@@ -207,3 +207,46 @@ fn double_enter_alt_is_idempotent() {
 
     assert_eq!(term.grid().cell(0, 0).c, 'P'); // primary survived
 }
+
+// ===========================================================================
+// Origin mode (DECOM ?6)
+// ===========================================================================
+
+/// With origin mode on, CUP row 1 is relative to the scroll region's top
+/// margin, not the absolute top of the screen.
+#[test]
+fn origin_mode_makes_cup_region_relative() {
+    let mut term = Engine::new(10, 6);
+    term.feed(b"\x1b[3;5r"); // scroll region rows 3..5 → grid rows 2..=4
+    term.feed(b"\x1b[?6h"); // DECOM on
+    term.feed(b"\x1b[1;1HX"); // CUP to region row 1 → grid row 2
+
+    assert_eq!(term.grid().cell(2, 0).c, 'X');
+}
+
+/// With origin mode on, a CUP past the bottom margin clamps to the region's
+/// bottom, not the screen's bottom.
+#[test]
+fn origin_mode_clamps_to_region_bottom() {
+    let mut term = Engine::new(10, 6);
+    term.feed(b"\x1b[3;5r"); // region grid rows 2..=4
+    term.feed(b"\x1b[?6h"); // DECOM on
+    term.feed(b"\x1b[99;1HY"); // CUP far past the region → clamp to grid row 4
+
+    assert_eq!(term.grid().cell(4, 0).c, 'Y');
+}
+
+/// Setting DECOM homes the cursor to the region top; unsetting it leaves the
+/// cursor where it is (the xterm/alacritty asymmetry we follow).
+#[test]
+fn decom_set_homes_to_region_unset_does_not_move() {
+    let mut term = Engine::new(10, 6);
+    term.feed(b"\x1b[3;5r"); // region grid rows 2..=4
+
+    term.feed(b"\x1b[?6h"); // DECOM set → home to region top
+    assert_eq!((term.cursor().row, term.cursor().col), (2, 0));
+
+    term.feed(b"\x1b[2;3H"); // move within the region → grid (3, 2)
+    term.feed(b"\x1b[?6l"); // DECOM unset → cursor must NOT move
+    assert_eq!((term.cursor().row, term.cursor().col), (3, 2));
+}

@@ -109,6 +109,10 @@ deferred behavior) it tracks — then add what you find here.** Seeds (caught in
   double-enter/leave is a no-op. The alt screen has no scrollback, and tab stops + scroll margins are
   *not* per-screen — they persist across the swap. The engine emits whichever grid is active; the
   switch is transparent to consumers. DEC private modes arrive as a `?` in the CSI `intermediates`. [#8]
+- **Origin mode (DECOM ?6) makes cursor addressing region-relative.** When set, CUP/HVP (`goto`) is
+  relative to the scroll region's top margin and clamped to the bottom margin; the column is
+  unaffected. Setting DECOM homes the cursor to the region top; *unsetting* it leaves the cursor put
+  — an xterm/alacritty asymmetry we follow (ADR-0001 gold reference), noting xterm homes on both. [#8]
 
 The *systematic* catch for this whole class is #8's vttest harness + dogfood — this list is only the
 famous few caught by review. Pull vttest early so VT-semantics slices verify against it from the start.

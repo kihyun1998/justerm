@@ -26,6 +26,9 @@ pub struct Term {
     /// One flag per column: is there a tab stop here? Explicit per-column state
     /// (HTS sets, TBC clears), not a fixed modulo. Default = every 8th column.
     tabs: Vec<bool>,
+    /// Origin mode (DECOM ?6): when set, cursor addressing is relative to the
+    /// scroll region's top margin (and clamped to it).
+    origin_mode: bool,
     /// Scroll region top/bottom margins (DECSTBM), 0-based inclusive. A
     /// line-feed at `scroll_bottom` scrolls only rows `[scroll_top..=scroll_bottom]`.
     /// Default = the full screen.
@@ -41,6 +44,7 @@ impl Term {
             cursor: Cursor::default(),
             saved_cursor: Cursor::default(),
             on_alt: false,
+            origin_mode: false,
             tabs: default_tabs(cols),
             scroll_top: 0,
             scroll_bottom: rows - 1,
@@ -241,7 +245,14 @@ impl Term {
     }
 
     fn goto(&mut self, row: usize, col: usize) {
-        self.cursor.row = row.min(self.grid.rows() - 1);
+        // Origin mode addresses rows relative to the scroll region's top margin
+        // and clamps to its bottom; otherwise rows are absolute to the screen.
+        let (offset, max_row) = if self.origin_mode {
+            (self.scroll_top, self.scroll_bottom)
+        } else {
+            (0, self.grid.rows() - 1)
+        };
+        self.cursor.row = (row + offset).min(max_row);
         self.cursor.col = col.min(self.grid.cols() - 1);
         self.cursor.pending_wrap = false;
     }
@@ -433,6 +444,13 @@ impl Perform for Term {
             match (action, mode) {
                 ('h', 1049) => self.enter_alt_screen(),
                 ('l', 1049) => self.leave_alt_screen(),
+                ('h', 6) => {
+                    // DECOM: set homes the cursor to the region top.
+                    self.origin_mode = true;
+                    self.goto(0, 0);
+                }
+                ('l', 6) => self.origin_mode = false, // unset leaves the cursor put
+
                 _ => {} // other DEC modes are later slices
             }
             return;
