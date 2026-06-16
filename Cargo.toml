@@ -2,5 +2,11 @@
 name = "justerm"
 version = "0.1.0"
 edition = "2024"
+description = "A pure terminal engine: VT byte stream to grid + scrollback + damage. No I/O, no rendering, theme-agnostic."
+license = "MIT"
+repository = "https://github.com/kihyun1998/justerm"
+readme = "README.md"
+keywords = ["terminal", "vte", "ansi", "tui", "emulator"]
+categories = ["command-line-interface", "parsing"]
 
 [dependencies]
