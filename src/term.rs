@@ -68,6 +68,16 @@ impl Term {
         self.goto(0, 0); // DECSTBM homes the cursor (absolute)
     }
 
+    /// RI (ESC M): move up one line. At the top margin, scroll the region down
+    /// instead.
+    fn reverse_index(&mut self) {
+        if self.cursor.row == self.scroll_top {
+            self.grid.scroll_down_region(self.scroll_top, self.scroll_bottom);
+        } else if self.cursor.row > 0 {
+            self.cursor.row -= 1;
+        }
+    }
+
     fn carriage_return(&mut self) {
         self.cursor.col = 0;
         self.cursor.pending_wrap = false;
@@ -415,8 +425,11 @@ impl Perform for Term {
         if !intermediates.is_empty() {
             return;
         }
-        if byte == b'H' {
-            self.set_tab_stop(); // HTS
+        match byte {
+            b'D' => self.linefeed(),       // IND (line-feed without CR)
+            b'H' => self.set_tab_stop(),   // HTS
+            b'M' => self.reverse_index(),  // RI
+            _ => {}
         }
     }
 }

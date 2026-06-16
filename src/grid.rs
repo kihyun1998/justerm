@@ -61,4 +61,16 @@ impl Grid {
             cell.reset();
         }
     }
+
+    /// Scroll the rows `[top..=bottom]` down by one line: a blank line appears at
+    /// `top` and the bottom region line is dropped. Rows outside are untouched.
+    /// Used by RI (reverse index) at the top margin.
+    pub fn scroll_down_region(&mut self, top: usize, bottom: usize) {
+        // Rotate the region's bottom line to its top, then blank it: every line
+        // in the region shifts down one and the region's top becomes empty.
+        self.lines[top..=bottom].rotate_right(1);
+        for cell in &mut self.lines[top] {
+            cell.reset();
+        }
+    }
 }

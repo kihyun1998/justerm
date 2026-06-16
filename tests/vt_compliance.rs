@@ -117,3 +117,46 @@ fn invalid_scroll_region_is_ignored() {
     // 'd' moved up a row: the region is still the whole screen.
     assert_eq!(term.grid().cell(2, 0).c, 'd');
 }
+
+// ===========================================================================
+// Index / Reverse Index (IND / RI)
+// ===========================================================================
+
+/// RI (ESC M) at the top margin scrolls the region down: a blank line appears
+/// at the top and existing rows are pushed down.
+#[test]
+fn reverse_index_at_top_scrolls_region_down() {
+    let mut term = Engine::new(4, 4);
+    term.feed(b"\x1b[1;1Ha"); // 'a' at row 0
+    term.feed(b"\x1b[2;1Hb"); // 'b' at row 1
+    term.feed(b"\x1b[1;1H"); // cursor back to the top margin
+    term.feed(b"\x1bM"); // RI at the top margin → scroll region down
+
+    assert_eq!(term.grid().cell(0, 0).c, ' '); // blank inserted at the top
+    assert_eq!(term.grid().cell(1, 0).c, 'a'); // 'a' pushed down
+    assert_eq!(term.grid().cell(2, 0).c, 'b'); // 'b' pushed down
+}
+
+/// RI below the top margin just moves the cursor up — no scroll.
+#[test]
+fn reverse_index_below_top_moves_up() {
+    let mut term = Engine::new(4, 4);
+    term.feed(b"\x1b[3;1Hx"); // cursor to grid row 2, write 'x'
+    term.feed(b"\x1bM"); // RI: not at the top margin → move up
+
+    assert_eq!(term.cursor().row, 1);
+    assert_eq!(term.grid().cell(2, 0).c, 'x'); // content intact, no scroll
+}
+
+/// IND (ESC D) at the bottom margin scrolls the region up — a line-feed without
+/// the carriage return.
+#[test]
+fn index_at_bottom_scrolls_region_up() {
+    let mut term = Engine::new(4, 2);
+    term.feed(b"\x1b[1;1Ha\x1b[2;1Hb"); // row 0 = 'a', row 1 = 'b'
+    term.feed(b"\x1b[2;1H"); // cursor to the bottom margin
+    term.feed(b"\x1bD"); // IND → scroll region up
+
+    assert_eq!(term.grid().cell(0, 0).c, 'b'); // 'b' scrolled up
+    assert_eq!(term.grid().cell(1, 0).c, ' '); // blank at the bottom
+}

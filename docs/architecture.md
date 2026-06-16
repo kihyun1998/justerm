@@ -100,6 +100,10 @@ deferred behavior) it tracks — then add what you find here.** Seeds (caught in
   homes the cursor (absolute (0,0); origin-relative under DECOM, a later slice), ignores an invalid
   region (top ≥ bottom), and defaults to the full screen. A line-feed below the region just
   descends; no scroll happens outside it. [#8]
+- **IND / RI (ESC D / ESC M) scroll at the margins.** IND moves the cursor down — at the bottom
+  margin it scrolls the region up (a line-feed without the carriage return). RI moves up — at the
+  *top* margin it scrolls the region *down* (a blank line appears at the top, the bottom region line
+  is lost). Off the margin, each just moves the cursor. [#8]
 
 The *systematic* catch for this whole class is #8's vttest harness + dogfood — this list is only the
 famous few caught by review. Pull vttest early so VT-semantics slices verify against it from the start.
