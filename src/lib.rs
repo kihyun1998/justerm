@@ -62,4 +62,10 @@ impl Engine {
     pub fn cursor(&self) -> &Cursor {
         self.term.cursor()
     }
+
+    /// Whether bracketed-paste mode (DEC ?2004) is enabled. A consumer's input
+    /// encoder reads this to decide whether to wrap pasted text in markers.
+    pub fn bracketed_paste(&self) -> bool {
+        self.term.bracketed_paste()
+    }
 }

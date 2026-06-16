@@ -29,6 +29,9 @@ pub struct Term {
     /// Origin mode (DECOM ?6): when set, cursor addressing is relative to the
     /// scroll region's top margin (and clamped to it).
     origin_mode: bool,
+    /// Bracketed-paste mode (DEC ?2004). The engine owns the flag; the input
+    /// encoder (#11) reads it to decide whether to wrap pasted text in markers.
+    bracketed_paste: bool,
     /// Scroll region top/bottom margins (DECSTBM), 0-based inclusive. A
     /// line-feed at `scroll_bottom` scrolls only rows `[scroll_top..=scroll_bottom]`.
     /// Default = the full screen.
@@ -45,6 +48,7 @@ impl Term {
             saved_cursor: Cursor::default(),
             on_alt: false,
             origin_mode: false,
+            bracketed_paste: false,
             tabs: default_tabs(cols),
             scroll_top: 0,
             scroll_bottom: rows - 1,
@@ -57,6 +61,12 @@ impl Term {
 
     pub fn cursor(&self) -> &Cursor {
         &self.cursor
+    }
+
+    /// Whether bracketed-paste mode (DEC ?2004) is enabled. The input encoder
+    /// (#11) reads this to decide whether to wrap pasted text in markers.
+    pub fn bracketed_paste(&self) -> bool {
+        self.bracketed_paste
     }
 
     // ---- cursor / scroll primitives ------------------------------------------
@@ -452,6 +462,8 @@ impl Perform for Term {
                 ('l', 6) => self.origin_mode = false, // unset leaves the cursor put
                 ('h', 25) => self.cursor.visible = true, // DECTCEM show
                 ('l', 25) => self.cursor.visible = false, // DECTCEM hide
+                ('h', 2004) => self.bracketed_paste = true,
+                ('l', 2004) => self.bracketed_paste = false,
 
                 _ => {} // other DEC modes are later slices
             }

@@ -268,3 +268,22 @@ fn cursor_visibility_toggles() {
     term.feed(b"\x1b[?25h"); // show
     assert!(term.cursor().visible);
 }
+
+// ===========================================================================
+// Bracketed paste mode (DEC ?2004)
+// ===========================================================================
+
+/// ?2004h enables bracketed-paste mode, ?2004l disables it; off by default.
+/// The engine owns the flag — wrapping pasted input in markers is the input
+/// encoder's job (#11).
+#[test]
+fn bracketed_paste_mode_toggles() {
+    let mut term = Engine::new(10, 2);
+    assert!(!term.bracketed_paste()); // off by default
+
+    term.feed(b"\x1b[?2004h"); // enable
+    assert!(term.bracketed_paste());
+
+    term.feed(b"\x1b[?2004l"); // disable
+    assert!(!term.bracketed_paste());
+}
