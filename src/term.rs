@@ -14,6 +14,9 @@ use crate::grid::Grid;
 pub struct Term {
     grid: Grid,
     cursor: Cursor,
+    /// One flag per column: is there a tab stop here? Explicit per-column state
+    /// (HTS sets, TBC clears), not a fixed modulo. Default = every 8th column.
+    tabs: Vec<bool>,
 }
 
 impl Term {
@@ -21,6 +24,7 @@ impl Term {
         Term {
             grid: Grid::new(cols, rows),
             cursor: Cursor::default(),
+            tabs: default_tabs(cols),
         }
     }
 
@@ -54,6 +58,42 @@ impl Term {
         self.linefeed();
         self.cursor.col = 0;
         self.cursor.pending_wrap = false;
+    }
+
+    // ---- tab stops (HT / HTS / TBC) ------------------------------------------
+
+    /// HT: advance to the next set tab stop, or the last column if none remain
+    /// (no wrap).
+    fn put_tab(&mut self) {
+        let cols = self.grid.cols();
+        let mut col = self.cursor.col;
+        while col + 1 < cols {
+            col += 1;
+            if self.tabs[col] {
+                break;
+            }
+        }
+        self.cursor.col = col;
+        self.cursor.pending_wrap = false;
+    }
+
+    /// HTS (ESC H): set a tab stop at the cursor column.
+    fn set_tab_stop(&mut self) {
+        let col = self.cursor.col;
+        self.tabs[col] = true;
+    }
+
+    /// TBC (CSI g): clear the tab stop at the cursor (mode 0) or all stops
+    /// (mode 3).
+    fn clear_tab_stop(&mut self, mode: u16) {
+        match mode {
+            0 => {
+                let col = self.cursor.col;
+                self.tabs[col] = false;
+            }
+            3 => self.tabs.iter_mut().for_each(|t| *t = false),
+            _ => {}
+        }
     }
 
     // ---- printing ------------------------------------------------------------
@@ -277,6 +317,11 @@ where
     }
 }
 
+/// Default tab stops: one every 8 columns (incl. column 0), matching xterm.
+fn default_tabs(cols: usize) -> Vec<bool> {
+    (0..cols).map(|i| i % 8 == 0).collect()
+}
+
 /// First sub-parameter of CSI param `idx`, or `default` when absent or zero
 /// (a zero/omitted numeric param means "1" for cursor movement and "0" for
 /// erase — callers pass the right default).
@@ -307,13 +352,7 @@ impl Perform for Term {
                 self.cursor.col = self.cursor.col.saturating_sub(1);
                 self.cursor.pending_wrap = false;
             }
-            b'\t' => {
-                // Horizontal tab to the next 8-column stop. Real, settable tab
-                // stops are a later slice.
-                let next = ((self.cursor.col / 8) + 1) * 8;
-                self.cursor.col = next.min(self.grid.cols() - 1);
-                self.cursor.pending_wrap = false;
-            }
+            b'\t' => self.put_tab(),
             // BEL (0x07) and others: an event/notification surface is a later
             // slice; ignore for now.
             _ => {}
@@ -340,12 +379,18 @@ impl Perform for Term {
             }
             'J' => self.erase_display(param_or(params, 0, 0)),
             'K' => self.erase_line(param_or(params, 0, 0)),
+            'g' => self.clear_tab_stop(param_or(params, 0, 0)),
             'm' => self.sgr(params),
             _ => {}
         }
     }
 
-    // OSC, DCS (hook/put/unhook), and ESC dispatch are later slices; the default
-    // no-op `Perform` impls cover them.
-    fn esc_dispatch(&mut self, _intermediates: &[u8], _ignore: bool, _byte: u8) {}
+    fn esc_dispatch(&mut self, intermediates: &[u8], _ignore: bool, byte: u8) {
+        if !intermediates.is_empty() {
+            return;
+        }
+        if byte == b'H' {
+            self.set_tab_stop(); // HTS
+        }
+    }
 }

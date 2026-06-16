@@ -90,6 +90,10 @@ deferred behavior) it tracks — then add what you find here.** Seeds (caught in
   selection, and cursor positioning go wrong. [#2]
 - **Background Color Erase (BCE).** Erase (ED/EL) fills cleared cells with the *current SGR
   background*, not default. [#8; note in #2 if deferred]
+- **Tab stops are explicit per-column state, not a fixed modulo.** A bool-per-column set: HTS
+  (ESC H) sets a stop at the cursor, TBC (CSI g) clears one (param 0) or all (param 3), and HT
+  advances to the next *set* stop — or the last column if none remain (no wrap). Default = every
+  8th column (incl. col 0). Resize must re-init/extend the set (#7). [#8]
 
 The *systematic* catch for this whole class is #8's vttest harness + dogfood — this list is only the
 famous few caught by review. Pull vttest early so VT-semantics slices verify against it from the start.
