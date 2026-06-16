@@ -450,6 +450,8 @@ impl Perform for Term {
                     self.goto(0, 0);
                 }
                 ('l', 6) => self.origin_mode = false, // unset leaves the cursor put
+                ('h', 25) => self.cursor.visible = true, // DECTCEM show
+                ('l', 25) => self.cursor.visible = false, // DECTCEM hide
 
                 _ => {} // other DEC modes are later slices
             }

@@ -33,7 +33,7 @@ impl Pen {
 }
 
 /// The input position, its pending-wrap state, and the current pen.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug)]
 pub struct Cursor {
     pub row: usize,
     pub col: usize,
@@ -43,4 +43,21 @@ pub struct Cursor {
     /// lines (see `docs/architecture.md` "Hidden VT state").
     pub pending_wrap: bool,
     pub pen: Pen,
+    /// Whether the cursor is shown (DEC ?25). The engine only reports this;
+    /// blink is a renderer-local animation, not an engine concern.
+    pub visible: bool,
+}
+
+impl Default for Cursor {
+    fn default() -> Self {
+        // The cursor starts visible; a manual impl is needed because `bool`'s
+        // derived default is `false`.
+        Cursor {
+            row: 0,
+            col: 0,
+            pending_wrap: false,
+            pen: Pen::default(),
+            visible: true,
+        }
+    }
 }

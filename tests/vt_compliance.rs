@@ -250,3 +250,21 @@ fn decom_set_homes_to_region_unset_does_not_move() {
     term.feed(b"\x1b[?6l"); // DECOM unset → cursor must NOT move
     assert_eq!((term.cursor().row, term.cursor().col), (3, 2));
 }
+
+// ===========================================================================
+// Cursor visibility (DEC ?25)
+// ===========================================================================
+
+/// ?25l hides the cursor, ?25h shows it; the cursor is visible by default. The
+/// engine only reports visibility (blink is a renderer concern).
+#[test]
+fn cursor_visibility_toggles() {
+    let mut term = Engine::new(10, 2);
+    assert!(term.cursor().visible); // visible by default
+
+    term.feed(b"\x1b[?25l"); // hide
+    assert!(!term.cursor().visible);
+
+    term.feed(b"\x1b[?25h"); // show
+    assert!(term.cursor().visible);
+}
