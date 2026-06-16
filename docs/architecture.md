@@ -94,6 +94,25 @@ deferred behavior) it tracks — then add what you find here.** Seeds (caught in
 The *systematic* catch for this whole class is #7's vttest harness + dogfood — this list is only the
 famous few caught by review. Pull vttest early so VT-semantics slices verify against it from the start.
 
+### Where to look (reference impls — grep symbols, not line numbers)
+
+External paths drift; **symbol/flag names don't** — grep these in a fresh checkout rather than
+trusting a path.
+
+- **`vte`** — the parser we depend on: <https://github.com/alacritty/vte> (the `Perform` trait, params
+  handling, the `ansi` module if present).
+- **`alacritty_terminal`** — the gold state-model reference (we do *not* depend on it; read only):
+  <https://github.com/alacritty/alacritty> under `alacritty_terminal/src/` —
+  - pending-wrap → grep **`WRAPLINE`**, **`input_needs_wrap`** (in `term/mod.rs`).
+  - wide-char → grep **`WIDE_CHAR`**, **`WIDE_CHAR_SPACER`** (in `term/cell.rs`).
+  - BCE → the erase handlers that clear with the cursor *template* cell (carries current bg).
+  - selection → `selection.rs` (`Selection`, `to_range`, `selection_to_string`).
+  - grid/scrollback → `grid/` (`Grid`, `Row`, the scrollback ring).
+- **`wezterm-term`** — alternative model: <https://github.com/wezterm/wezterm> under `term/src/`.
+- **`xterm.js`** — the web/JS perspective (what PenTerm leaves behind): <https://github.com/xtermjs/xterm.js>.
+- **Conformance suites** (for #7): **vttest** <https://invisible-island.net/vttest/> and iTerm2's
+  **esctest** (very thorough) — these *are* the systematic net.
+
 ## How a consumer integrates (context, not justerm's work)
 
 PenTerm (first consumer) wraps justerm: feeds PTY/SSH bytes, ships the binary diff over a Tauri
