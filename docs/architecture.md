@@ -113,6 +113,14 @@ deferred behavior) it tracks — then add what you find here.** Seeds (caught in
   relative to the scroll region's top margin and clamped to the bottom margin; the column is
   unaffected. Setting DECOM homes the cursor to the region top; *unsetting* it leaves the cursor put
   — an xterm/alacritty asymmetry we follow (ADR-0001 gold reference), noting xterm homes on both. [#8]
+- **Scrollback accrues only on a top-anchored, primary-screen scroll.** A line scrolled off enters
+  history *only* when `scroll_top == 0` and not on the alt screen — NOT merely "the full screen". A
+  top-anchored sub-region (`[0..k]`) still accrues; a region with `scroll_top > 0`, the alt screen,
+  and reverse-index (scroll *down*) never do (verified against alacritty `region.start == 0`). The
+  viewport windows into history via a `display_offset` clamped to `[0, history.len()]`. New output
+  while scrolled up (`display_offset > 0`) **stays** put — the offset is bumped to hold the view, not
+  yanked to the bottom (alacritty/xterm.js follow-bottom). History is a flat line ring; semantic
+  grouping (Warp's command "blocks") is a *consumer* concern above the engine, never in it. [#3]
 
 The *systematic* catch for this whole class is #8's vttest harness + dogfood — this list is only the
 famous few caught by review. Pull vttest early so VT-semantics slices verify against it from the start.

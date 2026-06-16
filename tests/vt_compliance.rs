@@ -252,6 +252,45 @@ fn decom_set_homes_to_region_unset_does_not_move() {
 }
 
 // ===========================================================================
+// Scrollback (#3)
+// ===========================================================================
+
+/// A line scrolled off the top of the primary screen enters scrollback history.
+#[test]
+fn scroll_accrues_history() {
+    let mut term = Engine::new(4, 2); // 2 visible rows
+    assert_eq!(term.scrollback_len(), 0);
+
+    term.feed(b"a\r\nb\r\nc"); // 'a' is pushed off when the 3rd line starts
+    assert_eq!(term.scrollback_len(), 1);
+}
+
+/// At the bottom (no scroll), the viewport is the live screen.
+#[test]
+fn viewport_shows_live_screen_at_bottom() {
+    let mut term = Engine::new(4, 2);
+    term.feed(b"a\r\nb\r\nc"); // history=['a'], screen rows 'b','c'
+
+    assert_eq!(term.viewport_line(0)[0].c, 'b');
+    assert_eq!(term.viewport_line(1)[0].c, 'c');
+}
+
+/// Scrolling up windows the viewport into history (acceptance: feed lines,
+/// scroll up → older lines show).
+#[test]
+fn scroll_up_reveals_history() {
+    let mut term = Engine::new(4, 4);
+    // 6 lines into a 4-row screen → 2 lines (a, b) in history.
+    term.feed(b"a\r\nb\r\nc\r\nd\r\ne\r\nf");
+    assert_eq!(term.scrollback_len(), 2);
+
+    term.scroll_up(2); // reveal the two oldest lines at the top
+    assert_eq!(term.viewport_line(0)[0].c, 'a');
+    assert_eq!(term.viewport_line(1)[0].c, 'b');
+    assert_eq!(term.viewport_line(2)[0].c, 'c');
+}
+
+// ===========================================================================
 // Cursor visibility (DEC ?25)
 // ===========================================================================
 

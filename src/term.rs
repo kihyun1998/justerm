@@ -2,13 +2,15 @@
 //! the grid, cursor, and pen. This is where the "hidden VT state" lives —
 //! pending-wrap, the wide-char spacer, and the pen (BCE seam).
 
+use std::collections::VecDeque;
+
 use unicode_width::UnicodeWidthChar;
 use vte::{Params, Perform};
 
-use crate::cell::CellFlags;
+use crate::cell::{Cell, CellFlags};
 use crate::color::Color;
 use crate::cursor::Cursor;
-use crate::grid::Grid;
+use crate::grid::{Grid, Row};
 
 /// Owns the authoritative screen state and applies VT actions to it.
 pub struct Term {
@@ -37,6 +39,12 @@ pub struct Term {
     /// Default = the full screen.
     scroll_top: usize,
     scroll_bottom: usize,
+    /// Lines that have scrolled off the top of the primary screen, oldest at the
+    /// front. Accrues only on a top-anchored, primary-screen scroll.
+    scrollback: VecDeque<Row>,
+    /// How many lines the viewport is scrolled up from the bottom. 0 = following
+    /// the live screen; clamped to `[0, scrollback.len()]`.
+    display_offset: usize,
 }
 
 impl Term {
@@ -52,7 +60,32 @@ impl Term {
             tabs: default_tabs(cols),
             scroll_top: 0,
             scroll_bottom: rows - 1,
+            scrollback: VecDeque::new(),
+            display_offset: 0,
         }
+    }
+
+    /// Number of lines currently held in scrollback history.
+    pub fn scrollback_len(&self) -> usize {
+        self.scrollback.len()
+    }
+
+    /// The cells of visible row `i` (0..rows) at the current scroll position.
+    /// The viewport windows into `[history.. ; screen..]`: rows above
+    /// `scrollback.len()` come from history, the rest from the live screen.
+    pub fn viewport_line(&self, i: usize) -> &[Cell] {
+        let top = self.scrollback.len() - self.display_offset;
+        let idx = top + i;
+        if idx < self.scrollback.len() {
+            &self.scrollback[idx]
+        } else {
+            self.grid.row(idx - self.scrollback.len())
+        }
+    }
+
+    /// Scroll the viewport up by `n` lines into history (clamped to the oldest).
+    pub fn scroll_up(&mut self, n: usize) {
+        self.display_offset = (self.display_offset + n).min(self.scrollback.len());
     }
 
     pub fn grid(&self) -> &Grid {
@@ -76,6 +109,12 @@ impl Term {
     /// CR is what returns to column 0).
     fn linefeed(&mut self) {
         if self.cursor.row == self.scroll_bottom {
+            // A top-anchored primary-screen scroll pushes the evicted top line
+            // into scrollback history.
+            if self.scroll_top == 0 && !self.on_alt {
+                let evicted = self.grid.row(0).to_vec();
+                self.scrollback.push_back(evicted);
+            }
             self.grid.scroll_up_region(self.scroll_top, self.scroll_bottom);
         } else if self.cursor.row + 1 < self.grid.rows() {
             self.cursor.row += 1;

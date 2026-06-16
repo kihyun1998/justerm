@@ -68,4 +68,19 @@ impl Engine {
     pub fn bracketed_paste(&self) -> bool {
         self.term.bracketed_paste()
     }
+
+    /// Number of lines currently held in scrollback history.
+    pub fn scrollback_len(&self) -> usize {
+        self.term.scrollback_len()
+    }
+
+    /// The cells of visible row `i` (0..rows) at the current scroll position.
+    pub fn viewport_line(&self, i: usize) -> &[Cell] {
+        self.term.viewport_line(i)
+    }
+
+    /// Scroll the viewport up by `n` lines into scrollback history.
+    pub fn scroll_up(&mut self, n: usize) {
+        self.term.scroll_up(n);
+    }
 }
