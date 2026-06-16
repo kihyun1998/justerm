@@ -287,3 +287,19 @@ fn bracketed_paste_mode_toggles() {
     term.feed(b"\x1b[?2004l"); // disable
     assert!(!term.bracketed_paste());
 }
+
+// ===========================================================================
+// NEL — Next Line (ESC E)
+// ===========================================================================
+
+/// NEL moves the cursor to the first column of the next line (a CR + LF).
+#[test]
+fn nel_moves_to_start_of_next_line() {
+    let mut term = Engine::new(10, 3);
+    term.feed(b"ab"); // cursor at (0, 2)
+    term.feed(b"\x1bE"); // NEL → (1, 0)
+    term.feed(b"c");
+
+    assert_eq!(term.grid().cell(1, 0).c, 'c');
+    assert_eq!((term.cursor().row, term.cursor().col), (1, 1));
+}

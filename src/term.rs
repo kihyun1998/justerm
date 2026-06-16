@@ -506,6 +506,11 @@ impl Perform for Term {
         }
         match byte {
             b'D' => self.linefeed(),       // IND (line-feed without CR)
+            b'E' => {
+                // NEL (next line): carriage return + line-feed.
+                self.carriage_return();
+                self.linefeed();
+            }
             b'H' => self.set_tab_stop(),   // HTS
             b'M' => self.reverse_index(),  // RI
             _ => {}
