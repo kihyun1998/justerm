@@ -10,5 +10,6 @@ keywords = ["terminal", "vte", "ansi", "tui", "emulator"]
 categories = ["command-line-interface", "parsing"]
 
 [dependencies]
+bitflags = "2"
 unicode-width = "0.2"
 vte = "0.15"
