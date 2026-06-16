@@ -69,6 +69,24 @@ cursor=(1,1) visible=true
     );
 }
 
+/// Pending-wrap: a case that ends the instant the last column is filled. The
+/// cursor line distinguishes deferred wrap (parked at the last column) from an
+/// eager wrap (already moved to the next row) — which the `autowrap` case above
+/// cannot, because it writes past the boundary and the two converge.
+#[test]
+fn pending_wrap_parks_cursor() {
+    check(
+        3,
+        2,
+        b"abc",
+        "\
+|abc|
+|   |
+cursor=(0,2) visible=true
+",
+    );
+}
+
 /// HT advances to the 8-column tab stop.
 #[test]
 fn tab_stop() {
