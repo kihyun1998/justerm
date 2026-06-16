@@ -44,7 +44,7 @@ cargo bench         # throughput 마이크로벤치(추세 기록)
 
 ## 핵심 규칙
 
-- **주석**: 한국어.
+- **주석**: 영어 (코드 주석은 영어로 작성한다).
 - **CONTEXT.md / docs/adr/**: 영어 (LLM 토큰 효율). 그 외 사람이 읽는 문서·CLAUDE.md: 한국어.
 - **네이밍**: Rust 관용(snake_case 함수/모듈, CamelCase 타입).
 - **커밋 메시지**: 관련 GitHub 이슈 번호 참조 (`feat: ... (#12)`). `Co-Authored-By` trailer 금지.
