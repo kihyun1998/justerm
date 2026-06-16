@@ -62,6 +62,16 @@ impl Grid {
         }
     }
 
+    /// Reset every cell to a blank default. Used when switching to the alt
+    /// screen (which always starts cleared).
+    pub fn clear(&mut self) {
+        for row in &mut self.lines {
+            for cell in row {
+                cell.reset();
+            }
+        }
+    }
+
     /// Scroll the rows `[top..=bottom]` down by one line: a blank line appears at
     /// `top` and the bottom region line is dropped. Rows outside are untouched.
     /// Used by RI (reverse index) at the top margin.

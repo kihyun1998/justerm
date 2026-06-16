@@ -13,7 +13,16 @@ use crate::grid::Grid;
 /// Owns the authoritative screen state and applies VT actions to it.
 pub struct Term {
     grid: Grid,
+    /// The inactive screen. Swapped with `grid` on alt-screen enter/leave; holds
+    /// whichever of primary/alternate is not currently shown. The alt screen has
+    /// no scrollback (#3 only rings the primary).
+    alt_grid: Grid,
     cursor: Cursor,
+    /// Cursor saved on alt-screen enter (DEC 1049), restored on leave.
+    saved_cursor: Cursor,
+    /// Whether the alternate screen is currently active. Guards enter/leave so a
+    /// double-enter or double-leave is a no-op.
+    on_alt: bool,
     /// One flag per column: is there a tab stop here? Explicit per-column state
     /// (HTS sets, TBC clears), not a fixed modulo. Default = every 8th column.
     tabs: Vec<bool>,
@@ -28,7 +37,10 @@ impl Term {
     pub fn new(cols: usize, rows: usize) -> Self {
         Term {
             grid: Grid::new(cols, rows),
+            alt_grid: Grid::new(cols, rows),
             cursor: Cursor::default(),
+            saved_cursor: Cursor::default(),
+            on_alt: false,
             tabs: default_tabs(cols),
             scroll_top: 0,
             scroll_bottom: rows - 1,
@@ -66,6 +78,31 @@ impl Term {
         self.scroll_top = top - 1;
         self.scroll_bottom = bottom - 1;
         self.goto(0, 0); // DECSTBM homes the cursor (absolute)
+    }
+
+    // ---- alt screen (DEC 1049) -----------------------------------------------
+
+    /// Enter the alternate screen: save the cursor, swap in the other grid, and
+    /// clear it.
+    fn enter_alt_screen(&mut self) {
+        if self.on_alt {
+            return;
+        }
+        self.saved_cursor = self.cursor;
+        std::mem::swap(&mut self.grid, &mut self.alt_grid);
+        self.grid.clear();
+        self.on_alt = true;
+    }
+
+    /// Leave the alternate screen: swap the primary grid back in and restore the
+    /// saved cursor.
+    fn leave_alt_screen(&mut self) {
+        if !self.on_alt {
+            return;
+        }
+        std::mem::swap(&mut self.grid, &mut self.alt_grid);
+        self.cursor = self.saved_cursor;
+        self.on_alt = false;
     }
 
     /// RI (ESC M): move up one line. At the top margin, scroll the region down
@@ -390,8 +427,18 @@ impl Perform for Term {
     }
 
     fn csi_dispatch(&mut self, params: &Params, intermediates: &[u8], _ignore: bool, action: char) {
-        // Private-mode sequences (intermediates such as '?', '>') — DEC modes —
-        // are a later slice; ignore them rather than misinterpret.
+        // DEC private modes arrive with a '?' intermediate.
+        if intermediates.first() == Some(&b'?') {
+            let mode = param_or(params, 0, 0);
+            match (action, mode) {
+                ('h', 1049) => self.enter_alt_screen(),
+                ('l', 1049) => self.leave_alt_screen(),
+                _ => {} // other DEC modes are later slices
+            }
+            return;
+        }
+        // Other private/intermediate sequences are later slices; ignore them
+        // rather than misinterpret.
         if !intermediates.is_empty() {
             return;
         }

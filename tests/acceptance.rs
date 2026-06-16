@@ -347,12 +347,13 @@ fn zero_width_is_dropped_for_now() {
 // Robustness — sequences the slice deliberately ignores
 // ===========================================================================
 
-/// Private-mode sequences (intermediates such as `?`) are ignored rather than
-/// misinterpreted — DEC modes are #8. The surrounding text still prints.
+/// Unimplemented private-mode sequences (intermediates such as `?`) are ignored
+/// rather than misinterpreted. The surrounding text still prints. (Modes that
+/// ARE implemented, e.g. ?1049 alt-screen, are tested in vt_compliance.rs.)
 #[test]
 fn private_mode_sequences_are_ignored() {
     let mut term = Engine::new(10, 2);
-    term.feed(b"A\x1b[?25lB\x1b[?1049hC"); // hide-cursor / alt-screen toggles
+    term.feed(b"A\x1b[?25lB\x1b[?2004hC"); // hide-cursor + bracketed-paste: both unimplemented
     assert_eq!(term.grid().cell(0, 0).c, 'A');
     assert_eq!(term.grid().cell(0, 1).c, 'B');
     assert_eq!(term.grid().cell(0, 2).c, 'C');

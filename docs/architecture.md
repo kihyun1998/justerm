@@ -104,6 +104,11 @@ deferred behavior) it tracks — then add what you find here.** Seeds (caught in
   margin it scrolls the region up (a line-feed without the carriage return). RI moves up — at the
   *top* margin it scrolls the region *down* (a blank line appears at the top, the bottom region line
   is lost). Off the margin, each just moves the cursor. [#8]
+- **Alt-screen is a second grid swapped in (DEC 1049).** `?1049h` saves the cursor and swaps to a
+  fresh (cleared) alternate grid; `?1049l` swaps back and restores the cursor. Guarded so a
+  double-enter/leave is a no-op. The alt screen has no scrollback, and tab stops + scroll margins are
+  *not* per-screen — they persist across the swap. The engine emits whichever grid is active; the
+  switch is transparent to consumers. DEC private modes arrive as a `?` in the CSI `intermediates`. [#8]
 
 The *systematic* catch for this whole class is #8's vttest harness + dogfood — this list is only the
 famous few caught by review. Pull vttest early so VT-semantics slices verify against it from the start.

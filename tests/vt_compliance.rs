@@ -160,3 +160,50 @@ fn index_at_bottom_scrolls_region_up() {
     assert_eq!(term.grid().cell(0, 0).c, 'b'); // 'b' scrolled up
     assert_eq!(term.grid().cell(1, 0).c, ' '); // blank at the bottom
 }
+
+// ===========================================================================
+// Alt-screen (DEC 1049)
+// ===========================================================================
+
+/// Entering the alt screen (?1049h) shows a fresh blank grid; leaving (?1049l)
+/// brings the primary screen's content back.
+#[test]
+fn alt_screen_switches_and_restores() {
+    let mut term = Engine::new(10, 3);
+    term.feed(b"PRIMARY"); // content on the primary screen
+
+    term.feed(b"\x1b[?1049h"); // enter alt → fresh, cleared screen
+    assert_eq!(term.grid().cell(0, 0).c, ' ');
+    term.feed(b"\x1b[1;1HALT"); // write on the alt screen
+    assert_eq!(term.grid().cell(0, 0).c, 'A');
+
+    term.feed(b"\x1b[?1049l"); // leave → primary content is back
+    assert_eq!(term.grid().cell(0, 0).c, 'P');
+}
+
+/// Entering the alt screen saves the cursor; leaving restores it (the alt
+/// screen's own cursor movement does not leak back to the primary).
+#[test]
+fn alt_screen_saves_and_restores_cursor() {
+    let mut term = Engine::new(10, 3);
+    term.feed(b"\x1b[2;5H"); // cursor to grid (1, 4) on the primary
+    term.feed(b"\x1b[?1049h"); // enter alt → save cursor
+    term.feed(b"\x1b[1;1H"); // move cursor on the alt screen
+    term.feed(b"\x1b[?1049l"); // leave → restore the saved cursor
+
+    assert_eq!((term.cursor().row, term.cursor().col), (1, 4));
+}
+
+/// A redundant ?1049h while already on the alt screen is a no-op — it must not
+/// swap the primary screen in and clear it.
+#[test]
+fn double_enter_alt_is_idempotent() {
+    let mut term = Engine::new(10, 2);
+    term.feed(b"P"); // primary content
+    term.feed(b"\x1b[?1049h"); // enter alt
+    term.feed(b"\x1b[1;1HX"); // write on the alt screen
+    term.feed(b"\x1b[?1049h"); // enter AGAIN — must be a no-op
+    term.feed(b"\x1b[?1049l"); // a single leave → back to primary
+
+    assert_eq!(term.grid().cell(0, 0).c, 'P'); // primary survived
+}
