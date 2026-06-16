@@ -94,6 +94,12 @@ deferred behavior) it tracks — then add what you find here.** Seeds (caught in
   (ESC H) sets a stop at the cursor, TBC (CSI g) clears one (param 0) or all (param 3), and HT
   advances to the next *set* stop — or the last column if none remain (no wrap). Default = every
   8th column (incl. col 0). Resize must re-init/extend the set (#7). [#8]
+- **Scroll region (DECSTBM) redefines what "scroll" means.** top/bottom margins (0-based,
+  inclusive) stored as state; a line-feed at the *bottom margin* scrolls only rows `[top..=bottom]`,
+  leaving rows outside fixed — `linefeed` must consult the margins, not the screen edge. DECSTBM
+  homes the cursor (absolute (0,0); origin-relative under DECOM, a later slice), ignores an invalid
+  region (top ≥ bottom), and defaults to the full screen. A line-feed below the region just
+  descends; no scroll happens outside it. [#8]
 
 The *systematic* catch for this whole class is #8's vttest harness + dogfood — this list is only the
 famous few caught by review. Pull vttest early so VT-semantics slices verify against it from the start.

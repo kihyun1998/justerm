@@ -17,6 +17,11 @@ pub struct Term {
     /// One flag per column: is there a tab stop here? Explicit per-column state
     /// (HTS sets, TBC clears), not a fixed modulo. Default = every 8th column.
     tabs: Vec<bool>,
+    /// Scroll region top/bottom margins (DECSTBM), 0-based inclusive. A
+    /// line-feed at `scroll_bottom` scrolls only rows `[scroll_top..=scroll_bottom]`.
+    /// Default = the full screen.
+    scroll_top: usize,
+    scroll_bottom: usize,
 }
 
 impl Term {
@@ -25,6 +30,8 @@ impl Term {
             grid: Grid::new(cols, rows),
             cursor: Cursor::default(),
             tabs: default_tabs(cols),
+            scroll_top: 0,
+            scroll_bottom: rows - 1,
         }
     }
 
@@ -38,14 +45,27 @@ impl Term {
 
     // ---- cursor / scroll primitives ------------------------------------------
 
-    /// Move down one line, scrolling the screen if already at the bottom. Column
-    /// is unchanged (raw LF; CR is what returns to column 0).
+    /// Move down one line. At the bottom margin, scroll the region instead;
+    /// below the region, just descend (no scroll). Column is unchanged (raw LF;
+    /// CR is what returns to column 0).
     fn linefeed(&mut self) {
-        if self.cursor.row + 1 >= self.grid.rows() {
-            self.grid.scroll_up_one();
-        } else {
+        if self.cursor.row == self.scroll_bottom {
+            self.grid.scroll_up_region(self.scroll_top, self.scroll_bottom);
+        } else if self.cursor.row + 1 < self.grid.rows() {
             self.cursor.row += 1;
         }
+    }
+
+    /// DECSTBM (CSI r): set the top/bottom scroll margins (1-based inclusive).
+    /// An invalid region (top ≥ bottom) is ignored.
+    fn set_scroll_region(&mut self, top: usize, bottom: usize) {
+        let bottom = bottom.min(self.grid.rows());
+        if top >= bottom {
+            return;
+        }
+        self.scroll_top = top - 1;
+        self.scroll_bottom = bottom - 1;
+        self.goto(0, 0); // DECSTBM homes the cursor (absolute)
     }
 
     fn carriage_return(&mut self) {
@@ -380,6 +400,12 @@ impl Perform for Term {
             'J' => self.erase_display(param_or(params, 0, 0)),
             'K' => self.erase_line(param_or(params, 0, 0)),
             'g' => self.clear_tab_stop(param_or(params, 0, 0)),
+            'r' => {
+                let rows = self.grid.rows() as u16;
+                let top = param_or(params, 0, 1) as usize;
+                let bottom = param_or(params, 1, rows) as usize;
+                self.set_scroll_region(top, bottom);
+            }
             'm' => self.sgr(params),
             _ => {}
         }

@@ -46,17 +46,18 @@ impl Grid {
         &self.lines[row]
     }
 
-    /// Scroll the whole screen up by one line: drop the top line, push a blank
-    /// at the bottom.
+    /// Scroll the rows `[top..=bottom]` up by one line: the top line of the
+    /// region is dropped and a blank line appears at `bottom`. Rows outside the
+    /// region are untouched.
     ///
-    /// Scrollback retention is a later slice (#3) — for now the scrolled-off
-    /// line is discarded rather than pushed into a history ring.
-    pub fn scroll_up_one(&mut self) {
-        // Rotate the top line to the bottom, then blank it: net effect is every
-        // line shifts up one and the bottom becomes empty.
-        self.lines.rotate_left(1);
-        let last = self.rows - 1;
-        for cell in &mut self.lines[last] {
+    /// Scrollback retention (when the region is the full screen) is a later
+    /// slice (#3) — for now the scrolled-off line is discarded rather than
+    /// pushed into a history ring.
+    pub fn scroll_up_region(&mut self, top: usize, bottom: usize) {
+        // Rotate the region's top line to its bottom, then blank it: every line
+        // in the region shifts up one and the region's bottom becomes empty.
+        self.lines[top..=bottom].rotate_left(1);
+        for cell in &mut self.lines[bottom] {
             cell.reset();
         }
     }

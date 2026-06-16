@@ -74,3 +74,46 @@ fn tbc_clears_all_stops() {
 
     assert_eq!(term.cursor().col, 19);
 }
+
+// ===========================================================================
+// Scroll region (DECSTBM)
+// ===========================================================================
+
+/// A line-feed at the bottom margin scrolls only the region rows; content
+/// outside the region stays fixed.
+#[test]
+fn linefeed_scrolls_only_within_region() {
+    let mut term = Engine::new(4, 4);
+    term.feed(b"\x1b[4;1HZ"); // 'Z' at grid row 3 — below the region
+    term.feed(b"\x1b[1;2r"); // DECSTBM: region = rows 1..2 (grid 0..=1)
+    term.feed(b"\x1b[2;1HB"); // cursor to grid row 1 (bottom margin), write 'B'
+    term.feed(b"\r\n"); // CR + LF at the bottom margin → scroll the region
+
+    assert_eq!(term.grid().cell(0, 0).c, 'B'); // region scrolled: 'B' moved up
+    assert_eq!(term.grid().cell(1, 0).c, ' '); // new blank line inside the region
+    assert_eq!(term.grid().cell(3, 0).c, 'Z'); // outside the region: untouched
+}
+
+/// DECSTBM homes the cursor to the absolute top-left (origin-relative homing
+/// under DECOM is a later slice).
+#[test]
+fn decstbm_homes_cursor() {
+    let mut term = Engine::new(10, 5);
+    term.feed(b"\x1b[3;5H"); // move cursor to grid (2, 4)
+    term.feed(b"\x1b[2;4r"); // DECSTBM → should home the cursor
+
+    assert_eq!((term.cursor().row, term.cursor().col), (0, 0));
+}
+
+/// An invalid region (top ≥ bottom) is ignored entirely — the margins stay at
+/// the full screen, so a bottom-row line-feed still scrolls everything.
+#[test]
+fn invalid_scroll_region_is_ignored() {
+    let mut term = Engine::new(4, 4);
+    term.feed(b"\x1b[3;2r"); // top=3 >= bottom=2 → invalid, must be ignored
+    term.feed(b"\x1b[4;1Hd"); // 'd' on the last row
+    term.feed(b"\r\n"); // LF at screen bottom → full-screen scroll
+
+    // 'd' moved up a row: the region is still the whole screen.
+    assert_eq!(term.grid().cell(2, 0).c, 'd');
+}
