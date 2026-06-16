@@ -79,7 +79,7 @@ transport (e.g. a Tauri Channel) and decode straight into typed arrays. The engi
 A correct-*looking* model (cell + cursor + advance + wrap) silently omits subtle state real terminals
 track. These are invisible from first principles / this contract — only a reference impl (`vte` /
 alacritty / xterm) or vttest reveals them. **Before implementing any VT-semantics slice (#2, #3, #4,
-#6, #7, #10): read how a reference terminal handles that area and enumerate the hidden state (flags,
+#6, #7, #8, #10): read how a reference terminal handles that area and enumerate the hidden state (flags,
 deferred behavior) it tracks — then add what you find here.** Seeds (caught in #2 review, 2026-06-16):
 
 - **Pending-wrap (deferred last-column wrap).** Printing into the last column does *not* advance to
@@ -89,9 +89,9 @@ deferred behavior) it tracks — then add what you find here.** Seeds (caught in
   carry a "wide-char spacer" marker (flag/variant), not a plain blank — else overwrite, erase,
   selection, and cursor positioning go wrong. [#2]
 - **Background Color Erase (BCE).** Erase (ED/EL) fills cleared cells with the *current SGR
-  background*, not default. [#7; note in #2 if deferred]
+  background*, not default. [#8; note in #2 if deferred]
 
-The *systematic* catch for this whole class is #7's vttest harness + dogfood — this list is only the
+The *systematic* catch for this whole class is #8's vttest harness + dogfood — this list is only the
 famous few caught by review. Pull vttest early so VT-semantics slices verify against it from the start.
 
 ### Where to look (reference impls — grep symbols, not line numbers)
@@ -110,7 +110,7 @@ trusting a path.
   - grid/scrollback → `grid/` (`Grid`, `Row`, the scrollback ring).
 - **`wezterm-term`** — alternative model: <https://github.com/wezterm/wezterm> under `term/src/`.
 - **`xterm.js`** — the web/JS perspective (what PenTerm leaves behind): <https://github.com/xtermjs/xterm.js>.
-- **Conformance suites** (for #7): **vttest** <https://invisible-island.net/vttest/> and iTerm2's
+- **Conformance suites** (for #8): **vttest** <https://invisible-island.net/vttest/> and iTerm2's
   **esctest** (very thorough) — these *are* the systematic net.
 
 ## How a consumer integrates (context, not justerm's work)

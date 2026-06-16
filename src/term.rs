@@ -143,7 +143,7 @@ impl Term {
 
     /// Clear cells `from..to` on `row`.
     ///
-    /// TODO(#7): Background Color Erase — fill with the pen's bg, not Default.
+    /// TODO(#8): Background Color Erase — fill with the pen's bg, not Default.
     /// The pen is already the template; swap `reset()` for a pen-bg fill there.
     fn clear_cells(&mut self, row: usize, from: usize, to: usize) {
         for col in from..to {
