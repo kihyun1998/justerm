@@ -57,6 +57,11 @@ cargo bench         # throughput 마이크로벤치(추세 기록)
 검증**을 함께 한다. 수렴 = 비임의성 신호, prior art 가 1원리의 under-reach 디테일을 깎는다.
 "완벽 = 최대 granular" 아님 — *올바른 grain*. 자세히는 메모리 참조.
 
+이건 *design* 뿐 아니라 **VT-semantics 구현(#2·#3·#4·#6·#7·#10)에도 적용**한다 — 1원리/계약만 보면
+*correct-looking 한데 숨은 상태를 빠뜨린* 모델이 나온다(pending-wrap·wide-char spacer·BCE 가 그 예).
+**구현 전, 참조 구현(vte/alacritty/xterm)이 그 영역에서 추적하는 *숨은 상태*를 열거**하고
+`docs/architecture.md` § "Hidden VT state" 에 추가하라. 체계적 catch 는 #7 vttest — 일찍 세워라.
+
 ## Agent skills
 
 ### Issue tracker

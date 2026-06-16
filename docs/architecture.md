@@ -74,6 +74,26 @@ a grapheme side-table for rare multi-code-point clusters. Designed for a consume
 transport (e.g. a Tauri Channel) and decode straight into typed arrays. The engine provides the
 *format*; transport is the consumer's job.
 
+## Hidden VT state — model these (and grow this list)
+
+A correct-*looking* model (cell + cursor + advance + wrap) silently omits subtle state real terminals
+track. These are invisible from first principles / this contract — only a reference impl (`vte` /
+alacritty / xterm) or vttest reveals them. **Before implementing any VT-semantics slice (#2, #3, #4,
+#6, #7, #10): read how a reference terminal handles that area and enumerate the hidden state (flags,
+deferred behavior) it tracks — then add what you find here.** Seeds (caught in #2 review, 2026-06-16):
+
+- **Pending-wrap (deferred last-column wrap).** Printing into the last column does *not* advance to
+  the next line — the cursor stays put with a `wrapnext` flag, and wrap happens on the *next* print.
+  Eager wrap is a classic off-by-one bug (lines shift). [#2]
+- **Wide-char spacer is a distinct marker, not a blank.** The trailing column of a width-2 char must
+  carry a "wide-char spacer" marker (flag/variant), not a plain blank — else overwrite, erase,
+  selection, and cursor positioning go wrong. [#2]
+- **Background Color Erase (BCE).** Erase (ED/EL) fills cleared cells with the *current SGR
+  background*, not default. [#7; note in #2 if deferred]
+
+The *systematic* catch for this whole class is #7's vttest harness + dogfood — this list is only the
+famous few caught by review. Pull vttest early so VT-semantics slices verify against it from the start.
+
 ## How a consumer integrates (context, not justerm's work)
 
 PenTerm (first consumer) wraps justerm: feeds PTY/SSH bytes, ships the binary diff over a Tauri
