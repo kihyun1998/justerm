@@ -143,11 +143,15 @@ impl Term {
 
     /// Clear cells `from..to` on `row`.
     ///
-    /// TODO(#8): Background Color Erase — fill with the pen's bg, not Default.
-    /// The pen is already the template; swap `reset()` for a pen-bg fill there.
+    /// Background Color Erase (BCE): erased cells carry the current SGR
+    /// background only — fg and text attributes reset to default (matches
+    /// xterm/alacritty, where the fill is `cursor.template.bg.into()`).
     fn clear_cells(&mut self, row: usize, from: usize, to: usize) {
+        let bg = self.cursor.pen.bg;
         for col in from..to {
-            self.grid.cell_mut(row, col).reset();
+            let cell = self.grid.cell_mut(row, col);
+            cell.reset();
+            cell.bg = bg;
         }
     }
 
