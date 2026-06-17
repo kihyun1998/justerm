@@ -29,3 +29,38 @@ fn grow_rows_keeps_content_adds_blank_lines() {
     assert_eq!(term.grid().cell(1, 0).c, 'c');
     assert_eq!(term.grid().cell(2, 0).c, ' '); // new blank row
 }
+
+/// Shrinking the row count scrolls the top lines into scrollback (preserved),
+/// keeping the bottom rows visible.
+#[test]
+fn shrink_rows_preserves_top_lines_in_scrollback() {
+    let mut term = Engine::new(4, 3);
+    term.feed(b"a\r\nb\r\nc"); // rows a, b, c
+
+    term.resize(4, 2); // shrink → 'a' scrolls into scrollback
+
+    assert_eq!((term.grid().rows(), term.scrollback_len()), (2, 1));
+    assert_eq!(term.grid().cell(0, 0).c, 'b'); // bottom rows stay visible
+    assert_eq!(term.grid().cell(1, 0).c, 'c');
+
+    term.scroll_up(1);
+    assert_eq!(term.viewport_line(0)[0].c, 'a'); // preserved in history
+}
+
+/// Narrowing the column count re-wraps a soft-wrapped logical line at the new
+/// width (acceptance: resize narrower → wrapped lines reflow).
+#[test]
+fn shrink_cols_rewraps_soft_wrapped_line() {
+    let mut term = Engine::new(4, 4);
+    term.feed(b"abcdef"); // "abcd"(WRAPLINE) + "ef"
+    assert!(term.grid().cell(0, 3).flags.contains(CellFlags::WRAPLINE));
+
+    term.resize(2, 4); // narrow to 2 cols → "abcdef" rewraps as ab|cd|ef
+
+    assert_eq!((term.grid().cell(0, 0).c, term.grid().cell(0, 1).c), ('a', 'b'));
+    assert!(term.grid().cell(0, 1).flags.contains(CellFlags::WRAPLINE));
+    assert_eq!((term.grid().cell(1, 0).c, term.grid().cell(1, 1).c), ('c', 'd'));
+    assert!(term.grid().cell(1, 1).flags.contains(CellFlags::WRAPLINE));
+    assert_eq!((term.grid().cell(2, 0).c, term.grid().cell(2, 1).c), ('e', 'f'));
+    assert!(!term.grid().cell(2, 1).flags.contains(CellFlags::WRAPLINE)); // last segment is hard
+}

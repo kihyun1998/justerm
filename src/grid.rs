@@ -3,10 +3,67 @@
 //! Rows are stored as separate `Vec`s (not one flat buffer) so the scrollback
 //! ring (a later slice) can move whole rows in/out cheaply.
 
-use crate::cell::Cell;
+use crate::cell::{Cell, CellFlags};
 
 /// One row of cells.
 pub type Row = Vec<Cell>;
+
+/// Re-wrap physical `rows` to `new_cols`. Soft-wrapped rows (WRAPLINE on the
+/// last cell) are joined into logical lines, then each logical line is re-split
+/// at `new_cols` with WRAPLINE set on every segment but the last. Trailing blank
+/// rows are absorbed (re-created by the caller's row-count fit). See #7.
+///
+/// Common-90%: trailing blanks on a hard-ended row are trimmed, and a wide-char
+/// split across the new boundary is not yet special-cased.
+fn reflow(rows: Vec<Row>, new_cols: usize) -> Vec<Row> {
+    // 1. Join soft-wrapped rows into logical lines.
+    let mut logical: Vec<Vec<Cell>> = Vec::new();
+    let mut current: Vec<Cell> = Vec::new();
+    for row in rows {
+        let soft = row
+            .last()
+            .is_some_and(|c| c.flags.contains(CellFlags::WRAPLINE));
+        if soft {
+            current.extend(row.into_iter().map(|mut c| {
+                c.flags.remove(CellFlags::WRAPLINE);
+                c
+            }));
+        } else {
+            let mut cells = row;
+            while cells.last() == Some(&Cell::default()) {
+                cells.pop();
+            }
+            current.extend(cells);
+            logical.push(std::mem::take(&mut current));
+        }
+    }
+    if !current.is_empty() {
+        logical.push(current);
+    }
+    // Trailing blank lines are absorbed, not preserved as rows.
+    while logical.last().is_some_and(|l| l.is_empty()) {
+        logical.pop();
+    }
+
+    // 2. Re-split each logical line into `new_cols`-wide rows.
+    let mut out: Vec<Row> = Vec::new();
+    for line in logical {
+        if line.is_empty() {
+            out.push(vec![Cell::default(); new_cols]);
+            continue;
+        }
+        let mut chunks = line.chunks(new_cols).peekable();
+        while let Some(chunk) = chunks.next() {
+            let mut row: Row = chunk.to_vec();
+            row.resize(new_cols, Cell::default());
+            if chunks.peek().is_some() {
+                row[new_cols - 1].flags.insert(CellFlags::WRAPLINE);
+            }
+            out.push(row);
+        }
+    }
+    out
+}
 
 /// The current screen: `rows` × `cols` cells.
 #[derive(Clone, Debug)]
@@ -68,17 +125,18 @@ impl Grid {
     /// (the caller pushes them into scrollback). See #7.
     pub fn resize(&mut self, cols: usize, rows: usize) -> Vec<Row> {
         if cols != self.cols {
-            for row in &mut self.lines {
-                row.resize(cols, Cell::default());
-            }
+            self.lines = reflow(std::mem::take(&mut self.lines), cols);
             self.cols = cols;
         }
 
+        // Reflow may change the row count; fit to `rows`. Excess top rows drop
+        // off into scrollback; a deficit is padded with blank rows at the bottom.
+        let current = self.lines.len();
         let mut dropped = Vec::new();
-        if rows < self.rows {
-            dropped = self.lines.drain(0..(self.rows - rows)).collect();
+        if rows < current {
+            dropped = self.lines.drain(0..(current - rows)).collect();
         } else {
-            for _ in 0..(rows - self.rows) {
+            for _ in 0..(rows - current) {
                 self.lines.push(vec![Cell::default(); cols]);
             }
         }
