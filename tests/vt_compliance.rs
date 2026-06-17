@@ -696,3 +696,86 @@ fn region_scroll_exposed_lines_use_bce() {
     assert_eq!(term.grid().cell(1, 0).bg, Color::Indexed(1));
     assert_eq!(term.grid().cell(1, 0).c, ' ');
 }
+
+// ===========================================================================
+// Cursor save/restore — DECSC/DECRC (ESC 7 / ESC 8) + CSI s/u  [#18]
+// ===========================================================================
+
+/// DECSC (ESC 7) saves the cursor position; DECRC (ESC 8) restores it.
+#[test]
+fn decsc_decrc_restores_position() {
+    let mut term = Engine::new(10, 5);
+    term.feed(b"\x1b[3;4H"); // cursor → row 2, col 3
+    term.feed(b"\x1b7"); // DECSC save
+    term.feed(b"\x1b[1;1H"); // move to home
+    term.feed(b"\x1b8"); // DECRC restore
+
+    assert_eq!((term.cursor().row, term.cursor().col), (2, 3));
+}
+
+/// DECSC/DECRC restores the pen (SGR) — a glyph after restore uses the saved fg.
+#[test]
+fn decsc_decrc_restores_pen() {
+    let mut term = Engine::new(10, 2);
+    term.feed(b"\x1b[31m"); // fg red
+    term.feed(b"\x1b7"); // save (cursor at 0,0, pen red)
+    term.feed(b"\x1b[0m"); // reset pen
+    term.feed(b"\x1b8"); // restore → pen red again
+    term.feed(b"X");
+
+    assert_eq!(term.grid().cell(0, 0).fg, Color::Indexed(1));
+}
+
+/// DECRC restores origin mode (ADR-0004: the DEC spec mandates it, Alacritty
+/// omits it). With a region set and origin toggled off between save and restore,
+/// DECRC brings origin back on — so a region-relative CUP lands in the region.
+#[test]
+fn decrc_restores_origin_mode() {
+    let mut term = Engine::new(10, 5);
+    term.feed(b"\x1b[2;4r"); // scroll region rows 1..=3 (0-based)
+    term.feed(b"\x1b[?6h"); // origin mode ON
+    term.feed(b"\x1b7"); // DECSC (origin = on)
+    term.feed(b"\x1b[?6l"); // origin mode OFF
+    term.feed(b"\x1b8"); // DECRC → origin restored ON
+    term.feed(b"\x1b[1;1HX"); // origin-relative CUP → region top (screen row 1)
+
+    assert_eq!(term.grid().cell(1, 0).c, 'X'); // would be row 0 if origin were off
+    assert_eq!(term.grid().cell(0, 0).c, ' ');
+}
+
+/// DECRC does NOT restore cursor visibility (DECTCEM is separate from DECSC).
+#[test]
+fn decrc_does_not_restore_visibility() {
+    let mut term = Engine::new(10, 2);
+    term.feed(b"\x1b7"); // save (cursor visible by default)
+    term.feed(b"\x1b[?25l"); // hide cursor
+    term.feed(b"\x1b8"); // restore — visibility must stay as-is
+
+    assert!(!term.cursor().visible);
+}
+
+/// CSI s / CSI u are SCOSC/SCORC aliases of DECSC/DECRC.
+#[test]
+fn csi_s_u_alias_save_restore() {
+    let mut term = Engine::new(10, 5);
+    term.feed(b"\x1b[3;4H"); // row 2, col 3
+    term.feed(b"\x1b[s"); // save
+    term.feed(b"\x1b[1;1H"); // home
+    term.feed(b"\x1b[u"); // restore
+
+    assert_eq!((term.cursor().row, term.cursor().col), (2, 3));
+}
+
+/// DECSC/DECRC round-trips pending-wrap: saved at a filled last column, a print
+/// after restore still wraps (the saved `wrapnext` came back).
+#[test]
+fn decsc_decrc_restores_pending_wrap() {
+    let mut term = Engine::new(3, 2);
+    term.feed(b"abc"); // fills row 0; cursor parks at col 2 with pending-wrap
+    term.feed(b"\x1b7"); // save (pending-wrap = true)
+    term.feed(b"\x1b[1;1H"); // home clears pending-wrap
+    term.feed(b"\x1b8"); // restore → pending-wrap back
+    term.feed(b"d"); // should wrap to row 1
+
+    assert_eq!(term.grid().cell(1, 0).c, 'd');
+}

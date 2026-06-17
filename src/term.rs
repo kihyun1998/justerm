@@ -9,7 +9,7 @@ use vte::{Params, Perform};
 
 use crate::cell::{Cell, CellFlags};
 use crate::color::Color;
-use crate::cursor::Cursor;
+use crate::cursor::{Cursor, Pen};
 use crate::damage::{LineBounds, LineDamage, ScrollOp, TermDamage};
 use crate::grid::{Grid, Row};
 use crate::selection::{Anchor, BufferPoint, Selection, SelectionSpan, SelectionType, Side};
@@ -59,10 +59,27 @@ pub struct Term {
     /// The live selection, in absolute buffer coordinates. `None` when nothing
     /// is selected. See `selection.rs`.
     selection: Option<Selection>,
+    /// Cursor state saved by DECSC (ESC 7), restored by DECRC (ESC 8). A slot
+    /// separate from `saved_cursor` (which is the alt-screen save). Defaults to
+    /// home/default so a DECRC with no prior DECSC restores a sane state.
+    decsc: SavedCursor,
 }
 
 /// Default scrollback retention when not specified.
 const DEFAULT_SCROLLBACK: usize = 10_000;
+
+/// The state DECSC (ESC 7) saves and DECRC (ESC 8) restores: position, pen/SGR,
+/// pending-wrap, and origin mode (per ADR-0004 — DECRC restores origin mode,
+/// which Alacritty omits). Cursor *visibility* is deliberately not part of this
+/// (DECTCEM is separate from DECSC).
+#[derive(Clone, Copy, Default)]
+struct SavedCursor {
+    row: usize,
+    col: usize,
+    pen: Pen,
+    pending_wrap: bool,
+    origin_mode: bool,
+}
 
 /// A selection resolved to absolute-coordinate bounds, ready for text extraction
 /// or viewport-span projection. Columns are half-open (`from..to`).
@@ -108,6 +125,7 @@ impl Term {
             scroll: None,
             full_damage: false,
             selection: None,
+            decsc: SavedCursor::default(),
         }
     }
 
@@ -842,6 +860,32 @@ impl Term {
         }
     }
 
+    // ---- cursor save/restore (DECSC / DECRC) ---------------------------------
+
+    /// DECSC (ESC 7): save the cursor position, pen, pending-wrap, and origin
+    /// mode. Visibility is not saved (DECTCEM is separate).
+    fn save_cursor(&mut self) {
+        self.decsc = SavedCursor {
+            row: self.cursor.row,
+            col: self.cursor.col,
+            pen: self.cursor.pen,
+            pending_wrap: self.cursor.pending_wrap,
+            origin_mode: self.origin_mode,
+        };
+    }
+
+    /// DECRC (ESC 8): restore what DECSC saved. Origin mode is restored (per
+    /// ADR-0004); visibility is left as-is. The position is clamped to the
+    /// current screen in case it shrank since the save.
+    fn restore_cursor(&mut self) {
+        let s = self.decsc;
+        self.cursor.row = s.row.min(self.grid.rows() - 1);
+        self.cursor.col = s.col.min(self.grid.cols() - 1);
+        self.cursor.pen = s.pen;
+        self.cursor.pending_wrap = s.pending_wrap;
+        self.origin_mode = s.origin_mode;
+    }
+
     fn carriage_return(&mut self) {
         self.cursor.col = 0;
         self.cursor.pending_wrap = false;
@@ -1528,6 +1572,8 @@ impl Perform for Term {
                 self.set_scroll_region(top, bottom);
             }
             'm' => self.sgr(params),
+            's' => self.save_cursor(),    // SCOSC (CSI s) — alias of DECSC
+            'u' => self.restore_cursor(), // SCORC (CSI u) — alias of DECRC
             _ => {}
         }
     }
@@ -1543,8 +1589,10 @@ impl Perform for Term {
                 self.carriage_return();
                 self.linefeed();
             }
-            b'H' => self.set_tab_stop(),  // HTS
-            b'M' => self.reverse_index(), // RI
+            b'H' => self.set_tab_stop(),   // HTS
+            b'M' => self.reverse_index(),  // RI
+            b'7' => self.save_cursor(),    // DECSC
+            b'8' => self.restore_cursor(), // DECRC
             _ => {}
         }
     }
