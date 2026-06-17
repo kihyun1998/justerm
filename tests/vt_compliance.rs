@@ -391,6 +391,21 @@ fn non_top_anchored_region_produces_no_scrollback() {
     assert_eq!(term.scrollback_len(), 0);
 }
 
+/// Auto-wrap at the bottom margin scrolls only the scroll region; content below
+/// the region stays fixed (print path goes through the region-aware line-feed).
+#[test]
+fn autowrap_at_bottom_margin_scrolls_only_the_region() {
+    let mut term = Engine::new(3, 3);
+    term.feed(b"\x1b[1;2r"); // region = rows 1..2 (grid 0..=1); homes cursor
+    term.feed(b"\x1b[3;1HZ"); // 'Z' below the region at grid row 2
+
+    term.feed(b"\x1b[1;1Habcdefg"); // abc|def fill the region, 'g' wraps → region scrolls
+
+    assert_eq!(term.grid().cell(0, 0).c, 'd'); // region scrolled up
+    assert_eq!(term.grid().cell(1, 0).c, 'g'); // new content on the bottom margin
+    assert_eq!(term.grid().cell(2, 0).c, 'Z'); // below the region: untouched
+}
+
 // ===========================================================================
 // Cursor visibility (DEC ?25)
 // ===========================================================================
