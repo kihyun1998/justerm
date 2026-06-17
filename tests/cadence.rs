@@ -34,3 +34,46 @@ fn content_scroll_while_scrolled_up_is_invisible() {
         "off-screen change reported as viewport damage",
     );
 }
+
+// The ack-gated diff primitive (built in #4) is what cadence rides on. These
+// characterize that contract: accumulate-until-ack (flow control, no discards)
+// and intermediate-state skip.
+
+/// Changes accumulate into one diff until the consumer acks (reset_damage) — a
+/// slow consumer gets a single larger diff, never a pile-up or a lost update.
+#[test]
+fn damage_accumulates_until_ack() {
+    let mut term = Engine::new(10, 1);
+    term.reset_damage();
+    term.feed(b"ab"); // cols 0..1
+    term.feed(b"cde"); // cols 2..4 — no ack between
+
+    match term.damage() {
+        TermDamage::Partial(l) => {
+            assert_eq!(l.len(), 1);
+            assert_eq!((l[0].line, l[0].left, l[0].right), (0, 0, 4)); // one merged span
+        }
+        other => panic!("{other:?}"),
+    }
+    term.reset_damage(); // ack
+    assert!(matches!(term.damage(), TermDamage::Partial(ref l) if l.is_empty()));
+}
+
+/// Intermediate states are skipped: overwriting a cell before the ack reports a
+/// single span for the final state, not one per write.
+#[test]
+fn intermediate_writes_collapse_into_one_diff() {
+    let mut term = Engine::new(10, 1);
+    term.reset_damage();
+    term.feed(b"\x1b[1;1Hx"); // write x at col 0
+    term.feed(b"\x1b[1;1Hy"); // overwrite with y — x never needs to be drawn
+
+    match term.damage() {
+        TermDamage::Partial(l) => {
+            assert_eq!(l.len(), 1);
+            assert_eq!((l[0].line, l[0].left, l[0].right), (0, 0, 0));
+        }
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(term.viewport_line(0)[0].c, 'y'); // the consumer sees only the final state
+}
