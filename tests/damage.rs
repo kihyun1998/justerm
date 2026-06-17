@@ -62,6 +62,19 @@ fn alt_screen_switch_is_full_damage() {
     assert!(matches!(term.damage(), TermDamage::Full));
 }
 
+/// Resize clears any pending scroll op — a stale op points at the old rows and
+/// would be out of range against the resized screen.
+#[test]
+fn resize_clears_stale_scroll_op() {
+    let mut term = Engine::new(4, 5);
+    term.feed(b"a\r\nb\r\nc\r\nd\r\ne\r\nf"); // line-feeds at the bottom record a scroll op
+    assert!(term.scroll_delta().is_some());
+
+    term.resize(4, 3);
+
+    assert!(term.scroll_delta().is_none());
+}
+
 /// Reverse index at the top margin scrolls down → a negative-count scroll op.
 #[test]
 fn reverse_index_emits_down_scroll_op() {

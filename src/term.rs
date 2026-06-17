@@ -272,8 +272,10 @@ impl Term {
         self.tabs = default_tabs(cols);
         self.display_offset = self.display_offset.min(self.scrollback.len());
 
-        // Damage tracking is sized to the screen; a resize repaints everything.
+        // Damage tracking is sized to the screen; a resize repaints everything,
+        // so drop any pending scroll op (it points at the old rows).
         self.line_damage = vec![LineBounds::undamaged(cols); rows];
+        self.scroll = None;
         self.mark_fully_damaged();
     }
 
