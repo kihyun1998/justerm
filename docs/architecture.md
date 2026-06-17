@@ -39,7 +39,9 @@ Emit changed line ranges, each carrying the changed column span (`{line, left, r
 `LineDamageBounds` grain). **Not** full-frame (wastes IPC/idle power on small updates), **not**
 cell-level (finer than terminals mutate; gratuitous). Scroll is a **first-class op** (shift rows + new
 rows) so moderate scrolling moves content instead of redrawing; degrades to all-rows-dirty on
-floods/resize. Damage is an *efficiency* axis, not quality — same pixels either way.
+floods/resize. Damage is an *efficiency* axis, not quality — same pixels either way. The model
+(incremental line+column bounds, **ack-gated** reset, a *recorded* — not diff-detected — scroll op)
+and why not baseline-diff (Mosh) or per-line seqno (wezterm): **ADR-0003**.
 
 ## Viewport / scrollback / scroll
 
