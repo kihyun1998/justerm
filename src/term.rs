@@ -10,6 +10,7 @@ use vte::{Params, Perform};
 use crate::cell::{Cell, CellFlags};
 use crate::color::Color;
 use crate::cursor::Cursor;
+use crate::damage::{LineBounds, LineDamage, TermDamage};
 use crate::grid::{Grid, Row};
 
 /// Owns the authoritative screen state and applies VT actions to it.
@@ -47,6 +48,8 @@ pub struct Term {
     display_offset: usize,
     /// Maximum scrollback lines retained; the oldest are evicted past this.
     scrollback_limit: usize,
+    /// Per-line damage bounds since the last `reset_damage` (ack), one per row.
+    line_damage: Vec<LineBounds>,
 }
 
 /// Default scrollback retention when not specified.
@@ -72,7 +75,37 @@ impl Term {
             scrollback: VecDeque::new(),
             display_offset: 0,
             scrollback_limit,
+            line_damage: vec![LineBounds::undamaged(cols); rows],
         }
+    }
+
+    /// What changed since the last `reset_damage()` — line ranges, each with a
+    /// changed column span. See ADR-0003.
+    pub fn damage(&self) -> TermDamage {
+        let lines: Vec<LineDamage> = self
+            .line_damage
+            .iter()
+            .enumerate()
+            .filter(|(_, b)| b.is_damaged())
+            .map(|(line, b)| {
+                let (left, right) = b.span();
+                LineDamage { line, left, right }
+            })
+            .collect();
+        TermDamage::Partial(lines)
+    }
+
+    /// Clear accumulated damage. The consumer calls this after applying a frame
+    /// (the ack); the next `damage()` reflects only changes since.
+    pub fn reset_damage(&mut self) {
+        for b in &mut self.line_damage {
+            b.reset();
+        }
+    }
+
+    /// Record that columns `[left, right]` of `row` changed.
+    fn damage_span(&mut self, row: usize, left: usize, right: usize) {
+        self.line_damage[row].expand(left, right);
     }
 
     /// Number of lines currently held in scrollback history.
@@ -284,6 +317,9 @@ impl Term {
             *self.grid.cell_mut(row, col + 1) = spacer;
         }
 
+        // Record damage for the cell(s) just written.
+        self.damage_span(row, col, col + width - 1);
+
         // Advance. Reaching/passing the last column sets pending-wrap instead of
         // wrapping eagerly — the cursor parks on the last column.
         let new_col = col + width;
@@ -353,6 +389,9 @@ impl Term {
             let cell = self.grid.cell_mut(row, col);
             cell.reset();
             cell.bg = bg;
+        }
+        if to > from {
+            self.damage_span(row, from, to - 1);
         }
     }
 

@@ -17,12 +17,14 @@
 mod cell;
 mod color;
 mod cursor;
+mod damage;
 mod grid;
 mod term;
 
 pub use cell::{Cell, CellFlags};
 pub use color::Color;
 pub use cursor::{Cursor, Pen};
+pub use damage::{LineDamage, TermDamage};
 pub use grid::{Grid, Row};
 pub use term::Term;
 
@@ -80,6 +82,17 @@ impl Engine {
     /// Number of lines currently held in scrollback history.
     pub fn scrollback_len(&self) -> usize {
         self.term.scrollback_len()
+    }
+
+    /// What changed since the last [`Engine::reset_damage`] — line ranges each
+    /// with a changed column span (see ADR-0003).
+    pub fn damage(&self) -> TermDamage {
+        self.term.damage()
+    }
+
+    /// Clear accumulated damage after a frame is applied (the consumer's ack).
+    pub fn reset_damage(&mut self) {
+        self.term.reset_damage();
     }
 
     /// The cells of visible row `i` (0..rows) at the current scroll position.
