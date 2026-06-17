@@ -61,6 +61,13 @@ intermediate-state skip (a slow consumer's missed frames collapse into one diff)
 consumer gets larger diffs less often — never a pile-up, never discards), and pacing (the ack
 round-trip is the collection interval, phase-aligned to the consumer's vsync). No separate timer.
 
+**Open question — viewport-vs-screen damage (carried over from #4 / ADR-0003).** Damage (#4) is
+recorded against the *screen*, but the consumer renders the *viewport*. While scrolled up under
+follow-bottom "stay" (#3), the screen scrolls yet the viewport is unchanged — so a screen scroll op
+must NOT be applied to a scrolled-up viewport (it would shift a frozen view). The cadence work owns
+mapping screen damage → viewport damage (and suppressing/ translating scroll ops while
+`display_offset > 0`). Cadence has **no dedicated issue yet**; this note is its tracker.
+
 ## Selection
 
 Engine-owned. Type = char / word / line / **block**; anchor = point + **side (left/right)**.
