@@ -69,11 +69,21 @@ pub(crate) fn reflow(
         if line.is_empty() {
             out.push(vec![Cell::default(); new_cols]);
         } else {
-            let mut chunks = line.chunks(new_cols).peekable();
-            while let Some(chunk) = chunks.next() {
-                let mut row: Row = chunk.to_vec();
+            let mut i = 0;
+            while i < line.len() {
+                let mut take = (line.len() - i).min(new_cols);
+                // Don't split a wide char from its spacer: if the row would end
+                // on a WIDE_CHAR lead, drop it to the next row (xterm's newCols-1).
+                if i + take < line.len()
+                    && line[i + take - 1].flags.contains(CellFlags::WIDE_CHAR)
+                {
+                    take -= 1;
+                }
+                let take = take.max(1); // guard the 1-col degenerate case
+                let mut row: Row = line[i..i + take].to_vec();
                 row.resize(new_cols, Cell::default());
-                if chunks.peek().is_some() {
+                i += take;
+                if i < line.len() {
                     row[new_cols - 1].flags.insert(CellFlags::WRAPLINE);
                 }
                 out.push(row);

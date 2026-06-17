@@ -122,3 +122,17 @@ fn resize_to_zero_is_clamped_not_a_panic() {
     assert!(term.grid().cols() >= 1);
     assert!(term.grid().rows() >= 1);
 }
+
+/// Reflow must not split a wide char from its spacer across the new column
+/// boundary — the glyph wraps whole to the next row instead.
+#[test]
+fn reflow_keeps_wide_char_together_at_boundary() {
+    let mut term = Engine::new(4, 4);
+    term.feed("a한".as_bytes()); // 'a' + a width-2 glyph
+
+    term.resize(2, 4); // 'a' takes col 0; '한' can't fit in the last col → wraps whole
+
+    assert_eq!(term.grid().cell(1, 0).c, '한');
+    assert!(term.grid().cell(1, 0).flags.contains(CellFlags::WIDE_CHAR));
+    assert!(term.grid().cell(1, 1).flags.contains(CellFlags::WIDE_CHAR_SPACER));
+}
