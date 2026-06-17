@@ -376,7 +376,14 @@ impl Term {
         let cols = self.grid.cols();
 
         // Resolve a deferred last-column wrap before placing the next glyph.
+        // The row being left soft-wrapped: mark its last cell so reflow (#7) can
+        // tell it from a hard CR/LF line-end.
         if self.cursor.pending_wrap {
+            let row = self.cursor.row;
+            self.grid
+                .cell_mut(row, cols - 1)
+                .flags
+                .insert(CellFlags::WRAPLINE);
             self.wrapline();
         }
 

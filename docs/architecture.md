@@ -138,6 +138,12 @@ deferred behavior) it tracks — then add what you find here.** Seeds (caught in
   while scrolled up (`display_offset > 0`) **stays** put — the offset is bumped to hold the view, not
   yanked to the bottom (alacritty/xterm.js follow-bottom). History is a flat line ring; semantic
   grouping (Warp's command "blocks") is a *consumer* concern above the engine, never in it. [#3]
+- **Soft-wrap (WRAPLINE) vs a hard line-end must be distinguished for reflow.** An auto-wrap (the
+  deferred last-column wrap firing) marks the row it leaves as *soft-wrapped* — a `WRAPLINE` flag on
+  its last cell (Alacritty's encoding; xterm.js instead flags the continuation row). An explicit
+  CR/LF/NEL ends the line *hard*. Reflow (#7) merges soft-wrapped rows into one logical line and
+  re-splits at the new width; without this flag every line looks identical and reflow corrupts
+  content. [#7]
 
 The *systematic* catch for this whole class is #8's vttest harness + dogfood — this list is only the
 famous few caught by review. Pull vttest early so VT-semantics slices verify against it from the start.

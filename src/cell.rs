@@ -27,7 +27,11 @@ bitflags::bitflags! {
         /// plain blank — overwrite, erase, selection, and cursor positioning all
         /// depend on knowing this column belongs to the wide char to its left.
         const WIDE_CHAR_SPACER = 1 << 9;
-        // bits 10..=15 reserved (underline style/colour, hyperlink id).
+        /// Set on the last cell of a row that soft-wrapped (auto-wrap) into the
+        /// next — distinguishes a soft wrap from a hard CR/LF line-end so reflow
+        /// (#7) can merge and re-split logical lines.
+        const WRAPLINE = 1 << 10;
+        // bits 11..=15 reserved (underline style/colour, hyperlink id).
     }
 }
 
