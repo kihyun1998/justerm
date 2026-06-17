@@ -9,6 +9,17 @@ pub struct LineDamage {
     pub right: usize,
 }
 
+/// A first-class scroll: rows `[top..=bottom]` shifted by `count` lines
+/// (positive = up, negative = down). The renderer moves the rows instead of
+/// redrawing them. Recorded by the engine — which executes the scroll — rather
+/// than diff-detected (ADR-0003).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct ScrollOp {
+    pub top: usize,
+    pub bottom: usize,
+    pub count: isize,
+}
+
 /// What changed since the last `reset_damage()`.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum TermDamage {

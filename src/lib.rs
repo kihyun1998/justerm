@@ -24,7 +24,7 @@ mod term;
 pub use cell::{Cell, CellFlags};
 pub use color::Color;
 pub use cursor::{Cursor, Pen};
-pub use damage::{LineDamage, TermDamage};
+pub use damage::{LineDamage, ScrollOp, TermDamage};
 pub use grid::{Grid, Row};
 pub use term::Term;
 
@@ -93,6 +93,12 @@ impl Engine {
     /// Clear accumulated damage after a frame is applied (the consumer's ack).
     pub fn reset_damage(&mut self) {
         self.term.reset_damage();
+    }
+
+    /// The first-class scroll recorded since the last [`Engine::reset_damage`],
+    /// if any — lets the renderer shift rows instead of redrawing them.
+    pub fn scroll_delta(&self) -> Option<ScrollOp> {
+        self.term.scroll_delta()
     }
 
     /// The cells of visible row `i` (0..rows) at the current scroll position.

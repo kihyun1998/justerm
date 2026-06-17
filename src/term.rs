@@ -10,7 +10,7 @@ use vte::{Params, Perform};
 use crate::cell::{Cell, CellFlags};
 use crate::color::Color;
 use crate::cursor::Cursor;
-use crate::damage::{LineBounds, LineDamage, TermDamage};
+use crate::damage::{LineBounds, LineDamage, ScrollOp, TermDamage};
 use crate::grid::{Grid, Row};
 
 /// Owns the authoritative screen state and applies VT actions to it.
@@ -50,6 +50,8 @@ pub struct Term {
     scrollback_limit: usize,
     /// Per-line damage bounds since the last `reset_damage` (ack), one per row.
     line_damage: Vec<LineBounds>,
+    /// A first-class scroll recorded since the last `reset_damage`.
+    scroll: Option<ScrollOp>,
 }
 
 /// Default scrollback retention when not specified.
@@ -76,6 +78,7 @@ impl Term {
             display_offset: 0,
             scrollback_limit,
             line_damage: vec![LineBounds::undamaged(cols); rows],
+            scroll: None,
         }
     }
 
@@ -101,11 +104,22 @@ impl Term {
         for b in &mut self.line_damage {
             b.reset();
         }
+        self.scroll = None;
     }
 
     /// Record that columns `[left, right]` of `row` changed.
     fn damage_span(&mut self, row: usize, left: usize, right: usize) {
         self.line_damage[row].expand(left, right);
+    }
+
+    /// The first-class scroll recorded since the last `reset_damage`, if any.
+    pub fn scroll_delta(&self) -> Option<ScrollOp> {
+        self.scroll
+    }
+
+    /// Record a scroll of rows `[top, bottom]` by `count` (positive = up).
+    fn record_scroll(&mut self, top: usize, bottom: usize, count: isize) {
+        self.scroll = Some(ScrollOp { top, bottom, count });
     }
 
     /// Number of lines currently held in scrollback history.
@@ -183,6 +197,7 @@ impl Term {
                 }
             }
             self.grid.scroll_up_region(self.scroll_top, self.scroll_bottom);
+            self.record_scroll(self.scroll_top, self.scroll_bottom, 1);
         } else if self.cursor.row + 1 < self.grid.rows() {
             self.cursor.row += 1;
         }

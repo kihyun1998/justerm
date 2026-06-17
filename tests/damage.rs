@@ -3,6 +3,8 @@
 
 use justerm::{Engine, TermDamage};
 
+// ScrollOp is brought in per-test where needed.
+
 /// Writing one glyph damages only its line, with a column span of just that cell.
 #[test]
 fn single_cell_change_damages_its_line_span() {
@@ -34,4 +36,17 @@ fn erase_damages_the_cleared_span() {
         }
         other => panic!("{other:?}"),
     }
+}
+
+/// A scroll is a first-class op, not full-screen damage.
+#[test]
+fn scroll_emits_first_class_op_not_full_damage() {
+    let mut term = Engine::new(4, 2);
+    term.feed(b"a\r\nb"); // a → row 0, b → row 1
+    term.reset_damage();
+    term.feed(b"\r\nc"); // CR+LF at the bottom → scroll up; c on the new bottom
+
+    let op = term.scroll_delta().expect("expected a scroll op");
+    assert_eq!((op.top, op.bottom, op.count), (0, 1, 1)); // rows [0..=1] up by 1
+    assert!(!matches!(term.damage(), TermDamage::Full)); // not a full redraw
 }
