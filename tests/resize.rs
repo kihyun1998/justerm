@@ -57,11 +57,20 @@ fn shrink_cols_rewraps_soft_wrapped_line() {
 
     term.resize(2, 4); // narrow to 2 cols → "abcdef" rewraps as ab|cd|ef
 
-    assert_eq!((term.grid().cell(0, 0).c, term.grid().cell(0, 1).c), ('a', 'b'));
+    assert_eq!(
+        (term.grid().cell(0, 0).c, term.grid().cell(0, 1).c),
+        ('a', 'b')
+    );
     assert!(term.grid().cell(0, 1).flags.contains(CellFlags::WRAPLINE));
-    assert_eq!((term.grid().cell(1, 0).c, term.grid().cell(1, 1).c), ('c', 'd'));
+    assert_eq!(
+        (term.grid().cell(1, 0).c, term.grid().cell(1, 1).c),
+        ('c', 'd')
+    );
     assert!(term.grid().cell(1, 1).flags.contains(CellFlags::WRAPLINE));
-    assert_eq!((term.grid().cell(2, 0).c, term.grid().cell(2, 1).c), ('e', 'f'));
+    assert_eq!(
+        (term.grid().cell(2, 0).c, term.grid().cell(2, 1).c),
+        ('e', 'f')
+    );
     assert!(!term.grid().cell(2, 1).flags.contains(CellFlags::WRAPLINE)); // last segment is hard
 }
 
@@ -134,7 +143,12 @@ fn reflow_keeps_wide_char_together_at_boundary() {
 
     assert_eq!(term.grid().cell(1, 0).c, '한');
     assert!(term.grid().cell(1, 0).flags.contains(CellFlags::WIDE_CHAR));
-    assert!(term.grid().cell(1, 1).flags.contains(CellFlags::WIDE_CHAR_SPACER));
+    assert!(
+        term.grid()
+            .cell(1, 1)
+            .flags
+            .contains(CellFlags::WIDE_CHAR_SPACER)
+    );
 }
 
 /// Resizing while on the alt screen must resize BOTH screens — the inactive

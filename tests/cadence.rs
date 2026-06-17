@@ -28,7 +28,10 @@ fn content_scroll_while_scrolled_up_is_invisible() {
     term.reset_damage(); // ack that frame
     term.feed(b"\r\nd"); // new output scrolls the screen; viewport stays put
 
-    assert!(term.scroll_delta().is_none(), "scroll op leaked to a frozen viewport");
+    assert!(
+        term.scroll_delta().is_none(),
+        "scroll op leaked to a frozen viewport"
+    );
     assert!(
         matches!(term.damage(), TermDamage::Partial(ref l) if l.is_empty()),
         "off-screen change reported as viewport damage",
@@ -92,7 +95,10 @@ fn cap_eviction_while_scrolled_to_top_is_not_suppressed() {
     term.feed(b"\r\nf"); // new line: cap evicts the oldest visible line, view shifts
 
     let top_after = term.viewport_line(0)[0].c;
-    assert_ne!(top_before, top_after, "precondition: the viewport actually shifted");
+    assert_ne!(
+        top_before, top_after,
+        "precondition: the viewport actually shifted"
+    );
     assert!(
         !matches!(term.damage(), TermDamage::Partial(ref l) if l.is_empty()),
         "the viewport shift from cap eviction was suppressed",

@@ -102,9 +102,15 @@ fn write_then_scroll_realigns_damage_with_content() {
         other => panic!("{other:?}"),
     };
     // Z ended up on row 0 after the scroll — its damage must point there.
-    assert!(lines.iter().any(|d| d.line == 0), "row 0 not damaged: {lines:?}");
+    assert!(
+        lines.iter().any(|d| d.line == 0),
+        "row 0 not damaged: {lines:?}"
+    );
     // The newly exposed bottom row is new blank content → damaged too.
-    assert!(lines.iter().any(|d| d.line == 1), "row 1 not damaged: {lines:?}");
+    assert!(
+        lines.iter().any(|d| d.line == 1),
+        "row 1 not damaged: {lines:?}"
+    );
 }
 
 /// Several scrolls of the same region between acks accumulate into one op (flow
