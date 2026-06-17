@@ -136,3 +136,19 @@ fn reflow_keeps_wide_char_together_at_boundary() {
     assert!(term.grid().cell(1, 0).flags.contains(CellFlags::WIDE_CHAR));
     assert!(term.grid().cell(1, 1).flags.contains(CellFlags::WIDE_CHAR_SPACER));
 }
+
+/// Resizing while on the alt screen must resize BOTH screens — the inactive
+/// (primary) screen must not be left at the old dimensions.
+#[test]
+fn resize_while_on_alt_resizes_both_screens() {
+    let mut term = Engine::new(10, 5);
+    term.feed(b"primary");
+    term.feed(b"\x1b[?1049h"); // enter alt
+    term.feed(b"alt");
+
+    term.resize(20, 8); // resize while on the alt screen
+    assert_eq!((term.grid().cols(), term.grid().rows()), (20, 8));
+
+    term.feed(b"\x1b[?1049l"); // leave alt → primary returns
+    assert_eq!((term.grid().cols(), term.grid().rows()), (20, 8)); // primary also resized
+}

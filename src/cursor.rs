@@ -48,6 +48,19 @@ pub struct Cursor {
     pub visible: bool,
 }
 
+impl Cursor {
+    /// The cursor's `(row, col)` position.
+    pub(crate) fn point(&self) -> (usize, usize) {
+        (self.row, self.col)
+    }
+
+    /// Set the position, clamped to a `rows` x `cols` screen.
+    pub(crate) fn set_point(&mut self, point: (usize, usize), rows: usize, cols: usize) {
+        self.row = point.0.min(rows - 1);
+        self.col = point.1.min(cols - 1);
+    }
+}
+
 impl Default for Cursor {
     fn default() -> Self {
         // The cursor starts visible; a manual impl is needed because `bool`'s

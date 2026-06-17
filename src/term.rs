@@ -230,39 +230,46 @@ impl Term {
         // chunking by cols) can't underflow or divide by zero.
         let cols = cols.max(1);
         let rows = rows.max(1);
+        let old_cols = self.grid.cols();
+        let limit = self.scrollback_limit;
 
-        // Reflow scrollback and screen as one stream so a soft-wrapped logical
-        // line that spans the history/screen boundary re-wraps correctly. The
-        // cursor is tracked by its absolute position in the joined buffer.
-        let cursor_abs = (self.scrollback.len() + self.cursor.row, self.cursor.col);
-        let mut all: Vec<Row> = std::mem::take(&mut self.scrollback).into();
-        all.append(&mut self.grid.take_lines());
-        let new_cursor = if cols != self.grid.cols() {
-            let (reflowed, pt) = crate::grid::reflow(all, cols, cursor_abs);
-            all = reflowed;
-            pt
+        // Both screens are resized. Scrollback pairs with the PRIMARY screen
+        // (whichever is active) — the alt screen has no history of its own.
+        let scrollback = std::mem::take(&mut self.scrollback);
+        if self.on_alt {
+            // Active = alt (cursor, no scrollback); inactive = primary.
+            let alt = self.grid.take_lines();
+            let (alt, _drop, cur) =
+                reflow_pane(alt, VecDeque::new(), old_cols, cols, rows, self.cursor.point(), limit);
+            self.grid.set_screen(alt, cols, rows);
+            self.cursor.set_point(cur, rows, cols);
+
+            let primary = self.alt_grid.take_lines();
+            let (primary, sb, saved) =
+                reflow_pane(primary, scrollback, old_cols, cols, rows, self.saved_cursor.point(), limit);
+            self.alt_grid.set_screen(primary, cols, rows);
+            self.scrollback = sb;
+            self.saved_cursor.set_point(saved, rows, cols);
         } else {
-            cursor_abs
-        };
+            // Active = primary (cursor, scrollback); inactive = alt.
+            let primary = self.grid.take_lines();
+            let (primary, sb, cur) =
+                reflow_pane(primary, scrollback, old_cols, cols, rows, self.cursor.point(), limit);
+            self.grid.set_screen(primary, cols, rows);
+            self.scrollback = sb;
+            self.cursor.set_point(cur, rows, cols);
 
-        // The bottom `rows` rows are the screen; the rest is scrollback.
-        let split = all.len().saturating_sub(rows);
-        let history: Vec<Row> = all.drain(0..split).collect();
-        self.scrollback = history.into();
-        while self.scrollback.len() > self.scrollback_limit {
-            self.scrollback.pop_front();
+            let alt = self.alt_grid.take_lines();
+            let (alt, _drop, _p) =
+                reflow_pane(alt, VecDeque::new(), old_cols, cols, rows, (0, 0), limit);
+            self.alt_grid.set_screen(alt, cols, rows);
         }
-        self.grid.set_screen(all, cols, rows);
 
         // Margins reset to the full screen; tab stops reset to the default grid.
+        self.cursor.pending_wrap = false;
         self.scroll_top = 0;
         self.scroll_bottom = rows - 1;
         self.tabs = default_tabs(cols);
-
-        // Map the cursor from its absolute buffer position back into the screen.
-        self.cursor.row = new_cursor.0.saturating_sub(split).min(rows - 1);
-        self.cursor.col = new_cursor.1.min(cols - 1);
-        self.cursor.pending_wrap = false;
         self.display_offset = self.display_offset.min(self.scrollback.len());
 
         // Damage tracking is sized to the screen; a resize repaints everything.
@@ -655,6 +662,41 @@ where
             _ => None,
         }
     }
+}
+
+/// Reflow one screen (joined with its `scrollback`) to `cols` x `rows`, tracking
+/// `point` (a cursor in screen coordinates). Returns the new screen rows, the new
+/// scrollback (capped to `limit`), and the new point. The alt screen passes an
+/// empty scrollback and discards the returned one.
+fn reflow_pane(
+    screen: Vec<Row>,
+    scrollback: VecDeque<Row>,
+    old_cols: usize,
+    cols: usize,
+    rows: usize,
+    point: (usize, usize),
+    limit: usize,
+) -> (Vec<Row>, VecDeque<Row>, (usize, usize)) {
+    let scroll_len = scrollback.len();
+    let mut all: Vec<Row> = scrollback.into();
+    all.extend(screen);
+
+    let abs = (scroll_len + point.0, point.1);
+    let abs = if cols != old_cols {
+        let (reflowed, pt) = crate::grid::reflow(all, cols, abs);
+        all = reflowed;
+        pt
+    } else {
+        abs
+    };
+
+    let split = all.len().saturating_sub(rows);
+    let history: Vec<Row> = all.drain(0..split).collect();
+    let mut sb: VecDeque<Row> = history.into();
+    while sb.len() > limit {
+        sb.pop_front();
+    }
+    (all, sb, (abs.0.saturating_sub(split), abs.1))
 }
 
 /// Default tab stops: one every 8 columns (incl. column 0), matching xterm.
