@@ -131,7 +131,23 @@ impl Term {
     }
 
     /// Record a scroll of rows `[top, bottom]` by `count` (positive = up).
+    ///
+    /// Damage is indexed by row position, so it must follow the content the
+    /// scroll just moved: rotate the bounds the same way and mark the newly
+    /// exposed line fully damaged (it is new blank content for the consumer).
     fn record_scroll(&mut self, top: usize, bottom: usize, count: isize) {
+        let cols = self.grid.cols();
+        match count {
+            1 => {
+                self.line_damage[top..=bottom].rotate_left(1);
+                self.line_damage[bottom] = LineBounds::fully_damaged(cols);
+            }
+            -1 => {
+                self.line_damage[top..=bottom].rotate_right(1);
+                self.line_damage[top] = LineBounds::fully_damaged(cols);
+            }
+            _ => {}
+        }
         self.scroll = Some(ScrollOp { top, bottom, count });
     }
 

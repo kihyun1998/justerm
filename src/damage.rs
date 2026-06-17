@@ -48,6 +48,15 @@ impl LineBounds {
         }
     }
 
+    /// A line damaged across its full width (a newly exposed scroll line).
+    pub(crate) fn fully_damaged(cols: usize) -> Self {
+        LineBounds {
+            left: 0,
+            right: cols.saturating_sub(1),
+            cols,
+        }
+    }
+
     /// Widen the span to include columns `[left, right]`.
     pub(crate) fn expand(&mut self, left: usize, right: usize) {
         self.left = self.left.min(left);

@@ -73,3 +73,23 @@ fn reverse_index_emits_down_scroll_op() {
     let op = term.scroll_delta().expect("expected a scroll op");
     assert_eq!((op.top, op.bottom, op.count), (0, 1, -1));
 }
+
+/// The common path: print on the bottom row, then a line-feed scrolls it up.
+/// Damage must follow the content to its new row (and the exposed bottom row is
+/// new blank content), so the consumer redraws the right rows after the shift.
+#[test]
+fn write_then_scroll_realigns_damage_with_content() {
+    let mut term = Engine::new(4, 2);
+    term.feed(b"\x1b[2;1H"); // cursor to the bottom row
+    term.reset_damage();
+    term.feed(b"Z\n"); // write Z at the bottom, then LF scrolls it up
+
+    let lines = match term.damage() {
+        TermDamage::Partial(l) => l,
+        other => panic!("{other:?}"),
+    };
+    // Z ended up on row 0 after the scroll — its damage must point there.
+    assert!(lines.iter().any(|d| d.line == 0), "row 0 not damaged: {lines:?}");
+    // The newly exposed bottom row is new blank content → damaged too.
+    assert!(lines.iter().any(|d| d.line == 1), "row 1 not damaged: {lines:?}");
+}
