@@ -594,3 +594,105 @@ fn editing_preserves_pending_wrap() {
 
     assert_eq!(term.grid().cell(1, 0).c, 'd');
 }
+
+// ===========================================================================
+// Line/region editing — IL (L) / DL (M) / SU (S) / SD (T)  [#17]
+// ===========================================================================
+
+/// SU (CSI Pn S) scrolls the whole region up by Pn; exposed bottom lines blank.
+#[test]
+fn su_scrolls_region_up() {
+    let mut term = Engine::new(2, 4);
+    term.feed(b"A\r\nB\r\nC\r\nD"); // rows A,B,C,D
+
+    term.feed(b"\x1b[2S"); // scroll up 2
+
+    assert_eq!(row(&term, 0), "C ");
+    assert_eq!(row(&term, 1), "D ");
+    assert_eq!(row(&term, 2), "  ");
+    assert_eq!(row(&term, 3), "  ");
+}
+
+/// SD (CSI Pn T) scrolls the whole region down by Pn; exposed top lines blank.
+#[test]
+fn sd_scrolls_region_down() {
+    let mut term = Engine::new(2, 4);
+    term.feed(b"A\r\nB\r\nC\r\nD");
+
+    term.feed(b"\x1b[2T"); // scroll down 2
+
+    assert_eq!(row(&term, 0), "  ");
+    assert_eq!(row(&term, 1), "  ");
+    assert_eq!(row(&term, 2), "A ");
+    assert_eq!(row(&term, 3), "B ");
+}
+
+/// IL (CSI Pn L) inserts blank lines at the cursor, scrolling [cursor..bottom]
+/// down; the bottom of that range falls off.
+#[test]
+fn il_inserts_lines_at_cursor() {
+    let mut term = Engine::new(2, 4);
+    term.feed(b"A\r\nB\r\nC\r\nD");
+    term.feed(b"\x1b[2;1H"); // cursor → row 1
+    term.feed(b"\x1b[1L"); // insert 1 line
+
+    assert_eq!(row(&term, 0), "A "); // above the cursor: fixed
+    assert_eq!(row(&term, 1), "  "); // new blank line
+    assert_eq!(row(&term, 2), "B "); // B,C pushed down; D fell off
+    assert_eq!(row(&term, 3), "C ");
+}
+
+/// DL (CSI Pn M) deletes lines at the cursor, scrolling [cursor..bottom] up; the
+/// bottom of that range is blanked.
+#[test]
+fn dl_deletes_lines_at_cursor() {
+    let mut term = Engine::new(2, 4);
+    term.feed(b"A\r\nB\r\nC\r\nD");
+    term.feed(b"\x1b[2;1H"); // cursor → row 1
+    term.feed(b"\x1b[1M"); // delete 1 line (B)
+
+    assert_eq!(row(&term, 0), "A "); // above: fixed
+    assert_eq!(row(&term, 1), "C "); // C,D pulled up
+    assert_eq!(row(&term, 2), "D ");
+    assert_eq!(row(&term, 3), "  "); // bottom blanked
+}
+
+/// IL/DL are a no-op when the cursor is outside the scroll region.
+#[test]
+fn il_outside_region_is_a_noop() {
+    let mut term = Engine::new(2, 4);
+    term.feed(b"A\r\nB\r\nC\r\nD");
+    term.feed(b"\x1b[2;3r"); // region rows 1..=2; homes cursor to (0,0) — outside
+    term.feed(b"\x1b[1L"); // IL at row 0, outside the region → no-op
+
+    assert_eq!(row(&term, 0), "A ");
+    assert_eq!(row(&term, 1), "B ");
+    assert_eq!(row(&term, 2), "C ");
+    assert_eq!(row(&term, 3), "D ");
+}
+
+/// SU scrolls only within the scroll region; rows outside it stay fixed.
+#[test]
+fn su_respects_scroll_region() {
+    let mut term = Engine::new(2, 4);
+    term.feed(b"A\r\nB\r\nC\r\nD");
+    term.feed(b"\x1b[2;3r"); // region rows 1..=2 (B,C)
+    term.feed(b"\x1b[1S"); // scroll the region up 1
+
+    assert_eq!(row(&term, 0), "A "); // outside region: fixed
+    assert_eq!(row(&term, 1), "C "); // B fell off, C pulled up
+    assert_eq!(row(&term, 2), "  "); // exposed blank inside region
+    assert_eq!(row(&term, 3), "D "); // outside region: fixed
+}
+
+/// The lines a region scroll exposes are BCE-filled (current SGR background).
+#[test]
+fn region_scroll_exposed_lines_use_bce() {
+    let mut term = Engine::new(2, 2);
+    term.feed(b"A\r\nB");
+    term.feed(b"\x1b[41m"); // bg red
+    term.feed(b"\x1b[1S"); // scroll up 1 → row 1 exposed
+
+    assert_eq!(term.grid().cell(1, 0).bg, Color::Indexed(1));
+    assert_eq!(term.grid().cell(1, 0).c, ' ');
+}

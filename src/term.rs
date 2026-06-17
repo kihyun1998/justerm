@@ -1193,6 +1193,77 @@ impl Term {
         self.damage_span(r, col, cols - 1);
     }
 
+    // ---- line/region editing (IL / DL / SU / SD) -----------------------------
+
+    /// Scroll rows `[top..=bottom]` by `n` lines, BCE-filling the exposed lines.
+    /// `down` inserts blanks at the top (content moves down); otherwise content
+    /// moves up and blanks appear at the bottom. Reuses the one-line region scroll
+    /// primitives (so damage + scroll-op accumulation come for free), then fills
+    /// the exposed lines with the current SGR background.
+    fn scroll_region_lines(&mut self, top: usize, bottom: usize, n: usize, down: bool) {
+        let height = bottom - top + 1;
+        let n = n.min(height);
+        if n == 0 {
+            return;
+        }
+        for _ in 0..n {
+            if down {
+                self.grid.scroll_down_region(top, bottom);
+                self.record_scroll(top, bottom, -1);
+            } else {
+                self.grid.scroll_up_region(top, bottom);
+                self.record_scroll(top, bottom, 1);
+            }
+        }
+        // BCE-fill the n exposed lines (the primitives blank to default).
+        let bg = self.cursor.pen.bg;
+        let (fill_top, fill_end) = if down {
+            (top, top + n)
+        } else {
+            (bottom + 1 - n, bottom + 1)
+        };
+        let cols = self.grid.cols();
+        for r in fill_top..fill_end {
+            for c in 0..cols {
+                let cell = self.grid.cell_mut(r, c);
+                cell.reset();
+                cell.bg = bg;
+            }
+        }
+    }
+
+    /// SU (CSI Pn S): scroll the scroll region up by `n`.
+    fn scroll_up_lines(&mut self, n: usize) {
+        self.scroll_region_lines(self.scroll_top, self.scroll_bottom, n, false);
+    }
+
+    /// SD (CSI Pn T): scroll the scroll region down by `n`.
+    fn scroll_down_lines(&mut self, n: usize) {
+        self.scroll_region_lines(self.scroll_top, self.scroll_bottom, n, true);
+    }
+
+    /// IL (CSI Pn L): insert `n` blank lines at the cursor, scrolling
+    /// `[cursor..=scroll_bottom]` down. A no-op when the cursor is outside the
+    /// scroll region.
+    fn insert_lines(&mut self, n: usize) {
+        let cur = self.cursor.row;
+        if cur < self.scroll_top || cur > self.scroll_bottom {
+            return;
+        }
+        self.scroll_region_lines(cur, self.scroll_bottom, n, true);
+    }
+
+    /// DL (CSI Pn M): delete `n` lines at the cursor, scrolling
+    /// `[cursor..=scroll_bottom]` up. A no-op when the cursor is outside the
+    /// scroll region.
+    fn delete_lines(&mut self, n: usize) {
+        let cur = self.cursor.row;
+        if cur < self.scroll_top || cur > self.scroll_bottom {
+            return;
+        }
+        self.scroll_region_lines(cur, self.scroll_bottom, n, false);
+    }
+
     // ---- SGR (CSI m) ---------------------------------------------------------
 
     fn sgr(&mut self, params: &Params) {
@@ -1445,6 +1516,10 @@ impl Perform for Term {
             'X' => self.erase_chars(param_or(params, 0, 1) as usize),
             '@' => self.insert_chars(param_or(params, 0, 1) as usize),
             'P' => self.delete_chars(param_or(params, 0, 1) as usize),
+            'S' => self.scroll_up_lines(param_or(params, 0, 1) as usize),
+            'T' => self.scroll_down_lines(param_or(params, 0, 1) as usize),
+            'L' => self.insert_lines(param_or(params, 0, 1) as usize),
+            'M' => self.delete_lines(param_or(params, 0, 1) as usize),
             'g' => self.clear_tab_stop(param_or(params, 0, 0)),
             'r' => {
                 let rows = self.grid.rows() as u16;
