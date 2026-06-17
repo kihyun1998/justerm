@@ -61,6 +61,14 @@ intermediate-state skip (a slow consumer's missed frames collapse into one diff)
 consumer gets larger diffs less often — never a pile-up, never discards), and pacing (the ack
 round-trip is the collection interval, phase-aligned to the consumer's vsync). No separate timer.
 
+**Boundary — the engine provides the diff, the consumer paces it (#13).** Cross-checked against Mosh
+(SSP splits `diff_from(acked→latest)` from `calculate_timers`), Alacritty (damage state vs the render
+loop), and xterm.js (`RenderDebouncer` coalesces dirty rows and flushes one frame per
+`requestAnimationFrame`): the **state diff** (damage + scroll op + ack-gated reset) is engine-side and
+already built in #4; the **pacing** (when to pull, RTT/vsync timing, ≤1-in-flight wire, retransmit)
+lives in the consumer's transport (PenTerm's Tauri Channel) — NOT in justerm (CLAUDE.md: no IPC). So
+#13's engine work is narrow: the viewport-vs-screen damage mapping above.
+
 **Open question — viewport-vs-screen damage (carried over from #4 / ADR-0003).** Damage (#4) is
 recorded against the *screen*, but the consumer renders the *viewport*. While scrolled up under
 follow-bottom "stay" (#3), the screen scrolls yet the viewport is unchanged — so a screen scroll op

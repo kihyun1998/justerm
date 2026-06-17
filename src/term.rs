@@ -92,6 +92,12 @@ impl Term {
         if self.full_damage {
             return TermDamage::Full;
         }
+        // Scrolled up under follow-bottom "stay": the viewport is frozen, so
+        // screen changes below it are not visible — report nothing. (A user
+        // scroll that moves the viewport sets full_damage above.)
+        if self.display_offset > 0 {
+            return TermDamage::Partial(Vec::new());
+        }
         let lines: Vec<LineDamage> = self
             .line_damage
             .iter()
@@ -126,7 +132,12 @@ impl Term {
     }
 
     /// The first-class scroll recorded since the last `reset_damage`, if any.
+    /// Suppressed while scrolled up — a content scroll must not shift the frozen
+    /// viewport.
     pub fn scroll_delta(&self) -> Option<ScrollOp> {
+        if self.display_offset > 0 {
+            return None;
+        }
         self.scroll
     }
 
@@ -187,17 +198,28 @@ impl Term {
 
     /// Scroll the viewport up by `n` lines into history (clamped to the oldest).
     pub fn scroll_up(&mut self, n: usize) {
-        self.display_offset = (self.display_offset + n).min(self.scrollback.len());
+        let target = (self.display_offset + n).min(self.scrollback.len());
+        self.set_display_offset(target);
     }
 
     /// Scroll the viewport down by `n` lines toward the live screen.
     pub fn scroll_down(&mut self, n: usize) {
-        self.display_offset = self.display_offset.saturating_sub(n);
+        let target = self.display_offset.saturating_sub(n);
+        self.set_display_offset(target);
     }
 
     /// Jump the viewport back to the live screen (follow the bottom).
     pub fn scroll_to_bottom(&mut self) {
-        self.display_offset = 0;
+        self.set_display_offset(0);
+    }
+
+    /// Move the viewport. A user scroll changes which lines are visible, so the
+    /// whole viewport is repainted (full damage) when the offset actually moves.
+    fn set_display_offset(&mut self, offset: usize) {
+        if offset != self.display_offset {
+            self.display_offset = offset;
+            self.mark_fully_damaged();
+        }
     }
 
     pub fn grid(&self) -> &Grid {
