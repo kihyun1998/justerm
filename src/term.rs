@@ -148,7 +148,16 @@ impl Term {
             }
             _ => {}
         }
-        self.scroll = Some(ScrollOp { top, bottom, count });
+        // Accumulate repeated scrolls of the same region into one op (flow
+        // control); a different region between acks is a later refinement.
+        self.scroll = match self.scroll {
+            Some(op) if op.top == top && op.bottom == bottom => Some(ScrollOp {
+                top,
+                bottom,
+                count: op.count + count,
+            }),
+            _ => Some(ScrollOp { top, bottom, count }),
+        };
     }
 
     /// Number of lines currently held in scrollback history.

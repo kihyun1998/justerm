@@ -93,3 +93,16 @@ fn write_then_scroll_realigns_damage_with_content() {
     // The newly exposed bottom row is new blank content → damaged too.
     assert!(lines.iter().any(|d| d.line == 1), "row 1 not damaged: {lines:?}");
 }
+
+/// Several scrolls of the same region between acks accumulate into one op (flow
+/// control: a slow consumer gets a single larger shift, never a pile-up).
+#[test]
+fn repeated_scroll_accumulates_count() {
+    let mut term = Engine::new(4, 3);
+    term.feed(b"a\r\nb\r\nc"); // fill 3 rows
+    term.reset_damage();
+    term.feed(b"\r\nd\r\ne"); // two line-feeds → two full-region scrolls
+
+    let op = term.scroll_delta().expect("scroll op");
+    assert_eq!((op.top, op.bottom, op.count), (0, 2, 2));
+}
