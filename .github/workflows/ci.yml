@@ -1,0 +1,29 @@
+name: CI
+
+# The systematic net (#8 / #15): every push and PR runs the full test suite,
+# clippy, and a format check, so VT-compliance slices verify against it from the
+# start (architecture.md: pull the conformance net early).
+
+on:
+  push:
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: test + clippy + fmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - name: Format check
+        run: cargo fmt --check
+      - name: Clippy (warnings fail)
+        run: cargo clippy --all-targets -- -D warnings
+      - name: Test (unit + integration + doc)
+        run: cargo test
