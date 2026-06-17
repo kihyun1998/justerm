@@ -106,3 +106,18 @@ fn repeated_scroll_accumulates_count() {
     let op = term.scroll_delta().expect("scroll op");
     assert_eq!((op.top, op.bottom, op.count), (0, 2, 2));
 }
+
+/// Scrolls of *different* regions in one frame cannot be expressed as a single
+/// op, so they degrade to full damage rather than silently dropping one.
+#[test]
+fn scrolls_of_different_regions_degrade_to_full() {
+    let mut term = Engine::new(4, 4);
+    term.feed(b"\x1b[4;1H"); // cursor to the bottom of the full screen
+    term.reset_damage();
+    term.feed(b"\n"); // scroll the full region [0..=3]
+
+    term.feed(b"\x1b[2;3r"); // DECSTBM region rows 2..3 → [1..=2] (homes cursor)
+    term.feed(b"\x1b[3;1H\n"); // cursor to the region bottom, scroll [1..=2]
+
+    assert!(matches!(term.damage(), TermDamage::Full));
+}

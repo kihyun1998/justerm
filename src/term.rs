@@ -149,15 +149,22 @@ impl Term {
             _ => {}
         }
         // Accumulate repeated scrolls of the same region into one op (flow
-        // control); a different region between acks is a later refinement.
-        self.scroll = match self.scroll {
-            Some(op) if op.top == top && op.bottom == bottom => Some(ScrollOp {
-                top,
-                bottom,
-                count: op.count + count,
-            }),
-            _ => Some(ScrollOp { top, bottom, count }),
-        };
+        // control). A *different* region cannot be expressed as one op, so
+        // degrade to full rather than silently dropping the earlier scroll.
+        match self.scroll {
+            Some(op) if op.top == top && op.bottom == bottom => {
+                self.scroll = Some(ScrollOp {
+                    top,
+                    bottom,
+                    count: op.count + count,
+                });
+            }
+            None => self.scroll = Some(ScrollOp { top, bottom, count }),
+            Some(_) => {
+                self.scroll = None;
+                self.mark_fully_damaged();
+            }
+        }
     }
 
     /// Number of lines currently held in scrollback history.
