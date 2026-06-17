@@ -296,6 +296,25 @@ fn pending_wrap_is_deferred() {
     assert!(!term.cursor().pending_wrap);
 }
 
+/// Overwriting one half of a wide glyph clears the other half — no orphaned
+/// lead or spacer is left behind.
+#[test]
+fn overwriting_a_wide_char_clears_its_other_half() {
+    // Overwrite the lead → the spacer must be cleared.
+    let mut a = Engine::new(10, 1);
+    a.feed("한".as_bytes()); // (0,0)=lead, (0,1)=spacer
+    a.feed(b"\x1b[1;1Hx"); // write 'x' over the lead
+    assert_eq!(a.grid().cell(0, 0).c, 'x');
+    assert!(!a.grid().cell(0, 1).flags.contains(CellFlags::WIDE_CHAR_SPACER));
+
+    // Overwrite the spacer → the lead must be cleared.
+    let mut b = Engine::new(10, 1);
+    b.feed("한".as_bytes());
+    b.feed(b"\x1b[1;2Hy"); // write 'y' over the spacer
+    assert_eq!(b.grid().cell(0, 1).c, 'y');
+    assert!(!b.grid().cell(0, 0).flags.contains(CellFlags::WIDE_CHAR));
+}
+
 /// A width-2 glyph occupies two cells: the lead carries WIDE_CHAR, the trailing
 /// column a distinct WIDE_CHAR_SPACER marker (not a plain blank).
 /// Mutation-checked: drop the spacer flag → this test goes red.

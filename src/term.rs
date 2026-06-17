@@ -465,6 +465,28 @@ impl Term {
 
         let (row, col) = (self.cursor.row, self.cursor.col);
 
+        // Overwriting one half of an existing wide glyph orphans the other —
+        // clear it so no stray lead/spacer is left behind.
+        let last = col + width - 1;
+        if col > 0
+            && self
+                .grid
+                .cell(row, col)
+                .flags
+                .contains(CellFlags::WIDE_CHAR_SPACER)
+        {
+            self.grid.cell_mut(row, col - 1).reset();
+        }
+        if last + 1 < cols
+            && self
+                .grid
+                .cell(row, last)
+                .flags
+                .contains(CellFlags::WIDE_CHAR)
+        {
+            self.grid.cell_mut(row, last + 1).reset();
+        }
+
         let mut cell = self.cursor.pen.cell(c);
         if width == 2 {
             cell.flags.insert(CellFlags::WIDE_CHAR);
