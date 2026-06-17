@@ -290,6 +290,66 @@ fn scroll_up_reveals_history() {
     assert_eq!(term.viewport_line(2)[0].c, 'c');
 }
 
+/// New output while scrolled up keeps the view stable (follow-bottom = stay):
+/// the offset is bumped so the same lines stay visible, not yanked to bottom.
+#[test]
+fn new_output_while_scrolled_stays_put() {
+    let mut term = Engine::new(4, 4);
+    term.feed(b"a\r\nb\r\nc\r\nd\r\ne\r\nf"); // history=[a,b]
+    term.scroll_up(2);
+    assert_eq!(term.viewport_line(0)[0].c, 'a'); // viewing the top of history
+
+    term.feed(b"\r\ng"); // new line scrolls history; view must stay on 'a'
+    assert_eq!(term.viewport_line(0)[0].c, 'a');
+}
+
+/// scroll_down walks back toward the live screen; scroll_to_bottom jumps there.
+#[test]
+fn scroll_down_and_to_bottom() {
+    let mut term = Engine::new(4, 4);
+    term.feed(b"a\r\nb\r\nc\r\nd\r\ne\r\nf"); // history=[a,b], screen c,d,e,f
+    term.scroll_up(2);
+    assert_eq!(term.viewport_line(0)[0].c, 'a');
+
+    term.scroll_down(1);
+    assert_eq!(term.viewport_line(0)[0].c, 'b'); // one line back toward bottom
+
+    term.scroll_to_bottom();
+    assert_eq!(term.viewport_line(0)[0].c, 'c'); // live screen top
+}
+
+/// Scrollback is capped: the oldest lines are evicted once the limit is hit.
+#[test]
+fn scrollback_caps_oldest_evicted() {
+    let mut term = Engine::with_scrollback(4, 2, 2); // keep at most 2 history lines
+    term.feed(b"a\r\nb\r\nc\r\nd\r\ne"); // a,b,c scroll off, but cap = 2
+
+    assert_eq!(term.scrollback_len(), 2);
+    term.scroll_up(2);
+    assert_eq!(term.viewport_line(0)[0].c, 'b'); // 'a' was evicted; 'b' is oldest
+}
+
+/// The alt screen has no scrollback — scrolling it accrues no history.
+#[test]
+fn alt_screen_produces_no_scrollback() {
+    let mut term = Engine::new(4, 2);
+    term.feed(b"\x1b[?1049h"); // enter alt screen
+    term.feed(b"a\r\nb\r\nc\r\nd"); // scroll several lines on the alt screen
+
+    assert_eq!(term.scrollback_len(), 0);
+}
+
+/// A scroll region that is NOT top-anchored (scroll_top != 0) accrues no
+/// history — the rule is `scroll_top == 0`, not "the full screen".
+#[test]
+fn non_top_anchored_region_produces_no_scrollback() {
+    let mut term = Engine::new(4, 3);
+    term.feed(b"\x1b[2;3r"); // region rows 2..3 → scroll_top = 1
+    term.feed(b"a\r\nb\r\nc\r\nd"); // a scroll happens inside the region
+
+    assert_eq!(term.scrollback_len(), 0);
+}
+
 // ===========================================================================
 // Cursor visibility (DEC ?25)
 // ===========================================================================

@@ -45,10 +45,19 @@ pub struct Term {
     /// How many lines the viewport is scrolled up from the bottom. 0 = following
     /// the live screen; clamped to `[0, scrollback.len()]`.
     display_offset: usize,
+    /// Maximum scrollback lines retained; the oldest are evicted past this.
+    scrollback_limit: usize,
 }
+
+/// Default scrollback retention when not specified.
+const DEFAULT_SCROLLBACK: usize = 10_000;
 
 impl Term {
     pub fn new(cols: usize, rows: usize) -> Self {
+        Self::with_scrollback(cols, rows, DEFAULT_SCROLLBACK)
+    }
+
+    pub fn with_scrollback(cols: usize, rows: usize, scrollback_limit: usize) -> Self {
         Term {
             grid: Grid::new(cols, rows),
             alt_grid: Grid::new(cols, rows),
@@ -62,6 +71,7 @@ impl Term {
             scroll_bottom: rows - 1,
             scrollback: VecDeque::new(),
             display_offset: 0,
+            scrollback_limit,
         }
     }
 
@@ -86,6 +96,16 @@ impl Term {
     /// Scroll the viewport up by `n` lines into history (clamped to the oldest).
     pub fn scroll_up(&mut self, n: usize) {
         self.display_offset = (self.display_offset + n).min(self.scrollback.len());
+    }
+
+    /// Scroll the viewport down by `n` lines toward the live screen.
+    pub fn scroll_down(&mut self, n: usize) {
+        self.display_offset = self.display_offset.saturating_sub(n);
+    }
+
+    /// Jump the viewport back to the live screen (follow the bottom).
+    pub fn scroll_to_bottom(&mut self) {
+        self.display_offset = 0;
     }
 
     pub fn grid(&self) -> &Grid {
@@ -114,6 +134,16 @@ impl Term {
             if self.scroll_top == 0 && !self.on_alt {
                 let evicted = self.grid.row(0).to_vec();
                 self.scrollback.push_back(evicted);
+                // Follow-bottom = stay: if the user is scrolled up, bump the
+                // offset so the same lines stay in view instead of being yanked
+                // to the bottom.
+                if self.display_offset > 0 {
+                    self.display_offset = (self.display_offset + 1).min(self.scrollback.len());
+                }
+                // Cap: evict the oldest line past the limit.
+                if self.scrollback.len() > self.scrollback_limit {
+                    self.scrollback.pop_front();
+                }
             }
             self.grid.scroll_up_region(self.scroll_top, self.scroll_bottom);
         } else if self.cursor.row + 1 < self.grid.rows() {

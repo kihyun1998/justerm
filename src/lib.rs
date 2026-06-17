@@ -39,11 +39,19 @@ pub struct Engine {
 }
 
 impl Engine {
-    /// A blank engine with a `cols` × `rows` screen.
+    /// A blank engine with a `cols` × `rows` screen and a default scrollback cap.
     pub fn new(cols: usize, rows: usize) -> Self {
         Engine {
             parser: Parser::new(),
             term: Term::new(cols, rows),
+        }
+    }
+
+    /// Like [`Engine::new`] but with an explicit scrollback line limit.
+    pub fn with_scrollback(cols: usize, rows: usize, scrollback_limit: usize) -> Self {
+        Engine {
+            parser: Parser::new(),
+            term: Term::with_scrollback(cols, rows, scrollback_limit),
         }
     }
 
@@ -82,5 +90,15 @@ impl Engine {
     /// Scroll the viewport up by `n` lines into scrollback history.
     pub fn scroll_up(&mut self, n: usize) {
         self.term.scroll_up(n);
+    }
+
+    /// Scroll the viewport down by `n` lines toward the live screen.
+    pub fn scroll_down(&mut self, n: usize) {
+        self.term.scroll_down(n);
+    }
+
+    /// Jump the viewport back to the live screen (follow the bottom).
+    pub fn scroll_to_bottom(&mut self) {
+        self.term.scroll_to_bottom();
     }
 }
