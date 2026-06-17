@@ -19,6 +19,7 @@ mod color;
 mod cursor;
 mod damage;
 mod grid;
+mod search;
 mod selection;
 mod term;
 
@@ -27,6 +28,7 @@ pub use color::Color;
 pub use cursor::{Cursor, Pen};
 pub use damage::{LineDamage, ScrollOp, TermDamage};
 pub use grid::{Grid, Row};
+pub use search::Match;
 pub use selection::{SelectionSpan, SelectionType, Side};
 
 pub use term::Term;
@@ -157,5 +159,25 @@ impl Engine {
     /// selection.
     pub fn selection_text(&self) -> Option<String> {
         self.term.selection_text()
+    }
+
+    /// Literal search over the grid + scrollback, returning every match in
+    /// absolute buffer coordinates (top-to-bottom). Smart-case: a query with no
+    /// uppercase matches case-insensitively. The consumer drives next/prev by
+    /// walking the returned `Vec` and calling [`Engine::scroll_to_match`].
+    pub fn search(&self, query: &str) -> Vec<Match> {
+        self.term.search(query)
+    }
+
+    /// Scroll the viewport so `m` is visible (next/prev navigation: the consumer
+    /// picks the match, the engine scrolls to it).
+    pub fn scroll_to_match(&mut self, m: &Match) {
+        self.term.search_scroll_to(m);
+    }
+
+    /// The match projected onto the viewport as inclusive-column spans per
+    /// visible row, for the renderer to highlight.
+    pub fn match_spans(&self, m: &Match) -> Vec<SelectionSpan> {
+        self.term.match_spans(m)
     }
 }

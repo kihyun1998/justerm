@@ -12,6 +12,7 @@ use crate::color::Color;
 use crate::cursor::{Cursor, Pen};
 use crate::damage::{LineBounds, LineDamage, ScrollOp, TermDamage};
 use crate::grid::{Grid, Row};
+use crate::search::Match;
 use crate::selection::{Anchor, BufferPoint, Selection, SelectionSpan, SelectionType, Side};
 
 /// Owns the authoritative screen state and applies VT actions to it.
@@ -294,6 +295,113 @@ impl Term {
         } else {
             self.grid.row(line - self.scrollback.len())
         }
+    }
+
+    /// Literal search over the whole buffer (`[scrollback ++ screen]`), returning
+    /// every non-overlapping match top-to-bottom in absolute coordinates. Matches
+    /// cross soft-wrapped rows (one logical line) and skip wide-char spacers.
+    /// Smart-case: a query with no uppercase matches case-insensitively.
+    pub fn search(&self, query: &str) -> Vec<Match> {
+        let q: Vec<char> = query.chars().collect();
+        if q.is_empty() {
+            return Vec::new();
+        }
+        let ci = !q.iter().any(|c| c.is_uppercase());
+        // Fold to a single representative char so the haystack stays 1:1 with its
+        // positions (rare multi-char case expansions take their first char).
+        let fold = |c: char| {
+            if ci {
+                c.to_lowercase().next().unwrap_or(c)
+            } else {
+                c
+            }
+        };
+        let needle: Vec<char> = q.iter().map(|&c| fold(c)).collect();
+        let total = self.scrollback.len() + self.grid.rows();
+
+        let mut matches = Vec::new();
+        let mut r = 0;
+        while r < total {
+            // Build the logical line at `r`: join soft-wrapped rows, recording
+            // each char's source position and skipping wide-char spacers.
+            let mut hay: Vec<char> = Vec::new();
+            let mut pos: Vec<(usize, usize)> = Vec::new();
+            let mut line = r;
+            loop {
+                let cells = self.abs_line(line);
+                for (col, cell) in cells.iter().enumerate() {
+                    if cell.flags.contains(CellFlags::WIDE_CHAR_SPACER) {
+                        continue;
+                    }
+                    hay.push(fold(cell.c));
+                    pos.push((line, col));
+                }
+                let soft = cells
+                    .last()
+                    .is_some_and(|c| c.flags.contains(CellFlags::WRAPLINE));
+                if soft && line + 1 < total {
+                    line += 1;
+                } else {
+                    break;
+                }
+            }
+
+            // Slide the needle over the logical line (non-overlapping).
+            let mut i = 0;
+            while needle.len() <= hay.len() && i + needle.len() <= hay.len() {
+                if hay[i..i + needle.len()] == needle[..] {
+                    let (start_line, start_col) = pos[i];
+                    let (end_line, end_col) = pos[i + needle.len() - 1];
+                    matches.push(Match {
+                        start_line,
+                        start_col,
+                        end_line,
+                        end_col,
+                    });
+                    i += needle.len();
+                } else {
+                    i += 1;
+                }
+            }
+            r = line + 1;
+        }
+        matches
+    }
+
+    /// Scroll the viewport so a match's start line is visible (placed at the top
+    /// when it sits in history; the live view when it is already on screen).
+    pub fn search_scroll_to(&mut self, m: &Match) {
+        let target = self.scrollback.len().saturating_sub(m.start_line);
+        self.set_display_offset(target);
+    }
+
+    /// Project a match onto the current viewport as inclusive-column spans, one
+    /// per visible row (off-screen parts dropped) — for the renderer to
+    /// highlight, like `selection_range`.
+    pub fn match_spans(&self, m: &Match) -> Vec<SelectionSpan> {
+        let rows = self.grid.rows();
+        let top = self.scrollback.len() - self.display_offset;
+        let mut spans = Vec::new();
+        for line in m.start_line..=m.end_line {
+            if line < top {
+                continue;
+            }
+            let row = line - top;
+            if row >= rows {
+                break;
+            }
+            let last = self.abs_line(line).len().saturating_sub(1);
+            let left = if line == m.start_line { m.start_col } else { 0 };
+            let right = if line == m.end_line {
+                m.end_col.min(last)
+            } else {
+                last
+            };
+            if right >= left {
+                spans.push(SelectionSpan { row, left, right });
+            }
+        }
+        spans
     }
 
     /// Begin a selection of `ty` at viewport `(row, col)`, `side`.
