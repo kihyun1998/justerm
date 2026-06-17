@@ -62,6 +62,30 @@ impl Grid {
         }
     }
 
+    /// Resize to `cols` x `rows`. Column resize is naive here (truncate/pad);
+    /// soft-wrap reflow is layered on top separately. Row growth appends blank
+    /// rows at the bottom; row shrink drops rows off the **top** and returns them
+    /// (the caller pushes them into scrollback). See #7.
+    pub fn resize(&mut self, cols: usize, rows: usize) -> Vec<Row> {
+        if cols != self.cols {
+            for row in &mut self.lines {
+                row.resize(cols, Cell::default());
+            }
+            self.cols = cols;
+        }
+
+        let mut dropped = Vec::new();
+        if rows < self.rows {
+            dropped = self.lines.drain(0..(self.rows - rows)).collect();
+        } else {
+            for _ in 0..(rows - self.rows) {
+                self.lines.push(vec![Cell::default(); cols]);
+            }
+        }
+        self.rows = rows;
+        dropped
+    }
+
     /// Reset every cell to a blank default. Used when switching to the alt
     /// screen (which always starts cleared).
     pub fn clear(&mut self) {

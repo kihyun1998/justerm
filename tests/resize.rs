@@ -14,3 +14,18 @@ fn auto_wrap_marks_wrapline_but_hard_newline_does_not() {
     hard.feed(b"ab\r\nc"); // 'ab', then a hard CR/LF
     assert!(!hard.grid().cell(0, 1).flags.contains(CellFlags::WRAPLINE));
 }
+
+/// Growing the row count keeps existing content and adds blank rows at the
+/// bottom.
+#[test]
+fn grow_rows_keeps_content_adds_blank_lines() {
+    let mut term = Engine::new(4, 2);
+    term.feed(b"ab\r\ncd"); // row 0 = ab, row 1 = cd
+
+    term.resize(4, 3);
+
+    assert_eq!((term.grid().cols(), term.grid().rows()), (4, 3));
+    assert_eq!(term.grid().cell(0, 0).c, 'a'); // preserved
+    assert_eq!(term.grid().cell(1, 0).c, 'c');
+    assert_eq!(term.grid().cell(2, 0).c, ' '); // new blank row
+}

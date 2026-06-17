@@ -222,6 +222,34 @@ impl Term {
         }
     }
 
+    /// Resize the screen to `cols` x `rows`. Rows dropped off the top (on shrink)
+    /// enter scrollback. Column reflow of soft-wrapped lines is layered on top
+    /// separately (#7). The whole screen is damaged.
+    pub fn resize(&mut self, cols: usize, rows: usize) {
+        let dropped = self.grid.resize(cols, rows);
+        for row in dropped {
+            self.scrollback.push_back(row);
+            if self.scrollback.len() > self.scrollback_limit {
+                self.scrollback.pop_front();
+            }
+        }
+
+        // Margins reset to the full screen; tab stops reset to the default grid.
+        self.scroll_top = 0;
+        self.scroll_bottom = rows - 1;
+        self.tabs = default_tabs(cols);
+
+        // Keep the cursor and viewport within the new bounds.
+        self.cursor.row = self.cursor.row.min(rows - 1);
+        self.cursor.col = self.cursor.col.min(cols - 1);
+        self.cursor.pending_wrap = false;
+        self.display_offset = self.display_offset.min(self.scrollback.len());
+
+        // Damage tracking is sized to the screen; a resize repaints everything.
+        self.line_damage = vec![LineBounds::undamaged(cols); rows];
+        self.mark_fully_damaged();
+    }
+
     pub fn grid(&self) -> &Grid {
         &self.grid
     }

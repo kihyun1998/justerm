@@ -63,6 +63,12 @@ impl Engine {
         self.parser.advance(&mut self.term, bytes);
     }
 
+    /// Resize the screen to `cols` x `rows`. Rows that scroll off the top enter
+    /// scrollback; the whole screen is damaged. (Soft-wrap reflow lands in #7.)
+    pub fn resize(&mut self, cols: usize, rows: usize) {
+        self.term.resize(cols, rows);
+    }
+
     /// The current screen grid.
     pub fn grid(&self) -> &Grid {
         self.term.grid()
