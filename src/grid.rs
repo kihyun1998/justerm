@@ -75,8 +75,7 @@ pub(crate) fn reflow(
                 let mut take = (line.len() - i).min(new_cols);
                 // Don't split a wide char from its spacer: if the row would end
                 // on a WIDE_CHAR lead, drop it to the next row (xterm's newCols-1).
-                if i + take < line.len()
-                    && line[i + take - 1].flags.contains(CellFlags::WIDE_CHAR)
+                if i + take < line.len() && line[i + take - 1].flags.contains(CellFlags::WIDE_CHAR)
                 {
                     take -= 1;
                 }

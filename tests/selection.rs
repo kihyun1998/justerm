@@ -164,7 +164,11 @@ fn selection_range_reports_viewport_spans() {
 
     assert_eq!(
         term.selection_range(),
-        vec![SelectionSpan { row: 0, left: 0, right: 4 }]
+        vec![SelectionSpan {
+            row: 0,
+            left: 0,
+            right: 4
+        }]
     );
 }
 
@@ -183,9 +187,21 @@ fn selection_range_clips_to_viewport_when_scrolled() {
     assert_eq!(
         term.selection_range(),
         vec![
-            SelectionSpan { row: 0, left: 0, right: 3 },
-            SelectionSpan { row: 1, left: 0, right: 3 },
-            SelectionSpan { row: 2, left: 0, right: 3 },
+            SelectionSpan {
+                row: 0,
+                left: 0,
+                right: 3
+            },
+            SelectionSpan {
+                row: 1,
+                left: 0,
+                right: 3
+            },
+            SelectionSpan {
+                row: 2,
+                left: 0,
+                right: 3
+            },
         ]
     );
 
@@ -193,9 +209,17 @@ fn selection_range_clips_to_viewport_when_scrolled() {
     assert_eq!(
         term.selection_range(),
         vec![
-            SelectionSpan { row: 1, left: 0, right: 3 }, // abs 2
-            SelectionSpan { row: 2, left: 0, right: 3 }, // abs 3
-            // abs 4 is now below the viewport → dropped
+            SelectionSpan {
+                row: 1,
+                left: 0,
+                right: 3
+            }, // abs 2
+            SelectionSpan {
+                row: 2,
+                left: 0,
+                right: 3
+            }, // abs 3
+               // abs 4 is now below the viewport → dropped
         ]
     );
 }

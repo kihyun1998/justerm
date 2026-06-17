@@ -305,7 +305,12 @@ fn overwriting_a_wide_char_clears_its_other_half() {
     a.feed("한".as_bytes()); // (0,0)=lead, (0,1)=spacer
     a.feed(b"\x1b[1;1Hx"); // write 'x' over the lead
     assert_eq!(a.grid().cell(0, 0).c, 'x');
-    assert!(!a.grid().cell(0, 1).flags.contains(CellFlags::WIDE_CHAR_SPACER));
+    assert!(
+        !a.grid()
+            .cell(0, 1)
+            .flags
+            .contains(CellFlags::WIDE_CHAR_SPACER)
+    );
 
     // Overwrite the spacer → the lead must be cleared.
     let mut b = Engine::new(10, 1);
@@ -329,7 +334,12 @@ fn erasing_part_of_a_wide_char_clears_its_other_half() {
     let mut b = Engine::new(10, 1);
     b.feed("a한b".as_bytes());
     b.feed(b"\x1b[1;2H\x1b[1K"); // cursor on the lead (col 1), erase start..=cursor
-    assert!(!b.grid().cell(0, 2).flags.contains(CellFlags::WIDE_CHAR_SPACER));
+    assert!(
+        !b.grid()
+            .cell(0, 2)
+            .flags
+            .contains(CellFlags::WIDE_CHAR_SPACER)
+    );
 }
 
 /// A width-2 glyph occupies two cells: the lead carries WIDE_CHAR, the trailing

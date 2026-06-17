@@ -521,7 +521,13 @@ impl Term {
     /// lines between). Soft-wrapped rows (WRAPLINE) accumulate into one *logical*
     /// line so trailing-blank trimming happens only at the logical end — spaces
     /// at a wrap boundary are real content. A hard line-end flushes with `\n`.
-    fn extract_lines(&self, start_line: usize, from: usize, end_line: usize, to_end: usize) -> String {
+    fn extract_lines(
+        &self,
+        start_line: usize,
+        from: usize,
+        end_line: usize,
+        to_end: usize,
+    ) -> String {
         let mut out = String::new();
         let mut current = String::new();
         for line in start_line..=end_line {
@@ -763,9 +769,14 @@ impl Term {
                 // and absolute indices in the region shift. Rotate the selection
                 // up so it follows; an endpoint on the dropped line clears it.
                 let base = self.scrollback.len();
-                self.selection_rotate_region(base + self.scroll_top, base + self.scroll_bottom, true);
+                self.selection_rotate_region(
+                    base + self.scroll_top,
+                    base + self.scroll_bottom,
+                    true,
+                );
             }
-            self.grid.scroll_up_region(self.scroll_top, self.scroll_bottom);
+            self.grid
+                .scroll_up_region(self.scroll_top, self.scroll_bottom);
             self.record_scroll(self.scroll_top, self.scroll_bottom, 1);
         } else if self.cursor.row + 1 < self.grid.rows() {
             self.cursor.row += 1;
@@ -823,7 +834,8 @@ impl Term {
             // screen, so absolute indices in it shift down. Rotate the selection.
             let base = self.scrollback.len();
             self.selection_rotate_region(base + self.scroll_top, base + self.scroll_bottom, false);
-            self.grid.scroll_down_region(self.scroll_top, self.scroll_bottom);
+            self.grid
+                .scroll_down_region(self.scroll_top, self.scroll_bottom);
             self.record_scroll(self.scroll_top, self.scroll_bottom, -1);
         } else if self.cursor.row > 0 {
             self.cursor.row -= 1;
@@ -1345,14 +1357,14 @@ impl Perform for Term {
             return;
         }
         match byte {
-            b'D' => self.linefeed(),       // IND (line-feed without CR)
+            b'D' => self.linefeed(), // IND (line-feed without CR)
             b'E' => {
                 // NEL (next line): carriage return + line-feed.
                 self.carriage_return();
                 self.linefeed();
             }
-            b'H' => self.set_tab_stop(),   // HTS
-            b'M' => self.reverse_index(),  // RI
+            b'H' => self.set_tab_stop(),  // HTS
+            b'M' => self.reverse_index(), // RI
             _ => {}
         }
     }
