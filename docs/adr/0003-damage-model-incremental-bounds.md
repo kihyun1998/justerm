@@ -62,11 +62,10 @@ Public surface (matches the architecture's API shape):
 
 ## Consequences
 
-- **Aligned with §Cadence from the start**, so the future cadence work
-  (described in `architecture.md` §Cadence — it has no dedicated issue yet)
-  builds the ack-pacing on top of this damage state without a breaking API
-  change — the reason this is settled before implementation (CLAUDE.md: the
-  bones correct from day one).
+- **Aligned with §Cadence from the start**, so the cadence work (#13;
+  architecture.md §Cadence) builds the ack-pacing on top of this damage state
+  without a breaking API change — the reason this is settled before
+  implementation (CLAUDE.md: the bones correct from day one).
 - **Native column spans, no baseline copy, no per-frame full diff.** Cost: every
   mutation site (print, erase, scroll, later cursor moves) must record damage —
   invasive but local and matching Alacritty.
@@ -77,5 +76,5 @@ Public surface (matches the architecture's API shape):
   model there. Single-consumer today makes A strictly simpler.
 - Damage interacts with scrollback (#3): the consumer renders the *viewport*, so
   while scrolled up under follow-bottom "stay" the viewport is unchanged even as
-  the screen scrolls — viewport-vs-screen damage mapping is an open question for
-  the cadence work (architecture.md §Cadence; no dedicated issue yet).
+  the screen scrolls — viewport-vs-screen damage mapping is owned by the cadence
+  work (#13; architecture.md §Cadence).

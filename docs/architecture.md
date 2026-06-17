@@ -66,7 +66,7 @@ recorded against the *screen*, but the consumer renders the *viewport*. While sc
 follow-bottom "stay" (#3), the screen scrolls yet the viewport is unchanged — so a screen scroll op
 must NOT be applied to a scrolled-up viewport (it would shift a frozen view). The cadence work owns
 mapping screen damage → viewport damage (and suppressing/ translating scroll ops while
-`display_offset > 0`). Cadence has **no dedicated issue yet**; this note is its tracker.
+`display_offset > 0`). Tracked in **#13** (cadence).
 
 ## Selection
 
