@@ -161,6 +161,32 @@ deferred behavior) it tracks — then add what you find here.** Seeds (caught in
   `\n`; Block extracts each row independently. `selection_range` instead projects onto *viewport* rows
   (clipping off-screen parts) as inclusive column spans for the renderer. [#5]
 
+- **Editing CSIs are BCE-filled and region/line-scoped — and must not orphan a wide-char half.**
+  ICH (`@`, insert blanks), DCH (`P`, delete chars), ECH (`X`, erase chars) operate *within the
+  cursor's line*; IL (`L`), DL (`M`) insert/delete whole lines; SU (`S`)/SD (`T`) scroll the region.
+  All fill newly-blanked cells with the current SGR background (BCE), default param 1. IL/DL are
+  **region-gated**: they act only when the cursor is inside the scroll region and scroll
+  `[cursor_row..=scroll_bottom]` — a no-op when the cursor is outside (Alacritty's
+  `scroll_region.contains(origin)` gate). SU/SD are keyed to the region *top*, cursor-independent.
+  **None reset pending-wrap.** ICH/DCH shift cells and so can split a width-2 glyph at the boundary —
+  unlike Alacritty (which ignores this), justerm clears the orphaned lead/spacer to keep the repo's
+  no-orphan wide-char invariant (the same rule `clear_cells`/`write_glyph` already enforce), because
+  selection's spacer-skip and the renderer both assume a spacer always has a lead to its left. [#8]
+- **DECSC/DECRC save set includes origin mode; DECRC restores it.** `ESC 7`/`ESC 8` (and the
+  `CSI s`/`CSI u` aliases) save and restore the cursor: position, pen/SGR, **origin mode (DECOM)**,
+  and pending-wrap. Alacritty omits origin mode from its saved `Cursor`; justerm follows the DEC/xterm
+  spec and restores it (charsets join the set when a charset slice lands). The general tie-break —
+  Alacritty on genuine ambiguities, the spec where Alacritty merely omits a mandated behaviour — is
+  **ADR-0004**. [#8]
+- **A combining mark (width-0 code point) attaches to the previous base cell, not its own cell.**
+  `print` must not drop a width-0 char (the current #2 behaviour). It appends to the cell the cursor
+  just left: back up one column, and if that cell is a `WIDE_CHAR_SPACER` back up once more to the
+  lead. The exception is pending-wrap — there the cursor still sits *on* the just-written last-column
+  glyph, so the mark attaches in place without backing up (and without firing the deferred wrap). The
+  extra code points live in a per-cell side-table (a `zerowidth` list, Alacritty's `CellExtra`
+  pattern) so the common single-code-point cell stays cheap; `selection_text` appends them after the
+  base char, and the binary serialization (#6) encodes them as the grapheme side-table. [#8]
+
 The *systematic* catch for this whole class is #8's vttest harness + dogfood — this list is only the
 famous few caught by review. Pull vttest early so VT-semantics slices verify against it from the start.
 
