@@ -226,6 +226,11 @@ impl Term {
     /// enter scrollback. Column reflow of soft-wrapped lines is layered on top
     /// separately (#7). The whole screen is damaged.
     pub fn resize(&mut self, cols: usize, rows: usize) {
+        // A terminal is never 0-wide/0-tall; clamp so the math below (rows - 1,
+        // chunking by cols) can't underflow or divide by zero.
+        let cols = cols.max(1);
+        let rows = rows.max(1);
+
         // Reflow scrollback and screen as one stream so a soft-wrapped logical
         // line that spans the history/screen boundary re-wraps correctly. The
         // cursor is tracked by its absolute position in the joined buffer.

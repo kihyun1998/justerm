@@ -110,3 +110,15 @@ fn cursor_follows_content_through_reflow() {
 
     assert_eq!((term.cursor().row, term.cursor().col), (1, 0));
 }
+
+/// A degenerate resize to zero is clamped to a 1x1 minimum, not a panic.
+#[test]
+fn resize_to_zero_is_clamped_not_a_panic() {
+    let mut term = Engine::new(4, 4);
+    term.feed(b"hi");
+
+    term.resize(0, 0); // must not panic
+
+    assert!(term.grid().cols() >= 1);
+    assert!(term.grid().rows() >= 1);
+}
