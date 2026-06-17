@@ -216,6 +216,10 @@ impl Term {
     /// Move the viewport. A user scroll changes which lines are visible, so the
     /// whole viewport is repainted (full damage) when the offset actually moves.
     fn set_display_offset(&mut self, offset: usize) {
+        // The alt screen has no scrollback to view; scroll intents are no-ops.
+        if self.on_alt {
+            return;
+        }
         if offset != self.display_offset {
             self.display_offset = offset;
             self.mark_fully_damaged();
@@ -351,6 +355,7 @@ impl Term {
         std::mem::swap(&mut self.grid, &mut self.alt_grid);
         self.grid.clear();
         self.on_alt = true;
+        self.display_offset = 0; // the alt screen has no scrollback to view
         self.mark_fully_damaged();
     }
 
@@ -363,6 +368,7 @@ impl Term {
         std::mem::swap(&mut self.grid, &mut self.alt_grid);
         self.cursor = self.saved_cursor;
         self.on_alt = false;
+        self.display_offset = 0; // return to the primary at its bottom
         self.mark_fully_damaged();
     }
 

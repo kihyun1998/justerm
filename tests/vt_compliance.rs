@@ -194,6 +194,32 @@ fn alt_screen_saves_and_restores_cursor() {
     assert_eq!((term.cursor().row, term.cursor().col), (1, 4));
 }
 
+/// Entering the alt screen resets the scroll position — the alt screen has no
+/// scrollback, so a viewport scrolled up in the primary must not show primary
+/// history on the alt screen.
+#[test]
+fn entering_alt_resets_scroll_position() {
+    let mut term = Engine::new(4, 2);
+    term.feed(b"a\r\nb\r\nc"); // history = [a], screen = b, c
+    term.scroll_up(1); // scroll up into primary history
+
+    term.feed(b"\x1b[?1049h"); // enter alt → view must snap to the (blank) alt screen
+
+    assert_eq!(term.viewport_line(0)[0].c, ' '); // not primary's 'a'
+}
+
+/// Scroll intents are no-ops on the alt screen — there is no history to view.
+#[test]
+fn scroll_is_a_noop_on_alt_screen() {
+    let mut term = Engine::new(4, 2);
+    term.feed(b"a\r\nb\r\nc"); // primary history = [a]
+    term.feed(b"\x1b[?1049h"); // enter alt
+
+    term.scroll_up(5); // must not window into the primary's scrollback
+
+    assert_eq!(term.viewport_line(0)[0].c, ' ');
+}
+
 /// A redundant ?1049h while already on the alt screen is a no-op — it must not
 /// swap the primary screen in and clear it.
 #[test]
