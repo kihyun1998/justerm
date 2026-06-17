@@ -152,3 +152,28 @@ fn resize_while_on_alt_resizes_both_screens() {
     term.feed(b"\x1b[?1049l"); // leave alt → primary returns
     assert_eq!((term.grid().cols(), term.grid().rows()), (20, 8)); // primary also resized
 }
+
+/// After an alt → resize → leave round-trip the primary screen is coherent and
+/// usable: content preserved, and feeding / damage / viewport reads don't panic
+/// or go out of range. (Stress-checks the resize refactor's output state.)
+#[test]
+fn primary_is_usable_after_alt_resize_roundtrip() {
+    let mut term = Engine::new(10, 5);
+    term.feed(b"line1\r\nline2");
+    term.feed(b"\x1b[?1049h"); // enter alt
+    term.resize(20, 8); // resize on alt
+    term.feed(b"\x1b[?1049l"); // back to primary at the new size
+
+    assert_eq!((term.grid().cols(), term.grid().rows()), (20, 8));
+    assert_eq!(term.grid().cell(0, 0).c, 'l'); // primary content preserved
+
+    // Keep using the primary — must stay coherent (no panic / out-of-range).
+    term.feed(b"\r\nline3");
+    term.reset_damage();
+    term.feed(b"x");
+    let _ = term.damage();
+    for r in 0..term.grid().rows() {
+        let _ = term.viewport_line(r);
+    }
+    assert_eq!(term.grid().cell(0, 0).c, 'l');
+}
