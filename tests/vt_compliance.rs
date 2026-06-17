@@ -1,7 +1,7 @@
 //! Issue #8 — VT compliance (common 90%). Grown test-first, one behaviour per
 //! cycle. (The vttest-style conformance harness is a later slice of #8.)
 
-use justerm::{Color, Engine};
+use justerm::{Color, Engine, SelectionType, Side};
 
 // ===========================================================================
 // Background Color Erase (BCE)
@@ -778,4 +778,71 @@ fn decsc_decrc_restores_pending_wrap() {
     term.feed(b"d"); // should wrap to row 1
 
     assert_eq!(term.grid().cell(1, 0).c, 'd');
+}
+
+// ===========================================================================
+// Grapheme clusters — combining marks attach to the previous base cell  [#19]
+// ===========================================================================
+
+/// Select the single cell `(row, col)` and return its copied text (base glyph
+/// plus any attached combining marks).
+fn cell_text(term: &mut Engine, row: usize, col: usize) -> String {
+    term.selection_begin(row, col, Side::Left, SelectionType::Char);
+    term.selection_extend(row, col, Side::Right);
+    term.selection_text().unwrap_or_default()
+}
+
+/// A combining mark (width 0) is not dropped — it attaches to the preceding base
+/// glyph, so the cell still holds one base char and copies as the full cluster.
+#[test]
+fn combining_mark_attaches_to_base() {
+    let mut term = Engine::new(5, 1);
+    term.feed("e\u{0301}".as_bytes()); // 'e' + combining acute → é
+
+    assert_eq!(term.grid().cell(0, 0).c, 'e'); // base stays a single char
+    assert_eq!(cell_text(&mut term, 0, 0), "e\u{0301}"); // cluster copied whole
+}
+
+/// A combining mark after a wide glyph attaches to the lead, not the spacer
+/// (the attach point backs up over the WIDE_CHAR_SPACER).
+#[test]
+fn combining_mark_after_wide_glyph_attaches_to_lead() {
+    let mut term = Engine::new(5, 1);
+    term.feed("한\u{0301}".as_bytes()); // 한 = lead(0)+spacer(1), then combining
+
+    assert_eq!(cell_text(&mut term, 0, 0), "한\u{0301}");
+}
+
+/// A combining mark at pending-wrap attaches to the last-column glyph in place —
+/// it must not back up, and must not fire the deferred wrap.
+#[test]
+fn combining_mark_at_pending_wrap_attaches_in_place() {
+    let mut term = Engine::new(2, 2);
+    term.feed(b"ab"); // fills row 0; cursor parks at col 1 with pending-wrap
+    term.feed("\u{0301}".as_bytes()); // combining → attaches to 'b', no wrap
+
+    assert_eq!(cell_text(&mut term, 0, 1), "b\u{0301}");
+    assert_eq!(term.grid().cell(1, 0).c, ' '); // no wrap fired
+    term.feed(b"c"); // pending-wrap still set → this wraps
+    assert_eq!(term.grid().cell(1, 0).c, 'c');
+}
+
+/// Multiple combining marks accumulate on the same base cell, in order.
+#[test]
+fn multiple_combining_marks_accumulate() {
+    let mut term = Engine::new(5, 1);
+    term.feed("a\u{0301}\u{0302}".as_bytes()); // a + acute + circumflex
+
+    assert_eq!(cell_text(&mut term, 0, 0), "a\u{0301}\u{0302}");
+}
+
+/// A combining mark survives a column resize: its side-table index travels with
+/// the cell through reflow, so the cluster is still intact afterward.
+#[test]
+fn combining_mark_survives_resize() {
+    let mut term = Engine::new(5, 2);
+    term.feed("e\u{0301}".as_bytes());
+    term.resize(3, 2); // column change → reflow
+
+    assert_eq!(cell_text(&mut term, 0, 0), "e\u{0301}");
 }

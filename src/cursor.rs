@@ -28,6 +28,7 @@ impl Pen {
             fg: self.fg,
             bg: self.bg,
             flags: self.flags,
+            extra: None,
         }
     }
 }

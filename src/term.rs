@@ -63,6 +63,10 @@ pub struct Term {
     /// separate from `saved_cursor` (which is the alt-screen save). Defaults to
     /// home/default so a DECRC with no prior DECSC restores a sane state.
     decsc: SavedCursor,
+    /// Grapheme side-table: each entry is one cell's combining marks, referenced
+    /// by `Cell.extra` (1-based). Append-only; a cell overwritten or reset drops
+    /// its reference and leaves a dead entry (compacted on resize — common-90%).
+    grapheme_pool: Vec<Vec<char>>,
 }
 
 /// Default scrollback retention when not specified.
@@ -126,6 +130,7 @@ impl Term {
             full_damage: false,
             selection: None,
             decsc: SavedCursor::default(),
+            grapheme_pool: Vec::new(),
         }
     }
 
@@ -519,11 +524,10 @@ impl Term {
                 let mut out = String::new();
                 for line in line0..=line1 {
                     let cells = self.abs_line(line);
-                    let seg: String = cells[from..to.min(cells.len())]
-                        .iter()
-                        .filter(|c| !c.flags.contains(CellFlags::WIDE_CHAR_SPACER))
-                        .map(|c| c.c)
-                        .collect();
+                    let mut seg = String::new();
+                    for cell in &cells[from..to.min(cells.len())] {
+                        self.append_cell(&mut seg, cell);
+                    }
                     out.push_str(seg.trim_end());
                     if line != line1 {
                         out.push('\n');
@@ -531,6 +535,18 @@ impl Term {
                 }
                 Some(out)
             }
+        }
+    }
+
+    /// Append a cell's text — its base glyph plus any combining marks from the
+    /// grapheme side-table — to `out`. Wide-char spacers contribute nothing.
+    fn append_cell(&self, out: &mut String, cell: &Cell) {
+        if cell.flags.contains(CellFlags::WIDE_CHAR_SPACER) {
+            return;
+        }
+        out.push(cell.c);
+        if let Some(idx) = cell.extra {
+            out.extend(self.grapheme_pool[idx.get() as usize - 1].iter());
         }
     }
 
@@ -559,12 +575,9 @@ impl Term {
             // A degenerate range (sides inverting one cell) gives left > right;
             // clamp to empty rather than panic on the slice.
             let right = right.max(left);
-            current.extend(
-                cells[left..right]
-                    .iter()
-                    .filter(|c| !c.flags.contains(CellFlags::WIDE_CHAR_SPACER))
-                    .map(|c| c.c),
-            );
+            for cell in &cells[left..right] {
+                self.append_cell(&mut current, cell);
+            }
 
             let is_last = line == end_line;
             let soft = cells
@@ -1009,6 +1022,38 @@ impl Term {
         } else {
             self.cursor.col = new_col;
         }
+    }
+
+    /// Attach a combining mark (width-0 code point) to the grapheme it modifies —
+    /// the cell the cursor just left. With pending-wrap the cursor still sits on
+    /// the just-written last-column glyph, so attach in place (no back-up, no
+    /// deferred wrap); otherwise step back one column, and once more over a
+    /// wide-char spacer to reach its lead. Stored in the grapheme side-table.
+    fn push_combining(&mut self, c: char) {
+        let row = self.cursor.row;
+        let mut col = if self.cursor.pending_wrap {
+            self.cursor.col
+        } else {
+            self.cursor.col.saturating_sub(1)
+        };
+        if self
+            .grid
+            .cell(row, col)
+            .flags
+            .contains(CellFlags::WIDE_CHAR_SPACER)
+        {
+            col = col.saturating_sub(1);
+        }
+        match self.grid.cell(row, col).extra {
+            Some(idx) => self.grapheme_pool[idx.get() as usize - 1].push(c),
+            None => {
+                self.grapheme_pool.push(vec![c]);
+                let idx = core::num::NonZeroU32::new(self.grapheme_pool.len() as u32)
+                    .expect("pool len is >= 1 after push");
+                self.grid.cell_mut(row, col).extra = Some(idx);
+            }
+        }
+        self.damage_span(row, col, col);
     }
 
     // ---- cursor movement (CSI A/B/C/D/G/d/H/f) -------------------------------
@@ -1494,7 +1539,10 @@ impl Perform for Term {
         match c.width() {
             // Zero-width (combining marks): the grapheme-cluster side-table is a
             // later slice; drop for now rather than mis-place it as its own cell.
-            Some(0) | None => {}
+            // A zero-width code point is a combining mark — attach it to the
+            // previous base glyph rather than dropping it.
+            Some(0) => self.push_combining(c),
+            None => {}
             Some(width) => self.write_glyph(c, width),
         }
     }

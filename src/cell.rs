@@ -35,17 +35,24 @@ bitflags::bitflags! {
     }
 }
 
-/// One character position: a glyph, fg/bg colour references, and flags.
+/// One character position: a base glyph, fg/bg colour references, flags, and an
+/// optional reference to a grapheme cluster's combining marks.
 ///
-/// `content` is a single `char` for now. Full grapheme clusters (a base plus
-/// combining marks, kept in a side-table to stay fixed-width) are a later slice;
-/// the field is the seam where that grows.
+/// `c` is the base code point. Combining marks (and ZWJ emoji sequences) attach
+/// via `extra` — a 1-based index into the engine's grapheme side-table — so the
+/// common single-code-point cell stays small and `Copy` (the index travels with
+/// the cell through scrolls/shifts/reflow). `None` for the overwhelming majority
+/// of cells. The side-table (not the cell) holds the actual code points; see
+/// `term.rs` and the serialization slice (#6).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Cell {
     pub c: char,
     pub fg: Color,
     pub bg: Color,
     pub flags: CellFlags,
+    /// 1-based index into the grapheme side-table for this cell's combining
+    /// marks, or `None` when the cell is a single code point.
+    pub extra: Option<core::num::NonZeroU32>,
 }
 
 impl Default for Cell {
@@ -55,6 +62,7 @@ impl Default for Cell {
             fg: Color::Default,
             bg: Color::Default,
             flags: CellFlags::empty(),
+            extra: None,
         }
     }
 }

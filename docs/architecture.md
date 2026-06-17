@@ -183,9 +183,15 @@ deferred behavior) it tracks — then add what you find here.** Seeds (caught in
   just left: back up one column, and if that cell is a `WIDE_CHAR_SPACER` back up once more to the
   lead. The exception is pending-wrap — there the cursor still sits *on* the just-written last-column
   glyph, so the mark attaches in place without backing up (and without firing the deferred wrap). The
-  extra code points live in a per-cell side-table (a `zerowidth` list, Alacritty's `CellExtra`
-  pattern) so the common single-code-point cell stays cheap; `selection_text` appends them after the
-  base char, and the binary serialization (#6) encodes them as the grapheme side-table. [#8]
+  extra code points live in a side-table referenced by a **1-based index in the cell** (`Cell.extra:
+  Option<NonZeroU32>`), not a boxed list on the cell: this keeps `Cell` `Copy` — which the grid relies
+  on (`copy_within` for ICH/DCH, reflow's `to_vec`), and which Alacritty's `Option<Box<CellExtra>>`
+  would forfeit — and matches #6's index-referenced serialization more directly. The index travels
+  with the cell through scroll/shift/reflow (it is plain data). Trade-off: a cell overwritten or reset
+  drops its index, leaking a dead side-table entry (rare — only combining-mark cells; compactable on
+  resize, a common-90% deferral). `selection_text` appends the marks after the base char; #6 encodes
+  the side-table. Per-codepoint width means a true multi-emoji ZWJ sequence still splits at each
+  width-2 glyph (a grapheme segmenter is a later slice); the ZWJ/VS code points themselves attach. [#8]
 
 The *systematic* catch for this whole class is #8's vttest harness + dogfood — this list is only the
 famous few caught by review. Pull vttest early so VT-semantics slices verify against it from the start.
