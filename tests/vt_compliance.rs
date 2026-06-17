@@ -329,6 +329,21 @@ fn scrollback_caps_oldest_evicted() {
     assert_eq!(term.viewport_line(0)[0].c, 'b'); // 'a' was evicted; 'b' is oldest
 }
 
+/// Scrolled to the very top with the cap full, new output must not push the
+/// display offset past history (a usize underflow) — when the oldest visible
+/// line is evicted the view advances by one, matching xterm.js trimming both
+/// ybase and ydisp.
+#[test]
+fn new_output_at_cap_while_scrolled_to_top() {
+    let mut term = Engine::with_scrollback(4, 2, 2);
+    term.feed(b"a\r\nb\r\nc\r\nd\r\ne"); // history capped to [b, c]
+    term.scroll_up(99); // clamp to the very top
+    assert_eq!(term.viewport_line(0)[0].c, 'b');
+
+    term.feed(b"\r\nf"); // evicts 'b' at the cap; must not panic
+    assert_eq!(term.viewport_line(0)[0].c, 'c');
+}
+
 /// The alt screen has no scrollback — scrolling it accrues no history.
 #[test]
 fn alt_screen_produces_no_scrollback() {

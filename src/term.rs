@@ -140,9 +140,13 @@ impl Term {
                 if self.display_offset > 0 {
                     self.display_offset = (self.display_offset + 1).min(self.scrollback.len());
                 }
-                // Cap: evict the oldest line past the limit.
+                // Cap: evict the oldest line past the limit. The view is anchored
+                // to history, so dropping the front shifts the offset down too
+                // (xterm.js trims ybase and ydisp together) — also keeps the
+                // offset within `[0, len]`.
                 if self.scrollback.len() > self.scrollback_limit {
                     self.scrollback.pop_front();
+                    self.display_offset = self.display_offset.saturating_sub(1);
                 }
             }
             self.grid.scroll_up_region(self.scroll_top, self.scroll_bottom);
