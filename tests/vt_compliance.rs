@@ -458,3 +458,139 @@ fn nel_moves_to_start_of_next_line() {
     assert_eq!(term.grid().cell(1, 0).c, 'c');
     assert_eq!((term.cursor().row, term.cursor().col), (1, 1));
 }
+
+// ===========================================================================
+// Intra-line editing — ICH (@) / DCH (P) / ECH (X)  [#16]
+// ===========================================================================
+
+/// Row `r` rendered as a string (trailing cells shown as their blanks).
+fn row(term: &Engine, r: usize) -> String {
+    let g = term.grid();
+    (0..g.cols()).map(|c| g.cell(r, c).c).collect()
+}
+
+/// ECH (CSI Pn X) erases Pn cells in place at the cursor — no shift.
+#[test]
+fn ech_erases_in_place() {
+    let mut term = Engine::new(6, 1);
+    term.feed(b"abcdef");
+    term.feed(b"\x1b[3G"); // cursor → col index 2
+    term.feed(b"\x1b[2X"); // erase 2 cells
+
+    assert_eq!(row(&term, 0), "ab  ef");
+}
+
+/// ICH (CSI Pn @) inserts Pn blanks at the cursor, shifting the rest right; cells
+/// pushed past the right edge are lost.
+#[test]
+fn ich_inserts_blanks_shifting_right() {
+    let mut term = Engine::new(6, 1);
+    term.feed(b"abcdef");
+    term.feed(b"\x1b[3G"); // cursor → col index 2
+    term.feed(b"\x1b[2@"); // insert 2 blanks
+
+    assert_eq!(row(&term, 0), "ab  cd"); // e,f shifted off the edge
+}
+
+/// ICH that splits a wide glyph destroys it — both halves become blank, leaving
+/// no orphaned lead or spacer (the repo's no-orphan invariant; Alacritty leaves
+/// the orphan). "a한bc": inserting one blank at the spacer column separates the
+/// lead from its spacer, so both clear.
+#[test]
+fn ich_splitting_a_wide_glyph_clears_both_halves() {
+    let mut term = Engine::new(6, 1);
+    term.feed("a한bc".as_bytes()); // a(0) 한=lead(1)+spacer(2) b(3) c(4)
+    term.feed(b"\x1b[3G"); // cursor → col index 2 (the spacer)
+    term.feed(b"\x1b[1@"); // insert 1 blank, splitting 한
+
+    assert_eq!(row(&term, 0), "a   bc"); // 한 gone, no orphan
+}
+
+/// ICH that pushes a wide glyph's spacer off the right edge orphans the lead at
+/// the last column — it must be cleared. "ab한": inserting one blank at col 0
+/// shifts 한's lead to the last column while its spacer falls off, so the lead
+/// clears.
+#[test]
+fn ich_pushing_wide_spacer_off_edge_clears_lead() {
+    let mut term = Engine::new(4, 1);
+    term.feed("ab한".as_bytes()); // a(0) b(1) 한=lead(2)+spacer(3)
+    term.feed(b"\x1b[1G"); // cursor → col index 0
+    term.feed(b"\x1b[1@"); // insert 1 blank
+
+    assert_eq!(row(&term, 0), " ab "); // 한 destroyed, no orphan lead
+}
+
+/// DCH (CSI Pn P) deletes Pn cells at the cursor, shifting the tail left; the
+/// vacated cells at the right are BCE-blanked.
+#[test]
+fn dch_deletes_shifting_left() {
+    let mut term = Engine::new(6, 1);
+    term.feed(b"abcdef");
+    term.feed(b"\x1b[3G"); // cursor → col index 2
+    term.feed(b"\x1b[2P"); // delete 2 cells
+
+    assert_eq!(row(&term, 0), "abef  "); // cd deleted, ef pulled left
+}
+
+/// DCH that deletes one half of a wide glyph clears the other — no orphan.
+/// "a한bc": deleting at the spacer column pulls the tail over the spacer, so the
+/// lead at the previous column is orphaned and clears.
+#[test]
+fn dch_deleting_wide_half_clears_the_other() {
+    let mut term = Engine::new(6, 1);
+    term.feed("a한bc".as_bytes()); // a(0) 한=lead(1)+spacer(2) b(3) c(4)
+    term.feed(b"\x1b[3G"); // cursor → col index 2 (the spacer)
+    term.feed(b"\x1b[1P"); // delete it
+
+    assert_eq!(row(&term, 0), "a bc  "); // 한 lead orphaned → cleared
+}
+
+/// Symmetric DCH case: deleting the lead orphans the spacer pulled to the cursor.
+#[test]
+fn dch_deleting_wide_lead_clears_the_spacer() {
+    let mut term = Engine::new(6, 1);
+    term.feed("a한bc".as_bytes()); // a(0) 한=lead(1)+spacer(2) b(3) c(4)
+    term.feed(b"\x1b[2G"); // cursor → col index 1 (the lead)
+    term.feed(b"\x1b[1P"); // delete it
+
+    assert_eq!(row(&term, 0), "a bc  "); // spacer pulled to cursor → cleared
+}
+
+/// ICH fills the opened gap with the current SGR background (BCE).
+#[test]
+fn ich_fills_gap_with_bce_background() {
+    let mut term = Engine::new(6, 1);
+    term.feed(b"abcdef");
+    term.feed(b"\x1b[3G"); // cursor → col index 2
+    term.feed(b"\x1b[41m"); // bg red
+    term.feed(b"\x1b[2@"); // insert 2
+
+    assert_eq!(term.grid().cell(0, 2).bg, Color::Indexed(1));
+    assert_eq!(term.grid().cell(0, 2).c, ' ');
+}
+
+/// DCH fills the vacated tail with the current SGR background (BCE).
+#[test]
+fn dch_fills_tail_with_bce_background() {
+    let mut term = Engine::new(6, 1);
+    term.feed(b"abcdef");
+    term.feed(b"\x1b[3G"); // cursor → col index 2
+    term.feed(b"\x1b[41m"); // bg red
+    term.feed(b"\x1b[2P"); // delete 2 → tail cols 4,5 BCE-blanked
+
+    assert_eq!(term.grid().cell(0, 5).bg, Color::Indexed(1));
+    assert_eq!(term.grid().cell(0, 5).c, ' ');
+}
+
+/// Intra-line edits do not clear pending-wrap (xterm/alacritty: these ops leave
+/// `wrapnext` untouched). After filling the last column, an ECH then a print
+/// still wraps to the next row.
+#[test]
+fn editing_preserves_pending_wrap() {
+    let mut term = Engine::new(3, 2);
+    term.feed(b"abc"); // fills row 0, cursor parks at col 2 with pending-wrap
+    term.feed(b"\x1b[1X"); // ECH at the last column — must not clear pending-wrap
+    term.feed(b"d"); // should still wrap to row 1
+
+    assert_eq!(term.grid().cell(1, 0).c, 'd');
+}

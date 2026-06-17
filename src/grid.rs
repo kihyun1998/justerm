@@ -144,6 +144,11 @@ impl Grid {
         &self.lines[row]
     }
 
+    /// Mutable access to a whole row — for in-row cell shifts (ICH/DCH).
+    pub(crate) fn row_mut(&mut self, row: usize) -> &mut [Cell] {
+        &mut self.lines[row]
+    }
+
     /// Scroll the rows `[top..=bottom]` up by one line: the top line of the
     /// region is dropped and a blank line appears at `bottom`. Rows outside the
     /// region are untouched.

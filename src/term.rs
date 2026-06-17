@@ -1091,6 +1091,108 @@ impl Term {
         }
     }
 
+    // ---- intra-line editing (ICH / DCH / ECH) --------------------------------
+
+    /// ECH (CSI Pn X): erase `n` cells in place from the cursor — no shift.
+    /// BCE-filled (via `clear_cells`); pending-wrap is left untouched.
+    fn erase_chars(&mut self, n: usize) {
+        let cols = self.grid.cols();
+        let (row, col) = (self.cursor.row, self.cursor.col);
+        let to = (col + n).min(cols);
+        self.clear_cells(row, col, to);
+    }
+
+    /// ICH (CSI Pn @): insert `n` blanks at the cursor, shifting the rest of the
+    /// line right; cells pushed past the right edge are lost. The opened gap is
+    /// BCE-filled; pending-wrap is left untouched.
+    fn insert_chars(&mut self, n: usize) {
+        let cols = self.grid.cols();
+        let (r, col) = (self.cursor.row, self.cursor.col);
+        let n = n.min(cols - col);
+        if n == 0 {
+            return;
+        }
+        let bg = self.cursor.pen.bg;
+        let row = self.grid.row_mut(r);
+        // Shift [col .. cols-n) right by n; the tail falls off the edge.
+        row.copy_within(col..cols - n, col + n);
+        for cell in &mut row[col..col + n] {
+            cell.reset();
+            cell.bg = bg;
+        }
+        // Repair wide-char halves split at the seams (no-orphan invariant):
+        // a lead just before the gap lost its spacer; the first shifted cell may
+        // be a spacer whose lead did not move.
+        if col > 0
+            && self
+                .grid
+                .cell(r, col - 1)
+                .flags
+                .contains(CellFlags::WIDE_CHAR)
+        {
+            self.grid.cell_mut(r, col - 1).reset();
+        }
+        if col + n < cols
+            && self
+                .grid
+                .cell(r, col + n)
+                .flags
+                .contains(CellFlags::WIDE_CHAR_SPACER)
+        {
+            self.grid.cell_mut(r, col + n).reset();
+        }
+        // A lead shifted to the last column lost its spacer off the edge.
+        if self
+            .grid
+            .cell(r, cols - 1)
+            .flags
+            .contains(CellFlags::WIDE_CHAR)
+        {
+            self.grid.cell_mut(r, cols - 1).reset();
+        }
+        self.damage_span(r, col, cols - 1);
+    }
+
+    /// DCH (CSI Pn P): delete `n` cells at the cursor, shifting the tail left; the
+    /// vacated cells at the right are BCE-blanked. Pending-wrap is left untouched.
+    fn delete_chars(&mut self, n: usize) {
+        let cols = self.grid.cols();
+        let (r, col) = (self.cursor.row, self.cursor.col);
+        let n = n.min(cols - col);
+        if n == 0 {
+            return;
+        }
+        let bg = self.cursor.pen.bg;
+        let row = self.grid.row_mut(r);
+        // Shift [col+n .. cols) left to [col ..); BCE-fill the vacated tail.
+        row.copy_within(col + n..cols, col);
+        for cell in &mut row[cols - n..cols] {
+            cell.reset();
+            cell.bg = bg;
+        }
+        // Repair wide-char halves split by the deletion (no-orphan invariant):
+        // a lead just before the cut lost its spacer; the cell now at the cursor
+        // may be a spacer whose lead was deleted.
+        if col > 0
+            && self
+                .grid
+                .cell(r, col - 1)
+                .flags
+                .contains(CellFlags::WIDE_CHAR)
+        {
+            self.grid.cell_mut(r, col - 1).reset();
+        }
+        if self
+            .grid
+            .cell(r, col)
+            .flags
+            .contains(CellFlags::WIDE_CHAR_SPACER)
+        {
+            self.grid.cell_mut(r, col).reset();
+        }
+        self.damage_span(r, col, cols - 1);
+    }
+
     // ---- SGR (CSI m) ---------------------------------------------------------
 
     fn sgr(&mut self, params: &Params) {
@@ -1340,6 +1442,9 @@ impl Perform for Term {
             }
             'J' => self.erase_display(param_or(params, 0, 0)),
             'K' => self.erase_line(param_or(params, 0, 0)),
+            'X' => self.erase_chars(param_or(params, 0, 1) as usize),
+            '@' => self.insert_chars(param_or(params, 0, 1) as usize),
+            'P' => self.delete_chars(param_or(params, 0, 1) as usize),
             'g' => self.clear_tab_stop(param_or(params, 0, 0)),
             'r' => {
                 let rows = self.grid.rows() as u16;
