@@ -64,3 +64,36 @@ fn shrink_cols_rewraps_soft_wrapped_line() {
     assert_eq!((term.grid().cell(2, 0).c, term.grid().cell(2, 1).c), ('e', 'f'));
     assert!(!term.grid().cell(2, 1).flags.contains(CellFlags::WRAPLINE)); // last segment is hard
 }
+
+/// Widening merges soft-wrapped segments back into one line — reflow is
+/// symmetric, so a narrow→wide round-trip restores the logical line.
+#[test]
+fn widen_cols_merges_wrapped_segments() {
+    let mut term = Engine::new(2, 4);
+    term.feed(b"abcdef"); // 2 cols → ab|cd|ef across three wrapped rows
+
+    term.resize(6, 4); // widen → merge back onto one row
+
+    for (col, ch) in "abcdef".chars().enumerate() {
+        assert_eq!(term.grid().cell(0, col).c, ch);
+    }
+    assert!(!term.grid().cell(0, 5).flags.contains(CellFlags::WRAPLINE)); // fits, no wrap
+}
+
+/// Reflow applies to scrollback history too, not just the visible screen — a
+/// resized terminal must not leave old-width rows in history.
+#[test]
+fn resize_reflows_scrollback_too() {
+    let mut term = Engine::new(4, 2);
+    term.feed(b"abcdefgh"); // "abcd"(WRAPLINE) | "efgh" fills both screen rows
+    term.feed(b"\r\nX"); // scroll: "abcd" (soft-wrapped) goes into scrollback
+    assert_eq!(term.scrollback_len(), 1);
+
+    term.resize(2, 2); // narrow — scrollback must reflow to width 2
+
+    let total = term.scrollback_len();
+    term.scroll_up(total);
+    let top = term.viewport_line(0);
+    assert_eq!(top.len(), 2, "scrollback row left at the old width");
+    assert_eq!((top[0].c, top[1].c), ('a', 'b'));
+}

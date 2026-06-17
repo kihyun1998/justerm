@@ -15,7 +15,7 @@ pub type Row = Vec<Cell>;
 ///
 /// Common-90%: trailing blanks on a hard-ended row are trimmed, and a wide-char
 /// split across the new boundary is not yet special-cased.
-fn reflow(rows: Vec<Row>, new_cols: usize) -> Vec<Row> {
+pub(crate) fn reflow(rows: Vec<Row>, new_cols: usize) -> Vec<Row> {
     // 1. Join soft-wrapped rows into logical lines.
     let mut logical: Vec<Vec<Cell>> = Vec::new();
     let mut current: Vec<Cell> = Vec::new();
@@ -119,29 +119,25 @@ impl Grid {
         }
     }
 
-    /// Resize to `cols` x `rows`. Column resize is naive here (truncate/pad);
-    /// soft-wrap reflow is layered on top separately. Row growth appends blank
-    /// rows at the bottom; row shrink drops rows off the **top** and returns them
-    /// (the caller pushes them into scrollback). See #7.
-    pub fn resize(&mut self, cols: usize, rows: usize) -> Vec<Row> {
-        if cols != self.cols {
-            self.lines = reflow(std::mem::take(&mut self.lines), cols);
-            self.cols = cols;
-        }
+    /// Extract all rows, leaving the grid empty. Used by `Term::resize` to
+    /// reflow the screen together with scrollback as one stream.
+    pub(crate) fn take_lines(&mut self) -> Vec<Row> {
+        std::mem::take(&mut self.lines)
+    }
 
-        // Reflow may change the row count; fit to `rows`. Excess top rows drop
-        // off into scrollback; a deficit is padded with blank rows at the bottom.
-        let current = self.lines.len();
-        let mut dropped = Vec::new();
-        if rows < current {
-            dropped = self.lines.drain(0..(current - rows)).collect();
-        } else {
-            for _ in 0..(rows - current) {
-                self.lines.push(vec![Cell::default(); cols]);
-            }
+    /// Replace the screen with `lines` at `cols` x `rows`: each row is fit to
+    /// `cols` and the screen is padded with blank rows / truncated to `rows`.
+    pub(crate) fn set_screen(&mut self, mut lines: Vec<Row>, cols: usize, rows: usize) {
+        for row in &mut lines {
+            row.resize(cols, Cell::default());
         }
+        while lines.len() < rows {
+            lines.push(vec![Cell::default(); cols]);
+        }
+        lines.truncate(rows);
+        self.lines = lines;
+        self.cols = cols;
         self.rows = rows;
-        dropped
     }
 
     /// Reset every cell to a blank default. Used when switching to the alt

@@ -226,13 +226,22 @@ impl Term {
     /// enter scrollback. Column reflow of soft-wrapped lines is layered on top
     /// separately (#7). The whole screen is damaged.
     pub fn resize(&mut self, cols: usize, rows: usize) {
-        let dropped = self.grid.resize(cols, rows);
-        for row in dropped {
-            self.scrollback.push_back(row);
-            if self.scrollback.len() > self.scrollback_limit {
-                self.scrollback.pop_front();
-            }
+        // Reflow scrollback and screen as one stream so a soft-wrapped logical
+        // line that spans the history/screen boundary re-wraps correctly.
+        let mut all: Vec<Row> = std::mem::take(&mut self.scrollback).into();
+        all.append(&mut self.grid.take_lines());
+        if cols != self.grid.cols() {
+            all = crate::grid::reflow(all, cols);
         }
+
+        // The bottom `rows` rows are the screen; the rest is scrollback.
+        let split = all.len().saturating_sub(rows);
+        let history: Vec<Row> = all.drain(0..split).collect();
+        self.scrollback = history.into();
+        while self.scrollback.len() > self.scrollback_limit {
+            self.scrollback.pop_front();
+        }
+        self.grid.set_screen(all, cols, rows);
 
         // Margins reset to the full screen; tab stops reset to the default grid.
         self.scroll_top = 0;
