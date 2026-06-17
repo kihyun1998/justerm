@@ -50,3 +50,26 @@ fn scroll_emits_first_class_op_not_full_damage() {
     assert_eq!((op.top, op.bottom, op.count), (0, 1, 1)); // rows [0..=1] up by 1
     assert!(!matches!(term.damage(), TermDamage::Full)); // not a full redraw
 }
+
+/// Switching to the alt screen replaces the whole screen → full damage.
+#[test]
+fn alt_screen_switch_is_full_damage() {
+    let mut term = Engine::new(4, 2);
+    term.feed(b"ab");
+    term.reset_damage();
+    term.feed(b"\x1b[?1049h"); // enter alt → entire screen swapped + cleared
+
+    assert!(matches!(term.damage(), TermDamage::Full));
+}
+
+/// Reverse index at the top margin scrolls down → a negative-count scroll op.
+#[test]
+fn reverse_index_emits_down_scroll_op() {
+    let mut term = Engine::new(4, 2);
+    term.feed(b"\x1b[1;1H"); // cursor at the top margin
+    term.reset_damage();
+    term.feed(b"\x1bM"); // RI → scroll the region down
+
+    let op = term.scroll_delta().expect("expected a scroll op");
+    assert_eq!((op.top, op.bottom, op.count), (0, 1, -1));
+}

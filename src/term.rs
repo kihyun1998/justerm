@@ -52,6 +52,9 @@ pub struct Term {
     line_damage: Vec<LineBounds>,
     /// A first-class scroll recorded since the last `reset_damage`.
     scroll: Option<ScrollOp>,
+    /// The whole screen changed (alt switch / clear / later resize+flood) — the
+    /// renderer must redraw everything.
+    full_damage: bool,
 }
 
 /// Default scrollback retention when not specified.
@@ -79,12 +82,16 @@ impl Term {
             scrollback_limit,
             line_damage: vec![LineBounds::undamaged(cols); rows],
             scroll: None,
+            full_damage: false,
         }
     }
 
     /// What changed since the last `reset_damage()` — line ranges, each with a
     /// changed column span. See ADR-0003.
     pub fn damage(&self) -> TermDamage {
+        if self.full_damage {
+            return TermDamage::Full;
+        }
         let lines: Vec<LineDamage> = self
             .line_damage
             .iter()
@@ -105,6 +112,12 @@ impl Term {
             b.reset();
         }
         self.scroll = None;
+        self.full_damage = false;
+    }
+
+    /// Mark the whole screen damaged (alt switch / clear / flood).
+    fn mark_fully_damaged(&mut self) {
+        self.full_damage = true;
     }
 
     /// Record that columns `[left, right]` of `row` changed.
@@ -227,6 +240,7 @@ impl Term {
         std::mem::swap(&mut self.grid, &mut self.alt_grid);
         self.grid.clear();
         self.on_alt = true;
+        self.mark_fully_damaged();
     }
 
     /// Leave the alternate screen: swap the primary grid back in and restore the
@@ -238,6 +252,7 @@ impl Term {
         std::mem::swap(&mut self.grid, &mut self.alt_grid);
         self.cursor = self.saved_cursor;
         self.on_alt = false;
+        self.mark_fully_damaged();
     }
 
     /// RI (ESC M): move up one line. At the top margin, scroll the region down
@@ -245,6 +260,7 @@ impl Term {
     fn reverse_index(&mut self) {
         if self.cursor.row == self.scroll_top {
             self.grid.scroll_down_region(self.scroll_top, self.scroll_bottom);
+            self.record_scroll(self.scroll_top, self.scroll_bottom, -1);
         } else if self.cursor.row > 0 {
             self.cursor.row -= 1;
         }
