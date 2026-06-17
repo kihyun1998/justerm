@@ -567,6 +567,28 @@ impl Term {
     /// background only — fg and text attributes reset to default (matches
     /// xterm/alacritty, where the fill is `cursor.template.bg.into()`).
     fn clear_cells(&mut self, row: usize, from: usize, to: usize) {
+        let cols = self.grid.cols();
+        // Don't orphan a wide char straddling the erase boundary.
+        if from > 0
+            && self
+                .grid
+                .cell(row, from)
+                .flags
+                .contains(CellFlags::WIDE_CHAR_SPACER)
+        {
+            self.grid.cell_mut(row, from - 1).reset();
+        }
+        if to > from
+            && to < cols
+            && self
+                .grid
+                .cell(row, to - 1)
+                .flags
+                .contains(CellFlags::WIDE_CHAR)
+        {
+            self.grid.cell_mut(row, to).reset();
+        }
+
         let bg = self.cursor.pen.bg;
         for col in from..to {
             let cell = self.grid.cell_mut(row, col);

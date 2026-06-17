@@ -315,6 +315,23 @@ fn overwriting_a_wide_char_clears_its_other_half() {
     assert!(!b.grid().cell(0, 0).flags.contains(CellFlags::WIDE_CHAR));
 }
 
+/// Erasing across one half of a wide glyph clears the other half too — the
+/// erase boundary must not orphan a lead or spacer.
+#[test]
+fn erasing_part_of_a_wide_char_clears_its_other_half() {
+    // Erase-to-end starting on the spacer → the lead is cleared too.
+    let mut a = Engine::new(10, 1);
+    a.feed("a한b".as_bytes()); // a(0), lead(1), spacer(2), b(3)
+    a.feed(b"\x1b[1;3H\x1b[0K"); // cursor on the spacer (col 2), erase to end
+    assert!(!a.grid().cell(0, 1).flags.contains(CellFlags::WIDE_CHAR));
+
+    // Erase-to-start ending on the lead → the spacer is cleared too.
+    let mut b = Engine::new(10, 1);
+    b.feed("a한b".as_bytes());
+    b.feed(b"\x1b[1;2H\x1b[1K"); // cursor on the lead (col 1), erase start..=cursor
+    assert!(!b.grid().cell(0, 2).flags.contains(CellFlags::WIDE_CHAR_SPACER));
+}
+
 /// A width-2 glyph occupies two cells: the lead carries WIDE_CHAR, the trailing
 /// column a distinct WIDE_CHAR_SPACER marker (not a plain blank).
 /// Mutation-checked: drop the spacer flag → this test goes red.
