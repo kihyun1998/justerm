@@ -13,27 +13,28 @@ pub type Row = Vec<Cell>;
 /// at `new_cols` with WRAPLINE set on every segment but the last. Trailing blank
 /// rows are absorbed (re-created by the caller's row-count fit). See #7.
 ///
+/// `points` are `(row, col)` coordinates to track through the reflow (the cursor
+/// and any selection anchors); the returned `Vec` maps each to its new position,
+/// index-aligned with the input.
+///
 /// Common-90%: trailing blanks on a hard-ended row are trimmed, and a wide-char
 /// split across the new boundary is not yet special-cased.
 pub(crate) fn reflow(
     rows: Vec<Row>,
     new_cols: usize,
-    point: (usize, usize),
-) -> (Vec<Row>, (usize, usize)) {
-    let (pt_row, pt_col) = point;
-
-    // 1. Join soft-wrapped rows into logical lines, recording the logical
-    //    coordinate (line index + offset) of the tracked point.
+    points: &[(usize, usize)],
+) -> (Vec<Row>, Vec<(usize, usize)>) {
+    // 1. Join soft-wrapped rows into logical lines, recording each tracked
+    //    point's logical coordinate (line index + offset within the line).
     let mut logical: Vec<Vec<Cell>> = Vec::new();
     let mut current: Vec<Cell> = Vec::new();
-    let mut pt_line = 0;
-    let mut pt_offset = 0;
-    let mut pt_found = false;
+    // Per point: (logical line, offset, found-yet).
+    let mut tracked: Vec<(usize, usize, bool)> = vec![(0, 0, false); points.len()];
     for (i, row) in rows.into_iter().enumerate() {
-        if i == pt_row && !pt_found {
-            pt_line = logical.len();
-            pt_offset = current.len() + pt_col;
-            pt_found = true;
+        for (pi, &(pr, pc)) in points.iter().enumerate() {
+            if i == pr && !tracked[pi].2 {
+                tracked[pi] = (logical.len(), current.len() + pc, true);
+            }
         }
         let soft = row
             .last()
@@ -60,10 +61,10 @@ pub(crate) fn reflow(
         logical.pop();
     }
 
-    // 2. Re-split each logical line into `new_cols`-wide rows, mapping the
+    // 2. Re-split each logical line into `new_cols`-wide rows, mapping each
     //    tracked point to its new (row, col).
     let mut out: Vec<Row> = Vec::new();
-    let mut new_point = (0, 0);
+    let mut new_points = vec![(0usize, 0usize); points.len()];
     for (li, line) in logical.iter().enumerate() {
         let start = out.len();
         if line.is_empty() {
@@ -89,17 +90,21 @@ pub(crate) fn reflow(
                 out.push(row);
             }
         }
-        if li == pt_line {
-            let off = pt_offset.min(line.len());
-            new_point = (start + off / new_cols, off % new_cols);
+        for (pi, &(pl, poff, _)) in tracked.iter().enumerate() {
+            if pl == li {
+                let off = poff.min(line.len());
+                new_points[pi] = (start + off / new_cols, off % new_cols);
+            }
         }
     }
-    // The point's logical line may have been trimmed (it was trailing blank).
-    if pt_line >= logical.len() {
-        new_point = (out.len().saturating_sub(1), 0);
+    // A point whose logical line was trimmed (trailing blank) clamps to the end.
+    for (pi, &(pl, _, _)) in tracked.iter().enumerate() {
+        if pl >= logical.len() {
+            new_points[pi] = (out.len().saturating_sub(1), 0);
+        }
     }
 
-    (out, new_point)
+    (out, new_points)
 }
 
 /// The current screen: `rows` × `cols` cells.

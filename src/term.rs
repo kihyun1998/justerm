@@ -12,6 +12,7 @@ use crate::color::Color;
 use crate::cursor::Cursor;
 use crate::damage::{LineBounds, LineDamage, ScrollOp, TermDamage};
 use crate::grid::{Grid, Row};
+use crate::selection::{Anchor, BufferPoint, Selection, SelectionSpan, SelectionType, Side};
 
 /// Owns the authoritative screen state and applies VT actions to it.
 pub struct Term {
@@ -55,10 +56,33 @@ pub struct Term {
     /// The whole screen changed (alt switch / clear / later resize+flood) — the
     /// renderer must redraw everything.
     full_damage: bool,
+    /// The live selection, in absolute buffer coordinates. `None` when nothing
+    /// is selected. See `selection.rs`.
+    selection: Option<Selection>,
 }
 
 /// Default scrollback retention when not specified.
 const DEFAULT_SCROLLBACK: usize = 10_000;
+
+/// A selection resolved to absolute-coordinate bounds, ready for text extraction
+/// or viewport-span projection. Columns are half-open (`from..to`).
+enum Resolved {
+    /// Char/Word/Line: a run that joins soft-wrapped rows. Columns apply to the
+    /// first/last line; middle lines are whole.
+    Linear {
+        start_line: usize,
+        from: usize,
+        end_line: usize,
+        to: usize,
+    },
+    /// Block: a rectangle — the same `from..to` columns on every row.
+    Block {
+        line0: usize,
+        line1: usize,
+        from: usize,
+        to: usize,
+    },
+}
 
 impl Term {
     pub fn new(cols: usize, rows: usize) -> Self {
@@ -83,6 +107,7 @@ impl Term {
             line_damage: vec![LineBounds::undamaged(cols); rows],
             scroll: None,
             full_damage: false,
+            selection: None,
         }
     }
 
@@ -226,6 +251,380 @@ impl Term {
         }
     }
 
+    // ---- selection -----------------------------------------------------------
+
+    /// Map a viewport cell `(row, col)` to an absolute buffer point. The top
+    /// visible row is `scrollback.len() - display_offset`, so viewport row `i`
+    /// is that plus `i`.
+    fn viewport_to_abs(&self, row: usize, col: usize) -> BufferPoint {
+        let top = self.scrollback.len() - self.display_offset;
+        BufferPoint {
+            line: top + row,
+            col,
+        }
+    }
+
+    /// The cells of absolute buffer line `line` (`[scrollback ++ screen]`).
+    fn abs_line(&self, line: usize) -> &[Cell] {
+        if line < self.scrollback.len() {
+            &self.scrollback[line]
+        } else {
+            self.grid.row(line - self.scrollback.len())
+        }
+    }
+
+    /// Begin a selection of `ty` at viewport `(row, col)`, `side`.
+    pub fn selection_begin(&mut self, row: usize, col: usize, side: Side, ty: SelectionType) {
+        let anchor = Anchor {
+            point: self.viewport_to_abs(row, col),
+            side,
+        };
+        self.selection = Some(Selection {
+            ty,
+            anchor,
+            focus: anchor,
+        });
+    }
+
+    /// Extend the live selection's focus to viewport `(row, col)`, `side`.
+    pub fn selection_extend(&mut self, row: usize, col: usize, side: Side) {
+        let focus = Anchor {
+            point: self.viewport_to_abs(row, col),
+            side,
+        };
+        if let Some(sel) = &mut self.selection {
+            sel.focus = focus;
+        }
+    }
+
+    /// Clear the selection.
+    pub fn selection_clear(&mut self) {
+        self.selection = None;
+    }
+
+    /// Shift the selection up by one absolute line after the oldest history line
+    /// is evicted by the scrollback cap. An endpoint clamps to the new top; if
+    /// the whole selection was on the evicted line, it is cleared.
+    fn selection_evict_oldest(&mut self) {
+        let Some((a, f)) = self
+            .selection
+            .as_ref()
+            .map(|s| (s.anchor.point.line, s.focus.point.line))
+        else {
+            return;
+        };
+        if a == 0 && f == 0 {
+            self.selection = None;
+            return;
+        }
+        if let Some(sel) = &mut self.selection {
+            sel.anchor.point.line = a.saturating_sub(1);
+            sel.focus.point.line = f.saturating_sub(1);
+        }
+    }
+
+    /// Rotate the selection within an in-screen scroll of absolute lines
+    /// `[top, bottom]`. `up` = content scrolled up (a line dropped at `top`);
+    /// otherwise down (dropped at `bottom`). Lines outside the region are
+    /// untouched; an endpoint on the dropped line scrolls out, so the whole
+    /// selection is cleared rather than copy stale content.
+    fn selection_rotate_region(&mut self, top: usize, bottom: usize, up: bool) {
+        let rotate = |line: usize| -> Option<usize> {
+            if line < top || line > bottom {
+                return Some(line); // outside the region — unchanged
+            }
+            if up {
+                (line != top).then(|| line - 1)
+            } else {
+                (line != bottom).then_some(line + 1)
+            }
+        };
+        let Some((a, f)) = self
+            .selection
+            .as_ref()
+            .map(|s| (s.anchor.point.line, s.focus.point.line))
+        else {
+            return;
+        };
+        match (rotate(a), rotate(f)) {
+            (Some(al), Some(fl)) => {
+                if let Some(sel) = &mut self.selection {
+                    sel.anchor.point.line = al;
+                    sel.focus.point.line = fl;
+                }
+            }
+            _ => self.selection = None,
+        }
+    }
+
+    /// The selection projected onto the current viewport: one inclusive-column
+    /// span per visible row. Rows scrolled off-screen (above or below) are
+    /// dropped. Empty when nothing is selected. See `SelectionSpan`.
+    pub fn selection_range(&self) -> Vec<SelectionSpan> {
+        let Some(resolved) = self.resolve() else {
+            return Vec::new();
+        };
+        let rows = self.grid.rows();
+        // Absolute index of viewport row 0.
+        let top = self.scrollback.len() - self.display_offset;
+        let mut spans = Vec::new();
+
+        // Add a span for absolute `line` with inclusive cols `left..=right`, if
+        // the line is currently visible.
+        let mut push = |line: usize, left: usize, right: usize| {
+            if line >= top {
+                let row = line - top;
+                if row < rows {
+                    spans.push(SelectionSpan { row, left, right });
+                }
+            }
+        };
+
+        match resolved {
+            Resolved::Linear {
+                start_line,
+                from,
+                end_line,
+                to,
+            } => {
+                for line in start_line..=end_line {
+                    let len = self.abs_line(line).len();
+                    let left = if line == start_line { from } else { 0 };
+                    let right_excl = if line == end_line { to.min(len) } else { len };
+                    if right_excl > left {
+                        push(line, left, right_excl - 1);
+                    }
+                }
+            }
+            Resolved::Block {
+                line0,
+                line1,
+                from,
+                to,
+            } => {
+                if to > from {
+                    for line in line0..=line1 {
+                        push(line, from, to - 1);
+                    }
+                }
+            }
+        }
+        spans
+    }
+
+    /// Resolve the live selection into absolute-coordinate bounds per type:
+    /// a `Linear` run (char/word/line, which join soft wraps) or a `Block`
+    /// rectangle. `None` when nothing is selected. Columns are half-open
+    /// (`from..to`). Shared by `selection_text` and `selection_range`.
+    fn resolve(&self) -> Option<Resolved> {
+        let sel = self.selection.as_ref()?;
+        let (start, end) = sel.ordered();
+        Some(match sel.ty {
+            SelectionType::Char => {
+                // Half-open columns: each side decides if its own cell is in.
+                let from = match start.side {
+                    Side::Left => start.point.col,
+                    Side::Right => start.point.col + 1,
+                };
+                let to = match end.side {
+                    Side::Left => end.point.col,
+                    Side::Right => end.point.col + 1,
+                };
+                Resolved::Linear {
+                    start_line: start.point.line,
+                    from,
+                    end_line: end.point.line,
+                    to,
+                }
+            }
+            SelectionType::Word => {
+                // Snap both ends to word boundaries (side is ignored).
+                let ws = self.word_start(start.point);
+                let we = self.word_end(end.point);
+                Resolved::Linear {
+                    start_line: ws.line,
+                    from: ws.col,
+                    end_line: we.line,
+                    to: we.col + 1,
+                }
+            }
+            SelectionType::Line => Resolved::Linear {
+                start_line: start.point.line,
+                from: 0,
+                end_line: end.point.line,
+                to: self.grid.cols(),
+            },
+            SelectionType::Block => {
+                // Rectangular: the same column range on every row. Columns come
+                // from the two anchors (min/max, with each edge's side).
+                let cols = self.grid.cols();
+                let (a, b) = (sel.anchor, sel.focus);
+                let (lcol, lside, rcol, rside) = if a.point.col <= b.point.col {
+                    (a.point.col, a.side, b.point.col, b.side)
+                } else {
+                    (b.point.col, b.side, a.point.col, a.side)
+                };
+                let from = match lside {
+                    Side::Left => lcol,
+                    Side::Right => lcol + 1,
+                };
+                let to = match rside {
+                    Side::Left => rcol,
+                    Side::Right => rcol + 1,
+                };
+                Resolved::Block {
+                    line0: a.point.line.min(b.point.line),
+                    line1: a.point.line.max(b.point.line),
+                    from,
+                    to: to.min(cols).max(from),
+                }
+            }
+        })
+    }
+
+    /// The selected text (for copy), or `None` when nothing is selected.
+    pub fn selection_text(&self) -> Option<String> {
+        match self.resolve()? {
+            Resolved::Linear {
+                start_line,
+                from,
+                end_line,
+                to,
+            } => Some(self.extract_lines(start_line, from, end_line, to)),
+            Resolved::Block {
+                line0,
+                line1,
+                from,
+                to,
+            } => {
+                // Each row independently — no soft-wrap joining.
+                let mut out = String::new();
+                for line in line0..=line1 {
+                    let cells = self.abs_line(line);
+                    let seg: String = cells[from..to.min(cells.len())]
+                        .iter()
+                        .filter(|c| !c.flags.contains(CellFlags::WIDE_CHAR_SPACER))
+                        .map(|c| c.c)
+                        .collect();
+                    out.push_str(seg.trim_end());
+                    if line != line1 {
+                        out.push('\n');
+                    }
+                }
+                Some(out)
+            }
+        }
+    }
+
+    /// Concatenate the selected cells from `(start_line, from)` to
+    /// `(end_line, to_end)` (half-open columns on the first/last line, whole
+    /// lines between). Soft-wrapped rows (WRAPLINE) accumulate into one *logical*
+    /// line so trailing-blank trimming happens only at the logical end — spaces
+    /// at a wrap boundary are real content. A hard line-end flushes with `\n`.
+    fn extract_lines(&self, start_line: usize, from: usize, end_line: usize, to_end: usize) -> String {
+        let mut out = String::new();
+        let mut current = String::new();
+        for line in start_line..=end_line {
+            let cells = self.abs_line(line);
+            let left = if line == start_line { from } else { 0 };
+            let right = if line == end_line {
+                to_end.min(cells.len())
+            } else {
+                cells.len()
+            };
+            // A degenerate range (sides inverting one cell) gives left > right;
+            // clamp to empty rather than panic on the slice.
+            let right = right.max(left);
+            current.extend(
+                cells[left..right]
+                    .iter()
+                    .filter(|c| !c.flags.contains(CellFlags::WIDE_CHAR_SPACER))
+                    .map(|c| c.c),
+            );
+
+            let is_last = line == end_line;
+            let soft = cells
+                .last()
+                .is_some_and(|c| c.flags.contains(CellFlags::WRAPLINE));
+            if is_last || !soft {
+                out.push_str(current.trim_end());
+                current.clear();
+                if !is_last {
+                    out.push('\n');
+                }
+            }
+        }
+        out
+    }
+
+    /// The cell position before `(line, col)` in the *logical* line — the column
+    /// to the left, or the end of the previous row if it soft-wrapped into this
+    /// one. `None` at the buffer start or across a hard line-end.
+    fn prev_pos(&self, line: usize, col: usize) -> Option<(usize, usize)> {
+        if col > 0 {
+            return Some((line, col - 1));
+        }
+        if line > 0 {
+            let prev = self.abs_line(line - 1);
+            if prev
+                .last()
+                .is_some_and(|c| c.flags.contains(CellFlags::WRAPLINE))
+            {
+                return Some((line - 1, prev.len() - 1));
+            }
+        }
+        None
+    }
+
+    /// The cell position after `(line, col)` in the *logical* line — the column
+    /// to the right, or the start of the next row if this row soft-wrapped.
+    /// `None` at the buffer end or across a hard line-end.
+    fn next_pos(&self, line: usize, col: usize) -> Option<(usize, usize)> {
+        let cells = self.abs_line(line);
+        if col + 1 < cells.len() {
+            return Some((line, col + 1));
+        }
+        let total = self.scrollback.len() + self.grid.rows();
+        if line + 1 < total
+            && cells
+                .last()
+                .is_some_and(|c| c.flags.contains(CellFlags::WRAPLINE))
+        {
+            return Some((line + 1, 0));
+        }
+        None
+    }
+
+    /// Walk left to the first cell of `p`'s word (a maximal run of non-boundary
+    /// chars), following a soft wrap into the previous row.
+    fn word_start(&self, p: BufferPoint) -> BufferPoint {
+        let cells = self.abs_line(p.line);
+        let (mut line, mut col) = (p.line, p.col.min(cells.len().saturating_sub(1)));
+        while let Some((pl, pc)) = self.prev_pos(line, col) {
+            if is_word_boundary(self.abs_line(pl)[pc].c) {
+                break;
+            }
+            line = pl;
+            col = pc;
+        }
+        BufferPoint { line, col }
+    }
+
+    /// Walk right to the last cell of `p`'s word, following a soft wrap into the
+    /// next row.
+    fn word_end(&self, p: BufferPoint) -> BufferPoint {
+        let cells = self.abs_line(p.line);
+        let (mut line, mut col) = (p.line, p.col.min(cells.len().saturating_sub(1)));
+        while let Some((nl, nc)) = self.next_pos(line, col) {
+            if is_word_boundary(self.abs_line(nl)[nc].c) {
+                break;
+            }
+            line = nl;
+            col = nc;
+        }
+        BufferPoint { line, col }
+    }
+
     /// Resize the screen to `cols` x `rows`. Rows dropped off the top (on shrink)
     /// enter scrollback. Column reflow of soft-wrapped lines is layered on top
     /// separately (#7). The whole screen is damaged.
@@ -239,34 +638,60 @@ impl Term {
 
         // Both screens are resized. Scrollback pairs with the PRIMARY screen
         // (whichever is active) — the alt screen has no history of its own.
+        let dims = ReflowDims {
+            old_cols,
+            cols,
+            rows,
+            limit,
+        };
         let scrollback = std::mem::take(&mut self.scrollback);
         if self.on_alt {
-            // Active = alt (cursor, no scrollback); inactive = primary.
+            // Active = alt (cursor, no scrollback); inactive = primary. Selection
+            // is primary-only and cleared on alt enter, so no anchors to track.
             let alt = self.grid.take_lines();
-            let (alt, _drop, cur) =
-                reflow_pane(alt, VecDeque::new(), old_cols, cols, rows, self.cursor.point(), limit);
-            self.grid.set_screen(alt, cols, rows);
-            self.cursor.set_point(cur, rows, cols);
+            let r = reflow_pane(alt, VecDeque::new(), self.cursor.point(), &[], dims);
+            self.grid.set_screen(r.screen, cols, rows);
+            self.cursor.set_point(r.cursor, rows, cols);
 
             let primary = self.alt_grid.take_lines();
-            let (primary, sb, saved) =
-                reflow_pane(primary, scrollback, old_cols, cols, rows, self.saved_cursor.point(), limit);
-            self.alt_grid.set_screen(primary, cols, rows);
-            self.scrollback = sb;
-            self.saved_cursor.set_point(saved, rows, cols);
+            let r = reflow_pane(primary, scrollback, self.saved_cursor.point(), &[], dims);
+            self.alt_grid.set_screen(r.screen, cols, rows);
+            self.scrollback = r.scrollback;
+            self.saved_cursor.set_point(r.cursor, rows, cols);
         } else {
-            // Active = primary (cursor, scrollback); inactive = alt.
+            // Active = primary (cursor, scrollback); inactive = alt. The selection
+            // anchors (absolute) reflow alongside the cursor so they keep their
+            // content across a column change.
+            let sel_pts: Vec<(usize, usize)> = self
+                .selection
+                .as_ref()
+                .map(|s| {
+                    vec![
+                        (s.anchor.point.line, s.anchor.point.col),
+                        (s.focus.point.line, s.focus.point.col),
+                    ]
+                })
+                .unwrap_or_default();
+
             let primary = self.grid.take_lines();
-            let (primary, sb, cur) =
-                reflow_pane(primary, scrollback, old_cols, cols, rows, self.cursor.point(), limit);
-            self.grid.set_screen(primary, cols, rows);
-            self.scrollback = sb;
-            self.cursor.set_point(cur, rows, cols);
+            let r = reflow_pane(primary, scrollback, self.cursor.point(), &sel_pts, dims);
+            self.grid.set_screen(r.screen, cols, rows);
+            self.scrollback = r.scrollback;
+            self.cursor.set_point(r.cursor, rows, cols);
+            if let Some(sel) = &mut self.selection {
+                sel.anchor.point = BufferPoint {
+                    line: r.extras[0].0,
+                    col: r.extras[0].1,
+                };
+                sel.focus.point = BufferPoint {
+                    line: r.extras[1].0,
+                    col: r.extras[1].1,
+                };
+            }
 
             let alt = self.alt_grid.take_lines();
-            let (alt, _drop, _p) =
-                reflow_pane(alt, VecDeque::new(), old_cols, cols, rows, (0, 0), limit);
-            self.alt_grid.set_screen(alt, cols, rows);
+            let r = reflow_pane(alt, VecDeque::new(), (0, 0), &[], dims);
+            self.alt_grid.set_screen(r.screen, cols, rows);
         }
 
         // Margins reset to the full screen; tab stops reset to the default grid.
@@ -321,6 +746,9 @@ impl Term {
                 // offset within `[0, len]`.
                 if self.scrollback.len() > self.scrollback_limit {
                     self.scrollback.pop_front();
+                    // Every absolute index just shifted down by one; move the
+                    // selection with it so its anchors keep their content.
+                    self.selection_evict_oldest();
                     if self.display_offset > 0 {
                         // Scrolled up: evicting the oldest line advanced the
                         // viewport, so it must be repainted (the "frozen while
@@ -329,6 +757,13 @@ impl Term {
                         self.mark_fully_damaged();
                     }
                 }
+            } else {
+                // Region (top margin > 0) or alt-screen scroll: the evicted line
+                // does NOT enter scrollback, so content moves *within* the screen
+                // and absolute indices in the region shift. Rotate the selection
+                // up so it follows; an endpoint on the dropped line clears it.
+                let base = self.scrollback.len();
+                self.selection_rotate_region(base + self.scroll_top, base + self.scroll_bottom, true);
             }
             self.grid.scroll_up_region(self.scroll_top, self.scroll_bottom);
             self.record_scroll(self.scroll_top, self.scroll_bottom, 1);
@@ -362,6 +797,7 @@ impl Term {
         self.grid.clear();
         self.on_alt = true;
         self.display_offset = 0; // the alt screen has no scrollback to view
+        self.selection = None; // a selection cannot survive a screen swap
         self.mark_fully_damaged();
     }
 
@@ -375,6 +811,7 @@ impl Term {
         self.cursor = self.saved_cursor;
         self.on_alt = false;
         self.display_offset = 0; // return to the primary at its bottom
+        self.selection = None; // a selection cannot survive a screen swap
         self.mark_fully_damaged();
     }
 
@@ -382,6 +819,10 @@ impl Term {
     /// instead.
     fn reverse_index(&mut self) {
         if self.cursor.row == self.scroll_top {
+            // RI never enters scrollback; the region scrolls down within the
+            // screen, so absolute indices in it shift down. Rotate the selection.
+            let base = self.scrollback.len();
+            self.selection_rotate_region(base + self.scroll_top, base + self.scroll_bottom, false);
             self.grid.scroll_down_region(self.scroll_top, self.scroll_bottom);
             self.record_scroll(self.scroll_top, self.scroll_bottom, -1);
         } else if self.cursor.row > 0 {
@@ -726,35 +1167,82 @@ where
 /// `point` (a cursor in screen coordinates). Returns the new screen rows, the new
 /// scrollback (capped to `limit`), and the new point. The alt screen passes an
 /// empty scrollback and discards the returned one.
-fn reflow_pane(
-    screen: Vec<Row>,
-    scrollback: VecDeque<Row>,
+/// The fixed dimensions a resize reflows toward.
+#[derive(Clone, Copy)]
+struct ReflowDims {
     old_cols: usize,
     cols: usize,
     rows: usize,
-    point: (usize, usize),
     limit: usize,
-) -> (Vec<Row>, VecDeque<Row>, (usize, usize)) {
+}
+
+/// The result of reflowing one pane.
+struct PaneReflow {
+    screen: Vec<Row>,
+    scrollback: VecDeque<Row>,
+    /// The cursor's new screen-relative position.
+    cursor: (usize, usize),
+    /// Each tracked extra point's new **absolute** position, index-aligned with
+    /// the `extra_abs` argument.
+    extras: Vec<(usize, usize)>,
+}
+
+/// Reflow one pane (its `scrollback` joined with `screen`) to `dims`, tracking
+/// the screen-relative cursor `point` plus any `extra_abs` points given in
+/// **absolute** `[scrollback ++ screen]` coordinates (selection anchors).
+fn reflow_pane(
+    screen: Vec<Row>,
+    scrollback: VecDeque<Row>,
+    point: (usize, usize),
+    extra_abs: &[(usize, usize)],
+    dims: ReflowDims,
+) -> PaneReflow {
     let scroll_len = scrollback.len();
     let mut all: Vec<Row> = scrollback.into();
     all.extend(screen);
 
-    let abs = (scroll_len + point.0, point.1);
-    let abs = if cols != old_cols {
-        let (reflowed, pt) = crate::grid::reflow(all, cols, abs);
+    // The cursor is screen-relative; lift it to absolute, then track it together
+    // with the already-absolute extras.
+    let mut pts: Vec<(usize, usize)> = Vec::with_capacity(1 + extra_abs.len());
+    pts.push((scroll_len + point.0, point.1));
+    pts.extend_from_slice(extra_abs);
+
+    let pts = if dims.cols != dims.old_cols {
+        let (reflowed, np) = crate::grid::reflow(all, dims.cols, &pts);
         all = reflowed;
-        pt
+        np
     } else {
-        abs
+        pts
     };
 
-    let split = all.len().saturating_sub(rows);
+    let split = all.len().saturating_sub(dims.rows);
     let history: Vec<Row> = all.drain(0..split).collect();
     let mut sb: VecDeque<Row> = history.into();
-    while sb.len() > limit {
+    let mut dropped = 0usize;
+    while sb.len() > dims.limit {
         sb.pop_front();
+        dropped += 1;
     }
-    (all, sb, (abs.0.saturating_sub(split), abs.1))
+
+    // The cursor returns to screen-relative (its absolute index minus the
+    // history split). The extras stay absolute, shifted down by any lines the
+    // cap dropped from the front of history.
+    PaneReflow {
+        cursor: (pts[0].0.saturating_sub(split), pts[0].1),
+        extras: pts[1..]
+            .iter()
+            .map(|&(l, c)| (l.saturating_sub(dropped), c))
+            .collect(),
+        screen: all,
+        scrollback: sb,
+    }
+}
+
+/// Whether `c` ends a word for Word (semantic) selection. Whitespace plus a
+/// punctuation set mirroring Alacritty's default `semantic_escape_chars`, so
+/// path/URL-ish runs (`.`, `/`, `-`) stay one word.
+fn is_word_boundary(c: char) -> bool {
+    c.is_whitespace() || ",│`|:\"'()[]{}<>".contains(c)
 }
 
 /// Default tab stops: one every 8 columns (incl. column 0), matching xterm.

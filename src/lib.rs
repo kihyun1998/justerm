@@ -19,6 +19,7 @@ mod color;
 mod cursor;
 mod damage;
 mod grid;
+mod selection;
 mod term;
 
 pub use cell::{Cell, CellFlags};
@@ -26,6 +27,8 @@ pub use color::Color;
 pub use cursor::{Cursor, Pen};
 pub use damage::{LineDamage, ScrollOp, TermDamage};
 pub use grid::{Grid, Row};
+pub use selection::{SelectionSpan, SelectionType, Side};
+
 pub use term::Term;
 
 use vte::Parser;
@@ -125,5 +128,34 @@ impl Engine {
     /// Jump the viewport back to the live screen (follow the bottom).
     pub fn scroll_to_bottom(&mut self) {
         self.term.scroll_to_bottom();
+    }
+
+    /// Begin a selection of `ty` at viewport cell `(row, col)`, on `side` of the
+    /// cell. Coordinates are viewport-relative (what a mouse event carries).
+    pub fn selection_begin(&mut self, row: usize, col: usize, side: Side, ty: SelectionType) {
+        self.term.selection_begin(row, col, side, ty);
+    }
+
+    /// Extend the live selection to viewport cell `(row, col)`, on `side`.
+    pub fn selection_extend(&mut self, row: usize, col: usize, side: Side) {
+        self.term.selection_extend(row, col, side);
+    }
+
+    /// Clear the selection.
+    pub fn selection_clear(&mut self) {
+        self.term.selection_clear();
+    }
+
+    /// The selection projected onto the viewport: one inclusive-column span per
+    /// visible row, for the renderer to highlight. Empty when nothing is
+    /// selected or the selection is fully scrolled off-screen.
+    pub fn selection_range(&self) -> Vec<SelectionSpan> {
+        self.term.selection_range()
+    }
+
+    /// The selected text for copy (respects scrollback), or `None` if no
+    /// selection.
+    pub fn selection_text(&self) -> Option<String> {
+        self.term.selection_text()
     }
 }

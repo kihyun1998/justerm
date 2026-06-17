@@ -145,6 +145,22 @@ deferred behavior) it tracks — then add what you find here.** Seeds (caught in
   re-splits at the new width; without this flag every line looks identical and reflow corrupts
   content. [#7]
 
+- **Selection coordinates are absolute-from-oldest, and only three events move them.** Anchors are
+  stored as a line index into `[scrollback ++ screen]` counted from the oldest line — NOT viewport
+  rows (those drift under new output). This index is *invariant* under a normal top-anchored scroll:
+  the line evicted into scrollback grows `scrollback.len()` by exactly the screen shift, so existing
+  content keeps its index (verified against the existing `display_offset` model, which bumps in
+  lock-step). The index moves only on (a) **cap eviction** (`pop_front` → decrement anchors, clamp
+  off-top), (b) **in-screen region/RI scroll** with `scroll_top > 0` or alt (rotate anchors within the
+  region; an endpoint on the dropped line clears the selection — top-anchored scroll must NOT rotate),
+  and (c) **resize reflow** (anchors reflow through `grid::reflow` alongside the cursor — it tracks N
+  points). Alt enter/leave clears the selection (it is primary-only). [#5]
+- **Selection text vs highlight need different grains.** `selection_text` joins soft-wrapped rows into
+  one logical line and trims trailing blanks *only at the logical end* (spaces at a wrap boundary are
+  real content), skips `WIDE_CHAR_SPACER` cells (emit the lead glyph once), and ends hard lines with
+  `\n`; Block extracts each row independently. `selection_range` instead projects onto *viewport* rows
+  (clipping off-screen parts) as inclusive column spans for the renderer. [#5]
+
 The *systematic* catch for this whole class is #8's vttest harness + dogfood — this list is only the
 famous few caught by review. Pull vttest early so VT-semantics slices verify against it from the start.
 
