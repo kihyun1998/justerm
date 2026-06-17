@@ -98,3 +98,30 @@ fn cap_eviction_while_scrolled_to_top_is_not_suppressed() {
         "the viewport shift from cap eviction was suppressed",
     );
 }
+
+/// Resizing while scrolled up leaves cadence in a consistent state: full damage
+/// (resize repaints), no stale scroll op, viewport reads in range, and normal
+/// partial damage resumes afterward.
+#[test]
+fn resize_while_scrolled_up_is_full_and_coherent() {
+    let mut term = Engine::new(4, 3);
+    term.feed(b"a\r\nb\r\nc\r\nd\r\ne\r\nf"); // build some history
+    term.scroll_up(2);
+    term.reset_damage(); // ack the scroll frame
+
+    term.resize(6, 4); // resize while scrolled up
+
+    assert!(matches!(term.damage(), TermDamage::Full));
+    assert!(term.scroll_delta().is_none());
+    for r in 0..term.grid().rows() {
+        let _ = term.viewport_line(r); // must not panic / go out of range
+    }
+
+    // Resize keeps the scroll position (alacritty clamps, doesn't reset), so a
+    // write while still scrolled up stays suppressed. Back at the bottom,
+    // cadence reports partial damage normally again.
+    term.scroll_to_bottom();
+    term.reset_damage();
+    term.feed(b"\x1b[1;1Hz");
+    assert!(matches!(term.damage(), TermDamage::Partial(ref l) if !l.is_empty()));
+}
