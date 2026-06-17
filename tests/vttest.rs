@@ -134,3 +134,47 @@ cursor=(0,1) visible=true
 ",
     );
 }
+
+// ===========================================================================
+// #20 dogfood — synthetic "editor redraw" goldens combining the editing CSIs.
+// A full-screen golden catches cross-interactions a per-op test cannot. (The
+// real captured vim/htop streams are the HITL remainder of #20.)
+// ===========================================================================
+
+/// Editor-style edit: type three lines, then with the cursor saved (DECSC) open
+/// a line above the last two (IL), tighten line 0 (ICH) and line 1 (DCH), and
+/// restore the cursor (DECRC). The cursor line proves DECRC returned it to where
+/// DECSC saved it (3,4) rather than where IL left it.
+#[test]
+fn editor_redraw_insert_and_edit() {
+    check(
+        6,
+        4,
+        b"ABC\r\nDEF\r\nGHI\x1b7\x1b[1;1H\x1b[2@\x1b[2;2H\x1b[1P\x1b[3;1H\x1b[1L\x1b8",
+        "\
+|  ABC |
+|DF    |
+|      |
+|GHI   |
+cursor=(2,3) visible=true
+",
+    );
+}
+
+/// Editor-style delete: fill four rows, erase mid-row-0 (ECH), delete a whole
+/// line pulling the rest up (DL), then clear to end-of-line (EL).
+#[test]
+fn editor_redraw_delete_and_erase() {
+    check(
+        6,
+        4,
+        b"xxxxxx\r\nyyyyyy\r\nzzzzzz\r\nwwwwww\x1b[1;3H\x1b[2X\x1b[2;1H\x1b[1M\x1b[3;4H\x1b[0K",
+        "\
+|xx  xx|
+|zzzzzz|
+|www   |
+|      |
+cursor=(2,3) visible=true
+",
+    );
+}
