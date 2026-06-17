@@ -77,3 +77,24 @@ fn intermediate_writes_collapse_into_one_diff() {
     }
     assert_eq!(term.viewport_line(0)[0].c, 'y'); // the consumer sees only the final state
 }
+
+/// While scrolled to the very top with the cap full, new output evicts the
+/// oldest (visible) line and the viewport advances — that shift must be
+/// reported, not suppressed by the "scrolled up = frozen" rule.
+#[test]
+fn cap_eviction_while_scrolled_to_top_is_not_suppressed() {
+    let mut term = Engine::with_scrollback(4, 2, 2); // cap = 2 history lines
+    term.feed(b"a\r\nb\r\nc\r\nd\r\ne"); // fills history to the cap
+    term.scroll_up(99); // to the very top of history
+    let top_before = term.viewport_line(0)[0].c;
+    term.reset_damage(); // ack the scrolled frame
+
+    term.feed(b"\r\nf"); // new line: cap evicts the oldest visible line, view shifts
+
+    let top_after = term.viewport_line(0)[0].c;
+    assert_ne!(top_before, top_after, "precondition: the viewport actually shifted");
+    assert!(
+        !matches!(term.damage(), TermDamage::Partial(ref l) if l.is_empty()),
+        "the viewport shift from cap eviction was suppressed",
+    );
+}

@@ -321,7 +321,13 @@ impl Term {
                 // offset within `[0, len]`.
                 if self.scrollback.len() > self.scrollback_limit {
                     self.scrollback.pop_front();
-                    self.display_offset = self.display_offset.saturating_sub(1);
+                    if self.display_offset > 0 {
+                        // Scrolled up: evicting the oldest line advanced the
+                        // viewport, so it must be repainted (the "frozen while
+                        // scrolled" rule does not apply when the view itself moved).
+                        self.display_offset -= 1;
+                        self.mark_fully_damaged();
+                    }
                 }
             }
             self.grid.scroll_up_region(self.scroll_top, self.scroll_bottom);
