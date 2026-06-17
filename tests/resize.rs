@@ -97,3 +97,16 @@ fn resize_reflows_scrollback_too() {
     assert_eq!(top.len(), 2, "scrollback row left at the old width");
     assert_eq!((top[0].c, top[1].c), ('a', 'b'));
 }
+
+/// The cursor follows its content through a reflow instead of being clamped to
+/// a stale position.
+#[test]
+fn cursor_follows_content_through_reflow() {
+    let mut term = Engine::new(4, 4);
+    term.feed(b"abcdef"); // "abcd"(WRAPLINE) | "ef"
+    term.feed(b"\x1b[1;3H"); // cursor onto 'c' at (0, 2) — logical position 2
+
+    term.resize(2, 4); // "abcdef" rewraps as ab|cd|ef; 'c' moves to (1, 0)
+
+    assert_eq!((term.cursor().row, term.cursor().col), (1, 0));
+}

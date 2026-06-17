@@ -227,12 +227,18 @@ impl Term {
     /// separately (#7). The whole screen is damaged.
     pub fn resize(&mut self, cols: usize, rows: usize) {
         // Reflow scrollback and screen as one stream so a soft-wrapped logical
-        // line that spans the history/screen boundary re-wraps correctly.
+        // line that spans the history/screen boundary re-wraps correctly. The
+        // cursor is tracked by its absolute position in the joined buffer.
+        let cursor_abs = (self.scrollback.len() + self.cursor.row, self.cursor.col);
         let mut all: Vec<Row> = std::mem::take(&mut self.scrollback).into();
         all.append(&mut self.grid.take_lines());
-        if cols != self.grid.cols() {
-            all = crate::grid::reflow(all, cols);
-        }
+        let new_cursor = if cols != self.grid.cols() {
+            let (reflowed, pt) = crate::grid::reflow(all, cols, cursor_abs);
+            all = reflowed;
+            pt
+        } else {
+            cursor_abs
+        };
 
         // The bottom `rows` rows are the screen; the rest is scrollback.
         let split = all.len().saturating_sub(rows);
@@ -248,9 +254,9 @@ impl Term {
         self.scroll_bottom = rows - 1;
         self.tabs = default_tabs(cols);
 
-        // Keep the cursor and viewport within the new bounds.
-        self.cursor.row = self.cursor.row.min(rows - 1);
-        self.cursor.col = self.cursor.col.min(cols - 1);
+        // Map the cursor from its absolute buffer position back into the screen.
+        self.cursor.row = new_cursor.0.saturating_sub(split).min(rows - 1);
+        self.cursor.col = new_cursor.1.min(cols - 1);
         self.cursor.pending_wrap = false;
         self.display_offset = self.display_offset.min(self.scrollback.len());
 

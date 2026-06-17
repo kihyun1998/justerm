@@ -15,11 +15,26 @@ pub type Row = Vec<Cell>;
 ///
 /// Common-90%: trailing blanks on a hard-ended row are trimmed, and a wide-char
 /// split across the new boundary is not yet special-cased.
-pub(crate) fn reflow(rows: Vec<Row>, new_cols: usize) -> Vec<Row> {
-    // 1. Join soft-wrapped rows into logical lines.
+pub(crate) fn reflow(
+    rows: Vec<Row>,
+    new_cols: usize,
+    point: (usize, usize),
+) -> (Vec<Row>, (usize, usize)) {
+    let (pt_row, pt_col) = point;
+
+    // 1. Join soft-wrapped rows into logical lines, recording the logical
+    //    coordinate (line index + offset) of the tracked point.
     let mut logical: Vec<Vec<Cell>> = Vec::new();
     let mut current: Vec<Cell> = Vec::new();
-    for row in rows {
+    let mut pt_line = 0;
+    let mut pt_offset = 0;
+    let mut pt_found = false;
+    for (i, row) in rows.into_iter().enumerate() {
+        if i == pt_row && !pt_found {
+            pt_line = logical.len();
+            pt_offset = current.len() + pt_col;
+            pt_found = true;
+        }
         let soft = row
             .last()
             .is_some_and(|c| c.flags.contains(CellFlags::WRAPLINE));
@@ -45,24 +60,36 @@ pub(crate) fn reflow(rows: Vec<Row>, new_cols: usize) -> Vec<Row> {
         logical.pop();
     }
 
-    // 2. Re-split each logical line into `new_cols`-wide rows.
+    // 2. Re-split each logical line into `new_cols`-wide rows, mapping the
+    //    tracked point to its new (row, col).
     let mut out: Vec<Row> = Vec::new();
-    for line in logical {
+    let mut new_point = (0, 0);
+    for (li, line) in logical.iter().enumerate() {
+        let start = out.len();
         if line.is_empty() {
             out.push(vec![Cell::default(); new_cols]);
-            continue;
-        }
-        let mut chunks = line.chunks(new_cols).peekable();
-        while let Some(chunk) = chunks.next() {
-            let mut row: Row = chunk.to_vec();
-            row.resize(new_cols, Cell::default());
-            if chunks.peek().is_some() {
-                row[new_cols - 1].flags.insert(CellFlags::WRAPLINE);
+        } else {
+            let mut chunks = line.chunks(new_cols).peekable();
+            while let Some(chunk) = chunks.next() {
+                let mut row: Row = chunk.to_vec();
+                row.resize(new_cols, Cell::default());
+                if chunks.peek().is_some() {
+                    row[new_cols - 1].flags.insert(CellFlags::WRAPLINE);
+                }
+                out.push(row);
             }
-            out.push(row);
+        }
+        if li == pt_line {
+            let off = pt_offset.min(line.len());
+            new_point = (start + off / new_cols, off % new_cols);
         }
     }
-    out
+    // The point's logical line may have been trimmed (it was trailing blank).
+    if pt_line >= logical.len() {
+        new_point = (out.len().saturating_sub(1), 0);
+    }
+
+    (out, new_point)
 }
 
 /// The current screen: `rows` × `cols` cells.
