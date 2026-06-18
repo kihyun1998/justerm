@@ -14,6 +14,7 @@ use crate::damage::{LineBounds, LineDamage, ScrollOp, TermDamage};
 use crate::grid::{Grid, Row};
 use crate::search::Match;
 use crate::selection::{Anchor, BufferPoint, Selection, SelectionSpan, SelectionType, Side};
+use crate::serialize::{Frame, FrameKind, Span};
 
 /// Owns the authoritative screen state and applies VT actions to it.
 pub struct Term {
@@ -188,6 +189,61 @@ impl Term {
             return None;
         }
         self.scroll
+    }
+
+    /// Build a serializable [`Frame`] from the current damage + grid + grapheme
+    /// pool (#6). `Full` ships every row; `Partial` ships the damaged spans. The
+    /// global side-table is remapped to **frame-local** indices — the engine pool
+    /// is append-only and leaky, so a frame carries only the clusters its cells
+    /// reference, renumbered, with each cell's `extra` rewritten to the local id.
+    pub fn frame(&self) -> Frame {
+        let cols = self.grid.cols();
+        let rows = self.grid.rows();
+        let (kind, line_spans): (FrameKind, Vec<(usize, usize, usize)>) = match self.damage() {
+            TermDamage::Full => (
+                FrameKind::Full,
+                (0..rows).map(|l| (l, 0, cols - 1)).collect(),
+            ),
+            TermDamage::Partial(lines) => (
+                FrameKind::Partial,
+                lines.into_iter().map(|d| (d.line, d.left, d.right)).collect(),
+            ),
+        };
+
+        let mut side_table: Vec<Vec<char>> = Vec::new();
+        // global pool index (1-based) -> frame-local index (1-based, 0 = unset).
+        let mut remap = vec![0u16; self.grapheme_pool.len() + 1];
+        let mut spans = Vec::with_capacity(line_spans.len());
+        for (line, left, right) in line_spans {
+            let mut cells = Vec::with_capacity(right - left + 1);
+            for col in left..=right {
+                let mut cell = *self.grid.cell(line, col);
+                if let Some(gidx) = cell.extra {
+                    let g = gidx.get() as usize;
+                    if remap[g] == 0 {
+                        side_table.push(self.grapheme_pool[g - 1].clone());
+                        remap[g] = side_table.len() as u16;
+                    }
+                    cell.extra = core::num::NonZeroU32::new(remap[g] as u32);
+                }
+                cells.push(cell);
+            }
+            spans.push(Span {
+                line: line as u16,
+                left: left as u16,
+                right: right as u16,
+                cells,
+            });
+        }
+
+        Frame {
+            cols: cols as u16,
+            rows: rows as u16,
+            kind,
+            scroll: self.scroll_delta(),
+            spans,
+            side_table,
+        }
     }
 
     /// Record a scroll of rows `[top, bottom]` by `count` (positive = up).

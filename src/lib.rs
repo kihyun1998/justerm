@@ -103,6 +103,14 @@ impl Engine {
         self.term.damage()
     }
 
+    /// Build a serializable [`Frame`] of the current diff — the damaged spans
+    /// (or every row, when `Full`), the recorded scroll op, and a frame-local
+    /// grapheme side-table. Pass it to [`encode`] for the wire (see #6). Reading
+    /// a frame does not clear damage; call [`Engine::reset_damage`] on ack.
+    pub fn frame(&self) -> Frame {
+        self.term.frame()
+    }
+
     /// Clear accumulated damage after a frame is applied (the consumer's ack).
     pub fn reset_damage(&mut self) {
         self.term.reset_damage();

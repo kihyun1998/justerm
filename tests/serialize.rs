@@ -4,7 +4,7 @@
 //! §Serialization + ADR-0005.
 
 use core::num::NonZeroU32;
-use justerm::{Cell, CellFlags, Color, Frame, FrameKind, ScrollOp, Span, decode, encode};
+use justerm::{Cell, CellFlags, Color, Engine, Frame, FrameKind, ScrollOp, Span, decode, encode};
 
 /// Tracer bullet: an empty Partial frame (header only, no scroll, no spans)
 /// round-trips. Proves the frame envelope encodes and decodes end-to-end.
@@ -167,4 +167,90 @@ fn round_trip_full_frame_kind() {
         side_table: vec![],
     };
     assert_eq!(decode(&encode(&frame)).expect("decode"), frame);
+}
+
+// ===========================================================================
+// Engine -> Frame producer (#6 next slice): build a Frame from live engine
+// state (damage + grid + grapheme pool), remapping the global side-table to
+// frame-local indices.
+// ===========================================================================
+
+/// Tracer: a fresh engine fed "hi" produces a Partial frame whose line-0 spans
+/// carry the written cells.
+#[test]
+fn engine_frame_captures_written_cells() {
+    let mut term = Engine::new(5, 2);
+    term.feed(b"hi");
+    let f = term.frame();
+    assert_eq!((f.cols, f.rows), (5, 2));
+    assert_eq!(f.kind, FrameKind::Partial);
+    let chars: String = f
+        .spans
+        .iter()
+        .filter(|s| s.line == 0)
+        .flat_map(|s| s.cells.iter().map(|c| c.c))
+        .collect();
+    assert!(chars.contains('h') && chars.contains('i'), "got {chars:?}");
+}
+
+/// The recorded scroll op reaches the frame (content scrolled off the top).
+#[test]
+fn engine_frame_carries_scroll_op() {
+    let mut term = Engine::new(5, 2);
+    term.feed(b"x\r\ny\r\nz"); // 3 lines into a 2-row screen -> one scroll
+    assert!(term.frame().scroll.is_some());
+}
+
+/// After a resize the frame is Full and ships every row at the new dimensions.
+#[test]
+fn engine_frame_is_full_after_resize() {
+    let mut term = Engine::new(5, 2);
+    term.feed(b"hi");
+    term.resize(6, 3);
+    let f = term.frame();
+    assert_eq!(f.kind, FrameKind::Full);
+    assert_eq!((f.cols, f.rows), (6, 3));
+    assert_eq!(f.spans.len(), 3, "Full ships every row");
+}
+
+/// Trap #2: a frame ships only *referenced* clusters, renumbered frame-local —
+/// an orphaned global pool entry is not shipped and the live one is re-indexed.
+#[test]
+fn engine_frame_remaps_orphaned_global_index() {
+    let mut term = Engine::new(5, 1);
+    term.feed("e\u{0301}".as_bytes()); // pool[0]: cell0 -> global index 1
+    term.feed(b"\rx"); // CR to col0, overwrite 'e' with 'x' -> orphans pool[0]
+    term.feed("o\u{0308}".as_bytes()); // pool[1]: cell1 -> global index 2
+    let f = term.frame();
+    assert_eq!(f.side_table, vec![vec!['\u{0308}']], "only the live cluster ships");
+    let g = f.spans.iter().flat_map(|s| &s.cells).find(|c| c.extra.is_some()).unwrap();
+    assert_eq!(g.c, 'o');
+    assert_eq!(g.extra.unwrap().get(), 1, "global index 2 remapped to frame-local 1");
+}
+
+/// Integration: feed colours + a wide glyph + a combining mark, then the live
+/// engine's frame survives a full encode/decode round-trip.
+#[test]
+fn engine_frame_round_trips_through_bytes() {
+    let mut term = Engine::new(8, 1);
+    term.feed("\x1b[31m한e\u{0301}".as_bytes());
+    let f = term.frame();
+    assert_eq!(decode(&encode(&f)).expect("decode"), f);
+}
+
+/// Integration on real captured streams (the #20 dogfood fixtures): after
+/// replaying a real app, the live engine's frame round-trips through the wire
+/// format — exercising colours, wide glyphs, scroll, and full-screen content.
+#[test]
+fn engine_frame_round_trips_real_captures() {
+    for raw in [
+        include_bytes!("fixtures/vim_redraw.raw").as_slice(),
+        include_bytes!("fixtures/top.raw").as_slice(),
+        include_bytes!("fixtures/htop.raw").as_slice(),
+    ] {
+        let mut term = Engine::new(80, 24);
+        term.feed(raw);
+        let f = term.frame();
+        assert_eq!(decode(&encode(&f)).expect("decode"), f, "real-capture round-trip");
+    }
 }
