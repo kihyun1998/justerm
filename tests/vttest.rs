@@ -141,6 +141,25 @@ cursor=(0,1) visible=true
 // real captured vim/htop streams are the HITL remainder of #20.)
 // ===========================================================================
 
+/// #20 dogfood — REAL captured `htop` session (80x24, EPEL on RHEL; see
+/// tests/fixtures/capture-dogfood.sh). htop is an ncurses TUI on the alt screen
+/// (?1049h), so this snapshots just before it leaves (?1049l), like the vim
+/// alt-screen golden. It exercises a heavier mix than top: SGR colour gauges
+/// (the per-core `[||  1.3%]` meters and Mem/Swp bars), G0 charset designation
+/// (ESC(B), a non-ASCII sort glyph (▽ in the `CPU%▽MEM%` header), VPA (CSI d),
+/// SGR mouse-tracking enable/disable (?1006;1000h/l), and a teardown
+/// Erase-in-Display: on SIGINT htop homes to row 24 and emits CSI J, wiping the
+/// F1..F10 function-key bar — so the bottom row is intentionally blank here.
+/// Frozen bytes keep the snapshot deterministic despite htop's live data.
+#[test]
+fn htop_capture_redraw() {
+    let raw = include_bytes!("fixtures/htop.raw");
+    let altcut = raw.windows(8).position(|w| w == b"\x1b[?1049l").unwrap();
+    let mut term = Engine::new(80, 24);
+    term.feed(&raw[..altcut]);
+    assert_eq!(dump(&term), include_str!("fixtures/htop.altscreen.golden"));
+}
+
 /// #20 dogfood — REAL captured `top` session (80x24, procps-ng on RHEL; see
 /// tests/fixtures/capture-dogfood.sh, which uses `top` when htop/EPEL is
 /// unavailable). A live-monitor TUI exercises a different CSI mix than an

@@ -1,28 +1,34 @@
 #!/usr/bin/env bash
 #
 # Dogfood capture for issue #20 — record real terminal byte streams (a vim edit
-# session + a live-monitor TUI) as frozen golden fixtures.
-#   Live monitor: htop if present (EPEL), else top (procps-ng, always on RHEL).
-#   On RHEL without EPEL, top is captured automatically — no install needed.
+# session + live-monitor TUIs: top and htop) as frozen golden fixtures.
 #
 # WHERE TO RUN: on a Linux box, inside a REAL terminal session.
 #   - SSH in from Windows via PuTTY / Windows Terminal / ssh  (recommended:
 #     pasting the base64 output back is easiest), OR
 #   - run directly in the VM console window.
-#   What matters: vim/htop must run on Linux under a real PTY. A non-interactive
+#   What matters: the TUIs must run on Linux under a real PTY. A non-interactive
 #   shell (e.g. an agent's tool shell) produces degenerate output and is useless.
 #
-# WHAT IT DOES: drives vim with a SCRIPTED keystroke file (no human typing),
-# records everything the program writes to the terminal into *.raw via script(1),
-# then prints each capture as base64 to paste back.
+# WHAT IT DOES: drives vim with a SCRIPTED keystroke file (no human typing) and
+# runs each live monitor in the FOREGROUND for a few seconds, recording every
+# byte written to the terminal into *.raw via script(1), then prints each as
+# base64 to paste back.
 #
-# WHY base64: CI never re-runs vim/htop. We freeze ONE capture's raw bytes and
-# feed() those bytes; frozen input -> deterministic snapshot, so htop's live
+# WHY base64: CI never re-runs these apps. We freeze ONE capture's raw bytes and
+# feed() them; frozen input -> deterministic snapshot, so a monitor's live
 # system state cannot cause flakiness.
+#
+# NOTES:
+#   - htop needs EPEL on RHEL (dnf install epel-release htop). If it is missing
+#     its capture is skipped (empty *.raw) and the rest still runs.
+#   - A full-screen TUI must own the controlling tty: run it in the FOREGROUND
+#     via timeout(1). Backgrounding it (`top &`) yields "failed tty get".
+#   - Never `top -b` -- batch mode is plain text, not a redraw.
 #
 set -e
 cd "$(mktemp -d)"
-stty rows 24 cols 80 || true   # fix PTY winsize (the value vim/htop read via ioctl)
+stty rows 24 cols 80 || true   # fix PTY winsize (the value the TUIs read via ioctl)
 
 # --- deterministic vim driver: \033=ESC, \015=Enter(CR) ---
 {
@@ -44,16 +50,22 @@ stty rows 24 cols 80 || true   # fix PTY winsize (the value vim/htop read via io
 : > note.txt
 TERM=xterm-256color script -q -c 'vim -u NONE -N -s keys.txt note.txt' vim.raw </dev/null
 
-# --- live monitor: a TUI that redraws on a timer. Prefer htop (EPEL); fall back
-#     to top (procps-ng, always on RHEL). Run in the FOREGROUND (a full-screen
-#     TUI must own the controlling tty -- backgrounding it gives "failed tty
-#     get") and auto-quit via timeout(1). NOTE: never `top -b` -- batch mode is
-#     plain text, not a redraw. ---
-: > monitor.raw
-if command -v htop >/dev/null; then MON='htop'; else MON='top -d 1'; fi
-TERM=xterm-256color script -q -c "timeout -s INT 4 $MON" monitor.raw </dev/null || true
+# Capture a foreground TUI for ~4s, or leave an empty *.raw if it is not installed.
+#   $1 = output basename (-> $1.raw)   $2 = command line (first word = binary)
+capture_tui() {
+  local out="$1.raw" cmd="$2"
+  : > "$out"
+  if command -v "${cmd%% *}" >/dev/null; then
+    TERM=xterm-256color script -q -c "timeout -s INT 4 $cmd" "$out" </dev/null || true
+  else
+    echo "NOTE: ${cmd%% *} not installed -> $out left empty" >&2
+  fi
+}
 
-echo "=== sizes ==="; wc -c vim.raw monitor.raw
-echo "monitor program: $MON"
-echo "=== BEGIN vim.raw.b64 ===";     base64 -w0 vim.raw;     echo
-echo "=== BEGIN monitor.raw.b64 ==="; base64 -w0 monitor.raw; echo
+capture_tui top  'top -d 1'
+capture_tui htop 'htop'
+
+echo "=== sizes ==="; wc -c vim.raw top.raw htop.raw
+for f in vim top htop; do
+  echo "=== BEGIN $f.raw.b64 ==="; base64 -w0 "$f.raw"; echo
+done
