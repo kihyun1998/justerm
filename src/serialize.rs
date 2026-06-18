@@ -57,6 +57,8 @@ pub enum DecodeError {
     BadVersion(u8),
     /// A tag/kind byte held a value outside its defined set.
     BadTag,
+    /// A span's `left` was past its `right` (would underflow the cell count).
+    BadSpan,
 }
 
 /// Serialize a frame to the binary wire format.
@@ -149,6 +151,9 @@ pub fn decode(bytes: &[u8]) -> Result<Frame, DecodeError> {
         let line = r.u16()?;
         let left = r.u16()?;
         let right = r.u16()?;
+        if right < left {
+            return Err(DecodeError::BadSpan);
+        }
         let n = (right - left + 1) as usize;
         let mut cells = Vec::with_capacity(n);
         for _ in 0..n {

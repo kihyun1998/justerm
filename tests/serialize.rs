@@ -254,3 +254,56 @@ fn engine_frame_round_trips_real_captures() {
         assert_eq!(decode(&encode(&f)).expect("decode"), f, "real-capture round-trip");
     }
 }
+
+/// A crafted frame whose span has left > right must be a clean error, not a
+/// u16-underflow panic — decode consumes untrusted bytes off a transport.
+#[test]
+fn decode_rejects_span_with_left_past_right() {
+    let mut b = Vec::new();
+    b.extend_from_slice(b"JT"); // magic
+    b.push(1); // version
+    b.push(0); // scroll flag
+    b.push(1); // kind = Partial
+    b.extend_from_slice(&80u16.to_le_bytes()); // cols
+    b.extend_from_slice(&24u16.to_le_bytes()); // rows
+    b.extend_from_slice(&1u16.to_le_bytes()); // span count
+    b.extend_from_slice(&0u16.to_le_bytes()); // line
+    b.extend_from_slice(&5u16.to_le_bytes()); // left = 5
+    b.extend_from_slice(&0u16.to_le_bytes()); // right = 0  (< left!)
+    assert!(decode(&b).is_err(), "left>right must error, not panic");
+}
+
+/// A Full frame carrying real cells (not just the kind flag) round-trips.
+#[test]
+fn round_trip_full_frame_with_cells() {
+    let row = |line| Span {
+        line,
+        left: 0,
+        right: 2,
+        cells: "abc".chars().map(|c| Cell { c, ..Cell::default() }).collect(),
+    };
+    let frame = Frame {
+        cols: 3,
+        rows: 2,
+        kind: FrameKind::Full,
+        scroll: None,
+        spans: vec![row(0), row(1)],
+        side_table: vec![],
+    };
+    assert_eq!(decode(&encode(&frame)).expect("decode"), frame);
+}
+
+/// A downward scroll (negative count, e.g. RI at the top margin) round-trips —
+/// the count is signed on the wire.
+#[test]
+fn round_trip_negative_scroll_count() {
+    let frame = Frame {
+        cols: 80,
+        rows: 24,
+        kind: FrameKind::Partial,
+        scroll: Some(ScrollOp { top: 2, bottom: 23, count: -4 }),
+        spans: vec![],
+        side_table: vec![],
+    };
+    assert_eq!(decode(&encode(&frame)).expect("decode"), frame);
+}
