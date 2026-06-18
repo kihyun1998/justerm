@@ -130,6 +130,13 @@ impl Engine {
         self.term.drain_events()
     }
 
+    /// Take the reply bytes the engine produced for app queries (DA / DSR /
+    /// DECRQM) since the last drain — the consumer writes them straight back to
+    /// the PTY. The inbound-query counterpart to [`Engine::drain_events`].
+    pub fn drain_replies(&mut self) -> Vec<u8> {
+        self.term.drain_replies()
+    }
+
     /// Resolve a cell's `link` index (OSC 8 hyperlink) to its URI. The renderer
     /// reads [`Cell::link`](crate::Cell), then this, to make a cell clickable.
     pub fn hyperlink(&self, link: core::num::NonZeroU32) -> Option<&str> {

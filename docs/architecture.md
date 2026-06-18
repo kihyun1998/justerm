@@ -25,6 +25,9 @@ art (Mosh / Alacritty / Warp / VS Code / beamterm); the origin/rationale record 
   is *not* here — it is per-cell state (#26), not an event.
 - `hyperlink(link) -> Option<&str>` — resolve a cell's `link` index (OSC 8) to its URI, so the renderer
   reads `Cell.link` then this to make a cell clickable (#26).
+- `drain_replies() -> Vec<u8>` — bytes the engine produced answering app queries (DA1, DSR, DECRQM)
+  during `feed`, for the consumer to write back to the PTY. Pull, and separate from `drain_events`
+  (raw bytes → PTY vs typed notifications → UI). The first outbound "engine → app" path (#27).
 
 ## Cell
 
@@ -296,6 +299,18 @@ deferred behavior) it tracks — then add what you find here.** Seeds (caught in
   point-in-time event, which is why it is here and not on the `drain_events` surface (alacritty agrees —
   hyperlink is a Cell attribute, not an `Event`). The OSC 8 `id=` param (multi-line link grouping) is a
   later refinement; the common-90% interns one pool entry per open. [#26]
+
+- **Query replies are an outbound channel, drained pull-style and kept apart from events.** An app
+  query (`CSI c` DA1, `CSI 5n`/`CSI 6n` DSR, `CSI ? Ps $ p` DECRQM) makes the engine *produce bytes the
+  consumer must write back to the PTY* — justerm's first "engine → app" path. They queue during `feed`
+  and the consumer takes them via `drain_replies` (raw `Vec<u8>`), separate from `drain_events` (typed
+  notifications → UI; replies → PTY). This is alacritty's push `Event::PtyWrite` translated to justerm's
+  pull cadence; xterm.js instead unifies replies with key output into one `onData` stream — justerm does
+  not, because `encode_*` is a *synchronous* consumer-driven call while a reply is an *async* side-effect
+  of parsing. Catches: **DA1 must advertise only what the engine implements** (`CSI ? 62;22 c` = VT220 +
+  ANSI colour, not Sixel/printer it lacks — a lying DA makes apps call absent features); **DSR cursor
+  position is region-relative under origin mode** (DECOM), 1-based; an unrecognised query emits *nothing*
+  (no spurious bytes). The kitty `CSI ? u` query (#23) reuses this channel. [#27]
 
 The *systematic* catch for this whole class is #8's vttest harness + dogfood — this list is only the
 famous few caught by review. Pull vttest early so VT-semantics slices verify against it from the start.

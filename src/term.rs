@@ -56,6 +56,10 @@ pub struct Term {
     /// Consumer events (title / bell / cwd) accumulated since the last
     /// `drain_events` (#12). Pull, not push — see `event.rs`.
     events: Vec<TermEvent>,
+    /// Outbound reply bytes (DA/DSR/DECRQM query answers, #27) accumulated
+    /// during `feed` for the consumer to write back to the PTY. Raw bytes →
+    /// PTY, kept separate from typed `events` → UI.
+    replies: Vec<u8>,
     /// Hyperlink side-table (OSC 8): each entry is one link's URI, referenced by
     /// `Cell.link` (1-based). Append-only, like `grapheme_pool` (#26).
     hyperlink_pool: Vec<String>,
@@ -151,6 +155,7 @@ impl Term {
             mouse_encoding: MouseEncoding::Default,
             focus_events: false,
             events: Vec::new(),
+            replies: Vec::new(),
             hyperlink_pool: Vec::new(),
             current_link: None,
             tabs: default_tabs(cols),
@@ -1000,6 +1005,61 @@ impl Term {
         std::mem::take(&mut self.events)
     }
 
+    /// Take the reply bytes queued since the last drain (DA/DSR/DECRQM answers),
+    /// emptying the buffer. The consumer writes them back to the PTY.
+    pub fn drain_replies(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.replies)
+    }
+
+    /// Device Status Report (CSI Ps n): 6 = cursor position, 5 = operating
+    /// status. Queues the reply for `drain_replies` (#27).
+    fn device_status_report(&mut self, param: u16) {
+        match param {
+            6 => {
+                // CSI row;col R, 1-based — region-relative under origin mode
+                // (the coordinate system the app is addressing in).
+                let row = if self.origin_mode {
+                    self.cursor.row.saturating_sub(self.scroll_top)
+                } else {
+                    self.cursor.row
+                } + 1;
+                let col = self.cursor.col + 1;
+                self.replies
+                    .extend_from_slice(format!("\x1b[{row};{col}R").as_bytes());
+            }
+            5 => self.replies.extend_from_slice(b"\x1b[0n"), // status: OK
+            _ => {}
+        }
+    }
+
+    /// DECRQM (CSI ? Ps $ p): report whether DEC private mode `Ps` is set —
+    /// `CSI ? Ps ; val $ y` with val 1=set, 2=reset, 0=not recognized (#27).
+    fn decrqm(&mut self, mode: u16) {
+        let state = match mode {
+            1 => Some(self.app_cursor_keys),
+            6 => Some(self.origin_mode),
+            25 => Some(self.cursor.visible),
+            // Mouse tracking is a single-state enum (the levels are mutually
+            // exclusive — an app enables one), so querying ?1000 while ?1002 is
+            // active reports "reset". Faithful to that model.
+            1000 => Some(self.mouse_protocol == MouseProtocol::Normal),
+            1002 => Some(self.mouse_protocol == MouseProtocol::ButtonEvent),
+            1003 => Some(self.mouse_protocol == MouseProtocol::AnyEvent),
+            1004 => Some(self.focus_events),
+            1006 => Some(self.mouse_encoding == MouseEncoding::Sgr),
+            1049 => Some(self.on_alt),
+            2004 => Some(self.bracketed_paste),
+            _ => None,
+        };
+        let val = match state {
+            Some(true) => 1,
+            Some(false) => 2,
+            None => 0,
+        };
+        self.replies
+            .extend_from_slice(format!("\x1b[?{mode};{val}$y").as_bytes());
+    }
+
     /// Resolve a cell's `link` index (OSC 8) to its URI, or `None` if the index
     /// is out of range. The renderer reads `Cell.link`, then this, to make a
     /// cell clickable (#26).
@@ -1820,6 +1880,12 @@ impl Perform for Term {
         // DEC private modes arrive with a '?' intermediate.
         if intermediates.first() == Some(&b'?') {
             let mode = param_or(params, 0, 0);
+            // DECRQM (CSI ? Ps $ p) — report whether mode Ps is set. The '$'
+            // intermediate distinguishes it from a plain `?...p`.
+            if action == 'p' && intermediates.contains(&b'$') {
+                self.decrqm(mode);
+                return;
+            }
             match (action, mode) {
                 ('h', 1049) => self.enter_alt_screen(),
                 ('l', 1049) => self.leave_alt_screen(),
@@ -1888,6 +1954,10 @@ impl Perform for Term {
             'm' => self.sgr(params),
             's' => self.save_cursor(),    // SCOSC (CSI s) — alias of DECSC
             'u' => self.restore_cursor(), // SCORC (CSI u) — alias of DECRC
+            // DA1 (primary device attributes, CSI c): advertise VT220 + ANSI
+            // colour — the levels justerm actually implements (#27).
+            'c' => self.replies.extend_from_slice(b"\x1b[?62;22c"),
+            'n' => self.device_status_report(param_or(params, 0, 0)),
             _ => {}
         }
     }
