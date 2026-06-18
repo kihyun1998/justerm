@@ -86,10 +86,29 @@ position/style/visibility.
 
 ## Serialization (the wire format the engine offers)
 
-Binary, **reference-based** (matches the Cell above — references, not RGB), fixed-width cell records +
-a grapheme side-table for rare multi-code-point clusters. Designed for a consumer to ship over its own
-transport (e.g. a Tauri Channel) and decode straight into typed arrays. The engine provides the
-*format*; transport is the consumer's job.
+Binary, **reference-based** (matches the Cell above — references, not RGB), little-endian,
+**fixed-width 16-byte cell records** + a grapheme side-table for rare multi-code-point clusters.
+Designed for a consumer to ship over its own transport (e.g. a Tauri Channel) and decode straight into
+typed arrays (a fixed stride → one contiguous view, no per-field parse). The engine provides the
+*format* **and both directions** (`encode` a damage frame / `decode` it — the round-trip is the test);
+*transport* is the consumer's job. Rationale — binary fixed-width vs Mosh's protobuf baseline-diff vs
+xterm.js's escape-sequence re-emit (which a non-parsing GPU renderer like beamterm cannot consume):
+**ADR-0005**.
+
+A **frame** serializes one damage cycle (`damage()` + `scroll_delta()`):
+- **header** — magic, version, flags, `cols`/`rows`, kind (`Full` | `Partial`).
+- **scroll op** (optional) — `{top, bottom, count}` (ADR-0003); the decoder applies it *before* the spans.
+- **spans** — for `Partial`, each `{line, left, right}` then `(right−left+1)` cell records; `Full` = all rows.
+- **side-table** — only the clusters referenced *this frame*, renumbered frame-local; each cell's
+  `extra` rewritten to the local index.
+
+The **16-byte cell record** (little-endian): `c` (u32 Unicode scalar — *not* the renderer's atlas glyph
+id), `fg`/`bg` (u32 each = tag byte `Default|Indexed|Rgb` + 24-bit payload; the tag is mandatory so
+`Default ≠ Indexed(0) ≠ Rgb(0,0,0)`), `flags` (u16, incl. layout markers), `extra` (u16 frame-local
+side-table index, `0` = none) = **4+4+4+2+2 = 16 bytes**, 4-aligned for typed-array decode. Width is
+derived from `flags & WIDE_CHAR`. The "reserve room for later" room is *spare bits*, not a padding
+field: underline style+colour use `flags` bits 11–15 and the colour tags' spare 6 bits; an OSC 8
+hyperlink id is a **versioned** addition (its own index + side-table), never an overload of a live field.
 
 ## Hidden VT state — model these (and grow this list)
 
@@ -192,6 +211,40 @@ deferred behavior) it tracks — then add what you find here.** Seeds (caught in
   resize, a common-90% deferral). `selection_text` appends the marks after the base char; #6 encodes
   the side-table. Per-codepoint width means a true multi-emoji ZWJ sequence still splits at each
   width-2 glyph (a grapheme segmenter is a later slice); the ZWJ/VS code points themselves attach. [#8]
+
+- **A wide-char's two halves both serialize, as flagged cells — never dropped, never a plain blank.**
+  A span covering a width-2 glyph encodes *both* cells: the `WIDE_CHAR` lead (carries `c`) and the
+  `WIDE_CHAR_SPACER` trailer (blank `c`, spacer flag). The consumer places one glyph across two columns
+  and must know the trailer column is *owned* (cursor math, overwrite, selection). A column-bounded
+  damage span can also *bisect* a glyph — start on a spacer or end on a lead whose partner is outside
+  the span; cells ship as-is and the consumer's mirror already holds the partner from a prior frame, so
+  the half is unambiguous against that mirror (do not "fix up" by widening the span). [#6]
+- **The grapheme side-table is re-indexed per frame — the engine pool is global, append-only, and
+  leaky.** `Cell.extra` indexes the engine's `grapheme_pool`, which only grows and accumulates dead
+  entries (an overwritten combining-mark cell orphans its slot). Serializing the whole pool would ship
+  garbage and grow unbounded. A frame encodes *only* the clusters its cells reference, renumbered
+  contiguous frame-local, rewriting each `extra` to the local index; the decoder rebuilds a per-frame
+  table. (Side-effect: the wire never exposes the leak; pool compaction stays a deferred engine concern.) [#6]
+- **The scroll op is recorded (not diff-detected), screen-relative, and ordered before the spans.**
+  Per ADR-0003 the frame carries `{top, bottom, count}` *ahead of* the damage spans; the decoder shifts
+  its mirror grid first, then applies spans — reversing the order lands spans on pre-scroll rows. #6
+  serializes **screen** damage only; the screen→viewport remap (suppress/translate scroll while
+  `display_offset > 0`) is the consumer/cadence concern in #13, out of this format's scope. [#6]
+- **Colour needs an explicit tag in bytes; `Default ≠ Indexed(0) ≠ Rgb(0,0,0)`.** A "zero means
+  default" packing collides with ANSI black (`Indexed(0)`) and true black (`Rgb(0,0,0)`). Each of
+  `fg`/`bg` ships a tag + payload so the consumer's frozen-scheme resolver picks default vs palette vs
+  truecolour. This is the theme-agnostic invariant projected into the wire: the engine ships the
+  *reference*, never the resolved hex. [#6]
+- **`flags` mixes SGR attrs with layout markers, and `c` is a codepoint — the consumer must split
+  both.** The record ships the raw `CellFlags` u16: bits 0–7 (bold…strikethrough) map to the renderer's
+  style/effect, bits 8–10 (`WIDE_CHAR`/`SPACER`/`WRAPLINE`) are *layout*, not font style (beamterm
+  packs bold/italic/underline into its 16-bit glyph id — feeding `WIDE_CHAR` there would corrupt it).
+  Likewise `c` is the Unicode scalar; mapping codepoint → atlas glyph id is the consumer's job, so the
+  engine stays font/atlas-agnostic and reusable beyond beamterm. [#6]
+- **Empty, Partial, and Full are three distinct frames the ack cadence needs.** "Nothing changed since
+  the ack" is a valid frame (0 spans, no scroll) so the consumer can ack without redraw — *not* the
+  absence of a frame, and *not* `Full`. `Full` (resize / alt-screen clear) ships every row. Conflating
+  empty with "skip" or with `Full` breaks the ≤1-in-flight ack loop (§Cadence). [#6]
 
 The *systematic* catch for this whole class is #8's vttest harness + dogfood — this list is only the
 famous few caught by review. Pull vttest early so VT-semantics slices verify against it from the start.

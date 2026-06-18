@@ -21,6 +21,7 @@ mod damage;
 mod grid;
 mod search;
 mod selection;
+mod serialize;
 mod term;
 
 pub use cell::{Cell, CellFlags};
@@ -30,6 +31,7 @@ pub use damage::{LineDamage, ScrollOp, TermDamage};
 pub use grid::{Grid, Row};
 pub use search::Match;
 pub use selection::{SelectionSpan, SelectionType, Side};
+pub use serialize::{DecodeError, Frame, FrameKind, Span, decode, encode};
 
 pub use term::Term;
 
@@ -99,6 +101,14 @@ impl Engine {
     /// with a changed column span (see ADR-0003).
     pub fn damage(&self) -> TermDamage {
         self.term.damage()
+    }
+
+    /// Build a serializable [`Frame`] of the current diff — the damaged spans
+    /// (or every row, when `Full`), the recorded scroll op, and a frame-local
+    /// grapheme side-table. Pass it to [`encode`] for the wire (see #6). Reading
+    /// a frame does not clear damage; call [`Engine::reset_damage`] on ack.
+    pub fn frame(&self) -> Frame {
+        self.term.frame()
     }
 
     /// Clear accumulated damage after a frame is applied (the consumer's ack).
