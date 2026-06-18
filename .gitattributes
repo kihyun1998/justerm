@@ -1,0 +1,10 @@
+# Captured VT byte streams are binary — never apply line-ending conversion, or
+# the embedded CR/LF bytes get mangled and the replayed goldens break (#20).
+tests/fixtures/*.raw binary
+
+# Screen-dump goldens are compared against dump() output, which always uses LF.
+# Force LF on every platform so a CRLF checkout cannot fail the comparison.
+tests/fixtures/*.golden text eol=lf
+
+# Shell scripts must stay LF so they run on Linux (a CRLF shebang breaks them).
+*.sh text eol=lf

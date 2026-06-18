@@ -1,0 +1,25 @@
+|                                                                                |
+|    0[||                          1.3%] Tasks: 138, 526 thr, 202 kthr; 0 runni  |
+|    1[||                          1.3%] Load average: 0.05 0.07 0.09            |
+|    2[|                           0.7%] Uptime: 01:42:42                        |
+|    3[||                          3.9%]                                         |
+|  Mem[|||||||||||||||||||||2.16G/3.55G]                                         |
+|  Swp[||||||||||||||||      777M/2.00G]                                         |
+|                                                                                |
+|  [Main] [I/O]                                                                  |
+|    PID USER       PRI  NI  VIRT   RES   SHR S  CPU%▽MEM%   TIME+  Command      |
+|  41638 root        20   0  219M  5436  3892 R   2.0  0.1  0:00.12 htop         |
+|      1 root        20   0  167M 11716  7352 S   0.0  0.3  0:01.36 /usr/lib/syst|
+|    760 root        20   0 26816  8368  6788 S   0.0  0.2  0:00.26 /usr/lib/syst|
+|    776 root        20   0  147M     0     0 S   0.0  0.0  0:00.00 vmware-vmbloc|
+|    777 root        20   0  147M     0     0 S   0.0  0.0  0:00.10 vmware-vmbloc|
+|    778 root        20   0  147M     0     0 S   0.0  0.0  0:00.10 vmware-vmbloc|
+|    779 root        20   0 34976  7220  4592 S   0.0  0.2  0:00.12 /usr/lib/syst|
+|    886 root        16  -4 91820  3636  1560 S   0.0  0.1  0:00.04 /sbin/auditd |
+|    887 root        16  -4 91820  3636  1560 S   0.0  0.1  0:00.00 /sbin/auditd |
+|    888 root        16  -4  7780  2708  2612 S   0.0  0.1  0:00.01 /usr/sbin/sed|
+|    889 root        16  -4 91820  3636  1560 S   0.0  0.1  0:00.01 /sbin/auditd |
+|    909 dbus        20   0 11012  3372  3180 S   0.0  0.1  0:00.02 /usr/bin/dbus|
+|    910 dbus        20   0  8304  5248  2136 S   0.0  0.1  0:00.43 dbus-broker -|
+|                                                                                |
+cursor=(23,0) visible=true
