@@ -141,6 +141,63 @@ cursor=(0,1) visible=true
 // real captured vim/htop streams are the HITL remainder of #20.)
 // ===========================================================================
 
+/// #20 dogfood — REAL captured `top` session (80x24, procps-ng on RHEL; see
+/// tests/fixtures/capture-dogfood.sh, which uses `top` when htop/EPEL is
+/// unavailable). A live-monitor TUI exercises a different CSI mix than an
+/// editor: per-cell SGR colour + bold + reverse-video (the column header),
+/// G0 charset designation (ESC(B), EL clears, full-screen home-and-repaint,
+/// and a bottom-row LF scroll that pushes the "top -" header line off the top.
+/// The char-only dump does not render attributes, but exact text placement
+/// proves every escape was consumed rather than printed — and replaying frozen
+/// bytes keeps the snapshot deterministic despite top's live system data.
+#[test]
+fn top_capture_redraw() {
+    let mut term = Engine::new(80, 24);
+    term.feed(include_bytes!("fixtures/top.raw"));
+    assert_eq!(dump(&term), include_str!("fixtures/top.golden"));
+}
+
+// ===========================================================================
+// #20 dogfood — REAL captured vim session (80x24). Recorded via script(1) on
+// RHEL with a scripted keystroke driver; see tests/fixtures/capture-dogfood.sh.
+// The raw byte stream (script header/footer stripped) is replayed verbatim, so
+// these goldens exercise the exact CSI mix a real editor emits — alt-screen
+// enter/leave, DECSTBM scroll regions, IL/scroll-based line insert & delete,
+// ICH/DCH, ECH, wide (Hangul) status text, and bottom-row LF scroll.
+// ===========================================================================
+
+/// Feed the whole real vim stream. vim opens the alt screen (?1049h) and
+/// restores the primary one on quit (?1049l), so the engine ends back on an
+/// empty primary screen with the cursor home — proving alt-screen save/restore
+/// survives a full real session.
+#[test]
+fn vim_capture_restores_primary_on_quit() {
+    let mut term = Engine::new(80, 24);
+    term.feed(include_bytes!("fixtures/vim_redraw.raw"));
+    assert_eq!(
+        dump(&term),
+        include_str!("fixtures/vim_redraw.full.golden")
+    );
+}
+
+/// Feed up to the alt-screen teardown (?1049l) to assert the editor screen vim
+/// actually drew. Note the buffer's first line ("inserted near the top") has
+/// scrolled off the top: just before leaving the alt screen vim emits CR CR LF
+/// with the cursor on the bottom row, and an LF there scrolls the whole screen
+/// up one — standard VT behaviour (matches xterm/alacritty). The Hangul save
+/// message on the status row shows wide cells followed by spacer cells.
+#[test]
+fn vim_capture_altscreen_redraw() {
+    let raw = include_bytes!("fixtures/vim_redraw.raw");
+    let altcut = raw.windows(8).position(|w| w == b"\x1b[?1049l").unwrap();
+    let mut term = Engine::new(80, 24);
+    term.feed(&raw[..altcut]);
+    assert_eq!(
+        dump(&term),
+        include_str!("fixtures/vim_redraw.altscreen.golden")
+    );
+}
+
 /// Editor-style edit: type three lines, then with the cursor saved (DECSC) open
 /// a line above the last two (IL), tighten line 0 (ICH) and line 1 (DCH), and
 /// restore the cursor (DECRC). The cursor line proves DECRC returned it to where
