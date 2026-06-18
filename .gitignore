@@ -1,1 +1,4 @@
 /target
+
+# Local scratch (personal prompt notes — not part of the crate)
+/prompt.md
