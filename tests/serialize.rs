@@ -307,3 +307,17 @@ fn round_trip_negative_scroll_count() {
     };
     assert_eq!(decode(&encode(&frame)).expect("decode"), frame);
 }
+
+/// Trap #6: with nothing damaged since the ack, the engine yields an *empty
+/// Partial* frame (0 spans, no scroll) — not Full and not "no frame" — so the
+/// consumer can ack without redrawing.
+#[test]
+fn engine_frame_undamaged_is_empty_partial_not_full() {
+    let mut term = Engine::new(5, 2);
+    term.feed(b"hi");
+    term.reset_damage(); // consumer applied + ack'd the frame
+    let f = term.frame();
+    assert_eq!(f.kind, FrameKind::Partial);
+    assert!(f.spans.is_empty(), "no damage since ack -> no spans");
+    assert!(f.scroll.is_none());
+}
