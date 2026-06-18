@@ -1,0 +1,6 @@
+# Pin the Rust toolchain so local and CI builds are reproducible, and a new Rust
+# release can't turn CI red on its own (fmt/clippy rules change between versions).
+# Bumping this is a deliberate, reviewed change. Keep in sync with ci.yml.
+[toolchain]
+channel = "1.96.0"
+components = ["clippy", "rustfmt"]
