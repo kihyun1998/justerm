@@ -18,6 +18,7 @@ mod cell;
 mod color;
 mod cursor;
 mod damage;
+mod event;
 mod grid;
 mod input;
 mod search;
@@ -29,6 +30,7 @@ pub use cell::{Cell, CellFlags};
 pub use color::Color;
 pub use cursor::{Cursor, Pen};
 pub use damage::{LineDamage, ScrollOp, TermDamage};
+pub use event::TermEvent;
 pub use grid::{Grid, Row};
 pub use input::{Key, KeyEvent, Modifiers, MouseAction, MouseButton, MouseEvent};
 pub use search::Match;
@@ -119,6 +121,13 @@ impl Engine {
     /// `None` when focus reporting (?1004) is off.
     pub fn encode_focus(&self, focused: bool) -> Option<Vec<u8>> {
         self.term.encode_focus(focused)
+    }
+
+    /// Take the consumer events accumulated since the last drain (title / bell /
+    /// cwd — see [`TermEvent`]), emptying the queue. The pull counterpart to a
+    /// callback: poll this alongside [`Engine::frame`].
+    pub fn drain_events(&mut self) -> Vec<TermEvent> {
+        self.term.drain_events()
     }
 
     /// Number of lines currently held in scrollback history.

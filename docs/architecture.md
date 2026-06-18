@@ -20,7 +20,9 @@ art (Mosh / Alacritty / Warp / VS Code / beamterm); the origin/rationale record 
   mode-dependent input encoding (the engine owns the modes that decide encoding: DECCKM, mouse
   tracking/encoding, bracketed paste, focus reporting). `encode_mouse`/`encode_focus` return `Option`
   (nothing when the mode is off). See the "Input encoding" Hidden VT state entry.
-- events: OSC title, bell, OSC8 hyperlink, OSC7 cwd — a subscribe surface for consumers.
+- `drain_events() -> Vec<TermEvent>` — point-in-time consumer events (OSC 0/2 title, BEL bell, OSC 7
+  cwd) accumulated during `feed`, drained pull-style (no callback across the boundary). OSC 8 hyperlink
+  is *not* here — it is per-cell state (#26), not an event.
 
 ## Cell
 
@@ -269,6 +271,16 @@ deferred behavior) it tracks — then add what you find here.** Seeds (caught in
   The kitty keyboard protocol (`CSI u` + a negotiated progressive-flag stack + key-release events) is a
   *stateful* superset deferred to #23; legacy here is a pure event→bytes function. `?1016` SGR-pixel
   mouse is out of bounds — it needs pixel/font geometry the engine never has. [#11]
+
+- **Consumer events are pull-drained, and OSC 8 is not one of them.** Title (OSC 0/2), bell (BEL), and
+  cwd (OSC 7) are point-in-time notifications: the engine queues them during `feed` and the consumer
+  takes them via `drain_events` (emptying the queue — the pull counterpart to an ack). No callback is
+  injected across the boundary — unlike alacritty's `EventListener` push model, which would couple the
+  engine to the consumer's event loop and break the "feed in, pull out" symmetry. OSC 8 hyperlink is
+  deliberately excluded: a hyperlink applies to *subsequently printed cells* until closed, so it is
+  per-cell state (modelled like a grapheme side-table, versioned into the wire), not an event — its own
+  slice (#26). OSC string terminator may be BEL or ST; vte consumes it and calls `osc_dispatch` once, so
+  an OSC-terminating BEL is not double-counted as a bell. [#12]
 
 The *systematic* catch for this whole class is #8's vttest harness + dogfood — this list is only the
 famous few caught by review. Pull vttest early so VT-semantics slices verify against it from the start.

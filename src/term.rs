@@ -11,6 +11,7 @@ use crate::cell::{Cell, CellFlags};
 use crate::color::Color;
 use crate::cursor::{Cursor, Pen};
 use crate::damage::{LineBounds, LineDamage, ScrollOp, TermDamage};
+use crate::event::TermEvent;
 use crate::grid::{Grid, Row};
 use crate::input::{
     KeyEvent, MouseEncoding, MouseEvent, MouseProtocol, encode_focus, encode_key, encode_mouse,
@@ -52,6 +53,9 @@ pub struct Term {
     mouse_encoding: MouseEncoding,
     /// Focus in/out reporting (?1004): emit `CSI I`/`CSI O` on focus change.
     focus_events: bool,
+    /// Consumer events (title / bell / cwd) accumulated since the last
+    /// `drain_events` (#12). Pull, not push — see `event.rs`.
+    events: Vec<TermEvent>,
     /// Scroll region top/bottom margins (DECSTBM), 0-based inclusive. A
     /// line-feed at `scroll_bottom` scrolls only rows `[scroll_top..=scroll_bottom]`.
     /// Default = the full screen.
@@ -139,6 +143,7 @@ impl Term {
             mouse_protocol: MouseProtocol::Off,
             mouse_encoding: MouseEncoding::Default,
             focus_events: false,
+            events: Vec::new(),
             tabs: default_tabs(cols),
             scroll_top: 0,
             scroll_bottom: rows - 1,
@@ -969,6 +974,11 @@ impl Term {
         encode_focus(focused, self.focus_events)
     }
 
+    /// Take the consumer events queued since the last drain, emptying the queue.
+    pub fn drain_events(&mut self) -> Vec<TermEvent> {
+        std::mem::take(&mut self.events)
+    }
+
     // ---- cursor / scroll primitives ------------------------------------------
 
     /// Move down one line. At the bottom margin, scroll the region instead;
@@ -1768,8 +1778,7 @@ impl Perform for Term {
                 self.cursor.pending_wrap = false;
             }
             b'\t' => self.put_tab(),
-            // BEL (0x07) and others: an event/notification surface is a later
-            // slice; ignore for now.
+            0x07 => self.events.push(TermEvent::Bell), // BEL (#12)
             _ => {}
         }
     }
@@ -1866,6 +1875,33 @@ impl Perform for Term {
             b'7' => self.save_cursor(),    // DECSC
             b'8' => self.restore_cursor(), // DECRC
             _ => {}
+        }
+    }
+
+    /// OSC dispatch (#12 event surface): title (0/2), cwd (7). OSC 8 hyperlink
+    /// is per-cell state, handled in its own slice (#26), not here.
+    fn osc_dispatch(&mut self, params: &[&[u8]], _bell_terminated: bool) {
+        // params[0] is the OSC number; params[1..] the payload fields.
+        let Some(&number) = params.first() else {
+            return;
+        };
+        match number {
+            // OSC 0 = icon + window title, OSC 2 = window title. Both set title.
+            b"0" | b"2" => {
+                if let Some(&title) = params.get(1) {
+                    self.events.push(TermEvent::Title(
+                        String::from_utf8_lossy(title).into_owned(),
+                    ));
+                }
+            }
+            // OSC 7 = current working directory (a file:// URI).
+            b"7" => {
+                if let Some(&cwd) = params.get(1) {
+                    self.events
+                        .push(TermEvent::Cwd(String::from_utf8_lossy(cwd).into_owned()));
+                }
+            }
+            _ => {} // OSC 8 (#26) and others are later slices
         }
     }
 }
