@@ -53,6 +53,10 @@ pub struct Cell {
     /// 1-based index into the grapheme side-table for this cell's combining
     /// marks, or `None` when the cell is a single code point.
     pub extra: Option<core::num::NonZeroU32>,
+    /// 1-based index into the hyperlink side-table (OSC 8) — set on every cell
+    /// printed while a hyperlink is open, `None` otherwise. Like `extra`, the
+    /// index travels with the cell through scroll/shift/reflow (#26).
+    pub link: Option<core::num::NonZeroU32>,
 }
 
 impl Default for Cell {
@@ -63,6 +67,7 @@ impl Default for Cell {
             bg: Color::Default,
             flags: CellFlags::empty(),
             extra: None,
+            link: None,
         }
     }
 }

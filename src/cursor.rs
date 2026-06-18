@@ -29,6 +29,7 @@ impl Pen {
             bg: self.bg,
             flags: self.flags,
             extra: None,
+            link: None,
         }
     }
 }

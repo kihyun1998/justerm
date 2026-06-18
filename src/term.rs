@@ -56,6 +56,13 @@ pub struct Term {
     /// Consumer events (title / bell / cwd) accumulated since the last
     /// `drain_events` (#12). Pull, not push — see `event.rs`.
     events: Vec<TermEvent>,
+    /// Hyperlink side-table (OSC 8): each entry is one link's URI, referenced by
+    /// `Cell.link` (1-based). Append-only, like `grapheme_pool` (#26).
+    hyperlink_pool: Vec<String>,
+    /// The hyperlink currently open (OSC 8 with a URI), stamped onto every glyph
+    /// written until closed (OSC 8 with empty URI). Ambient pen-like state — not
+    /// part of the pen/SGR, and *not* cleared by an SGR reset.
+    current_link: Option<core::num::NonZeroU32>,
     /// Scroll region top/bottom margins (DECSTBM), 0-based inclusive. A
     /// line-feed at `scroll_bottom` scrolls only rows `[scroll_top..=scroll_bottom]`.
     /// Default = the full screen.
@@ -144,6 +151,8 @@ impl Term {
             mouse_encoding: MouseEncoding::Default,
             focus_events: false,
             events: Vec::new(),
+            hyperlink_pool: Vec::new(),
+            current_link: None,
             tabs: default_tabs(cols),
             scroll_top: 0,
             scroll_bottom: rows - 1,
@@ -239,6 +248,9 @@ impl Term {
         let mut side_table: Vec<Vec<char>> = Vec::new();
         // global pool index (1-based) -> frame-local index (1-based, 0 = unset).
         let mut remap = vec![0u16; self.grapheme_pool.len() + 1];
+        // Same frame-local renumber for the hyperlink side-table (#26).
+        let mut link_table: Vec<String> = Vec::new();
+        let mut link_remap = vec![0u16; self.hyperlink_pool.len() + 1];
         let mut spans = Vec::with_capacity(line_spans.len());
         for (line, left, right) in line_spans {
             let mut cells = Vec::with_capacity(right - left + 1);
@@ -251,6 +263,14 @@ impl Term {
                         remap[g] = side_table.len() as u16;
                     }
                     cell.extra = core::num::NonZeroU32::new(remap[g] as u32);
+                }
+                if let Some(lidx) = cell.link {
+                    let l = lidx.get() as usize;
+                    if link_remap[l] == 0 {
+                        link_table.push(self.hyperlink_pool[l - 1].clone());
+                        link_remap[l] = link_table.len() as u16;
+                    }
+                    cell.link = core::num::NonZeroU32::new(link_remap[l] as u32);
                 }
                 cells.push(cell);
             }
@@ -269,6 +289,7 @@ impl Term {
             scroll: self.scroll_delta(),
             spans,
             side_table,
+            link_table,
         }
     }
 
@@ -979,6 +1000,15 @@ impl Term {
         std::mem::take(&mut self.events)
     }
 
+    /// Resolve a cell's `link` index (OSC 8) to its URI, or `None` if the index
+    /// is out of range. The renderer reads `Cell.link`, then this, to make a
+    /// cell clickable (#26).
+    pub fn hyperlink(&self, link: core::num::NonZeroU32) -> Option<&str> {
+        self.hyperlink_pool
+            .get(link.get() as usize - 1)
+            .map(String::as_str)
+    }
+
     // ---- cursor / scroll primitives ------------------------------------------
 
     /// Move down one line. At the bottom margin, scroll the region instead;
@@ -1218,14 +1248,17 @@ impl Term {
         }
 
         let mut cell = self.cursor.pen.cell(c);
+        cell.link = self.current_link; // stamp the open hyperlink, if any (#26)
         if width == 2 {
             cell.flags.insert(CellFlags::WIDE_CHAR);
         }
         *self.grid.cell_mut(row, col) = cell;
 
-        // The trailing column of a wide glyph carries a distinct spacer marker.
+        // The trailing column of a wide glyph carries a distinct spacer marker —
+        // and the same link, so a hover/selection over either half agrees.
         if width == 2 && col + 1 < cols {
             let mut spacer = self.cursor.pen.cell(' ');
+            spacer.link = self.current_link;
             spacer.flags.insert(CellFlags::WIDE_CHAR_SPACER);
             *self.grid.cell_mut(row, col + 1) = spacer;
         }
@@ -1901,7 +1934,21 @@ impl Perform for Term {
                         .push(TermEvent::Cwd(String::from_utf8_lossy(cwd).into_owned()));
                 }
             }
-            _ => {} // OSC 8 (#26) and others are later slices
+            // OSC 8 = hyperlink: `OSC 8 ; params ; URI`. A non-empty URI opens a
+            // link (interned + made current); an empty URI closes it. `params`
+            // (e.g. `id=…`) is ignored for now — id-grouping is a later refinement.
+            b"8" => {
+                let uri = params.get(2).copied().unwrap_or(b"");
+                if uri.is_empty() {
+                    self.current_link = None;
+                } else {
+                    self.hyperlink_pool
+                        .push(String::from_utf8_lossy(uri).into_owned());
+                    self.current_link =
+                        core::num::NonZeroU32::new(self.hyperlink_pool.len() as u32);
+                }
+            }
+            _ => {} // other OSCs are later slices
         }
     }
 }

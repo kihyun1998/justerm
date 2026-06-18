@@ -1,6 +1,7 @@
 # ADR-0005: Binary, reference-based, fixed-width serialization (frame = damage + side-table)
 
-Status: accepted (2026-06-18)
+Status: accepted (2026-06-18); amended (2026-06-18, #26 — wire v2 widened the cell
+record to 18 bytes and added the hyperlink side-table; see the v2 notes below)
 
 ## Context
 
@@ -49,8 +50,9 @@ So #6's record sits exactly one layer **above** beamterm's `CellDynamic`.
 
 ## Decision
 
-Adopt **A, reference-based**: a binary, little-endian frame of fixed-width
-**16-byte** cell records plus a per-frame grapheme side-table. The engine
+Adopt **A, reference-based**: a binary, little-endian frame of fixed-width cell
+records (**16 bytes** at v1; **18 bytes** since v2, #26) plus per-frame side-tables.
+The engine
 provides **both** `encode` (a damage frame) and `decode` (so the round-trip is
 the acceptance test); transport stays the consumer's job (CLAUDE.md: no IPC).
 
@@ -59,26 +61,35 @@ scroll op `{top, bottom, count}` (applied before spans) → spans (`{line, left,
 right}` + cells) → side-table (only clusters referenced this frame, frame-local
 indices). Cell record (LE): `c` u32 (Unicode scalar, not atlas id), `fg`/`bg`
 u32 each (tag `Default|Indexed|Rgb` + 24-bit payload), `flags` u16, `extra` u16
-(frame-local, 0 = none) = **16 bytes**, 4-aligned. Future underline style+colour
-ride `flags`' spare bits (11–15) + the colour tags' spare bits; an OSC 8
-hyperlink id is a versioned addition (own index + side-table), so no padding
-field is reserved. Width derives from `flags & WIDE_CHAR`.
+(frame-local grapheme index, 0 = none) = **16 bytes**, 4-aligned at v1. Future
+underline style+colour ride `flags`' spare bits (11–15) + the colour tags' spare
+bits — those are *fixed-size* attributes that fit without a record change. An OSC
+8 hyperlink id, by contrast, references a variable-length URI, so it cannot ride
+spare bits: it is a versioned addition (own index + side-table). **v2 (#26)**
+appends a `link` u16 (frame-local hyperlink index, 0 = none) to the record (now
+**18 bytes**, 2-aligned) and a `link_table` after the grapheme side-table; the
+`version` byte gates it so the change is non-breaking. Width derives from
+`flags & WIDE_CHAR`.
 The format-specific hidden state (wide-char halves, side-table re-indexing,
 scroll/span ordering, colour tagging, flag/codepoint splitting, empty-vs-Full
 frames) is enumerated in architecture.md §"Hidden VT state" `[#6]`.
 
 ## Consequences
 
-- **Decodes into a renderer buffer without a parser** — the fixed 16-byte stride
-  is one contiguous view; the consumer's adapter does two cheap maps (ref → RGB,
+- **Decodes into a renderer buffer without a parser** — the fixed-width stride
+  (16 bytes v1, 18 v2) is one contiguous view; the consumer's adapter does two cheap maps (ref → RGB,
   codepoint → atlas id) to reach beamterm's 8-byte cell. C (escape re-emit) could
   never do this.
 - **Invariants hold to the wire.** Reference-based keeps theme-agnosticism;
   codepoint (not atlas id) keeps font-agnosticism — the format is reusable beyond
   beamterm.
-- **Versioned, extensible without a break.** `reserved` + a header `version` mean
-  underline style/colour and OSC 8 hyperlinks land later without a format change
-  (matches the Cell's reserved bits).
+- **Versioned, extensible without a break.** A header `version` byte means the
+  format can grow compatibly. Fixed-size attrs (underline style/colour) ride the
+  Cell's spare `flags`/colour-tag bits with *no* record change; a variable-length
+  addition like the OSC 8 hyperlink URI instead lands as a **version-gated format
+  change** — v2 widened the record (16→18 B) and added a `link_table`, which the
+  `version` byte keeps non-breaking. (Original wording — "hyperlinks land without
+  a format change" — was corrected here: only the spare-bit attrs do; #26.)
 - **Round-trippable and testable in isolation.** `decode` exists so #6 verifies
   `encode → decode == input` (incl. wide chars + side-table) with no PTY, no
   transport, no renderer — the boundary that makes justerm independently testable.

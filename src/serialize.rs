@@ -13,7 +13,7 @@ use core::num::NonZeroU32;
 
 /// Wire magic ("juSTerm") + format version. A new feature bumps `VERSION`.
 const MAGIC: [u8; 2] = *b"JT";
-const VERSION: u8 = 1;
+const VERSION: u8 = 2; // v2 adds the OSC 8 hyperlink side-table + cell `link` (#26)
 
 /// Whether a frame redraws everything or just its spans.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -34,8 +34,9 @@ pub struct Span {
 }
 
 /// One serialized damage cycle: the decoded logical form that `encode`/`decode`
-/// round-trip. `side_table` holds this frame's grapheme clusters, referenced by
-/// each cell's frame-local `extra` index.
+/// round-trip. `side_table` holds this frame's grapheme clusters (referenced by
+/// each cell's frame-local `extra`); `link_table` holds its OSC 8 hyperlink URIs
+/// (referenced by each cell's frame-local `link`).
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Frame {
     pub cols: u16,
@@ -44,6 +45,7 @@ pub struct Frame {
     pub scroll: Option<ScrollOp>,
     pub spans: Vec<Span>,
     pub side_table: Vec<Vec<char>>,
+    pub link_table: Vec<String>,
 }
 
 /// Why a byte buffer could not be decoded into a [`Frame`].
@@ -94,18 +96,26 @@ pub fn encode(frame: &Frame) -> Vec<u8> {
             out.extend_from_slice(&(ch as u32).to_le_bytes());
         }
     }
+    // Hyperlink side-table: each URI as a length-prefixed UTF-8 byte run (#26).
+    out.extend_from_slice(&(frame.link_table.len() as u16).to_le_bytes());
+    for uri in &frame.link_table {
+        out.extend_from_slice(&(uri.len() as u16).to_le_bytes());
+        out.extend_from_slice(uri.as_bytes());
+    }
     out
 }
 
-/// A cell as a fixed 16-byte little-endian record:
+/// A cell as a fixed 18-byte little-endian record:
 /// `c` u32 (Unicode scalar) · `fg` u32 · `bg` u32 · `flags` u16 · `extra` u16
-/// (frame-local side-table index, 0 = none). Width derives from `flags`.
+/// (frame-local grapheme index, 0 = none) · `link` u16 (frame-local hyperlink
+/// index, 0 = none). Width derives from `flags`.
 fn encode_cell(out: &mut Vec<u8>, cell: &Cell) {
     out.extend_from_slice(&(cell.c as u32).to_le_bytes());
     out.extend_from_slice(&encode_color(cell.fg).to_le_bytes());
     out.extend_from_slice(&encode_color(cell.bg).to_le_bytes());
     out.extend_from_slice(&cell.flags.bits().to_le_bytes());
     out.extend_from_slice(&cell.extra.map_or(0, |n| n.get() as u16).to_le_bytes());
+    out.extend_from_slice(&cell.link.map_or(0, |n| n.get() as u16).to_le_bytes());
 }
 
 /// A colour reference as a tagged u32: high byte = tag
@@ -176,6 +186,13 @@ pub fn decode(bytes: &[u8]) -> Result<Frame, DecodeError> {
         }
         side_table.push(cluster);
     }
+    let link_count = r.u16()?;
+    let mut link_table = Vec::with_capacity(link_count as usize);
+    for _ in 0..link_count {
+        let len = r.u16()? as usize;
+        let bytes = r.take(len)?;
+        link_table.push(String::from_utf8_lossy(bytes).into_owned());
+    }
     Ok(Frame {
         cols,
         rows,
@@ -183,6 +200,7 @@ pub fn decode(bytes: &[u8]) -> Result<Frame, DecodeError> {
         scroll,
         spans,
         side_table,
+        link_table,
     })
 }
 
@@ -193,12 +211,14 @@ fn decode_cell(r: &mut Reader) -> Result<Cell, DecodeError> {
     let bg = decode_color(r.u32()?)?;
     let flags = CellFlags::from_bits_retain(r.u16()?);
     let extra = NonZeroU32::new(r.u16()? as u32);
+    let link = NonZeroU32::new(r.u16()? as u32);
     Ok(Cell {
         c,
         fg,
         bg,
         flags,
         extra,
+        link,
     })
 }
 

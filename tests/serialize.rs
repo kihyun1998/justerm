@@ -17,6 +17,7 @@ fn round_trip_empty_partial_frame() {
         scroll: None,
         spans: vec![],
         side_table: vec![],
+        link_table: vec![],
     };
     let bytes = encode(&frame);
     assert_eq!(decode(&bytes).expect("decode"), frame);
@@ -45,6 +46,7 @@ fn round_trip_span_of_plain_cells() {
             cells,
         }],
         side_table: vec![],
+        link_table: vec![],
     };
     assert_eq!(decode(&encode(&frame)).expect("decode"), frame);
 }
@@ -76,6 +78,7 @@ fn round_trip_distinct_colour_references() {
             cells,
         }],
         side_table: vec![],
+        link_table: vec![],
     };
     let d = decode(&encode(&frame)).expect("decode");
     assert_eq!(d, frame);
@@ -112,6 +115,7 @@ fn round_trip_cell_flags_incl_layout_markers() {
             cells: vec![lead, spacer],
         }],
         side_table: vec![],
+        link_table: vec![],
     };
     assert_eq!(decode(&encode(&frame)).expect("decode"), frame);
 }
@@ -150,15 +154,17 @@ fn round_trip_grapheme_side_table() {
             cells: vec![accented, plain],
         }],
         side_table: vec![vec!['\u{0301}']], // combining acute accent
+        link_table: vec![],
     };
     assert_eq!(decode(&encode(&frame)).expect("decode"), frame);
 }
 
-/// Acceptance #2: cells stay fixed-width — each added cell costs exactly 16
-/// bytes, so a grapheme cell is no wider than a plain one (its cluster lives in
-/// the side-table). Measured as the per-cell delta, independent of header size.
+/// Acceptance #2: cells stay fixed-width — each added cell costs exactly 18
+/// bytes (16 + the v2 hyperlink `link` u16, #26), so a grapheme or linked cell
+/// is no wider than a plain one (cluster/URI live in the side-tables). Measured
+/// as the per-cell delta, independent of header size.
 #[test]
-fn cell_record_is_fixed_16_bytes() {
+fn cell_record_is_fixed_18_bytes() {
     let span_of = |n: usize| Frame {
         cols: 1,
         rows: 1,
@@ -171,10 +177,11 @@ fn cell_record_is_fixed_16_bytes() {
             cells: vec![Cell::default(); n],
         }],
         side_table: vec![],
+        link_table: vec![],
     };
     let one = encode(&span_of(1)).len();
     let two = encode(&span_of(2)).len();
-    assert_eq!(two - one, 16, "each added cell must cost exactly 16 bytes");
+    assert_eq!(two - one, 18, "each added cell must cost exactly 18 bytes");
 }
 
 /// A recorded scroll op round-trips. It is encoded ahead of the spans so the
@@ -192,6 +199,7 @@ fn round_trip_scroll_op() {
         }),
         spans: vec![],
         side_table: vec![],
+        link_table: vec![],
     };
     assert_eq!(decode(&encode(&frame)).expect("decode"), frame);
 }
@@ -206,6 +214,7 @@ fn round_trip_full_frame_kind() {
         scroll: None,
         spans: vec![],
         side_table: vec![],
+        link_table: vec![],
     };
     assert_eq!(decode(&encode(&frame)).expect("decode"), frame);
 }
@@ -353,6 +362,7 @@ fn round_trip_full_frame_with_cells() {
         scroll: None,
         spans: vec![row(0), row(1)],
         side_table: vec![],
+        link_table: vec![],
     };
     assert_eq!(decode(&encode(&frame)).expect("decode"), frame);
 }
@@ -372,6 +382,7 @@ fn round_trip_negative_scroll_count() {
         }),
         spans: vec![],
         side_table: vec![],
+        link_table: vec![],
     };
     assert_eq!(decode(&encode(&frame)).expect("decode"), frame);
 }

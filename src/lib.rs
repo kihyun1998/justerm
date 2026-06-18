@@ -130,6 +130,12 @@ impl Engine {
         self.term.drain_events()
     }
 
+    /// Resolve a cell's `link` index (OSC 8 hyperlink) to its URI. The renderer
+    /// reads [`Cell::link`](crate::Cell), then this, to make a cell clickable.
+    pub fn hyperlink(&self, link: core::num::NonZeroU32) -> Option<&str> {
+        self.term.hyperlink(link)
+    }
+
     /// Number of lines currently held in scrollback history.
     pub fn scrollback_len(&self) -> usize {
         self.term.scrollback_len()

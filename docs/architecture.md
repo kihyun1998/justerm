@@ -23,6 +23,8 @@ art (Mosh / Alacritty / Warp / VS Code / beamterm); the origin/rationale record 
 - `drain_events() -> Vec<TermEvent>` — point-in-time consumer events (OSC 0/2 title, BEL bell, OSC 7
   cwd) accumulated during `feed`, drained pull-style (no callback across the boundary). OSC 8 hyperlink
   is *not* here — it is per-cell state (#26), not an event.
+- `hyperlink(link) -> Option<&str>` — resolve a cell's `link` index (OSC 8) to its URI, so the renderer
+  reads `Cell.link` then this to make a cell clickable (#26).
 
 ## Cell
 
@@ -106,13 +108,15 @@ A **frame** serializes one damage cycle (`damage()` + `scroll_delta()`):
 - **side-table** — only the clusters referenced *this frame*, renumbered frame-local; each cell's
   `extra` rewritten to the local index.
 
-The **16-byte cell record** (little-endian): `c` (u32 Unicode scalar — *not* the renderer's atlas glyph
+The **cell record** (little-endian): `c` (u32 Unicode scalar — *not* the renderer's atlas glyph
 id), `fg`/`bg` (u32 each = tag byte `Default|Indexed|Rgb` + 24-bit payload; the tag is mandatory so
 `Default ≠ Indexed(0) ≠ Rgb(0,0,0)`), `flags` (u16, incl. layout markers), `extra` (u16 frame-local
-side-table index, `0` = none) = **4+4+4+2+2 = 16 bytes**, 4-aligned for typed-array decode. Width is
-derived from `flags & WIDE_CHAR`. The "reserve room for later" room is *spare bits*, not a padding
-field: underline style+colour use `flags` bits 11–15 and the colour tags' spare 6 bits; an OSC 8
-hyperlink id is a **versioned** addition (its own index + side-table), never an overload of a live field.
+grapheme index, `0` = none), and — since wire **v2** (#26) — `link` (u16 frame-local hyperlink index,
+`0` = none) = **4+4+4+2+2+2 = 18 bytes**, 2-aligned. Width is derived from `flags & WIDE_CHAR`. The
+hyperlink id was added exactly as the format promised — a **versioned** addition with its own index +
+side-table (`link_table`), never an overload of a live field; the `VERSION` byte gates it. Remaining
+"reserve room for later" is *spare bits*, not padding: underline style+colour use `flags` bits 11–15
+and the colour tags' spare 6 bits.
 
 ## Hidden VT state — model these (and grow this list)
 
@@ -281,6 +285,17 @@ deferred behavior) it tracks — then add what you find here.** Seeds (caught in
   per-cell state (modelled like a grapheme side-table, versioned into the wire), not an event — its own
   slice (#26). OSC string terminator may be BEL or ST; vte consumes it and calls `osc_dispatch` once, so
   an OSC-terminating BEL is not double-counted as a bell. [#12]
+- **An OSC 8 hyperlink is ambient pen-like state stamped onto cells — not an event, and not closed by
+  an SGR reset.** `OSC 8 ; params ; URI` opens a link (the URI is interned into a `hyperlink_pool` and
+  becomes "current"); `OSC 8 ; ; ` (empty URI) closes it. Every glyph printed while open carries a
+  `Cell.link` index into the pool — both halves of a wide glyph, so a hover/selection over either
+  agrees. The index is plain `Copy` data, so it rides the cell through scroll/scrollback/reflow exactly
+  like the grapheme `extra`, and it renumbers frame-local into the wire's `link_table` the same way.
+  The catch: a hyperlink is **orthogonal to SGR** — `CSI 0 m` (reset attributes) must *not* close it;
+  only an empty-URI OSC 8 does (and it persists across line-feeds until then). It is cell state, not a
+  point-in-time event, which is why it is here and not on the `drain_events` surface (alacritty agrees —
+  hyperlink is a Cell attribute, not an `Event`). The OSC 8 `id=` param (multi-line link grouping) is a
+  later refinement; the common-90% interns one pool entry per open. [#26]
 
 The *systematic* catch for this whole class is #8's vttest harness + dogfood — this list is only the
 famous few caught by review. Pull vttest early so VT-semantics slices verify against it from the start.
