@@ -16,8 +16,10 @@ art (Mosh / Alacritty / Warp / VS Code / beamterm); the origin/rationale record 
 - `resize(cols, rows)` — re-layout / reflow.
 - selection: `begin/extend/clear(point, side, mode)`, `selection_range()`, `selection_text() -> String`.
 - `search(query) -> Matches` (grid + scrollback).
-- `encode_key(event) / encode_mouse(event) -> bytes` — mode-dependent input encoding (the engine owns
-  the modes that decide encoding).
+- `encode_key(event) / encode_mouse(event) / encode_paste(text) / encode_focus(focused) -> bytes` —
+  mode-dependent input encoding (the engine owns the modes that decide encoding: DECCKM, mouse
+  tracking/encoding, bracketed paste, focus reporting). `encode_mouse`/`encode_focus` return `Option`
+  (nothing when the mode is off). See the "Input encoding" Hidden VT state entry.
 - events: OSC title, bell, OSC8 hyperlink, OSC7 cwd — a subscribe surface for consumers.
 
 ## Cell
@@ -245,6 +247,28 @@ deferred behavior) it tracks — then add what you find here.** Seeds (caught in
   the ack" is a valid frame (0 spans, no scroll) so the consumer can ack without redraw — *not* the
   absence of a frame, and *not* `Full`. `Full` (resize / alt-screen clear) ships every row. Conflating
   empty with "skip" or with `Full` breaks the ≤1-in-flight ack loop (§Cadence). [#6]
+
+- **Input encoding is mode-gated, and the modes are hidden state the engine owns.** `encode_key` /
+  `encode_mouse` / `encode_paste` are the inverse of `feed`: a consumer event → the bytes an app
+  expects, decided by DEC modes the engine tracks from the *output* stream. (a) **App cursor keys
+  (DECCKM `?1`)**: when set, the cursor keys and Home/End encode as **SS3** (`ESC O A`); when reset, as
+  **CSI** (`ESC [ A`). The catch: a key carrying *any* modifier always uses the **CSI `1;<mod>` form**
+  regardless of DECCKM (xterm: "if the original did not start with CSI, the start is changed to CSI" —
+  except keypad). Modifier param = `1 + (shift 1 | alt 2 | ctrl 4 | meta 8)`. (b) **Mouse** is two
+  orthogonal axes: a **tracking mode** deciding *what* reports (`?1000` press+release, `?1002` adds
+  motion-while-pressed, `?1003` adds all motion — so `encode_mouse` returns `None` for a bare move
+  under `?1000`) and an **encoding** deciding *how* (`default` X10 `CSI M Cb Cx Cy` with each value
+  `+32` — which **breaks past column 223** — vs `?1006` **SGR** `CSI < Cb;Cx;Cy M/m`, where final `M`
+  is press/motion and `m` is release, coords unbounded). Coords are **1-based** in both; the button
+  byte packs button low bits + motion `+32` + wheel `64` + modifiers (shift 4 | meta 8 | ctrl 16);
+  default encoding has no separate release code (button 3 = "released"), SGR distinguishes via `M`/`m`.
+  (c) **Focus reporting (`?1004`)**: emit `CSI I` on focus-in, `CSI O` on focus-out — only when set.
+  (d) **Bracketed paste (`?2004`)**: wrap pasted text in `CSI 200~`…`CSI 201~` so the app never
+  mistakes paste content for typed control sequences (a real injection-safety boundary, not cosmetic).
+  (e) **Backspace is DEL (`0x7f`), not BS (`0x08`)** — the standard PC-keyboard convention apps assume.
+  The kitty keyboard protocol (`CSI u` + a negotiated progressive-flag stack + key-release events) is a
+  *stateful* superset deferred to #23; legacy here is a pure event→bytes function. `?1016` SGR-pixel
+  mouse is out of bounds — it needs pixel/font geometry the engine never has. [#11]
 
 The *systematic* catch for this whole class is #8's vttest harness + dogfood — this list is only the
 famous few caught by review. Pull vttest early so VT-semantics slices verify against it from the start.

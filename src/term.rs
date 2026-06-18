@@ -12,6 +12,10 @@ use crate::color::Color;
 use crate::cursor::{Cursor, Pen};
 use crate::damage::{LineBounds, LineDamage, ScrollOp, TermDamage};
 use crate::grid::{Grid, Row};
+use crate::input::{
+    KeyEvent, MouseEncoding, MouseEvent, MouseProtocol, encode_focus, encode_key, encode_mouse,
+    encode_paste,
+};
 use crate::search::Match;
 use crate::selection::{Anchor, BufferPoint, Selection, SelectionSpan, SelectionType, Side};
 use crate::serialize::{Frame, FrameKind, Span};
@@ -38,6 +42,16 @@ pub struct Term {
     /// Bracketed-paste mode (DEC ?2004). The engine owns the flag; the input
     /// encoder (#11) reads it to decide whether to wrap pasted text in markers.
     bracketed_paste: bool,
+    /// Application cursor keys (DECCKM ?1): when set, cursor keys / Home / End
+    /// encode as SS3 rather than CSI (see `input.rs`).
+    app_cursor_keys: bool,
+    /// Mouse tracking mode — what events the app asked to be reported
+    /// (?1000/?1002/?1003). `Off` by default.
+    mouse_protocol: MouseProtocol,
+    /// Mouse coordinate encoding (default X10 vs ?1006 SGR).
+    mouse_encoding: MouseEncoding,
+    /// Focus in/out reporting (?1004): emit `CSI I`/`CSI O` on focus change.
+    focus_events: bool,
     /// Scroll region top/bottom margins (DECSTBM), 0-based inclusive. A
     /// line-feed at `scroll_bottom` scrolls only rows `[scroll_top..=scroll_bottom]`.
     /// Default = the full screen.
@@ -121,6 +135,10 @@ impl Term {
             on_alt: false,
             origin_mode: false,
             bracketed_paste: false,
+            app_cursor_keys: false,
+            mouse_protocol: MouseProtocol::Off,
+            mouse_encoding: MouseEncoding::Default,
+            focus_events: false,
             tabs: default_tabs(cols),
             scroll_top: 0,
             scroll_bottom: rows - 1,
@@ -924,6 +942,31 @@ impl Term {
     /// (#11) reads this to decide whether to wrap pasted text in markers.
     pub fn bracketed_paste(&self) -> bool {
         self.bracketed_paste
+    }
+
+    // ---- input encoding (#11) ------------------------------------------------
+
+    /// Encode a key event to bytes using the active cursor-key mode (DECCKM).
+    pub fn encode_key(&self, ev: KeyEvent) -> Option<Vec<u8>> {
+        encode_key(&ev, self.app_cursor_keys)
+    }
+
+    /// Encode a mouse event using the active tracking mode + encoding. `None`
+    /// when reporting is off or the event is filtered by the mode.
+    pub fn encode_mouse(&self, ev: MouseEvent) -> Option<Vec<u8>> {
+        encode_mouse(&ev, self.mouse_protocol, self.mouse_encoding)
+    }
+
+    /// Encode pasted text, wrapping it in bracketed-paste markers when ?2004 is
+    /// on.
+    pub fn encode_paste(&self, text: &str) -> Vec<u8> {
+        encode_paste(text, self.bracketed_paste)
+    }
+
+    /// Encode a focus change (`CSI I`/`CSI O`), or `None` when focus reporting
+    /// (?1004) is off.
+    pub fn encode_focus(&self, focused: bool) -> Option<Vec<u8>> {
+        encode_focus(focused, self.focus_events)
     }
 
     // ---- cursor / scroll primitives ------------------------------------------
@@ -1748,6 +1791,20 @@ impl Perform for Term {
                 ('l', 25) => self.cursor.visible = false, // DECTCEM hide
                 ('h', 2004) => self.bracketed_paste = true,
                 ('l', 2004) => self.bracketed_paste = false,
+
+                // Input-encoding modes (#11): DECCKM, mouse tracking + encoding,
+                // focus reporting. Each set assigns the level; each reset clears
+                // it (apps enable/disable the same mode, not a stack).
+                ('h', 1) => self.app_cursor_keys = true, // DECCKM
+                ('l', 1) => self.app_cursor_keys = false,
+                ('h', 1000) => self.mouse_protocol = MouseProtocol::Normal,
+                ('h', 1002) => self.mouse_protocol = MouseProtocol::ButtonEvent,
+                ('h', 1003) => self.mouse_protocol = MouseProtocol::AnyEvent,
+                ('l', 1000) | ('l', 1002) | ('l', 1003) => self.mouse_protocol = MouseProtocol::Off,
+                ('h', 1006) => self.mouse_encoding = MouseEncoding::Sgr,
+                ('l', 1006) => self.mouse_encoding = MouseEncoding::Default,
+                ('h', 1004) => self.focus_events = true,
+                ('l', 1004) => self.focus_events = false,
 
                 _ => {} // other DEC modes are later slices
             }

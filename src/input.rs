@@ -1,0 +1,350 @@
+//! Input encoding (#11): consumer events → the bytes an application expects.
+//!
+//! The inverse of `feed` — a key/mouse/paste/focus event becomes the byte
+//! sequence a TUI app reads on its stdin, decided by the DEC modes the engine
+//! tracks from the *output* stream (DECCKM, mouse tracking/encoding, focus,
+//! bracketed paste). The engine owns the modes; these functions are pure
+//! (event + modes → bytes), so the consumer's I/O stays its own concern.
+//!
+//! This is the **legacy xterm** baseline (the common-90% every TUI speaks). The
+//! kitty keyboard protocol (`CSI u` + a negotiated progressive-flag stack) is a
+//! stateful superset deferred to #23.
+
+use bitflags::bitflags;
+
+bitflags! {
+    /// Modifier keys held during an event. The CSI parameter form encodes these
+    /// as `1 + bits` (xterm): Shift=1, Alt=2, Ctrl=4, Meta=8.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+    pub struct Modifiers: u8 {
+        const SHIFT = 0b0001;
+        const ALT   = 0b0010;
+        const CTRL  = 0b0100;
+        const META  = 0b1000;
+    }
+}
+
+impl Modifiers {
+    /// The xterm CSI modifier parameter (`1 + bitmask`), or `None` when no
+    /// modifier is held (the unmodified sequence is used instead).
+    fn csi_param(self) -> Option<u8> {
+        if self.is_empty() {
+            None
+        } else {
+            Some(1 + self.bits())
+        }
+    }
+}
+
+/// A logical key press from the consumer (already decoded from the platform's
+/// keyboard event — justerm does not read hardware).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Key {
+    /// A printable character (the consumer's already-composed text).
+    Char(char),
+    Up,
+    Down,
+    Right,
+    Left,
+    Home,
+    End,
+    PageUp,
+    PageDown,
+    Insert,
+    Delete,
+    Enter,
+    Tab,
+    Backspace,
+    Escape,
+    /// Function key `F(n)`, `n` in 1..=12.
+    F(u8),
+}
+
+/// A key event: a key plus the modifiers held with it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KeyEvent {
+    pub key: Key,
+    pub mods: Modifiers,
+}
+
+/// Which mouse button an event concerns. `None` on a [`MouseEvent`] means bare
+/// motion with no button held.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MouseButton {
+    Left,
+    Middle,
+    Right,
+    WheelUp,
+    WheelDown,
+}
+
+/// What the mouse did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MouseAction {
+    Press,
+    Release,
+    Motion,
+}
+
+/// A mouse event in viewport cell coordinates (0-based — the encoding shifts to
+/// 1-based on the wire).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MouseEvent {
+    /// The button, or `None` for bare motion (no button held).
+    pub button: Option<MouseButton>,
+    pub action: MouseAction,
+    pub col: usize,
+    pub row: usize,
+    pub mods: Modifiers,
+}
+
+/// Mouse tracking mode — *what* the app asked to be reported (DEC `?1000` /
+/// `?1002` / `?1003`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MouseProtocol {
+    /// No reporting (default). `encode_mouse` returns `None`.
+    #[default]
+    Off,
+    /// `?1000` — button press and release only.
+    Normal,
+    /// `?1002` — also motion while a button is held (drag).
+    ButtonEvent,
+    /// `?1003` — also motion with no button held.
+    AnyEvent,
+}
+
+/// Mouse coordinate encoding — *how* a report is framed (default X10 vs DEC
+/// `?1006` SGR).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MouseEncoding {
+    /// X10 `CSI M Cb Cx Cy`, each value offset by 32 — breaks past column 223.
+    #[default]
+    Default,
+    /// `?1006` SGR `CSI < Cb ; Cx ; Cy M|m` — coords unbounded, release distinct.
+    Sgr,
+}
+
+const ESC: u8 = 0x1b;
+
+/// Encode a key event to bytes, given whether DECCKM (application cursor keys)
+/// is active. Returns `None` only for keys with no defined encoding.
+pub fn encode_key(ev: &KeyEvent, app_cursor: bool) -> Option<Vec<u8>> {
+    match ev.key {
+        Key::Char(c) => Some(encode_char(c, ev.mods)),
+        Key::Up => Some(cursor_key(b'A', ev.mods, app_cursor)),
+        Key::Down => Some(cursor_key(b'B', ev.mods, app_cursor)),
+        Key::Right => Some(cursor_key(b'C', ev.mods, app_cursor)),
+        Key::Left => Some(cursor_key(b'D', ev.mods, app_cursor)),
+        Key::Home => Some(cursor_key(b'H', ev.mods, app_cursor)),
+        Key::End => Some(cursor_key(b'F', ev.mods, app_cursor)),
+        Key::Insert => Some(tilde_key(2, ev.mods)),
+        Key::Delete => Some(tilde_key(3, ev.mods)),
+        Key::PageUp => Some(tilde_key(5, ev.mods)),
+        Key::PageDown => Some(tilde_key(6, ev.mods)),
+        Key::Enter => Some(vec![b'\r']),
+        Key::Backspace => Some(vec![0x7f]), // DEL, the PC-keyboard convention
+        Key::Escape => Some(vec![ESC]),
+        Key::Tab => {
+            if ev.mods.contains(Modifiers::SHIFT) {
+                Some(vec![ESC, b'[', b'Z']) // back-tab (CBT)
+            } else {
+                Some(vec![b'\t'])
+            }
+        }
+        Key::F(n) => function_key(n, ev.mods),
+    }
+}
+
+/// A printable character with modifiers. Ctrl folds an ASCII letter to its
+/// control code; Alt (meta-sends-escape) prefixes ESC.
+fn encode_char(c: char, mods: Modifiers) -> Vec<u8> {
+    let mut out = Vec::new();
+    if mods.contains(Modifiers::ALT) {
+        out.push(ESC);
+    }
+    if mods.contains(Modifiers::CTRL) {
+        // Ctrl+letter → 0x01..=0x1a; Ctrl+@/[/\/]/^/_ → 0x00..0x1f.
+        let code = match c {
+            'a'..='z' => Some((c as u8 - b'a') + 1),
+            'A'..='Z' => Some((c as u8 - b'A') + 1),
+            '@' => Some(0),
+            '[' => Some(0x1b),
+            '\\' => Some(0x1c),
+            ']' => Some(0x1d),
+            '^' => Some(0x1e),
+            '_' => Some(0x1f),
+            ' ' => Some(0),
+            _ => None,
+        };
+        if let Some(b) = code {
+            out.push(b);
+            return out;
+        }
+    }
+    let mut buf = [0u8; 4];
+    out.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
+    out
+}
+
+/// Cursor keys and Home/End. Unmodified: SS3 under DECCKM, else CSI. Modified:
+/// always the CSI `1;<mod>` form regardless of DECCKM (xterm rule).
+fn cursor_key(final_byte: u8, mods: Modifiers, app_cursor: bool) -> Vec<u8> {
+    match mods.csi_param() {
+        Some(param) => {
+            let mut v = vec![ESC, b'['];
+            v.extend_from_slice(b"1;");
+            v.extend_from_slice(param.to_string().as_bytes());
+            v.push(final_byte);
+            v
+        }
+        None if app_cursor => vec![ESC, b'O', final_byte],
+        None => vec![ESC, b'[', final_byte],
+    }
+}
+
+/// Keys encoded as `CSI <n> ~` (Insert/Delete/PageUp/PageDown and F5+), with an
+/// optional `;<mod>` parameter.
+fn tilde_key(n: u8, mods: Modifiers) -> Vec<u8> {
+    let mut v = vec![ESC, b'['];
+    v.extend_from_slice(n.to_string().as_bytes());
+    if let Some(param) = mods.csi_param() {
+        v.push(b';');
+        v.extend_from_slice(param.to_string().as_bytes());
+    }
+    v.push(b'~');
+    v
+}
+
+/// Function keys. F1–F4 are SS3 `P/Q/R/S` (CSI `1;<mod>` form when modified);
+/// F5–F12 are tilde keys `15/17/18/19/20/21/23/24 ~`.
+fn function_key(n: u8, mods: Modifiers) -> Option<Vec<u8>> {
+    match n {
+        1..=4 => {
+            let letter = b'P' + (n - 1); // P, Q, R, S
+            match mods.csi_param() {
+                Some(param) => {
+                    let mut v = vec![ESC, b'[', b'1', b';'];
+                    v.extend_from_slice(param.to_string().as_bytes());
+                    v.push(letter);
+                    Some(v)
+                }
+                None => Some(vec![ESC, b'O', letter]),
+            }
+        }
+        5 => Some(tilde_key(15, mods)),
+        6 => Some(tilde_key(17, mods)),
+        7 => Some(tilde_key(18, mods)),
+        8 => Some(tilde_key(19, mods)),
+        9 => Some(tilde_key(20, mods)),
+        10 => Some(tilde_key(21, mods)),
+        11 => Some(tilde_key(23, mods)),
+        12 => Some(tilde_key(24, mods)),
+        _ => None,
+    }
+}
+
+/// Encode a mouse event, given the active tracking mode and encoding. Returns
+/// `None` when reporting is off or the event is filtered out by the mode (e.g.
+/// a bare move under `?1000`).
+pub fn encode_mouse(ev: &MouseEvent, proto: MouseProtocol, enc: MouseEncoding) -> Option<Vec<u8>> {
+    if proto == MouseProtocol::Off {
+        return None;
+    }
+    // Mode gates which events report at all.
+    match ev.action {
+        MouseAction::Press | MouseAction::Release => {}
+        MouseAction::Motion => match (proto, ev.button) {
+            // Drag (button held) needs ButtonEvent or AnyEvent.
+            (MouseProtocol::ButtonEvent | MouseProtocol::AnyEvent, Some(_)) => {}
+            // Bare motion needs AnyEvent.
+            (MouseProtocol::AnyEvent, None) => {}
+            _ => return None,
+        },
+    }
+
+    // Low button bits + wheel base.
+    let button_bits = match ev.button {
+        Some(MouseButton::Left) => 0,
+        Some(MouseButton::Middle) => 1,
+        Some(MouseButton::Right) => 2,
+        Some(MouseButton::WheelUp) => 64,
+        Some(MouseButton::WheelDown) => 65,
+        None => 3, // motion with no button: the "no button" code
+    };
+    let motion = if ev.action == MouseAction::Motion {
+        32
+    } else {
+        0
+    };
+    let mod_bits = (if ev.mods.contains(Modifiers::SHIFT) {
+        4
+    } else {
+        0
+    }) + (if ev.mods.contains(Modifiers::ALT) {
+        8
+    } else {
+        0
+    }) + (if ev.mods.contains(Modifiers::CTRL) {
+        16
+    } else {
+        0
+    });
+
+    let col1 = ev.col + 1;
+    let row1 = ev.row + 1;
+
+    match enc {
+        MouseEncoding::Sgr => {
+            // SGR keeps the button identity on release; the terminator says which.
+            let cb = button_bits + motion + mod_bits;
+            let final_byte = if ev.action == MouseAction::Release {
+                b'm'
+            } else {
+                b'M'
+            };
+            let mut v = vec![ESC, b'[', b'<'];
+            v.extend_from_slice(cb.to_string().as_bytes());
+            v.push(b';');
+            v.extend_from_slice(col1.to_string().as_bytes());
+            v.push(b';');
+            v.extend_from_slice(row1.to_string().as_bytes());
+            v.push(final_byte);
+            Some(v)
+        }
+        MouseEncoding::Default => {
+            // X10: release loses button identity (button bits = 3); all values +32.
+            let base = if ev.action == MouseAction::Release {
+                3
+            } else {
+                button_bits
+            };
+            let cb = base + motion + mod_bits + 32;
+            let cx = (col1 + 32).min(255) as u8;
+            let cy = (row1 + 32).min(255) as u8;
+            Some(vec![ESC, b'[', b'M', cb as u8, cx, cy])
+        }
+    }
+}
+
+/// Wrap pasted text in bracketed-paste markers when the mode is on, else return
+/// it raw. The markers let the app treat the payload as literal text, never as
+/// typed control sequences.
+pub fn encode_paste(text: &str, bracketed: bool) -> Vec<u8> {
+    if !bracketed {
+        return text.as_bytes().to_vec();
+    }
+    let mut v = Vec::with_capacity(text.len() + 12);
+    v.extend_from_slice(b"\x1b[200~");
+    v.extend_from_slice(text.as_bytes());
+    v.extend_from_slice(b"\x1b[201~");
+    v
+}
+
+/// Focus in/out report (`CSI I` / `CSI O`), or `None` when focus reporting
+/// (`?1004`) is off.
+pub fn encode_focus(focused: bool, enabled: bool) -> Option<Vec<u8>> {
+    if !enabled {
+        return None;
+    }
+    Some(vec![ESC, b'[', if focused { b'I' } else { b'O' }])
+}

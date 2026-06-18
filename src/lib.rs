@@ -19,6 +19,7 @@ mod color;
 mod cursor;
 mod damage;
 mod grid;
+mod input;
 mod search;
 mod selection;
 mod serialize;
@@ -29,6 +30,7 @@ pub use color::Color;
 pub use cursor::{Cursor, Pen};
 pub use damage::{LineDamage, ScrollOp, TermDamage};
 pub use grid::{Grid, Row};
+pub use input::{Key, KeyEvent, Modifiers, MouseAction, MouseButton, MouseEvent};
 pub use search::Match;
 pub use selection::{SelectionSpan, SelectionType, Side};
 pub use serialize::{DecodeError, Frame, FrameKind, Span, decode, encode};
@@ -90,6 +92,33 @@ impl Engine {
     /// encoder reads this to decide whether to wrap pasted text in markers.
     pub fn bracketed_paste(&self) -> bool {
         self.term.bracketed_paste()
+    }
+
+    /// Encode a key event to the bytes an application expects, honouring the
+    /// engine's cursor-key mode (DECCKM). The inverse of [`Engine::feed`] — the
+    /// consumer hands a decoded key event and writes the bytes to its PTY.
+    /// Returns `None` for a key with no defined encoding.
+    pub fn encode_key(&self, ev: KeyEvent) -> Option<Vec<u8>> {
+        self.term.encode_key(ev)
+    }
+
+    /// Encode a mouse event using the engine's active tracking mode + encoding.
+    /// Returns `None` when mouse reporting is off, or when the event is filtered
+    /// out by the mode (e.g. a bare move while only ?1000 is set).
+    pub fn encode_mouse(&self, ev: MouseEvent) -> Option<Vec<u8>> {
+        self.term.encode_mouse(ev)
+    }
+
+    /// Encode pasted text — wrapped in bracketed-paste markers when ?2004 is on,
+    /// raw otherwise.
+    pub fn encode_paste(&self, text: &str) -> Vec<u8> {
+        self.term.encode_paste(text)
+    }
+
+    /// Encode a focus change (`CSI I` on focus-in, `CSI O` on focus-out), or
+    /// `None` when focus reporting (?1004) is off.
+    pub fn encode_focus(&self, focused: bool) -> Option<Vec<u8>> {
+        self.term.encode_focus(focused)
     }
 
     /// Number of lines currently held in scrollback history.
