@@ -1,0 +1,246 @@
+//! Issue #6 — binary, reference-based wire format for a damage frame.
+//!
+//! `encode` a [`Frame`] to bytes, `decode` them back; the round-trip is the
+//! contract. Reference-based (colour refs, Unicode scalars — never resolved RGB
+//! or atlas ids) so the engine stays theme- and font-agnostic; the consumer's
+//! adapter resolves references before handing cells to the renderer. Format spec
+//! and rationale: `docs/architecture.md` §Serialization + ADR-0005.
+
+use crate::cell::{Cell, CellFlags};
+use crate::color::Color;
+use crate::damage::ScrollOp;
+use core::num::NonZeroU32;
+
+/// Wire magic ("juSTerm") + format version. A new feature bumps `VERSION`.
+const MAGIC: [u8; 2] = *b"JT";
+const VERSION: u8 = 1;
+
+/// Whether a frame redraws everything or just its spans.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum FrameKind {
+    /// Every row is present (resize / alt-screen clear).
+    Full,
+    /// Only the listed spans changed since the consumer's ack.
+    Partial,
+}
+
+/// A damaged column run on one line, with its cells (frame-local `extra`).
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Span {
+    pub line: u16,
+    pub left: u16,
+    pub right: u16,
+    pub cells: Vec<Cell>,
+}
+
+/// One serialized damage cycle: the decoded logical form that `encode`/`decode`
+/// round-trip. `side_table` holds this frame's grapheme clusters, referenced by
+/// each cell's frame-local `extra` index.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Frame {
+    pub cols: u16,
+    pub rows: u16,
+    pub kind: FrameKind,
+    pub scroll: Option<ScrollOp>,
+    pub spans: Vec<Span>,
+    pub side_table: Vec<Vec<char>>,
+}
+
+/// Why a byte buffer could not be decoded into a [`Frame`].
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum DecodeError {
+    /// Ran out of bytes mid-field.
+    Truncated,
+    /// First two bytes are not the wire magic.
+    BadMagic,
+    /// Unsupported format version.
+    BadVersion(u8),
+    /// A tag/kind byte held a value outside its defined set.
+    BadTag,
+}
+
+/// Serialize a frame to the binary wire format.
+pub fn encode(frame: &Frame) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(&MAGIC);
+    out.push(VERSION);
+    out.push(frame.scroll.is_some() as u8);
+    out.push(match frame.kind {
+        FrameKind::Full => 0,
+        FrameKind::Partial => 1,
+    });
+    out.extend_from_slice(&frame.cols.to_le_bytes());
+    out.extend_from_slice(&frame.rows.to_le_bytes());
+    if let Some(s) = frame.scroll {
+        out.extend_from_slice(&(s.top as u16).to_le_bytes());
+        out.extend_from_slice(&(s.bottom as u16).to_le_bytes());
+        out.extend_from_slice(&(s.count as i16).to_le_bytes());
+    }
+    out.extend_from_slice(&(frame.spans.len() as u16).to_le_bytes());
+    for span in &frame.spans {
+        out.extend_from_slice(&span.line.to_le_bytes());
+        out.extend_from_slice(&span.left.to_le_bytes());
+        out.extend_from_slice(&span.right.to_le_bytes());
+        for cell in &span.cells {
+            encode_cell(&mut out, cell);
+        }
+    }
+    out.extend_from_slice(&(frame.side_table.len() as u16).to_le_bytes());
+    for cluster in &frame.side_table {
+        out.extend_from_slice(&(cluster.len() as u16).to_le_bytes());
+        for &ch in cluster {
+            out.extend_from_slice(&(ch as u32).to_le_bytes());
+        }
+    }
+    out
+}
+
+/// A cell as a fixed 16-byte little-endian record:
+/// `c` u32 (Unicode scalar) · `fg` u32 · `bg` u32 · `flags` u16 · `extra` u16
+/// (frame-local side-table index, 0 = none). Width derives from `flags`.
+fn encode_cell(out: &mut Vec<u8>, cell: &Cell) {
+    out.extend_from_slice(&(cell.c as u32).to_le_bytes());
+    out.extend_from_slice(&encode_color(cell.fg).to_le_bytes());
+    out.extend_from_slice(&encode_color(cell.bg).to_le_bytes());
+    out.extend_from_slice(&cell.flags.bits().to_le_bytes());
+    out.extend_from_slice(&cell.extra.map_or(0, |n| n.get() as u16).to_le_bytes());
+}
+
+/// A colour reference as a tagged u32: high byte = tag
+/// (0 = Default, 1 = Indexed, 2 = Rgb), low 24 bits = payload. The tag is
+/// mandatory so `Default`, `Indexed(0)`, and `Rgb(0,0,0)` stay distinct.
+fn encode_color(c: Color) -> u32 {
+    match c {
+        Color::Default => 0,
+        Color::Indexed(i) => (1 << 24) | i as u32,
+        Color::Rgb(r, g, b) => (2 << 24) | (r as u32) << 16 | (g as u32) << 8 | b as u32,
+    }
+}
+
+/// Deserialize the binary wire format back into a [`Frame`].
+pub fn decode(bytes: &[u8]) -> Result<Frame, DecodeError> {
+    let mut r = Reader::new(bytes);
+    if r.take(2)? != MAGIC {
+        return Err(DecodeError::BadMagic);
+    }
+    let version = r.u8()?;
+    if version != VERSION {
+        return Err(DecodeError::BadVersion(version));
+    }
+    let has_scroll = r.u8()? != 0;
+    let kind = match r.u8()? {
+        0 => FrameKind::Full,
+        1 => FrameKind::Partial,
+        _ => return Err(DecodeError::BadTag),
+    };
+    let cols = r.u16()?;
+    let rows = r.u16()?;
+    let scroll = if has_scroll {
+        let top = r.u16()? as usize;
+        let bottom = r.u16()? as usize;
+        let count = (r.u16()? as i16) as isize;
+        Some(ScrollOp { top, bottom, count })
+    } else {
+        None
+    };
+    let span_count = r.u16()?;
+    let mut spans = Vec::with_capacity(span_count as usize);
+    for _ in 0..span_count {
+        let line = r.u16()?;
+        let left = r.u16()?;
+        let right = r.u16()?;
+        let n = (right - left + 1) as usize;
+        let mut cells = Vec::with_capacity(n);
+        for _ in 0..n {
+            cells.push(decode_cell(&mut r)?);
+        }
+        spans.push(Span {
+            line,
+            left,
+            right,
+            cells,
+        });
+    }
+    let side_table_count = r.u16()?;
+    let mut side_table = Vec::with_capacity(side_table_count as usize);
+    for _ in 0..side_table_count {
+        let len = r.u16()?;
+        let mut cluster = Vec::with_capacity(len as usize);
+        for _ in 0..len {
+            cluster.push(char::from_u32(r.u32()?).ok_or(DecodeError::BadTag)?);
+        }
+        side_table.push(cluster);
+    }
+    Ok(Frame {
+        cols,
+        rows,
+        kind,
+        scroll,
+        spans,
+        side_table,
+    })
+}
+
+/// Decode one 16-byte cell record (inverse of [`encode_cell`]).
+fn decode_cell(r: &mut Reader) -> Result<Cell, DecodeError> {
+    let c = char::from_u32(r.u32()?).ok_or(DecodeError::BadTag)?;
+    let fg = decode_color(r.u32()?)?;
+    let bg = decode_color(r.u32()?)?;
+    let flags = CellFlags::from_bits_retain(r.u16()?);
+    let extra = NonZeroU32::new(r.u16()? as u32);
+    Ok(Cell {
+        c,
+        fg,
+        bg,
+        flags,
+        extra,
+    })
+}
+
+/// Decode a tagged-u32 colour reference (inverse of [`encode_color`]).
+fn decode_color(v: u32) -> Result<Color, DecodeError> {
+    let payload = v & 0x00FF_FFFF;
+    match v >> 24 {
+        0 => Ok(Color::Default),
+        1 => Ok(Color::Indexed(payload as u8)),
+        2 => Ok(Color::Rgb(
+            (payload >> 16) as u8,
+            (payload >> 8) as u8,
+            payload as u8,
+        )),
+        _ => Err(DecodeError::BadTag),
+    }
+}
+
+/// A little-endian cursor over the wire bytes.
+struct Reader<'a> {
+    bytes: &'a [u8],
+    pos: usize,
+}
+
+impl<'a> Reader<'a> {
+    fn new(bytes: &'a [u8]) -> Self {
+        Reader { bytes, pos: 0 }
+    }
+
+    fn take(&mut self, n: usize) -> Result<&'a [u8], DecodeError> {
+        let end = self.pos.checked_add(n).ok_or(DecodeError::Truncated)?;
+        let slice = self.bytes.get(self.pos..end).ok_or(DecodeError::Truncated)?;
+        self.pos = end;
+        Ok(slice)
+    }
+
+    fn u8(&mut self) -> Result<u8, DecodeError> {
+        Ok(self.take(1)?[0])
+    }
+
+    fn u16(&mut self) -> Result<u16, DecodeError> {
+        let b = self.take(2)?;
+        Ok(u16::from_le_bytes([b[0], b[1]]))
+    }
+
+    fn u32(&mut self) -> Result<u32, DecodeError> {
+        let b = self.take(4)?;
+        Ok(u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+    }
+}

@@ -21,6 +21,7 @@ mod damage;
 mod grid;
 mod search;
 mod selection;
+mod serialize;
 mod term;
 
 pub use cell::{Cell, CellFlags};
@@ -30,6 +31,7 @@ pub use damage::{LineDamage, ScrollOp, TermDamage};
 pub use grid::{Grid, Row};
 pub use search::Match;
 pub use selection::{SelectionSpan, SelectionType, Side};
+pub use serialize::{DecodeError, Frame, FrameKind, Span, decode, encode};
 
 pub use term::Term;
 

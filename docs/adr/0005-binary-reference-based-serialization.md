@@ -59,8 +59,10 @@ scroll op `{top, bottom, count}` (applied before spans) → spans (`{line, left,
 right}` + cells) → side-table (only clusters referenced this frame, frame-local
 indices). Cell record (LE): `c` u32 (Unicode scalar, not atlas id), `fg`/`bg`
 u32 each (tag `Default|Indexed|Rgb` + 24-bit payload), `flags` u16, `extra` u16
-(frame-local, 0 = none), `reserved` u16 (underline style+colour / OSC 8 id —
-zeroed; a new feature bumps `version`). Width derives from `flags & WIDE_CHAR`.
+(frame-local, 0 = none) = **16 bytes**, 4-aligned. Future underline style+colour
+ride `flags`' spare bits (11–15) + the colour tags' spare bits; an OSC 8
+hyperlink id is a versioned addition (own index + side-table), so no padding
+field is reserved. Width derives from `flags & WIDE_CHAR`.
 The format-specific hidden state (wide-char halves, side-table re-indexing,
 scroll/span ordering, colour tagging, flag/codepoint splitting, empty-vs-Full
 frames) is enumerated in architecture.md §"Hidden VT state" `[#6]`.

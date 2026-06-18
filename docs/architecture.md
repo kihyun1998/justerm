@@ -105,8 +105,10 @@ A **frame** serializes one damage cycle (`damage()` + `scroll_delta()`):
 The **16-byte cell record** (little-endian): `c` (u32 Unicode scalar — *not* the renderer's atlas glyph
 id), `fg`/`bg` (u32 each = tag byte `Default|Indexed|Rgb` + 24-bit payload; the tag is mandatory so
 `Default ≠ Indexed(0) ≠ Rgb(0,0,0)`), `flags` (u16, incl. layout markers), `extra` (u16 frame-local
-side-table index, `0` = none), `reserved` (u16 — underline style+colour / OSC 8 id: zeroed now, a
-future feature **bumps the version**, never overloads reserved). Width is derived from `flags & WIDE_CHAR`.
+side-table index, `0` = none) = **4+4+4+2+2 = 16 bytes**, 4-aligned for typed-array decode. Width is
+derived from `flags & WIDE_CHAR`. The "reserve room for later" room is *spare bits*, not a padding
+field: underline style+colour use `flags` bits 11–15 and the colour tags' spare 6 bits; an OSC 8
+hyperlink id is a **versioned** addition (its own index + side-table), never an overload of a live field.
 
 ## Hidden VT state — model these (and grow this list)
 
