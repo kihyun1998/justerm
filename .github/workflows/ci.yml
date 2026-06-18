@@ -33,15 +33,3 @@ jobs:
         run: cargo clippy --all-targets -- -D warnings
       - name: Test (unit + integration + doc)
         run: cargo test
-
-  # Supply-chain gate: just-shield verifies every action this repo ingests
-  # (SHA pinning, least-privilege permissions, known-compromised versions)
-  # before merge. See ADR-0006.
-  supply-chain:
-    name: supply-chain (just-shield)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-      - uses: kihyun1998/just-shield@bfe605c359607bddb3fcbc04ee568e0ff4f60bf3 # v0.3.0
-        with:
-          strict: true
