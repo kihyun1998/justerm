@@ -206,7 +206,10 @@ impl Term {
             ),
             TermDamage::Partial(lines) => (
                 FrameKind::Partial,
-                lines.into_iter().map(|d| (d.line, d.left, d.right)).collect(),
+                lines
+                    .into_iter()
+                    .map(|d| (d.line, d.left, d.right))
+                    .collect(),
             ),
         };
 

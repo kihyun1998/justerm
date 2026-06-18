@@ -26,13 +26,24 @@ fn round_trip_empty_partial_frame() {
 /// the fixed-width cell record and span bodies.
 #[test]
 fn round_trip_span_of_plain_cells() {
-    let cells: Vec<Cell> = "hi!".chars().map(|c| Cell { c, ..Cell::default() }).collect();
+    let cells: Vec<Cell> = "hi!"
+        .chars()
+        .map(|c| Cell {
+            c,
+            ..Cell::default()
+        })
+        .collect();
     let frame = Frame {
         cols: 80,
         rows: 24,
         kind: FrameKind::Partial,
         scroll: None,
-        spans: vec![Span { line: 3, left: 10, right: 12, cells }],
+        spans: vec![Span {
+            line: 3,
+            left: 10,
+            right: 12,
+            cells,
+        }],
         side_table: vec![],
     };
     assert_eq!(decode(&encode(&frame)).expect("decode"), frame);
@@ -42,7 +53,12 @@ fn round_trip_span_of_plain_cells() {
 /// mandatory tag keeps `Default`, `Indexed(0)` and `Rgb(0,0,0)` from collapsing.
 #[test]
 fn round_trip_distinct_colour_references() {
-    let mk = |fg, bg| Cell { c: 'x', fg, bg, ..Cell::default() };
+    let mk = |fg, bg| Cell {
+        c: 'x',
+        fg,
+        bg,
+        ..Cell::default()
+    };
     let cells = vec![
         mk(Color::Default, Color::Default),
         mk(Color::Indexed(0), Color::Indexed(255)),
@@ -53,14 +69,22 @@ fn round_trip_distinct_colour_references() {
         rows: 24,
         kind: FrameKind::Partial,
         scroll: None,
-        spans: vec![Span { line: 0, left: 0, right: 2, cells }],
+        spans: vec![Span {
+            line: 0,
+            left: 0,
+            right: 2,
+            cells,
+        }],
         side_table: vec![],
     };
     let d = decode(&encode(&frame)).expect("decode");
     assert_eq!(d, frame);
     let row = &d.spans[0].cells;
     assert_ne!(row[0].fg, row[1].fg, "Default must differ from Indexed(0)");
-    assert_ne!(row[1].fg, row[2].fg, "Indexed(0) must differ from Rgb(0,0,0)");
+    assert_ne!(
+        row[1].fg, row[2].fg,
+        "Indexed(0) must differ from Rgb(0,0,0)"
+    );
 }
 
 /// SGR attributes *and* layout markers (wide-char lead + spacer) survive the
@@ -81,7 +105,12 @@ fn round_trip_cell_flags_incl_layout_markers() {
         rows: 24,
         kind: FrameKind::Partial,
         scroll: None,
-        spans: vec![Span { line: 5, left: 0, right: 1, cells: vec![lead, spacer] }],
+        spans: vec![Span {
+            line: 5,
+            left: 0,
+            right: 1,
+            cells: vec![lead, spacer],
+        }],
         side_table: vec![],
     };
     assert_eq!(decode(&encode(&frame)).expect("decode"), frame);
@@ -105,13 +134,21 @@ fn round_trip_grapheme_side_table() {
         extra: NonZeroU32::new(1), // 1-based index into side_table[0]
         ..Cell::default()
     };
-    let plain = Cell { c: 'x', ..Cell::default() };
+    let plain = Cell {
+        c: 'x',
+        ..Cell::default()
+    };
     let frame = Frame {
         cols: 80,
         rows: 24,
         kind: FrameKind::Partial,
         scroll: None,
-        spans: vec![Span { line: 0, left: 0, right: 1, cells: vec![accented, plain] }],
+        spans: vec![Span {
+            line: 0,
+            left: 0,
+            right: 1,
+            cells: vec![accented, plain],
+        }],
         side_table: vec![vec!['\u{0301}']], // combining acute accent
     };
     assert_eq!(decode(&encode(&frame)).expect("decode"), frame);
@@ -148,7 +185,11 @@ fn round_trip_scroll_op() {
         cols: 80,
         rows: 24,
         kind: FrameKind::Partial,
-        scroll: Some(ScrollOp { top: 0, bottom: 23, count: 3 }),
+        scroll: Some(ScrollOp {
+            top: 0,
+            bottom: 23,
+            count: 3,
+        }),
         spans: vec![],
         side_table: vec![],
     };
@@ -222,10 +263,23 @@ fn engine_frame_remaps_orphaned_global_index() {
     term.feed(b"\rx"); // CR to col0, overwrite 'e' with 'x' -> orphans pool[0]
     term.feed("o\u{0308}".as_bytes()); // pool[1]: cell1 -> global index 2
     let f = term.frame();
-    assert_eq!(f.side_table, vec![vec!['\u{0308}']], "only the live cluster ships");
-    let g = f.spans.iter().flat_map(|s| &s.cells).find(|c| c.extra.is_some()).unwrap();
+    assert_eq!(
+        f.side_table,
+        vec![vec!['\u{0308}']],
+        "only the live cluster ships"
+    );
+    let g = f
+        .spans
+        .iter()
+        .flat_map(|s| &s.cells)
+        .find(|c| c.extra.is_some())
+        .unwrap();
     assert_eq!(g.c, 'o');
-    assert_eq!(g.extra.unwrap().get(), 1, "global index 2 remapped to frame-local 1");
+    assert_eq!(
+        g.extra.unwrap().get(),
+        1,
+        "global index 2 remapped to frame-local 1"
+    );
 }
 
 /// Integration: feed colours + a wide glyph + a combining mark, then the live
@@ -251,7 +305,11 @@ fn engine_frame_round_trips_real_captures() {
         let mut term = Engine::new(80, 24);
         term.feed(raw);
         let f = term.frame();
-        assert_eq!(decode(&encode(&f)).expect("decode"), f, "real-capture round-trip");
+        assert_eq!(
+            decode(&encode(&f)).expect("decode"),
+            f,
+            "real-capture round-trip"
+        );
     }
 }
 
@@ -280,7 +338,13 @@ fn round_trip_full_frame_with_cells() {
         line,
         left: 0,
         right: 2,
-        cells: "abc".chars().map(|c| Cell { c, ..Cell::default() }).collect(),
+        cells: "abc"
+            .chars()
+            .map(|c| Cell {
+                c,
+                ..Cell::default()
+            })
+            .collect(),
     };
     let frame = Frame {
         cols: 3,
@@ -301,7 +365,11 @@ fn round_trip_negative_scroll_count() {
         cols: 80,
         rows: 24,
         kind: FrameKind::Partial,
-        scroll: Some(ScrollOp { top: 2, bottom: 23, count: -4 }),
+        scroll: Some(ScrollOp {
+            top: 2,
+            bottom: 23,
+            count: -4,
+        }),
         spans: vec![],
         side_table: vec![],
     };
