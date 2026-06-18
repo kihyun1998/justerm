@@ -230,7 +230,10 @@ impl<'a> Reader<'a> {
 
     fn take(&mut self, n: usize) -> Result<&'a [u8], DecodeError> {
         let end = self.pos.checked_add(n).ok_or(DecodeError::Truncated)?;
-        let slice = self.bytes.get(self.pos..end).ok_or(DecodeError::Truncated)?;
+        let slice = self
+            .bytes
+            .get(self.pos..end)
+            .ok_or(DecodeError::Truncated)?;
         self.pos = end;
         Ok(slice)
     }

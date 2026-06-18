@@ -193,10 +193,7 @@ fn top_capture_redraw() {
 fn vim_capture_restores_primary_on_quit() {
     let mut term = Engine::new(80, 24);
     term.feed(include_bytes!("fixtures/vim_redraw.raw"));
-    assert_eq!(
-        dump(&term),
-        include_str!("fixtures/vim_redraw.full.golden")
-    );
+    assert_eq!(dump(&term), include_str!("fixtures/vim_redraw.full.golden"));
 }
 
 /// Feed up to the alt-screen teardown (?1049l) to assert the editor screen vim

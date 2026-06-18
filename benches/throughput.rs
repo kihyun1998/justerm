@@ -12,12 +12,12 @@
 //!
 //! - `ascii`     — printable fast path (`write_glyph`, width 1) + line feeds.
 //! - `ansi`      — escape state machine + pen mutation (`csi_dispatch` -> `sgr`,
-//!                 a colour change every cell; vtebench's `dense_cells`).
+//!   a colour change every cell; vtebench's `dense_cells`).
 //! - `cjk`       — wide-glyph path (`write_glyph`, width 2) + pending-wrap and
-//!                 spacer-cell handling (vtebench's `unicode`).
+//!   spacer-cell handling (vtebench's `unicode`).
 //! - `scrolling` — the line-feed scroll routine, the engine's most frequent
-//!                 state mutation (vtebench's `scrolling*`, which are one path
-//!                 to us since we shift buffer rows rather than redraw a region).
+//!   state mutation (vtebench's `scrolling*`, which are one path to us since we
+//!   shift buffer rows rather than redraw a region).
 //!
 //! Each input is generated deterministically here — no external files, no RNG —
 //! so the byte stream (and thus the MB/s figure) is reproducible across runs.
