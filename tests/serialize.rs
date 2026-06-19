@@ -340,6 +340,29 @@ fn decode_rejects_span_with_left_past_right() {
     assert!(decode(&b).is_err(), "left>right must error, not panic");
 }
 
+/// A span with `left=0, right=65535` is a valid `right >= left`, but the run
+/// length `right - left + 1` overflows `u16` (65535 + 1). decode must widen
+/// before the arithmetic and return a typed error (the truncated buffer can't
+/// supply 65536 cells), never panic. Found by `cargo fuzz run serialize` (#33).
+#[test]
+fn decode_rejects_span_length_u16_overflow() {
+    let mut b = Vec::new();
+    b.extend_from_slice(b"JT"); // magic
+    b.push(1); // version
+    b.push(0); // scroll flag
+    b.push(1); // kind = Partial
+    b.extend_from_slice(&80u16.to_le_bytes()); // cols
+    b.extend_from_slice(&24u16.to_le_bytes()); // rows
+    b.extend_from_slice(&1u16.to_le_bytes()); // span count
+    b.extend_from_slice(&0u16.to_le_bytes()); // line
+    b.extend_from_slice(&0u16.to_le_bytes()); // left = 0
+    b.extend_from_slice(&65535u16.to_le_bytes()); // right = 65535 -> len overflows u16
+    assert!(
+        decode(&b).is_err(),
+        "u16-overflowing span length must error, not panic"
+    );
+}
+
 /// A Full frame carrying real cells (not just the kind flag) round-trips.
 #[test]
 fn round_trip_full_frame_with_cells() {

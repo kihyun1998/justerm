@@ -164,7 +164,11 @@ pub fn decode(bytes: &[u8]) -> Result<Frame, DecodeError> {
         if right < left {
             return Err(DecodeError::BadSpan);
         }
-        let n = (right - left + 1) as usize;
+        // Widen before the arithmetic: `right - left + 1` in `u16` overflows
+        // when `right == u16::MAX` (e.g. left=0, right=65535), panicking under
+        // overflow checks. `right >= left` is enforced just above, so the
+        // subtraction in `usize` cannot underflow.
+        let n = right as usize - left as usize + 1;
         let mut cells = Vec::with_capacity(n);
         for _ in 0..n {
             cells.push(decode_cell(&mut r)?);
