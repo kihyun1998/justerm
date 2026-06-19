@@ -134,8 +134,9 @@ transform we decline.
 ## Decision
 
 Ship a **separate `justerm-wasm` crate** in a Cargo workspace (`version.workspace = true` →
-version-lockstep with the core), `crate-type = ["cdylib"]`, depending on `justerm` +
-`wasm-bindgen` + `js-sys`. It exposes a single `#[wasm_bindgen]` entry, `decode_frame(&[u8]) ->
+version-lockstep with the core), `crate-type = ["cdylib", "rlib"]` (`cdylib` is the wasm artifact;
+`rlib` lets the crate's own test/bench targets link it — the *core* crate, not this one, is what
+stays rlib-only), depending on `justerm` + `wasm-bindgen` + `js-sys`. It exposes a single `#[wasm_bindgen]` entry, `decode_frame(&[u8]) ->
 Result<DecodedFrame, JsValue>`, that calls `justerm::decode` and presents the result as Axis-3's
 flat-buffer-view shape. The core `justerm` crate is untouched — its dependency set and boundary
 invariants hold.

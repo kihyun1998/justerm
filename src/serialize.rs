@@ -15,6 +15,10 @@ use core::num::NonZeroU32;
 const MAGIC: [u8; 2] = *b"JT";
 const VERSION: u8 = 2; // v2 adds the OSC 8 hyperlink side-table + cell `link` (#26)
 
+/// The wire-format version (the gating `VERSION` byte), exposed so a binding can
+/// assert at load that its decoder matches the backend encoder (#34/ADR-0008).
+pub const WIRE_VERSION: u8 = VERSION;
+
 /// Whether a frame redraws everything or just its spans.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum FrameKind {
@@ -105,17 +109,33 @@ pub fn encode(frame: &Frame) -> Vec<u8> {
     out
 }
 
-/// A cell as a fixed 18-byte little-endian record:
+/// Length in bytes of one fixed-width wire cell record (see
+/// [`encode_cell_record`]).
+pub const CELL_RECORD_LEN: usize = 18;
+
+/// Encode one [`Cell`] to its fixed 18-byte little-endian record:
 /// `c` u32 (Unicode scalar) · `fg` u32 · `bg` u32 · `flags` u16 · `extra` u16
 /// (frame-local grapheme index, 0 = none) · `link` u16 (frame-local hyperlink
 /// index, 0 = none). Width derives from `flags`.
+///
+/// This is the single definition of the cell record layout — [`encode`] writes
+/// it per span cell, and an alternate consumer (the WASM decoder, #34/ADR-0008)
+/// reuses it to lay decoded cells out flat without re-implementing the layout,
+/// so the two cannot drift.
+pub fn encode_cell_record(cell: &Cell) -> [u8; CELL_RECORD_LEN] {
+    let mut r = [0u8; CELL_RECORD_LEN];
+    r[0..4].copy_from_slice(&(cell.c as u32).to_le_bytes());
+    r[4..8].copy_from_slice(&encode_color(cell.fg).to_le_bytes());
+    r[8..12].copy_from_slice(&encode_color(cell.bg).to_le_bytes());
+    r[12..14].copy_from_slice(&cell.flags.bits().to_le_bytes());
+    r[14..16].copy_from_slice(&cell.extra.map_or(0, |n| n.get() as u16).to_le_bytes());
+    r[16..18].copy_from_slice(&cell.link.map_or(0, |n| n.get() as u16).to_le_bytes());
+    r
+}
+
+/// Append one cell's wire record to `out` (the [`encode`] hot path).
 fn encode_cell(out: &mut Vec<u8>, cell: &Cell) {
-    out.extend_from_slice(&(cell.c as u32).to_le_bytes());
-    out.extend_from_slice(&encode_color(cell.fg).to_le_bytes());
-    out.extend_from_slice(&encode_color(cell.bg).to_le_bytes());
-    out.extend_from_slice(&cell.flags.bits().to_le_bytes());
-    out.extend_from_slice(&cell.extra.map_or(0, |n| n.get() as u16).to_le_bytes());
-    out.extend_from_slice(&cell.link.map_or(0, |n| n.get() as u16).to_le_bytes());
+    out.extend_from_slice(&encode_cell_record(cell));
 }
 
 /// A colour reference as a tagged u32: high byte = tag

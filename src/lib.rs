@@ -35,7 +35,10 @@ pub use grid::{Grid, Row};
 pub use input::{Key, KeyAction, KeyEvent, Modifiers, MouseAction, MouseButton, MouseEvent};
 pub use search::Match;
 pub use selection::{SelectionSpan, SelectionType, Side};
-pub use serialize::{DecodeError, Frame, FrameKind, Span, decode, encode};
+pub use serialize::{
+    CELL_RECORD_LEN, DecodeError, Frame, FrameKind, Span, WIRE_VERSION, decode, encode,
+    encode_cell_record,
+};
 
 pub use term::Term;
 

@@ -1,10 +1,22 @@
-[package]
-name = "justerm"
+[workspace]
+members = [".", "justerm-wasm"]
+resolver = "3"
+
+# Shared across the core crate and the `justerm-wasm` binding so one version bump
+# moves both — the version-lockstep ADR-0005/0008 require (#34).
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
-description = "A pure terminal engine: VT byte stream to grid + scrollback + damage. No I/O, no rendering, theme-agnostic."
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/kihyun1998/justerm"
+
+[package]
+name = "justerm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "A pure terminal engine: VT byte stream to grid + scrollback + damage. No I/O, no rendering, theme-agnostic."
 readme = "README.md"
 keywords = ["terminal", "vte", "ansi", "tui", "emulator"]
 categories = ["command-line-interface", "parsing"]
