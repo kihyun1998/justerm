@@ -4,8 +4,8 @@
 //! consumes a VT stream originating from a PTY/SSH peer — both are attacker-influenced bytes. The
 //! decoders must answer malformed input with a typed `DecodeError` (or absorb it), never panic,
 //! overflow, or read out of bounds. These properties assert that contract across the whole input
-//! space, not just the hand-written vectors in the other `tests/` files. Companion to ADR-0006's
-//! supply-chain hardening: robustness of what we parse, alongside robustness of what CI runs.
+//! space, not just the hand-written vectors in the other `tests/` files. The two-lane robustness
+//! decision (these properties + the CI-only fuzz lane) is ADR-0007.
 
 use justerm::{Engine, decode, encode};
 use proptest::prelude::*;
