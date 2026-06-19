@@ -45,6 +45,11 @@ jobs:
           echo "tag=$tag package=$pkg"
           test "$tag" = "$pkg" || { echo "::error::tag v$tag != package version $pkg"; exit 1; }
 
+      # The crate is dual-licensed; copy the texts into the package (npm auto-includes LICENSE*) so
+      # the npm artifact ships them, without duplicating the files in the source tree.
+      - name: Include licenses in the package
+        run: cp LICENSE-MIT LICENSE-APACHE justerm-wasm/pkg/
+
       - name: Publish to npm
         env:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}

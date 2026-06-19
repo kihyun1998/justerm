@@ -26,6 +26,15 @@ Pairs as the engine half of a `-term` family with the renderer `beamterm`. First
   `beamterm`).
 - **Build plan**: GitHub issues — Epic #1 (the PRD-equivalent) + slices #2–#12.
 
+## Web consumers
+
+The wire format's decoder is shipped to the web as [`justerm-wasm`](./justerm-wasm) — the native
+`decode` compiled to WASM and published to npm, version-locked to this crate, so the backend encoder
+and the webview decoder share one implementation (no TypeScript mirror to drift). Decode only; the
+consumer's adapter resolves colour references → RGB and codepoints → atlas glyphs. See
+[`justerm-wasm/README.md`](./justerm-wasm/README.md) and
+[ADR-0008](./docs/adr/0008-wasm-decode-binding-separate-crate.md).
+
 ## License
 
 Licensed under either of
