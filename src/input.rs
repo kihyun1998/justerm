@@ -13,21 +13,47 @@
 use bitflags::bitflags;
 
 bitflags! {
-    /// Modifier keys held during an event. The CSI parameter form encodes these
-    /// as `1 + bits` (xterm): Shift=1, Alt=2, Ctrl=4, Meta=8.
+    /// Modifier keys held during an event. The bit values follow the **kitty**
+    /// scheme (the superset): Shift=1, Alt=2, Ctrl=4, Super=8, Hyper=16, Meta=32,
+    /// CapsLock=64, NumLock=128. Legacy xterm can only express the first three
+    /// plus Meta-at-8, so `csi_param` remaps; kitty uses the bits directly (#23).
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
     pub struct Modifiers: u8 {
-        const SHIFT = 0b0001;
-        const ALT   = 0b0010;
-        const CTRL  = 0b0100;
-        const META  = 0b1000;
+        const SHIFT     = 1;
+        const ALT       = 2;
+        const CTRL      = 4;
+        const SUPER     = 8;
+        const HYPER     = 16;
+        const META      = 32;
+        const CAPS_LOCK = 64;
+        const NUM_LOCK  = 128;
     }
 }
 
 impl Modifiers {
-    /// The xterm CSI modifier parameter (`1 + bitmask`), or `None` when no
-    /// modifier is held (the unmodified sequence is used instead).
+    /// The legacy xterm CSI modifier parameter (`1 + bitmask`, Shift=1/Alt=2/
+    /// Ctrl=4/Meta=8), or `None` when none of the legacy-expressible modifiers is
+    /// held. Super/Hyper/CapsLock/NumLock have no legacy form and are dropped.
     fn csi_param(self) -> Option<u8> {
+        let mut bits = 0u8;
+        if self.contains(Modifiers::SHIFT) {
+            bits |= 1;
+        }
+        if self.contains(Modifiers::ALT) {
+            bits |= 2;
+        }
+        if self.contains(Modifiers::CTRL) {
+            bits |= 4;
+        }
+        if self.contains(Modifiers::META) {
+            bits |= 8;
+        }
+        if bits == 0 { None } else { Some(1 + bits) }
+    }
+
+    /// The kitty CSI modifier parameter (`1 + bits`) — the bit values already
+    /// match the kitty scheme, so all eight modifiers are expressible (#23).
+    fn kitty_param(self) -> Option<u8> {
         if self.is_empty() {
             None
         } else {
@@ -60,11 +86,46 @@ pub enum Key {
     F(u8),
 }
 
-/// A key event: a key plus the modifiers held with it.
+/// Press / repeat / release. Legacy reports only presses; the kitty protocol's
+/// "report event types" flag (bit 1) carries repeat and release too (#23).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum KeyAction {
+    #[default]
+    Press,
+    Repeat,
+    Release,
+}
+
+/// A key event: a key, the modifiers held with it, its press/repeat/release type
+/// (defaults to `Press`), and consumer-supplied extras the kitty protocol's
+/// alternate-keys / associated-text flags report (all `None` for legacy).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct KeyEvent {
     pub key: Key,
     pub mods: Modifiers,
+    pub action: KeyAction,
+    /// Kitty alternate-keys (bit 2): the codepoint Shift would produce, if it
+    /// differs from `key`.
+    pub shifted_key: Option<char>,
+    /// Kitty alternate-keys (bit 2): the codepoint at this key's position on the
+    /// base (standard) layout, if it differs from `key`.
+    pub base_key: Option<char>,
+    /// Kitty associated-text (bit 4): the text the key actually produced
+    /// (composed input / dead keys).
+    pub text: Option<char>,
+}
+
+impl Default for KeyEvent {
+    fn default() -> Self {
+        KeyEvent {
+            key: Key::Char('\0'),
+            mods: Modifiers::empty(),
+            action: KeyAction::Press,
+            shifted_key: None,
+            base_key: None,
+            text: None,
+        }
+    }
 }
 
 /// Which mouse button an event concerns. `None` on a [`MouseEvent`] means bare
@@ -141,9 +202,21 @@ pub enum MouseEncoding {
 
 const ESC: u8 = 0x1b;
 
+/// Bit 0 of the kitty progressive-enhancement flags: disambiguate escape codes.
+const KITTY_DISAMBIGUATE: u8 = 0b1;
+
 /// Encode a key event to bytes, given whether DECCKM (application cursor keys)
-/// is active. Returns `None` only for keys with no defined encoding.
-pub fn encode_key(ev: &KeyEvent, app_cursor: bool) -> Option<Vec<u8>> {
+/// is active and the kitty keyboard-protocol flags. Returns `None` only for keys
+/// with no defined encoding.
+pub fn encode_key(ev: &KeyEvent, app_cursor: bool, kitty_flags: u8) -> Option<Vec<u8>> {
+    // Under the kitty protocol, events legacy cannot express (a modifier on a
+    // text key, a release/repeat) take the `CSI unicode ; mods : event u` form;
+    // everything else falls through to legacy (#23).
+    if kitty_flags != 0
+        && let Some(bytes) = kitty_encode(ev, kitty_flags)
+    {
+        return Some(bytes);
+    }
     match ev.key {
         Key::Char(c) => Some(encode_char(c, ev.mods)),
         Key::Up => Some(cursor_key(b'A', ev.mods, app_cursor)),
@@ -168,6 +241,163 @@ pub fn encode_key(ev: &KeyEvent, app_cursor: bool) -> Option<Vec<u8>> {
         }
         Key::F(n) => function_key(n, ev.mods),
     }
+}
+
+/// Bit 1 of the kitty flags: report event types (repeat / release).
+const KITTY_REPORT_EVENTS: u8 = 0b10;
+/// Bit 2 of the kitty flags: report alternate (shifted / base-layout) keys.
+const KITTY_ALTERNATE_KEYS: u8 = 0b100;
+/// Bit 3 of the kitty flags: report all keys (incl. printable) as escape codes.
+const KITTY_ALL_AS_ESCAPE: u8 = 0b1000;
+/// Bit 4 of the kitty flags: report the text a key produced.
+const KITTY_ASSOCIATED_TEXT: u8 = 0b10000;
+
+/// Kitty `CSI unicode ; mods : event u` encoding. Returns `None` to fall through
+/// to legacy when this event needs no kitty form (a plain press of an
+/// unmodified key under disambiguate, etc.). The functional-key codepoint table
+/// and the remaining flags grow this in later slices.
+fn kitty_encode(ev: &KeyEvent, flags: u8) -> Option<Vec<u8>> {
+    // Event sub-parameter — only reported when the report-events flag is on, and
+    // a plain press is the omitted default.
+    let event = if flags & KITTY_REPORT_EVENTS != 0 {
+        match ev.action {
+            KeyAction::Press => None,
+            KeyAction::Repeat => Some(2),
+            KeyAction::Release => Some(3),
+        }
+    } else {
+        None
+    };
+    let modified = ev.mods.kitty_param();
+    let disambiguate = flags & KITTY_DISAMBIGUATE != 0;
+
+    // Functional keys (arrows / nav / F-keys) keep their legacy escape form but
+    // gain the kitty `;mods:event` parameter when modified or evented; an
+    // unmodified press stays legacy.
+    if let Some((number, terminator)) = functional_key(ev.key) {
+        if event.is_none() && modified.is_none() {
+            return None; // legacy form
+        }
+        return Some(kitty_seq(number, modified, event, terminator));
+    }
+
+    // Codepoint keys. Escape is ambiguous (introduces sequences) → disambiguated
+    // even unmodified. Enter/Tab/Backspace are the documented *exceptions*: legacy
+    // unless modified or carrying a non-press event.
+    let codepoint = match ev.key {
+        Key::Escape => 27,
+        Key::Enter => 13,
+        Key::Tab => 9,
+        Key::Backspace => 127,
+        Key::Char(c) => c as u32,
+        _ => return None,
+    };
+    // Escape disambiguates even unmodified. All-as-escape sends *every* key in
+    // CSI u form — by here, functional keys are already handled, so the rest
+    // (Esc/Enter/Tab/Backspace/Char) all qualify. Otherwise a modifier or a
+    // non-press event is needed.
+    let all_as_escape = flags & KITTY_ALL_AS_ESCAPE != 0;
+    let always = (disambiguate && ev.key == Key::Escape) || all_as_escape;
+    if !always && event.is_none() && !(disambiguate && modified.is_some()) {
+        return None;
+    }
+    Some(kitty_csi_u(ev, codepoint, modified, event, flags))
+}
+
+/// The `CSI u` codepoint form, including the alternate-keys and associated-text
+/// sub-fields when their flags are active:
+/// `CSI codepoint[:shifted[:base]] [; mods[:event] [; text]] u`.
+fn kitty_csi_u(
+    ev: &KeyEvent,
+    codepoint: u32,
+    modified: Option<u8>,
+    event: Option<u8>,
+    flags: u8,
+) -> Vec<u8> {
+    let mut s = format!("\x1b[{codepoint}");
+
+    // Alternate keys (bit 2): codepoint : shifted : base.
+    if flags & KITTY_ALTERNATE_KEYS != 0 && (ev.shifted_key.is_some() || ev.base_key.is_some()) {
+        s.push(':');
+        if let Some(sh) = ev.shifted_key {
+            s.push_str(&(sh as u32).to_string());
+        }
+        if let Some(b) = ev.base_key {
+            s.push(':');
+            s.push_str(&(b as u32).to_string());
+        }
+    }
+
+    // The text sub-parameter (bit 4) forces the modifier field to be present.
+    let text = if flags & KITTY_ASSOCIATED_TEXT != 0 {
+        ev.text
+    } else {
+        None
+    };
+    if modified.is_some() || event.is_some() || text.is_some() {
+        s.push(';');
+        s.push_str(&modified.unwrap_or(1).to_string());
+        if let Some(e) = event {
+            s.push(':');
+            s.push_str(&e.to_string());
+        }
+    }
+    if let Some(txt) = text {
+        s.push(';');
+        s.push_str(&(txt as u32).to_string());
+    }
+
+    s.push('u');
+    s.into_bytes()
+}
+
+/// A functional key's legacy CSI form: `(leading number, terminator)` — e.g. Up
+/// is `(1, b'A')` → `CSI 1 A`, Delete is `(3, b'~')` → `CSI 3 ~`. `None` for keys
+/// that take the `CSI u` codepoint form instead.
+fn functional_key(key: Key) -> Option<(u32, u8)> {
+    Some(match key {
+        Key::Up => (1, b'A'),
+        Key::Down => (1, b'B'),
+        Key::Right => (1, b'C'),
+        Key::Left => (1, b'D'),
+        Key::Home => (1, b'H'),
+        Key::End => (1, b'F'),
+        Key::Insert => (2, b'~'),
+        Key::Delete => (3, b'~'),
+        Key::PageUp => (5, b'~'),
+        Key::PageDown => (6, b'~'),
+        Key::F(1) => (1, b'P'),
+        Key::F(2) => (1, b'Q'),
+        Key::F(3) => (1, b'R'),
+        Key::F(4) => (1, b'S'),
+        Key::F(5) => (15, b'~'),
+        Key::F(6) => (17, b'~'),
+        Key::F(7) => (18, b'~'),
+        Key::F(8) => (19, b'~'),
+        Key::F(9) => (20, b'~'),
+        Key::F(10) => (21, b'~'),
+        Key::F(11) => (23, b'~'),
+        Key::F(12) => (24, b'~'),
+        _ => return None,
+    })
+}
+
+/// Build `CSI <number> [; <param> [: <event>]] <terminator>` — the shared shape
+/// of both the `CSI u` codepoint form and the functional-key legacy form. The
+/// `;param` is emitted when modified or evented (param defaults to 1).
+fn kitty_seq(number: u32, modified: Option<u8>, event: Option<u8>, terminator: u8) -> Vec<u8> {
+    let mut s = format!("\x1b[{number}");
+    if modified.is_some() || event.is_some() {
+        s.push(';');
+        s.push_str(&modified.unwrap_or(1).to_string());
+        if let Some(e) = event {
+            s.push(':');
+            s.push_str(&e.to_string());
+        }
+    }
+    let mut v = s.into_bytes();
+    v.push(terminator);
+    v
 }
 
 /// A printable character with modifiers. Ctrl folds an ASCII letter to its

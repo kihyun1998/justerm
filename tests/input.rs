@@ -10,12 +10,16 @@ use justerm::{Engine, Key, KeyEvent, Modifiers, MouseAction, MouseButton, MouseE
 fn key(k: Key) -> KeyEvent {
     KeyEvent {
         key: k,
-        mods: Modifiers::empty(),
+        ..Default::default()
     }
 }
 
 fn key_mod(k: Key, mods: Modifiers) -> KeyEvent {
-    KeyEvent { key: k, mods }
+    KeyEvent {
+        key: k,
+        mods,
+        ..Default::default()
+    }
 }
 
 // ---- characters & control codes ------------------------------------------

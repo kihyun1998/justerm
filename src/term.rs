@@ -53,6 +53,13 @@ pub struct Term {
     mouse_encoding: MouseEncoding,
     /// Focus in/out reporting (?1004): emit `CSI I`/`CSI O` on focus change.
     focus_events: bool,
+    /// Kitty keyboard-protocol progressive-enhancement flags currently in effect
+    /// (bit0 disambiguate, bit1 report-events, bit2 alt-keys, bit3 all-as-escape,
+    /// bit4 associated-text). 0 = legacy. `encode_key` consults these (#23).
+    kitty_flags: u8,
+    /// Saved `kitty_flags` for the protocol's push/pop stack (`CSI > u` pushes,
+    /// `CSI < u` pops). Capped depth — overflow drops the oldest entry.
+    kitty_stack: Vec<u8>,
     /// Consumer events (title / bell / cwd) accumulated since the last
     /// `drain_events` (#12). Pull, not push — see `event.rs`.
     events: Vec<TermEvent>,
@@ -154,6 +161,8 @@ impl Term {
             mouse_protocol: MouseProtocol::Off,
             mouse_encoding: MouseEncoding::Default,
             focus_events: false,
+            kitty_flags: 0,
+            kitty_stack: Vec::new(),
             events: Vec::new(),
             replies: Vec::new(),
             hyperlink_pool: Vec::new(),
@@ -977,9 +986,10 @@ impl Term {
 
     // ---- input encoding (#11) ------------------------------------------------
 
-    /// Encode a key event to bytes using the active cursor-key mode (DECCKM).
+    /// Encode a key event to bytes using the active cursor-key mode (DECCKM)
+    /// and the kitty keyboard-protocol flags (`encode_key` consults both).
     pub fn encode_key(&self, ev: KeyEvent) -> Option<Vec<u8>> {
-        encode_key(&ev, self.app_cursor_keys)
+        encode_key(&ev, self.app_cursor_keys, self.kitty_flags)
     }
 
     /// Encode a mouse event using the active tracking mode + encoding. `None`
@@ -1028,6 +1038,43 @@ impl Term {
                     .extend_from_slice(format!("\x1b[{row};{col}R").as_bytes());
             }
             5 => self.replies.extend_from_slice(b"\x1b[0n"), // status: OK
+            _ => {}
+        }
+    }
+
+    /// Kitty keyboard-protocol negotiation (#23). `lead` is the leading CSI
+    /// intermediate: `?` query, `>` push, `=` set, `<` pop.
+    fn kitty_dispatch(&mut self, lead: u8, params: &Params) {
+        match lead {
+            // Query → report the current flags as `CSI ? flags u` (#27 channel).
+            b'?' => self
+                .replies
+                .extend_from_slice(format!("\x1b[?{}u", self.kitty_flags).as_bytes()),
+            // Push: save the current flags, then set the new ones (default 0).
+            b'>' => {
+                const KITTY_STACK_CAP: usize = 16;
+                if self.kitty_stack.len() >= KITTY_STACK_CAP {
+                    self.kitty_stack.remove(0); // drop the oldest on overflow
+                }
+                self.kitty_stack.push(self.kitty_flags);
+                self.kitty_flags = param_or(params, 0, 0) as u8;
+            }
+            // Pop `n` (default 1): restore from the stack, 0 once empty.
+            b'<' => {
+                for _ in 0..param_or(params, 0, 1) {
+                    self.kitty_flags = self.kitty_stack.pop().unwrap_or(0);
+                }
+            }
+            // Set in place (no push): mode 1 replace, 2 or-in, 3 and-not.
+            b'=' => {
+                let flags = param_or(params, 0, 0) as u8;
+                self.kitty_flags = match param_or(params, 1, 1) {
+                    1 => flags,
+                    2 => self.kitty_flags | flags,
+                    3 => self.kitty_flags & !flags,
+                    _ => self.kitty_flags,
+                };
+            }
             _ => {}
         }
     }
@@ -1877,6 +1924,15 @@ impl Perform for Term {
     }
 
     fn csi_dispatch(&mut self, params: &Params, intermediates: &[u8], _ignore: bool, action: char) {
+        // Kitty keyboard-protocol negotiation: CSI > / = / < / ? ... u. The
+        // leading intermediate distinguishes it from plain `CSI u` (SCORC) (#23).
+        if action == 'u'
+            && let Some(&lead) = intermediates.first()
+            && matches!(lead, b'>' | b'<' | b'=' | b'?')
+        {
+            self.kitty_dispatch(lead, params);
+            return;
+        }
         // DEC private modes arrive with a '?' intermediate.
         if intermediates.first() == Some(&b'?') {
             let mode = param_or(params, 0, 0);

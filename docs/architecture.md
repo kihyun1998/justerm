@@ -286,6 +286,25 @@ deferred behavior) it tracks — then add what you find here.** Seeds (caught in
   mouse — once mistakenly called out-of-bounds — is in scope: the consumer supplies the pixels, the
   engine only formats them; landed in #28. The genuinely-excluded mode is `?1001` hilite tracking, a
   stateful handshake, not an encoding.) [#11]
+- **The kitty keyboard protocol is a negotiated flag stack that rewrites only what legacy can't express.**
+  An app enables it via `CSI > flags u` (push the current flags, set new), `CSI = flags ; mode u` (set in
+  place — mode 1 replace / 2 or-in / 3 and-not), `CSI < n u` (pop n), and queries with `CSI ? u` → the
+  engine replies `CSI ? flags u` on the #27 channel. These route by their leading `>`/`=`/`<`/`?`
+  intermediate, so a plain `CSI u` stays SCORC. The stack is depth-capped (oldest dropped). The five
+  progressive flags gate `encode_key`: bit0 disambiguate, bit1 report-events (repeat/release), bit2
+  alternate-keys (`codepoint:shifted:base`), bit3 all-as-escape (printable chars → `CSI u`), bit4
+  associated-text (`…; text` codepoints). The load-bearing rule: kitty **only changes what legacy
+  cannot express** — a plain unmodified press stays legacy; the `CSI u`/extended form appears only for a
+  modifier legacy can't carry, a release/repeat event, or an ambiguous key. The per-key exceptions are
+  spec-verified, not guessed: **Escape** disambiguates even unmodified (it introduces sequences), but
+  **Enter/Tab/Backspace stay legacy** (the documented exceptions); functional keys (arrows/nav/F1–F12)
+  keep their legacy terminator (`A`…/`~`) and only gain the `;mods:event` parameter. Modifiers carry the
+  **kitty bit scheme** (Super=8/Meta=32/… — the superset), so `csi_param` remaps to the legacy
+  Shift1/Alt2/Ctrl4/Meta8 while `kitty_param` uses the bits directly. The exotic functional keys
+  (F13–F35, keypad, media, lock, modifier-as-key) are **deferred**: they need a `Key`-enum expansion the
+  consumer must drive, have no dogfood (encode is inbound — no capture exercises it), and even the engine
+  library `alacritty_terminal` does no key encoding at all. Verified against a real neovim+kitty session
+  capture (`tests/fixtures/neovim_kitty.raw`). [#23]
 
 - **Consumer events are pull-drained, and OSC 8 is not one of them.** Title (OSC 0/2), bell (BEL), and
   cwd (OSC 7) are point-in-time notifications: the engine queues them during `feed` and the consumer
