@@ -95,6 +95,11 @@ pub struct MouseEvent {
     pub action: MouseAction,
     pub col: usize,
     pub row: usize,
+    /// 0-based pixel coordinates, used only by the `?1016` SGR-pixels encoding —
+    /// the consumer (which has the window geometry) supplies them; the engine
+    /// only formats them. Ignored by the cell-based encodings.
+    pub px: usize,
+    pub py: usize,
     pub mods: Modifiers,
 }
 
@@ -122,6 +127,16 @@ pub enum MouseEncoding {
     Default,
     /// `?1006` SGR `CSI < Cb ; Cx ; Cy M|m` — coords unbounded, release distinct.
     Sgr,
+    /// `?1015` urxvt `CSI Cb ; Cx ; Cy M` — the Default byte semantics (Cb with
+    /// the +32 base, release loses button identity) as decimal params, always
+    /// terminated by `M`. Unbounded coords, no separate release form.
+    Urxvt,
+    /// `?1005` UTF-8 — the Default `CSI M Cb Cx Cy` framing but each value
+    /// UTF-8-encoded, so values past 127 become multi-byte (extends the range).
+    Utf8,
+    /// `?1016` SGR-pixels — the SGR framing but the coordinates are pixels
+    /// (from `MouseEvent::px`/`py`) instead of cells.
+    SgrPixels,
 }
 
 const ESC: u8 = 0x1b;
@@ -294,9 +309,15 @@ pub fn encode_mouse(ev: &MouseEvent, proto: MouseProtocol, enc: MouseEncoding) -
     let row1 = ev.row + 1;
 
     match enc {
-        MouseEncoding::Sgr => {
+        MouseEncoding::Sgr | MouseEncoding::SgrPixels => {
+            // SGR framing; `?1016` swaps cell coords for the consumer's pixels.
             // SGR keeps the button identity on release; the terminator says which.
             let cb = button_bits + motion + mod_bits;
+            let (x, y) = if enc == MouseEncoding::SgrPixels {
+                (ev.px + 1, ev.py + 1)
+            } else {
+                (col1, row1)
+            };
             let final_byte = if ev.action == MouseAction::Release {
                 b'm'
             } else {
@@ -305,9 +326,9 @@ pub fn encode_mouse(ev: &MouseEvent, proto: MouseProtocol, enc: MouseEncoding) -
             let mut v = vec![ESC, b'[', b'<'];
             v.extend_from_slice(cb.to_string().as_bytes());
             v.push(b';');
-            v.extend_from_slice(col1.to_string().as_bytes());
+            v.extend_from_slice(x.to_string().as_bytes());
             v.push(b';');
-            v.extend_from_slice(row1.to_string().as_bytes());
+            v.extend_from_slice(y.to_string().as_bytes());
             v.push(final_byte);
             Some(v)
         }
@@ -323,7 +344,47 @@ pub fn encode_mouse(ev: &MouseEvent, proto: MouseProtocol, enc: MouseEncoding) -
             let cy = (row1 + 32).min(255) as u8;
             Some(vec![ESC, b'[', b'M', cb as u8, cx, cy])
         }
+        MouseEncoding::Urxvt => {
+            // Default's Cb semantics (release → button 3, +32 base) but as decimal
+            // params and always terminated by `M`.
+            let base = if ev.action == MouseAction::Release {
+                3
+            } else {
+                button_bits
+            };
+            let cb = base + motion + mod_bits + 32;
+            let mut v = vec![ESC, b'['];
+            v.extend_from_slice(cb.to_string().as_bytes());
+            v.push(b';');
+            v.extend_from_slice(col1.to_string().as_bytes());
+            v.push(b';');
+            v.extend_from_slice(row1.to_string().as_bytes());
+            v.push(b'M');
+            Some(v)
+        }
+        MouseEncoding::Utf8 => {
+            // Default's CSI M framing, but each value UTF-8-encoded so it can
+            // exceed one byte (the 223-column fix that predates SGR).
+            let base = if ev.action == MouseAction::Release {
+                3
+            } else {
+                button_bits
+            };
+            let mut v = vec![ESC, b'[', b'M'];
+            push_utf8(&mut v, base + motion + mod_bits + 32);
+            push_utf8(&mut v, col1 + 32);
+            push_utf8(&mut v, row1 + 32);
+            Some(v)
+        }
     }
+}
+
+/// Append `val` UTF-8-encoded (a single code point) — the ?1005 coordinate
+/// packing. Out-of-range values fall back to the replacement character.
+fn push_utf8(out: &mut Vec<u8>, val: usize) {
+    let c = char::from_u32(val as u32).unwrap_or('\u{fffd}');
+    let mut buf = [0u8; 4];
+    out.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
 }
 
 /// Wrap pasted text in bracketed-paste markers when the mode is on, else return

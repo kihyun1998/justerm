@@ -169,6 +169,8 @@ fn mouse(button: Option<MouseButton>, action: MouseAction, col: usize, row: usiz
         action,
         col,
         row,
+        px: 0,
+        py: 0,
         mods: Modifiers::empty(),
     }
 }
@@ -243,6 +245,8 @@ fn mouse_wheel_and_modifiers_sgr() {
         action: MouseAction::Press,
         col: 0,
         row: 0,
+        px: 0,
+        py: 0,
         mods: Modifiers::CTRL,
     };
     assert_eq!(term.encode_mouse(ctrl_left).unwrap(), b"\x1b[<16;1;1M");

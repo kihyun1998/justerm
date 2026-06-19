@@ -1911,6 +1911,12 @@ impl Perform for Term {
                 ('l', 1000) | ('l', 1002) | ('l', 1003) => self.mouse_protocol = MouseProtocol::Off,
                 ('h', 1006) => self.mouse_encoding = MouseEncoding::Sgr,
                 ('l', 1006) => self.mouse_encoding = MouseEncoding::Default,
+                ('h', 1015) => self.mouse_encoding = MouseEncoding::Urxvt,
+                ('l', 1015) => self.mouse_encoding = MouseEncoding::Default,
+                ('h', 1005) => self.mouse_encoding = MouseEncoding::Utf8,
+                ('l', 1005) => self.mouse_encoding = MouseEncoding::Default,
+                ('h', 1016) => self.mouse_encoding = MouseEncoding::SgrPixels,
+                ('l', 1016) => self.mouse_encoding = MouseEncoding::Default,
                 ('h', 1004) => self.focus_events = true,
                 ('l', 1004) => self.focus_events = false,
 

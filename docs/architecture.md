@@ -271,13 +271,21 @@ deferred behavior) it tracks — then add what you find here.** Seeds (caught in
   is press/motion and `m` is release, coords unbounded). Coords are **1-based** in both; the button
   byte packs button low bits + motion `+32` + wheel `64` + modifiers (shift 4 | meta 8 | ctrl 16);
   default encoding has no separate release code (button 3 = "released"), SGR distinguishes via `M`/`m`.
+  Three further encodings (#28) are stateless `encode_mouse` arms on the same `Cb`: `?1015` **urxvt**
+  (`CSI Cb;Cx;Cy M`, the default `Cb` semantics as decimal params, always `M`), `?1005` **UTF-8**
+  (default `CSI M` framing but each value UTF-8-encoded to pass the 223 ceiling), and `?1016` **SGR-pixels**
+  (SGR framing but the coordinates are the consumer-supplied **pixels** in `MouseEvent::px`/`py` — the
+  engine only formats them, it never computes pixels, so the boundary holds). `?1001` hilite tracking is
+  excluded — a stateful interactive handshake, not a stateless encoding, with ~0 real usage.
   (c) **Focus reporting (`?1004`)**: emit `CSI I` on focus-in, `CSI O` on focus-out — only when set.
   (d) **Bracketed paste (`?2004`)**: wrap pasted text in `CSI 200~`…`CSI 201~` so the app never
   mistakes paste content for typed control sequences (a real injection-safety boundary, not cosmetic).
   (e) **Backspace is DEL (`0x7f`), not BS (`0x08`)** — the standard PC-keyboard convention apps assume.
   The kitty keyboard protocol (`CSI u` + a negotiated progressive-flag stack + key-release events) is a
-  *stateful* superset deferred to #23; legacy here is a pure event→bytes function. `?1016` SGR-pixel
-  mouse is out of bounds — it needs pixel/font geometry the engine never has. [#11]
+  *stateful* superset deferred to #23; legacy here is a pure event→bytes function. (`?1016` SGR-pixel
+  mouse — once mistakenly called out-of-bounds — is in scope: the consumer supplies the pixels, the
+  engine only formats them; landed in #28. The genuinely-excluded mode is `?1001` hilite tracking, a
+  stateful handshake, not an encoding.) [#11]
 
 - **Consumer events are pull-drained, and OSC 8 is not one of them.** Title (OSC 0/2), bell (BEL), and
   cwd (OSC 7) are point-in-time notifications: the engine queues them during `feed` and the consumer
