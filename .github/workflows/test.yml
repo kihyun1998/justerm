@@ -22,7 +22,30 @@ jobs:
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
       - name: Format
         run: cargo fmt --all --check
+      # --workspace so the justerm-wasm binding (the flatten core's host unit tests) is gated too.
       - name: Clippy
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Test
-        run: cargo test
+        run: cargo test --workspace
+
+  # The WASM decoder (#34, ADR-0008): build both wasm-pack targets and run the JS-boundary tests on
+  # the wasm32 target. Separate from `test` because it needs the wasm32 target + wasm-pack, and the
+  # tests/web.rs cases call js_sys (they self-exclude off-wasm via #![cfg(target_arch = "wasm32")]).
+  wasm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - name: Add wasm32 target
+        run: rustup target add wasm32-unknown-unknown
+      # Same install model as fuzz.yml's cargo-fuzz: compile from source, no new third-party action.
+      - name: Install wasm-pack
+        run: cargo install wasm-pack --locked
+      - name: Test (node)
+        run: wasm-pack test --node justerm-wasm
+      # Build both published targets — bundler (Vite/webpack) and web (no-bundler ESM) — so a break
+      # in either is caught at PR time (AC1). Publishing happens in publish-wasm.yml on a tag.
+      - name: Build (bundler)
+        run: wasm-pack build --target bundler --out-dir pkg-bundler justerm-wasm
+      - name: Build (web)
+        run: wasm-pack build --target web --out-dir pkg-web justerm-wasm

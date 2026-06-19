@@ -1,0 +1,53 @@
+# Publish the justerm-wasm decoder to the public npm registry (#34, ADR-0008).
+#
+# Trigger: a `vX.Y.Z` tag. The npm package version is derived by wasm-pack from Cargo.toml (the
+# workspace version), so one version bump moves the crate and the npm artifact together (AC4). The
+# verify step below fails the publish if the tag and the built package version disagree, making the
+# lockstep a hard gate rather than a convention.
+#
+# Setup required once by the maintainer: add an `NPM_TOKEN` repository secret (an npm automation
+# token with publish rights for `justerm-wasm`). No new third-party action is introduced — wasm-pack
+# is `cargo install`ed (as in fuzz.yml) and npm auth is a one-line ~/.npmrc, both matching the repo's
+# supply-chain posture (ADR-0006).
+name: publish-wasm
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+
+      - name: Add wasm32 target
+        run: rustup target add wasm32-unknown-unknown
+      - name: Install wasm-pack
+        run: cargo install wasm-pack --locked
+
+      # Bundler target is the published artifact (PenTerm's Vite/webpack consumes it).
+      - name: Build (bundler)
+        run: wasm-pack build --target bundler --out-dir pkg justerm-wasm
+
+      # Version-lockstep gate (AC4): the tag (minus the `v`) must equal the package version wasm-pack
+      # wrote from the crate version. A mismatch means an artifact would publish under a version that
+      # is not the one tagged — fail instead.
+      - name: Verify tag matches package version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          pkg="$(node -p "require('./justerm-wasm/pkg/package.json').version")"
+          echo "tag=$tag package=$pkg"
+          test "$tag" = "$pkg" || { echo "::error::tag v$tag != package version $pkg"; exit 1; }
+
+      - name: Publish to npm
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" > ~/.npmrc
+          npm publish justerm-wasm/pkg --access public

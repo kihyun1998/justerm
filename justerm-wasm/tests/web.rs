@@ -5,6 +5,12 @@
 //! these verify the wasm-bindgen layer that unit tests cannot reach — that the
 //! typed-array views carry the right bytes across the JS boundary, malformed
 //! input throws, and the WASM build decodes identically to the native path.
+//!
+//! wasm32-only: these call `js_sys` (typed-array views over WASM memory), which
+//! panics off-wasm. The crate-level cfg makes a native `cargo test --workspace`
+//! skip this file (compiling it to nothing) while `wasm-pack test --node` still
+//! runs it on the wasm32 target.
+#![cfg(target_arch = "wasm32")]
 
 use justerm::{Cell, Frame, FrameKind, Span};
 use justerm_wasm::{decode_frame, wire_version};
