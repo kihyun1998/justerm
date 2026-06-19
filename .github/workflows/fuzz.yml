@@ -1,0 +1,62 @@
+# Coverage-guided fuzzing of the untrusted-input entry points (decode, feed).
+#
+# CI-only: libFuzzer needs the nightly toolchain (the repo pins stable 1.96.0 via
+# rust-toolchain.toml, so each fuzz step uses `cargo +nightly`, overriding that pin). Counterpart
+# to the proptest properties in tests/robustness.rs — libFuzzer's `-timeout` catches hangs that
+# proptest cannot, and coverage guidance reaches deeper states.
+#
+# Non-blocking: weekly schedule + on demand, never a per-PR gate.
+name: fuzz
+
+on:
+  schedule:
+    # Weekly, Sunday 04:17 UTC.
+    - cron: "17 4 * * 0"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - serialize
+          - feed
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      - name: Install nightly toolchain and cargo-fuzz
+        run: |
+          rustup toolchain install nightly --profile minimal
+          cargo install cargo-fuzz --locked
+
+      - name: Restore corpus
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: fuzz/corpus/${{ matrix.target }}
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
+          restore-keys: |
+            fuzz-corpus-${{ matrix.target }}-
+
+      # -max_total_time bounds the run; -timeout=10 fails an input that runs >10s, catching hangs.
+      - name: Fuzz ${{ matrix.target }}
+        run: cargo +nightly fuzz run ${{ matrix.target }} -- -max_total_time=300 -timeout=10
+
+      - name: Save corpus
+        if: ${{ always() && !cancelled() }}
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: fuzz/corpus/${{ matrix.target }}
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
+
+      - name: Upload crash reproducers
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: fuzz-crash-${{ matrix.target }}
+          path: fuzz/artifacts/${{ matrix.target }}/
+          if-no-files-found: ignore

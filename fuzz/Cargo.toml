@@ -1,0 +1,40 @@
+# Coverage-guided cargo-fuzz / libFuzzer targets for the untrusted-input entry points. CI-only
+# counterpart to the `proptest` properties in tests/robustness.rs: libFuzzer's `-timeout` catches
+# hangs (a non-terminating parse / escape-sequence loop) that proptest cannot, and coverage
+# guidance reaches deeper states than random bytes.
+#
+# Standalone workspace (the empty `[workspace]`): cargo-fuzz convention, detaches this crate from
+# the parent so its nightly/libFuzzer build never touches the normal `cargo build`. The parent's
+# rust-toolchain.toml pins stable 1.96.0; libFuzzer needs nightly, so CI invokes `cargo +nightly
+# fuzz run`, overriding that pin per-invocation.
+[package]
+name = "justerm-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = { version = "0.4", features = ["arbitrary-derive"] }
+justerm = { path = ".." }
+
+[workspace]
+
+[profile.release]
+debug = 1
+
+[[bin]]
+name = "serialize"
+path = "fuzz_targets/serialize.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "feed"
+path = "fuzz_targets/feed.rs"
+test = false
+doc = false
+bench = false
