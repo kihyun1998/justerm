@@ -55,4 +55,6 @@ jobs:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" > ~/.npmrc
-          npm publish justerm-wasm/pkg --access public
+          # `./` prefix: without it npm parses `justerm-wasm/pkg` as a GitHub
+          # owner/repo shorthand, not a local folder, and fails on git ls-remote.
+          npm publish ./justerm-wasm/pkg --access public
