@@ -217,8 +217,9 @@ impl Term {
         self.full_damage = false;
     }
 
-    /// Mark the whole screen damaged (alt switch / clear / flood).
-    fn mark_fully_damaged(&mut self) {
+    /// Mark the whole screen damaged (alt switch / clear / flood, and a consumer
+    /// reattach that needs a full re-sync — see [`crate::Engine::mark_fully_damaged`]).
+    pub fn mark_fully_damaged(&mut self) {
         self.full_damage = true;
     }
 

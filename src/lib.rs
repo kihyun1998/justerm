@@ -167,6 +167,15 @@ impl Engine {
         self.term.reset_damage();
     }
 
+    /// Force the next [`Engine::frame`] to be a `Full` frame (every row), even if
+    /// little changed. The use case is **reattach / late subscribe**: a renderer
+    /// that connects after output has already been parsed needs the whole current
+    /// viewport once, then incremental diffs. Marks the screen fully damaged; the
+    /// next `frame()` reports `FrameKind::Full`.
+    pub fn mark_fully_damaged(&mut self) {
+        self.term.mark_fully_damaged();
+    }
+
     /// The first-class scroll recorded since the last [`Engine::reset_damage`],
     /// if any — lets the renderer shift rows instead of redrawing them.
     pub fn scroll_delta(&self) -> Option<ScrollOp> {
