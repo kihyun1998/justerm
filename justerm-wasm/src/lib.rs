@@ -11,76 +11,134 @@
 //! colour ref -> RGB, codepoint -> atlas glyph-id, and cursor drawing stay the
 //! consumer's theme/renderer-specific adapter. WASM is adopted for maintenance +
 //! consistency, *not* speed — see ADR-0008's "Non-goal" note.
+//!
+//! ## Structure
+//! [`flatten`] is the pure core (`Frame` -> renderer-friendly flat buffers),
+//! testable with plain `cargo test` — no wasm runtime. [`DecodedFrame`] is the
+//! thin `#[wasm_bindgen]` layer that exposes [`Flat`]'s buffers to JS as
+//! zero-copy typed-array views.
 
-use justerm::{FrameKind, decode, encode_cell_record};
+use justerm::{Frame, FrameKind, decode, encode_cell_record};
 use wasm_bindgen::prelude::*;
 
-/// The wire-format version this decoder understands (the `VERSION` byte gating
-/// ADR-0005). A consumer can read it at load time to assert the WASM decoder and
-/// the backend encoder agree before any frame flows; `decodeFrame` also returns a
-/// `BadVersion` error on mismatch, so a stale artifact fails loudly.
-#[wasm_bindgen(js_name = wireVersion)]
-pub fn wire_version() -> u8 {
-    justerm::WIRE_VERSION
+/// Number of `u32` fields per span in the flat span directory:
+/// `line, left, right, cell_offset, cell_count`.
+const SPAN_STRIDE: usize = 5;
+
+/// A decoded frame flattened to renderer-friendly buffers — the pure core the
+/// `#[wasm_bindgen]` layer exposes as views. Kept separate from the binding so
+/// it is testable with plain `cargo test`, no wasm runtime.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct Flat {
+    cols: u16,
+    rows: u16,
+    /// `0` = Full, `1` = Partial.
+    kind: u8,
+    /// `(top, bottom, count)` of the frame's scroll op, applied before spans.
+    scroll: Option<(u16, u16, i16)>,
+    /// Every span's cells concatenated as fixed-stride `CELL_RECORD_LEN` records.
+    cells: Vec<u8>,
+    /// Span directory: `SPAN_STRIDE` `u32`s per span — see [`SPAN_STRIDE`].
+    /// `cell_offset` is the index (in records, not bytes) of the span's first
+    /// cell within [`Flat::cells`]; `cell_count` is its number of records.
+    spans: Vec<u32>,
+    /// Grapheme clusters referenced by cells' `extra` index (frame-local).
+    side_table: Vec<Vec<char>>,
+    /// OSC 8 hyperlink URIs referenced by cells' `link` index (frame-local).
+    link_table: Vec<String>,
+}
+
+/// Flatten a decoded [`Frame`] into renderer-friendly buffers ([`Flat`]).
+///
+/// Cells are laid out flat by reusing `justerm::encode_cell_record` (the single
+/// definition of the cell record layout — no drift). The span directory records
+/// where each span's cells sit so JS walks the *directory*, never per cell.
+fn flatten(frame: &Frame) -> Flat {
+    let cell_count: usize = frame.spans.iter().map(|s| s.cells.len()).sum();
+    let mut cells = Vec::with_capacity(cell_count * justerm::CELL_RECORD_LEN);
+    let mut spans = Vec::with_capacity(frame.spans.len() * SPAN_STRIDE);
+    let mut cell_offset: u32 = 0;
+    for span in &frame.spans {
+        let count = span.cells.len() as u32;
+        spans.extend_from_slice(&[
+            span.line as u32,
+            span.left as u32,
+            span.right as u32,
+            cell_offset,
+            count,
+        ]);
+        cell_offset += count;
+        for cell in &span.cells {
+            cells.extend_from_slice(&encode_cell_record(cell));
+        }
+    }
+
+    Flat {
+        cols: frame.cols,
+        rows: frame.rows,
+        kind: match frame.kind {
+            FrameKind::Full => 0,
+            FrameKind::Partial => 1,
+        },
+        scroll: frame
+            .scroll
+            .map(|s| (s.top as u16, s.bottom as u16, s.count as i16)),
+        cells,
+        spans,
+        side_table: frame.side_table.clone(),
+        link_table: frame.link_table.clone(),
+    }
 }
 
 /// A decoded damage frame, presented for a web renderer.
 ///
 /// Scalars come via getters; the bulk cell data is exposed as a zero-copy
 /// [`js_sys::Uint8Array`] view over WASM linear memory (see [`DecodedFrame::cells`]).
-/// The span directory mapping cells back to grid rows lands in S2.
 #[wasm_bindgen]
 pub struct DecodedFrame {
-    cols: u16,
-    rows: u16,
-    kind: u8,
-    has_scroll: bool,
-    scroll_top: u16,
-    scroll_bottom: u16,
-    scroll_count: i16,
-    cells: Vec<u8>,
+    flat: Flat,
 }
 
 #[wasm_bindgen]
 impl DecodedFrame {
     #[wasm_bindgen(getter)]
     pub fn cols(&self) -> u16 {
-        self.cols
+        self.flat.cols
     }
 
     #[wasm_bindgen(getter)]
     pub fn rows(&self) -> u16 {
-        self.rows
+        self.flat.rows
     }
 
     /// `0` = Full (every row present), `1` = Partial (only the listed spans).
     #[wasm_bindgen(getter)]
     pub fn kind(&self) -> u8 {
-        self.kind
+        self.flat.kind
     }
 
     #[wasm_bindgen(getter, js_name = hasScroll)]
     pub fn has_scroll(&self) -> bool {
-        self.has_scroll
+        self.flat.scroll.is_some()
     }
 
     #[wasm_bindgen(getter, js_name = scrollTop)]
     pub fn scroll_top(&self) -> u16 {
-        self.scroll_top
+        self.flat.scroll.map_or(0, |s| s.0)
     }
 
     #[wasm_bindgen(getter, js_name = scrollBottom)]
     pub fn scroll_bottom(&self) -> u16 {
-        self.scroll_bottom
+        self.flat.scroll.map_or(0, |s| s.1)
     }
 
     #[wasm_bindgen(getter, js_name = scrollCount)]
     pub fn scroll_count(&self) -> i16 {
-        self.scroll_count
+        self.flat.scroll.map_or(0, |s| s.2)
     }
 
-    /// Every cell across the frame's spans, concatenated as fixed-stride 18-byte
-    /// records (`justerm::CELL_RECORD_LEN`), exposed as a zero-copy view into
+    /// Every cell across the frame's spans, concatenated as fixed-stride
+    /// `justerm::CELL_RECORD_LEN`-byte records, exposed as a zero-copy view into
     /// WASM linear memory — the bulk data reaches JS with no per-cell boundary
     /// crossing (#34 AC3).
     ///
@@ -90,10 +148,50 @@ impl DecodedFrame {
     /// the next decode.
     #[wasm_bindgen(getter)]
     pub fn cells(&self) -> js_sys::Uint8Array {
-        // SAFETY: the view borrows `self.cells`, which `self` keeps alive. The
-        // caller must consume it before triggering another WASM allocation.
-        unsafe { js_sys::Uint8Array::view(&self.cells) }
+        // SAFETY: the view borrows `self.flat.cells`, which `self` keeps alive.
+        // The caller must consume it before triggering another WASM allocation.
+        unsafe { js_sys::Uint8Array::view(&self.flat.cells) }
     }
+
+    /// Span directory: 5 `u32`s per span — `line, left, right, cell_offset,
+    /// cell_count` — where `cell_offset` indexes [`DecodedFrame::cells`] in
+    /// *records* (cell k of a span is at byte `(cell_offset + k) * 18`). JS walks
+    /// this directory, never per cell (#34 AC3). Same zero-copy view lifetime as
+    /// [`DecodedFrame::cells`].
+    #[wasm_bindgen(getter)]
+    pub fn spans(&self) -> js_sys::Uint32Array {
+        // SAFETY: as `cells` — the view borrows `self`-owned memory; consume
+        // before the next WASM allocation.
+        unsafe { js_sys::Uint32Array::view(&self.flat.spans) }
+    }
+
+    /// This frame's grapheme clusters, each joined into a string, indexed by a
+    /// cell's `extra` field (1-based; index 0 means none). Small and rare, so
+    /// copied to a JS array rather than viewed.
+    #[wasm_bindgen(getter, js_name = sideTable)]
+    pub fn side_table(&self) -> Vec<String> {
+        self.flat
+            .side_table
+            .iter()
+            .map(|cluster| cluster.iter().collect())
+            .collect()
+    }
+
+    /// This frame's OSC 8 hyperlink URIs, indexed by a cell's `link` field
+    /// (1-based; index 0 means none). Small and rare, so copied to a JS array.
+    #[wasm_bindgen(getter, js_name = linkTable)]
+    pub fn link_table(&self) -> Vec<String> {
+        self.flat.link_table.clone()
+    }
+}
+
+/// The wire-format version this decoder understands (the `VERSION` byte gating
+/// ADR-0005). A consumer can read it at load time to assert the WASM decoder and
+/// the backend encoder agree before any frame flows; `decodeFrame` also returns a
+/// `BadVersion` error on mismatch, so a stale artifact fails loudly.
+#[wasm_bindgen(js_name = wireVersion)]
+pub fn wire_version() -> u8 {
+    justerm::WIRE_VERSION
 }
 
 /// Decode a justerm wire buffer (ADR-0005) into a [`DecodedFrame`].
@@ -105,31 +203,193 @@ impl DecodedFrame {
 #[wasm_bindgen(js_name = decodeFrame)]
 pub fn decode_frame(bytes: &[u8]) -> Result<DecodedFrame, JsValue> {
     let frame = decode(bytes).map_err(|e| JsValue::from_str(&format!("{e:?}")))?;
+    Ok(DecodedFrame {
+        flat: flatten(&frame),
+    })
+}
 
-    let (has_scroll, scroll_top, scroll_bottom, scroll_count) = match frame.scroll {
-        Some(s) => (true, s.top as u16, s.bottom as u16, s.count as i16),
-        None => (false, 0, 0, 0),
-    };
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use justerm::{Cell, CellFlags, Color, Span};
 
-    let cell_count: usize = frame.spans.iter().map(|s| s.cells.len()).sum();
-    let mut cells = Vec::with_capacity(cell_count * justerm::CELL_RECORD_LEN);
-    for span in &frame.spans {
-        for cell in &span.cells {
-            cells.extend_from_slice(&encode_cell_record(cell));
+    /// Build a plain ASCII span of `s` on `line` starting at column `left`.
+    fn ascii_span(line: u16, left: u16, s: &str) -> Span {
+        let cells: Vec<Cell> = s
+            .chars()
+            .map(|c| Cell {
+                c,
+                ..Cell::default()
+            })
+            .collect();
+        Span {
+            line,
+            left,
+            right: left + cells.len() as u16 - 1,
+            cells,
         }
     }
 
-    Ok(DecodedFrame {
-        cols: frame.cols,
-        rows: frame.rows,
-        kind: match frame.kind {
-            FrameKind::Full => 0,
-            FrameKind::Partial => 1,
-        },
-        has_scroll,
-        scroll_top,
-        scroll_bottom,
-        scroll_count,
-        cells,
-    })
+    fn partial(cols: u16, rows: u16, spans: Vec<Span>) -> Frame {
+        Frame {
+            cols,
+            rows,
+            kind: FrameKind::Partial,
+            scroll: None,
+            spans,
+            side_table: vec![],
+            link_table: vec![],
+        }
+    }
+
+    // --- characterization of S1 behavior (cells concat + scalars) ---
+
+    #[test]
+    fn flatten_concatenates_cells_at_record_stride() {
+        let frame = partial(
+            80,
+            24,
+            vec![ascii_span(0, 0, "hi"), ascii_span(1, 0, "abc")],
+        );
+        let flat = flatten(&frame);
+        // 2 + 3 cells, each CELL_RECORD_LEN bytes.
+        assert_eq!(flat.cells.len(), 5 * justerm::CELL_RECORD_LEN);
+        // First cell's bytes match the shared record encoder (no drift).
+        assert_eq!(
+            &flat.cells[..justerm::CELL_RECORD_LEN],
+            &encode_cell_record(&Cell {
+                c: 'h',
+                ..Cell::default()
+            })
+        );
+    }
+
+    #[test]
+    fn flatten_carries_scalars_and_scroll() {
+        let mut frame = partial(120, 40, vec![]);
+        frame.kind = FrameKind::Full;
+        frame.scroll = Some(justerm::ScrollOp {
+            top: 2,
+            bottom: 39,
+            count: -3,
+        });
+        let flat = flatten(&frame);
+        assert_eq!((flat.cols, flat.rows, flat.kind), (120, 40, 0));
+        assert_eq!(flat.scroll, Some((2, 39, -3)));
+    }
+
+    // --- S2: span directory ---
+
+    #[test]
+    fn flatten_builds_span_directory_with_record_offsets() {
+        let frame = partial(
+            80,
+            24,
+            vec![ascii_span(0, 0, "hi"), ascii_span(1, 5, "abc")],
+        );
+        let flat = flatten(&frame);
+        // [line, left, right, cell_offset(records), cell_count] per span.
+        assert_eq!(
+            flat.spans,
+            vec![
+                0, 0, 1, 0, 2, // "hi" at row 0, cols 0..=1, first 2 records
+                1, 5, 7, 2, 3, // "abc" at row 1, cols 5..=7, next 3 records
+            ]
+        );
+    }
+
+    // --- S2: side-table + link-table carried through ---
+
+    #[test]
+    fn flatten_carries_side_and_link_tables() {
+        let mut frame = partial(80, 24, vec![ascii_span(0, 0, "x")]);
+        frame.side_table = vec![vec!['e', '\u{301}'], vec!['a', '\u{308}']];
+        frame.link_table = vec!["https://example.com".to_string()];
+        let flat = flatten(&frame);
+        assert_eq!(
+            flat.side_table,
+            vec![vec!['e', '\u{301}'], vec!['a', '\u{308}']]
+        );
+        assert_eq!(flat.link_table, vec!["https://example.com".to_string()]);
+    }
+
+    // --- S3/AC2: flatten faithfully represents the native-decoded frame ---
+
+    #[test]
+    fn flatten_matches_native_decode_for_a_rich_frame() {
+        use core::num::NonZeroU32;
+        // A frame exercising wide chars, colours, a grapheme ref, a link ref,
+        // scroll, and multiple spans — then round-tripped through the real wire.
+        let wide = Cell {
+            c: '한',
+            flags: CellFlags::WIDE_CHAR,
+            ..Cell::default()
+        };
+        let spacer = Cell {
+            c: ' ',
+            flags: CellFlags::WIDE_CHAR_SPACER,
+            ..Cell::default()
+        };
+        let coloured = Cell {
+            c: 'A',
+            fg: Color::Indexed(9),
+            bg: Color::Rgb(1, 2, 3),
+            flags: CellFlags::BOLD,
+            extra: NonZeroU32::new(1),
+            link: NonZeroU32::new(1),
+        };
+        let frame = Frame {
+            cols: 80,
+            rows: 24,
+            kind: FrameKind::Full,
+            scroll: Some(justerm::ScrollOp {
+                top: 0,
+                bottom: 23,
+                count: 5,
+            }),
+            spans: vec![
+                Span {
+                    line: 0,
+                    left: 0,
+                    right: 2,
+                    cells: vec![wide, spacer, coloured],
+                },
+                ascii_span(3, 10, "hi"),
+            ],
+            side_table: vec![vec!['e', '\u{301}']],
+            link_table: vec!["https://x.example".to_string()],
+        };
+
+        let bytes = justerm::encode(&frame);
+        let native = justerm::decode(&bytes).expect("native decode");
+        let flat = flatten(&native);
+
+        // Scalars + scroll + tables match the native frame.
+        assert_eq!((flat.cols, flat.rows, flat.kind), (80, 24, 0));
+        assert_eq!(flat.scroll, Some((0, 23, 5)));
+        assert_eq!(flat.side_table, native.side_table);
+        assert_eq!(flat.link_table, native.link_table);
+
+        // Cells: the flat buffer equals the shared record encoding of every
+        // native cell, in span order (the WASM path == the native path).
+        let mut expected_cells = Vec::new();
+        let mut expected_spans = Vec::new();
+        let mut off: u32 = 0;
+        for span in &native.spans {
+            let n = span.cells.len() as u32;
+            expected_spans.extend_from_slice(&[
+                span.line as u32,
+                span.left as u32,
+                span.right as u32,
+                off,
+                n,
+            ]);
+            off += n;
+            for cell in &span.cells {
+                expected_cells.extend_from_slice(&encode_cell_record(cell));
+            }
+        }
+        assert_eq!(flat.cells, expected_cells);
+        assert_eq!(flat.spans, expected_spans);
+    }
 }
