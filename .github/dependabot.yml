@@ -1,0 +1,14 @@
+version: 2
+updates:
+  # Runtime crates (vte, bitflags, unicode-width) + dev (criterion).
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+  # The GitHub Actions used by the test + supply-chain workflows. With actions pinned to commit
+  # SHAs (ADR-0006), this is what makes SHA-pinning cheap: Dependabot opens the bump PR with the
+  # new SHA and a version comment, so pins stay both immutable and up to date.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"

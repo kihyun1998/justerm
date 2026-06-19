@@ -1,0 +1,34 @@
+# Supply-chain self-defense for this repo's GitHub Actions (ADR-0006).
+#
+# Runs just-shield (kihyun1998/just-shield) over .github/workflows/** to enforce the action-pinning
+# policy: third-party actions must be pinned to an immutable commit SHA; GitHub-owned actions/* may
+# use version tags. This protects CI from action tag-hijacking (the tj-actions/changed-files class,
+# CVE-2025-30066).
+#
+# just-shield is first-party here (same owner as this repo), so adopting it adds no new third-party
+# trust; it is still pinned to a commit SHA below, per its own R1 rule.
+name: supply-chain
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/**"
+  push:
+    branches: [master]
+    paths:
+      - ".github/workflows/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  just-shield:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: kihyun1998/just-shield@120ece81f159977ffab06b078903afc1f721c116 # v0.3.0
+        with:
+          strict: true

@@ -1,0 +1,28 @@
+# Build / format / lint / test gate.
+#
+# The toolchain is taken from rust-toolchain.toml (pinned channel + clippy/rustfmt) — rustup
+# honors that file automatically on the first cargo invocation, so there is no install step and a
+# new Rust release cannot turn CI red on its own. Bumping the pin is a deliberate, reviewed change
+# (that file says "keep in sync with ci.yml" — this is that ci).
+name: test
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - name: Format
+        run: cargo fmt --all --check
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+      - name: Test
+        run: cargo test
