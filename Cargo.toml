@@ -19,6 +19,11 @@ vte = "0.15"
 
 [dev-dependencies]
 criterion = "0.5"
+# Property-based robustness tests for the untrusted-input entry points (`serialize::decode` over a
+# wire buffer, `Engine::feed` over a VT stream): "decode never panics on arbitrary bytes", plus the
+# encode/decode round-trip the serialization contract (ADR-0005) promises. See ADR-0006's sibling
+# robustness rationale in tests/robustness.rs.
+proptest = "1"
 
 [[bench]]
 name = "throughput"
