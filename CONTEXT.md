@@ -23,8 +23,9 @@ renderer. The first consumer is PenTerm.
 
 The canonical web decoder: the engine's wire-format `decode` compiled to WASM and published to npm
 (as `justerm-wasm`), so a web **Consumer** shares one decoder with the native backend instead of
-re-implementing it. Decode only — it yields reference cells (with **Color references**); resolving
-those and feeding the **Renderer** stay the consumer's adapter. Version-locked to the engine.
+re-implementing it. It yields reference cells (with **Color references**) and the format-level
+helpers to read them; the theme values that resolve those references — the **Palette** — and the
+render policy that feeds the **Renderer** stay the consumer's adapter. Version-locked to the engine.
 
 ## Cell
 
@@ -39,8 +40,16 @@ cell's content is a grapheme, not a single code point.
 ## Color reference
 
 How a cell names its colour without committing to a pixel value: Default, an indexed palette slot, or
-a direct RGB triple. The engine stores references only; resolving a reference to an actual colour is
-the consumer/renderer's job (it owns the theme). Keeps the engine theme-agnostic.
+a direct RGB triple. The engine stores references only; resolving a reference to an actual colour —
+against a **Palette** — is the consumer/renderer's job (it owns the theme). Keeps the engine
+theme-agnostic.
+
+## Palette
+
+The consumer-supplied table that resolves **Color references** to actual colours — the 16 base ANSI
+colours plus default foreground/background, i.e. the theme's values. Indexed slots 16–255 are not
+theme values but follow a fixed standard. The engine never holds a palette (it stores references);
+the consumer owns it because it owns the theme.
 
 ## Grid
 

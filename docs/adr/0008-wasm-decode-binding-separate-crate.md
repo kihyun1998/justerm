@@ -1,6 +1,8 @@
 # ADR-0008: WASM decode binding — a separate crate exposing the canonical decoder as a zero-copy web artifact
 
-Status: accepted (2026-06-19)
+Status: accepted (2026-06-19); amended (2026-06-19, v0.2.0 follow-up to #34 — the JS cell exposure
+moves from a packed byte view to structure-of-arrays, and the package gains format-owned colour
+helpers; the boundary is refined, not breached. See the amendment at the end.)
 
 Note: like ADR-0002, the binding runs in the *consumer's* webview, not in justerm's core
 runtime. This ADR is recorded here because it decides how the engine's wire format (ADR-0005)
@@ -182,3 +184,71 @@ invariants hold.
   the engine to one renderer; the adapter resolves, the decoder does not.
 - **Cell objects across the boundary.** Rejected — Axis 3 A: per-cell marshalling is the inefficiency
   AC3 forbids.
+
+## Amendment (2026-06-19, v0.2.0) — cell exposure as structure-of-arrays + format-owned colour helpers
+
+### What prompted it
+
+The 0.1.0 shape above exposes cells as one packed `Uint8Array` of 18-byte records and documents the
+byte offsets + the tagged-u32 colour encoding in the README for the consumer to hand-parse. That
+re-opens, *at the cell level*, the exact drift the WASM decoder closed at the frame level: a
+consumer's `DataView` offset reader and colour-tag unpacker are a hand-written mirror of
+`encode_cell_record` / `encode_color` that breaks silently when the record changes. The same holds
+for the xterm Indexed-16..255 cube/grayscale formula — a fixed standard (not a theme), so
+reimplemented per consumer it drifts (a wrong level-table entry = wrong colours).
+
+### Refined boundary (the durable principle)
+
+The original "decode only; colour resolution stays the consumer's adapter" was too coarse. Sharper:
+
+- **justerm owns every fixed *format* or *standard*** — the wire records, the tagged-u32 colour-ref
+  encoding, and the xterm Indexed-16..255 formula. Hand-mirroring any of these in a consumer is
+  drift; the package owns the single implementation.
+- **The consumer owns every *theme value* and *render policy*** — the 16 base ANSI colours + default
+  fg/bg (and their hex→u32 and name→index), the attribute interpretations (inverse, dim, hidden,
+  bold→bright), the font atlas, and the cursor.
+- `resolveRgb` sits exactly on the line: a *mechanical* function (justerm) that takes the consumer's
+  *palette* as an argument (theme). justerm still never knows a hex value — it is handed them.
+
+So "colour resolution = the consumer's" sharpens to "the *policy and values* are the consumer's; the
+*mechanical mapping over fixed formats/standards* is justerm's."
+
+### Decided API (v0.2.0) — supersedes the packed `Uint8Array` exposure of Axes 3–4 for the *JS surface*
+
+(The `justerm::decode` reuse, validation, and span directory are unchanged.)
+
+- **Cells as structure-of-arrays views** — `codepoints` / `fg` / `bg` as `Uint32Array`, `flags` /
+  `extra` / `link` as `Uint16Array`; each a zero-copy view into WASM memory, alongside the `spans`
+  directory. The consumer reads `frame.fg[i]` with no offset/stride knowledge — the typed-array type
+  *is* the layout contract, so adding a future field does not break index reads. Chosen over
+  packed+reader: no per-cell object allocation, and no hand-written offset reader to parity-test.
+  (PenTerm confirmed it consumes cells in place — decode → resolve → build beamterm cell → discard —
+  with no Worker transfer / re-send / cache that a single packed buffer would favour, and our views
+  are not transferable out of WASM memory without a copy anyway.)
+- **`decodeColorRef(ref) → { kind, … }`** — unpacks the tagged-u32 colour-ref encoding (format).
+  Object return; not for the hot loop.
+- **`buildPalette({ ansi: Uint32Array(16), defaultFg, defaultBg }) → { colors: Uint32Array(256),
+  defaultFg, defaultBg }`** — fills Indexed 16..255 via the fixed xterm formula once per scheme. The
+  consumer supplies only its 16 theme colours + defaults.
+- **`resolveRgb(ref, palette, role) → 0xRRGGBB`** — pure, alloc-free lookup: `Default` → the role's
+  default, `Indexed` → `palette.colors[i]`, `Rgb` → passthrough. `role` (fg/bg) is required so
+  `Default` picks the right default. *Excludes* inverse/dim/hidden/bold→bright by design — those are
+  render policy the consumer applies afterward (e.g. "dim = −50% luminance vs alpha" is a renderer
+  choice that cannot be an argument the way a palette can).
+
+`flags` is exposed as a raw `Uint16Array`; whether the package also ships flag-bit helpers/constants
+is left open.
+
+### Consequences
+
+- **Wire format unchanged.** `WIRE_VERSION` stays 2 — this changes only how decoded data is
+  *presented* to JS. It is a breaking *JS API* change → npm **0.2.0** (the crates.io crate's Rust API
+  is unaffected). Safe to make now: PenTerm has not yet integrated the WASM decoder (it bridges with a
+  temporary TS decoder).
+- **Parity obligation.** `decodeColorRef` / `resolveRgb` embed the colour-ref encoding mirrored from
+  Rust `encode_color`, so they require a Rust↔JS parity test (encode known refs in Rust, assert the
+  JS helpers agree). `buildPalette`'s xterm formula has no Rust counterpart and is validated against
+  known xterm reference values instead.
+- **Boundary refined, not breached.** justerm-wasm still never knows a hex value or a font atlas; it
+  gained ownership of *fixed formats/standards* only — a sharpening of, not a departure from, the
+  core's theme/renderer-agnostic invariants.
