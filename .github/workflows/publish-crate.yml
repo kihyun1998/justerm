@@ -1,0 +1,43 @@
+# Publish the justerm core crate to crates.io (the Rust-consumer track).
+#
+# Sibling of publish-wasm.yml: the SAME `vX.Y.Z` tag publishes both the crate (here) and the
+# justerm-wasm npm artifact (there), so the two registries stay version-locked from one tag. The
+# workspace version is the single source — bump `[workspace.package] version`, tag the matching
+# `vX.Y.Z`, and both publish at that version.
+#
+# Setup required once by the maintainer: add a `CARGO_REGISTRY_TOKEN` repository secret (a crates.io
+# API token with publish rights). `cargo publish` reads it from the env automatically.
+#
+# Note: a crates.io version cannot be re-published. 0.1.0 was published manually before this workflow
+# existed, so re-tagging v0.1.0 would fail here ("already uploaded") — this automation is for 0.1.1+.
+name: publish-crate
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+
+      # Version-lockstep gate: the tag (minus `v`) must equal the crate version, mirroring
+      # publish-wasm.yml's check so a mismatched tag fails before publishing.
+      - name: Verify tag matches crate version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          crate="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name=="justerm") | .version')"
+          echo "tag=$tag crate=$crate"
+          test "$tag" = "$crate" || { echo "::error::tag v$tag != crate version $crate"; exit 1; }
+
+      # -p justerm only; justerm-wasm is publish = false (npm-only), so it is never sent to crates.io.
+      - name: Publish to crates.io
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish -p justerm --locked
