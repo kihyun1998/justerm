@@ -19,6 +19,13 @@ outside justerm. The engine never draws; it hands state to the renderer.
 An application that embeds the engine — feeds it bytes, transports its output, and pairs it with a
 renderer. The first consumer is PenTerm.
 
+## WASM decoder
+
+The canonical web decoder: the engine's wire-format `decode` compiled to WASM and published to npm
+(as `justerm-wasm`), so a web **Consumer** shares one decoder with the native backend instead of
+re-implementing it. Decode only — it yields reference cells (with **Color references**); resolving
+those and feeding the **Renderer** stay the consumer's adapter. Version-locked to the engine.
+
 ## Cell
 
 One character position in the grid: a grapheme, foreground/background **color references**, text
