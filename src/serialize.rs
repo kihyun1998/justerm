@@ -141,7 +141,11 @@ fn encode_cell(out: &mut Vec<u8>, cell: &Cell) {
 /// A colour reference as a tagged u32: high byte = tag
 /// (0 = Default, 1 = Indexed, 2 = Rgb), low 24 bits = payload. The tag is
 /// mandatory so `Default`, `Indexed(0)`, and `Rgb(0,0,0)` stay distinct.
-fn encode_color(c: Color) -> u32 {
+///
+/// Public so an alternate consumer (the WASM decoder's structure-of-arrays
+/// `fg`/`bg` columns, #35) reuses this single definition of the colour-ref
+/// encoding instead of re-implementing the tag packing — no drift.
+pub fn encode_color(c: Color) -> u32 {
     match c {
         Color::Default => 0,
         Color::Indexed(i) => (1 << 24) | i as u32,

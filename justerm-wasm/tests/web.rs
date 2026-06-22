@@ -3,8 +3,9 @@
 //!
 //! The pure `flatten` logic is unit-tested in `lib.rs` with plain `cargo test`;
 //! these verify the wasm-bindgen layer that unit tests cannot reach — that the
-//! typed-array views carry the right bytes across the JS boundary, malformed
-//! input throws, and the WASM build decodes identically to the native path.
+//! typed-array column views carry the right values across the JS boundary,
+//! malformed input throws, and the WASM build decodes identically to the native
+//! path.
 //!
 //! wasm32-only: these call `js_sys` (typed-array views over WASM memory), which
 //! panics off-wasm. The crate-level cfg makes a native `cargo test --workspace`
@@ -12,7 +13,7 @@
 //! runs it on the wasm32 target.
 #![cfg(target_arch = "wasm32")]
 
-use justerm::{Cell, Frame, FrameKind, Span};
+use justerm::{Cell, CellFlags, Color, Frame, FrameKind, Span};
 use justerm_wasm::{decode_frame, wire_version};
 use wasm_bindgen_test::*;
 
@@ -57,17 +58,51 @@ fn decode_frame_exposes_scalars() {
 }
 
 #[wasm_bindgen_test]
-fn cells_view_carries_record_bytes_across_the_boundary() {
+fn soa_columns_carry_values_across_the_boundary() {
     let bytes = justerm::encode(&sample_frame());
     let df = decode_frame(&bytes).expect("decode");
-    let cells = df.cells();
-    // 2 + 3 cells, 18 bytes each.
-    assert_eq!(cells.length(), 5 * 18);
-    // First record's codepoint u32 (LE) is 'h' = 0x68.
-    assert_eq!(cells.get_index(0), b'h');
-    assert_eq!(cells.get_index(1), 0);
-    // Third cell is 'a' (start of "abc"), at record index 2 → byte 2*18.
-    assert_eq!(cells.get_index(2 * 18), b'a');
+    let cp = df.codepoints();
+    // 2 + 3 cells, one entry per cell.
+    assert_eq!(cp.length(), 5);
+    assert_eq!(cp.get_index(0), 'h' as u32);
+    assert_eq!(cp.get_index(1), 'i' as u32);
+    assert_eq!(cp.get_index(2), 'a' as u32); // start of "abc"
+    // Every column is one-per-cell and reaches JS as its own typed array.
+    assert_eq!(df.fg().length(), 5);
+    assert_eq!(df.bg().length(), 5);
+    assert_eq!(df.flags().length(), 5);
+    assert_eq!(df.extra().length(), 5);
+    assert_eq!(df.link().length(), 5);
+}
+
+#[wasm_bindgen_test]
+fn colour_and_flag_columns_carry_tagged_values() {
+    let cell = Cell {
+        c: 'A',
+        fg: Color::Indexed(9),
+        flags: CellFlags::BOLD,
+        ..Cell::default()
+    };
+    let frame = Frame {
+        cols: 80,
+        rows: 24,
+        kind: FrameKind::Partial,
+        scroll: None,
+        spans: vec![Span {
+            line: 0,
+            left: 0,
+            right: 0,
+            cells: vec![cell],
+        }],
+        side_table: vec![],
+        link_table: vec![],
+    };
+    let bytes = justerm::encode(&frame);
+    let df = decode_frame(&bytes).expect("decode");
+    // fg column carries the tagged-u32 colour ref: Indexed(9) = (1 << 24) | 9.
+    assert_eq!(df.fg().get_index(0), (1 << 24) | 9);
+    // flags column carries the raw CellFlags bits.
+    assert_eq!(df.flags().get_index(0), CellFlags::BOLD.bits());
 }
 
 #[wasm_bindgen_test]

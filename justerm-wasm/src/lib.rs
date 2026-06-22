@@ -18,7 +18,7 @@
 //! thin `#[wasm_bindgen]` layer that exposes [`Flat`]'s buffers to JS as
 //! zero-copy typed-array views.
 
-use justerm::{Frame, FrameKind, decode, encode_cell_record};
+use justerm::{Frame, FrameKind, decode};
 use wasm_bindgen::prelude::*;
 
 /// Number of `u32` fields per span in the flat span directory:
@@ -36,11 +36,21 @@ struct Flat {
     kind: u8,
     /// `(top, bottom, count)` of the frame's scroll op, applied before spans.
     scroll: Option<(u16, u16, i16)>,
-    /// Every span's cells concatenated as fixed-stride `CELL_RECORD_LEN` records.
-    cells: Vec<u8>,
+    /// Per-cell base codepoint (`cell.c`), span order — the `codepoints` column.
+    codepoints: Vec<u32>,
+    /// Per-cell foreground/background colour refs as tagged u32s (see
+    /// `justerm::encode_color`) — the `fg`/`bg` columns.
+    fg: Vec<u32>,
+    bg: Vec<u32>,
+    /// Per-cell `CellFlags` bits — the `flags` column.
+    flags: Vec<u16>,
+    /// Per-cell frame-local side-table / hyperlink indices (`0` = none) — the
+    /// `extra` / `link` columns.
+    extra: Vec<u16>,
+    link: Vec<u16>,
     /// Span directory: `SPAN_STRIDE` `u32`s per span — see [`SPAN_STRIDE`].
-    /// `cell_offset` is the index (in records, not bytes) of the span's first
-    /// cell within [`Flat::cells`]; `cell_count` is its number of records.
+    /// `cell_offset` is the index of the span's first cell within the cell
+    /// columns (`codepoints`/`fg`/…); `cell_count` is its number of cells.
     spans: Vec<u32>,
     /// Grapheme clusters referenced by cells' `extra` index (frame-local).
     side_table: Vec<Vec<char>>,
@@ -50,12 +60,19 @@ struct Flat {
 
 /// Flatten a decoded [`Frame`] into renderer-friendly buffers ([`Flat`]).
 ///
-/// Cells are laid out flat by reusing `justerm::encode_cell_record` (the single
-/// definition of the cell record layout — no drift). The span directory records
-/// where each span's cells sit so JS walks the *directory*, never per cell.
+/// Cells are de-interleaved into one column per field (structure-of-arrays), so a
+/// consumer reads `frame.fg[i]` etc. with no byte-offset knowledge (#35). Colour
+/// refs reuse `justerm::encode_color` — the single definition of the tagged-u32
+/// encoding, no drift. The span directory records where each span's cells sit so
+/// JS walks the *directory*, never per cell.
 fn flatten(frame: &Frame) -> Flat {
     let cell_count: usize = frame.spans.iter().map(|s| s.cells.len()).sum();
-    let mut cells = Vec::with_capacity(cell_count * justerm::CELL_RECORD_LEN);
+    let mut codepoints = Vec::with_capacity(cell_count);
+    let mut fg = Vec::with_capacity(cell_count);
+    let mut bg = Vec::with_capacity(cell_count);
+    let mut flags = Vec::with_capacity(cell_count);
+    let mut extra = Vec::with_capacity(cell_count);
+    let mut link = Vec::with_capacity(cell_count);
     let mut spans = Vec::with_capacity(frame.spans.len() * SPAN_STRIDE);
     let mut cell_offset: u32 = 0;
     for span in &frame.spans {
@@ -69,7 +86,12 @@ fn flatten(frame: &Frame) -> Flat {
         ]);
         cell_offset += count;
         for cell in &span.cells {
-            cells.extend_from_slice(&encode_cell_record(cell));
+            codepoints.push(cell.c as u32);
+            fg.push(justerm::encode_color(cell.fg));
+            bg.push(justerm::encode_color(cell.bg));
+            flags.push(cell.flags.bits());
+            extra.push(cell.extra.map_or(0, |n| n.get() as u16));
+            link.push(cell.link.map_or(0, |n| n.get() as u16));
         }
     }
 
@@ -83,7 +105,12 @@ fn flatten(frame: &Frame) -> Flat {
         scroll: frame
             .scroll
             .map(|s| (s.top as u16, s.bottom as u16, s.count as i16)),
-        cells,
+        codepoints,
+        fg,
+        bg,
+        flags,
+        extra,
+        link,
         spans,
         side_table: frame.side_table.clone(),
         link_table: frame.link_table.clone(),
@@ -92,8 +119,10 @@ fn flatten(frame: &Frame) -> Flat {
 
 /// A decoded damage frame, presented for a web renderer.
 ///
-/// Scalars come via getters; the bulk cell data is exposed as a zero-copy
-/// [`js_sys::Uint8Array`] view over WASM linear memory (see [`DecodedFrame::cells`]).
+/// Scalars come via getters; cells are exposed as **structure-of-arrays** — one
+/// zero-copy typed-array column per field (`codepoints`/`fg`/`bg`/`flags`/
+/// `extra`/`link`) plus the `spans` directory — so a consumer reads `frame.fg[i]`
+/// with no byte-offset knowledge and no per-cell boundary crossing (#34/#35).
 #[wasm_bindgen]
 pub struct DecodedFrame {
     flat: Flat,
@@ -137,31 +166,59 @@ impl DecodedFrame {
         self.flat.scroll.map_or(0, |s| s.2)
     }
 
-    /// Every cell across the frame's spans, concatenated as fixed-stride
-    /// `justerm::CELL_RECORD_LEN`-byte records, exposed as a zero-copy view into
-    /// WASM linear memory — the bulk data reaches JS with no per-cell boundary
-    /// crossing (#34 AC3).
+    /// Per-cell base codepoints (`cell.c` as `u32`), in span order — one of the
+    /// structure-of-arrays cell columns (#35). Zero-copy view into WASM memory;
+    /// the bulk data reaches JS with no per-cell boundary crossing (#34 AC3).
     ///
-    /// # Lifetime
+    /// # Lifetime (applies to every column + `spans`)
     /// The returned array views WASM memory directly; it is invalidated if that
     /// memory grows (e.g. the next `decodeFrame` call allocates). Read it before
     /// the next decode.
     #[wasm_bindgen(getter)]
-    pub fn cells(&self) -> js_sys::Uint8Array {
-        // SAFETY: the view borrows `self.flat.cells`, which `self` keeps alive.
-        // The caller must consume it before triggering another WASM allocation.
-        unsafe { js_sys::Uint8Array::view(&self.flat.cells) }
+    pub fn codepoints(&self) -> js_sys::Uint32Array {
+        // SAFETY: the view borrows `self`-owned memory; consume before the next
+        // WASM allocation. (Same for every column getter below.)
+        unsafe { js_sys::Uint32Array::view(&self.flat.codepoints) }
+    }
+
+    /// Per-cell foreground colour references as tagged `u32`s (high byte = tag
+    /// `Default|Indexed|Rgb`, low 24 = payload). Resolve with `resolveRgb`.
+    #[wasm_bindgen(getter)]
+    pub fn fg(&self) -> js_sys::Uint32Array {
+        unsafe { js_sys::Uint32Array::view(&self.flat.fg) }
+    }
+
+    /// Per-cell background colour references (tagged `u32`s, as [`DecodedFrame::fg`]).
+    #[wasm_bindgen(getter)]
+    pub fn bg(&self) -> js_sys::Uint32Array {
+        unsafe { js_sys::Uint32Array::view(&self.flat.bg) }
+    }
+
+    /// Per-cell `CellFlags` bits. Test with the constants from `flags()`.
+    #[wasm_bindgen(getter)]
+    pub fn flags(&self) -> js_sys::Uint16Array {
+        unsafe { js_sys::Uint16Array::view(&self.flat.flags) }
+    }
+
+    /// Per-cell frame-local grapheme side-table index (`0` = none; else
+    /// `sideTable[extra - 1]`).
+    #[wasm_bindgen(getter)]
+    pub fn extra(&self) -> js_sys::Uint16Array {
+        unsafe { js_sys::Uint16Array::view(&self.flat.extra) }
+    }
+
+    /// Per-cell frame-local hyperlink index (`0` = none; else `linkTable[link - 1]`).
+    #[wasm_bindgen(getter)]
+    pub fn link(&self) -> js_sys::Uint16Array {
+        unsafe { js_sys::Uint16Array::view(&self.flat.link) }
     }
 
     /// Span directory: 5 `u32`s per span — `line, left, right, cell_offset,
-    /// cell_count` — where `cell_offset` indexes [`DecodedFrame::cells`] in
-    /// *records* (cell k of a span is at byte `(cell_offset + k) * 18`). JS walks
-    /// this directory, never per cell (#34 AC3). Same zero-copy view lifetime as
-    /// [`DecodedFrame::cells`].
+    /// cell_count` — where `cell_offset` indexes the cell columns (cell k of a
+    /// span is column index `cell_offset + k`). JS walks this directory, never per
+    /// cell (#34 AC3). Same zero-copy view lifetime as the columns.
     #[wasm_bindgen(getter)]
     pub fn spans(&self) -> js_sys::Uint32Array {
-        // SAFETY: as `cells` — the view borrows `self`-owned memory; consume
-        // before the next WASM allocation.
         unsafe { js_sys::Uint32Array::view(&self.flat.spans) }
     }
 
@@ -242,26 +299,85 @@ mod tests {
         }
     }
 
-    // --- characterization of S1 behavior (cells concat + scalars) ---
+    // --- #35: structure-of-arrays cell columns ---
 
     #[test]
-    fn flatten_concatenates_cells_at_record_stride() {
+    fn flatten_exposes_codepoints_column() {
         let frame = partial(
             80,
             24,
-            vec![ascii_span(0, 0, "hi"), ascii_span(1, 0, "abc")],
+            vec![ascii_span(0, 0, "hi"), ascii_span(1, 5, "abc")],
         );
         let flat = flatten(&frame);
-        // 2 + 3 cells, each CELL_RECORD_LEN bytes.
-        assert_eq!(flat.cells.len(), 5 * justerm::CELL_RECORD_LEN);
-        // First cell's bytes match the shared record encoder (no drift).
         assert_eq!(
-            &flat.cells[..justerm::CELL_RECORD_LEN],
-            &encode_cell_record(&Cell {
-                c: 'h',
-                ..Cell::default()
-            })
+            flat.codepoints,
+            vec!['h' as u32, 'i' as u32, 'a' as u32, 'b' as u32, 'c' as u32]
         );
+    }
+
+    #[test]
+    fn flatten_exposes_fg_bg_columns_as_tagged_refs() {
+        let cells = vec![
+            Cell {
+                c: 'A',
+                fg: Color::Indexed(9),
+                bg: Color::Rgb(1, 2, 3),
+                ..Cell::default()
+            },
+            Cell {
+                c: 'B',
+                ..Cell::default() // Default fg/bg
+            },
+        ];
+        let frame = partial(
+            80,
+            24,
+            vec![Span {
+                line: 0,
+                left: 0,
+                right: 1,
+                cells,
+            }],
+        );
+        let flat = flatten(&frame);
+        // tagged u32: high byte = tag (0 Default, 1 Indexed, 2 Rgb), low 24 = payload.
+        assert_eq!(flat.fg, vec![(1 << 24) | 9, 0]);
+        assert_eq!(flat.bg, vec![(2 << 24) | (1 << 16) | (2 << 8) | 3, 0]);
+    }
+
+    #[test]
+    fn flatten_exposes_flags_extra_link_columns() {
+        use core::num::NonZeroU32;
+        let cells = vec![
+            Cell {
+                c: 'A',
+                flags: CellFlags::BOLD | CellFlags::ITALIC,
+                extra: NonZeroU32::new(3),
+                link: NonZeroU32::new(7),
+                ..Cell::default()
+            },
+            Cell {
+                c: 'B',
+                ..Cell::default() // no flags / extra / link
+            },
+        ];
+        let frame = partial(
+            80,
+            24,
+            vec![Span {
+                line: 0,
+                left: 0,
+                right: 1,
+                cells,
+            }],
+        );
+        let flat = flatten(&frame);
+        assert_eq!(
+            flat.flags,
+            vec![(CellFlags::BOLD | CellFlags::ITALIC).bits(), 0]
+        );
+        assert_eq!(flat.extra, vec![3, 0]); // 1-based index, 0 = none
+        assert_eq!(flat.link, vec![7, 0]);
     }
 
     #[test]
@@ -370,9 +486,14 @@ mod tests {
         assert_eq!(flat.side_table, native.side_table);
         assert_eq!(flat.link_table, native.link_table);
 
-        // Cells: the flat buffer equals the shared record encoding of every
-        // native cell, in span order (the WASM path == the native path).
-        let mut expected_cells = Vec::new();
+        // SoA columns: each equals the corresponding field of every native cell,
+        // in span order (decode -> flatten preserves every cell, no drop/reorder).
+        let mut exp_codepoints = Vec::new();
+        let mut exp_fg = Vec::new();
+        let mut exp_bg = Vec::new();
+        let mut exp_flags = Vec::new();
+        let mut exp_extra = Vec::new();
+        let mut exp_link = Vec::new();
         let mut expected_spans = Vec::new();
         let mut off: u32 = 0;
         for span in &native.spans {
@@ -386,10 +507,20 @@ mod tests {
             ]);
             off += n;
             for cell in &span.cells {
-                expected_cells.extend_from_slice(&encode_cell_record(cell));
+                exp_codepoints.push(cell.c as u32);
+                exp_fg.push(justerm::encode_color(cell.fg));
+                exp_bg.push(justerm::encode_color(cell.bg));
+                exp_flags.push(cell.flags.bits());
+                exp_extra.push(cell.extra.map_or(0, |x| x.get() as u16));
+                exp_link.push(cell.link.map_or(0, |x| x.get() as u16));
             }
         }
-        assert_eq!(flat.cells, expected_cells);
+        assert_eq!(flat.codepoints, exp_codepoints);
+        assert_eq!(flat.fg, exp_fg);
+        assert_eq!(flat.bg, exp_bg);
+        assert_eq!(flat.flags, exp_flags);
+        assert_eq!(flat.extra, exp_extra);
+        assert_eq!(flat.link, exp_link);
         assert_eq!(flat.spans, expected_spans);
     }
 }

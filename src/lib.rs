@@ -37,7 +37,7 @@ pub use search::Match;
 pub use selection::{SelectionSpan, SelectionType, Side};
 pub use serialize::{
     CELL_RECORD_LEN, DecodeError, Frame, FrameKind, Span, WIRE_VERSION, decode, encode,
-    encode_cell_record,
+    encode_cell_record, encode_color,
 };
 
 pub use term::Term;
