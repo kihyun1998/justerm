@@ -225,19 +225,28 @@ So "colour resolution = the consumer's" sharpens to "the *policy and values* are
   (PenTerm confirmed it consumes cells in place — decode → resolve → build beamterm cell → discard —
   with no Worker transfer / re-send / cache that a single packed buffer would favour, and our views
   are not transferable out of WASM memory without a copy anyway.)
-- **`decodeColorRef(ref) → { kind, … }`** — unpacks the tagged-u32 colour-ref encoding (format).
-  Object return; not for the hot loop.
-- **`buildPalette({ ansi: Uint32Array(16), defaultFg, defaultBg }) → { colors: Uint32Array(256),
-  defaultFg, defaultBg }`** — fills Indexed 16..255 via the fixed xterm formula once per scheme. The
-  consumer supplies only its 16 theme colours + defaults.
-- **`resolveRgb(ref, palette, role) → 0xRRGGBB`** — pure, alloc-free lookup: `Default` → the role's
-  default, `Indexed` → `palette.colors[i]`, `Rgb` → passthrough. `role` (fg/bg) is required so
-  `Default` picks the right default. *Excludes* inverse/dim/hidden/bold→bright by design — those are
-  render policy the consumer applies afterward (e.g. "dim = −50% luminance vs alpha" is a renderer
-  choice that cannot be an argument the way a palette can).
+The colour/flag helpers follow one rule — *a JS mirror of a Rust format is allowed only where AC3's
+per-cell no-crossing forces it; everything else is sourced from Rust (structural, no mirror)*:
 
-`flags` is exposed as a raw `Uint16Array`; whether the package also ships flag-bit helpers/constants
-is left open.
+- **`flags` — raw `Uint16Array` + Rust-exported bit constants** (`flags()` via `wasm-bindgen`, read
+  once and cached: `flags[i] & F.BOLD`). The bit positions come straight from Rust `CellFlags`, so
+  there is no JS mirror to drift. Which bits to act on (and how — bold→bright, skip the wide spacer,
+  dim) stays render policy; the constants give only the bit positions.
+- **`buildPalette(ansi: Uint32Array(16), defaultFg, defaultBg) → palette` — WASM (Rust).** Per-scheme,
+  not per-cell, so AC3 does not force JS: it lives in Rust and returns an **owned** copy of the 256
+  resolved indices (a view would be invalidated by later decodes — the palette outlives many frames).
+  The fixed xterm Indexed-16..255 cube/grayscale formula therefore lives in Rust, covered by a Rust
+  unit test — no JS mirror, no separate formula parity check. The consumer supplies only its 16 theme
+  colours + defaults.
+- **`resolveRgb(ref, palette, role) → 0xRRGGBB` (+ `decodeColorRef`) — JS, the *single* mirror.**
+  Per-cell hot loop ⇒ AC3 forces JS. Pure, alloc-free: `Default` → role's default, `Indexed` →
+  `palette[i]`, `Rgb` → passthrough. `role` (fg/bg) is required so `Default` picks the right default.
+  The only Rust format it mirrors is the tagged-u32 colour-ref *encoding* (`>>24` / payload).
+  *Excludes* inverse/dim/hidden/bold→bright — render policy the consumer applies afterward (e.g.
+  "dim = −50% luminance vs alpha" cannot be an argument the way a palette can).
+
+The public `.d.ts` exports `resolveRgb` / `decodeColorRef` / `buildPalette` / `flags()` with types —
+that is the consumer's consumption contract.
 
 ### Consequences
 
@@ -245,10 +254,12 @@ is left open.
   *presented* to JS. It is a breaking *JS API* change → npm **0.2.0** (the crates.io crate's Rust API
   is unaffected). Safe to make now: PenTerm has not yet integrated the WASM decoder (it bridges with a
   temporary TS decoder).
-- **Parity obligation.** `decodeColorRef` / `resolveRgb` embed the colour-ref encoding mirrored from
-  Rust `encode_color`, so they require a Rust↔JS parity test (encode known refs in Rust, assert the
-  JS helpers agree). `buildPalette`'s xterm formula has no Rust counterpart and is validated against
-  known xterm reference values instead.
+- **Parity obligation — one mirror only.** The sole JS mirror is `resolveRgb` / `decodeColorRef`'s
+  tagged-u32 encoding, covered by a Rust↔JS parity test: a `wasm-bindgen` cross-import (a Rust test
+  imports the JS helpers, encodes known `Color`s via `encode_color`, asserts the JS results agree),
+  run in the existing `wasm-pack test --node` lane — no new JS test runner. Flags constants and
+  `buildPalette` are Rust-sourced, so they need no parity test (a Rust unit test covers the xterm
+  formula; the flag bits come from `CellFlags` directly).
 - **Boundary refined, not breached.** justerm-wasm still never knows a hex value or a font atlas; it
   gained ownership of *fixed formats/standards* only — a sharpening of, not a departure from, the
   core's theme/renderer-agnostic invariants.
