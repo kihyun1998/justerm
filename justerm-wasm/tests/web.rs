@@ -60,6 +60,9 @@ fn sample_frame() -> Frame {
         cols: 80,
         rows: 24,
         kind: FrameKind::Partial,
+        cursor_row: 0,
+        cursor_col: 0,
+        cursor_visible: true,
         scroll: None,
         spans: vec![span(0, 0, "hi"), span(1, 5, "abc")],
         side_table: vec![],
@@ -68,8 +71,20 @@ fn sample_frame() -> Frame {
 }
 
 #[wasm_bindgen_test]
-fn wire_version_is_two() {
-    assert_eq!(wire_version(), 2);
+fn wire_version_is_three() {
+    assert_eq!(wire_version(), 3); // #38 bumped 2 -> 3 for the cursor fields
+}
+
+#[wasm_bindgen_test]
+fn decode_frame_exposes_cursor_scalars() {
+    let mut frame = sample_frame();
+    frame.cursor_row = 9;
+    frame.cursor_col = 19;
+    frame.cursor_visible = false;
+    let df = decode_frame(&justerm::encode(&frame)).expect("decode");
+    assert_eq!(df.cursor_row(), 9);
+    assert_eq!(df.cursor_col(), 19);
+    assert!(!df.cursor_visible());
 }
 
 #[wasm_bindgen_test]
@@ -112,6 +127,9 @@ fn colour_and_flag_columns_carry_tagged_values() {
         cols: 80,
         rows: 24,
         kind: FrameKind::Partial,
+        cursor_row: 0,
+        cursor_col: 0,
+        cursor_visible: true,
         scroll: None,
         spans: vec![Span {
             line: 0,

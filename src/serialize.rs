@@ -13,7 +13,7 @@ use core::num::NonZeroU32;
 
 /// Wire magic ("juSTerm") + format version. A new feature bumps `VERSION`.
 const MAGIC: [u8; 2] = *b"JT";
-const VERSION: u8 = 2; // v2 adds the OSC 8 hyperlink side-table + cell `link` (#26)
+const VERSION: u8 = 3; // v3 adds the per-frame cursor row/col + visibility (#38)
 
 /// The wire-format version (the gating `VERSION` byte), exposed so a binding can
 /// assert at load that its decoder matches the backend encoder (#34/ADR-0008).
@@ -46,6 +46,13 @@ pub struct Frame {
     pub cols: u16,
     pub rows: u16,
     pub kind: FrameKind,
+    /// Cursor row/col in screen coordinates (0-based), and whether the engine
+    /// shows it (DECTCEM). Rides in the header because the cursor moves with
+    /// almost every frame (#38). *Drawing* the cursor — cell-invert / overlay —
+    /// stays the consumer's renderer adapter; the engine only reports state.
+    pub cursor_row: u16,
+    pub cursor_col: u16,
+    pub cursor_visible: bool,
     pub scroll: Option<ScrollOp>,
     pub spans: Vec<Span>,
     pub side_table: Vec<Vec<char>>,
@@ -79,6 +86,9 @@ pub fn encode(frame: &Frame) -> Vec<u8> {
     });
     out.extend_from_slice(&frame.cols.to_le_bytes());
     out.extend_from_slice(&frame.rows.to_le_bytes());
+    out.extend_from_slice(&frame.cursor_row.to_le_bytes());
+    out.extend_from_slice(&frame.cursor_col.to_le_bytes());
+    out.push(frame.cursor_visible as u8);
     if let Some(s) = frame.scroll {
         out.extend_from_slice(&(s.top as u16).to_le_bytes());
         out.extend_from_slice(&(s.bottom as u16).to_le_bytes());
@@ -171,6 +181,9 @@ pub fn decode(bytes: &[u8]) -> Result<Frame, DecodeError> {
     };
     let cols = r.u16()?;
     let rows = r.u16()?;
+    let cursor_row = r.u16()?;
+    let cursor_col = r.u16()?;
+    let cursor_visible = r.u8()? != 0;
     let scroll = if has_scroll {
         let top = r.u16()? as usize;
         let bottom = r.u16()? as usize;
@@ -225,6 +238,9 @@ pub fn decode(bytes: &[u8]) -> Result<Frame, DecodeError> {
         cols,
         rows,
         kind,
+        cursor_row,
+        cursor_col,
+        cursor_visible,
         scroll,
         spans,
         side_table,

@@ -137,6 +137,15 @@ deferred behavior) it tracks — then add what you find here.** Seeds (caught in
   selection, and cursor positioning go wrong. [#2]
 - **Background Color Erase (BCE).** Erase (ED/EL) fills cleared cells with the *current SGR
   background*, not default. [#8; note in #2 if deferred]
+- **Cursor-move damage (the previous cursor cell is hidden damage).** Moving the cursor changes *no
+  cell content*, so a content-only damage model records nothing — yet the rendered output changed: the
+  consumer draws the cursor by **cell-invert** (beamterm has no cursor primitive — it consumes flat
+  `CellData`, so the caller swaps fg/bg on the cursor cell; see "How a consumer integrates"). With
+  incremental (`Partial`) damage, a pure cursor move then leaves the old cell still inverted (a ghost)
+  and the new cell never inverted. The engine must damage **both the old and new cursor cells** on a
+  move — Alacritty tracks this as `TermDamageState::last_cursor` (damages the cell the cursor left +
+  the cell it lands on). This is damage-layer hidden state a "cursor is just (row, col)" model omits;
+  it is the engine's job (it owns damage), *not* "drawing" (which stays the consumer's). [#38]
 - **Tab stops are explicit per-column state, not a fixed modulo.** A bool-per-column set: HTS
   (ESC H) sets a stop at the cursor, TBC (CSI g) clears one (param 0) or all (param 3), and HT
   advances to the next *set* stop — or the last column if none remain (no wrap). Default = every
@@ -366,8 +375,14 @@ trusting a path.
 PenTerm (first consumer) wraps justerm: feeds PTY/SSH bytes, ships the binary diff over a Tauri
 Channel, and in the webview a **thin adapter** resolves color references → RGB (via the session's
 frozen scheme) and maps attrs (inverse/dim/hidden → colour manipulation) before handing cells to the
-**`beamterm`** WebGL2 renderer; the adapter draws the cursor. Selection highlight is rendered by
-beamterm but the selection *model + text* stay in justerm (so copy reaches scrollback). This
+**`beamterm`** WebGL2 renderer; the adapter draws the cursor. beamterm has **no cursor primitive** —
+no overlay quad, no cursor uniform, no per-cell reverse bit; it consumes only flat `CellData
+{ symbol, style_bits, fg, bg }`. So the adapter renders the cursor by **cell-invert**: swap fg/bg on
+the cell at the engine-reported cursor row/col (beamterm's own terminal example does exactly this).
+Because of that, the engine must include the old+new cursor cells in `Partial` damage on a cursor move
+(see "Cursor-move damage" under Hidden VT state) — otherwise the inverted cell ghosts. Selection
+highlight is rendered by beamterm but the selection *model + text* stay in justerm (so copy reaches
+scrollback). This
 integration is tracked in PenTerm, not here — but it defines what the engine's output must serve.
 
 In the webview, the adapter does not hand-write the `decode` side of the wire format: justerm ships

@@ -94,6 +94,12 @@ pub struct Term {
     /// The whole screen changed (alt switch / clear / later resize+flood) — the
     /// renderer must redraw everything.
     full_damage: bool,
+    /// The cursor `(row, col)` at the last `reset_damage` (ack) — where the
+    /// consumer last saw the caret. A pure cursor move records no content
+    /// damage, so `damage()` folds this *old* cell plus the current one into the
+    /// frame; without it a cell-invert caret ghosts at the old spot (mirrors
+    /// Alacritty's `last_cursor`). #38.
+    prev_cursor: (usize, usize),
     /// The live selection, in absolute buffer coordinates. `None` when nothing
     /// is selected. See `selection.rs`.
     selection: Option<Selection>,
@@ -143,6 +149,21 @@ enum Resolved {
     },
 }
 
+/// Collect per-line damage bounds into damaged `LineDamage` spans (undamaged
+/// lines dropped). Shared by `damage` (content-only) and `frame_damage`
+/// (content + cursor cells).
+fn bounds_to_lines(bounds: &[LineBounds]) -> Vec<LineDamage> {
+    bounds
+        .iter()
+        .enumerate()
+        .filter(|(_, b)| b.is_damaged())
+        .map(|(line, b)| {
+            let (left, right) = b.span();
+            LineDamage { line, left, right }
+        })
+        .collect()
+}
+
 impl Term {
     pub fn new(cols: usize, rows: usize) -> Self {
         Self::with_scrollback(cols, rows, DEFAULT_SCROLLBACK)
@@ -176,6 +197,7 @@ impl Term {
             line_damage: vec![LineBounds::undamaged(cols); rows],
             scroll: None,
             full_damage: false,
+            prev_cursor: (0, 0), // matches the default cursor's home position
             selection: None,
             decsc: SavedCursor::default(),
             grapheme_pool: Vec::new(),
@@ -194,17 +216,34 @@ impl Term {
         if self.display_offset > 0 {
             return TermDamage::Partial(Vec::new());
         }
-        let lines: Vec<LineDamage> = self
-            .line_damage
-            .iter()
-            .enumerate()
-            .filter(|(_, b)| b.is_damaged())
-            .map(|(line, b)| {
-                let (left, right) = b.span();
-                LineDamage { line, left, right }
-            })
-            .collect();
-        TermDamage::Partial(lines)
+        TermDamage::Partial(bounds_to_lines(&self.line_damage))
+    }
+
+    /// Render damage: content damage plus the cursor cells, for [`Term::frame`].
+    ///
+    /// A pure cursor move changes no cell *content*, so [`Term::damage`] (which
+    /// stays content-only, the cadence/flow-control primitive) would miss it —
+    /// yet a cell-invert caret must clear its old spot and ink the new one. So
+    /// the frame producer folds the old (last-acked) + current cursor cells in,
+    /// but only when the cursor actually moved: a still cursor needs no redraw,
+    /// keeping an idle frame empty. Mirrors Alacritty's `last_cursor`. #38.
+    fn frame_damage(&self) -> TermDamage {
+        if self.full_damage {
+            return TermDamage::Full;
+        }
+        if self.display_offset > 0 {
+            return TermDamage::Partial(Vec::new());
+        }
+        let cur = self.cursor.point();
+        if cur == self.prev_cursor {
+            return TermDamage::Partial(bounds_to_lines(&self.line_damage));
+        }
+        let mut bounds = self.line_damage.clone();
+        bounds[cur.0].expand(cur.1, cur.1);
+        let pr = self.prev_cursor.0.min(self.grid.rows() - 1);
+        let pc = self.prev_cursor.1.min(self.grid.cols() - 1);
+        bounds[pr].expand(pc, pc);
+        TermDamage::Partial(bounds_to_lines(&bounds))
     }
 
     /// Clear accumulated damage. The consumer calls this after applying a frame
@@ -215,6 +254,9 @@ impl Term {
         }
         self.scroll = None;
         self.full_damage = false;
+        // The consumer has now seen the caret at the current position; the next
+        // frame's cursor-move damage is measured from here (#38).
+        self.prev_cursor = self.cursor.point();
     }
 
     /// Mark the whole screen damaged (alt switch / clear / flood, and a consumer
@@ -246,7 +288,8 @@ impl Term {
     pub fn frame(&self) -> Frame {
         let cols = self.grid.cols();
         let rows = self.grid.rows();
-        let (kind, line_spans): (FrameKind, Vec<(usize, usize, usize)>) = match self.damage() {
+        let (kind, line_spans): (FrameKind, Vec<(usize, usize, usize)>) = match self.frame_damage()
+        {
             TermDamage::Full => (
                 FrameKind::Full,
                 (0..rows).map(|l| (l, 0, cols - 1)).collect(),
@@ -301,6 +344,11 @@ impl Term {
             cols: cols as u16,
             rows: rows as u16,
             kind,
+            // The live cursor: position in screen coords + DECTCEM visibility.
+            // Reported, not drawn — the consumer renders the caret (#38).
+            cursor_row: self.cursor.row as u16,
+            cursor_col: self.cursor.col as u16,
+            cursor_visible: self.cursor.visible,
             scroll: self.scroll_delta(),
             spans,
             side_table,
@@ -1208,7 +1256,12 @@ impl Term {
             return;
         }
         std::mem::swap(&mut self.grid, &mut self.alt_grid);
+        // DECTCEM visibility is a standalone mode, not part of the ?1049 cursor
+        // save — preserve it across the restore (xterm/alacritty: ?25 is a Term
+        // mode, never carried by the alt grid swap). #38.
+        let visible = self.cursor.visible;
         self.cursor = self.saved_cursor;
+        self.cursor.visible = visible;
         self.on_alt = false;
         self.display_offset = 0; // return to the primary at its bottom
         self.selection = None; // a selection cannot survive a screen swap

@@ -93,6 +93,20 @@ One entry per cell, in span order. `spans` is a flat directory: 5 `u32`s per spa
 
 `frame.sideTable` (`string[]`) and `frame.linkTable` (`string[]`) carry the referenced clusters/URIs.
 
+## Cursor
+
+The frame also carries the engine's cursor as scalar getters (screen coordinates, 0-based):
+
+| Getter | Type | Meaning |
+|--------|------|---------|
+| `cursorRow` / `cursorCol` | `number` | cursor cell position |
+| `cursorVisible` | `boolean` | `false` when the engine hides the cursor (DECTCEM `?25l`) |
+
+justerm **reports** the cursor; *drawing* it is your adapter's job. beamterm has no cursor primitive,
+so draw the caret by inverting `fg`/`bg` on the cell at `(cursorRow, cursorCol)` (or an overlay quad).
+A pure cursor move is included in the frame's damage spans (the old **and** new cells), so an
+incremental cell-invert renderer clears the previous caret and inks the new one without ghosting.
+
 ## Colour helpers
 
 - **`resolveRgb(ref, palette, role) → 0xRRGGBB`** — resolves a `fg[i]`/`bg[i]` ref: `Default` → the

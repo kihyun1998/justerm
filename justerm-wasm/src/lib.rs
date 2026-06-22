@@ -34,6 +34,12 @@ struct Flat {
     rows: u16,
     /// `0` = Full, `1` = Partial.
     kind: u8,
+    /// Cursor row/col (screen coords, 0-based) + DECTCEM visibility (#38). The
+    /// consumer reads these to draw the caret (cell-invert / overlay); justerm
+    /// only reports state.
+    cursor_row: u16,
+    cursor_col: u16,
+    cursor_visible: bool,
     /// `(top, bottom, count)` of the frame's scroll op, applied before spans.
     scroll: Option<(u16, u16, i16)>,
     /// Per-cell base codepoint (`cell.c`), span order — the `codepoints` column.
@@ -102,6 +108,9 @@ fn flatten(frame: &Frame) -> Flat {
             FrameKind::Full => 0,
             FrameKind::Partial => 1,
         },
+        cursor_row: frame.cursor_row,
+        cursor_col: frame.cursor_col,
+        cursor_visible: frame.cursor_visible,
         scroll: frame
             .scroll
             .map(|s| (s.top as u16, s.bottom as u16, s.count as i16)),
@@ -144,6 +153,26 @@ impl DecodedFrame {
     #[wasm_bindgen(getter)]
     pub fn kind(&self) -> u8 {
         self.flat.kind
+    }
+
+    /// Cursor row (screen coords, 0-based). The consumer draws the caret here by
+    /// cell-invert / overlay — justerm only reports where it is (#38).
+    #[wasm_bindgen(getter, js_name = cursorRow)]
+    pub fn cursor_row(&self) -> u16 {
+        self.flat.cursor_row
+    }
+
+    /// Cursor column (screen coords, 0-based).
+    #[wasm_bindgen(getter, js_name = cursorCol)]
+    pub fn cursor_col(&self) -> u16 {
+        self.flat.cursor_col
+    }
+
+    /// Whether the engine shows the cursor (DECTCEM `?25`). When `false` the
+    /// consumer stops drawing the caret.
+    #[wasm_bindgen(getter, js_name = cursorVisible)]
+    pub fn cursor_visible(&self) -> bool {
+        self.flat.cursor_visible
     }
 
     #[wasm_bindgen(getter, js_name = hasScroll)]
@@ -360,6 +389,9 @@ mod tests {
             cols,
             rows,
             kind: FrameKind::Partial,
+            cursor_row: 0,
+            cursor_col: 0,
+            cursor_visible: true,
             scroll: None,
             spans,
             side_table: vec![],
@@ -515,6 +547,19 @@ mod tests {
         assert_eq!(flat.scroll, Some((2, 39, -3)));
     }
 
+    #[test]
+    fn flatten_carries_cursor() {
+        let mut frame = partial(80, 24, vec![]);
+        frame.cursor_row = 9;
+        frame.cursor_col = 19;
+        frame.cursor_visible = false;
+        let flat = flatten(&frame);
+        assert_eq!(
+            (flat.cursor_row, flat.cursor_col, flat.cursor_visible),
+            (9, 19, false)
+        );
+    }
+
     // --- S2: span directory ---
 
     #[test]
@@ -579,6 +624,9 @@ mod tests {
             cols: 80,
             rows: 24,
             kind: FrameKind::Full,
+            cursor_row: 7,
+            cursor_col: 13,
+            cursor_visible: false,
             scroll: Some(justerm::ScrollOp {
                 top: 0,
                 bottom: 23,
@@ -601,8 +649,17 @@ mod tests {
         let native = justerm::decode(&bytes).expect("native decode");
         let flat = flatten(&native);
 
-        // Scalars + scroll + tables match the native frame.
+        // Scalars + cursor + scroll + tables match the native frame (AC3: the
+        // WASM path yields cursor fields identical to the native engine state).
         assert_eq!((flat.cols, flat.rows, flat.kind), (80, 24, 0));
+        assert_eq!(
+            (flat.cursor_row, flat.cursor_col, flat.cursor_visible),
+            (native.cursor_row, native.cursor_col, native.cursor_visible)
+        );
+        assert_eq!(
+            (flat.cursor_row, flat.cursor_col, flat.cursor_visible),
+            (7, 13, false)
+        );
         assert_eq!(flat.scroll, Some((0, 23, 5)));
         assert_eq!(flat.side_table, native.side_table);
         assert_eq!(flat.link_table, native.link_table);

@@ -20,6 +20,9 @@ fn main() {
         cols: 80,
         rows: 24,
         kind: FrameKind::Partial,
+        cursor_row: 0,
+        cursor_col: 0,
+        cursor_visible: true,
         scroll: None,
         spans: vec![Span {
             line: 0,
