@@ -38,6 +38,43 @@ fn erase_damages_the_cleared_span() {
     }
 }
 
+/// A pure cursor move puts the old *and* new cursor cells into the rendered
+/// frame, even though no cell *content* changed — the consumer draws the caret
+/// by cell-invert (beamterm has no cursor primitive), so without this the old
+/// position keeps the inverted cell (a ghost) and the new one is never inverted.
+/// Caret cells live in `frame()` (the render producer), not `damage()` (which
+/// stays content-only for cadence); mirrors Alacritty's `last_cursor`. (#38)
+#[test]
+fn cursor_move_puts_old_and_new_cells_in_frame() {
+    let mut term = Engine::new(80, 24);
+    term.feed(b"abc"); // content on row 0; cursor now at (0, 3)
+    term.reset_damage(); // ack: consumer has seen the cursor at (0, 3)
+    term.feed(b"\x1b[10;20H"); // CUP to (9, 19); no glyph written
+
+    let covers = |spans: &[justerm::Span], line: u16, col: u16| {
+        spans
+            .iter()
+            .any(|s| s.line == line && s.left <= col && s.right >= col)
+    };
+    let f = term.frame();
+    assert!(
+        covers(&f.spans, 0, 3),
+        "old cursor cell (0,3) must be in the frame, got {:?}",
+        f.spans
+    );
+    assert!(
+        covers(&f.spans, 9, 19),
+        "new cursor cell (9,19) must be in the frame, got {:?}",
+        f.spans
+    );
+
+    // `damage()` stays content-only: a pure move records no content change.
+    assert!(
+        matches!(term.damage(), TermDamage::Partial(ref l) if l.is_empty()),
+        "damage() is content-only and must stay empty on a pure cursor move"
+    );
+}
+
 /// A scroll is a first-class op, not full-screen damage.
 #[test]
 fn scroll_emits_first_class_op_not_full_damage() {

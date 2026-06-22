@@ -14,6 +14,9 @@ fn round_trip_empty_partial_frame() {
         cols: 80,
         rows: 24,
         kind: FrameKind::Partial,
+        cursor_row: 0,
+        cursor_col: 0,
+        cursor_visible: true,
         scroll: None,
         spans: vec![],
         side_table: vec![],
@@ -21,6 +24,26 @@ fn round_trip_empty_partial_frame() {
     };
     let bytes = encode(&frame);
     assert_eq!(decode(&bytes).expect("decode"), frame);
+}
+
+/// Cursor position + visibility survive the wire round-trip (#38). The cursor
+/// moves with almost every frame, so it rides in the frame header alongside
+/// `cols`/`rows` rather than in a span.
+#[test]
+fn round_trip_cursor_position_and_visibility() {
+    let frame = Frame {
+        cols: 80,
+        rows: 24,
+        kind: FrameKind::Partial,
+        cursor_row: 9,
+        cursor_col: 19,
+        cursor_visible: false,
+        scroll: None,
+        spans: vec![],
+        side_table: vec![],
+        link_table: vec![],
+    };
+    assert_eq!(decode(&encode(&frame)).expect("decode"), frame);
 }
 
 /// A Partial frame with one span of plain ASCII cells round-trips — exercises
@@ -38,6 +61,9 @@ fn round_trip_span_of_plain_cells() {
         cols: 80,
         rows: 24,
         kind: FrameKind::Partial,
+        cursor_row: 0,
+        cursor_col: 0,
+        cursor_visible: true,
         scroll: None,
         spans: vec![Span {
             line: 3,
@@ -70,6 +96,9 @@ fn round_trip_distinct_colour_references() {
         cols: 80,
         rows: 24,
         kind: FrameKind::Partial,
+        cursor_row: 0,
+        cursor_col: 0,
+        cursor_visible: true,
         scroll: None,
         spans: vec![Span {
             line: 0,
@@ -107,6 +136,9 @@ fn round_trip_cell_flags_incl_layout_markers() {
         cols: 80,
         rows: 24,
         kind: FrameKind::Partial,
+        cursor_row: 0,
+        cursor_col: 0,
+        cursor_visible: true,
         scroll: None,
         spans: vec![Span {
             line: 5,
@@ -129,6 +161,31 @@ fn decode_rejects_malformed_input() {
     assert!(decode(b"JT").is_err(), "truncated mid-header");
 }
 
+/// A buffer from a superseded wire version fails loudly with `BadVersion`,
+/// never a silent misparse — a consumer pinned to the old encoder is rejected
+/// at the version gate (#38 bumped `VERSION` 2 -> 3).
+#[test]
+fn decode_rejects_superseded_version() {
+    let frame = Frame {
+        cols: 1,
+        rows: 1,
+        kind: FrameKind::Partial,
+        cursor_row: 0,
+        cursor_col: 0,
+        cursor_visible: true,
+        scroll: None,
+        spans: vec![],
+        side_table: vec![],
+        link_table: vec![],
+    };
+    let mut bytes = encode(&frame);
+    bytes[2] = 2; // the VERSION byte sits right after the 2-byte magic
+    assert!(matches!(
+        decode(&bytes),
+        Err(justerm::DecodeError::BadVersion(2))
+    ));
+}
+
 /// A cell whose `extra` references a combining-mark cluster round-trips: the
 /// cell carries only a frame-local index, the code points live in `side_table`.
 #[test]
@@ -146,6 +203,9 @@ fn round_trip_grapheme_side_table() {
         cols: 80,
         rows: 24,
         kind: FrameKind::Partial,
+        cursor_row: 0,
+        cursor_col: 0,
+        cursor_visible: true,
         scroll: None,
         spans: vec![Span {
             line: 0,
@@ -169,6 +229,9 @@ fn cell_record_is_fixed_18_bytes() {
         cols: 1,
         rows: 1,
         kind: FrameKind::Partial,
+        cursor_row: 0,
+        cursor_col: 0,
+        cursor_visible: true,
         scroll: None,
         spans: vec![Span {
             line: 0,
@@ -192,6 +255,9 @@ fn round_trip_scroll_op() {
         cols: 80,
         rows: 24,
         kind: FrameKind::Partial,
+        cursor_row: 0,
+        cursor_col: 0,
+        cursor_visible: true,
         scroll: Some(ScrollOp {
             top: 0,
             bottom: 23,
@@ -211,6 +277,9 @@ fn round_trip_full_frame_kind() {
         cols: 40,
         rows: 12,
         kind: FrameKind::Full,
+        cursor_row: 0,
+        cursor_col: 0,
+        cursor_visible: true,
         scroll: None,
         spans: vec![],
         side_table: vec![],
@@ -241,6 +310,71 @@ fn engine_frame_captures_written_cells() {
         .flat_map(|s| s.cells.iter().map(|c| c.c))
         .collect();
     assert!(chars.contains('h') && chars.contains('i'), "got {chars:?}");
+}
+
+/// The frame reports the live cursor position (#38). The engine only exposes
+/// where the cursor is; *drawing* it stays the consumer's renderer adapter.
+#[test]
+fn engine_frame_reports_cursor_position() {
+    let mut term = Engine::new(80, 24);
+    term.feed(b"\x1b[10;20H"); // CUP to row 10, col 20 (1-based) -> (9, 19)
+    let f = term.frame();
+    assert_eq!((f.cursor_row, f.cursor_col), (9, 19));
+    assert!(f.cursor_visible, "cursor is visible by default");
+}
+
+/// Cursor visibility follows DECTCEM (`?25l` hides, `?25h` shows) — the frame
+/// reflects the engine's hide/show so the consumer can stop drawing the caret.
+#[test]
+fn engine_frame_reports_cursor_visibility_via_dectcem() {
+    let mut term = Engine::new(80, 24);
+    term.feed(b"\x1b[?25l"); // DECTCEM hide
+    assert!(!term.frame().cursor_visible, "hidden after ?25l");
+    term.feed(b"\x1b[?25h"); // DECTCEM show
+    assert!(term.frame().cursor_visible, "visible again after ?25h");
+}
+
+/// DECTCEM visibility is a standalone mode, *not* part of the alt-screen
+/// (`?1049`) cursor save/restore — matches xterm/alacritty, where `?25` is a
+/// Term mode never carried by the alt grid swap. So hiding the cursor *on* the
+/// alt screen persists after leaving it, and showing it persists too. (#38: the
+/// alt path used to restore the whole saved `Cursor` incl. `visible`, wrongly
+/// resurrecting / re-hiding the caret.)
+#[test]
+fn engine_cursor_visibility_is_independent_of_alt_screen() {
+    // Hide on alt → stays hidden after leaving.
+    let mut term = Engine::new(80, 24);
+    term.feed(b"\x1b[?1049h\x1b[?25l\x1b[?1049l");
+    assert!(
+        !term.frame().cursor_visible,
+        "?25l on alt must persist after ?1049l"
+    );
+
+    // Hidden before alt, shown on alt → stays shown after leaving.
+    let mut term = Engine::new(80, 24);
+    term.feed(b"\x1b[?25l\x1b[?1049h\x1b[?25h\x1b[?1049l");
+    assert!(
+        term.frame().cursor_visible,
+        "?25h on alt must persist after ?1049l"
+    );
+}
+
+/// Interaction (cursor × resize): shrinking the screen below the cursor's old
+/// position must not panic when the next frame folds cursor-move damage, and the
+/// reported cursor is clamped into the new bounds. (#38 adversarial)
+#[test]
+fn engine_frame_cursor_survives_resize_shrink() {
+    let mut term = Engine::new(80, 24);
+    term.feed(b"\x1b[20;70H"); // cursor to (19, 69)
+    term.reset_damage(); // prev_cursor = (19, 69)
+    term.resize(10, 5); // shrink well below the old cursor
+    let f = term.frame(); // must not panic
+    assert!(
+        f.cursor_row < 5 && f.cursor_col < 10,
+        "cursor clamped to new bounds, got ({}, {})",
+        f.cursor_row,
+        f.cursor_col
+    );
 }
 
 /// The recorded scroll op reaches the frame (content scrolled off the top).
@@ -382,6 +516,9 @@ fn round_trip_full_frame_with_cells() {
         cols: 3,
         rows: 2,
         kind: FrameKind::Full,
+        cursor_row: 0,
+        cursor_col: 0,
+        cursor_visible: true,
         scroll: None,
         spans: vec![row(0), row(1)],
         side_table: vec![],
@@ -398,6 +535,9 @@ fn round_trip_negative_scroll_count() {
         cols: 80,
         rows: 24,
         kind: FrameKind::Partial,
+        cursor_row: 0,
+        cursor_col: 0,
+        cursor_visible: true,
         scroll: Some(ScrollOp {
             top: 2,
             bottom: 23,
