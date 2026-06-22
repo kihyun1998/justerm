@@ -251,6 +251,74 @@ pub fn wire_version() -> u8 {
     justerm::WIRE_VERSION
 }
 
+/// The `CellFlags` bit positions, exported so a consumer tests `flags[i] & F.bold`
+/// without hard-coding bit values (#36). The values come straight from Rust
+/// `CellFlags`, so there is no JS mirror to drift. Read once and cache (e.g.
+/// destructure the result): the bits never change within a build.
+#[wasm_bindgen]
+pub struct Flags {
+    pub bold: u16,
+    pub dim: u16,
+    pub italic: u16,
+    pub underline: u16,
+    pub blink: u16,
+    pub inverse: u16,
+    pub hidden: u16,
+    pub strikethrough: u16,
+    pub wide_char: u16,
+    pub wide_char_spacer: u16,
+    pub wrapline: u16,
+}
+
+/// The `CellFlags` bit constants (see [`Flags`]).
+#[wasm_bindgen(js_name = flags)]
+pub fn flags() -> Flags {
+    use justerm::CellFlags as F;
+    Flags {
+        bold: F::BOLD.bits(),
+        dim: F::DIM.bits(),
+        italic: F::ITALIC.bits(),
+        underline: F::UNDERLINE.bits(),
+        blink: F::BLINK.bits(),
+        inverse: F::INVERSE.bits(),
+        hidden: F::HIDDEN.bits(),
+        strikethrough: F::STRIKETHROUGH.bits(),
+        wide_char: F::WIDE_CHAR.bits(),
+        wide_char_spacer: F::WIDE_CHAR_SPACER.bits(),
+        wrapline: F::WRAPLINE.bits(),
+    }
+}
+
+/// Resolve a 16-colour ANSI scheme into the full xterm 256-colour table (#36).
+///
+/// Slots `0..16` are the supplied ANSI colours (the theme's values); `16..256`
+/// are the fixed xterm 6×6×6 cube + grayscale ramp, computed here so a consumer
+/// never re-implements that standard. Returns an **owned** copy (built per scheme;
+/// it outlives many `decodeFrame` calls). `ansi` is expected to have 16 entries
+/// (extras ignored, missing treated as `0`). The default fg/bg are *not* part of
+/// the 256 — the consumer keeps them and passes them to `resolveRgb`.
+#[wasm_bindgen(js_name = buildPalette)]
+pub fn build_palette(ansi: &[u32]) -> Vec<u32> {
+    let mut colors = vec![0u32; 256];
+    for (slot, &c) in colors.iter_mut().zip(ansi.iter()).take(16) {
+        *slot = c;
+    }
+    // 6×6×6 cube, indices 16..=231: each component picks one of six fixed levels.
+    const LEVELS: [u32; 6] = [0, 95, 135, 175, 215, 255];
+    for n in 0..216u32 {
+        let r = LEVELS[(n / 36) as usize];
+        let g = LEVELS[((n / 6) % 6) as usize];
+        let b = LEVELS[(n % 6) as usize];
+        colors[16 + n as usize] = (r << 16) | (g << 8) | b;
+    }
+    // Grayscale ramp, indices 232..=255: value = 8 + 10·i (i = 0..24), 8..=238.
+    for i in 0..24u32 {
+        let v = 8 + 10 * i;
+        colors[232 + i as usize] = (v << 16) | (v << 8) | v;
+    }
+    colors
+}
+
 /// Decode a justerm wire buffer (ADR-0005) into a [`DecodedFrame`].
 ///
 /// On a malformed buffer this throws a JS `Error` carrying the `DecodeError`
@@ -297,6 +365,59 @@ mod tests {
             side_table: vec![],
             link_table: vec![],
         }
+    }
+
+    // --- #36: build_palette (xterm 256-colour table) ---
+
+    /// The 16 base ANSI colours a consumer would pass (values are arbitrary here;
+    /// `build_palette` must echo them into slots 0..15 verbatim).
+    const ANSI16: [u32; 16] = [
+        0x000000, 0x800000, 0x008000, 0x808000, 0x000080, 0x800080, 0x008080, 0xc0c0c0, 0x808080,
+        0xff0000, 0x00ff00, 0xffff00, 0x0000ff, 0xff00ff, 0x00ffff, 0xffffff,
+    ];
+
+    #[test]
+    fn build_palette_passes_through_the_16_ansi_colours() {
+        let colors = build_palette(&ANSI16);
+        assert_eq!(colors.len(), 256);
+        assert_eq!(&colors[..16], &ANSI16[..]);
+    }
+
+    #[test]
+    fn build_palette_fills_the_6x6x6_cube() {
+        let colors = build_palette(&ANSI16);
+        // Verified against published xterm values (ditig 256-colours cheat sheet).
+        assert_eq!(colors[16], 0x000000);
+        assert_eq!(colors[21], 0x0000ff);
+        assert_eq!(colors[88], 0x870000);
+        assert_eq!(colors[196], 0xff0000);
+        assert_eq!(colors[226], 0xffff00);
+        assert_eq!(colors[231], 0xffffff);
+    }
+
+    #[test]
+    fn build_palette_fills_the_grayscale_ramp() {
+        let colors = build_palette(&ANSI16);
+        // Verified against published xterm values (ditig 256-colours cheat sheet).
+        assert_eq!(colors[232], 0x080808);
+        assert_eq!(colors[244], 0x808080);
+        assert_eq!(colors[255], 0xeeeeee);
+    }
+
+    #[test]
+    fn flags_constants_match_cell_flags_bits() {
+        let f = flags();
+        assert_eq!(f.bold, CellFlags::BOLD.bits());
+        assert_eq!(f.dim, CellFlags::DIM.bits());
+        assert_eq!(f.italic, CellFlags::ITALIC.bits());
+        assert_eq!(f.underline, CellFlags::UNDERLINE.bits());
+        assert_eq!(f.blink, CellFlags::BLINK.bits());
+        assert_eq!(f.inverse, CellFlags::INVERSE.bits());
+        assert_eq!(f.hidden, CellFlags::HIDDEN.bits());
+        assert_eq!(f.strikethrough, CellFlags::STRIKETHROUGH.bits());
+        assert_eq!(f.wide_char, CellFlags::WIDE_CHAR.bits());
+        assert_eq!(f.wide_char_spacer, CellFlags::WIDE_CHAR_SPACER.bits());
+        assert_eq!(f.wrapline, CellFlags::WRAPLINE.bits());
     }
 
     // --- #35: structure-of-arrays cell columns ---

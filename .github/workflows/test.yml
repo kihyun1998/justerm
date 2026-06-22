@@ -46,6 +46,10 @@ jobs:
       # Build both published targets — bundler (Vite/webpack) and web (no-bundler ESM) — so a break
       # in either is caught at PR time (AC1). Publishing happens in publish-wasm.yml on a tag.
       - name: Build (bundler)
-        run: wasm-pack build --target bundler --out-dir pkg-bundler justerm-wasm
+        run: |
+          wasm-pack build --target bundler --out-dir pkg-bundler justerm-wasm
+          node justerm-wasm/scripts/finish-pkg.mjs justerm-wasm/pkg-bundler
       - name: Build (web)
-        run: wasm-pack build --target web --out-dir pkg-web justerm-wasm
+        run: |
+          wasm-pack build --target web --out-dir pkg-web justerm-wasm
+          node justerm-wasm/scripts/finish-pkg.mjs justerm-wasm/pkg-web

@@ -13,9 +13,34 @@
 //! runs it on the wasm32 target.
 #![cfg(target_arch = "wasm32")]
 
-use justerm::{Cell, CellFlags, Color, Frame, FrameKind, Span};
-use justerm_wasm::{decode_frame, wire_version};
+use justerm::{Cell, CellFlags, Color, Frame, FrameKind, Span, encode_color};
+use justerm_wasm::{build_palette, decode_frame, wire_version};
+use wasm_bindgen::prelude::*;
 use wasm_bindgen_test::*;
+
+// Cross-import the hand-written JS colour helpers so the parity tests below
+// check them against the Rust encoder (the single mirror's safety net, #36).
+#[wasm_bindgen(module = "/js/colors.js")]
+extern "C" {
+    #[wasm_bindgen(js_name = resolveRgb)]
+    fn resolve_rgb(reference: u32, palette: &js_sys::Object, role: u32) -> u32;
+    #[wasm_bindgen(js_name = decodeColorRef)]
+    fn decode_color_ref(reference: u32) -> JsValue;
+}
+
+fn get_str(v: &JsValue, key: &str) -> String {
+    js_sys::Reflect::get(v, &key.into())
+        .unwrap()
+        .as_string()
+        .unwrap()
+}
+
+fn get_num(v: &JsValue, key: &str) -> f64 {
+    js_sys::Reflect::get(v, &key.into())
+        .unwrap()
+        .as_f64()
+        .unwrap()
+}
 
 /// A Partial frame: "hi" at row 0 col 0, "abc" at row 1 col 5.
 fn sample_frame() -> Frame {
@@ -134,4 +159,57 @@ fn decode_frame_throws_on_truncated() {
     let mut bytes = justerm::encode(&sample_frame());
     bytes.truncate(bytes.len() - 4); // chop into the last cell record
     assert!(decode_frame(&bytes).is_err());
+}
+
+// --- #36: colour-helper parity (Rust encode_color = source of truth) ---
+
+#[wasm_bindgen_test]
+fn decode_color_ref_matches_rust_encoding() {
+    let v = decode_color_ref(encode_color(Color::Default));
+    assert_eq!(get_str(&v, "kind"), "default");
+
+    let v = decode_color_ref(encode_color(Color::Indexed(200)));
+    assert_eq!(get_str(&v, "kind"), "indexed");
+    assert_eq!(get_num(&v, "index"), 200.0);
+
+    let v = decode_color_ref(encode_color(Color::Rgb(10, 20, 30)));
+    assert_eq!(get_str(&v, "kind"), "rgb");
+    assert_eq!(get_num(&v, "r"), 10.0);
+    assert_eq!(get_num(&v, "g"), 20.0);
+    assert_eq!(get_num(&v, "b"), 30.0);
+}
+
+#[wasm_bindgen_test]
+fn resolve_rgb_matches_rust_encoding() {
+    // colors[16..] come from the xterm formula; ANSI 0..15 unused here.
+    let colors = build_palette(&[0u32; 16]);
+    let palette = js_sys::Object::new();
+    js_sys::Reflect::set(
+        &palette,
+        &"colors".into(),
+        &js_sys::Uint32Array::from(&colors[..]),
+    )
+    .unwrap();
+    js_sys::Reflect::set(&palette, &"defaultFg".into(), &0x111111_u32.into()).unwrap();
+    js_sys::Reflect::set(&palette, &"defaultBg".into(), &0x222222_u32.into()).unwrap();
+
+    // Default resolves to the role's default (0 = fg, 1 = bg).
+    assert_eq!(
+        resolve_rgb(encode_color(Color::Default), &palette, 0),
+        0x111111
+    );
+    assert_eq!(
+        resolve_rgb(encode_color(Color::Default), &palette, 1),
+        0x222222
+    );
+    // Indexed -> palette.colors[i] (196 is the cube's pure red).
+    assert_eq!(
+        resolve_rgb(encode_color(Color::Indexed(196)), &palette, 0),
+        0xff0000
+    );
+    // Rgb -> packed passthrough.
+    assert_eq!(
+        resolve_rgb(encode_color(Color::Rgb(10, 20, 30)), &palette, 0),
+        0x0a141e
+    );
 }

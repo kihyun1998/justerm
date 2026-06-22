@@ -32,8 +32,11 @@ jobs:
         run: cargo install wasm-pack --locked
 
       # Bundler target is the published artifact (PenTerm's Vite/webpack consumes it).
+      # finish-pkg folds in the hand-written colour helpers (colors.js/.d.ts).
       - name: Build (bundler)
-        run: wasm-pack build --target bundler --out-dir pkg justerm-wasm
+        run: |
+          wasm-pack build --target bundler --out-dir pkg justerm-wasm
+          node justerm-wasm/scripts/finish-pkg.mjs justerm-wasm/pkg
 
       # Version-lockstep gate (AC4): the tag (minus the `v`) must equal the package version wasm-pack
       # wrote from the crate version. A mismatch means an artifact would publish under a version that

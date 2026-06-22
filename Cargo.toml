@@ -5,7 +5,7 @@ resolver = "3"
 # Shared across the core crate and the `justerm-wasm` binding so one version bump
 # moves both — the version-lockstep ADR-0005/0008 require (#34).
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/kihyun1998/justerm"

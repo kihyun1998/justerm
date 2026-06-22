@@ -232,12 +232,14 @@ per-cell no-crossing forces it; everything else is sourced from Rust (structural
   once and cached: `flags[i] & F.BOLD`). The bit positions come straight from Rust `CellFlags`, so
   there is no JS mirror to drift. Which bits to act on (and how — bold→bright, skip the wide spacer,
   dim) stays render policy; the constants give only the bit positions.
-- **`buildPalette(ansi: Uint32Array(16), defaultFg, defaultBg) → palette` — WASM (Rust).** Per-scheme,
-  not per-cell, so AC3 does not force JS: it lives in Rust and returns an **owned** copy of the 256
-  resolved indices (a view would be invalidated by later decodes — the palette outlives many frames).
-  The fixed xterm Indexed-16..255 cube/grayscale formula therefore lives in Rust, covered by a Rust
-  unit test — no JS mirror, no separate formula parity check. The consumer supplies only its 16 theme
-  colours + defaults.
+- **`buildPalette(ansi: Uint32Array(16)) → Uint32Array(256)` — WASM (Rust).** Per-scheme, not
+  per-cell, so AC3 does not force JS: it lives in Rust and returns an **owned** copy of the 256
+  resolved indices (`0..15` = the supplied ANSI colours, `16..255` = the fixed xterm cube/grayscale
+  formula). An owned copy, not a view — the palette outlives many decodes. The formula lives in Rust,
+  covered by a Rust unit test against published xterm values — no JS mirror, no separate formula
+  parity check. It takes **only** the 16 ANSI colours: the default fg/bg are not part of the 256
+  (they are the tag-0 `Default` case), so the consumer keeps them and assembles the resolveRgb
+  palette object itself — `{ colors: buildPalette(ansi16), defaultFg, defaultBg }`.
 - **`resolveRgb(ref, palette, role) → 0xRRGGBB` (+ `decodeColorRef`) — JS, the *single* mirror.**
   Per-cell hot loop ⇒ AC3 forces JS. Pure, alloc-free: `Default` → role's default, `Indexed` →
   `palette[i]`, `Rgb` → passthrough. `role` (fg/bg) is required so `Default` picks the right default.
