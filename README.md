@@ -30,9 +30,10 @@ Pairs as the engine half of a `-term` family with the renderer `beamterm`. First
 
 The wire format's decoder is shipped to the web as [`justerm-wasm`](./justerm-wasm) — the native
 `decode` compiled to WASM and published to npm, version-locked to this crate, so the backend encoder
-and the webview decoder share one implementation (no TypeScript mirror to drift). Decode only; the
-consumer's adapter resolves colour references → RGB and codepoints → atlas glyphs. See
-[`justerm-wasm/README.md`](./justerm-wasm/README.md) and
+and the webview decoder share one implementation (no TypeScript mirror to drift). It decodes into
+structure-of-arrays cell columns and ships the **format-owned** helpers (`resolveRgb` / `buildPalette`
+/ `flags`); the *theme values* (your palette) and *render policy* (atlas, cursor) stay the consumer's
+adapter. See [`justerm-wasm/README.md`](./justerm-wasm/README.md) and
 [ADR-0008](./docs/adr/0008-wasm-decode-binding-separate-crate.md).
 
 ## License

@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "WASM binding for justerm's canonical wire-format decoder (decode only). See ADR-0008."
+description = "WASM decoder for justerm's wire format: structure-of-arrays cell columns + format-owned colour/flag helpers. See ADR-0008."
 readme = "README.md" # wasm-pack copies this into the npm package as its page
 publish = false # published as an npm artifact via wasm-pack, not to crates.io
 
