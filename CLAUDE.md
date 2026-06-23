@@ -75,3 +75,7 @@ Default vocabulary — each triage role's label equals its name. See `docs/agent
 ### Domain docs
 
 Single-context — one `CONTEXT.md` + `docs/adr/` at the repo root. See `docs/agents/domain.md`.
+
+### Releasing
+
+태그 구동 + CI 발행 — `vX.Y.Z` 태그 push 가 crates.io + npm 을 *자동* 발행한다(수동 `cargo publish`/`npm publish` 금지, 충돌남). 버전·semver·GitHub Release 규약은 `docs/agents/release.md`.
