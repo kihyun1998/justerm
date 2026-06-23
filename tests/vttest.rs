@@ -20,7 +20,7 @@ fn dump(term: &Engine) -> String {
     for row in 0..grid.rows() {
         s.push('|');
         for col in 0..grid.cols() {
-            s.push(grid.cell(row, col).c);
+            s.push(grid.cell(row, col).c());
         }
         s.push_str("|\n");
     }

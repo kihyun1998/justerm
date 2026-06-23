@@ -38,10 +38,10 @@ pub(crate) fn reflow(
         }
         let soft = row
             .last()
-            .is_some_and(|c| c.flags.contains(CellFlags::WRAPLINE));
+            .is_some_and(|c| c.flags().contains(CellFlags::WRAPLINE));
         if soft {
             current.extend(row.into_iter().map(|mut c| {
-                c.flags.remove(CellFlags::WRAPLINE);
+                c.remove_flags(CellFlags::WRAPLINE);
                 c
             }));
         } else {
@@ -75,7 +75,7 @@ pub(crate) fn reflow(
                 let mut take = (line.len() - i).min(new_cols);
                 // Don't split a wide char from its spacer: if the row would end
                 // on a WIDE_CHAR lead, drop it to the next row (xterm's newCols-1).
-                if i + take < line.len() && line[i + take - 1].flags.contains(CellFlags::WIDE_CHAR)
+                if i + take < line.len() && line[i + take - 1].flags().contains(CellFlags::WIDE_CHAR)
                 {
                     take -= 1;
                 }
@@ -84,7 +84,7 @@ pub(crate) fn reflow(
                 row.resize(new_cols, Cell::default());
                 i += take;
                 if i < line.len() {
-                    row[new_cols - 1].flags.insert(CellFlags::WRAPLINE);
+                    row[new_cols - 1].insert_flags(CellFlags::WRAPLINE);
                 }
                 out.push(row);
             }
@@ -235,14 +235,14 @@ mod tests {
     fn stamped(cols: usize, rows: usize) -> Grid {
         let mut g = Grid::new(cols, rows);
         for r in 0..rows {
-            g.cell_mut(r, 0).c = char::from(b'a' + r as u8);
+            g.cell_mut(r, 0).set_c(char::from(b'a' + r as u8));
         }
         g
     }
 
     /// Column-0 chars read top-to-bottom in *logical* row order.
     fn col0(g: &Grid) -> String {
-        (0..g.rows()).map(|r| g.cell(r, 0).c).collect()
+        (0..g.rows()).map(|r| g.cell(r, 0).c()).collect()
     }
 
     #[test]
@@ -273,15 +273,11 @@ mod tests {
         let mut g = stamped(2, 3); // "abc"
         // Hand it a *dirty* recycled row (full width, stale content) — the new
         // bottom must come out blank, not carrying the recycled row's text.
-        let dirty = vec![
-            Cell {
-                c: 'X',
-                ..Cell::default()
-            };
-            2
-        ];
+        let mut x = Cell::default();
+        x.set_c('X');
+        let dirty = vec![x; 2];
         let evicted = g.scroll_up_recycle(dirty);
-        assert_eq!(evicted[0].c, 'a'); // logical row 0 moved out, not copied
+        assert_eq!(evicted[0].c(), 'a'); // logical row 0 moved out, not copied
         assert_eq!(col0(&g), "bc "); // shifted up; bottom blank, NOT "bcX"
     }
 
@@ -291,7 +287,7 @@ mod tests {
         let mut g = stamped(1, 3); // "abc"
         g.scroll_up_region(0, 2); // "bc "
         let lines = g.take_lines();
-        let got: String = lines.iter().map(|r| r[0].c).collect();
+        let got: String = lines.iter().map(|r| r[0].c()).collect();
         assert_eq!(got, "bc ");
     }
 }

@@ -16,8 +16,8 @@ fn erase_line_uses_current_background() {
     term.feed(b"\x1b[41m"); // set background = red (index 1)
     term.feed(b"\x1b[2K"); // erase whole line
 
-    assert_eq!(term.grid().cell(0, 0).bg, Color::Indexed(1));
-    assert_eq!(term.grid().cell(0, 0).c, ' '); // still blank
+    assert_eq!(term.grid().cell(0, 0).bg(), Color::Indexed(1));
+    assert_eq!(term.grid().cell(0, 0).c(), ' '); // still blank
 }
 
 /// BCE carries the background only — the pen's foreground and text attributes
@@ -30,9 +30,9 @@ fn erase_carries_background_only_not_fg_or_attrs() {
     term.feed(b"\x1b[2K");
 
     let cell = *term.grid().cell(0, 0);
-    assert_eq!(cell.bg, Color::Indexed(1)); // background carried
-    assert_eq!(cell.fg, Color::Default); // foreground NOT carried
-    assert!(cell.flags.is_empty()); // attributes NOT carried
+    assert_eq!(cell.bg(), Color::Indexed(1)); // background carried
+    assert_eq!(cell.fg(), Color::Default); // foreground NOT carried
+    assert!(cell.flags().is_empty()); // attributes NOT carried
 }
 
 // ===========================================================================
@@ -89,9 +89,9 @@ fn linefeed_scrolls_only_within_region() {
     term.feed(b"\x1b[2;1HB"); // cursor to grid row 1 (bottom margin), write 'B'
     term.feed(b"\r\n"); // CR + LF at the bottom margin → scroll the region
 
-    assert_eq!(term.grid().cell(0, 0).c, 'B'); // region scrolled: 'B' moved up
-    assert_eq!(term.grid().cell(1, 0).c, ' '); // new blank line inside the region
-    assert_eq!(term.grid().cell(3, 0).c, 'Z'); // outside the region: untouched
+    assert_eq!(term.grid().cell(0, 0).c(), 'B'); // region scrolled: 'B' moved up
+    assert_eq!(term.grid().cell(1, 0).c(), ' '); // new blank line inside the region
+    assert_eq!(term.grid().cell(3, 0).c(), 'Z'); // outside the region: untouched
 }
 
 /// DECSTBM homes the cursor to the absolute top-left (origin-relative homing
@@ -115,7 +115,7 @@ fn invalid_scroll_region_is_ignored() {
     term.feed(b"\r\n"); // LF at screen bottom → full-screen scroll
 
     // 'd' moved up a row: the region is still the whole screen.
-    assert_eq!(term.grid().cell(2, 0).c, 'd');
+    assert_eq!(term.grid().cell(2, 0).c(), 'd');
 }
 
 // ===========================================================================
@@ -132,9 +132,9 @@ fn reverse_index_at_top_scrolls_region_down() {
     term.feed(b"\x1b[1;1H"); // cursor back to the top margin
     term.feed(b"\x1bM"); // RI at the top margin → scroll region down
 
-    assert_eq!(term.grid().cell(0, 0).c, ' '); // blank inserted at the top
-    assert_eq!(term.grid().cell(1, 0).c, 'a'); // 'a' pushed down
-    assert_eq!(term.grid().cell(2, 0).c, 'b'); // 'b' pushed down
+    assert_eq!(term.grid().cell(0, 0).c(), ' '); // blank inserted at the top
+    assert_eq!(term.grid().cell(1, 0).c(), 'a'); // 'a' pushed down
+    assert_eq!(term.grid().cell(2, 0).c(), 'b'); // 'b' pushed down
 }
 
 /// RI below the top margin just moves the cursor up — no scroll.
@@ -145,7 +145,7 @@ fn reverse_index_below_top_moves_up() {
     term.feed(b"\x1bM"); // RI: not at the top margin → move up
 
     assert_eq!(term.cursor().row, 1);
-    assert_eq!(term.grid().cell(2, 0).c, 'x'); // content intact, no scroll
+    assert_eq!(term.grid().cell(2, 0).c(), 'x'); // content intact, no scroll
 }
 
 /// IND (ESC D) at the bottom margin scrolls the region up — a line-feed without
@@ -157,8 +157,8 @@ fn index_at_bottom_scrolls_region_up() {
     term.feed(b"\x1b[2;1H"); // cursor to the bottom margin
     term.feed(b"\x1bD"); // IND → scroll region up
 
-    assert_eq!(term.grid().cell(0, 0).c, 'b'); // 'b' scrolled up
-    assert_eq!(term.grid().cell(1, 0).c, ' '); // blank at the bottom
+    assert_eq!(term.grid().cell(0, 0).c(), 'b'); // 'b' scrolled up
+    assert_eq!(term.grid().cell(1, 0).c(), ' '); // blank at the bottom
 }
 
 // ===========================================================================
@@ -173,12 +173,12 @@ fn alt_screen_switches_and_restores() {
     term.feed(b"PRIMARY"); // content on the primary screen
 
     term.feed(b"\x1b[?1049h"); // enter alt → fresh, cleared screen
-    assert_eq!(term.grid().cell(0, 0).c, ' ');
+    assert_eq!(term.grid().cell(0, 0).c(), ' ');
     term.feed(b"\x1b[1;1HALT"); // write on the alt screen
-    assert_eq!(term.grid().cell(0, 0).c, 'A');
+    assert_eq!(term.grid().cell(0, 0).c(), 'A');
 
     term.feed(b"\x1b[?1049l"); // leave → primary content is back
-    assert_eq!(term.grid().cell(0, 0).c, 'P');
+    assert_eq!(term.grid().cell(0, 0).c(), 'P');
 }
 
 /// Entering the alt screen saves the cursor; leaving restores it (the alt
@@ -205,7 +205,7 @@ fn entering_alt_resets_scroll_position() {
 
     term.feed(b"\x1b[?1049h"); // enter alt → view must snap to the (blank) alt screen
 
-    assert_eq!(term.viewport_line(0)[0].c, ' '); // not primary's 'a'
+    assert_eq!(term.viewport_line(0)[0].c(), ' '); // not primary's 'a'
 }
 
 /// Scroll intents are no-ops on the alt screen — there is no history to view.
@@ -217,7 +217,7 @@ fn scroll_is_a_noop_on_alt_screen() {
 
     term.scroll_up(5); // must not window into the primary's scrollback
 
-    assert_eq!(term.viewport_line(0)[0].c, ' ');
+    assert_eq!(term.viewport_line(0)[0].c(), ' ');
 }
 
 /// A redundant ?1049h while already on the alt screen is a no-op — it must not
@@ -231,7 +231,7 @@ fn double_enter_alt_is_idempotent() {
     term.feed(b"\x1b[?1049h"); // enter AGAIN — must be a no-op
     term.feed(b"\x1b[?1049l"); // a single leave → back to primary
 
-    assert_eq!(term.grid().cell(0, 0).c, 'P'); // primary survived
+    assert_eq!(term.grid().cell(0, 0).c(), 'P'); // primary survived
 }
 
 // ===========================================================================
@@ -247,7 +247,7 @@ fn origin_mode_makes_cup_region_relative() {
     term.feed(b"\x1b[?6h"); // DECOM on
     term.feed(b"\x1b[1;1HX"); // CUP to region row 1 → grid row 2
 
-    assert_eq!(term.grid().cell(2, 0).c, 'X');
+    assert_eq!(term.grid().cell(2, 0).c(), 'X');
 }
 
 /// With origin mode on, a CUP past the bottom margin clamps to the region's
@@ -259,7 +259,7 @@ fn origin_mode_clamps_to_region_bottom() {
     term.feed(b"\x1b[?6h"); // DECOM on
     term.feed(b"\x1b[99;1HY"); // CUP far past the region → clamp to grid row 4
 
-    assert_eq!(term.grid().cell(4, 0).c, 'Y');
+    assert_eq!(term.grid().cell(4, 0).c(), 'Y');
 }
 
 /// Setting DECOM homes the cursor to the region top; unsetting it leaves the
@@ -305,14 +305,14 @@ fn flooding_past_cap_recycles_rows_without_corrupting_history() {
 
     // Live screen: '9' on top, the just-scrolled-in bottom is BLANK — a recycled
     // row reused as the new bottom must be cleared, not carry stale text.
-    assert_eq!(term.viewport_line(0)[0].c, '9');
-    assert_eq!(term.viewport_line(1)[0].c, ' ');
+    assert_eq!(term.viewport_line(0)[0].c(), '9');
+    assert_eq!(term.viewport_line(1)[0].c(), ' ');
 
     // History holds exactly the last 3 evicted lines, in order, intact through
     // every recycle: '6', '7', '8' (0..5 correctly evicted).
     term.scroll_up(3);
-    assert_eq!(term.viewport_line(0)[0].c, '6');
-    assert_eq!(term.viewport_line(1)[0].c, '7');
+    assert_eq!(term.viewport_line(0)[0].c(), '6');
+    assert_eq!(term.viewport_line(1)[0].c(), '7');
 }
 
 /// At the bottom (no scroll), the viewport is the live screen.
@@ -321,8 +321,8 @@ fn viewport_shows_live_screen_at_bottom() {
     let mut term = Engine::new(4, 2);
     term.feed(b"a\r\nb\r\nc"); // history=['a'], screen rows 'b','c'
 
-    assert_eq!(term.viewport_line(0)[0].c, 'b');
-    assert_eq!(term.viewport_line(1)[0].c, 'c');
+    assert_eq!(term.viewport_line(0)[0].c(), 'b');
+    assert_eq!(term.viewport_line(1)[0].c(), 'c');
 }
 
 /// Scrolling up windows the viewport into history (acceptance: feed lines,
@@ -335,9 +335,9 @@ fn scroll_up_reveals_history() {
     assert_eq!(term.scrollback_len(), 2);
 
     term.scroll_up(2); // reveal the two oldest lines at the top
-    assert_eq!(term.viewport_line(0)[0].c, 'a');
-    assert_eq!(term.viewport_line(1)[0].c, 'b');
-    assert_eq!(term.viewport_line(2)[0].c, 'c');
+    assert_eq!(term.viewport_line(0)[0].c(), 'a');
+    assert_eq!(term.viewport_line(1)[0].c(), 'b');
+    assert_eq!(term.viewport_line(2)[0].c(), 'c');
 }
 
 /// New output while scrolled up keeps the view stable (follow-bottom = stay):
@@ -347,10 +347,10 @@ fn new_output_while_scrolled_stays_put() {
     let mut term = Engine::new(4, 4);
     term.feed(b"a\r\nb\r\nc\r\nd\r\ne\r\nf"); // history=[a,b]
     term.scroll_up(2);
-    assert_eq!(term.viewport_line(0)[0].c, 'a'); // viewing the top of history
+    assert_eq!(term.viewport_line(0)[0].c(), 'a'); // viewing the top of history
 
     term.feed(b"\r\ng"); // new line scrolls history; view must stay on 'a'
-    assert_eq!(term.viewport_line(0)[0].c, 'a');
+    assert_eq!(term.viewport_line(0)[0].c(), 'a');
 }
 
 /// scroll_down walks back toward the live screen; scroll_to_bottom jumps there.
@@ -359,13 +359,13 @@ fn scroll_down_and_to_bottom() {
     let mut term = Engine::new(4, 4);
     term.feed(b"a\r\nb\r\nc\r\nd\r\ne\r\nf"); // history=[a,b], screen c,d,e,f
     term.scroll_up(2);
-    assert_eq!(term.viewport_line(0)[0].c, 'a');
+    assert_eq!(term.viewport_line(0)[0].c(), 'a');
 
     term.scroll_down(1);
-    assert_eq!(term.viewport_line(0)[0].c, 'b'); // one line back toward bottom
+    assert_eq!(term.viewport_line(0)[0].c(), 'b'); // one line back toward bottom
 
     term.scroll_to_bottom();
-    assert_eq!(term.viewport_line(0)[0].c, 'c'); // live screen top
+    assert_eq!(term.viewport_line(0)[0].c(), 'c'); // live screen top
 }
 
 /// Scrollback is capped: the oldest lines are evicted once the limit is hit.
@@ -376,7 +376,7 @@ fn scrollback_caps_oldest_evicted() {
 
     assert_eq!(term.scrollback_len(), 2);
     term.scroll_up(2);
-    assert_eq!(term.viewport_line(0)[0].c, 'b'); // 'a' was evicted; 'b' is oldest
+    assert_eq!(term.viewport_line(0)[0].c(), 'b'); // 'a' was evicted; 'b' is oldest
 }
 
 /// Scrolled to the very top with the cap full, new output must not push the
@@ -388,10 +388,10 @@ fn new_output_at_cap_while_scrolled_to_top() {
     let mut term = Engine::with_scrollback(4, 2, 2);
     term.feed(b"a\r\nb\r\nc\r\nd\r\ne"); // history capped to [b, c]
     term.scroll_up(99); // clamp to the very top
-    assert_eq!(term.viewport_line(0)[0].c, 'b');
+    assert_eq!(term.viewport_line(0)[0].c(), 'b');
 
     term.feed(b"\r\nf"); // evicts 'b' at the cap; must not panic
-    assert_eq!(term.viewport_line(0)[0].c, 'c');
+    assert_eq!(term.viewport_line(0)[0].c(), 'c');
 }
 
 /// The alt screen has no scrollback — scrolling it accrues no history.
@@ -425,9 +425,9 @@ fn autowrap_at_bottom_margin_scrolls_only_the_region() {
 
     term.feed(b"\x1b[1;1Habcdefg"); // abc|def fill the region, 'g' wraps → region scrolls
 
-    assert_eq!(term.grid().cell(0, 0).c, 'd'); // region scrolled up
-    assert_eq!(term.grid().cell(1, 0).c, 'g'); // new content on the bottom margin
-    assert_eq!(term.grid().cell(2, 0).c, 'Z'); // below the region: untouched
+    assert_eq!(term.grid().cell(0, 0).c(), 'd'); // region scrolled up
+    assert_eq!(term.grid().cell(1, 0).c(), 'g'); // new content on the bottom margin
+    assert_eq!(term.grid().cell(2, 0).c(), 'Z'); // below the region: untouched
 }
 
 // ===========================================================================
@@ -479,7 +479,7 @@ fn nel_moves_to_start_of_next_line() {
     term.feed(b"\x1bE"); // NEL → (1, 0)
     term.feed(b"c");
 
-    assert_eq!(term.grid().cell(1, 0).c, 'c');
+    assert_eq!(term.grid().cell(1, 0).c(), 'c');
     assert_eq!((term.cursor().row, term.cursor().col), (1, 1));
 }
 
@@ -490,7 +490,7 @@ fn nel_moves_to_start_of_next_line() {
 /// Row `r` rendered as a string (trailing cells shown as their blanks).
 fn row(term: &Engine, r: usize) -> String {
     let g = term.grid();
-    (0..g.cols()).map(|c| g.cell(r, c).c).collect()
+    (0..g.cols()).map(|c| g.cell(r, c).c()).collect()
 }
 
 /// ECH (CSI Pn X) erases Pn cells in place at the cursor — no shift.
@@ -589,8 +589,8 @@ fn ich_fills_gap_with_bce_background() {
     term.feed(b"\x1b[41m"); // bg red
     term.feed(b"\x1b[2@"); // insert 2
 
-    assert_eq!(term.grid().cell(0, 2).bg, Color::Indexed(1));
-    assert_eq!(term.grid().cell(0, 2).c, ' ');
+    assert_eq!(term.grid().cell(0, 2).bg(), Color::Indexed(1));
+    assert_eq!(term.grid().cell(0, 2).c(), ' ');
 }
 
 /// DCH fills the vacated tail with the current SGR background (BCE).
@@ -602,8 +602,8 @@ fn dch_fills_tail_with_bce_background() {
     term.feed(b"\x1b[41m"); // bg red
     term.feed(b"\x1b[2P"); // delete 2 → tail cols 4,5 BCE-blanked
 
-    assert_eq!(term.grid().cell(0, 5).bg, Color::Indexed(1));
-    assert_eq!(term.grid().cell(0, 5).c, ' ');
+    assert_eq!(term.grid().cell(0, 5).bg(), Color::Indexed(1));
+    assert_eq!(term.grid().cell(0, 5).c(), ' ');
 }
 
 /// Intra-line edits do not clear pending-wrap (xterm/alacritty: these ops leave
@@ -616,7 +616,7 @@ fn editing_preserves_pending_wrap() {
     term.feed(b"\x1b[1X"); // ECH at the last column — must not clear pending-wrap
     term.feed(b"d"); // should still wrap to row 1
 
-    assert_eq!(term.grid().cell(1, 0).c, 'd');
+    assert_eq!(term.grid().cell(1, 0).c(), 'd');
 }
 
 // ===========================================================================
@@ -717,8 +717,8 @@ fn region_scroll_exposed_lines_use_bce() {
     term.feed(b"\x1b[41m"); // bg red
     term.feed(b"\x1b[1S"); // scroll up 1 → row 1 exposed
 
-    assert_eq!(term.grid().cell(1, 0).bg, Color::Indexed(1));
-    assert_eq!(term.grid().cell(1, 0).c, ' ');
+    assert_eq!(term.grid().cell(1, 0).bg(), Color::Indexed(1));
+    assert_eq!(term.grid().cell(1, 0).c(), ' ');
 }
 
 // ===========================================================================
@@ -747,7 +747,7 @@ fn decsc_decrc_restores_pen() {
     term.feed(b"\x1b8"); // restore → pen red again
     term.feed(b"X");
 
-    assert_eq!(term.grid().cell(0, 0).fg, Color::Indexed(1));
+    assert_eq!(term.grid().cell(0, 0).fg(), Color::Indexed(1));
 }
 
 /// DECRC restores origin mode (ADR-0004: the DEC spec mandates it, Alacritty
@@ -763,8 +763,8 @@ fn decrc_restores_origin_mode() {
     term.feed(b"\x1b8"); // DECRC → origin restored ON
     term.feed(b"\x1b[1;1HX"); // origin-relative CUP → region top (screen row 1)
 
-    assert_eq!(term.grid().cell(1, 0).c, 'X'); // would be row 0 if origin were off
-    assert_eq!(term.grid().cell(0, 0).c, ' ');
+    assert_eq!(term.grid().cell(1, 0).c(), 'X'); // would be row 0 if origin were off
+    assert_eq!(term.grid().cell(0, 0).c(), ' ');
 }
 
 /// DECRC does NOT restore cursor visibility (DECTCEM is separate from DECSC).
@@ -801,7 +801,7 @@ fn decsc_decrc_restores_pending_wrap() {
     term.feed(b"\x1b8"); // restore → pending-wrap back
     term.feed(b"d"); // should wrap to row 1
 
-    assert_eq!(term.grid().cell(1, 0).c, 'd');
+    assert_eq!(term.grid().cell(1, 0).c(), 'd');
 }
 
 // ===========================================================================
@@ -823,7 +823,7 @@ fn combining_mark_attaches_to_base() {
     let mut term = Engine::new(5, 1);
     term.feed("e\u{0301}".as_bytes()); // 'e' + combining acute → é
 
-    assert_eq!(term.grid().cell(0, 0).c, 'e'); // base stays a single char
+    assert_eq!(term.grid().cell(0, 0).c(), 'e'); // base stays a single char
     assert_eq!(cell_text(&mut term, 0, 0), "e\u{0301}"); // cluster copied whole
 }
 
@@ -846,9 +846,9 @@ fn combining_mark_at_pending_wrap_attaches_in_place() {
     term.feed("\u{0301}".as_bytes()); // combining → attaches to 'b', no wrap
 
     assert_eq!(cell_text(&mut term, 0, 1), "b\u{0301}");
-    assert_eq!(term.grid().cell(1, 0).c, ' '); // no wrap fired
+    assert_eq!(term.grid().cell(1, 0).c(), ' '); // no wrap fired
     term.feed(b"c"); // pending-wrap still set → this wraps
-    assert_eq!(term.grid().cell(1, 0).c, 'c');
+    assert_eq!(term.grid().cell(1, 0).c(), 'c');
 }
 
 /// Multiple combining marks accumulate on the same base cell, in order.

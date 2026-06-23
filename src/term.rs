@@ -319,21 +319,21 @@ impl Term {
             let mut cells = Vec::with_capacity(right - left + 1);
             for col in left..=right {
                 let mut cell = *self.grid.cell(line, col);
-                if let Some(gidx) = cell.extra {
+                if let Some(gidx) = cell.extra() {
                     let g = gidx.get() as usize;
                     if remap[g] == 0 {
                         side_table.push(self.grapheme_pool[g - 1].clone());
                         remap[g] = side_table.len() as u16;
                     }
-                    cell.extra = core::num::NonZeroU32::new(remap[g] as u32);
+                    cell.set_extra(core::num::NonZeroU32::new(remap[g] as u32));
                 }
-                if let Some(lidx) = cell.link {
+                if let Some(lidx) = cell.link() {
                     let l = lidx.get() as usize;
                     if link_remap[l] == 0 {
                         link_table.push(self.hyperlink_pool[l - 1].clone());
                         link_remap[l] = link_table.len() as u16;
                     }
-                    cell.link = core::num::NonZeroU32::new(link_remap[l] as u32);
+                    cell.set_link(core::num::NonZeroU32::new(link_remap[l] as u32));
                 }
                 cells.push(cell);
             }
@@ -501,15 +501,15 @@ impl Term {
             loop {
                 let cells = self.abs_line(line);
                 for (col, cell) in cells.iter().enumerate() {
-                    if cell.flags.contains(CellFlags::WIDE_CHAR_SPACER) {
+                    if cell.flags().contains(CellFlags::WIDE_CHAR_SPACER) {
                         continue;
                     }
-                    hay.push(fold(cell.c));
+                    hay.push(fold(cell.c()));
                     pos.push((line, col));
                 }
                 let soft = cells
                     .last()
-                    .is_some_and(|c| c.flags.contains(CellFlags::WRAPLINE));
+                    .is_some_and(|c| c.flags().contains(CellFlags::WRAPLINE));
                 if soft && line + 1 < total {
                     line += 1;
                 } else {
@@ -820,11 +820,11 @@ impl Term {
     /// Append a cell's text — its base glyph plus any combining marks from the
     /// grapheme side-table — to `out`. Wide-char spacers contribute nothing.
     fn append_cell(&self, out: &mut String, cell: &Cell) {
-        if cell.flags.contains(CellFlags::WIDE_CHAR_SPACER) {
+        if cell.flags().contains(CellFlags::WIDE_CHAR_SPACER) {
             return;
         }
-        out.push(cell.c);
-        if let Some(idx) = cell.extra {
+        out.push(cell.c());
+        if let Some(idx) = cell.extra() {
             out.extend(self.grapheme_pool[idx.get() as usize - 1].iter());
         }
     }
@@ -861,7 +861,7 @@ impl Term {
             let is_last = line == end_line;
             let soft = cells
                 .last()
-                .is_some_and(|c| c.flags.contains(CellFlags::WRAPLINE));
+                .is_some_and(|c| c.flags().contains(CellFlags::WRAPLINE));
             if is_last || !soft {
                 out.push_str(current.trim_end());
                 current.clear();
@@ -884,7 +884,7 @@ impl Term {
             let prev = self.abs_line(line - 1);
             if prev
                 .last()
-                .is_some_and(|c| c.flags.contains(CellFlags::WRAPLINE))
+                .is_some_and(|c| c.flags().contains(CellFlags::WRAPLINE))
             {
                 return Some((line - 1, prev.len() - 1));
             }
@@ -904,7 +904,7 @@ impl Term {
         if line + 1 < total
             && cells
                 .last()
-                .is_some_and(|c| c.flags.contains(CellFlags::WRAPLINE))
+                .is_some_and(|c| c.flags().contains(CellFlags::WRAPLINE))
         {
             return Some((line + 1, 0));
         }
@@ -917,7 +917,7 @@ impl Term {
         let cells = self.abs_line(p.line);
         let (mut line, mut col) = (p.line, p.col.min(cells.len().saturating_sub(1)));
         while let Some((pl, pc)) = self.prev_pos(line, col) {
-            if is_word_boundary(self.abs_line(pl)[pc].c) {
+            if is_word_boundary(self.abs_line(pl)[pc].c()) {
                 break;
             }
             line = pl;
@@ -932,7 +932,7 @@ impl Term {
         let cells = self.abs_line(p.line);
         let (mut line, mut col) = (p.line, p.col.min(cells.len().saturating_sub(1)));
         while let Some((nl, nc)) = self.next_pos(line, col) {
-            if is_word_boundary(self.abs_line(nl)[nc].c) {
+            if is_word_boundary(self.abs_line(nl)[nc].c()) {
                 break;
             }
             line = nl;
@@ -1398,8 +1398,7 @@ impl Term {
             let row = self.cursor.row;
             self.grid
                 .cell_mut(row, cols - 1)
-                .flags
-                .insert(CellFlags::WRAPLINE);
+                .insert_flags(CellFlags::WRAPLINE);
             self.wrapline();
         }
 
@@ -1419,7 +1418,7 @@ impl Term {
             && self
                 .grid
                 .cell(row, col)
-                .flags
+                .flags()
                 .contains(CellFlags::WIDE_CHAR_SPACER)
         {
             self.grid.cell_mut(row, col - 1).reset();
@@ -1428,16 +1427,16 @@ impl Term {
             && self
                 .grid
                 .cell(row, last)
-                .flags
+                .flags()
                 .contains(CellFlags::WIDE_CHAR)
         {
             self.grid.cell_mut(row, last + 1).reset();
         }
 
         let mut cell = self.cursor.pen.cell(c);
-        cell.link = self.current_link; // stamp the open hyperlink, if any (#26)
+        cell.set_link(self.current_link); // stamp the open hyperlink, if any (#26)
         if width == 2 {
-            cell.flags.insert(CellFlags::WIDE_CHAR);
+            cell.insert_flags(CellFlags::WIDE_CHAR);
         }
         *self.grid.cell_mut(row, col) = cell;
 
@@ -1445,8 +1444,8 @@ impl Term {
         // and the same link, so a hover/selection over either half agrees.
         if width == 2 && col + 1 < cols {
             let mut spacer = self.cursor.pen.cell(' ');
-            spacer.link = self.current_link;
-            spacer.flags.insert(CellFlags::WIDE_CHAR_SPACER);
+            spacer.set_link(self.current_link);
+            spacer.insert_flags(CellFlags::WIDE_CHAR_SPACER);
             *self.grid.cell_mut(row, col + 1) = spacer;
         }
 
@@ -1479,18 +1478,18 @@ impl Term {
         if self
             .grid
             .cell(row, col)
-            .flags
+            .flags()
             .contains(CellFlags::WIDE_CHAR_SPACER)
         {
             col = col.saturating_sub(1);
         }
-        match self.grid.cell(row, col).extra {
+        match self.grid.cell(row, col).extra() {
             Some(idx) => self.grapheme_pool[idx.get() as usize - 1].push(c),
             None => {
                 self.grapheme_pool.push(vec![c]);
                 let idx = core::num::NonZeroU32::new(self.grapheme_pool.len() as u32)
                     .expect("pool len is >= 1 after push");
-                self.grid.cell_mut(row, col).extra = Some(idx);
+                self.grid.cell_mut(row, col).set_extra(Some(idx));
             }
         }
         self.damage_span(row, col, col);
@@ -1555,7 +1554,7 @@ impl Term {
             && self
                 .grid
                 .cell(row, from)
-                .flags
+                .flags()
                 .contains(CellFlags::WIDE_CHAR_SPACER)
         {
             self.grid.cell_mut(row, from - 1).reset();
@@ -1565,7 +1564,7 @@ impl Term {
             && self
                 .grid
                 .cell(row, to - 1)
-                .flags
+                .flags()
                 .contains(CellFlags::WIDE_CHAR)
         {
             self.grid.cell_mut(row, to).reset();
@@ -1575,7 +1574,7 @@ impl Term {
         for col in from..to {
             let cell = self.grid.cell_mut(row, col);
             cell.reset();
-            cell.bg = bg;
+            cell.set_bg(bg);
         }
         if to > from {
             self.damage_span(row, from, to - 1);
@@ -1647,7 +1646,7 @@ impl Term {
         row.copy_within(col..cols - n, col + n);
         for cell in &mut row[col..col + n] {
             cell.reset();
-            cell.bg = bg;
+            cell.set_bg(bg);
         }
         // Repair wide-char halves split at the seams (no-orphan invariant):
         // a lead just before the gap lost its spacer; the first shifted cell may
@@ -1656,7 +1655,7 @@ impl Term {
             && self
                 .grid
                 .cell(r, col - 1)
-                .flags
+                .flags()
                 .contains(CellFlags::WIDE_CHAR)
         {
             self.grid.cell_mut(r, col - 1).reset();
@@ -1665,7 +1664,7 @@ impl Term {
             && self
                 .grid
                 .cell(r, col + n)
-                .flags
+                .flags()
                 .contains(CellFlags::WIDE_CHAR_SPACER)
         {
             self.grid.cell_mut(r, col + n).reset();
@@ -1674,7 +1673,7 @@ impl Term {
         if self
             .grid
             .cell(r, cols - 1)
-            .flags
+            .flags()
             .contains(CellFlags::WIDE_CHAR)
         {
             self.grid.cell_mut(r, cols - 1).reset();
@@ -1697,7 +1696,7 @@ impl Term {
         row.copy_within(col + n..cols, col);
         for cell in &mut row[cols - n..cols] {
             cell.reset();
-            cell.bg = bg;
+            cell.set_bg(bg);
         }
         // Repair wide-char halves split by the deletion (no-orphan invariant):
         // a lead just before the cut lost its spacer; the cell now at the cursor
@@ -1706,7 +1705,7 @@ impl Term {
             && self
                 .grid
                 .cell(r, col - 1)
-                .flags
+                .flags()
                 .contains(CellFlags::WIDE_CHAR)
         {
             self.grid.cell_mut(r, col - 1).reset();
@@ -1714,7 +1713,7 @@ impl Term {
         if self
             .grid
             .cell(r, col)
-            .flags
+            .flags()
             .contains(CellFlags::WIDE_CHAR_SPACER)
         {
             self.grid.cell_mut(r, col).reset();
@@ -1756,7 +1755,7 @@ impl Term {
             for c in 0..cols {
                 let cell = self.grid.cell_mut(r, c);
                 cell.reset();
-                cell.bg = bg;
+                cell.set_bg(bg);
             }
         }
     }

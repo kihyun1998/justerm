@@ -44,19 +44,23 @@ bitflags::bitflags! {
 /// the cell through scrolls/shifts/reflow). `None` for the overwhelming majority
 /// of cells. The side-table (not the cell) holds the actual code points; see
 /// `term.rs` and the serialization slice (#6).
+///
+/// # Accessor seam (#44)
+///
+/// The fields are **private**: every read/write goes through the accessor methods
+/// below, so the in-memory representation can change (toward the packed 3×u32
+/// xterm.js layout of #43) without touching a single call site outside this
+/// module. This slice keeps the plain-field representation; only the interface is
+/// sealed. Construct a cell with [`Cell::from_parts`] (the wire decoder and
+/// `Pen::cell` both go through it) or [`Cell::default`].
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Cell {
-    pub c: char,
-    pub fg: Color,
-    pub bg: Color,
-    pub flags: CellFlags,
-    /// 1-based index into the grapheme side-table for this cell's combining
-    /// marks, or `None` when the cell is a single code point.
-    pub extra: Option<core::num::NonZeroU32>,
-    /// 1-based index into the hyperlink side-table (OSC 8) — set on every cell
-    /// printed while a hyperlink is open, `None` otherwise. Like `extra`, the
-    /// index travels with the cell through scroll/shift/reflow (#26).
-    pub link: Option<core::num::NonZeroU32>,
+    c: char,
+    fg: Color,
+    bg: Color,
+    flags: CellFlags,
+    extra: Option<core::num::NonZeroU32>,
+    link: Option<core::num::NonZeroU32>,
 }
 
 impl Default for Cell {
@@ -73,6 +77,83 @@ impl Default for Cell {
 }
 
 impl Cell {
+    /// Assemble a cell from its logical parts. The single construction seam —
+    /// `Pen::cell` and the wire decoder funnel through here so a future packed
+    /// representation has exactly one place to do the bit-packing (#44).
+    pub fn from_parts(
+        c: char,
+        fg: Color,
+        bg: Color,
+        flags: CellFlags,
+        extra: Option<core::num::NonZeroU32>,
+        link: Option<core::num::NonZeroU32>,
+    ) -> Self {
+        Cell { c, fg, bg, flags, extra, link }
+    }
+
+    /// The base code point.
+    pub fn c(&self) -> char {
+        self.c
+    }
+
+    /// The foreground colour reference.
+    pub fn fg(&self) -> Color {
+        self.fg
+    }
+
+    /// The background colour reference.
+    pub fn bg(&self) -> Color {
+        self.bg
+    }
+
+    /// The cell's flags (SGR attributes + layout markers).
+    pub fn flags(&self) -> CellFlags {
+        self.flags
+    }
+
+    /// 1-based index into the grapheme side-table for this cell's combining
+    /// marks, or `None` when the cell is a single code point.
+    pub fn extra(&self) -> Option<core::num::NonZeroU32> {
+        self.extra
+    }
+
+    /// 1-based index into the hyperlink side-table (OSC 8), or `None`. Set on
+    /// every cell printed while a hyperlink is open; the index travels with the
+    /// cell through scroll/shift/reflow (#26).
+    pub fn link(&self) -> Option<core::num::NonZeroU32> {
+        self.link
+    }
+
+    /// Overwrite the base code point.
+    pub fn set_c(&mut self, c: char) {
+        self.c = c;
+    }
+
+    /// Overwrite the background colour (the BCE erase fill, #16).
+    pub fn set_bg(&mut self, bg: Color) {
+        self.bg = bg;
+    }
+
+    /// Set (or clear) the grapheme side-table index.
+    pub fn set_extra(&mut self, extra: Option<core::num::NonZeroU32>) {
+        self.extra = extra;
+    }
+
+    /// Set (or clear) the hyperlink side-table index.
+    pub fn set_link(&mut self, link: Option<core::num::NonZeroU32>) {
+        self.link = link;
+    }
+
+    /// Add the given flags (leaving the others set).
+    pub fn insert_flags(&mut self, flags: CellFlags) {
+        self.flags.insert(flags);
+    }
+
+    /// Clear the given flags (leaving the others as they are).
+    pub fn remove_flags(&mut self, flags: CellFlags) {
+        self.flags.remove(flags);
+    }
+
     /// Reset to a blank default cell.
     pub fn reset(&mut self) {
         *self = Cell::default();

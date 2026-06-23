@@ -255,7 +255,7 @@ fn neovim_kitty_session_consumed_to_stable_state() {
 
     // (2) neovim leaves the alt screen on exit, so the primary grid shows the
     // typescript header printed before alt-screen — a stable, non-degenerate cell.
-    assert_eq!(t.grid().cell(0, 0).c, 'S'); // "Script started on ..."
+    assert_eq!(t.grid().cell(0, 0).c(), 'S'); // "Script started on ..."
 }
 
 #[test]

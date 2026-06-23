@@ -101,7 +101,7 @@ fn scroll_to_match_reveals_history_match() {
 
     term.scroll_to_match(&m[0]);
 
-    let top: String = term.viewport_line(0).iter().map(|c| c.c).collect();
+    let top: String = term.viewport_line(0).iter().map(|c| c.c()).collect();
     assert_eq!(top.trim_end(), "aaa");
 }
 

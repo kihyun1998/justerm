@@ -134,12 +134,12 @@ pub const CELL_RECORD_LEN: usize = 18;
 /// so the two cannot drift.
 pub fn encode_cell_record(cell: &Cell) -> [u8; CELL_RECORD_LEN] {
     let mut r = [0u8; CELL_RECORD_LEN];
-    r[0..4].copy_from_slice(&(cell.c as u32).to_le_bytes());
-    r[4..8].copy_from_slice(&encode_color(cell.fg).to_le_bytes());
-    r[8..12].copy_from_slice(&encode_color(cell.bg).to_le_bytes());
-    r[12..14].copy_from_slice(&cell.flags.bits().to_le_bytes());
-    r[14..16].copy_from_slice(&cell.extra.map_or(0, |n| n.get() as u16).to_le_bytes());
-    r[16..18].copy_from_slice(&cell.link.map_or(0, |n| n.get() as u16).to_le_bytes());
+    r[0..4].copy_from_slice(&(cell.c() as u32).to_le_bytes());
+    r[4..8].copy_from_slice(&encode_color(cell.fg()).to_le_bytes());
+    r[8..12].copy_from_slice(&encode_color(cell.bg()).to_le_bytes());
+    r[12..14].copy_from_slice(&cell.flags().bits().to_le_bytes());
+    r[14..16].copy_from_slice(&cell.extra().map_or(0, |n| n.get() as u16).to_le_bytes());
+    r[16..18].copy_from_slice(&cell.link().map_or(0, |n| n.get() as u16).to_le_bytes());
     r
 }
 
@@ -256,14 +256,7 @@ fn decode_cell(r: &mut Reader) -> Result<Cell, DecodeError> {
     let flags = CellFlags::from_bits_retain(r.u16()?);
     let extra = NonZeroU32::new(r.u16()? as u32);
     let link = NonZeroU32::new(r.u16()? as u32);
-    Ok(Cell {
-        c,
-        fg,
-        bg,
-        flags,
-        extra,
-        link,
-    })
+    Ok(Cell::from_parts(c, fg, bg, flags, extra, link))
 }
 
 /// Decode a tagged-u32 colour reference (inverse of [`encode_color`]).

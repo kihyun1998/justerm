@@ -52,10 +52,7 @@ fn round_trip_cursor_position_and_visibility() {
 fn round_trip_span_of_plain_cells() {
     let cells: Vec<Cell> = "hi!"
         .chars()
-        .map(|c| Cell {
-            c,
-            ..Cell::default()
-        })
+        .map(|c| Cell::from_parts(c, Color::Default, Color::Default, CellFlags::empty(), None, None))
         .collect();
     let frame = Frame {
         cols: 80,
@@ -81,12 +78,7 @@ fn round_trip_span_of_plain_cells() {
 /// mandatory tag keeps `Default`, `Indexed(0)` and `Rgb(0,0,0)` from collapsing.
 #[test]
 fn round_trip_distinct_colour_references() {
-    let mk = |fg, bg| Cell {
-        c: 'x',
-        fg,
-        bg,
-        ..Cell::default()
-    };
+    let mk = |fg, bg| Cell::from_parts('x', fg, bg, CellFlags::empty(), None, None);
     let cells = vec![
         mk(Color::Default, Color::Default),
         mk(Color::Indexed(0), Color::Indexed(255)),
@@ -112,9 +104,9 @@ fn round_trip_distinct_colour_references() {
     let d = decode(&encode(&frame)).expect("decode");
     assert_eq!(d, frame);
     let row = &d.spans[0].cells;
-    assert_ne!(row[0].fg, row[1].fg, "Default must differ from Indexed(0)");
+    assert_ne!(row[0].fg(), row[1].fg(), "Default must differ from Indexed(0)");
     assert_ne!(
-        row[1].fg, row[2].fg,
+        row[1].fg(), row[2].fg(),
         "Indexed(0) must differ from Rgb(0,0,0)"
     );
 }
@@ -123,15 +115,8 @@ fn round_trip_distinct_colour_references() {
 /// `flags` field — the consumer needs both halves of a wide glyph to render it.
 #[test]
 fn round_trip_cell_flags_incl_layout_markers() {
-    let lead = Cell {
-        c: '한',
-        flags: CellFlags::BOLD | CellFlags::WIDE_CHAR,
-        ..Cell::default()
-    };
-    let spacer = Cell {
-        flags: CellFlags::WIDE_CHAR_SPACER,
-        ..Cell::default()
-    };
+    let lead = Cell::from_parts('한', Color::Default, Color::Default, CellFlags::BOLD | CellFlags::WIDE_CHAR, None, None);
+    let spacer = Cell::from_parts(' ', Color::Default, Color::Default, CellFlags::WIDE_CHAR_SPACER, None, None);
     let frame = Frame {
         cols: 80,
         rows: 24,
@@ -190,15 +175,8 @@ fn decode_rejects_superseded_version() {
 /// cell carries only a frame-local index, the code points live in `side_table`.
 #[test]
 fn round_trip_grapheme_side_table() {
-    let accented = Cell {
-        c: 'e',
-        extra: NonZeroU32::new(1), // 1-based index into side_table[0]
-        ..Cell::default()
-    };
-    let plain = Cell {
-        c: 'x',
-        ..Cell::default()
-    };
+    let accented = Cell::from_parts('e', Color::Default, Color::Default, CellFlags::empty(), NonZeroU32::new(1), None); // 1-based index into side_table[0]
+    let plain = Cell::from_parts('x', Color::Default, Color::Default, CellFlags::empty(), None, None);
     let frame = Frame {
         cols: 80,
         rows: 24,
@@ -307,7 +285,7 @@ fn engine_frame_captures_written_cells() {
         .spans
         .iter()
         .filter(|s| s.line == 0)
-        .flat_map(|s| s.cells.iter().map(|c| c.c))
+        .flat_map(|s| s.cells.iter().map(|c| c.c()))
         .collect();
     assert!(chars.contains('h') && chars.contains('i'), "got {chars:?}");
 }
@@ -415,11 +393,11 @@ fn engine_frame_remaps_orphaned_global_index() {
         .spans
         .iter()
         .flat_map(|s| &s.cells)
-        .find(|c| c.extra.is_some())
+        .find(|c| c.extra().is_some())
         .unwrap();
-    assert_eq!(g.c, 'o');
+    assert_eq!(g.c(), 'o');
     assert_eq!(
-        g.extra.unwrap().get(),
+        g.extra().unwrap().get(),
         1,
         "global index 2 remapped to frame-local 1"
     );
@@ -506,10 +484,7 @@ fn round_trip_full_frame_with_cells() {
         right: 2,
         cells: "abc"
             .chars()
-            .map(|c| Cell {
-                c,
-                ..Cell::default()
-            })
+            .map(|c| Cell::from_parts(c, Color::Default, Color::Default, CellFlags::empty(), None, None))
             .collect(),
     };
     let frame = Frame {

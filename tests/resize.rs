@@ -8,11 +8,11 @@ use justerm::{CellFlags, Engine};
 fn auto_wrap_marks_wrapline_but_hard_newline_does_not() {
     let mut soft = Engine::new(3, 2);
     soft.feed(b"abcd"); // 'abc' fills row 0, 'd' auto-wraps to row 1
-    assert!(soft.grid().cell(0, 2).flags.contains(CellFlags::WRAPLINE));
+    assert!(soft.grid().cell(0, 2).flags().contains(CellFlags::WRAPLINE));
 
     let mut hard = Engine::new(3, 2);
     hard.feed(b"ab\r\nc"); // 'ab', then a hard CR/LF
-    assert!(!hard.grid().cell(0, 1).flags.contains(CellFlags::WRAPLINE));
+    assert!(!hard.grid().cell(0, 1).flags().contains(CellFlags::WRAPLINE));
 }
 
 /// Growing the row count keeps existing content and adds blank rows at the
@@ -25,9 +25,9 @@ fn grow_rows_keeps_content_adds_blank_lines() {
     term.resize(4, 3);
 
     assert_eq!((term.grid().cols(), term.grid().rows()), (4, 3));
-    assert_eq!(term.grid().cell(0, 0).c, 'a'); // preserved
-    assert_eq!(term.grid().cell(1, 0).c, 'c');
-    assert_eq!(term.grid().cell(2, 0).c, ' '); // new blank row
+    assert_eq!(term.grid().cell(0, 0).c(), 'a'); // preserved
+    assert_eq!(term.grid().cell(1, 0).c(), 'c');
+    assert_eq!(term.grid().cell(2, 0).c(), ' '); // new blank row
 }
 
 /// Shrinking the row count scrolls the top lines into scrollback (preserved),
@@ -40,11 +40,11 @@ fn shrink_rows_preserves_top_lines_in_scrollback() {
     term.resize(4, 2); // shrink → 'a' scrolls into scrollback
 
     assert_eq!((term.grid().rows(), term.scrollback_len()), (2, 1));
-    assert_eq!(term.grid().cell(0, 0).c, 'b'); // bottom rows stay visible
-    assert_eq!(term.grid().cell(1, 0).c, 'c');
+    assert_eq!(term.grid().cell(0, 0).c(), 'b'); // bottom rows stay visible
+    assert_eq!(term.grid().cell(1, 0).c(), 'c');
 
     term.scroll_up(1);
-    assert_eq!(term.viewport_line(0)[0].c, 'a'); // preserved in history
+    assert_eq!(term.viewport_line(0)[0].c(), 'a'); // preserved in history
 }
 
 /// Narrowing the column count re-wraps a soft-wrapped logical line at the new
@@ -53,25 +53,25 @@ fn shrink_rows_preserves_top_lines_in_scrollback() {
 fn shrink_cols_rewraps_soft_wrapped_line() {
     let mut term = Engine::new(4, 4);
     term.feed(b"abcdef"); // "abcd"(WRAPLINE) + "ef"
-    assert!(term.grid().cell(0, 3).flags.contains(CellFlags::WRAPLINE));
+    assert!(term.grid().cell(0, 3).flags().contains(CellFlags::WRAPLINE));
 
     term.resize(2, 4); // narrow to 2 cols → "abcdef" rewraps as ab|cd|ef
 
     assert_eq!(
-        (term.grid().cell(0, 0).c, term.grid().cell(0, 1).c),
+        (term.grid().cell(0, 0).c(), term.grid().cell(0, 1).c()),
         ('a', 'b')
     );
-    assert!(term.grid().cell(0, 1).flags.contains(CellFlags::WRAPLINE));
+    assert!(term.grid().cell(0, 1).flags().contains(CellFlags::WRAPLINE));
     assert_eq!(
-        (term.grid().cell(1, 0).c, term.grid().cell(1, 1).c),
+        (term.grid().cell(1, 0).c(), term.grid().cell(1, 1).c()),
         ('c', 'd')
     );
-    assert!(term.grid().cell(1, 1).flags.contains(CellFlags::WRAPLINE));
+    assert!(term.grid().cell(1, 1).flags().contains(CellFlags::WRAPLINE));
     assert_eq!(
-        (term.grid().cell(2, 0).c, term.grid().cell(2, 1).c),
+        (term.grid().cell(2, 0).c(), term.grid().cell(2, 1).c()),
         ('e', 'f')
     );
-    assert!(!term.grid().cell(2, 1).flags.contains(CellFlags::WRAPLINE)); // last segment is hard
+    assert!(!term.grid().cell(2, 1).flags().contains(CellFlags::WRAPLINE)); // last segment is hard
 }
 
 /// Widening merges soft-wrapped segments back into one line — reflow is
@@ -84,9 +84,9 @@ fn widen_cols_merges_wrapped_segments() {
     term.resize(6, 4); // widen → merge back onto one row
 
     for (col, ch) in "abcdef".chars().enumerate() {
-        assert_eq!(term.grid().cell(0, col).c, ch);
+        assert_eq!(term.grid().cell(0, col).c(), ch);
     }
-    assert!(!term.grid().cell(0, 5).flags.contains(CellFlags::WRAPLINE)); // fits, no wrap
+    assert!(!term.grid().cell(0, 5).flags().contains(CellFlags::WRAPLINE)); // fits, no wrap
 }
 
 /// Reflow applies to scrollback history too, not just the visible screen — a
@@ -104,7 +104,7 @@ fn resize_reflows_scrollback_too() {
     term.scroll_up(total);
     let top = term.viewport_line(0);
     assert_eq!(top.len(), 2, "scrollback row left at the old width");
-    assert_eq!((top[0].c, top[1].c), ('a', 'b'));
+    assert_eq!((top[0].c(), top[1].c()), ('a', 'b'));
 }
 
 /// The cursor follows its content through a reflow instead of being clamped to
@@ -141,12 +141,12 @@ fn reflow_keeps_wide_char_together_at_boundary() {
 
     term.resize(2, 4); // 'a' takes col 0; '한' can't fit in the last col → wraps whole
 
-    assert_eq!(term.grid().cell(1, 0).c, '한');
-    assert!(term.grid().cell(1, 0).flags.contains(CellFlags::WIDE_CHAR));
+    assert_eq!(term.grid().cell(1, 0).c(), '한');
+    assert!(term.grid().cell(1, 0).flags().contains(CellFlags::WIDE_CHAR));
     assert!(
         term.grid()
             .cell(1, 1)
-            .flags
+            .flags()
             .contains(CellFlags::WIDE_CHAR_SPACER)
     );
 }
@@ -179,7 +179,7 @@ fn primary_is_usable_after_alt_resize_roundtrip() {
     term.feed(b"\x1b[?1049l"); // back to primary at the new size
 
     assert_eq!((term.grid().cols(), term.grid().rows()), (20, 8));
-    assert_eq!(term.grid().cell(0, 0).c, 'l'); // primary content preserved
+    assert_eq!(term.grid().cell(0, 0).c(), 'l'); // primary content preserved
 
     // Keep using the primary — must stay coherent (no panic / out-of-range).
     term.feed(b"\r\nline3");
@@ -189,5 +189,5 @@ fn primary_is_usable_after_alt_resize_roundtrip() {
     for r in 0..term.grid().rows() {
         let _ = term.viewport_line(r);
     }
-    assert_eq!(term.grid().cell(0, 0).c, 'l');
+    assert_eq!(term.grid().cell(0, 0).c(), 'l');
 }

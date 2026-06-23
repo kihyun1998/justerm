@@ -19,11 +19,11 @@ fn red_hi_stored_as_reference() {
     term.feed(b"\x1b[31mhi\x1b[0m");
 
     let grid = term.grid();
-    assert_eq!(grid.cell(0, 0).c, 'h');
-    assert_eq!(grid.cell(0, 1).c, 'i');
+    assert_eq!(grid.cell(0, 0).c(), 'h');
+    assert_eq!(grid.cell(0, 1).c(), 'i');
     // Red is index 1, kept as a reference — never resolved to hex.
-    assert_eq!(grid.cell(0, 0).fg, Color::Indexed(1));
-    assert_eq!(grid.cell(0, 1).fg, Color::Indexed(1));
+    assert_eq!(grid.cell(0, 0).fg(), Color::Indexed(1));
+    assert_eq!(grid.cell(0, 1).fg(), Color::Indexed(1));
     // The trailing reset cleared the pen (it does not retro-edit written cells).
     assert_eq!(term.cursor().pen.fg, Color::Default);
 }
@@ -33,7 +33,7 @@ fn red_hi_stored_as_reference() {
 fn indexed_background() {
     let mut term = Engine::new(10, 2);
     term.feed(b"\x1b[42mX");
-    assert_eq!(term.grid().cell(0, 0).bg, Color::Indexed(2));
+    assert_eq!(term.grid().cell(0, 0).bg(), Color::Indexed(2));
 }
 
 /// Bright fg/bg (aixterm 90..=97 / 100..=107) map to palette slots 8..=15.
@@ -41,8 +41,8 @@ fn indexed_background() {
 fn bright_colors_map_to_high_palette() {
     let mut term = Engine::new(10, 2);
     term.feed(b"\x1b[91mA\x1b[102mB");
-    assert_eq!(term.grid().cell(0, 0).fg, Color::Indexed(9)); // 91 - 90 + 8
-    assert_eq!(term.grid().cell(0, 1).bg, Color::Indexed(10)); // 102 - 100 + 8
+    assert_eq!(term.grid().cell(0, 0).fg(), Color::Indexed(9)); // 91 - 90 + 8
+    assert_eq!(term.grid().cell(0, 1).bg(), Color::Indexed(10)); // 102 - 100 + 8
 }
 
 /// 24-bit and 256-colour SGR in legacy (semicolon) form.
@@ -50,8 +50,8 @@ fn bright_colors_map_to_high_palette() {
 fn extended_color_semicolon_form() {
     let mut term = Engine::new(20, 2);
     term.feed(b"\x1b[38;2;10;20;30mA\x1b[48;5;200mB");
-    assert_eq!(term.grid().cell(0, 0).fg, Color::Rgb(10, 20, 30));
-    assert_eq!(term.grid().cell(0, 1).bg, Color::Indexed(200));
+    assert_eq!(term.grid().cell(0, 0).fg(), Color::Rgb(10, 20, 30));
+    assert_eq!(term.grid().cell(0, 1).bg(), Color::Indexed(200));
 }
 
 /// 24-bit and 256-colour SGR in sub-parameter (colon) form, incl. the
@@ -60,9 +60,9 @@ fn extended_color_semicolon_form() {
 fn extended_color_colon_form() {
     let mut term = Engine::new(20, 2);
     term.feed(b"\x1b[38:2:1:2:3mA\x1b[38:5:5mB\x1b[48:2::4:5:6mC");
-    assert_eq!(term.grid().cell(0, 0).fg, Color::Rgb(1, 2, 3));
-    assert_eq!(term.grid().cell(0, 1).fg, Color::Indexed(5));
-    assert_eq!(term.grid().cell(0, 2).bg, Color::Rgb(4, 5, 6)); // colorspace id skipped
+    assert_eq!(term.grid().cell(0, 0).fg(), Color::Rgb(1, 2, 3));
+    assert_eq!(term.grid().cell(0, 1).fg(), Color::Indexed(5));
+    assert_eq!(term.grid().cell(0, 2).bg(), Color::Rgb(4, 5, 6)); // colorspace id skipped
 }
 
 /// SGR 39/49 reset fg/bg to Default without touching other attrs.
@@ -71,10 +71,10 @@ fn default_color_reset() {
     let mut term = Engine::new(10, 2);
     term.feed(b"\x1b[31;41;1mA\x1b[39;49mB");
     let b = *term.grid().cell(0, 1);
-    assert_eq!(b.fg, Color::Default);
-    assert_eq!(b.bg, Color::Default);
+    assert_eq!(b.fg(), Color::Default);
+    assert_eq!(b.bg(), Color::Default);
     // 39/49 do not clear bold.
-    assert!(b.flags.contains(CellFlags::BOLD));
+    assert!(b.flags().contains(CellFlags::BOLD));
 }
 
 /// Each standard attribute sets its flag; SGR 0 resets everything.
@@ -93,11 +93,11 @@ fn attributes_set_and_full_reset() {
         CellFlags::HIDDEN,
         CellFlags::STRIKETHROUGH,
     ] {
-        assert!(x.flags.contains(f), "missing {f:?}");
+        assert!(x.flags().contains(f), "missing {f:?}");
     }
 
     term.feed(b"\x1b[0mY");
-    assert_eq!(term.grid().cell(0, 1).flags, CellFlags::empty());
+    assert_eq!(term.grid().cell(0, 1).flags(), CellFlags::empty());
 }
 
 /// Per-attribute removal (22 clears bold+dim; 23/24/25/27/28/29 clear one each).
@@ -107,11 +107,11 @@ fn attribute_removal() {
     // Set bold+dim+italic+underline, then clear bold+dim (22) and italic (23).
     term.feed(b"\x1b[1;2;3;4m\x1b[22;23mX");
     let x = *term.grid().cell(0, 0);
-    assert!(!x.flags.contains(CellFlags::BOLD));
-    assert!(!x.flags.contains(CellFlags::DIM));
-    assert!(!x.flags.contains(CellFlags::ITALIC));
+    assert!(!x.flags().contains(CellFlags::BOLD));
+    assert!(!x.flags().contains(CellFlags::DIM));
+    assert!(!x.flags().contains(CellFlags::ITALIC));
     // Underline survived — removal is selective.
-    assert!(x.flags.contains(CellFlags::UNDERLINE));
+    assert!(x.flags().contains(CellFlags::UNDERLINE));
 }
 
 // ===========================================================================
@@ -124,13 +124,13 @@ fn absolute_positioning() {
     let mut term = Engine::new(10, 5);
 
     term.feed(b"\x1b[2;4Hx"); // CUP row 2 col 4 → grid (1, 3)
-    assert_eq!(term.grid().cell(1, 3).c, 'x');
+    assert_eq!(term.grid().cell(1, 3).c(), 'x');
 
     term.feed(b"\x1b[3Gy"); // CHA col 3 → (1, 2)
-    assert_eq!(term.grid().cell(1, 2).c, 'y');
+    assert_eq!(term.grid().cell(1, 2).c(), 'y');
 
     term.feed(b"\x1b[4dz"); // VPA row 4 → row 3; col unchanged = 3 (print of 'y' advanced it)
-    assert_eq!(term.grid().cell(3, 3).c, 'z');
+    assert_eq!(term.grid().cell(3, 3).c(), 'z');
 }
 
 /// Relative movement CUU/CUD/CUF/CUB.
@@ -138,11 +138,11 @@ fn absolute_positioning() {
 fn relative_movement_all_directions() {
     let mut term = Engine::new(10, 5);
     term.feed(b"\x1b[2B\x1b[4C*"); // down 2, forward 4 → (2, 4)
-    assert_eq!(term.grid().cell(2, 4).c, '*');
+    assert_eq!(term.grid().cell(2, 4).c(), '*');
 
     // From (2, 5) after the print: up 1, back 3 → (1, 2).
     term.feed(b"\x1b[1A\x1b[3D#");
-    assert_eq!(term.grid().cell(1, 2).c, '#');
+    assert_eq!(term.grid().cell(1, 2).c(), '#');
 }
 
 /// Movement saturates at the grid edges (no panic, no wrap-around).
@@ -163,7 +163,7 @@ fn cursor_move_clears_pending_wrap() {
     term.feed(b"abc"); // fills row 0 → pending_wrap set
     assert!(term.cursor().pending_wrap);
     term.feed(b"\x1b[1;1HX"); // CUP back to start clears it
-    assert_eq!(term.grid().cell(0, 0).c, 'X');
+    assert_eq!(term.grid().cell(0, 0).c(), 'X');
     assert_eq!(term.cursor().row, 0); // did NOT wrap to row 1
 }
 
@@ -182,20 +182,20 @@ fn erase_line_modes() {
 
     let mut t0 = setup();
     t0.feed(b"\x1b[0K"); // cursor→end
-    assert_eq!(t0.grid().cell(0, 1).c, 'b'); // before cursor kept
-    assert_eq!(t0.grid().cell(0, 2).c, ' '); // cursor cleared
-    assert_eq!(t0.grid().cell(0, 4).c, ' ');
+    assert_eq!(t0.grid().cell(0, 1).c(), 'b'); // before cursor kept
+    assert_eq!(t0.grid().cell(0, 2).c(), ' '); // cursor cleared
+    assert_eq!(t0.grid().cell(0, 4).c(), ' ');
 
     let mut t1 = setup();
     t1.feed(b"\x1b[1K"); // start→cursor (inclusive)
-    assert_eq!(t1.grid().cell(0, 0).c, ' ');
-    assert_eq!(t1.grid().cell(0, 2).c, ' ');
-    assert_eq!(t1.grid().cell(0, 3).c, 'd'); // after cursor kept
+    assert_eq!(t1.grid().cell(0, 0).c(), ' ');
+    assert_eq!(t1.grid().cell(0, 2).c(), ' ');
+    assert_eq!(t1.grid().cell(0, 3).c(), 'd'); // after cursor kept
 
     let mut t2 = setup();
     t2.feed(b"\x1b[2K"); // whole line
-    assert_eq!(t2.grid().cell(0, 0).c, ' ');
-    assert_eq!(t2.grid().cell(0, 4).c, ' ');
+    assert_eq!(t2.grid().cell(0, 0).c(), ' ');
+    assert_eq!(t2.grid().cell(0, 4).c(), ' ');
 }
 
 /// ED: 0 = cursor→end-of-screen, 1 = start→cursor, 2 = whole screen.
@@ -209,23 +209,23 @@ fn erase_display_modes() {
 
     let mut t0 = setup();
     t0.feed(b"\x1b[0J"); // cursor→end
-    assert_eq!(t0.grid().cell(0, 0).c, 'a'); // row above kept
-    assert_eq!(t0.grid().cell(1, 0).c, 'b'); // before cursor on its row kept
-    assert_eq!(t0.grid().cell(1, 1).c, ' '); // cursor cleared
-    assert_eq!(t0.grid().cell(2, 0).c, ' '); // row below cleared
+    assert_eq!(t0.grid().cell(0, 0).c(), 'a'); // row above kept
+    assert_eq!(t0.grid().cell(1, 0).c(), 'b'); // before cursor on its row kept
+    assert_eq!(t0.grid().cell(1, 1).c(), ' '); // cursor cleared
+    assert_eq!(t0.grid().cell(2, 0).c(), ' '); // row below cleared
 
     let mut t1 = setup();
     t1.feed(b"\x1b[1J"); // start→cursor
-    assert_eq!(t1.grid().cell(0, 0).c, ' '); // row above cleared
-    assert_eq!(t1.grid().cell(1, 1).c, ' '); // cursor cleared
-    assert_eq!(t1.grid().cell(1, 2).c, 'b'); // after cursor on its row kept
-    assert_eq!(t1.grid().cell(2, 0).c, 'c'); // row below kept
+    assert_eq!(t1.grid().cell(0, 0).c(), ' '); // row above cleared
+    assert_eq!(t1.grid().cell(1, 1).c(), ' '); // cursor cleared
+    assert_eq!(t1.grid().cell(1, 2).c(), 'b'); // after cursor on its row kept
+    assert_eq!(t1.grid().cell(2, 0).c(), 'c'); // row below kept
 
     let mut t2 = setup();
     t2.feed(b"\x1b[2J"); // whole screen
     for r in 0..3 {
         for c in 0..3 {
-            assert_eq!(t2.grid().cell(r, c).c, ' ');
+            assert_eq!(t2.grid().cell(r, c).c(), ' ');
         }
     }
 }
@@ -239,8 +239,8 @@ fn erase_display_modes() {
 fn carriage_return_and_linefeed() {
     let mut term = Engine::new(10, 3);
     term.feed(b"ab\r\nc");
-    assert_eq!(term.grid().cell(0, 0).c, 'a');
-    assert_eq!(term.grid().cell(1, 0).c, 'c'); // CR reset col, LF dropped to row 1
+    assert_eq!(term.grid().cell(0, 0).c(), 'a');
+    assert_eq!(term.grid().cell(1, 0).c(), 'c'); // CR reset col, LF dropped to row 1
 }
 
 /// LF (and VT/FF) past the bottom scrolls the screen up; the top line is
@@ -249,11 +249,11 @@ fn carriage_return_and_linefeed() {
 fn linefeed_scrolls_at_bottom() {
     let mut term = Engine::new(4, 2);
     term.feed(b"top\r\nbot");
-    assert_eq!(term.grid().cell(0, 0).c, 't');
+    assert_eq!(term.grid().cell(0, 0).c(), 't');
 
     term.feed(b"\r\nnew");
-    assert_eq!(term.grid().cell(0, 0).c, 'b'); // "bot" shifted up
-    assert_eq!(term.grid().cell(1, 0).c, 'n');
+    assert_eq!(term.grid().cell(0, 0).c(), 'b'); // "bot" shifted up
+    assert_eq!(term.grid().cell(1, 0).c(), 'n');
 }
 
 /// Backspace moves the cursor left by one (and the next print overwrites).
@@ -261,7 +261,7 @@ fn linefeed_scrolls_at_bottom() {
 fn backspace_moves_left() {
     let mut term = Engine::new(10, 2);
     term.feed(b"ab\x08c"); // b at col1, BS to col1, c overwrites
-    assert_eq!(term.grid().cell(0, 1).c, 'c');
+    assert_eq!(term.grid().cell(0, 1).c(), 'c');
     assert_eq!(term.cursor().col, 2);
 }
 
@@ -270,7 +270,7 @@ fn backspace_moves_left() {
 fn tab_to_next_stop() {
     let mut term = Engine::new(20, 2);
     term.feed(b"\tx");
-    assert_eq!(term.grid().cell(0, 8).c, 'x');
+    assert_eq!(term.grid().cell(0, 8).c(), 'x');
 }
 
 // ===========================================================================
@@ -285,14 +285,14 @@ fn pending_wrap_is_deferred() {
     let mut term = Engine::new(3, 3);
     term.feed(b"abc"); // exactly fills row 0
 
-    assert_eq!(term.grid().cell(0, 2).c, 'c');
+    assert_eq!(term.grid().cell(0, 2).c(), 'c');
     assert_eq!(term.cursor().row, 0); // parked, not yet wrapped
     assert_eq!(term.cursor().col, 2);
     assert!(term.cursor().pending_wrap);
 
     term.feed(b"d"); // now the wrap happens
     assert_eq!(term.cursor().row, 1);
-    assert_eq!(term.grid().cell(1, 0).c, 'd');
+    assert_eq!(term.grid().cell(1, 0).c(), 'd');
     assert!(!term.cursor().pending_wrap);
 }
 
@@ -304,11 +304,11 @@ fn overwriting_a_wide_char_clears_its_other_half() {
     let mut a = Engine::new(10, 1);
     a.feed("한".as_bytes()); // (0,0)=lead, (0,1)=spacer
     a.feed(b"\x1b[1;1Hx"); // write 'x' over the lead
-    assert_eq!(a.grid().cell(0, 0).c, 'x');
+    assert_eq!(a.grid().cell(0, 0).c(), 'x');
     assert!(
         !a.grid()
             .cell(0, 1)
-            .flags
+            .flags()
             .contains(CellFlags::WIDE_CHAR_SPACER)
     );
 
@@ -316,8 +316,8 @@ fn overwriting_a_wide_char_clears_its_other_half() {
     let mut b = Engine::new(10, 1);
     b.feed("한".as_bytes());
     b.feed(b"\x1b[1;2Hy"); // write 'y' over the spacer
-    assert_eq!(b.grid().cell(0, 1).c, 'y');
-    assert!(!b.grid().cell(0, 0).flags.contains(CellFlags::WIDE_CHAR));
+    assert_eq!(b.grid().cell(0, 1).c(), 'y');
+    assert!(!b.grid().cell(0, 0).flags().contains(CellFlags::WIDE_CHAR));
 }
 
 /// Erasing across one half of a wide glyph clears the other half too — the
@@ -328,7 +328,7 @@ fn erasing_part_of_a_wide_char_clears_its_other_half() {
     let mut a = Engine::new(10, 1);
     a.feed("a한b".as_bytes()); // a(0), lead(1), spacer(2), b(3)
     a.feed(b"\x1b[1;3H\x1b[0K"); // cursor on the spacer (col 2), erase to end
-    assert!(!a.grid().cell(0, 1).flags.contains(CellFlags::WIDE_CHAR));
+    assert!(!a.grid().cell(0, 1).flags().contains(CellFlags::WIDE_CHAR));
 
     // Erase-to-start ending on the lead → the spacer is cleared too.
     let mut b = Engine::new(10, 1);
@@ -337,7 +337,7 @@ fn erasing_part_of_a_wide_char_clears_its_other_half() {
     assert!(
         !b.grid()
             .cell(0, 2)
-            .flags
+            .flags()
             .contains(CellFlags::WIDE_CHAR_SPACER)
     );
 }
@@ -351,8 +351,8 @@ fn wide_char_marks_spacer() {
     term.feed("한".as_bytes()); // Hangul syllable, display width 2
 
     let grid = term.grid();
-    assert_eq!(grid.cell(0, 0).c, '한');
-    assert!(grid.cell(0, 0).flags.contains(CellFlags::WIDE_CHAR));
+    assert_eq!(grid.cell(0, 0).c(), '한');
+    assert!(grid.cell(0, 0).flags().contains(CellFlags::WIDE_CHAR));
     assert!(grid.cell(0, 1).is_wide_spacer());
     assert_eq!(term.cursor().col, 2);
 }
@@ -366,12 +366,12 @@ fn wide_char_wraps_when_it_does_not_fit() {
     term.feed("ab한".as_bytes()); // 'a','b' fill cols 0,1; '한' can't fit at col 2
 
     let grid = term.grid();
-    assert_eq!(grid.cell(0, 0).c, 'a');
-    assert_eq!(grid.cell(0, 1).c, 'b');
-    assert_eq!(grid.cell(0, 2).c, ' '); // vacated last column left blank
+    assert_eq!(grid.cell(0, 0).c(), 'a');
+    assert_eq!(grid.cell(0, 1).c(), 'b');
+    assert_eq!(grid.cell(0, 2).c(), ' '); // vacated last column left blank
     // The wide glyph wrapped to the next row.
-    assert_eq!(grid.cell(1, 0).c, '한');
-    assert!(grid.cell(1, 0).flags.contains(CellFlags::WIDE_CHAR));
+    assert_eq!(grid.cell(1, 0).c(), '한');
+    assert!(grid.cell(1, 0).flags().contains(CellFlags::WIDE_CHAR));
     assert!(grid.cell(1, 1).is_wide_spacer());
 }
 
@@ -383,10 +383,10 @@ fn zero_width_is_dropped_for_now() {
     let mut term = Engine::new(10, 2);
     term.feed("e\u{0301}".as_bytes()); // 'e' + combining acute accent
 
-    assert_eq!(term.grid().cell(0, 0).c, 'e');
+    assert_eq!(term.grid().cell(0, 0).c(), 'e');
     // The combining mark did not advance the cursor nor occupy col 1.
     assert_eq!(term.cursor().col, 1);
-    assert_eq!(term.grid().cell(0, 1).c, ' ');
+    assert_eq!(term.grid().cell(0, 1).c(), ' ');
 }
 
 // ===========================================================================
@@ -400,9 +400,9 @@ fn zero_width_is_dropped_for_now() {
 fn private_mode_sequences_are_ignored() {
     let mut term = Engine::new(10, 2);
     term.feed(b"A\x1b[?25lB\x1b[?2004hC"); // hide-cursor + bracketed-paste: both unimplemented
-    assert_eq!(term.grid().cell(0, 0).c, 'A');
-    assert_eq!(term.grid().cell(0, 1).c, 'B');
-    assert_eq!(term.grid().cell(0, 2).c, 'C');
+    assert_eq!(term.grid().cell(0, 0).c(), 'A');
+    assert_eq!(term.grid().cell(0, 1).c(), 'B');
+    assert_eq!(term.grid().cell(0, 2).c(), 'C');
 }
 
 /// Bytes split across feed() calls mid-escape are parsed correctly (the parser
@@ -412,6 +412,6 @@ fn escape_split_across_feeds() {
     let mut term = Engine::new(10, 2);
     term.feed(b"\x1b[3"); // CSI param, cut here
     term.feed(b"1mZ"); // ...resumes: SGR 31, print Z
-    assert_eq!(term.grid().cell(0, 0).c, 'Z');
-    assert_eq!(term.grid().cell(0, 0).fg, Color::Indexed(1));
+    assert_eq!(term.grid().cell(0, 0).c(), 'Z');
+    assert_eq!(term.grid().cell(0, 0).fg(), Color::Indexed(1));
 }

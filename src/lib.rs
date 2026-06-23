@@ -10,8 +10,8 @@
 //!
 //! let mut term = Engine::new(80, 24);
 //! term.feed(b"\x1b[31mhi\x1b[0m");
-//! assert_eq!(term.grid().cell(0, 0).c, 'h');
-//! assert_eq!(term.grid().cell(0, 0).fg, Color::Indexed(1));
+//! assert_eq!(term.grid().cell(0, 0).c(), 'h');
+//! assert_eq!(term.grid().cell(0, 0).fg(), Color::Indexed(1));
 //! ```
 
 mod cell;

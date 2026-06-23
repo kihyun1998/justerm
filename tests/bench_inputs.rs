@@ -20,7 +20,7 @@ fn ascii_feeds_printable_text() {
     let mut term = Engine::new(COLS, ROWS);
     term.feed(&ascii_input());
     // "The quick brown fox..." — the first glyph lands at the top-left cell.
-    assert_eq!(term.grid().cell(0, 0).c, 'T');
+    assert_eq!(term.grid().cell(0, 0).c(), 'T');
 }
 
 #[test]
@@ -30,11 +30,11 @@ fn ansi_actually_colours_cells() {
     // The input is "ANSI-heavy" only if the SGR sequences land: the first cell
     // is `\x1b[38;5;0m#`, so it must carry an indexed colour, not the default.
     let first = term.grid().cell(0, 0);
-    assert_eq!(first.c, '#');
+    assert_eq!(first.c(), '#');
     assert!(
-        matches!(first.fg, Color::Indexed(_)),
+        matches!(first.fg(), Color::Indexed(_)),
         "SGR-dense input must leave indexed colours, got {:?}",
-        first.fg
+        first.fg()
     );
 }
 
@@ -50,13 +50,13 @@ fn cjk_glyphs_are_all_wide() {
         term.feed(g.encode_utf8(&mut tmp).as_bytes());
         let lead = term.grid().cell(0, 0);
         let spacer = term.grid().cell(0, 1);
-        assert_eq!(lead.c, g);
+        assert_eq!(lead.c(), g);
         assert!(
-            lead.flags.contains(CellFlags::WIDE_CHAR),
+            lead.flags().contains(CellFlags::WIDE_CHAR),
             "{g:?} should be a wide lead cell"
         );
         assert!(
-            spacer.flags.contains(CellFlags::WIDE_CHAR_SPACER),
+            spacer.flags().contains(CellFlags::WIDE_CHAR_SPACER),
             "{g:?} should leave a spacer in the next column"
         );
     }
