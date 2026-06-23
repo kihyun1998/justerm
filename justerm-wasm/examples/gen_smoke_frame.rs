@@ -15,14 +15,16 @@ fn main() {
         .expect("usage: gen_smoke_frame <out-file>");
 
     // One Partial span, one cell 'A' with fg = Indexed(196) — xterm cube pure red,
-    // so the smoke can assert resolveRgb(fg[0]) == 0xff0000 end-to-end.
+    // so the smoke can assert resolveRgb(fg[0]) == 0xff0000 end-to-end. The cursor
+    // carries a known non-default value (3, 7, hidden) so the smoke can assert the
+    // v3 cursor getters cross the assembled-package boundary (#38).
     let frame = Frame {
         cols: 80,
         rows: 24,
         kind: FrameKind::Partial,
-        cursor_row: 0,
-        cursor_col: 0,
-        cursor_visible: true,
+        cursor_row: 3,
+        cursor_col: 7,
+        cursor_visible: false,
         scroll: None,
         spans: vec![Span {
             line: 0,

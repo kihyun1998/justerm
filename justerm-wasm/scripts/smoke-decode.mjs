@@ -35,6 +35,15 @@ if (frame.codepoints[0] !== "A".codePointAt(0)) {
   fail(`codepoints[0] = ${frame.codepoints[0]}, expected 'A'`);
 }
 
+// v3 cursor getters cross the assembled-package boundary (#38). The golden frame
+// bakes a known non-default cursor (3, 7, hidden) in gen_smoke_frame.rs.
+if (frame.cursorRow !== 3 || frame.cursorCol !== 7 || frame.cursorVisible !== false) {
+  fail(
+    `cursor = (${frame.cursorRow}, ${frame.cursorCol}, ${frame.cursorVisible}), ` +
+      `expected (3, 7, false)`,
+  );
+}
+
 // Default ANSI (unused here); index 196 comes from the xterm cube.
 const palette = {
   colors: wasm.buildPalette(new Uint32Array(16)),
