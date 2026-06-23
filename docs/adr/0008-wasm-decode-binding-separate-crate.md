@@ -252,8 +252,9 @@ that is the consumer's consumption contract.
 
 ### Consequences
 
-- **Wire format unchanged.** `WIRE_VERSION` stays 2 — this changes only how decoded data is
-  *presented* to JS. It is a breaking *JS API* change → npm **0.2.0** (the crates.io crate's Rust API
+- **Wire format unchanged by this ADR.** This change only affects how decoded data is *presented*
+  to JS; it did not bump `WIRE_VERSION` (2 at the time of this ADR; later raised to 3 by #38's cursor
+  fields). It is a breaking *JS API* change → npm **0.2.0** (the crates.io crate's Rust API
   is unaffected). Safe to make now: PenTerm has not yet integrated the WASM decoder (it bridges with a
   temporary TS decoder).
 - **Parity obligation — one mirror only.** The sole JS mirror is `resolveRgb` / `decodeColorRef`'s

@@ -1,7 +1,9 @@
 # ADR-0005: Binary, reference-based, fixed-width serialization (frame = damage + side-table)
 
 Status: accepted (2026-06-18); amended (2026-06-18, #26 — wire v2 widened the cell
-record to 18 bytes and added the hyperlink side-table; see the v2 notes below)
+record to 18 bytes and added the hyperlink side-table; see the v2 notes below);
+amended (2026-06-23, #38 — wire v3 added per-frame cursor header fields
+(`cursor_row`/`cursor_col` u16 + `cursor_visible` u8); `VERSION` 2→3)
 
 ## Context
 
@@ -56,7 +58,8 @@ The engine
 provides **both** `encode` (a damage frame) and `decode` (so the round-trip is
 the acceptance test); transport stays the consumer's job (CLAUDE.md: no IPC).
 
-Frame = header (magic/version/flags, `cols`/`rows`, `Full | Partial`) → optional
+Frame = header (magic/version/flags, `cols`/`rows`, cursor row/col + visibility (v3,
+#38), `Full | Partial`) → optional
 scroll op `{top, bottom, count}` (applied before spans) → spans (`{line, left,
 right}` + cells) → side-table (only clusters referenced this frame, frame-local
 indices). Cell record (LE): `c` u32 (Unicode scalar, not atlas id), `fg`/`bg`

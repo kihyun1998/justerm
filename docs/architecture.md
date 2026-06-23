@@ -105,7 +105,8 @@ xterm.js's escape-sequence re-emit (which a non-parsing GPU renderer like beamte
 **ADR-0005**.
 
 A **frame** serializes one damage cycle (`damage()` + `scroll_delta()`):
-- **header** — magic, version, flags, `cols`/`rows`, kind (`Full` | `Partial`).
+- **header** — magic, version, flags, `cols`/`rows`, cursor (`cursor_row`/`cursor_col` u16 +
+  `cursor_visible` u8 — v3, #38), kind (`Full` | `Partial`).
 - **scroll op** (optional) — `{top, bottom, count}` (ADR-0003); the decoder applies it *before* the spans.
 - **spans** — for `Partial`, each `{line, left, right}` then `(right−left+1)` cell records; `Full` = all rows.
 - **side-table** — only the clusters referenced *this frame*, renumbered frame-local; each cell's
