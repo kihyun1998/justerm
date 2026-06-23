@@ -62,3 +62,19 @@ pub fn scrolling_input() -> Vec<u8> {
     }
     buf
 }
+
+/// ~5 MiB of short CRLF lines — the *at-cap flood* the harness times. Short
+/// lines mean the most newlines per MiB (the worst case for scroll), and the
+/// line count (~120k) dwarfs any sane scrollback cap, so once the cap is full
+/// every line evicts + recycles a row: the steady-state, bandwidth-bound regime
+/// a real `cat huge.log` produces. The small inputs never reach the cap, so this
+/// is the one that measures row recycling rather than history growth. [#42]
+pub fn flood_input() -> Vec<u8> {
+    let mut buf = Vec::with_capacity(5 * 1024 * 1024 + 64);
+    let mut i = 0u32;
+    while buf.len() < 5 * 1024 * 1024 {
+        buf.extend_from_slice(format!("line {i:08}: flooding the scrollback ring\r\n").as_bytes());
+        i += 1;
+    }
+    buf
+}

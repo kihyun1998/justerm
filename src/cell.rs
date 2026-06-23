@@ -83,3 +83,18 @@ impl Cell {
         self.flags.contains(CellFlags::WIDE_CHAR_SPACER)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::Cell;
+
+    /// Baseline pin: `Cell` is 24 bytes today (c: char + fg/bg: Color×2 + flags:
+    /// u16 + extra/link: Option<NonZeroU32>×2). Flood throughput is
+    /// memory-bandwidth-bound, so this size is touched on every print/scroll-blank
+    /// — #43 (the deferred pack) drives it toward ~12. This test documents the
+    /// starting point and guards against accidental `Cell` bloat. [#42]
+    #[test]
+    fn cell_is_24_bytes() {
+        assert_eq!(std::mem::size_of::<Cell>(), 24);
+    }
+}

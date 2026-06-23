@@ -74,6 +74,32 @@ fn scrolling_fills_scrollback() {
     );
 }
 
+/// The flood input exists to model a *real* terminal flood: far more lines than
+/// the scrollback cap, so eviction recycles a row every line — the
+/// bandwidth-bound, at-cap regime the harness must measure (the small inputs
+/// only exercise the below-cap path). Saturating the cap is what makes that
+/// regime real, so the bench times row recycling, not history growth. [#42]
+const FLOOD_CAP: usize = 100;
+
+#[test]
+fn flood_saturates_the_scrollback_cap() {
+    let mut term = Engine::with_scrollback(COLS, ROWS, FLOOD_CAP);
+    term.feed(&flood_input());
+    assert_eq!(
+        term.scrollback_len(),
+        FLOOD_CAP,
+        "flood must fill scrollback to its cap so eviction churns every line"
+    );
+}
+
+#[test]
+fn flood_is_several_megabytes() {
+    // A bandwidth measurement needs a large, steady stream; a tiny buffer leaves
+    // the timer dominated by fixed per-call overhead instead of the steady state.
+    let n = flood_input().len();
+    assert!(n >= 4 * 1024 * 1024, "flood should be >= 4 MiB, got {n}");
+}
+
 #[test]
 fn every_input_is_non_empty_and_feeds_cleanly() {
     // criterion divides by buffer length for MB/s, so an empty buffer would be a
