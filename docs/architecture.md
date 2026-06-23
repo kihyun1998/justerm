@@ -178,6 +178,30 @@ deferred behavior) it tracks — then add what you find here.** Seeds (caught in
   while scrolled up (`display_offset > 0`) **stays** put — the offset is bumped to hold the view, not
   yanked to the bottom (alacritty/xterm.js follow-bottom). History is a flat line ring; semantic
   grouping (Warp's command "blocks") is a *consumer* concern above the engine, never in it. [#3]
+- **The screen `Grid` is a row ring — logical rows map through a `zero` offset; scroll moves the
+  offset, not the rows.** `feed` is **scroll-bound, not parse-bound** (#41 profiling: a 10 MB flood
+  spends ~90% in `feed`, and *ascii* — the simplest input, hence the most newlines per MB — is the
+  *slowest*, so the cost tracks newline count). The cause was `scroll_up_region`'s
+  `lines[..].rotate_left(1)` — O(rows) row-handle moves *per scrolled line*. Fix (ADR-0009): `Grid`
+  holds `lines` as a ring of exactly `rows` rows plus a `zero: usize`; a **full-screen** scroll advances
+  `zero` (O(1)) instead of moving rows, and accessors map a logical row `r` to physical `zero + r` via
+  *conditional subtraction* (`if s >= rows { s - rows }`, alacritty's `compute_index` trick — not `%`,
+  since `zero + r < 2·rows`). The screen↔scrollback boundary is **kept** (Route A, not a unified
+  alacritty-`Storage` ring — the analogy lacks a shared cause, ADR-0009): the hot path crosses it with a
+  **value-handshake** — `Grid::scroll_up_recycle(blank: Row) -> Row` installs a caller-supplied cleared
+  `blank` at the new bottom by `mem::replace` and returns the evicted top row by **move** (the old
+  per-newline `row(0).to_vec()` copy is gone); `Term` supplies the `blank` (recycled from the
+  cap-`pop_front`ed row, so steady-state is zero-alloc — xterm.js `recycle`) and pushes the evicted row
+  into scrollback. The mapping is the **hidden state**, and it must be *total* — one un-mapped path is
+  silent corruption. Obligations: **every** Grid accessor maps through `phys()` (`cell`/`cell_mut`/
+  `row`/`row_mut`/`clear`); `take_lines`/`set_screen` (reflow/resize) **linearize** the ring (rotate to
+  `zero = 0`) because `grid::reflow` assumes logical order; `clear` (alt entry) resets `zero = 0`; the
+  alt and primary grids each carry their **own** `zero` across `mem::swap`; a **region** scroll
+  (`scroll_top > 0`, alt, or any DECSTBM sub-region) must **not** advance `zero` — it stays the O(region)
+  in-region swap (alacritty's `region.start != 0` fallback; #41 permits it, not the hot path), as does
+  RI / `scroll_down_region` (never accrues scrollback). `record_scroll` and damage stay in **logical**
+  coordinates, so the ring is invisible to the wire format and `DecodedFrame` (no `WIRE_VERSION` bump).
+  [#41]
 - **Soft-wrap (WRAPLINE) vs a hard line-end must be distinguished for reflow.** An auto-wrap (the
   deferred last-column wrap firing) marks the row it leaves as *soft-wrapped* — a `WRAPLINE` flag on
   its last cell (Alacritty's encoding; xterm.js instead flags the continuation row). An explicit
