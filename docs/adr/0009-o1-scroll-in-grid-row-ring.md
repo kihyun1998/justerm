@@ -1,6 +1,11 @@
-# ADR-0009: O(1) full-screen scroll via an in-Grid row ring with a value-handshake — not a unified screen+scrollback ring
+# ADR-0009: Scroll eviction via a move+recycle value-handshake — the row ring was measured as a regression and dropped
 
-Status: accepted (2026-06-23)
+Status: accepted (2026-06-23); **amended (2026-06-23) — the in-Grid ring this ADR originally adopted was
+implemented, benchmarked, and found to be a net regression; it is dropped. The *value-handshake / row
+recycling* is kept; the *ring* (`zero`/`phys`) is not. See the amendment at the end — it supersedes the
+"in-Grid row ring" parts of the Decision and Consequences below. The Context, the rejection of the
+unified ring (Route B), and the handshake design remain valid; read the original text as the reasoning
+that led to the handshake, and the amendment for why the ring half was wrong.**
 
 ## Context
 
@@ -153,3 +158,73 @@ the boundary with an explicit value-handshake.**
   move the ring and reflow both rely on (`Row` as a movable unit).
 - **Callback from `Grid` into `Term` for eviction.** Rejected — it leaks the boundary the value-handshake
   keeps clean; `Grid` must not call back into history policy.
+
+## Amendment (2026-06-23) — the ring was measured as a regression; recycle without it
+
+The Decision above was implemented in two commits (the ring in `af15a87`, the handshake in `8e370d5`)
+and then benchmarked. **The ring is a net regression and has been dropped** (`1fa3b14`); only the
+move+recycle handshake survives. What the original reasoning got wrong:
+
+### What the benchmark showed
+
+`benches/throughput.rs`, 24 rows, criterion `--baseline` (paired, same session):
+
+- **Default cap, ring vs pre-`#41` baseline:** `ascii` **−21 %** (CI −26 %…−17 %), `cjk` **−6 %**
+  (CI −6.8 %…−5.0 %) — confident *regressions*; `ansi`/`scrolling` within noise.
+- **Cap-hitting (`scrollback_limit = 100`, so eviction churns every line — what a real flood does),
+  three variants:** the ring was the *slowest* of the three on most inputs (e.g. `scrolling` 107 vs the
+  pre-`#41` baseline's 112 MiB/s); the **no-ring move+recycle was fastest** (`scrolling` ~140, `ascii`
+  ~144 MiB/s), beating both the ring and the original `to_vec` path.
+
+### Why the ring lost — two errors in the original analysis
+
+1. **The O(rows) it removed was already free.** `lines: Vec<Row>` with `Row = Vec<Cell>`, so
+   `rotate_left` moves 24-byte `Vec` *handles*, **not** cell data — and `rows` is small *and bounded*
+   (a screen is ~24–100 rows; scrollback is a separate `VecDeque`, never thousands of in-grid rows).
+   Big-O describes growth as N→∞; with N small and fixed, the constant dominates, and a 24-handle
+   `rotate_left` is sub-microsecond. The "Keep `rotate_left`" alternative was rejected with *"the
+   algorithm, not the constant, is the cost"* — **that was exactly backwards.** This is precisely the
+   under-reach the unified-ring analogy was checked against (CLAUDE.md "shared cause"): alacritty's
+   `Storage` ring earns its keep because *its* buffer holds screen **+ thousands of scrollback rows**, so
+   *its* rotate really is O(thousands). justerm split them, so the ring's premise never transferred —
+   and the original ADR stopped one step short of concluding "therefore the ring buys nothing here."
+2. **The ring taxed the actually-hot path.** Making `lines` a ring forces every cell access through
+   `phys()`. Cell writes (printing) outnumber scrolls by orders of magnitude, so the ring moved cost
+   *onto* the hot path to shave a rare, already-free one — a net loss, worst on print-heavy `ascii`.
+
+### The real cost, and the real fix
+
+`#41`'s ~960 ms was **not** `rotate_left`. It was the per-newline eviction: `grid.row(0).to_vec()`
+(copy ~2 KB + allocate) every line, plus an alloc/free **pair** every line once scrollback sits at its
+cap (a 10 MB / ~160 k-line flood is at cap the whole time). That is a *constant-factor / allocator*
+problem, not an algorithmic one. The fix is to **recycle the row buffer**, which needs no ring:
+
+```rust
+// Grid: keep the cheap rotate_left; move row 0 out, swap a recycled blank into the bottom slot.
+pub(crate) fn scroll_up_recycle(&mut self, mut blank: Row) -> Row {
+    blank.clear();
+    blank.resize(self.cols, Cell::default());
+    self.lines.rotate_left(1);                 // 24-byte handle moves — negligible
+    let last = self.rows - 1;
+    std::mem::replace(&mut self.lines[last], blank)   // evicted row out by move (no copy)
+}
+```
+
+`Term` still owns policy (parks the cap-evicted row in a `recycled_row` spare and feeds it back as the
+next blank → zero per-line alloc/copy in steady state). The **value-handshake and the
+full-screen-vs-top-anchored-sub-region routing are unchanged** — they were always ring-agnostic, which is
+why dropping the ring touched only `grid.rs` (−114/+37 lines: no `zero`, no `phys`, accessors back to
+direct indexing, region scrolls back to plain `rotate`, `take_lines` back to a plain `take`).
+
+### What stands and what doesn't
+
+- **Stands:** rejecting the unified ring (Route B) — that reasoning is independent of the in-Grid ring
+  and still correct; the screen↔scrollback split is right. The handshake's purity (Grid stays a pure
+  `rows × cols` grid; Term owns history policy) also stands.
+- **Superseded:** every "ring / `zero` / `phys` / O(1) scroll / linearize `take_lines`" claim in the
+  Decision and Consequences. There is no per-cell mapping, so the "hidden cost is `phys()`" obligation
+  list is moot. `record_scroll`/damage stay in logical coordinates trivially (rows never leave logical
+  order). `DecodedFrame` output is identical; 260 tests pass.
+- **Method lesson (for the next perf slice):** profile the *kind* of cost (allocator vs memory-bandwidth
+  vs CPU) before assigning a Big-O label. "Slow scroll" was allocator churn, and the bound N was small —
+  neither implies an algorithmic fix. Measure the change, don't infer it from the complexity class.
