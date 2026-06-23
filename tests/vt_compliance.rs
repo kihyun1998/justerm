@@ -291,6 +291,30 @@ fn scroll_accrues_history() {
     assert_eq!(term.scrollback_len(), 1);
 }
 
+/// Flooding well past the scrollback cap recycles evicted row buffers as new
+/// blank lines (ADR-0009). The recycling must not corrupt history content, leak
+/// a stale row into the live screen, or miscount the cap.
+#[test]
+fn flooding_past_cap_recycles_rows_without_corrupting_history() {
+    let mut term = Engine::with_scrollback(4, 2, 3); // 2 rows, cap = 3 history
+    // 10 lines through a 2-row screen, cap 3 → ~5 cap evictions, each parking a
+    // row that the next full-screen scroll reuses as its blank bottom.
+    term.feed(b"0\r\n1\r\n2\r\n3\r\n4\r\n5\r\n6\r\n7\r\n8\r\n9\r\n");
+
+    assert_eq!(term.scrollback_len(), 3); // cap held exactly
+
+    // Live screen: '9' on top, the just-scrolled-in bottom is BLANK — a recycled
+    // row reused as the new bottom must be cleared, not carry stale text.
+    assert_eq!(term.viewport_line(0)[0].c, '9');
+    assert_eq!(term.viewport_line(1)[0].c, ' ');
+
+    // History holds exactly the last 3 evicted lines, in order, intact through
+    // every recycle: '6', '7', '8' (0..5 correctly evicted).
+    term.scroll_up(3);
+    assert_eq!(term.viewport_line(0)[0].c, '6');
+    assert_eq!(term.viewport_line(1)[0].c, '7');
+}
+
 /// At the bottom (no scroll), the viewport is the live screen.
 #[test]
 fn viewport_shows_live_screen_at_bottom() {

@@ -205,6 +205,19 @@ impl Grid {
         }
     }
 
+    /// Full-screen scroll up that **moves** the evicted top row out instead of
+    /// copying it: install `blank` as the new bottom line and return logical
+    /// row 0 by value (the caller pushes it into scrollback). The grid clears +
+    /// fits `blank` to `cols`, so the caller may hand it a dirty recycled row
+    /// (reusing its allocation — zero-alloc steady state, ADR-0009). O(1).
+    pub(crate) fn scroll_up_recycle(&mut self, mut blank: Row) -> Row {
+        blank.clear(); // drop any recycled content (keeps the allocation)
+        blank.resize(self.cols, Cell::default());
+        let evicted = std::mem::replace(&mut self.lines[self.zero], blank);
+        self.zero = self.phys(1);
+        evicted
+    }
+
     /// Extract all rows in **logical** order, leaving the grid empty. Used by
     /// `Term::resize` to reflow the screen together with scrollback as one
     /// stream — `reflow` assumes logical order, so the ring is linearized first
@@ -330,6 +343,23 @@ mod tests {
         g.scroll_up_region(0, 1); // sub-region [0..=1] only
         // rows 0..=1 ("bc") scroll up → "c" then blank; rows 2,3 ("d", blank) stay.
         assert_eq!(col0(&g), "c d ");
+    }
+
+    #[test]
+    fn scroll_up_recycle_moves_out_row0_and_blanks_a_dirty_recycled_row() {
+        let mut g = stamped(2, 3); // "abc"
+        // Hand it a *dirty* recycled row (full width, stale content) — the new
+        // bottom must come out blank, not carrying the recycled row's text.
+        let dirty = vec![
+            Cell {
+                c: 'X',
+                ..Cell::default()
+            };
+            2
+        ];
+        let evicted = g.scroll_up_recycle(dirty);
+        assert_eq!(evicted[0].c, 'a'); // logical row 0 moved out, not copied
+        assert_eq!(col0(&g), "bc "); // shifted up; bottom blank, NOT "bcX"
     }
 
     #[test]

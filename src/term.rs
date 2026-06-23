@@ -87,6 +87,10 @@ pub struct Term {
     display_offset: usize,
     /// Maximum scrollback lines retained; the oldest are evicted past this.
     scrollback_limit: usize,
+    /// A spare row buffer recycled across full-screen scrolls: the cap-evicted
+    /// oldest line is parked here and reused as the next scroll's blank bottom,
+    /// so a steady-state flood allocates nothing (ADR-0009).
+    recycled_row: Option<Row>,
     /// Per-line damage bounds since the last `reset_damage` (ack), one per row.
     line_damage: Vec<LineBounds>,
     /// A first-class scroll recorded since the last `reset_damage`.
@@ -194,6 +198,7 @@ impl Term {
             scrollback: VecDeque::new(),
             display_offset: 0,
             scrollback_limit,
+            recycled_row: None,
             line_damage: vec![LineBounds::undamaged(cols); rows],
             scroll: None,
             full_damage: false,
@@ -1175,7 +1180,28 @@ impl Term {
             // A top-anchored primary-screen scroll pushes the evicted top line
             // into scrollback history.
             if self.scroll_top == 0 && !self.on_alt {
-                let evicted = self.grid.row(0).to_vec();
+                // Scrollback accrues whenever the scroll is top-anchored on the
+                // primary screen (`scroll_top == 0`) — but the O(1) ring handshake
+                // only applies to a *full-screen* scroll (`scroll_bottom` at the
+                // last row). A top-anchored *sub-region* (`[0..k]`, k < rows-1)
+                // still accrues, yet must scroll only its region, so it keeps the
+                // copy + region scroll. These are distinct predicates (ADR-0009).
+                let evicted = if self.scroll_bottom == self.grid.rows() - 1 {
+                    // Full-screen hot path: move the evicted top row out, install
+                    // a recycled blank as the new bottom (zero-alloc steady state).
+                    let blank = self
+                        .recycled_row
+                        .take()
+                        .unwrap_or_else(|| Vec::with_capacity(self.grid.cols()));
+                    self.grid.scroll_up_recycle(blank)
+                } else {
+                    // Top-anchored sub-region: copy row 0, then region-scroll
+                    // `[0..=scroll_bottom]` (rows below stay fixed).
+                    let evicted = self.grid.row(0).to_vec();
+                    self.grid
+                        .scroll_up_region(self.scroll_top, self.scroll_bottom);
+                    evicted
+                };
                 self.scrollback.push_back(evicted);
                 // Follow-bottom = stay: if the user is scrolled up, bump the
                 // offset so the same lines stay in view instead of being yanked
@@ -1186,9 +1212,9 @@ impl Term {
                 // Cap: evict the oldest line past the limit. The view is anchored
                 // to history, so dropping the front shifts the offset down too
                 // (xterm.js trims ybase and ydisp together) — also keeps the
-                // offset within `[0, len]`.
+                // offset within `[0, len]`. The evicted row is parked for reuse.
                 if self.scrollback.len() > self.scrollback_limit {
-                    self.scrollback.pop_front();
+                    self.recycled_row = self.scrollback.pop_front();
                     // Every absolute index just shifted down by one; move the
                     // selection with it so its anchors keep their content.
                     self.selection_evict_oldest();
@@ -1211,9 +1237,9 @@ impl Term {
                     base + self.scroll_bottom,
                     true,
                 );
+                self.grid
+                    .scroll_up_region(self.scroll_top, self.scroll_bottom);
             }
-            self.grid
-                .scroll_up_region(self.scroll_top, self.scroll_bottom);
             self.record_scroll(self.scroll_top, self.scroll_bottom, 1);
         } else if self.cursor.row + 1 < self.grid.rows() {
             self.cursor.row += 1;
