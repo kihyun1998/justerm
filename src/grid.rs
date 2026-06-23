@@ -107,43 +107,18 @@ pub(crate) fn reflow(
 }
 
 /// The current screen: `rows` × `cols` cells.
-///
-/// `lines` is a **row ring**: logical row `r` lives at physical slot `phys(r)`,
-/// offset by `zero` (the physical slot of logical row 0). A full-screen scroll
-/// advances `zero` in O(1) instead of moving every row (ADR-0009). All accessors
-/// map through `phys`; the offset is invisible outside this module.
 #[derive(Clone, Debug)]
 pub struct Grid {
     cols: usize,
     rows: usize,
     lines: Vec<Row>,
-    /// Physical slot of logical row 0. `0..rows`. Advanced by a full-screen
-    /// scroll; every accessor maps a logical row through `phys`.
-    zero: usize,
 }
 
 impl Grid {
     /// A blank grid of the given size.
     pub fn new(cols: usize, rows: usize) -> Self {
         let lines = vec![vec![Cell::default(); cols]; rows];
-        Grid {
-            cols,
-            rows,
-            lines,
-            zero: 0,
-        }
-    }
-
-    /// Map a logical row to its physical slot in the ring. `zero + row < 2·rows`
-    /// (callers clamp `row < rows`, and `zero < rows`), so one conditional
-    /// subtraction replaces a modulo (alacritty `Storage::compute_index`).
-    fn phys(&self, row: usize) -> usize {
-        let slot = self.zero + row;
-        if slot >= self.rows {
-            slot - self.rows
-        } else {
-            slot
-        }
+        Grid { cols, rows, lines }
     }
 
     pub fn cols(&self) -> usize {
@@ -156,75 +131,60 @@ impl Grid {
 
     /// Read a cell. Panics on out-of-bounds (callers clamp to the grid).
     pub fn cell(&self, row: usize, col: usize) -> &Cell {
-        &self.lines[self.phys(row)][col]
+        &self.lines[row][col]
     }
 
     /// Mutable access to a cell.
     pub fn cell_mut(&mut self, row: usize, col: usize) -> &mut Cell {
-        let p = self.phys(row);
-        &mut self.lines[p][col]
+        &mut self.lines[row][col]
     }
 
     /// Read a whole row.
     pub fn row(&self, row: usize) -> &[Cell] {
-        &self.lines[self.phys(row)]
+        &self.lines[row]
     }
 
     /// Mutable access to a whole row — for in-row cell shifts (ICH/DCH).
     pub(crate) fn row_mut(&mut self, row: usize) -> &mut [Cell] {
-        let p = self.phys(row);
-        &mut self.lines[p]
+        &mut self.lines[row]
     }
 
     /// Scroll the rows `[top..=bottom]` up by one line: the top line of the
     /// region is dropped and a blank line appears at `bottom`. Rows outside the
     /// region are untouched.
     ///
-    /// Scrollback retention (when the region is the full screen) is a later
-    /// slice (#3) — for now the scrolled-off line is discarded rather than
-    /// pushed into a history ring.
+    /// `rotate_left` moves whole-row `Vec` *handles* (24 bytes each), not cell
+    /// data — cheap even at the screen's bounded row count, so the per-newline
+    /// scrollback cost lives in the *eviction*, not here (see `scroll_up_recycle`
+    /// and ADR-0009).
     pub fn scroll_up_region(&mut self, top: usize, bottom: usize) {
-        if top == 0 && bottom == self.rows - 1 {
-            // Full-screen scroll: recycle logical row 0's slot as the new blank
-            // bottom and advance `zero` — O(1), no row moves (ADR-0009).
-            for cell in &mut self.lines[self.zero] {
-                cell.reset();
-            }
-            self.zero = self.phys(1);
-        } else {
-            // Sub-region scroll stays O(region). The logical region may straddle
-            // the ring's wrap, so shift by *logical*-indexed swaps (alacritty's
-            // `Storage::swap`), not a contiguous `rotate_left`.
-            for r in top..bottom {
-                let (a, b) = (self.phys(r), self.phys(r + 1));
-                self.lines.swap(a, b);
-            }
-            for cell in self.row_mut(bottom) {
-                cell.reset();
-            }
+        // Rotate the region's top line to its bottom, then blank it: every line
+        // in the region shifts up one and the region's bottom becomes empty.
+        self.lines[top..=bottom].rotate_left(1);
+        for cell in &mut self.lines[bottom] {
+            cell.reset();
         }
     }
 
     /// Full-screen scroll up that **moves** the evicted top row out instead of
-    /// copying it: install `blank` as the new bottom line and return logical
-    /// row 0 by value (the caller pushes it into scrollback). The grid clears +
-    /// fits `blank` to `cols`, so the caller may hand it a dirty recycled row
-    /// (reusing its allocation — zero-alloc steady state, ADR-0009). O(1).
+    /// copying it (`Term::linefeed`'s hot path): `rotate_left` puts logical row 0
+    /// in the bottom slot, then a recycled `blank` is swapped into that slot and
+    /// the evicted row returned by value (the caller pushes it into scrollback).
+    /// The grid clears + fits `blank` to `cols`, so the caller may hand it a
+    /// dirty recycled row — reusing its allocation, so a steady-state flood does
+    /// no per-line alloc/copy (ADR-0009). No ring: the win is recycling the row
+    /// buffer, not making the cheap handle-rotate O(1).
     pub(crate) fn scroll_up_recycle(&mut self, mut blank: Row) -> Row {
         blank.clear(); // drop any recycled content (keeps the allocation)
         blank.resize(self.cols, Cell::default());
-        let evicted = std::mem::replace(&mut self.lines[self.zero], blank);
-        self.zero = self.phys(1);
-        evicted
+        self.lines.rotate_left(1); // logical row 0 -> the bottom slot
+        let last = self.rows - 1;
+        std::mem::replace(&mut self.lines[last], blank)
     }
 
-    /// Extract all rows in **logical** order, leaving the grid empty. Used by
-    /// `Term::resize` to reflow the screen together with scrollback as one
-    /// stream — `reflow` assumes logical order, so the ring is linearized first
-    /// (rotate the physical buffer by `zero`, then reset the offset).
+    /// Extract all rows, leaving the grid empty. Used by `Term::resize` to
+    /// reflow the screen together with scrollback as one stream.
     pub(crate) fn take_lines(&mut self) -> Vec<Row> {
-        self.lines.rotate_left(self.zero);
-        self.zero = 0;
         std::mem::take(&mut self.lines)
     }
 
@@ -241,7 +201,6 @@ impl Grid {
         self.lines = lines;
         self.cols = cols;
         self.rows = rows;
-        self.zero = 0; // `lines` is freshly built in logical order
     }
 
     /// Reset every cell to a blank default. Used when switching to the alt
@@ -252,34 +211,17 @@ impl Grid {
                 cell.reset();
             }
         }
-        self.zero = 0; // an all-blank grid normalizes the offset
     }
 
     /// Scroll the rows `[top..=bottom]` down by one line: a blank line appears at
     /// `top` and the bottom region line is dropped. Rows outside are untouched.
     /// Used by RI (reverse index) at the top margin.
     pub fn scroll_down_region(&mut self, top: usize, bottom: usize) {
-        if top == 0 && bottom == self.rows - 1 {
-            // Full-screen reverse scroll: retreat `zero` and blank the slot that
-            // becomes the new logical top — O(1), the mirror of `scroll_up`.
-            self.zero = if self.zero == 0 {
-                self.rows - 1
-            } else {
-                self.zero - 1
-            };
-            for cell in &mut self.lines[self.zero] {
-                cell.reset();
-            }
-        } else {
-            // Sub-region: logical-indexed swaps from the bottom up (rotate_right),
-            // then blank the logical top. See `scroll_up_region`.
-            for r in (top..bottom).rev() {
-                let (a, b) = (self.phys(r), self.phys(r + 1));
-                self.lines.swap(a, b);
-            }
-            for cell in self.row_mut(top) {
-                cell.reset();
-            }
+        // Rotate the region's bottom line to its top, then blank it: every line
+        // in the region shifts down one and the region's top becomes empty.
+        self.lines[top..=bottom].rotate_right(1);
+        for cell in &mut self.lines[top] {
+            cell.reset();
         }
     }
 }
@@ -311,20 +253,6 @@ mod tests {
     }
 
     #[test]
-    fn full_screen_scroll_up_reads_correctly_past_a_full_wrap() {
-        // Scroll the whole screen more than `rows` times: a ring's `zero` wraps,
-        // so this exercises the logical→physical mapping across the wrap point.
-        let mut g = stamped(2, 3); // "abc"
-        for _ in 0..3 {
-            g.scroll_up_region(0, 2);
-        }
-        assert_eq!(col0(&g), "   "); // everything scrolled off → all blank
-        // And the grid is still usable from a wrapped offset: write + read back.
-        g.cell_mut(1, 0).c = 'z';
-        assert_eq!(col0(&g), " z ");
-    }
-
-    #[test]
     fn full_screen_scroll_down_shifts_content_and_blanks_top() {
         // RI at the top margin: blank appears at the top, the bottom line is lost.
         let mut g = stamped(2, 3); // "abc"
@@ -333,16 +261,11 @@ mod tests {
     }
 
     #[test]
-    fn sub_region_scroll_under_a_wrapped_offset_isolates_outside_rows() {
-        // The hard ring path: a full-screen scroll advances `zero`, *then* a
-        // sub-region scroll must shift the in-region rows (whose physical slots
-        // now straddle the wrap) while leaving rows outside the region untouched.
+    fn sub_region_scroll_leaves_rows_outside_the_region_untouched() {
         let mut g = stamped(2, 4); // "abcd"
-        g.scroll_up_region(0, 3); // full screen → "bcd ", zero now 1
-        assert_eq!(col0(&g), "bcd ");
         g.scroll_up_region(0, 1); // sub-region [0..=1] only
-        // rows 0..=1 ("bc") scroll up → "c" then blank; rows 2,3 ("d", blank) stay.
-        assert_eq!(col0(&g), "c d ");
+        // rows 0..=1 ("ab") scroll up → "b" then blank; rows 2,3 ("c","d") stay.
+        assert_eq!(col0(&g), "b cd");
     }
 
     #[test]
@@ -364,11 +287,11 @@ mod tests {
 
     #[test]
     fn take_lines_returns_rows_in_logical_order_after_a_scroll() {
-        // `reflow` assumes logical order, so `take_lines` must linearize the ring.
+        // `reflow` assumes logical row order; `take_lines` must deliver it.
         let mut g = stamped(1, 3); // "abc"
-        g.scroll_up_region(0, 2); // "bc ", zero now 1 (physically rotated)
+        g.scroll_up_region(0, 2); // "bc "
         let lines = g.take_lines();
         let got: String = lines.iter().map(|r| r[0].c).collect();
-        assert_eq!(got, "bc "); // logical order, not the physical [_, b, c]
+        assert_eq!(got, "bc ");
     }
 }
