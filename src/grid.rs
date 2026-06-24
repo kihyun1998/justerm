@@ -38,7 +38,7 @@ pub(crate) fn reflow(
         }
         let soft = row
             .last()
-            .is_some_and(|c| c.flags().contains(CellFlags::WRAPLINE));
+            .is_some_and(|c| c.is_wrapline());
         if soft {
             current.extend(row.into_iter().map(|mut c| {
                 c.remove_flags(CellFlags::WRAPLINE);
@@ -75,7 +75,7 @@ pub(crate) fn reflow(
                 let mut take = (line.len() - i).min(new_cols);
                 // Don't split a wide char from its spacer: if the row would end
                 // on a WIDE_CHAR lead, drop it to the next row (xterm's newCols-1).
-                if i + take < line.len() && line[i + take - 1].flags().contains(CellFlags::WIDE_CHAR)
+                if i + take < line.len() && line[i + take - 1].is_wide()
                 {
                     take -= 1;
                 }

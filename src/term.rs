@@ -501,7 +501,7 @@ impl Term {
             loop {
                 let cells = self.abs_line(line);
                 for (col, cell) in cells.iter().enumerate() {
-                    if cell.flags().contains(CellFlags::WIDE_CHAR_SPACER) {
+                    if cell.is_wide_spacer() {
                         continue;
                     }
                     hay.push(fold(cell.c()));
@@ -509,7 +509,7 @@ impl Term {
                 }
                 let soft = cells
                     .last()
-                    .is_some_and(|c| c.flags().contains(CellFlags::WRAPLINE));
+                    .is_some_and(|c| c.is_wrapline());
                 if soft && line + 1 < total {
                     line += 1;
                 } else {
@@ -820,7 +820,7 @@ impl Term {
     /// Append a cell's text — its base glyph plus any combining marks from the
     /// grapheme side-table — to `out`. Wide-char spacers contribute nothing.
     fn append_cell(&self, out: &mut String, cell: &Cell) {
-        if cell.flags().contains(CellFlags::WIDE_CHAR_SPACER) {
+        if cell.is_wide_spacer() {
             return;
         }
         out.push(cell.c());
@@ -861,7 +861,7 @@ impl Term {
             let is_last = line == end_line;
             let soft = cells
                 .last()
-                .is_some_and(|c| c.flags().contains(CellFlags::WRAPLINE));
+                .is_some_and(|c| c.is_wrapline());
             if is_last || !soft {
                 out.push_str(current.trim_end());
                 current.clear();
@@ -884,7 +884,7 @@ impl Term {
             let prev = self.abs_line(line - 1);
             if prev
                 .last()
-                .is_some_and(|c| c.flags().contains(CellFlags::WRAPLINE))
+                .is_some_and(|c| c.is_wrapline())
             {
                 return Some((line - 1, prev.len() - 1));
             }
@@ -904,7 +904,7 @@ impl Term {
         if line + 1 < total
             && cells
                 .last()
-                .is_some_and(|c| c.flags().contains(CellFlags::WRAPLINE))
+                .is_some_and(|c| c.is_wrapline())
         {
             return Some((line + 1, 0));
         }
@@ -1418,8 +1418,7 @@ impl Term {
             && self
                 .grid
                 .cell(row, col)
-                .flags()
-                .contains(CellFlags::WIDE_CHAR_SPACER)
+                .is_wide_spacer()
         {
             self.grid.cell_mut(row, col - 1).reset();
         }
@@ -1427,8 +1426,7 @@ impl Term {
             && self
                 .grid
                 .cell(row, last)
-                .flags()
-                .contains(CellFlags::WIDE_CHAR)
+                .is_wide()
         {
             self.grid.cell_mut(row, last + 1).reset();
         }
@@ -1478,8 +1476,7 @@ impl Term {
         if self
             .grid
             .cell(row, col)
-            .flags()
-            .contains(CellFlags::WIDE_CHAR_SPACER)
+            .is_wide_spacer()
         {
             col = col.saturating_sub(1);
         }
@@ -1554,8 +1551,7 @@ impl Term {
             && self
                 .grid
                 .cell(row, from)
-                .flags()
-                .contains(CellFlags::WIDE_CHAR_SPACER)
+                .is_wide_spacer()
         {
             self.grid.cell_mut(row, from - 1).reset();
         }
@@ -1564,8 +1560,7 @@ impl Term {
             && self
                 .grid
                 .cell(row, to - 1)
-                .flags()
-                .contains(CellFlags::WIDE_CHAR)
+                .is_wide()
         {
             self.grid.cell_mut(row, to).reset();
         }
@@ -1655,8 +1650,7 @@ impl Term {
             && self
                 .grid
                 .cell(r, col - 1)
-                .flags()
-                .contains(CellFlags::WIDE_CHAR)
+                .is_wide()
         {
             self.grid.cell_mut(r, col - 1).reset();
         }
@@ -1664,8 +1658,7 @@ impl Term {
             && self
                 .grid
                 .cell(r, col + n)
-                .flags()
-                .contains(CellFlags::WIDE_CHAR_SPACER)
+                .is_wide_spacer()
         {
             self.grid.cell_mut(r, col + n).reset();
         }
@@ -1673,8 +1666,7 @@ impl Term {
         if self
             .grid
             .cell(r, cols - 1)
-            .flags()
-            .contains(CellFlags::WIDE_CHAR)
+            .is_wide()
         {
             self.grid.cell_mut(r, cols - 1).reset();
         }
@@ -1705,16 +1697,14 @@ impl Term {
             && self
                 .grid
                 .cell(r, col - 1)
-                .flags()
-                .contains(CellFlags::WIDE_CHAR)
+                .is_wide()
         {
             self.grid.cell_mut(r, col - 1).reset();
         }
         if self
             .grid
             .cell(r, col)
-            .flags()
-            .contains(CellFlags::WIDE_CHAR_SPACER)
+            .is_wide_spacer()
         {
             self.grid.cell_mut(r, col).reset();
         }

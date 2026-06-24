@@ -35,51 +35,137 @@ bitflags::bitflags! {
     }
 }
 
-/// One character position: a base glyph, fg/bg colour references, flags, and an
-/// optional reference to a grapheme cluster's combining marks.
+// --- packed bit layout (#44) ----------------------------------------------
+//
+// Three 32-bit words mirroring xterm.js's `BufferLine` cell (verified against
+// `xtermjs/xterm.js@master` `src/common/buffer/Constants.ts`). The fg/bg colour
+// words are byte-identical to xterm's `Attributes` + `FgFlags`/`BgFlags`; the
+// content word keeps justerm's explicit layout-marker flags where xterm stores a
+// 2-bit `wcwidth` value (justerm's model is flag-based — the spacer and per-cell
+// WRAPLINE are load-bearing for overwrite/selection/reflow).
+//
+//   content u32: codepoint(21) | COMBINED(1) | WIDE | SPACER | WRAP | reserved
+//   fg/bg   u32: colour value(24) | colour mode(2) | flags(6)
+//
+// COMBINED_PRESENT (content) and LINK_PRESENT (bg, xterm's HAS_EXTENDED slot)
+// are reserved here but dormant: slice A still carries `extra`/`link` as
+// `Option<NonZeroU32>` fields, so presence is `is_some()`. Slices B and C light
+// these bits up when those fields move into per-row maps.
+
+const CODEPOINT_MASK: u32 = 0x001F_FFFF; // bits 0..21
+#[allow(dead_code)] // lit by slice B
+const C_COMBINED: u32 = 1 << 21;
+const C_WIDE: u32 = 1 << 22;
+const C_SPACER: u32 = 1 << 23;
+const C_WRAP: u32 = 1 << 24;
+const CONTENT_MARKER_MASK: u32 = C_WIDE | C_SPACER | C_WRAP;
+
+const COLOR_VALUE_MASK: u32 = 0x00FF_FFFF; // bits 0..24
+const COLOR_MODE_SHIFT: u32 = 24; // bits 24..26
+const CM_DEFAULT: u32 = 0;
+const CM_INDEXED: u32 = 1;
+const CM_RGB: u32 = 2;
+
+// fg flags, bits 26..32 — xterm FgFlags order (HIDDEN == xterm INVISIBLE).
+const FG_INVERSE: u32 = 1 << 26;
+const FG_BOLD: u32 = 1 << 27;
+const FG_UNDERLINE: u32 = 1 << 28;
+const FG_BLINK: u32 = 1 << 29;
+const FG_HIDDEN: u32 = 1 << 30;
+const FG_STRIKE: u32 = 1 << 31;
+const FG_FLAG_MASK: u32 =
+    FG_INVERSE | FG_BOLD | FG_UNDERLINE | FG_BLINK | FG_HIDDEN | FG_STRIKE;
+
+// bg flags, bits 26..28 — xterm BgFlags order.
+const BG_ITALIC: u32 = 1 << 26;
+const BG_DIM: u32 = 1 << 27;
+#[allow(dead_code)] // lit by slice C (xterm BgFlags::HAS_EXTENDED)
+const BG_LINK: u32 = 1 << 28;
+const BG_FLAG_MASK: u32 = BG_ITALIC | BG_DIM;
+
+/// Pack a colour reference into the low 26 bits of a colour word (mode + value);
+/// the high 6 bits are left for the SGR flags.
+fn pack_color(c: Color) -> u32 {
+    match c {
+        Color::Default => CM_DEFAULT << COLOR_MODE_SHIFT,
+        Color::Indexed(i) => (CM_INDEXED << COLOR_MODE_SHIFT) | i as u32,
+        Color::Rgb(r, g, b) => {
+            (CM_RGB << COLOR_MODE_SHIFT) | (r as u32) << 16 | (g as u32) << 8 | b as u32
+        }
+    }
+}
+
+/// Inverse of [`pack_color`] — reads only the mode + value bits, ignoring the
+/// flag bits that share the word.
+fn unpack_color(w: u32) -> Color {
+    match (w >> COLOR_MODE_SHIFT) & 0b11 {
+        CM_INDEXED => Color::Indexed((w & 0xFF) as u8),
+        CM_RGB => Color::Rgb((w >> 16) as u8, (w >> 8) as u8, w as u8),
+        _ => Color::Default, // CM_DEFAULT (and the unused mode 3) resolve to Default
+    }
+}
+
+/// Scatter a `CellFlags` bit set (as a `u32`) into the three words' flag-bit
+/// positions: `(content_markers, fg_flags, bg_flags)`. Branchless — each group is
+/// masked and shifted in one step. The `CellFlags` bit values are frozen by the
+/// wire format (`serialize` encodes `flags().bits()`), so the source positions are
+/// fixed; see the shift comments. One place for store / insert / remove to share.
+#[inline]
+fn flag_words(f: u32) -> (u32, u32, u32) {
+    let content = (f & 0x0700) << 14; // WIDE/SPACER/WRAP bits 8,9,10 -> 22,23,24
+    let fg = ((f & 0x0001) << 27)     // BOLD     bit 0  -> 27
+        | ((f & 0x0020) << 21)        // INVERSE  bit 5  -> 26
+        | ((f & 0x0018) << 25)        // UNDERLINE/BLINK bits 3,4 -> 28,29
+        | ((f & 0x00C0) << 24); // HIDDEN/STRIKE   bits 6,7 -> 30,31
+    let bg = ((f & 0x0004) << 24)     // ITALIC bit 2 -> 26
+        | ((f & 0x0002) << 26); // DIM    bit 1 -> 27
+    (content, fg, bg)
+}
+
+/// One character position: a base glyph, fg/bg colour references, flags, and
+/// optional references to a grapheme cluster's combining marks and an OSC 8
+/// hyperlink. Stored as the packed words above; all access is through the
+/// accessor seam (#44), construction through [`Cell::from_parts`] or
+/// [`Cell::default`].
 ///
-/// `c` is the base code point. Combining marks (and ZWJ emoji sequences) attach
-/// via `extra` — a 1-based index into the engine's grapheme side-table — so the
-/// common single-code-point cell stays small and `Copy` (the index travels with
-/// the cell through scrolls/shifts/reflow). `None` for the overwhelming majority
-/// of cells. The side-table (not the cell) holds the actual code points; see
-/// `term.rs` and the serialization slice (#6).
-///
-/// # Accessor seam (#44)
-///
-/// The fields are **private**: every read/write goes through the accessor methods
-/// below, so the in-memory representation can change (toward the packed 3×u32
-/// xterm.js layout of #43) without touching a single call site outside this
-/// module. This slice keeps the plain-field representation; only the interface is
-/// sealed. Construct a cell with [`Cell::from_parts`] (the wire decoder and
-/// `Pen::cell` both go through it) or [`Cell::default`].
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+/// `Eq` is a derived bitwise compare, which is exact because the packing is
+/// canonical — every logical cell maps to one bit pattern (unused bits stay 0).
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Cell {
-    c: char,
-    fg: Color,
-    bg: Color,
-    flags: CellFlags,
+    content: u32,
+    fg: u32,
+    bg: u32,
     extra: Option<core::num::NonZeroU32>,
     link: Option<core::num::NonZeroU32>,
 }
 
 impl Default for Cell {
     fn default() -> Self {
-        Cell {
-            c: ' ',
-            fg: Color::Default,
-            bg: Color::Default,
-            flags: CellFlags::empty(),
-            extra: None,
-            link: None,
-        }
+        // The packed form of a blank cell: ' ' (U+0020) in the codepoint field,
+        // every other field zero (Default colours, no flags, no indices). Built
+        // directly rather than through `from_parts` so scroll/erase blanking —
+        // which constructs defaults by the rowful — stays a cheap copy.
+        Cell { content: ' ' as u32, fg: 0, bg: 0, extra: None, link: None }
+    }
+}
+
+impl core::fmt::Debug for Cell {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Cell")
+            .field("c", &self.c())
+            .field("fg", &self.fg())
+            .field("bg", &self.bg())
+            .field("flags", &self.flags())
+            .field("extra", &self.extra())
+            .field("link", &self.link())
+            .finish()
     }
 }
 
 impl Cell {
     /// Assemble a cell from its logical parts. The single construction seam —
-    /// `Pen::cell` and the wire decoder funnel through here so a future packed
-    /// representation has exactly one place to do the bit-packing (#44).
+    /// `Pen::cell` and the wire decoder funnel through here, so the bit-packing
+    /// lives in exactly one place (#44).
     pub fn from_parts(
         c: char,
         fg: Color,
@@ -88,27 +174,54 @@ impl Cell {
         extra: Option<core::num::NonZeroU32>,
         link: Option<core::num::NonZeroU32>,
     ) -> Self {
-        Cell { c, fg, bg, flags, extra, link }
+        let mut cell = Cell {
+            content: c as u32, // a `char` is <= U+10FFFF, so it fits the 21-bit field
+            fg: pack_color(fg),
+            bg: pack_color(bg),
+            extra,
+            link,
+        };
+        cell.store_flags(flags);
+        cell
+    }
+
+    /// Replace the flag bits across the three words from `flags`, preserving the
+    /// codepoint, colours, and the dormant presence bits. The inverse is
+    /// [`Cell::flags`].
+    fn store_flags(&mut self, flags: CellFlags) {
+        let (content, fg, bg) = flag_words(flags.bits() as u32);
+        self.content = (self.content & !CONTENT_MARKER_MASK) | content;
+        self.fg = (self.fg & !FG_FLAG_MASK) | fg;
+        self.bg = (self.bg & !BG_FLAG_MASK) | bg;
     }
 
     /// The base code point.
     pub fn c(&self) -> char {
-        self.c
+        char::from_u32(self.content & CODEPOINT_MASK)
+            .expect("codepoint bits always hold a valid char")
     }
 
     /// The foreground colour reference.
     pub fn fg(&self) -> Color {
-        self.fg
+        unpack_color(self.fg)
     }
 
     /// The background colour reference.
     pub fn bg(&self) -> Color {
-        self.bg
+        unpack_color(self.bg)
     }
 
-    /// The cell's flags (SGR attributes + layout markers).
+    /// The cell's flags (SGR attributes + layout markers), reassembled from the
+    /// three words — the branchless inverse of [`Cell::store_flags`].
     pub fn flags(&self) -> CellFlags {
-        self.flags
+        let bits = ((self.content & CONTENT_MARKER_MASK) >> 14)         // 22,23,24 -> 8,9,10
+            | ((self.fg & FG_BOLD) >> 27)                              // 27 -> 0
+            | ((self.fg & FG_INVERSE) >> 21)                           // 26 -> 5
+            | ((self.fg & (FG_UNDERLINE | FG_BLINK)) >> 25)            // 28,29 -> 3,4
+            | ((self.fg & (FG_HIDDEN | FG_STRIKE)) >> 24)              // 30,31 -> 6,7
+            | ((self.bg & BG_ITALIC) >> 24)                           // 26 -> 2
+            | ((self.bg & BG_DIM) >> 26); // 27 -> 1
+        CellFlags::from_bits_retain(bits as u16)
     }
 
     /// 1-based index into the grapheme side-table for this cell's combining
@@ -124,14 +237,15 @@ impl Cell {
         self.link
     }
 
-    /// Overwrite the base code point.
+    /// Overwrite the base code point, preserving the layout markers.
     pub fn set_c(&mut self, c: char) {
-        self.c = c;
+        self.content = (self.content & !CODEPOINT_MASK) | c as u32;
     }
 
-    /// Overwrite the background colour (the BCE erase fill, #16).
+    /// Overwrite the background colour (the BCE erase fill, #16), preserving the
+    /// bg-word flag bits.
     pub fn set_bg(&mut self, bg: Color) {
-        self.bg = bg;
+        self.bg = pack_color(bg) | (self.bg & !(COLOR_VALUE_MASK | (0b11 << COLOR_MODE_SHIFT)));
     }
 
     /// Set (or clear) the grapheme side-table index.
@@ -144,14 +258,21 @@ impl Cell {
         self.link = link;
     }
 
-    /// Add the given flags (leaving the others set).
+    /// Add the given flags (leaving the others set). Sets the word bits directly —
+    /// no round-trip through `flags()`/`store_flags`.
     pub fn insert_flags(&mut self, flags: CellFlags) {
-        self.flags.insert(flags);
+        let (content, fg, bg) = flag_words(flags.bits() as u32);
+        self.content |= content;
+        self.fg |= fg;
+        self.bg |= bg;
     }
 
     /// Clear the given flags (leaving the others as they are).
     pub fn remove_flags(&mut self, flags: CellFlags) {
-        self.flags.remove(flags);
+        let (content, fg, bg) = flag_words(flags.bits() as u32);
+        self.content &= !content;
+        self.fg &= !fg;
+        self.bg &= !bg;
     }
 
     /// Reset to a blank default cell.
@@ -159,23 +280,102 @@ impl Cell {
         *self = Cell::default();
     }
 
+    /// Is this the lead cell of a width-2 glyph? Direct content-bit query — the
+    /// hot overwrite/erase/reflow paths use this instead of reconstructing the
+    /// full `flags()` to test one marker.
+    pub fn is_wide(&self) -> bool {
+        self.content & C_WIDE != 0
+    }
+
     /// Is this the trailing spacer cell of a width-2 glyph?
     pub fn is_wide_spacer(&self) -> bool {
-        self.flags.contains(CellFlags::WIDE_CHAR_SPACER)
+        self.content & C_SPACER != 0
+    }
+
+    /// Did this row soft-wrap into the next (WRAPLINE on its last cell)?
+    pub fn is_wrapline(&self) -> bool {
+        self.content & C_WRAP != 0
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::Cell;
+    use super::{Cell, CellFlags};
+    use crate::color::Color;
+    use core::num::NonZeroU32;
 
-    /// Baseline pin: `Cell` is 24 bytes today (c: char + fg/bg: Color×2 + flags:
-    /// u16 + extra/link: Option<NonZeroU32>×2). Flood throughput is
-    /// memory-bandwidth-bound, so this size is touched on every print/scroll-blank
-    /// — #43 (the deferred pack) drives it toward ~12. This test documents the
-    /// starting point and guards against accidental `Cell` bloat. [#42]
+    /// Size pin: slice A packs content + colours into three `u32` words, dropping
+    /// the standalone `flags: u16` field, so `Cell` is 20 bytes — the three packed
+    /// words plus the two `Option<NonZeroU32>` indices. Flood throughput is
+    /// memory-bandwidth-bound, so this size is touched on every print/scroll-blank;
+    /// slices B and C move extra/link into per-row maps to reach 12. [#42, #44]
     #[test]
-    fn cell_is_24_bytes() {
-        assert_eq!(std::mem::size_of::<Cell>(), 24);
+    fn cell_is_20_bytes() {
+        assert_eq!(std::mem::size_of::<Cell>(), 20);
+    }
+
+    /// The packing must be lossless: every colour reference read back equal in
+    /// both the fg and bg word, including the tag-distinguished trio that must not
+    /// collapse (`Default` / `Indexed(0)` / `Rgb(0,0,0)`).
+    #[test]
+    fn every_colour_round_trips_in_both_words() {
+        let colours = [
+            Color::Default,
+            Color::Indexed(0),
+            Color::Indexed(255),
+            Color::Rgb(0, 0, 0),
+            Color::Rgb(255, 128, 1),
+        ];
+        for &fg in &colours {
+            for &bg in &colours {
+                let cell = Cell::from_parts('x', fg, bg, CellFlags::empty(), None, None);
+                assert_eq!(cell.fg(), fg, "fg {fg:?} / bg {bg:?}");
+                assert_eq!(cell.bg(), bg, "fg {fg:?} / bg {bg:?}");
+            }
+        }
+    }
+
+    /// Every flag bit — SGR attributes (split across the fg/bg words) and the
+    /// layout markers (in the content word) — round-trips, alone and combined.
+    #[test]
+    fn every_flag_round_trips() {
+        let all = CellFlags::all();
+        for bit in all.iter() {
+            let cell = Cell::from_parts('x', Color::Default, Color::Default, bit, None, None);
+            assert_eq!(cell.flags(), bit, "single {bit:?}");
+        }
+        let cell = Cell::from_parts('x', Color::Default, Color::Default, all, None, None);
+        assert_eq!(cell.flags(), all, "all flags at once");
+    }
+
+    /// The codepoint occupies 21 bits — the full Unicode range, up to the
+    /// maximum scalar value, survives alongside flags set in the same word.
+    #[test]
+    fn codepoint_round_trips_to_the_unicode_max() {
+        for c in ['a', ' ', '한', '🦀', '\u{10FFFF}'] {
+            let cell = Cell::from_parts(c, Color::Default, Color::Default, CellFlags::WIDE_CHAR, None, None);
+            assert_eq!(cell.c(), c, "codepoint {c:?}");
+            assert!(cell.flags().contains(CellFlags::WIDE_CHAR));
+        }
+    }
+
+    /// The side-table indices (still `Option<NonZeroU32>` fields in slice A) and
+    /// the spacer query survive construction unchanged.
+    #[test]
+    fn indices_and_spacer_query_round_trip() {
+        let extra = NonZeroU32::new(7);
+        let link = NonZeroU32::new(42);
+        let cell = Cell::from_parts(
+            ' ',
+            Color::Default,
+            Color::Default,
+            CellFlags::WIDE_CHAR_SPACER,
+            extra,
+            link,
+        );
+        assert_eq!(cell.extra(), extra);
+        assert_eq!(cell.link(), link);
+        assert!(cell.is_wide_spacer());
+        assert!(!Cell::default().is_wide_spacer());
     }
 }
