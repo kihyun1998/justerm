@@ -15,6 +15,22 @@ the slowness it was reacting to was never measured on equal footing (premise C: 
 gut feeling, never a same-machine number). Once measured apples-to-apples, native
 wins.
 
+### Cross-reference: confirmed end-to-end in penterm (2026-06-24)
+
+This bench is renderer-free `feed()` vs `write()`. The premise originated in
+**penterm**, whose `perf-journey.md` recorded justerm `feed` as the "wall" and
+xterm ~1.5× faster end-to-end. That turned out to be a **`tauri dev` (debug-Rust)
+measurement artifact** — penterm's harness runs under `tauri dev`, which compiles
+the `justerm` dependency in debug, while xterm is JIT-optimized JS regardless.
+Re-run in release (`pnpm tauri dev --release`), penterm's *full* pipeline
+(feed + encode + IPC + wasm decode + beamterm render) **beats xterm 2.6–4.8×**
+(native ascii 73.5 / ansi 83.7 / cjk 103.4 MB/s vs xterm 24.3 / 31.6 / 21.4);
+the backend `feed` alone dropped 646 → 98 ms (ascii, ~6.6×) between debug and
+release — matching this repo's own ~7× `time_feed` debug-vs-release factor. So the
+native-wins result here holds not just for isolated `feed` but for the real
+consumer's end-to-end render path. (penterm `perf-journey.md` + issues 09/15 carry
+the correction on their side.)
+
 ## Method
 
 - **Same scope**: `@xterm/headless` is the real xterm.js core with no renderer —
