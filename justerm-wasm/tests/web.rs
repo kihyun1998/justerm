@@ -47,14 +47,13 @@ fn sample_frame() -> Frame {
     let span = |line: u16, left: u16, s: &str| Span {
         cells: s
             .chars()
-            .map(|c| Cell {
-                c,
-                ..Cell::default()
-            })
+            .map(|c| Cell::from_parts(c, Color::Default, Color::Default, CellFlags::empty()))
             .collect(),
         line,
         left,
         right: left + s.chars().count() as u16 - 1,
+        combining: Default::default(),
+        links: Default::default(),
     };
     Frame {
         cols: 80,
@@ -117,12 +116,7 @@ fn soa_columns_carry_values_across_the_boundary() {
 
 #[wasm_bindgen_test]
 fn colour_and_flag_columns_carry_tagged_values() {
-    let cell = Cell {
-        c: 'A',
-        fg: Color::Indexed(9),
-        flags: CellFlags::BOLD,
-        ..Cell::default()
-    };
+    let cell = Cell::from_parts('A', Color::Indexed(9), Color::Default, CellFlags::BOLD);
     let frame = Frame {
         cols: 80,
         rows: 24,
@@ -136,6 +130,8 @@ fn colour_and_flag_columns_carry_tagged_values() {
             left: 0,
             right: 0,
             cells: vec![cell],
+            combining: Default::default(),
+            links: Default::default(),
         }],
         side_table: vec![],
         link_table: vec![],
