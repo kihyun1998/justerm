@@ -91,13 +91,15 @@ fn flatten(frame: &Frame) -> Flat {
             count,
         ]);
         cell_offset += count;
-        for cell in &span.cells {
-            codepoints.push(cell.c as u32);
-            fg.push(justerm::encode_color(cell.fg));
-            bg.push(justerm::encode_color(cell.bg));
-            flags.push(cell.flags.bits());
-            extra.push(cell.extra.map_or(0, |n| n.get() as u16));
-            link.push(cell.link.map_or(0, |n| n.get() as u16));
+        for (col, cell) in span.cells.iter().enumerate() {
+            codepoints.push(cell.c() as u32);
+            fg.push(justerm::encode_color(cell.fg()));
+            bg.push(justerm::encode_color(cell.bg()));
+            flags.push(cell.flags().bits());
+            // Combining/link indices ride on the span (per column), not the cell,
+            // since slices #45/#46 moved them into per-row maps.
+            extra.push(span.combining.get(&col).map_or(0, |n| n.get() as u16));
+            link.push(span.links.get(&col).map_or(0, |n| n.get() as u16));
         }
     }
 
@@ -365,22 +367,23 @@ pub fn decode_frame(bytes: &[u8]) -> Result<DecodedFrame, JsValue> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use core::num::NonZeroU32;
     use justerm::{Cell, CellFlags, Color, Span};
+    use std::collections::BTreeMap;
 
     /// Build a plain ASCII span of `s` on `line` starting at column `left`.
     fn ascii_span(line: u16, left: u16, s: &str) -> Span {
         let cells: Vec<Cell> = s
             .chars()
-            .map(|c| Cell {
-                c,
-                ..Cell::default()
-            })
+            .map(|c| Cell::from_parts(c, Color::Default, Color::Default, CellFlags::empty()))
             .collect();
         Span {
             line,
             left,
             right: left + cells.len() as u16 - 1,
             cells,
+            combining: BTreeMap::new(),
+            links: BTreeMap::new(),
         }
     }
 
@@ -471,16 +474,8 @@ mod tests {
     #[test]
     fn flatten_exposes_fg_bg_columns_as_tagged_refs() {
         let cells = vec![
-            Cell {
-                c: 'A',
-                fg: Color::Indexed(9),
-                bg: Color::Rgb(1, 2, 3),
-                ..Cell::default()
-            },
-            Cell {
-                c: 'B',
-                ..Cell::default() // Default fg/bg
-            },
+            Cell::from_parts('A', Color::Indexed(9), Color::Rgb(1, 2, 3), CellFlags::empty()),
+            Cell::from_parts('B', Color::Default, Color::Default, CellFlags::empty()),
         ];
         let frame = partial(
             80,
@@ -490,6 +485,8 @@ mod tests {
                 left: 0,
                 right: 1,
                 cells,
+                combining: BTreeMap::new(),
+                links: BTreeMap::new(),
             }],
         );
         let flat = flatten(&frame);
@@ -500,19 +497,14 @@ mod tests {
 
     #[test]
     fn flatten_exposes_flags_extra_link_columns() {
-        use core::num::NonZeroU32;
         let cells = vec![
-            Cell {
-                c: 'A',
-                flags: CellFlags::BOLD | CellFlags::ITALIC,
-                extra: NonZeroU32::new(3),
-                link: NonZeroU32::new(7),
-                ..Cell::default()
-            },
-            Cell {
-                c: 'B',
-                ..Cell::default() // no flags / extra / link
-            },
+            Cell::from_parts(
+                'A',
+                Color::Default,
+                Color::Default,
+                CellFlags::BOLD | CellFlags::ITALIC,
+            ),
+            Cell::from_parts('B', Color::Default, Color::Default, CellFlags::empty()),
         ];
         let frame = partial(
             80,
@@ -522,6 +514,9 @@ mod tests {
                 left: 0,
                 right: 1,
                 cells,
+                // extra/link ride the span now (per column), not the cell.
+                combining: BTreeMap::from([(0, NonZeroU32::new(3).unwrap())]),
+                links: BTreeMap::from([(0, NonZeroU32::new(7).unwrap())]),
             }],
         );
         let flat = flatten(&frame);
@@ -599,27 +594,13 @@ mod tests {
 
     #[test]
     fn flatten_matches_native_decode_for_a_rich_frame() {
-        use core::num::NonZeroU32;
         // A frame exercising wide chars, colours, a grapheme ref, a link ref,
         // scroll, and multiple spans — then round-tripped through the real wire.
-        let wide = Cell {
-            c: '한',
-            flags: CellFlags::WIDE_CHAR,
-            ..Cell::default()
-        };
-        let spacer = Cell {
-            c: ' ',
-            flags: CellFlags::WIDE_CHAR_SPACER,
-            ..Cell::default()
-        };
-        let coloured = Cell {
-            c: 'A',
-            fg: Color::Indexed(9),
-            bg: Color::Rgb(1, 2, 3),
-            flags: CellFlags::BOLD,
-            extra: NonZeroU32::new(1),
-            link: NonZeroU32::new(1),
-        };
+        let wide = Cell::from_parts('한', Color::Default, Color::Default, CellFlags::WIDE_CHAR);
+        let spacer =
+            Cell::from_parts(' ', Color::Default, Color::Default, CellFlags::WIDE_CHAR_SPACER);
+        let coloured =
+            Cell::from_parts('A', Color::Indexed(9), Color::Rgb(1, 2, 3), CellFlags::BOLD);
         let frame = Frame {
             cols: 80,
             rows: 24,
@@ -638,6 +619,9 @@ mod tests {
                     left: 0,
                     right: 2,
                     cells: vec![wide, spacer, coloured],
+                    // the `coloured` cell (column 2) references grapheme + link 1.
+                    combining: BTreeMap::from([(2, NonZeroU32::new(1).unwrap())]),
+                    links: BTreeMap::from([(2, NonZeroU32::new(1).unwrap())]),
                 },
                 ascii_span(3, 10, "hi"),
             ],
@@ -684,13 +668,13 @@ mod tests {
                 n,
             ]);
             off += n;
-            for cell in &span.cells {
-                exp_codepoints.push(cell.c as u32);
-                exp_fg.push(justerm::encode_color(cell.fg));
-                exp_bg.push(justerm::encode_color(cell.bg));
-                exp_flags.push(cell.flags.bits());
-                exp_extra.push(cell.extra.map_or(0, |x| x.get() as u16));
-                exp_link.push(cell.link.map_or(0, |x| x.get() as u16));
+            for (col, cell) in span.cells.iter().enumerate() {
+                exp_codepoints.push(cell.c() as u32);
+                exp_fg.push(justerm::encode_color(cell.fg()));
+                exp_bg.push(justerm::encode_color(cell.bg()));
+                exp_flags.push(cell.flags().bits());
+                exp_extra.push(span.combining.get(&col).map_or(0, |x| x.get() as u16));
+                exp_link.push(span.links.get(&col).map_or(0, |x| x.get() as u16));
             }
         }
         assert_eq!(flat.codepoints, exp_codepoints);

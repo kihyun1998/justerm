@@ -7,7 +7,8 @@
 //!
 //! Usage: `cargo run -p justerm-wasm --example gen_smoke_frame -- <out-file>`
 
-use justerm::{Cell, Color, Frame, FrameKind, Span, encode};
+use justerm::{Cell, CellFlags, Color, Frame, FrameKind, Span, encode};
+use std::collections::BTreeMap;
 
 fn main() {
     let path = std::env::args()
@@ -30,11 +31,14 @@ fn main() {
             line: 0,
             left: 0,
             right: 0,
-            cells: vec![Cell {
-                c: 'A',
-                fg: Color::Indexed(196),
-                ..Cell::default()
-            }],
+            cells: vec![Cell::from_parts(
+                'A',
+                Color::Indexed(196),
+                Color::Default,
+                CellFlags::empty(),
+            )],
+            combining: BTreeMap::new(),
+            links: BTreeMap::new(),
         }],
         side_table: vec![],
         link_table: vec![],
