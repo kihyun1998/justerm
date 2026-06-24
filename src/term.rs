@@ -1943,6 +1943,50 @@ fn param_or(params: &Params, idx: usize, default: u16) -> u16 {
     }
 }
 
+impl Term {
+    /// Apply one DEC private mode set (`'h'`) or reset (`'l'`). DECSET/DECRST
+    /// carry a list of modes, so `csi_dispatch` folds this over every parameter
+    /// (#56); each mode is an independent toggle, not a stack.
+    fn set_dec_private_mode(&mut self, action: char, mode: u16) {
+        match (action, mode) {
+            ('h', 1049) => self.enter_alt_screen(),
+            ('l', 1049) => self.leave_alt_screen(),
+            ('h', 6) => {
+                // DECOM: set homes the cursor to the region top.
+                self.origin_mode = true;
+                self.goto(0, 0);
+            }
+            ('l', 6) => self.origin_mode = false, // unset leaves the cursor put
+            ('h', 25) => self.cursor.visible = true, // DECTCEM show
+            ('l', 25) => self.cursor.visible = false, // DECTCEM hide
+            ('h', 2004) => self.bracketed_paste = true,
+            ('l', 2004) => self.bracketed_paste = false,
+
+            // Input-encoding modes (#11): DECCKM, mouse tracking + encoding,
+            // focus reporting. Each set assigns the level; each reset clears
+            // it (apps enable/disable the same mode, not a stack).
+            ('h', 1) => self.app_cursor_keys = true, // DECCKM
+            ('l', 1) => self.app_cursor_keys = false,
+            ('h', 1000) => self.mouse_protocol = MouseProtocol::Normal,
+            ('h', 1002) => self.mouse_protocol = MouseProtocol::ButtonEvent,
+            ('h', 1003) => self.mouse_protocol = MouseProtocol::AnyEvent,
+            ('l', 1000) | ('l', 1002) | ('l', 1003) => self.mouse_protocol = MouseProtocol::Off,
+            ('h', 1006) => self.mouse_encoding = MouseEncoding::Sgr,
+            ('l', 1006) => self.mouse_encoding = MouseEncoding::Default,
+            ('h', 1015) => self.mouse_encoding = MouseEncoding::Urxvt,
+            ('l', 1015) => self.mouse_encoding = MouseEncoding::Default,
+            ('h', 1005) => self.mouse_encoding = MouseEncoding::Utf8,
+            ('l', 1005) => self.mouse_encoding = MouseEncoding::Default,
+            ('h', 1016) => self.mouse_encoding = MouseEncoding::SgrPixels,
+            ('l', 1016) => self.mouse_encoding = MouseEncoding::Default,
+            ('h', 1004) => self.focus_events = true,
+            ('l', 1004) => self.focus_events = false,
+
+            _ => {} // other DEC modes are later slices
+        }
+    }
+}
+
 impl Perform for Term {
     fn print(&mut self, c: char) {
         match c.width() {
@@ -1984,48 +2028,18 @@ impl Perform for Term {
         }
         // DEC private modes arrive with a '?' intermediate.
         if intermediates.first() == Some(&b'?') {
-            let mode = param_or(params, 0, 0);
             // DECRQM (CSI ? Ps $ p) — report whether mode Ps is set. The '$'
-            // intermediate distinguishes it from a plain `?...p`.
+            // intermediate distinguishes it from a plain `?...p`. It queries a
+            // single mode, so it keys off the first parameter only.
             if action == 'p' && intermediates.contains(&b'$') {
-                self.decrqm(mode);
+                self.decrqm(param_or(params, 0, 0));
                 return;
             }
-            match (action, mode) {
-                ('h', 1049) => self.enter_alt_screen(),
-                ('l', 1049) => self.leave_alt_screen(),
-                ('h', 6) => {
-                    // DECOM: set homes the cursor to the region top.
-                    self.origin_mode = true;
-                    self.goto(0, 0);
-                }
-                ('l', 6) => self.origin_mode = false, // unset leaves the cursor put
-                ('h', 25) => self.cursor.visible = true, // DECTCEM show
-                ('l', 25) => self.cursor.visible = false, // DECTCEM hide
-                ('h', 2004) => self.bracketed_paste = true,
-                ('l', 2004) => self.bracketed_paste = false,
-
-                // Input-encoding modes (#11): DECCKM, mouse tracking + encoding,
-                // focus reporting. Each set assigns the level; each reset clears
-                // it (apps enable/disable the same mode, not a stack).
-                ('h', 1) => self.app_cursor_keys = true, // DECCKM
-                ('l', 1) => self.app_cursor_keys = false,
-                ('h', 1000) => self.mouse_protocol = MouseProtocol::Normal,
-                ('h', 1002) => self.mouse_protocol = MouseProtocol::ButtonEvent,
-                ('h', 1003) => self.mouse_protocol = MouseProtocol::AnyEvent,
-                ('l', 1000) | ('l', 1002) | ('l', 1003) => self.mouse_protocol = MouseProtocol::Off,
-                ('h', 1006) => self.mouse_encoding = MouseEncoding::Sgr,
-                ('l', 1006) => self.mouse_encoding = MouseEncoding::Default,
-                ('h', 1015) => self.mouse_encoding = MouseEncoding::Urxvt,
-                ('l', 1015) => self.mouse_encoding = MouseEncoding::Default,
-                ('h', 1005) => self.mouse_encoding = MouseEncoding::Utf8,
-                ('l', 1005) => self.mouse_encoding = MouseEncoding::Default,
-                ('h', 1016) => self.mouse_encoding = MouseEncoding::SgrPixels,
-                ('l', 1016) => self.mouse_encoding = MouseEncoding::Default,
-                ('h', 1004) => self.focus_events = true,
-                ('l', 1004) => self.focus_events = false,
-
-                _ => {} // other DEC modes are later slices
+            // DECSET/DECRST carry a *list* of modes; apply set/reset to EVERY
+            // parameter, not just the first — htop batches `?1006;1000h` into one
+            // CSI, so folding only params[0] dropped the 1000 (#56).
+            for mode in params.iter().filter_map(|p| p.first().copied()) {
+                self.set_dec_private_mode(action, mode);
             }
             return;
         }
