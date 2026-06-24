@@ -94,6 +94,83 @@ fn wheel_release_emits_nothing() {
     );
 }
 
+/// A press event with an arbitrary button. Unlike the wheel, the back/forward
+/// and extra buttons are real buttons (press + release).
+fn btn(button: MouseButton, col: usize, row: usize) -> MouseEvent {
+    MouseEvent {
+        button: Some(button),
+        action: MouseAction::Press,
+        col,
+        row,
+        px: 0,
+        py: 0,
+        mods: Modifiers::empty(),
+    }
+}
+
+// #52 — additional buttons (the +128 group). xterm encodes back/forward (X11
+// buttons 8/9) as Cb 128/129; gaming-mouse extras (10/11) via the same bit
+// formula `(n & 3) | (n & 4 ? 64) | (n & 8 ? 128)`.
+
+#[test]
+fn back_button_encodes_sgr_cb_128() {
+    let mut t = Engine::new(80, 24);
+    t.feed(b"\x1b[?1000h\x1b[?1006h"); // normal tracking + SGR
+    // back = X11 button 8 → Cb base 128; SGR press 'M'.
+    assert_eq!(
+        t.encode_mouse(btn(MouseButton::Back, 5, 10)).unwrap(),
+        b"\x1b[<128;6;11M"
+    );
+}
+
+#[test]
+fn forward_button_encodes_sgr_cb_129() {
+    let mut t = Engine::new(80, 24);
+    t.feed(b"\x1b[?1000h\x1b[?1006h");
+    assert_eq!(
+        t.encode_mouse(btn(MouseButton::Forward, 5, 10)).unwrap(),
+        b"\x1b[<129;6;11M"
+    );
+}
+
+#[test]
+fn other_buttons_encode_via_the_xterm_bit_formula() {
+    // Gaming-mouse extras by X11 number: 10 → (10&3)|128 = 130, 11 → 131.
+    let mut t = Engine::new(80, 24);
+    t.feed(b"\x1b[?1000h\x1b[?1006h");
+    assert_eq!(
+        t.encode_mouse(btn(MouseButton::Other(10), 5, 10)).unwrap(),
+        b"\x1b[<130;6;11M"
+    );
+    assert_eq!(
+        t.encode_mouse(btn(MouseButton::Other(11), 5, 10)).unwrap(),
+        b"\x1b[<131;6;11M"
+    );
+}
+
+#[test]
+fn back_button_has_a_real_release_unlike_the_wheel() {
+    // Back/Forward/Other are real buttons: a Release reports (SGR 'm'), it is
+    // not dropped the way a wheel turn's phantom release is (#50/#52).
+    let mut t = Engine::new(80, 24);
+    t.feed(b"\x1b[?1000h\x1b[?1006h");
+    let mut e = btn(MouseButton::Back, 5, 10);
+    e.action = MouseAction::Release;
+    assert_eq!(t.encode_mouse(e).unwrap(), b"\x1b[<128;6;11m");
+}
+
+#[test]
+fn back_button_rides_the_x10_default_framing() {
+    // X10: Cb 128 + 32 = 160 still fits a single byte, so the +128 group encodes
+    // fine in the default framing too; coords are +32.
+    let mut t = Engine::new(80, 24);
+    t.feed(b"\x1b[?1000h"); // default X10 encoding
+    assert_eq!(
+        t.encode_mouse(btn(MouseButton::Back, 5, 10)).unwrap(),
+        vec![0x1b, b'[', b'M', 160, 38, 43]
+    );
+}
+
 #[test]
 fn urxvt_encoding_is_decimal_csi_m() {
     let mut t = Engine::new(80, 24);
