@@ -68,7 +68,7 @@ pub struct Term {
     /// PTY, kept separate from typed `events` → UI.
     replies: Vec<u8>,
     /// Hyperlink side-table (OSC 8): each entry is one link's URI, referenced by
-    /// `Cell.link` (1-based). Append-only, like `grapheme_pool` (#26).
+    /// `Cell.link` (1-based). Append-only (#26).
     hyperlink_pool: Vec<String>,
     /// The hyperlink currently open (OSC 8 with a URI), stamped onto every glyph
     /// written until closed (OSC 8 with empty URI). Ambient pen-like state — not
@@ -111,10 +111,6 @@ pub struct Term {
     /// separate from `saved_cursor` (which is the alt-screen save). Defaults to
     /// home/default so a DECRC with no prior DECSC restores a sane state.
     decsc: SavedCursor,
-    /// Grapheme side-table: each entry is one cell's combining marks, referenced
-    /// by `Cell.extra` (1-based). Append-only; a cell overwritten or reset drops
-    /// its reference and leaves a dead entry (compacted on resize — common-90%).
-    grapheme_pool: Vec<Vec<char>>,
 }
 
 /// Default scrollback retention when not specified.
@@ -205,7 +201,6 @@ impl Term {
             prev_cursor: (0, 0), // matches the default cursor's home position
             selection: None,
             decsc: SavedCursor::default(),
-            grapheme_pool: Vec::new(),
         }
     }
 
@@ -309,23 +304,24 @@ impl Term {
         };
 
         let mut side_table: Vec<Vec<char>> = Vec::new();
-        // global pool index (1-based) -> frame-local index (1-based, 0 = unset).
-        let mut remap = vec![0u16; self.grapheme_pool.len() + 1];
         // Same frame-local renumber for the hyperlink side-table (#26).
         let mut link_table: Vec<String> = Vec::new();
         let mut link_remap = vec![0u16; self.hyperlink_pool.len() + 1];
         let mut spans = Vec::with_capacity(line_spans.len());
         for (line, left, right) in line_spans {
             let mut cells = Vec::with_capacity(right - left + 1);
+            let mut combining = std::collections::BTreeMap::new();
+            let row = self.grid.row_ref(line);
             for col in left..=right {
                 let mut cell = *self.grid.cell(line, col);
-                if let Some(gidx) = cell.extra() {
-                    let g = gidx.get() as usize;
-                    if remap[g] == 0 {
-                        side_table.push(self.grapheme_pool[g - 1].clone());
-                        remap[g] = side_table.len() as u16;
-                    }
-                    cell.set_extra(core::num::NonZeroU32::new(remap[g] as u32));
+                // Combining clusters now live in the row's map; each combined cell
+                // contributes its own cluster to the frame side-table (no global
+                // pool to renumber), recorded on the span by span-relative column.
+                if let Some(marks) = row.combining_at(col) {
+                    side_table.push(marks.to_vec());
+                    let idx = core::num::NonZeroU32::new(side_table.len() as u32)
+                        .expect("side_table just pushed, len >= 1");
+                    combining.insert(col - left, idx);
                 }
                 if let Some(lidx) = cell.link() {
                     let l = lidx.get() as usize;
@@ -342,6 +338,7 @@ impl Term {
                 left: left as u16,
                 right: right as u16,
                 cells,
+                combining,
             });
         }
 
@@ -466,6 +463,21 @@ impl Term {
         } else {
             self.grid.row(line - self.scrollback.len())
         }
+    }
+
+    /// The whole row (cells + combining map) of absolute buffer line `line`.
+    fn abs_row(&self, line: usize) -> &Row {
+        if line < self.scrollback.len() {
+            &self.scrollback[line]
+        } else {
+            self.grid.row_ref(line - self.scrollback.len())
+        }
+    }
+
+    /// The combining marks at absolute `(line, col)`, or `None` — flag-gated
+    /// through the row's map, so a stale entry is never surfaced.
+    fn combining_at(&self, line: usize, col: usize) -> Option<&[char]> {
+        self.abs_row(line).combining_at(col)
     }
 
     /// Literal search over the whole buffer (`[scrollback ++ screen]`), returning
@@ -802,10 +814,10 @@ impl Term {
                 // Each row independently — no soft-wrap joining.
                 let mut out = String::new();
                 for line in line0..=line1 {
-                    let cells = self.abs_line(line);
+                    let hi = to.min(self.abs_line(line).len());
                     let mut seg = String::new();
-                    for cell in &cells[from..to.min(cells.len())] {
-                        self.append_cell(&mut seg, cell);
+                    for col in from..hi {
+                        self.append_cell(&mut seg, line, col);
                     }
                     out.push_str(seg.trim_end());
                     if line != line1 {
@@ -817,15 +829,17 @@ impl Term {
         }
     }
 
-    /// Append a cell's text — its base glyph plus any combining marks from the
-    /// grapheme side-table — to `out`. Wide-char spacers contribute nothing.
-    fn append_cell(&self, out: &mut String, cell: &Cell) {
+    /// Append the text at absolute `(line, col)` — its base glyph plus any
+    /// combining marks from the row's map — to `out`. Wide-char spacers
+    /// contribute nothing.
+    fn append_cell(&self, out: &mut String, line: usize, col: usize) {
+        let cell = &self.abs_line(line)[col];
         if cell.is_wide_spacer() {
             return;
         }
         out.push(cell.c());
-        if let Some(idx) = cell.extra() {
-            out.extend(self.grapheme_pool[idx.get() as usize - 1].iter());
+        if let Some(marks) = self.combining_at(line, col) {
+            out.extend(marks);
         }
     }
 
@@ -854,8 +868,8 @@ impl Term {
             // A degenerate range (sides inverting one cell) gives left > right;
             // clamp to empty rather than panic on the slice.
             let right = right.max(left);
-            for cell in &cells[left..right] {
-                self.append_cell(&mut current, cell);
+            for col in left..right {
+                self.append_cell(&mut current, line, col);
             }
 
             let is_last = line == end_line;
@@ -1196,7 +1210,7 @@ impl Term {
                 } else {
                     // Top-anchored sub-region: copy row 0, then region-scroll
                     // `[0..=scroll_bottom]` (rows below stay fixed).
-                    let evicted = Row::from_cells(self.grid.row(0).to_vec());
+                    let evicted = self.grid.row_owned(0);
                     self.grid
                         .scroll_up_region(self.scroll_top, self.scroll_bottom);
                     evicted
@@ -1472,22 +1486,12 @@ impl Term {
         } else {
             self.cursor.col.saturating_sub(1)
         };
-        if self
-            .grid
-            .cell(row, col)
-            .is_wide_spacer()
-        {
+        if self.grid.cell(row, col).is_wide_spacer() {
             col = col.saturating_sub(1);
         }
-        match self.grid.cell(row, col).extra() {
-            Some(idx) => self.grapheme_pool[idx.get() as usize - 1].push(c),
-            None => {
-                self.grapheme_pool.push(vec![c]);
-                let idx = core::num::NonZeroU32::new(self.grapheme_pool.len() as u32)
-                    .expect("pool len is >= 1 after push");
-                self.grid.cell_mut(row, col).set_extra(Some(idx));
-            }
-        }
+        // Append the mark to the row's combining map at this column (setting the
+        // cell's combining bit). No global pool — the cluster rides the row.
+        self.grid.row_mut(row).push_combining(col, c);
         self.damage_span(row, col, col);
     }
 
@@ -1636,8 +1640,11 @@ impl Term {
         }
         let bg = self.cursor.pen.bg;
         let row = self.grid.row_mut(r);
-        // Shift [col .. cols-n) right by n; the tail falls off the edge.
+        // Shift [col .. cols-n) right by n; the tail falls off the edge. The
+        // combining map follows the moved cells (the bit travels with the raw
+        // copy, the cluster data must too).
         row.copy_within(col..cols - n, col + n);
+        row.move_combining(col..cols - n, col + n);
         for cell in &mut row[col..col + n] {
             cell.reset();
             cell.set_bg(bg);
@@ -1683,8 +1690,10 @@ impl Term {
         }
         let bg = self.cursor.pen.bg;
         let row = self.grid.row_mut(r);
-        // Shift [col+n .. cols) left to [col ..); BCE-fill the vacated tail.
+        // Shift [col+n .. cols) left to [col ..); BCE-fill the vacated tail. The
+        // combining map follows the moved cells.
         row.copy_within(col + n..cols, col);
+        row.move_combining(col + n..cols, col);
         for cell in &mut row[cols - n..cols] {
             cell.reset();
             cell.set_bg(bg);

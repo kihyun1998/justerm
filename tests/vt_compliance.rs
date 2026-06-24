@@ -860,8 +860,8 @@ fn multiple_combining_marks_accumulate() {
     assert_eq!(cell_text(&mut term, 0, 0), "a\u{0301}\u{0302}");
 }
 
-/// A combining mark survives a column resize: its side-table index travels with
-/// the cell through reflow, so the cluster is still intact afterward.
+/// A combining mark survives a column resize: the cluster is carried through the
+/// reflow re-key, so it is still intact afterward (#45 per-row-map reflow carry).
 #[test]
 fn combining_mark_survives_resize() {
     let mut term = Engine::new(5, 2);
@@ -869,4 +869,58 @@ fn combining_mark_survives_resize() {
     term.resize(3, 2); // column change → reflow
 
     assert_eq!(cell_text(&mut term, 0, 0), "e\u{0301}");
+}
+
+/// ICH (insert blanks) shifts cells right — the combining map must follow, so a
+/// cluster stays attached to its glyph at the new column (#45: the bit travels
+/// with the raw cell copy, the cluster data must too).
+#[test]
+fn combining_mark_follows_an_insert_shift() {
+    let mut term = Engine::new(6, 1);
+    term.feed("xe\u{0301}".as_bytes()); // col0='x', col1='e'+acute
+    term.feed(b"\x1b[1;1H"); // cursor home (0,0)
+    term.feed(b"\x1b[2@"); // ICH 2: 'x' -> col2, 'e'+acute -> col3
+
+    assert_eq!(term.grid().cell(0, 2).c(), 'x');
+    assert_eq!(cell_text(&mut term, 0, 3), "e\u{0301}", "cluster followed the shift");
+}
+
+/// DCH (delete cells) shifts the tail left — the combining map must follow.
+#[test]
+fn combining_mark_follows_a_delete_shift() {
+    let mut term = Engine::new(6, 1);
+    term.feed("xye\u{0301}".as_bytes()); // col0='x', col1='y', col2='e'+acute
+    term.feed(b"\x1b[1;1H"); // cursor home
+    term.feed(b"\x1b[2P"); // DCH 2: delete x,y; 'e'+acute -> col0
+
+    assert_eq!(cell_text(&mut term, 0, 0), "e\u{0301}", "cluster followed the shift");
+}
+
+/// Overwriting a combined cell starts a fresh cluster — the new glyph's marks
+/// must not accumulate onto the overwritten cell's stale map entry. Guards the
+/// flag-gated-cache invariant: a stale entry is dropped, not appended to (#45).
+#[test]
+fn overwriting_a_combined_cell_does_not_accumulate_stale_marks() {
+    let mut term = Engine::new(3, 1);
+    term.feed("e\u{0301}".as_bytes()); // col0 = e + acute
+    term.feed(b"\r"); // back to col0
+    term.feed("a\u{0302}".as_bytes()); // overwrite -> a + circumflex (NOT e+acute+circumflex)
+
+    assert_eq!(
+        cell_text(&mut term, 0, 0),
+        "a\u{0302}",
+        "fresh cluster — the stale acute must not survive the overwrite"
+    );
+}
+
+/// Plain-overwriting a combined cell makes its combining invisible: the cleared
+/// bit gates off the (now stale) map entry, so the cell copies as just its glyph.
+#[test]
+fn plain_overwrite_hides_a_combined_cells_marks() {
+    let mut term = Engine::new(3, 1);
+    term.feed("e\u{0301}".as_bytes()); // col0 = e + acute
+    term.feed(b"\rx"); // CR, overwrite col0 with plain 'x'
+
+    assert!(!term.grid().cell(0, 0).is_combined());
+    assert_eq!(cell_text(&mut term, 0, 0), "x", "no stale combining surfaces");
 }

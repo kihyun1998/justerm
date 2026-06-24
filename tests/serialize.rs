@@ -4,6 +4,7 @@
 //! §Serialization + ADR-0005.
 
 use core::num::NonZeroU32;
+use std::collections::BTreeMap;
 use justerm::{Cell, CellFlags, Color, Engine, Frame, FrameKind, ScrollOp, Span, decode, encode};
 
 /// Tracer bullet: an empty Partial frame (header only, no scroll, no spans)
@@ -52,7 +53,7 @@ fn round_trip_cursor_position_and_visibility() {
 fn round_trip_span_of_plain_cells() {
     let cells: Vec<Cell> = "hi!"
         .chars()
-        .map(|c| Cell::from_parts(c, Color::Default, Color::Default, CellFlags::empty(), None, None))
+        .map(|c| Cell::from_parts(c, Color::Default, Color::Default, CellFlags::empty(), None))
         .collect();
     let frame = Frame {
         cols: 80,
@@ -67,6 +68,7 @@ fn round_trip_span_of_plain_cells() {
             left: 10,
             right: 12,
             cells,
+            combining: BTreeMap::new(),
         }],
         side_table: vec![],
         link_table: vec![],
@@ -78,7 +80,7 @@ fn round_trip_span_of_plain_cells() {
 /// mandatory tag keeps `Default`, `Indexed(0)` and `Rgb(0,0,0)` from collapsing.
 #[test]
 fn round_trip_distinct_colour_references() {
-    let mk = |fg, bg| Cell::from_parts('x', fg, bg, CellFlags::empty(), None, None);
+    let mk = |fg, bg| Cell::from_parts('x', fg, bg, CellFlags::empty(), None);
     let cells = vec![
         mk(Color::Default, Color::Default),
         mk(Color::Indexed(0), Color::Indexed(255)),
@@ -97,6 +99,7 @@ fn round_trip_distinct_colour_references() {
             left: 0,
             right: 2,
             cells,
+            combining: BTreeMap::new(),
         }],
         side_table: vec![],
         link_table: vec![],
@@ -115,8 +118,8 @@ fn round_trip_distinct_colour_references() {
 /// `flags` field — the consumer needs both halves of a wide glyph to render it.
 #[test]
 fn round_trip_cell_flags_incl_layout_markers() {
-    let lead = Cell::from_parts('한', Color::Default, Color::Default, CellFlags::BOLD | CellFlags::WIDE_CHAR, None, None);
-    let spacer = Cell::from_parts(' ', Color::Default, Color::Default, CellFlags::WIDE_CHAR_SPACER, None, None);
+    let lead = Cell::from_parts('한', Color::Default, Color::Default, CellFlags::BOLD | CellFlags::WIDE_CHAR, None);
+    let spacer = Cell::from_parts(' ', Color::Default, Color::Default, CellFlags::WIDE_CHAR_SPACER, None);
     let frame = Frame {
         cols: 80,
         rows: 24,
@@ -130,6 +133,7 @@ fn round_trip_cell_flags_incl_layout_markers() {
             left: 0,
             right: 1,
             cells: vec![lead, spacer],
+            combining: BTreeMap::new(),
         }],
         side_table: vec![],
         link_table: vec![],
@@ -171,12 +175,15 @@ fn decode_rejects_superseded_version() {
     ));
 }
 
-/// A cell whose `extra` references a combining-mark cluster round-trips: the
-/// cell carries only a frame-local index, the code points live in `side_table`.
+/// A combining-mark cluster round-trips: the cell carries only its combining bit,
+/// the frame-local index rides on the span's `combining` map, and the code points
+/// live in `side_table`.
 #[test]
 fn round_trip_grapheme_side_table() {
-    let accented = Cell::from_parts('e', Color::Default, Color::Default, CellFlags::empty(), NonZeroU32::new(1), None); // 1-based index into side_table[0]
-    let plain = Cell::from_parts('x', Color::Default, Color::Default, CellFlags::empty(), None, None);
+    let mut accented =
+        Cell::from_parts('e', Color::Default, Color::Default, CellFlags::empty(), None);
+    accented.set_combined(true);
+    let plain = Cell::from_parts('x', Color::Default, Color::Default, CellFlags::empty(), None);
     let frame = Frame {
         cols: 80,
         rows: 24,
@@ -190,6 +197,8 @@ fn round_trip_grapheme_side_table() {
             left: 0,
             right: 1,
             cells: vec![accented, plain],
+            // column 0 -> side_table[0] (1-based index)
+            combining: BTreeMap::from([(0, NonZeroU32::new(1).unwrap())]),
         }],
         side_table: vec![vec!['\u{0301}']], // combining acute accent
         link_table: vec![],
@@ -216,6 +225,7 @@ fn cell_record_is_fixed_18_bytes() {
             left: 0,
             right: (n - 1) as u16,
             cells: vec![Cell::default(); n],
+            combining: BTreeMap::new(),
         }],
         side_table: vec![],
         link_table: vec![],
@@ -375,32 +385,32 @@ fn engine_frame_is_full_after_resize() {
     assert_eq!(f.spans.len(), 3, "Full ships every row");
 }
 
-/// Trap #2: a frame ships only *referenced* clusters, renumbered frame-local —
-/// an orphaned global pool entry is not shipped and the live one is re-indexed.
+/// Trap #2: a frame ships only *live* clusters, indexed frame-local. Overwriting
+/// a combined cell clears its bit, so its (now stale) row-map entry is never
+/// gathered — only the surviving combined cell contributes to `side_table`, at
+/// frame-local index 1.
 #[test]
-fn engine_frame_remaps_orphaned_global_index() {
+fn engine_frame_ships_only_live_combining_clusters() {
     let mut term = Engine::new(5, 1);
-    term.feed("e\u{0301}".as_bytes()); // pool[0]: cell0 -> global index 1
-    term.feed(b"\rx"); // CR to col0, overwrite 'e' with 'x' -> orphans pool[0]
-    term.feed("o\u{0308}".as_bytes()); // pool[1]: cell1 -> global index 2
+    term.feed("e\u{0301}".as_bytes()); // col0 'e' + acute -> combined
+    term.feed(b"\rx"); // CR to col0, overwrite 'e' with 'x' -> col0 bit cleared
+    term.feed("o\u{0308}".as_bytes()); // col1 'o' + diaeresis -> combined
     let f = term.frame();
     assert_eq!(
         f.side_table,
         vec![vec!['\u{0308}']],
         "only the live cluster ships"
     );
-    let g = f
+    // Exactly one span column carries combining; it is the 'o', at frame-local 1.
+    let span = f
         .spans
         .iter()
-        .flat_map(|s| &s.cells)
-        .find(|c| c.extra().is_some())
-        .unwrap();
-    assert_eq!(g.c(), 'o');
-    assert_eq!(
-        g.extra().unwrap().get(),
-        1,
-        "global index 2 remapped to frame-local 1"
-    );
+        .find(|s| !s.combining.is_empty())
+        .expect("a span with combining");
+    let (&col, idx) = span.combining.iter().next().unwrap();
+    assert_eq!(idx.get(), 1, "the live cluster is frame-local index 1");
+    assert_eq!(span.cells[col].c(), 'o');
+    assert!(span.cells[col].is_combined());
 }
 
 /// Integration: feed colours + a wide glyph + a combining mark, then the live
@@ -484,8 +494,9 @@ fn round_trip_full_frame_with_cells() {
         right: 2,
         cells: "abc"
             .chars()
-            .map(|c| Cell::from_parts(c, Color::Default, Color::Default, CellFlags::empty(), None, None))
+            .map(|c| Cell::from_parts(c, Color::Default, Color::Default, CellFlags::empty(), None))
             .collect(),
+        combining: BTreeMap::new(),
     };
     let frame = Frame {
         cols: 3,

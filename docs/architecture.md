@@ -261,12 +261,19 @@ deferred behavior) it tracks — then add what you find here.** Seeds (caught in
   damage span can also *bisect* a glyph — start on a spacer or end on a lead whose partner is outside
   the span; cells ship as-is and the consumer's mirror already holds the partner from a prior frame, so
   the half is unambiguous against that mirror (do not "fix up" by widening the span). [#6]
-- **The grapheme side-table is re-indexed per frame — the engine pool is global, append-only, and
-  leaky.** `Cell.extra` indexes the engine's `grapheme_pool`, which only grows and accumulates dead
-  entries (an overwritten combining-mark cell orphans its slot). Serializing the whole pool would ship
-  garbage and grow unbounded. A frame encodes *only* the clusters its cells reference, renumbered
-  contiguous frame-local, rewriting each `extra` to the local index; the decoder rebuilds a per-frame
-  table. (Side-effect: the wire never exposes the leak; pool compaction stays a deferred engine concern.) [#6]
+- **Combining clusters live in a per-row, column-keyed map — a flag-gated cache, never read without the
+  cell's `COMBINED_PRESENT` bit.** A `Row` carries a `BTreeMap<col, marks>` alongside its cells (#45,
+  blueprint xterm.js `BufferLine._combined`); the cell holds only the presence bit, not an index. The map
+  rides with the row through scroll/scrollback/reflow for free (the row is the unit that moves) and is
+  cleared on row reuse, so there is **no global pool and no leak** (the old `grapheme_pool` did grow
+  unbounded — an overwritten combining cell orphaned its slot). The load-bearing invariant: `map[col]` is
+  read iff the cell at `col` is combined, which makes a stale entry (left by an overwrite/erase) harmless.
+  Cells move by raw copy (the bit travels, the map does not), so the live entries must be **carried
+  explicitly only where cells change column**: ICH/DCH re-key the map alongside the cell shift, and reflow
+  re-keys per column when splitting/merging rows (xterm's `_copyCellMapsFrom`); print-overwrite, erase, and
+  whole-row scroll need nothing. Serialization gathers each combined cell's cluster into the frame-local
+  `side_table`, recording the index on the **span** (`Span.combining`, the per-cell `extra` lifted out of
+  the cell); the wire bytes are unchanged. [#6, #45]
 - **The scroll op is recorded (not diff-detected), screen-relative, and ordered before the spans.**
   Per ADR-0003 the frame carries `{top, bottom, count}` *ahead of* the damage spans; the decoder shifts
   its mirror grid first, then applies spans — reversing the order lands spans on pre-scroll rows. #6
