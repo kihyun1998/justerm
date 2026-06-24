@@ -37,10 +37,13 @@ justerm 이 **하지 않는 것** (의존성으로 끌어들이지도 말 것):
 ## 개발 명령어
 
 ```bash
-cargo build
-cargo test          # 단위테스트 + vttest 정합성
-cargo bench         # throughput 마이크로벤치(추세 기록)
+cargo test --workspace   # 코어 + justerm-wasm 바인딩까지 게이트 (--workspace 필수)
+cargo bench              # throughput 마이크로벤치(추세 기록)
 ```
+
+**`--workspace` 는 필수**: 맨 `cargo test`/`cargo build --all-targets` 는 *현재 패키지(`justerm`)만* 본다 —
+공개 API 를 바꾸는 변경은 `justerm-wasm` 바인딩을 조용히 깨뜨릴 수 있으니(0.4.0 에서 발생), 공개 표면을
+건드릴 땐 `cargo test --workspace`/`cargo clippy --workspace --all-targets` 로 멤버 전부를 검증한다(CI 와 동일).
 
 ## 핵심 규칙
 

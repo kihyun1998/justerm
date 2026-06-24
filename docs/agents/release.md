@@ -21,7 +21,11 @@ bump. So map the change to the version like this (pre-1.0 / 0.x semver):
 ## Cut a release (what the maintainer/agent does)
 
 1. Bump `[workspace.package] version` in `Cargo.toml`; refresh the lock (`cargo check --workspace`).
-2. Gate: `cargo test` green, `cargo clippy --all-targets` clean.
+2. Gate **the whole workspace** (not just the core crate): `cargo test --workspace` green,
+   `cargo clippy --workspace --all-targets` clean. The `--workspace` is load-bearing — a bare
+   `cargo test` / `cargo build --all-targets` only covers the current package, so a public-API change
+   that breaks the `justerm-wasm` binding passes a non-workspace gate silently (it bit v0.4.0; CI's
+   `test.yml` already uses `--workspace`, so this just matches the local gate to CI before the tag).
 3. Commit: `chore(release): vX.Y.Z — <summary> (#issues)` (Cargo.toml + Cargo.lock).
 4. Tag: `git tag -a vX.Y.Z -m "vX.Y.Z — <summary>"`.
 5. Push **both** the branch and the tag: `git push origin master && git push origin vX.Y.Z`.
