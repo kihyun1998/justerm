@@ -4,9 +4,70 @@
 //! ring (a later slice) can move whole rows in/out cheaply.
 
 use crate::cell::{Cell, CellFlags};
+use std::ops::{Deref, DerefMut};
 
 /// One row of cells.
-pub type Row = Vec<Cell>;
+///
+/// A struct rather than a bare `Vec<Cell>` so a per-row, column-keyed sparse map
+/// of combining clusters can ride alongside the cells (#45) — the map travels
+/// with the row through scroll/scrollback/reflow for free. This slice is the
+/// structural step: `Row` wraps the cell vector and derefs to `[Cell]`, so the
+/// pervasive index/iterate/slice sites are unchanged; the combining map lands in
+/// the next step. Build with [`Row::blank`] / [`Row::from_cells`].
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub struct Row {
+    cells: Vec<Cell>,
+}
+
+impl Row {
+    /// A row of `cols` blank cells.
+    pub(crate) fn blank(cols: usize) -> Row {
+        Row { cells: vec![Cell::default(); cols] }
+    }
+
+    /// Wrap an existing cell vector as a row.
+    pub(crate) fn from_cells(cells: Vec<Cell>) -> Row {
+        Row { cells }
+    }
+
+    /// Consume the row, yielding its cells.
+    pub(crate) fn into_cells(self) -> Vec<Cell> {
+        self.cells
+    }
+
+    /// Resize to `cols`, padding with blanks or truncating.
+    pub(crate) fn resize(&mut self, cols: usize) {
+        self.cells.resize(cols, Cell::default());
+    }
+
+    /// Empty the row, keeping its allocation — for recycling a row buffer
+    /// (`scroll_up_recycle`). The cell vector is cleared; the caller resizes back
+    /// to width with blanks.
+    pub(crate) fn clear(&mut self) {
+        self.cells.clear();
+    }
+}
+
+impl Deref for Row {
+    type Target = [Cell];
+    fn deref(&self) -> &[Cell] {
+        &self.cells
+    }
+}
+
+impl DerefMut for Row {
+    fn deref_mut(&mut self) -> &mut [Cell] {
+        &mut self.cells
+    }
+}
+
+impl IntoIterator for Row {
+    type Item = Cell;
+    type IntoIter = std::vec::IntoIter<Cell>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.cells.into_iter()
+    }
+}
 
 /// Re-wrap physical `rows` to `new_cols`. Soft-wrapped rows (WRAPLINE on the
 /// last cell) are joined into logical lines, then each logical line is re-split
@@ -36,16 +97,14 @@ pub(crate) fn reflow(
                 tracked[pi] = (logical.len(), current.len() + pc, true);
             }
         }
-        let soft = row
-            .last()
-            .is_some_and(|c| c.is_wrapline());
+        let soft = row.last().is_some_and(|c| c.is_wrapline());
         if soft {
             current.extend(row.into_iter().map(|mut c| {
                 c.remove_flags(CellFlags::WRAPLINE);
                 c
             }));
         } else {
-            let mut cells = row;
+            let mut cells = row.into_cells();
             while cells.last() == Some(&Cell::default()) {
                 cells.pop();
             }
@@ -68,20 +127,19 @@ pub(crate) fn reflow(
     for (li, line) in logical.iter().enumerate() {
         let start = out.len();
         if line.is_empty() {
-            out.push(vec![Cell::default(); new_cols]);
+            out.push(Row::blank(new_cols));
         } else {
             let mut i = 0;
             while i < line.len() {
                 let mut take = (line.len() - i).min(new_cols);
                 // Don't split a wide char from its spacer: if the row would end
                 // on a WIDE_CHAR lead, drop it to the next row (xterm's newCols-1).
-                if i + take < line.len() && line[i + take - 1].is_wide()
-                {
+                if i + take < line.len() && line[i + take - 1].is_wide() {
                     take -= 1;
                 }
                 let take = take.max(1); // guard the 1-col degenerate case
-                let mut row: Row = line[i..i + take].to_vec();
-                row.resize(new_cols, Cell::default());
+                let mut row = Row::from_cells(line[i..i + take].to_vec());
+                row.resize(new_cols);
                 i += take;
                 if i < line.len() {
                     row[new_cols - 1].insert_flags(CellFlags::WRAPLINE);
@@ -117,7 +175,7 @@ pub struct Grid {
 impl Grid {
     /// A blank grid of the given size.
     pub fn new(cols: usize, rows: usize) -> Self {
-        let lines = vec![vec![Cell::default(); cols]; rows];
+        let lines = vec![Row::blank(cols); rows];
         Grid { cols, rows, lines }
     }
 
@@ -161,7 +219,7 @@ impl Grid {
         // Rotate the region's top line to its bottom, then blank it: every line
         // in the region shifts up one and the region's bottom becomes empty.
         self.lines[top..=bottom].rotate_left(1);
-        for cell in &mut self.lines[bottom] {
+        for cell in self.lines[bottom].iter_mut() {
             cell.reset();
         }
     }
@@ -176,7 +234,7 @@ impl Grid {
     /// buffer, not making the cheap handle-rotate O(1).
     pub(crate) fn scroll_up_recycle(&mut self, mut blank: Row) -> Row {
         blank.clear(); // drop any recycled content (keeps the allocation)
-        blank.resize(self.cols, Cell::default());
+        blank.resize(self.cols);
         self.lines.rotate_left(1); // logical row 0 -> the bottom slot
         let last = self.rows - 1;
         std::mem::replace(&mut self.lines[last], blank)
@@ -192,10 +250,10 @@ impl Grid {
     /// `cols` and the screen is padded with blank rows / truncated to `rows`.
     pub(crate) fn set_screen(&mut self, mut lines: Vec<Row>, cols: usize, rows: usize) {
         for row in &mut lines {
-            row.resize(cols, Cell::default());
+            row.resize(cols);
         }
         while lines.len() < rows {
-            lines.push(vec![Cell::default(); cols]);
+            lines.push(Row::blank(cols));
         }
         lines.truncate(rows);
         self.lines = lines;
@@ -207,7 +265,7 @@ impl Grid {
     /// screen (which always starts cleared).
     pub fn clear(&mut self) {
         for row in &mut self.lines {
-            for cell in row {
+            for cell in row.iter_mut() {
                 cell.reset();
             }
         }
@@ -220,7 +278,7 @@ impl Grid {
         // Rotate the region's bottom line to its top, then blank it: every line
         // in the region shifts down one and the region's top becomes empty.
         self.lines[top..=bottom].rotate_right(1);
-        for cell in &mut self.lines[top] {
+        for cell in self.lines[top].iter_mut() {
             cell.reset();
         }
     }
@@ -275,7 +333,7 @@ mod tests {
         // bottom must come out blank, not carrying the recycled row's text.
         let mut x = Cell::default();
         x.set_c('X');
-        let dirty = vec![x; 2];
+        let dirty = Row::from_cells(vec![x; 2]);
         let evicted = g.scroll_up_recycle(dirty);
         assert_eq!(evicted[0].c(), 'a'); // logical row 0 moved out, not copied
         assert_eq!(col0(&g), "bc "); // shifted up; bottom blank, NOT "bcX"

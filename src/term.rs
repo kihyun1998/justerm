@@ -1189,15 +1189,14 @@ impl Term {
                 let evicted = if self.scroll_bottom == self.grid.rows() - 1 {
                     // Full-screen hot path: move the evicted top row out, install
                     // a recycled blank as the new bottom (zero-alloc steady state).
-                    let blank = self
-                        .recycled_row
-                        .take()
-                        .unwrap_or_else(|| Vec::with_capacity(self.grid.cols()));
+                    let blank = self.recycled_row.take().unwrap_or_else(|| {
+                        Row::from_cells(Vec::with_capacity(self.grid.cols()))
+                    });
                     self.grid.scroll_up_recycle(blank)
                 } else {
                     // Top-anchored sub-region: copy row 0, then region-scroll
                     // `[0..=scroll_bottom]` (rows below stay fixed).
-                    let evicted = self.grid.row(0).to_vec();
+                    let evicted = Row::from_cells(self.grid.row(0).to_vec());
                     self.grid
                         .scroll_up_region(self.scroll_top, self.scroll_bottom);
                     evicted
