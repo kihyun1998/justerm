@@ -137,6 +137,10 @@ pub enum MouseButton {
     Right,
     WheelUp,
     WheelDown,
+    /// Horizontal scroll / tilt-wheel — xterm buttons 6 and 7, encoded in the
+    /// same 64-base wheel group as up/down.
+    WheelLeft,
+    WheelRight,
 }
 
 /// What the mouse did.
@@ -495,6 +499,22 @@ pub fn encode_mouse(ev: &MouseEvent, proto: MouseProtocol, enc: MouseEncoding) -
     if proto == MouseProtocol::Off {
         return None;
     }
+    // A wheel turn is a single press-like event; a release on a wheel button is
+    // not a real report (it would leak a bogus SGR `m` / an identity-less X10
+    // release), so drop it.
+    if ev.action == MouseAction::Release
+        && matches!(
+            ev.button,
+            Some(
+                MouseButton::WheelUp
+                    | MouseButton::WheelDown
+                    | MouseButton::WheelLeft
+                    | MouseButton::WheelRight
+            )
+        )
+    {
+        return None;
+    }
     // Mode gates which events report at all.
     match ev.action {
         MouseAction::Press | MouseAction::Release => {}
@@ -514,6 +534,8 @@ pub fn encode_mouse(ev: &MouseEvent, proto: MouseProtocol, enc: MouseEncoding) -
         Some(MouseButton::Right) => 2,
         Some(MouseButton::WheelUp) => 64,
         Some(MouseButton::WheelDown) => 65,
+        Some(MouseButton::WheelLeft) => 66,
+        Some(MouseButton::WheelRight) => 67,
         None => 3, // motion with no button: the "no button" code
     };
     let motion = if ev.action == MouseAction::Motion {
