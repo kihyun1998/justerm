@@ -2,7 +2,20 @@
 //! (Pacing — when to pull, vsync/RTT timing — is the consumer's transport, not
 //! the engine; see architecture.md §Cadence.)
 
-use justerm::{Engine, TermDamage};
+use justerm::{Engine, Frame, TermDamage};
+
+/// Read the character a `Frame` carries at viewport `(row, col)` — locate the
+/// span covering that row, then index by span-relative column. Panics if the
+/// frame ships no cell there (a `Full` frame covers every row, so the
+/// viewport-source tests below always find one).
+fn frame_char(frame: &Frame, row: u16, col: u16) -> char {
+    let span = frame
+        .spans
+        .iter()
+        .find(|s| s.line == row && s.left <= col && col <= s.right)
+        .expect("frame has no span covering this cell");
+    span.cells[(col - span.left) as usize].c()
+}
 
 /// A user scroll changes which lines are visible, so the whole viewport must be
 /// repainted → full damage (matches alacritty's scroll_display).
@@ -35,6 +48,66 @@ fn content_scroll_while_scrolled_up_is_invisible() {
     assert!(
         matches!(term.damage(), TermDamage::Partial(ref l) if l.is_empty()),
         "off-screen change reported as viewport damage",
+    );
+}
+
+/// #48 — `frame()` must source its cells from the viewport at `display_offset`,
+/// the same rows `viewport_line` returns. After scrolling up, the frame ships
+/// the scrolled-back rows, not the live bottom rows; otherwise a wire consumer
+/// (cells reach the renderer only through `frame()`) can never display
+/// scrollback — scrolling appears to do nothing.
+#[test]
+fn frame_cells_follow_the_scrolled_back_viewport() {
+    let mut term = Engine::new(4, 2);
+    term.feed(b"a\r\nb\r\nc"); // history = [a], screen = [b, c]
+    term.scroll_up(1); // viewport = [a, b]; live bottom is still [b, c]
+
+    let frame = term.frame();
+
+    assert_eq!(
+        frame_char(&frame, 0, 0),
+        term.viewport_line(0)[0].c(),
+        "frame top row must be the scrolled-back row, not the live grid",
+    );
+    assert_eq!(frame_char(&frame, 0, 0), 'a');
+    assert_eq!(frame_char(&frame, 1, 0), 'b');
+}
+
+/// #48 — at the bottom (`display_offset == 0`) the viewport *is* the live grid,
+/// so making `frame()` viewport-aware must not change the common case: the frame
+/// still ships the live screen rows.
+#[test]
+fn frame_cells_unchanged_at_bottom() {
+    let mut term = Engine::new(4, 2);
+    term.feed(b"a\r\nb\r\nc"); // screen = [b, c], not scrolled
+
+    let frame = term.frame();
+
+    assert_eq!(frame_char(&frame, 0, 0), 'b');
+    assert_eq!(frame_char(&frame, 1, 0), 'c');
+    assert_eq!(frame_char(&frame, 0, 0), term.viewport_line(0)[0].c());
+}
+
+/// #48 — while scrolled up the live cursor is off the frozen viewport, so the
+/// frame must report it hidden. A consumer renders the caret by cell-invert; a
+/// `cursor_visible` frame here would ink a caret onto scrollback history. Matches
+/// xterm.js (hide when `ydisp != ybase`) and alacritty (cursor off the
+/// display_iter is not drawn). Returning to the bottom restores it.
+#[test]
+fn cursor_hidden_while_scrolled_up() {
+    let mut term = Engine::new(4, 2);
+    term.feed(b"a\r\nb\r\nc"); // cursor live on the bottom row
+
+    term.scroll_up(1);
+    assert!(
+        !term.frame().cursor_visible,
+        "caret reported visible over frozen scrollback",
+    );
+
+    term.scroll_to_bottom();
+    assert!(
+        term.frame().cursor_visible,
+        "caret not restored after following the bottom",
     );
 }
 
