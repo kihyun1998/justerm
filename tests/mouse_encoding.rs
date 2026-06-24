@@ -39,7 +39,8 @@ fn wheel_left_encodes_sgr_cb_66() {
     t.feed(b"\x1b[?1000h\x1b[?1006h"); // normal tracking + SGR
     // wheel-left at (5,10) 0-based → Cb base 66, 1-based coords 6;11, press 'M'.
     assert_eq!(
-        t.encode_mouse(wheel(MouseButton::WheelLeft, 5, 10)).unwrap(),
+        t.encode_mouse(wheel(MouseButton::WheelLeft, 5, 10))
+            .unwrap(),
         b"\x1b[<66;6;11M"
     );
 }
@@ -49,7 +50,8 @@ fn wheel_right_encodes_sgr_cb_67() {
     let mut t = Engine::new(80, 24);
     t.feed(b"\x1b[?1000h\x1b[?1006h");
     assert_eq!(
-        t.encode_mouse(wheel(MouseButton::WheelRight, 5, 10)).unwrap(),
+        t.encode_mouse(wheel(MouseButton::WheelRight, 5, 10))
+            .unwrap(),
         b"\x1b[<67;6;11M"
     );
 }
@@ -61,7 +63,8 @@ fn wheel_tilt_rides_the_x10_default_framing() {
     let mut t = Engine::new(80, 24);
     t.feed(b"\x1b[?1000h"); // default X10 encoding
     assert_eq!(
-        t.encode_mouse(wheel(MouseButton::WheelLeft, 5, 10)).unwrap(),
+        t.encode_mouse(wheel(MouseButton::WheelLeft, 5, 10))
+            .unwrap(),
         vec![0x1b, b'[', b'M', 98, 38, 43]
     );
 }
