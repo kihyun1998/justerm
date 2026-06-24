@@ -141,6 +141,14 @@ pub enum MouseButton {
     /// same 64-base wheel group as up/down.
     WheelLeft,
     WheelRight,
+    /// The thumb buttons — X11 buttons 8 and 9, the "back"/"forward" of the
+    /// 128-base extra group.
+    Back,
+    Forward,
+    /// Any further mouse button by its X11 number (gaming-mouse side buttons,
+    /// 10+). Encoded via the xterm bit formula; use the named variants above for
+    /// buttons that have one.
+    Other(u8),
 }
 
 /// What the mouse did.
@@ -536,6 +544,14 @@ pub fn encode_mouse(ev: &MouseEvent, proto: MouseProtocol, enc: MouseEncoding) -
         Some(MouseButton::WheelDown) => 65,
         Some(MouseButton::WheelLeft) => 66,
         Some(MouseButton::WheelRight) => 67,
+        Some(MouseButton::Back) => 128,
+        Some(MouseButton::Forward) => 129,
+        // Any other button by its X11 number, via the xterm bit translation:
+        // low 2 bits as-is, +64 for the wheel group, +128 for the extra group.
+        Some(MouseButton::Other(n)) => {
+            let n = n as usize;
+            (n & 3) | (if n & 4 != 0 { 64 } else { 0 }) | (if n & 8 != 0 { 128 } else { 0 })
+        }
         None => 3, // motion with no button: the "no button" code
     };
     let motion = if ev.action == MouseAction::Motion {
