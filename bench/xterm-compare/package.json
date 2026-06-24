@@ -1,0 +1,13 @@
+{
+  "name": "xterm-compare",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Same-machine throughput comparison: justerm feed() vs @xterm/headless write(). Renderer-free on both sides, fed byte-identical streams dumped from justerm's benches/inputs.rs. See docs/perf/xterm-comparison.md.",
+  "scripts": {
+    "bench": "node bench-xterm.mjs"
+  },
+  "dependencies": {
+    "@xterm/headless": "^5.5.0"
+  }
+}
