@@ -142,7 +142,12 @@ fn reflow_keeps_wide_char_together_at_boundary() {
     term.resize(2, 4); // 'a' takes col 0; '한' can't fit in the last col → wraps whole
 
     assert_eq!(term.grid().cell(1, 0).c(), '한');
-    assert!(term.grid().cell(1, 0).flags().contains(CellFlags::WIDE_CHAR));
+    assert!(
+        term.grid()
+            .cell(1, 0)
+            .flags()
+            .contains(CellFlags::WIDE_CHAR)
+    );
     assert!(
         term.grid()
             .cell(1, 1)

@@ -57,17 +57,29 @@ pub struct Row {
 impl Row {
     /// A row of `cols` blank cells.
     pub(crate) fn blank(cols: usize) -> Row {
-        Row { cells: vec![Cell::default(); cols], combining: Combining::new(), links: Links::new() }
+        Row {
+            cells: vec![Cell::default(); cols],
+            combining: Combining::new(),
+            links: Links::new(),
+        }
     }
 
     /// Wrap a cell vector as a row with no combining marks or links.
     pub(crate) fn from_cells(cells: Vec<Cell>) -> Row {
-        Row { cells, combining: Combining::new(), links: Links::new() }
+        Row {
+            cells,
+            combining: Combining::new(),
+            links: Links::new(),
+        }
     }
 
     /// Build a row from cells and its maps (the reflow re-split path).
     pub(crate) fn new(cells: Vec<Cell>, combining: Combining, links: Links) -> Row {
-        Row { cells, combining, links }
+        Row {
+            cells,
+            combining,
+            links,
+        }
     }
 
     /// Consume the row into its cells, combining map, and link map (the reflow
@@ -80,7 +92,12 @@ impl Row {
     /// dropped columns are pruned (xterm's shrink-prune).
     pub(crate) fn resize(&mut self, cols: usize) {
         self.cells.resize(cols, Cell::default());
-        if self.combining.keys().next_back().is_some_and(|&m| m >= cols) {
+        if self
+            .combining
+            .keys()
+            .next_back()
+            .is_some_and(|&m| m >= cols)
+        {
             self.combining.retain(|&col, _| col < cols);
         }
         if self.links.keys().next_back().is_some_and(|&m| m >= cols) {

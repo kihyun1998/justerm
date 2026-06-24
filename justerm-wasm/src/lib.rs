@@ -474,7 +474,12 @@ mod tests {
     #[test]
     fn flatten_exposes_fg_bg_columns_as_tagged_refs() {
         let cells = vec![
-            Cell::from_parts('A', Color::Indexed(9), Color::Rgb(1, 2, 3), CellFlags::empty()),
+            Cell::from_parts(
+                'A',
+                Color::Indexed(9),
+                Color::Rgb(1, 2, 3),
+                CellFlags::empty(),
+            ),
             Cell::from_parts('B', Color::Default, Color::Default, CellFlags::empty()),
         ];
         let frame = partial(
@@ -597,8 +602,12 @@ mod tests {
         // A frame exercising wide chars, colours, a grapheme ref, a link ref,
         // scroll, and multiple spans — then round-tripped through the real wire.
         let wide = Cell::from_parts('한', Color::Default, Color::Default, CellFlags::WIDE_CHAR);
-        let spacer =
-            Cell::from_parts(' ', Color::Default, Color::Default, CellFlags::WIDE_CHAR_SPACER);
+        let spacer = Cell::from_parts(
+            ' ',
+            Color::Default,
+            Color::Default,
+            CellFlags::WIDE_CHAR_SPACER,
+        );
         let coloured =
             Cell::from_parts('A', Color::Indexed(9), Color::Rgb(1, 2, 3), CellFlags::BOLD);
         let frame = Frame {

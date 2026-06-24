@@ -72,8 +72,7 @@ const FG_UNDERLINE: u32 = 1 << 28;
 const FG_BLINK: u32 = 1 << 29;
 const FG_HIDDEN: u32 = 1 << 30;
 const FG_STRIKE: u32 = 1 << 31;
-const FG_FLAG_MASK: u32 =
-    FG_INVERSE | FG_BOLD | FG_UNDERLINE | FG_BLINK | FG_HIDDEN | FG_STRIKE;
+const FG_FLAG_MASK: u32 = FG_INVERSE | FG_BOLD | FG_UNDERLINE | FG_BLINK | FG_HIDDEN | FG_STRIKE;
 
 // bg flags, bits 26..28 — xterm BgFlags order.
 const BG_ITALIC: u32 = 1 << 26;
@@ -146,7 +145,11 @@ impl Default for Cell {
         // every other word zero (Default colours, no flags, no combining/link
         // bits). Built directly rather than through `from_parts` so scroll/erase
         // blanking — which constructs defaults by the rowful — stays a cheap copy.
-        Cell { content: ' ' as u32, fg: 0, bg: 0 }
+        Cell {
+            content: ' ' as u32,
+            fg: 0,
+            bg: 0,
+        }
     }
 }
 
@@ -381,17 +384,29 @@ mod tests {
         // Everything else survives both bits being set.
         assert_eq!(cell.c(), 'e');
         assert_eq!(cell.fg(), Color::Indexed(3));
-        assert_eq!(cell.bg(), Color::Rgb(1, 2, 3), "link bit shares the bg word");
+        assert_eq!(
+            cell.bg(),
+            Color::Rgb(1, 2, 3),
+            "link bit shares the bg word"
+        );
         assert!(cell.flags().contains(CellFlags::WIDE_CHAR | CellFlags::DIM));
 
         cell.set_linked(false);
         assert!(cell.is_combined() && !cell.is_linked());
         cell.set_combined(false);
         assert!(!cell.is_combined() && !cell.is_linked());
-        assert_eq!(cell.bg(), Color::Rgb(1, 2, 3), "bg colour intact after clearing");
+        assert_eq!(
+            cell.bg(),
+            Color::Rgb(1, 2, 3),
+            "bg colour intact after clearing"
+        );
 
-        let spacer =
-            Cell::from_parts(' ', Color::Default, Color::Default, CellFlags::WIDE_CHAR_SPACER);
+        let spacer = Cell::from_parts(
+            ' ',
+            Color::Default,
+            Color::Default,
+            CellFlags::WIDE_CHAR_SPACER,
+        );
         assert!(spacer.is_wide_spacer());
         assert!(!Cell::default().is_wide_spacer());
     }

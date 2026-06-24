@@ -540,9 +540,7 @@ impl Term {
                     hay.push(fold(cell.c()));
                     pos.push((line, col));
                 }
-                let soft = cells
-                    .last()
-                    .is_some_and(|c| c.is_wrapline());
+                let soft = cells.last().is_some_and(|c| c.is_wrapline());
                 if soft && line + 1 < total {
                     line += 1;
                 } else {
@@ -894,9 +892,7 @@ impl Term {
             }
 
             let is_last = line == end_line;
-            let soft = cells
-                .last()
-                .is_some_and(|c| c.is_wrapline());
+            let soft = cells.last().is_some_and(|c| c.is_wrapline());
             if is_last || !soft {
                 out.push_str(current.trim_end());
                 current.clear();
@@ -917,10 +913,7 @@ impl Term {
         }
         if line > 0 {
             let prev = self.abs_line(line - 1);
-            if prev
-                .last()
-                .is_some_and(|c| c.is_wrapline())
-            {
+            if prev.last().is_some_and(|c| c.is_wrapline()) {
                 return Some((line - 1, prev.len() - 1));
             }
         }
@@ -936,11 +929,7 @@ impl Term {
             return Some((line, col + 1));
         }
         let total = self.scrollback.len() + self.grid.rows();
-        if line + 1 < total
-            && cells
-                .last()
-                .is_some_and(|c| c.is_wrapline())
-        {
+        if line + 1 < total && cells.last().is_some_and(|c| c.is_wrapline()) {
             return Some((line + 1, 0));
         }
         None
@@ -1224,9 +1213,10 @@ impl Term {
                 let evicted = if self.scroll_bottom == self.grid.rows() - 1 {
                     // Full-screen hot path: move the evicted top row out, install
                     // a recycled blank as the new bottom (zero-alloc steady state).
-                    let blank = self.recycled_row.take().unwrap_or_else(|| {
-                        Row::from_cells(Vec::with_capacity(self.grid.cols()))
-                    });
+                    let blank = self
+                        .recycled_row
+                        .take()
+                        .unwrap_or_else(|| Row::from_cells(Vec::with_capacity(self.grid.cols())));
                     self.grid.scroll_up_recycle(blank)
                 } else {
                     // Top-anchored sub-region: copy row 0, then region-scroll
@@ -1448,20 +1438,10 @@ impl Term {
         // Overwriting one half of an existing wide glyph orphans the other —
         // clear it so no stray lead/spacer is left behind.
         let last = col + width - 1;
-        if col > 0
-            && self
-                .grid
-                .cell(row, col)
-                .is_wide_spacer()
-        {
+        if col > 0 && self.grid.cell(row, col).is_wide_spacer() {
             self.grid.cell_mut(row, col - 1).reset();
         }
-        if last + 1 < cols
-            && self
-                .grid
-                .cell(row, last)
-                .is_wide()
-        {
+        if last + 1 < cols && self.grid.cell(row, last).is_wide() {
             self.grid.cell_mut(row, last + 1).reset();
         }
 
@@ -1576,21 +1556,10 @@ impl Term {
     fn clear_cells(&mut self, row: usize, from: usize, to: usize) {
         let cols = self.grid.cols();
         // Don't orphan a wide char straddling the erase boundary.
-        if from > 0
-            && self
-                .grid
-                .cell(row, from)
-                .is_wide_spacer()
-        {
+        if from > 0 && self.grid.cell(row, from).is_wide_spacer() {
             self.grid.cell_mut(row, from - 1).reset();
         }
-        if to > from
-            && to < cols
-            && self
-                .grid
-                .cell(row, to - 1)
-                .is_wide()
-        {
+        if to > from && to < cols && self.grid.cell(row, to - 1).is_wide() {
             self.grid.cell_mut(row, to).reset();
         }
 
@@ -1678,28 +1647,14 @@ impl Term {
         // Repair wide-char halves split at the seams (no-orphan invariant):
         // a lead just before the gap lost its spacer; the first shifted cell may
         // be a spacer whose lead did not move.
-        if col > 0
-            && self
-                .grid
-                .cell(r, col - 1)
-                .is_wide()
-        {
+        if col > 0 && self.grid.cell(r, col - 1).is_wide() {
             self.grid.cell_mut(r, col - 1).reset();
         }
-        if col + n < cols
-            && self
-                .grid
-                .cell(r, col + n)
-                .is_wide_spacer()
-        {
+        if col + n < cols && self.grid.cell(r, col + n).is_wide_spacer() {
             self.grid.cell_mut(r, col + n).reset();
         }
         // A lead shifted to the last column lost its spacer off the edge.
-        if self
-            .grid
-            .cell(r, cols - 1)
-            .is_wide()
-        {
+        if self.grid.cell(r, cols - 1).is_wide() {
             self.grid.cell_mut(r, cols - 1).reset();
         }
         self.damage_span(r, col, cols - 1);
@@ -1727,19 +1682,10 @@ impl Term {
         // Repair wide-char halves split by the deletion (no-orphan invariant):
         // a lead just before the cut lost its spacer; the cell now at the cursor
         // may be a spacer whose lead was deleted.
-        if col > 0
-            && self
-                .grid
-                .cell(r, col - 1)
-                .is_wide()
-        {
+        if col > 0 && self.grid.cell(r, col - 1).is_wide() {
             self.grid.cell_mut(r, col - 1).reset();
         }
-        if self
-            .grid
-            .cell(r, col)
-            .is_wide_spacer()
-        {
+        if self.grid.cell(r, col).is_wide_spacer() {
             self.grid.cell_mut(r, col).reset();
         }
         self.damage_span(r, col, cols - 1);
