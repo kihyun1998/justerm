@@ -4,6 +4,7 @@
 //! ring (a later slice) can move whole rows in/out cheaply.
 
 use crate::cell::{Cell, CellFlags};
+use core::num::NonZeroU32;
 use std::collections::BTreeMap;
 use std::ops::{Deref, DerefMut};
 
@@ -15,57 +16,85 @@ use std::ops::{Deref, DerefMut};
 /// carried when cells move column (ICH/DCH/reflow).
 type Combining = BTreeMap<usize, Vec<char>>;
 
-/// One row of cells **plus** its per-row, column-keyed combining map.
+/// A row's hyperlinks: column → the global `hyperlink_pool` index (OSC 8). Same
+/// per-row, flag-gated sparse-map design as [`Combining`], gated by the cell's
+/// `LINK_PRESENT` bit instead (xterm's `_extendedAttrs` / `HAS_EXTENDED`, #46).
+type Links = BTreeMap<usize, NonZeroU32>;
+
+/// Re-key a sparse column map to follow a `copy_within(src, dst)` cell shift: the
+/// live entry for a moved cell travels to the cell's new column. Vacated source
+/// keys whose cell loses its gate bit are left stale — harmless under the
+/// flag-gate — so only the live carry is done. Generic over the value type so the
+/// combining and link maps share one implementation.
+fn move_map<V>(map: &mut BTreeMap<usize, V>, src: std::ops::Range<usize>, dst: usize) {
+    if map.is_empty() {
+        return;
+    }
+    let start = src.start;
+    let moved: Vec<(usize, V)> = src
+        .filter_map(|s| map.remove(&s).map(|v| (dst + (s - start), v)))
+        .collect();
+    for (col, v) in moved {
+        map.insert(col, v);
+    }
+}
+
+/// One row of cells **plus** its per-row, column-keyed combining and link maps.
 ///
-/// The map rides with the row through scroll / scrollback / reflow for free (the
-/// row is the unit that moves), which is why combining lives here rather than in a
-/// global pool — no leak, cleared on row reuse (#45). `Row` derefs to `[Cell]`, so
-/// index/iterate/slice sites are unchanged; combining is reached through the
-/// dedicated methods so the flag-gate is never bypassed.
+/// The maps ride with the row through scroll / scrollback / reflow for free (the
+/// row is the unit that moves), which is why combining (#45) and hyperlinks (#46)
+/// live here rather than in global per-cell indices — no leak, cleared on row
+/// reuse. `Row` derefs to `[Cell]`, so index/iterate/slice sites are unchanged;
+/// the maps are reached through the dedicated methods so the flag-gate (read iff
+/// the cell's `COMBINED_PRESENT` / `LINK_PRESENT` bit is set) is never bypassed.
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct Row {
     cells: Vec<Cell>,
     combining: Combining,
+    links: Links,
 }
 
 impl Row {
     /// A row of `cols` blank cells.
     pub(crate) fn blank(cols: usize) -> Row {
-        Row { cells: vec![Cell::default(); cols], combining: Combining::new() }
+        Row { cells: vec![Cell::default(); cols], combining: Combining::new(), links: Links::new() }
     }
 
-    /// Wrap a cell vector as a row with no combining marks.
+    /// Wrap a cell vector as a row with no combining marks or links.
     pub(crate) fn from_cells(cells: Vec<Cell>) -> Row {
-        Row { cells, combining: Combining::new() }
+        Row { cells, combining: Combining::new(), links: Links::new() }
     }
 
-    /// Build a row from cells and a combining map (the reflow re-split path).
-    pub(crate) fn new(cells: Vec<Cell>, combining: Combining) -> Row {
-        Row { cells, combining }
+    /// Build a row from cells and its maps (the reflow re-split path).
+    pub(crate) fn new(cells: Vec<Cell>, combining: Combining, links: Links) -> Row {
+        Row { cells, combining, links }
     }
 
-    /// Consume the row into its cells and combining map (the reflow join path).
-    pub(crate) fn into_parts(self) -> (Vec<Cell>, Combining) {
-        (self.cells, self.combining)
+    /// Consume the row into its cells, combining map, and link map (the reflow
+    /// join path).
+    pub(crate) fn into_parts(self) -> (Vec<Cell>, Combining, Links) {
+        (self.cells, self.combining, self.links)
     }
 
-    /// Resize to `cols`, padding with blanks or truncating; combining entries for
+    /// Resize to `cols`, padding with blanks or truncating; map entries for
     /// dropped columns are pruned (xterm's shrink-prune).
     pub(crate) fn resize(&mut self, cols: usize) {
         self.cells.resize(cols, Cell::default());
-        if let Some(&max) = self.combining.keys().next_back()
-            && max >= cols
-        {
+        if self.combining.keys().next_back().is_some_and(|&m| m >= cols) {
             self.combining.retain(|&col, _| col < cols);
+        }
+        if self.links.keys().next_back().is_some_and(|&m| m >= cols) {
+            self.links.retain(|&col, _| col < cols);
         }
     }
 
     /// Empty the row, keeping the cell allocation — for recycling a row buffer
-    /// (`scroll_up_recycle`). Clears both cells and combining so a reused row
-    /// never surfaces a previous occupant's marks.
+    /// (`scroll_up_recycle`). Clears cells and both maps so a reused row never
+    /// surfaces a previous occupant's marks or links.
     pub(crate) fn clear(&mut self) {
         self.cells.clear();
         self.combining.clear();
+        self.links.clear();
     }
 
     /// The combining marks at `col`, or `None`. Flag-gated: returns `Some` only
@@ -74,6 +103,16 @@ impl Row {
     pub(crate) fn combining_at(&self, col: usize) -> Option<&[char]> {
         if self.cells[col].is_combined() {
             self.combining.get(&col).map(Vec::as_slice)
+        } else {
+            None
+        }
+    }
+
+    /// The hyperlink-pool index at `col`, or `None`. Flag-gated by the cell's
+    /// `LINK_PRESENT` bit (mirror of [`Row::combining_at`]).
+    pub(crate) fn link_at(&self, col: usize) -> Option<NonZeroU32> {
+        if self.cells[col].is_linked() {
+            self.links.get(&col).copied()
         } else {
             None
         }
@@ -92,21 +131,18 @@ impl Row {
         }
     }
 
-    /// Re-key combining entries to follow a `copy_within(src, dst)` cell shift
-    /// (ICH/DCH): the live entry for a moved cell travels to the cell's new
-    /// column. Vacated source keys whose cell loses the bit are left stale —
-    /// harmless under the flag-gate — so only the live carry is done here.
-    pub(crate) fn move_combining(&mut self, src: std::ops::Range<usize>, dst: usize) {
-        if self.combining.is_empty() {
-            return;
-        }
-        let start = src.start;
-        let moved: Vec<(usize, Vec<char>)> = src
-            .filter_map(|s| self.combining.remove(&s).map(|v| (dst + (s - start), v)))
-            .collect();
-        for (col, marks) in moved {
-            self.combining.insert(col, marks);
-        }
+    /// Stamp `col`'s glyph with a hyperlink-pool index, setting the presence bit
+    /// (the print path calls this on every cell written while a link is open).
+    pub(crate) fn set_link(&mut self, col: usize, link: NonZeroU32) {
+        self.cells[col].set_linked(true);
+        self.links.insert(col, link);
+    }
+
+    /// Re-key both maps to follow a `copy_within(src, dst)` cell shift (ICH/DCH),
+    /// so a cluster or link stays attached to its glyph at the new column.
+    pub(crate) fn move_maps(&mut self, src: std::ops::Range<usize>, dst: usize) {
+        move_map(&mut self.combining, src.clone(), dst);
+        move_map(&mut self.links, src, dst);
     }
 }
 
@@ -145,8 +181,10 @@ pub(crate) fn reflow(
     //    join offset so a cluster stays attached to its glyph across the wrap.
     let mut logical: Vec<Vec<Cell>> = Vec::new();
     let mut logical_comb: Vec<Combining> = Vec::new();
+    let mut logical_links: Vec<Links> = Vec::new();
     let mut current: Vec<Cell> = Vec::new();
     let mut current_comb: Combining = Combining::new();
+    let mut current_links: Links = Links::new();
     // Per point: (logical line, offset, found-yet).
     let mut tracked: Vec<(usize, usize, bool)> = vec![(0, 0, false); points.len()];
     for (i, row) in rows.into_iter().enumerate() {
@@ -157,12 +195,17 @@ pub(crate) fn reflow(
         }
         let soft = row.last().is_some_and(|c| c.is_wrapline());
         let base = current.len();
-        let (cells, comb) = row.into_parts();
-        // Carry live combining entries, re-keyed to the logical-line offset
-        // (flag-gated: a stale entry whose cell lost the bit is dropped).
+        let (cells, comb, links) = row.into_parts();
+        // Carry live map entries, re-keyed to the logical-line offset (flag-gated:
+        // a stale entry whose cell lost its bit is dropped).
         for (col, marks) in comb {
             if cells[col].is_combined() {
                 current_comb.insert(base + col, marks);
+            }
+        }
+        for (col, link) in links {
+            if cells[col].is_linked() {
+                current_links.insert(base + col, link);
             }
         }
         if soft {
@@ -178,17 +221,20 @@ pub(crate) fn reflow(
             current.extend(cells);
             logical.push(std::mem::take(&mut current));
             logical_comb.push(std::mem::take(&mut current_comb));
+            logical_links.push(std::mem::take(&mut current_links));
         }
     }
     if !current.is_empty() {
         logical.push(current);
         logical_comb.push(current_comb);
+        logical_links.push(current_links);
     }
-    // Trailing blank lines are absorbed, not preserved as rows (combining map
-    // trimmed in lockstep so the two stay index-aligned).
+    // Trailing blank lines are absorbed, not preserved as rows (the maps are
+    // trimmed in lockstep so all three stay index-aligned).
     while logical.last().is_some_and(|l| l.is_empty()) {
         logical.pop();
         logical_comb.pop();
+        logical_links.pop();
     }
 
     // 2. Re-split each logical line into `new_cols`-wide rows, mapping each
@@ -197,6 +243,7 @@ pub(crate) fn reflow(
     let mut new_points = vec![(0usize, 0usize); points.len()];
     for (li, line) in logical.iter().enumerate() {
         let comb = &logical_comb[li];
+        let links = &logical_links[li];
         let start = out.len();
         if line.is_empty() {
             out.push(Row::blank(new_cols));
@@ -210,12 +257,16 @@ pub(crate) fn reflow(
                     take -= 1;
                 }
                 let take = take.max(1); // guard the 1-col degenerate case
-                // Segment combining: entries in [i, i+take) re-keyed to col - i.
+                // Segment maps: entries in [i, i+take) re-keyed to col - i.
                 let seg_comb: Combining = comb
                     .range(i..i + take)
                     .map(|(&col, marks)| (col - i, marks.clone()))
                     .collect();
-                let mut row = Row::new(line[i..i + take].to_vec(), seg_comb);
+                let seg_links: Links = links
+                    .range(i..i + take)
+                    .map(|(&col, &link)| (col - i, link))
+                    .collect();
+                let mut row = Row::new(line[i..i + take].to_vec(), seg_comb, seg_links);
                 row.resize(new_cols);
                 i += take;
                 if i < line.len() {

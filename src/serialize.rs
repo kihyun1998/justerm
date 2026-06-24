@@ -31,11 +31,13 @@ pub enum FrameKind {
 
 /// A damaged column run on one line, with its cells.
 ///
-/// `combining` maps a span-relative column to its frame-local grapheme index
-/// (1-based, into [`Frame::side_table`]) — the per-cell `extra` reference lifted
-/// out of the cell now that combining clusters live in a per-row map (#45). A
-/// column is present here iff its cell carries the combining bit; on the wire it
-/// is the cell record's `extra` field, so the bytes are unchanged.
+/// `combining` and `links` map a span-relative column to its frame-local index
+/// (1-based) — `combining` into [`Frame::side_table`], `links` into
+/// [`Frame::link_table`]. These are the per-cell `extra`/`link` references lifted
+/// out of the cell now that combining clusters (#45) and hyperlinks (#46) live in
+/// per-row maps. A column is present iff its cell carries the matching bit; on the
+/// wire they are the cell record's `extra`/`link` fields, so the bytes are
+/// unchanged.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Span {
     pub line: u16,
@@ -43,6 +45,7 @@ pub struct Span {
     pub right: u16,
     pub cells: Vec<Cell>,
     pub combining: BTreeMap<usize, NonZeroU32>,
+    pub links: BTreeMap<usize, NonZeroU32>,
 }
 
 /// One serialized damage cycle: the decoded logical form that `encode`/`decode`
@@ -108,9 +111,11 @@ pub fn encode(frame: &Frame) -> Vec<u8> {
         out.extend_from_slice(&span.left.to_le_bytes());
         out.extend_from_slice(&span.right.to_le_bytes());
         for (col, cell) in span.cells.iter().enumerate() {
-            // The grapheme index now rides on the span (per column), not the cell.
+            // The grapheme and hyperlink indices now ride on the span (per
+            // column), not the cell.
             let extra = span.combining.get(&col).map_or(0, |n| n.get() as u16);
-            out.extend_from_slice(&encode_cell_record(cell, extra));
+            let link = span.links.get(&col).map_or(0, |n| n.get() as u16);
+            out.extend_from_slice(&encode_cell_record(cell, extra, link));
         }
     }
     out.extend_from_slice(&(frame.side_table.len() as u16).to_le_bytes());
@@ -138,22 +143,22 @@ pub const CELL_RECORD_LEN: usize = 18;
 /// (frame-local grapheme index, 0 = none) · `link` u16 (frame-local hyperlink
 /// index, 0 = none). Width derives from `flags`.
 ///
-/// `extra` is passed in rather than read from the cell: combining clusters now
-/// live in a per-row map, so the grapheme index rides on the [`Span`], not the
-/// cell (#45). The wire bytes are unchanged.
+/// `extra` and `link` are passed in rather than read from the cell: combining
+/// clusters (#45) and hyperlinks (#46) now live in per-row maps, so both indices
+/// ride on the [`Span`], not the cell. The wire bytes are unchanged.
 ///
 /// This is the single definition of the cell record layout — [`encode`] writes
 /// it per span cell, and an alternate consumer (the WASM decoder, #34/ADR-0008)
 /// reuses it to lay decoded cells out flat without re-implementing the layout,
 /// so the two cannot drift.
-pub fn encode_cell_record(cell: &Cell, extra: u16) -> [u8; CELL_RECORD_LEN] {
+pub fn encode_cell_record(cell: &Cell, extra: u16, link: u16) -> [u8; CELL_RECORD_LEN] {
     let mut r = [0u8; CELL_RECORD_LEN];
     r[0..4].copy_from_slice(&(cell.c() as u32).to_le_bytes());
     r[4..8].copy_from_slice(&encode_color(cell.fg()).to_le_bytes());
     r[8..12].copy_from_slice(&encode_color(cell.bg()).to_le_bytes());
     r[12..14].copy_from_slice(&cell.flags().bits().to_le_bytes());
     r[14..16].copy_from_slice(&extra.to_le_bytes());
-    r[16..18].copy_from_slice(&cell.link().map_or(0, |n| n.get() as u16).to_le_bytes());
+    r[16..18].copy_from_slice(&link.to_le_bytes());
     r
 }
 
@@ -217,10 +222,14 @@ pub fn decode(bytes: &[u8]) -> Result<Frame, DecodeError> {
         let n = right as usize - left as usize + 1;
         let mut cells = Vec::with_capacity(n);
         let mut combining = BTreeMap::new();
+        let mut links = BTreeMap::new();
         for col in 0..n {
-            let (cell, extra) = decode_cell(&mut r)?;
+            let (cell, extra, link) = decode_cell(&mut r)?;
             if let Some(idx) = NonZeroU32::new(extra as u32) {
                 combining.insert(col, idx);
+            }
+            if let Some(idx) = NonZeroU32::new(link as u32) {
+                links.insert(col, idx);
             }
             cells.push(cell);
         }
@@ -230,6 +239,7 @@ pub fn decode(bytes: &[u8]) -> Result<Frame, DecodeError> {
             right,
             cells,
             combining,
+            links,
         });
     }
     let side_table_count = r.u16()?;
@@ -264,18 +274,20 @@ pub fn decode(bytes: &[u8]) -> Result<Frame, DecodeError> {
 }
 
 /// Decode one 18-byte cell record (inverse of [`encode_cell_record`]), returning
-/// the cell and its raw `extra` grapheme index (0 = none). A non-zero `extra`
-/// sets the cell's combining bit; the caller records the index on the span.
-fn decode_cell(r: &mut Reader) -> Result<(Cell, u16), DecodeError> {
+/// the cell and its raw `extra` grapheme index and `link` index (0 = none). A
+/// non-zero index sets the corresponding presence bit; the caller records the
+/// indices on the span.
+fn decode_cell(r: &mut Reader) -> Result<(Cell, u16, u16), DecodeError> {
     let c = char::from_u32(r.u32()?).ok_or(DecodeError::BadTag)?;
     let fg = decode_color(r.u32()?)?;
     let bg = decode_color(r.u32()?)?;
     let flags = CellFlags::from_bits_retain(r.u16()?);
     let extra = r.u16()?;
-    let link = NonZeroU32::new(r.u16()? as u32);
-    let mut cell = Cell::from_parts(c, fg, bg, flags, link);
+    let link = r.u16()?;
+    let mut cell = Cell::from_parts(c, fg, bg, flags);
     cell.set_combined(extra != 0);
-    Ok((cell, extra))
+    cell.set_linked(link != 0);
+    Ok((cell, extra, link))
 }
 
 /// Decode a tagged-u32 colour reference (inverse of [`encode_color`]).

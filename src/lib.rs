@@ -140,8 +140,24 @@ impl Engine {
         self.term.drain_replies()
     }
 
-    /// Resolve a cell's `link` index (OSC 8 hyperlink) to its URI. The renderer
-    /// reads [`Cell::link`](crate::Cell), then this, to make a cell clickable.
+    /// The OSC 8 hyperlink index at **screen** `(row, col)` — the live grid, same
+    /// coordinates as [`Engine::grid`]'s `cell(row, col)` — or `None`. Combining
+    /// and links no longer ride on the [`Cell`](crate::Cell) (#45/#46); read the
+    /// index here, then resolve it with [`Engine::hyperlink`].
+    pub fn link_at(&self, row: usize, col: usize) -> Option<core::num::NonZeroU32> {
+        self.term.screen_link_at(row, col)
+    }
+
+    /// The OSC 8 hyperlink index at **viewport** `(row, col)` — the visible
+    /// window including scrollback at the current scroll, same coordinates as
+    /// [`Engine::viewport_line`] — or `None`.
+    pub fn viewport_link_at(&self, row: usize, col: usize) -> Option<core::num::NonZeroU32> {
+        self.term.viewport_link_at(row, col)
+    }
+
+    /// Resolve a hyperlink index (from [`Engine::link_at`] /
+    /// [`Engine::viewport_link_at`], or a decoded `Span`'s `links`) to its URI,
+    /// to make a cell clickable.
     pub fn hyperlink(&self, link: core::num::NonZeroU32) -> Option<&str> {
         self.term.hyperlink(link)
     }

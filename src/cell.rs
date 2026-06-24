@@ -47,10 +47,10 @@ bitflags::bitflags! {
 //   content u32: codepoint(21) | COMBINED(1) | WIDE | SPACER | WRAP | reserved
 //   fg/bg   u32: colour value(24) | colour mode(2) | flags(6)
 //
-// COMBINED_PRESENT (content) is live as of slice B: combining clusters live in
-// the row's column-keyed map, and this bit gates every read of it. LINK_PRESENT
-// (bg, xterm's HAS_EXTENDED slot) stays dormant until slice C, where `link` moves
-// out of the cell into a per-row map the same way.
+// COMBINED_PRESENT (content) and LINK_PRESENT (bg, xterm's HAS_EXTENDED slot) are
+// both live: combining clusters (#45) and OSC 8 hyperlink indices (#46) live in
+// per-row, column-keyed maps, and these bits gate every read of them. The cell is
+// now pure packed words — three u32, no `Option` field (the epic's 12 B target).
 
 const CODEPOINT_MASK: u32 = 0x001F_FFFF; // bits 0..21
 const C_COMBINED: u32 = 1 << 21; // a combining cluster lives in the row's map at this column (#45)
@@ -78,7 +78,11 @@ const FG_FLAG_MASK: u32 =
 // bg flags, bits 26..28 — xterm BgFlags order.
 const BG_ITALIC: u32 = 1 << 26;
 const BG_DIM: u32 = 1 << 27;
-#[allow(dead_code)] // lit by slice C (xterm BgFlags::HAS_EXTENDED)
+// LINK_PRESENT: an OSC 8 hyperlink index lives in the row's link map at this
+// column (#46). Reuses xterm's `BgFlags.HAS_EXTENDED = 0x10000000` (bit 28)
+// exactly — in xterm this is a *shared* "extended attrs present" gate (link +
+// underline colour); justerm models only the link, so it is link-only here and
+// would widen to an extended-attrs map if underline colour is ever added.
 const BG_LINK: u32 = 1 << 28;
 const BG_FLAG_MASK: u32 = BG_ITALIC | BG_DIM;
 
@@ -121,11 +125,11 @@ fn flag_words(f: u32) -> (u32, u32, u32) {
     (content, fg, bg)
 }
 
-/// One character position: a base glyph, fg/bg colour references, flags, and
-/// optional references to a grapheme cluster's combining marks and an OSC 8
-/// hyperlink. Stored as the packed words above; all access is through the
-/// accessor seam (#44), construction through [`Cell::from_parts`] or
-/// [`Cell::default`].
+/// One character position: a base glyph, fg/bg colour references, and flags.
+/// Combining marks (#45) and an OSC 8 hyperlink (#46) attach via per-row maps,
+/// signalled by the `COMBINED_PRESENT` / `LINK_PRESENT` bits — the cell itself is
+/// three packed words, no `Option` field. All access is through the accessor seam
+/// (#44); construct with [`Cell::from_parts`] or [`Cell::default`].
 ///
 /// `Eq` is a derived bitwise compare, which is exact because the packing is
 /// canonical — every logical cell maps to one bit pattern (unused bits stay 0).
@@ -134,16 +138,15 @@ pub struct Cell {
     content: u32,
     fg: u32,
     bg: u32,
-    link: Option<core::num::NonZeroU32>,
 }
 
 impl Default for Cell {
     fn default() -> Self {
         // The packed form of a blank cell: ' ' (U+0020) in the codepoint field,
-        // every other field zero (Default colours, no flags, no combining bit, no
-        // link). Built directly rather than through `from_parts` so scroll/erase
+        // every other word zero (Default colours, no flags, no combining/link
+        // bits). Built directly rather than through `from_parts` so scroll/erase
         // blanking — which constructs defaults by the rowful — stays a cheap copy.
-        Cell { content: ' ' as u32, fg: 0, bg: 0, link: None }
+        Cell { content: ' ' as u32, fg: 0, bg: 0 }
     }
 }
 
@@ -155,7 +158,7 @@ impl core::fmt::Debug for Cell {
             .field("bg", &self.bg())
             .field("flags", &self.flags())
             .field("combined", &self.is_combined())
-            .field("link", &self.link())
+            .field("linked", &self.is_linked())
             .finish()
     }
 }
@@ -164,18 +167,11 @@ impl Cell {
     /// Assemble a cell from its logical parts. The single construction seam —
     /// `Pen::cell` and the wire decoder funnel through here, so the bit-packing
     /// lives in exactly one place (#44).
-    pub fn from_parts(
-        c: char,
-        fg: Color,
-        bg: Color,
-        flags: CellFlags,
-        link: Option<core::num::NonZeroU32>,
-    ) -> Self {
+    pub fn from_parts(c: char, fg: Color, bg: Color, flags: CellFlags) -> Self {
         let mut cell = Cell {
             content: c as u32, // a `char` is <= U+10FFFF, so it fits the 21-bit field
             fg: pack_color(fg),
             bg: pack_color(bg),
-            link,
         };
         cell.store_flags(flags);
         cell
@@ -227,11 +223,11 @@ impl Cell {
         self.content & C_COMBINED != 0
     }
 
-    /// 1-based index into the hyperlink side-table (OSC 8), or `None`. Set on
-    /// every cell printed while a hyperlink is open; the index travels with the
-    /// cell through scroll/shift/reflow (#26).
-    pub fn link(&self) -> Option<core::num::NonZeroU32> {
-        self.link
+    /// Does this column carry an OSC 8 hyperlink? When true, the hyperlink-pool
+    /// index lives in the row's link map at this column (#46) — flag-gated like
+    /// combining: never read the link map without first checking this bit.
+    pub fn is_linked(&self) -> bool {
+        self.bg & BG_LINK != 0
     }
 
     /// Overwrite the base code point, preserving the layout markers.
@@ -254,9 +250,13 @@ impl Cell {
         }
     }
 
-    /// Set (or clear) the hyperlink side-table index.
-    pub fn set_link(&mut self, link: Option<core::num::NonZeroU32>) {
-        self.link = link;
+    /// Mark (or unmark) this column as carrying an OSC 8 hyperlink in the row map.
+    pub fn set_linked(&mut self, on: bool) {
+        if on {
+            self.bg |= BG_LINK;
+        } else {
+            self.bg &= !BG_LINK;
+        }
     }
 
     /// Add the given flags (leaving the others set). Sets the word bits directly —
@@ -303,16 +303,17 @@ impl Cell {
 mod tests {
     use super::{Cell, CellFlags};
     use crate::color::Color;
-    use core::num::NonZeroU32;
 
-    /// Size pin: slice B moves `extra` out of the cell into the row's combining
-    /// map (a cell now signals combining with only the `COMBINED_PRESENT` content
-    /// bit), so `Cell` is 16 bytes — the three packed words plus the `link` index.
-    /// Flood throughput is memory-bandwidth-bound, so this size is touched on every
-    /// print/scroll-blank; slice C moves `link` out too to reach 12. [#42, #45]
+    /// Size pin: slice C moves `link` out of the cell into the row's link map (a
+    /// cell now signals a hyperlink with only the `LINK_PRESENT` bg bit), so `Cell`
+    /// is **12 bytes** — three packed `u32` words, matching xterm.js's `BufferLine`
+    /// cell. This is the epic's target (#43): combining and link both ride per-row
+    /// maps, the cell is pure packed words. Flood throughput is
+    /// memory-bandwidth-bound, so this size is touched on every print/scroll-blank.
+    /// [#42, #46]
     #[test]
-    fn cell_is_16_bytes() {
-        assert_eq!(std::mem::size_of::<Cell>(), 16);
+    fn cell_is_12_bytes() {
+        assert_eq!(std::mem::size_of::<Cell>(), 12);
     }
 
     /// The packing must be lossless: every colour reference read back equal in
@@ -329,7 +330,7 @@ mod tests {
         ];
         for &fg in &colours {
             for &bg in &colours {
-                let cell = Cell::from_parts('x', fg, bg, CellFlags::empty(), None);
+                let cell = Cell::from_parts('x', fg, bg, CellFlags::empty());
                 assert_eq!(cell.fg(), fg, "fg {fg:?} / bg {bg:?}");
                 assert_eq!(cell.bg(), bg, "fg {fg:?} / bg {bg:?}");
             }
@@ -342,10 +343,10 @@ mod tests {
     fn every_flag_round_trips() {
         let all = CellFlags::all();
         for bit in all.iter() {
-            let cell = Cell::from_parts('x', Color::Default, Color::Default, bit, None);
+            let cell = Cell::from_parts('x', Color::Default, Color::Default, bit);
             assert_eq!(cell.flags(), bit, "single {bit:?}");
         }
-        let cell = Cell::from_parts('x', Color::Default, Color::Default, all, None);
+        let cell = Cell::from_parts('x', Color::Default, Color::Default, all);
         assert_eq!(cell.flags(), all, "all flags at once");
     }
 
@@ -354,34 +355,43 @@ mod tests {
     #[test]
     fn codepoint_round_trips_to_the_unicode_max() {
         for c in ['a', ' ', '한', '🦀', '\u{10FFFF}'] {
-            let cell = Cell::from_parts(c, Color::Default, Color::Default, CellFlags::WIDE_CHAR, None);
+            let cell = Cell::from_parts(c, Color::Default, Color::Default, CellFlags::WIDE_CHAR);
             assert_eq!(cell.c(), c, "codepoint {c:?}");
             assert!(cell.flags().contains(CellFlags::WIDE_CHAR));
         }
     }
 
-    /// The `link` index, the combining-presence bit, and the spacer query are
-    /// independent and survive construction. The combining bit shares the content
-    /// word with the codepoint and layout markers, so toggling it must not disturb
-    /// them.
+    /// The combining-presence bit (content word) and link-presence bit (bg word)
+    /// are independent of each other, of the codepoint/markers, of the colours, and
+    /// of the SGR flags — toggling one must disturb none of the others.
     #[test]
-    fn link_combined_bit_and_spacer_query_round_trip() {
-        let link = NonZeroU32::new(42);
-        let mut cell = Cell::from_parts('e', Color::Default, Color::Default, CellFlags::WIDE_CHAR, link);
-        assert_eq!(cell.link(), link);
+    fn combined_and_linked_bits_are_independent() {
+        let mut cell = Cell::from_parts(
+            'e',
+            Color::Indexed(3),
+            Color::Rgb(1, 2, 3),
+            CellFlags::WIDE_CHAR | CellFlags::DIM,
+        );
         assert!(!cell.is_combined());
+        assert!(!cell.is_linked());
 
         cell.set_combined(true);
-        assert!(cell.is_combined());
-        assert_eq!(cell.c(), 'e', "codepoint intact through the combined bit");
-        assert!(cell.flags().contains(CellFlags::WIDE_CHAR), "marker intact");
-        assert_eq!(cell.link(), link, "link intact");
-
-        cell.set_combined(false);
-        assert!(!cell.is_combined());
+        cell.set_linked(true);
+        assert!(cell.is_combined() && cell.is_linked());
+        // Everything else survives both bits being set.
         assert_eq!(cell.c(), 'e');
+        assert_eq!(cell.fg(), Color::Indexed(3));
+        assert_eq!(cell.bg(), Color::Rgb(1, 2, 3), "link bit shares the bg word");
+        assert!(cell.flags().contains(CellFlags::WIDE_CHAR | CellFlags::DIM));
 
-        let spacer = Cell::from_parts(' ', Color::Default, Color::Default, CellFlags::WIDE_CHAR_SPACER, None);
+        cell.set_linked(false);
+        assert!(cell.is_combined() && !cell.is_linked());
+        cell.set_combined(false);
+        assert!(!cell.is_combined() && !cell.is_linked());
+        assert_eq!(cell.bg(), Color::Rgb(1, 2, 3), "bg colour intact after clearing");
+
+        let spacer =
+            Cell::from_parts(' ', Color::Default, Color::Default, CellFlags::WIDE_CHAR_SPACER);
         assert!(spacer.is_wide_spacer());
         assert!(!Cell::default().is_wide_spacer());
     }

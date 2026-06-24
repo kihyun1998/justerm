@@ -311,25 +311,30 @@ impl Term {
         for (line, left, right) in line_spans {
             let mut cells = Vec::with_capacity(right - left + 1);
             let mut combining = std::collections::BTreeMap::new();
+            let mut links = std::collections::BTreeMap::new();
             let row = self.grid.row_ref(line);
             for col in left..=right {
-                let mut cell = *self.grid.cell(line, col);
-                // Combining clusters now live in the row's map; each combined cell
-                // contributes its own cluster to the frame side-table (no global
-                // pool to renumber), recorded on the span by span-relative column.
+                let cell = *self.grid.cell(line, col);
+                // Combining clusters and hyperlinks live in the row's maps; each
+                // tagged cell contributes its reference to the frame, recorded on
+                // the span by span-relative column (the cell holds only the bit).
                 if let Some(marks) = row.combining_at(col) {
                     side_table.push(marks.to_vec());
                     let idx = core::num::NonZeroU32::new(side_table.len() as u32)
                         .expect("side_table just pushed, len >= 1");
                     combining.insert(col - left, idx);
                 }
-                if let Some(lidx) = cell.link() {
+                if let Some(lidx) = row.link_at(col) {
+                    // Renumber the global pool index to a contiguous frame-local
+                    // one (only referenced URIs ship), same as the old per-cell link.
                     let l = lidx.get() as usize;
                     if link_remap[l] == 0 {
                         link_table.push(self.hyperlink_pool[l - 1].clone());
                         link_remap[l] = link_table.len() as u16;
                     }
-                    cell.set_link(core::num::NonZeroU32::new(link_remap[l] as u32));
+                    let fidx = core::num::NonZeroU32::new(link_remap[l] as u32)
+                        .expect("link_remap just set, nonzero");
+                    links.insert(col - left, fidx);
                 }
                 cells.push(cell);
             }
@@ -339,6 +344,7 @@ impl Term {
                 right: right as u16,
                 cells,
                 combining,
+                links,
             });
         }
 
@@ -478,6 +484,21 @@ impl Term {
     /// through the row's map, so a stale entry is never surfaced.
     fn combining_at(&self, line: usize, col: usize) -> Option<&[char]> {
         self.abs_row(line).combining_at(col)
+    }
+
+    /// The hyperlink-pool index at **screen** `(row, col)` (the live grid), or
+    /// `None` — flag-gated through the row's link map. Resolve to the URI with
+    /// [`Term::hyperlink`]. Mirrors `grid().cell(row, col)`.
+    pub(crate) fn screen_link_at(&self, row: usize, col: usize) -> Option<core::num::NonZeroU32> {
+        self.grid.row_ref(row).link_at(col)
+    }
+
+    /// The hyperlink-pool index at **viewport** `(row, col)` (visible window,
+    /// history included at the current scroll), or `None`. Mirrors
+    /// `viewport_line(row)`.
+    pub(crate) fn viewport_link_at(&self, row: usize, col: usize) -> Option<core::num::NonZeroU32> {
+        let idx = self.scrollback.len() - self.display_offset + row;
+        self.abs_row(idx).link_at(col)
     }
 
     /// Literal search over the whole buffer (`[scrollback ++ screen]`), returning
@@ -1445,19 +1466,24 @@ impl Term {
         }
 
         let mut cell = self.cursor.pen.cell(c);
-        cell.set_link(self.current_link); // stamp the open hyperlink, if any (#26)
         if width == 2 {
             cell.insert_flags(CellFlags::WIDE_CHAR);
         }
         *self.grid.cell_mut(row, col) = cell;
+        // Stamp the open hyperlink, if any, into the row's link map (#26/#46).
+        if let Some(link) = self.current_link {
+            self.grid.row_mut(row).set_link(col, link);
+        }
 
         // The trailing column of a wide glyph carries a distinct spacer marker —
         // and the same link, so a hover/selection over either half agrees.
         if width == 2 && col + 1 < cols {
             let mut spacer = self.cursor.pen.cell(' ');
-            spacer.set_link(self.current_link);
             spacer.insert_flags(CellFlags::WIDE_CHAR_SPACER);
             *self.grid.cell_mut(row, col + 1) = spacer;
+            if let Some(link) = self.current_link {
+                self.grid.row_mut(row).set_link(col + 1, link);
+            }
         }
 
         // Record damage for the cell(s) just written.
@@ -1644,7 +1670,7 @@ impl Term {
         // combining map follows the moved cells (the bit travels with the raw
         // copy, the cluster data must too).
         row.copy_within(col..cols - n, col + n);
-        row.move_combining(col..cols - n, col + n);
+        row.move_maps(col..cols - n, col + n);
         for cell in &mut row[col..col + n] {
             cell.reset();
             cell.set_bg(bg);
@@ -1693,7 +1719,7 @@ impl Term {
         // Shift [col+n .. cols) left to [col ..); BCE-fill the vacated tail. The
         // combining map follows the moved cells.
         row.copy_within(col + n..cols, col);
-        row.move_combining(col + n..cols, col);
+        row.move_maps(col + n..cols, col);
         for cell in &mut row[cols - n..cols] {
             cell.reset();
             cell.set_bg(bg);

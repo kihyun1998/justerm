@@ -23,7 +23,7 @@ impl Pen {
 
     /// Build a cell carrying this pen's appearance and the given glyph.
     pub fn cell(&self, c: char) -> Cell {
-        Cell::from_parts(c, self.fg, self.bg, self.flags, None)
+        Cell::from_parts(c, self.fg, self.bg, self.flags)
     }
 }
 

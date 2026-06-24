@@ -53,7 +53,7 @@ fn round_trip_cursor_position_and_visibility() {
 fn round_trip_span_of_plain_cells() {
     let cells: Vec<Cell> = "hi!"
         .chars()
-        .map(|c| Cell::from_parts(c, Color::Default, Color::Default, CellFlags::empty(), None))
+        .map(|c| Cell::from_parts(c, Color::Default, Color::Default, CellFlags::empty()))
         .collect();
     let frame = Frame {
         cols: 80,
@@ -69,6 +69,7 @@ fn round_trip_span_of_plain_cells() {
             right: 12,
             cells,
             combining: BTreeMap::new(),
+            links: BTreeMap::new(),
         }],
         side_table: vec![],
         link_table: vec![],
@@ -80,7 +81,7 @@ fn round_trip_span_of_plain_cells() {
 /// mandatory tag keeps `Default`, `Indexed(0)` and `Rgb(0,0,0)` from collapsing.
 #[test]
 fn round_trip_distinct_colour_references() {
-    let mk = |fg, bg| Cell::from_parts('x', fg, bg, CellFlags::empty(), None);
+    let mk = |fg, bg| Cell::from_parts('x', fg, bg, CellFlags::empty());
     let cells = vec![
         mk(Color::Default, Color::Default),
         mk(Color::Indexed(0), Color::Indexed(255)),
@@ -100,6 +101,7 @@ fn round_trip_distinct_colour_references() {
             right: 2,
             cells,
             combining: BTreeMap::new(),
+            links: BTreeMap::new(),
         }],
         side_table: vec![],
         link_table: vec![],
@@ -118,8 +120,8 @@ fn round_trip_distinct_colour_references() {
 /// `flags` field — the consumer needs both halves of a wide glyph to render it.
 #[test]
 fn round_trip_cell_flags_incl_layout_markers() {
-    let lead = Cell::from_parts('한', Color::Default, Color::Default, CellFlags::BOLD | CellFlags::WIDE_CHAR, None);
-    let spacer = Cell::from_parts(' ', Color::Default, Color::Default, CellFlags::WIDE_CHAR_SPACER, None);
+    let lead = Cell::from_parts('한', Color::Default, Color::Default, CellFlags::BOLD | CellFlags::WIDE_CHAR);
+    let spacer = Cell::from_parts(' ', Color::Default, Color::Default, CellFlags::WIDE_CHAR_SPACER);
     let frame = Frame {
         cols: 80,
         rows: 24,
@@ -134,6 +136,7 @@ fn round_trip_cell_flags_incl_layout_markers() {
             right: 1,
             cells: vec![lead, spacer],
             combining: BTreeMap::new(),
+            links: BTreeMap::new(),
         }],
         side_table: vec![],
         link_table: vec![],
@@ -181,9 +184,9 @@ fn decode_rejects_superseded_version() {
 #[test]
 fn round_trip_grapheme_side_table() {
     let mut accented =
-        Cell::from_parts('e', Color::Default, Color::Default, CellFlags::empty(), None);
+        Cell::from_parts('e', Color::Default, Color::Default, CellFlags::empty());
     accented.set_combined(true);
-    let plain = Cell::from_parts('x', Color::Default, Color::Default, CellFlags::empty(), None);
+    let plain = Cell::from_parts('x', Color::Default, Color::Default, CellFlags::empty());
     let frame = Frame {
         cols: 80,
         rows: 24,
@@ -199,6 +202,7 @@ fn round_trip_grapheme_side_table() {
             cells: vec![accented, plain],
             // column 0 -> side_table[0] (1-based index)
             combining: BTreeMap::from([(0, NonZeroU32::new(1).unwrap())]),
+            links: BTreeMap::new(),
         }],
         side_table: vec![vec!['\u{0301}']], // combining acute accent
         link_table: vec![],
@@ -226,6 +230,7 @@ fn cell_record_is_fixed_18_bytes() {
             right: (n - 1) as u16,
             cells: vec![Cell::default(); n],
             combining: BTreeMap::new(),
+            links: BTreeMap::new(),
         }],
         side_table: vec![],
         link_table: vec![],
@@ -494,9 +499,10 @@ fn round_trip_full_frame_with_cells() {
         right: 2,
         cells: "abc"
             .chars()
-            .map(|c| Cell::from_parts(c, Color::Default, Color::Default, CellFlags::empty(), None))
+            .map(|c| Cell::from_parts(c, Color::Default, Color::Default, CellFlags::empty()))
             .collect(),
         combining: BTreeMap::new(),
+        links: BTreeMap::new(),
     };
     let frame = Frame {
         cols: 3,

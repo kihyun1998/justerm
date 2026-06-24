@@ -274,6 +274,17 @@ deferred behavior) it tracks — then add what you find here.** Seeds (caught in
   whole-row scroll need nothing. Serialization gathers each combined cell's cluster into the frame-local
   `side_table`, recording the index on the **span** (`Span.combining`, the per-cell `extra` lifted out of
   the cell); the wire bytes are unchanged. [#6, #45]
+- **OSC 8 hyperlinks ride the *same* per-row-map machinery, gated by the `LINK_PRESENT` bit.** The `Row`
+  carries a second `BTreeMap<col, hyperlink-pool index>` (the URI dedup pool, `hyperlink_pool`, stays
+  global — only the per-column reference moved), gated by the cell's `LINK_PRESENT` bit, which reuses
+  xterm's `BgFlags.HAS_EXTENDED` (`0x10000000`, bg bit 28) **exactly**. Carry/reflow/recycle treat it
+  identically to combining (`Row::move_maps` re-keys both maps together; reflow threads both). Reads go
+  through `Engine::link_at(row, col)` / `viewport_link_at` (the link is no longer on the `Cell`); the
+  decoded index rides `Span.links`. With this `Cell` is **12 bytes** — three packed `u32`, no `Option`
+  field (the #43 epic target, matching xterm.js's `BufferLine` cell). Deliberate simplification: xterm's
+  `HAS_EXTENDED` is a *shared* gate (link **and** underline colour/style in one `ExtendedAttrs` object);
+  justerm models only the link, so the map is link-only — it widens to an extended-attrs map, with bit and
+  serialization parity intact, if underline colour (SGR 58) is ever added. [#26, #46]
 - **The scroll op is recorded (not diff-detected), screen-relative, and ordered before the spans.**
   Per ADR-0003 the frame carries `{top, bottom, count}` *ahead of* the damage spans; the decoder shifts
   its mirror grid first, then applies spans — reversing the order lands spans on pre-scroll rows. #6
