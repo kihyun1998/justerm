@@ -206,6 +206,36 @@ fn mouse_press_release_sgr() {
 }
 
 #[test]
+fn combined_private_modes_enable_both_tracking_and_encoding() {
+    // #56: htop enables the mouse with ONE combined CSI `?1006;1000h`, not two
+    // separate sequences. DECSET takes a *list* of modes, so both the SGR
+    // encoding (1006) and Normal tracking (1000) must apply — otherwise the
+    // dropped 1000 leaves mouse_protocol Off and encode_mouse returns None.
+    let mut term = Engine::new(80, 24);
+    term.feed(b"\x1b[?1006;1000h"); // the exact bytes in tests/fixtures/htop.raw
+    assert_eq!(
+        term.encode_mouse(mouse(Some(MouseButton::Left), MouseAction::Press, 5, 10))
+            .unwrap(),
+        b"\x1b[<0;6;11M", // SGR framing (1006) + tracking on (1000) → a report
+    );
+}
+
+#[test]
+fn combined_private_modes_reset_disables_tracking() {
+    // The symmetric exit: htop turns the mouse back off with one combined
+    // `?1006;1000l`. The dropped 1000 must reset tracking too (#56), or a
+    // batched reset leaves mouse_protocol stuck on after the app exits.
+    let mut term = Engine::new(80, 24);
+    term.feed(b"\x1b[?1006;1000h"); // enabled via the combined enter
+    term.feed(b"\x1b[?1006;1000l"); // htop's combined exit
+    assert_eq!(
+        term.encode_mouse(mouse(Some(MouseButton::Left), MouseAction::Press, 5, 10)),
+        None,
+        "combined reset must turn tracking back off",
+    );
+}
+
+#[test]
 fn mouse_motion_gating_by_mode() {
     let bare_move = mouse(None, MouseAction::Motion, 5, 10);
     let drag = mouse(Some(MouseButton::Left), MouseAction::Motion, 5, 10);
