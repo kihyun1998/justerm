@@ -59,7 +59,9 @@ fn main() {
         .expect("usage: time_feed <inputs-dir>");
 
     println!("{{");
-    println!("  \"engine\": \"justerm\", \"cols\": {COLS}, \"rows\": {ROWS}, \"scrollback\": {SCROLLBACK}, \"warmup\": {WARMUP}, \"samples\": {SAMPLES},");
+    println!(
+        "  \"engine\": \"justerm\", \"cols\": {COLS}, \"rows\": {ROWS}, \"scrollback\": {SCROLLBACK}, \"warmup\": {WARMUP}, \"samples\": {SAMPLES},"
+    );
     println!("  \"results\": {{");
     for (idx, name) in INPUTS.iter().enumerate() {
         let unit = std::fs::read(format!("{dir}/{name}.bin"))

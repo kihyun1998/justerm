@@ -4,8 +4,8 @@
 //! §Serialization + ADR-0005.
 
 use core::num::NonZeroU32;
-use std::collections::BTreeMap;
 use justerm::{Cell, CellFlags, Color, Engine, Frame, FrameKind, ScrollOp, Span, decode, encode};
+use std::collections::BTreeMap;
 
 /// Tracer bullet: an empty Partial frame (header only, no scroll, no spans)
 /// round-trips. Proves the frame envelope encodes and decodes end-to-end.
@@ -109,9 +109,14 @@ fn round_trip_distinct_colour_references() {
     let d = decode(&encode(&frame)).expect("decode");
     assert_eq!(d, frame);
     let row = &d.spans[0].cells;
-    assert_ne!(row[0].fg(), row[1].fg(), "Default must differ from Indexed(0)");
     assert_ne!(
-        row[1].fg(), row[2].fg(),
+        row[0].fg(),
+        row[1].fg(),
+        "Default must differ from Indexed(0)"
+    );
+    assert_ne!(
+        row[1].fg(),
+        row[2].fg(),
         "Indexed(0) must differ from Rgb(0,0,0)"
     );
 }
@@ -120,8 +125,18 @@ fn round_trip_distinct_colour_references() {
 /// `flags` field — the consumer needs both halves of a wide glyph to render it.
 #[test]
 fn round_trip_cell_flags_incl_layout_markers() {
-    let lead = Cell::from_parts('한', Color::Default, Color::Default, CellFlags::BOLD | CellFlags::WIDE_CHAR);
-    let spacer = Cell::from_parts(' ', Color::Default, Color::Default, CellFlags::WIDE_CHAR_SPACER);
+    let lead = Cell::from_parts(
+        '한',
+        Color::Default,
+        Color::Default,
+        CellFlags::BOLD | CellFlags::WIDE_CHAR,
+    );
+    let spacer = Cell::from_parts(
+        ' ',
+        Color::Default,
+        Color::Default,
+        CellFlags::WIDE_CHAR_SPACER,
+    );
     let frame = Frame {
         cols: 80,
         rows: 24,
@@ -183,8 +198,7 @@ fn decode_rejects_superseded_version() {
 /// live in `side_table`.
 #[test]
 fn round_trip_grapheme_side_table() {
-    let mut accented =
-        Cell::from_parts('e', Color::Default, Color::Default, CellFlags::empty());
+    let mut accented = Cell::from_parts('e', Color::Default, Color::Default, CellFlags::empty());
     accented.set_combined(true);
     let plain = Cell::from_parts('x', Color::Default, Color::Default, CellFlags::empty());
     let frame = Frame {

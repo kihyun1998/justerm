@@ -882,7 +882,11 @@ fn combining_mark_follows_an_insert_shift() {
     term.feed(b"\x1b[2@"); // ICH 2: 'x' -> col2, 'e'+acute -> col3
 
     assert_eq!(term.grid().cell(0, 2).c(), 'x');
-    assert_eq!(cell_text(&mut term, 0, 3), "e\u{0301}", "cluster followed the shift");
+    assert_eq!(
+        cell_text(&mut term, 0, 3),
+        "e\u{0301}",
+        "cluster followed the shift"
+    );
 }
 
 /// DCH (delete cells) shifts the tail left — the combining map must follow.
@@ -893,7 +897,11 @@ fn combining_mark_follows_a_delete_shift() {
     term.feed(b"\x1b[1;1H"); // cursor home
     term.feed(b"\x1b[2P"); // DCH 2: delete x,y; 'e'+acute -> col0
 
-    assert_eq!(cell_text(&mut term, 0, 0), "e\u{0301}", "cluster followed the shift");
+    assert_eq!(
+        cell_text(&mut term, 0, 0),
+        "e\u{0301}",
+        "cluster followed the shift"
+    );
 }
 
 /// Overwriting a combined cell starts a fresh cluster — the new glyph's marks
@@ -922,5 +930,9 @@ fn plain_overwrite_hides_a_combined_cells_marks() {
     term.feed(b"\rx"); // CR, overwrite col0 with plain 'x'
 
     assert!(!term.grid().cell(0, 0).is_combined());
-    assert_eq!(cell_text(&mut term, 0, 0), "x", "no stale combining surfaces");
+    assert_eq!(
+        cell_text(&mut term, 0, 0),
+        "x",
+        "no stale combining surfaces"
+    );
 }
