@@ -1214,7 +1214,12 @@ impl Term {
     /// Encode a key event to bytes using the active cursor-key mode (DECCKM)
     /// and the kitty keyboard-protocol flags (`encode_key` consults both).
     pub fn encode_key(&self, ev: KeyEvent) -> Option<Vec<u8>> {
-        encode_key(&ev, self.app_cursor_keys, self.kitty_flags)
+        encode_key(
+            &ev,
+            self.app_cursor_keys,
+            self.application_keypad,
+            self.kitty_flags,
+        )
     }
 
     /// Encode a mouse event using the active tracking mode + encoding. `None`
