@@ -388,6 +388,22 @@ deferred behavior) it tracks — then add what you find here.** Seeds (caught in
   position is region-relative under origin mode** (DECOM), 1-based; an unrecognised query emits *nothing*
   (no spurious bytes). The kitty `CSI ? u` query (#23) reuses this channel. [#27]
 
+- **RIS and DECSTR are two reset strengths, and the split is the hidden state.** **RIS** (`ESC c`, full
+  reset) is power-on reinitialisation: every screen/mode field to its default — clear screen + alt,
+  **clear scrollback**, `display_offset` 0, primary screen, tabs default, cursor home, *all* modes (mouse
+  tracking/encoding, focus, bracketed paste, app-cursor-keys, origin, autowrap, insert), charsets default.
+  Implemented as a **reconstruct preserving only (cols, rows, scrollback_limit)** — so new state added
+  later is reset for free — but it must (a) **preserve the `replies`/`events` queues** accrued earlier in
+  the same `feed` (consumer-bound output, not terminal state) and (b) **signal full damage** (a fresh
+  reconstruct has none, so the consumer would not repaint the blanked screen). The vte parser lives
+  outside `Term`, so replacing `self` is safe. **DECSTR** (`CSI ! p`, soft reset) is a *subset* that does
+  **not** destroy content: cursor-visible on, scroll margins full, SGR default, saved-cursor (DECSC) home,
+  charsets default, and origin/app-cursor-keys/bracketed-paste/insert **off** — but it pointedly does
+  **NOT** clear the screen/scrollback, move the *active* cursor, or reset mouse/focus tracking (so a stuck
+  mouse is recovered only by RIS, never DECSTR). The load-bearing detail, source-verified against
+  xterm.js (`CoreService` default `wraparound: true // xterm - true, vt100 - false`): **DECSTR sets
+  autowrap back ON**, contradicting the VT510 manual's "no autowrap" — follow xterm. [#53]
+
 The *systematic* catch for this whole class is #8's vttest harness + dogfood — this list is only the
 famous few caught by review. Pull vttest early so VT-semantics slices verify against it from the start.
 

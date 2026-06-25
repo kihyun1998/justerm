@@ -1466,6 +1466,41 @@ impl Term {
         self.gl = s.gl;
     }
 
+    /// RIS (ESC c) — full reset to the power-on state (#53). Reconstruct every
+    /// screen/mode field to its construction default (preserving only the
+    /// dimensions and the scrollback cap), but keep the consumer-bound output
+    /// queues (`replies`/`events`) that accrued earlier in this `feed`, and
+    /// signal a full repaint. The vte parser lives outside `Term`, so replacing
+    /// `self` does not disturb in-progress parsing. Mirrors xterm.js fullReset.
+    fn full_reset(&mut self) {
+        let replies = std::mem::take(&mut self.replies);
+        let events = std::mem::take(&mut self.events);
+        let (cols, rows) = (self.grid.cols(), self.grid.rows());
+        *self = Term::with_scrollback(cols, rows, self.scrollback_limit);
+        self.replies = replies;
+        self.events = events;
+        self.mark_fully_damaged();
+    }
+
+    /// DECSTR (CSI ! p) — soft reset (#53). Resets a defined subset of modes to
+    /// their defaults *without* destroying screen content or scrollback, moving
+    /// the active cursor, or touching the mouse/focus reporting subsystem. Per
+    /// xterm.js softReset, autowrap returns to ON (the xterm default), not off.
+    fn soft_reset(&mut self) {
+        self.cursor.visible = true;
+        self.cursor.pen = Pen::default();
+        self.scroll_top = 0;
+        self.scroll_bottom = self.grid.rows() - 1;
+        self.origin_mode = false;
+        self.app_cursor_keys = false;
+        self.bracketed_paste = false;
+        self.autowrap = true; // xterm default is ON (not the VT100 "off")
+        self.insert_mode = false;
+        self.charsets = [Charset::Ascii; 4];
+        self.gl = 0;
+        self.decsc = SavedCursor::default();
+    }
+
     fn carriage_return(&mut self) {
         self.cursor.col = 0;
         self.cursor.pending_wrap = false;
@@ -2169,6 +2204,11 @@ impl Perform for Term {
             }
             return;
         }
+        // DECSTR soft reset: CSI ! p (#53).
+        if intermediates.first() == Some(&b'!') && action == 'p' {
+            self.soft_reset();
+            return;
+        }
         // Other private/intermediate sequences are later slices; ignore them
         // rather than misinterpret.
         if !intermediates.is_empty() {
@@ -2255,6 +2295,7 @@ impl Perform for Term {
             b'M' => self.reverse_index(),  // RI
             b'7' => self.save_cursor(),    // DECSC
             b'8' => self.restore_cursor(), // DECRC
+            b'c' => self.full_reset(),     // RIS (#53)
             _ => {}
         }
     }
