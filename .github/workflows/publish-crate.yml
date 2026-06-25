@@ -25,7 +25,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+
+      # No build cache here: publishing runs only on a `v*` tag (rare), so a cache buys little, and
+      # just-shield R6 flags a third-party action sharing a job that holds the publish token. Dropping
+      # rust-cache keeps `CARGO_REGISTRY_TOKEN` away from any third-party action (ADR-0006 blast-radius).
 
       # Version-lockstep gate: the tag (minus `v`) must equal the crate version, mirroring
       # publish-wasm.yml's check so a mismatched tag fails before publishing.
