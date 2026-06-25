@@ -51,6 +51,10 @@ pub struct Term {
     /// a line feed also carriage-returns (`convertEol`). Output-only — the Enter
     /// key still encodes CR, matching xterm.js (#71).
     newline_mode: bool,
+    /// Reverse wraparound (DEC ?45): default off. When on, a *backspace* at
+    /// column 0 of a soft-wrapped row moves back to the end of the previous row
+    /// (BS only, soft wraps only — matches xterm.js) (#80).
+    reverse_wraparound: bool,
     /// Bracketed-paste mode (DEC ?2004). The engine owns the flag; the input
     /// encoder (#11) reads it to decide whether to wrap pasted text in markers.
     bracketed_paste: bool,
@@ -274,6 +278,7 @@ impl Term {
             autowrap: true,
             insert_mode: false,
             newline_mode: false,
+            reverse_wraparound: false,
             bracketed_paste: false,
             synchronized_output: false,
             app_cursor_keys: false,
@@ -1282,6 +1287,7 @@ impl Term {
             1 => Some(self.app_cursor_keys),
             6 => Some(self.origin_mode),
             7 => Some(self.autowrap),
+            45 => Some(self.reverse_wraparound),
             9 => Some(self.mouse_protocol == MouseProtocol::X10),
             66 => Some(self.application_keypad),
             25 => Some(self.cursor.visible),
@@ -1559,6 +1565,33 @@ impl Term {
     fn carriage_return(&mut self) {
         self.cursor.col = 0;
         self.cursor.pending_wrap = false;
+    }
+
+    /// Backspace (BS, 0x08): move the cursor one column left. With reverse
+    /// wraparound (?45) a backspace at column 0 of a *soft-wrapped* row moves
+    /// back to the last column of the previous row — undoing one autowrap. Only
+    /// soft wraps reverse (the previous row carries `WRAPLINE`); a hard CR/LF
+    /// line does not. BS only (not cursor-left), matching xterm.js (#80).
+    fn backspace(&mut self) {
+        self.cursor.pending_wrap = false;
+        if self.cursor.col > 0 {
+            self.cursor.col -= 1;
+            return;
+        }
+        if self.reverse_wraparound
+            && self.cursor.row > self.scroll_top
+            && self.cursor.row <= self.scroll_bottom
+        {
+            let prev = self.cursor.row - 1;
+            let last = self.grid.cols() - 1;
+            if self.grid.cell(prev, last).is_wrapline() {
+                self.grid
+                    .cell_mut(prev, last)
+                    .remove_flags(CellFlags::WRAPLINE);
+                self.cursor.row = prev;
+                self.cursor.col = last;
+            }
+        }
     }
 
     /// Auto-wrap at end of line: line-feed then return to column 0.
@@ -2175,6 +2208,8 @@ impl Term {
             ('l', 6) => self.origin_mode = false, // unset leaves the cursor put
             ('h', 7) => self.autowrap = true,     // DECAWM
             ('l', 7) => self.autowrap = false,
+            ('h', 45) => self.reverse_wraparound = true, // reverse wraparound (#80)
+            ('l', 45) => self.reverse_wraparound = false,
             ('h', 25) => self.cursor.visible = true, // DECTCEM show
             ('l', 25) => self.cursor.visible = false, // DECTCEM hide
             ('h', 2004) => self.bracketed_paste = true,
@@ -2233,11 +2268,7 @@ impl Perform for Term {
             // LF, VT, FF all line-feed.
             b'\n' | 0x0b | 0x0c => self.linefeed(),
             b'\r' => self.carriage_return(),
-            0x08 => {
-                // Backspace.
-                self.cursor.col = self.cursor.col.saturating_sub(1);
-                self.cursor.pending_wrap = false;
-            }
+            0x08 => self.backspace(),
             b'\t' => self.put_tab(),
             0x07 => self.events.push(TermEvent::Bell), // BEL (#12)
             0x0e => self.gl = 1,                       // SO (LS1): GL = G1 (#62)
