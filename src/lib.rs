@@ -167,6 +167,17 @@ impl Engine {
         self.term.scrollback_len()
     }
 
+    /// Whether the app has an open **synchronized-output** block (DEC `?2026`):
+    /// it has asked that the next frame of output be painted atomically. The
+    /// engine only *reports* this — **the consumer owns the paint-hold and the
+    /// spec-mandated timeout** (a buggy app that never closes the block must not
+    /// freeze the screen forever, and the engine has no clock). Poll this after
+    /// `feed`; while it is `true`, defer applying frames, and apply once it
+    /// clears (or your own timeout fires). (#73)
+    pub fn synchronized_output(&self) -> bool {
+        self.term.synchronized_output()
+    }
+
     /// What changed since the last [`Engine::reset_damage`] — line ranges each
     /// with a changed column span (see ADR-0003).
     pub fn damage(&self) -> TermDamage {
