@@ -61,6 +61,10 @@ pub struct Term {
     /// Application cursor keys (DECCKM ?1): when set, cursor keys / Home / End
     /// encode as SS3 rather than CSI (see `input.rs`).
     app_cursor_keys: bool,
+    /// Application keypad mode (DECNKM ?66 / DECKPAM `ESC =` / DECKPNM `ESC >`):
+    /// tracked for protocol completeness + DECRQM, but NOT yet acted on in key
+    /// encoding — xterm.js tracks it the same way and never reads it (#74).
+    application_keypad: bool,
     /// Mouse tracking mode — what events the app asked to be reported
     /// (?1000/?1002/?1003). `Off` by default.
     mouse_protocol: MouseProtocol,
@@ -273,6 +277,7 @@ impl Term {
             bracketed_paste: false,
             synchronized_output: false,
             app_cursor_keys: false,
+            application_keypad: false,
             mouse_protocol: MouseProtocol::Off,
             mouse_encoding: MouseEncoding::Default,
             focus_events: false,
@@ -1278,6 +1283,7 @@ impl Term {
             6 => Some(self.origin_mode),
             7 => Some(self.autowrap),
             9 => Some(self.mouse_protocol == MouseProtocol::X10),
+            66 => Some(self.application_keypad),
             25 => Some(self.cursor.visible),
             // Mouse tracking is a single-state enum (the levels are mutually
             // exclusive — an app enables one), so querying ?1000 while ?1002 is
@@ -2181,6 +2187,8 @@ impl Term {
             // it (apps enable/disable the same mode, not a stack).
             ('h', 1) => self.app_cursor_keys = true, // DECCKM
             ('l', 1) => self.app_cursor_keys = false,
+            ('h', 66) => self.application_keypad = true, // DECNKM (#74)
+            ('l', 66) => self.application_keypad = false,
             ('h', 9) => self.mouse_protocol = MouseProtocol::X10, // X10 mouse (#70)
             ('h', 1000) => self.mouse_protocol = MouseProtocol::Normal,
             ('h', 1002) => self.mouse_protocol = MouseProtocol::ButtonEvent,
@@ -2356,11 +2364,13 @@ impl Perform for Term {
                 self.carriage_return();
                 self.linefeed();
             }
-            b'H' => self.set_tab_stop(),   // HTS
-            b'M' => self.reverse_index(),  // RI
-            b'7' => self.save_cursor(),    // DECSC
-            b'8' => self.restore_cursor(), // DECRC
-            b'c' => self.full_reset(),     // RIS (#53)
+            b'H' => self.set_tab_stop(),             // HTS
+            b'M' => self.reverse_index(),            // RI
+            b'7' => self.save_cursor(),              // DECSC
+            b'8' => self.restore_cursor(),           // DECRC
+            b'c' => self.full_reset(),               // RIS (#53)
+            b'=' => self.application_keypad = true,  // DECKPAM (#74)
+            b'>' => self.application_keypad = false, // DECKPNM
             _ => {}
         }
     }
