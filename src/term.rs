@@ -145,8 +145,10 @@ impl Charset {
 /// box-drawing and symbol glyphs. Matches xterm/alacritty; anything outside the
 /// range passes through unchanged.
 fn dec_special_graphics(c: char) -> char {
+    // Keys ``..`~` only — `_` (0x5F) is deliberately absent, matching xterm.js /
+    // alacritty (it passes through as a literal underscore), not the strict-DEC
+    // "0x5F = blank" reading.
     match c {
-        '_' => ' ',
         '`' => '◆',
         'a' => '▒',
         'b' => '␉',

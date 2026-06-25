@@ -36,6 +36,16 @@ fn si_so_switch_the_active_charset() {
 }
 
 #[test]
+fn special_graphics_leaves_underscore_untranslated() {
+    // xterm.js (and alacritty) omit `_` from the DEC Special Graphics table, so
+    // it passes through as a literal underscore — verified against xterm.js's
+    // Charsets.ts, not just the strict-DEC "0x5F = blank" reading (#62).
+    let mut t = Engine::new(10, 2);
+    t.feed(b"\x1b(0_"); // special graphics, then `_`
+    assert_eq!(t.grid().cell(0, 0).c(), '_');
+}
+
+#[test]
 fn uk_charset_maps_hash_to_pound() {
     let mut t = Engine::new(10, 2);
     t.feed(b"\x1b(A#"); // G0 = UK; '#' → £
