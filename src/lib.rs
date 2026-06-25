@@ -198,6 +198,15 @@ impl Engine {
         self.term.report_color_scheme(dark);
     }
 
+    /// Whether the app enabled **win32-input-mode** (DEC `?9001`): it asked for
+    /// keys as raw Windows key-records. The engine only tracks the flag — encoding
+    /// the records (`CSI Vk;Sc;Uc;Kd;Cs;Rc _`) is a non-goal (raw passthrough, no
+    /// semantic conversion), so [`Engine::encode_key`] is unchanged. A ConPTY
+    /// consumer reads this to decide whether to emit the records itself (#86).
+    pub fn win32_input_mode(&self) -> bool {
+        self.term.win32_input_mode()
+    }
+
     /// What changed since the last [`Engine::reset_damage`] — line ranges each
     /// with a changed column span (see ADR-0003).
     pub fn damage(&self) -> TermDamage {
