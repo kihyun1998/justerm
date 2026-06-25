@@ -24,4 +24,8 @@ pub enum TermEvent {
     /// dimension-free, so this is a *request* — the consumer may honor it by
     /// calling `resize(cols, rows)`, or ignore it. `cols` is 80 or 132 (#82).
     ColumnMode { cols: usize },
+    /// The app queried the light/dark color scheme (DSR `CSI ? 996 n`). justerm
+    /// is theme-agnostic, so the consumer (which knows the scheme) answers by
+    /// calling `Engine::report_color_scheme` (#85).
+    ColorSchemeQuery,
 }
