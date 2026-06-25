@@ -47,6 +47,10 @@ pub struct Term {
     /// Insert mode (IRM, the non-private SM/RM mode 4): default off (replace).
     /// When on, a printed glyph shifts the row's tail right first (#64).
     insert_mode: bool,
+    /// New-line mode (LNM, the non-private SM/RM mode 20): default off. When on,
+    /// a line feed also carriage-returns (`convertEol`). Output-only — the Enter
+    /// key still encodes CR, matching xterm.js (#71).
+    newline_mode: bool,
     /// Bracketed-paste mode (DEC ?2004). The engine owns the flag; the input
     /// encoder (#11) reads it to decide whether to wrap pasted text in markers.
     bracketed_paste: bool,
@@ -261,6 +265,7 @@ impl Term {
             origin_mode: false,
             autowrap: true,
             insert_mode: false,
+            newline_mode: false,
             bracketed_paste: false,
             app_cursor_keys: false,
             mouse_protocol: MouseProtocol::Off,
@@ -1303,6 +1308,10 @@ impl Term {
     /// below the region, just descend (no scroll). Column is unchanged (raw LF;
     /// CR is what returns to column 0).
     fn linefeed(&mut self) {
+        // New-line mode (LNM ?20): a line feed also returns to column 0 (#71).
+        if self.newline_mode {
+            self.carriage_return();
+        }
         if self.cursor.row == self.scroll_bottom {
             // A top-anchored primary-screen scroll pushes the evicted top line
             // into scrollback history.
@@ -2254,18 +2263,22 @@ impl Perform for Term {
             'c' => self.replies.extend_from_slice(b"\x1b[?62;22c"),
             'n' => self.device_status_report(param_or(params, 0, 0)),
             // Non-private SM/RM. Folded over every parameter (modes can batch,
-            // like the private path #56); only IRM (mode 4) is handled so far.
+            // like the private path #56). IRM (4) and LNM (20) so far.
             'h' => {
                 for m in params.iter().filter_map(|p| p.first().copied()) {
-                    if m == 4 {
-                        self.insert_mode = true;
+                    match m {
+                        4 => self.insert_mode = true,
+                        20 => self.newline_mode = true,
+                        _ => {}
                     }
                 }
             }
             'l' => {
                 for m in params.iter().filter_map(|p| p.first().copied()) {
-                    if m == 4 {
-                        self.insert_mode = false;
+                    match m {
+                        4 => self.insert_mode = false,
+                        20 => self.newline_mode = false,
+                        _ => {}
                     }
                 }
             }
