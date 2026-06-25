@@ -1286,6 +1286,9 @@ impl Term {
         let state = match mode {
             1 => Some(self.app_cursor_keys),
             6 => Some(self.origin_mode),
+            // DECCOLM: derived from the actual width, never a tracked flag — a
+            // flag would lie if the consumer ignored the resize request (#82).
+            3 => Some(self.grid.cols() == 132),
             7 => Some(self.autowrap),
             45 => Some(self.reverse_wraparound),
             9 => Some(self.mouse_protocol == MouseProtocol::X10),
@@ -2210,6 +2213,10 @@ impl Term {
             ('l', 7) => self.autowrap = false,
             ('h', 45) => self.reverse_wraparound = true, // reverse wraparound (#80)
             ('l', 45) => self.reverse_wraparound = false,
+            // DECCOLM (#82): the engine is dimension-free, so emit a request the
+            // consumer may honor by resizing — no screen/cursor/margin change here.
+            ('h', 3) => self.events.push(TermEvent::ColumnMode { cols: 132 }),
+            ('l', 3) => self.events.push(TermEvent::ColumnMode { cols: 80 }),
             ('h', 25) => self.cursor.visible = true, // DECTCEM show
             ('l', 25) => self.cursor.visible = false, // DECTCEM hide
             ('h', 2004) => self.bracketed_paste = true,
