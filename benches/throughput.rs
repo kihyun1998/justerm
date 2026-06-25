@@ -30,9 +30,10 @@
 //! Each input is generated deterministically (no files, no RNG), so the byte
 //! stream — and thus the MB/s figure — is reproducible across runs.
 
+use std::hint::black_box;
 use std::time::Duration;
 
-use criterion::{BatchSize, Criterion, Throughput, black_box, criterion_group, criterion_main};
+use criterion::{BatchSize, Criterion, Throughput, criterion_group, criterion_main};
 use justerm::{Cell, Engine};
 
 #[path = "inputs.rs"]
