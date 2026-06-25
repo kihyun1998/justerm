@@ -78,6 +78,37 @@ fn link_survives_scroll_into_scrollback() {
 }
 
 #[test]
+fn frame_carries_a_scrolled_back_links_uri() {
+    // #48: `frame()` sources cells *and* the per-row link map from the viewport
+    // at `display_offset`. With the link scrolled into history, the frame's
+    // link_table must still carry the URI and the span must reference it —
+    // otherwise a wire consumer (which only sees `frame()`) loses the link.
+    let mut t = Engine::new(80, 2);
+    t.feed(OPEN);
+    t.feed(b"L");
+    t.feed(CLOSE);
+    t.feed(b"\r\nsecond\r\n"); // evicts the linked row 0 into scrollback
+    t.scroll_up(1); // viewport row 0 is the linked 'L' again
+
+    let frame = t.frame();
+    assert_eq!(
+        frame.link_table,
+        vec!["https://example.com".to_string()],
+        "the scrolled-back link did not reach the frame's link_table",
+    );
+    let span = frame
+        .spans
+        .iter()
+        .find(|s| s.line == 0)
+        .expect("full frame covers row 0");
+    let idx = span.links.get(&0).expect("col 0 references the link");
+    assert_eq!(
+        frame.link_table[idx.get() as usize - 1],
+        "https://example.com"
+    );
+}
+
+#[test]
 fn plain_output_carries_no_link() {
     let mut t = Engine::new(80, 24);
     t.feed(b"plain");

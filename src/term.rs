@@ -393,14 +393,21 @@ impl Term {
         // Same frame-local renumber for the hyperlink side-table (#26).
         let mut link_table: Vec<String> = Vec::new();
         let mut link_remap = vec![0u16; self.hyperlink_pool.len() + 1];
+        // Cells come from the viewport at `display_offset`, not the live grid:
+        // viewport row `line` is absolute buffer line `top + line` (scrollback
+        // when scrolled up, the live grid when `display_offset == 0`, where
+        // `top == scrollback.len()` and this is identical to reading the grid).
+        // Without this, a wire consumer — cells reach it only through `frame()` —
+        // could never display scrollback (#48).
+        let top = self.scrollback.len() - self.display_offset;
         let mut spans = Vec::with_capacity(line_spans.len());
         for (line, left, right) in line_spans {
             let mut cells = Vec::with_capacity(right - left + 1);
             let mut combining = std::collections::BTreeMap::new();
             let mut links = std::collections::BTreeMap::new();
-            let row = self.grid.row_ref(line);
+            let row = self.abs_row(top + line);
             for col in left..=right {
-                let cell = *self.grid.cell(line, col);
+                let cell = row[col];
                 // Combining clusters and hyperlinks live in the row's maps; each
                 // tagged cell contributes its reference to the frame, recorded on
                 // the span by span-relative column (the cell holds only the bit).
@@ -442,7 +449,12 @@ impl Term {
             // Reported, not drawn — the consumer renders the caret (#38).
             cursor_row: self.cursor.row as u16,
             cursor_col: self.cursor.col as u16,
-            cursor_visible: self.cursor.visible,
+            // Hidden while scrolled up: the live cursor is off the frozen
+            // viewport, and a cell-invert caret would otherwise ink over
+            // scrollback. Consistent with the frozen-damage policy (no cursor
+            // damage is emitted while scrolled) and with xterm.js / alacritty,
+            // which hide the caret when it falls outside the visible rows (#48).
+            cursor_visible: self.cursor.visible && self.display_offset == 0,
             scroll: self.scroll_delta(),
             spans,
             side_table,
