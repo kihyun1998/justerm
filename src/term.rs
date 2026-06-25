@@ -44,6 +44,9 @@ pub struct Term {
     /// pins the cursor to the last column and overwrites in place instead of
     /// wrapping to the next line (matches xterm.js) (#63).
     autowrap: bool,
+    /// Insert mode (IRM, the non-private SM/RM mode 4): default off (replace).
+    /// When on, a printed glyph shifts the row's tail right first (#64).
+    insert_mode: bool,
     /// Bracketed-paste mode (DEC ?2004). The engine owns the flag; the input
     /// encoder (#11) reads it to decide whether to wrap pasted text in markers.
     bracketed_paste: bool,
@@ -257,6 +260,7 @@ impl Term {
             on_alt: false,
             origin_mode: false,
             autowrap: true,
+            insert_mode: false,
             bracketed_paste: false,
             app_cursor_keys: false,
             mouse_protocol: MouseProtocol::Off,
@@ -1527,6 +1531,13 @@ impl Term {
             self.wrapline();
         }
 
+        // Insert mode (IRM): open a `width`-wide gap at the cursor first, shifting
+        // the row's tail right (off-edge cells discarded, wide halves repaired),
+        // then write into the gap — mirrors xterm.js's insertCells (#64).
+        if self.insert_mode {
+            self.insert_chars(width);
+        }
+
         let (row, col) = (self.cursor.row, self.cursor.col);
 
         // Overwriting one half of an existing wide glyph orphans the other —
@@ -2186,6 +2197,22 @@ impl Perform for Term {
             // colour — the levels justerm actually implements (#27).
             'c' => self.replies.extend_from_slice(b"\x1b[?62;22c"),
             'n' => self.device_status_report(param_or(params, 0, 0)),
+            // Non-private SM/RM. Folded over every parameter (modes can batch,
+            // like the private path #56); only IRM (mode 4) is handled so far.
+            'h' => {
+                for m in params.iter().filter_map(|p| p.first().copied()) {
+                    if m == 4 {
+                        self.insert_mode = true;
+                    }
+                }
+            }
+            'l' => {
+                for m in params.iter().filter_map(|p| p.first().copied()) {
+                    if m == 4 {
+                        self.insert_mode = false;
+                    }
+                }
+            }
             _ => {}
         }
     }
