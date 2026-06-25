@@ -8,13 +8,14 @@
 
 use crate::cell::{Cell, CellFlags};
 use crate::color::Color;
+use crate::cursor::CursorShape;
 use crate::damage::ScrollOp;
 use core::num::NonZeroU32;
 use std::collections::BTreeMap;
 
 /// Wire magic ("juSTerm") + format version. A new feature bumps `VERSION`.
 const MAGIC: [u8; 2] = *b"JT";
-const VERSION: u8 = 3; // v3 adds the per-frame cursor row/col + visibility (#38)
+const VERSION: u8 = 4; // v4 adds the cursor shape + blink (#81); v3 added cursor row/col/visibility (#38)
 
 /// The wire-format version (the gating `VERSION` byte), exposed so a binding can
 /// assert at load that its decoder matches the backend encoder (#34/ADR-0008).
@@ -64,6 +65,10 @@ pub struct Frame {
     pub cursor_row: u16,
     pub cursor_col: u16,
     pub cursor_visible: bool,
+    /// The caret shape (DECSCUSR #89) and whether it blinks (att610 ?12, #81).
+    /// Reported for the renderer; drawing/animation stays the consumer's.
+    pub cursor_shape: CursorShape,
+    pub cursor_blink: bool,
     pub scroll: Option<ScrollOp>,
     pub spans: Vec<Span>,
     pub side_table: Vec<Vec<char>>,
@@ -100,6 +105,12 @@ pub fn encode(frame: &Frame) -> Vec<u8> {
     out.extend_from_slice(&frame.cursor_row.to_le_bytes());
     out.extend_from_slice(&frame.cursor_col.to_le_bytes());
     out.push(frame.cursor_visible as u8);
+    out.push(match frame.cursor_shape {
+        CursorShape::Block => 0,
+        CursorShape::Underline => 1,
+        CursorShape::Bar => 2,
+    });
+    out.push(frame.cursor_blink as u8);
     if let Some(s) = frame.scroll {
         out.extend_from_slice(&(s.top as u16).to_le_bytes());
         out.extend_from_slice(&(s.bottom as u16).to_le_bytes());
@@ -198,6 +209,13 @@ pub fn decode(bytes: &[u8]) -> Result<Frame, DecodeError> {
     let cursor_row = r.u16()?;
     let cursor_col = r.u16()?;
     let cursor_visible = r.u8()? != 0;
+    let cursor_shape = match r.u8()? {
+        0 => CursorShape::Block,
+        1 => CursorShape::Underline,
+        2 => CursorShape::Bar,
+        _ => return Err(DecodeError::BadTag),
+    };
+    let cursor_blink = r.u8()? != 0;
     let scroll = if has_scroll {
         let top = r.u16()? as usize;
         let bottom = r.u16()? as usize;
@@ -266,6 +284,8 @@ pub fn decode(bytes: &[u8]) -> Result<Frame, DecodeError> {
         cursor_row,
         cursor_col,
         cursor_visible,
+        cursor_shape,
+        cursor_blink,
         scroll,
         spans,
         side_table,

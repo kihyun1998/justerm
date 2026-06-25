@@ -27,6 +27,16 @@ impl Pen {
     }
 }
 
+/// The cursor's drawn shape (DECSCUSR / the renderer's caret glyph). The engine
+/// reports it on the frame; the renderer draws it. Default `Block` (#81).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum CursorShape {
+    #[default]
+    Block,
+    Underline,
+    Bar,
+}
+
 /// The input position, its pending-wrap state, and the current pen.
 #[derive(Clone, Copy, Debug)]
 pub struct Cursor {
@@ -38,9 +48,14 @@ pub struct Cursor {
     /// lines (see `docs/architecture.md` "Hidden VT state").
     pub pending_wrap: bool,
     pub pen: Pen,
-    /// Whether the cursor is shown (DEC ?25). The engine only reports this;
-    /// blink is a renderer-local animation, not an engine concern.
+    /// Whether the cursor is shown (DEC ?25). The engine only reports it.
     pub visible: bool,
+    /// The caret shape (DECSCUSR, #89) — reported on the frame, drawn by the
+    /// renderer.
+    pub shape: CursorShape,
+    /// Whether the caret blinks (att610 ?12, #81). The engine reports the *mode*;
+    /// the actual animation is the renderer's.
+    pub blink: bool,
 }
 
 impl Cursor {
@@ -66,6 +81,8 @@ impl Default for Cursor {
             pending_wrap: false,
             pen: Pen::default(),
             visible: true,
+            shape: CursorShape::Block,
+            blink: false,
         }
     }
 }

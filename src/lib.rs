@@ -28,7 +28,7 @@ mod term;
 
 pub use cell::{Cell, CellFlags};
 pub use color::Color;
-pub use cursor::{Cursor, Pen};
+pub use cursor::{Cursor, CursorShape, Pen};
 pub use damage::{LineDamage, ScrollOp, TermDamage};
 pub use event::TermEvent;
 pub use grid::{Grid, Row};

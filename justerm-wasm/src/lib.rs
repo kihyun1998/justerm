@@ -40,6 +40,9 @@ struct Flat {
     cursor_row: u16,
     cursor_col: u16,
     cursor_visible: bool,
+    /// Caret shape (`0` = Block, `1` = Underline, `2` = Bar) + blink (#81).
+    cursor_shape: u8,
+    cursor_blink: bool,
     /// `(top, bottom, count)` of the frame's scroll op, applied before spans.
     scroll: Option<(u16, u16, i16)>,
     /// Per-cell base codepoint (`cell.c`), span order — the `codepoints` column.
@@ -113,6 +116,12 @@ fn flatten(frame: &Frame) -> Flat {
         cursor_row: frame.cursor_row,
         cursor_col: frame.cursor_col,
         cursor_visible: frame.cursor_visible,
+        cursor_shape: match frame.cursor_shape {
+            justerm::CursorShape::Block => 0,
+            justerm::CursorShape::Underline => 1,
+            justerm::CursorShape::Bar => 2,
+        },
+        cursor_blink: frame.cursor_blink,
         scroll: frame
             .scroll
             .map(|s| (s.top as u16, s.bottom as u16, s.count as i16)),
@@ -175,6 +184,20 @@ impl DecodedFrame {
     #[wasm_bindgen(getter, js_name = cursorVisible)]
     pub fn cursor_visible(&self) -> bool {
         self.flat.cursor_visible
+    }
+
+    /// Caret shape: `0` = Block, `1` = Underline, `2` = Bar (DECSCUSR #89). The
+    /// consumer draws the shape; the engine only reports it (#81).
+    #[wasm_bindgen(getter, js_name = cursorShape)]
+    pub fn cursor_shape(&self) -> u8 {
+        self.flat.cursor_shape
+    }
+
+    /// Whether the caret blinks (att610 `?12`). The engine reports the mode; the
+    /// renderer does the animation (#81).
+    #[wasm_bindgen(getter, js_name = cursorBlink)]
+    pub fn cursor_blink(&self) -> bool {
+        self.flat.cursor_blink
     }
 
     #[wasm_bindgen(getter, js_name = hasScroll)]
@@ -395,6 +418,8 @@ mod tests {
             cursor_row: 0,
             cursor_col: 0,
             cursor_visible: true,
+            cursor_shape: justerm::CursorShape::Block,
+            cursor_blink: false,
             scroll: None,
             spans,
             side_table: vec![],
@@ -617,6 +642,8 @@ mod tests {
             cursor_row: 7,
             cursor_col: 13,
             cursor_visible: false,
+            cursor_shape: justerm::CursorShape::Block,
+            cursor_blink: false,
             scroll: Some(justerm::ScrollOp {
                 top: 0,
                 bottom: 23,
