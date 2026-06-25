@@ -54,6 +54,10 @@ pub struct Term {
     /// Bracketed-paste mode (DEC ?2004). The engine owns the flag; the input
     /// encoder (#11) reads it to decide whether to wrap pasted text in markers.
     bracketed_paste: bool,
+    /// Synchronized output (DEC ?2026): the app brackets a frame of output so the
+    /// renderer can paint it atomically. The engine only *tracks* the flag — the
+    /// consumer owns the paint-hold and the spec-mandated timeout (#73).
+    synchronized_output: bool,
     /// Application cursor keys (DECCKM ?1): when set, cursor keys / Home / End
     /// encode as SS3 rather than CSI (see `input.rs`).
     app_cursor_keys: bool,
@@ -267,6 +271,7 @@ impl Term {
             insert_mode: false,
             newline_mode: false,
             bracketed_paste: false,
+            synchronized_output: false,
             app_cursor_keys: false,
             mouse_protocol: MouseProtocol::Off,
             mouse_encoding: MouseEncoding::Default,
@@ -507,6 +512,11 @@ impl Term {
     /// Number of lines currently held in scrollback history.
     pub fn scrollback_len(&self) -> usize {
         self.scrollback.len()
+    }
+
+    /// Whether the app has an open synchronized-output block (DEC ?2026, #73).
+    pub fn synchronized_output(&self) -> bool {
+        self.synchronized_output
     }
 
     /// The cells of visible row `i` (0..rows) at the current scroll position.
@@ -1282,6 +1292,7 @@ impl Term {
             1016 => Some(self.mouse_encoding == MouseEncoding::SgrPixels),
             47 | 1047 | 1049 => Some(self.on_alt),
             2004 => Some(self.bracketed_paste),
+            2026 => Some(self.synchronized_output),
             _ => None,
         };
         let val = match state {
@@ -2162,6 +2173,8 @@ impl Term {
             ('l', 25) => self.cursor.visible = false, // DECTCEM hide
             ('h', 2004) => self.bracketed_paste = true,
             ('l', 2004) => self.bracketed_paste = false,
+            ('h', 2026) => self.synchronized_output = true, // synchronized output (#73)
+            ('l', 2026) => self.synchronized_output = false,
 
             // Input-encoding modes (#11): DECCKM, mouse tracking + encoding,
             // focus reporting. Each set assigns the level; each reset clears
