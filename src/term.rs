@@ -1280,7 +1280,7 @@ impl Term {
             1015 => Some(self.mouse_encoding == MouseEncoding::Urxvt),
             1005 => Some(self.mouse_encoding == MouseEncoding::Utf8),
             1016 => Some(self.mouse_encoding == MouseEncoding::SgrPixels),
-            1049 => Some(self.on_alt),
+            47 | 1047 | 1049 => Some(self.on_alt),
             2004 => Some(self.bracketed_paste),
             _ => None,
         };
@@ -1398,11 +1398,27 @@ impl Term {
 
     /// Enter the alternate screen: save the cursor, swap in the other grid, and
     /// clear it.
-    fn enter_alt_screen(&mut self) {
+    /// Save the cursor into the alt-screen slot — `?1048` set, and the first
+    /// half of `?1049` enter (#72).
+    fn save_alt_cursor(&mut self) {
+        self.saved_cursor = self.cursor;
+    }
+
+    /// Restore the cursor from the alt-screen slot — `?1048` reset, and the
+    /// second half of `?1049` leave. DECTCEM visibility is a standalone mode, not
+    /// part of the save, so preserve it across the restore (#38/#72).
+    fn restore_alt_cursor(&mut self) {
+        let visible = self.cursor.visible;
+        self.cursor = self.saved_cursor;
+        self.cursor.visible = visible;
+    }
+
+    /// Switch to the (cleared) alternate buffer without touching the cursor —
+    /// `?47`/`?1047` set, and the second half of `?1049` enter (#72).
+    fn switch_to_alt(&mut self) {
         if self.on_alt {
             return;
         }
-        self.saved_cursor = self.cursor;
         std::mem::swap(&mut self.grid, &mut self.alt_grid);
         self.grid.clear();
         self.on_alt = true;
@@ -1411,23 +1427,35 @@ impl Term {
         self.mark_fully_damaged();
     }
 
+    /// Switch back to the primary buffer without touching the cursor —
+    /// `?47`/`?1047` reset, and the first half of `?1049` leave (#72).
+    fn switch_to_primary(&mut self) {
+        if !self.on_alt {
+            return;
+        }
+        std::mem::swap(&mut self.grid, &mut self.alt_grid);
+        self.on_alt = false;
+        self.display_offset = 0; // return to the primary at its bottom
+        self.selection = None; // a selection cannot survive a screen swap
+        self.mark_fully_damaged();
+    }
+
+    fn enter_alt_screen(&mut self) {
+        if self.on_alt {
+            return;
+        }
+        self.save_alt_cursor();
+        self.switch_to_alt();
+    }
+
     /// Leave the alternate screen: swap the primary grid back in and restore the
     /// saved cursor.
     fn leave_alt_screen(&mut self) {
         if !self.on_alt {
             return;
         }
-        std::mem::swap(&mut self.grid, &mut self.alt_grid);
-        // DECTCEM visibility is a standalone mode, not part of the ?1049 cursor
-        // save — preserve it across the restore (xterm/alacritty: ?25 is a Term
-        // mode, never carried by the alt grid swap). #38.
-        let visible = self.cursor.visible;
-        self.cursor = self.saved_cursor;
-        self.cursor.visible = visible;
-        self.on_alt = false;
-        self.display_offset = 0; // return to the primary at its bottom
-        self.selection = None; // a selection cannot survive a screen swap
-        self.mark_fully_damaged();
+        self.switch_to_primary();
+        self.restore_alt_cursor();
     }
 
     /// RI (ESC M): move up one line. At the top margin, scroll the region down
@@ -2115,6 +2143,13 @@ impl Term {
         match (action, mode) {
             ('h', 1049) => self.enter_alt_screen(),
             ('l', 1049) => self.leave_alt_screen(),
+            // Legacy alt-screen variants (#72): ?47/?1047 switch the buffer
+            // without saving the cursor; ?1048 saves/restores the cursor without
+            // switching. ?1049 is the two combined.
+            ('h', 47) | ('h', 1047) => self.switch_to_alt(),
+            ('l', 47) | ('l', 1047) => self.switch_to_primary(),
+            ('h', 1048) => self.save_alt_cursor(),
+            ('l', 1048) => self.restore_alt_cursor(),
             ('h', 6) => {
                 // DECOM: set homes the cursor to the region top.
                 self.origin_mode = true;
