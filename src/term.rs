@@ -67,6 +67,11 @@ pub struct Term {
     /// tracks the flag; the consumer (which knows the scheme) drives the ?997
     /// notification via `report_color_scheme` (#85).
     color_scheme_updates: bool,
+    /// win32-input-mode (DEC ?9001): the app asked for keys as raw Windows
+    /// key-records. The engine only *tracks* the flag — the raw record encoding
+    /// (`CSI Vk;Sc;Uc;Kd;Cs;Rc _`) is a non-goal (raw passthrough, no semantic
+    /// conversion), left to the ConPTY consumer; `encode_key` is unchanged (#86).
+    win32_input_mode: bool,
     /// Application cursor keys (DECCKM ?1): when set, cursor keys / Home / End
     /// encode as SS3 rather than CSI (see `input.rs`).
     app_cursor_keys: bool,
@@ -287,6 +292,7 @@ impl Term {
             bracketed_paste: false,
             synchronized_output: false,
             color_scheme_updates: false,
+            win32_input_mode: false,
             app_cursor_keys: false,
             application_keypad: false,
             mouse_protocol: MouseProtocol::Off,
@@ -540,6 +546,13 @@ impl Term {
     /// Whether the app enabled color-scheme-update notifications (DEC ?2031, #85).
     pub fn color_scheme_updates(&self) -> bool {
         self.color_scheme_updates
+    }
+
+    /// Whether the app enabled win32-input-mode (DEC ?9001, #86). The engine does
+    /// not encode the raw key-records itself (a non-goal); a ConPTY consumer reads
+    /// this to decide whether to emit them.
+    pub fn win32_input_mode(&self) -> bool {
+        self.win32_input_mode
     }
 
     /// Queue a color-scheme report (`CSI ? 997 ; 1 n` dark / `; 2 n` light) on the
@@ -1339,6 +1352,7 @@ impl Term {
             2004 => Some(self.bracketed_paste),
             2026 => Some(self.synchronized_output),
             2031 => Some(self.color_scheme_updates),
+            9001 => Some(self.win32_input_mode),
             _ => None,
         };
         let val = match state {
@@ -2276,6 +2290,8 @@ impl Term {
             ('l', 2026) => self.synchronized_output = false,
             ('h', 2031) => self.color_scheme_updates = true, // color-scheme notifications (#85)
             ('l', 2031) => self.color_scheme_updates = false,
+            ('h', 9001) => self.win32_input_mode = true, // win32-input-mode (#86)
+            ('l', 9001) => self.win32_input_mode = false,
 
             // Input-encoding modes (#11): DECCKM, mouse tracking + encoding,
             // focus reporting. Each set assigns the level; each reset clears
