@@ -9,7 +9,7 @@ use vte::{Params, Perform};
 
 use crate::cell::{Cell, CellFlags};
 use crate::color::Color;
-use crate::cursor::{Cursor, Pen};
+use crate::cursor::{Cursor, CursorShape, Pen};
 use crate::damage::{LineBounds, LineDamage, ScrollOp, TermDamage};
 use crate::event::TermEvent;
 use crate::grid::{Grid, Row};
@@ -1573,6 +1573,24 @@ impl Term {
         self.cursor.pending_wrap = false;
     }
 
+    /// DECSCUSR (CSI Ps SP q): set the caret shape + blink (#89). 0/2 = steady
+    /// block, 1 = blinking block; 3/4 = blinking/steady underline; 5/6 =
+    /// blinking/steady bar (odd = blink). 0 resets to the default (steady block).
+    /// An unknown param leaves the style unchanged. Mirrors xterm.js.
+    fn set_cursor_style(&mut self, param: u16) {
+        let (shape, blink) = match param {
+            0 | 2 => (CursorShape::Block, false),
+            1 => (CursorShape::Block, true),
+            3 => (CursorShape::Underline, true),
+            4 => (CursorShape::Underline, false),
+            5 => (CursorShape::Bar, true),
+            6 => (CursorShape::Bar, false),
+            _ => return,
+        };
+        self.cursor.shape = shape;
+        self.cursor.blink = blink;
+    }
+
     /// Backspace (BS, 0x08): move the cursor one column left. With reverse
     /// wraparound (?45) a backspace at column 0 of a *soft-wrapped* row moves
     /// back to the last column of the previous row — undoing one autowrap. Only
@@ -2319,6 +2337,14 @@ impl Perform for Term {
         // DECSTR soft reset: CSI ! p (#53).
         if intermediates.first() == Some(&b'!') && action == 'p' {
             self.soft_reset();
+            return;
+        }
+        // DECSCUSR set cursor style: CSI Ps SP q (space intermediate) (#89). An
+        // absent param means 1 (block blink); an explicit 0 means reset — so the
+        // raw value matters and `param_or` (which folds 0 to its default) is wrong.
+        if intermediates.first() == Some(&b' ') && action == 'q' {
+            let param = params.iter().next().and_then(|p| p.first().copied());
+            self.set_cursor_style(param.unwrap_or(1));
             return;
         }
         // Other private/intermediate sequences are later slices; ignore them
