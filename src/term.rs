@@ -1262,6 +1262,7 @@ impl Term {
             1 => Some(self.app_cursor_keys),
             6 => Some(self.origin_mode),
             7 => Some(self.autowrap),
+            9 => Some(self.mouse_protocol == MouseProtocol::X10),
             25 => Some(self.cursor.visible),
             // Mouse tracking is a single-state enum (the levels are mutually
             // exclusive — an app enables one), so querying ?1000 while ?1002 is
@@ -2123,10 +2124,13 @@ impl Term {
             // it (apps enable/disable the same mode, not a stack).
             ('h', 1) => self.app_cursor_keys = true, // DECCKM
             ('l', 1) => self.app_cursor_keys = false,
+            ('h', 9) => self.mouse_protocol = MouseProtocol::X10, // X10 mouse (#70)
             ('h', 1000) => self.mouse_protocol = MouseProtocol::Normal,
             ('h', 1002) => self.mouse_protocol = MouseProtocol::ButtonEvent,
             ('h', 1003) => self.mouse_protocol = MouseProtocol::AnyEvent,
-            ('l', 1000) | ('l', 1002) | ('l', 1003) => self.mouse_protocol = MouseProtocol::Off,
+            ('l', 9) | ('l', 1000) | ('l', 1002) | ('l', 1003) => {
+                self.mouse_protocol = MouseProtocol::Off
+            }
             ('h', 1006) => self.mouse_encoding = MouseEncoding::Sgr,
             ('l', 1006) => self.mouse_encoding = MouseEncoding::Default,
             ('h', 1015) => self.mouse_encoding = MouseEncoding::Urxvt,

@@ -183,6 +183,9 @@ pub enum MouseProtocol {
     /// No reporting (default). `encode_mouse` returns `None`.
     #[default]
     Off,
+    /// `?9` — the original X10 protocol: button **press only**, no release, no
+    /// motion, no wheel, and no modifier bits.
+    X10,
     /// `?1000` — button press and release only.
     Normal,
     /// `?1002` — also motion while a button is held (drag).
@@ -507,6 +510,24 @@ pub fn encode_mouse(ev: &MouseEvent, proto: MouseProtocol, enc: MouseEncoding) -
     if proto == MouseProtocol::Off {
         return None;
     }
+    // X10 (?9): a button *press* only — no release, no motion, no wheel — and the
+    // button byte carries no modifier bits (xterm.js CoreMouseService X10
+    // `restrict`). The modifier strip is applied at `mod_bits` below.
+    let x10 = proto == MouseProtocol::X10;
+    if x10
+        && (ev.action != MouseAction::Press
+            || matches!(
+                ev.button,
+                Some(
+                    MouseButton::WheelUp
+                        | MouseButton::WheelDown
+                        | MouseButton::WheelLeft
+                        | MouseButton::WheelRight
+                )
+            ))
+    {
+        return None;
+    }
     // A wheel turn is a single press-like event; a release on a wheel button is
     // not a real report (it would leak a bogus SGR `m` / an identity-less X10
     // release), so drop it.
@@ -559,19 +580,24 @@ pub fn encode_mouse(ev: &MouseEvent, proto: MouseProtocol, enc: MouseEncoding) -
     } else {
         0
     };
-    let mod_bits = (if ev.mods.contains(Modifiers::SHIFT) {
-        4
-    } else {
+    // X10 carries no modifier bits; the others pack shift 4 / alt 8 / ctrl 16.
+    let mod_bits = if x10 {
         0
-    }) + (if ev.mods.contains(Modifiers::ALT) {
-        8
     } else {
-        0
-    }) + (if ev.mods.contains(Modifiers::CTRL) {
-        16
-    } else {
-        0
-    });
+        (if ev.mods.contains(Modifiers::SHIFT) {
+            4
+        } else {
+            0
+        }) + (if ev.mods.contains(Modifiers::ALT) {
+            8
+        } else {
+            0
+        }) + (if ev.mods.contains(Modifiers::CTRL) {
+            16
+        } else {
+            0
+        })
+    };
 
     let col1 = ev.col + 1;
     let row1 = ev.row + 1;
