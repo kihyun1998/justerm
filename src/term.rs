@@ -40,6 +40,10 @@ pub struct Term {
     /// Origin mode (DECOM ?6): when set, cursor addressing is relative to the
     /// scroll region's top margin (and clamped to it).
     origin_mode: bool,
+    /// Autowrap (DECAWM ?7): default on. When off, a glyph past the right margin
+    /// pins the cursor to the last column and overwrites in place instead of
+    /// wrapping to the next line (matches xterm.js) (#63).
+    autowrap: bool,
     /// Bracketed-paste mode (DEC ?2004). The engine owns the flag; the input
     /// encoder (#11) reads it to decide whether to wrap pasted text in markers.
     bracketed_paste: bool,
@@ -252,6 +256,7 @@ impl Term {
             saved_cursor: Cursor::default(),
             on_alt: false,
             origin_mode: false,
+            autowrap: true,
             bracketed_paste: false,
             app_cursor_keys: false,
             mouse_protocol: MouseProtocol::Off,
@@ -1240,6 +1245,7 @@ impl Term {
         let state = match mode {
             1 => Some(self.app_cursor_keys),
             6 => Some(self.origin_mode),
+            7 => Some(self.autowrap),
             25 => Some(self.cursor.visible),
             // Mouse tracking is a single-state enum (the levels are mutually
             // exclusive — an app enables one), so querying ?1000 while ?1002 is
@@ -1510,10 +1516,14 @@ impl Term {
             self.wrapline();
         }
 
-        // A width-2 glyph that cannot fit in the last column wraps first.
-        // TODO: xterm leaves a LEADING_WIDE_CHAR_SPACER in the vacated column;
-        // common-90% just wraps and leaves it blank.
+        // A width-2 glyph that cannot fit in the last column wraps first — unless
+        // autowrap is off, in which case it is dropped (xterm.js `continue`), not
+        // squeezed or wrapped. TODO: xterm leaves a LEADING_WIDE_CHAR_SPACER in
+        // the vacated column; common-90% just wraps and leaves it blank.
         if width == 2 && self.cursor.col + 1 >= cols {
+            if !self.autowrap {
+                return;
+            }
             self.wrapline();
         }
 
@@ -1558,7 +1568,9 @@ impl Term {
         let new_col = col + width;
         if new_col >= cols {
             self.cursor.col = cols - 1;
-            self.cursor.pending_wrap = true;
+            // With autowrap off (DECAWM ?7l) the cursor pins to the last column
+            // and the next glyph overwrites in place — no deferred wrap (#63).
+            self.cursor.pending_wrap = self.autowrap;
         } else {
             self.cursor.col = new_col;
         }
@@ -2041,6 +2053,8 @@ impl Term {
                 self.goto(0, 0);
             }
             ('l', 6) => self.origin_mode = false, // unset leaves the cursor put
+            ('h', 7) => self.autowrap = true,     // DECAWM
+            ('l', 7) => self.autowrap = false,
             ('h', 25) => self.cursor.visible = true, // DECTCEM show
             ('l', 25) => self.cursor.visible = false, // DECTCEM hide
             ('h', 2004) => self.bracketed_paste = true,
