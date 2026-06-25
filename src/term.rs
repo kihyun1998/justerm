@@ -62,6 +62,11 @@ pub struct Term {
     /// renderer can paint it atomically. The engine only *tracks* the flag — the
     /// consumer owns the paint-hold and the spec-mandated timeout (#73).
     synchronized_output: bool,
+    /// Color-scheme-update notifications (DEC ?2031): the app asked to be told
+    /// when the light/dark scheme changes. The engine is theme-agnostic — it only
+    /// tracks the flag; the consumer (which knows the scheme) drives the ?997
+    /// notification via `report_color_scheme` (#85).
+    color_scheme_updates: bool,
     /// Application cursor keys (DECCKM ?1): when set, cursor keys / Home / End
     /// encode as SS3 rather than CSI (see `input.rs`).
     app_cursor_keys: bool,
@@ -281,6 +286,7 @@ impl Term {
             reverse_wraparound: false,
             bracketed_paste: false,
             synchronized_output: false,
+            color_scheme_updates: false,
             app_cursor_keys: false,
             application_keypad: false,
             mouse_protocol: MouseProtocol::Off,
@@ -529,6 +535,22 @@ impl Term {
     /// Whether the app has an open synchronized-output block (DEC ?2026, #73).
     pub fn synchronized_output(&self) -> bool {
         self.synchronized_output
+    }
+
+    /// Whether the app enabled color-scheme-update notifications (DEC ?2031, #85).
+    pub fn color_scheme_updates(&self) -> bool {
+        self.color_scheme_updates
+    }
+
+    /// Queue a color-scheme report (`CSI ? 997 ; 1 n` dark / `; 2 n` light) on the
+    /// reply channel. The consumer calls this to answer a `ColorSchemeQuery` event
+    /// or, when its scheme changes and `color_scheme_updates()` is set, to send the
+    /// unsolicited notification. The engine never stores or interprets the scheme
+    /// (#85).
+    pub fn report_color_scheme(&mut self, dark: bool) {
+        let ps = if dark { 1 } else { 2 };
+        self.replies
+            .extend_from_slice(format!("\x1b[?997;{ps}n").as_bytes());
     }
 
     /// The cells of visible row `i` (0..rows) at the current scroll position.
@@ -1311,6 +1333,7 @@ impl Term {
             47 | 1047 | 1049 => Some(self.on_alt),
             2004 => Some(self.bracketed_paste),
             2026 => Some(self.synchronized_output),
+            2031 => Some(self.color_scheme_updates),
             _ => None,
         };
         let val = match state {
@@ -2246,6 +2269,8 @@ impl Term {
             ('l', 2004) => self.bracketed_paste = false,
             ('h', 2026) => self.synchronized_output = true, // synchronized output (#73)
             ('l', 2026) => self.synchronized_output = false,
+            ('h', 2031) => self.color_scheme_updates = true, // color-scheme notifications (#85)
+            ('l', 2031) => self.color_scheme_updates = false,
 
             // Input-encoding modes (#11): DECCKM, mouse tracking + encoding,
             // focus reporting. Each set assigns the level; each reset clears
@@ -2324,6 +2349,14 @@ impl Perform for Term {
             // single mode, so it keys off the first parameter only.
             if action == 'p' && intermediates.contains(&b'$') {
                 self.decrqm(param_or(params, 0, 0));
+                return;
+            }
+            // Private DSR (CSI ? Ps n): ?996 = color-scheme query (#85). The
+            // theme-agnostic engine relays it as an event for the consumer.
+            if action == 'n' {
+                if param_or(params, 0, 0) == 996 {
+                    self.events.push(TermEvent::ColorSchemeQuery);
+                }
                 return;
             }
             // DECSET/DECRST carry a *list* of modes; apply set/reset to EVERY

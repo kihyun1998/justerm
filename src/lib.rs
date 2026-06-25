@@ -178,6 +178,24 @@ impl Engine {
         self.term.synchronized_output()
     }
 
+    /// Whether the app enabled color-scheme-update notifications (DEC `?2031`).
+    /// The engine is theme-agnostic — it never knows the scheme. The consumer
+    /// answers a [`TermEvent::ColorSchemeQuery`] (from `?996`) and, when its
+    /// scheme changes *and* this is `true`, sends an unsolicited notification, in
+    /// both cases by calling [`Engine::report_color_scheme`] (#85).
+    pub fn color_scheme_updates(&self) -> bool {
+        self.term.color_scheme_updates()
+    }
+
+    /// Report the current light/dark color scheme to the app as `CSI ? 997 ; 1 n`
+    /// (dark) / `; 2 n` (light), drained via [`Engine::drain_replies`]. Call this
+    /// to answer a [`TermEvent::ColorSchemeQuery`], or — guarded by
+    /// [`Engine::color_scheme_updates`] — when the scheme changes. The engine only
+    /// formats the bit you pass; it stores no scheme (#85).
+    pub fn report_color_scheme(&mut self, dark: bool) {
+        self.term.report_color_scheme(dark);
+    }
+
     /// What changed since the last [`Engine::reset_damage`] — line ranges each
     /// with a changed column span (see ADR-0003).
     pub fn damage(&self) -> TermDamage {
