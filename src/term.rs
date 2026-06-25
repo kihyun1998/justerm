@@ -111,6 +111,75 @@ pub struct Term {
     /// separate from `saved_cursor` (which is the alt-screen save). Defaults to
     /// home/default so a DECRC with no prior DECSC restores a sane state.
     decsc: SavedCursor,
+    /// SCS-designated character sets G0..G3 (#62). `gl` indexes the active (GL)
+    /// set, switched by SI (→G0) / SO (→G1). First cut uses G0/G1.
+    charsets: [Charset; 4],
+    gl: usize,
+}
+
+/// A character set designated by SCS (#62). First cut: ASCII (default), DEC
+/// Special Graphics (line-drawing), and UK. G2/G3 and the GR half are later.
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+enum Charset {
+    #[default]
+    Ascii,
+    DecSpecialGraphics,
+    Uk,
+}
+
+impl Charset {
+    /// Map one GL byte (a `char` in the 7-bit range) through this set. ASCII and
+    /// any out-of-range char pass through; UK swaps `#`→£; DEC Special Graphics
+    /// translates `_`..`~` to the line-drawing / symbol glyphs.
+    fn map(self, c: char) -> char {
+        match self {
+            Charset::Ascii => c,
+            Charset::Uk if c == '#' => '£',
+            Charset::Uk => c,
+            Charset::DecSpecialGraphics => dec_special_graphics(c),
+        }
+    }
+}
+
+/// The VT100 DEC Special Graphics set: bytes `_`..`~` (0x5F..0x7E) map to the
+/// box-drawing and symbol glyphs. Matches xterm/alacritty; anything outside the
+/// range passes through unchanged.
+fn dec_special_graphics(c: char) -> char {
+    match c {
+        '_' => ' ',
+        '`' => '◆',
+        'a' => '▒',
+        'b' => '␉',
+        'c' => '␌',
+        'd' => '␍',
+        'e' => '␊',
+        'f' => '°',
+        'g' => '±',
+        'h' => '␤',
+        'i' => '␋',
+        'j' => '┘',
+        'k' => '┐',
+        'l' => '┌',
+        'm' => '└',
+        'n' => '┼',
+        'o' => '⎺',
+        'p' => '⎻',
+        'q' => '─',
+        'r' => '⎼',
+        's' => '⎽',
+        't' => '├',
+        'u' => '┤',
+        'v' => '┴',
+        'w' => '┬',
+        'x' => '│',
+        'y' => '≤',
+        'z' => '≥',
+        '{' => 'π',
+        '|' => '≠',
+        '}' => '£',
+        '~' => '·',
+        other => other,
+    }
 }
 
 /// Default scrollback retention when not specified.
@@ -127,6 +196,10 @@ struct SavedCursor {
     pen: Pen,
     pending_wrap: bool,
     origin_mode: bool,
+    /// SCS charset state at save time — DECSC/DECRC round-trip the designated
+    /// sets and the active GL shift (#62).
+    charsets: [Charset; 4],
+    gl: usize,
 }
 
 /// A selection resolved to absolute-coordinate bounds, ready for text extraction
@@ -201,6 +274,8 @@ impl Term {
             prev_cursor: (0, 0), // matches the default cursor's home position
             selection: None,
             decsc: SavedCursor::default(),
+            charsets: [Charset::Ascii; 4],
+            gl: 0,
         }
     }
 
@@ -1348,6 +1423,8 @@ impl Term {
             pen: self.cursor.pen,
             pending_wrap: self.cursor.pending_wrap,
             origin_mode: self.origin_mode,
+            charsets: self.charsets,
+            gl: self.gl,
         };
     }
 
@@ -1361,6 +1438,8 @@ impl Term {
         self.cursor.pen = s.pen;
         self.cursor.pending_wrap = s.pending_wrap;
         self.origin_mode = s.origin_mode;
+        self.charsets = s.charsets;
+        self.gl = s.gl;
     }
 
     fn carriage_return(&mut self) {
@@ -1992,6 +2071,9 @@ impl Term {
 
 impl Perform for Term {
     fn print(&mut self, c: char) {
+        // Translate through the active (GL) character set first (#62): under DEC
+        // Special Graphics a printable byte becomes a line-drawing glyph.
+        let c = self.charsets[self.gl].map(c);
         match c.width() {
             // Zero-width (combining marks): the grapheme-cluster side-table is a
             // later slice; drop for now rather than mis-place it as its own cell.
@@ -2015,6 +2097,8 @@ impl Perform for Term {
             }
             b'\t' => self.put_tab(),
             0x07 => self.events.push(TermEvent::Bell), // BEL (#12)
+            0x0e => self.gl = 1,                       // SO (LS1): GL = G1 (#62)
+            0x0f => self.gl = 0,                       // SI (LS0): GL = G0
             _ => {}
         }
     }
@@ -2091,7 +2175,18 @@ impl Perform for Term {
     }
 
     fn esc_dispatch(&mut self, intermediates: &[u8], _ignore: bool, byte: u8) {
-        if !intermediates.is_empty() {
+        if let Some(&i) = intermediates.first() {
+            // SCS: designate a charset to G0 (`ESC ( F`) or G1 (`ESC ) F`) (#62).
+            if matches!(i, b'(' | b')') {
+                let set = match byte {
+                    b'0' => Charset::DecSpecialGraphics,
+                    b'A' => Charset::Uk,
+                    b'B' => Charset::Ascii,
+                    _ => return, // other sets are later slices
+                };
+                self.charsets[if i == b'(' { 0 } else { 1 }] = set;
+            }
+            // Other intermediates (G2/G3 designators, etc.) are later slices.
             return;
         }
         match byte {
