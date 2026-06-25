@@ -404,6 +404,26 @@ deferred behavior) it tracks — then add what you find here.** Seeds (caught in
   xterm.js (`CoreService` default `wraparound: true // xterm - true, vt100 - false`): **DECSTR sets
   autowrap back ON**, contradicting the VT510 manual's "no autowrap" — follow xterm. [#53]
 
+- **VT52 mode (DECANM ?2) is a second escape *dialect*, mode-gated — not a second parser, and `ESC Y`
+  coordinates are hidden state.** Resetting DECANM (`CSI ?2l`) enters the pre-ANSI VT52 dialect; `ESC <`
+  returns to ANSI (default). Neither xterm.js (marks ?2 `#N`, no `case 2`) nor alacritty (no `vt52` at
+  all) implement it, so the authority is the xterm `ctlseqs` "VT52 Mode" section + the DEC VT100 manual.
+  Every VT52 sequence is `ESC <final>`, which vte already tokenizes, so VT52 is a **`vt52_mode` flag that
+  re-routes `esc_dispatch`** into VT52 meanings (`A/B/C/D`=cursor, `H`=home, `I`=reverse-LF, `J/K`=erase,
+  `Z`=identify→reply `ESC / Z`, `=`/`>`=keypad→`application_keypad`, `<`=exit, `c`=RIS), **not** a
+  pre-vte sub-parser — a sub-parser would force byte-at-a-time vte feeding to catch mid-`feed` mode flips
+  and re-own the ESC state machine vte already owns (ADR-0001). The load-bearing hidden state is **`ESC Y
+  row col` direct addressing**: vte dispatches `Y` as a final and returns to ground, so the two
+  coordinate bytes arrive as ordinary **`print` calls**, *not* part of the escape sequence. A 2→1→0
+  `vt52_y_pending` counter (with `vt52_y_row` parking the first) consumes them in `print` before they
+  would be drawn; each byte decodes as `value - 0x20` (so coords are always ≥ `0x20` — printable, never a
+  C0 control routed to `execute`), and `goto` clamps out-of-range coordinates. The state lives on `Term`,
+  so it survives `feed` boundaries (coords may split across calls) for free. RIS is honored *inside* VT52
+  (`full_reset` rebuilds `Term`, clearing `vt52_mode`) so an app can always escape back to ANSI; DECRQM
+  ?2 reports `!vt52_mode` (DECANM *set* = ANSI). Non-goal in the first cut: graphics `ESC F`/`ESC G` are
+  no-ops — the VT52 graphics glyph set differs from DEC Special Graphics, so reusing that charset would
+  render *wrong* glyphs (approximate-but-wrong is worse than an explicit non-goal). [#84]
+
 The *systematic* catch for this whole class is #8's vttest harness + dogfood — this list is only the
 famous few caught by review. Pull vttest early so VT-semantics slices verify against it from the start.
 

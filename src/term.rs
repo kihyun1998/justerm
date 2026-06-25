@@ -79,6 +79,17 @@ pub struct Term {
     /// tracked for protocol completeness + DECRQM, but NOT yet acted on in key
     /// encoding — xterm.js tracks it the same way and never reads it (#74).
     application_keypad: bool,
+    /// VT52 compatibility mode (DECANM ?2 *reset*): when set, `esc_dispatch` is
+    /// re-routed into the pre-ANSI VT52 dialect (`ESC A`-style sequences) instead
+    /// of the ANSI meaning. `ESC <` clears it. Default off (ANSI). (#84)
+    vt52_mode: bool,
+    /// VT52 `ESC Y row col` direct-addressing state (#84). vte tokenizes `ESC Y`
+    /// as a final and returns to ground, so the two coordinate bytes arrive as
+    /// `print()` calls — not part of the escape sequence. This counts them down
+    /// (2 → 1 → 0; 0 = not addressing) and `vt52_y_row` parks the first (row)
+    /// until the second (col) lands. Each byte decodes as `value - 0x20`.
+    vt52_y_pending: u8,
+    vt52_y_row: usize,
     /// Mouse tracking mode — what events the app asked to be reported
     /// (?1000/?1002/?1003). `Off` by default.
     mouse_protocol: MouseProtocol,
@@ -295,6 +306,9 @@ impl Term {
             win32_input_mode: false,
             app_cursor_keys: false,
             application_keypad: false,
+            vt52_mode: false,
+            vt52_y_pending: 0,
+            vt52_y_row: 0,
             mouse_protocol: MouseProtocol::Off,
             mouse_encoding: MouseEncoding::Default,
             focus_events: false,
@@ -1327,6 +1341,8 @@ impl Term {
     fn decrqm(&mut self, mode: u16) {
         let state = match mode {
             1 => Some(self.app_cursor_keys),
+            // DECANM (#84): set = ANSI mode (the normal state), reset = VT52.
+            2 => Some(!self.vt52_mode),
             6 => Some(self.origin_mode),
             // DECCOLM: derived from the actual width, never a tracked flag — a
             // flag would lie if the consumer ignored the resize request (#82).
@@ -2300,6 +2316,9 @@ impl Term {
             ('l', 1) => self.app_cursor_keys = false,
             ('h', 66) => self.application_keypad = true, // DECNKM (#74)
             ('l', 66) => self.application_keypad = false,
+            // DECANM (#84): set = ANSI (the normal state); reset enters VT52. Only
+            // the reset is meaningful — `?2h` is a no-op (already ANSI).
+            ('l', 2) => self.vt52_mode = true,
             ('h', 9) => self.mouse_protocol = MouseProtocol::X10, // X10 mouse (#70)
             ('h', 1000) => self.mouse_protocol = MouseProtocol::Normal,
             ('h', 1002) => self.mouse_protocol = MouseProtocol::ButtonEvent,
@@ -2321,10 +2340,65 @@ impl Term {
             _ => {} // other DEC modes are later slices
         }
     }
+
+    /// Dispatch one VT52 escape sequence (`ESC <final>`), reached only while
+    /// `vt52_mode` is set (#84). VT52 is a pre-ANSI dialect: the cursor/erase
+    /// finals map to the same `Term` primitives the ANSI path uses. `ESC <`
+    /// returns to ANSI. Unknown finals are ignored.
+    fn vt52_dispatch(&mut self, byte: u8) {
+        match byte {
+            b'A' => self.move_up(1),         // cursor up
+            b'B' => self.move_down(1),       // cursor down
+            b'C' => self.move_forward(1),    // cursor right
+            b'D' => self.move_back(1),       // cursor left
+            b'H' => self.goto(0, 0),         // cursor home
+            b'I' => self.reverse_index(),    // reverse line feed
+            b'J' => self.erase_display(0),   // erase cursor → end of screen
+            b'K' => self.erase_line(0),      // erase cursor → end of line
+            b'Y' => self.vt52_y_pending = 2, // direct address: two coord bytes follow
+            // Identify (DECID): reply `ESC / Z` — "I am a VT52".
+            b'Z' => self.replies.extend_from_slice(b"\x1b/Z"),
+            b'=' => self.application_keypad = true, // enter alternate keypad
+            b'>' => self.application_keypad = false, // exit alternate keypad
+            b'<' => self.vt52_mode = false,         // exit VT52, return to ANSI
+            // RIS (`ESC c`) is honored even here: it is a hard "recover from any
+            // state" reset, and `full_reset` rebuilds `Term` with `vt52_mode`
+            // cleared, so RIS always escapes VT52 back to ANSI. VT52 defines no
+            // other meaning for `ESC c`.
+            b'c' => self.full_reset(),
+            // Graphics mode (`ESC F`/`ESC G`) is a documented non-goal: the VT52
+            // graphics glyph set differs from DEC Special Graphics, so reusing that
+            // charset would render the wrong glyphs. No-op rather than approximate.
+            b'F' | b'G' => {}
+            _ => {} // unknown VT52 finals are ignored
+        }
+    }
+
+    /// Consume one `ESC Y` coordinate byte (#84). The first byte is the row, the
+    /// second the column; each decodes as `value - 0x20`. On the second byte the
+    /// cursor is addressed (`goto` clamps out-of-range coordinates). Reached only
+    /// from `print` while `vt52_y_pending > 0`.
+    fn vt52_take_coord(&mut self, c: char) {
+        let coord = (c as usize).saturating_sub(0x20);
+        if self.vt52_y_pending == 2 {
+            self.vt52_y_row = coord;
+            self.vt52_y_pending = 1;
+        } else {
+            self.vt52_y_pending = 0;
+            self.goto(self.vt52_y_row, coord);
+        }
+    }
 }
 
 impl Perform for Term {
     fn print(&mut self, c: char) {
+        // VT52 `ESC Y` direct addressing (#84): vte delivers the two coordinate
+        // bytes here (it returned to ground after the `Y` final), so intercept
+        // them before they would be written as glyphs.
+        if self.vt52_y_pending > 0 {
+            self.vt52_take_coord(c);
+            return;
+        }
         // Translate through the active (GL) character set first (#62): under DEC
         // Special Graphics a printable byte becomes a line-drawing glyph.
         let c = self.charsets[self.gl].map(c);
@@ -2466,6 +2540,14 @@ impl Perform for Term {
     }
 
     fn esc_dispatch(&mut self, intermediates: &[u8], _ignore: bool, byte: u8) {
+        // VT52 mode (#84): the pre-ANSI dialect reuses the same `ESC <final>`
+        // tokens vte already produces, but with different meanings, so it is a
+        // mode-gated branch here rather than a separate parser. All VT52 sequences
+        // are intermediate-free; anything with an intermediate is not VT52.
+        if self.vt52_mode && intermediates.is_empty() {
+            self.vt52_dispatch(byte);
+            return;
+        }
         if let Some(&i) = intermediates.first() {
             // SCS: designate a charset to G0 (`ESC ( F`) or G1 (`ESC ) F`) (#62).
             if matches!(i, b'(' | b')') {
