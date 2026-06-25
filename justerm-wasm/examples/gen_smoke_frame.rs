@@ -26,6 +26,8 @@ fn main() {
         cursor_row: 3,
         cursor_col: 7,
         cursor_visible: false,
+        cursor_shape: justerm::CursorShape::Block,
+        cursor_blink: false,
         scroll: None,
         spans: vec![Span {
             line: 0,

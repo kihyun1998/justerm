@@ -475,6 +475,8 @@ impl Term {
             // damage is emitted while scrolled) and with xterm.js / alacritty,
             // which hide the caret when it falls outside the visible rows (#48).
             cursor_visible: self.cursor.visible && self.display_offset == 0,
+            cursor_shape: self.cursor.shape,
+            cursor_blink: self.cursor.blink,
             scroll: self.scroll_delta(),
             spans,
             side_table,
@@ -1293,6 +1295,7 @@ impl Term {
             45 => Some(self.reverse_wraparound),
             9 => Some(self.mouse_protocol == MouseProtocol::X10),
             66 => Some(self.application_keypad),
+            12 => Some(self.cursor.blink),
             25 => Some(self.cursor.visible),
             // Mouse tracking is a single-state enum (the levels are mutually
             // exclusive — an app enables one), so querying ?1000 while ?1002 is
@@ -2219,6 +2222,8 @@ impl Term {
             ('l', 3) => self.events.push(TermEvent::ColumnMode { cols: 80 }),
             ('h', 25) => self.cursor.visible = true, // DECTCEM show
             ('l', 25) => self.cursor.visible = false, // DECTCEM hide
+            ('h', 12) => self.cursor.blink = true,   // att610 cursor blink (#81)
+            ('l', 12) => self.cursor.blink = false,
             ('h', 2004) => self.bracketed_paste = true,
             ('l', 2004) => self.bracketed_paste = false,
             ('h', 2026) => self.synchronized_output = true, // synchronized output (#73)

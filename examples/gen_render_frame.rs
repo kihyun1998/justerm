@@ -49,6 +49,8 @@ fn main() {
         cursor_row: 0,
         cursor_col: 0,
         cursor_visible: true,
+        cursor_shape: justerm::CursorShape::Block,
+        cursor_blink: false,
         scroll: None,
         spans,
         side_table: vec![],
