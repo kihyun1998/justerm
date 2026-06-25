@@ -62,12 +62,31 @@ impl Modifiers {
     }
 }
 
+/// A numeric-keypad key. In application-keypad mode (DECNKM ?66 / DECKPAM, #74)
+/// these encode as the classic VT100/VT220 SS3 sequences; in numeric mode as the
+/// literal character. The consumer produces these for *raw* keypad identity — it
+/// owns NumLock / key-location resolution (#83).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeypadKey {
+    /// A keypad digit, `0..=9`.
+    Digit(u8),
+    Decimal,
+    Enter,
+    Add,
+    Subtract,
+    Multiply,
+    Divide,
+    Equal,
+}
+
 /// A logical key press from the consumer (already decoded from the platform's
 /// keyboard event — justerm does not read hardware).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Key {
     /// A printable character (the consumer's already-composed text).
     Char(char),
+    /// A numeric-keypad key (encoded per application-keypad mode, #83).
+    Keypad(KeypadKey),
     Up,
     Down,
     Right,
@@ -223,7 +242,12 @@ const KITTY_DISAMBIGUATE: u8 = 0b1;
 /// Encode a key event to bytes, given whether DECCKM (application cursor keys)
 /// is active and the kitty keyboard-protocol flags. Returns `None` only for keys
 /// with no defined encoding.
-pub fn encode_key(ev: &KeyEvent, app_cursor: bool, kitty_flags: u8) -> Option<Vec<u8>> {
+pub fn encode_key(
+    ev: &KeyEvent,
+    app_cursor: bool,
+    app_keypad: bool,
+    kitty_flags: u8,
+) -> Option<Vec<u8>> {
     // Under the kitty protocol, events legacy cannot express (a modifier on a
     // text key, a release/repeat) take the `CSI unicode ; mods : event u` form;
     // everything else falls through to legacy (#23).
@@ -234,6 +258,7 @@ pub fn encode_key(ev: &KeyEvent, app_cursor: bool, kitty_flags: u8) -> Option<Ve
     }
     match ev.key {
         Key::Char(c) => Some(encode_char(c, ev.mods)),
+        Key::Keypad(k) => Some(keypad_key(k, app_keypad)),
         Key::Up => Some(cursor_key(b'A', ev.mods, app_cursor)),
         Key::Down => Some(cursor_key(b'B', ev.mods, app_cursor)),
         Key::Right => Some(cursor_key(b'C', ev.mods, app_cursor)),
@@ -459,6 +484,38 @@ fn cursor_key(final_byte: u8, mods: Modifiers, app_cursor: bool) -> Vec<u8> {
         }
         None if app_cursor => vec![ESC, b'O', final_byte],
         None => vec![ESC, b'[', final_byte],
+    }
+}
+
+/// A numeric-keypad key (#83). In application-keypad mode it is the classic
+/// VT100/VT220 `SS3` sequence (`ESC O <final>`); in numeric mode it is the
+/// literal character. Sequences verified against the xterm ctlseqs DEC
+/// application-keypad table.
+fn keypad_key(k: KeypadKey, app_keypad: bool) -> Vec<u8> {
+    if app_keypad {
+        let final_byte = match k {
+            KeypadKey::Digit(n) => b'p' + n.min(9), // p=0 .. y=9
+            KeypadKey::Decimal => b'n',
+            KeypadKey::Enter => b'M',
+            KeypadKey::Add => b'k',
+            KeypadKey::Subtract => b'm',
+            KeypadKey::Multiply => b'j',
+            KeypadKey::Divide => b'o',
+            KeypadKey::Equal => b'X',
+        };
+        vec![ESC, b'O', final_byte]
+    } else {
+        let c = match k {
+            KeypadKey::Digit(n) => b'0' + n.min(9),
+            KeypadKey::Decimal => b'.',
+            KeypadKey::Enter => b'\r',
+            KeypadKey::Add => b'+',
+            KeypadKey::Subtract => b'-',
+            KeypadKey::Multiply => b'*',
+            KeypadKey::Divide => b'/',
+            KeypadKey::Equal => b'=',
+        };
+        vec![c]
     }
 }
 
