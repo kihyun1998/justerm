@@ -171,6 +171,58 @@ fn back_button_rides_the_x10_default_framing() {
     );
 }
 
+// #70 — ?9 X10 mouse: press-only, no release/motion/wheel, modifiers stripped
+// (verified against xterm.js CoreMouseService X10 `restrict`).
+
+#[test]
+fn x10_mouse_reports_a_bare_press() {
+    let mut t = Engine::new(80, 24);
+    t.feed(b"\x1b[?9h"); // X10 tracking
+    // Left press at (5,10) on the default X10 framing: Cb 0 + 32 = 32, coords +32.
+    assert_eq!(
+        t.encode_mouse(btn(MouseButton::Left, 5, 10)).unwrap(),
+        vec![0x1b, b'[', b'M', 32, 38, 43]
+    );
+}
+
+#[test]
+fn x10_mouse_drops_release_motion_and_wheel() {
+    let mut t = Engine::new(80, 24);
+    t.feed(b"\x1b[?9h");
+    let mut rel = btn(MouseButton::Left, 5, 10);
+    rel.action = MouseAction::Release;
+    assert!(t.encode_mouse(rel).is_none(), "X10 reports no release");
+    let mut mv = btn(MouseButton::Left, 5, 10);
+    mv.action = MouseAction::Motion;
+    assert!(t.encode_mouse(mv).is_none(), "X10 reports no motion");
+    assert!(
+        t.encode_mouse(btn(MouseButton::WheelUp, 5, 10)).is_none(),
+        "X10 reports no wheel",
+    );
+}
+
+#[test]
+fn x10_mouse_strips_modifiers() {
+    let mut t = Engine::new(80, 24);
+    t.feed(b"\x1b[?9h");
+    let mut e = btn(MouseButton::Left, 5, 10);
+    e.mods = Modifiers::CTRL;
+    // Ctrl is stripped → identical bytes to a bare press (Cb 32, not 32 + 16).
+    assert_eq!(
+        t.encode_mouse(e).unwrap(),
+        vec![0x1b, b'[', b'M', 32, 38, 43]
+    );
+}
+
+#[test]
+fn decrqm_reports_x10_mode() {
+    let mut t = Engine::new(80, 24);
+    t.feed(b"\x1b[?9$p"); // default off → reset
+    assert_eq!(t.drain_replies(), b"\x1b[?9;2$y");
+    t.feed(b"\x1b[?9h\x1b[?9$p"); // on → set
+    assert_eq!(t.drain_replies(), b"\x1b[?9;1$y");
+}
+
 #[test]
 fn urxvt_encoding_is_decimal_csi_m() {
     let mut t = Engine::new(80, 24);
