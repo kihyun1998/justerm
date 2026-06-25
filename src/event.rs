@@ -20,4 +20,8 @@ pub enum TermEvent {
     Bell,
     /// The working directory was reported (OSC 7), e.g. `file://host/path`.
     Cwd(String),
+    /// The app requested 80/132-column mode (DECCOLM `?3`). justerm is
+    /// dimension-free, so this is a *request* — the consumer may honor it by
+    /// calling `resize(cols, rows)`, or ignore it. `cols` is 80 or 132 (#82).
+    ColumnMode { cols: usize },
 }
