@@ -21,7 +21,7 @@ This bench is renderer-free `feed()` vs `write()`. The premise originated in
 **penterm**, whose `perf-journey.md` recorded justerm `feed` as the "wall" and
 xterm ~1.5× faster end-to-end. That turned out to be a **`tauri dev` (debug-Rust)
 measurement artifact** — penterm's harness runs under `tauri dev`, which compiles
-the `justerm` dependency in debug, while xterm is JIT-optimized JS regardless.
+the `justerm-core` dependency in debug, while xterm is JIT-optimized JS regardless.
 Re-run in release (`pnpm tauri dev --release`), penterm's *full* pipeline
 (feed + encode + IPC + wasm decode + beamterm render) **beats xterm 2.6–4.8×**
 (native ascii 73.5 / ansi 83.7 / cjk 103.4 MB/s vs xterm 24.3 / 31.6 / 21.4);
