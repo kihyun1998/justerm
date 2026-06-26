@@ -72,6 +72,12 @@ cargo bench              # throughput 마이크로벤치(추세 기록)
 **구현 전, 참조 구현(vte/alacritty/xterm)이 그 영역에서 추적하는 *숨은 상태*를 열거**하고
 `docs/architecture.md` § "Hidden VT state" 에 추가하라. 체계적 catch 는 #7 vttest — 일찍 세워라.
 
+**결정 유형으로 라우팅한다.** 순수 기술 메커니즘(와이어 포맷·좌표계·API 모양 등 — 코드 + 명명된
+prior-art 로 *도출 가능*한 것)은 사용자에게 grilling 하지 말고 **직접 결정 → 실제 소스 대조 검증 →
+결과만 제시**(yes/no 승인). 답이 코드에 있는 걸 묻는 건 일 떠넘기기다. grilling/질문은 **제품·정체성·
+우선순위 판단**(네이밍·repo 구조·스코프·비전 — 사용자가 의견 갖고 교정할 영역)에만 쓴다. ADR 은 보통
+*구현 시* 확정이 더 단단하다(실제 encode/decode 디테일이 결정을 firm up).
+
 ## Agent skills
 
 ### Issue tracker
