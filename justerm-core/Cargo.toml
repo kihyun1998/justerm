@@ -1,0 +1,30 @@
+[package]
+name = "justerm-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "A pure terminal engine: VT byte stream to grid + scrollback + damage. No I/O, no rendering, theme-agnostic."
+readme = "README.md"
+keywords = ["terminal", "vte", "ansi", "tui", "emulator"]
+categories = ["command-line-interface", "parsing"]
+# `benches/inputs.rs` is a shared helper module (included via `#[path]`), not a
+# bench target — disable auto-discovery and list the real bench explicitly.
+autobenches = false
+
+[dependencies]
+bitflags = "2"
+unicode-width = "0.2"
+vte = "0.15"
+
+[dev-dependencies]
+criterion = "0.8"
+# Property-based robustness tests for the untrusted-input entry points (`serialize::decode` over a
+# wire buffer, `Engine::feed` over a VT stream): "decode never panics on arbitrary bytes", plus the
+# encode/decode round-trip the serialization contract (ADR-0005) promises. See ADR-0006's sibling
+# robustness rationale in tests/robustness.rs.
+proptest = "1"
+
+[[bench]]
+name = "throughput"
+harness = false

@@ -462,7 +462,7 @@ scrollback). This
 integration is tracked in PenTerm, not here — but it defines what the engine's output must serve.
 
 In the webview, the adapter does not hand-write the `decode` side of the wire format: justerm ships
-the **canonical web decoder** as a separate `justerm-wasm` crate (the native `decode` compiled to
+the **canonical web decoder** as a separate `justerm-wasm-decode` crate (the native `decode` compiled to
 WASM, version-locked to the crate), so encode (native backend) and decode (WASM webview) share one
 implementation and cannot drift. The decoder stops at *references* (a zero-copy flat cell-buffer view
 + span directory); ref → RGB, codepoint → atlas, and the per-cell adapter loop above stay the

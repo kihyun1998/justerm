@@ -1,0 +1,22 @@
+# One-shot tombstone for the pre-0.6.0 crate name `justerm` (#100, ADR-0010).
+#
+# `justerm` was renamed to `justerm-core`. This 0.5.1 release re-exports `justerm-core`
+# so existing `justerm = "0.5"` dependants keep compiling while learning of the rename.
+#
+# DELIBERATELY OUTSIDE the workspace (root `[workspace] exclude`): it is frozen at 0.5.1
+# forever and must NOT be moved by the version-lockstep that ties justerm-core /
+# justerm-wasm-decode together. Published MANUALLY and ONCE, AFTER justerm-core 0.6.0 is
+# live on crates.io (it depends on it) — it cannot be built or gated inside the rename PR.
+# Do not re-publish; do not update.
+[package]
+name = "justerm"
+version = "0.5.1"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/kihyun1998/justerm"
+description = "Renamed to `justerm-core`. This release re-exports justerm-core for the old crate name — depend on justerm-core directly."
+readme = "README.md"
+keywords = ["terminal", "vte", "ansi", "deprecated"]
+
+[dependencies]
+justerm-core = "0.6"

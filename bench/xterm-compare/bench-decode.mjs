@@ -1,4 +1,4 @@
-// Time the WASM per-frame decode penterm's webview runs: justerm-wasm
+// Time the WASM per-frame decode penterm's webview runs: justerm-wasm-decode
 // decodeFrame(wireBytes) -> structure-of-arrays. This is the ONLY WASM cost in
 // penterm's pipeline (feed() runs native in the Tauri backend; beamterm renders
 // the SoA on the GPU, out of scope here). Matched to examples/time_decode.rs:
@@ -10,7 +10,7 @@ import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
 const HERE = dirname(fileURLToPath(import.meta.url));
-const wasm = require(join(HERE, '..', '..', 'justerm-wasm', 'pkg-node', 'justerm_wasm.js'));
+const wasm = require(join(HERE, '..', '..', 'justerm-wasm-decode', 'pkg-node', 'justerm_wasm_decode.js'));
 
 const framePath = process.argv[2];
 const bytes = new Uint8Array(readFileSync(framePath));

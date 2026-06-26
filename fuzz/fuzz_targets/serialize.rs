@@ -6,5 +6,5 @@
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {
-    let _ = justerm::decode(data);
+    let _ = justerm_core::decode(data);
 });

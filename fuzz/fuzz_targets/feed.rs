@@ -19,6 +19,6 @@ struct Input {
 fuzz_target!(|input: Input| {
     let cols = usize::from(input.cols) % 200 + 1;
     let rows = usize::from(input.rows) % 100 + 1;
-    let mut engine = justerm::Engine::new(cols, rows);
+    let mut engine = justerm_core::Engine::new(cols, rows);
     engine.feed(&input.stream);
 });
