@@ -1,4 +1,6 @@
-/target
+# Match at any depth: the workspace shares /target, but the workspace-excluded
+# crates (fuzz, justerm-facade) each build their own target/ dir (#100).
+target/
 
 # wasm-pack build output (the npm artifact is built in CI / on publish, never committed).
 # wasm-pack also writes a nested .gitignore in each, but make it explicit here too.
