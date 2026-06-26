@@ -1,42 +1,16 @@
 [workspace]
-members = [".", "justerm-wasm"]
+members = ["justerm-core", "justerm-wasm-decode"]
+# `fuzz` (cargo-fuzz, nightly/libFuzzer) and `justerm-facade` (the one-shot `justerm`
+# 0.5.1 tombstone, frozen at its own version) are deliberately OUTSIDE the workspace:
+# the fuzz crate carries its own `[workspace]`, and the facade must not be dragged by
+# the version-lockstep below. Verify them via `--manifest-path` (see CLAUDE.md).
+exclude = ["fuzz", "justerm-facade"]
 resolver = "3"
 
-# Shared across the core crate and the `justerm-wasm` binding so one version bump
+# Shared across the core crate and the `justerm-wasm-decode` binding so one version bump
 # moves both — the version-lockstep ADR-0005/0008 require (#34).
 [workspace.package]
-version = "0.5.0"
+version = "0.6.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/kihyun1998/justerm"
-
-[package]
-name = "justerm"
-version.workspace = true
-edition.workspace = true
-license.workspace = true
-repository.workspace = true
-description = "A pure terminal engine: VT byte stream to grid + scrollback + damage. No I/O, no rendering, theme-agnostic."
-readme = "README.md"
-keywords = ["terminal", "vte", "ansi", "tui", "emulator"]
-categories = ["command-line-interface", "parsing"]
-# `benches/inputs.rs` is a shared helper module (included via `#[path]`), not a
-# bench target — disable auto-discovery and list the real bench explicitly.
-autobenches = false
-
-[dependencies]
-bitflags = "2"
-unicode-width = "0.2"
-vte = "0.15"
-
-[dev-dependencies]
-criterion = "0.8"
-# Property-based robustness tests for the untrusted-input entry points (`serialize::decode` over a
-# wire buffer, `Engine::feed` over a VT stream): "decode never panics on arbitrary bytes", plus the
-# encode/decode round-trip the serialization contract (ADR-0005) promises. See ADR-0006's sibling
-# robustness rationale in tests/robustness.rs.
-proptest = "1"
-
-[[bench]]
-name = "throughput"
-harness = false

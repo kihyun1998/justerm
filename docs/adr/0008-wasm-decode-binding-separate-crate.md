@@ -266,3 +266,22 @@ that is the consumer's consumption contract.
 - **Boundary refined, not breached.** justerm-wasm still never knows a hex value or a font atlas; it
   gained ownership of *fixed formats/standards* only — a sharpening of, not a departure from, the
   core's theme/renderer-agnostic invariants.
+
+## Amendment (2026-06-26, v0.6.0) — crate renamed `justerm-wasm` → `justerm-wasm-decode`
+
+The all-prefixed naming convention (ADR-0010, #100) renames this crate from **`justerm-wasm`** to
+**`justerm-wasm-decode`** (and the core `justerm` → `justerm-core`). Nothing about the decision above
+changes — the separate-crate packaging (Axis 1), the `justerm-core::decode` reuse (Axis 2), the
+flat-buffer / structure-of-arrays output (Axis 3 + the v0.2.0 amendment), and the 18-byte stride
+(Axis 4) all stand. The rename only makes the **decode-only scope explicit in the name**:
+
+- `-decode` states that this crate is the *decoder* binding, distinguishing it from a future
+  **`justerm-wasm-engine`** — a reserved sibling for an in-wasm `feed`/engine binding (the "in-wasm
+  mode" this ADR's `encode`-stays-native scope deferred). That split was implicit before; the suffixes
+  now name it.
+- The npm package name follows the crate name automatically (wasm-pack derives it), so the published
+  artifact becomes `justerm-wasm-decode`. The old npm `justerm-wasm` is `deprecate`d with a redirect
+  message; see ADR-0010 for the tombstone strategy and the npm↔crates.io signal asymmetry.
+
+The wire format and the JS API are **unchanged** by this rename — it is a packaging/name change only,
+carried by the v0.6.0 version bump (the binding's first publish under the new name).

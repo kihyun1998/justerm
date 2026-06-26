@@ -3,9 +3,10 @@
 VT 바이트 스트림을 터미널 화면 상태(그리드 + 스크롤백)로 짜 넣는 **순수 터미널 엔진** (Rust).
 렌더러도 emulator 도 아니다 — 화면을 *그리지 않고*, 화면 *상태와 변경분(damage)* 을 만들어 노출한다.
 
-- **엔진 = justerm** (이 repo, 파싱+상태) / **렌더러 = `beamterm`** (그리드를 WebGL2 로 그림, 별도) →
-  `-term` 패밀리.
-- **첫 소비처 = PenTerm** (Tauri 터미널 앱). justerm 은 penterm 전용이 아니라 *재사용 가능한 독립
+- **엔진 = `justerm-core`** (이 repo 의 코어 크레이트, 파싱+상태) / **렌더러 = `beamterm`** (그리드를
+  WebGL2 로 그림, 별도) → `-term` 패밀리. `justerm` 은 *패밀리 umbrella* 이름이다(코어 `justerm-core` +
+  wasm 디코더 `justerm-wasm-decode` + 향후 `justerm-web`) — v0.6.0 에서 맨이름 `justerm` 을 개명(ADR-0010).
+- **첫 소비처 = PenTerm** (Tauri 터미널 앱). `justerm-core` 는 penterm 전용이 아니라 *재사용 가능한 독립
   크레이트*다.
 - **상세 계약(구현 시 참조)**: **`docs/architecture.md`** — 셀·damage·뷰포트/스크롤·cadence·
   selection·직렬화·엔진 API 의 authoritative 스펙. 핵심 결정 근거는 `docs/adr/`(0001 vte·0002
@@ -37,13 +38,19 @@ justerm 이 **하지 않는 것** (의존성으로 끌어들이지도 말 것):
 ## 개발 명령어
 
 ```bash
-cargo test --workspace   # 코어 + justerm-wasm 바인딩까지 게이트 (--workspace 필수)
+cargo test --workspace   # 코어(justerm-core) + justerm-wasm-decode 바인딩까지 게이트 (--workspace 필수)
 cargo bench              # throughput 마이크로벤치(추세 기록)
 ```
 
-**`--workspace` 는 필수**: 맨 `cargo test`/`cargo build --all-targets` 는 *현재 패키지(`justerm`)만* 본다 —
-공개 API 를 바꾸는 변경은 `justerm-wasm` 바인딩을 조용히 깨뜨릴 수 있으니(0.4.0 에서 발생), 공개 표면을
-건드릴 땐 `cargo test --workspace`/`cargo clippy --workspace --all-targets` 로 멤버 전부를 검증한다(CI 와 동일).
+**`--workspace` 는 필수**: 루트는 가상 매니페스트(`[package]` 없음)라 멤버를 명시 게이트해야 한다 —
+공개 API 를 바꾸는 변경은 `justerm-wasm-decode` 바인딩을 조용히 깨뜨릴 수 있으니(0.4.0 에서 발생), 공개
+표면을 건드릴 땐 `cargo test --workspace`/`cargo clippy --workspace --all-targets` 로 멤버 전부를 검증한다(CI 와 동일).
+
+**`--workspace` *밖* 사각지대**: `fuzz` 와 `justerm-facade` 는 의도적으로 워크스페이스 밖이다(루트
+`[workspace] exclude`; fuzz 는 자체 `[workspace]`, facade 는 버전 lockstep 바깥의 일회성 `justerm` 0.5.1
+묘비). `--workspace` 게이트가 이들을 *빌드조차 안 하므로*, 개명·공개경로 변경 후엔
+`cargo check --manifest-path fuzz/Cargo.toml` 로 별도 검증한다. 같은 류의 다른 사각:
+`cargo fmt --all --check`(핀 버전)와 wasm32-전용 `justerm-wasm-decode/tests/web.rs`(host 에선 0컴파일).
 
 ## 핵심 규칙
 

@@ -2,7 +2,7 @@
 
 # wasm-pack build output (the npm artifact is built in CI / on publish, never committed).
 # wasm-pack also writes a nested .gitignore in each, but make it explicit here too.
-/justerm-wasm/pkg*
+/justerm-wasm-decode/pkg*
 
 # Local scratch (personal prompt notes — not part of the crate)
 /prompt.md

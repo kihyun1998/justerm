@@ -3,11 +3,19 @@
 The shared vocabulary for justerm. Glossary only — no implementation detail, no spec. When code,
 issues, or ADRs name a concept here, use this term and not a synonym.
 
+## justerm (family)
+
+`justerm` names the `-term`-family umbrella, not a single crate: the **Engine** (crate `justerm-core`),
+its WASM binding(s) (`justerm-wasm-decode`), and the forthcoming web-renderer side (`justerm-web`). When
+the core engine crate specifically is meant, say `justerm-core`; "justerm" alone is the family. (The
+name was `justerm` for the bare engine until v0.6.0 renamed it for this disambiguation — ADR-0010.)
+
 ## Engine
 
-justerm itself: the component that consumes a VT byte stream and owns the authoritative terminal
-state (grid, scrollback, cursor, selection). It produces a viewport snapshot, damage, and scroll ops.
-It does no I/O, no IPC, no rendering, and is theme-agnostic. Distinct from the **Renderer**.
+The core component that consumes a VT byte stream and owns the authoritative terminal state (grid,
+scrollback, cursor, selection); its crate is **`justerm-core`**. It produces a viewport snapshot,
+damage, and scroll ops. It does no I/O, no IPC, no rendering, and is theme-agnostic. Distinct from the
+**Renderer**.
 
 ## Renderer
 
@@ -22,7 +30,7 @@ renderer. The first consumer is PenTerm.
 ## WASM decoder
 
 The canonical web decoder: the engine's wire-format `decode` compiled to WASM and published to npm
-(as `justerm-wasm`), so a web **Consumer** shares one decoder with the native backend instead of
+(as `justerm-wasm-decode`), so a web **Consumer** shares one decoder with the native backend instead of
 re-implementing it. It yields reference cells (with **Color references**) and the format-level
 helpers to read them; the theme values that resolve those references — the **Palette** — and the
 render policy that feeds the **Renderer** stay the consumer's adapter. Version-locked to the engine.

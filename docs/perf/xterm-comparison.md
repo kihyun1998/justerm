@@ -36,7 +36,7 @@ the correction on their side.)
 - **Same scope**: `@xterm/headless` is the real xterm.js core with no renderer —
   bytes → buffer state, exactly justerm's `feed()` contract. Neither side draws.
 - **Same bytes**: the 5 streams are dumped from justerm's own `benches/inputs.rs`
-  (`cargo run --release --example dump_bench_inputs -- <dir>`) and fed verbatim to
+  (`cargo run --release -p justerm-core --example dump_bench_inputs -- <dir>`) and fed verbatim to
   both engines — no re-authoring, so no workload confound.
 - **Same config**: cols=80, rows=24, scrollback=100 (= bench `FLOOD_CAP`, so the
   flood stream drives the at-cap recycle path on both sides).
@@ -100,7 +100,7 @@ ideas for justerm-vs-itself, should that ever become a goal — see below.)
 ## Caveats / scope (what this does NOT measure)
 
 1. **Native only.** This is justerm's native `feed()`. justerm's first consumer
-   (penterm) uses it via **WASM** (`justerm-wasm`) + the **beamterm** renderer. If
+   (penterm) uses it via **WASM** (`justerm-wasm-decode`) + the **beamterm** renderer. If
    slowness is perceived *there*, it lives in the WASM boundary or rendering — a
    different axis this bench does not touch. Measure that separately before
    concluding anything about penterm.
@@ -116,7 +116,7 @@ ideas for justerm-vs-itself, should that ever become a goal — see below.)
 ## WASM decode path (penterm's render-feeding cost)
 
 A follow-up to "if justerm is fast natively, where does penterm slow down?".
-Key architecture correction: **`justerm-wasm` is a *decoder*, not the engine** — it
+Key architecture correction: **`justerm-wasm-decode` is a *decoder*, not the engine** — it
 exposes `decodeFrame(bytes)`, not `feed()`. penterm's pipeline runs `feed()`
 **native** in the Tauri backend (the fast path measured above), serialises a
 compact wire frame, ships it over IPC, and the webview calls `decodeFrame` (WASM)
@@ -149,10 +149,10 @@ indexed colour every 5 cells), release wasm-pack build, batched median:
 
 Reproduce:
 ```
-cargo run --release -p justerm-wasm --example gen_smoke_frame  -- /tmp/smoke.bin   # 1-cell
-cargo run --release            --example gen_render_frame      -- /tmp/full.bin    # 80x24
-cargo run --release            --example time_decode           -- /tmp/full.bin    # native
-wasm-pack build justerm-wasm --target nodejs --out-dir pkg-node
+cargo run --release -p justerm-wasm-decode --example gen_smoke_frame  -- /tmp/smoke.bin   # 1-cell
+cargo run --release -p justerm-core --example gen_render_frame -- /tmp/full.bin    # 80x24
+cargo run --release -p justerm-core --example time_decode      -- /tmp/full.bin    # native
+wasm-pack build justerm-wasm-decode --target nodejs --out-dir pkg-node
 node bench/xterm-compare/bench-decode.mjs /tmp/full.bin [--touch]                  # wasm
 ```
 
@@ -168,8 +168,8 @@ it is a separate decision. Flagged here so it isn't lost.
 ## Reproduce
 
 ```
-cargo run --release --example dump_bench_inputs -- bench/xterm-compare/inputs
-cargo run --release --example time_feed       -- bench/xterm-compare/inputs   # justerm
+cargo run --release -p justerm-core --example dump_bench_inputs -- bench/xterm-compare/inputs
+cargo run --release -p justerm-core --example time_feed         -- bench/xterm-compare/inputs   # justerm
 cd bench/xterm-compare && npm install && node bench-xterm.mjs                  # xterm
 ```
 Adjust `TARGET_BYTES` (both harnesses, kept equal) to change payload size.

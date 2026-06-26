@@ -8,7 +8,7 @@ re-published).
 ## The version is one number
 
 `[workspace.package] version` in the root `Cargo.toml` is the single source — it moves both the core
-crate (`justerm`) and the binding (`justerm-wasm`) together (the lockstep ADR-0005/0008 require). The
+crate (`justerm-core`) and the binding (`justerm-wasm-decode`) together (the lockstep ADR-0005/0008 require). The
 **wire `VERSION`** is a *separate* constant (ADR-0008): `feed`/internal changes can ship without a wire
 bump. So map the change to the version like this (pre-1.0 / 0.x semver):
 
@@ -24,7 +24,7 @@ bump. So map the change to the version like this (pre-1.0 / 0.x semver):
 2. Gate **the whole workspace** (not just the core crate): `cargo test --workspace` green,
    `cargo clippy --workspace --all-targets` clean. The `--workspace` is load-bearing — a bare
    `cargo test` / `cargo build --all-targets` only covers the current package, so a public-API change
-   that breaks the `justerm-wasm` binding passes a non-workspace gate silently (it bit v0.4.0; CI's
+   that breaks the `justerm-wasm-decode` binding passes a non-workspace gate silently (it bit v0.4.0; CI's
    `test.yml` already uses `--workspace`, so this just matches the local gate to CI before the tag).
 3. Commit: `chore(release): vX.Y.Z — <summary> (#issues)` (Cargo.toml + Cargo.lock).
 4. Tag: `git tag -a vX.Y.Z -m "vX.Y.Z — <summary>"`.
@@ -39,10 +39,10 @@ That tag push is the publish trigger. Verify it:
 
 | Workflow | Publishes | Gate | Secret |
 | --- | --- | --- | --- |
-| `.github/workflows/publish-crate.yml` | `cargo publish -p justerm` → crates.io | tag (minus `v`) must equal the crate version, else fail | `CARGO_REGISTRY_TOKEN` |
-| `.github/workflows/publish-wasm.yml` | `wasm-pack build --target bundler` + `npm publish` → npm (`justerm-wasm`) | tag must equal the wasm-pack package version, else fail | `NPM_TOKEN` |
+| `.github/workflows/publish-crate.yml` | `cargo publish -p justerm-core` → crates.io | tag (minus `v`) must equal the crate version, else fail | `CARGO_REGISTRY_TOKEN` |
+| `.github/workflows/publish-wasm.yml` | `wasm-pack build --target bundler` + `npm publish` → npm (`justerm-wasm-decode`) | tag must equal the wasm-pack package version, else fail | `NPM_TOKEN` |
 
-Both secrets are one-time maintainer setup (repo secrets). `justerm-wasm` is `publish = false` for cargo,
+Both secrets are one-time maintainer setup (repo secrets). `justerm-wasm-decode` is `publish = false` for cargo,
 so it never goes to crates.io; the core crate never goes to npm.
 
 ## GitHub Releases — manual, and the track starts at v0.3.1
@@ -59,5 +59,11 @@ much older tags. Backfilling is a non-goal, not an oversight — leave the pre-v
 
 - `v0.1.0` was published to crates.io manually before `publish-crate.yml` existed; re-tagging it would
   fail ("already uploaded"). The automation is for `0.1.1+`.
-- Bumping the workspace version moves `justerm-wasm` even when only the core crate changed — that is the
+- **The crates were renamed in v0.6.0** (#100, ADR-0010): `justerm` → `justerm-core` (crates.io) and
+  `justerm-wasm` → `justerm-wasm-decode` (npm). `v0.6.0` is the *first* publish of both new names. The
+  old names are tombstoned — npm `justerm-wasm` is `deprecate`d, and crates.io `justerm` gets a one-shot
+  `0.5.1` facade (`pub use justerm_core::*`); see ADR-0010 for the facade-over-yank rationale. Publish
+  order on the tag is automatic (both new names are fresh); the `justerm` 0.5.1 facade is a separate
+  manual publish that must come **after** `justerm-core` 0.6.0 is live (it depends on it).
+- Bumping the workspace version moves `justerm-wasm-decode` even when only the core crate changed — that is the
   lockstep working as intended, so the wasm decoder and core never drift in version.
