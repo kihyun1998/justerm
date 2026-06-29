@@ -57,6 +57,7 @@ fn main() {
         spans,
         side_table: vec![],
         link_table: vec![],
+        overlay: Default::default(),
     };
 
     let bytes = encode(&frame);

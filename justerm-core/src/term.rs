@@ -19,7 +19,7 @@ use crate::input::{
 };
 use crate::search::Match;
 use crate::selection::{Anchor, BufferPoint, Selection, SelectionSpan, SelectionType, Side};
-use crate::serialize::{Frame, FrameKind, Span};
+use crate::serialize::{Frame, FrameKind, MarkerId, MarkerPosition, Overlay, Span};
 
 /// Owns the authoritative screen state and applies VT actions to it.
 pub struct Term {
@@ -151,6 +151,17 @@ pub struct Term {
     /// The live selection, in absolute buffer coordinates. `None` when nothing
     /// is selected. See `selection.rs`.
     selection: Option<Selection>,
+    /// The active search highlights the consumer asked to paint (#108). Search
+    /// matches are consumer-owned (it drives next/prev), so the engine holds only
+    /// the set handed back via `set_search_highlights`, and `frame()` projects it
+    /// onto the viewport — the same anchoring path as the selection.
+    search_highlights: Vec<Match>,
+    /// Engine-owned decoration markers (#118): each a stable id bound to an
+    /// absolute buffer line. The line re-anchors through eviction/scroll/reflow
+    /// like a selection anchor, and the marker is disposed when its line leaves
+    /// the buffer. `next_marker_id` hands out monotonic ids.
+    markers: Vec<Marker>,
+    next_marker_id: u32,
     /// Cursor state saved by DECSC (ESC 7), restored by DECRC (ESC 8). A slot
     /// separate from `saved_cursor` (which is the alt-screen save). Defaults to
     /// home/default so a DECRC with no prior DECSC restores a sane state.
@@ -248,6 +259,15 @@ struct SavedCursor {
     gl: usize,
 }
 
+/// An engine-owned decoration marker (#118): a stable id bound to an absolute
+/// buffer line. The line shifts in lockstep with eviction/region scroll/reflow
+/// (the same coordinate moves the selection anchor tracks); the marker is
+/// dropped when its line leaves the buffer.
+struct Marker {
+    id: MarkerId,
+    line: usize,
+}
+
 /// A selection resolved to absolute-coordinate bounds, ready for text extraction
 /// or viewport-span projection. Columns are half-open (`from..to`).
 enum Resolved {
@@ -330,6 +350,9 @@ impl Term {
             full_damage: false,
             prev_cursor: (0, 0), // matches the default cursor's home position
             selection: None,
+            search_highlights: Vec::new(),
+            markers: Vec::new(),
+            next_marker_id: 0,
             decsc: SavedCursor::default(),
             charsets: [Charset::Ascii; 4],
             gl: 0,
@@ -510,6 +533,19 @@ impl Term {
             spans,
             side_table,
             link_table,
+            // Interaction overlays projected onto this viewport (#108): the
+            // engine-owned selection and the consumer-supplied search highlights,
+            // each re-projected here so the scroll offset is applied once, by the
+            // same authority that projects the cells.
+            overlay: Overlay {
+                selection: self.selection_range(),
+                matches: self
+                    .search_highlights
+                    .iter()
+                    .flat_map(|m| self.match_spans(m))
+                    .collect(),
+                markers: self.marker_positions(),
+            },
         }
     }
 
@@ -781,6 +817,111 @@ impl Term {
             }
         }
         spans
+    }
+
+    /// Set the active search highlights to paint (#108). The consumer owns the
+    /// `Vec<Match>` (it drives next/prev); handing it back here lets `frame()`
+    /// project the highlights onto the viewport. An empty vec clears them.
+    pub fn set_search_highlights(&mut self, matches: Vec<Match>) {
+        self.search_highlights = matches;
+    }
+
+    /// Invalidate the held search highlights (#108). Called wherever a buffer
+    /// mutation shifts the absolute coordinates the matches were found at — cap
+    /// eviction, in-screen region/RI scroll, reflow. Search matches are
+    /// query-derived (the engine holds matches, not the query, and the *set*
+    /// itself may have changed), so unlike the user-authored selection they are
+    /// dropped rather than re-anchored; the consumer re-searches on output
+    /// (mirroring xterm/alacritty). Clearing avoids painting wrong content for
+    /// the frame between the mutation and the consumer's refresh.
+    fn invalidate_search_highlights(&mut self) {
+        self.search_highlights.clear();
+    }
+
+    /// Register a decoration marker at viewport `row`, returning its stable id
+    /// (#118). The row is resolved to an absolute buffer line (like a selection
+    /// anchor), so the marker tracks that content through scroll/eviction/reflow.
+    pub fn add_marker(&mut self, row: usize) -> MarkerId {
+        let id = MarkerId(self.next_marker_id);
+        self.next_marker_id += 1;
+        let line = self.viewport_to_abs(row, 0).line;
+        self.markers.push(Marker { id, line });
+        id
+    }
+
+    /// Remove a marker by id (#118). Disposing it fires `MarkerDisposed` so the
+    /// consumer's cleanup is one path whether the marker left by eviction or by
+    /// this explicit call (xterm's `dispose()` likewise always fires onDispose).
+    /// A no-op for an unknown/already-disposed id.
+    pub fn remove_marker(&mut self, id: MarkerId) {
+        let before = self.markers.len();
+        self.markers.retain(|m| m.id != id);
+        if self.markers.len() != before {
+            self.events.push(TermEvent::MarkerDisposed(id));
+        }
+    }
+
+    /// Shift markers down one absolute line after the oldest history line is
+    /// evicted; a marker *on* that line (abs 0) has left the buffer, so it is
+    /// disposed and announced (#118) — the marker analogue of
+    /// `selection_evict_oldest`, but a list with per-marker disposal.
+    fn markers_evict_oldest(&mut self) {
+        let mut disposed = Vec::new();
+        self.markers.retain_mut(|m| {
+            if m.line == 0 {
+                disposed.push(m.id);
+                false
+            } else {
+                m.line -= 1;
+                true
+            }
+        });
+        for id in disposed {
+            self.events.push(TermEvent::MarkerDisposed(id));
+        }
+    }
+
+    /// Rotate markers within an in-screen region scroll of absolute lines
+    /// `[top, bottom]` (`up` = a line dropped at `top`, else at `bottom`) — the
+    /// marker analogue of `selection_rotate_region`. A marker on the dropped edge
+    /// has left the buffer, so it is disposed and announced (#118).
+    fn markers_rotate_region(&mut self, top: usize, bottom: usize, up: bool) {
+        let mut disposed = Vec::new();
+        self.markers.retain_mut(|m| {
+            if m.line < top || m.line > bottom {
+                return true; // outside the region — unchanged
+            }
+            let dropped_edge = if up { top } else { bottom };
+            if m.line == dropped_edge {
+                disposed.push(m.id);
+                false
+            } else {
+                m.line = if up { m.line - 1 } else { m.line + 1 };
+                true
+            }
+        });
+        for id in disposed {
+            self.events.push(TermEvent::MarkerDisposed(id));
+        }
+    }
+
+    /// The engine's markers projected onto the current viewport — one
+    /// `MarkerPosition` per marker whose line is visible, off-screen markers
+    /// omitted. Emitted only on the primary screen (markers anchor primary
+    /// content; an alt-screen frame carries none).
+    fn marker_positions(&self) -> Vec<MarkerPosition> {
+        if self.on_alt {
+            return Vec::new();
+        }
+        let top = self.scrollback.len() - self.display_offset;
+        let rows = self.grid.rows();
+        self.markers
+            .iter()
+            .filter_map(|m| {
+                let row = m.line.checked_sub(top)?;
+                (row < rows).then_some(MarkerPosition { id: m.id, row })
+            })
+            .collect()
     }
 
     /// Begin a selection of `ty` at viewport `(row, col)`, `side`.
@@ -1153,6 +1294,11 @@ impl Term {
         let old_cols = self.grid.cols();
         let limit = self.scrollback_limit;
 
+        // A reflow moves match coordinates (and can change the match set), so the
+        // query-derived highlights are invalidated; the consumer re-searches at
+        // the new width. The selection re-anchors below — it is user-authored.
+        self.invalidate_search_highlights();
+
         // Both screens are resized. Scrollback pairs with the PRIMARY screen
         // (whichever is active) — the alt screen has no history of its own.
         let dims = ReflowDims {
@@ -1170,11 +1316,24 @@ impl Term {
             self.grid.set_screen(r.screen, cols, rows);
             self.cursor.set_point(r.cursor, rows, cols);
 
+            // Primary is inactive here, but markers anchor *primary* content, so
+            // they reflow with it (the selection is already cleared on alt enter).
+            let marker_pts: Vec<(usize, usize)> =
+                self.markers.iter().map(|m| (m.line, 0)).collect();
             let primary = self.alt_grid.take_lines();
-            let r = reflow_pane(primary, scrollback, self.saved_cursor.point(), &[], dims);
+            let r = reflow_pane(
+                primary,
+                scrollback,
+                self.saved_cursor.point(),
+                &marker_pts,
+                dims,
+            );
             self.alt_grid.set_screen(r.screen, cols, rows);
             self.scrollback = r.scrollback;
             self.saved_cursor.set_point(r.cursor, rows, cols);
+            for (i, m) in self.markers.iter_mut().enumerate() {
+                m.line = r.extras[i].0;
+            }
         } else {
             // Active = primary (cursor, scrollback); inactive = alt. The selection
             // anchors (absolute) reflow alongside the cursor so they keep their
@@ -1189,9 +1348,14 @@ impl Term {
                     ]
                 })
                 .unwrap_or_default();
+            // Markers reflow on the same pane, by line (col 0). They ride after
+            // the selection points so each reads its own reflowed slot back from
+            // `extras` (#118).
+            let mut pts = sel_pts.clone();
+            pts.extend(self.markers.iter().map(|m| (m.line, 0)));
 
             let primary = self.grid.take_lines();
-            let r = reflow_pane(primary, scrollback, self.cursor.point(), &sel_pts, dims);
+            let r = reflow_pane(primary, scrollback, self.cursor.point(), &pts, dims);
             self.grid.set_screen(r.screen, cols, rows);
             self.scrollback = r.scrollback;
             self.cursor.set_point(r.cursor, rows, cols);
@@ -1204,6 +1368,10 @@ impl Term {
                     line: r.extras[1].0,
                     col: r.extras[1].1,
                 };
+            }
+            let marker_off = sel_pts.len();
+            for (i, m) in self.markers.iter_mut().enumerate() {
+                m.line = r.extras[marker_off + i].0;
             }
 
             let alt = self.alt_grid.take_lines();
@@ -1444,6 +1612,12 @@ impl Term {
                     // Every absolute index just shifted down by one; move the
                     // selection with it so its anchors keep their content.
                     self.selection_evict_oldest();
+                    // Query-derived highlights can't survive the index shift (see
+                    // the method doc); selection re-anchors, highlights invalidate.
+                    self.invalidate_search_highlights();
+                    // Markers are persistent anchors: shift them down with the
+                    // index, disposing any whose line was the evicted one (#118).
+                    self.markers_evict_oldest();
                     if self.display_offset > 0 {
                         // Scrolled up: evicting the oldest line advanced the
                         // viewport, so it must be repainted (the "frozen while
@@ -1463,6 +1637,8 @@ impl Term {
                     base + self.scroll_bottom,
                     true,
                 );
+                self.markers_rotate_region(base + self.scroll_top, base + self.scroll_bottom, true);
+                self.invalidate_search_highlights();
                 self.grid
                     .scroll_up_region(self.scroll_top, self.scroll_bottom);
             }
@@ -1514,6 +1690,7 @@ impl Term {
         self.on_alt = true;
         self.display_offset = 0; // the alt screen has no scrollback to view
         self.selection = None; // a selection cannot survive a screen swap
+        self.invalidate_search_highlights(); // matches index the primary buffer
         self.mark_fully_damaged();
     }
 
@@ -1527,6 +1704,7 @@ impl Term {
         self.on_alt = false;
         self.display_offset = 0; // return to the primary at its bottom
         self.selection = None; // a selection cannot survive a screen swap
+        self.invalidate_search_highlights(); // matches index the swapped-out buffer
         self.mark_fully_damaged();
     }
 
@@ -1556,6 +1734,8 @@ impl Term {
             // screen, so absolute indices in it shift down. Rotate the selection.
             let base = self.scrollback.len();
             self.selection_rotate_region(base + self.scroll_top, base + self.scroll_bottom, false);
+            self.markers_rotate_region(base + self.scroll_top, base + self.scroll_bottom, false);
+            self.invalidate_search_highlights();
             self.grid
                 .scroll_down_region(self.scroll_top, self.scroll_bottom);
             self.record_scroll(self.scroll_top, self.scroll_bottom, -1);
@@ -1602,7 +1782,12 @@ impl Term {
     /// `self` does not disturb in-progress parsing. Mirrors xterm.js fullReset.
     fn full_reset(&mut self) {
         let replies = std::mem::take(&mut self.replies);
-        let events = std::mem::take(&mut self.events);
+        let mut events = std::mem::take(&mut self.events);
+        // RIS wipes the buffer, so every marker's line is gone — announce each
+        // disposal so the consumer drops its decorations (and isn't confused when
+        // the reset id counter reissues the same ids). The events survive the
+        // reset below (#118).
+        events.extend(self.markers.iter().map(|m| TermEvent::MarkerDisposed(m.id)));
         let (cols, rows) = (self.grid.cols(), self.grid.rows());
         *self = Term::with_scrollback(cols, rows, self.scrollback_limit);
         self.replies = replies;

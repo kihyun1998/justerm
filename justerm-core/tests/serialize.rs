@@ -5,7 +5,8 @@
 
 use core::num::NonZeroU32;
 use justerm_core::{
-    Cell, CellFlags, Color, Engine, Frame, FrameKind, ScrollOp, Span, decode, encode,
+    Cell, CellFlags, Color, Engine, Frame, FrameKind, MarkerId, MarkerPosition, Overlay, ScrollOp,
+    SelectionSpan, Span, decode, encode,
 };
 use std::collections::BTreeMap;
 
@@ -28,7 +29,88 @@ fn round_trip_empty_partial_frame() {
         spans: vec![],
         side_table: vec![],
         link_table: vec![],
+        overlay: Default::default(),
     };
+    let bytes = encode(&frame);
+    assert_eq!(decode(&bytes).expect("decode"), frame);
+}
+
+/// #108: the overlay section round-trips both groups — selection spans and
+/// search-match spans — as viewport `(row, left, right)` triples. Positions
+/// only (no colour); the consumer resolves highlight colour.
+#[test]
+fn round_trip_overlay_selection_and_match_spans() {
+    let frame = Frame {
+        cols: 80,
+        rows: 24,
+        kind: FrameKind::Partial,
+        cursor_row: 0,
+        cursor_col: 0,
+        cursor_visible: true,
+        cursor_shape: justerm_core::CursorShape::Block,
+        cursor_blink: false,
+        display_offset: 0,
+        scrollback_len: 0,
+        scroll: None,
+        spans: vec![],
+        side_table: vec![],
+        link_table: vec![],
+        overlay: Overlay {
+            selection: vec![
+                SelectionSpan {
+                    row: 0,
+                    left: 2,
+                    right: 7,
+                },
+                SelectionSpan {
+                    row: 1,
+                    left: 0,
+                    right: 4,
+                },
+            ],
+            matches: vec![SelectionSpan {
+                row: 3,
+                left: 10,
+                right: 12,
+            }],
+            markers: vec![],
+        },
+    };
+    let bytes = encode(&frame);
+    assert_eq!(decode(&bytes).expect("decode"), frame);
+}
+
+/// #118: the overlay's third group — marker positions — round-trips as
+/// `(marker_id, row)` pairs (a different record shape from the span groups).
+#[test]
+fn round_trip_overlay_marker_positions() {
+    let mut frame = Frame {
+        cols: 80,
+        rows: 24,
+        kind: FrameKind::Partial,
+        cursor_row: 0,
+        cursor_col: 0,
+        cursor_visible: true,
+        cursor_shape: justerm_core::CursorShape::Block,
+        cursor_blink: false,
+        display_offset: 0,
+        scrollback_len: 0,
+        scroll: None,
+        spans: vec![],
+        side_table: vec![],
+        link_table: vec![],
+        overlay: Overlay::default(),
+    };
+    frame.overlay.markers = vec![
+        MarkerPosition {
+            id: MarkerId(5),
+            row: 3,
+        },
+        MarkerPosition {
+            id: MarkerId(99),
+            row: 0,
+        },
+    ];
     let bytes = encode(&frame);
     assert_eq!(decode(&bytes).expect("decode"), frame);
 }
@@ -53,6 +135,7 @@ fn round_trip_scroll_position() {
         spans: vec![],
         side_table: vec![],
         link_table: vec![],
+        overlay: Default::default(),
     };
     let decoded = decode(&encode(&frame)).expect("decode");
     assert_eq!(decoded.display_offset, 7);
@@ -80,6 +163,7 @@ fn round_trip_cursor_position_and_visibility() {
         spans: vec![],
         side_table: vec![],
         link_table: vec![],
+        overlay: Default::default(),
     };
     assert_eq!(decode(&encode(&frame)).expect("decode"), frame);
 }
@@ -114,6 +198,7 @@ fn round_trip_span_of_plain_cells() {
         }],
         side_table: vec![],
         link_table: vec![],
+        overlay: Default::default(),
     };
     assert_eq!(decode(&encode(&frame)).expect("decode"), frame);
 }
@@ -150,6 +235,7 @@ fn round_trip_distinct_colour_references() {
         }],
         side_table: vec![],
         link_table: vec![],
+        overlay: Default::default(),
     };
     let d = decode(&encode(&frame)).expect("decode");
     assert_eq!(d, frame);
@@ -204,6 +290,7 @@ fn round_trip_cell_flags_incl_layout_markers() {
         }],
         side_table: vec![],
         link_table: vec![],
+        overlay: Default::default(),
     };
     assert_eq!(decode(&encode(&frame)).expect("decode"), frame);
 }
@@ -237,6 +324,7 @@ fn decode_rejects_superseded_version() {
         spans: vec![],
         side_table: vec![],
         link_table: vec![],
+        overlay: Default::default(),
     };
     let mut bytes = encode(&frame);
     bytes[2] = 2; // the VERSION byte sits right after the 2-byte magic
@@ -244,6 +332,19 @@ fn decode_rejects_superseded_version() {
         decode(&bytes),
         Err(justerm_core::DecodeError::BadVersion(2))
     ));
+}
+
+/// The wire is gated at version 7 (the #118 overlay marker group, atop the #108
+/// section). Both the exported `WIRE_VERSION` constant and the byte the encoder
+/// emits must read 7 — the value the WASM decoder's `wire_version()` mirrors in
+/// lockstep (ADR-0008), so a drift here trips before it can desync a binding.
+#[test]
+fn wire_version_is_seven() {
+    assert_eq!(justerm_core::WIRE_VERSION, 7);
+    let mut term = Engine::new(1, 1);
+    term.feed(b"x");
+    let bytes = encode(&term.frame());
+    assert_eq!(bytes[2], justerm_core::WIRE_VERSION); // VERSION byte after magic
 }
 
 /// A combining-mark cluster round-trips: the cell carries only its combining bit,
@@ -277,6 +378,7 @@ fn round_trip_grapheme_side_table() {
         }],
         side_table: vec![vec!['\u{0301}']], // combining acute accent
         link_table: vec![],
+        overlay: Default::default(),
     };
     assert_eq!(decode(&encode(&frame)).expect("decode"), frame);
 }
@@ -309,6 +411,7 @@ fn cell_record_is_fixed_18_bytes() {
         }],
         side_table: vec![],
         link_table: vec![],
+        overlay: Default::default(),
     };
     let one = encode(&span_of(1)).len();
     let two = encode(&span_of(2)).len();
@@ -338,6 +441,7 @@ fn round_trip_scroll_op() {
         spans: vec![],
         side_table: vec![],
         link_table: vec![],
+        overlay: Default::default(),
     };
     assert_eq!(decode(&encode(&frame)).expect("decode"), frame);
 }
@@ -360,6 +464,7 @@ fn round_trip_full_frame_kind() {
         spans: vec![],
         side_table: vec![],
         link_table: vec![],
+        overlay: Default::default(),
     };
     assert_eq!(decode(&encode(&frame)).expect("decode"), frame);
 }
@@ -602,6 +707,7 @@ fn round_trip_full_frame_with_cells() {
         spans: vec![row(0), row(1)],
         side_table: vec![],
         link_table: vec![],
+        overlay: Default::default(),
     };
     assert_eq!(decode(&encode(&frame)).expect("decode"), frame);
 }
@@ -629,6 +735,7 @@ fn round_trip_negative_scroll_count() {
         spans: vec![],
         side_table: vec![],
         link_table: vec![],
+        overlay: Default::default(),
     };
     assert_eq!(decode(&encode(&frame)).expect("decode"), frame);
 }

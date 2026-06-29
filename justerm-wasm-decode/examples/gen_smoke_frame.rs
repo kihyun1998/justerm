@@ -46,6 +46,7 @@ fn main() {
         }],
         side_table: vec![],
         link_table: vec![],
+        overlay: Default::default(),
     };
 
     std::fs::write(&path, encode(&frame)).expect("write golden fixture");
