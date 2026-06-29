@@ -8,3 +8,7 @@ target/
 
 # Local scratch (personal prompt notes — not part of the crate)
 /prompt.md
+
+# justerm-web (TS package) — deps + build output, never committed.
+/justerm-web/node_modules
+/justerm-web/dist

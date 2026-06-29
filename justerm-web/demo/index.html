@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>justerm-web S1 — empty grid</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: #1e1e2e;
+      }
+      #term {
+        width: 100vw;
+        height: 100vh;
+        display: block;
+      }
+    </style>
+  </head>
+  <body>
+    <!-- Manual harness: run `pnpm demo` and open the printed URL.
+         Verifies S1's beamterm mount — an empty cleared grid should appear. -->
+    <canvas id="term"></canvas>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>
