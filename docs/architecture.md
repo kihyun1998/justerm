@@ -106,7 +106,9 @@ xterm.js's escape-sequence re-emit (which a non-parsing GPU renderer like beamte
 
 A **frame** serializes one damage cycle (`damage()` + `scroll_delta()`):
 - **header** — magic, version, flags, `cols`/`rows`, cursor (`cursor_row`/`cursor_col` u16 +
-  `cursor_visible` u8 — v3, #38), kind (`Full` | `Partial`).
+  `cursor_visible` u8 — v3, #38; `cursor_shape`/`cursor_blink` — v4, #81), scroll position
+  (`display_offset`/`scrollback_len` u32 — v5, #112/ADR-0013, for the consumer's scrollbar), kind
+  (`Full` | `Partial`).
 - **scroll op** (optional) — `{top, bottom, count}` (ADR-0003); the decoder applies it *before* the spans.
 - **spans** — for `Partial`, each `{line, left, right}` then `(right−left+1)` cell records; `Full` = all rows.
 - **side-table** — only the clusters referenced *this frame*, renumbered frame-local; each cell's
@@ -288,8 +290,10 @@ deferred behavior) it tracks — then add what you find here.** Seeds (caught in
 - **The scroll op is recorded (not diff-detected), screen-relative, and ordered before the spans.**
   Per ADR-0003 the frame carries `{top, bottom, count}` *ahead of* the damage spans; the decoder shifts
   its mirror grid first, then applies spans — reversing the order lands spans on pre-scroll rows. #6
-  serializes **screen** damage only; the screen→viewport remap (suppress/translate scroll while
-  `display_offset > 0`) is the consumer/cadence concern in #13, out of this format's scope. [#6]
+  serializes **screen** damage only; the screen→viewport *remap* (suppress/translate scroll while
+  `display_offset > 0`) is the consumer/cadence concern in #13. The scroll *position* itself
+  (`display_offset` + `scrollback_len`) **was** out of scope until a consumer needed it — the scrollbar
+  (#112) did, so v5 now carries it in the header (ADR-0013); the remap logic stays #13's. [#6]
 - **Colour needs an explicit tag in bytes; `Default ≠ Indexed(0) ≠ Rgb(0,0,0)`.** A "zero means
   default" packing collides with ANSI black (`Indexed(0)`) and true black (`Rgb(0,0,0)`). Each of
   `fg`/`bg` ships a tag + payload so the consumer's frozen-scheme resolver picks default vs palette vs

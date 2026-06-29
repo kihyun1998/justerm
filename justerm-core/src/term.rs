@@ -503,6 +503,9 @@ impl Term {
             cursor_visible: self.cursor.visible && self.display_offset == 0,
             cursor_shape: self.cursor.shape,
             cursor_blink: self.cursor.blink,
+            // Viewport scroll position for the consumer's scrollbar (ADR-0013).
+            display_offset: self.display_offset as u32,
+            scrollback_len: self.scrollback.len() as u32,
             scroll: self.scroll_delta(),
             spans,
             side_table,

@@ -64,6 +64,8 @@ fn sample_frame() -> Frame {
         cursor_visible: true,
         cursor_shape: justerm_core::CursorShape::Block,
         cursor_blink: false,
+        display_offset: 0,
+        scrollback_len: 0,
         scroll: None,
         spans: vec![span(0, 0, "hi"), span(1, 5, "abc")],
         side_table: vec![],
@@ -72,8 +74,18 @@ fn sample_frame() -> Frame {
 }
 
 #[wasm_bindgen_test]
-fn wire_version_is_four() {
-    assert_eq!(wire_version(), 4); // #81 bumped 3 -> 4 for the cursor shape + blink
+fn wire_version_is_five() {
+    assert_eq!(wire_version(), 5); // #112/ADR-0013 bumped 4 -> 5 for scroll position
+}
+
+#[wasm_bindgen_test]
+fn decode_frame_exposes_scroll_position() {
+    let mut frame = sample_frame();
+    frame.display_offset = 7;
+    frame.scrollback_len = 250;
+    let df = decode_frame(&justerm_core::encode(&frame)).expect("decode");
+    assert_eq!(df.display_offset(), 7);
+    assert_eq!(df.scrollback_len(), 250);
 }
 
 #[wasm_bindgen_test]
@@ -132,6 +144,8 @@ fn colour_and_flag_columns_carry_tagged_values() {
         cursor_visible: true,
         cursor_shape: justerm_core::CursorShape::Block,
         cursor_blink: false,
+        display_offset: 0,
+        scrollback_len: 0,
         scroll: None,
         spans: vec![Span {
             line: 0,
