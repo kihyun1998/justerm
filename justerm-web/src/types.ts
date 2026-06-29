@@ -31,6 +31,15 @@ export interface DecodedFrame {
   readonly spans: ArrayLike<number>;
   /** Grapheme clusters referenced by cells' `extra` index (frame-local). */
   readonly sideTable: readonly string[];
+  /**
+   * Scroll op (applied before spans): rows `[scrollTop, scrollBottom]` shifted by
+   * `scrollCount` (positive = up). Optional — absent/`hasScroll: false` means no
+   * shift. The cell mirror applies it; a span-only frame omits it.
+   */
+  readonly hasScroll?: boolean;
+  readonly scrollTop?: number;
+  readonly scrollBottom?: number;
+  readonly scrollCount?: number;
 }
 
 /** Unsubscribe handle returned by {@link FrameSource.subscribe}. */
