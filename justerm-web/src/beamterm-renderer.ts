@@ -1,7 +1,8 @@
-import type { BeamtermRenderer as Backend, Cell, CellStyle } from "@beamterm/renderer";
+import type { BeamtermRenderer as Backend, Batch, Cell, CellStyle } from "@beamterm/renderer";
 import type { Palette } from "justerm-wasm-decode/colors.js";
 import { CellMirror } from "./cell-mirror";
-import type { FlagBits } from "./render-core";
+import { CursorBlink, cursorOp } from "./cursor";
+import type { DrawOp, FlagBits } from "./render-core";
 import type { DecodedFrame } from "./types";
 import type { Renderer } from "./renderer";
 
@@ -12,6 +13,8 @@ export interface Theme {
   ansi: number[];
   defaultFg: number;
   defaultBg: number;
+  /** The cursor colour (cell-invert fill / underline). Defaults to `defaultFg`. */
+  cursorColor?: number;
 }
 
 export interface BeamtermOptions {
@@ -31,6 +34,9 @@ interface Factory {
 
 /** `0xRRGGBB` → `0xRRGGBBAA` (opaque), the format beamterm's `clear` expects. */
 const opaque = (rgb: number): number => ((rgb << 8) | 0xff) >>> 0;
+
+/** Monotonic clock for the blink phase (ms). */
+const now = (): number => performance.now();
 
 /**
  * The real {@link Renderer}: wraps `@beamterm/renderer` (WASM + WebGL) and feeds
@@ -54,6 +60,11 @@ export class BeamtermRenderer implements Renderer {
   private mirror: CellMirror | undefined;
   private cols = 0;
   private rows = 0;
+  private readonly blink = new CursorBlink();
+  /** Last cursor reported by a frame (screen coords). */
+  private cursor: { row: number; col: number; shape: number; visible: boolean } | undefined;
+  private lastBlinkOn = true;
+  private rafId: number | undefined;
 
   private constructor(
     private readonly backend: Backend,
@@ -61,6 +72,7 @@ export class BeamtermRenderer implements Renderer {
     private readonly palette: Palette,
     private readonly flagBits: FlagBits,
     private readonly clearColor: number,
+    private readonly cursorColor: number,
   ) {}
 
   static async create(opts: BeamtermOptions): Promise<BeamtermRenderer> {
@@ -90,7 +102,14 @@ export class BeamtermRenderer implements Renderer {
       wide_char_spacer: f.wide_char_spacer,
     };
     const factory: Factory = { style: beamterm.style, cell: beamterm.cell };
-    return new BeamtermRenderer(backend, factory, palette, flagBits, opaque(opts.theme.defaultBg));
+    return new BeamtermRenderer(
+      backend,
+      factory,
+      palette,
+      flagBits,
+      opaque(opts.theme.defaultBg),
+      opts.theme.cursorColor ?? opts.theme.defaultFg,
+    );
   }
 
   applyFrame(frame: DecodedFrame): void {
@@ -102,19 +121,90 @@ export class BeamtermRenderer implements Renderer {
       this.mirror = new CellMirror(frame.cols, frame.rows, this.palette, this.flagBits);
     }
     const ops = this.mirror.applyFrame(frame);
+    this.updateCursor(frame);
 
     const batch = this.backend.batch();
     // Full frames repaint the whole viewport; partial frames retain untouched
     // cells (damage-only), so only full clears.
     if (frame.kind === 0) batch.clear(this.clearColor);
-    for (const op of ops) {
-      let st = this.factory.style().fg(op.fg).bg(op.bg);
-      if (op.bold) st = st.bold();
-      if (op.italic) st = st.italic();
-      if (op.underline) st = st.underline();
-      if (op.strikethrough) st = st.strikethrough();
-      batch.cell(op.x, op.y, this.factory.cell(op.symbol, st));
+    for (const op of ops) this.drawOp(batch, op);
+    // Overlay the cursor into the same batch (it draws over its mirror cell).
+    this.lastBlinkOn = this.blink.isVisible(now());
+    this.overlayCursor(batch, this.lastBlinkOn);
+    this.startBlinkLoop();
+  }
+
+  /**
+   * Focus gates the blink: an unfocused terminal stops blinking. xterm draws a
+   * *hollow* (outline) cursor when unfocused, but that is sub-cell geometry
+   * beamterm can't render (ADR-0012), so we keep a solid cursor — only the blink
+   * stops.
+   */
+  setFocused(focused: boolean): void {
+    this.blink.setFocused(focused);
+    this.redrawCursor();
+  }
+
+  /** Stop the blink loop. */
+  dispose(): void {
+    if (this.rafId !== undefined) {
+      cancelAnimationFrame(this.rafId);
+      this.rafId = undefined;
     }
+  }
+
+  private updateCursor(frame: DecodedFrame): void {
+    if (frame.cursorRow === undefined && frame.cursorVisible === undefined) return;
+    const next = {
+      row: frame.cursorRow ?? 0,
+      col: frame.cursorCol ?? 0,
+      shape: frame.cursorShape ?? 0,
+      visible: frame.cursorVisible ?? false,
+    };
+    // A move (or first appearance) restarts the blink so the cursor shows at once.
+    if (!this.cursor || next.row !== this.cursor.row || next.col !== this.cursor.col) {
+      this.blink.restart(now());
+    }
+    this.cursor = next;
+  }
+
+  /** Draw the cursor cell — styled when `on`, otherwise its plain mirror cell. */
+  private overlayCursor(batch: Batch, on: boolean): void {
+    if (!this.mirror || !this.cursor || !this.cursor.visible) return;
+    const { col, row, shape } = this.cursor;
+    if (col >= this.cols || row >= this.rows) return;
+    const base = this.mirror.cellAt(col, row);
+    this.drawOp(batch, on ? cursorOp(base, shape, this.cursorColor) : base);
+  }
+
+  /** Re-render just the cursor cell (used by the blink loop + focus changes). */
+  private redrawCursor(): void {
+    const batch = this.backend.batch();
+    this.overlayCursor(batch, this.blink.isVisible(now()));
+    this.backend.render();
+  }
+
+  /** A rAF loop that re-renders the cursor cell whenever its blink phase flips. */
+  private startBlinkLoop(): void {
+    if (this.rafId !== undefined) return;
+    const tick = (): void => {
+      const on = this.blink.isVisible(now());
+      if (on !== this.lastBlinkOn) {
+        this.lastBlinkOn = on;
+        this.redrawCursor();
+      }
+      this.rafId = requestAnimationFrame(tick);
+    };
+    this.rafId = requestAnimationFrame(tick);
+  }
+
+  private drawOp(batch: Batch, op: DrawOp): void {
+    let st = this.factory.style().fg(op.fg).bg(op.bg);
+    if (op.bold) st = st.bold();
+    if (op.italic) st = st.italic();
+    if (op.underline) st = st.underline();
+    if (op.strikethrough) st = st.strikethrough();
+    batch.cell(op.x, op.y, this.factory.cell(op.symbol, st));
   }
 
   render(): void {

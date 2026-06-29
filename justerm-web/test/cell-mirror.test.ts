@@ -139,4 +139,13 @@ describe("CellMirror.applyFrame", () => {
 
     expect(ops.map((o) => o.symbol)).toEqual([" ", " ", " ", " ", "Z", " "]);
   });
+
+  // cellAt exposes a stored cell's draw op so the cursor overlay can read (and
+  // restore) the cursor cell independently of the current frame's damage.
+  it("returns the stored cell's draw op via cellAt", () => {
+    const mirror = new CellMirror(80, 24, palette(), F);
+    mirror.applyFrame(frame(0, [{ line: 0, left: 0, text: "hi" }]));
+
+    expect(mirror.cellAt(1, 0)).toMatchObject({ x: 1, y: 0, symbol: "i" });
+  });
 });

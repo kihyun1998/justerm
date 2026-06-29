@@ -1,12 +1,9 @@
-// Manual S3 harness — a scrolling log. This SIMULATES A BACKEND spewing output
-// (like `tail -f`): a timer pushes frames; justerm-web only renders them. It is
-// NOT wheel-driven — in frame mode the backend owns the viewport offset and
-// scrollback (ADR-0011), so wheel scrollback navigation belongs to the consumer
-// (#111 / in-wasm), not this widget. Pushes a full frame of numbered rows, then a
-// scroll-op frame every 600ms (shift up 1 + a new bottom line). Expected result:
-// the rows scroll upward continuously, proving the cell mirror applies scroll-op
-// damage through beamterm (which has no scroll primitive).
-// Run: `pnpm demo` (Vite + vite-plugin-wasm handle the TS + both WASM modules).
+// Manual S5 harness — a blinking cursor. Pushes one full frame with a prompt and
+// a block cursor after it. Expected result: a solid cursor-coloured block that
+// blinks every 600ms; click outside the page (blur) and it stops blinking (stays
+// solid); focus again and it resumes. This exercises the cell-invert cursor +
+// CursorBlink policy through beamterm (which has no cursor primitive).
+// Run: `pnpm demo` (NOT `vite demo` — that skips vite.config.ts + its wasm plugins).
 import { BeamtermRenderer, StubFrameSource, Terminal } from "../src/index";
 import type { DecodedFrame } from "../src/types";
 
@@ -24,17 +21,16 @@ const renderer = await BeamtermRenderer.create({
     ],
     defaultFg: 0xcdd6f4,
     defaultBg: 0x1e1e2e,
+    cursorColor: 0xf5e0dc,
   },
 });
 
 const source = new StubFrameSource();
 new Terminal(source, renderer).mount();
 
-// Build a frame from text rows (one span each), optionally with a scroll op.
-function rowsFrame(
-  kind: number,
+function frame(
   rows: { line: number; text: string }[],
-  scroll?: { top: number; bottom: number; count: number },
+  cursor: { row: number; col: number; shape: number },
 ): DecodedFrame {
   const codepoints: number[] = [];
   const spans: number[] = [];
@@ -49,7 +45,7 @@ function rowsFrame(
   return {
     cols: COLS,
     rows: ROWS,
-    kind,
+    kind: 0,
     codepoints,
     fg: new Array(n).fill(0),
     bg: new Array(n).fill(0),
@@ -57,19 +53,23 @@ function rowsFrame(
     extra: new Array(n).fill(0),
     spans,
     sideTable: [],
-    ...(scroll
-      ? { hasScroll: true, scrollTop: scroll.top, scrollBottom: scroll.bottom, scrollCount: scroll.count }
-      : {}),
+    cursorRow: cursor.row,
+    cursorCol: cursor.col,
+    cursorVisible: true,
+    cursorShape: cursor.shape,
+    cursorBlink: true,
   } as DecodedFrame;
 }
 
-// Initial full viewport: rows 0..23.
-source.push(rowsFrame(0, Array.from({ length: ROWS }, (_, i) => ({ line: i, text: `row ${i}` }))));
+// A prompt with a block cursor right after "$ " (cols 0,1 → cursor at col 2).
+source.push(
+  frame([{ line: 0, text: "justerm-web — cursor demo (click away to unfocus)" }, { line: 2, text: "$ " }], {
+    row: 2,
+    col: 2,
+    shape: 0, // Block
+  }),
+);
 
-// Scroll a fresh line in at the bottom every 600ms.
-let next = ROWS;
-setInterval(() => {
-  source.push(
-    rowsFrame(1, [{ line: ROWS - 1, text: `row ${next++}` }], { top: 0, bottom: ROWS - 1, count: 1 }),
-  );
-}, 600);
+// Focus gates the blink (solid while unfocused).
+window.addEventListener("focus", () => renderer.setFocused(true));
+window.addEventListener("blur", () => renderer.setFocused(false));

@@ -32,6 +32,16 @@ export interface DecodedFrame {
   /** Grapheme clusters referenced by cells' `extra` index (frame-local). */
   readonly sideTable: readonly string[];
   /**
+   * Cursor state (screen coords, 0-based). `cursorShape`: 0 = Block, 1 =
+   * Underline, 2 = Bar. `cursorBlink` is the *mode* — the blink timing is a
+   * web-side policy. Optional — a frame may omit them (treated as no cursor).
+   */
+  readonly cursorRow?: number;
+  readonly cursorCol?: number;
+  readonly cursorVisible?: boolean;
+  readonly cursorShape?: number;
+  readonly cursorBlink?: boolean;
+  /**
    * Scroll op (applied before spans): rows `[scrollTop, scrollBottom]` shifted by
    * `scrollCount` (positive = up). Optional — absent/`hasScroll: false` means no
    * shift. The cell mirror applies it; a span-only frame omits it.
