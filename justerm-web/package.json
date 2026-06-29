@@ -21,7 +21,8 @@
     "vitest": "^2.1.0"
   },
   "dependencies": {
-    "@beamterm/renderer": "^1.0.0"
+    "@beamterm/renderer": "^1.0.0",
+    "justerm-wasm-decode": "^0.6.0"
   },
   "main": "./dist/index.js",
   "module": "./dist/index.js",

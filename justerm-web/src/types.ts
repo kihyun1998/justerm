@@ -1,16 +1,36 @@
 /**
  * A decoded terminal frame — the unit the renderer consumes.
  *
- * S1 models only the dimensions + kind; the structure-of-arrays cell columns,
- * spans, cursor and scroll come from `justerm-wasm-decode` in S2 (#105). The
- * shape is intentionally source-agnostic: a frame may arrive decoded from a
- * backend wire (frame mode) or produced by an in-wasm engine (future).
+ * Structure-of-arrays: one column per cell field (`codepoints`/`fg`/`bg`/…) plus
+ * a `spans` directory, exactly as `justerm-wasm-decode`'s `DecodedFrame` exposes
+ * it. This is a *structural* view — the wasm `DecodedFrame` class satisfies it
+ * (its getters return these typed arrays, and it carries extra cursor/scroll
+ * getters later slices read), and tests/demos pass plain objects. The shape is
+ * source-agnostic: a frame may arrive decoded from a backend wire (frame mode)
+ * or be produced by an in-wasm engine (future).
+ *
+ * Cells are addressed through the span directory, not row-major: walk `spans` in
+ * stride-5 chunks and index the columns at each span's `cell_offset`. See
+ * {@link import("./render-core").frameToDrawOps}.
  */
 export interface DecodedFrame {
   readonly cols: number;
   readonly rows: number;
-  /** `full` = whole viewport; `partial` = damage-bounded (spans, in S2). */
-  readonly kind: "full" | "partial";
+  /** `0` = Full (whole viewport); `1` = Partial (only the listed spans). */
+  readonly kind: number;
+  /** Per-cell base codepoint, span order (`0` = blank). */
+  readonly codepoints: ArrayLike<number>;
+  /** Per-cell fg/bg colour refs (tagged u32; resolve with `resolveRgb`). */
+  readonly fg: ArrayLike<number>;
+  readonly bg: ArrayLike<number>;
+  /** Per-cell `CellFlags` bits. */
+  readonly flags: ArrayLike<number>;
+  /** Per-cell 1-based grapheme-cluster index (`0` = none → `sideTable[extra-1]`). */
+  readonly extra: ArrayLike<number>;
+  /** Span directory, stride 5: `[line, left, right, cell_offset, count]`. */
+  readonly spans: ArrayLike<number>;
+  /** Grapheme clusters referenced by cells' `extra` index (frame-local). */
+  readonly sideTable: readonly string[];
 }
 
 /** Unsubscribe handle returned by {@link FrameSource.subscribe}. */

@@ -5,7 +5,14 @@ import type { DecodedFrame } from "../src/types";
 const emptyFrame = (cols: number, rows: number): DecodedFrame => ({
   cols,
   rows,
-  kind: "full",
+  kind: 0, // Full
+  codepoints: [],
+  fg: [],
+  bg: [],
+  flags: [],
+  extra: [],
+  spans: [],
+  sideTable: [],
 });
 
 describe("FrameSource contract (StubFrameSource)", () => {
