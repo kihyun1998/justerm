@@ -623,6 +623,25 @@ impl Term {
             .extend_from_slice(format!("\x1b[?997;{ps}n").as_bytes());
     }
 
+    /// OSC 10/11 set/query the default fg/bg, stacking the `;`-separated specs
+    /// across the `[foreground, background]` slots — xterm's
+    /// `_setOrReportSpecialColor` offset loop (#137). OSC 10 starts at slot 0
+    /// (fg → bg), OSC 11 at slot 1 (bg). A `?` spec is a query. xterm's 3rd slot
+    /// (cursor / OSC 12) is out of scope, so the stack caps at two slots — extra
+    /// specs are dropped.
+    fn special_color(&mut self, params: &[&[u8]], start: usize) {
+        for (i, &spec) in params[1..].iter().enumerate() {
+            let event = match start + i {
+                0 if spec == b"?" => TermEvent::QueryForeground,
+                0 => TermEvent::SetForeground(String::from_utf8_lossy(spec).into_owned()),
+                1 if spec == b"?" => TermEvent::QueryBackground,
+                1 => TermEvent::SetBackground(String::from_utf8_lossy(spec).into_owned()),
+                _ => break, // past [fg, bg] — cursor (OSC 12) unsupported
+            };
+            self.events.push(event);
+        }
+    }
+
     /// Answer an OSC 4 palette query (#122): wrap the consumer-supplied spec for
     /// `index` in the OSC 4 reply envelope, ST-terminated.
     pub fn report_palette_color(&mut self, index: u8, spec: &str) {
@@ -2864,31 +2883,11 @@ impl Perform for Term {
                     }
                 }
             }
-            // OSC 10 = set/query the default foreground colour (#122).
-            b"10" => {
-                if let Some(&spec) = params.get(1) {
-                    if spec == b"?" {
-                        self.events.push(TermEvent::QueryForeground);
-                    } else {
-                        self.events.push(TermEvent::SetForeground(
-                            String::from_utf8_lossy(spec).into_owned(),
-                        ));
-                    }
-                }
-            }
-            // OSC 11 = set/query the default background colour (#122). The engine
-            // forwards the raw spec for the consumer to apply (theme-agnostic).
-            b"11" => {
-                if let Some(&spec) = params.get(1) {
-                    if spec == b"?" {
-                        self.events.push(TermEvent::QueryBackground);
-                    } else {
-                        self.events.push(TermEvent::SetBackground(
-                            String::from_utf8_lossy(spec).into_owned(),
-                        ));
-                    }
-                }
-            }
+            // OSC 10/11 = set/query the default foreground/background, stacking
+            // specs across the [fg, bg] slots (#122, #137). OSC 10 starts at fg,
+            // OSC 11 at bg. The engine forwards raw specs (theme-agnostic).
+            b"10" => self.special_color(params, 0),
+            b"11" => self.special_color(params, 1),
             // OSC 110 / 111 = reset the default foreground / background (#122).
             b"110" => self.events.push(TermEvent::ResetForeground),
             b"111" => self.events.push(TermEvent::ResetBackground),
