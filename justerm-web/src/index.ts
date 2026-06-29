@@ -17,3 +17,20 @@ export { CellMirror } from "./cell-mirror";
 export { cellToDrawOp } from "./render-core";
 // Cursor — blink state (web policy) + cell-invert/underline overlay.
 export { BLINK_INTERVAL, CursorBlink, CursorShape, cursorOp } from "./cursor";
+// Input — DOM events → intent (the backend encodes); outbound seam.
+export { captureInput, keyFromDom, Mod, mouseFromDom, StubInputSink, wheelMouseFromDom } from "./input";
+export type {
+  CaptureOptions,
+  CellGeometry,
+  Intent,
+  InputSink,
+  Key,
+  KeyAction,
+  KeyboardEventLike,
+  KeyEvent,
+  MouseAction,
+  MouseButton,
+  MouseEvent,
+  MouseEventLike,
+  NamedKey,
+} from "./input";
