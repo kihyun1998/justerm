@@ -90,6 +90,13 @@ export class CellMirror {
     return ops;
   }
 
+  /** The stored cell at `(x, y)` as a draw op (for the cursor overlay to read
+   * and restore the cursor cell, independent of the frame's damage). */
+  cellAt(x: number, y: number): DrawOp {
+    const cell = this.cells[y * this.cols + x]!;
+    return cellToDrawOp(x, y, cell.symbol, cell.fg, cell.bg, cell.flags, this.palette, this.F, this.policy);
+  }
+
   /** Shift rows `[top, bottom]` by `count` (>0 = up, exposing blanks at the
    * bottom; <0 = down, exposing at the top). Reassigns slots, never mutates a
    * stored cell, so the iteration order can't clobber a not-yet-copied source. */

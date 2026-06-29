@@ -15,3 +15,5 @@ export type { ScrollOptions, WheelContext, WheelLike } from "./scroll-control";
 // Viewport cell mirror — applies scroll-op damage for frame mode (ADR-0011).
 export { CellMirror } from "./cell-mirror";
 export { cellToDrawOp } from "./render-core";
+// Cursor — blink state (web policy) + cell-invert/underline overlay.
+export { BLINK_INTERVAL, CursorBlink, CursorShape, cursorOp } from "./cursor";
