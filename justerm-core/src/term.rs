@@ -529,6 +529,10 @@ impl Term {
             // Viewport scroll position for the consumer's scrollbar (ADR-0013).
             display_offset: self.display_offset as u32,
             scrollback_len: self.scrollback.len() as u32,
+            // The mouse tracking mode as a routing mask (#129): which mouse events
+            // the app wants, derived from the protocol by the single source
+            // `encode_mouse` shares. The consumer routes app-vs-local on it.
+            mouse_events: self.mouse_protocol.wanted_events(),
             scroll: self.scroll_delta(),
             spans,
             side_table,

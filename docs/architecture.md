@@ -107,7 +107,9 @@ xterm.js's escape-sequence re-emit (which a non-parsing GPU renderer like beamte
 A **frame** serializes one damage cycle (`damage()` + `scroll_delta()`):
 - **header** — magic, version, flags, `cols`/`rows`, cursor (`cursor_row`/`cursor_col` u16 +
   `cursor_visible` u8 — v3, #38; `cursor_shape`/`cursor_blink` — v4, #81), scroll position
-  (`display_offset`/`scrollback_len` u32 — v5, #112/ADR-0013, for the consumer's scrollbar), kind
+  (`display_offset`/`scrollback_len` u32 — v5, #112/ADR-0013, for the consumer's scrollbar), the mouse
+  wanted-events mask (`mouse_events` u8 — v8, #129/ADR-0016, the routing bits DOWN/UP/WHEEL/DRAG/MOVE the
+  active tracking mode reports; the consumer routes a mouse event to the app vs. local on it), kind
   (`Full` | `Partial`).
 - **scroll op** (optional) — `{top, bottom, count}` (ADR-0003); the decoder applies it *before* the spans.
 - **spans** — for `Partial`, each `{line, left, right}` then `(right−left+1)` cell records; `Full` = all rows.

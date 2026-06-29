@@ -10,13 +10,14 @@ use crate::cell::{Cell, CellFlags};
 use crate::color::Color;
 use crate::cursor::CursorShape;
 use crate::damage::ScrollOp;
+use crate::input::MouseEvents;
 use crate::selection::SelectionSpan;
 use core::num::NonZeroU32;
 use std::collections::BTreeMap;
 
 /// Wire magic ("juSTerm") + format version. A new feature bumps `VERSION`.
 const MAGIC: [u8; 2] = *b"JT";
-const VERSION: u8 = 7; // v7 adds the overlay marker group (#118/ADR-0015); v6 overlay selection + search-match spans (#108/ADR-0014); v5 scroll position (#112/ADR-0013); v4 cursor shape+blink (#81); v3 cursor row/col/visibility (#38)
+const VERSION: u8 = 8; // v8 adds the mouse wanted-events mask in the header (#129/ADR-0016); v7 overlay marker group (#118/ADR-0015); v6 overlay selection + search-match spans (#108/ADR-0014); v5 scroll position (#112/ADR-0013); v4 cursor shape+blink (#81); v3 cursor row/col/visibility (#38)
 
 /// The wire-format version (the gating `VERSION` byte), exposed so a binding can
 /// assert at load that its decoder matches the backend encoder (#34/ADR-0008).
@@ -116,6 +117,13 @@ pub struct Frame {
     /// the header like the cursor — per-frame viewport state, not cell content.
     pub display_offset: u32,
     pub scrollback_len: u32,
+    /// The mouse tracking mode as a *wanted-events* mask (#129): which mouse
+    /// event categories the app asked to receive, so the consumer routes an event
+    /// to the app (bit set) or keeps it local. `empty()` = no reporting. Rides the
+    /// header like the cursor — per-frame mode state the consumer reads, not cell
+    /// content. Positions/encoding never cross; the backend encodes via
+    /// `encode_mouse`.
+    pub mouse_events: MouseEvents,
     pub scroll: Option<ScrollOp>,
     pub spans: Vec<Span>,
     pub side_table: Vec<Vec<char>>,
@@ -162,6 +170,9 @@ pub fn encode(frame: &Frame) -> Vec<u8> {
     out.push(frame.cursor_blink as u8);
     out.extend_from_slice(&frame.display_offset.to_le_bytes());
     out.extend_from_slice(&frame.scrollback_len.to_le_bytes());
+    // Mouse wanted-events mask (#129): one byte in the header, like the cursor
+    // scalars. Off = 0.
+    out.push(frame.mouse_events.bits());
     if let Some(s) = frame.scroll {
         out.extend_from_slice(&(s.top as u16).to_le_bytes());
         out.extend_from_slice(&(s.bottom as u16).to_le_bytes());
@@ -294,6 +305,7 @@ pub fn decode(bytes: &[u8]) -> Result<Frame, DecodeError> {
     let cursor_blink = r.u8()? != 0;
     let display_offset = r.u32()?;
     let scrollback_len = r.u32()?;
+    let mouse_events = MouseEvents::from_bits_retain(r.u8()?);
     let scroll = if has_scroll {
         let top = r.u16()? as usize;
         let bottom = r.u16()? as usize;
@@ -383,6 +395,7 @@ pub fn decode(bytes: &[u8]) -> Result<Frame, DecodeError> {
         cursor_blink,
         display_offset,
         scrollback_len,
+        mouse_events,
         scroll,
         spans,
         side_table,
