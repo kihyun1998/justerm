@@ -5,8 +5,8 @@
 
 use core::num::NonZeroU32;
 use justerm_core::{
-    Cell, CellFlags, Color, Engine, Frame, FrameKind, Overlay, ScrollOp, SelectionSpan, Span,
-    decode, encode,
+    Cell, CellFlags, Color, Engine, Frame, FrameKind, MarkerId, MarkerPosition, Overlay, ScrollOp,
+    SelectionSpan, Span, decode, encode,
 };
 use std::collections::BTreeMap;
 
@@ -73,8 +73,44 @@ fn round_trip_overlay_selection_and_match_spans() {
                 left: 10,
                 right: 12,
             }],
+            markers: vec![],
         },
     };
+    let bytes = encode(&frame);
+    assert_eq!(decode(&bytes).expect("decode"), frame);
+}
+
+/// #118: the overlay's third group — marker positions — round-trips as
+/// `(marker_id, row)` pairs (a different record shape from the span groups).
+#[test]
+fn round_trip_overlay_marker_positions() {
+    let mut frame = Frame {
+        cols: 80,
+        rows: 24,
+        kind: FrameKind::Partial,
+        cursor_row: 0,
+        cursor_col: 0,
+        cursor_visible: true,
+        cursor_shape: justerm_core::CursorShape::Block,
+        cursor_blink: false,
+        display_offset: 0,
+        scrollback_len: 0,
+        scroll: None,
+        spans: vec![],
+        side_table: vec![],
+        link_table: vec![],
+        overlay: Overlay::default(),
+    };
+    frame.overlay.markers = vec![
+        MarkerPosition {
+            id: MarkerId(5),
+            row: 3,
+        },
+        MarkerPosition {
+            id: MarkerId(99),
+            row: 0,
+        },
+    ];
     let bytes = encode(&frame);
     assert_eq!(decode(&bytes).expect("decode"), frame);
 }
@@ -298,13 +334,13 @@ fn decode_rejects_superseded_version() {
     ));
 }
 
-/// The wire is gated at version 6 (the #108 overlay section). Both the exported
-/// `WIRE_VERSION` constant and the byte the encoder emits must read 6 — the
-/// value the WASM decoder's `wire_version()` mirrors in lockstep (ADR-0008), so
-/// a drift here trips before it can desync a binding.
+/// The wire is gated at version 7 (the #118 overlay marker group, atop the #108
+/// section). Both the exported `WIRE_VERSION` constant and the byte the encoder
+/// emits must read 7 — the value the WASM decoder's `wire_version()` mirrors in
+/// lockstep (ADR-0008), so a drift here trips before it can desync a binding.
 #[test]
-fn wire_version_is_six() {
-    assert_eq!(justerm_core::WIRE_VERSION, 6);
+fn wire_version_is_seven() {
+    assert_eq!(justerm_core::WIRE_VERSION, 7);
     let mut term = Engine::new(1, 1);
     term.feed(b"x");
     let bytes = encode(&term.frame());

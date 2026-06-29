@@ -11,6 +11,8 @@
 //! (which cells are links), not a point-in-time event, so it is modelled like
 //! graphemes in its own slice (#26), not here.
 
+use crate::serialize::MarkerId;
+
 /// A consumer-facing event emitted while parsing the VT stream.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TermEvent {
@@ -28,4 +30,11 @@ pub enum TermEvent {
     /// is theme-agnostic, so the consumer (which knows the scheme) answers by
     /// calling `Engine::report_color_scheme` (#85).
     ColorSchemeQuery,
+    /// A decoration marker's line left the buffer — evicted past the scrollback
+    /// cap, or scrolled out of an in-screen region (#118). The handle is now
+    /// dead; the consumer drops the decoration bound to it. This is the
+    /// frame-mode equivalent of xterm's `IMarker.onDispose` — disposal is a
+    /// point-in-time fact (a marker absent from a frame may merely be scrolled
+    /// off-screen), so it rides the event queue, not the frame overlay.
+    MarkerDisposed(MarkerId),
 }

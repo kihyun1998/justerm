@@ -38,8 +38,8 @@ pub use input::{
 pub use search::Match;
 pub use selection::{SelectionSpan, SelectionType, Side};
 pub use serialize::{
-    CELL_RECORD_LEN, DecodeError, Frame, FrameKind, Overlay, Span, WIRE_VERSION, decode, encode,
-    encode_cell_record, encode_color,
+    CELL_RECORD_LEN, DecodeError, Frame, FrameKind, MarkerId, MarkerPosition, Overlay, Span,
+    WIRE_VERSION, decode, encode, encode_cell_record, encode_color,
 };
 
 pub use term::Term;
@@ -316,5 +316,20 @@ impl Engine {
     /// alongside the selection. An empty vec clears the highlights.
     pub fn set_search_highlights(&mut self, matches: Vec<Match>) {
         self.term.set_search_highlights(matches);
+    }
+
+    /// Register a decoration marker at viewport `row`, returning its stable id
+    /// (#118). The marker anchors the content currently on that row and tracks
+    /// it through scroll/eviction/reflow; [`Engine::frame`] reports its viewport
+    /// position while visible. Use the id to remove it or to match the
+    /// `TermEvent::MarkerDisposed` fired when its line leaves the buffer.
+    pub fn add_marker(&mut self, row: usize) -> MarkerId {
+        self.term.add_marker(row)
+    }
+
+    /// Remove a marker by id (#118), firing `TermEvent::MarkerDisposed`. A no-op
+    /// for an unknown or already-disposed id.
+    pub fn remove_marker(&mut self, id: MarkerId) {
+        self.term.remove_marker(id);
     }
 }

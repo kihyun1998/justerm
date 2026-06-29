@@ -75,8 +75,8 @@ fn sample_frame() -> Frame {
 }
 
 #[wasm_bindgen_test]
-fn wire_version_is_six() {
-    assert_eq!(wire_version(), 6); // #108/ADR-0005 bumped 5 -> 6 for the overlay section
+fn wire_version_is_seven() {
+    assert_eq!(wire_version(), 7); // #118/ADR-0015 bumped 6 -> 7 for the overlay marker group
 }
 
 #[wasm_bindgen_test]
@@ -209,6 +209,7 @@ fn overlay_span_views_cross_the_boundary() {
                 right: 9,
             },
         ],
+        markers: vec![],
     };
     let df = decode_frame(&justerm_core::encode(&frame)).expect("decode");
 
@@ -226,6 +227,30 @@ fn overlay_span_views_cross_the_boundary() {
     assert_eq!(m.get_index(2), 3);
     assert_eq!(m.get_index(3), 4);
     assert_eq!(m.get_index(5), 9);
+}
+
+#[wasm_bindgen_test]
+fn marker_position_view_crosses_the_boundary() {
+    use justerm_core::{MarkerId, MarkerPosition};
+    let mut frame = sample_frame();
+    frame.overlay.markers = vec![
+        MarkerPosition {
+            id: MarkerId(5),
+            row: 3,
+        },
+        MarkerPosition {
+            id: MarkerId(99),
+            row: 0,
+        },
+    ];
+    let df = decode_frame(&justerm_core::encode(&frame)).expect("decode");
+
+    let m = df.marker_positions();
+    assert_eq!(m.length(), 4); // two (id, row) pairs
+    assert_eq!(m.get_index(0), 5); // id
+    assert_eq!(m.get_index(1), 3); // row
+    assert_eq!(m.get_index(2), 99);
+    assert_eq!(m.get_index(3), 0);
 }
 
 #[wasm_bindgen_test]

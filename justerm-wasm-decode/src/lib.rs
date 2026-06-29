@@ -76,11 +76,16 @@ struct Flat {
     /// consumer picks the highlight colour (theme-agnostic).
     selection_spans: Vec<u32>,
     match_spans: Vec<u32>,
+    /// Marker positions (#118), `MARKER_STRIDE` u32s per marker (`id`, `row`).
+    marker_positions: Vec<u32>,
 }
 
 /// u32s per overlay span in the `selection_spans` / `match_spans` directories:
 /// `row`, `left`, `right` (viewport coordinates, inclusive columns).
 pub const OVERLAY_STRIDE: usize = 3;
+
+/// u32s per marker in the `marker_positions` directory: `id`, `row`.
+pub const MARKER_STRIDE: usize = 2;
 
 /// Flatten a decoded [`Frame`] into renderer-friendly buffers ([`Flat`]).
 ///
@@ -153,6 +158,12 @@ fn flatten(frame: &Frame) -> Flat {
         link_table: frame.link_table.clone(),
         selection_spans: flatten_overlay_spans(&frame.overlay.selection),
         match_spans: flatten_overlay_spans(&frame.overlay.matches),
+        marker_positions: frame
+            .overlay
+            .markers
+            .iter()
+            .flat_map(|m| [m.id.0, m.row as u32])
+            .collect(),
     }
 }
 
@@ -354,6 +365,15 @@ impl DecodedFrame {
     #[wasm_bindgen(getter, js_name = matchSpans)]
     pub fn match_spans(&self) -> js_sys::Uint32Array {
         unsafe { js_sys::Uint32Array::view(&self.flat.match_spans) }
+    }
+
+    /// Decoration markers visible in this viewport (#118), `MARKER_STRIDE` u32s
+    /// per marker (`id`, `row`). An off-screen marker is absent (still alive);
+    /// disposal arrives out-of-band via the backend's `MarkerDisposed` event,
+    /// so absence here is "scrolled away", not "gone".
+    #[wasm_bindgen(getter, js_name = markerPositions)]
+    pub fn marker_positions(&self) -> js_sys::Uint32Array {
+        unsafe { js_sys::Uint32Array::view(&self.flat.marker_positions) }
     }
 }
 
@@ -708,6 +728,7 @@ mod tests {
                     right: 9,
                 },
             ],
+            markers: vec![],
         };
         // Through the real wire (encode→decode), then flattened — proves the
         // overlay survives the byte boundary the WASM decoder reads.
@@ -715,6 +736,25 @@ mod tests {
         let flat = flatten(&native);
         assert_eq!(flat.selection_spans, vec![0, 2, 7]); // one (row,left,right)
         assert_eq!(flat.match_spans, vec![1, 0, 3, 4, 9, 9]); // two triples
+    }
+
+    #[test]
+    fn flatten_carries_marker_positions_through_the_wire() {
+        use justerm_core::{MarkerId, MarkerPosition};
+        let mut frame = partial(80, 24, vec![ascii_span(0, 0, "x")]);
+        frame.overlay.markers = vec![
+            MarkerPosition {
+                id: MarkerId(5),
+                row: 3,
+            },
+            MarkerPosition {
+                id: MarkerId(99),
+                row: 0,
+            },
+        ];
+        let native = justerm_core::decode(&justerm_core::encode(&frame)).expect("decode");
+        let flat = flatten(&native);
+        assert_eq!(flat.marker_positions, vec![5, 3, 99, 0]); // (id, row) pairs
     }
 
     // --- S3/AC2: flatten faithfully represents the native-decoded frame ---

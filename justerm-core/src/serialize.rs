@@ -16,7 +16,7 @@ use std::collections::BTreeMap;
 
 /// Wire magic ("juSTerm") + format version. A new feature bumps `VERSION`.
 const MAGIC: [u8; 2] = *b"JT";
-const VERSION: u8 = 6; // v6 adds the overlay section (selection + search-match spans, #108/ADR-0005 amendment); v5 scroll position (#112/ADR-0013); v4 cursor shape+blink (#81); v3 cursor row/col/visibility (#38)
+const VERSION: u8 = 7; // v7 adds the overlay marker group (#118/ADR-0015); v6 overlay selection + search-match spans (#108/ADR-0014); v5 scroll position (#112/ADR-0013); v4 cursor shape+blink (#81); v3 cursor row/col/visibility (#38)
 
 /// The wire-format version (the gating `VERSION` byte), exposed so a binding can
 /// assert at load that its decoder matches the backend encoder (#34/ADR-0008).
@@ -50,6 +50,23 @@ pub struct Span {
     pub links: BTreeMap<usize, NonZeroU32>,
 }
 
+/// A stable handle to a buffer line, handed out by `Engine::add_marker` (#118).
+/// Monotonic per engine. The consumer attaches a decoration to the id; the frame
+/// reports where the marker currently sits, and `TermEvent::MarkerDisposed`
+/// signals when its line has left the buffer.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct MarkerId(pub u32);
+
+/// A marker projected onto the viewport (#118): its id and the row it sits on.
+/// Only markers visible in the current viewport are reported; an off-screen
+/// marker is omitted but still alive (death comes via `MarkerDisposed`, not
+/// absence — so the consumer can tell "scrolled away" from "gone").
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct MarkerPosition {
+    pub id: MarkerId,
+    pub row: usize,
+}
+
 /// Interaction overlays projected onto the viewport (#108): highlight spans the
 /// engine carries on the frame so a frame-mode consumer can paint them without
 /// an in-process model query. Positions only — highlight colour is the
@@ -65,6 +82,12 @@ pub struct Overlay {
     /// consumer hands the active set back via `set_search_highlights` and the
     /// engine projects it here — mirroring how the engine-owned selection rides.
     pub matches: Vec<SelectionSpan>,
+    /// Engine-owned markers visible in this viewport (#118): persistent line
+    /// anchors for decorations. Unlike the selection (cleared on a screen swap)
+    /// and search highlights (invalidated on output), markers re-anchor through
+    /// buffer mutation and survive an alt-screen excursion; only their viewport
+    /// position rides here.
+    pub markers: Vec<MarkerPosition>,
 }
 
 /// One serialized damage cycle: the decoded logical form that `encode`/`decode`
@@ -176,6 +199,14 @@ pub fn encode(frame: &Frame) -> Vec<u8> {
     // a third count here at the next version bump.
     encode_overlay_spans(&mut out, &frame.overlay.selection);
     encode_overlay_spans(&mut out, &frame.overlay.matches);
+    // Third overlay group (#118): markers as `(id u32, row u16)` pairs — a
+    // different record shape from the span groups (a marker is a line anchor,
+    // not a column run).
+    out.extend_from_slice(&(frame.overlay.markers.len() as u16).to_le_bytes());
+    for m in &frame.overlay.markers {
+        out.extend_from_slice(&m.id.0.to_le_bytes());
+        out.extend_from_slice(&(m.row as u16).to_le_bytes());
+    }
     out
 }
 
@@ -328,7 +359,19 @@ pub fn decode(bytes: &[u8]) -> Result<Frame, DecodeError> {
     // `(row, left, right)` triples (inverse of `encode_overlay_spans`).
     let selection = decode_overlay_spans(&mut r)?;
     let matches = decode_overlay_spans(&mut r)?;
-    let overlay = Overlay { selection, matches };
+    // Third group (#118): marker `(id u32, row u16)` pairs.
+    let marker_count = r.u16()?;
+    let mut markers = Vec::with_capacity(marker_count as usize);
+    for _ in 0..marker_count {
+        let id = MarkerId(r.u32()?);
+        let row = r.u16()? as usize;
+        markers.push(MarkerPosition { id, row });
+    }
+    let overlay = Overlay {
+        selection,
+        matches,
+        markers,
+    };
     Ok(Frame {
         cols,
         rows,
