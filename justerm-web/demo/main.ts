@@ -1,10 +1,10 @@
-// Manual S5 harness — a blinking cursor. Pushes one full frame with a prompt and
-// a block cursor after it. Expected result: a solid cursor-coloured block that
-// blinks every 600ms; click outside the page (blur) and it stops blinking (stays
-// solid); focus again and it resumes. This exercises the cell-invert cursor +
-// CursorBlink policy through beamterm (which has no cursor primitive).
-// Run: `pnpm demo` (NOT `vite demo` — that skips vite.config.ts + its wasm plugins).
-import { BeamtermRenderer, StubFrameSource, Terminal } from "../src/index";
+// Manual S4 harness — a scrolling log with a draggable scrollbar. The demo plays
+// a tiny "backend": it holds the full log, renders the viewport window at the
+// current display offset, and re-renders when the scrollbar drag requests a new
+// offset. A timer appends lines (following the bottom only when not scrolled up),
+// so the thumb shrinks as history grows. Drag the thumb to scroll back.
+// Run: `pnpm demo` (NOT `vite demo`).
+import { BeamtermRenderer, Scrollbar, StubFrameSource, Terminal } from "../src/index";
 import type { DecodedFrame } from "../src/types";
 
 const COLS = 80;
@@ -21,26 +21,30 @@ const renderer = await BeamtermRenderer.create({
     ],
     defaultFg: 0xcdd6f4,
     defaultBg: 0x1e1e2e,
-    cursorColor: 0xf5e0dc,
   },
 });
 
 const source = new StubFrameSource();
 new Terminal(source, renderer).mount();
 
-function frame(
-  rows: { line: number; text: string }[],
-  cursor: { row: number; col: number; shape: number },
-): DecodedFrame {
+const log: string[] = [];
+let displayOffset = 0;
+
+function viewportFrame(): DecodedFrame {
+  const total = log.length;
+  const scrollbackLen = Math.max(0, total - ROWS);
+  const top = Math.max(0, total - ROWS - displayOffset);
+  const rows = log.slice(top, top + ROWS);
   const codepoints: number[] = [];
   const spans: number[] = [];
   let offset = 0;
-  for (const r of rows) {
-    const chars = [...r.text];
-    spans.push(r.line, 0, chars.length - 1, offset, chars.length);
+  rows.forEach((text, line) => {
+    const chars = [...text];
+    if (chars.length === 0) return;
+    spans.push(line, 0, chars.length - 1, offset, chars.length);
     for (const c of chars) codepoints.push(c.codePointAt(0)!);
     offset += chars.length;
-  }
+  });
   const n = codepoints.length;
   return {
     cols: COLS,
@@ -53,23 +57,28 @@ function frame(
     extra: new Array(n).fill(0),
     spans,
     sideTable: [],
-    cursorRow: cursor.row,
-    cursorCol: cursor.col,
-    cursorVisible: true,
-    cursorShape: cursor.shape,
-    cursorBlink: true,
+    displayOffset,
+    scrollbackLen,
   } as DecodedFrame;
 }
 
-// A prompt with a block cursor right after "$ " (cols 0,1 → cursor at col 2).
-source.push(
-  frame([{ line: 0, text: "justerm-web — cursor demo (click away to unfocus)" }, { line: 2, text: "$ " }], {
-    row: 2,
-    col: 2,
-    shape: 0, // Block
-  }),
-);
+const bar = new Scrollbar(document.body, {
+  onScroll: (offset) => {
+    displayOffset = offset;
+    render();
+  },
+});
 
-// Focus gates the blink (solid while unfocused).
-window.addEventListener("focus", () => renderer.setFocused(true));
-window.addEventListener("blur", () => renderer.setFocused(false));
+function render(): void {
+  source.push(viewportFrame());
+  bar.update({ displayOffset, scrollbackLen: Math.max(0, log.length - ROWS), rows: ROWS });
+}
+
+// Append a line every 300ms; follow the bottom only when not scrolled up.
+let next = 0;
+setInterval(() => {
+  log.push(`row ${next++} — drag the scrollbar on the right to scroll back`);
+  if (displayOffset === 0) render();
+  else bar.update({ displayOffset, scrollbackLen: Math.max(0, log.length - ROWS), rows: ROWS });
+}, 300);
+render();

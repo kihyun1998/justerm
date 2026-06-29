@@ -42,6 +42,13 @@ export interface DecodedFrame {
   readonly cursorShape?: number;
   readonly cursorBlink?: boolean;
   /**
+   * Viewport scroll position (#112, wire v5): `displayOffset` lines scrolled up
+   * from the bottom (0 = following), `scrollbackLen` history lines. The scrollbar
+   * sizes its thumb from these. Optional — a frame may omit them (no scrollback).
+   */
+  readonly displayOffset?: number;
+  readonly scrollbackLen?: number;
+  /**
    * Scroll op (applied before spans): rows `[scrollTop, scrollBottom]` shifted by
    * `scrollCount` (positive = up). Optional — absent/`hasScroll: false` means no
    * shift. The cell mirror applies it; a span-only frame omits it.
