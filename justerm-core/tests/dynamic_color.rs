@@ -212,17 +212,44 @@ fn spec_forms_pass_through_verbatim() {
     }
 }
 
-/// Documented limitation (#122 scope): OSC 10/11 multi-spec stacking
-/// (`OSC 10 ; fg ; bg` setting fg then bg then cursor in xterm) is NOT supported —
-/// only the first spec is taken (fg for OSC 10), the rest dropped gracefully. Set
-/// fg and bg with separate OSC 10 / OSC 11 instead. This test pins the behavior so
-/// the cut stays intentional.
+/// OSC 10 stacks its `;`-separated specs across [fg, bg] (xterm's offset loop):
+/// `OSC 10 ; a ; b` sets foreground=a then background=b in one sequence (#137).
 #[test]
-fn osc10_takes_only_the_first_spec_no_stacking() {
+fn osc10_stacks_fg_then_bg() {
     let mut t = Engine::new(80, 24);
     t.feed(b"\x1b]10;rgb:11/11/11;rgb:22/22/22\x07");
     assert_eq!(
         t.drain_events(),
-        vec![TermEvent::SetForeground("rgb:11/11/11".into())] // bg spec dropped
+        vec![
+            TermEvent::SetForeground("rgb:11/11/11".into()),
+            TermEvent::SetBackground("rgb:22/22/22".into()),
+        ]
+    );
+}
+
+/// OSC 11 starts at the background slot, so a third spec would be the cursor —
+/// out of scope. `OSC 11 ; a ; b` sets background=a and drops b (cursor cap).
+#[test]
+fn osc11_stacks_from_bg_and_caps_at_cursor() {
+    let mut t = Engine::new(80, 24);
+    t.feed(b"\x1b]11;rgb:11/11/11;rgb:22/22/22\x07");
+    assert_eq!(
+        t.drain_events(),
+        vec![TermEvent::SetBackground("rgb:11/11/11".into())] // cursor slot dropped
+    );
+}
+
+/// A `?` works per slot inside a stack: `OSC 10 ; fg ; ?` sets the foreground and
+/// queries the background.
+#[test]
+fn osc10_stack_mixes_set_and_query_per_slot() {
+    let mut t = Engine::new(80, 24);
+    t.feed(b"\x1b]10;rgb:11/11/11;?\x07");
+    assert_eq!(
+        t.drain_events(),
+        vec![
+            TermEvent::SetForeground("rgb:11/11/11".into()),
+            TermEvent::QueryBackground,
+        ]
     );
 }
