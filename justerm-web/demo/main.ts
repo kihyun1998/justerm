@@ -1,6 +1,6 @@
 // Manual S1 harness — wires the real beamterm renderer to a stub source and
 // pushes one empty frame. Expected result: an empty cleared grid on the canvas.
-// Run: `pnpm dlx vite demo` (Vite handles the TS + beamterm WASM).
+// Run: `pnpm demo` (Vite + vite-plugin-wasm handle the TS + beamterm WASM).
 import { BeamtermRenderer, StubFrameSource, Terminal } from "../src/index";
 
 const source = new StubFrameSource();
