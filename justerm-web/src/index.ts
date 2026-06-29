@@ -9,3 +9,9 @@ export type { BeamtermOptions, Theme } from "./beamterm-renderer";
 // Exposed so alternate renderers (or #115's render policy) can reuse it.
 export { frameToDrawOps, identityPolicy } from "./render-core";
 export type { DrawOp, FlagBits, RenderPolicy } from "./render-core";
+// Scroll intent — wheel events → scrollback line delta (xterm consumeWheelEvent).
+export { WheelScroller } from "./scroll-control";
+export type { ScrollOptions, WheelContext, WheelLike } from "./scroll-control";
+// Viewport cell mirror — applies scroll-op damage for frame mode (ADR-0011).
+export { CellMirror } from "./cell-mirror";
+export { cellToDrawOp } from "./render-core";

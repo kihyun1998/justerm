@@ -67,23 +67,39 @@ export function frameToDrawOps(
       const code = frame.codepoints[idx]!;
       const symbol =
         extra !== 0 ? frame.sideTable[extra - 1]! : code === 0 ? " " : String.fromCodePoint(code);
-      const { fg, bg } = policy(
-        resolveRgb(frame.fg[idx]!, palette, FG),
-        resolveRgb(frame.bg[idx]!, palette, BG),
-        flags,
-      );
-      ops.push({
-        x: left + i,
-        y: line,
-        symbol,
-        fg,
-        bg,
-        bold: (flags & F.bold) !== 0,
-        italic: (flags & F.italic) !== 0,
-        underline: (flags & F.underline) !== 0,
-        strikethrough: (flags & F.strikethrough) !== 0,
-      });
+      ops.push(cellToDrawOp(left + i, line, symbol, frame.fg[idx]!, frame.bg[idx]!, flags, palette, F, policy));
     }
   }
   return ops;
+}
+
+/**
+ * Map a single resolved cell to a {@link DrawOp}: resolve its colour refs, run
+ * the {@link RenderPolicy}, and unpack the style flags. Shared by
+ * {@link frameToDrawOps} (frame spans) and the cell mirror (scroll-shifted
+ * cells). The caller skips `wide_char_spacer` cells before calling.
+ */
+export function cellToDrawOp(
+  x: number,
+  y: number,
+  symbol: string,
+  fgRef: number,
+  bgRef: number,
+  flags: number,
+  palette: Palette,
+  F: FlagBits,
+  policy: RenderPolicy = identityPolicy,
+): DrawOp {
+  const { fg, bg } = policy(resolveRgb(fgRef, palette, FG), resolveRgb(bgRef, palette, BG), flags);
+  return {
+    x,
+    y,
+    symbol,
+    fg,
+    bg,
+    bold: (flags & F.bold) !== 0,
+    italic: (flags & F.italic) !== 0,
+    underline: (flags & F.underline) !== 0,
+    strikethrough: (flags & F.strikethrough) !== 0,
+  };
 }

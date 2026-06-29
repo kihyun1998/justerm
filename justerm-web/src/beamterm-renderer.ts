@@ -1,6 +1,6 @@
 import type { BeamtermRenderer as Backend, Cell, CellStyle } from "@beamterm/renderer";
 import type { Palette } from "justerm-wasm-decode/colors.js";
-import { frameToDrawOps } from "./render-core";
+import { CellMirror } from "./cell-mirror";
 import type { FlagBits } from "./render-core";
 import type { DecodedFrame } from "./types";
 import type { Renderer } from "./renderer";
@@ -50,6 +50,11 @@ const opaque = (rgb: number): number => ((rgb << 8) | 0xff) >>> 0;
  * frames; this adapter only translates ops into beamterm calls.
  */
 export class BeamtermRenderer implements Renderer {
+  /** Viewport cell mirror (ADR-0011), (re)built lazily to the frame's size. */
+  private mirror: CellMirror | undefined;
+  private cols = 0;
+  private rows = 0;
+
   private constructor(
     private readonly backend: Backend,
     private readonly factory: Factory,
@@ -89,11 +94,20 @@ export class BeamtermRenderer implements Renderer {
   }
 
   applyFrame(frame: DecodedFrame): void {
+    // The mirror applies scroll ops + spans and yields the damaged cells; rebuild
+    // it when the viewport size changes (a resize arrives as a Full frame).
+    if (!this.mirror || this.cols !== frame.cols || this.rows !== frame.rows) {
+      this.cols = frame.cols;
+      this.rows = frame.rows;
+      this.mirror = new CellMirror(frame.cols, frame.rows, this.palette, this.flagBits);
+    }
+    const ops = this.mirror.applyFrame(frame);
+
     const batch = this.backend.batch();
     // Full frames repaint the whole viewport; partial frames retain untouched
     // cells (damage-only), so only full clears.
     if (frame.kind === 0) batch.clear(this.clearColor);
-    for (const op of frameToDrawOps(frame, this.palette, this.flagBits)) {
+    for (const op of ops) {
       let st = this.factory.style().fg(op.fg).bg(op.bg);
       if (op.bold) st = st.bold();
       if (op.italic) st = st.italic();
