@@ -11,6 +11,9 @@ importers:
       '@beamterm/renderer':
         specifier: ^1.0.0
         version: 1.0.0
+      justerm-wasm-decode:
+        specifier: ^0.6.0
+        version: 0.6.0
     devDependencies:
       tsup:
         specifier: ^8.5.1
@@ -698,6 +701,9 @@ packages:
   joycon@3.1.1:
     resolution: {integrity: sha512-34wB/Y7MW7bzjKRjUKTa46I2Z7eV62Rkhva+KkopW7Qvv/OSWBqvkSY7vusOPrNuZcUG3tApvdVgNB8POj3SPw==}
     engines: {node: '>=10'}
+
+  justerm-wasm-decode@0.6.0:
+    resolution: {integrity: sha512-HhZ0IdHVnCcyZWvaXlc9506CekEGK3m0cTMXSgcyRI3j/gcpFwhlgUsvMKDZ/bx3c1jsMS7ta97a4xoLo+X0IA==}
 
   lilconfig@3.1.3:
     resolution: {integrity: sha512-/vlFKAoH5Cgt3Ie+JLhRbwOsCQePABiU3tJ1egGvyQ+33R/vcwM2Zl2QR/LzjsBeItPt3oSVXapn+m4nQDvpzw==}
@@ -1463,6 +1469,8 @@ snapshots:
     optional: true
 
   joycon@3.1.1: {}
+
+  justerm-wasm-decode@0.6.0: {}
 
   lilconfig@3.1.3: {}
 

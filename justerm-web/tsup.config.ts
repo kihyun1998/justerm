@@ -5,6 +5,7 @@ export default defineConfig({
   format: ["esm"],
   dts: true,
   clean: true,
-  // @beamterm/renderer (WASM) stays external — the consumer's bundler loads it.
-  external: ["@beamterm/renderer"],
+  // WASM-backed deps stay external — the consumer's bundler instantiates them
+  // (vite-plugin-wasm or equivalent). Covers the `/colors.js` subpath too.
+  external: ["@beamterm/renderer", "justerm-wasm-decode", "justerm-wasm-decode/*"],
 });

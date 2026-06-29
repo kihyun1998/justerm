@@ -11,9 +11,14 @@ export default defineConfig({
   // Serve the manual S1 harness; src/ lives one level up.
   root: "demo",
   plugins: [wasm(), topLevelAwait()],
-  // esbuild's dep pre-bundle can't follow the .wasm ESM import — let the
-  // wasm plugin handle @beamterm/renderer instead.
-  optimizeDeps: { exclude: ["@beamterm/renderer"] },
+  // esbuild's dep pre-bundle can't follow the wasm-bindgen `import * as wasm`
+  // ESM import (it produces a broken bundle that crashes on __wbindgen_start) —
+  // exclude both WASM-backed packages so vite-plugin-wasm handles them instead.
+  // Excluding the bare package name also covers its subpaths (e.g. the
+  // `justerm-wasm-decode/colors.js` import in render-core.ts).
+  optimizeDeps: {
+    exclude: ["@beamterm/renderer", "justerm-wasm-decode"],
+  },
   // demo/ imports from ../src; allow Vite to read the package root.
   server: { fs: { allow: [".."] } },
   // top-level-await emits modern syntax (async destructuring); don't let
