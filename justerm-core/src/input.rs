@@ -213,6 +213,50 @@ pub enum MouseProtocol {
     AnyEvent,
 }
 
+bitflags::bitflags! {
+    /// The mouse event categories the active tracking mode reports (#129) — the
+    /// routing mask the frame carries so a frame-mode consumer sends an event to
+    /// the app (a wanted bit set) or keeps it local (selection/scrollback). It is
+    /// the single source `encode_mouse`'s restriction shares, so the wire mask and
+    /// the encode-time gate cannot drift.
+    #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+    pub struct MouseEvents: u8 {
+        /// Button press (every protocol except `Off`).
+        const DOWN  = 1 << 0;
+        /// Button release (`?1000`+).
+        const UP    = 1 << 1;
+        /// Wheel turn (`?1000`+ — X10 excludes it).
+        const WHEEL = 1 << 2;
+        /// Motion while a button is held — drag (`?1002`+).
+        const DRAG  = 1 << 3;
+        /// Bare motion, no button held (`?1003`).
+        const MOVE  = 1 << 4;
+    }
+}
+
+impl MouseProtocol {
+    /// The event categories this protocol reports — the routing mask carried on
+    /// the frame (#129). This is the authoritative protocol→events table;
+    /// `encode_mouse` gates on the same mask so the two cannot diverge.
+    pub fn wanted_events(self) -> MouseEvents {
+        match self {
+            MouseProtocol::Off => MouseEvents::empty(),
+            MouseProtocol::X10 => MouseEvents::DOWN,
+            MouseProtocol::Normal => MouseEvents::DOWN | MouseEvents::UP | MouseEvents::WHEEL,
+            MouseProtocol::ButtonEvent => {
+                MouseEvents::DOWN | MouseEvents::UP | MouseEvents::WHEEL | MouseEvents::DRAG
+            }
+            MouseProtocol::AnyEvent => {
+                MouseEvents::DOWN
+                    | MouseEvents::UP
+                    | MouseEvents::WHEEL
+                    | MouseEvents::DRAG
+                    | MouseEvents::MOVE
+            }
+        }
+    }
+}
+
 /// Mouse coordinate encoding — *how* a report is framed (default X10 vs DEC
 /// `?1006` SGR).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -560,58 +604,53 @@ fn function_key(n: u8, mods: Modifiers) -> Option<Vec<u8>> {
     }
 }
 
+/// Whether a button is one of the wheel directions (the 64-base wheel group).
+fn is_wheel(button: Option<MouseButton>) -> bool {
+    matches!(
+        button,
+        Some(
+            MouseButton::WheelUp
+                | MouseButton::WheelDown
+                | MouseButton::WheelLeft
+                | MouseButton::WheelRight
+        )
+    )
+}
+
+/// The event's category as a single [`MouseEvents`] bit — what the tracking mode
+/// must *want* for this event to report. Wheel releases are dropped before this
+/// (see `encode_mouse`), so a `Release` here is always a real button-up.
+fn event_category(ev: &MouseEvent) -> MouseEvents {
+    match ev.action {
+        MouseAction::Press if is_wheel(ev.button) => MouseEvents::WHEEL,
+        MouseAction::Press => MouseEvents::DOWN,
+        MouseAction::Release => MouseEvents::UP,
+        MouseAction::Motion if ev.button.is_some() => MouseEvents::DRAG,
+        MouseAction::Motion => MouseEvents::MOVE,
+    }
+}
+
 /// Encode a mouse event, given the active tracking mode and encoding. Returns
 /// `None` when reporting is off or the event is filtered out by the mode (e.g.
 /// a bare move under `?1000`).
 pub fn encode_mouse(ev: &MouseEvent, proto: MouseProtocol, enc: MouseEncoding) -> Option<Vec<u8>> {
-    if proto == MouseProtocol::Off {
-        return None;
-    }
-    // X10 (?9): a button *press* only — no release, no motion, no wheel — and the
-    // button byte carries no modifier bits (xterm.js CoreMouseService X10
-    // `restrict`). The modifier strip is applied at `mod_bits` below.
-    let x10 = proto == MouseProtocol::X10;
-    if x10
-        && (ev.action != MouseAction::Press
-            || matches!(
-                ev.button,
-                Some(
-                    MouseButton::WheelUp
-                        | MouseButton::WheelDown
-                        | MouseButton::WheelLeft
-                        | MouseButton::WheelRight
-                )
-            ))
-    {
-        return None;
-    }
     // A wheel turn is a single press-like event; a release on a wheel button is
     // not a real report (it would leak a bogus SGR `m` / an identity-less X10
-    // release), so drop it.
-    if ev.action == MouseAction::Release
-        && matches!(
-            ev.button,
-            Some(
-                MouseButton::WheelUp
-                    | MouseButton::WheelDown
-                    | MouseButton::WheelLeft
-                    | MouseButton::WheelRight
-            )
-        )
-    {
+    // release), so drop it — independent of the tracking mode.
+    if ev.action == MouseAction::Release && is_wheel(ev.button) {
         return None;
     }
-    // Mode gates which events report at all.
-    match ev.action {
-        MouseAction::Press | MouseAction::Release => {}
-        MouseAction::Motion => match (proto, ev.button) {
-            // Drag (button held) needs ButtonEvent or AnyEvent.
-            (MouseProtocol::ButtonEvent | MouseProtocol::AnyEvent, Some(_)) => {}
-            // Bare motion needs AnyEvent.
-            (MouseProtocol::AnyEvent, None) => {}
-            _ => return None,
-        },
+    // The tracking mode gates which event categories report at all. This is the
+    // single source `MouseProtocol::wanted_events` — the same mask the frame
+    // carries for the consumer's routing (#129) — so the encode-time gate and the
+    // wire mask cannot drift. (Off wants nothing → None; X10 wants only DOWN, so
+    // its press-only/no-wheel restriction falls out here too.)
+    if !proto.wanted_events().contains(event_category(ev)) {
+        return None;
     }
+    // X10 (?9) additionally carries no modifier bits in the button byte; the
+    // strip is applied at `mod_bits` below.
+    let x10 = proto == MouseProtocol::X10;
 
     // Low button bits + wheel base.
     let button_bits = match ev.button {

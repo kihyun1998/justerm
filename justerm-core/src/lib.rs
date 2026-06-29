@@ -34,6 +34,7 @@ pub use event::TermEvent;
 pub use grid::{Grid, Row};
 pub use input::{
     Key, KeyAction, KeyEvent, KeypadKey, Modifiers, MouseAction, MouseButton, MouseEvent,
+    MouseEvents,
 };
 pub use search::Match;
 pub use selection::{SelectionSpan, SelectionType, Side};

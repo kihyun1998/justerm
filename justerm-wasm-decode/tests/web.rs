@@ -66,6 +66,7 @@ fn sample_frame() -> Frame {
         cursor_blink: false,
         display_offset: 0,
         scrollback_len: 0,
+        mouse_events: Default::default(),
         scroll: None,
         spans: vec![span(0, 0, "hi"), span(1, 5, "abc")],
         side_table: vec![],
@@ -75,8 +76,18 @@ fn sample_frame() -> Frame {
 }
 
 #[wasm_bindgen_test]
-fn wire_version_is_seven() {
-    assert_eq!(wire_version(), 7); // #118/ADR-0015 bumped 6 -> 7 for the overlay marker group
+fn wire_version_is_eight() {
+    assert_eq!(wire_version(), 8); // #129/ADR-0016 bumped 7 -> 8 for the mouse mask
+}
+
+#[wasm_bindgen_test]
+fn mouse_wanted_events_crosses_the_boundary() {
+    use justerm_core::MouseEvents;
+    let mut frame = sample_frame();
+    frame.mouse_events = MouseEvents::DOWN | MouseEvents::UP | MouseEvents::WHEEL;
+    let df = decode_frame(&justerm_core::encode(&frame)).expect("decode");
+    assert_eq!(df.mouse_wanted_events(), frame.mouse_events.bits());
+    assert!(df.mouse_wanted_events() & MouseEvents::WHEEL.bits() != 0); // wheel routes to app
 }
 
 #[wasm_bindgen_test]
@@ -147,6 +158,7 @@ fn colour_and_flag_columns_carry_tagged_values() {
         cursor_blink: false,
         display_offset: 0,
         scrollback_len: 0,
+        mouse_events: Default::default(),
         scroll: None,
         spans: vec![Span {
             line: 0,

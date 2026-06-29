@@ -5,8 +5,8 @@
 
 use core::num::NonZeroU32;
 use justerm_core::{
-    Cell, CellFlags, Color, Engine, Frame, FrameKind, MarkerId, MarkerPosition, Overlay, ScrollOp,
-    SelectionSpan, Span, decode, encode,
+    Cell, CellFlags, Color, Engine, Frame, FrameKind, MarkerId, MarkerPosition, MouseEvents,
+    Overlay, ScrollOp, SelectionSpan, SelectionType, Side, Span, decode, encode,
 };
 use std::collections::BTreeMap;
 
@@ -25,6 +25,7 @@ fn round_trip_empty_partial_frame() {
         cursor_blink: false,
         display_offset: 0,
         scrollback_len: 0,
+        mouse_events: Default::default(),
         scroll: None,
         spans: vec![],
         side_table: vec![],
@@ -51,6 +52,7 @@ fn round_trip_overlay_selection_and_match_spans() {
         cursor_blink: false,
         display_offset: 0,
         scrollback_len: 0,
+        mouse_events: Default::default(),
         scroll: None,
         spans: vec![],
         side_table: vec![],
@@ -80,6 +82,54 @@ fn round_trip_overlay_selection_and_match_spans() {
     assert_eq!(decode(&bytes).expect("decode"), frame);
 }
 
+/// Every non-default header/overlay field at once round-trips — scroll op +
+/// mouse mask + selection + marker together — so a new field (the v8 mask byte
+/// between `scrollback_len` and the scroll op) cannot corrupt the layout when
+/// the others are present. Driven through the engine, not a hand-built literal.
+#[test]
+fn round_trip_full_frame_all_fields_present() {
+    let mut term = Engine::with_scrollback(20, 3, 100);
+    term.feed(b"L0\r\nL1\r\nL2\r\nL3\r\nL4"); // scrollback + a scroll op
+    term.feed(b"\x1b[?1002h"); // mouse mask = DOWN|UP|WHEEL|DRAG
+    term.selection_begin(0, 0, Side::Left, SelectionType::Char);
+    term.selection_extend(0, 2, Side::Right);
+    term.add_marker(1);
+
+    let frame = term.frame();
+    assert!(frame.scroll.is_some() && !frame.mouse_events.is_empty());
+    assert!(!frame.overlay.selection.is_empty() && !frame.overlay.markers.is_empty());
+
+    let bytes = encode(&frame);
+    assert_eq!(decode(&bytes).expect("decode"), frame);
+}
+
+/// #129: the mouse wanted-events mask round-trips in the header (a flag byte,
+/// like the cursor scalars).
+#[test]
+fn round_trip_mouse_events_mask() {
+    let mut frame = Frame {
+        cols: 80,
+        rows: 24,
+        kind: FrameKind::Partial,
+        cursor_row: 0,
+        cursor_col: 0,
+        cursor_visible: true,
+        cursor_shape: justerm_core::CursorShape::Block,
+        cursor_blink: false,
+        display_offset: 0,
+        scrollback_len: 0,
+        mouse_events: MouseEvents::empty(),
+        scroll: None,
+        spans: vec![],
+        side_table: vec![],
+        link_table: vec![],
+        overlay: Overlay::default(),
+    };
+    frame.mouse_events = MouseEvents::DOWN | MouseEvents::UP | MouseEvents::WHEEL;
+    let bytes = encode(&frame);
+    assert_eq!(decode(&bytes).expect("decode"), frame);
+}
+
 /// #118: the overlay's third group — marker positions — round-trips as
 /// `(marker_id, row)` pairs (a different record shape from the span groups).
 #[test]
@@ -95,6 +145,7 @@ fn round_trip_overlay_marker_positions() {
         cursor_blink: false,
         display_offset: 0,
         scrollback_len: 0,
+        mouse_events: Default::default(),
         scroll: None,
         spans: vec![],
         side_table: vec![],
@@ -131,6 +182,7 @@ fn round_trip_scroll_position() {
         cursor_blink: false,
         display_offset: 7,
         scrollback_len: 250,
+        mouse_events: Default::default(),
         scroll: None,
         spans: vec![],
         side_table: vec![],
@@ -159,6 +211,7 @@ fn round_trip_cursor_position_and_visibility() {
         cursor_blink: false,
         display_offset: 0,
         scrollback_len: 0,
+        mouse_events: Default::default(),
         scroll: None,
         spans: vec![],
         side_table: vec![],
@@ -187,6 +240,7 @@ fn round_trip_span_of_plain_cells() {
         cursor_blink: false,
         display_offset: 0,
         scrollback_len: 0,
+        mouse_events: Default::default(),
         scroll: None,
         spans: vec![Span {
             line: 3,
@@ -224,6 +278,7 @@ fn round_trip_distinct_colour_references() {
         cursor_blink: false,
         display_offset: 0,
         scrollback_len: 0,
+        mouse_events: Default::default(),
         scroll: None,
         spans: vec![Span {
             line: 0,
@@ -279,6 +334,7 @@ fn round_trip_cell_flags_incl_layout_markers() {
         cursor_blink: false,
         display_offset: 0,
         scrollback_len: 0,
+        mouse_events: Default::default(),
         scroll: None,
         spans: vec![Span {
             line: 5,
@@ -320,6 +376,7 @@ fn decode_rejects_superseded_version() {
         cursor_blink: false,
         display_offset: 0,
         scrollback_len: 0,
+        mouse_events: Default::default(),
         scroll: None,
         spans: vec![],
         side_table: vec![],
@@ -334,13 +391,13 @@ fn decode_rejects_superseded_version() {
     ));
 }
 
-/// The wire is gated at version 7 (the #118 overlay marker group, atop the #108
-/// section). Both the exported `WIRE_VERSION` constant and the byte the encoder
-/// emits must read 7 — the value the WASM decoder's `wire_version()` mirrors in
+/// The wire is gated at version 8 (the #129 mouse mask, atop the #118 marker
+/// group). Both the exported `WIRE_VERSION` constant and the byte the encoder
+/// emits must read 8 — the value the WASM decoder's `wire_version()` mirrors in
 /// lockstep (ADR-0008), so a drift here trips before it can desync a binding.
 #[test]
-fn wire_version_is_seven() {
-    assert_eq!(justerm_core::WIRE_VERSION, 7);
+fn wire_version_is_eight() {
+    assert_eq!(justerm_core::WIRE_VERSION, 8);
     let mut term = Engine::new(1, 1);
     term.feed(b"x");
     let bytes = encode(&term.frame());
@@ -366,6 +423,7 @@ fn round_trip_grapheme_side_table() {
         cursor_blink: false,
         display_offset: 0,
         scrollback_len: 0,
+        mouse_events: Default::default(),
         scroll: None,
         spans: vec![Span {
             line: 0,
@@ -400,6 +458,7 @@ fn cell_record_is_fixed_18_bytes() {
         cursor_blink: false,
         display_offset: 0,
         scrollback_len: 0,
+        mouse_events: Default::default(),
         scroll: None,
         spans: vec![Span {
             line: 0,
@@ -433,6 +492,7 @@ fn round_trip_scroll_op() {
         cursor_blink: false,
         display_offset: 0,
         scrollback_len: 0,
+        mouse_events: Default::default(),
         scroll: Some(ScrollOp {
             top: 0,
             bottom: 23,
@@ -460,6 +520,7 @@ fn round_trip_full_frame_kind() {
         cursor_blink: false,
         display_offset: 0,
         scrollback_len: 0,
+        mouse_events: Default::default(),
         scroll: None,
         spans: vec![],
         side_table: vec![],
@@ -703,6 +764,7 @@ fn round_trip_full_frame_with_cells() {
         cursor_blink: false,
         display_offset: 0,
         scrollback_len: 0,
+        mouse_events: Default::default(),
         scroll: None,
         spans: vec![row(0), row(1)],
         side_table: vec![],
@@ -727,6 +789,7 @@ fn round_trip_negative_scroll_count() {
         cursor_blink: false,
         display_offset: 0,
         scrollback_len: 0,
+        mouse_events: Default::default(),
         scroll: Some(ScrollOp {
             top: 2,
             bottom: 23,

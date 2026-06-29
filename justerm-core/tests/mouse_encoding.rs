@@ -280,3 +280,50 @@ fn disabling_an_encoding_returns_to_default() {
         vec![0x1b, b'[', b'M', 32, 38, 43]
     );
 }
+
+// #129 — the motion gate per tracking mode. Each protocol's wanted-events set
+// (the single source `encode_mouse` shares with the frame's routing mask) decides
+// which motion reports; locked directly at the encode boundary so the shared-mask
+// refactor cannot silently change it.
+
+/// A motion event with an optional held button.
+fn motion(button: Option<MouseButton>, col: usize, row: usize) -> MouseEvent {
+    MouseEvent {
+        button,
+        action: MouseAction::Motion,
+        col,
+        row,
+        px: 0,
+        py: 0,
+        mods: Modifiers::empty(),
+    }
+}
+
+#[test]
+fn normal_tracking_drops_all_motion() {
+    let mut t = Engine::new(80, 24);
+    t.feed(b"\x1b[?1000h"); // Normal: down/up/wheel only
+    assert!(
+        t.encode_mouse(motion(Some(MouseButton::Left), 5, 10))
+            .is_none()
+    );
+    assert!(t.encode_mouse(motion(None, 5, 10)).is_none());
+}
+
+#[test]
+fn button_event_reports_drag_but_not_bare_motion() {
+    let mut t = Engine::new(80, 24);
+    t.feed(b"\x1b[?1002h"); // ButtonEvent: + drag (motion with a button)
+    assert!(
+        t.encode_mouse(motion(Some(MouseButton::Left), 5, 10))
+            .is_some()
+    );
+    assert!(t.encode_mouse(motion(None, 5, 10)).is_none());
+}
+
+#[test]
+fn any_event_reports_bare_motion() {
+    let mut t = Engine::new(80, 24);
+    t.feed(b"\x1b[?1003h"); // AnyEvent: + bare motion
+    assert!(t.encode_mouse(motion(None, 5, 10)).is_some());
+}

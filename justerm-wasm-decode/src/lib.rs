@@ -48,6 +48,9 @@ struct Flat {
     /// `scrollback_len` history lines (total height = `+ rows`).
     display_offset: u32,
     scrollback_len: u32,
+    /// Mouse wanted-events mask (#129) — the routing bits the active tracking
+    /// mode reports (DOWN/UP/WHEEL/DRAG/MOVE). `0` = no reporting.
+    mouse_events: u8,
     /// `(top, bottom, count)` of the frame's scroll op, applied before spans.
     scroll: Option<(u16, u16, i16)>,
     /// Per-cell base codepoint (`cell.c`), span order — the `codepoints` column.
@@ -144,6 +147,7 @@ fn flatten(frame: &Frame) -> Flat {
         cursor_blink: frame.cursor_blink,
         display_offset: frame.display_offset,
         scrollback_len: frame.scrollback_len,
+        mouse_events: frame.mouse_events.bits(),
         scroll: frame
             .scroll
             .map(|s| (s.top as u16, s.bottom as u16, s.count as i16)),
@@ -258,6 +262,17 @@ impl DecodedFrame {
     #[wasm_bindgen(getter, js_name = hasScroll)]
     pub fn has_scroll(&self) -> bool {
         self.flat.scroll.is_some()
+    }
+
+    /// The mouse wanted-events mask (#129): which event categories the active
+    /// tracking mode reports (bit 0 DOWN, 1 UP, 2 WHEEL, 3 DRAG, 4 MOVE). `0` =
+    /// no reporting. The consumer routes a mouse/wheel event to the app when its
+    /// bit is set, else keeps it local (selection / scrollback). Encoding the
+    /// report bytes stays the backend's (`encode_mouse`); only this routing mask
+    /// crosses.
+    #[wasm_bindgen(getter, js_name = mouseWantedEvents)]
+    pub fn mouse_wanted_events(&self) -> u8 {
+        self.flat.mouse_events
     }
 
     #[wasm_bindgen(getter, js_name = scrollTop)]
@@ -503,6 +518,7 @@ mod tests {
             cursor_blink: false,
             display_offset: 0,
             scrollback_len: 0,
+            mouse_events: Default::default(),
             scroll: None,
             spans,
             side_table: vec![],
@@ -757,6 +773,16 @@ mod tests {
         assert_eq!(flat.marker_positions, vec![5, 3, 99, 0]); // (id, row) pairs
     }
 
+    #[test]
+    fn flatten_carries_mouse_events_mask_through_the_wire() {
+        use justerm_core::MouseEvents;
+        let mut frame = partial(80, 24, vec![ascii_span(0, 0, "x")]);
+        frame.mouse_events = MouseEvents::DOWN | MouseEvents::UP | MouseEvents::WHEEL;
+        let native = justerm_core::decode(&justerm_core::encode(&frame)).expect("decode");
+        let flat = flatten(&native);
+        assert_eq!(flat.mouse_events, frame.mouse_events.bits());
+    }
+
     // --- S3/AC2: flatten faithfully represents the native-decoded frame ---
 
     #[test]
@@ -783,6 +809,7 @@ mod tests {
             cursor_blink: false,
             display_offset: 0,
             scrollback_len: 0,
+            mouse_events: Default::default(),
             scroll: Some(justerm_core::ScrollOp {
                 top: 0,
                 bottom: 23,
