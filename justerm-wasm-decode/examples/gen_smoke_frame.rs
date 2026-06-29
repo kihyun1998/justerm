@@ -28,6 +28,8 @@ fn main() {
         cursor_visible: false,
         cursor_shape: justerm_core::CursorShape::Block,
         cursor_blink: false,
+        display_offset: 0,
+        scrollback_len: 0,
         scroll: None,
         spans: vec![Span {
             line: 0,

@@ -43,6 +43,11 @@ struct Flat {
     /// Caret shape (`0` = Block, `1` = Underline, `2` = Bar) + blink (#81).
     cursor_shape: u8,
     cursor_blink: bool,
+    /// Viewport scroll position for the consumer's scrollbar (#112 / ADR-0013):
+    /// `display_offset` lines scrolled up from the bottom (0 = following), and
+    /// `scrollback_len` history lines (total height = `+ rows`).
+    display_offset: u32,
+    scrollback_len: u32,
     /// `(top, bottom, count)` of the frame's scroll op, applied before spans.
     scroll: Option<(u16, u16, i16)>,
     /// Per-cell base codepoint (`cell.c`), span order — the `codepoints` column.
@@ -122,6 +127,8 @@ fn flatten(frame: &Frame) -> Flat {
             justerm_core::CursorShape::Bar => 2,
         },
         cursor_blink: frame.cursor_blink,
+        display_offset: frame.display_offset,
+        scrollback_len: frame.scrollback_len,
         scroll: frame
             .scroll
             .map(|s| (s.top as u16, s.bottom as u16, s.count as i16)),
@@ -198,6 +205,20 @@ impl DecodedFrame {
     #[wasm_bindgen(getter, js_name = cursorBlink)]
     pub fn cursor_blink(&self) -> bool {
         self.flat.cursor_blink
+    }
+
+    /// Lines the viewport is scrolled up from the bottom (`0` = following the
+    /// live screen). With [`scrollback_len`](Self::scrollback_len), sizes the
+    /// consumer's scrollbar thumb (#112 / ADR-0013).
+    #[wasm_bindgen(getter, js_name = displayOffset)]
+    pub fn display_offset(&self) -> u32 {
+        self.flat.display_offset
+    }
+
+    /// History lines in scrollback; total content height is `scrollbackLen + rows`.
+    #[wasm_bindgen(getter, js_name = scrollbackLen)]
+    pub fn scrollback_len(&self) -> u32 {
+        self.flat.scrollback_len
     }
 
     #[wasm_bindgen(getter, js_name = hasScroll)]
@@ -420,6 +441,8 @@ mod tests {
             cursor_visible: true,
             cursor_shape: justerm_core::CursorShape::Block,
             cursor_blink: false,
+            display_offset: 0,
+            scrollback_len: 0,
             scroll: None,
             spans,
             side_table: vec![],
@@ -644,6 +667,8 @@ mod tests {
             cursor_visible: false,
             cursor_shape: justerm_core::CursorShape::Block,
             cursor_blink: false,
+            display_offset: 0,
+            scrollback_len: 0,
             scroll: Some(justerm_core::ScrollOp {
                 top: 0,
                 bottom: 23,

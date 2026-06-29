@@ -22,6 +22,8 @@ fn round_trip_empty_partial_frame() {
         cursor_visible: true,
         cursor_shape: justerm_core::CursorShape::Block,
         cursor_blink: false,
+        display_offset: 0,
+        scrollback_len: 0,
         scroll: None,
         spans: vec![],
         side_table: vec![],
@@ -29,6 +31,33 @@ fn round_trip_empty_partial_frame() {
     };
     let bytes = encode(&frame);
     assert_eq!(decode(&bytes).expect("decode"), frame);
+}
+
+/// Scroll position (display_offset + scrollback_len) survives the wire round-trip
+/// (#112 / ADR-0013, wire v5). It rides in the header like the cursor, for the
+/// consumer's scrollbar.
+#[test]
+fn round_trip_scroll_position() {
+    let frame = Frame {
+        cols: 80,
+        rows: 24,
+        kind: FrameKind::Partial,
+        cursor_row: 0,
+        cursor_col: 0,
+        cursor_visible: true,
+        cursor_shape: justerm_core::CursorShape::Block,
+        cursor_blink: false,
+        display_offset: 7,
+        scrollback_len: 250,
+        scroll: None,
+        spans: vec![],
+        side_table: vec![],
+        link_table: vec![],
+    };
+    let decoded = decode(&encode(&frame)).expect("decode");
+    assert_eq!(decoded.display_offset, 7);
+    assert_eq!(decoded.scrollback_len, 250);
+    assert_eq!(decoded, frame);
 }
 
 /// Cursor position + visibility survive the wire round-trip (#38). The cursor
@@ -45,6 +74,8 @@ fn round_trip_cursor_position_and_visibility() {
         cursor_visible: false,
         cursor_shape: justerm_core::CursorShape::Block,
         cursor_blink: false,
+        display_offset: 0,
+        scrollback_len: 0,
         scroll: None,
         spans: vec![],
         side_table: vec![],
@@ -70,6 +101,8 @@ fn round_trip_span_of_plain_cells() {
         cursor_visible: true,
         cursor_shape: justerm_core::CursorShape::Block,
         cursor_blink: false,
+        display_offset: 0,
+        scrollback_len: 0,
         scroll: None,
         spans: vec![Span {
             line: 3,
@@ -104,6 +137,8 @@ fn round_trip_distinct_colour_references() {
         cursor_visible: true,
         cursor_shape: justerm_core::CursorShape::Block,
         cursor_blink: false,
+        display_offset: 0,
+        scrollback_len: 0,
         scroll: None,
         spans: vec![Span {
             line: 0,
@@ -156,6 +191,8 @@ fn round_trip_cell_flags_incl_layout_markers() {
         cursor_visible: true,
         cursor_shape: justerm_core::CursorShape::Block,
         cursor_blink: false,
+        display_offset: 0,
+        scrollback_len: 0,
         scroll: None,
         spans: vec![Span {
             line: 5,
@@ -194,6 +231,8 @@ fn decode_rejects_superseded_version() {
         cursor_visible: true,
         cursor_shape: justerm_core::CursorShape::Block,
         cursor_blink: false,
+        display_offset: 0,
+        scrollback_len: 0,
         scroll: None,
         spans: vec![],
         side_table: vec![],
@@ -224,6 +263,8 @@ fn round_trip_grapheme_side_table() {
         cursor_visible: true,
         cursor_shape: justerm_core::CursorShape::Block,
         cursor_blink: false,
+        display_offset: 0,
+        scrollback_len: 0,
         scroll: None,
         spans: vec![Span {
             line: 0,
@@ -255,6 +296,8 @@ fn cell_record_is_fixed_18_bytes() {
         cursor_visible: true,
         cursor_shape: justerm_core::CursorShape::Block,
         cursor_blink: false,
+        display_offset: 0,
+        scrollback_len: 0,
         scroll: None,
         spans: vec![Span {
             line: 0,
@@ -285,6 +328,8 @@ fn round_trip_scroll_op() {
         cursor_visible: true,
         cursor_shape: justerm_core::CursorShape::Block,
         cursor_blink: false,
+        display_offset: 0,
+        scrollback_len: 0,
         scroll: Some(ScrollOp {
             top: 0,
             bottom: 23,
@@ -309,6 +354,8 @@ fn round_trip_full_frame_kind() {
         cursor_visible: true,
         cursor_shape: justerm_core::CursorShape::Block,
         cursor_blink: false,
+        display_offset: 0,
+        scrollback_len: 0,
         scroll: None,
         spans: vec![],
         side_table: vec![],
@@ -549,6 +596,8 @@ fn round_trip_full_frame_with_cells() {
         cursor_visible: true,
         cursor_shape: justerm_core::CursorShape::Block,
         cursor_blink: false,
+        display_offset: 0,
+        scrollback_len: 0,
         scroll: None,
         spans: vec![row(0), row(1)],
         side_table: vec![],
@@ -570,6 +619,8 @@ fn round_trip_negative_scroll_count() {
         cursor_visible: true,
         cursor_shape: justerm_core::CursorShape::Block,
         cursor_blink: false,
+        display_offset: 0,
+        scrollback_len: 0,
         scroll: Some(ScrollOp {
             top: 2,
             bottom: 23,
