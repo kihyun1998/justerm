@@ -30,6 +30,36 @@ pub enum TermEvent {
     /// is theme-agnostic, so the consumer (which knows the scheme) answers by
     /// calling `Engine::report_color_scheme` (#85).
     ColorSchemeQuery,
+    /// The app set ANSI palette entry `index` to `spec` (OSC 4). One event per
+    /// `index ; spec` pair in the sequence. The cell still references
+    /// `Indexed(index)` — only the consumer's palette[index] changes, so the
+    /// engine stays theme-agnostic (#122).
+    SetPaletteColor { index: u8, spec: String },
+    /// The app set the default foreground colour (OSC 10). Raw spec, forwarded
+    /// for the consumer to apply — theme-agnostic, like [`SetBackground`](Self::SetBackground) (#122).
+    SetForeground(String),
+    /// The app set the default background colour (OSC 11). The engine is
+    /// theme-agnostic, so it forwards the raw spec string (`rgb:…`/`#…`) for the
+    /// consumer to parse and apply to its palette — it never holds hex (#122).
+    SetBackground(String),
+    /// The app reset palette entries to the theme default (OSC 104). `None` =
+    /// the whole table (no argument); `Some(index)` = one entry, one event per
+    /// index given. The consumer restores its palette (#122).
+    ResetPaletteColor(Option<u8>),
+    /// The app queried ANSI palette entry `index` (OSC 4 with `?` for that pair);
+    /// the consumer answers with `report_palette_color` (#122).
+    QueryPaletteColor { index: u8 },
+    /// The app reset the default foreground to the theme default (OSC 110, #122).
+    ResetForeground,
+    /// The app reset the default background to the theme default (OSC 111, #122).
+    ResetBackground,
+    /// The app queried the default foreground colour (OSC 10 with `?`); the
+    /// consumer answers with `report_foreground` (#122).
+    QueryForeground,
+    /// The app queried the default background colour (OSC 11 with `?`). The
+    /// theme-agnostic engine relays it; the consumer answers with
+    /// `report_background` (#122), mirroring `ColorSchemeQuery`.
+    QueryBackground,
     /// A decoration marker's line left the buffer — evicted past the scrollback
     /// cap, or scrolled out of an in-screen region (#118). The handle is now
     /// dead; the consumer drops the decoration bound to it. This is the

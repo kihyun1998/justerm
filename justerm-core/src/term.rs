@@ -623,6 +623,28 @@ impl Term {
             .extend_from_slice(format!("\x1b[?997;{ps}n").as_bytes());
     }
 
+    /// Answer an OSC 4 palette query (#122): wrap the consumer-supplied spec for
+    /// `index` in the OSC 4 reply envelope, ST-terminated.
+    pub fn report_palette_color(&mut self, index: u8, spec: &str) {
+        self.replies
+            .extend_from_slice(format!("\x1b]4;{index};{spec}\x1b\\").as_bytes());
+    }
+
+    /// Answer an OSC 10 foreground query (#122): wrap the consumer-supplied spec
+    /// in the OSC 10 reply envelope, ST-terminated.
+    pub fn report_foreground(&mut self, spec: &str) {
+        self.replies
+            .extend_from_slice(format!("\x1b]10;{spec}\x1b\\").as_bytes());
+    }
+
+    /// Answer an OSC 11 background query (#122): wrap the consumer-supplied spec
+    /// (it knows its palette) in the OSC 11 reply envelope, ST-terminated. The
+    /// engine formats the envelope only — it never knows the colour.
+    pub fn report_background(&mut self, spec: &str) {
+        self.replies
+            .extend_from_slice(format!("\x1b]11;{spec}\x1b\\").as_bytes());
+    }
+
     /// The cells of visible row `i` (0..rows) at the current scroll position.
     /// The viewport windows into `[history.. ; screen..]`: rows above
     /// `scrollback.len()` come from history, the rest from the live screen.
@@ -2809,6 +2831,67 @@ impl Perform for Term {
                         core::num::NonZeroU32::new(self.hyperlink_pool.len() as u32);
                 }
             }
+            // OSC 4 = set/query an ANSI palette entry: `OSC 4 ; index ; spec`
+            // (#122). The engine forwards index + raw spec; the consumer applies
+            // it to its palette (theme-agnostic — the cell keeps `Indexed`).
+            b"4" => {
+                // One event per `index ; spec` pair (xterm's `while slots > 1`).
+                let mut rest = &params[1..];
+                while let [idx, spec, tail @ ..] = rest {
+                    rest = tail;
+                    if let Ok(index) = String::from_utf8_lossy(idx).parse::<u8>() {
+                        if *spec == b"?" {
+                            self.events.push(TermEvent::QueryPaletteColor { index });
+                        } else {
+                            self.events.push(TermEvent::SetPaletteColor {
+                                index,
+                                spec: String::from_utf8_lossy(spec).into_owned(),
+                            });
+                        }
+                    }
+                }
+            }
+            // OSC 104 = reset palette entries (#122): no arg resets the whole
+            // table, else one event per named index.
+            b"104" => {
+                if params.len() <= 1 {
+                    self.events.push(TermEvent::ResetPaletteColor(None));
+                } else {
+                    for &idx in &params[1..] {
+                        if let Ok(index) = String::from_utf8_lossy(idx).parse::<u8>() {
+                            self.events.push(TermEvent::ResetPaletteColor(Some(index)));
+                        }
+                    }
+                }
+            }
+            // OSC 10 = set/query the default foreground colour (#122).
+            b"10" => {
+                if let Some(&spec) = params.get(1) {
+                    if spec == b"?" {
+                        self.events.push(TermEvent::QueryForeground);
+                    } else {
+                        self.events.push(TermEvent::SetForeground(
+                            String::from_utf8_lossy(spec).into_owned(),
+                        ));
+                    }
+                }
+            }
+            // OSC 11 = set/query the default background colour (#122). The engine
+            // forwards the raw spec for the consumer to apply (theme-agnostic).
+            b"11" => {
+                if let Some(&spec) = params.get(1) {
+                    if spec == b"?" {
+                        self.events.push(TermEvent::QueryBackground);
+                    } else {
+                        self.events.push(TermEvent::SetBackground(
+                            String::from_utf8_lossy(spec).into_owned(),
+                        ));
+                    }
+                }
+            }
+            // OSC 110 / 111 = reset the default foreground / background (#122).
+            b"110" => self.events.push(TermEvent::ResetForeground),
+            b"111" => self.events.push(TermEvent::ResetBackground),
             _ => {} // other OSCs are later slices
         }
     }

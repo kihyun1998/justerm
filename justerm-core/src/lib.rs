@@ -199,6 +199,26 @@ impl Engine {
         self.term.report_color_scheme(dark);
     }
 
+    /// Answer an OSC 11 `QueryBackground` event (#122): the consumer hands back
+    /// the current background spec (it owns the palette) and the engine queues
+    /// the OSC 11 reply for `drain_replies`. Theme-agnostic — the engine never
+    /// knows the colour, only formats the envelope.
+    pub fn report_background(&mut self, spec: &str) {
+        self.term.report_background(spec);
+    }
+
+    /// Answer an OSC 10 `QueryForeground` event (#122): queue the OSC 10 reply
+    /// from the consumer-supplied spec. Theme-agnostic envelope-only.
+    pub fn report_foreground(&mut self, spec: &str) {
+        self.term.report_foreground(spec);
+    }
+
+    /// Answer an OSC 4 `QueryPaletteColor` event (#122): queue the OSC 4 reply for
+    /// `index` from the consumer-supplied spec. Theme-agnostic envelope-only.
+    pub fn report_palette_color(&mut self, index: u8, spec: &str) {
+        self.term.report_palette_color(index, spec);
+    }
+
     /// Whether the app enabled **win32-input-mode** (DEC `?9001`): it asked for
     /// keys as raw Windows key-records. The engine only tracks the flag — encoding
     /// the records (`CSI Vk;Sc;Uc;Kd;Cs;Rc _`) is a non-goal (raw passthrough, no
