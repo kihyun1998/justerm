@@ -17,6 +17,9 @@ export { CellMirror } from "./cell-mirror";
 export { cellToDrawOp } from "./render-core";
 // Cursor — blink state (web policy) + cell-invert/underline overlay.
 export { BLINK_INTERVAL, CursorBlink, CursorShape, cursorOp } from "./cursor";
+// Scrollbar — custom DOM slider over the canvas (thumb math + drag → offset).
+export { dragToDisplayOffset, Scrollbar, scrollbarMetrics } from "./scrollbar";
+export type { ScrollbarMetrics, ScrollbarOptions, ScrollPosition } from "./scrollbar";
 // Input — DOM events → intent (the backend encodes); outbound seam.
 export { captureInput, keyFromDom, Mod, mouseFromDom, StubInputSink, wheelMouseFromDom } from "./input";
 export type {
