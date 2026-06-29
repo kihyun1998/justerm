@@ -72,6 +72,13 @@ cargo bench              # throughput 마이크로벤치(추세 기록)
 **구현 전, 참조 구현(vte/alacritty/xterm)이 그 영역에서 추적하는 *숨은 상태*를 열거**하고
 `docs/architecture.md` § "Hidden VT state" 에 추가하라. 체계적 catch 는 #7 vttest — 일찍 세워라.
 
+**참조 소스는 `gh api` 로 raw 를 직접 받아 grep/sed 한다** (WebFetch 금지). WebFetch 는 요약 모델이
+큰 파일을 잘라 *메서드 본문을 놓친다*(예: xterm.js `InputHandler.ts` 3.7K 줄 — 등록부만 보이고
+`setOrReportIndexedColor` 등 핸들러 본문은 잘림). 대신
+`gh api repos/<owner>/<repo>/contents/<path> --jq .content | base64 -d > /tmp/x.ts` 로 전체를 받아
+`grep -n`/`sed -n` 으로 *실제 줄* 을 읽어라. 기억/요약 아닌 실코드 대조가 원칙(메모리
+`feedback_proactive_adversarial_and_reference_verify`).
+
 **결정 유형으로 라우팅한다.** 순수 기술 메커니즘(와이어 포맷·좌표계·API 모양 등 — 코드 + 명명된
 prior-art 로 *도출 가능*한 것)은 사용자에게 grilling 하지 말고 **직접 결정 → 실제 소스 대조 검증 →
 결과만 제시**(yes/no 승인). 답이 코드에 있는 걸 묻는 건 일 떠넘기기다. grilling/질문은 **제품·정체성·
