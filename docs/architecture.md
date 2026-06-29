@@ -113,6 +113,10 @@ A **frame** serializes one damage cycle (`damage()` + `scroll_delta()`):
 - **spans** — for `Partial`, each `{line, left, right}` then `(right−left+1)` cell records; `Full` = all rows.
 - **side-table** — only the clusters referenced *this frame*, renumbered frame-local; each cell's
   `extra` rewritten to the local index.
+- **overlay** (v6, #108/ADR-0014) — interaction highlights as *viewport* spans: a selection group then a
+  search-match group, each a `u16` count + `(row, left, right)` `u16` triples. Positions only (colour is
+  the consumer's); `frame()` re-projects them against the scroll offset, the single anchoring authority.
+  Append-only — markers (#118) become a third group at the next bump.
 
 The **cell record** (little-endian): `c` (u32 Unicode scalar — *not* the renderer's atlas glyph
 id), `fg`/`bg` (u32 each = tag byte `Default|Indexed|Rgb` + 24-bit payload; the tag is mandatory so

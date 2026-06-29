@@ -10,12 +10,13 @@ use crate::cell::{Cell, CellFlags};
 use crate::color::Color;
 use crate::cursor::CursorShape;
 use crate::damage::ScrollOp;
+use crate::selection::SelectionSpan;
 use core::num::NonZeroU32;
 use std::collections::BTreeMap;
 
 /// Wire magic ("juSTerm") + format version. A new feature bumps `VERSION`.
 const MAGIC: [u8; 2] = *b"JT";
-const VERSION: u8 = 5; // v5 adds scroll position (display_offset + scrollback_len, #112/ADR-0013); v4 cursor shape+blink (#81); v3 cursor row/col/visibility (#38)
+const VERSION: u8 = 6; // v6 adds the overlay section (selection + search-match spans, #108/ADR-0005 amendment); v5 scroll position (#112/ADR-0013); v4 cursor shape+blink (#81); v3 cursor row/col/visibility (#38)
 
 /// The wire-format version (the gating `VERSION` byte), exposed so a binding can
 /// assert at load that its decoder matches the backend encoder (#34/ADR-0008).
@@ -49,6 +50,23 @@ pub struct Span {
     pub links: BTreeMap<usize, NonZeroU32>,
 }
 
+/// Interaction overlays projected onto the viewport (#108): highlight spans the
+/// engine carries on the frame so a frame-mode consumer can paint them without
+/// an in-process model query. Positions only — highlight colour is the
+/// consumer's (theme-agnostic). Coordinates are viewport rows/cols, re-projected
+/// by `frame()` against the scroll offset so the engine stays the single
+/// anchoring authority.
+#[derive(Clone, PartialEq, Eq, Debug, Default)]
+pub struct Overlay {
+    /// The live selection projected onto visible rows (`selection_range`).
+    pub selection: Vec<SelectionSpan>,
+    /// The active search highlights projected onto visible rows. Search matches
+    /// are consumer-owned (next/prev navigation holds the `Vec<Match>`), so the
+    /// consumer hands the active set back via `set_search_highlights` and the
+    /// engine projects it here — mirroring how the engine-owned selection rides.
+    pub matches: Vec<SelectionSpan>,
+}
+
 /// One serialized damage cycle: the decoded logical form that `encode`/`decode`
 /// round-trip. `side_table` holds this frame's grapheme clusters (referenced by
 /// each cell's frame-local `extra`); `link_table` holds its OSC 8 hyperlink URIs
@@ -79,6 +97,8 @@ pub struct Frame {
     pub spans: Vec<Span>,
     pub side_table: Vec<Vec<char>>,
     pub link_table: Vec<String>,
+    /// Interaction overlays (selection/search highlights) for this viewport (#108).
+    pub overlay: Overlay,
 }
 
 /// Why a byte buffer could not be decoded into a [`Frame`].
@@ -150,7 +170,24 @@ pub fn encode(frame: &Frame) -> Vec<u8> {
         out.extend_from_slice(&(uri.len() as u16).to_le_bytes());
         out.extend_from_slice(uri.as_bytes());
     }
+    // Overlay section (#108): each group is a u16 count then that many
+    // `(row, left, right)` u16 viewport triples. Selection first, then search
+    // matches. Append-only, version-gated — a future group (markers, #118) adds
+    // a third count here at the next version bump.
+    encode_overlay_spans(&mut out, &frame.overlay.selection);
+    encode_overlay_spans(&mut out, &frame.overlay.matches);
     out
+}
+
+/// Encode one overlay group: a u16 span count, then each span as three u16s
+/// (`row`, `left`, `right`) in viewport coordinates.
+fn encode_overlay_spans(out: &mut Vec<u8>, spans: &[SelectionSpan]) {
+    out.extend_from_slice(&(spans.len() as u16).to_le_bytes());
+    for s in spans {
+        out.extend_from_slice(&(s.row as u16).to_le_bytes());
+        out.extend_from_slice(&(s.left as u16).to_le_bytes());
+        out.extend_from_slice(&(s.right as u16).to_le_bytes());
+    }
 }
 
 /// Length in bytes of one fixed-width wire cell record (see
@@ -287,6 +324,11 @@ pub fn decode(bytes: &[u8]) -> Result<Frame, DecodeError> {
         let bytes = r.take(len)?;
         link_table.push(String::from_utf8_lossy(bytes).into_owned());
     }
+    // Overlay section (#108): selection group then match group, each a count +
+    // `(row, left, right)` triples (inverse of `encode_overlay_spans`).
+    let selection = decode_overlay_spans(&mut r)?;
+    let matches = decode_overlay_spans(&mut r)?;
+    let overlay = Overlay { selection, matches };
     Ok(Frame {
         cols,
         rows,
@@ -302,7 +344,23 @@ pub fn decode(bytes: &[u8]) -> Result<Frame, DecodeError> {
         spans,
         side_table,
         link_table,
+        overlay,
     })
+}
+
+/// Decode one overlay group: a u16 span count, then that many `(row, left,
+/// right)` u16 triples back into viewport [`SelectionSpan`]s (inverse of
+/// [`encode_overlay_spans`]).
+fn decode_overlay_spans(r: &mut Reader) -> Result<Vec<SelectionSpan>, DecodeError> {
+    let count = r.u16()?;
+    let mut spans = Vec::with_capacity(count as usize);
+    for _ in 0..count {
+        let row = r.u16()? as usize;
+        let left = r.u16()? as usize;
+        let right = r.u16()? as usize;
+        spans.push(SelectionSpan { row, left, right });
+    }
+    Ok(spans)
 }
 
 /// Decode one 18-byte cell record (inverse of [`encode_cell_record`]), returning

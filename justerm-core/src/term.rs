@@ -19,7 +19,7 @@ use crate::input::{
 };
 use crate::search::Match;
 use crate::selection::{Anchor, BufferPoint, Selection, SelectionSpan, SelectionType, Side};
-use crate::serialize::{Frame, FrameKind, Span};
+use crate::serialize::{Frame, FrameKind, Overlay, Span};
 
 /// Owns the authoritative screen state and applies VT actions to it.
 pub struct Term {
@@ -151,6 +151,11 @@ pub struct Term {
     /// The live selection, in absolute buffer coordinates. `None` when nothing
     /// is selected. See `selection.rs`.
     selection: Option<Selection>,
+    /// The active search highlights the consumer asked to paint (#108). Search
+    /// matches are consumer-owned (it drives next/prev), so the engine holds only
+    /// the set handed back via `set_search_highlights`, and `frame()` projects it
+    /// onto the viewport — the same anchoring path as the selection.
+    search_highlights: Vec<Match>,
     /// Cursor state saved by DECSC (ESC 7), restored by DECRC (ESC 8). A slot
     /// separate from `saved_cursor` (which is the alt-screen save). Defaults to
     /// home/default so a DECRC with no prior DECSC restores a sane state.
@@ -330,6 +335,7 @@ impl Term {
             full_damage: false,
             prev_cursor: (0, 0), // matches the default cursor's home position
             selection: None,
+            search_highlights: Vec::new(),
             decsc: SavedCursor::default(),
             charsets: [Charset::Ascii; 4],
             gl: 0,
@@ -510,6 +516,18 @@ impl Term {
             spans,
             side_table,
             link_table,
+            // Interaction overlays projected onto this viewport (#108): the
+            // engine-owned selection and the consumer-supplied search highlights,
+            // each re-projected here so the scroll offset is applied once, by the
+            // same authority that projects the cells.
+            overlay: Overlay {
+                selection: self.selection_range(),
+                matches: self
+                    .search_highlights
+                    .iter()
+                    .flat_map(|m| self.match_spans(m))
+                    .collect(),
+            },
         }
     }
 
@@ -781,6 +799,25 @@ impl Term {
             }
         }
         spans
+    }
+
+    /// Set the active search highlights to paint (#108). The consumer owns the
+    /// `Vec<Match>` (it drives next/prev); handing it back here lets `frame()`
+    /// project the highlights onto the viewport. An empty vec clears them.
+    pub fn set_search_highlights(&mut self, matches: Vec<Match>) {
+        self.search_highlights = matches;
+    }
+
+    /// Invalidate the held search highlights (#108). Called wherever a buffer
+    /// mutation shifts the absolute coordinates the matches were found at — cap
+    /// eviction, in-screen region/RI scroll, reflow. Search matches are
+    /// query-derived (the engine holds matches, not the query, and the *set*
+    /// itself may have changed), so unlike the user-authored selection they are
+    /// dropped rather than re-anchored; the consumer re-searches on output
+    /// (mirroring xterm/alacritty). Clearing avoids painting wrong content for
+    /// the frame between the mutation and the consumer's refresh.
+    fn invalidate_search_highlights(&mut self) {
+        self.search_highlights.clear();
     }
 
     /// Begin a selection of `ty` at viewport `(row, col)`, `side`.
@@ -1153,6 +1190,11 @@ impl Term {
         let old_cols = self.grid.cols();
         let limit = self.scrollback_limit;
 
+        // A reflow moves match coordinates (and can change the match set), so the
+        // query-derived highlights are invalidated; the consumer re-searches at
+        // the new width. The selection re-anchors below — it is user-authored.
+        self.invalidate_search_highlights();
+
         // Both screens are resized. Scrollback pairs with the PRIMARY screen
         // (whichever is active) — the alt screen has no history of its own.
         let dims = ReflowDims {
@@ -1444,6 +1486,9 @@ impl Term {
                     // Every absolute index just shifted down by one; move the
                     // selection with it so its anchors keep their content.
                     self.selection_evict_oldest();
+                    // Query-derived highlights can't survive the index shift (see
+                    // the method doc); selection re-anchors, highlights invalidate.
+                    self.invalidate_search_highlights();
                     if self.display_offset > 0 {
                         // Scrolled up: evicting the oldest line advanced the
                         // viewport, so it must be repainted (the "frozen while
@@ -1463,6 +1508,7 @@ impl Term {
                     base + self.scroll_bottom,
                     true,
                 );
+                self.invalidate_search_highlights();
                 self.grid
                     .scroll_up_region(self.scroll_top, self.scroll_bottom);
             }
@@ -1514,6 +1560,7 @@ impl Term {
         self.on_alt = true;
         self.display_offset = 0; // the alt screen has no scrollback to view
         self.selection = None; // a selection cannot survive a screen swap
+        self.invalidate_search_highlights(); // matches index the primary buffer
         self.mark_fully_damaged();
     }
 
@@ -1527,6 +1574,7 @@ impl Term {
         self.on_alt = false;
         self.display_offset = 0; // return to the primary at its bottom
         self.selection = None; // a selection cannot survive a screen swap
+        self.invalidate_search_highlights(); // matches index the swapped-out buffer
         self.mark_fully_damaged();
     }
 
@@ -1556,6 +1604,7 @@ impl Term {
             // screen, so absolute indices in it shift down. Rotate the selection.
             let base = self.scrollback.len();
             self.selection_rotate_region(base + self.scroll_top, base + self.scroll_bottom, false);
+            self.invalidate_search_highlights();
             self.grid
                 .scroll_down_region(self.scroll_top, self.scroll_bottom);
             self.record_scroll(self.scroll_top, self.scroll_bottom, -1);

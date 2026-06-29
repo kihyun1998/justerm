@@ -38,7 +38,7 @@ pub use input::{
 pub use search::Match;
 pub use selection::{SelectionSpan, SelectionType, Side};
 pub use serialize::{
-    CELL_RECORD_LEN, DecodeError, Frame, FrameKind, Span, WIRE_VERSION, decode, encode,
+    CELL_RECORD_LEN, DecodeError, Frame, FrameKind, Overlay, Span, WIRE_VERSION, decode, encode,
     encode_cell_record, encode_color,
 };
 
@@ -308,5 +308,13 @@ impl Engine {
     /// visible row, for the renderer to highlight.
     pub fn match_spans(&self, m: &Match) -> Vec<SelectionSpan> {
         self.term.match_spans(m)
+    }
+
+    /// Set the active search highlights the frame should carry (#108). The
+    /// consumer owns match navigation, so it hands the set to highlight back
+    /// here; [`Engine::frame`] then projects them onto the viewport overlay
+    /// alongside the selection. An empty vec clears the highlights.
+    pub fn set_search_highlights(&mut self, matches: Vec<Match>) {
+        self.term.set_search_highlights(matches);
     }
 }

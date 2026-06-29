@@ -70,7 +70,17 @@ struct Flat {
     side_table: Vec<Vec<char>>,
     /// OSC 8 hyperlink URIs referenced by cells' `link` index (frame-local).
     link_table: Vec<String>,
+    /// Overlay highlight spans (#108), `OVERLAY_STRIDE` u32s per span
+    /// (`row`, `left`, `right`) in viewport coords — `selection` is the live
+    /// selection, `matches` the active search highlights. Positions only; the
+    /// consumer picks the highlight colour (theme-agnostic).
+    selection_spans: Vec<u32>,
+    match_spans: Vec<u32>,
 }
+
+/// u32s per overlay span in the `selection_spans` / `match_spans` directories:
+/// `row`, `left`, `right` (viewport coordinates, inclusive columns).
+pub const OVERLAY_STRIDE: usize = 3;
 
 /// Flatten a decoded [`Frame`] into renderer-friendly buffers ([`Flat`]).
 ///
@@ -141,7 +151,20 @@ fn flatten(frame: &Frame) -> Flat {
         spans,
         side_table: frame.side_table.clone(),
         link_table: frame.link_table.clone(),
+        selection_spans: flatten_overlay_spans(&frame.overlay.selection),
+        match_spans: flatten_overlay_spans(&frame.overlay.matches),
     }
+}
+
+/// Flatten an overlay group into `OVERLAY_STRIDE` u32s per span (`row`, `left`,
+/// `right`), so JS reads the directory as one zero-copy typed array — the same
+/// structure-of-arrays treatment the cell spans get.
+fn flatten_overlay_spans(spans: &[justerm_core::SelectionSpan]) -> Vec<u32> {
+    let mut out = Vec::with_capacity(spans.len() * OVERLAY_STRIDE);
+    for s in spans {
+        out.extend_from_slice(&[s.row as u32, s.left as u32, s.right as u32]);
+    }
+    out
 }
 
 /// A decoded damage frame, presented for a web renderer.
@@ -315,6 +338,23 @@ impl DecodedFrame {
     pub fn link_table(&self) -> Vec<String> {
         self.flat.link_table.clone()
     }
+
+    /// The live selection projected onto the viewport (#108), `OVERLAY_STRIDE`
+    /// u32s per span (`row`, `left`, `right`, inclusive cols). The consumer
+    /// paints the highlight; the colour is the consumer's (theme-agnostic). Same
+    /// zero-copy view lifetime as the cell columns.
+    #[wasm_bindgen(getter, js_name = selectionSpans)]
+    pub fn selection_spans(&self) -> js_sys::Uint32Array {
+        unsafe { js_sys::Uint32Array::view(&self.flat.selection_spans) }
+    }
+
+    /// The active search highlights projected onto the viewport (#108), same
+    /// `(row, left, right)` triple layout as [`DecodedFrame::selection_spans`].
+    /// Set on the backend via `Engine::set_search_highlights`.
+    #[wasm_bindgen(getter, js_name = matchSpans)]
+    pub fn match_spans(&self) -> js_sys::Uint32Array {
+        unsafe { js_sys::Uint32Array::view(&self.flat.match_spans) }
+    }
 }
 
 /// The wire-format version this decoder understands (the `VERSION` byte gating
@@ -447,6 +487,7 @@ mod tests {
             spans,
             side_table: vec![],
             link_table: vec![],
+            overlay: Default::default(),
         }
     }
 
@@ -643,6 +684,39 @@ mod tests {
         assert_eq!(flat.link_table, vec!["https://example.com".to_string()]);
     }
 
+    // --- #108: overlay highlight spans carried through (selection + matches) ---
+
+    #[test]
+    fn flatten_carries_overlay_spans_through_the_wire() {
+        use justerm_core::{Overlay, SelectionSpan};
+        let mut frame = partial(80, 24, vec![ascii_span(0, 0, "x")]);
+        frame.overlay = Overlay {
+            selection: vec![SelectionSpan {
+                row: 0,
+                left: 2,
+                right: 7,
+            }],
+            matches: vec![
+                SelectionSpan {
+                    row: 1,
+                    left: 0,
+                    right: 3,
+                },
+                SelectionSpan {
+                    row: 4,
+                    left: 9,
+                    right: 9,
+                },
+            ],
+        };
+        // Through the real wire (encode→decode), then flattened — proves the
+        // overlay survives the byte boundary the WASM decoder reads.
+        let native = justerm_core::decode(&justerm_core::encode(&frame)).expect("decode");
+        let flat = flatten(&native);
+        assert_eq!(flat.selection_spans, vec![0, 2, 7]); // one (row,left,right)
+        assert_eq!(flat.match_spans, vec![1, 0, 3, 4, 9, 9]); // two triples
+    }
+
     // --- S3/AC2: flatten faithfully represents the native-decoded frame ---
 
     #[test]
@@ -688,6 +762,7 @@ mod tests {
             ],
             side_table: vec![vec!['e', '\u{301}']],
             link_table: vec!["https://x.example".to_string()],
+            overlay: Default::default(),
         };
 
         let bytes = justerm_core::encode(&frame);

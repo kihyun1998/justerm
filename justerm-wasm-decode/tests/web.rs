@@ -70,12 +70,13 @@ fn sample_frame() -> Frame {
         spans: vec![span(0, 0, "hi"), span(1, 5, "abc")],
         side_table: vec![],
         link_table: vec![],
+        overlay: Default::default(),
     }
 }
 
 #[wasm_bindgen_test]
-fn wire_version_is_five() {
-    assert_eq!(wire_version(), 5); // #112/ADR-0013 bumped 4 -> 5 for scroll position
+fn wire_version_is_six() {
+    assert_eq!(wire_version(), 6); // #108/ADR-0005 bumped 5 -> 6 for the overlay section
 }
 
 #[wasm_bindgen_test]
@@ -157,6 +158,7 @@ fn colour_and_flag_columns_carry_tagged_values() {
         }],
         side_table: vec![],
         link_table: vec![],
+        overlay: Default::default(),
     };
     let bytes = justerm_core::encode(&frame);
     let df = decode_frame(&bytes).expect("decode");
@@ -183,6 +185,47 @@ fn span_directory_view_maps_cells_to_rows() {
     assert_eq!(spans.get_index(6), 5);
     assert_eq!(spans.get_index(8), 2);
     assert_eq!(spans.get_index(9), 3);
+}
+
+#[wasm_bindgen_test]
+fn overlay_span_views_cross_the_boundary() {
+    use justerm_core::{Overlay, SelectionSpan};
+    let mut frame = sample_frame();
+    frame.overlay = Overlay {
+        selection: vec![SelectionSpan {
+            row: 0,
+            left: 2,
+            right: 7,
+        }],
+        matches: vec![
+            SelectionSpan {
+                row: 1,
+                left: 0,
+                right: 3,
+            },
+            SelectionSpan {
+                row: 4,
+                left: 9,
+                right: 9,
+            },
+        ],
+    };
+    let df = decode_frame(&justerm_core::encode(&frame)).expect("decode");
+
+    // selectionSpans: one (row, left, right) triple.
+    let sel = df.selection_spans();
+    assert_eq!(sel.length(), 3);
+    assert_eq!(sel.get_index(0), 0);
+    assert_eq!(sel.get_index(1), 2);
+    assert_eq!(sel.get_index(2), 7);
+
+    // matchSpans: two triples, flat.
+    let m = df.match_spans();
+    assert_eq!(m.length(), 6);
+    assert_eq!(m.get_index(0), 1);
+    assert_eq!(m.get_index(2), 3);
+    assert_eq!(m.get_index(3), 4);
+    assert_eq!(m.get_index(5), 9);
 }
 
 #[wasm_bindgen_test]
