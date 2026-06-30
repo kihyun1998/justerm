@@ -46,6 +46,15 @@ export interface DecodedFrame {
   /** Grapheme clusters referenced by cells' `extra` index (frame-local). */
   readonly sideTable: readonly string[];
   /**
+   * Per-cell OSC 8 hyperlink index (wire v2), span order: `0` = none, else
+   * `linkTable[link - 1]` is the URI. Both halves of a wide glyph carry it.
+   * `justerm-wasm-decode`'s `link` getter. Optional — a frame with no links omits it.
+   */
+  readonly link?: ArrayLike<number>;
+  /** OSC 8 URIs referenced by cells' `link` index (frame-local) — the decoder's
+   * `linkTable` getter. */
+  readonly linkTable?: readonly string[];
+  /**
    * Cursor state (screen coords, 0-based). `cursorShape`: 0 = Block, 1 =
    * Underline, 2 = Bar. `cursorBlink` is the *mode* — the blink timing is a
    * web-side policy. Optional — a frame may omit them (treated as no cursor).

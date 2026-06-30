@@ -33,6 +33,11 @@ export type { HighlightKind, HighlightRect, HighlightSpan } from "./overlay";
 // is by index. Active match = selection (reuses the selection highlight).
 export { SearchController, StubSearchPort } from "./search";
 export type { SearchPort, SearchResult } from "./search";
+// Links — two sources: OSC8 explicit (frame link/linkTable) + plain-URL regex
+// over the engine's logical lines (ADR-0017: core assembles, web matches). The
+// controller drives hover/leave/activate, OSC8 winning over regex on a cell.
+export { computeLinks, LinkController, osc8Links, URL_REGEX } from "./links";
+export type { Link, LogicalLine } from "./links";
 // Input — DOM events → intent (the backend encodes); outbound seam.
 export { captureInput, keyFromDom, Mod, mouseFromDom, StubInputSink, wheelMouseFromDom } from "./input";
 export type {
