@@ -38,6 +38,11 @@ export type { SearchPort, SearchResult } from "./search";
 // controller drives hover/leave/activate, OSC8 winning over regex on a cell.
 export { computeLinks, LinkController, osc8Links, URL_REGEX } from "./links";
 export type { Link, LogicalLine } from "./links";
+// Accessibility (#119) — screen-reader mirror: hidden row tree (review) +
+// aria-live announce (cursor-anchored viewport diff, typed-echo dedup, alt-screen
+// suppress). Pure logic; the consumer injects the DOM sinks.
+export { AccessibilityController, TOO_MUCH_OUTPUT } from "./accessibility";
+export type { A11yFrame, A11yTreeSink, LiveRegionSink } from "./accessibility";
 // Input — DOM events → intent (the backend encodes); outbound seam.
 export { captureInput, keyFromDom, Mod, mouseFromDom, StubInputSink, wheelMouseFromDom } from "./input";
 export type {
