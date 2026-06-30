@@ -21,6 +21,7 @@ mod damage;
 mod event;
 mod grid;
 mod input;
+mod logical;
 mod search;
 mod selection;
 mod serialize;
@@ -36,6 +37,7 @@ pub use input::{
     Key, KeyAction, KeyEvent, KeypadKey, Modifiers, MouseAction, MouseButton, MouseEvent,
     MouseEvents,
 };
+pub use logical::LogicalLine;
 pub use search::Match;
 pub use selection::{SelectionSpan, SelectionType, Side};
 pub use serialize::{
@@ -317,6 +319,15 @@ impl Engine {
     /// walking the returned `Vec` and calling [`Engine::scroll_to_match`].
     pub fn search(&self, query: &str) -> Vec<Match> {
         self.term.search(query)
+    }
+
+    /// The viewport's logical lines (#113/ADR-0017): each soft-wrap-joined line's
+    /// text plus a per-char map to its viewport `(row, col)`. The buffer-wide
+    /// mechanism for consumer-side URL detection — the consumer runs its own
+    /// regex / `new URL()` over the text and maps matches back through `cells`.
+    /// Also serves the a11y mirror (#119).
+    pub fn viewport_logical_lines(&self) -> Vec<LogicalLine> {
+        self.term.viewport_logical_lines()
     }
 
     /// Scroll the viewport so `m` is visible (next/prev navigation: the consumer

@@ -142,3 +142,18 @@ fn match_spans_clip_off_screen() {
         }]
     );
 }
+
+/// A query spanning a wide char that wrapped off the right edge matches: the
+/// vacated column is a leading spacer the haystack skips, so the join is clean
+/// ("abcd한", not "abcd 한"). Regression for the wide-wrap WRAPLINE/spacer fix.
+#[test]
+fn search_crosses_wide_char_wrap_boundary() {
+    let mut term = Engine::new(5, 2);
+    term.feed("abcd한".as_bytes()); // '한' can't fit col4 → wraps: "abcd" | "한"
+
+    let m = term.search("d한");
+
+    assert_eq!(m.len(), 1);
+    assert_eq!((m[0].start_line, m[0].start_col), (0, 3)); // 'd'
+    assert_eq!((m[0].end_line, m[0].end_col), (1, 0)); // '한' body
+}
