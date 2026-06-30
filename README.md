@@ -1,5 +1,10 @@
 # justerm
 
+[![crates.io](https://img.shields.io/crates/v/justerm-core.svg?label=justerm-core)](https://crates.io/crates/justerm-core)
+[![docs.rs](https://img.shields.io/docsrs/justerm-core.svg)](https://docs.rs/justerm-core)
+[![npm](https://img.shields.io/npm/v/justerm-wasm-decode.svg?label=justerm-wasm-decode)](https://www.npmjs.com/package/justerm-wasm-decode)
+[![license](https://img.shields.io/crates/l/justerm-core.svg)](#license)
+
 The **`justerm` family** — a pure terminal **engine** and its bindings. Feed a VT byte stream in; get
 terminal *state* and *damage* out. No I/O, no IPC, no rendering, theme-agnostic. Pairs with the
 renderer [`beamterm`](https://github.com/junkdog/beamterm) (WebGL2) to form the `-term` family. First
@@ -13,12 +18,13 @@ consumer: PenTerm.
 
 | Crate / package | Registry | Role |
 | --- | --- | --- |
-| [`justerm-core`](./justerm-core) | crates.io | The engine: VT stream → grid + scrollback + cursor + selection → viewport snapshot, damage, scroll ops, text. |
-| [`justerm-wasm-decode`](./justerm-wasm-decode) | npm | The canonical web decoder — `justerm-core`'s wire-format `decode` compiled to WASM, so a web consumer shares one decoder with the native backend (no TS mirror). Version-locked to the core. |
+| [`justerm-core`](./justerm-core) | [crates.io](https://crates.io/crates/justerm-core) · [docs.rs](https://docs.rs/justerm-core) | The engine: VT stream → grid + scrollback + cursor + selection → viewport snapshot, damage, scroll ops, text. |
+| [`justerm-wasm-decode`](./justerm-wasm-decode) | [npm](https://www.npmjs.com/package/justerm-wasm-decode) | The canonical web decoder — `justerm-core`'s wire-format `decode` compiled to WASM, so a web consumer shares one decoder with the native backend (no TS mirror). Version-locked to the core. |
 
 Reserved for future work: `justerm-wasm-engine` (in-wasm `feed` binding, ADR-0008) and `justerm-web`
-(the renderer-side TS package). The repo also carries `justerm-facade` — a one-shot `justerm` 0.5.1
-tombstone that re-exports `justerm-core` for anyone still on the old crate name (see ADR-0010).
+(the renderer-side TS package). The repo also carries `justerm-facade` — a one-shot
+[`justerm`](https://crates.io/crates/justerm) 0.5.1 tombstone that re-exports `justerm-core` for
+anyone still on the old crate name (see ADR-0010).
 
 ## Docs (start here)
 
