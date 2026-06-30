@@ -81,7 +81,23 @@ export class BeamtermRenderer implements Renderer {
     private readonly cursorColor: number,
     private readonly selectionBg: number,
     private readonly matchBg: number,
-  ) {}
+  ) {
+    // Honour prefers-reduced-motion (#119): suppress the cursor blink, tracking
+    // changes live. Browser-only; the renderer is only built via `create`.
+    const mq = window.matchMedia("(prefers-reduced-motion: reduce)");
+    this.blink.setReducedMotion(mq.matches);
+    mq.addEventListener("change", (e) => this.blink.setReducedMotion(e.matches));
+  }
+
+  /** The cell-decoding context the renderer resolved from the wasm decoder
+   * (palette + flag bits). Exposed so the a11y mirror (#119) reads the same
+   * cells via its own {@link CellMirror} without re-importing the decoder. */
+  get cellPalette(): Palette {
+    return this.palette;
+  }
+  get cellFlags(): FlagBits {
+    return this.flagBits;
+  }
 
   static async create(opts: BeamtermOptions): Promise<BeamtermRenderer> {
     const [beamterm, decoder] = await Promise.all([

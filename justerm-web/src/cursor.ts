@@ -30,11 +30,12 @@ export function cursorOp(base: DrawOp, shape: number, cursorColor: number): Draw
 export class CursorBlink {
   private lastRestart = 0;
   private focused = true;
+  private reducedMotion = false;
 
   /** Whether the cursor is shown at time `now` (ms). */
   isVisible(now: number): boolean {
-    // Unfocused = solid (no blink).
-    if (!this.focused) {
+    // Reduced motion or unfocused = solid (no blink).
+    if (this.reducedMotion || !this.focused) {
       return true;
     }
     return Math.floor((now - this.lastRestart) / BLINK_INTERVAL) % 2 === 0;
@@ -48,5 +49,11 @@ export class CursorBlink {
   /** Focus gates blinking — unfocused terminals show a solid cursor. */
   setFocused(focused: boolean): void {
     this.focused = focused;
+  }
+
+  /** Honour `prefers-reduced-motion` (#119): when set, the cursor never blinks.
+   * The integration reads the media query and forwards changes here. */
+  setReducedMotion(reduced: boolean): void {
+    this.reducedMotion = reduced;
   }
 }

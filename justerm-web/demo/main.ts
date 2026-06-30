@@ -10,6 +10,7 @@
 // the real one is the backend.
 // Run: `pnpm demo` (NOT `vite demo`).
 import {
+  Accessibility,
   BeamtermRenderer,
   computeLinks,
   copySelection,
@@ -68,6 +69,25 @@ new Terminal(source, renderer).mount();
 const log: string[] = [];
 let displayOffset = 0;
 
+// S14 (#119): the screen-reader mirror. Mounted off-screen beside the canvas; it
+// reads each frame's viewport text (its own CellMirror) into a hidden row tree
+// and announces new output via aria-live. Turn on a screen reader (NVDA/VO) to
+// hear appended rows; Tab into the hidden list to walk rows. Boundary focus
+// scrolls the (demo) backend via onScroll.
+const a11y = new Accessibility(document, renderer.cellPalette, renderer.cellFlags, {
+  onScroll: (lines) => {
+    displayOffset = Math.min(Math.max(displayOffset - lines, 0), maxOffset());
+    render();
+  },
+});
+document.body.appendChild(a11y.root);
+canvas.addEventListener("blur", () => a11y.onBlur());
+window.addEventListener("keydown", (e) => {
+  // Forward printable keystrokes for echo dedup (this demo doesn't echo, so it's
+  // a no-op here — the dedup is unit-tested; this wires the seam).
+  if (e.key.length === 1) a11y.onKey(e.key);
+});
+
 /** Absolute log line shown at viewport row 0 for the current scroll. */
 const viewTop = (): number => Math.max(0, log.length - ROWS - displayOffset);
 const maxOffset = (): number => Math.max(0, log.length - ROWS);
@@ -75,7 +95,12 @@ const maxOffset = (): number => Math.max(0, log.length - ROWS);
 const engine = new FakeSelectionEngine(() => log, viewTop, () => ROWS);
 const searchEngine = new FakeSearchEngine();
 
-function viewportFrame(): DecodedFrame {
+// `out` set = an incremental output frame (Partial). `scrollCount > 0` only when
+// the buffer is full and content actually scrolled off the top — sending a
+// phantom scroll while the screen is still filling shifts the mirror wrongly
+// (a real backend emits the scroll op only on a real scroll). A repaint
+// (scrollbar/selection) passes nothing → a Full frame.
+function viewportFrame(out?: { scrollCount: number }): DecodedFrame {
   const top = viewTop();
   const rows = log.slice(top, top + ROWS);
   const codepoints: number[] = [];
@@ -92,7 +117,8 @@ function viewportFrame(): DecodedFrame {
   return {
     cols: COLS,
     rows: ROWS,
-    kind: 0,
+    // Incremental output → Partial; a repaint (scrollbar/selection) → Full.
+    kind: out ? 1 : 0,
     codepoints,
     fg: new Array(n).fill(0),
     bg: new Array(n).fill(0),
@@ -104,6 +130,9 @@ function viewportFrame(): DecodedFrame {
     scrollbackLen: maxOffset(),
     selectionSpans: engine.range(), // S8: the live selection projected onto the view
     matchSpans: searchEngine.matchSpans(top, ROWS), // S9: search matches on the view
+    ...(out && out.scrollCount > 0
+      ? { hasScroll: true, scrollTop: 0, scrollBottom: ROWS - 1, scrollCount: out.scrollCount }
+      : {}),
   } as DecodedFrame;
 }
 
@@ -114,8 +143,10 @@ const bar = new Scrollbar(document.body, {
   },
 });
 
-function render(): void {
-  source.push(viewportFrame());
+function render(out?: { scrollCount: number }): void {
+  const frame = viewportFrame(out);
+  source.push(frame);
+  a11y.onFrame(frame); // S14: mirror the viewport + announce new output
   bar.update({ displayOffset, scrollbackLen: maxOffset(), rows: ROWS });
   updateLinks();
 }
@@ -334,7 +365,10 @@ setInterval(() => {
   log.push(`row ${next++} — select · find=Ctrl-F · link: https://github.com/kihyun1998/justerm`);
   search.onFrame();
   updateCount();
-  if (displayOffset === 0) render();
+  // Real scroll amount: 0 while the screen is still filling, 1 once full (the top
+  // line actually scrolls off). Following → emit it; scrolled up → scrollbar only.
+  const scrollCount = Math.max(0, log.length - ROWS) - Math.max(0, log.length - 1 - ROWS);
+  if (displayOffset === 0) render({ scrollCount });
   else bar.update({ displayOffset, scrollbackLen: maxOffset(), rows: ROWS });
 }, 300);
 render();
