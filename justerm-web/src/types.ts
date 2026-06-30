@@ -29,6 +29,20 @@ export interface DecodedFrame {
   readonly extra: ArrayLike<number>;
   /** Span directory, stride 5: `[line, left, right, cell_offset, count]`. */
   readonly spans: ArrayLike<number>;
+  /**
+   * Live-selection overlay (#108, wire v6): viewport `(row, left, right)`
+   * triples, both columns inclusive — `justerm-wasm-decode`'s `selectionSpans`
+   * getter. Positions only (the blend colour is web policy, #115). Optional —
+   * a frame with no selection omits it (treated as empty).
+   */
+  readonly selectionSpans?: ArrayLike<number>;
+  /**
+   * Search-match overlay (#108): same viewport `(row, left, right)` stride-3
+   * layout as {@link selectionSpans}, a separate wire group —
+   * `justerm-wasm-decode`'s `matchSpans` getter. Set on the backend via
+   * `Engine::set_search_highlights`; consumed by search (#110). Optional.
+   */
+  readonly matchSpans?: ArrayLike<number>;
   /** Grapheme clusters referenced by cells' `extra` index (frame-local). */
   readonly sideTable: readonly string[];
   /**

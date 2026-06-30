@@ -144,6 +144,10 @@ export interface MouseEventLike {
   altKey: boolean;
   ctrlKey: boolean;
   metaKey: boolean;
+  /** DOM event timestamp (ms). Used to tell a quick alt-click (cursor move) from
+   * a slow one. Optional — only the selection controller's alt-click path reads
+   * it; events that never take that path may omit it. */
+  timeStamp?: number;
 }
 
 /** Canvas origin + cell size, to map pixels to cells. */

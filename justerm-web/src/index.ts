@@ -20,6 +20,14 @@ export { BLINK_INTERVAL, CursorBlink, CursorShape, cursorOp } from "./cursor";
 // Scrollbar — custom DOM slider over the canvas (thumb math + drag → offset).
 export { dragToDisplayOffset, Scrollbar, scrollbarMetrics } from "./scrollbar";
 export type { ScrollbarMetrics, ScrollbarOptions, ScrollPosition } from "./scrollbar";
+// Selection — drag → engine selection commands (SelectionPort, the write-side
+// sibling of FrameSource), drag-scroll, alt-click cursor move, copy, primary.
+export { copySelection, dragScrollSpeed, SelectionController, StubSelectionPort } from "./selection";
+export type { SelCall, SelectionPort, SelType, Side } from "./selection";
+// Overlay — frame selection/search spans → kinded highlight rects + per-cell
+// lookup the renderer blends (colour is #115's policy).
+export { highlightAt, highlightRects, matchHighlights, selectionHighlights } from "./overlay";
+export type { HighlightKind, HighlightRect, HighlightSpan } from "./overlay";
 // Input — DOM events → intent (the backend encodes); outbound seam.
 export { captureInput, keyFromDom, Mod, mouseFromDom, StubInputSink, wheelMouseFromDom } from "./input";
 export type {
