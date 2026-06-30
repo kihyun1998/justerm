@@ -28,6 +28,10 @@ const ANNOUNCE_DEBOUNCE_MS = 200;
  * satisfies it structurally. */
 export interface A11yFrame {
   readonly rows: number;
+  /** `0` = Full (whole-viewport repaint — clear/resize/alt-switch), else
+   * Partial/incremental. A Full frame reseeds the announce baseline but isn't
+   * announced (it's not new output). Absent → treated as incremental. */
+  readonly kind?: number;
   /** Lines scrolled up from the bottom (0 = following the latest output). */
   readonly displayOffset?: number;
   /** History lines above the viewport. */
@@ -140,6 +144,9 @@ export class AccessibilityController {
     // The alternate screen (vim/htop) repaints wholesale — announcing it is
     // noise. Suppress, but the row tree (updated above) still serves review.
     if (frame.altScreen) return;
+    // A Full frame (kind 0) is a repaint (clear/resize/alt-switch), not output —
+    // reseed the baseline (done by the caller after this) without announcing.
+    if (frame.kind === 0) return;
     // Shift the previous rows by this frame's scroll op so moved content lines
     // up with where it landed — only genuinely new text then differs.
     const prev = this.shiftPrev(frame);

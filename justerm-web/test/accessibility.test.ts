@@ -170,6 +170,23 @@ describe("AccessibilityController — announce new output (W2)", () => {
     expect(live.announced).toEqual(["file.txt"]);
   });
 
+  // A Full frame (kind 0) is a whole-viewport repaint — a clear, resize, or
+  // alt-screen switch, NOT incremental output. Announcing its diff would read
+  // the whole screen aloud on every `clear`. So it reseeds the baseline silently
+  // and a later Partial frame diffs against it.
+  it("does not announce a full-frame repaint, but reseeds the baseline", () => {
+    const { ctrl, live, flush } = make();
+
+    ctrl.onFrame({ rows: 2, cursorRow: 0 }, ["a", "b"]); // baseline
+    ctrl.onFrame({ rows: 2, kind: 0 }, ["X", "Y"]); // full repaint (clear/resize)
+    flush();
+    expect(live.announced).toEqual([]); // repaint not announced
+
+    ctrl.onFrame({ rows: 2, kind: 1, cursorRow: 1 }, ["X", "Z"]); // partial output
+    flush();
+    expect(live.announced).toEqual(["Z"]); // diffs against the repaint baseline
+  });
+
   // Rapid frames (streaming output) collapse to one announcement — the point of
   // the debounce. The accumulated new lines flush together.
   it("coalesces rapid frames into a single announcement", () => {
