@@ -43,6 +43,9 @@ export type { Link, LogicalLine } from "./links";
 // suppress). Pure logic; the consumer injects the DOM sinks.
 export { AccessibilityController, TOO_MUCH_OUTPUT } from "./accessibility";
 export type { A11yFrame, A11yTreeSink, LiveRegionSink } from "./accessibility";
+// DOM glue: hidden row tree + aria-live sinks + a CellMirror-backed adapter the
+// consumer mounts beside the canvas and feeds frames (verified in the demo).
+export { Accessibility } from "./accessibility-dom";
 // Input — DOM events → intent (the backend encodes); outbound seam.
 export { captureInput, keyFromDom, Mod, mouseFromDom, StubInputSink, wheelMouseFromDom } from "./input";
 export type {

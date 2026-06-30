@@ -83,6 +83,16 @@ export class BeamtermRenderer implements Renderer {
     private readonly matchBg: number,
   ) {}
 
+  /** The cell-decoding context the renderer resolved from the wasm decoder
+   * (palette + flag bits). Exposed so the a11y mirror (#119) reads the same
+   * cells via its own {@link CellMirror} without re-importing the decoder. */
+  get cellPalette(): Palette {
+    return this.palette;
+  }
+  get cellFlags(): FlagBits {
+    return this.flagBits;
+  }
+
   static async create(opts: BeamtermOptions): Promise<BeamtermRenderer> {
     const [beamterm, decoder] = await Promise.all([
       import("@beamterm/renderer"),

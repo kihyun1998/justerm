@@ -90,6 +90,19 @@ export class CellMirror {
     return ops;
   }
 
+  /** Row `y`'s text for the a11y mirror (#119): the stored symbols left to
+   * right, skipping wide-char spacer halves, with trailing blanks trimmed (a
+   * screen reader shouldn't read end-of-line padding). */
+  rowText(y: number): string {
+    let text = "";
+    for (let x = 0; x < this.cols; x++) {
+      const cell = this.cells[y * this.cols + x]!;
+      if ((cell.flags & this.F.wide_char_spacer) !== 0) continue; // trailing half
+      text += cell.symbol;
+    }
+    return text.replace(/\s+$/u, "");
+  }
+
   /** The stored cell at `(x, y)` as a draw op (for the cursor overlay to read
    * and restore the cursor cell, independent of the frame's damage). */
   cellAt(x: number, y: number): DrawOp {

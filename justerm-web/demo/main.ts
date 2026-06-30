@@ -10,6 +10,7 @@
 // the real one is the backend.
 // Run: `pnpm demo` (NOT `vite demo`).
 import {
+  Accessibility,
   BeamtermRenderer,
   computeLinks,
   copySelection,
@@ -68,6 +69,25 @@ new Terminal(source, renderer).mount();
 const log: string[] = [];
 let displayOffset = 0;
 
+// S14 (#119): the screen-reader mirror. Mounted off-screen beside the canvas; it
+// reads each frame's viewport text (its own CellMirror) into a hidden row tree
+// and announces new output via aria-live. Turn on a screen reader (NVDA/VO) to
+// hear appended rows; Tab into the hidden list to walk rows. Boundary focus
+// scrolls the (demo) backend via onScroll.
+const a11y = new Accessibility(document, renderer.cellPalette, renderer.cellFlags, {
+  onScroll: (lines) => {
+    displayOffset = Math.min(Math.max(displayOffset - lines, 0), maxOffset());
+    render();
+  },
+});
+document.body.appendChild(a11y.root);
+canvas.addEventListener("blur", () => a11y.onBlur());
+window.addEventListener("keydown", (e) => {
+  // Forward printable keystrokes for echo dedup (this demo doesn't echo, so it's
+  // a no-op here — the dedup is unit-tested; this wires the seam).
+  if (e.key.length === 1) a11y.onKey(e.key);
+});
+
 /** Absolute log line shown at viewport row 0 for the current scroll. */
 const viewTop = (): number => Math.max(0, log.length - ROWS - displayOffset);
 const maxOffset = (): number => Math.max(0, log.length - ROWS);
@@ -115,7 +135,9 @@ const bar = new Scrollbar(document.body, {
 });
 
 function render(): void {
-  source.push(viewportFrame());
+  const frame = viewportFrame();
+  source.push(frame);
+  a11y.onFrame(frame); // S14: mirror the viewport + announce new output
   bar.update({ displayOffset, scrollbackLen: maxOffset(), rows: ROWS });
   updateLinks();
 }

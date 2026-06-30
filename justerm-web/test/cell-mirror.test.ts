@@ -149,3 +149,37 @@ describe("CellMirror.applyFrame", () => {
     expect(mirror.cellAt(1, 0)).toMatchObject({ x: 1, y: 0, symbol: "i" });
   });
 });
+
+describe("CellMirror.rowText", () => {
+  // The a11y row tree (#119) reads each viewport row as text. Trailing blanks
+  // are trimmed — a screen reader shouldn't read the padding to end-of-line.
+  it("joins a row's symbols and trims trailing blanks", () => {
+    const mirror = new CellMirror(80, 24, palette(), F);
+    mirror.applyFrame(frame(0, [{ line: 0, left: 0, text: "echo hi" }]));
+
+    expect(mirror.rowText(0)).toBe("echo hi");
+    expect(mirror.rowText(1)).toBe(""); // a blank row is empty, not 80 spaces
+  });
+
+  // A wide glyph occupies two cells: the symbol then a spacer half. The text
+  // must read the glyph once, not glyph-plus-blank (else the SR hears a gap).
+  it("reads a wide glyph once, skipping its spacer half", () => {
+    const mirror = new CellMirror(4, 1, palette(), F);
+    // "가b": wide "가" at col 0 with a spacer at col 1, then "b" at col 2.
+    const wide: DecodedFrame = {
+      cols: 4,
+      rows: 1,
+      kind: 0,
+      codepoints: [cp("가"), cp(" "), cp("b")],
+      fg: [0, 0, 0],
+      bg: [0, 0, 0],
+      flags: [0, F.wide_char_spacer, 0],
+      extra: [0, 0, 0],
+      spans: [0, 0, 2, 0, 3],
+      sideTable: [],
+    } as DecodedFrame;
+    mirror.applyFrame(wide);
+
+    expect(mirror.rowText(0)).toBe("가b");
+  });
+});
