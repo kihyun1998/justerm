@@ -2,6 +2,7 @@ import type { BeamtermRenderer as Backend, Batch, Cell, CellStyle } from "@beamt
 import type { Palette } from "justerm-wasm-decode/colors.js";
 import { CellMirror } from "./cell-mirror";
 import { CursorBlink, cursorOp } from "./cursor";
+import { highlightAt, highlightRects } from "./overlay";
 import type { DrawOp, FlagBits } from "./render-core";
 import type { DecodedFrame } from "./types";
 import type { Renderer } from "./renderer";
@@ -15,6 +16,11 @@ export interface Theme {
   defaultBg: number;
   /** The cursor colour (cell-invert fill / underline). Defaults to `defaultFg`. */
   cursorColor?: number;
+  /** Selection highlight background (`0xRRGGBB`). A placeholder until #115's
+   * focused/inactive blend; defaults to a muted slate. */
+  selectionBg?: number;
+  /** Search-match highlight background (`0xRRGGBB`). Defaults to a muted amber. */
+  matchBg?: number;
 }
 
 export interface BeamtermOptions {
@@ -73,6 +79,8 @@ export class BeamtermRenderer implements Renderer {
     private readonly flagBits: FlagBits,
     private readonly clearColor: number,
     private readonly cursorColor: number,
+    private readonly selectionBg: number,
+    private readonly matchBg: number,
   ) {}
 
   static async create(opts: BeamtermOptions): Promise<BeamtermRenderer> {
@@ -109,7 +117,29 @@ export class BeamtermRenderer implements Renderer {
       flagBits,
       opaque(opts.theme.defaultBg),
       opts.theme.cursorColor ?? opts.theme.defaultFg,
+      opts.theme.selectionBg ?? 0x45475a,
+      opts.theme.matchBg ?? 0x6e5c00,
     );
+  }
+
+  /** The renderer's cell size in pixels — the consumer needs it to map pointer
+   * coordinates to cells (e.g. for the selection controller's geometry). */
+  cellSize(): { width: number; height: number } {
+    const s = this.backend.cellSize();
+    return { width: s.width, height: s.height };
+  }
+
+  /** Resize the backend to a new canvas backing-buffer size (px). The caller
+   * sizes the canvas; the next frame rebuilds the cell mirror to the new grid. */
+  resize(width: number, height: number): void {
+    this.backend.resize(width, height);
+  }
+
+  /** The terminal grid the backend currently fits — `{ cols, rows }`. Changes
+   * after {@link resize}; the consumer drives its frames at these dimensions. */
+  terminalSize(): { cols: number; rows: number } {
+    const t = this.backend.terminalSize();
+    return { cols: t.cols, rows: t.rows };
   }
 
   applyFrame(frame: DecodedFrame): void {
@@ -127,7 +157,16 @@ export class BeamtermRenderer implements Renderer {
     // Full frames repaint the whole viewport; partial frames retain untouched
     // cells (damage-only), so only full clears.
     if (frame.kind === 0) batch.clear(this.clearColor);
-    for (const op of ops) this.drawOp(batch, op);
+    // Blend selection/search highlights into each painted cell's background —
+    // beamterm has no overlay layer, so a highlight is a per-cell bg swap (like
+    // the cursor's cell-invert). NB: this tints only the cells in `ops`; on a
+    // partial frame the engine must damage cells whose highlight state flips
+    // (the demo pushes Full frames, so every cell repaints).
+    const rects = highlightRects(frame);
+    for (const op of ops) {
+      const kind = rects.length ? highlightAt(rects, op.x, op.y) : null;
+      this.drawOp(batch, kind ? { ...op, bg: kind === "selection" ? this.selectionBg : this.matchBg } : op);
+    }
     // Overlay the cursor into the same batch (it draws over its mirror cell).
     this.lastBlinkOn = this.blink.isVisible(now());
     this.overlayCursor(batch, this.lastBlinkOn);
