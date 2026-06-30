@@ -28,6 +28,11 @@ export type { SelCall, SelectionPort, SelType, Side } from "./selection";
 // lookup the renderer blends (colour is #115's policy).
 export { highlightAt, highlightRects, matchHighlights, selectionHighlights } from "./overlay";
 export type { HighlightKind, HighlightRect, HighlightSpan } from "./overlay";
+// Search — query-box state machine (count/index/wrap/debounce) → SearchPort.
+// Matches stay backend-side (only their matchSpans cross the wire); navigation
+// is by index. Active match = selection (reuses the selection highlight).
+export { SearchController, StubSearchPort } from "./search";
+export type { SearchPort, SearchResult } from "./search";
 // Input — DOM events → intent (the backend encodes); outbound seam.
 export { captureInput, keyFromDom, Mod, mouseFromDom, StubInputSink, wheelMouseFromDom } from "./input";
 export type {

@@ -13,13 +13,15 @@ import {
   BeamtermRenderer,
   copySelection,
   Scrollbar,
+  SearchController,
   SelectionController,
   StubFrameSource,
   Terminal,
 } from "../src/index";
-import type { CellGeometry, SelectionPort } from "../src/index";
+import type { CellGeometry, SearchPort, SelectionPort } from "../src/index";
 import type { DecodedFrame } from "../src/types";
 import { FakeSelectionEngine } from "./fake-select";
+import { FakeSearchEngine } from "./fake-search";
 
 const renderer = await BeamtermRenderer.create({
   canvasSelector: "#term",
@@ -69,6 +71,7 @@ const viewTop = (): number => Math.max(0, log.length - ROWS - displayOffset);
 const maxOffset = (): number => Math.max(0, log.length - ROWS);
 
 const engine = new FakeSelectionEngine(() => log, viewTop, () => ROWS);
+const searchEngine = new FakeSearchEngine();
 
 function viewportFrame(): DecodedFrame {
   const top = viewTop();
@@ -98,6 +101,7 @@ function viewportFrame(): DecodedFrame {
     displayOffset,
     scrollbackLen: maxOffset(),
     selectionSpans: engine.range(), // S8: the live selection projected onto the view
+    matchSpans: searchEngine.matchSpans(top, ROWS), // S9: search matches on the view
   } as DecodedFrame;
 }
 
@@ -186,10 +190,83 @@ window.addEventListener("keydown", (e) => {
   }
 });
 
-// Append a line every 300ms; follow the bottom only when not scrolled up.
+// --- S9 wiring: search box → SearchController → fake search engine ---
+
+const searchPort: SearchPort = {
+  search: async (q) => {
+    const n = searchEngine.search(q, log);
+    render(); // matchSpans now carry the highlights
+    return n;
+  },
+  showMatch: async (i) => {
+    const m = searchEngine.match(i);
+    if (!m) return;
+    // Off-screen match → scroll it to the viewport centre (xterm); on-screen →
+    // leave the scroll. Then select it so the active match shows in the
+    // *selection* colour over the muted match colour (the 2-tier emphasis).
+    const row = m.startLine - viewTop();
+    if (row < 0 || row >= ROWS) {
+      const centred = log.length - ROWS - (m.startLine - Math.floor(ROWS / 2));
+      displayOffset = Math.min(Math.max(centred, 0), maxOffset());
+    }
+    const vrow = m.startLine - viewTop();
+    engine.begin(vrow, m.startCol, "left", "char");
+    engine.extend(vrow, m.endCol, "right");
+    render();
+  },
+  clear: () => {
+    searchEngine.clear();
+    engine.clear();
+    render();
+  },
+};
+
+const search = new SearchController(searchPort);
+
+const box = document.createElement("div");
+box.style.cssText =
+  "position:fixed;top:8px;right:24px;display:none;gap:6px;align-items:center;background:#313244;color:#cdd6f4;font:14px monospace;padding:6px 10px;border-radius:6px;z-index:10";
+const input = document.createElement("input");
+input.placeholder = "search";
+input.style.cssText =
+  "background:#1e1e2e;color:#cdd6f4;border:1px solid #45475a;padding:2px 6px;font:14px monospace;outline:none";
+const countLabel = document.createElement("span");
+countLabel.textContent = "0/0";
+box.append(input, countLabel);
+document.body.append(box);
+
+function updateCount(): void {
+  const r = search.result();
+  countLabel.textContent = `${r.current}/${r.total}`;
+}
+input.addEventListener("input", () => void search.search(input.value).then(updateCount));
+input.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") {
+    e.preventDefault();
+    void (e.shiftKey ? search.prev() : search.next()).then(updateCount);
+  } else if (e.key === "Escape") {
+    e.preventDefault();
+    box.style.display = "none";
+    search.clear();
+    updateCount();
+  }
+});
+window.addEventListener("keydown", (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "f") {
+    e.preventDefault();
+    box.style.display = "flex";
+    input.focus();
+    input.select();
+  }
+});
+
+// Append a line every 300ms; follow the bottom only when not scrolled up. Each
+// append is "output" — the search re-highlights (debounced) so matches track it.
 let next = 0;
 setInterval(() => {
-  log.push(`row ${next++} — drag to select · dbl=word · trpl=line · Alt=block · Ctrl/Cmd-C=copy`);
+  log.push(`row ${next++} — drag=select · dbl=word · trpl=line · Alt=block · Ctrl/Cmd-C=copy · Ctrl/Cmd-F=find`);
+  search.onFrame();
+  updateCount();
   if (displayOffset === 0) render();
   else bar.update({ displayOffset, scrollbackLen: maxOffset(), rows: ROWS });
 }, 300);
