@@ -57,6 +57,14 @@ const C_COMBINED: u32 = 1 << 21; // a combining cluster lives in the row's map a
 const C_WIDE: u32 = 1 << 22;
 const C_SPACER: u32 = 1 << 23;
 const C_WRAP: u32 = 1 << 24;
+// The vacated column left when a width-2 glyph wraps off the right edge (#113):
+// a blank that holds no character but isn't a hard line-end. Unlike C_SPACER it
+// has *no wide lead to its left*, so the overwrite/erase repair paths (which key
+// off C_SPACER) must not treat it as one — it's a separate marker the text
+// extractors skip. Engine-internal: it stays in the content word and never
+// reaches `flags()` / the wire (a frame-mode consumer gets the already-correct
+// text, and the cell renders as the blank it is).
+const C_LEADING_SPACER: u32 = 1 << 25;
 const CONTENT_MARKER_MASK: u32 = C_WIDE | C_SPACER | C_WRAP;
 
 const COLOR_VALUE_MASK: u32 = 0x00FF_FFFF; // bits 0..24
@@ -294,6 +302,25 @@ impl Cell {
     /// Is this the trailing spacer cell of a width-2 glyph?
     pub fn is_wide_spacer(&self) -> bool {
         self.content & C_SPACER != 0
+    }
+
+    /// Is this the blank column vacated when a wide glyph wrapped off the right
+    /// edge (#113)? It holds no character; unlike a trailing spacer it has no
+    /// wide lead to its left, so only the *text* extractors skip it.
+    pub fn is_leading_spacer(&self) -> bool {
+        self.content & C_LEADING_SPACER != 0
+    }
+
+    /// Does this column hold no text — either half of a wide glyph's trailing
+    /// spacer or a wide-wrap leading spacer? Used by the text extractors (search,
+    /// selection text, logical lines) to skip non-character columns.
+    pub fn is_spacer(&self) -> bool {
+        self.content & (C_SPACER | C_LEADING_SPACER) != 0
+    }
+
+    /// Mark this (blank) column as the leading spacer of a wrapped wide glyph.
+    pub fn set_leading_spacer(&mut self) {
+        self.content |= C_LEADING_SPACER;
     }
 
     /// Did this row soft-wrap into the next (WRAPLINE on its last cell)?

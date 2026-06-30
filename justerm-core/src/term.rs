@@ -17,6 +17,7 @@ use crate::input::{
     KeyEvent, MouseEncoding, MouseEvent, MouseProtocol, encode_focus, encode_key, encode_mouse,
     encode_paste,
 };
+use crate::logical::LogicalLine;
 use crate::search::Match;
 use crate::selection::{Anchor, BufferPoint, Selection, SelectionSpan, SelectionType, Side};
 use crate::serialize::{Frame, FrameKind, MarkerId, MarkerPosition, Overlay, Span};
@@ -759,6 +760,83 @@ impl Term {
         self.abs_row(idx).link_at(col)
     }
 
+    /// The viewport's logical lines (#113/ADR-0017): each line's text plus a
+    /// per-char map to its viewport `(row, col)`. Wide-char spacers are skipped
+    /// and trailing blanks trimmed (so the text is 1:1 with `cells`). Empty rows
+    /// are dropped. The cell-aware assembly the consumer can't do in frame mode.
+    pub fn viewport_logical_lines(&self) -> Vec<LogicalLine> {
+        let rows = self.grid.rows();
+        let total = self.scrollback.len() + rows;
+        let top = self.scrollback.len() - self.display_offset; // abs line of viewport row 0
+        let bottom = top + rows; // abs lines [top, bottom) are on screen
+
+        // If viewport row 0 is a wrap-continuation, walk up into scrollback to
+        // the logical line's true start so an edge-spanning URL still matches.
+        // On the alt screen the scrollback belongs to the *primary* buffer, so
+        // the walk must stop at the screen top (`scrollback.len()`) — the alt
+        // buffer is separate (selection clears on alt-swap for the same reason).
+        let floor = if self.on_alt {
+            self.scrollback.len()
+        } else {
+            0
+        };
+        let mut start = top;
+        while start > floor
+            && self
+                .abs_line(start - 1)
+                .last()
+                .is_some_and(|c| c.is_wrapline())
+        {
+            start -= 1;
+        }
+
+        let mut out = Vec::new();
+        let mut line = start;
+        while line < bottom {
+            // Accumulate one logical line forward while each row soft-wraps; the
+            // tail may run past `bottom` (off-screen below) — included too.
+            let mut text = String::new();
+            let mut map: Vec<(i32, usize)> = Vec::new();
+            let mut cur = line;
+            loop {
+                let cells = self.abs_line(cur);
+                for (col, cell) in cells.iter().enumerate() {
+                    if cell.is_spacer() {
+                        continue;
+                    }
+                    // Signed viewport row: < 0 above the top, >= rows below.
+                    let vrow = cur as i32 - top as i32;
+                    text.push(cell.c());
+                    map.push((vrow, col));
+                    // Combining marks (#45) ride the same cell — append each and
+                    // map it to that cell so `text` stays 1:1 with `cells`.
+                    if let Some(marks) = self.combining_at(cur, col) {
+                        for &m in marks {
+                            text.push(m);
+                            map.push((vrow, col));
+                        }
+                    }
+                }
+                let soft = cells.last().is_some_and(|c| c.is_wrapline());
+                if soft && cur + 1 < total {
+                    cur += 1;
+                } else {
+                    break;
+                }
+            }
+            // Trim trailing blanks (only the last row can have them), keeping
+            // `text` and `cells` in lockstep.
+            let trimmed = text.trim_end();
+            map.truncate(trimmed.chars().count());
+            text.truncate(trimmed.len());
+            if !text.is_empty() {
+                out.push(LogicalLine { text, cells: map });
+            }
+            line = cur + 1;
+        }
+        out
+    }
+
     /// Literal search over the whole buffer (`[scrollback ++ screen]`), returning
     /// every non-overlapping match top-to-bottom in absolute coordinates. Matches
     /// cross soft-wrapped rows (one logical line) and skip wide-char spacers.
@@ -792,7 +870,7 @@ impl Term {
             loop {
                 let cells = self.abs_line(line);
                 for (col, cell) in cells.iter().enumerate() {
-                    if cell.is_wide_spacer() {
+                    if cell.is_spacer() {
                         continue;
                     }
                     hay.push(fold(cell.c()));
@@ -1216,7 +1294,7 @@ impl Term {
     /// contribute nothing.
     fn append_cell(&self, out: &mut String, line: usize, col: usize) {
         let cell = &self.abs_line(line)[col];
-        if cell.is_wide_spacer() {
+        if cell.is_spacer() {
             return;
         }
         out.push(cell.c());
@@ -1972,12 +2050,19 @@ impl Term {
 
         // A width-2 glyph that cannot fit in the last column wraps first — unless
         // autowrap is off, in which case it is dropped (xterm.js `continue`), not
-        // squeezed or wrapped. TODO: xterm leaves a LEADING_WIDE_CHAR_SPACER in
-        // the vacated column; common-90% just wraps and leaves it blank.
+        // squeezed or wrapped.
         if width == 2 && self.cursor.col + 1 >= cols {
             if !self.autowrap {
                 return;
             }
+            // Mark the row soft-wrapped, like the pending-wrap path above: the
+            // vacated last column is a continuation, not a hard line-end. Search,
+            // logical lines (#113), and reflow (#7) all read WRAPLINE for the join.
+            // Also tag it a leading spacer so the text extractors skip the blank
+            // (xterm's LEADING_WIDE_CHAR_SPACER) instead of joining "ab한"→"ab 한".
+            let vacated = self.grid.cell_mut(self.cursor.row, cols - 1);
+            vacated.insert_flags(CellFlags::WRAPLINE);
+            vacated.set_leading_spacer();
             self.wrapline();
         }
 
