@@ -11,14 +11,16 @@
 // Run: `pnpm demo` (NOT `vite demo`).
 import {
   BeamtermRenderer,
+  computeLinks,
   copySelection,
+  LinkController,
   Scrollbar,
   SearchController,
   SelectionController,
   StubFrameSource,
   Terminal,
 } from "../src/index";
-import type { CellGeometry, SearchPort, SelectionPort } from "../src/index";
+import type { CellGeometry, LogicalLine, SearchPort, SelectionPort } from "../src/index";
 import type { DecodedFrame } from "../src/types";
 import { FakeSelectionEngine } from "./fake-select";
 import { FakeSearchEngine } from "./fake-search";
@@ -115,6 +117,7 @@ const bar = new Scrollbar(document.body, {
 function render(): void {
   source.push(viewportFrame());
   bar.update({ displayOffset, scrollbackLen: maxOffset(), rows: ROWS });
+  updateLinks();
 }
 
 // --- S8 wiring: SelectionController → fake engine, DOM mouse → controller ---
@@ -260,11 +263,75 @@ window.addEventListener("keydown", (e) => {
   }
 });
 
+// --- S10 wiring: link hover/click. The demo only exercises plain-URL detection
+// (regex) over the visible rows; OSC8 (osc8Links) is unit-tested. In frame mode
+// the logical-line text + cell map come from core (viewport_logical_lines); the
+// demo builds them from the unwrapped log directly.
+
+const linkLabel = document.createElement("div");
+linkLabel.style.cssText =
+  "position:fixed;bottom:8px;left:8px;display:none;background:#313244;color:#89b4fa;font:13px monospace;padding:4px 8px;border-radius:6px;z-index:10";
+document.body.append(linkLabel);
+
+const linkCtrl = new LinkController({
+  onHover: (l) => {
+    canvas.style.cursor = "pointer";
+    linkLabel.textContent = `🔗 ${l.uri}  (Ctrl/Cmd-click to open)`;
+    linkLabel.style.display = "block";
+  },
+  onLeave: () => {
+    canvas.style.cursor = "text";
+    linkLabel.style.display = "none";
+  },
+  // The library never opens anything — onActivate is the seam. *How* to open is
+  // consumer policy; this demo (a consumer) opens a new tab, severing `opener`
+  // for security (xterm's handleLink does the same). A native consumer (penterm)
+  // would call its shell-open instead.
+  onActivate: (uri) => {
+    console.log(`[link] open ${uri}`);
+    window.open(uri, "_blank", "noopener,noreferrer");
+  },
+});
+
+let lastPointer: [number, number] | undefined;
+
+function visibleLogicalLines(): LogicalLine[] {
+  const top = viewTop();
+  return log.slice(top, top + ROWS).map((text, r) => ({
+    text,
+    cells: [...text].map((_, c) => [r, c] as [number, number]),
+  }));
+}
+function updateLinks(): void {
+  const regex = visibleLogicalLines().flatMap((l) => computeLinks(l));
+  linkCtrl.setLinks([], regex);
+  if (lastPointer) linkCtrl.pointerMove(lastPointer[0], lastPointer[1]); // re-hover after re-set
+}
+function cellFromEvent(e: globalThis.MouseEvent): [number, number] {
+  const g = getGeometry();
+  return [
+    Math.floor((e.clientY - g.originY) / g.cellHeight),
+    Math.floor((e.clientX - g.originX) / g.cellWidth),
+  ];
+}
+
+window.addEventListener("mousemove", (e) => {
+  if (e.buttons !== 0) return; // dragging → selection owns it, not link hover
+  lastPointer = cellFromEvent(e);
+  linkCtrl.pointerMove(lastPointer[0], lastPointer[1]);
+});
+canvas.addEventListener("click", (e) => {
+  if (e.ctrlKey || e.metaKey) {
+    const [row, col] = cellFromEvent(e);
+    linkCtrl.click(row, col);
+  }
+});
+
 // Append a line every 300ms; follow the bottom only when not scrolled up. Each
-// append is "output" — the search re-highlights (debounced) so matches track it.
+// append is "output" — search re-highlights (debounced) and links re-detect.
 let next = 0;
 setInterval(() => {
-  log.push(`row ${next++} — drag=select · dbl=word · trpl=line · Alt=block · Ctrl/Cmd-C=copy · Ctrl/Cmd-F=find`);
+  log.push(`row ${next++} — select · find=Ctrl-F · link: https://github.com/kihyun1998/justerm`);
   search.onFrame();
   updateCount();
   if (displayOffset === 0) render();
