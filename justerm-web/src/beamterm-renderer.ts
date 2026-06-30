@@ -160,8 +160,9 @@ export class BeamtermRenderer implements Renderer {
     // Blend selection/search highlights into each painted cell's background —
     // beamterm has no overlay layer, so a highlight is a per-cell bg swap (like
     // the cursor's cell-invert). NB: this tints only the cells in `ops`; on a
-    // partial frame the engine must damage cells whose highlight state flips
-    // (the demo pushes Full frames, so every cell repaints).
+    // partial frame a cell whose highlight state just flipped isn't repainted —
+    // needs old+new overlay-cell damage like the cursor (#140). Correct today
+    // only on Full frames (the demo pushes Full).
     const rects = highlightRects(frame);
     for (const op of ops) {
       const kind = rects.length ? highlightAt(rects, op.x, op.y) : null;

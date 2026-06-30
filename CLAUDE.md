@@ -85,6 +85,14 @@ prior-art 로 *도출 가능*한 것)은 사용자에게 grilling 하지 말고 
 우선순위 판단**(네이밍·repo 구조·스코프·비전 — 사용자가 의견 갖고 교정할 영역)에만 쓴다. ADR 은 보통
 *구현 시* 확정이 더 단단하다(실제 encode/decode 디테일이 결정을 firm up).
 
+**완성 기준 — "대충 금지".** 슬라이스/기능 "완료" 는 ① 골격(계약·경계)이 처음부터 옳고 ② 로직이 100%
+테스트되고 ③ 갭이 *추적된 0*(남기는 deferral 은 전부 이슈로 surfacing — *침묵하는* 갭 0) ④ 동작 증명이
+*자기 가짜가 아닌 실 core/참조(xterm.js·alacritty)* 왕복으로 설 때만이다. 데모/테스트의 fake 백엔드는
+feel용 스모크일 뿐 *증명이 아니다* — fake 가 통과해도 real 이 다를 수 있으니, 한 슬라이스당 최소 1회는
+실 core(encode→decode 왕복, ADR-0005) 또는 참조 구현으로 가정을 교차검증한다. "결과만 보고 넘어가기" 는
+②④ 위반. 이건 `컴플라이언스는 누적`(갭을 허용하되 *추적*)·메모리 `reference-verify`(가짜 아닌 참조로
+검증, 품질을 사용자 닦달에 의존 금지)의 강화판이다.
+
 ## Agent skills
 
 ### Issue tracker
@@ -106,3 +114,13 @@ Single-context — one `CONTEXT.md` + `docs/adr/` at the repo root. See `docs/ag
 ### Supply-chain check
 
 CI 의 `supply-chain` 게이트는 **just-shield**(같은 소유자=first-party, SHA 핀 된 GitHub Actions 공급망 스캐너; 소스는 형제 repo `../just-shield`)로 워크플로를 `scan --strict` 한다. *결정*은 ADR-0006, *운영*(로컬 재현·R1~R10 규칙 해독·실패 대처)은 `docs/agents/supply-chain.md`.
+
+## justerm-web 슬라이스 작업 방식
+
+`justerm-web/` 의 슬라이스(Epic #103 의 S1–S16)는 이 흐름으로 짠다 — S8(#109 selection)에서 확립, 이후 슬라이스도 동일 적용:
+
+1. **xterm.js 실측 대조 먼저.** 대응 기능의 xterm 소스를 `gh api repos/xtermjs/xterm.js/contents/<path> --jq .content | base64 -d` 로 *통째* 받아 grep/sed 로 읽는다(WebFetch 금지 — 핵심규칙과 동일). 모드명·상수(예: drag-scroll 50px/15, highlightLimit 1000)·숨은 동작을 추측 말고 실코드로 박는다.
+2. **"모델=core, 구동=web" 경계를 코드로 가른다.** frame 모드에서 web 은 엔진을 *안 돌린다* — 상태·텍스트·검색·word경계는 core 가, web 은 명령을 *보내고*(write seam) 프레임 overlay 를 *그린다*. web 은 scrollback 셀이 없어 계산할 수도 없다(=경계의 물리적 강제). write seam 은 `FrameSource`(read)의 형제(`SelectionPort`/`SearchPort`…), 쿼리는 `Promise`(IPC 왕복).
+3. **순수 로직을 `/tdd` 로.** 컨트롤러는 DOM/GPU/IPC **0 의존** — 모든 부수효과(port·clock/`tick()`·clipboard·scroll)를 주입 seam 으로 받고 `MouseEventLike` 같은 *구조적* 타입으로 단언한다(실 DOM 이벤트가 그대로 만족). RED→GREEN 수직 슬라이스 한 번에 하나, 증분마다 `pnpm typecheck` + 전체 vitest. 공개 표면은 `src/index.ts` 로 내보낸다.
+4. **`pnpm demo` spike 로 실브라우저 검증.** 데모의 *throwaway* 가짜 백엔드에 기능을 얹어 손으로 만진다 — 단위 테스트가 못 잡는 DPR·좌표·렌더 버그를 잡는다(S8 에서 cellSize(버퍼px) vs CSS px 오프셋을 이렇게 발견). 캔버스는 버퍼=CSS×DPR, geometry 는 화면 박스에서 역산(`rect.h/ROWS`).
+5. **커밋/PR/머지.** 브랜치 → `feat(justerm-web): … (#issue)`(Co-Authored-By 금지) → squash PR(`Closes #issue`) → `test`/`wasm` CI 그린 확인.
