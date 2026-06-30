@@ -112,7 +112,7 @@ describe("AccessibilityController — boundary scroll (W1)", () => {
     // 100 lines of history, scrolled up by 5 → room to scroll further up.
     ctrl.onFrame({ rows: 4, displayOffset: 5, scrollbackLen: 100 }, ["a", "b", "c", "d"]);
 
-    ctrl.onBoundaryFocus("top");
+    ctrl.onBoundaryFocus("top", true); // focus arrived from the inner neighbour
 
     expect(scrolled).toEqual([-1]);
     expect(tree.focused).toEqual([1]);
@@ -133,10 +133,29 @@ describe("AccessibilityController — boundary scroll (W1)", () => {
     // No scrollback, following the bottom: viewport spans the whole buffer.
     ctrl.onFrame({ rows: 4, displayOffset: 0, scrollbackLen: 0 }, ["a", "b", "c", "d"]);
 
-    ctrl.onBoundaryFocus("top"); // top is buffer line 1 → no-op
-    ctrl.onBoundaryFocus("bottom"); // bottom is the last line → no-op
+    ctrl.onBoundaryFocus("top", true); // top is buffer line 1 → no-op
+    ctrl.onBoundaryFocus("bottom", true); // bottom is the last line → no-op
 
     expect(scrolled).toEqual([]);
+    expect(tree.focused).toEqual([]);
+  });
+
+  // The boundary scroll has a second guard (xterm `relatedTarget`): scroll only
+  // when focus arrived from the *inner* neighbour (the user walking outward).
+  // A click, Tab-in, or programmatic focus onto the edge row must NOT scroll.
+  it("does not scroll when focus did not arrive from the inner row", () => {
+    const tree = new StubTree();
+    const scrolled: number[] = [];
+    const ctrl = new AccessibilityController({
+      tree,
+      live: new StubLive(),
+      onScroll: (n) => scrolled.push(n),
+    });
+    ctrl.onFrame({ rows: 4, displayOffset: 5, scrollbackLen: 100 }, ["a", "b", "c", "d"]);
+
+    ctrl.onBoundaryFocus("top", false); // focus landed here directly (click/Tab-in)
+
+    expect(scrolled).toEqual([]); // suppressed despite room to scroll
     expect(tree.focused).toEqual([]);
   });
 });
@@ -163,8 +182,8 @@ describe("AccessibilityController — announce new output (W2)", () => {
   it("announces a newly printed line, not the initial paint", () => {
     const { ctrl, live, flush } = make();
 
-    ctrl.onFrame({ rows: 3, cursorRow: 0 }, ["$ ls", "", ""]); // baseline
-    ctrl.onFrame({ rows: 3, cursorRow: 2 }, ["$ ls", "file.txt", ""]);
+    ctrl.onFrame({ rows: 3 }, ["$ ls", "", ""]); // baseline
+    ctrl.onFrame({ rows: 3 }, ["$ ls", "file.txt", ""]);
     flush();
 
     expect(live.announced).toEqual(["file.txt"]);
@@ -177,12 +196,12 @@ describe("AccessibilityController — announce new output (W2)", () => {
   it("does not announce a full-frame repaint, but reseeds the baseline", () => {
     const { ctrl, live, flush } = make();
 
-    ctrl.onFrame({ rows: 2, cursorRow: 0 }, ["a", "b"]); // baseline
+    ctrl.onFrame({ rows: 2 }, ["a", "b"]); // baseline
     ctrl.onFrame({ rows: 2, kind: 0 }, ["X", "Y"]); // full repaint (clear/resize)
     flush();
     expect(live.announced).toEqual([]); // repaint not announced
 
-    ctrl.onFrame({ rows: 2, kind: 1, cursorRow: 1 }, ["X", "Z"]); // partial output
+    ctrl.onFrame({ rows: 2, kind: 1 }, ["X", "Z"]); // partial output
     flush();
     expect(live.announced).toEqual(["Z"]); // diffs against the repaint baseline
   });
@@ -192,9 +211,9 @@ describe("AccessibilityController — announce new output (W2)", () => {
   it("coalesces rapid frames into a single announcement", () => {
     const { ctrl, live, flush } = make();
 
-    ctrl.onFrame({ rows: 3, cursorRow: 0 }, ["a", "", ""]); // baseline
-    ctrl.onFrame({ rows: 3, cursorRow: 1 }, ["a", "b", ""]);
-    ctrl.onFrame({ rows: 3, cursorRow: 2 }, ["a", "b", "c"]);
+    ctrl.onFrame({ rows: 3 }, ["a", "", ""]); // baseline
+    ctrl.onFrame({ rows: 3 }, ["a", "b", ""]);
+    ctrl.onFrame({ rows: 3 }, ["a", "b", "c"]);
     flush();
 
     expect(live.announced).toEqual(["b\nc"]);
@@ -207,9 +226,9 @@ describe("AccessibilityController — announce new output (W2)", () => {
   it("announces only newly scrolled-in lines, not the shifted screen", () => {
     const { ctrl, live, flush } = make();
 
-    ctrl.onFrame({ rows: 3, cursorRow: 2 }, ["line1", "line2", "line3"]); // baseline
+    ctrl.onFrame({ rows: 3 }, ["line1", "line2", "line3"]); // baseline
     ctrl.onFrame(
-      { rows: 3, cursorRow: 2, hasScroll: true, scrollTop: 0, scrollBottom: 2, scrollCount: 1 },
+      { rows: 3, hasScroll: true, scrollTop: 0, scrollBottom: 2, scrollCount: 1 },
       ["line2", "line3", "line4"],
     );
     flush();
@@ -224,9 +243,9 @@ describe("AccessibilityController — announce new output (W2)", () => {
   it("does not announce the echo of a typed char", () => {
     const { ctrl, live, flush } = make();
 
-    ctrl.onFrame({ rows: 2, cursorRow: 0 }, ["$ ", ""]); // baseline
+    ctrl.onFrame({ rows: 2 }, ["$ ", ""]); // baseline
     ctrl.onKey("y");
-    ctrl.onFrame({ rows: 2, cursorRow: 0 }, ["$ y", ""]); // echo
+    ctrl.onFrame({ rows: 2 }, ["$ y", ""]); // echo
     flush();
 
     expect(live.announced).toEqual([]);
@@ -270,5 +289,51 @@ describe("AccessibilityController — announce new output (W2)", () => {
     ctrl.onBlur();
 
     expect(live.cleared).toBe(1);
+  });
+
+  // The consume queue must drain at the output rate (xterm pops one per output
+  // char), not stall at the first mismatch. A typed char that is never echoed
+  // (e.g. `read -s`) must not linger and silently swallow a later genuine
+  // identical line.
+  it("drains a never-echoed typed char so it can't suppress later output", () => {
+    const { ctrl, live, flush } = make();
+
+    ctrl.onFrame({ rows: 3 }, ["a", "", ""]); // baseline
+    ctrl.onKey("x"); // typed, but the next output is NOT its echo
+    ctrl.onFrame({ rows: 3 }, ["a", "b", ""]); // output "b" → "x" should drain here
+    flush();
+    ctrl.onFrame({ rows: 3 }, ["a", "b", "x"]); // a genuine "x" line later
+    flush();
+
+    expect(live.announced).toEqual(["b", "x"]); // not ["b"] — "x" not swallowed
+  });
+
+  // A keystroke cancels an in-flight (debounced) announcement and clears the
+  // live region: the user is typing, so stale output mustn't be read over them
+  // (xterm `_handleKey` → `_clearLiveRegion`).
+  it("cancels a pending announcement on keypress", () => {
+    const { ctrl, live, flush } = make();
+
+    ctrl.onFrame({ rows: 2 }, ["a", ""]); // baseline
+    ctrl.onFrame({ rows: 2 }, ["a", "b"]); // arms a pending announce
+    ctrl.onKey("z"); // typing → wipe the pending read
+    flush();
+
+    expect(live.announced).toEqual([]); // pending dropped
+    expect(live.cleared).toBeGreaterThanOrEqual(1);
+  });
+
+  // dispose() tears the controller down: a pending debounce timer must not fire
+  // afterwards (it would announce into a detached region). Mirrors the dispose
+  // seam the sibling controllers expose.
+  it("does not flush a pending announcement after dispose", () => {
+    const { ctrl, live, flush } = make();
+
+    ctrl.onFrame({ rows: 2 }, ["a", ""]); // baseline
+    ctrl.onFrame({ rows: 2 }, ["a", "b"]); // arms a pending announce
+    ctrl.dispose();
+    flush();
+
+    expect(live.announced).toEqual([]);
   });
 });

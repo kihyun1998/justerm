@@ -36,8 +36,6 @@ export interface A11yFrame {
   readonly displayOffset?: number;
   /** History lines above the viewport. */
   readonly scrollbackLen?: number;
-  /** Cursor row (0-based, viewport). Anchors "new output" to at/above it. */
-  readonly cursorRow?: number;
   /** Scroll op applied this frame (mirrors `DecodedFrame`): rows
    * `[scrollTop, scrollBottom]` shifted by `scrollCount` (positive = up). The
    * diff shifts the previous rows to match, so moved content isn't "new". */
@@ -177,33 +175,56 @@ export class AccessibilityController {
     this.live.announce(text.split("\n").length > MAX_ROWS_TO_READ ? TOO_MUCH_OUTPUT : text);
   }
 
-  /** Drop leading chars of `fresh` that match queued typed chars in order (the
-   * echo the AT already read), returning the remainder to announce. */
+  /** Strip echoed keystrokes from `fresh`. Drains the consume queue at the output
+   * rate — one queued char per output char (xterm `_charsToConsume`), announcing
+   * mismatches — so a never-echoed key (e.g. `read -s`) can't linger and swallow
+   * a later genuine line. A leading match (the common echo) is dropped. */
   private dedupTyped(fresh: string): string {
-    let i = 0;
-    while (i < fresh.length && this.consume.length > 0 && this.consume[0] === fresh[i]) {
-      this.consume.shift();
-      i++;
+    if (this.consume.length === 0) return fresh;
+    let result = "";
+    for (const ch of fresh) {
+      if (this.consume.length === 0) {
+        result += ch;
+        continue;
+      }
+      const queued = this.consume.shift();
+      if (queued !== ch) result += ch; // mismatch → announce; match → drop the echo
     }
-    return fresh.slice(i);
+    return result;
   }
 
-  /** A key was typed. Queue its char so the shell's echo of it isn't announced
-   * (control chars — Enter, arrows — aren't echoed as text, so they're skipped,
-   * mirroring xterm's `\p{Control}` guard). */
+  /** A key was typed. The keystroke takes precedence over any in-flight output
+   * read — cancel the pending announce and wipe the live region so stale output
+   * isn't read over the user (xterm `_handleKey` → `_clearLiveRegion`). Then
+   * queue the char so the shell's echo of it isn't re-announced (control chars
+   * aren't echoed as text, so skip them — xterm's `\p{Control}` guard). */
   onKey(char: string): void {
+    this.cancelPending();
+    this.live.clear();
     if (!/\p{Control}/u.test(char)) this.consume.push(char);
   }
 
   /** The widget lost focus. Drop any pending announcement and clear the live
    * region so nothing stale is left for the next focus (xterm `onBlur`). */
   onBlur(): void {
+    this.cancelPending();
+    this.live.clear();
+  }
+
+  /** Tear down: cancel any pending debounce so it can't flush into a detached
+   * live region after the widget is gone (the sibling controllers' dispose
+   * pattern). */
+  dispose(): void {
+    this.cancelPending();
+  }
+
+  /** Cancel the debounce timer and drop the accumulated announcement. */
+  private cancelPending(): void {
     if (this.timer !== undefined) {
       this.clearTimer(this.timer);
       this.timer = undefined;
     }
     this.pending = [];
-    this.live.clear();
   }
 
   /** The previous viewport rows with this frame's scroll op applied, so the
@@ -225,10 +246,16 @@ export class AccessibilityController {
   /**
    * AT focus reached a viewport boundary row. Scroll one line toward it so the
    * user can keep walking past the edge, then re-focus the inner neighbour
-   * (xterm `_handleBoundaryFocus`). No-op when the buffer edge in that direction
-   * is already exposed — there's nothing further to reach.
+   * (xterm `_handleBoundaryFocus`).
+   *
+   * `cameFromInner` is xterm's `relatedTarget` guard: scroll only when focus
+   * arrived from the inner neighbour (the user walking *outward*) — a click,
+   * Tab-in, or programmatic focus onto the edge row must not scroll. No-op too
+   * when the buffer edge is already exposed, or the viewport is too short to
+   * have a distinct inner row.
    */
-  onBoundaryFocus(position: "top" | "bottom"): void {
+  onBoundaryFocus(position: "top" | "bottom", cameFromInner: boolean): void {
+    if (!cameFromInner || this.treeRows < 3) return;
     if (position === "top") {
       if (this.top === 0) return; // viewport top is the first buffer line
       this.onScroll(-1);

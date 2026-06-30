@@ -40,7 +40,7 @@ class DomA11yTree implements A11yTreeSink {
 
   constructor(
     private readonly doc: Document,
-    private readonly onBoundary: (position: "top" | "bottom") => void,
+    private readonly onBoundary: (position: "top" | "bottom", cameFromInner: boolean) => void,
   ) {
     this.container = doc.createElement("div");
     this.container.setAttribute("role", "list");
@@ -78,7 +78,14 @@ class DomA11yTree implements A11yTreeSink {
   private bindBoundaries(): void {
     for (const [i, el] of this.rows.entries()) {
       const position = i === 0 ? "top" : i === this.rows.length - 1 ? "bottom" : null;
-      el.onfocus = position ? () => this.onBoundary(position) : null;
+      if (!position) {
+        el.onfocus = null;
+        continue;
+      }
+      // The inner neighbour whose focus, if it preceded this one, means the user
+      // walked outward (xterm's `relatedTarget` guard, passed to the controller).
+      const inner = this.rows[position === "top" ? 1 : this.rows.length - 2];
+      el.onfocus = (e) => this.onBoundary(position, e.relatedTarget === inner);
     }
   }
 }
@@ -89,7 +96,10 @@ class DomLiveRegion implements LiveRegionSink {
 
   constructor(doc: Document) {
     this.el = doc.createElement("div");
-    this.el.setAttribute("aria-live", "polite");
+    // `assertive`: primary-screen output is the headline announce and should
+    // interrupt (#119 spec). Alt-screen repaints never reach here — the
+    // controller suppresses them upstream — so this only ever carries output.
+    this.el.setAttribute("aria-live", "assertive");
     this.el.setAttribute("aria-atomic", "false");
   }
 
@@ -127,7 +137,9 @@ export class Accessibility {
     private readonly flagBits: FlagBits,
     opts: { onScroll?: (lines: number) => void } = {},
   ) {
-    this.tree = new DomA11yTree(doc, (pos) => this.controller.onBoundaryFocus(pos));
+    this.tree = new DomA11yTree(doc, (pos, fromInner) =>
+      this.controller.onBoundaryFocus(pos, fromInner),
+    );
     this.live = new DomLiveRegion(doc);
     this.controller = new AccessibilityController({
       tree: this.tree,
@@ -151,8 +163,8 @@ export class Accessibility {
     this.mirror.applyFrame(frame);
     const rows = Array.from({ length: frame.rows }, (_, y) => this.mirror!.rowText(y));
     // A `DecodedFrame` structurally satisfies `A11yFrame` (it carries
-    // rows/cursorRow/displayOffset/scrollbackLen/scroll op); `altScreen` is
-    // absent until #149, so the controller treats it as the primary screen.
+    // rows/displayOffset/scrollbackLen/scroll op); `altScreen` is absent until
+    // #149, so the controller treats it as the primary screen.
     this.controller.onFrame(frame, rows);
   }
 
@@ -164,5 +176,12 @@ export class Accessibility {
   /** The widget lost focus. */
   onBlur(): void {
     this.controller.onBlur();
+  }
+
+  /** Tear down: cancel the controller's pending announce and detach the hidden
+   * root from the DOM. */
+  dispose(): void {
+    this.controller.dispose();
+    this.root.remove();
   }
 }
