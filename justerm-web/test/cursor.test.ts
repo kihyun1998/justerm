@@ -31,6 +31,16 @@ describe("CursorBlink", () => {
     );
   });
 
+  // prefers-reduced-motion (#119): the blink is motion the user asked to avoid,
+  // so the cursor stays solid regardless of phase. The media query is read at the
+  // integration layer and injected via setReducedMotion.
+  it("stays solid when reduced motion is requested", () => {
+    const blink = new CursorBlink();
+    blink.setReducedMotion(true);
+
+    expect([blink.isVisible(0), blink.isVisible(600), blink.isVisible(1200)]).toEqual([true, true, true]);
+  });
+
   // Typing or moving the cursor restarts the animation: the cursor shows at once
   // and the interval resets from that moment, so it never blinks off right after
   // input (xterm restartBlinkAnimation).
