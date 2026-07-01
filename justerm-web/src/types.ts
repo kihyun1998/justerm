@@ -72,6 +72,13 @@ export interface DecodedFrame {
   readonly displayOffset?: number;
   readonly scrollbackLen?: number;
   /**
+   * Whether the alternate screen (`?1049`/`?47`) is active (#149, wire v9) —
+   * `justerm-wasm-decode`'s `altScreen` getter. The a11y announce policy (#119)
+   * suppresses output reads when set (a TUI repaint isn't new output). Optional —
+   * a frame may omit it (treated as the primary screen).
+   */
+  readonly altScreen?: boolean;
+  /**
    * Scroll op (applied before spans): rows `[scrollTop, scrollBottom]` shifted by
    * `scrollCount` (positive = up). Optional — absent/`hasScroll: false` means no
    * shift. The cell mirror applies it; a span-only frame omits it.

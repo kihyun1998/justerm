@@ -17,7 +17,7 @@ use std::collections::BTreeMap;
 
 /// Wire magic ("juSTerm") + format version. A new feature bumps `VERSION`.
 const MAGIC: [u8; 2] = *b"JT";
-const VERSION: u8 = 8; // v8 adds the mouse wanted-events mask in the header (#129/ADR-0016); v7 overlay marker group (#118/ADR-0015); v6 overlay selection + search-match spans (#108/ADR-0014); v5 scroll position (#112/ADR-0013); v4 cursor shape+blink (#81); v3 cursor row/col/visibility (#38)
+const VERSION: u8 = 9; // v9 adds the alt-screen flag in the header (#149); v8 adds the mouse wanted-events mask in the header (#129/ADR-0016); v7 overlay marker group (#118/ADR-0015); v6 overlay selection + search-match spans (#108/ADR-0014); v5 scroll position (#112/ADR-0013); v4 cursor shape+blink (#81); v3 cursor row/col/visibility (#38)
 
 /// The wire-format version (the gating `VERSION` byte), exposed so a binding can
 /// assert at load that its decoder matches the backend encoder (#34/ADR-0008).
@@ -124,6 +124,11 @@ pub struct Frame {
     /// content. Positions/encoding never cross; the backend encodes via
     /// `encode_mouse`.
     pub mouse_events: MouseEvents,
+    /// Whether the alternate screen (`?1049`/`?47`) is active (#149). Buffer-global
+    /// state a frame-mode consumer can't derive from viewport damage — the
+    /// accessibility announce policy (#119) gates on it (suppress TUI repaints).
+    /// Rides the header like the cursor scalars (ADR-0014).
+    pub alt_screen: bool,
     pub scroll: Option<ScrollOp>,
     pub spans: Vec<Span>,
     pub side_table: Vec<Vec<char>>,
@@ -173,6 +178,8 @@ pub fn encode(frame: &Frame) -> Vec<u8> {
     // Mouse wanted-events mask (#129): one byte in the header, like the cursor
     // scalars. Off = 0.
     out.push(frame.mouse_events.bits());
+    // Alt-screen flag (#149): one byte in the header, like the cursor scalars.
+    out.push(frame.alt_screen as u8);
     if let Some(s) = frame.scroll {
         out.extend_from_slice(&(s.top as u16).to_le_bytes());
         out.extend_from_slice(&(s.bottom as u16).to_le_bytes());
@@ -306,6 +313,7 @@ pub fn decode(bytes: &[u8]) -> Result<Frame, DecodeError> {
     let display_offset = r.u32()?;
     let scrollback_len = r.u32()?;
     let mouse_events = MouseEvents::from_bits_retain(r.u8()?);
+    let alt_screen = r.u8()? != 0;
     let scroll = if has_scroll {
         let top = r.u16()? as usize;
         let bottom = r.u16()? as usize;
@@ -396,6 +404,7 @@ pub fn decode(bytes: &[u8]) -> Result<Frame, DecodeError> {
         display_offset,
         scrollback_len,
         mouse_events,
+        alt_screen,
         scroll,
         spans,
         side_table,

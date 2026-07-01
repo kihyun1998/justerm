@@ -162,9 +162,9 @@ export class Accessibility {
     }
     this.mirror.applyFrame(frame);
     const rows = Array.from({ length: frame.rows }, (_, y) => this.mirror!.rowText(y));
-    // A `DecodedFrame` structurally satisfies `A11yFrame` (it carries
-    // rows/displayOffset/scrollbackLen/scroll op); `altScreen` is absent until
-    // #149, so the controller treats it as the primary screen.
+    // A `DecodedFrame` structurally satisfies `A11yFrame` (rows / displayOffset /
+    // scrollbackLen / scroll op / altScreen #149) — the controller suppresses
+    // announce on the alt screen.
     this.controller.onFrame(frame, rows);
   }
 
