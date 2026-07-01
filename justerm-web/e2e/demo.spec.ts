@@ -111,6 +111,36 @@ test("command nav walks history: announces the command + fires its signal (#166)
   expect(signals.some((s) => s.includes("failed"))).toBe(true);
 });
 
+test("row-tree churn is skipped while SR inactive, re-syncs on reactivation (#169)", async ({
+  page,
+}) => {
+  // The hidden review row-tree (role=list) mirrors the viewport. Its concatenated
+  // row text is the DOM-state proxy for "did the tree churn this frame".
+  const treeText = () =>
+    page.evaluate(() => {
+      const list = document.querySelector("[role='list']");
+      return list ? Array.from(list.children, (c) => c.textContent).join("|") : null;
+    });
+
+  // SR ON (default): as output appends every 300ms the tree tracks the changing
+  // viewport — so its text differs after a few frames.
+  const before = await treeText();
+  await page.waitForTimeout(900);
+  expect(await treeText()).not.toBe(before);
+
+  // Turn SR OFF → the per-frame setRow churn is skipped: the tree FREEZES even
+  // though output keeps flowing (the win — no DOM work nobody reads).
+  await page.getByRole("button", { name: "Screen reader: ON" }).click();
+  const frozen = await treeText();
+  await page.waitForTimeout(900); // several frames append while inactive
+  expect(await treeText()).toBe(frozen); // no churn — unchanged
+
+  // Turn SR ON → syncTree re-renders from the cached latest frame at once (no
+  // cold rebuild, no waiting for the next frame): the tree is current again.
+  await page.getByRole("button", { name: "Screen reader: OFF" }).click();
+  expect(await treeText()).not.toBe(frozen);
+});
+
 test("accessible view opens as a document overlay and Escape closes it", async ({ page }) => {
   const doc = page.locator("[role='document']");
   await expect(doc).toBeHidden();

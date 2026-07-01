@@ -81,6 +81,11 @@ export class AccessibilityController {
   private readonly onScroll: (lines: number) => void;
   private readonly setTimer: (fn: () => void, ms: number) => number;
   private readonly clearTimer: (handle: number) => void;
+  /** Whether a screen reader is active (#161/#169). While inactive, the per-frame
+   * row-tree `setRow` churn is skipped (nobody reads the tree) — but bookkeeping
+   * stays current, so {@link syncTree} on reactivation refreshes from the cached
+   * frame with no cold rebuild (justerm's edge over xterm disposing the manager). */
+  private readonly isActive: () => boolean;
   /** New output accumulated across frames, flushed on the debounce timer. */
   private pending: string[] = [];
   private timer: number | undefined;
@@ -104,12 +109,15 @@ export class AccessibilityController {
     onScroll?: (lines: number) => void;
     setTimer?: (fn: () => void, ms: number) => number;
     clearTimer?: (handle: number) => void;
+    /** SR-active probe (#169). Defaults to always-active (pre-#169 behaviour). */
+    isActive?: () => boolean;
   }) {
     this.tree = opts.tree;
     this.live = opts.live;
     this.onScroll = opts.onScroll ?? (() => {});
     this.setTimer = opts.setTimer ?? ((fn, ms) => setTimeout(fn, ms) as unknown as number);
     this.clearTimer = opts.clearTimer ?? ((h) => clearTimeout(h));
+    this.isActive = opts.isActive ?? (() => true);
   }
 
   /** A new frame arrived. Mirror its viewport rows into the review tree. */
@@ -124,11 +132,43 @@ export class AccessibilityController {
     // after all scrollback when following, less the scroll-up offset.
     this.top = scrollbackLen - displayOffset;
     this.setSize = scrollbackLen + frame.rows;
-    for (let i = 0; i < frame.rows; i++) {
-      this.tree.setRow(i, rows[i] ?? "", this.top + i + 1, this.setSize);
+    // Skip the per-frame tree DOM churn while inactive — nobody reads it (#169).
+    // Bookkeeping above/below still runs, so `syncTree` refreshes instantly on
+    // reactivation. The announce path is gated separately (#161 sink wrap).
+    if (this.isActive()) {
+      for (let i = 0; i < frame.rows; i++) {
+        this.tree.setRow(i, rows[i] ?? "", this.top + i + 1, this.setSize);
+      }
     }
     this.announceNewOutput(frame, rows);
     this.prevRows = rows;
+  }
+
+  /**
+   * Re-render the row tree from the cached last frame (#169). Call on
+   * reactivation (`setScreenReaderActive(true)`): the tree DOM and bookkeeping
+   * were kept while inactive, so this refreshes immediately with no cold rebuild
+   * and without waiting for the next frame (which may never come if idle). A
+   * no-op before the first frame (no cached rows).
+   */
+  syncTree(): void {
+    if (this.prevRows === null) return;
+    for (let i = 0; i < this.treeRows; i++) {
+      this.tree.setRow(i, this.prevRows[i] ?? "", this.top + i + 1, this.setSize);
+    }
+  }
+
+  /**
+   * Reactivate after the screen reader was inactive (#169). Two things at once:
+   * drop any pending announce that accumulated across the inactive span so it is
+   * NOT replayed (a screen reader starting reviews prior output via the freshly
+   * synced tree, not a surprise burst — matches xterm disposing its manager), then
+   * re-render the tree from the cached frame. Call from `setScreenReaderActive` on
+   * a false→true transition.
+   */
+  reactivate(): void {
+    this.cancelPending();
+    this.syncTree();
   }
 
   /**
