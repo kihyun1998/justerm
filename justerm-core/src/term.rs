@@ -1046,10 +1046,15 @@ impl Term {
     }
 
     /// Record an OSC 133 command-boundary mark at the cursor's current line
-    /// (#158). Ignored on the alt screen — shell-integration marks anchor
-    /// *primary* content (like `marker_positions`), and alt-screen apps don't
-    /// emit them. The cursor line is `scrollback ++ screen`-absolute, independent
-    /// of `display_offset` (the cursor is always in the grid, never scrollback).
+    /// (#158). Ignored on the alt screen: unlike the decoration guards that
+    /// per-buffer storage retired (#187), this one stands on a *semantic* — OSC
+    /// 133 is shell integration, which only runs on the primary screen, so an alt
+    /// 133 is meaningless (there is no command to bound). Command nav/announce read
+    /// the *normal* buffer's marks (`command_marks`/`command_lines`, primary-scoped
+    /// since #186), so even a stray alt 133 could not reach them — but there is no
+    /// value in creating an alt-scoped command mark nothing consumes (#188). The
+    /// cursor line is `scrollback ++ screen`-absolute, independent of
+    /// `display_offset` (the cursor is always in the grid, never scrollback).
     fn add_command_mark(&mut self, kind: MarkerKind) {
         if self.on_alt {
             return;

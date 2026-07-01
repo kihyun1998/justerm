@@ -82,10 +82,10 @@ fn marks_anchor_at_cursor_line() {
     assert_eq!(marks[1].1, 1, "OutputStart anchors on row 1");
 }
 
-/// Alt-screen apps (vim, less) don't emit shell-integration marks, and our
-/// markers anchor *primary* content (`marker_positions` is primary-only). A 133
-/// arriving while on the alt screen is ignored — no dangling mark into the alt
-/// grid.
+/// Alt-screen apps (vim, less) don't emit shell-integration marks. A 133 on the
+/// alt screen is ignored — not for the old aliasing reason (per-buffer storage,
+/// #186/#187, retired that) but on a *semantic*: OSC 133 is primary-screen shell
+/// integration, so an alt 133 marks nothing meaningful (#188).
 #[test]
 fn alt_screen_marks_are_ignored() {
     let mut t = Engine::new(40, 24);
@@ -93,6 +93,45 @@ fn alt_screen_marks_are_ignored() {
     t.feed(b"\x1b]133;A\x07\x1b]133;D;0\x07");
 
     assert!(t.command_marks().is_empty());
+}
+
+/// #188: command navigation is primary-scoped. Even while on the alt screen with
+/// an alt decoration marker present (#187), `command_marks`/`command_lines` read
+/// the *normal* buffer, so the primary command history stays intact for nav
+/// (#166) / announce (#160) and the alt marker never leaks into it.
+#[test]
+fn command_nav_is_primary_scoped_on_alt() {
+    let mut t = Engine::new(40, 24);
+    // A primary command cycle: `ls`, exit 0.
+    t.feed(b"\x1b]133;A\x07$ \x1b]133;B\x07ls\x1b]133;C\x07\r\n\x1b]133;D;0\x07");
+
+    // Enter alt and drop a decoration marker there.
+    t.feed(b"\x1b[?1049h");
+    let _alt = t.add_marker(2);
+
+    // command_marks shows ONLY the primary command's marks — the alt decoration
+    // marker (a Plain kind in the alt buffer) never leaks in.
+    assert_eq!(
+        t.command_marks()
+            .into_iter()
+            .map(|(_, _, k)| k)
+            .collect::<Vec<_>>(),
+        vec![
+            MarkerKind::PromptStart,
+            MarkerKind::CommandStart,
+            MarkerKind::OutputStart,
+            MarkerKind::CommandFinished(Some(0)),
+        ],
+    );
+    // command_lines is entry-scoped to the primary too: exactly the one primary
+    // command, with its exit from the D mark.
+    let cmds = t.command_lines();
+    assert_eq!(cmds.len(), 1);
+    assert_eq!(cmds[0].exit, Some(0));
+    // NB: the command *text* is not asserted here — while on the alt screen
+    // `extract_lines` reads the active (alt) grid, so it comes back empty. That is
+    // a separate, pre-existing bug tracked as #192; the mark/entry scoping this
+    // test locks in is unaffected by it.
 }
 
 /// An unknown 133 subcommand (future FinalTerm letters, typos) is ignored, not
