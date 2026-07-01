@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { ScreenReaderState } from "../src/screen-reader";
 import type { LiveRegionSink } from "../src/accessibility";
-import type { SignalSink } from "../src/command-announce";
 
 class RecLive implements LiveRegionSink {
   readonly said: string[] = [];
@@ -11,16 +10,6 @@ class RecLive implements LiveRegionSink {
   }
   clear(): void {
     this.cleared++;
-  }
-}
-
-class RecSignal implements SignalSink {
-  readonly signals: string[] = [];
-  commandSucceeded(): void {
-    this.signals.push("ok");
-  }
-  commandFailed(): void {
-    this.signals.push("fail");
   }
 }
 
@@ -83,17 +72,7 @@ describe("ScreenReaderState (#161)", () => {
     expect(live.cleared).toBe(1);
   });
 
-  // The signal sink is gated the same way: no success/fail earcon while inactive.
-  it("gates the success/fail signal too", () => {
-    const sr = new ScreenReaderState();
-    const signal = new RecSignal();
-    const gated = sr.gateSignal(signal);
-
-    gated.commandSucceeded();
-    expect(signal.signals).toEqual(["ok"]);
-
-    sr.setActive(false);
-    gated.commandFailed();
-    expect(signal.signals).toEqual(["ok"]); // suppressed
-  });
+  // The command success/fail signal is NOT gated here (no `gateSignal`): #160's
+  // controller reads `isActive()` through #167's `auto` policy state instead, so
+  // an `on` modality can override an SR-off state — a blanket wrapper couldn't.
 });

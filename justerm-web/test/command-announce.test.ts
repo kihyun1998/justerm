@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  type AnnouncePolicy,
   CommandAnnounceController,
+  type Enablement,
   type SignalSink,
 } from "../src/command-announce";
 import type { LiveRegionSink } from "../src/accessibility";
@@ -47,6 +49,18 @@ const FULL = 0;
 function seeded(live: LiveRegionSink, signal: SignalSink) {
   const c = new CommandAnnounceController(live, signal);
   c.onFrame(frame(PARTIAL)); // consume the first-frame baseline seed
+  return c;
+}
+
+/** Seed a controller carrying a #167 per-outcome policy and/or a screen-reader
+ * probe (for the `auto` state), then consume the baseline frame. */
+function seededWith(
+  live: LiveRegionSink,
+  signal: SignalSink,
+  opts: { policy?: AnnouncePolicy; screenReaderActive?: () => boolean },
+) {
+  const c = new CommandAnnounceController(live, signal, opts);
+  c.onFrame(frame(PARTIAL));
   return c;
 }
 
@@ -164,5 +178,156 @@ describe("CommandAnnounceController (#160)", () => {
     c.onFrame(frame(PARTIAL, marker(1, MarkerKind.CommandFinished, 0)));
 
     expect(live.said).toEqual(["Command succeeded", "Command succeeded"]);
+  });
+});
+
+describe("CommandAnnounceController per-outcome policy (#167)", () => {
+  // Mirrors VSCode's independent `{sound, announcement}` per outcome
+  // (accessibilityConfiguration.ts terminalCommandSucceeded/Failed). Each of the
+  // two modalities (announce / signal) is `on | off | auto`; `auto` fires iff a
+  // screen reader is active (accessibilitySignalService.ts:274 checkEnabledState).
+
+  const ALL_AUTO: AnnouncePolicy = {
+    succeeded: { announce: "auto", signal: "auto" },
+    failed: { announce: "auto", signal: "auto" },
+  };
+
+  // `off` on a modality suppresses just that modality, even with SR active — the
+  // other modality still fires ("succeeded: earcon only, announce off").
+  it("off on one modality suppresses only that modality", () => {
+    const live = new RecLive();
+    const signal = new RecSignal();
+    const c = seededWith(live, signal, {
+      policy: { ...ALL_AUTO, succeeded: { announce: "off", signal: "auto" } },
+    });
+
+    c.onFrame(frame(PARTIAL, marker(1, MarkerKind.CommandFinished, 0)));
+
+    expect(live.said).toEqual([]); // announce off
+    expect(signal.signals).toEqual(["ok"]); // signal still auto+SR-on
+  });
+
+  // The failed outcome is policed independently of succeeded: fail-announce off
+  // but fail-signal on → the earcon plays, nothing is spoken.
+  it("polices the failed outcome independently of succeeded", () => {
+    const live = new RecLive();
+    const signal = new RecSignal();
+    const c = seededWith(live, signal, {
+      policy: {
+        succeeded: { announce: "auto", signal: "auto" },
+        failed: { announce: "off", signal: "on" },
+      },
+    });
+
+    c.onFrame(frame(PARTIAL, marker(1, MarkerKind.CommandFinished, 3)));
+
+    expect(live.said).toEqual([]);
+    expect(signal.signals).toEqual(["fail"]);
+  });
+
+  // `auto` with NO screen reader → nothing fires (the point of `auto`: don't
+  // announce/earcon to an absent SR). This is #161's gate, now resolved inside
+  // the controller so `on` can still override it (next test).
+  it("auto suppresses both modalities when the screen reader is inactive", () => {
+    const live = new RecLive();
+    const signal = new RecSignal();
+    const c = seededWith(live, signal, {
+      policy: ALL_AUTO,
+      screenReaderActive: () => false,
+    });
+
+    c.onFrame(frame(PARTIAL, marker(1, MarkerKind.CommandFinished, 0)));
+
+    expect(live.said).toEqual([]);
+    expect(signal.signals).toEqual([]);
+  });
+
+  // `on` fires REGARDLESS of SR state — this is exactly what a blanket sink gate
+  // (#161's gateSignal wrapping) cannot express, and why `auto` had to move into
+  // the controller.
+  it("on fires even when the screen reader is inactive", () => {
+    const live = new RecLive();
+    const signal = new RecSignal();
+    const c = seededWith(live, signal, {
+      policy: { ...ALL_AUTO, succeeded: { announce: "on", signal: "on" } },
+      screenReaderActive: () => false,
+    });
+
+    c.onFrame(frame(PARTIAL, marker(1, MarkerKind.CommandFinished, 0)));
+
+    expect(live.said).toEqual(["Command succeeded"]);
+    expect(signal.signals).toEqual(["ok"]);
+  });
+
+  // #161 invariant preserved: a command suppressed by policy (auto + SR off) is
+  // still marked seen, so flipping SR on later does NOT replay it. The gating
+  // moved into the controller, but `seen.add` stays unconditional.
+  it("does not replay a policy-suppressed command when SR later turns on", () => {
+    const live = new RecLive();
+    const signal = new RecSignal();
+    let sr = false;
+    const c = seededWith(live, signal, {
+      policy: ALL_AUTO,
+      screenReaderActive: () => sr,
+    });
+
+    const f = frame(PARTIAL, marker(1, MarkerKind.CommandFinished, 0));
+    c.onFrame(f); // auto + SR off → suppressed, but marked seen
+    expect(live.said).toEqual([]);
+
+    sr = true;
+    c.onFrame(f); // same mark, SR now on → still seen, must NOT re-announce
+    expect(live.said).toEqual([]);
+    expect(signal.signals).toEqual([]);
+  });
+
+  // Exhaustive matrix: outcome × state × SR-active, both modalities coupled to
+  // the state under test. `enabled(state, sr)` = `on || (auto && sr)` is the
+  // spec oracle (VSCode checkEnabledState, accessibilitySignalService.ts:274);
+  // this asserts the controller against it for every cell so no combination is
+  // covered only implicitly.
+  const STATES: Enablement[] = ["on", "off", "auto"];
+  const OUTCOMES = [
+    { name: "succeeded", exit: 0, say: "Command succeeded", sig: "ok" },
+    { name: "failed", exit: 5, say: "Command failed, exit 5", sig: "fail" },
+  ] as const;
+  for (const o of OUTCOMES) {
+    for (const state of STATES) {
+      for (const sr of [true, false]) {
+        const fires = state === "on" || (state === "auto" && sr);
+        it(`${o.name}: ${state} + SR ${sr ? "on" : "off"} → ${fires ? "fires" : "silent"}`, () => {
+          const live = new RecLive();
+          const signal = new RecSignal();
+          // Couple both modalities to the state under test; the *other* outcome
+          // is off and never reached (only one mark, of this outcome, is fed).
+          const rule = { announce: state, signal: state };
+          const other = { announce: "off", signal: "off" } as const;
+          const policy: AnnouncePolicy =
+            o.name === "succeeded"
+              ? { succeeded: rule, failed: other }
+              : { succeeded: other, failed: rule };
+          const c = seededWith(live, signal, { policy, screenReaderActive: () => sr });
+
+          c.onFrame(frame(PARTIAL, marker(1, MarkerKind.CommandFinished, o.exit)));
+
+          expect(live.said).toEqual(fires ? [o.say] : []);
+          expect(signal.signals).toEqual(fires ? [o.sig] : []);
+        });
+      }
+    }
+  }
+
+  // The default (no opts) is every modality `auto`; with #161's default-active SR
+  // that reproduces the pre-#167 always-on behaviour (the existing suite above
+  // exercises this via the 2-arg constructor).
+  it("defaults to all-auto, preserving pre-#167 behaviour with SR active", () => {
+    const live = new RecLive();
+    const signal = new RecSignal();
+    const c = seededWith(live, signal, {}); // no policy, no SR probe → default true
+
+    c.onFrame(frame(PARTIAL, marker(1, MarkerKind.CommandFinished, 7)));
+
+    expect(live.said).toEqual(["Command failed, exit 7"]);
+    expect(signal.signals).toEqual(["fail"]);
   });
 });

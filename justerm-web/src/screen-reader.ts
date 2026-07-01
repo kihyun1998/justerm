@@ -11,14 +11,17 @@
  * would silently kill a11y); a host that knows no SR is attached opts INTO
  * suppression to avoid wasted aria-live churn and earcons nobody hears.
  *
- * The gate wraps the announce/signal *sinks* rather than short-circuiting the
- * controllers, so a controller's own bookkeeping (e.g. #160's finished-mark
- * dedup) stays current while inactive — flipping SR on later then does not replay
- * the backlog of commands that ran while it was off.
+ * The gate wraps the announce *sink* rather than short-circuiting the controller,
+ * so #119's own bookkeeping stays current while inactive — flipping SR on later
+ * then does not replay the backlog of output that arrived while it was off.
+ *
+ * The command announce/signal (#160) is gated differently: its controller reads
+ * {@link isActive} directly through #167's per-outcome `auto` policy state (a
+ * blanket signal wrapper couldn't express an `on` override), so there is no
+ * `gateSignal` here — only `gateLive`, for #119's output announce.
  */
 
 import type { LiveRegionSink } from "./accessibility";
-import type { SignalSink } from "./command-announce";
 
 export class ScreenReaderState {
   private active = true;
@@ -42,19 +45,6 @@ export class ScreenReaderState {
         if (this.active) sink.announce(text);
       },
       clear: () => sink.clear(),
-    };
-  }
-
-  /** Wrap a {@link SignalSink} so the success/fail earcon is a no-op while
-   * inactive (nobody is listening for the a11y cue). */
-  gateSignal(sink: SignalSink): SignalSink {
-    return {
-      commandSucceeded: () => {
-        if (this.active) sink.commandSucceeded();
-      },
-      commandFailed: () => {
-        if (this.active) sink.commandFailed();
-      },
     };
   }
 }

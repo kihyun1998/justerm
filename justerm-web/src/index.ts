@@ -56,8 +56,13 @@ export type { AccessiblePort, AccessibleView } from "./accessible-view";
 // announce + exit-driven success/fail signal (VSCode terminalCommand* analog).
 // Pure logic; the consumer injects the aria-live + signal sinks. Prompt-to-prompt
 // navigation is a separate slice (#166).
-export { CommandAnnounceController } from "./command-announce";
-export type { SignalSink } from "./command-announce";
+export { CommandAnnounceController, DEFAULT_ANNOUNCE_POLICY } from "./command-announce";
+export type {
+  AnnouncePolicy,
+  Enablement,
+  OutcomePolicy,
+  SignalSink,
+} from "./command-announce";
 // Markers (#118/#159) — decode a frame's stride-5 markerPositions into typed
 // Markers (id/row/kind/exit). Shared by command announce, decorations, nav.
 export { MarkerKind, readMarkers } from "./markers";
