@@ -264,13 +264,6 @@ struct SavedCursor {
     gl: usize,
 }
 
-/// A reserved "no marker" id returned by `add_marker` on the alt screen (#164).
-/// It never comes from the live `next_marker_id` counter, so it can't alias a
-/// real marker even after RIS resets the counter; it never enters `markers`, so
-/// `remove_marker` on it is a permanent no-op. (The counter would have to hand
-/// out 2^32-1 real markers in one session to collide — practically impossible.)
-const MARKER_NONE: MarkerId = MarkerId(u32::MAX);
-
 /// An engine-owned decoration marker (#118): a stable id bound to an absolute
 /// buffer line. The line shifts in lockstep with eviction/region scroll/reflow
 /// (the same coordinate moves the selection anchor tracks); the marker is
@@ -1028,19 +1021,10 @@ impl Term {
     }
 
     pub fn add_marker(&mut self, row: usize) -> MarkerId {
-        // Markers anchor *primary* content; on the alt screen the row is transient
-        // alt content (nothing to anchor), so this is a no-op — consistent with
-        // `add_command_mark`'s guard (#164). xterm scopes such a marker to the alt
-        // buffer and clears it on leave; justerm has one marker list, so it
-        // declines rather than pin a primary line the user never marked. It returns
-        // a reserved sentinel id, NOT one from the live counter: the dead id gets no
-        // `MarkerDisposed`, so it must never be reissued — a counter id would alias
-        // a real marker after RIS resets the counter, and `remove_marker(dead)`
-        // would then delete the wrong marker. `MARKER_NONE` never enters `markers`,
-        // so `remove_marker` on it is a permanent no-op.
-        if self.on_alt {
-            return MARKER_NONE;
-        }
+        // On the alt screen this anchors an *alt-scoped* marker (#187): per-buffer
+        // storage (#186) keeps it out of the primary list, and it is disposed on
+        // alt-leave — xterm's per-buffer `addMarker` + `clearAllMarkers`. No dead
+        // sentinel is needed anymore; `markers_mut` routes to the active buffer.
         let line = self.viewport_to_abs(row, 0).line;
         self.push_marker(line, 0, MarkerKind::Plain)
     }
@@ -1204,14 +1188,11 @@ impl Term {
         }
     }
 
-    /// The engine's markers projected onto the current viewport — one
+    /// The active buffer's markers projected onto the current viewport — one
     /// `MarkerPosition` per marker whose line is visible, off-screen markers
-    /// omitted. Emitted only on the primary screen (markers anchor primary
-    /// content; an alt-screen frame carries none).
+    /// omitted. The alt screen projects its own (alt-scoped) markers now (#187);
+    /// they are disposed on alt-leave, so a primary frame never shows them.
     fn marker_positions(&self) -> Vec<MarkerPosition> {
-        if self.on_alt {
-            return Vec::new();
-        }
         let top = self.scrollback.len() - self.display_offset;
         let rows = self.grid.rows();
         self.markers()
@@ -1694,10 +1675,21 @@ impl Term {
         if self.on_alt {
             // Active = alt (cursor, no scrollback); inactive = primary. Selection
             // is primary-only and cleared on alt enter, so no anchors to track.
+            // Alt markers DO ride this reflow (#187): justerm column-reflows the
+            // alt grid, so a marker must follow its content or it drifts off. Their
+            // stored line is `base + alt_row` (base = primary scrollback len), so
+            // convert to alt-local rows for the pane, and re-anchor on the reflowed
+            // base afterward (the primary scrollback below may rewrap its length).
+            let old_base = scrollback.len();
+            let alt_pts: Vec<(usize, usize)> = self
+                .alt_markers
+                .iter()
+                .map(|m| (m.line - old_base, 0))
+                .collect();
             let alt = self.grid.take_lines();
-            let r = reflow_pane(alt, VecDeque::new(), self.cursor.point(), &[], dims);
-            self.grid.set_screen(r.screen, cols, rows);
-            self.cursor.set_point(r.cursor, rows, cols);
+            let r_alt = reflow_pane(alt, VecDeque::new(), self.cursor.point(), &alt_pts, dims);
+            self.grid.set_screen(r_alt.screen, cols, rows);
+            self.cursor.set_point(r_alt.cursor, rows, cols);
 
             // Primary is inactive here, but markers anchor *primary* content, so
             // they reflow with it (the selection is already cleared on alt enter).
@@ -1716,6 +1708,10 @@ impl Term {
             self.saved_cursor.set_point(r.cursor, rows, cols);
             for (i, m) in self.normal_markers.iter_mut().enumerate() {
                 m.line = r.extras[i].0;
+            }
+            let new_base = self.scrollback.len();
+            for (i, m) in self.alt_markers.iter_mut().enumerate() {
+                m.line = new_base + r_alt.extras[i].0;
             }
         } else {
             // Active = primary (cursor, scrollback); inactive = alt. The selection
@@ -2022,20 +2018,11 @@ impl Term {
                     base + self.scroll_bottom,
                     true,
                 );
-                // Markers anchor *primary* content (`marker_positions` is
-                // primary-only). On the alt screen the primary buffer is frozen,
-                // yet the alt grid occupies the same absolute-line range — so an
-                // alt scroll must NOT rotate primary marks or it disposes them
-                // across a vim/less/htop excursion (#158). The selection is safe
-                // (cleared on alt enter); markers are retained, so they need the
-                // explicit guard.
-                if !self.on_alt {
-                    self.markers_rotate_region(
-                        base + self.scroll_top,
-                        base + self.scroll_bottom,
-                        true,
-                    );
-                }
+                // Rotate the active buffer's markers with the content (#187):
+                // per-buffer storage (#186) scopes them, so an alt scroll rotates
+                // *alt* marks and leaves the frozen primary list untouched — no
+                // guard needed. `markers_rotate_region` routes via `markers_mut`.
+                self.markers_rotate_region(base + self.scroll_top, base + self.scroll_bottom, true);
                 self.invalidate_search_highlights();
                 self.grid
                     .scroll_up_region(self.scroll_top, self.scroll_bottom);
@@ -2138,15 +2125,9 @@ impl Term {
             // screen, so absolute indices in it shift down. Rotate the selection.
             let base = self.scrollback.len();
             self.selection_rotate_region(base + self.scroll_top, base + self.scroll_bottom, false);
-            // See `linefeed`: shield primary marks from an alt-screen scroll —
-            // the alt grid shares the primary's absolute-line range (#158).
-            if !self.on_alt {
-                self.markers_rotate_region(
-                    base + self.scroll_top,
-                    base + self.scroll_bottom,
-                    false,
-                );
-            }
+            // Rotate the active buffer's markers (#187) — alt-scoped on the alt
+            // screen, so no guard (see `linefeed`).
+            self.markers_rotate_region(base + self.scroll_top, base + self.scroll_bottom, false);
             self.invalidate_search_highlights();
             self.grid
                 .scroll_down_region(self.scroll_top, self.scroll_bottom);
@@ -2652,13 +2633,11 @@ impl Term {
                 self.record_scroll(top, bottom, 1);
             }
             // Rotate anchors with the content, like `linefeed`/`reverse_index`
-            // (#162). `up` = content moved up = the non-`down` case. Markers are
-            // guarded off the alt screen (they anchor primary content, #158); the
-            // selection is cleared on alt enter, so its rotate is a no-op there.
+            // (#162). `up` = content moved up = the non-`down` case. Markers rotate
+            // with the active buffer (#187) — alt-scoped on the alt screen, so no
+            // guard; the selection is cleared on alt enter.
             self.selection_rotate_region(base + top, base + bottom, !down);
-            if !self.on_alt {
-                self.markers_rotate_region(base + top, base + bottom, !down);
-            }
+            self.markers_rotate_region(base + top, base + bottom, !down);
         }
         self.invalidate_search_highlights();
         // BCE-fill the n exposed lines (the primitives blank to default).
