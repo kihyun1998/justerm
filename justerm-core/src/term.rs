@@ -157,11 +157,15 @@ pub struct Term {
     /// the set handed back via `set_search_highlights`, and `frame()` projects it
     /// onto the viewport — the same anchoring path as the selection.
     search_highlights: Vec<Match>,
-    /// Engine-owned decoration markers (#118): each a stable id bound to an
-    /// absolute buffer line. The line re-anchors through eviction/scroll/reflow
-    /// like a selection anchor, and the marker is disposed when its line leaves
-    /// the buffer. `next_marker_id` hands out monotonic ids.
-    markers: Vec<Marker>,
+    /// Engine-owned decoration markers (#118), split per buffer like xterm's
+    /// `BufferSet` (#177 S0): each a stable id bound to an absolute buffer line
+    /// that re-anchors through eviction/scroll/reflow like a selection anchor. The
+    /// active buffer's list is selected by `on_alt` — `markers`/`markers_mut`.
+    /// `alt_markers` stays empty while the alt guards (#158/#164) are in place; it
+    /// is disposed on alt-leave (xterm `clearAllMarkers`). `next_marker_id` hands
+    /// out monotonic ids across both buffers so ids never alias.
+    normal_markers: Vec<Marker>,
+    alt_markers: Vec<Marker>,
     next_marker_id: u32,
     /// Cursor state saved by DECSC (ESC 7), restored by DECRC (ESC 8). A slot
     /// separate from `saved_cursor` (which is the alt-screen save). Defaults to
@@ -386,7 +390,8 @@ impl Term {
             prev_cursor: (0, 0), // matches the default cursor's home position
             selection: None,
             search_highlights: Vec::new(),
-            markers: Vec::new(),
+            normal_markers: Vec::new(),
+            alt_markers: Vec::new(),
             next_marker_id: 0,
             decsc: SavedCursor::default(),
             charsets: [Charset::Ascii; 4],
@@ -1001,6 +1006,27 @@ impl Term {
     /// Register a decoration marker at viewport `row`, returning its stable id
     /// (#118). The row is resolved to an absolute buffer line (like a selection
     /// anchor), so the marker tracks that content through scroll/eviction/reflow.
+    /// The active buffer's marker list (#177 S0) — alt while on the alt screen,
+    /// else normal. Add/rotate/project operate on this; primary-scoped queries
+    /// (`command_marks`/`command_lines`) and scrollback eviction read
+    /// `normal_markers` directly.
+    fn markers(&self) -> &Vec<Marker> {
+        if self.on_alt {
+            &self.alt_markers
+        } else {
+            &self.normal_markers
+        }
+    }
+
+    /// Mutable [`Self::markers`].
+    fn markers_mut(&mut self) -> &mut Vec<Marker> {
+        if self.on_alt {
+            &mut self.alt_markers
+        } else {
+            &mut self.normal_markers
+        }
+    }
+
     pub fn add_marker(&mut self, row: usize) -> MarkerId {
         // Markers anchor *primary* content; on the alt screen the row is transient
         // alt content (nothing to anchor), so this is a no-op — consistent with
@@ -1026,7 +1052,7 @@ impl Term {
     fn push_marker(&mut self, line: usize, col: usize, kind: MarkerKind) -> MarkerId {
         let id = MarkerId(self.next_marker_id);
         self.next_marker_id += 1;
-        self.markers.push(Marker {
+        self.markers_mut().push(Marker {
             id,
             line,
             col,
@@ -1053,7 +1079,9 @@ impl Term {
     /// pairs prompt/command/finished marks and drives navigation/announce policy
     /// (#160); core only parses and anchors them.
     pub fn command_marks(&self) -> Vec<(MarkerId, usize, MarkerKind)> {
-        self.markers
+        // Primary-scoped: OSC-133 shell integration marks live on the normal
+        // buffer, so command nav/announce read it even while on the alt screen.
+        self.normal_markers
             .iter()
             .filter(|m| m.kind != MarkerKind::Plain)
             .map(|m| (m.id, m.line, m.kind))
@@ -1072,7 +1100,8 @@ impl Term {
         let mut out: Vec<CommandLine> = Vec::new();
         // (B line, B col) awaiting its matching C. Marks arrive in buffer order.
         let mut pending: Option<(usize, usize)> = None;
-        for m in &self.markers {
+        // Primary-scoped (see `command_marks`): the normal buffer's marks.
+        for m in &self.normal_markers {
             match m.kind {
                 MarkerKind::CommandStart => pending = Some((m.line, m.col)),
                 MarkerKind::OutputStart => {
@@ -1120,9 +1149,12 @@ impl Term {
     /// this explicit call (xterm's `dispose()` likewise always fires onDispose).
     /// A no-op for an unknown/already-disposed id.
     pub fn remove_marker(&mut self, id: MarkerId) {
-        let before = self.markers.len();
-        self.markers.retain(|m| m.id != id);
-        if self.markers.len() != before {
+        // Id-based, buffer-agnostic: search both lists (ids are unique across
+        // buffers) so a marker is removed whichever screen it lives on (#177 S0).
+        let before = self.normal_markers.len() + self.alt_markers.len();
+        self.normal_markers.retain(|m| m.id != id);
+        self.alt_markers.retain(|m| m.id != id);
+        if self.normal_markers.len() + self.alt_markers.len() != before {
             self.events.push(TermEvent::MarkerDisposed(id));
         }
     }
@@ -1132,8 +1164,9 @@ impl Term {
     /// disposed and announced (#118) — the marker analogue of
     /// `selection_evict_oldest`, but a list with per-marker disposal.
     fn markers_evict_oldest(&mut self) {
+        // Scrollback eviction is primary-only (the alt screen has none).
         let mut disposed = Vec::new();
-        self.markers.retain_mut(|m| {
+        self.normal_markers.retain_mut(|m| {
             if m.line == 0 {
                 disposed.push(m.id);
                 false
@@ -1153,7 +1186,7 @@ impl Term {
     /// has left the buffer, so it is disposed and announced (#118).
     fn markers_rotate_region(&mut self, top: usize, bottom: usize, up: bool) {
         let mut disposed = Vec::new();
-        self.markers.retain_mut(|m| {
+        self.markers_mut().retain_mut(|m| {
             if m.line < top || m.line > bottom {
                 return true; // outside the region — unchanged
             }
@@ -1181,7 +1214,7 @@ impl Term {
         }
         let top = self.scrollback.len() - self.display_offset;
         let rows = self.grid.rows();
-        self.markers
+        self.markers()
             .iter()
             .filter_map(|m| {
                 let row = m.line.checked_sub(top)?;
@@ -1669,7 +1702,7 @@ impl Term {
             // Primary is inactive here, but markers anchor *primary* content, so
             // they reflow with it (the selection is already cleared on alt enter).
             let marker_pts: Vec<(usize, usize)> =
-                self.markers.iter().map(|m| (m.line, 0)).collect();
+                self.normal_markers.iter().map(|m| (m.line, 0)).collect();
             let primary = self.alt_grid.take_lines();
             let r = reflow_pane(
                 primary,
@@ -1681,7 +1714,7 @@ impl Term {
             self.alt_grid.set_screen(r.screen, cols, rows);
             self.scrollback = r.scrollback;
             self.saved_cursor.set_point(r.cursor, rows, cols);
-            for (i, m) in self.markers.iter_mut().enumerate() {
+            for (i, m) in self.normal_markers.iter_mut().enumerate() {
                 m.line = r.extras[i].0;
             }
         } else {
@@ -1703,7 +1736,7 @@ impl Term {
             // command text (#166). They ride after the selection points so each
             // reads its own reflowed slot back from `extras` (#118).
             let mut pts = sel_pts.clone();
-            pts.extend(self.markers.iter().map(|m| (m.line, m.col)));
+            pts.extend(self.normal_markers.iter().map(|m| (m.line, m.col)));
 
             let primary = self.grid.take_lines();
             let r = reflow_pane(primary, scrollback, self.cursor.point(), &pts, dims);
@@ -1721,7 +1754,7 @@ impl Term {
                 };
             }
             let marker_off = sel_pts.len();
-            for (i, m) in self.markers.iter_mut().enumerate() {
+            for (i, m) in self.normal_markers.iter_mut().enumerate() {
                 m.line = r.extras[marker_off + i].0;
                 m.col = r.extras[marker_off + i].1;
             }
@@ -2065,6 +2098,12 @@ impl Term {
         if !self.on_alt {
             return;
         }
+        // Dispose the alt buffer's markers on leave — xterm `activateNormalBuffer`
+        // → `clearAllMarkers` (#177 S0). Empty while the alt guards stand, so this
+        // fires nothing today; it's the seam the alt-marker slices (#187) build on.
+        for m in self.alt_markers.drain(..) {
+            self.events.push(TermEvent::MarkerDisposed(m.id));
+        }
         std::mem::swap(&mut self.grid, &mut self.alt_grid);
         self.on_alt = false;
         self.display_offset = 0; // return to the primary at its bottom
@@ -2160,7 +2199,12 @@ impl Term {
         // disposal so the consumer drops its decorations (and isn't confused when
         // the reset id counter reissues the same ids). The events survive the
         // reset below (#118).
-        events.extend(self.markers.iter().map(|m| TermEvent::MarkerDisposed(m.id)));
+        events.extend(
+            self.normal_markers
+                .iter()
+                .chain(&self.alt_markers)
+                .map(|m| TermEvent::MarkerDisposed(m.id)),
+        );
         let (cols, rows) = (self.grid.cols(), self.grid.rows());
         *self = Term::with_scrollback(cols, rows, self.scrollback_limit);
         self.replies = replies;
