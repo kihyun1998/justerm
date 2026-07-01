@@ -76,23 +76,36 @@ test("command nav walks history: announces the command + fires its signal (#166)
     if (t.includes("[demo] signal:")) signals.push(t);
   });
 
+  // The 0-based index of the focused line within the accessible-view document —
+  // the DOM side-effect of reveal() (announce/signal alone would NOT prove the
+  // reading cursor moved). The demo's stub commands sit at document lines 0/2/4.
+  const focusedLine = () =>
+    page.evaluate(() => {
+      const doc = document.querySelector("[role='document']");
+      return doc ? Array.prototype.indexOf.call(doc.children, document.activeElement) : -1;
+    });
+
   // Open the accessible view so nav loads the command list (cursor at the end).
   await page.getByRole("button", { name: /Accessible view/ }).click();
   await expect(page.locator("[role='document']")).toBeVisible();
 
   // Prev from the end → last preset command ("ls -la", exit 0): announced on the
-  // polite region + a success signal. This is the real CommandNavController +
-  // DomAccessibleView running behind the demo's stub port.
+  // polite region, a success signal, AND focus revealed on its document line (4).
+  // This is the real CommandNavController + DomAccessibleView + wasm.
   await page.getByRole("button", { name: "Prev command" }).click();
   await expect(page.locator(live)).toHaveText("ls -la");
+  expect(await focusedLine()).toBe(4); // reveal() moved focus to the command line
 
-  // Prev again → the failing command ("false", exit 1): announce + fail signal.
+  // Prev again → the failing command ("false", exit 1): announce + fail signal +
+  // focus revealed on line 2.
   await page.getByRole("button", { name: "Prev command" }).click();
   await expect(page.locator(live)).toHaveText("false");
+  expect(await focusedLine()).toBe(2);
 
   // Next → forward to "ls -la" again (VSCode Next = line > cursor, nearest).
   await page.getByRole("button", { name: "Next command" }).click();
   await expect(page.locator(live)).toHaveText("ls -la");
+  expect(await focusedLine()).toBe(4);
 
   expect(signals.some((s) => s.includes("succeeded"))).toBe(true);
   expect(signals.some((s) => s.includes("failed"))).toBe(true);

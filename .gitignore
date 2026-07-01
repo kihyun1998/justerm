@@ -12,3 +12,6 @@ target/
 # justerm-web (TS package) — deps + build output, never committed.
 /justerm-web/node_modules
 /justerm-web/dist
+
+# Playwright MCP live-drive artifacts (snapshots/console logs — scratch, not committed).
+.playwright-mcp/
