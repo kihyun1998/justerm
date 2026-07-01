@@ -12,8 +12,11 @@
  * suppression to avoid wasted aria-live churn and earcons nobody hears.
  *
  * The gate wraps the announce *sink* rather than short-circuiting the controller,
- * so #119's own bookkeeping stays current while inactive — flipping SR on later
- * then does not replay the backlog of output that arrived while it was off.
+ * so #119's own bookkeeping stays current while inactive. No backlog is replayed
+ * when SR flips on: the gate no-ops announces during the inactive span, and
+ * reactivation (`AccessibilityController.reactivate`, #169) drops any pending
+ * debounce tail — the user reviews prior output via the freshly synced row tree,
+ * not a surprise burst.
  *
  * The command announce/signal (#160) is gated differently: its controller reads
  * {@link isActive} directly through #167's per-outcome `auto` policy state (a

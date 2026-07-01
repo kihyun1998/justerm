@@ -153,9 +153,11 @@ export class Accessibility {
     this.live = new DomLiveRegion(doc);
     this.controller = new AccessibilityController({
       tree: this.tree,
-      // Gate the live announce on SR-active (#161); the row tree keeps mirroring
-      // (review DOM is harmless unread and rebuilds on the next frame).
+      // Gate the live announce on SR-active (#161).
       live: this.srState.gateLive(this.live),
+      // Skip the per-frame row-tree churn while inactive (#169) — bookkeeping is
+      // kept, so reactivation re-syncs instantly (see setScreenReaderActive).
+      isActive: () => this.srState.isActive(),
       onScroll: opts.onScroll,
     });
     this.root = doc.createElement("div");
@@ -182,10 +184,15 @@ export class Accessibility {
 
   /** Set whether a screen reader is active (#161) — the host injects its own SR
    * detection (a browser can't detect one). While inactive, output announces are
-   * suppressed; the row tree keeps mirroring. Share the gate with the command
-   * announce (#160) via the `screenReaderState` constructor option. */
+   * suppressed (#161) and the row-tree DOM churn is skipped (#169); reactivating
+   * re-syncs the tree from the cached frame at once (no cold rebuild). Share the
+   * gate with the command announce (#160) via the `screenReaderState` option. */
   setScreenReaderActive(active: boolean): void {
+    const was = this.srState.isActive();
     this.srState.setActive(active);
+    // Reactivated → refresh the stale tree from the cached frame at once (no cold
+    // rebuild) AND drop any announce backlog so it isn't replayed (#169).
+    if (active && !was) this.controller.reactivate();
   }
 
   /** A key was typed (for echo dedup) — the consumer forwards its input here. */

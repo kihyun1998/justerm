@@ -238,10 +238,13 @@ function finishCommand(): void {
   cmdBtn.textContent = `Finish command (next exit ${cmdFailToggle ? 1 : 0})`;
 }
 function toggleScreenReader(): void {
-  srState.setActive(!srState.isActive());
+  // Route through the a11y seam (not srState directly) so reactivation re-syncs
+  // the row tree (#169). The shared srState still updates, so the command
+  // announce/signal gate (#160/#161) sees it too.
+  a11y.setScreenReaderActive(!srState.isActive());
   srBtn.textContent = `Screen reader: ${srState.isActive() ? "ON" : "OFF"}`;
   console.log(
-    `[demo] screenReaderActive = ${srState.isActive()} (announce/earcon ${srState.isActive() ? "on" : "SUPPRESSED"})`,
+    `[demo] screenReaderActive = ${srState.isActive()} (announce/earcon ${srState.isActive() ? "on" : "SUPPRESSED"}, tree churn ${srState.isActive() ? "on" : "SKIPPED"})`,
   );
 }
 

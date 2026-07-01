@@ -10,11 +10,14 @@ class StubTree {
   readonly focused: number[] = [];
   /** Every `resize` argument, to assert it isn't called redundantly. */
   readonly resizes: number[] = [];
+  /** How many times `setRow` was called (to assert no churn while inactive, #169). */
+  setRowCalls = 0;
   resize(rows: number): void {
     this.rows = rows;
     this.resizes.push(rows);
   }
   setRow(i: number, text: string, posInSet: number, setSize: number): void {
+    this.setRowCalls++;
     this.set.set(i, { text, posInSet, setSize });
   }
   focusRow(i: number): void {
@@ -335,5 +338,161 @@ describe("AccessibilityController — announce new output (W2)", () => {
     flush();
 
     expect(live.announced).toEqual([]);
+  });
+});
+
+describe("AccessibilityController — row-tree churn gate while SR inactive (#169)", () => {
+  // While inactive (host knows no screen reader is attached), a frame updates the
+  // controller's bookkeeping but does NOT rewrite the tree DOM — the per-frame
+  // `setRow` churn (xterm's `_refreshRows`, which it avoids by disposing the whole
+  // manager) is skipped. The tree structure (resize) is still maintained.
+  it("skips the row-tree setRow loop while inactive", () => {
+    const tree = new StubTree();
+    let active = false;
+    const ctrl = new AccessibilityController({
+      tree,
+      live: new StubLive(),
+      isActive: () => active,
+    });
+
+    ctrl.onFrame({ rows: 2, displayOffset: 0, scrollbackLen: 0 }, ["a", "b"]);
+
+    expect(tree.setRowCalls).toBe(0); // no per-frame DOM churn
+    expect(tree.resizes).toEqual([2]); // structure kept, so reactivation is instant
+  });
+
+  // Reactivation re-syncs the tree from the CACHED last frame immediately — no
+  // cold rebuild and no waiting for the next frame (justerm's edge over xterm's
+  // dispose+createInstance).
+  it("syncTree renders the cached last frame on reactivation", () => {
+    const tree = new StubTree();
+    let active = false;
+    const ctrl = new AccessibilityController({
+      tree,
+      live: new StubLive(),
+      isActive: () => active,
+    });
+
+    ctrl.onFrame({ rows: 2, displayOffset: 0, scrollbackLen: 0 }, ["hello", "$ "]);
+    expect(tree.setRowCalls).toBe(0);
+
+    active = true;
+    ctrl.syncTree();
+
+    expect(tree.set.get(0)).toEqual({ text: "hello", posInSet: 1, setSize: 2 });
+    expect(tree.set.get(1)).toEqual({ text: "$ ", posInSet: 2, setSize: 2 });
+  });
+
+  // After reactivation, per-frame mirroring resumes normally.
+  it("resumes per-frame mirroring after reactivation", () => {
+    const tree = new StubTree();
+    let active = false;
+    const ctrl = new AccessibilityController({
+      tree,
+      live: new StubLive(),
+      isActive: () => active,
+    });
+
+    ctrl.onFrame({ rows: 1, displayOffset: 0, scrollbackLen: 0 }, ["old"]);
+    active = true;
+    ctrl.syncTree();
+    tree.setRowCalls = 0; // ignore the sync render; count only the next frame
+
+    ctrl.onFrame({ rows: 1, displayOffset: 0, scrollbackLen: 0 }, ["new"]);
+
+    expect(tree.setRowCalls).toBe(1);
+    expect(tree.set.get(0)?.text).toBe("new");
+  });
+
+  // syncTree before any frame has no cached rows — a safe no-op.
+  it("syncTree is a no-op before the first frame", () => {
+    const tree = new StubTree();
+    const ctrl = new AccessibilityController({ tree, live: new StubLive(), isActive: () => true });
+
+    ctrl.syncTree();
+
+    expect(tree.setRowCalls).toBe(0);
+  });
+
+  // Omitting isActive defaults to active — the pre-#169 always-mirror behaviour.
+  it("defaults to active: mirrors every frame when isActive is omitted", () => {
+    const tree = new StubTree();
+    const ctrl = new AccessibilityController({ tree, live: new StubLive() });
+
+    ctrl.onFrame({ rows: 1, displayOffset: 0, scrollbackLen: 0 }, ["x"]);
+
+    expect(tree.setRowCalls).toBe(1);
+  });
+
+  // A resize (viewport row-count change) while inactive still tracks the tree
+  // structure, so syncTree renders ALL the current rows on reactivation — the
+  // cached prevRows and treeRows stay in lockstep.
+  it("re-syncs the full tree after a resize while inactive", () => {
+    const tree = new StubTree();
+    let active = false;
+    const ctrl = new AccessibilityController({
+      tree,
+      live: new StubLive(),
+      isActive: () => active,
+    });
+
+    ctrl.onFrame({ rows: 2, displayOffset: 0, scrollbackLen: 0 }, ["a", "b"]);
+    ctrl.onFrame({ rows: 3, displayOffset: 0, scrollbackLen: 0 }, ["x", "y", "z"]); // grew
+    expect(tree.setRowCalls).toBe(0);
+    expect(tree.resizes).toEqual([2, 3]); // structure tracked the resize
+
+    active = true;
+    ctrl.syncTree();
+
+    expect(tree.setRowCalls).toBe(3);
+    expect(tree.set.get(0)?.text).toBe("x");
+    expect(tree.set.get(2)?.text).toBe("z");
+  });
+
+  // The very first frame arriving while inactive seeds the baseline (announce
+  // diff) and skips the tree churn; reactivation then renders that cached frame.
+  it("handles the first frame arriving while inactive", () => {
+    const tree = new StubTree();
+    let active = false;
+    const ctrl = new AccessibilityController({
+      tree,
+      live: new StubLive(),
+      isActive: () => active,
+    });
+
+    ctrl.onFrame({ rows: 1, displayOffset: 0, scrollbackLen: 0 }, ["boot"]);
+    expect(tree.setRowCalls).toBe(0);
+
+    active = true;
+    ctrl.syncTree();
+
+    expect(tree.set.get(0)?.text).toBe("boot");
+  });
+
+  // reactivate() drops any announce that accumulated while inactive (no surprise
+  // backlog replay — the user reviews via the synced tree) AND re-syncs the tree.
+  // Without the drop, the debounce tail would flush through the now-active gate.
+  it("reactivate drops the pending announce backlog and syncs the tree", () => {
+    const tree = new StubTree();
+    const live = new StubLive();
+    const sched = new ManualScheduler();
+    let active = false;
+    const ctrl = new AccessibilityController({
+      tree,
+      live,
+      isActive: () => active,
+      setTimer: sched.setTimer,
+      clearTimer: sched.clearTimer,
+    });
+
+    ctrl.onFrame({ rows: 1, displayOffset: 0, scrollbackLen: 0 }, ["$ "]); // baseline
+    ctrl.onFrame({ rows: 1, displayOffset: 0, scrollbackLen: 0 }, ["output"]); // arms pending
+
+    active = true;
+    ctrl.reactivate();
+    sched.flush(); // the cancelled debounce timer would have fired here
+
+    expect(live.announced).toEqual([]); // backlog NOT replayed
+    expect(tree.set.get(0)?.text).toBe("output"); // tree synced to the cached frame
   });
 });
