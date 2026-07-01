@@ -58,6 +58,27 @@ pub struct Span {
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct MarkerId(pub u32);
 
+/// What a marker means (#158). A plain `add_marker` decoration carries no
+/// semantics ([`MarkerKind::Plain`]); OSC 133 shell-integration marks carry the
+/// command-boundary role (prompt/command/output start, or command finished with
+/// its optional exit code). The engine only *parses and anchors* these — the
+/// success/failure colour, earcon and prompt-to-prompt navigation are consumer
+/// policy (ADR-0017), driven off the kind + exit the wire (#159) carries.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum MarkerKind {
+    /// A `add_marker` decoration anchor (#118) — no OSC-133 semantics.
+    Plain,
+    /// OSC `133;A` — the shell prompt begins here.
+    PromptStart,
+    /// OSC `133;B` — the typed command begins here (the prompt ended).
+    CommandStart,
+    /// OSC `133;C` — the command was submitted; its output begins here.
+    OutputStart,
+    /// OSC `133;D[;exit]` — the command finished, with its exit code if reported
+    /// (absent, empty or non-numeric → `None`).
+    CommandFinished(Option<i32>),
+}
+
 /// A marker projected onto the viewport (#118): its id and the row it sits on.
 /// Only markers visible in the current viewport are reported; an off-screen
 /// marker is omitted but still alive (death comes via `MarkerDisposed`, not
