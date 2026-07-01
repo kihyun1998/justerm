@@ -209,6 +209,12 @@ deferred behavior) it tracks — then add what you find here.** Seeds (caught in
   history *only* when `scroll_top == 0` and not on the alt screen — NOT merely "the full screen". A
   top-anchored sub-region (`[0..k]`) still accrues; a region with `scroll_top > 0`, the alt screen,
   and reverse-index (scroll *down*) never do (verified against alacritty `region.start == 0`). The
+  **explicit line-editing verbs (SU/SD/IL/DL via `scroll_region_lines`) also never accrue** — even a
+  full-screen SU (`scroll_top == 0`) drops its top line rather than pushing it to history; justerm
+  matches xterm.js here (which carries a `FIXME` to accrue) and *trails* real xterm/alacritty, which
+  rotate the SU top line into scrollback. Consequence for anchors (#162): a marker/selection on that
+  dropped edge is disposed/cleared, not shifted into history — the anchor rotation is deliberately
+  *consistent* with whatever the grid does, so revisiting SU-accrual would move the anchor path too. The
   viewport windows into history via a `display_offset` clamped to `[0, history.len()]`. New output
   while scrolled up (`display_offset > 0`) **stays** put — the offset is bumped to hold the view, not
   yanked to the bottom (alacritty/xterm.js follow-bottom). History is a flat line ring; semantic

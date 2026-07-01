@@ -2436,6 +2436,9 @@ impl Term {
         if n == 0 {
             return;
         }
+        // Anchors (selection #3, markers #118/#158) live at absolute buffer lines;
+        // SU/SD/IL/DL don't accrue scrollback, so `base` is stable across the loop.
+        let base = self.scrollback.len();
         for _ in 0..n {
             if down {
                 self.grid.scroll_down_region(top, bottom);
@@ -2444,7 +2447,16 @@ impl Term {
                 self.grid.scroll_up_region(top, bottom);
                 self.record_scroll(top, bottom, 1);
             }
+            // Rotate anchors with the content, like `linefeed`/`reverse_index`
+            // (#162). `up` = content moved up = the non-`down` case. Markers are
+            // guarded off the alt screen (they anchor primary content, #158); the
+            // selection is cleared on alt enter, so its rotate is a no-op there.
+            self.selection_rotate_region(base + top, base + bottom, !down);
+            if !self.on_alt {
+                self.markers_rotate_region(base + top, base + bottom, !down);
+            }
         }
+        self.invalidate_search_highlights();
         // BCE-fill the n exposed lines (the primitives blank to default).
         let bg = self.cursor.pen.bg;
         let (fill_top, fill_end) = if down {
