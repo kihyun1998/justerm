@@ -260,6 +260,13 @@ struct SavedCursor {
     gl: usize,
 }
 
+/// A reserved "no marker" id returned by `add_marker` on the alt screen (#164).
+/// It never comes from the live `next_marker_id` counter, so it can't alias a
+/// real marker even after RIS resets the counter; it never enters `markers`, so
+/// `remove_marker` on it is a permanent no-op. (The counter would have to hand
+/// out 2^32-1 real markers in one session to collide — practically impossible.)
+const MARKER_NONE: MarkerId = MarkerId(u32::MAX);
+
 /// An engine-owned decoration marker (#118): a stable id bound to an absolute
 /// buffer line. The line shifts in lockstep with eviction/region scroll/reflow
 /// (the same coordinate moves the selection anchor tracks); the marker is
@@ -971,6 +978,19 @@ impl Term {
     /// (#118). The row is resolved to an absolute buffer line (like a selection
     /// anchor), so the marker tracks that content through scroll/eviction/reflow.
     pub fn add_marker(&mut self, row: usize) -> MarkerId {
+        // Markers anchor *primary* content; on the alt screen the row is transient
+        // alt content (nothing to anchor), so this is a no-op — consistent with
+        // `add_command_mark`'s guard (#164). xterm scopes such a marker to the alt
+        // buffer and clears it on leave; justerm has one marker list, so it
+        // declines rather than pin a primary line the user never marked. It returns
+        // a reserved sentinel id, NOT one from the live counter: the dead id gets no
+        // `MarkerDisposed`, so it must never be reissued — a counter id would alias
+        // a real marker after RIS resets the counter, and `remove_marker(dead)`
+        // would then delete the wrong marker. `MARKER_NONE` never enters `markers`,
+        // so `remove_marker` on it is a permanent no-op.
+        if self.on_alt {
+            return MARKER_NONE;
+        }
         let line = self.viewport_to_abs(row, 0).line;
         self.push_marker(line, MarkerKind::Plain)
     }
