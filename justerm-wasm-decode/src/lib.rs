@@ -18,7 +18,7 @@
 //! thin `#[wasm_bindgen]` layer that exposes [`Flat`]'s buffers to JS as
 //! zero-copy typed-array views.
 
-use justerm_core::{Frame, FrameKind, decode};
+use justerm_core::{Frame, FrameKind, MarkerKind, decode};
 use wasm_bindgen::prelude::*;
 
 /// Number of `u32` fields per span in the flat span directory:
@@ -82,7 +82,8 @@ struct Flat {
     /// consumer picks the highlight colour (theme-agnostic).
     selection_spans: Vec<u32>,
     match_spans: Vec<u32>,
-    /// Marker positions (#118), `MARKER_STRIDE` u32s per marker (`id`, `row`).
+    /// Marker positions (#118/#159), `MARKER_STRIDE` u32s per marker
+    /// (`id`, `row`, `kind`, `exitPresent`, `exitBits`).
     marker_positions: Vec<u32>,
 }
 
@@ -90,8 +91,12 @@ struct Flat {
 /// `row`, `left`, `right` (viewport coordinates, inclusive columns).
 pub const OVERLAY_STRIDE: usize = 3;
 
-/// u32s per marker in the `marker_positions` directory: `id`, `row`.
-pub const MARKER_STRIDE: usize = 2;
+/// u32s per marker in the `marker_positions` directory: `id`, `row`, `kind`
+/// (0 Plain, 1 PromptStart, 2 CommandStart, 3 OutputStart, 4 CommandFinished),
+/// `exitPresent` (1 if the finished command reported an exit code), `exitBits`
+/// (the exit as raw u32 — reinterpret as i32 on the JS side, `bits | 0`). Non-
+/// `CommandFinished` markers carry `exitPresent = 0` (#159).
+pub const MARKER_STRIDE: usize = 5;
 
 /// Flatten a decoded [`Frame`] into renderer-friendly buffers ([`Flat`]).
 ///
@@ -170,7 +175,18 @@ fn flatten(frame: &Frame) -> Flat {
             .overlay
             .markers
             .iter()
-            .flat_map(|m| [m.id.0, m.row as u32])
+            .flat_map(|m| {
+                let (kind, present, exit) = match m.kind {
+                    MarkerKind::Plain => (0, 0, 0),
+                    MarkerKind::PromptStart => (1, 0, 0),
+                    MarkerKind::CommandStart => (2, 0, 0),
+                    MarkerKind::OutputStart => (3, 0, 0),
+                    MarkerKind::CommandFinished(e) => {
+                        (4, e.is_some() as u32, e.unwrap_or(0) as u32)
+                    }
+                };
+                [m.id.0, m.row as u32, kind, present, exit]
+            })
             .collect(),
     }
 }
@@ -395,10 +411,11 @@ impl DecodedFrame {
         unsafe { js_sys::Uint32Array::view(&self.flat.match_spans) }
     }
 
-    /// Decoration markers visible in this viewport (#118), `MARKER_STRIDE` u32s
-    /// per marker (`id`, `row`). An off-screen marker is absent (still alive);
-    /// disposal arrives out-of-band via the backend's `MarkerDisposed` event,
-    /// so absence here is "scrolled away", not "gone".
+    /// Decoration markers visible in this viewport (#118/#159), `MARKER_STRIDE`
+    /// u32s per marker (`id`, `row`, `kind`, `exitPresent`, `exitBits` — see
+    /// [`MARKER_STRIDE`]). An off-screen marker is absent (still alive); disposal
+    /// arrives out-of-band via the backend's `MarkerDisposed` event, so absence
+    /// here is "scrolled away", not "gone".
     #[wasm_bindgen(getter, js_name = markerPositions)]
     pub fn marker_positions(&self) -> js_sys::Uint32Array {
         unsafe { js_sys::Uint32Array::view(&self.flat.marker_positions) }
@@ -770,21 +787,39 @@ mod tests {
 
     #[test]
     fn flatten_carries_marker_positions_through_the_wire() {
-        use justerm_core::{MarkerId, MarkerPosition};
+        use justerm_core::{MarkerId, MarkerKind, MarkerPosition};
         let mut frame = partial(80, 24, vec![ascii_span(0, 0, "x")]);
         frame.overlay.markers = vec![
             MarkerPosition {
                 id: MarkerId(5),
                 row: 3,
+                kind: MarkerKind::PromptStart,
             },
             MarkerPosition {
                 id: MarkerId(99),
                 row: 0,
+                kind: MarkerKind::CommandFinished(Some(-1)),
             },
         ];
         let native = justerm_core::decode(&justerm_core::encode(&frame)).expect("decode");
         let flat = flatten(&native);
-        assert_eq!(flat.marker_positions, vec![5, 3, 99, 0]); // (id, row) pairs
+        // Stride 5 per marker: (id, row, kind, exitPresent, exitBits). The second
+        // marker exercises the signed exit i32→u32 bit-cast (-1 → 0xFFFFFFFF).
+        assert_eq!(
+            flat.marker_positions,
+            vec![
+                5,
+                3,
+                1,
+                0,
+                0, // PromptStart (kind 1), no exit
+                99,
+                0,
+                4,
+                1,
+                (-1i32) as u32, // CommandFinished(Some(-1)) (kind 4)
+            ]
+        );
     }
 
     #[test]

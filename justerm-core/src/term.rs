@@ -1080,7 +1080,11 @@ impl Term {
             .iter()
             .filter_map(|m| {
                 let row = m.line.checked_sub(top)?;
-                (row < rows).then_some(MarkerPosition { id: m.id, row })
+                (row < rows).then_some(MarkerPosition {
+                    id: m.id,
+                    row,
+                    kind: m.kind,
+                })
             })
             .collect()
     }

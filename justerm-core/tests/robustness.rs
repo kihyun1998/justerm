@@ -7,17 +7,20 @@
 //! space, not just the hand-written vectors in the other `tests/` files. The two-lane robustness
 //! decision (these properties + the CI-only fuzz lane) is ADR-0007.
 
-use justerm_core::{Engine, decode, encode};
+use justerm_core::{Engine, WIRE_VERSION, decode, encode};
 use proptest::prelude::*;
 
 /// A wire buffer that is half fully-arbitrary (exercising the magic/version rejection paths) and
-/// half prefixed with the valid `JT` magic + version 2, so the generator actually reaches the
-/// length-driven span/side-table/link-table body parser instead of bailing at the header.
+/// half prefixed with the valid `JT` magic + the *current* `WIRE_VERSION`, so the generator actually
+/// reaches the length-driven span/side-table/link-table/marker body parser instead of bailing at the
+/// header. The version MUST track `WIRE_VERSION` (not a literal) — a stale pin silently reroutes this
+/// lane to the header-rejection path, leaving every post-bump wire feature unreached (#159 caught the
+/// pin rotted at `2` while the format was at v10).
 fn wire_buf() -> impl Strategy<Value = Vec<u8>> {
     prop_oneof![
         proptest::collection::vec(any::<u8>(), 0..=1024),
         proptest::collection::vec(any::<u8>(), 0..=1024).prop_map(|body| {
-            let mut buf = vec![b'J', b'T', 2];
+            let mut buf = vec![b'J', b'T', WIRE_VERSION];
             buf.extend(body);
             buf
         }),

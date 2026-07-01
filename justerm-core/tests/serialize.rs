@@ -5,8 +5,8 @@
 
 use core::num::NonZeroU32;
 use justerm_core::{
-    Cell, CellFlags, Color, Engine, Frame, FrameKind, MarkerId, MarkerPosition, MouseEvents,
-    Overlay, ScrollOp, SelectionSpan, SelectionType, Side, Span, decode, encode,
+    Cell, CellFlags, Color, Engine, Frame, FrameKind, MarkerId, MarkerKind, MarkerPosition,
+    MouseEvents, Overlay, ScrollOp, SelectionSpan, SelectionType, Side, Span, decode, encode,
 };
 use std::collections::BTreeMap;
 
@@ -189,14 +189,127 @@ fn round_trip_overlay_marker_positions() {
         MarkerPosition {
             id: MarkerId(5),
             row: 3,
+            kind: MarkerKind::Plain,
         },
         MarkerPosition {
             id: MarkerId(99),
             row: 0,
+            kind: MarkerKind::Plain,
         },
     ];
     let bytes = encode(&frame);
     assert_eq!(decode(&bytes).expect("decode"), frame);
+}
+
+/// #159 (wire v10): a marker's kind + optional exit code (OSC 133 command marks)
+/// survive the wire. Every `MarkerKind` variant round-trips — including
+/// `CommandFinished`'s `Some`/`None` exit — extending the v7 `(id, row)` record
+/// with a kind discriminant + a presence-gated `i32` exit.
+#[test]
+fn round_trip_overlay_marker_kinds() {
+    let mut frame = Frame {
+        cols: 80,
+        rows: 24,
+        kind: FrameKind::Partial,
+        cursor_row: 0,
+        cursor_col: 0,
+        cursor_visible: true,
+        cursor_shape: justerm_core::CursorShape::Block,
+        cursor_blink: false,
+        display_offset: 0,
+        scrollback_len: 0,
+        mouse_events: Default::default(),
+        alt_screen: false,
+        scroll: None,
+        spans: vec![],
+        side_table: vec![],
+        link_table: vec![],
+        overlay: Overlay::default(),
+    };
+    frame.overlay.markers = vec![
+        MarkerPosition {
+            id: MarkerId(1),
+            row: 0,
+            kind: MarkerKind::Plain,
+        },
+        MarkerPosition {
+            id: MarkerId(2),
+            row: 1,
+            kind: MarkerKind::PromptStart,
+        },
+        MarkerPosition {
+            id: MarkerId(3),
+            row: 2,
+            kind: MarkerKind::CommandStart,
+        },
+        MarkerPosition {
+            id: MarkerId(4),
+            row: 3,
+            kind: MarkerKind::OutputStart,
+        },
+        MarkerPosition {
+            id: MarkerId(5),
+            row: 4,
+            kind: MarkerKind::CommandFinished(Some(130)),
+        },
+        MarkerPosition {
+            id: MarkerId(6),
+            row: 5,
+            kind: MarkerKind::CommandFinished(None),
+        },
+    ];
+    let bytes = encode(&frame);
+    assert_eq!(decode(&bytes).expect("decode"), frame);
+}
+
+/// #159 hostile input: the marker decoder rejects an unknown kind discriminant
+/// with an error (not a silent misread that swallows the next record's bytes),
+/// and a truncated `CommandFinished` exit errors rather than panicking — the
+/// error paths the decode-safety audit exercised, pinned as permanent coverage.
+#[test]
+fn decode_rejects_bad_marker_kind_and_truncated_exit() {
+    let mut frame = Frame {
+        cols: 80,
+        rows: 24,
+        kind: FrameKind::Partial,
+        cursor_row: 0,
+        cursor_col: 0,
+        cursor_visible: true,
+        cursor_shape: justerm_core::CursorShape::Block,
+        cursor_blink: false,
+        display_offset: 0,
+        scrollback_len: 0,
+        mouse_events: Default::default(),
+        alt_screen: false,
+        scroll: None,
+        spans: vec![],
+        side_table: vec![],
+        link_table: vec![],
+        overlay: Overlay::default(),
+    };
+    frame.overlay.markers = vec![MarkerPosition {
+        id: MarkerId(1),
+        row: 0,
+        kind: MarkerKind::CommandFinished(Some(7)),
+    }];
+    let bytes = encode(&frame);
+    // With every prior section empty, the tail is `marker_count(2)` then the one
+    // record `id(4) row(2) kind(1) present(1) exit(4)` — so the kind byte is 6
+    // from the end and the exit is the last 4 bytes.
+    let mut bad_kind = bytes.clone();
+    let k = bad_kind.len() - 6;
+    bad_kind[k] = 5; // unknown discriminant (valid kinds are 0..=4)
+    assert!(
+        decode(&bad_kind).is_err(),
+        "an unknown marker kind must be rejected, not misread"
+    );
+
+    let mut truncated = bytes.clone();
+    truncated.truncate(truncated.len() - 2); // chop into the i32 exit
+    assert!(
+        decode(&truncated).is_err(),
+        "a truncated exit must error, not panic"
+    );
 }
 
 /// Scroll position (display_offset + scrollback_len) survives the wire round-trip
@@ -430,14 +543,14 @@ fn decode_rejects_superseded_version() {
     ));
 }
 
-/// The wire is gated at version 9 (the #149 alt-screen flag, atop the #129 mouse
-/// mask and #118 marker group). Both the exported `WIRE_VERSION` constant and the
-/// byte the encoder emits must read 9 — the value the WASM decoder's
-/// `wire_version()` mirrors in lockstep (ADR-0008), so a drift here trips before
-/// it can desync a binding.
+/// The wire is gated at version 10 (the #159 marker kind + exit, atop the #149
+/// alt-screen flag, #129 mouse mask and #118 marker group). Both the exported
+/// `WIRE_VERSION` constant and the byte the encoder emits must read 10 — the value
+/// the WASM decoder's `wire_version()` mirrors in lockstep (ADR-0008), so a drift
+/// here trips before it can desync a binding.
 #[test]
-fn wire_version_is_nine() {
-    assert_eq!(justerm_core::WIRE_VERSION, 9);
+fn wire_version_is_ten() {
+    assert_eq!(justerm_core::WIRE_VERSION, 10);
     let mut term = Engine::new(1, 1);
     term.feed(b"x");
     let bytes = encode(&term.frame());

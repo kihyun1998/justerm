@@ -17,7 +17,7 @@ use std::collections::BTreeMap;
 
 /// Wire magic ("juSTerm") + format version. A new feature bumps `VERSION`.
 const MAGIC: [u8; 2] = *b"JT";
-const VERSION: u8 = 9; // v9 adds the alt-screen flag in the header (#149); v8 adds the mouse wanted-events mask in the header (#129/ADR-0016); v7 overlay marker group (#118/ADR-0015); v6 overlay selection + search-match spans (#108/ADR-0014); v5 scroll position (#112/ADR-0013); v4 cursor shape+blink (#81); v3 cursor row/col/visibility (#38)
+const VERSION: u8 = 10; // v10 adds a marker kind discriminant + optional i32 exit to the overlay marker group (#159); v9 adds the alt-screen flag in the header (#149); v8 adds the mouse wanted-events mask in the header (#129/ADR-0016); v7 overlay marker group (#118/ADR-0015); v6 overlay selection + search-match spans (#108/ADR-0014); v5 scroll position (#112/ADR-0013); v4 cursor shape+blink (#81); v3 cursor row/col/visibility (#38)
 
 /// The wire-format version (the gating `VERSION` byte), exposed so a binding can
 /// assert at load that its decoder matches the backend encoder (#34/ADR-0008).
@@ -79,14 +79,17 @@ pub enum MarkerKind {
     CommandFinished(Option<i32>),
 }
 
-/// A marker projected onto the viewport (#118): its id and the row it sits on.
-/// Only markers visible in the current viewport are reported; an off-screen
-/// marker is omitted but still alive (death comes via `MarkerDisposed`, not
-/// absence — so the consumer can tell "scrolled away" from "gone").
+/// A marker projected onto the viewport (#118): its id, the row it sits on, and
+/// its kind (#159). Only markers visible in the current viewport are reported; an
+/// off-screen marker is omitted but still alive (death comes via `MarkerDisposed`,
+/// not absence — so the consumer can tell "scrolled away" from "gone"). The kind
+/// carries the OSC 133 command-boundary role + exit code so the consumer can drive
+/// prompt-to-prompt navigation and success/fail signals (#160).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct MarkerPosition {
     pub id: MarkerId,
     pub row: usize,
+    pub kind: MarkerKind,
 }
 
 /// Interaction overlays projected onto the viewport (#108): highlight spans the
@@ -240,11 +243,24 @@ pub fn encode(frame: &Frame) -> Vec<u8> {
     encode_overlay_spans(&mut out, &frame.overlay.matches);
     // Third overlay group (#118): markers as `(id u32, row u16)` pairs — a
     // different record shape from the span groups (a marker is a line anchor,
-    // not a column run).
+    // not a column run). v10 (#159) appends a kind discriminant (u8, like
+    // `cursor_shape`), and — only for `CommandFinished` — a presence byte + i32
+    // exit code (the presence pattern mirrors the header's `scroll` option).
     out.extend_from_slice(&(frame.overlay.markers.len() as u16).to_le_bytes());
     for m in &frame.overlay.markers {
         out.extend_from_slice(&m.id.0.to_le_bytes());
         out.extend_from_slice(&(m.row as u16).to_le_bytes());
+        out.push(match m.kind {
+            MarkerKind::Plain => 0,
+            MarkerKind::PromptStart => 1,
+            MarkerKind::CommandStart => 2,
+            MarkerKind::OutputStart => 3,
+            MarkerKind::CommandFinished(_) => 4,
+        });
+        if let MarkerKind::CommandFinished(exit) = m.kind {
+            out.push(exit.is_some() as u8);
+            out.extend_from_slice(&exit.unwrap_or(0).to_le_bytes());
+        }
     }
     out
 }
@@ -400,13 +416,29 @@ pub fn decode(bytes: &[u8]) -> Result<Frame, DecodeError> {
     // `(row, left, right)` triples (inverse of `encode_overlay_spans`).
     let selection = decode_overlay_spans(&mut r)?;
     let matches = decode_overlay_spans(&mut r)?;
-    // Third group (#118): marker `(id u32, row u16)` pairs.
+    // Third group (#118): marker `(id u32, row u16)` records, each followed by a
+    // kind discriminant (v10, #159) and — for `CommandFinished` — a presence byte
+    // + i32 exit (inverse of the marker encode loop).
     let marker_count = r.u16()?;
     let mut markers = Vec::with_capacity(marker_count as usize);
     for _ in 0..marker_count {
         let id = MarkerId(r.u32()?);
         let row = r.u16()? as usize;
-        markers.push(MarkerPosition { id, row });
+        let kind = match r.u8()? {
+            0 => MarkerKind::Plain,
+            1 => MarkerKind::PromptStart,
+            2 => MarkerKind::CommandStart,
+            3 => MarkerKind::OutputStart,
+            4 => {
+                // Always read presence + i32 (the encoder writes both); a 0
+                // presence means the exit bytes are padding to discard.
+                let present = r.u8()? != 0;
+                let exit = r.u32()? as i32;
+                MarkerKind::CommandFinished(present.then_some(exit))
+            }
+            _ => return Err(DecodeError::BadTag),
+        };
+        markers.push(MarkerPosition { id, row, kind });
     }
     let overlay = Overlay {
         selection,
