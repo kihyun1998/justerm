@@ -67,6 +67,7 @@ fn sample_frame() -> Frame {
         display_offset: 0,
         scrollback_len: 0,
         mouse_events: Default::default(),
+        alt_screen: false,
         scroll: None,
         spans: vec![span(0, 0, "hi"), span(1, 5, "abc")],
         side_table: vec![],
@@ -76,8 +77,16 @@ fn sample_frame() -> Frame {
 }
 
 #[wasm_bindgen_test]
-fn wire_version_is_eight() {
-    assert_eq!(wire_version(), 8); // #129/ADR-0016 bumped 7 -> 8 for the mouse mask
+fn wire_version_is_nine() {
+    assert_eq!(wire_version(), 9); // #149 bumped 8 -> 9 for the alt-screen flag
+}
+
+#[wasm_bindgen_test]
+fn alt_screen_flag_crosses_the_boundary() {
+    let mut frame = sample_frame();
+    frame.alt_screen = true;
+    let df = decode_frame(&justerm_core::encode(&frame)).expect("decode");
+    assert!(df.alt_screen()); // #149: the a11y announce policy gates on this
 }
 
 #[wasm_bindgen_test]
@@ -159,6 +168,7 @@ fn colour_and_flag_columns_carry_tagged_values() {
         display_offset: 0,
         scrollback_len: 0,
         mouse_events: Default::default(),
+        alt_screen: false,
         scroll: None,
         spans: vec![Span {
             line: 0,

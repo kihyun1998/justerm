@@ -51,6 +51,9 @@ struct Flat {
     /// Mouse wanted-events mask (#129) — the routing bits the active tracking
     /// mode reports (DOWN/UP/WHEEL/DRAG/MOVE). `0` = no reporting.
     mouse_events: u8,
+    /// Whether the alternate screen is active (#149) — gates the a11y announce
+    /// policy (#119), which the frame-mode consumer can't derive from damage.
+    alt_screen: bool,
     /// `(top, bottom, count)` of the frame's scroll op, applied before spans.
     scroll: Option<(u16, u16, i16)>,
     /// Per-cell base codepoint (`cell.c`), span order — the `codepoints` column.
@@ -148,6 +151,7 @@ fn flatten(frame: &Frame) -> Flat {
         display_offset: frame.display_offset,
         scrollback_len: frame.scrollback_len,
         mouse_events: frame.mouse_events.bits(),
+        alt_screen: frame.alt_screen,
         scroll: frame
             .scroll
             .map(|s| (s.top as u16, s.bottom as u16, s.count as i16)),
@@ -273,6 +277,15 @@ impl DecodedFrame {
     #[wasm_bindgen(getter, js_name = mouseWantedEvents)]
     pub fn mouse_wanted_events(&self) -> u8 {
         self.flat.mouse_events
+    }
+
+    /// Whether the alternate screen (`?1049`/`?47`) is active (#149). The a11y
+    /// announce policy (#119) suppresses output reads here — a full-screen TUI
+    /// repaint isn't "new output". Buffer-global state the consumer can't derive
+    /// from viewport damage.
+    #[wasm_bindgen(getter, js_name = altScreen)]
+    pub fn alt_screen(&self) -> bool {
+        self.flat.alt_screen
     }
 
     #[wasm_bindgen(getter, js_name = scrollTop)]
@@ -519,6 +532,7 @@ mod tests {
             display_offset: 0,
             scrollback_len: 0,
             mouse_events: Default::default(),
+            alt_screen: false,
             scroll: None,
             spans,
             side_table: vec![],
@@ -810,6 +824,7 @@ mod tests {
             display_offset: 0,
             scrollback_len: 0,
             mouse_events: Default::default(),
+            alt_screen: false,
             scroll: Some(justerm_core::ScrollOp {
                 top: 0,
                 bottom: 23,

@@ -78,3 +78,52 @@ fn decrqm_reports_alt_buffer_for_47_and_1047() {
     t.feed(b"\x1b[?47h\x1b[?1047$p"); // on alt now; 1047 shares the state
     assert_eq!(t.drain_replies(), b"\x1b[?1047;1$y");
 }
+
+/// #149: the frame header exposes whether the alt screen is active, so a
+/// frame-mode consumer (a11y announce policy, #119) can gate on it. All three
+/// buffer-switch modes flip it — `?1049` and the older `?47`/`?1047` (full-screen
+/// apps that repaint wholesale exactly like `?1049`, so they suppress announce
+/// too). Matches xterm.js's single "is-alt" notion.
+#[test]
+fn frame_reports_alt_screen_state() {
+    let mut t = Engine::new(5, 2);
+    assert!(!t.frame().alt_screen, "primary screen at start");
+
+    t.feed(b"\x1b[?1049h");
+    assert!(t.frame().alt_screen, "alt after ?1049h");
+    t.feed(b"\x1b[?1049l");
+    assert!(!t.frame().alt_screen, "primary after ?1049l");
+
+    t.feed(b"\x1b[?47h");
+    assert!(t.frame().alt_screen, "alt after ?47h");
+    t.feed(b"\x1b[?47l");
+    assert!(!t.frame().alt_screen, "primary after ?47l");
+
+    t.feed(b"\x1b[?1047h");
+    assert!(t.frame().alt_screen, "alt after ?1047h");
+    t.feed(b"\x1b[?1047l");
+    assert!(!t.frame().alt_screen, "primary after ?1047l");
+}
+
+/// #149/#119: cursor-only `?1048` (save/restore) must NOT flip the alt-screen
+/// flag — the single wiring mistake that would silently break the announce
+/// policy (routing `?1048` to a buffer switch).
+#[test]
+fn frame_alt_screen_ignores_cursor_only_1048() {
+    let mut t = Engine::new(5, 2);
+    t.feed(b"\x1b[?1048h"); // save cursor only, not a buffer switch
+    assert!(!t.frame().alt_screen, "?1048h is cursor-only");
+    t.feed(b"\x1b[?1048l");
+    assert!(!t.frame().alt_screen, "?1048l is cursor-only");
+}
+
+/// #149: a full reset (RIS) while on the alt screen clears the flag, so the
+/// a11y-facing field returns to primary.
+#[test]
+fn frame_alt_screen_cleared_by_ris() {
+    let mut t = Engine::new(5, 2);
+    t.feed(b"\x1b[?1049h");
+    assert!(t.frame().alt_screen);
+    t.feed(b"\x1bc"); // RIS
+    assert!(!t.frame().alt_screen, "RIS returns to primary");
+}

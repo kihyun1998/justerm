@@ -26,6 +26,7 @@ fn round_trip_empty_partial_frame() {
         display_offset: 0,
         scrollback_len: 0,
         mouse_events: Default::default(),
+        alt_screen: false,
         scroll: None,
         spans: vec![],
         side_table: vec![],
@@ -53,6 +54,7 @@ fn round_trip_overlay_selection_and_match_spans() {
         display_offset: 0,
         scrollback_len: 0,
         mouse_events: Default::default(),
+        alt_screen: false,
         scroll: None,
         spans: vec![],
         side_table: vec![],
@@ -119,6 +121,7 @@ fn round_trip_mouse_events_mask() {
         display_offset: 0,
         scrollback_len: 0,
         mouse_events: MouseEvents::empty(),
+        alt_screen: false,
         scroll: None,
         spans: vec![],
         side_table: vec![],
@@ -128,6 +131,35 @@ fn round_trip_mouse_events_mask() {
     frame.mouse_events = MouseEvents::DOWN | MouseEvents::UP | MouseEvents::WHEEL;
     let bytes = encode(&frame);
     assert_eq!(decode(&bytes).expect("decode"), frame);
+}
+
+/// #149: the alt-screen flag round-trips through the header (one byte beside the
+/// mouse mask), so a frame-mode consumer reads the same primary/alt state the
+/// engine holds.
+#[test]
+fn round_trip_alt_screen_flag() {
+    let frame = Frame {
+        cols: 80,
+        rows: 24,
+        kind: FrameKind::Partial,
+        cursor_row: 0,
+        cursor_col: 0,
+        cursor_visible: true,
+        cursor_shape: justerm_core::CursorShape::Block,
+        cursor_blink: false,
+        display_offset: 0,
+        scrollback_len: 0,
+        mouse_events: MouseEvents::empty(),
+        alt_screen: true,
+        scroll: None,
+        spans: vec![],
+        side_table: vec![],
+        link_table: vec![],
+        overlay: Overlay::default(),
+    };
+    let decoded = decode(&encode(&frame)).expect("decode");
+    assert!(decoded.alt_screen);
+    assert_eq!(decoded, frame);
 }
 
 /// #118: the overlay's third group — marker positions — round-trips as
@@ -146,6 +178,7 @@ fn round_trip_overlay_marker_positions() {
         display_offset: 0,
         scrollback_len: 0,
         mouse_events: Default::default(),
+        alt_screen: false,
         scroll: None,
         spans: vec![],
         side_table: vec![],
@@ -183,6 +216,7 @@ fn round_trip_scroll_position() {
         display_offset: 7,
         scrollback_len: 250,
         mouse_events: Default::default(),
+        alt_screen: false,
         scroll: None,
         spans: vec![],
         side_table: vec![],
@@ -212,6 +246,7 @@ fn round_trip_cursor_position_and_visibility() {
         display_offset: 0,
         scrollback_len: 0,
         mouse_events: Default::default(),
+        alt_screen: false,
         scroll: None,
         spans: vec![],
         side_table: vec![],
@@ -241,6 +276,7 @@ fn round_trip_span_of_plain_cells() {
         display_offset: 0,
         scrollback_len: 0,
         mouse_events: Default::default(),
+        alt_screen: false,
         scroll: None,
         spans: vec![Span {
             line: 3,
@@ -279,6 +315,7 @@ fn round_trip_distinct_colour_references() {
         display_offset: 0,
         scrollback_len: 0,
         mouse_events: Default::default(),
+        alt_screen: false,
         scroll: None,
         spans: vec![Span {
             line: 0,
@@ -335,6 +372,7 @@ fn round_trip_cell_flags_incl_layout_markers() {
         display_offset: 0,
         scrollback_len: 0,
         mouse_events: Default::default(),
+        alt_screen: false,
         scroll: None,
         spans: vec![Span {
             line: 5,
@@ -377,6 +415,7 @@ fn decode_rejects_superseded_version() {
         display_offset: 0,
         scrollback_len: 0,
         mouse_events: Default::default(),
+        alt_screen: false,
         scroll: None,
         spans: vec![],
         side_table: vec![],
@@ -391,13 +430,14 @@ fn decode_rejects_superseded_version() {
     ));
 }
 
-/// The wire is gated at version 8 (the #129 mouse mask, atop the #118 marker
-/// group). Both the exported `WIRE_VERSION` constant and the byte the encoder
-/// emits must read 8 — the value the WASM decoder's `wire_version()` mirrors in
-/// lockstep (ADR-0008), so a drift here trips before it can desync a binding.
+/// The wire is gated at version 9 (the #149 alt-screen flag, atop the #129 mouse
+/// mask and #118 marker group). Both the exported `WIRE_VERSION` constant and the
+/// byte the encoder emits must read 9 — the value the WASM decoder's
+/// `wire_version()` mirrors in lockstep (ADR-0008), so a drift here trips before
+/// it can desync a binding.
 #[test]
-fn wire_version_is_eight() {
-    assert_eq!(justerm_core::WIRE_VERSION, 8);
+fn wire_version_is_nine() {
+    assert_eq!(justerm_core::WIRE_VERSION, 9);
     let mut term = Engine::new(1, 1);
     term.feed(b"x");
     let bytes = encode(&term.frame());
@@ -424,6 +464,7 @@ fn round_trip_grapheme_side_table() {
         display_offset: 0,
         scrollback_len: 0,
         mouse_events: Default::default(),
+        alt_screen: false,
         scroll: None,
         spans: vec![Span {
             line: 0,
@@ -459,6 +500,7 @@ fn cell_record_is_fixed_18_bytes() {
         display_offset: 0,
         scrollback_len: 0,
         mouse_events: Default::default(),
+        alt_screen: false,
         scroll: None,
         spans: vec![Span {
             line: 0,
@@ -493,6 +535,7 @@ fn round_trip_scroll_op() {
         display_offset: 0,
         scrollback_len: 0,
         mouse_events: Default::default(),
+        alt_screen: false,
         scroll: Some(ScrollOp {
             top: 0,
             bottom: 23,
@@ -521,6 +564,7 @@ fn round_trip_full_frame_kind() {
         display_offset: 0,
         scrollback_len: 0,
         mouse_events: Default::default(),
+        alt_screen: false,
         scroll: None,
         spans: vec![],
         side_table: vec![],
@@ -765,6 +809,7 @@ fn round_trip_full_frame_with_cells() {
         display_offset: 0,
         scrollback_len: 0,
         mouse_events: Default::default(),
+        alt_screen: false,
         scroll: None,
         spans: vec![row(0), row(1)],
         side_table: vec![],
@@ -790,6 +835,7 @@ fn round_trip_negative_scroll_count() {
         display_offset: 0,
         scrollback_len: 0,
         mouse_events: Default::default(),
+        alt_screen: false,
         scroll: Some(ScrollOp {
             top: 2,
             bottom: 23,

@@ -132,12 +132,21 @@ Single-context — one `CONTEXT.md` + `docs/adr/` at the repo root. See `docs/ag
 
 CI 의 `supply-chain` 게이트는 **just-shield**(같은 소유자=first-party, SHA 핀 된 GitHub Actions 공급망 스캐너; 소스는 형제 repo `../just-shield`)로 워크플로를 `scan --strict` 한다. *결정*은 ADR-0006, *운영*(로컬 재현·R1~R10 규칙 해독·실패 대처)은 `docs/agents/supply-chain.md`.
 
-## justerm-web 슬라이스 작업 방식
+## 작업 flow (core·wasm·web 공통 — "그 flow")
 
-`justerm-web/` 의 슬라이스(Epic #103 의 S1–S16)는 이 흐름으로 짠다 — S8(#109 selection)에서 확립, 이후 슬라이스도 동일 적용:
+**이건 `justerm-web` 전용이 아니다.** core(justerm-core)·wasm(justerm-wasm-decode)·web(justerm-web) 어느 크레이트든 *substantive 변경*이면 이 6단계로 짠다. 단계를 *생략*하려면 (건너뛰는 게 아니라) *왜 이 변경엔 해당 없는지를 명시*한다 — 유형이 다르면 *어느 참조를 보느냐*가 달라질 뿐, "본다·비교한다·검증한다"는 안 바뀐다. (web 슬라이스는 S8/#109 에서 이 형태로 확립됨.)
 
-1. **xterm.js 실측 대조 먼저.** 대응 기능의 xterm 소스를 `gh api repos/xtermjs/xterm.js/contents/<path> --jq .content | base64 -d` 로 *통째* 받아 grep/sed 로 읽는다(WebFetch 금지 — 핵심규칙과 동일). 모드명·상수(예: drag-scroll 50px/15, highlightLimit 1000)·숨은 동작을 추측 말고 실코드로 박는다.
-2. **"모델=core, 구동=web" 경계를 코드로 가른다.** frame 모드에서 web 은 엔진을 *안 돌린다* — 상태·텍스트·검색·word경계는 core 가, web 은 명령을 *보내고*(write seam) 프레임 overlay 를 *그린다*. web 은 scrollback 셀이 없어 계산할 수도 없다(=경계의 물리적 강제). write seam 은 `FrameSource`(read)의 형제(`SelectionPort`/`SearchPort`…), 쿼리는 `Promise`(IPC 왕복).
-3. **순수 로직을 `/tdd` 로.** 컨트롤러는 DOM/GPU/IPC **0 의존** — 모든 부수효과(port·clock/`tick()`·clipboard·scroll)를 주입 seam 으로 받고 `MouseEventLike` 같은 *구조적* 타입으로 단언한다(실 DOM 이벤트가 그대로 만족). RED→GREEN 수직 슬라이스 한 번에 하나, 증분마다 `pnpm typecheck` + 전체 vitest. 공개 표면은 `src/index.ts` 로 내보낸다.
-4. **`pnpm demo` spike 로 실브라우저 검증.** 데모의 *throwaway* 가짜 백엔드에 기능을 얹어 손으로 만진다 — 단위 테스트가 못 잡는 DPR·좌표·렌더 버그를 잡는다(S8 에서 cellSize(버퍼px) vs CSS px 오프셋을 이렇게 발견). 캔버스는 버퍼=CSS×DPR, geometry 는 화면 박스에서 역산(`rect.h/ROWS`).
-5. **커밋/PR/머지.** 브랜치 → `feat(justerm-web): … (#issue)`(Co-Authored-By 금지) → squash PR(`Closes #issue`) → `test`/`wasm` CI 그린 확인.
+1. **참조·선례 실측 대조 먼저 (추측 금지, 변경 유형으로 라우팅).** `gh api …/contents/<path> --jq .content | base64 -d` 로 *통째* 받아 grep/sed 로 실코드를 읽는다(WebFetch 금지). 상수·모드명·숨은동작을 기억이 아니라 실코드/선례로 박는다.
+   - **web 기능** → **xterm.js 실소스**(`repos/xtermjs/xterm.js`). 예: drag-scroll 50px/15, highlightLimit 1000, `_charsToConsume`.
+   - **core VT-semantics** → **xterm/alacritty 실소스** + *이 repo 형제 구현*(`docs/architecture.md` §"Hidden VT state" + search/selection 셀-walk). 참조가 추적하는 *숨은 상태*를 먼저 열거(pending-wrap·wide-char spacer·BCE 류).
+   - **wire/포맷·좌표계·API 모양** → *이 repo 형제 필드/선례*(#129 mouse_events·#112 scroll·#108 overlay 가 struct→encode→decode→Flat→getter→types.ts 를 어떻게 touch 했나) + **ADR**(0013/0014 = 헤더에 뷰포트 상태 싣기, 0008 = decode 경계). 새 wire 필드는 *가장 최근 형제를 그대로 미러*한다.
+2. **경계를 코드로 가른다 (ADR-0017: 메커니즘 core, 정책 소비처).** 기능의 메커니즘이 ①VT-파싱이거나 ②*버퍼 전체*가 필요하면 **core**; 정책(query·regex·palette·announce 정책)은 소비처가 주입. web 은 frame 모드에서 엔진을 *안 돌린다* — 상태·텍스트·word경계는 core 가, web 은 *명령을 보내고*(write seam = `FrameSource` 의 형제 `SelectionPort`/`SearchPort`…, 쿼리는 `Promise` IPC) 프레임 overlay 를 *그린다*(scrollback 셀이 없어 계산 불가 = 경계의 물리적 강제).
+3. **순수 로직을 `/tdd` 로 (RED→GREEN 수직, 한 번에 하나).** 부수효과(port·clock/`tick()`·clipboard·scroll·DOM)는 *주입 seam* 으로 받고 `MouseEventLike` 같은 *구조적* 타입으로 단언(실 DOM/이벤트가 그대로 만족). web 컨트롤러는 DOM/GPU/IPC **0 의존**, 공개표면은 `src/index.ts`. *wire 필드처럼 컴파일이 완전성을 강제*하는 변경은 엄격 RED 가 어색하니 round-trip 테스트가 그 자리를 대신하되, **테스트가 impl 을 뒤따르지 않게** 새 동작 테스트는 먼저 쓴다.
+4. **동작 증명 — 가짜 아닌 real 왕복(DoD ④).** fake 백엔드/데모는 feel용 스모크일 뿐 *증명 아님*. 유형별 real:
+   - **web** → `pnpm demo` 실브라우저(DPR·좌표·렌더 버그) + 필요시 실 스크린리더/HITL. (캔버스 버퍼=CSS×DPR, geometry 는 화면 박스 역산 `rect.h/ROWS`.)
+   - **core/wasm** → `encode→decode` 왕복(ADR-0005)·`vttest`·**실 PTY 캡처**(사용자 RHEL VM, 메모리 참조) 로 가정 교차검증.
+5. **Adversarial completeness 패스 (subagent 2렌즈) — 성질로 판단.** 변경이 *내 숨은상태 enumeration 이 불완전할 수 있는* 성질(엣지/상태 다수, VT-semantics, 상호작용)이면 **필수**: 독립 비평가를 *서로 다른 렌즈*(① 이 repo 형제 ② 참조구현 xterm/alacritty)로 병렬 → 갭 surfacing 또는 *수렴 증명*. 반대로 *닫힌 표면*(컴파일러+round-trip 이 완전성을 exhaustive 하게 게이트하는 순수 기계적 변경)이면 생략 가능하나 **그 판단을 명시 기록**(생략 자체가 침묵 갭이 되지 않게). "web 이냐 core 냐"가 아니라 *enumeration 리스크가 있냐* 로 건다 — demo/spike 가 갭을 *연달아* 잡으면 그게 트리거.
+6. **게이트 & PR/머지.** 크레이트별 게이트 *전부*(사각 포함):
+   - **core/wasm** → `cargo test --workspace` + `cargo fmt --all --check` + `cargo clippy --workspace --all-targets` + `cargo check --manifest-path fuzz/Cargo.toml`(워크스페이스 밖) + `cargo build -p justerm-wasm-decode --tests --target wasm32-unknown-unknown`(wasm32-only `web.rs` 는 host 에서 0컴파일 — *런타임 단언*은 브라우저 CI 에서만; 버전-핀 테스트를 host·wasm 양쪽 갱신).
+   - **web** → `pnpm typecheck` + 전체 vitest + `pnpm demo`.
+   - 브랜치 → `feat(<scope>): … (#issue)`(Co-Authored-By 금지) → squash PR(`Closes #issue`) → `test`/`wasm` CI 그린 확인.

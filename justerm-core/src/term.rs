@@ -534,6 +534,9 @@ impl Term {
             // the app wants, derived from the protocol by the single source
             // `encode_mouse` shares. The consumer routes app-vs-local on it.
             mouse_events: self.mouse_protocol.wanted_events(),
+            // Alt-screen flag (#149): buffer-global state the consumer can't
+            // derive from viewport damage; the a11y announce policy gates on it.
+            alt_screen: self.on_alt,
             scroll: self.scroll_delta(),
             spans,
             side_table,
