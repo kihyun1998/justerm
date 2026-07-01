@@ -20,6 +20,7 @@ import {
   LinkController,
   MarkerKind,
   Scrollbar,
+  ScreenReaderState,
   SearchController,
   SelectionController,
   StubFrameSource,
@@ -79,7 +80,12 @@ let displayOffset = 0;
 // and announces new output via aria-live. Turn on a screen reader (NVDA/VO) to
 // hear appended rows; Tab into the hidden list to walk rows. Boundary focus
 // scrolls the (demo) backend via onScroll.
+// #161: one SR-active gate shared by the output announce (#119) and the command
+// announce (#160), so F5 toggles both. Defaults active; a real host would set it
+// from its platform screen-reader detection.
+const srState = new ScreenReaderState();
 const a11y = new Accessibility(document, renderer.cellPalette, renderer.cellFlags, {
+  screenReaderState: srState,
   onScroll: (lines) => {
     displayOffset = Math.min(Math.max(displayOffset - lines, 0), maxOffset());
     render();
@@ -145,16 +151,19 @@ const cmdSignal: SignalSink = {
     beep(220); // low tone = failure
   },
 };
+// #161: gate both sinks on the shared SR-active state (F5). While inactive the
+// announce + earcon no-op, but cmdCtrl still tracks the finished mark (no backlog
+// replay when SR flips back on).
 const cmdCtrl = new CommandAnnounceController(
-  {
+  srState.gateLive({
     announce: (text) => {
       cmdLive.textContent = text;
     },
     clear: () => {
       cmdLive.textContent = "";
     },
-  },
-  cmdSignal,
+  }),
+  srState.gateSignal(cmdSignal),
 );
 let nextMarkId = 1;
 let commandMarks: number[] = [];
@@ -182,6 +191,14 @@ window.addEventListener("keydown", (e) => {
     commandMarks = [nextMarkId++, ROWS - 1, MarkerKind.CommandFinished, 1, exit];
     console.log(`[demo] simulated command finish, exit ${exit}`);
     render({ scrollCount: 0 }); // a Partial frame carries the mark → cmdCtrl announces
+    return;
+  }
+  if (e.key === "F5") {
+    e.preventDefault();
+    srState.setActive(!srState.isActive());
+    console.log(
+      `[demo] screenReaderActive = ${srState.isActive()} (announce/earcon ${srState.isActive() ? "on" : "SUPPRESSED"})`,
+    );
     return;
   }
   // Forward printable keystrokes for echo dedup (this demo doesn't echo, so it's

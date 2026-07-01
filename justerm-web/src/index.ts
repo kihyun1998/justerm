@@ -62,6 +62,10 @@ export type { SignalSink } from "./command-announce";
 // Markers (id/row/kind/exit). Shared by command announce, decorations, nav.
 export { MarkerKind, readMarkers } from "./markers";
 export type { Marker } from "./markers";
+// Screen-reader-active gate (#161) — the host injects SR presence (a browser
+// can't detect it); while inactive, the a11y announce/signal sinks no-op. Share
+// one instance across #119 + #160 so a single toggle governs both.
+export { ScreenReaderState } from "./screen-reader";
 // DOM glue: hidden row tree + aria-live sinks + a CellMirror-backed adapter the
 // consumer mounts beside the canvas and feeds frames (verified in the demo).
 export { Accessibility } from "./accessibility-dom";

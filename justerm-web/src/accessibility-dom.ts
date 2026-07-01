@@ -11,6 +11,7 @@
 import { AccessibilityController } from "./accessibility";
 import type { A11yTreeSink, LiveRegionSink } from "./accessibility";
 import { CellMirror } from "./cell-mirror";
+import { ScreenReaderState } from "./screen-reader";
 import type { FlagBits } from "./render-core";
 import type { DecodedFrame } from "./types";
 import type { Palette } from "justerm-wasm-decode/colors.js";
@@ -131,19 +132,30 @@ export class Accessibility {
   private cols = 0;
   private rows = 0;
 
+  private readonly srState: ScreenReaderState;
+
   constructor(
     doc: Document,
     private readonly palette: Palette,
     private readonly flagBits: FlagBits,
-    opts: { onScroll?: (lines: number) => void } = {},
+    opts: {
+      onScroll?: (lines: number) => void;
+      /** Shared SR-active gate (#161). Pass the same instance used to gate the
+       * command announce (#160) so one host toggle governs both. Defaults to a
+       * fresh, active gate (announce on). */
+      screenReaderState?: ScreenReaderState;
+    } = {},
   ) {
+    this.srState = opts.screenReaderState ?? new ScreenReaderState();
     this.tree = new DomA11yTree(doc, (pos, fromInner) =>
       this.controller.onBoundaryFocus(pos, fromInner),
     );
     this.live = new DomLiveRegion(doc);
     this.controller = new AccessibilityController({
       tree: this.tree,
-      live: this.live,
+      // Gate the live announce on SR-active (#161); the row tree keeps mirroring
+      // (review DOM is harmless unread and rebuilds on the next frame).
+      live: this.srState.gateLive(this.live),
       onScroll: opts.onScroll,
     });
     this.root = doc.createElement("div");
@@ -166,6 +178,14 @@ export class Accessibility {
     // scrollbackLen / scroll op / altScreen #149) — the controller suppresses
     // announce on the alt screen.
     this.controller.onFrame(frame, rows);
+  }
+
+  /** Set whether a screen reader is active (#161) — the host injects its own SR
+   * detection (a browser can't detect one). While inactive, output announces are
+   * suppressed; the row tree keeps mirroring. Share the gate with the command
+   * announce (#160) via the `screenReaderState` constructor option. */
+  setScreenReaderActive(active: boolean): void {
+    this.srState.setActive(active);
   }
 
   /** A key was typed (for echo dedup) — the consumer forwards its input here. */
