@@ -81,7 +81,7 @@ let displayOffset = 0;
 // hear appended rows; Tab into the hidden list to walk rows. Boundary focus
 // scrolls the (demo) backend via onScroll.
 // #161: one SR-active gate shared by the output announce (#119) and the command
-// announce (#160), so F5 toggles both. Defaults active; a real host would set it
+// announce (#160), so the Screen reader button toggles both. Defaults active; a real host would set it
 // from its platform screen-reader detection.
 const srState = new ScreenReaderState();
 const a11y = new Accessibility(document, renderer.cellPalette, renderer.cellFlags, {
@@ -94,13 +94,13 @@ const a11y = new Accessibility(document, renderer.cellPalette, renderer.cellFlag
 document.body.appendChild(a11y.root);
 canvas.addEventListener("blur", () => a11y.onBlur());
 
-// S14/#149 end-to-end spike: F2 toggles the alt-screen flag on emitted frames.
+// S14/#149 end-to-end spike: the Alt screen button toggles the flag on emitted frames.
 // With it ON, the controller must stop announcing new output (a TUI repaint isn't
 // "new output") while the hidden row tree keeps mirroring — the alt-screen bit
 // (#149 wire v9) driving the announce policy (#119), assembled.
 let altScreen = false;
 
-// #150 accessible view: F3 summons the whole-log document (a real backend runs
+// #150 accessible view: the Accessible view button summons the whole-log document (a real backend runs
 // core `accessible_text`; the demo joins its log), Escape closes + returns focus.
 canvas.tabIndex = 0; // make the canvas a focus target for restore
 const accessiblePort: AccessiblePort = { text: async () => log.join("\n") };
@@ -111,7 +111,7 @@ const viewCtrl = new AccessibleViewController(accessiblePort, accessibleView, {
 });
 
 // #160 command announce: an OSC-133 CommandFinished mark on a frame → a screen-
-// reader announce + an exit-driven success/fail earcon. F4 simulates a command
+// reader announce + an exit-driven success/fail earcon. The Finish command button simulates a command
 // finishing (toggling exit 0/1) so a real SR reads the outcome and the tones
 // distinguish success from failure by ear. The mark rides `markerPositions` (the
 // #159 wire); in a real backend it comes from core parsing OSC 133.
@@ -151,7 +151,7 @@ const cmdSignal: SignalSink = {
     beep(220); // low tone = failure
   },
 };
-// #161: gate both sinks on the shared SR-active state (F5). While inactive the
+// #161: gate both sinks on the shared SR-active state (Screen reader button). While inactive the
 // announce + earcon no-op, but cmdCtrl still tracks the finished mark (no backlog
 // replay when SR flips back on).
 const cmdCtrl = new CommandAnnounceController(
@@ -169,40 +169,81 @@ let nextMarkId = 1;
 let commandMarks: number[] = [];
 let cmdFailToggle = false;
 
+// --- Demo control bar: clickable, labelled buttons instead of F-key shortcuts
+// (discoverable, show current state, and no F5=refresh footgun). Each action is a
+// named function; toggles reflect their state in the button label. ---
+function toggleAltScreen(): void {
+  altScreen = !altScreen;
+  altBtn.textContent = `Alt screen: ${altScreen ? "ON" : "OFF"}`;
+  console.log(`[demo] altScreen = ${altScreen} (announce ${altScreen ? "SUPPRESSED" : "on"})`);
+}
+function summonAccessibleView(): void {
+  // whole-buffer document for the screen reader; the query can reject (IPC).
+  viewCtrl.summon().catch((err) => console.error("[demo] accessible view failed", err));
+}
+function finishCommand(): void {
+  // Simulate a command finishing, alternating success/failure. A stride-5 marker
+  // record `(id, row, kind, exitPresent, exitBits)` rides the next frame.
+  const exit = cmdFailToggle ? 1 : 0;
+  cmdFailToggle = !cmdFailToggle;
+  commandMarks = [nextMarkId++, ROWS - 1, MarkerKind.CommandFinished, 1, exit];
+  console.log(`[demo] simulated command finish, exit ${exit}`);
+  render({ scrollCount: 0 }); // a Partial frame carries the mark → cmdCtrl announces
+  cmdBtn.textContent = `Finish command (next exit ${cmdFailToggle ? 1 : 0})`;
+}
+function toggleScreenReader(): void {
+  srState.setActive(!srState.isActive());
+  srBtn.textContent = `Screen reader: ${srState.isActive() ? "ON" : "OFF"}`;
+  console.log(
+    `[demo] screenReaderActive = ${srState.isActive()} (announce/earcon ${srState.isActive() ? "on" : "SUPPRESSED"})`,
+  );
+}
+
+const controls = document.createElement("div");
+Object.assign(controls.style, {
+  position: "fixed",
+  bottom: "0",
+  left: "0",
+  right: "0",
+  display: "flex",
+  gap: "8px",
+  alignItems: "center",
+  padding: "6px 10px",
+  background: "#181825",
+  borderTop: "1px solid #313244",
+  font: "12px system-ui, sans-serif",
+  zIndex: "50",
+});
+function demoButton(label: string, onClick: () => void): HTMLButtonElement {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.textContent = label;
+  Object.assign(b.style, {
+    cursor: "pointer",
+    padding: "4px 10px",
+    background: "#313244",
+    color: "#cdd6f4",
+    border: "1px solid #45475a",
+    borderRadius: "4px",
+    font: "inherit",
+  });
+  // Return focus to the canvas after a click so keyboard interaction continues.
+  b.addEventListener("click", () => {
+    onClick();
+    canvas.focus();
+  });
+  return b;
+}
+const viewBtn = demoButton("Accessible view (log)", summonAccessibleView);
+const altBtn = demoButton("Alt screen: OFF", toggleAltScreen);
+const cmdBtn = demoButton("Finish command (next exit 0)", finishCommand);
+const srBtn = demoButton("Screen reader: ON", toggleScreenReader);
+controls.append(viewBtn, altBtn, cmdBtn, srBtn);
+document.body.appendChild(controls);
+
+// Forward printable keystrokes for echo dedup (this demo doesn't echo, so it's a
+// no-op here — the dedup is unit-tested; this wires the seam).
 window.addEventListener("keydown", (e) => {
-  if (e.key === "F2") {
-    e.preventDefault();
-    altScreen = !altScreen;
-    console.log(`[demo] altScreen = ${altScreen} (announce ${altScreen ? "SUPPRESSED" : "on"})`);
-    return;
-  }
-  if (e.key === "F3") {
-    e.preventDefault();
-    // whole-buffer document for the screen reader; the query can reject (IPC).
-    viewCtrl.summon().catch((err) => console.error("[demo] accessible view failed", err));
-    return;
-  }
-  if (e.key === "F4") {
-    e.preventDefault();
-    // Simulate a command finishing, alternating success/failure. A stride-5
-    // marker record `(id, row, kind, exitPresent, exitBits)` on the next frame.
-    const exit = cmdFailToggle ? 1 : 0;
-    cmdFailToggle = !cmdFailToggle;
-    commandMarks = [nextMarkId++, ROWS - 1, MarkerKind.CommandFinished, 1, exit];
-    console.log(`[demo] simulated command finish, exit ${exit}`);
-    render({ scrollCount: 0 }); // a Partial frame carries the mark → cmdCtrl announces
-    return;
-  }
-  if (e.key === "F5") {
-    e.preventDefault();
-    srState.setActive(!srState.isActive());
-    console.log(
-      `[demo] screenReaderActive = ${srState.isActive()} (announce/earcon ${srState.isActive() ? "on" : "SUPPRESSED"})`,
-    );
-    return;
-  }
-  // Forward printable keystrokes for echo dedup (this demo doesn't echo, so it's
-  // a no-op here — the dedup is unit-tested; this wires the seam).
   if (e.key.length === 1) a11y.onKey(e.key);
 });
 
@@ -246,10 +287,10 @@ function viewportFrame(out?: { scrollCount: number }): DecodedFrame {
     sideTable: [],
     displayOffset,
     scrollbackLen: maxOffset(),
-    altScreen, // #149: drives the a11y announce policy (F2 toggles)
+    altScreen, // #149: drives the a11y announce policy (Alt screen button)
     selectionSpans: engine.range(), // S8: the live selection projected onto the view
     matchSpans: searchEngine.matchSpans(top, ROWS), // S9: search matches on the view
-    markerPositions: commandMarks, // #160: OSC 133 command marks (F4 simulates)
+    markerPositions: commandMarks, // #160: OSC 133 command marks (Finish command button)
     ...(out && out.scrollCount > 0
       ? { hasScroll: true, scrollTop: 0, scrollBottom: ROWS - 1, scrollCount: out.scrollCount }
       : {}),
