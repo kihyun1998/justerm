@@ -6,7 +6,9 @@
 //! `scroll_up_relative`/`scroll_down_relative` (selection + vi cursor) and
 //! xterm.js marker `onInsert`/`onDelete`.
 
-use justerm_core::{Engine, MarkerKind, MarkerPosition, SelectionSpan, SelectionType, Side};
+use justerm_core::{
+    Engine, MarkerKind, MarkerPosition, SelectionSpan, SelectionType, Side, TermEvent,
+};
 
 /// Fill each of the `rows` screen rows with a distinct letter, cursor left at the
 /// last row. (5 rows → a,b,c,d,e on rows 0..4.)
@@ -104,6 +106,33 @@ fn alt_screen_region_edit_leaves_primary_marker() {
     t.feed(b"\x1b[1S\x1b[1T\x1b[1L\x1b[1M"); // SU/SD/IL/DL on the alt screen
     t.feed(b"\x1b[?1049l"); // leave alt
     assert_eq!(t.frame().overlay.markers, vec![marker(id, 2)]);
+}
+
+/// #177 S0 (per-buffer markers): leaving the alt screen disposes the *alt*
+/// marker list — empty while the alt guards stand, so it fires nothing today. A
+/// primary marker survives the alt enter→leave excursion, and no spurious
+/// `MarkerDisposed` is emitted. Locks in the dispose seam the alt-marker slices
+/// (#187) build on.
+#[test]
+fn alt_leave_fires_no_spurious_marker_disposal() {
+    let mut t = filled(10, 5);
+    let id = t.add_marker(2); // primary marker on "c"
+    t.drain_events(); // clear setup events
+
+    t.feed(b"\x1b[?1049h"); // enter alt
+    t.feed(b"\x1b[?1049l"); // leave alt → drains the (empty) alt marker list
+
+    let disposed: Vec<_> = t
+        .drain_events()
+        .into_iter()
+        .filter(|e| matches!(e, TermEvent::MarkerDisposed(_)))
+        .collect();
+    assert_eq!(disposed, vec![], "empty alt list → no disposal event");
+    assert_eq!(
+        t.frame().overlay.markers,
+        vec![marker(id, 2)],
+        "primary marker survives the excursion"
+    );
 }
 
 // ---- selection (the identical pre-existing gap) ----------------------------
