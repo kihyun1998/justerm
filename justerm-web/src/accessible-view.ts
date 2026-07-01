@@ -11,6 +11,8 @@
  * is physically enforced.
  */
 
+import type { NavView } from "./command-nav";
+
 /**
  * The read-query seam to the engine's full-buffer text (core
  * `Engine::accessible_text`). Frame mode wires it to the backend over IPC, like
@@ -84,9 +86,13 @@ export class StubAccessiblePort implements AccessiblePort {
  * overlay a screen reader navigates as a document (arrow keys, copy). Thin DOM —
  * verified in the demo + a real screen reader, not vitest.
  */
-export class DomAccessibleView implements AccessibleView {
+export class DomAccessibleView implements AccessibleView, NavView {
   /** Mount this over the terminal; the controller drives show/hide. */
   readonly el: HTMLElement;
+
+  /** One focusable element per document line, so command nav (#166) can reveal +
+   * focus a specific line (VSCode's `setPosition`). Rebuilt on every `show`. */
+  private lineEls: HTMLElement[] = [];
 
   constructor(doc: Document, onEscape?: () => void) {
     this.el = doc.createElement("pre");
@@ -114,13 +120,34 @@ export class DomAccessibleView implements AccessibleView {
   }
 
   show(text: string): void {
-    this.el.textContent = text;
+    // Render one focusable <div> per document line (not a flat textContent) so
+    // command nav can reveal + focus a line. `pre-wrap` on the container still
+    // wraps long lines within their div, matching a document's reading flow.
+    const doc = this.el.ownerDocument;
+    this.lineEls = text.split("\n").map((line) => {
+      const div = doc.createElement("div");
+      div.textContent = line;
+      div.tabIndex = -1;
+      return div;
+    });
+    this.el.replaceChildren(...this.lineEls);
     this.el.style.display = "block";
     this.el.focus();
   }
 
   hide(): void {
     this.el.style.display = "none";
-    this.el.textContent = "";
+    this.el.replaceChildren();
+    this.lineEls = [];
+  }
+
+  /** Scroll a document line into view and move focus to it (#166) — the SR reads
+   * the announced command; this moves the visual + focus cursor there so the user
+   * can read on from that command. Out-of-range lines are a no-op. */
+  reveal(line: number): void {
+    const el = this.lineEls[line];
+    if (!el) return;
+    el.scrollIntoView({ block: "center" });
+    el.focus();
   }
 }

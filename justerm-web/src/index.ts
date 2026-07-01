@@ -63,6 +63,11 @@ export type {
   OutcomePolicy,
   SignalSink,
 } from "./command-announce";
+// Command navigation (#166) — prompt-to-prompt walk over the whole command
+// history (core `command_lines` query) in the accessible view: reveal + announce
+// each command + reuse #160's success/fail signal (VSCode navigateToCommand).
+export { CommandNavController, StubCommandNavPort } from "./command-nav";
+export type { CommandInfo, CommandNavPort, NavView } from "./command-nav";
 // Markers (#118/#159) — decode a frame's stride-5 markerPositions into typed
 // Markers (id/row/kind/exit). Shared by command announce, decorations, nav.
 export { MarkerKind, readMarkers } from "./markers";

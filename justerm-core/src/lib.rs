@@ -45,7 +45,7 @@ pub use serialize::{
     Span, WIRE_VERSION, decode, encode, encode_cell_record, encode_color,
 };
 
-pub use term::Term;
+pub use term::{CommandLine, Term};
 
 use vte::Parser;
 
@@ -382,5 +382,16 @@ impl Engine {
     /// the `133;A/B/C/D` sequences and anchors the marks.
     pub fn command_marks(&self) -> Vec<(MarkerId, usize, MarkerKind)> {
         self.term.command_marks()
+    }
+
+    /// The executed shell commands recovered from OSC-133 marks, in buffer order
+    /// (#166) — the query behind screen-reader command navigation. Each
+    /// [`CommandLine`] carries the typed command text (prompt/output excluded via
+    /// the captured columns), its jump line (CommandStart), and the exit code.
+    /// This is a full-buffer query, wired to the frame-mode consumer over IPC like
+    /// [`Engine::accessible_text`]; the web side has no scrollback cells to derive
+    /// it (ADR-0017 — buffer-wide text is core's).
+    pub fn command_lines(&self) -> Vec<CommandLine> {
+        self.term.command_lines()
     }
 }

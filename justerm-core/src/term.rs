@@ -274,9 +274,33 @@ const MARKER_NONE: MarkerId = MarkerId(u32::MAX);
 struct Marker {
     id: MarkerId,
     line: usize,
+    /// The cursor column at emit time (#166). Meaningful for OSC-133 command
+    /// marks — CommandStart(B)/OutputStart(C) columns bound the *typed command*
+    /// (excluding the prompt), like VSCode's `commandStartX`/`commandExecutedX`.
+    /// Plain `add_marker` decorations are row-granular and carry `col = 0`.
+    col: usize,
     /// Plain for a `add_marker` decoration; a command-boundary role for an
     /// OSC 133 mark (#158). All kinds share the anchor/eviction machinery.
     kind: MarkerKind,
+}
+
+/// One executed shell command recovered from OSC-133 marks (#166), for
+/// screen-reader command navigation. The consumer jumps prompt-to-prompt over
+/// these and announces `command` + a success/fail signal from `exit`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommandLine {
+    /// The command's jump anchor as a *document* line — the logical-line index of
+    /// the CommandStart(B) mark within [`Term::accessible_text`], so the consumer
+    /// reveals the right row of the accessible view (soft-wrapped rows collapse to
+    /// one logical line). This is core's analog of VSCode's
+    /// `bufferToEditorLineMapping`; the frame-mode web side has no wrap info to
+    /// map it itself.
+    pub line: usize,
+    /// The typed command text, prompt- and output-excluded (B→C columns).
+    pub command: String,
+    /// The CommandFinished(D) exit code, if the shell reported one and the
+    /// command has finished.
+    pub exit: Option<i32>,
 }
 
 /// A selection resolved to absolute-coordinate bounds, ready for text extraction
@@ -992,16 +1016,22 @@ impl Term {
             return MARKER_NONE;
         }
         let line = self.viewport_to_abs(row, 0).line;
-        self.push_marker(line, MarkerKind::Plain)
+        self.push_marker(line, 0, MarkerKind::Plain)
     }
 
-    /// Push a marker anchored at absolute `line` with `kind`, returning its id.
-    /// The shared core of `add_marker` (viewport row) and OSC-133 command marks
-    /// (cursor line) — one place owns id allocation + the `markers` list.
-    fn push_marker(&mut self, line: usize, kind: MarkerKind) -> MarkerId {
+    /// Push a marker anchored at absolute `(line, col)` with `kind`, returning its
+    /// id. The shared core of `add_marker` (viewport row, `col = 0`) and OSC-133
+    /// command marks (cursor line + column) — one place owns id allocation + the
+    /// `markers` list.
+    fn push_marker(&mut self, line: usize, col: usize, kind: MarkerKind) -> MarkerId {
         let id = MarkerId(self.next_marker_id);
         self.next_marker_id += 1;
-        self.markers.push(Marker { id, line, kind });
+        self.markers.push(Marker {
+            id,
+            line,
+            col,
+            kind,
+        });
         id
     }
 
@@ -1015,7 +1045,7 @@ impl Term {
             return;
         }
         let line = self.scrollback.len() + self.cursor.row;
-        self.push_marker(line, kind);
+        self.push_marker(line, self.cursor.col, kind);
     }
 
     /// The OSC 133 command-boundary marks in buffer order — `(id, absolute line,
@@ -1028,6 +1058,61 @@ impl Term {
             .filter(|m| m.kind != MarkerKind::Plain)
             .map(|m| (m.id, m.line, m.kind))
             .collect()
+    }
+
+    /// The executed shell commands recovered from OSC-133 marks, in buffer order
+    /// (#166) — the data behind screen-reader command navigation. Each
+    /// [`CommandLine`] pairs a CommandStart(B) with the following OutputStart(C)
+    /// to extract the *typed command* (the prompt before B and the output after C
+    /// excluded via the captured columns, VSCode `extractCommandLine` parity), and
+    /// attaches the trailing CommandFinished(D) exit. A command still being typed
+    /// (B with no C yet) is not navigable — its text has no bound — so it is
+    /// omitted until output starts.
+    pub fn command_lines(&self) -> Vec<CommandLine> {
+        let mut out: Vec<CommandLine> = Vec::new();
+        // (B line, B col) awaiting its matching C. Marks arrive in buffer order.
+        let mut pending: Option<(usize, usize)> = None;
+        for m in &self.markers {
+            match m.kind {
+                MarkerKind::CommandStart => pending = Some((m.line, m.col)),
+                MarkerKind::OutputStart => {
+                    if let Some((b_line, b_col)) = pending.take() {
+                        // Columns bound the command precisely even though output was
+                        // written after C — `extract_lines` reads current cells but
+                        // clips to `[b_col, c_col)`, excluding both prompt and output.
+                        let command = self.extract_lines(b_line, b_col, m.line, m.col);
+                        out.push(CommandLine {
+                            line: self.doc_line_of(b_line),
+                            command,
+                            exit: None,
+                        });
+                    }
+                }
+                MarkerKind::CommandFinished(exit) => {
+                    // The exit belongs to the most recent command not yet closed;
+                    // the `is_none` guard stops a stray D from clobbering a code.
+                    if let Some(last) = out.last_mut()
+                        && last.exit.is_none()
+                    {
+                        last.exit = exit;
+                    }
+                }
+                MarkerKind::Plain | MarkerKind::PromptStart => {}
+            }
+        }
+        out
+    }
+
+    /// The document (logical) line index that absolute buffer line `abs` renders
+    /// into within [`Term::accessible_text`] — the number of hard line-ends before
+    /// it (soft-wrapped rows share one logical line). Primary-screen coordinates,
+    /// matching `accessible_text`'s `start = 0` for the primary screen; command
+    /// marks are primary-only. O(abs) per call — fine for an on-demand query over
+    /// the handful of commands in a session.
+    fn doc_line_of(&self, abs: usize) -> usize {
+        (0..abs)
+            .filter(|&l| !self.abs_line(l).last().is_some_and(|c| c.is_wrapline()))
+            .count()
     }
 
     /// Remove a marker by id (#118). Disposing it fires `MarkerDisposed` so the
@@ -1560,11 +1645,12 @@ impl Term {
                     ]
                 })
                 .unwrap_or_default();
-            // Markers reflow on the same pane, by line (col 0). They ride after
-            // the selection points so each reads its own reflowed slot back from
-            // `extras` (#118).
+            // Markers reflow on the same pane by (line, col) — the column matters
+            // for OSC-133 command marks, whose B/C columns bound the extracted
+            // command text (#166). They ride after the selection points so each
+            // reads its own reflowed slot back from `extras` (#118).
             let mut pts = sel_pts.clone();
-            pts.extend(self.markers.iter().map(|m| (m.line, 0)));
+            pts.extend(self.markers.iter().map(|m| (m.line, m.col)));
 
             let primary = self.grid.take_lines();
             let r = reflow_pane(primary, scrollback, self.cursor.point(), &pts, dims);
@@ -1584,6 +1670,7 @@ impl Term {
             let marker_off = sel_pts.len();
             for (i, m) in self.markers.iter_mut().enumerate() {
                 m.line = r.extras[marker_off + i].0;
+                m.col = r.extras[marker_off + i].1;
             }
 
             let alt = self.alt_grid.take_lines();
