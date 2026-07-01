@@ -13,17 +13,19 @@ import {
   Accessibility,
   AccessibleViewController,
   BeamtermRenderer,
+  CommandAnnounceController,
   computeLinks,
   copySelection,
   DomAccessibleView,
   LinkController,
+  MarkerKind,
   Scrollbar,
   SearchController,
   SelectionController,
   StubFrameSource,
   Terminal,
 } from "../src/index";
-import type { AccessiblePort } from "../src/index";
+import type { AccessiblePort, SignalSink } from "../src/index";
 import type { CellGeometry, LogicalLine, SearchPort, SelectionPort } from "../src/index";
 import type { DecodedFrame } from "../src/types";
 import { FakeSelectionEngine } from "./fake-select";
@@ -102,6 +104,62 @@ const viewCtrl = new AccessibleViewController(accessiblePort, accessibleView, {
   restoreFocus: () => canvas.focus(),
 });
 
+// #160 command announce: an OSC-133 CommandFinished mark on a frame → a screen-
+// reader announce + an exit-driven success/fail earcon. F4 simulates a command
+// finishing (toggling exit 0/1) so a real SR reads the outcome and the tones
+// distinguish success from failure by ear. The mark rides `markerPositions` (the
+// #159 wire); in a real backend it comes from core parsing OSC 133.
+// A SEPARATE, *polite* live region (not #119's output region): VSCode speaks the
+// outcome on a polite `status()` channel that doesn't interrupt ongoing speech,
+// and sharing #119's region would let an output flush clobber the announce.
+const cmdLive = document.createElement("div");
+cmdLive.setAttribute("aria-live", "polite");
+cmdLive.setAttribute("aria-atomic", "true");
+Object.assign(cmdLive.style, {
+  position: "absolute",
+  width: "1px",
+  height: "1px",
+  overflow: "hidden",
+  clipPath: "inset(50%)",
+  whiteSpace: "nowrap",
+});
+document.body.appendChild(cmdLive);
+const audio = new AudioContext();
+function beep(freq: number): void {
+  const osc = audio.createOscillator();
+  const gain = audio.createGain();
+  osc.frequency.value = freq;
+  osc.connect(gain).connect(audio.destination);
+  gain.gain.setValueAtTime(0.1, audio.currentTime);
+  gain.gain.exponentialRampToValueAtTime(0.001, audio.currentTime + 0.15);
+  osc.start();
+  osc.stop(audio.currentTime + 0.15);
+}
+const cmdSignal: SignalSink = {
+  commandSucceeded: () => {
+    console.log("[demo] signal: command succeeded");
+    beep(880); // high tone = success
+  },
+  commandFailed: () => {
+    console.log("[demo] signal: command failed");
+    beep(220); // low tone = failure
+  },
+};
+const cmdCtrl = new CommandAnnounceController(
+  {
+    announce: (text) => {
+      cmdLive.textContent = text;
+    },
+    clear: () => {
+      cmdLive.textContent = "";
+    },
+  },
+  cmdSignal,
+);
+let nextMarkId = 1;
+let commandMarks: number[] = [];
+let cmdFailToggle = false;
+
 window.addEventListener("keydown", (e) => {
   if (e.key === "F2") {
     e.preventDefault();
@@ -113,6 +171,17 @@ window.addEventListener("keydown", (e) => {
     e.preventDefault();
     // whole-buffer document for the screen reader; the query can reject (IPC).
     viewCtrl.summon().catch((err) => console.error("[demo] accessible view failed", err));
+    return;
+  }
+  if (e.key === "F4") {
+    e.preventDefault();
+    // Simulate a command finishing, alternating success/failure. A stride-5
+    // marker record `(id, row, kind, exitPresent, exitBits)` on the next frame.
+    const exit = cmdFailToggle ? 1 : 0;
+    cmdFailToggle = !cmdFailToggle;
+    commandMarks = [nextMarkId++, ROWS - 1, MarkerKind.CommandFinished, 1, exit];
+    console.log(`[demo] simulated command finish, exit ${exit}`);
+    render({ scrollCount: 0 }); // a Partial frame carries the mark → cmdCtrl announces
     return;
   }
   // Forward printable keystrokes for echo dedup (this demo doesn't echo, so it's
@@ -163,6 +232,7 @@ function viewportFrame(out?: { scrollCount: number }): DecodedFrame {
     altScreen, // #149: drives the a11y announce policy (F2 toggles)
     selectionSpans: engine.range(), // S8: the live selection projected onto the view
     matchSpans: searchEngine.matchSpans(top, ROWS), // S9: search matches on the view
+    markerPositions: commandMarks, // #160: OSC 133 command marks (F4 simulates)
     ...(out && out.scrollCount > 0
       ? { hasScroll: true, scrollTop: 0, scrollBottom: ROWS - 1, scrollCount: out.scrollCount }
       : {}),
@@ -180,6 +250,7 @@ function render(out?: { scrollCount: number }): void {
   const frame = viewportFrame(out);
   source.push(frame);
   a11y.onFrame(frame); // S14: mirror the viewport + announce new output
+  cmdCtrl.onFrame(frame); // #160: announce + signal a finished command
   bar.update({ displayOffset, scrollbackLen: maxOffset(), rows: ROWS });
   updateLinks();
 }

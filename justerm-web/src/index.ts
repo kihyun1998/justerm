@@ -52,6 +52,16 @@ export {
   StubAccessiblePort,
 } from "./accessible-view";
 export type { AccessiblePort, AccessibleView } from "./accessible-view";
+// Command announce (#160) — OSC 133 CommandFinished marks → screen-reader
+// announce + exit-driven success/fail signal (VSCode terminalCommand* analog).
+// Pure logic; the consumer injects the aria-live + signal sinks. Prompt-to-prompt
+// navigation is a separate slice (#166).
+export { CommandAnnounceController } from "./command-announce";
+export type { SignalSink } from "./command-announce";
+// Markers (#118/#159) — decode a frame's stride-5 markerPositions into typed
+// Markers (id/row/kind/exit). Shared by command announce, decorations, nav.
+export { MarkerKind, readMarkers } from "./markers";
+export type { Marker } from "./markers";
 // DOM glue: hidden row tree + aria-live sinks + a CellMirror-backed adapter the
 // consumer mounts beside the canvas and feeds frames (verified in the demo).
 export { Accessibility } from "./accessibility-dom";
