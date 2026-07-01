@@ -1246,35 +1246,88 @@ impl Term {
 
     /// Rotate the selection within an in-screen scroll of absolute lines
     /// `[top, bottom]`. `up` = content scrolled up (a line dropped at `top`);
-    /// otherwise down (dropped at `bottom`). Lines outside the region are
-    /// untouched; an endpoint on the dropped line scrolls out, so the whole
-    /// selection is cleared rather than copy stale content.
+    /// otherwise down (dropped at `bottom`). Called once per scrolled line (delta
+    /// 1) by linefeed/RI/SU/SD/IL/DL.
+    ///
+    /// Mirrors alacritty `Selection::rotate`: an endpoint pushed past the region
+    /// edge is *clamped* to that edge (upper → `top`/col 0/Left, lower →
+    /// `bottom`/last col/Right; columns/side kept for Block), preserving the part
+    /// of the selection still in the buffer. The whole selection clears only on a
+    /// true *overtake* — the upper endpoint crossing the bottom while the lower
+    /// stays inside, or the lower falling above the upper (a selection wholly on
+    /// the dropped line). (#174: this replaced a policy that cleared on any
+    /// endpoint touching the dropped edge, dropping still-valid content.)
     fn selection_rotate_region(&mut self, top: usize, bottom: usize, up: bool) {
-        let rotate = |line: usize| -> Option<usize> {
+        let (ty, anchor, focus) = match self.selection.as_ref() {
+            Some(s) => (s.ty, s.anchor, s.focus),
+            None => return,
+        };
+        let last_col = self.grid.cols().saturating_sub(1);
+        // Order the endpoints by buffer position; the upper (`start`) clamps to
+        // the region top, the lower (`end`) to the bottom. Remember which is the
+        // anchor so the result writes back to the right field.
+        let anchor_is_start = anchor.point <= focus.point;
+        let (mut start, mut end) = if anchor_is_start {
+            (anchor, focus)
+        } else {
+            (focus, anchor)
+        };
+
+        let (top_i, bottom_i) = (top as isize, bottom as isize);
+        // The endpoint's line after the one-line scroll, or `None` if it's outside
+        // the region (untouched). The dropped-edge line shifts *past* the edge (to
+        // be clamped/overtaken below), matching alacritty's `line - delta`.
+        let shift = |line: usize| -> Option<isize> {
             if line < top || line > bottom {
-                return Some(line); // outside the region — unchanged
-            }
-            if up {
-                (line != top).then(|| line - 1)
+                None
+            } else if up {
+                Some(line as isize - 1)
             } else {
-                (line != bottom).then_some(line + 1)
+                Some(line as isize + 1)
             }
         };
-        let Some((a, f)) = self
-            .selection
-            .as_ref()
-            .map(|s| (s.anchor.point.line, s.focus.point.line))
-        else {
-            return;
-        };
-        match (rotate(a), rotate(f)) {
-            (Some(al), Some(fl)) => {
-                if let Some(sel) = &mut self.selection {
-                    sel.anchor.point.line = al;
-                    sel.focus.point.line = fl;
+
+        // Upper endpoint: clamp to the region top when pushed above it; clear if it
+        // overtook the region bottom (down-scroll) while the lower stays inside.
+        if let Some(nl) = shift(start.point.line) {
+            if nl > bottom_i && (end.point.line as isize) <= bottom_i {
+                self.selection = None;
+                return;
+            }
+            if nl < top_i {
+                start.point.line = top;
+                if ty != SelectionType::Block {
+                    start.point.col = 0;
+                    start.side = Side::Left;
                 }
+            } else {
+                start.point.line = nl as usize;
             }
-            _ => self.selection = None,
+        }
+        // Lower endpoint: clear if it fell above the (rotated) upper endpoint;
+        // else clamp to the region bottom when pushed below it.
+        if let Some(nl) = shift(end.point.line) {
+            if nl < start.point.line as isize {
+                self.selection = None;
+                return;
+            }
+            if nl > bottom_i {
+                end.point.line = bottom;
+                if ty != SelectionType::Block {
+                    end.point.col = last_col;
+                    end.side = Side::Right;
+                }
+            } else {
+                end.point.line = nl as usize;
+            }
+        }
+
+        if let Some(sel) = &mut self.selection {
+            if anchor_is_start {
+                (sel.anchor, sel.focus) = (start, end);
+            } else {
+                (sel.anchor, sel.focus) = (end, start);
+            }
         }
     }
 

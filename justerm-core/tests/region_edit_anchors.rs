@@ -165,3 +165,124 @@ fn osc133_command_mark_rotates_on_insert_lines() {
     );
     assert_eq!(marks[0].kind, MarkerKind::OutputStart);
 }
+
+// ---- #174: edge-drop CLAMP (was: clear whole selection) --------------------
+// `selection_rotate_region` used to clear the entire selection when either
+// endpoint landed on the dropped edge. alacritty `Selection::rotate` instead
+// clamps the crossing endpoint to the region boundary and clears only on a true
+// overtake (a single-line selection wholly on the dropped line, or the endpoints
+// crossing). These mirror that policy.
+
+/// The motivating case: anchor ABOVE the DL region, focus ON the dropped top
+/// edge. The row above is untouched, so the still-valid part must survive — the
+/// focus collapses onto the anchor's row instead of the whole selection clearing.
+#[test]
+fn dl_clamps_when_focus_on_dropped_edge_keeps_valid_part() {
+    let mut t = filled(10, 5);
+    t.selection_begin(0, 1, Side::Left, SelectionType::Char); // anchor row0 (above region)
+    t.selection_extend(1, 3, Side::Right); // focus row1 (the dropped edge)
+    t.feed(b"\x1b[2;1H"); // cursor row1
+    t.feed(b"\x1b[1M"); // DL: region [row1,row4] up, row1 dropped
+
+    assert_eq!(
+        t.frame().overlay.selection,
+        vec![SelectionSpan {
+            row: 0,
+            left: 1,
+            right: 3
+        }],
+        "row0 part kept, not cleared"
+    );
+}
+
+/// The upper endpoint sitting on the dropped top edge of a DECSTBM region clamps
+/// to the region top (col 0), and the lower endpoint follows up — the selection
+/// survives clamped rather than clearing.
+#[test]
+fn su_clamps_upper_endpoint_to_region_top() {
+    let mut t = filled(10, 6); // rows a..f
+    t.feed(b"\x1b[2;5r"); // DECSTBM rows 2..5 (1-based) = region [row1,row4]
+    t.selection_begin(1, 2, Side::Left, SelectionType::Char); // anchor row1 = region top
+    t.selection_extend(3, 4, Side::Right); // focus row3
+    t.feed(b"\x1b[1S"); // SU: region up, row1 dropped
+
+    assert_eq!(
+        t.frame().overlay.selection,
+        vec![
+            SelectionSpan {
+                row: 1,
+                left: 0,
+                right: 9
+            }, // upper clamped to top, col 0 → full first row
+            SelectionSpan {
+                row: 2,
+                left: 0,
+                right: 4
+            },
+        ]
+    );
+}
+
+/// A single-line selection entirely on the dropped line still clears — the whole
+/// selection scrolled off (alacritty's overtake case, not a clamp).
+#[test]
+fn su_clears_single_line_selection_on_dropped_edge() {
+    let mut t = filled(10, 5);
+    t.selection_begin(0, 0, Side::Left, SelectionType::Char);
+    t.selection_extend(0, 3, Side::Right); // whole selection on row0 = dropped edge
+    t.feed(b"\x1b[1S"); // SU drops row0
+
+    assert_eq!(t.frame().overlay.selection, vec![], "wholly scrolled off");
+}
+
+/// Down-scroll (SD): the lower endpoint on the dropped bottom edge clamps to the
+/// region bottom (last col), the upper follows down. Survives clamped.
+#[test]
+fn sd_clamps_lower_endpoint_to_region_bottom() {
+    let mut t = filled(10, 5);
+    t.selection_begin(2, 1, Side::Left, SelectionType::Char); // anchor row2
+    t.selection_extend(4, 3, Side::Right); // focus row4 = bottom edge
+    t.feed(b"\x1b[1T"); // SD: region [row0,row4] down, row4 dropped
+
+    assert_eq!(
+        t.frame().overlay.selection,
+        vec![
+            SelectionSpan {
+                row: 3,
+                left: 1,
+                right: 9
+            },
+            SelectionSpan {
+                row: 4,
+                left: 0,
+                right: 9
+            }, // lower clamped to bottom, last col
+        ]
+    );
+}
+
+/// A Block (rectangular) selection keeps its columns on a clamp — alacritty only
+/// resets col/side to the region edge for non-Block selections.
+#[test]
+fn su_block_selection_keeps_columns_on_clamp() {
+    let mut t = filled(10, 5);
+    t.selection_begin(0, 2, Side::Left, SelectionType::Block); // anchor row0 = dropped edge
+    t.selection_extend(2, 5, Side::Right); // focus row2
+    t.feed(b"\x1b[1S"); // SU drops row0; upper endpoint clamps to top
+
+    assert_eq!(
+        t.frame().overlay.selection,
+        vec![
+            SelectionSpan {
+                row: 0,
+                left: 2,
+                right: 5
+            }, // columns 2..5 preserved (not reset to 0)
+            SelectionSpan {
+                row: 1,
+                left: 2,
+                right: 5
+            },
+        ]
+    );
+}
