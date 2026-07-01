@@ -74,7 +74,11 @@ fit();
 const source = new StubFrameSource();
 new Terminal(source, renderer).mount();
 
-const log: string[] = [];
+// Seed a few lines so the accessible view has content immediately (an empty
+// document at summon is poor UX) and the command-nav stub's lines (0/2/4) resolve
+// to real document rows from the first frame — mirroring production, where
+// `command_lines` only ever yields document lines that exist in `accessible_text`.
+const log: string[] = Array.from({ length: 8 }, (_, i) => `seed row ${i} — select · find=Ctrl-F`);
 let displayOffset = 0;
 
 // S14 (#119): the screen-reader mirror. Mounted off-screen beside the canvas; it
