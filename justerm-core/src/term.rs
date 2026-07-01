@@ -1306,6 +1306,33 @@ impl Term {
         }
     }
 
+    /// The whole buffer as one text document (#150): scrollback + screen assembled
+    /// into logical lines (soft-wrap joined, wide-spacers skipped, trailing blanks
+    /// trimmed at the logical end) — the accessible-view a screen reader reads as
+    /// a document, distinct from the viewport row tree (#119). Reuses the
+    /// selection extraction ([`extract_lines`](Self::extract_lines)) over the full
+    /// range. On the alt screen only the alt buffer is shown — its "scrollback" is
+    /// the *primary* buffer's, not this app's — mirroring `viewport_logical_lines`'
+    /// alt floor.
+    pub fn accessible_text(&self) -> String {
+        let total = self.scrollback.len() + self.grid.rows();
+        if total == 0 {
+            return String::new();
+        }
+        let start = if self.on_alt {
+            self.scrollback.len()
+        } else {
+            0
+        };
+        let mut doc = self.extract_lines(start, 0, total - 1, usize::MAX);
+        // Trim *trailing* empty lines (blank screen rows below the content) — pure
+        // noise to a listener, and what a fresh screen would otherwise emit. Keep
+        // *internal* blank lines (paragraph breaks between command outputs) — a
+        // document wants those, unlike the viewport tree which drops all empties.
+        doc.truncate(doc.trim_end_matches('\n').len());
+        doc
+    }
+
     /// Concatenate the selected cells from `(start_line, from)` to
     /// `(end_line, to_end)` (half-open columns on the first/last line, whole
     /// lines between). Soft-wrapped rows (WRAPLINE) accumulate into one *logical*

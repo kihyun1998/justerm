@@ -43,6 +43,15 @@ export type { Link, LogicalLine } from "./links";
 // suppress). Pure logic; the consumer injects the DOM sinks.
 export { AccessibilityController, TOO_MUCH_OUTPUT } from "./accessibility";
 export type { A11yFrame, A11yTreeSink, LiveRegionSink } from "./accessibility";
+// Accessible view (#150) — on-demand whole-buffer document (VSCode AccessibleView
+// analog): summon → query core (AccessiblePort) → navigable doc, close → restore
+// focus. Sibling of the row-tree mirror; the scrollback escape hatch.
+export {
+  AccessibleViewController,
+  DomAccessibleView,
+  StubAccessiblePort,
+} from "./accessible-view";
+export type { AccessiblePort, AccessibleView } from "./accessible-view";
 // DOM glue: hidden row tree + aria-live sinks + a CellMirror-backed adapter the
 // consumer mounts beside the canvas and feeds frames (verified in the demo).
 export { Accessibility } from "./accessibility-dom";

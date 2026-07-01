@@ -11,9 +11,11 @@
 // Run: `pnpm demo` (NOT `vite demo`).
 import {
   Accessibility,
+  AccessibleViewController,
   BeamtermRenderer,
   computeLinks,
   copySelection,
+  DomAccessibleView,
   LinkController,
   Scrollbar,
   SearchController,
@@ -21,6 +23,7 @@ import {
   StubFrameSource,
   Terminal,
 } from "../src/index";
+import type { AccessiblePort } from "../src/index";
 import type { CellGeometry, LogicalLine, SearchPort, SelectionPort } from "../src/index";
 import type { DecodedFrame } from "../src/types";
 import { FakeSelectionEngine } from "./fake-select";
@@ -88,11 +91,28 @@ canvas.addEventListener("blur", () => a11y.onBlur());
 // "new output") while the hidden row tree keeps mirroring — the alt-screen bit
 // (#149 wire v9) driving the announce policy (#119), assembled.
 let altScreen = false;
+
+// #150 accessible view: F3 summons the whole-log document (a real backend runs
+// core `accessible_text`; the demo joins its log), Escape closes + returns focus.
+canvas.tabIndex = 0; // make the canvas a focus target for restore
+const accessiblePort: AccessiblePort = { text: async () => log.join("\n") };
+const accessibleView = new DomAccessibleView(document, () => viewCtrl.close());
+document.body.appendChild(accessibleView.el);
+const viewCtrl = new AccessibleViewController(accessiblePort, accessibleView, {
+  restoreFocus: () => canvas.focus(),
+});
+
 window.addEventListener("keydown", (e) => {
   if (e.key === "F2") {
     e.preventDefault();
     altScreen = !altScreen;
     console.log(`[demo] altScreen = ${altScreen} (announce ${altScreen ? "SUPPRESSED" : "on"})`);
+    return;
+  }
+  if (e.key === "F3") {
+    e.preventDefault();
+    // whole-buffer document for the screen reader; the query can reject (IPC).
+    viewCtrl.summon().catch((err) => console.error("[demo] accessible view failed", err));
     return;
   }
   // Forward printable keystrokes for echo dedup (this demo doesn't echo, so it's

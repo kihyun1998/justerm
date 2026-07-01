@@ -330,6 +330,16 @@ impl Engine {
         self.term.viewport_logical_lines()
     }
 
+    /// The whole buffer (scrollback + screen) as one text document for a
+    /// screen-reader accessible view (#150) — soft-wrap-joined, wide-spacers
+    /// skipped, trailing blanks trimmed at the logical end, `\n` between logical
+    /// lines. A query seam the consumer summons (frame mode: over IPC, like
+    /// [`selection_text`](Self::selection_text)); no wire-format change. On the
+    /// alt screen only the alt buffer is shown.
+    pub fn accessible_text(&self) -> String {
+        self.term.accessible_text()
+    }
+
     /// Scroll the viewport so `m` is visible (next/prev navigation: the consumer
     /// picks the match, the engine scrolls to it).
     pub fn scroll_to_match(&mut self, m: &Match) {
