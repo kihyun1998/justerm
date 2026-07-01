@@ -82,7 +82,19 @@ const a11y = new Accessibility(document, renderer.cellPalette, renderer.cellFlag
 });
 document.body.appendChild(a11y.root);
 canvas.addEventListener("blur", () => a11y.onBlur());
+
+// S14/#149 end-to-end spike: F2 toggles the alt-screen flag on emitted frames.
+// With it ON, the controller must stop announcing new output (a TUI repaint isn't
+// "new output") while the hidden row tree keeps mirroring — the alt-screen bit
+// (#149 wire v9) driving the announce policy (#119), assembled.
+let altScreen = false;
 window.addEventListener("keydown", (e) => {
+  if (e.key === "F2") {
+    e.preventDefault();
+    altScreen = !altScreen;
+    console.log(`[demo] altScreen = ${altScreen} (announce ${altScreen ? "SUPPRESSED" : "on"})`);
+    return;
+  }
   // Forward printable keystrokes for echo dedup (this demo doesn't echo, so it's
   // a no-op here — the dedup is unit-tested; this wires the seam).
   if (e.key.length === 1) a11y.onKey(e.key);
@@ -128,6 +140,7 @@ function viewportFrame(out?: { scrollCount: number }): DecodedFrame {
     sideTable: [],
     displayOffset,
     scrollbackLen: maxOffset(),
+    altScreen, // #149: drives the a11y announce policy (F2 toggles)
     selectionSpans: engine.range(), // S8: the live selection projected onto the view
     matchSpans: searchEngine.matchSpans(top, ROWS), // S9: search matches on the view
     ...(out && out.scrollCount > 0
