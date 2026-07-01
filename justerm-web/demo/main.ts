@@ -121,6 +121,7 @@ const viewCtrl = new AccessibleViewController(accessiblePort, accessibleView, {
 const cmdLive = document.createElement("div");
 cmdLive.setAttribute("aria-live", "polite");
 cmdLive.setAttribute("aria-atomic", "true");
+cmdLive.setAttribute("data-testid", "command-live"); // e2e hook (#160 announce)
 Object.assign(cmdLive.style, {
   position: "absolute",
   width: "1px",
