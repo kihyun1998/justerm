@@ -14,6 +14,7 @@ import {
   AccessibleViewController,
   BeamtermRenderer,
   CommandAnnounceController,
+  CommandNavController,
   computeLinks,
   copySelection,
   DomAccessibleView,
@@ -23,6 +24,7 @@ import {
   ScreenReaderState,
   SearchController,
   SelectionController,
+  StubCommandNavPort,
   StubFrameSource,
   Terminal,
 } from "../src/index";
@@ -173,6 +175,32 @@ let nextMarkId = 1;
 let commandMarks: number[] = [];
 let cmdFailToggle = false;
 
+// #166 command navigation: Prev/Next walk the command history inside the
+// accessible view. A real backend returns core `command_lines` (document line +
+// text + exit); the demo presets three whose `line`s index into the log. Nav
+// reveals the line (DomAccessibleView.reveal), announces the command on the same
+// polite region (#160), and reuses the exit-driven earcon (cmdSignal). Summoning
+// the view (re)loads the list and resets the cursor to the end.
+const navPort = new StubCommandNavPort();
+navPort.list = [
+  { line: 0, command: "echo hello", exit: 0 },
+  { line: 2, command: "false", exit: 1 },
+  { line: 4, command: "ls -la", exit: 0 },
+];
+const navCtrl = new CommandNavController(
+  navPort,
+  {
+    announce: (text) => {
+      cmdLive.textContent = text;
+    },
+    clear: () => {
+      cmdLive.textContent = "";
+    },
+  },
+  cmdSignal,
+  accessibleView,
+);
+
 // --- Demo control bar: clickable, labelled buttons instead of F-key shortcuts
 // (discoverable, show current state, and no F5=refresh footgun). Each action is a
 // named function; toggles reflect their state in the button label. ---
@@ -183,7 +211,17 @@ function toggleAltScreen(): void {
 }
 function summonAccessibleView(): void {
   // whole-buffer document for the screen reader; the query can reject (IPC).
-  viewCtrl.summon().catch((err) => console.error("[demo] accessible view failed", err));
+  // On open, (re)load the command list so nav starts from the end (#166).
+  viewCtrl
+    .summon()
+    .then(() => navCtrl.load())
+    .catch((err) => console.error("[demo] accessible view failed", err));
+}
+function navPrevCommand(): void {
+  navCtrl.previous().catch((err) => console.error("[demo] nav prev failed", err));
+}
+function navNextCommand(): void {
+  navCtrl.next().catch((err) => console.error("[demo] nav next failed", err));
 }
 function finishCommand(): void {
   // Simulate a command finishing, alternating success/failure. A stride-5 marker
@@ -216,9 +254,15 @@ Object.assign(controls.style, {
   background: "#181825",
   borderTop: "1px solid #313244",
   font: "12px system-ui, sans-serif",
-  zIndex: "50",
+  // Above the accessible-view overlay (z 100) so command nav (#166) stays
+  // reachable while the view is open.
+  zIndex: "200",
 });
-function demoButton(label: string, onClick: () => void): HTMLButtonElement {
+function demoButton(
+  label: string,
+  onClick: () => void,
+  restoreFocus = true,
+): HTMLButtonElement {
   const b = document.createElement("button");
   b.type = "button";
   b.textContent = label;
@@ -231,10 +275,11 @@ function demoButton(label: string, onClick: () => void): HTMLButtonElement {
     borderRadius: "4px",
     font: "inherit",
   });
-  // Return focus to the canvas after a click so keyboard interaction continues.
   b.addEventListener("click", () => {
     onClick();
-    canvas.focus();
+    // Return focus to the canvas so keyboard interaction continues — except for
+    // command nav, which moves focus to the revealed accessible-view line (#166).
+    if (restoreFocus) canvas.focus();
   });
   return b;
 }
@@ -242,7 +287,9 @@ const viewBtn = demoButton("Accessible view (log)", summonAccessibleView);
 const altBtn = demoButton("Alt screen: OFF", toggleAltScreen);
 const cmdBtn = demoButton("Finish command (next exit 0)", finishCommand);
 const srBtn = demoButton("Screen reader: ON", toggleScreenReader);
-controls.append(viewBtn, altBtn, cmdBtn, srBtn);
+const prevBtn = demoButton("Prev command", navPrevCommand, false);
+const nextBtn = demoButton("Next command", navNextCommand, false);
+controls.append(viewBtn, altBtn, cmdBtn, srBtn, prevBtn, nextBtn);
 document.body.appendChild(controls);
 
 // Forward printable keystrokes for echo dedup (this demo doesn't echo, so it's a

@@ -17,11 +17,13 @@ test.beforeEach(async ({ page }) => {
   await expect(page.getByRole("button", { name: /Finish command/ })).toBeVisible();
 });
 
-test("control bar shows the four action buttons", async ({ page }) => {
+test("control bar shows the action buttons", async ({ page }) => {
   await expect(page.getByRole("button", { name: /Accessible view/ })).toBeVisible();
   await expect(page.getByRole("button", { name: /Alt screen: (ON|OFF)/ })).toBeVisible();
   await expect(page.getByRole("button", { name: /Finish command/ })).toBeVisible();
   await expect(page.getByRole("button", { name: /Screen reader: (ON|OFF)/ })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Prev command" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Next command" })).toBeVisible();
 });
 
 test("alt screen button toggles its label", async ({ page }) => {
@@ -63,6 +65,37 @@ test("screen-reader-off suppresses the announce; back on resumes it (#161)", asy
   await page.getByRole("button", { name: "Screen reader: OFF" }).click();
   await page.getByRole("button", { name: /Finish command/ }).click();
   await expect(page.locator(live)).not.toHaveText("");
+});
+
+test("command nav walks history: announces the command + fires its signal (#166)", async ({
+  page,
+}) => {
+  const signals: string[] = [];
+  page.on("console", (msg) => {
+    const t = msg.text();
+    if (t.includes("[demo] signal:")) signals.push(t);
+  });
+
+  // Open the accessible view so nav loads the command list (cursor at the end).
+  await page.getByRole("button", { name: /Accessible view/ }).click();
+  await expect(page.locator("[role='document']")).toBeVisible();
+
+  // Prev from the end → last preset command ("ls -la", exit 0): announced on the
+  // polite region + a success signal. This is the real CommandNavController +
+  // DomAccessibleView running behind the demo's stub port.
+  await page.getByRole("button", { name: "Prev command" }).click();
+  await expect(page.locator(live)).toHaveText("ls -la");
+
+  // Prev again → the failing command ("false", exit 1): announce + fail signal.
+  await page.getByRole("button", { name: "Prev command" }).click();
+  await expect(page.locator(live)).toHaveText("false");
+
+  // Next → forward to "ls -la" again (VSCode Next = line > cursor, nearest).
+  await page.getByRole("button", { name: "Next command" }).click();
+  await expect(page.locator(live)).toHaveText("ls -la");
+
+  expect(signals.some((s) => s.includes("succeeded"))).toBe(true);
+  expect(signals.some((s) => s.includes("failed"))).toBe(true);
 });
 
 test("accessible view opens as a document overlay and Escape closes it", async ({ page }) => {
