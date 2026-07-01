@@ -143,3 +143,25 @@ fn dl_rotates_selection_up() {
         }]
     );
 }
+
+// ---- end-to-end: the motivating scenario, mark from the *stream* (OSC 133) ----
+
+/// The scenario #162 exists for, proven end-to-end from the VT stream (not
+/// `add_marker`): a shell emits an OSC 133 command mark, then a multi-line prompt
+/// redraw inserts a line above it (IL). The command mark must follow its content
+/// down, not go stale — same rotate path as plain markers, but driven entirely by
+/// bytes (OSC 133 parse → mark → CSI L parse → rotate).
+#[test]
+fn osc133_command_mark_rotates_on_insert_lines() {
+    let mut t = filled(10, 5);
+    t.feed(b"\x1b[4;1H\x1b]133;C\x07"); // cursor row 3, OSC 133 C = OutputStart mark
+    t.feed(b"\x1b[2;1H\x1b[1L"); // cursor row 1, insert a line (prompt redraw)
+
+    let marks = t.frame().overlay.markers;
+    assert_eq!(marks.len(), 1);
+    assert_eq!(
+        marks[0].row, 4,
+        "OutputStart mark followed the content down"
+    );
+    assert_eq!(marks[0].kind, MarkerKind::OutputStart);
+}
