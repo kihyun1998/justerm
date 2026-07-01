@@ -152,19 +152,22 @@ const cmdSignal: SignalSink = {
     beep(220); // low tone = failure
   },
 };
-// #161: gate both sinks on the shared SR-active state (Screen reader button). While inactive the
-// announce + earcon no-op, but cmdCtrl still tracks the finished mark (no backlog
-// replay when SR flips back on).
+// #167: the controller owns SR-gating via the `auto` policy state, so the sinks
+// are passed RAW (not wrapped by srState.gate*). `screenReaderActive` feeds the
+// shared #161 state into the default all-`auto` policy — identical suppression to
+// the old blanket wrap, but now an `on` modality could override SR-off. cmdCtrl
+// still tracks every finished mark, so no backlog replays when SR flips on.
 const cmdCtrl = new CommandAnnounceController(
-  srState.gateLive({
+  {
     announce: (text) => {
       cmdLive.textContent = text;
     },
     clear: () => {
       cmdLive.textContent = "";
     },
-  }),
-  srState.gateSignal(cmdSignal),
+  },
+  cmdSignal,
+  { screenReaderActive: () => srState.isActive() },
 );
 let nextMarkId = 1;
 let commandMarks: number[] = [];

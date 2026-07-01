@@ -17,6 +17,59 @@ import type { LiveRegionSink } from "./accessibility";
 import { MarkerKind, readMarkers } from "./markers";
 
 /**
+ * Per-modality enablement (#167), the subset of VSCode's `EnabledState`
+ * (`accessibilitySignalService.ts:272`) justerm has a source for: `on` always
+ * fires, `off` never, `auto` fires iff a screen reader is active (#161). VSCode
+ * resolves `auto` *inside* `playSignal` (line 274 `checkEnabledState`) by reading
+ * the SR-attached observable — so justerm resolves it in the controller too,
+ * NOT by wrapping the sink. A blanket sink gate (#161's `gateSignal`) cannot
+ * express `on`, since the outer gate would still suppress it while SR is off.
+ */
+export type Enablement = "on" | "off" | "auto";
+
+/**
+ * Per-outcome policy: the aria-live `announce` and the earcon `signal` are
+ * enabled independently, mirroring VSCode's per-`{sound, announcement}` config on
+ * `terminalCommandSucceeded` / `terminalCommandFailed`
+ * (`accessibilityConfiguration.ts`).
+ *
+ * Note VSCode restricts the announcement modality to `auto | off` (announcing
+ * with no SR present reaches nobody); justerm keeps the uniform {@link Enablement}
+ * for both so a consumer *can* opt into `announce: "on"` explicitly (e.g. it pipes
+ * the live region somewhere else), at the cost of that one divergence.
+ */
+export interface OutcomePolicy {
+  /** Speak the outcome on the aria-live region (VSCode `announcement`). */
+  announce: Enablement;
+  /** Play the success/fail earcon (VSCode `sound`). */
+  signal: Enablement;
+}
+
+/** The enable matrix passed to {@link CommandAnnounceController}. Verbosity of
+ * the announce *text* is a separate concern (tracked apart from this slice). */
+export interface AnnouncePolicy {
+  /** Exit 0, or no exit code reported. */
+  succeeded: OutcomePolicy;
+  /** Non-zero exit. */
+  failed: OutcomePolicy;
+}
+
+/** VSCode's defaults: every modality `auto` (`sound`/`announcement` both default
+ * `auto`). Combined with #161's default-active SR state this reproduces the
+ * pre-#167 always-announce behaviour, so wiring the controller with no policy is
+ * a no-op change. */
+export const DEFAULT_ANNOUNCE_POLICY: AnnouncePolicy = {
+  succeeded: { announce: "auto", signal: "auto" },
+  failed: { announce: "auto", signal: "auto" },
+};
+
+/** Mirror of VSCode `checkEnabledState` (`accessibilitySignalService.ts:274`),
+ * minus the `always` / `userGesture` / `never` states justerm has no source for. */
+function enabled(state: Enablement, srActive: boolean): boolean {
+  return state === "on" || (state === "auto" && srActive);
+}
+
+/**
  * The exit-driven outcome signal — a success/failure earcon or aria cue the
  * consumer plays (the a11y counterpart to a green/red prompt a sighted user
  * sees). Web policy; a thin adapter over the Web Audio API / a live region
@@ -53,9 +106,22 @@ export class CommandAnnounceController {
    * Every later frame announces genuinely-new marks, Full or Partial alike. */
   private seeded = false;
 
+  /**
+   * @param opts.policy per-outcome × per-modality enable matrix (#167). Defaults
+   *   to {@link DEFAULT_ANNOUNCE_POLICY} (all `auto`).
+   * @param opts.screenReaderActive probes SR presence for the `auto` state (#161).
+   *   Wire it to the shared {@link ScreenReaderState} (`() => srState.isActive()`)
+   *   and do NOT also wrap these sinks with `gateLive`/`gateSignal` — this
+   *   controller now owns the gating, and double-gating would break `on`.
+   *   Defaults to `() => true` (SR active), matching #161's default.
+   */
   constructor(
     private readonly live: LiveRegionSink,
     private readonly signal: SignalSink,
+    private readonly opts: {
+      policy?: AnnouncePolicy;
+      screenReaderActive?: () => boolean;
+    } = {},
   ) {}
 
   /**
@@ -77,16 +143,24 @@ export class CommandAnnounceController {
       for (const m of finished) this.seen.add(m.id);
       return;
     }
+    const policy = this.opts.policy ?? DEFAULT_ANNOUNCE_POLICY;
+    // Read SR presence once per frame (all its marks share one instant). Resolved
+    // here rather than in a sink wrapper so `on` can override an SR-off state.
+    const srActive = this.opts.screenReaderActive?.() ?? true;
     for (const m of finished) {
       if (this.seen.has(m.id)) continue;
+      // Mark seen UNCONDITIONALLY — before any enable check — so a policy- or
+      // SR-suppressed command is still deduped and never replays when a modality
+      // is later enabled (#161's invariant, preserved now that gating lives here).
       this.seen.add(m.id);
       const failed = m.exit !== undefined && m.exit !== 0;
-      if (failed) {
-        this.live.announce(`Command failed, exit ${m.exit}`);
-        this.signal.commandFailed();
-      } else {
-        this.live.announce("Command succeeded");
-        this.signal.commandSucceeded();
+      const rule = failed ? policy.failed : policy.succeeded;
+      if (enabled(rule.announce, srActive)) {
+        this.live.announce(failed ? `Command failed, exit ${m.exit}` : "Command succeeded");
+      }
+      if (enabled(rule.signal, srActive)) {
+        if (failed) this.signal.commandFailed();
+        else this.signal.commandSucceeded();
       }
     }
   }
