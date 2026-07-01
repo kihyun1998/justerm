@@ -6,7 +6,7 @@
 //! highlight colour is the consumer's (theme-agnostic).
 
 use justerm_core::{
-    Engine, MarkerPosition, Overlay, SelectionSpan, SelectionType, Side, TermEvent,
+    Engine, MarkerKind, MarkerPosition, Overlay, SelectionSpan, SelectionType, Side, TermEvent,
 };
 
 // ===========================================================================
@@ -221,7 +221,11 @@ fn frame_overlay_carries_marker_position() {
 
     assert_eq!(
         term.frame().overlay.markers,
-        vec![MarkerPosition { id, row: 0 }]
+        vec![MarkerPosition {
+            id,
+            row: 0,
+            kind: MarkerKind::Plain
+        }]
     );
 }
 
@@ -237,14 +241,22 @@ fn frame_overlay_marker_reanchors_on_eviction() {
     let id = term.add_marker(0); // "L2" (viewport row 0, abs 2)
     assert_eq!(
         term.frame().overlay.markers,
-        vec![MarkerPosition { id, row: 0 }]
+        vec![MarkerPosition {
+            id,
+            row: 0,
+            kind: MarkerKind::Plain
+        }]
     );
 
     term.feed(b"\r\nL4"); // sb=[L1,L2], screen=[L3,L4]; "L0" evicted, indices -1
     term.scroll_up(1); // viewport abs 1..=2 = [L2, L3]; "L2" at row 0
     assert_eq!(
         term.frame().overlay.markers,
-        vec![MarkerPosition { id, row: 0 }] // followed "L2", not stuck on abs 2
+        vec![MarkerPosition {
+            id,
+            row: 0,
+            kind: MarkerKind::Plain
+        }] // followed "L2", not stuck on abs 2
     );
 }
 
@@ -260,7 +272,11 @@ fn frame_overlay_marker_disposed_when_its_line_is_evicted() {
     let id = term.add_marker(0); // "L0" (abs 0) — the oldest line
     assert_eq!(
         term.frame().overlay.markers,
-        vec![MarkerPosition { id, row: 0 }]
+        vec![MarkerPosition {
+            id,
+            row: 0,
+            kind: MarkerKind::Plain
+        }]
     );
     term.drain_events(); // clear unrelated events
 
@@ -284,13 +300,21 @@ fn frame_overlay_marker_rotates_with_region_scroll() {
     let id = term.add_marker(2); // "C" (abs 2)
     assert_eq!(
         term.frame().overlay.markers,
-        vec![MarkerPosition { id, row: 2 }]
+        vec![MarkerPosition {
+            id,
+            row: 2,
+            kind: MarkerKind::Plain
+        }]
     );
 
     term.feed(b"\r\n"); // line-feed at the bottom margin → region scrolls up
     assert_eq!(
         term.frame().overlay.markers,
-        vec![MarkerPosition { id, row: 1 }] // "C" now at row 1
+        vec![MarkerPosition {
+            id,
+            row: 1,
+            kind: MarkerKind::Plain
+        }] // "C" now at row 1
     );
 }
 
@@ -324,13 +348,21 @@ fn frame_overlay_marker_reflows_on_resize() {
     let id = term.add_marker(1); // "XY" wrapped row (abs 1)
     assert_eq!(
         term.frame().overlay.markers,
-        vec![MarkerPosition { id, row: 1 }]
+        vec![MarkerPosition {
+            id,
+            row: 1,
+            kind: MarkerKind::Plain
+        }]
     );
 
     term.resize(3, 4); // reflow → "abc"/"def"/"XY"
     assert_eq!(
         term.frame().overlay.markers,
-        vec![MarkerPosition { id, row: 2 }] // "XY" followed to row 2
+        vec![MarkerPosition {
+            id,
+            row: 2,
+            kind: MarkerKind::Plain
+        }] // "XY" followed to row 2
     );
 }
 
@@ -350,7 +382,11 @@ fn frame_overlay_marker_reflows_during_alt_excursion() {
 
     assert_eq!(
         term.frame().overlay.markers,
-        vec![MarkerPosition { id, row: 2 }] // reflowed to row 2 despite the excursion
+        vec![MarkerPosition {
+            id,
+            row: 2,
+            kind: MarkerKind::Plain
+        }] // reflowed to row 2 despite the excursion
     );
 }
 
@@ -366,7 +402,11 @@ fn frame_overlay_marker_survives_alt_screen_excursion() {
     let id = term.add_marker(0);
     assert_eq!(
         term.frame().overlay.markers,
-        vec![MarkerPosition { id, row: 0 }]
+        vec![MarkerPosition {
+            id,
+            row: 0,
+            kind: MarkerKind::Plain
+        }]
     );
     term.drain_events();
 
@@ -380,7 +420,11 @@ fn frame_overlay_marker_survives_alt_screen_excursion() {
     term.feed(b"\x1b[?1049l"); // leave alt screen → primary
     assert_eq!(
         term.frame().overlay.markers,
-        vec![MarkerPosition { id, row: 0 }] // back, still anchored
+        vec![MarkerPosition {
+            id,
+            row: 0,
+            kind: MarkerKind::Plain
+        }] // back, still anchored
     );
 }
 
@@ -421,7 +465,11 @@ fn frame_overlay_offscreen_marker_stays_alive() {
     term.scroll_up(2); // bring "MK" back into view
     assert_eq!(
         term.frame().overlay.markers,
-        vec![MarkerPosition { id, row: 0 }] // alive, reappears
+        vec![MarkerPosition {
+            id,
+            row: 0,
+            kind: MarkerKind::Plain
+        }] // alive, reappears
     );
 }
 

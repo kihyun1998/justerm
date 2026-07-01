@@ -77,8 +77,8 @@ fn sample_frame() -> Frame {
 }
 
 #[wasm_bindgen_test]
-fn wire_version_is_nine() {
-    assert_eq!(wire_version(), 9); // #149 bumped 8 -> 9 for the alt-screen flag
+fn wire_version_is_ten() {
+    assert_eq!(wire_version(), 10); // #159 bumped 9 -> 10 for marker kind + exit
 }
 
 #[wasm_bindgen_test]
@@ -253,26 +253,34 @@ fn overlay_span_views_cross_the_boundary() {
 
 #[wasm_bindgen_test]
 fn marker_position_view_crosses_the_boundary() {
-    use justerm_core::{MarkerId, MarkerPosition};
+    use justerm_core::{MarkerId, MarkerKind, MarkerPosition};
     let mut frame = sample_frame();
     frame.overlay.markers = vec![
         MarkerPosition {
             id: MarkerId(5),
             row: 3,
+            kind: MarkerKind::PromptStart,
         },
         MarkerPosition {
             id: MarkerId(99),
             row: 0,
+            kind: MarkerKind::CommandFinished(Some(-1)),
         },
     ];
     let df = decode_frame(&justerm_core::encode(&frame)).expect("decode");
 
     let m = df.marker_positions();
-    assert_eq!(m.length(), 4); // two (id, row) pairs
+    assert_eq!(m.length(), 10); // two markers × stride 5 (id, row, kind, present, exit)
     assert_eq!(m.get_index(0), 5); // id
     assert_eq!(m.get_index(1), 3); // row
-    assert_eq!(m.get_index(2), 99);
-    assert_eq!(m.get_index(3), 0);
+    assert_eq!(m.get_index(2), 1); // kind = PromptStart
+    assert_eq!(m.get_index(3), 0); // exitPresent = 0
+    assert_eq!(m.get_index(4), 0); // exitBits (unused)
+    assert_eq!(m.get_index(5), 99); // id
+    assert_eq!(m.get_index(6), 0); // row
+    assert_eq!(m.get_index(7), 4); // kind = CommandFinished
+    assert_eq!(m.get_index(8), 1); // exitPresent = 1
+    assert_eq!(m.get_index(9), (-1i32) as u32); // exitBits: -1 reinterpreted
 }
 
 #[wasm_bindgen_test]

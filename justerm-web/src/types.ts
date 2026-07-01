@@ -43,6 +43,17 @@ export interface DecodedFrame {
    * `Engine::set_search_highlights`; consumed by search (#110). Optional.
    */
   readonly matchSpans?: ArrayLike<number>;
+  /**
+   * Decoration/command markers visible in this viewport (#118/#159, wire v10):
+   * stride-5 `(id, row, kind, exitPresent, exitBits)` — `justerm-wasm-decode`'s
+   * `markerPositions` getter. `kind`: 0 = Plain (#118 decoration), 1 = PromptStart,
+   * 2 = CommandStart, 3 = OutputStart, 4 = CommandFinished (OSC 133). For a finished
+   * command, `exitPresent` is 1 and `exitBits` is the exit code as a raw u32 —
+   * reinterpret as signed with `exitBits | 0`. Off-screen markers are absent (still
+   * alive; disposal comes via a `MarkerDisposed` event). Optional — a frame with no
+   * markers omits it. Consumed by decorations (#120) + prompt-nav a11y (#160).
+   */
+  readonly markerPositions?: ArrayLike<number>;
   /** Grapheme clusters referenced by cells' `extra` index (frame-local). */
   readonly sideTable: readonly string[];
   /**
