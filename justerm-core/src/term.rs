@@ -20,7 +20,7 @@ use crate::input::{
 use crate::logical::LogicalLine;
 use crate::search::Match;
 use crate::selection::{Anchor, BufferPoint, Selection, SelectionSpan, SelectionType, Side};
-use crate::serialize::{Frame, FrameKind, MarkerId, MarkerPosition, Overlay, Span};
+use crate::serialize::{Frame, FrameKind, MarkerId, MarkerKind, MarkerPosition, Overlay, Span};
 
 /// Owns the authoritative screen state and applies VT actions to it.
 pub struct Term {
@@ -267,6 +267,9 @@ struct SavedCursor {
 struct Marker {
     id: MarkerId,
     line: usize,
+    /// Plain for a `add_marker` decoration; a command-boundary role for an
+    /// OSC 133 mark (#158). All kinds share the anchor/eviction machinery.
+    kind: MarkerKind,
 }
 
 /// A selection resolved to absolute-coordinate bounds, ready for text extraction
@@ -968,11 +971,43 @@ impl Term {
     /// (#118). The row is resolved to an absolute buffer line (like a selection
     /// anchor), so the marker tracks that content through scroll/eviction/reflow.
     pub fn add_marker(&mut self, row: usize) -> MarkerId {
+        let line = self.viewport_to_abs(row, 0).line;
+        self.push_marker(line, MarkerKind::Plain)
+    }
+
+    /// Push a marker anchored at absolute `line` with `kind`, returning its id.
+    /// The shared core of `add_marker` (viewport row) and OSC-133 command marks
+    /// (cursor line) — one place owns id allocation + the `markers` list.
+    fn push_marker(&mut self, line: usize, kind: MarkerKind) -> MarkerId {
         let id = MarkerId(self.next_marker_id);
         self.next_marker_id += 1;
-        let line = self.viewport_to_abs(row, 0).line;
-        self.markers.push(Marker { id, line });
+        self.markers.push(Marker { id, line, kind });
         id
+    }
+
+    /// Record an OSC 133 command-boundary mark at the cursor's current line
+    /// (#158). Ignored on the alt screen — shell-integration marks anchor
+    /// *primary* content (like `marker_positions`), and alt-screen apps don't
+    /// emit them. The cursor line is `scrollback ++ screen`-absolute, independent
+    /// of `display_offset` (the cursor is always in the grid, never scrollback).
+    fn add_command_mark(&mut self, kind: MarkerKind) {
+        if self.on_alt {
+            return;
+        }
+        let line = self.scrollback.len() + self.cursor.row;
+        self.push_marker(line, kind);
+    }
+
+    /// The OSC 133 command-boundary marks in buffer order — `(id, absolute line,
+    /// kind)` (#158). Plain decoration markers (#118) are excluded. The consumer
+    /// pairs prompt/command/finished marks and drives navigation/announce policy
+    /// (#160); core only parses and anchors them.
+    pub fn command_marks(&self) -> Vec<(MarkerId, usize, MarkerKind)> {
+        self.markers
+            .iter()
+            .filter(|m| m.kind != MarkerKind::Plain)
+            .map(|m| (m.id, m.line, m.kind))
+            .collect()
     }
 
     /// Remove a marker by id (#118). Disposing it fires `MarkerDisposed` so the
@@ -1790,7 +1825,20 @@ impl Term {
                     base + self.scroll_bottom,
                     true,
                 );
-                self.markers_rotate_region(base + self.scroll_top, base + self.scroll_bottom, true);
+                // Markers anchor *primary* content (`marker_positions` is
+                // primary-only). On the alt screen the primary buffer is frozen,
+                // yet the alt grid occupies the same absolute-line range — so an
+                // alt scroll must NOT rotate primary marks or it disposes them
+                // across a vim/less/htop excursion (#158). The selection is safe
+                // (cleared on alt enter); markers are retained, so they need the
+                // explicit guard.
+                if !self.on_alt {
+                    self.markers_rotate_region(
+                        base + self.scroll_top,
+                        base + self.scroll_bottom,
+                        true,
+                    );
+                }
                 self.invalidate_search_highlights();
                 self.grid
                     .scroll_up_region(self.scroll_top, self.scroll_bottom);
@@ -1887,7 +1935,15 @@ impl Term {
             // screen, so absolute indices in it shift down. Rotate the selection.
             let base = self.scrollback.len();
             self.selection_rotate_region(base + self.scroll_top, base + self.scroll_bottom, false);
-            self.markers_rotate_region(base + self.scroll_top, base + self.scroll_bottom, false);
+            // See `linefeed`: shield primary marks from an alt-screen scroll —
+            // the alt grid shares the primary's absolute-line range (#158).
+            if !self.on_alt {
+                self.markers_rotate_region(
+                    base + self.scroll_top,
+                    base + self.scroll_bottom,
+                    false,
+                );
+            }
             self.invalidate_search_highlights();
             self.grid
                 .scroll_down_region(self.scroll_top, self.scroll_bottom);
@@ -2951,6 +3007,24 @@ impl Perform for Term {
                         .push(TermEvent::Cwd(String::from_utf8_lossy(cwd).into_owned()));
                 }
             }
+            // OSC 133 = FinalTerm/iTerm2 shell-integration command marks (#158):
+            // `A` prompt start, `B` command start, `C` output start, `D[;exit]`
+            // command finished. Each anchors a kinded marker at the cursor line;
+            // pairing + navigation is consumer policy (#160). Unknown subcommands
+            // (or none) are ignored. `D`'s exit field parses to `i32`, else None.
+            b"133" => match params.get(1).copied() {
+                Some(b"A") => self.add_command_mark(MarkerKind::PromptStart),
+                Some(b"B") => self.add_command_mark(MarkerKind::CommandStart),
+                Some(b"C") => self.add_command_mark(MarkerKind::OutputStart),
+                Some(b"D") => {
+                    let exit = params
+                        .get(2)
+                        .and_then(|p| core::str::from_utf8(p).ok())
+                        .and_then(|s| s.parse::<i32>().ok());
+                    self.add_command_mark(MarkerKind::CommandFinished(exit));
+                }
+                _ => {}
+            },
             // OSC 8 = hyperlink: `OSC 8 ; params ; URI`. A non-empty URI opens a
             // link (interned + made current); an empty URI closes it. `params`
             // (e.g. `id=…`) is ignored for now — id-grouping is a later refinement.

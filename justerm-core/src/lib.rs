@@ -41,8 +41,8 @@ pub use logical::LogicalLine;
 pub use search::Match;
 pub use selection::{SelectionSpan, SelectionType, Side};
 pub use serialize::{
-    CELL_RECORD_LEN, DecodeError, Frame, FrameKind, MarkerId, MarkerPosition, Overlay, Span,
-    WIRE_VERSION, decode, encode, encode_cell_record, encode_color,
+    CELL_RECORD_LEN, DecodeError, Frame, FrameKind, MarkerId, MarkerKind, MarkerPosition, Overlay,
+    Span, WIRE_VERSION, decode, encode, encode_cell_record, encode_color,
 };
 
 pub use term::Term;
@@ -373,5 +373,14 @@ impl Engine {
     /// for an unknown or already-disposed id.
     pub fn remove_marker(&mut self, id: MarkerId) {
         self.term.remove_marker(id);
+    }
+
+    /// The OSC 133 shell-integration command marks in buffer order — `(id,
+    /// absolute line, kind)` (#158). Excludes plain `add_marker` decorations.
+    /// The consumer pairs prompt/command/finished marks to drive prompt-to-prompt
+    /// navigation and command/exit announcements (#160); the engine only parses
+    /// the `133;A/B/C/D` sequences and anchors the marks.
+    pub fn command_marks(&self) -> Vec<(MarkerId, usize, MarkerKind)> {
+        self.term.command_marks()
     }
 }

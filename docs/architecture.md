@@ -178,6 +178,29 @@ deferred behavior) it tracks — then add what you find here.** Seeds (caught in
   double-enter/leave is a no-op. The alt screen has no scrollback, and tab stops + scroll margins are
   *not* per-screen — they persist across the swap. The engine emits whichever grid is active; the
   switch is transparent to consumers. DEC private modes arrive as a `?` in the CSI `intermediates`. [#8]
+- **Anchor lifecycle: selection/marker anchors are absolute-line coords shifted in lockstep with
+  buffer mutation — and share the alt grid's line range.** Selection endpoints (#3) and decoration/
+  command markers (#118/#158) store `[scrollback ++ screen]`-absolute lines. Eviction
+  (`markers_evict_oldest`), region scroll (`markers_rotate_region`), and reflow (`iter_mut` over
+  `m.line`) shift them so they track content; an anchor on a dropped line is disposed. **Hazard: on the
+  alt screen the primary anchors are *retained* (that is the #118/#158 contract — a mark must survive a
+  vim/less excursion), yet the alt grid occupies the *same* absolute-line range `[scrollback.len(),
+  +rows)`. So an alt-screen scroll must NOT rotate primary markers or it silently disposes them.** The
+  selection dodges this only because it is *cleared* on alt enter; markers are guarded explicitly
+  (`if !self.on_alt` around `markers_rotate_region` in `linefeed`/`reverse_index`). [#158]
+- **Anchor rotation gap (tracked): the CSI line-editing verbs don't move anchors.** Only
+  `linefeed`/`reverse_index` rotate anchors today; `scroll_region_lines` (SU/SD/IL/DL) moves content
+  via `grid.scroll_*_region` + `record_scroll` but calls *neither* `markers_rotate_region` nor
+  `selection_rotate_region`, so a primary-screen IL/DL (zsh/fish multi-line prompt redraw, completion
+  menus) leaves marks + live selection pointing at the wrong line. Pre-existing (selection has it too);
+  tracked in **#162**. [#158]
+- **OSC 133 shell-integration marks: only `A/B/C/D` are parsed.** `133;A` prompt-start, `;B`
+  command-start, `;C` output-start, `;D[;exit]` finished → a kinded marker at the cursor line; the exit
+  field parses to `i32`, else `None` (matching VSCode's FinalTerm handler, safer than WezTerm's
+  `unwrap_or(0)` false-success). Suppressed on the alt screen (marks anchor primary content). Pairing
+  A↔D, prompt-to-prompt navigation and success/fail earcons are *consumer* policy (#160), not core.
+  Tracked long-tail: WezTerm also recognizes `133;L/I/N/P` (fresh-line + B/D/A variants); VSCode ignores
+  them too, so they are a deferred zero, not a silent one. [#158, #160]
 - **Origin mode (DECOM ?6) makes cursor addressing region-relative.** When set, CUP/HVP (`goto`) is
   relative to the scroll region's top margin and clamped to the bottom margin; the column is
   unaffected. Setting DECOM homes the cursor to the region top; *unsetting* it leaves the cursor put
