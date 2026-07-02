@@ -3,8 +3,8 @@ import type { Palette } from "justerm-wasm-decode/colors.js";
 import { CellMirror } from "./cell-mirror";
 import { CursorBlink, cursorOp } from "./cursor";
 import type { DecorationRect } from "./decorations";
-import { composeCellColors, decorationAt } from "./decoration-render";
-import { highlightAt, highlightRects } from "./overlay";
+import { highlightRects } from "./overlay";
+import { composeOverlayDraws } from "./overlay-compose";
 import type { DrawOp, FlagBits } from "./render-core";
 import type { DecodedFrame } from "./types";
 import type { Renderer } from "./renderer";
@@ -77,6 +77,11 @@ export class BeamtermRenderer implements Renderer {
    * the frame wire like selection/match), so the consumer injects a source bound
    * to its {@link DecorationRegistry}; absent → no decorations. */
   private decorationSource: ((frame: DecodedFrame) => DecorationRect[]) | undefined;
+  /** The overlay-tinted cell keys (`y·cols + x`) of the LAST frame, for the #140
+   * partial-frame delta: a cell whose highlight/decoration membership flipped but
+   * that this frame's damage doesn't cover is repainted from the mirror. Reset when
+   * the mirror is rebuilt (a resize invalidates the keys). Empty ⇔ nothing tinted. */
+  private prevOverlay = new Set<number>();
 
   private constructor(
     private readonly backend: Backend,
@@ -179,6 +184,9 @@ export class BeamtermRenderer implements Renderer {
       this.cols = frame.cols;
       this.rows = frame.rows;
       this.mirror = new CellMirror(frame.cols, frame.rows, this.palette, this.flagBits);
+      // The mirror is fresh and the old overlay keys (`y·cols + x`) index a different
+      // grid — drop them so the #140 delta doesn't repaint stale coordinates.
+      this.prevOverlay = new Set();
     }
     const ops = this.mirror.applyFrame(frame);
     this.updateCursor(frame);
@@ -190,24 +198,22 @@ export class BeamtermRenderer implements Renderer {
     // Blend selection/search highlights AND marker decorations (#120 S2) into each
     // painted cell's colour — beamterm has no overlay layer, so both are per-cell
     // colour overrides (like the cursor's cell-invert), layered back-to-front:
-    // base < bottom decoration < highlight < top decoration. NB: this tints only
-    // the cells in `ops`; on a partial frame a cell whose overlay state just
-    // flipped isn't repainted — needs old+new overlay-cell damage like the cursor
-    // (#140). Correct today only on Full frames (the demo pushes Full).
-    const rects = highlightRects(frame);
-    const decoRects = this.decorationSource?.(frame) ?? [];
-    for (const op of ops) {
-      const kind = rects.length ? highlightAt(rects, op.x, op.y) : null;
-      const highlightBg = kind ? (kind === "selection" ? this.selectionBg : this.matchBg) : null;
-      const bottom = decoRects.length ? decorationAt(decoRects, op.x, op.y, "bottom") : null;
-      const top = decoRects.length ? decorationAt(decoRects, op.x, op.y, "top") : null;
-      if (highlightBg === null && bottom === null && top === null) {
-        this.drawOp(batch, op);
-        continue;
-      }
-      const { fg, bg } = composeCellColors({ fg: op.fg, bg: op.bg }, bottom, highlightBg, top);
-      this.drawOp(batch, { ...op, fg, bg });
-    }
+    // base < bottom decoration < highlight < top decoration. `composeOverlayDraws`
+    // tints the damaged cells AND adds the #140 delta: a cell whose overlay
+    // membership flipped but that this partial frame doesn't damage is repainted from
+    // the mirror (re-tint or restore), the cursor's old+new cell damage pattern.
+    const { draws, overlay } = composeOverlayDraws({
+      ops,
+      highlights: highlightRects(frame),
+      decorations: this.decorationSource?.(frame) ?? [],
+      prevOverlay: this.prevOverlay,
+      cols: this.cols,
+      rows: this.rows,
+      colors: { selectionBg: this.selectionBg, matchBg: this.matchBg },
+      cellAt: (x, y) => this.mirror!.cellAt(x, y),
+    });
+    for (const d of draws) this.drawOp(batch, d);
+    this.prevOverlay = overlay;
     // Overlay the cursor into the same batch — it draws over its mirror cell,
     // AFTER the decoration/highlight compose above, and cell-inverts the cell's
     // ORIGINAL (un-composed) colours. So the cursor takes visual precedence over a
@@ -258,6 +264,7 @@ export class BeamtermRenderer implements Renderer {
     const { col, row, shape } = this.cursor;
     if (col >= this.cols || row >= this.rows) return;
     const base = this.mirror.cellAt(col, row);
+    if (!base) return; // a wide-char spacer half — the cursor sits on the lead, not here
     this.drawOp(batch, on ? cursorOp(base, shape, this.cursorColor) : base);
   }
 
