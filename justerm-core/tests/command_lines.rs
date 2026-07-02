@@ -159,6 +159,45 @@ fn output_start_without_command_start_is_ignored() {
     assert!(t.command_lines().is_empty());
 }
 
+/// #192: a command's text comes from the PRIMARY buffer even when `command_lines`
+/// is queried while on the alt screen. Extraction used to read the active (alt)
+/// grid, so a primary command's text came back empty inside a full-screen TUI;
+/// the marks/exit were always primary-scoped, only the text was wrong.
+#[test]
+fn command_text_is_primary_scoped_on_the_alt_screen() {
+    let mut t = Engine::new(40, 24);
+    t.feed(b"\x1b]133;A\x07$ \x1b]133;B\x07ls -la\x1b]133;C\x07\r\nout\r\n\x1b]133;D;0\x07");
+    t.feed(b"\x1b[?1049h"); // enter alt — primary content swaps out of the active grid
+
+    let cmds = t.command_lines();
+    assert_eq!(cmds.len(), 1);
+    assert_eq!(cmds[0].command, "ls -la"); // was "" (read the alt grid)
+    assert_eq!(cmds[0].exit, Some(0));
+}
+
+/// #192 (twin of the text bug, caught by the completeness pass): the command's
+/// document `line` is primary-scoped too. `doc_line_of` counts soft-wraps via the
+/// grid; on the alt screen it must count the PRIMARY buffer's wraps, not the blank
+/// alt grid, or the jump line drifts.
+#[test]
+fn command_line_number_is_primary_scoped_on_alt() {
+    let mut t = Engine::new(6, 24);
+    t.feed(b"0123456789\r\n"); // soft-wraps abs row0 (WRAP) -> row1, then newline to row2
+    t.feed(b"\x1b]133;A\x07$ \x1b]133;B\x07cmd\x1b]133;C\x07\r\n\x1b]133;D;0\x07"); // command on abs row2
+    let on_primary = t.command_lines()[0].line;
+    assert_eq!(
+        on_primary, 1,
+        "abs row2 -> document row1 (one soft wrap above)"
+    );
+
+    t.feed(b"\x1b[?1049h"); // enter alt — the primary wraps must still be counted
+    assert_eq!(
+        t.command_lines()[0].line,
+        on_primary,
+        "document line tracks the primary buffer, not the blank alt grid"
+    );
+}
+
 /// Alt-screen apps emit no shell-integration marks, so no command lines surface
 /// from an alt-screen session.
 #[test]
