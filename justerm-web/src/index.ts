@@ -102,6 +102,10 @@ export { ScreenReaderState } from "./screen-reader";
 // DOM glue: hidden row tree + aria-live sinks + a CellMirror-backed adapter the
 // consumer mounts beside the canvas and feeds frames (verified in the demo).
 export { Accessibility } from "./accessibility-dom";
+// #152: bridge an AT text selection in the row tree back to the engine selection,
+// reusing the mouse SelectionPort seam. `Accessibility` wires this when given a port.
+export { a11ySelectionToPort } from "./a11y-selection";
+export type { TreeSelection } from "./a11y-selection";
 // Input — DOM events → intent (the backend encodes); outbound seam.
 export { captureInput, keyFromDom, Mod, mouseFromDom, StubInputSink, wheelMouseFromDom } from "./input";
 export type {
