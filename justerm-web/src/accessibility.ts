@@ -23,6 +23,18 @@ export const TOO_MUCH_OUTPUT = "Too much output to announce, navigate to rows ma
 /** Debounce (ms) before flushing accumulated output to the live region, so
  * streaming output coalesces into one announcement (xterm `TimeBasedDebouncer`). */
 const ANNOUNCE_DEBOUNCE_MS = 200;
+/** Max time output may accumulate before a forced flush, so an unbroken sub-debounce
+ * stream (`yes`, a long build) still announces periodically instead of re-arming the
+ * debounce forever and staying silent until it stops (xterm `TimeBasedDebouncer`'s 1s
+ * throttle). #153.
+ *
+ * NB — deliberate divergence from xterm: this KEEPS the 200ms coalescing debounce and
+ * only *caps* the flood, rather than xterm's pure 1s throttle. So at moderate cadence
+ * (200ms–1s inter-output gaps) justerm may announce more often than xterm's strict
+ * "at most once per second" ceiling — an intentional responsiveness trade. The cap is
+ * the flood worst-case bound. (justerm also lacks xterm's leading-edge first-announce
+ * — the first line during a flood waits up to the cap; tracked in #215.) */
+const ANNOUNCE_MAX_WAIT_MS = 1000;
 
 /** The viewport frame header fields the controller reads. A `DecodedFrame`
  * satisfies it structurally. */
@@ -81,6 +93,8 @@ export class AccessibilityController {
   private readonly onScroll: (lines: number) => void;
   private readonly setTimer: (fn: () => void, ms: number) => number;
   private readonly clearTimer: (handle: number) => void;
+  /** Monotonic clock (ms) for the {@link ANNOUNCE_MAX_WAIT_MS} cap; injected for tests. */
+  private readonly now: () => number;
   /** Whether a screen reader is active (#161/#169). While inactive, the per-frame
    * row-tree `setRow` churn is skipped (nobody reads the tree) — but bookkeeping
    * stays current, so {@link syncTree} on reactivation refreshes from the cached
@@ -89,6 +103,9 @@ export class AccessibilityController {
   /** New output accumulated across frames, flushed on the debounce timer. */
   private pending: string[] = [];
   private timer: number | undefined;
+  /** `now()` when the current pending batch started (first push after empty), for the
+   * {@link ANNOUNCE_MAX_WAIT_MS} cap. Undefined ⇔ pending empty. */
+  private firstPendingAt: number | undefined;
   /** Current tree height, to resize only when the viewport changes. */
   private treeRows = 0;
   /** Last frame's geometry, so boundary scroll knows the buffer edges. */
@@ -109,6 +126,8 @@ export class AccessibilityController {
     onScroll?: (lines: number) => void;
     setTimer?: (fn: () => void, ms: number) => number;
     clearTimer?: (handle: number) => void;
+    /** Monotonic clock (ms) for the max-wait cap; defaults to `performance.now`. */
+    now?: () => number;
     /** SR-active probe (#169). Defaults to always-active (pre-#169 behaviour). */
     isActive?: () => boolean;
   }) {
@@ -117,6 +136,7 @@ export class AccessibilityController {
     this.onScroll = opts.onScroll ?? (() => {});
     this.setTimer = opts.setTimer ?? ((fn, ms) => setTimeout(fn, ms) as unknown as number);
     this.clearTimer = opts.clearTimer ?? ((h) => clearTimeout(h));
+    this.now = opts.now ?? (() => performance.now());
     this.isActive = opts.isActive ?? (() => true);
   }
 
@@ -215,15 +235,26 @@ export class AccessibilityController {
     const fresh = this.dedupTyped(parts.join("\n"));
     if (fresh.length === 0) return;
     this.pending.push(fresh);
-    // Coalesce streaming frames: (re)arm the timer; the flush announces the lot.
+    // Coalesce streaming frames: (re)arm the 200ms quiet-period timer. But cap the
+    // total wait at ANNOUNCE_MAX_WAIT_MS from the batch's first push (#153) — else an
+    // unbroken sub-200ms stream (`yes`) re-arms forever and the SR stays silent until
+    // it stops. When the cap is hit, flush now instead of re-arming (a periodic
+    // announce mid-flood, xterm `TimeBasedDebouncer`).
+    if (this.firstPendingAt === undefined) this.firstPendingAt = this.now();
     if (this.timer !== undefined) this.clearTimer(this.timer);
-    this.timer = this.setTimer(() => this.flush(), ANNOUNCE_DEBOUNCE_MS);
+    const remaining = ANNOUNCE_MAX_WAIT_MS - (this.now() - this.firstPendingAt);
+    if (remaining <= 0) {
+      this.flush();
+    } else {
+      this.timer = this.setTimer(() => this.flush(), Math.min(ANNOUNCE_DEBOUNCE_MS, remaining));
+    }
   }
 
   /** Announce the accumulated output (debounce expiry). A flood the screen
    * reader can't follow collapses to a manual-review notice. */
   private flush(): void {
     this.timer = undefined;
+    this.firstPendingAt = undefined;
     if (this.pending.length === 0) return;
     const text = this.pending.join("\n");
     this.pending = [];
@@ -261,7 +292,15 @@ export class AccessibilityController {
     // push would grow `consume` unbounded and swallow the first output after
     // reactivation. This mirrors xterm's disposed manager registering no char
     // listener at all. Control chars aren't echoed as text, so skip them.
-    if (this.isActive() && !/\p{Control}/u.test(char)) this.consume.push(char);
+    // Push per code point (#153 G9): `char` may be multi-unit (IME commit, a pasted
+    // run, an emoji) but `dedupTyped` drains one code point per echoed output char, so
+    // a single multi-code-point entry would mismatch and wrongly announce. Splitting
+    // keeps `consume` code-point-granular. Control chars aren't echoed as text.
+    if (this.isActive()) {
+      for (const cp of char) {
+        if (!/\p{Control}/u.test(cp)) this.consume.push(cp);
+      }
+    }
   }
 
   /** The widget lost focus. Drop any pending announcement and clear the live
@@ -284,6 +323,7 @@ export class AccessibilityController {
       this.clearTimer(this.timer);
       this.timer = undefined;
     }
+    this.firstPendingAt = undefined;
     this.pending = [];
   }
 

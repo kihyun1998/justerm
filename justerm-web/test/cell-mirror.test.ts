@@ -161,6 +161,16 @@ describe("CellMirror.rowText", () => {
     expect(mirror.rowText(1)).toBe(""); // a blank row is empty, not 80 spaces
   });
 
+  // #153 G8: a trailing NBSP (U+00A0) is real content, not padding — only regular
+  // trailing spaces are trimmed. `\s` would eat the NBSP, contradicting the copy
+  // invariant (justerm never emits NBSP as padding). Regular spaces after it still go.
+  it("preserves a trailing NBSP but still trims regular padding spaces", () => {
+    const mirror = new CellMirror(80, 24, palette(), F);
+    mirror.applyFrame(frame(0, [{ line: 0, left: 0, text: "a " }])); // "a" + NBSP, rest is padding
+
+    expect(mirror.rowText(0)).toBe("a "); // NBSP kept, blank-cell padding trimmed
+  });
+
   // A wide glyph occupies two cells: the symbol then a spacer half. The text
   // must read the glyph once, not glyph-plus-blank (else the SR hears a gap).
   it("reads a wide glyph once, skipping its spacer half", () => {
