@@ -11,7 +11,7 @@
 import { AccessibilityController } from "./accessibility";
 import type { A11yTreeSink, LiveRegionSink } from "./accessibility";
 import { a11ySelectionToPort } from "./a11y-selection";
-import type { TreeSelection } from "./a11y-selection";
+import type { TreeEndpoint, TreeSelection } from "./a11y-selection";
 import { CellMirror } from "./cell-mirror";
 import { ScreenReaderState } from "./screen-reader";
 import type { FlagBits } from "./render-core";
@@ -88,6 +88,32 @@ class DomA11yTree implements A11yTreeSink {
       if (i !== -1) return i;
       el = el.parentNode;
     }
+    return null;
+  }
+
+  /** For a selection endpoint `node` that is NOT inside a listitem (`rowIndexOf` is
+   * null), which side of the tree it sits on — `"before"` (at/above row 0), `"after"`
+   * (at/below the last row), or `null` (indeterminate: a spanning ancestor that contains
+   * the whole tree, or an empty tree). Mirrors xterm's `_handleSelectionChange` clamp
+   * checks (`compareDocumentPosition` vs the first/last row element with
+   * `CONTAINED_BY | FOLLOWING` for the start and `CONTAINED_BY | PRECEDING` for the end).
+   * DOM glue — proven live, not in the DOM-less test env (#217). */
+  endpointSide(node: Node | null): "before" | "after" | null {
+    const first = this.rows[0];
+    const last = this.rows[this.rows.length - 1];
+    if (!node || !first || !last) return null;
+    const atOrBeforeFirst = !!(
+      node.compareDocumentPosition(first) &
+      (Node.DOCUMENT_POSITION_CONTAINED_BY | Node.DOCUMENT_POSITION_FOLLOWING)
+    );
+    const atOrAfterLast = !!(
+      node.compareDocumentPosition(last) &
+      (Node.DOCUMENT_POSITION_CONTAINED_BY | Node.DOCUMENT_POSITION_PRECEDING)
+    );
+    // Exactly one side → that side. Both (an ancestor spanning the whole tree) or neither
+    // is indeterminate from the node alone — the caller disambiguates by document order.
+    if (atOrBeforeFirst && !atOrAfterLast) return "before";
+    if (atOrAfterLast && !atOrBeforeFirst) return "after";
     return null;
   }
 
@@ -210,12 +236,38 @@ export class Accessibility {
     if (!s) return;
     const anchorRow = this.tree.rowIndexOf(s.anchorNode);
     const focusRow = this.tree.rowIndexOf(s.focusNode);
-    const sel: TreeSelection = {
-      anchor: anchorRow === null ? null : { row: anchorRow, offset: s.anchorOffset },
-      focus: focusRow === null ? null : { row: focusRow, offset: s.focusOffset },
-      collapsed: s.isCollapsed,
-    };
-    a11ySelectionToPort(sel, (r) => this.mirror!.rowCells(r).columns, this.selectionPort);
+    // Resolve each endpoint to inside-the-tree coords, or the out-of-tree side it overlaps
+    // (#217): an endpoint above row 0 / below the last row clamps to that edge instead of
+    // no-oping (native Select-All, drag overshoot). `endpointSide` returns null for a
+    // spanning ancestor (contains the whole tree) — disambiguated by document order below.
+    let anchor: TreeEndpoint =
+      anchorRow === null ? this.tree.endpointSide(s.anchorNode) : { row: anchorRow, offset: s.anchorOffset };
+    let focus: TreeEndpoint =
+      focusRow === null ? this.tree.endpointSide(s.focusNode) : { row: focusRow, offset: s.focusOffset };
+    // Spanning ancestor: an endpoint that is an ancestor containing the whole tree can't be
+    // sided from the node alone (`endpointSide` → null), yet the selection may still overlap
+    // the tree — a Select-All (BOTH endpoints span) or an asymmetric "select to end" where
+    // one end resolved inside a row and the other is `documentElement`. Rescue whenever
+    // EITHER endpoint is null and the range intersects the container (not just both — else
+    // the asymmetric case is dropped), assigning each null endpoint the extreme matching its
+    // document order (earlier → `before`, later → `after`). Matches xterm clamping an
+    // ancestor by its node position (`_handleSelectionChange`, verified #217 2-lens).
+    if (
+      (anchor === null || focus === null) &&
+      !s.isCollapsed &&
+      s.anchorNode &&
+      s.focusNode &&
+      s.rangeCount > 0 &&
+      s.getRangeAt(0).intersectsNode(this.tree.container)
+    ) {
+      const focusBeforeAnchor = !!(
+        s.anchorNode.compareDocumentPosition(s.focusNode) & Node.DOCUMENT_POSITION_PRECEDING
+      );
+      if (anchor === null) anchor = focusBeforeAnchor ? "after" : "before";
+      if (focus === null) focus = focusBeforeAnchor ? "before" : "after";
+    }
+    const sel: TreeSelection = { anchor, focus, collapsed: s.isCollapsed };
+    a11ySelectionToPort(sel, (r) => this.mirror!.rowCells(r).columns, this.rows, this.selectionPort);
   }
 
   /** Mirror a frame: update the cell store, then drive the controller with the

@@ -10,9 +10,9 @@ const maps: Record<number, number[]> = {
 };
 const columnsFor = (row: number): number[] => maps[row] ?? [];
 
-function run(sel: TreeSelection) {
+function run(sel: TreeSelection, rowCount = 10) {
   const port = new StubSelectionPort();
-  a11ySelectionToPort(sel, columnsFor, port);
+  a11ySelectionToPort(sel, columnsFor, rowCount, port);
   return port.calls;
 }
 
@@ -82,5 +82,49 @@ describe("a11ySelectionToPort (#152 AT selection → core selection)", () => {
       { kind: "begin", row: 9, col: 0, side: "left", ty: "char" },
       { kind: "extend", row: 9, col: 0, side: "left" }, // empty map → column 0 either way
     ]);
+  });
+
+  // #217: an out-of-tree endpoint that still overlaps the tree is CLAMPED, not dropped
+  // (xterm's `_handleSelectionChange` begin/end clamp). A `before` anchor (a drag that
+  // began above row 0, or the native Select-All anchor) clamps to the start of row 0.
+  it("clamps a `before` endpoint to the start of row 0", () => {
+    expect(run({ anchor: "before", focus: { row: 0, offset: 3 }, collapsed: false })).toEqual([
+      { kind: "begin", row: 0, col: 0, side: "left", ty: "char" },
+      { kind: "extend", row: 0, col: 3, side: "left" },
+    ]);
+  });
+
+  // #217: an `after` endpoint (a drag overshooting past the last row, or into the sibling
+  // live region) clamps to the end of the last row (`rowCount-1`), end-of-text → RIGHT of
+  // its last char. Here rowCount=2, so the last row is row 1 ("가b", cols [0,2]).
+  it("clamps an `after` endpoint to the end of the last row", () => {
+    expect(run({ anchor: { row: 0, offset: 1 }, focus: "after", collapsed: false }, 2)).toEqual([
+      { kind: "begin", row: 0, col: 1, side: "left", ty: "char" },
+      { kind: "extend", row: 1, col: 2, side: "right" }, // row 1 end-of-text → columns[1]=2, right
+    ]);
+  });
+
+  // #217 casualty #1 — native Select-All: anchor above the tree, focus below it. Both
+  // endpoints clamp, selecting the whole viewport (row 0 start → last row end).
+  it("selects the whole tree for a spanning Select-All (before → after)", () => {
+    expect(run({ anchor: "before", focus: "after", collapsed: false }, 2)).toEqual([
+      { kind: "begin", row: 0, col: 0, side: "left", ty: "char" },
+      { kind: "extend", row: 1, col: 2, side: "right" },
+    ]);
+  });
+
+  // A selection wholly on one side of the tree doesn't overlap it — no-op (xterm bails
+  // when `begin` is below the last row, or `end` above the first).
+  it("ignores a selection wholly above the tree (both before)", () => {
+    expect(run({ anchor: "before", focus: "before", collapsed: false })).toEqual([]);
+  });
+  it("ignores a selection wholly below the tree (both after)", () => {
+    expect(run({ anchor: "after", focus: "after", collapsed: false })).toEqual([]);
+  });
+
+  // A collapsed caret OUTSIDE the tree must not clear the engine selection (only a caret
+  // inside the tree clears — xterm's `_rowContainer.contains(anchorNode)` guard).
+  it("does not clear on a collapsed caret outside the tree", () => {
+    expect(run({ anchor: "before", focus: "before", collapsed: true })).toEqual([]);
   });
 });
