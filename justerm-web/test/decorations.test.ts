@@ -2,6 +2,12 @@ import { describe, expect, it } from "vitest";
 import { DecorationRegistry } from "../src/decorations";
 import { MarkerKind } from "../src/markers";
 
+/** A frame stripped to what the ruler join reads: all-marker absolute lines
+ * (stride-2 `id, line`) plus the scroll geometry for the `line / total` ratio. */
+function rulerFrame(markerLines: number[], scrollbackLen: number, rows: number) {
+  return { markerLines, scrollbackLen, rows };
+}
+
 /** One stride-5 marker record `(id, row, kind, exitPresent, exitBits)`. Decorations
  * attach to any marker id, so kind/exit are irrelevant here (default Plain). */
 function mk(id: number, row: number, kind: MarkerKind = MarkerKind.Plain): number[] {
@@ -119,6 +125,81 @@ describe("DecorationRegistry (#120 S1)", () => {
     d.dispose();
 
     expect(reg.decorationsForFrame(frame(mk(4, 0)))).toEqual([]);
+  });
+});
+
+describe("DecorationRegistry.rulerMarksForFrame (#120 S3)", () => {
+  // A ruler mark sits at the marker's buffer-relative position: line / (scrollback
+  // + rows). Here total = 90 + 10 = 100, line 25 → topRatio 0.25.
+  it("places a ruler mark at the marker's buffer-relative position", () => {
+    const reg = new DecorationRegistry();
+    reg.register({ markerId: 7, overviewRulerOptions: { color: 0xff0000 } });
+
+    expect(reg.rulerMarksForFrame(rulerFrame([7, 25], 90, 10))).toEqual([
+      { topRatio: 0.25, color: 0xff0000, position: "full" },
+    ]);
+  });
+
+  // The whole point of the ruler: an OFF-viewport marker (absent from the viewport
+  // marker group, present in the all-marker `markerLines`) still gets a mark, so a
+  // user sees anchors they'd have to scroll to reach.
+  it("shows a mark for a marker off the current viewport", () => {
+    const reg = new DecorationRegistry();
+    reg.register({ markerId: 3, overviewRulerOptions: { color: 0x00ff00 } });
+
+    // marker at buffer line 4, viewport far below — markerLines still carries it.
+    expect(reg.rulerMarksForFrame(rulerFrame([3, 4], 196, 4))).toEqual([
+      { topRatio: 0.02, color: 0x00ff00, position: "full" },
+    ]);
+  });
+
+  // A decoration with no overviewRulerOptions is a cell-only decoration (#198) —
+  // it never contributes a ruler mark.
+  it("ignores decorations without overviewRulerOptions", () => {
+    const reg = new DecorationRegistry();
+    reg.register({ markerId: 7, bg: 0x111111 }); // cell decoration, no ruler
+
+    expect(reg.rulerMarksForFrame(rulerFrame([7, 25], 90, 10))).toEqual([]);
+  });
+
+  // A ruler decoration whose marker isn't in `markerLines` (disposed, or a stale
+  // id) yields no mark — the join is inner.
+  it("ignores a ruler decoration whose marker is absent from markerLines", () => {
+    const reg = new DecorationRegistry();
+    reg.register({ markerId: 9, overviewRulerOptions: { color: 0xff0000 } });
+
+    expect(reg.rulerMarksForFrame(rulerFrame([1, 5], 90, 10))).toEqual([]);
+  });
+
+  // The position option rides through (default "full"); an explicit position is
+  // honoured so a consumer can put marks in a gutter column.
+  it("honours the position option", () => {
+    const reg = new DecorationRegistry();
+    reg.register({ markerId: 2, overviewRulerOptions: { color: 0x0000ff, position: "right" } });
+
+    expect(reg.rulerMarksForFrame(rulerFrame([2, 50], 90, 10))).toEqual([
+      { topRatio: 0.5, color: 0x0000ff, position: "right" },
+    ]);
+  });
+
+  // No content (total 0) → no marks, no divide-by-zero.
+  it("yields no marks when there is no content", () => {
+    const reg = new DecorationRegistry();
+    reg.register({ markerId: 1, overviewRulerOptions: { color: 0xff0000 } });
+
+    expect(reg.rulerMarksForFrame(rulerFrame([1, 0], 0, 0))).toEqual([]);
+  });
+
+  // The ruler is a scrollback navigator, so it's suppressed on the alt screen
+  // (xterm hides its ruler canvas on the alt buffer) — even when markerLines and
+  // content are present.
+  it("yields no marks on the alt screen", () => {
+    const reg = new DecorationRegistry();
+    reg.register({ markerId: 7, overviewRulerOptions: { color: 0xff0000 } });
+
+    expect(
+      reg.rulerMarksForFrame({ markerLines: [7, 25], scrollbackLen: 90, rows: 10, altScreen: true }),
+    ).toEqual([]);
   });
 
   // Completeness pass (lens 1): the registry is a pass-through positions model — it

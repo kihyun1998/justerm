@@ -5,8 +5,9 @@
 
 use core::num::NonZeroU32;
 use justerm_core::{
-    Cell, CellFlags, Color, Engine, Frame, FrameKind, MarkerId, MarkerKind, MarkerPosition,
-    MouseEvents, Overlay, ScrollOp, SelectionSpan, SelectionType, Side, Span, decode, encode,
+    Cell, CellFlags, Color, Engine, Frame, FrameKind, MarkerId, MarkerKind, MarkerLine,
+    MarkerPosition, MouseEvents, Overlay, ScrollOp, SelectionSpan, SelectionType, Side, Span,
+    decode, encode,
 };
 use std::collections::BTreeMap;
 
@@ -78,6 +79,7 @@ fn round_trip_overlay_selection_and_match_spans() {
                 right: 12,
             }],
             markers: vec![],
+            marker_lines: vec![],
         },
     };
     let bytes = encode(&frame);
@@ -201,6 +203,65 @@ fn round_trip_overlay_marker_positions() {
     assert_eq!(decode(&bytes).expect("decode"), frame);
 }
 
+/// #120 S3 (wire v11): the fourth overlay group — every live marker's ABSOLUTE
+/// buffer line — round-trips as `(id u32, line u32)` pairs, independent of the
+/// viewport marker group. `line` is u32, so a value past u16 survives intact.
+#[test]
+fn round_trip_overlay_marker_lines() {
+    let mut frame = Frame {
+        cols: 80,
+        rows: 24,
+        kind: FrameKind::Partial,
+        cursor_row: 0,
+        cursor_col: 0,
+        cursor_visible: true,
+        cursor_shape: justerm_core::CursorShape::Block,
+        cursor_blink: false,
+        display_offset: 0,
+        scrollback_len: 0,
+        mouse_events: Default::default(),
+        alt_screen: false,
+        scroll: None,
+        spans: vec![],
+        side_table: vec![],
+        link_table: vec![],
+        overlay: Overlay::default(),
+    };
+    frame.overlay.marker_lines = vec![
+        MarkerLine {
+            id: MarkerId(5),
+            line: 3,
+        },
+        MarkerLine {
+            id: MarkerId(99),
+            line: 100_000, // past u16 — proves the u32 lane
+        },
+    ];
+    let bytes = encode(&frame);
+    assert_eq!(decode(&bytes).expect("decode"), frame);
+}
+
+/// #120 S3: a marker scrolled OFF the top of the viewport is omitted from the
+/// viewport marker group but STILL reported in `marker_lines` at its absolute
+/// buffer line — the whole reason the ruler group exists (off-viewport anchors).
+#[test]
+fn frame_reports_off_viewport_marker_in_marker_lines() {
+    let mut t = Engine::new(10, 3); // 3 visible rows
+    let id = t.add_marker(0); // marker anchored at absolute buffer line 0
+    t.feed(b"a\r\nb\r\nc\r\nd\r\ne\r\nf\r\n"); // scroll it up into the scrollback
+
+    let frame = t.frame();
+    assert!(
+        frame.overlay.markers.iter().all(|m| m.id != id),
+        "off-viewport marker is absent from the viewport group"
+    );
+    assert_eq!(
+        frame.overlay.marker_lines,
+        vec![MarkerLine { id, line: 0 }],
+        "but present in marker_lines at its absolute line"
+    );
+}
+
 /// #159 (wire v10): a marker's kind + optional exit code (OSC 133 command marks)
 /// survive the wire. Every `MarkerKind` variant round-trips — including
 /// `CommandFinished`'s `Some`/`None` exit — extending the v7 `(id, row)` record
@@ -293,11 +354,12 @@ fn decode_rejects_bad_marker_kind_and_truncated_exit() {
         kind: MarkerKind::CommandFinished(Some(7)),
     }];
     let bytes = encode(&frame);
-    // With every prior section empty, the tail is `marker_count(2)` then the one
-    // record `id(4) row(2) kind(1) present(1) exit(4)` — so the kind byte is 6
-    // from the end and the exit is the last 4 bytes.
+    // With every prior section empty, the tail is the marker group `marker_count(2)`
+    // + record `id(4) row(2) kind(1) present(1) exit(4)`, then the v11 marker_lines
+    // group `count(2)` (0 here). So the kind byte is 8 from the end and the exit
+    // occupies bytes [len-6, len-2).
     let mut bad_kind = bytes.clone();
-    let k = bad_kind.len() - 6;
+    let k = bad_kind.len() - 8;
     bad_kind[k] = 5; // unknown discriminant (valid kinds are 0..=4)
     assert!(
         decode(&bad_kind).is_err(),
@@ -305,7 +367,7 @@ fn decode_rejects_bad_marker_kind_and_truncated_exit() {
     );
 
     let mut truncated = bytes.clone();
-    truncated.truncate(truncated.len() - 2); // chop into the i32 exit
+    truncated.truncate(truncated.len() - 4); // drop the marker_lines count + into the i32 exit
     assert!(
         decode(&truncated).is_err(),
         "a truncated exit must error, not panic"
@@ -543,14 +605,14 @@ fn decode_rejects_superseded_version() {
     ));
 }
 
-/// The wire is gated at version 10 (the #159 marker kind + exit, atop the #149
-/// alt-screen flag, #129 mouse mask and #118 marker group). Both the exported
-/// `WIRE_VERSION` constant and the byte the encoder emits must read 10 — the value
-/// the WASM decoder's `wire_version()` mirrors in lockstep (ADR-0008), so a drift
-/// here trips before it can desync a binding.
+/// The wire is gated at version 11 (the #120 S3 marker-lines group, atop the #159
+/// marker kind + exit, #149 alt-screen flag, #129 mouse mask and #118 marker
+/// group). Both the exported `WIRE_VERSION` constant and the byte the encoder emits
+/// must read 11 — the value the WASM decoder's `wire_version()` mirrors in lockstep
+/// (ADR-0008), so a drift here trips before it can desync a binding.
 #[test]
-fn wire_version_is_ten() {
-    assert_eq!(justerm_core::WIRE_VERSION, 10);
+fn wire_version_is_eleven() {
+    assert_eq!(justerm_core::WIRE_VERSION, 11);
     let mut term = Engine::new(1, 1);
     term.feed(b"x");
     let bytes = encode(&term.frame());

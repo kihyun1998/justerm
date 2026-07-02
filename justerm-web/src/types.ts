@@ -54,6 +54,15 @@ export interface DecodedFrame {
    * markers omits it. Consumed by decorations (#120) + prompt-nav a11y (#160).
    */
   readonly markerPositions?: ArrayLike<number>;
+  /**
+   * EVERY live marker's absolute buffer line (#120 S3, wire v11): stride-2
+   * `(id, line)` — `justerm-wasm-decode`'s `markerLines` getter. A superset of
+   * {@link markerPositions} by id, but keyed to the absolute buffer line (in the
+   * `scrollbackLen + rows` frame), including OFF-viewport markers — so the overview
+   * ruler can place marks a user must scroll to reach. Optional; omitted when there
+   * are no markers. Consumed by decorations (#120 `rulerMarksForFrame`).
+   */
+  readonly markerLines?: ArrayLike<number>;
   /** Grapheme clusters referenced by cells' `extra` index (frame-local). */
   readonly sideTable: readonly string[];
   /**
