@@ -157,3 +157,34 @@ fn search_crosses_wide_char_wrap_boundary() {
     assert_eq!((m[0].start_line, m[0].start_col), (0, 3)); // 'd'
     assert_eq!((m[0].end_line, m[0].end_col), (1, 0)); // '한' body
 }
+
+/// On the alt screen, `search()` must NOT reach into *primary* scrollback (#144):
+/// those matches are unreachable (you can't scroll to them on alt), and joining a
+/// primary scrollback WRAPLINE row into the alt grid corrupts the haystack at the
+/// boundary. The alt buffer is separate — the analog of #113's
+/// `viewport_logical_lines` guard (floor the walk at `scrollback.len()` when
+/// `on_alt`; selection likewise clears on alt-swap). Regression for the unguarded
+/// whole-buffer search walk.
+#[test]
+fn search_on_alt_does_not_cross_into_primary_scrollback() {
+    let mut term = Engine::new(5, 2);
+    term.feed(b"abcdefghijklmno"); // primary soft-wraps; "abcde"(WRAPLINE) evicts to scrollback
+    term.feed(b"\x1b[?1049h\x1b[H"); // enter alt (separate buffer), home cursor
+    term.feed(b"XY"); // alt content at row 0
+
+    // A string that lives only in primary scrollback is unreachable on alt → no match.
+    assert!(
+        term.search("abcde").is_empty(),
+        "primary scrollback is not searched on the alt screen"
+    );
+    // The cross-boundary join "abcde" + "XY" must not form a haystack → no phantom.
+    assert!(
+        term.search("deXY").is_empty(),
+        "no primary→alt haystack corruption across the buffer boundary"
+    );
+    // Alt content is found at its absolute line (scrollback.len() == 1 → alt row 0 = abs 1).
+    let m = term.search("XY");
+    assert_eq!(m.len(), 1);
+    assert_eq!((m[0].start_line, m[0].start_col), (1, 0));
+    assert_eq!((m[0].end_line, m[0].end_col), (1, 1));
+}
