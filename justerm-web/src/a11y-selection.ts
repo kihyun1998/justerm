@@ -15,39 +15,83 @@
 
 import type { Side, SelectionPort } from "./selection";
 
-/** An AT text selection resolved to tree coordinates. Each endpoint is a viewport
- * `row` + the UTF-16 `offset` into that row's SR text (the row tree's `textContent`,
- * which is `rowCells(row).text`), or `null` when the endpoint is outside the row tree.
- * The DOM glue builds this from `getSelection()` + the listitems' `aria-posinset`. */
+/** One endpoint of an AT text selection, resolved by the DOM glue:
+ * - `{ row, offset }` — inside a listitem: viewport `row` + UTF-16 `offset` into that
+ *   row's SR text (the row tree's `textContent`, which is `rowCells(row).text`).
+ * - `"before"` / `"after"` — *outside* the tree but the selection overlaps it, with the
+ *   endpoint sitting above row 0 / below the last row (native Select-All, a text-drag
+ *   overshooting an edge, or the sibling live region). Clamped to the tree boundary
+ *   (#217), mirroring xterm's `_handleSelectionChange` begin/end clamp.
+ * - `null` — no node at all (empty `getSelection`), so there's nothing to map. */
+export type TreeEndpoint = { row: number; offset: number } | "before" | "after" | null;
+
+/** An AT text selection resolved to tree coordinates. The DOM glue builds this from
+ * `getSelection()` + the listitems' `aria-posinset` (and `compareDocumentPosition` for
+ * the out-of-tree `before`/`after` classification). */
 export interface TreeSelection {
-  readonly anchor: { row: number; offset: number } | null;
-  readonly focus: { row: number; offset: number } | null;
+  readonly anchor: TreeEndpoint;
+  readonly focus: TreeEndpoint;
   readonly collapsed: boolean;
 }
 
+/** Whether an endpoint resolved *inside* the tree (vs an out-of-tree side / null). */
+function inside(ep: TreeEndpoint): ep is { row: number; offset: number } {
+  return ep !== null && ep !== "before" && ep !== "after";
+}
+
 /**
- * Drive `port` from an AT text selection. A collapsed selection *inside the tree*
- * clears the engine selection (a caret is not a selection); a selection whose anchor
- * is outside the tree is ignored (it isn't ours — leave the engine's selection alone,
- * xterm's `_rowContainer.contains` guard). Otherwise `begin` at the anchor boundary and
- * `extend` to the focus boundary, both as `char` selections — the engine tracks
- * anchor→focus, so a backwards (focus-before-anchor) selection works unchanged.
+ * Drive `port` from an AT text selection. A collapsed selection whose caret is *inside
+ * the tree* clears the engine selection (a caret is not a selection); a caret outside
+ * the tree is left alone (xterm's `_rowContainer.contains` guard). For a range, each
+ * out-of-tree endpoint that still *overlaps* the tree is clamped to the nearest boundary
+ * — `"before"` → the start of row 0, `"after"` → the end of the last row (`rowCount-1`)
+ * — so native Select-All and drag-overshoot select the intersection instead of no-oping
+ * (#217, xterm's `_handleSelectionChange` clamp). A selection wholly on one side (both
+ * endpoints `"before"`, or both `"after"`) doesn't overlap and is ignored. Otherwise
+ * `begin` at the anchor boundary and `extend` to the focus boundary as `char` selections
+ * — the engine tracks anchor→focus, so a backwards selection works unchanged.
  */
 export function a11ySelectionToPort(
   sel: TreeSelection,
   columnsFor: (row: number) => number[],
+  rowCount: number,
   port: SelectionPort,
 ): void {
-  if (!sel.anchor) return; // anchor outside the row tree — not ours
   if (sel.collapsed) {
-    port.clear();
+    if (inside(sel.anchor)) port.clear(); // caret in the tree clears; outside is not ours
     return;
   }
-  if (!sel.focus) return;
-  const a = boundary(sel.anchor.row, sel.anchor.offset, columnsFor(sel.anchor.row));
-  const f = boundary(sel.focus.row, sel.focus.offset, columnsFor(sel.focus.row));
+  if (sel.anchor === null || sel.focus === null) return; // a missing endpoint — nothing to map
+  // Both endpoints on the same outside side → the selection doesn't overlap the tree
+  // (xterm bails when `begin` is below the last row or `end` is above the first).
+  if ((sel.anchor === "before" || sel.anchor === "after") && sel.anchor === sel.focus) return;
+  const a = clamp(sel.anchor, rowCount, columnsFor);
+  const f = clamp(sel.focus, rowCount, columnsFor);
+  // No invalid-range guard on purpose (unlike xterm's `throw 'invalid range'`): a backwards
+  // pair is normal (the engine normalizes anchor→focus, like the mouse backward-drag), and a
+  // degenerate begin===end (two UTF-16 offsets collapsing onto one grid column via a wide or
+  // combining char) is a harmless zero-width selection (empty text, copy skips it) — safer
+  // than throwing. Don't "restore parity" by adding the assert. (#217 2-lens.)
   port.begin(a.row, a.col, a.side, "char");
   port.extend(f.row, f.col, f.side);
+}
+
+/** Resolve an endpoint to a grid boundary, clamping an out-of-tree side to the tree
+ * edge: `"before"` → the left of row 0's first char, `"after"` → the right of the last
+ * row's last char (end-of-text on `rowCount-1`). */
+function clamp(
+  ep: { row: number; offset: number } | "before" | "after",
+  rowCount: number,
+  columnsFor: (row: number) => number[],
+): { row: number; col: number; side: Side } {
+  if (ep === "before") return boundary(0, 0, columnsFor(0));
+  if (ep === "after") {
+    const last = Math.max(0, rowCount - 1);
+    // Offset past the end → the RIGHT of the last char (end-of-line), like xterm clamping
+    // `end` to `lastRowElement.textContent.length`.
+    return boundary(last, Number.MAX_SAFE_INTEGER, columnsFor(last));
+  }
+  return boundary(ep.row, ep.offset, columnsFor(ep.row));
 }
 
 /** Map a DOM text `offset` in `row` (column map `columns`, one entry per UTF-16 unit)

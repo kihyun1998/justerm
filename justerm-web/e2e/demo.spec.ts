@@ -206,3 +206,69 @@ test("accessible view opens as a document overlay and Escape closes it", async (
   await page.keyboard.press("Escape");
   await expect(doc).toBeHidden();
 });
+
+// #217: a native Select-All puts the selection anchor/focus OUTSIDE the hidden row tree
+// (on document.body, an ancestor spanning it). The bridge must CLAMP those endpoints to
+// the tree instead of no-oping — begin at row 0, col 0 and extend to a later row. Proven
+// in a real browser: the demo's a11y `selectionPort` logs `[a11y-sel] begin/extend`, so a
+// clamp that fired (vs a silent no-op) is observable via the console signal. This exercises
+// the real DOM glue (`compareDocumentPosition` classification + range intersection), which
+// the DOM-less unit tests can't.
+test("Select-All clamps the out-of-tree selection to the row tree (#217)", async ({ page }) => {
+  const selLog: string[] = [];
+  page.on("console", (m) => {
+    const t = m.text();
+    if (t.includes("[a11y-sel]")) selLog.push(t);
+  });
+
+  // The row tree mirrors the viewport; wait for it to hold content rows.
+  await expect(page.locator("[role='listitem']").first()).toBeAttached();
+
+  // Native Select-All: select everything under <body>, spanning the whole tree.
+  await page.evaluate(() => {
+    const s = window.getSelection();
+    if (!s) throw new Error("no selection");
+    s.removeAllRanges();
+    s.selectAllChildren(document.body);
+  });
+
+  // The clamp fired: begin at the tree start (row 0, col 0) and an extend to a later row —
+  // NOT a no-op (pre-#217 this whole selection was dropped because both endpoints were
+  // outside the tree).
+  await expect.poll(() => selLog.join("\n")).toContain("[a11y-sel] begin 0,0");
+  expect(selLog.some((l) => l.includes("[a11y-sel] extend"))).toBe(true);
+});
+
+// #217 (Lens-1 edge): an ASYMMETRIC selection — one endpoint resolved inside a row, the
+// other a spanning ancestor (e.g. `documentElement`, how some ATs report a "select to
+// end"). The out-of-tree end classifies as null (an ancestor contains the whole tree), so
+// the rescue must fire on EITHER endpoint being null — not just both — else the whole
+// selection is silently dropped. Proven live: the clamp must still emit a begin/extend.
+test("asymmetric spanning selection (row → documentElement) still clamps (#217)", async ({
+  page,
+}) => {
+  const selLog: string[] = [];
+  page.on("console", (m) => {
+    const t = m.text();
+    if (t.includes("[a11y-sel]")) selLog.push(t);
+  });
+
+  await expect(page.locator("[role='listitem']").first()).toBeAttached();
+
+  await page.evaluate(() => {
+    const firstRow = document.querySelector("[role='list'] [role='listitem']");
+    const textNode = firstRow?.firstChild;
+    if (!textNode) throw new Error("no row text node");
+    const r = document.createRange();
+    r.setStart(textNode, 0); // anchor INSIDE row 0
+    r.setEnd(document.documentElement, document.documentElement.childNodes.length); // focus on a spanning ancestor
+    const s = window.getSelection();
+    if (!s) throw new Error("no selection");
+    s.removeAllRanges();
+    s.addRange(r);
+  });
+
+  // Not dropped: the spanning-ancestor end clamped, so a real selection was driven.
+  await expect.poll(() => selLog.some((l) => l.includes("[a11y-sel] begin"))).toBe(true);
+  expect(selLog.some((l) => l.includes("[a11y-sel] extend"))).toBe(true);
+});
