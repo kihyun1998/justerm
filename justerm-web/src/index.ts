@@ -78,6 +78,11 @@ export type { CommandInfo, CommandNavPort, NavView } from "./command-nav";
 // Markers (id/row/kind/exit). Shared by command announce, decorations, nav.
 export { MarkerKind, readMarkers } from "./markers";
 export type { Marker } from "./markers";
+// Marker-anchored decorations (#120) — a registry that projects per-frame
+// decoration rects (positions + colour refs) from markers; colour/render is the
+// consumer's (#115). S1: model + lifecycle + auto-dispose; render is S2/S3.
+export { DecorationRegistry } from "./decorations";
+export type { Decoration, DecorationLayer, DecorationOptions, DecorationRect } from "./decorations";
 // Screen-reader-active gate (#161) — the host injects SR presence (a browser
 // can't detect it); while inactive, the a11y announce/signal sinks no-op. Share
 // one instance across #119 + #160 so a single toggle governs both.
