@@ -262,6 +262,17 @@ deferred behavior) it tracks — then add what you find here.** Seeds (caught in
   real content), skips `WIDE_CHAR_SPACER` cells (emit the lead glyph once), and ends hard lines with
   `\n`; Block extracts each row independently. `selection_range` instead projects onto *viewport* rows
   (clipping off-screen parts) as inclusive column spans for the renderer. [#5]
+- **The soft-wrap run walk is intentionally unbounded (scrollback-bounded), not capped.** `search`,
+  `viewport_logical_lines`, and word-selection assemble a `WRAPLINE` run into one logical line with **no
+  per-run length cap** — bounded only physically by the scrollback cap (`O(scrollback)` per call, never
+  infinite). This is a deliberate completeness/a11y choice: an edge-spanning URL wrapped across many rows
+  still matches (link detection), and the a11y view reads the whole logical line (#119). xterm's *search*
+  wrap-assembly is likewise uncapped (only a 1000-*result* cap; its 2048-char/direction cap is in the
+  separate *link provider*), so a cap here would *exceed* xterm parity while *regressing* justerm's
+  completeness. It is therefore **deferred** until profiling shows the pathological single-multi-KB-line
+  case matters (a ReDoS-amplification surface only for the consumer's own regex, which the consumer bounds
+  at its layer — ADR-0017 policy-in-consumer). If ever added, it caps all three walks uniformly with a
+  whitespace stop. [#206]
 
 - **Editing CSIs are BCE-filled and region/line-scoped — and must not orphan a wide-char half.**
   ICH (`@`, insert blanks), DCH (`P`, delete chars), ECH (`X`, erase chars) operate *within the
