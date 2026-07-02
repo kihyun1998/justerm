@@ -925,8 +925,19 @@ impl Term {
         let needle: Vec<char> = q.iter().map(|&c| fold(c)).collect();
         let total = self.scrollback.len() + self.grid.rows();
 
+        // On the alt screen the scrollback belongs to the *primary* buffer, so the
+        // walk must start at the screen top (`scrollback.len()`): primary matches are
+        // unreachable on alt, and a primary WRAPLINE row would otherwise soft-wrap-join
+        // into the alt grid and corrupt the haystack at the boundary. Mirrors the
+        // `viewport_logical_lines` floor (#113) — the alt buffer is separate (selection
+        // clears on alt-swap for the same reason). (#144)
+        let floor = if self.on_alt {
+            self.scrollback.len()
+        } else {
+            0
+        };
         let mut matches = Vec::new();
-        let mut r = 0;
+        let mut r = floor;
         while r < total {
             // Build the logical line at `r`: join soft-wrapped rows, recording
             // each char's source position and skipping wide-char spacers.
