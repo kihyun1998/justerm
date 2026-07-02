@@ -1657,6 +1657,20 @@ impl Term {
         out
     }
 
+    /// The lowest absolute line a soft-wrap buffer walk may reach. On the alt screen
+    /// `scrollback` holds the *primary* buffer's history — a separate logical space —
+    /// so a walk floors at `scrollback.len()` (the alt grid's first line) and must not
+    /// join across it. Mirrors the `search()` (#144) and `viewport_logical_lines`
+    /// (#113) floors: justerm's single `[scrollback ++ grid]` buffer reproduces the
+    /// primary↔alt isolation xterm gets from separate `Buffer` objects.
+    fn abs_floor(&self) -> usize {
+        if self.on_alt {
+            self.scrollback.len()
+        } else {
+            0
+        }
+    }
+
     /// The cell position before `(line, col)` in the *logical* line — the column
     /// to the left, or the end of the previous row if it soft-wrapped into this
     /// one. `None` at the buffer start or across a hard line-end.
@@ -1664,7 +1678,10 @@ impl Term {
         if col > 0 {
             return Some((line, col - 1));
         }
-        if line > 0 {
+        // Only step up while the previous row is still on *this* buffer (>= floor):
+        // on alt, row 0 (`line == scrollback.len()`) must not join the primary
+        // scrollback row below it, even when that row carries WRAPLINE (#207).
+        if line > self.abs_floor() {
             let prev = self.abs_line(line - 1);
             if prev.last().is_some_and(|c| c.is_wrapline()) {
                 return Some((line - 1, prev.len() - 1));
@@ -1682,7 +1699,14 @@ impl Term {
             return Some((line, col + 1));
         }
         let total = self.scrollback.len() + self.grid.rows();
-        if line + 1 < total && cells.last().is_some_and(|c| c.is_wrapline()) {
+        // Symmetric floor guard (#207): a row below the floor (primary scrollback on
+        // alt) must not soft-wrap-join down into the alt grid. `line >= floor` holds
+        // for any position reachable on alt once `prev_pos` is floored; kept explicit
+        // so no future caller can cross from a primary row.
+        if line >= self.abs_floor()
+            && line + 1 < total
+            && cells.last().is_some_and(|c| c.is_wrapline())
+        {
             return Some((line + 1, 0));
         }
         None
