@@ -19,6 +19,30 @@ import { type Marker, readMarkers } from "./markers";
  * `bottom` overrides the cell background *under* the glyph, `top` paints *over* it. */
 export type DecorationLayer = "bottom" | "top";
 
+/** Where on the overview-ruler track a mark sits across its width (#120 S3),
+ * mirroring xterm's `IDecorationOverviewRulerOptions.position`. `full` spans the
+ * whole width; the others are gutter columns. */
+export type RulerPosition = "left" | "center" | "right" | "full";
+
+/** Overview-ruler options for a decoration (#120 S3): a mark on the scrollbar at
+ * the marker's buffer-relative position, so off-viewport anchors are visible.
+ * `color` is an opaque ref (consumer theme, theme-agnostic like `bg`/`fg`). */
+export interface OverviewRulerOptions {
+  /** Mark colour (opaque ref; the consumer/renderer resolves it). */
+  readonly color: number;
+  /** Where across the ruler width the mark sits (default `full`). */
+  readonly position?: RulerPosition;
+}
+
+/** One overview-ruler mark projected for a frame (#120 S3): its position down the
+ * track as a `0..1` ratio (the marker's absolute line ÷ total content lines), its
+ * colour, and its across-width placement. The scrollbar renders it. */
+export interface RulerMark {
+  readonly topRatio: number;
+  readonly color: number;
+  readonly position: RulerPosition;
+}
+
 /** Options for {@link DecorationRegistry.register}, the subset of xterm's
  * `IDecorationOptions` this slice models. `bg`/`fg` are opaque colour refs (the
  * renderer/#115 resolves them).
@@ -43,6 +67,9 @@ export interface DecorationOptions {
   readonly bg?: number;
   /** Foreground colour override ref (opaque; resolved by the renderer). */
   readonly fg?: number;
+  /** Overview-ruler mark options (#120 S3). Absent → no ruler mark (a cell-only
+   * decoration). Independent of `bg`/`fg`: a decoration can do either or both. */
+  readonly overviewRulerOptions?: OverviewRulerOptions;
 }
 
 /** A live decoration handle. Disposing it (or a {@link
@@ -81,6 +108,7 @@ interface StoredDecoration extends Decoration {
   readonly layer: DecorationLayer;
   readonly bg?: number;
   readonly fg?: number;
+  readonly overviewRulerOptions?: OverviewRulerOptions;
   disposed: boolean;
 }
 
@@ -106,6 +134,7 @@ export class DecorationRegistry {
       layer: options.layer ?? "bottom",
       bg: options.bg,
       fg: options.fg,
+      overviewRulerOptions: options.overviewRulerOptions,
       disposed: false,
       dispose: () => this.remove(d),
     };
@@ -149,6 +178,45 @@ export class DecorationRegistry {
     return rects;
   }
 
+  /**
+   * Project the overview-ruler marks for one frame (#120 S3): for each decoration
+   * carrying `overviewRulerOptions`, join its marker id with the frame's
+   * `markerLines` (EVERY live marker's absolute buffer line, on-screen or not — the
+   * v11 group) and place a mark at `line / (scrollbackLen + rows)` down the track.
+   * Off-viewport anchors show here even though they're absent from
+   * {@link decorationsForFrame} — that is the whole point of a ruler. A ruler
+   * decoration whose marker isn't currently live yields no mark (inner join).
+   */
+  rulerMarksForFrame(frame: {
+    markerLines?: ArrayLike<number>;
+    scrollbackLen?: number;
+    rows?: number;
+    altScreen?: boolean;
+  }): RulerMark[] {
+    // The overview ruler is a scrollback navigator, so it's hidden on the alt
+    // screen (vim/htop) — which has no user scrollback and whose markers are alt-
+    // scoped decorations, not primary anchors. Mirrors xterm hiding its ruler
+    // canvas (`display:none`) on buffer-activate to the alt buffer.
+    if (frame.altScreen) return [];
+    const total = (frame.scrollbackLen ?? 0) + (frame.rows ?? 0);
+    if (total <= 0) return [];
+    const lineOf = readMarkerLines(frame.markerLines);
+    const marks: RulerMark[] = [];
+    for (const [markerId, set] of this.byMarker) {
+      const line = lineOf.get(markerId);
+      if (line === undefined) continue;
+      for (const d of set) {
+        if (!d.overviewRulerOptions) continue;
+        marks.push({
+          topRatio: line / total,
+          color: d.overviewRulerOptions.color,
+          position: d.overviewRulerOptions.position ?? "full",
+        });
+      }
+    }
+    return marks;
+  }
+
   private rect(d: StoredDecoration, m: Marker): DecorationRect {
     return {
       row: m.row,
@@ -168,4 +236,18 @@ export class DecorationRegistry {
     set.delete(d);
     if (set.size === 0) this.byMarker.delete(d.markerId);
   }
+}
+
+/** u32 lanes per record in a frame's `markerLines` (#120 S3, wire v11): `id`,
+ * absolute `line`. See the wasm `MARKER_LINE_STRIDE`. */
+const MARKER_LINE_STRIDE = 2;
+
+/** Decode `markerLines` (flat stride-2) into a `markerId → absolute line` map. */
+function readMarkerLines(flat?: ArrayLike<number>): Map<number, number> {
+  const out = new Map<number, number>();
+  if (!flat) return out;
+  for (let i = 0; i + MARKER_LINE_STRIDE <= flat.length; i += MARKER_LINE_STRIDE) {
+    out.set(flat[i]!, flat[i + 1]!);
+  }
+  return out;
 }

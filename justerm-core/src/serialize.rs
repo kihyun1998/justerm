@@ -17,7 +17,7 @@ use std::collections::BTreeMap;
 
 /// Wire magic ("juSTerm") + format version. A new feature bumps `VERSION`.
 const MAGIC: [u8; 2] = *b"JT";
-const VERSION: u8 = 10; // v10 adds a marker kind discriminant + optional i32 exit to the overlay marker group (#159); v9 adds the alt-screen flag in the header (#149); v8 adds the mouse wanted-events mask in the header (#129/ADR-0016); v7 overlay marker group (#118/ADR-0015); v6 overlay selection + search-match spans (#108/ADR-0014); v5 scroll position (#112/ADR-0013); v4 cursor shape+blink (#81); v3 cursor row/col/visibility (#38)
+const VERSION: u8 = 11; // v11 adds a fourth overlay group: every live marker's absolute buffer line for the overview ruler (#120 S3); v10 adds a marker kind discriminant + optional i32 exit to the overlay marker group (#159); v9 adds the alt-screen flag in the header (#149); v8 adds the mouse wanted-events mask in the header (#129/ADR-0016); v7 overlay marker group (#118/ADR-0015); v6 overlay selection + search-match spans (#108/ADR-0014); v5 scroll position (#112/ADR-0013); v4 cursor shape+blink (#81); v3 cursor row/col/visibility (#38)
 
 /// The wire-format version (the gating `VERSION` byte), exposed so a binding can
 /// assert at load that its decoder matches the backend encoder (#34/ADR-0008).
@@ -92,6 +92,20 @@ pub struct MarkerPosition {
     pub kind: MarkerKind,
 }
 
+/// A marker's absolute buffer line (#120 S3, v11). Unlike [`MarkerPosition`],
+/// this is reported for EVERY live marker — on-screen or not — so a frame-mode
+/// consumer can place overview-ruler marks buffer-relatively (dividing by
+/// `scrollback + rows`), the whole point of a ruler being to show off-viewport
+/// anchors. The consumer joins `id` with its decoration registry; the ruler mark's
+/// colour is the consumer's (theme-agnostic), so no kind/exit rides here.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct MarkerLine {
+    pub id: MarkerId,
+    /// Absolute buffer line, in the same `[0, scrollback_len + rows)` frame the
+    /// header's `scrollback_len`/`display_offset` use.
+    pub line: u32,
+}
+
 /// Interaction overlays projected onto the viewport (#108): highlight spans the
 /// engine carries on the frame so a frame-mode consumer can paint them without
 /// an in-process model query. Positions only — highlight colour is the
@@ -113,6 +127,11 @@ pub struct Overlay {
     /// buffer mutation and survive an alt-screen excursion; only their viewport
     /// position rides here.
     pub markers: Vec<MarkerPosition>,
+    /// Every live marker's absolute buffer line (#120 S3, v11), on-screen or not —
+    /// the overview ruler needs off-viewport anchors, which `markers` (viewport-
+    /// only) can't supply. A superset of `markers` by id; different frame of
+    /// reference (absolute line, not viewport row).
+    pub marker_lines: Vec<MarkerLine>,
 }
 
 /// One serialized damage cycle: the decoded logical form that `encode`/`decode`
@@ -261,6 +280,15 @@ pub fn encode(frame: &Frame) -> Vec<u8> {
             out.push(exit.is_some() as u8);
             out.extend_from_slice(&exit.unwrap_or(0).to_le_bytes());
         }
+    }
+    // Fourth overlay group (#120 S3, v11): every live marker's absolute buffer
+    // line as `(id u32, line u32)` pairs — a superset of the viewport marker group
+    // above, for placing overview-ruler marks off-viewport. Count-prefixed like the
+    // others.
+    out.extend_from_slice(&(frame.overlay.marker_lines.len() as u16).to_le_bytes());
+    for m in &frame.overlay.marker_lines {
+        out.extend_from_slice(&m.id.0.to_le_bytes());
+        out.extend_from_slice(&m.line.to_le_bytes());
     }
     out
 }
@@ -440,10 +468,20 @@ pub fn decode(bytes: &[u8]) -> Result<Frame, DecodeError> {
         };
         markers.push(MarkerPosition { id, row, kind });
     }
+    // Fourth group (#120 S3, v11): every live marker's `(id u32, line u32)` — the
+    // absolute-line superset for the overview ruler (inverse of the encode loop).
+    let marker_line_count = r.u16()?;
+    let mut marker_lines = Vec::with_capacity(marker_line_count as usize);
+    for _ in 0..marker_line_count {
+        let id = MarkerId(r.u32()?);
+        let line = r.u32()?;
+        marker_lines.push(MarkerLine { id, line });
+    }
     let overlay = Overlay {
         selection,
         matches,
         markers,
+        marker_lines,
     };
     Ok(Frame {
         cols,

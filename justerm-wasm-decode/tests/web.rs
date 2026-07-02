@@ -77,8 +77,8 @@ fn sample_frame() -> Frame {
 }
 
 #[wasm_bindgen_test]
-fn wire_version_is_ten() {
-    assert_eq!(wire_version(), 10); // #159 bumped 9 -> 10 for marker kind + exit
+fn wire_version_is_eleven() {
+    assert_eq!(wire_version(), 11); // #120 S3 bumped 10 -> 11 for the marker-lines group
 }
 
 #[wasm_bindgen_test]
@@ -232,6 +232,7 @@ fn overlay_span_views_cross_the_boundary() {
             },
         ],
         markers: vec![],
+        marker_lines: vec![],
     };
     let df = decode_frame(&justerm_core::encode(&frame)).expect("decode");
 
@@ -281,6 +282,30 @@ fn marker_position_view_crosses_the_boundary() {
     assert_eq!(m.get_index(7), 4); // kind = CommandFinished
     assert_eq!(m.get_index(8), 1); // exitPresent = 1
     assert_eq!(m.get_index(9), (-1i32) as u32); // exitBits: -1 reinterpreted
+}
+
+#[wasm_bindgen_test]
+fn marker_lines_view_crosses_the_boundary() {
+    use justerm_core::{MarkerId, MarkerLine};
+    let mut frame = sample_frame();
+    frame.overlay.marker_lines = vec![
+        MarkerLine {
+            id: MarkerId(5),
+            line: 3,
+        },
+        MarkerLine {
+            id: MarkerId(99),
+            line: 100_000, // past u16 — the u32 line lane survives the JS boundary
+        },
+    ];
+    let df = decode_frame(&justerm_core::encode(&frame)).expect("decode");
+
+    let m = df.marker_lines();
+    assert_eq!(m.length(), 4); // two markers × stride 2 (id, line)
+    assert_eq!(m.get_index(0), 5); // id
+    assert_eq!(m.get_index(1), 3); // line
+    assert_eq!(m.get_index(2), 99); // id
+    assert_eq!(m.get_index(3), 100_000); // line (> u16)
 }
 
 #[wasm_bindgen_test]

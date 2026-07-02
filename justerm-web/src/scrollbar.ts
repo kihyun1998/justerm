@@ -1,3 +1,5 @@
+import type { RulerMark } from "./decorations";
+
 /** The viewport scroll position the scrollbar reads (from the decoded frame). */
 export interface ScrollPosition {
   /** Lines scrolled up from the bottom (0 = following the live screen). */
@@ -65,6 +67,8 @@ export class Scrollbar {
   private readonly track: HTMLDivElement;
   private readonly thumb: HTMLDivElement;
   private pos: ScrollPosition = { displayOffset: 0, scrollbackLen: 0, rows: 0 };
+  /** Overview-ruler mark elements (#120 S3), re-created each {@link setMarks}. */
+  private readonly markEls: HTMLDivElement[] = [];
   private dragging = false;
   private readonly onMove: (e: globalThis.MouseEvent) => void;
   private readonly onUp: () => void;
@@ -117,6 +121,31 @@ export class Scrollbar {
     this.thumb.style.top = `${m.thumbTopRatio * 100}%`;
   }
 
+  /**
+   * Render the overview-ruler marks (#120 S3) — xterm's `OverviewRulerRenderer`
+   * analog. Each mark is a thin coloured bar at its `topRatio` down the track, so
+   * off-viewport anchors are visible on the full-buffer scrollbar. Marks live on
+   * the track (they show with it) and don't intercept drags (`pointer-events:
+   * none`). Drive it with `registry.rulerMarksForFrame(frame)` each frame.
+   */
+  setMarks(marks: RulerMark[]): void {
+    for (const el of this.markEls) el.remove();
+    this.markEls.length = 0;
+    for (const m of marks) {
+      const el = document.createElement("div");
+      Object.assign(el.style, {
+        position: "absolute",
+        top: `${m.topRatio * 100}%`,
+        height: "2px",
+        background: `#${(m.color & 0xffffff).toString(16).padStart(6, "0")}`,
+        pointerEvents: "none",
+        ...rulerMarkX(m.position),
+      } satisfies Partial<CSSStyleDeclaration>);
+      this.track.appendChild(el);
+      this.markEls.push(el);
+    }
+  }
+
   private dragTo(clientY: number): void {
     if (!this.dragging) return;
     const r = this.track.getBoundingClientRect();
@@ -127,5 +156,20 @@ export class Scrollbar {
   dispose(): void {
     this.onUp();
     this.track.remove();
+  }
+}
+
+/** Horizontal placement CSS for a ruler mark's `position` — `full` spans the
+ * track; `left`/`center`/`right` are thirds (gutter columns). */
+function rulerMarkX(position: RulerMark["position"]): Partial<CSSStyleDeclaration> {
+  switch (position) {
+    case "left":
+      return { left: "0", width: "33%" };
+    case "center":
+      return { left: "33%", width: "34%" };
+    case "right":
+      return { right: "0", width: "33%" };
+    default:
+      return { left: "0", right: "0" };
   }
 }

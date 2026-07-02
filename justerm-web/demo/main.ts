@@ -278,6 +278,9 @@ function toggleDecorateLine(): void {
       width: COLS,
       layer: "bottom",
       bg: 0x008f00, // green — distinct from defaultBg, glyphs stay readable above
+      // #120 S3: also mark it on the overview ruler (orange), to demo the scrollbar
+      // mark alongside the cell tint.
+      overviewRulerOptions: { color: 0xff8800 },
     });
   }
   decoBtn.textContent = `Decorate line: ${lineDecoration ? "ON" : "OFF"}`;
@@ -406,6 +409,10 @@ function viewportFrame(out?: { scrollCount: number }): DecodedFrame {
     matchSpans: searchEngine.matchSpans(top, ROWS), // S9: search matches on the view
     // #160 command marks (Finish command) + #120 S2 decoration marker (Decorate line).
     markerPositions: [...commandMarks, ...decorationMarks],
+    // #120 S3: every live marker's absolute buffer line. The demo pins the ruler
+    // marker near the TOP of the buffer (line 3) so its ruler mark shows there
+    // regardless of scroll — an off-viewport anchor the viewport marker group can't.
+    markerLines: lineDecoration ? [DECO_MARKER_ID, 3] : [],
     ...(out && out.scrollCount > 0
       ? { hasScroll: true, scrollTop: 0, scrollBottom: ROWS - 1, scrollCount: out.scrollCount }
       : {}),
@@ -425,6 +432,7 @@ function render(out?: { scrollCount: number }): void {
   a11y.onFrame(frame); // S14: mirror the viewport + announce new output
   cmdCtrl.onFrame(frame); // #160: announce + signal a finished command
   bar.update({ displayOffset, scrollbackLen: maxOffset(), rows: ROWS });
+  bar.setMarks(decorations.rulerMarksForFrame(frame)); // #120 S3: overview-ruler marks
   updateLinks();
 }
 

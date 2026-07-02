@@ -82,7 +82,15 @@ export type { Marker } from "./markers";
 // decoration rects (positions + colour refs) from markers; colour/render is the
 // consumer's (#115). S1: model + lifecycle + auto-dispose; render is S2/S3.
 export { DecorationRegistry } from "./decorations";
-export type { Decoration, DecorationLayer, DecorationOptions, DecorationRect } from "./decorations";
+export type {
+  Decoration,
+  DecorationLayer,
+  DecorationOptions,
+  DecorationRect,
+  OverviewRulerOptions,
+  RulerMark,
+  RulerPosition,
+} from "./decorations";
 // Decoration rendering (#120 S2) — per-cell query + layered colour composition
 // (base < bottom decoration < selection/match highlight < top decoration). Pure;
 // a custom renderer composes decorations the same way BeamtermRenderer does.

@@ -20,7 +20,9 @@ use crate::input::{
 use crate::logical::LogicalLine;
 use crate::search::Match;
 use crate::selection::{Anchor, BufferPoint, Selection, SelectionSpan, SelectionType, Side};
-use crate::serialize::{Frame, FrameKind, MarkerId, MarkerKind, MarkerPosition, Overlay, Span};
+use crate::serialize::{
+    Frame, FrameKind, MarkerId, MarkerKind, MarkerLine, MarkerPosition, Overlay, Span,
+};
 
 /// Owns the authoritative screen state and applies VT actions to it.
 pub struct Term {
@@ -585,6 +587,7 @@ impl Term {
                     .flat_map(|m| self.match_spans(m))
                     .collect(),
                 markers: self.marker_positions(),
+                marker_lines: self.all_marker_lines(),
             },
         }
     }
@@ -1245,6 +1248,21 @@ impl Term {
                     row,
                     kind: m.kind,
                 })
+            })
+            .collect()
+    }
+
+    /// Every live marker's absolute buffer line (#120 S3) — the off-viewport
+    /// superset of `marker_positions`, for the overview ruler. No viewport filter:
+    /// a marker scrolled out of view is still reported (that is the ruler's job),
+    /// its `line` in the same `[0, scrollback + rows)` frame as the header's
+    /// `scrollback_len`/`display_offset`.
+    fn all_marker_lines(&self) -> Vec<MarkerLine> {
+        self.markers()
+            .iter()
+            .map(|m| MarkerLine {
+                id: m.id,
+                line: m.line as u32,
             })
             .collect()
     }
