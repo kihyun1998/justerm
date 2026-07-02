@@ -3,8 +3,8 @@ import type { Palette } from "justerm-wasm-decode/colors.js";
 import { CellMirror } from "./cell-mirror";
 import { CursorBlink, cursorOp } from "./cursor";
 import type { DecorationRect } from "./decorations";
-import { highlightRects } from "./overlay";
-import { composeOverlayDraws } from "./overlay-compose";
+import { type HighlightRect, highlightRects } from "./overlay";
+import { composeOverlayDraws, cursorCellDraw } from "./overlay-compose";
 import type { DrawOp, FlagBits } from "./render-core";
 import type { DecodedFrame } from "./types";
 import type { Renderer } from "./renderer";
@@ -82,6 +82,12 @@ export class BeamtermRenderer implements Renderer {
    * that this frame's damage doesn't cover is repainted from the mirror. Reset when
    * the mirror is rebuilt (a resize invalidates the keys). Empty ⇔ nothing tinted. */
   private prevOverlay = new Set<number>();
+  /** The last frame's overlay rects, retained so the blink loop's off-phase cursor
+   * cell composites the SAME tint (#210) — the loop fires between frames, so it can't
+   * read the frame. Selection/decoration only change via a frame, so these stay
+   * current. Empty ⇔ nothing tinted. */
+  private lastHighlights: HighlightRect[] = [];
+  private lastDecorations: DecorationRect[] = [];
 
   private constructor(
     private readonly backend: Backend,
@@ -202,10 +208,12 @@ export class BeamtermRenderer implements Renderer {
     // tints the damaged cells AND adds the #140 delta: a cell whose overlay
     // membership flipped but that this partial frame doesn't damage is repainted from
     // the mirror (re-tint or restore), the cursor's old+new cell damage pattern.
+    const highlights = highlightRects(frame);
+    const decorations = this.decorationSource?.(frame) ?? [];
     const { draws, overlay } = composeOverlayDraws({
       ops,
-      highlights: highlightRects(frame),
-      decorations: this.decorationSource?.(frame) ?? [],
+      highlights,
+      decorations,
       prevOverlay: this.prevOverlay,
       cols: this.cols,
       rows: this.rows,
@@ -214,6 +222,9 @@ export class BeamtermRenderer implements Renderer {
     });
     for (const d of draws) this.drawOp(batch, d);
     this.prevOverlay = overlay;
+    // Retain for the blink loop's off-phase cursor tint (#210).
+    this.lastHighlights = highlights;
+    this.lastDecorations = decorations;
     // Overlay the cursor into the same batch — it draws over its mirror cell,
     // AFTER the decoration/highlight compose above, and cell-inverts the cell's
     // ORIGINAL (un-composed) colours. So the cursor takes visual precedence over a
@@ -258,14 +269,23 @@ export class BeamtermRenderer implements Renderer {
     this.cursor = next;
   }
 
-  /** Draw the cursor cell — styled when `on`, otherwise its plain mirror cell. */
+  /** Draw the cursor cell — the cursor-invert when `on`, otherwise the cell's
+   * composited overlay tint (#210), so a selected/decorated cursor cell keeps its
+   * highlight during the blink-off gap instead of flashing to the bare cell. */
   private overlayCursor(batch: Batch, on: boolean): void {
     if (!this.mirror || !this.cursor || !this.cursor.visible) return;
     const { col, row, shape } = this.cursor;
     if (col >= this.cols || row >= this.rows) return;
     const base = this.mirror.cellAt(col, row);
     if (!base) return; // a wide-char spacer half — the cursor sits on the lead, not here
-    this.drawOp(batch, on ? cursorOp(base, shape, this.cursorColor) : base);
+    const styled = cursorOp(base, shape, this.cursorColor);
+    this.drawOp(
+      batch,
+      cursorCellDraw(base, on, styled, this.lastHighlights, this.lastDecorations, {
+        selectionBg: this.selectionBg,
+        matchBg: this.matchBg,
+      }),
+    );
   }
 
   /** Re-render just the cursor cell (used by the blink loop + focus changes). */
