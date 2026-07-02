@@ -66,8 +66,10 @@ export function overlayRepaintKeys(
 
 /** One cell's {@link DrawOp} after compositing the overlay tint at `(x, y)`: the
  * selection/match highlight and the bottom/top decorations, layered back-to-front
- * ({@link composeCellColors}). An untinted cell returns `base` unchanged. */
-function tintCell(
+ * ({@link composeCellColors}). An untinted cell returns `base` unchanged. Shared by
+ * {@link composeOverlayDraws} (per-frame) and {@link cursorCellDraw} (blink-off), so
+ * the cursor cell's off-phase tint uses the exact same layering, not a reimpl. */
+export function overlayTint(
   base: DrawOp,
   x: number,
   y: number,
@@ -82,6 +84,23 @@ function tintCell(
   if (highlightBg === null && bottom === null && top === null) return base;
   const { fg, bg } = composeCellColors({ fg: base.fg, bg: base.bg }, bottom, highlightBg, top);
   return { ...base, fg, bg };
+}
+
+/** The {@link DrawOp} for the cursor's OWN cell at a blink phase (#210). Blink **on**:
+ * the injected `styled` op (the cursor cell-invert) — visual precedence over any
+ * overlay, like the selection block hiding it. Blink **off**: the cursor is not shown,
+ * so the cell renders its composited overlay tint ({@link overlayTint}), NOT the bare
+ * `base` — else a selected/decorated cursor cell would flash un-tinted each blink gap.
+ * Pure so the on/off decision is unit-tested (the blink loop's GL draw is not). */
+export function cursorCellDraw(
+  base: DrawOp,
+  on: boolean,
+  styled: DrawOp,
+  highlights: readonly HighlightRect[],
+  decorations: readonly DecorationRect[],
+  colors: OverlayColors,
+): DrawOp {
+  return on ? styled : overlayTint(base, base.x, base.y, highlights, decorations, colors);
 }
 
 /** Every {@link DrawOp} to paint this frame with overlays composited, plus the new
@@ -107,7 +126,7 @@ export function composeOverlayDraws(args: {
   // Damaged cells: draw each, composited with any overlay tint (the existing path).
   for (const op of ops) {
     damaged.add(op.y * cols + op.x);
-    draws.push(tintCell(op, op.x, op.y, highlights, decorations, colors));
+    draws.push(overlayTint(op, op.x, op.y, highlights, decorations, colors));
   }
 
   // #140 delta: repaint cells whose overlay membership flipped but that damage
@@ -120,7 +139,7 @@ export function composeOverlayDraws(args: {
     // `cellAt` skips a wide-char spacer half (undefined) — the lead glyph covers it,
     // so a blank repaint there would clip the wide glyph (matches the ops-loop skip).
     const base = cellAt(x, y);
-    if (base) draws.push(tintCell(base, x, y, highlights, decorations, colors));
+    if (base) draws.push(overlayTint(base, x, y, highlights, decorations, colors));
   }
 
   return { draws, overlay };

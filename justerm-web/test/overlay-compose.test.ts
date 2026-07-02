@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
 import type { DecorationRect } from "../src/decorations";
 import type { HighlightRect } from "../src/overlay";
-import { composeOverlayDraws, overlayCellKeys, overlayRepaintKeys } from "../src/overlay-compose";
+import {
+  composeOverlayDraws,
+  cursorCellDraw,
+  overlayCellKeys,
+  overlayRepaintKeys,
+} from "../src/overlay-compose";
 import type { DrawOp } from "../src/render-core";
 
 const SEL = 0x111111;
@@ -151,5 +156,35 @@ describe("composeOverlayDraws (#140 partial-frame overlay damage)", () => {
     });
     expect(draws).toHaveLength(1);
     expect(draws[0]).toMatchObject({ x: 2, y: 0, bg: 0 });
+  });
+});
+
+describe("cursorCellDraw (#210 blink-off keeps the overlay tint)", () => {
+  const base = op(1, 0, 0, 0xffffff); // cursor cell at (1,0), plain bg 0
+  const styled = { ...base, fg: 0, bg: 0xffff00 }; // stand-in cursor invert
+
+  // Blink ON: the cursor cell-invert wins over any overlay (the block hides it),
+  // exactly the pre-#210 on-phase behaviour.
+  it("blink ON draws the styled cursor op even over a selection", () => {
+    expect(cursorCellDraw(base, true, styled, [sel(0, 1, 1)], [], colors)).toBe(styled);
+  });
+
+  // Blink OFF: the cursor isn't shown, so the cell keeps its selection tint instead
+  // of flashing to the bare cell (the #210 fix).
+  it("blink OFF composites the selection tint, not the bare cell", () => {
+    const out = cursorCellDraw(base, false, styled, [sel(0, 1, 1)], [], colors);
+    expect(out.bg).toBe(SEL); // NOT base bg 0, NOT the cursor colour
+  });
+
+  // Blink OFF composites a decoration too (the cursor cell need not be selected).
+  it("blink OFF composites a decoration on the cursor cell", () => {
+    const deco: DecorationRect = { row: 0, left: 1, right: 1, layer: "bottom", bg: 0x00ff00 };
+    const out = cursorCellDraw(base, false, styled, [], [deco], colors);
+    expect(out.bg).toBe(0x00ff00);
+  });
+
+  // Blink OFF with no overlay on the cursor cell returns the bare cell (unchanged).
+  it("blink OFF returns the bare cell when no overlay covers it", () => {
+    expect(cursorCellDraw(base, false, styled, [], [], colors)).toBe(base);
   });
 });
