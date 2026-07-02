@@ -100,7 +100,10 @@ export class CellMirror {
       if ((cell.flags & this.F.wide_char_spacer) !== 0) continue; // trailing half
       text += cell.symbol;
     }
-    return text.replace(/\s+$/u, "");
+    // Trim only trailing *regular* spaces (end-of-line padding); a real trailing NBSP
+    // (U+00A0) is content, not padding — `\s` would eat it, contradicting the copy
+    // invariant that justerm never emits NBSP as padding (#153 G8, `selection.ts`).
+    return text.replace(/ +$/, "");
   }
 
   /** The stored cell at `(x, y)` as a draw op (for the cursor overlay and the #140

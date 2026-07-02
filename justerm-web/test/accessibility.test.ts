@@ -254,6 +254,50 @@ describe("AccessibilityController — announce new output (W2)", () => {
     expect(live.announced).toEqual([]);
   });
 
+  // #153 G9: a key can commit MULTIPLE code points at once (IME, a pasted run). The
+  // echo-dedup drains one code point per echoed char, so a single multi-code-point
+  // consume entry would mismatch and wrongly re-announce. `onKey` splits per code
+  // point, so a multi-char commit's echo is fully swallowed like a single char.
+  it("dedups a multi-code-point key echo, not just single chars", () => {
+    const { ctrl, live, flush } = make();
+
+    ctrl.onFrame({ rows: 2 }, ["$ ", ""]); // baseline
+    ctrl.onKey("ab"); // a two-code-point commit (IME/paste)
+    ctrl.onFrame({ rows: 2 }, ["$ ab", ""]); // shell echoes both
+    flush();
+
+    expect(live.announced).toEqual([]); // both echoed chars deduped
+  });
+
+  // #153: a pure trailing debounce never flushes during an UNBROKEN sub-200ms stream
+  // (`yes`, a long build) — the SR stays silent until output stops. A max-wait cap
+  // force-flushes periodically (xterm `TimeBasedDebouncer` 1s throttle). Drives an
+  // injected clock; the debounce timer is never fired manually (no quiet gap).
+  it("force-flushes an unbroken stream at the max-wait, not just on stop", () => {
+    let t = 0;
+    const live = new StubLive();
+    const sched = new ManualScheduler();
+    const ctrl = new AccessibilityController({
+      tree: new StubTree(),
+      live,
+      setTimer: sched.setTimer,
+      clearTimer: sched.clearTimer,
+      now: () => t,
+    });
+
+    ctrl.onFrame({ rows: 2 }, ["x", ""]); // baseline (t=0, silent)
+    ctrl.onFrame({ rows: 2 }, ["x", "L0"]); // first output at t=0 → batch starts
+    for (let i = 1; i <= 9; i++) {
+      t = i * 100; // an unbroken stream every 100ms, no 200ms quiet gap
+      ctrl.onFrame({ rows: 2 }, ["x", `L${i}`]);
+    }
+    expect(live.announced).toEqual([]); // still silent at t=900 (< 1s cap)
+
+    t = 1000; // elapsed since the batch's first push hits the cap
+    ctrl.onFrame({ rows: 2 }, ["x", "L10"]);
+    expect(live.announced.length).toBeGreaterThan(0); // forced flush mid-stream
+  });
+
   // In the alternate screen (vim, htop) every repaint damages the whole screen;
   // announcing it would read the editor aloud on every keystroke. So announce is
   // suppressed there — but the review row tree still updates so the user can
