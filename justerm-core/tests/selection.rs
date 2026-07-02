@@ -111,6 +111,25 @@ fn word_select_crosses_soft_wrap() {
     assert_eq!(term.selection_text().as_deref(), Some("abcdef"));
 }
 
+/// A Word selection on the alt screen must NOT cross into *primary* scrollback. The
+/// alt buffer is separate, but justerm stores `[scrollback ++ grid]` as one linear
+/// buffer and the last primary scrollback row can carry WRAPLINE. Without the
+/// `on_alt` floor, `word_start`'s `prev_pos` up-walk treated that primary row as a
+/// soft-wrap continuation of alt row 0 and swallowed it ("abcdeWORD"). Same family
+/// as `search()` (#144) and `viewport_logical_lines` (#113). Regression for #207.
+#[test]
+fn word_select_on_alt_does_not_cross_into_primary_scrollback() {
+    let mut term = Engine::new(5, 2);
+    term.feed(b"abcdefghijklmno"); // primary: "abcde"(WRAPLINE) evicts to scrollback
+    term.feed(b"\x1b[?1049h\x1b[H"); // enter alt (separate buffer), home cursor
+    term.feed(b"WORD"); // alt row 0 = "WORD"
+
+    term.selection_begin(0, 0, Side::Left, SelectionType::Word); // double-click alt "WORD"
+
+    // Only the alt word — NOT "abcdeWORD" (the primary scrollback WRAPLINE row).
+    assert_eq!(term.selection_text().as_deref(), Some("WORD"));
+}
+
 /// A Line selection takes whole lines regardless of the click column, trimmed.
 #[test]
 fn line_select_takes_whole_lines() {
