@@ -17,6 +17,7 @@ import {
   CommandNavController,
   computeLinks,
   copySelection,
+  DecorationRegistry,
   DomAccessibleView,
   LinkController,
   MarkerKind,
@@ -75,6 +76,13 @@ fit();
 
 const source = new StubFrameSource();
 new Terminal(source, renderer).mount();
+
+// #120 S2: marker-anchored decorations. The registry is consumer-side; the
+// renderer pulls its rects per frame (joined with the frame's markerPositions)
+// and composes them into each cell's colour. The Decorate button below toggles a
+// full-row bottom decoration on the last finished command's marker.
+const decorations = new DecorationRegistry();
+renderer.setDecorationSource((f) => decorations.decorationsForFrame(f));
 
 // Seed a few lines so the accessible view has content immediately (an empty
 // document at summon is poor UX) and the command-nav stub's lines (0/2/4) resolve
@@ -189,6 +197,12 @@ let nextMarkId = 1;
 let commandMarks: number[] = [];
 let cmdFailToggle = false;
 let terseAnnounce = false;
+// #120 S2: the Decorate button drops a marker at a visible content row and a
+// full-row bottom decoration on it, so the green tint composes under real glyphs.
+const DECO_MARKER_ID = 9000;
+const DECO_ROW = 2;
+let decorationMarks: number[] = [];
+let lineDecoration: { dispose(): void } | undefined;
 
 // #166 command navigation: Prev/Next walk the command history inside the
 // accessible view. A real backend returns core `command_lines` (document line +
@@ -247,6 +261,27 @@ function finishCommand(): void {
   console.log(`[demo] simulated command finish, exit ${exit}`);
   render({ scrollCount: 0 }); // a Partial frame carries the mark → cmdCtrl announces
   cmdBtn.textContent = `Finish command (next exit ${cmdFailToggle ? 1 : 0})`;
+}
+function toggleDecorateLine(): void {
+  // #120 S2: toggle a full-row bottom decoration anchored to a marker at a visible
+  // content row. It projects each frame (marker row × registry) and the renderer
+  // composes its bg UNDER the glyphs — a green line highlight, legible text on top.
+  if (lineDecoration) {
+    lineDecoration.dispose();
+    lineDecoration = undefined;
+    decorationMarks = [];
+  } else {
+    decorationMarks = [DECO_MARKER_ID, DECO_ROW, MarkerKind.Plain, 0, 0];
+    lineDecoration = decorations.register({
+      markerId: DECO_MARKER_ID,
+      x: 0,
+      width: COLS,
+      layer: "bottom",
+      bg: 0x008f00, // green — distinct from defaultBg, glyphs stay readable above
+    });
+  }
+  decoBtn.textContent = `Decorate line: ${lineDecoration ? "ON" : "OFF"}`;
+  render(); // repaint (Full) so the decoration composes into the current cells
 }
 function toggleTerse(): void {
   // #179: flip the announce-text verbosity. Verbose (default) speaks the exit code
@@ -312,11 +347,12 @@ function demoButton(
 const viewBtn = demoButton("Accessible view (log)", summonAccessibleView);
 const altBtn = demoButton("Alt screen: OFF", toggleAltScreen);
 const cmdBtn = demoButton("Finish command (next exit 0)", finishCommand);
+const decoBtn = demoButton("Decorate line: OFF", toggleDecorateLine);
 const terseBtn = demoButton("Announce: VERBOSE", toggleTerse);
 const srBtn = demoButton("Screen reader: ON", toggleScreenReader);
 const prevBtn = demoButton("Prev command", navPrevCommand, false);
 const nextBtn = demoButton("Next command", navNextCommand, false);
-controls.append(viewBtn, altBtn, cmdBtn, terseBtn, srBtn, prevBtn, nextBtn);
+controls.append(viewBtn, altBtn, cmdBtn, decoBtn, terseBtn, srBtn, prevBtn, nextBtn);
 document.body.appendChild(controls);
 
 // Forward printable keystrokes for echo dedup (this demo doesn't echo, so it's a
@@ -368,7 +404,8 @@ function viewportFrame(out?: { scrollCount: number }): DecodedFrame {
     altScreen, // #149: drives the a11y announce policy (Alt screen button)
     selectionSpans: engine.range(), // S8: the live selection projected onto the view
     matchSpans: searchEngine.matchSpans(top, ROWS), // S9: search matches on the view
-    markerPositions: commandMarks, // #160: OSC 133 command marks (Finish command button)
+    // #160 command marks (Finish command) + #120 S2 decoration marker (Decorate line).
+    markerPositions: [...commandMarks, ...decorationMarks],
     ...(out && out.scrollCount > 0
       ? { hasScroll: true, scrollTop: 0, scrollBottom: ROWS - 1, scrollCount: out.scrollCount }
       : {}),

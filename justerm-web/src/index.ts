@@ -83,6 +83,10 @@ export type { Marker } from "./markers";
 // consumer's (#115). S1: model + lifecycle + auto-dispose; render is S2/S3.
 export { DecorationRegistry } from "./decorations";
 export type { Decoration, DecorationLayer, DecorationOptions, DecorationRect } from "./decorations";
+// Decoration rendering (#120 S2) — per-cell query + layered colour composition
+// (base < bottom decoration < selection/match highlight < top decoration). Pure;
+// a custom renderer composes decorations the same way BeamtermRenderer does.
+export { composeCellColors, decorationAt } from "./decoration-render";
 // Screen-reader-active gate (#161) — the host injects SR presence (a browser
 // can't detect it); while inactive, the a11y announce/signal sinks no-op. Share
 // one instance across #119 + #160 so a single toggle governs both.
