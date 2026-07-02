@@ -28,3 +28,10 @@ proptest = "1"
 [[bench]]
 name = "throughput"
 harness = false
+
+# Query-time bench for the unbounded soft-wrap-run walk (#206): times `search` /
+# `viewport_logical_lines` on a single-giant-run buffer vs a many-short-lines
+# control, to decide the deferred cap on data.
+[[bench]]
+name = "wrap_run"
+harness = false
