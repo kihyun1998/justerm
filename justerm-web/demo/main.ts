@@ -106,6 +106,16 @@ const a11y = new Accessibility(document, renderer.cellPalette, renderer.cellFlag
     displayOffset = Math.min(Math.max(displayOffset - lines, 0), maxOffset());
     render();
   },
+  // #152: bridge an AT text selection in the row tree to the selection seam. A real
+  // consumer passes the same SelectionPort the mouse uses; the demo logs the resulting
+  // (row, col, side) so the DOM glue (getSelection → row/column resolution → bridge)
+  // can be driven and asserted headlessly (the mouse path proves the port→core leg).
+  selectionPort: {
+    begin: (row, col, side, ty) => console.log(`[a11y-sel] begin ${row},${col} ${side} ${ty}`),
+    extend: (row, col, side) => console.log(`[a11y-sel] extend ${row},${col} ${side}`),
+    clear: () => console.log("[a11y-sel] clear"),
+    text: () => Promise.resolve(null),
+  },
 });
 document.body.appendChild(a11y.root);
 canvas.addEventListener("blur", () => a11y.onBlur());

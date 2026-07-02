@@ -94,16 +94,31 @@ export class CellMirror {
    * right, skipping wide-char spacer halves, with trailing blanks trimmed (a
    * screen reader shouldn't read end-of-line padding). */
   rowText(y: number): string {
+    return this.rowCells(y).text;
+  }
+
+  /** Row `y`'s SR text plus, per UTF-16 unit, its source terminal column (#152) —
+   * the bridge from an AT text selection in the row tree back to grid coordinates
+   * (xterm's `translateToString` `outColumns`). A wide glyph's char maps to its lead
+   * column (the spacer half is skipped); a combining cluster's units all map to their
+   * cell's column; trailing *regular*-space padding is trimmed (columns in lockstep;
+   * a real trailing NBSP survives — #153 G8). `columns.length === text.length`, so a
+   * DOM selection offset indexes straight into `columns`. */
+  rowCells(y: number): { text: string; columns: number[] } {
     let text = "";
+    const columns: number[] = [];
     for (let x = 0; x < this.cols; x++) {
       const cell = this.cells[y * this.cols + x]!;
       if ((cell.flags & this.F.wide_char_spacer) !== 0) continue; // trailing half
       text += cell.symbol;
+      // One column per UTF-16 unit (DOM selection offsets are unit-based), all = x.
+      for (let k = 0; k < cell.symbol.length; k++) columns.push(x);
     }
-    // Trim only trailing *regular* spaces (end-of-line padding); a real trailing NBSP
-    // (U+00A0) is content, not padding — `\s` would eat it, contradicting the copy
-    // invariant that justerm never emits NBSP as padding (#153 G8, `selection.ts`).
-    return text.replace(/ +$/, "");
+    // Trim trailing regular-space padding, keeping columns in lockstep (a `/ +$/`
+    // equivalent that also slices `columns`; NBSP is not U+0020 so it stays).
+    let end = text.length;
+    while (end > 0 && text[end - 1] === " ") end--;
+    return { text: text.slice(0, end), columns: columns.slice(0, end) };
   }
 
   /** The stored cell at `(x, y)` as a draw op (for the cursor overlay and the #140

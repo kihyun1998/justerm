@@ -193,3 +193,91 @@ describe("CellMirror.rowText", () => {
     expect(mirror.rowText(0)).toBe("가b");
   });
 });
+
+describe("CellMirror.rowCells (#152 column map)", () => {
+  // Each UTF-16 unit of the row text maps to its source terminal column, so an AT
+  // selection offset in the row tree reverses to a grid column. A wide glyph's char
+  // maps to its lead column; the spacer half is skipped (so "b" is column 2, not 1).
+  it("maps each character to its terminal column, skipping a wide glyph's spacer", () => {
+    const mirror = new CellMirror(4, 1, palette(), F);
+    const wide: DecodedFrame = {
+      cols: 4,
+      rows: 1,
+      kind: 0,
+      codepoints: [cp("가"), cp(" "), cp("b")],
+      fg: [0, 0, 0],
+      bg: [0, 0, 0],
+      flags: [0, F.wide_char_spacer, 0],
+      extra: [0, 0, 0],
+      spans: [0, 0, 2, 0, 3],
+      sideTable: [],
+    } as DecodedFrame;
+    mirror.applyFrame(wide);
+
+    expect(mirror.rowCells(0)).toEqual({ text: "가b", columns: [0, 2] });
+  });
+
+  // Trailing padding is trimmed from BOTH text and columns in lockstep; a real
+  // trailing NBSP (U+00A0) survives with its column (mirrors #153 G8).
+  it("trims trailing padding columns in lockstep, preserving a real NBSP", () => {
+    const mirror = new CellMirror(80, 24, palette(), F);
+    mirror.applyFrame(frame(0, [{ line: 0, left: 0, text: "a " }])); // "a" + NBSP + padding
+
+    expect(mirror.rowCells(0)).toEqual({ text: "a ", columns: [0, 1] });
+  });
+
+  // `columns.length === text.length` so a DOM offset indexes straight in — locked so
+  // a future change can't desync them (they must trim together).
+  it("keeps columns and text the same length", () => {
+    const mirror = new CellMirror(80, 24, palette(), F);
+    mirror.applyFrame(frame(0, [{ line: 0, left: 0, text: "hello" }]));
+
+    const { text, columns } = mirror.rowCells(0);
+    expect(columns).toEqual([0, 1, 2, 3, 4]); // one column per char, in order
+    expect(columns.length).toBe(text.length);
+  });
+
+  // A surrogate-pair emoji is TWO UTF-16 units in one cell; DOM selection offsets are
+  // unit-based, so BOTH units map to the cell's column (`columns.length === text.length`
+  // holds through the pair). The trim can't split it — a low surrogate isn't U+0020.
+  it("maps both UTF-16 units of a surrogate-pair emoji to the lead column", () => {
+    const mirror = new CellMirror(4, 1, palette(), F);
+    const f: DecodedFrame = {
+      cols: 4,
+      rows: 1,
+      kind: 0,
+      codepoints: [0x1f600, cp("b")], // 😀 (one code point, two UTF-16 units), then b
+      fg: [0, 0],
+      bg: [0, 0],
+      flags: [0, 0],
+      extra: [0, 0],
+      spans: [0, 0, 1, 0, 2],
+      sideTable: [],
+    } as DecodedFrame;
+    mirror.applyFrame(f);
+
+    expect(mirror.rowCells(0)).toEqual({ text: "\u{1F600}b", columns: [0, 0, 1] });
+  });
+
+  // A combining/grapheme cluster arrives as a multi-unit `symbol` via the side table
+  // (`extra` → `sideTable`). Each of its UTF-16 units maps to the one cell's column, so
+  // a mid-cluster AT offset still reverses to that column and text/columns stay aligned.
+  it("maps every UTF-16 unit of a side-table grapheme cluster to its cell column", () => {
+    const mirror = new CellMirror(4, 1, palette(), F);
+    const f: DecodedFrame = {
+      cols: 4,
+      rows: 1,
+      kind: 0,
+      codepoints: [cp("e"), cp("x")], // cell 0's base cp is overridden by `extra`
+      fg: [0, 0],
+      bg: [0, 0],
+      flags: [0, 0],
+      extra: [1, 0], // cell 0 → sideTable[0]
+      spans: [0, 0, 1, 0, 2],
+      sideTable: ["é"], // "é" as e + combining acute — two UTF-16 units
+    } as DecodedFrame;
+    mirror.applyFrame(f);
+
+    expect(mirror.rowCells(0)).toEqual({ text: "éx", columns: [0, 0, 1] });
+  });
+});

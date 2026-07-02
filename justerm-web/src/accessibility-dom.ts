@@ -10,9 +10,12 @@
  */
 import { AccessibilityController } from "./accessibility";
 import type { A11yTreeSink, LiveRegionSink } from "./accessibility";
+import { a11ySelectionToPort } from "./a11y-selection";
+import type { TreeSelection } from "./a11y-selection";
 import { CellMirror } from "./cell-mirror";
 import { ScreenReaderState } from "./screen-reader";
 import type { FlagBits } from "./render-core";
+import type { SelectionPort } from "./selection";
 import type { DecodedFrame } from "./types";
 import type { Palette } from "justerm-wasm-decode/colors.js";
 
@@ -74,6 +77,20 @@ class DomA11yTree implements A11yTreeSink {
     this.rows[i]?.focus();
   }
 
+  /** The viewport-row index of the listitem containing `node`, or `null` if `node`
+   * isn't inside the row tree (#152 — resolving a DOM selection endpoint to a row).
+   * Walks up from the node to its listitem ancestor. */
+  rowIndexOf(node: Node | null): number | null {
+    if (!node || !this.container.contains(node)) return null;
+    let el: Node | null = node;
+    while (el && el !== this.container) {
+      const i = this.rows.indexOf(el as HTMLElement);
+      if (i !== -1) return i;
+      el = el.parentNode;
+    }
+    return null;
+  }
+
   /** Put the boundary listeners on the current first/last rows (re-bound after
    * each resize, since those elements change). */
   private bindBoundaries(): void {
@@ -133,9 +150,13 @@ export class Accessibility {
   private rows = 0;
 
   private readonly srState: ScreenReaderState;
+  /** #152 selection bridge (optional): the `selectionchange` listener + the port it
+   * drives. Absent → no bridge installed (SR announce/tree still work). */
+  private readonly selectionPort: SelectionPort | undefined;
+  private readonly onSelectionChange: (() => void) | undefined;
 
   constructor(
-    doc: Document,
+    private readonly doc: Document,
     private readonly palette: Palette,
     private readonly flagBits: FlagBits,
     opts: {
@@ -144,6 +165,10 @@ export class Accessibility {
        * command announce (#160) so one host toggle governs both. Defaults to a
        * fresh, active gate (announce on). */
       screenReaderState?: ScreenReaderState;
+      /** The selection write seam (S8/#109). When provided, an AT text selection in
+       * the row tree bridges to the engine selection (#152) — the same port the
+       * mouse selection drives. Absent → no a11y selection bridge. */
+      selectionPort?: SelectionPort;
     } = {},
   ) {
     this.srState = opts.screenReaderState ?? new ScreenReaderState();
@@ -164,6 +189,33 @@ export class Accessibility {
     srOnly(this.root);
     this.root.appendChild(this.tree.container);
     this.root.appendChild(this.live.el);
+
+    // #152: bridge an AT text selection in the row tree to the engine selection. The
+    // browser fires `selectionchange` on the document; resolve it to tree coordinates
+    // and drive the same SelectionPort the mouse uses. Only when a port is wired.
+    this.selectionPort = opts.selectionPort;
+    if (this.selectionPort) {
+      this.onSelectionChange = () => this.bridgeSelection();
+      doc.addEventListener("selectionchange", this.onSelectionChange);
+    }
+  }
+
+  /** Resolve the document's current selection to {@link TreeSelection} and drive the
+   * port (#152). Runs on every `selectionchange`; a selection outside the row tree is
+   * a no-op (the bridge's `anchor === null` guard). DOM glue — proven live, not in the
+   * DOM-less test env; the resolution + mapping logic is unit-tested in `a11ySelectionToPort`. */
+  private bridgeSelection(): void {
+    if (!this.selectionPort || !this.mirror) return;
+    const s = this.doc.getSelection();
+    if (!s) return;
+    const anchorRow = this.tree.rowIndexOf(s.anchorNode);
+    const focusRow = this.tree.rowIndexOf(s.focusNode);
+    const sel: TreeSelection = {
+      anchor: anchorRow === null ? null : { row: anchorRow, offset: s.anchorOffset },
+      focus: focusRow === null ? null : { row: focusRow, offset: s.focusOffset },
+      collapsed: s.isCollapsed,
+    };
+    a11ySelectionToPort(sel, (r) => this.mirror!.rowCells(r).columns, this.selectionPort);
   }
 
   /** Mirror a frame: update the cell store, then drive the controller with the
@@ -208,6 +260,9 @@ export class Accessibility {
   /** Tear down: cancel the controller's pending announce and detach the hidden
    * root from the DOM. */
   dispose(): void {
+    if (this.onSelectionChange) {
+      this.doc.removeEventListener("selectionchange", this.onSelectionChange);
+    }
     this.controller.dispose();
     this.root.remove();
   }
