@@ -56,9 +56,15 @@ export type { AccessiblePort, AccessibleView } from "./accessible-view";
 // announce + exit-driven success/fail signal (VSCode terminalCommand* analog).
 // Pure logic; the consumer injects the aria-live + signal sinks. Prompt-to-prompt
 // navigation is a separate slice (#166).
-export { CommandAnnounceController, DEFAULT_ANNOUNCE_POLICY } from "./command-announce";
+export {
+  CommandAnnounceController,
+  DEFAULT_ANNOUNCE_POLICY,
+  TERSE_ANNOUNCE_TEXT,
+  VERBOSE_ANNOUNCE_TEXT,
+} from "./command-announce";
 export type {
   AnnouncePolicy,
+  AnnounceText,
   Enablement,
   OutcomePolicy,
   SignalSink,

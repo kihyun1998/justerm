@@ -21,6 +21,7 @@ test("control bar shows the action buttons", async ({ page }) => {
   await expect(page.getByRole("button", { name: /Accessible view/ })).toBeVisible();
   await expect(page.getByRole("button", { name: /Alt screen: (ON|OFF)/ })).toBeVisible();
   await expect(page.getByRole("button", { name: /Finish command/ })).toBeVisible();
+  await expect(page.getByRole("button", { name: /Announce: (TERSE|VERBOSE)/ })).toBeVisible();
   await expect(page.getByRole("button", { name: /Screen reader: (ON|OFF)/ })).toBeVisible();
   await expect(page.getByRole("button", { name: "Prev command" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Next command" })).toBeVisible();
@@ -50,6 +51,22 @@ test("finish command announces success then failure to the live region", async (
 
   expect(signals.some((s) => s.includes("succeeded"))).toBe(true);
   expect(signals.some((s) => s.includes("failed"))).toBe(true);
+});
+
+test("terse announce drops the exit code on failure (#179)", async ({ page }) => {
+  // Flip the announce text to terse (VSCode parity — the exit code is not spoken).
+  await page.getByRole("button", { name: "Announce: VERBOSE" }).click();
+  await expect(page.getByRole("button", { name: "Announce: TERSE" })).toBeVisible();
+
+  // First finish → exit 0 → success text is identical in either mode.
+  await page.getByRole("button", { name: /Finish command/ }).click();
+  await expect(page.locator(live)).toHaveText("Command succeeded");
+
+  // Second finish → exit 1 → terse omits the code ("Command failed", NOT
+  // "Command failed, exit 1"). Proves the injected preset flows through the real
+  // controller + aria-live path end-to-end, not just the unit fake.
+  await page.getByRole("button", { name: /Finish command/ }).click();
+  await expect(page.locator(live)).toHaveText("Command failed");
 });
 
 test("screen-reader-off suppresses the announce; back on resumes it (#161)", async ({ page }) => {
