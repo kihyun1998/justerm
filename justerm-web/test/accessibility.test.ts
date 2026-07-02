@@ -496,3 +496,99 @@ describe("AccessibilityController — row-tree churn gate while SR inactive (#16
     expect(tree.set.get(0)?.text).toBe("output"); // tree synced to the cached frame
   });
 });
+
+describe("AccessibilityController — announce-diff CPU gate while SR inactive (#183)", () => {
+  // A controller with a mutable SR-active flag and a RAW (ungated) live sink, so
+  // the ONLY thing that can silence an announce is the skipped diff (#183) — NOT
+  // #161's sink gate (which these tests deliberately don't wire). Mirrors the #169
+  // tree-gate setup + the W2 manual scheduler.
+  function make() {
+    const tree = new StubTree();
+    const live = new StubLive();
+    const sched = new ManualScheduler();
+    let active = true;
+    const ctrl = new AccessibilityController({
+      tree,
+      live,
+      isActive: () => active,
+      setTimer: sched.setTimer,
+      clearTimer: sched.clearTimer,
+    });
+    return {
+      ctrl,
+      live,
+      tree,
+      flush: () => sched.flush(),
+      setActive: (a: boolean) => {
+        active = a;
+      },
+    };
+  }
+
+  // The perf goal: while inactive the whole diff (shiftPrev + per-row compare +
+  // debounce arm) is skipped, not merely the flush. With a RAW sink, an inactive
+  // new-output frame still announces NOTHING — proving the diff never ran. (Under
+  // #161 alone the diff would run and only the flush would no-op at the gated
+  // sink; here the sink is ungated, so silence can only be the skipped work.)
+  it("skips the diff and arms no timer while inactive (raw sink stays silent)", () => {
+    const { ctrl, live, flush, setActive } = make();
+    ctrl.onFrame({ rows: 2 }, ["a", ""]); // baseline (active)
+    setActive(false);
+    ctrl.onFrame({ rows: 2 }, ["a", "new line"]); // genuinely new output, but inactive
+    flush(); // no timer armed → nothing to fire
+    expect(live.announced).toEqual([]);
+  });
+
+  // The #161 no-replay anchor survives the #183 gate: `prevRows` still advances on
+  // every inactive frame (it lives OUTSIDE announceNewOutput), so after
+  // reactivation the first frame diffs against the LAST inactive content — a
+  // repeat is silent and only genuinely new text ("d") announces. If the baseline
+  // had frozen (or inactive output had leaked), "b"/"c" would (re-)announce here.
+  it("keeps advancing the baseline while inactive so the first active diff is correct", () => {
+    const { ctrl, live, flush, setActive } = make();
+    ctrl.onFrame({ rows: 3 }, ["a", "", ""]); // baseline (active)
+    setActive(false);
+    ctrl.onFrame({ rows: 3 }, ["a", "b", ""]); // inactive: advances prevRows, announces nothing
+    ctrl.onFrame({ rows: 3 }, ["a", "b", "c"]); // still inactive
+    setActive(true);
+    ctrl.reactivate();
+    ctrl.onFrame({ rows: 3 }, ["a", "b", "c"]); // active, identical to last → no new text
+    flush();
+    expect(live.announced).toEqual([]); // nothing re-announced; baseline was current
+    ctrl.onFrame({ rows: 3 }, ["a", "b", "d"]); // active, genuine new text
+    flush();
+    expect(live.announced).toEqual(["d"]);
+  });
+
+  // The hidden-state catch — the whole reason #183 isn't folded into #169. The
+  // echo-dedup `consume` queue drains ONLY inside announceNewOutput (via
+  // dedupTyped). Gating that while inactive would let keystrokes pile up in
+  // `consume` unbounded, and on reactivation the first real output would be
+  // wrongly swallowed as stale echo. So onKey enqueues only while active (xterm's
+  // disposed manager registers no char listener) and reactivate clears the queue
+  // (xterm's fresh manager starts empty).
+  it("does not swallow the first post-reactivation output with keys typed while inactive", () => {
+    const { ctrl, live, flush, setActive } = make();
+    ctrl.onFrame({ rows: 1 }, ["$ "]); // baseline (active)
+    setActive(false);
+    ctrl.onKey("l"); // typed while inactive — must NOT accumulate in consume
+    ctrl.onKey("s");
+    setActive(true);
+    ctrl.reactivate();
+    ctrl.onFrame({ rows: 1 }, ["ls"]); // first real output after reactivation
+    flush();
+    expect(live.announced).toEqual(["ls"]); // announced in full, not swallowed as echo
+  });
+
+  // While active, echo dedup is unchanged (#119/W2 behaviour intact): a typed
+  // char whose echo lands in the next output is still swallowed. Guards against
+  // the fix over-reaching and disabling dedup wholesale.
+  it("still dedups an echo typed while active", () => {
+    const { ctrl, live, flush } = make(); // active throughout
+    ctrl.onFrame({ rows: 1 }, ["$ "]); // baseline
+    ctrl.onKey("y");
+    ctrl.onFrame({ rows: 1 }, ["$ y"]); // the echo of the keystroke
+    flush();
+    expect(live.announced).toEqual([]); // echo swallowed, not announced
+  });
+});
