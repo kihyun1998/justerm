@@ -168,6 +168,11 @@ export class AccessibilityController {
    */
   reactivate(): void {
     this.cancelPending();
+    // #183: start echo-dedup fresh, matching xterm's freshly-created manager whose
+    // `_charsToConsume` is empty. Keys typed during the inactive span (or un-echoed
+    // before it began) must not swallow the first real output as a stale echo —
+    // announce work was gated off, so there was no output to dedup them against.
+    this.consume.length = 0;
     this.syncTree();
   }
 
@@ -178,6 +183,16 @@ export class AccessibilityController {
    * Skipped on the first frame (no baseline) so the initial paint stays silent.
    */
   private announceNewOutput(frame: A11yFrame, rows: string[]): void {
+    // #183: while the screen reader is inactive nobody hears an announce, so skip
+    // the WHOLE diff (shiftPrev + per-row compare + commonPrefixLen + dedup) and
+    // the debounce arm — not just the gated flush (#161 no-ops the sink, but the
+    // CPU is still wasted). `prevRows` is advanced by the caller *after* this, so
+    // the #161 no-replay anchor holds and the first active frame diffs correctly.
+    // The echo-dedup `consume` queue drains only here, so it is instead handled at
+    // its source: `onKey` enqueues only while active + `reactivate` clears it
+    // (mirrors xterm disposing/recreating its AccessibilityManager, whose
+    // `_charsToConsume` listener is unregistered while off and empty on recreate).
+    if (!this.isActive()) return;
     if (this.prevRows === null) return;
     // The alternate screen (vim/htop) repaints wholesale — announcing it is
     // noise. Suppress, but the row tree (updated above) still serves review.
@@ -241,7 +256,12 @@ export class AccessibilityController {
   onKey(char: string): void {
     this.cancelPending();
     this.live.clear();
-    if (!/\p{Control}/u.test(char)) this.consume.push(char);
+    // #183: enqueue for echo-dedup ONLY while active. While inactive the drain
+    // (dedupTyped, inside the gated announceNewOutput) never runs, so an ungated
+    // push would grow `consume` unbounded and swallow the first output after
+    // reactivation. This mirrors xterm's disposed manager registering no char
+    // listener at all. Control chars aren't echoed as text, so skip them.
+    if (this.isActive() && !/\p{Control}/u.test(char)) this.consume.push(char);
   }
 
   /** The widget lost focus. Drop any pending announcement and clear the live
