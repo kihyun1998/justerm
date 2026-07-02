@@ -13,7 +13,7 @@
  * auto-dispose.
  */
 
-import { type Marker, readMarkers } from "./markers";
+import { readMarkers } from "./markers";
 
 /** Which layer a decoration paints on, mirroring xterm's `IDecorationOptions.layer`:
  * `bottom` overrides the cell background *under* the glyph, `top` paints *over* it. */
@@ -57,10 +57,17 @@ export interface RulerMark {
 export interface DecorationOptions {
   /** The marker this decoration anchors to (its row is read per frame). */
   readonly markerId: number;
-  /** First column of the decoration (default 0). */
+  /** Column offset relative to the anchor (default 0). */
   readonly x?: number;
   /** Column span width (default 1 — a single cell). */
   readonly width?: number;
+  /** Row span (default 1); a decoration `height` rows tall extends DOWN from the
+   * marker's row (#202, xterm `top = marker.line`). Projected as one single-row
+   * {@link DecorationRect} per covered row, clipped to the viewport bottom. */
+  readonly height?: number;
+  /** Which edge `x` is measured from (#202, default `left`). `right` counts `x`
+   * cells in from the right edge, the span extending leftward by `width`. */
+  readonly anchor?: "left" | "right";
   /** Paint layer (default `bottom`). */
   readonly layer?: DecorationLayer;
   /** Background colour override ref (opaque; resolved by the renderer). */
@@ -94,9 +101,12 @@ export interface DecorationRect {
   readonly fg?: number;
 }
 
-/** The frame fields the registry reads. A `DecodedFrame` satisfies it structurally. */
+/** The frame fields the registry reads. A `DecodedFrame` satisfies it structurally.
+ * `cols` sizes right-anchored spans; `rows` clips a multi-row `height` (#202). */
 interface DecorationFrame {
   readonly markerPositions?: ArrayLike<number>;
+  readonly cols?: number;
+  readonly rows?: number;
 }
 
 /** Internal decoration record — also the public {@link Decoration} handle. Its
@@ -105,6 +115,8 @@ interface StoredDecoration extends Decoration {
   readonly markerId: number;
   readonly x: number;
   readonly width: number;
+  readonly height: number;
+  readonly anchor: "left" | "right";
   readonly layer: DecorationLayer;
   readonly bg?: number;
   readonly fg?: number;
@@ -131,6 +143,8 @@ export class DecorationRegistry {
       markerId: options.markerId,
       x: options.x ?? 0,
       width: options.width ?? 1,
+      height: options.height ?? 1,
+      anchor: options.anchor ?? "left",
       layer: options.layer ?? "bottom",
       bg: options.bg,
       fg: options.fg,
@@ -170,10 +184,20 @@ export class DecorationRegistry {
    */
   decorationsForFrame(frame: DecorationFrame): DecorationRect[] {
     const rects: DecorationRect[] = [];
+    const cols = frame.cols ?? 0;
+    // Clip a multi-row `height` to the viewport bottom (the marker's row is already
+    // on-viewport, so its span may run past it). No `rows` → don't clip.
+    const maxRow = frame.rows !== undefined ? frame.rows - 1 : Number.POSITIVE_INFINITY;
     for (const m of readMarkers(frame.markerPositions)) {
       const set = this.byMarker.get(m.id);
       if (!set) continue;
-      for (const d of set) rects.push(this.rect(d, m));
+      for (const d of set) {
+        const [left, right] = columns(d, cols);
+        const lastRow = Math.min(m.row + d.height - 1, maxRow);
+        for (let row = m.row; row <= lastRow; row++) {
+          rects.push({ row, left, right, layer: d.layer, bg: d.bg, fg: d.fg });
+        }
+      }
     }
     return rects;
   }
@@ -186,6 +210,10 @@ export class DecorationRegistry {
    * Off-viewport anchors show here even though they're absent from
    * {@link decorationsForFrame} — that is the whole point of a ruler. A ruler
    * decoration whose marker isn't currently live yields no mark (inner join).
+   *
+   * The mark is one point per marker line, independent of the decoration's
+   * `height` — matching xterm, whose `ColorZoneStore` builds a single-line zone
+   * (`startBufferLine === endBufferLine`) for a decoration regardless of height.
    */
   rulerMarksForFrame(frame: {
     markerLines?: ArrayLike<number>;
@@ -217,16 +245,6 @@ export class DecorationRegistry {
     return marks;
   }
 
-  private rect(d: StoredDecoration, m: Marker): DecorationRect {
-    return {
-      row: m.row,
-      left: d.x,
-      right: d.x + d.width - 1,
-      layer: d.layer,
-      bg: d.bg,
-      fg: d.fg,
-    };
-  }
 
   private remove(d: StoredDecoration): void {
     if (d.disposed) return;
@@ -236,6 +254,14 @@ export class DecorationRegistry {
     set.delete(d);
     if (set.size === 0) this.byMarker.delete(d.markerId);
   }
+}
+
+/** A decoration's inclusive `[left, right]` viewport columns for a frame of `cols`
+ * width (#202). `left` anchor: `x`-based from the left; `right` anchor: `x` cells
+ * in from the right edge, extending leftward by `width` (xterm's `style.right`). */
+function columns(d: StoredDecoration, cols: number): [number, number] {
+  if (d.anchor === "right") return [cols - d.x - d.width, cols - 1 - d.x];
+  return [d.x, d.x + d.width - 1];
 }
 
 /** u32 lanes per record in a frame's `markerLines` (#120 S3, wire v11): `id`,
