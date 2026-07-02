@@ -203,6 +203,16 @@ const DECO_MARKER_ID = 9000;
 const DECO_ROW = 2;
 let decorationMarks: number[] = [];
 let lineDecoration: { dispose(): void } | undefined;
+// #189: the live decoration is scoped to the buffer it was created on (mirroring
+// core's per-buffer markers, #187) — its marker only rides that buffer's frames,
+// and an alt-scoped decoration is disposed on alt-leave (core's clearAllMarkers on
+// ?1049l). Undefined ⇔ no live decoration.
+let decorationBuffer: "primary" | "alt" | undefined;
+// The decoration's marker rides the CURRENT frame only when its buffer is the active
+// one — so a primary decoration is absent from the alt frame (no cross-buffer bleed,
+// like core omitting primary markers on an alt frame) and vice versa.
+const decorationOnScreen = () =>
+  lineDecoration !== undefined && (decorationBuffer === "alt") === altScreen;
 
 // #166 command navigation: Prev/Next walk the command history inside the
 // accessible view. A real backend returns core `command_lines` (document line +
@@ -235,8 +245,22 @@ const navCtrl = new CommandNavController(
 // named function; toggles reflect their state in the button label. ---
 function toggleAltScreen(): void {
   altScreen = !altScreen;
+  // #189: leaving the alt screen disposes any alt-scoped decoration. core fires
+  // `MarkerDisposed` on any alt-leave (?47l/?1047l/?1049l all route through the
+  // per-buffer `clearAllMarkers`, term.rs `switch_to_primary`, #187); a real consumer
+  // forwards that to `decorations.onMarkerDisposed`. The demo forwards it directly so
+  // the alt-line highlight clears on alt-leave, primary decorations untouched.
+  if (!altScreen && decorationBuffer === "alt") {
+    decorations.onMarkerDisposed(DECO_MARKER_ID);
+    lineDecoration = undefined;
+    decorationMarks = [];
+    decorationBuffer = undefined;
+    decoBtn.textContent = "Decorate line: OFF";
+    console.log("[demo] alt-leave disposed the alt-scoped decoration (#189)");
+  }
   altBtn.textContent = `Alt screen: ${altScreen ? "ON" : "OFF"}`;
   console.log(`[demo] altScreen = ${altScreen} (announce ${altScreen ? "SUPPRESSED" : "on"})`);
+  render(); // repaint: the frame's altScreen flips and any alt decoration clears
 }
 function summonAccessibleView(): void {
   // whole-buffer document for the screen reader; the query can reject (IPC).
@@ -270,7 +294,12 @@ function toggleDecorateLine(): void {
     lineDecoration.dispose();
     lineDecoration = undefined;
     decorationMarks = [];
+    decorationBuffer = undefined;
   } else {
+    // #189: scope the decoration to the buffer it's created on. On the alt screen it
+    // becomes an alt-scoped decoration (rides only alt frames, disposed on alt-leave);
+    // on primary it's a primary decoration (absent from alt frames — no bleed).
+    decorationBuffer = altScreen ? "alt" : "primary";
     decorationMarks = [DECO_MARKER_ID, DECO_ROW, MarkerKind.Plain, 0, 0];
     lineDecoration = decorations.register({
       markerId: DECO_MARKER_ID,
@@ -409,11 +438,15 @@ function viewportFrame(out?: { scrollCount: number }): DecodedFrame {
     selectionSpans: engine.range(), // S8: the live selection projected onto the view
     matchSpans: searchEngine.matchSpans(top, ROWS), // S9: search matches on the view
     // #160 command marks (Finish command) + #120 S2 decoration marker (Decorate line).
-    markerPositions: [...commandMarks, ...decorationMarks],
+    // #189: the decoration marker rides a frame only when its buffer is active, so a
+    // primary decoration is omitted from alt frames (and vice versa) — no bleed.
+    markerPositions: [...commandMarks, ...(decorationOnScreen() ? decorationMarks : [])],
     // #120 S3: every live marker's absolute buffer line. The demo pins the ruler
     // marker near the TOP of the buffer (line 3) so its ruler mark shows there
     // regardless of scroll — an off-viewport anchor the viewport marker group can't.
-    markerLines: lineDecoration ? [DECO_MARKER_ID, 3] : [],
+    // Only for a primary decoration on the primary screen: the ruler is a scrollback
+    // navigator, suppressed on alt (rulerMarksForFrame), and alt has no scrollback.
+    markerLines: decorationOnScreen() && !altScreen ? [DECO_MARKER_ID, 3] : [],
     ...(out && out.scrollCount > 0
       ? { hasScroll: true, scrollTop: 0, scrollBottom: ROWS - 1, scrollCount: out.scrollCount }
       : {}),

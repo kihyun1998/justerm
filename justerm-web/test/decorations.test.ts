@@ -325,3 +325,109 @@ describe("DecorationRegistry.rulerMarksForFrame (#120 S3)", () => {
     ]);
   });
 });
+
+// #189 (S3): the user-visible payoff of the per-buffer marker refactor (#186/#187).
+// core now carries alt-scoped markers on the alt frame's `marker_positions` and
+// disposes them on alt-leave; the registry is buffer-agnostic (it reads
+// `markerPositions` with NO alt gate — unlike `rulerMarksForFrame`, which suppresses
+// on alt), so those alt markers' decorations already project on the alt screen's
+// visible rows. There is no new registry logic in this slice — these tests LOCK the
+// existing correct behavior against a future alt-gate regression, mirroring core's
+// `alt_markers.rs` on the web side.
+describe("DecorationRegistry — alt-screen decorations (#189)", () => {
+  /** An alt frame: alt-scoped marker records plus `altScreen: true`. The registry
+   * does NOT read `altScreen` (that's the point — decorations are not suppressed on
+   * alt); it's set so the scenario reads as the alt buffer. */
+  const altFrame = (...records: number[][]) => ({
+    markerPositions: records.flat(),
+    altScreen: true,
+  });
+  /** An alt frame WITH viewport geometry — real alt frames carry `cols`/`rows`, so
+   * pin the geometry-dependent paths (multi-row `height` clip, right-anchor columns)
+   * on the alt buffer too, not just via the primary `frameGeom` tests. */
+  const altFrameGeom = (cols: number, rows: number, ...records: number[][]) => ({
+    cols,
+    rows,
+    markerPositions: records.flat(),
+    altScreen: true,
+  });
+
+  // Alt-frame markers drive decoration rendering on the alt screen's visible rows —
+  // highlighting a line inside a full-screen TUI (vim/htop). The alt screen has no
+  // scrollback, so an alt marker is always on-viewport when carried.
+  it("projects a decoration whose marker rides an alt frame (no alt suppression)", () => {
+    const reg = new DecorationRegistry();
+    reg.register({ markerId: 42, x: 0, width: 4, bg: 0x008f00 });
+
+    expect(reg.decorationsForFrame(altFrame(mk(42, 3)))).toEqual([
+      { row: 3, left: 0, right: 3, layer: "bottom", bg: 0x008f00, fg: undefined },
+    ]);
+  });
+
+  // No cross-buffer bleed: core omits primary markers from the alt frame (and marker
+  // ids are engine-global — a single `next_marker_id` counter — so a primary id never
+  // collides with an alt id). A decoration on a primary-only marker, absent from the
+  // alt frame's `markerPositions`, yields nothing on alt; it reappears on the primary
+  // frame that carries it. The join is purely marker-id, so isolation is structural.
+  it("does not bleed a primary-only decoration onto the alt screen", () => {
+    const reg = new DecorationRegistry();
+    reg.register({ markerId: 100, x: 0, width: 4, bg: 0x008f00 }); // primary anchor
+
+    // On alt, only the alt marker (7) is carried; 100 is absent → no rect for it.
+    expect(reg.decorationsForFrame(altFrame(mk(7, 1)))).toEqual([]);
+
+    // Back on a primary frame carrying marker 100, the primary decoration projects.
+    expect(reg.decorationsForFrame(frame(mk(100, 2)))).toEqual([
+      { row: 2, left: 0, right: 3, layer: "bottom", bg: 0x008f00, fg: undefined },
+    ]);
+  });
+
+  // Clear on alt-leave: core disposes the alt-scoped marker on `?1049l` and fires
+  // `MarkerDisposed`, which the consumer forwards to `onMarkerDisposed`. The alt
+  // decoration then stops projecting (even if its id is later reused), while a
+  // primary decoration on a still-live marker is untouched — no cross-buffer teardown.
+  it("clears alt decorations on alt-leave (MarkerDisposed) without touching primary", () => {
+    const reg = new DecorationRegistry();
+    const primary = reg.register({ markerId: 100, bg: 0x001122 });
+    const alt = reg.register({ markerId: 7, bg: 0x008f00 });
+
+    reg.onMarkerDisposed(7); // alt-leave disposes the alt-scoped marker
+
+    expect(alt.disposed).toBe(true);
+    expect(primary.disposed).toBe(false);
+    // The alt id reappearing (id reuse) yields nothing; the primary still projects.
+    expect(reg.decorationsForFrame(frame(mk(7, 0), mk(100, 2)))).toEqual([
+      { row: 2, left: 0, right: 0, layer: "bottom", bg: 0x001122, fg: undefined },
+    ]);
+  });
+
+  // Geometry on alt (2-lens completeness, sibling lens): a multi-row `height`
+  // decoration clips to the alt viewport bottom using the alt frame's `rows`. The
+  // alt screen has no scrollback, so nothing exists below the viewport to spill onto
+  // — the demo paints exactly this (a height-3 highlight inside the alt buffer).
+  it("clips a multi-row (height) decoration at the alt viewport bottom", () => {
+    const reg = new DecorationRegistry();
+    reg.register({ markerId: 7, x: 0, width: 2, height: 4, bg: 0x008f00 });
+
+    // Alt viewport = 5 rows (0..4); the marker sits at row 3, so a height-4 span
+    // (rows 3..6) clips to the two on-screen rows 3 and 4.
+    expect(reg.decorationsForFrame(altFrameGeom(6, 5, mk(7, 3)))).toEqual([
+      { row: 3, left: 0, right: 1, layer: "bottom", bg: 0x008f00, fg: undefined },
+      { row: 4, left: 0, right: 1, layer: "bottom", bg: 0x008f00, fg: undefined },
+    ]);
+  });
+
+  // Geometry on alt (2-lens completeness, sibling lens): a right-anchored span is
+  // measured from the alt frame's `cols`, exactly as on the primary — the column
+  // math has no buffer-specific path, but pin it on alt so a future regression in
+  // alt `cols` handling can't slip past.
+  it("right-anchors columns against the alt frame's cols", () => {
+    const reg = new DecorationRegistry();
+    reg.register({ markerId: 7, x: 0, width: 3, anchor: "right", bg: 0x008f00 });
+
+    // cols=10, right anchor x=0 width=3 → [10-0-3, 10-1-0] = [7, 9].
+    expect(reg.decorationsForFrame(altFrameGeom(10, 5, mk(7, 2)))).toEqual([
+      { row: 2, left: 7, right: 9, layer: "bottom", bg: 0x008f00, fg: undefined },
+    ]);
+  });
+});

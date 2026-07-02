@@ -34,6 +34,44 @@ test("alt screen button toggles its label", async ({ page }) => {
   await expect(page.getByRole("button", { name: "Alt screen: OFF" })).toBeVisible();
 });
 
+// #189: an alt-scoped decoration (created on the alt screen) is DISPOSED on
+// alt-leave — core fires MarkerDisposed on ?1049l (per-buffer clearAllMarkers), which
+// the demo forwards to `decorations.onMarkerDisposed`. The green highlight is a
+// beamterm canvas paint (not DOM, so headless can't see the pixel), but the disposal
+// is observable via the Decorate toggle returning to OFF (the handle is gone, not
+// merely off-screen) plus the demo's dispose log. A primary decoration, by contrast,
+// survives an alt round-trip (only alt-scoped markers dispose) — locking "no
+// cross-buffer teardown". This complements the live-screenshot proof so the DOM-
+// observable half of the lifecycle is a regression gate, not a one-time eyeball.
+test("alt-scoped decoration disposes on alt-leave; a primary decoration survives (#189)", async ({
+  page,
+}) => {
+  const disposeLogs: string[] = [];
+  page.on("console", (msg) => {
+    if (msg.text().includes("alt-leave disposed the alt-scoped decoration")) {
+      disposeLogs.push(msg.text());
+    }
+  });
+
+  // Alt-scoped: decorate on the alt screen, then leave → the toggle flips back to OFF.
+  await page.getByRole("button", { name: "Alt screen: OFF" }).click(); // enter alt
+  await page.getByRole("button", { name: "Decorate line: OFF" }).click(); // decorate (alt-scoped)
+  await expect(page.getByRole("button", { name: "Decorate line: ON" })).toBeVisible();
+
+  await page.getByRole("button", { name: "Alt screen: ON" }).click(); // leave alt → dispose
+  await expect(page.getByRole("button", { name: "Decorate line: OFF" })).toBeVisible();
+  expect(disposeLogs).toHaveLength(1);
+
+  // Primary: decorate on the primary screen, round-trip through alt → still ON, and no
+  // further dispose (the alt-leave teardown is alt-scoped only — primary untouched).
+  await page.getByRole("button", { name: "Decorate line: OFF" }).click(); // decorate (primary)
+  await expect(page.getByRole("button", { name: "Decorate line: ON" })).toBeVisible();
+  await page.getByRole("button", { name: "Alt screen: OFF" }).click(); // enter alt
+  await page.getByRole("button", { name: "Alt screen: ON" }).click(); // leave alt
+  await expect(page.getByRole("button", { name: "Decorate line: ON" })).toBeVisible();
+  expect(disposeLogs).toHaveLength(1);
+});
+
 test("finish command announces success then failure to the live region", async ({ page }) => {
   const signals: string[] = [];
   page.on("console", (msg) => {
