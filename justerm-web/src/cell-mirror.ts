@@ -103,10 +103,13 @@ export class CellMirror {
     return text.replace(/\s+$/u, "");
   }
 
-  /** The stored cell at `(x, y)` as a draw op (for the cursor overlay to read
-   * and restore the cursor cell, independent of the frame's damage). */
-  cellAt(x: number, y: number): DrawOp {
+  /** The stored cell at `(x, y)` as a draw op (for the cursor overlay and the #140
+   * overlay-delta to read and repaint a cell independent of the frame's damage), or
+   * `undefined` for a wide-char spacer half — the lead glyph already covers that
+   * column, so drawing a blank there would clip it (same skip as {@link applyFrame}). */
+  cellAt(x: number, y: number): DrawOp | undefined {
     const cell = this.cells[y * this.cols + x]!;
+    if ((cell.flags & this.F.wide_char_spacer) !== 0) return undefined;
     return cellToDrawOp(x, y, cell.symbol, cell.fg, cell.bg, cell.flags, this.palette, this.F, this.policy);
   }
 
