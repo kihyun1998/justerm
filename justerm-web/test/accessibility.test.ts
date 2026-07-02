@@ -209,17 +209,22 @@ describe("AccessibilityController — announce new output (W2)", () => {
     expect(live.announced).toEqual(["Z"]); // diffs against the repaint baseline
   });
 
-  // Rapid frames (streaming output) collapse to one announcement — the point of
-  // the debounce. The accumulated new lines flush together.
-  it("coalesces rapid frames into a single announcement", () => {
+  // #215: the first output after idle fires a leading edge (announced immediately,
+  // zero latency), so only the REST of a rapid burst coalesces on the trailing flush.
+  // (Before #215 the whole burst — its first line included — coalesced into one
+  // announcement; the leading edge trades that for a responsive first line, matching
+  // xterm's TimeBasedDebouncer synchronous leading refresh.)
+  it("leads the first line of a burst, then coalesces the rest", () => {
     const { ctrl, live, flush } = make();
 
-    ctrl.onFrame({ rows: 3 }, ["a", "", ""]); // baseline
-    ctrl.onFrame({ rows: 3 }, ["a", "b", ""]);
-    ctrl.onFrame({ rows: 3 }, ["a", "b", "c"]);
+    ctrl.onFrame({ rows: 4 }, ["a", "", "", ""]); // baseline
+    ctrl.onFrame({ rows: 4 }, ["a", "b", "", ""]); // first output after idle → leads now
+    expect(live.announced).toEqual(["b"]); // announced immediately, no flush needed
+    ctrl.onFrame({ rows: 4 }, ["a", "b", "c", ""]); // within the active window → debounced
+    ctrl.onFrame({ rows: 4 }, ["a", "b", "c", "d"]);
     flush();
 
-    expect(live.announced).toEqual(["b\nc"]);
+    expect(live.announced).toEqual(["b", "c\nd"]); // the rest coalesced into one trailing flush
   });
 
   // When output scrolls, every viewport row's text shifts up — a naive text
@@ -286,16 +291,84 @@ describe("AccessibilityController — announce new output (W2)", () => {
     });
 
     ctrl.onFrame({ rows: 2 }, ["x", ""]); // baseline (t=0, silent)
-    ctrl.onFrame({ rows: 2 }, ["x", "L0"]); // first output at t=0 → batch starts
-    for (let i = 1; i <= 9; i++) {
-      t = i * 100; // an unbroken stream every 100ms, no 200ms quiet gap
+    ctrl.onFrame({ rows: 2 }, ["x", "L0"]); // first output at t=0 → #215 leading edge
+    expect(live.announced).toEqual(["L0"]); // announced immediately
+    // An unbroken sub-200ms stream from t=100 — no 200ms quiet gap, so the trailing
+    // debounce never fires and only the max-wait cap can flush it. The batch's first
+    // push is L1 at t=100, so the cap lands at t=1100.
+    for (let i = 1; i <= 10; i++) {
+      t = i * 100;
       ctrl.onFrame({ rows: 2 }, ["x", `L${i}`]);
     }
-    expect(live.announced).toEqual([]); // still silent at t=900 (< 1s cap)
+    expect(live.announced).toEqual(["L0"]); // still just the leading line at t=1000 (< cap)
 
-    t = 1000; // elapsed since the batch's first push hits the cap
-    ctrl.onFrame({ rows: 2 }, ["x", "L10"]);
-    expect(live.announced.length).toBeGreaterThan(0); // forced flush mid-stream
+    t = 1100; // elapsed since the batch's first push (t=100) hits the 1s cap
+    ctrl.onFrame({ rows: 2 }, ["x", "L11"]);
+    expect(live.announced.length).toBeGreaterThan(1); // forced flush mid-stream
+  });
+
+  // #215: the first output after an idle window is announced with ZERO latency — a
+  // leading edge — instead of waiting the 200ms debounce. No timer flush is needed.
+  it("announces the first output immediately, without the debounce timer", () => {
+    const { ctrl, live } = make(); // note: no flush() call anywhere
+
+    ctrl.onFrame({ rows: 2 }, ["$ ", ""]); // baseline (silent)
+    ctrl.onFrame({ rows: 2 }, ["$ ", "hi"]); // first real output
+
+    expect(live.announced).toEqual(["hi"]); // led immediately — no flush() needed
+  });
+
+  // #215: the leading edge re-arms after a quiet gap of at least the cap, so a fresh
+  // command's first line following an idle period is announced immediately again — not
+  // only the very first output of the session.
+  it("leads again after an idle gap of at least the max-wait", () => {
+    let t = 0;
+    const live = new StubLive();
+    const sched = new ManualScheduler();
+    const ctrl = new AccessibilityController({
+      tree: new StubTree(),
+      live,
+      setTimer: sched.setTimer,
+      clearTimer: sched.clearTimer,
+      now: () => t,
+    });
+
+    ctrl.onFrame({ rows: 2 }, ["$ ", ""]); // baseline
+    ctrl.onFrame({ rows: 2 }, ["$ ", "one"]); // t=0 → leads
+    expect(live.announced).toEqual(["one"]);
+
+    t = 1500; // quiet for > the 1s cap
+    ctrl.onFrame({ rows: 2 }, ["$ ", "two"]); // fresh output after idle → leads again
+    expect(live.announced).toEqual(["one", "two"]); // immediate, no flush
+  });
+
+  // #215 / xterm parity: on screen-reader re-activation xterm disposes + recreates the
+  // whole AccessibilityManager — a FRESH debouncer (`_lastRefreshMs = 0`) whose first
+  // refresh always leads. `reactivate()` must mirror that by clearing the idle clock, so
+  // the first line after re-enabling the SR leads immediately even if the toggle happened
+  // < the cap after the last announce (otherwise it'd be held for the debounce).
+  it("leads the first output after reactivation, even within the cap", () => {
+    let t = 0;
+    const live = new StubLive();
+    const sched = new ManualScheduler();
+    const ctrl = new AccessibilityController({
+      tree: new StubTree(),
+      live,
+      setTimer: sched.setTimer,
+      clearTimer: sched.clearTimer,
+      now: () => t,
+    });
+
+    ctrl.onFrame({ rows: 2 }, ["$ ", ""]); // baseline
+    ctrl.onFrame({ rows: 2 }, ["$ ", "a"]); // t=0 → leads, lastFlushAt=0
+    expect(live.announced).toEqual(["a"]);
+
+    t = 500; // SR toggled off then back on, only 500ms later (< the 1s cap)
+    ctrl.reactivate();
+    t = 600;
+    ctrl.onFrame({ rows: 2 }, ["$ ", "b"]); // first output post-reactivation
+
+    expect(live.announced).toEqual(["a", "b"]); // led immediately, not held for the debounce
   });
 
   // In the alternate screen (vim, htop) every repaint damages the whole screen;
@@ -362,11 +435,12 @@ describe("AccessibilityController — announce new output (W2)", () => {
     const { ctrl, live, flush } = make();
 
     ctrl.onFrame({ rows: 2 }, ["a", ""]); // baseline
-    ctrl.onFrame({ rows: 2 }, ["a", "b"]); // arms a pending announce
+    ctrl.onFrame({ rows: 2 }, ["a", "b"]); // first output → #215 leads → announces "b"
+    ctrl.onFrame({ rows: 2 }, ["a", "bc"]); // follow-up within the window → pending
     ctrl.onKey("z"); // typing → wipe the pending read
     flush();
 
-    expect(live.announced).toEqual([]); // pending dropped
+    expect(live.announced).toEqual(["b"]); // the led line stands; the pending "c" dropped
     expect(live.cleared).toBeGreaterThanOrEqual(1);
   });
 
@@ -377,11 +451,12 @@ describe("AccessibilityController — announce new output (W2)", () => {
     const { ctrl, live, flush } = make();
 
     ctrl.onFrame({ rows: 2 }, ["a", ""]); // baseline
-    ctrl.onFrame({ rows: 2 }, ["a", "b"]); // arms a pending announce
+    ctrl.onFrame({ rows: 2 }, ["a", "b"]); // first output → #215 leads → announces "b"
+    ctrl.onFrame({ rows: 2 }, ["a", "bc"]); // follow-up within the window → pending
     ctrl.dispose();
     flush();
 
-    expect(live.announced).toEqual([]);
+    expect(live.announced).toEqual(["b"]); // the pending "c" never flushes after dispose
   });
 });
 

@@ -32,8 +32,9 @@ const ANNOUNCE_DEBOUNCE_MS = 200;
  * only *caps* the flood, rather than xterm's pure 1s throttle. So at moderate cadence
  * (200ms–1s inter-output gaps) justerm may announce more often than xterm's strict
  * "at most once per second" ceiling — an intentional responsiveness trade. The cap is
- * the flood worst-case bound. (justerm also lacks xterm's leading-edge first-announce
- * — the first line during a flood waits up to the cap; tracked in #215.) */
+ * the flood worst-case bound. A leading edge (#215) fires the first output after an
+ * idle gap of ≥ this cap immediately (matching xterm's synchronous leading refresh),
+ * so a fresh command's first line — or a flood's — isn't held for the debounce/cap. */
 const ANNOUNCE_MAX_WAIT_MS = 1000;
 
 /** The viewport frame header fields the controller reads. A `DecodedFrame`
@@ -106,6 +107,10 @@ export class AccessibilityController {
   /** `now()` when the current pending batch started (first push after empty), for the
    * {@link ANNOUNCE_MAX_WAIT_MS} cap. Undefined ⇔ pending empty. */
   private firstPendingAt: number | undefined;
+  /** `now()` of the last announce that actually emitted, for the {@link
+   * ANNOUNCE_MAX_WAIT_MS} leading-edge idle test (#215). Undefined ⇔ nothing has been
+   * announced yet (idle since forever), so the first output leads. */
+  private lastFlushAt: number | undefined;
   /** Current tree height, to resize only when the viewport changes. */
   private treeRows = 0;
   /** Last frame's geometry, so boundary scroll knows the buffer edges. */
@@ -188,6 +193,12 @@ export class AccessibilityController {
    */
   reactivate(): void {
     this.cancelPending();
+    // #215: clear the leading-edge idle clock too, mirroring xterm recreating a FRESH
+    // TimeBasedDebouncer (`_lastRefreshMs = 0`) on SR re-activation — so the first line
+    // after the screen reader is re-enabled leads immediately, even if the off→on toggle
+    // happened < the cap after the last announce. (Same "fresh manager" rationale as the
+    // `consume` reset below.)
+    this.lastFlushAt = undefined;
     // #183: start echo-dedup fresh, matching xterm's freshly-created manager whose
     // `_charsToConsume` is empty. Keys typed during the inactive span (or un-echoed
     // before it began) must not swallow the first real output as a stale echo —
@@ -235,6 +246,18 @@ export class AccessibilityController {
     const fresh = this.dedupTyped(parts.join("\n"));
     if (fresh.length === 0) return;
     this.pending.push(fresh);
+    // Leading edge (#215): the first output after an idle window is announced
+    // immediately, zero-latency, instead of waiting the 200ms debounce (isolated
+    // output) or — during a flood — the full 1s cap. `firstPendingAt === undefined`
+    // marks the first push into an empty batch; `idleForLeadingEdge()` requires the
+    // batch to follow a quiet gap of at least the cap (or the very first output ever,
+    // when nothing has flushed yet — the `yes`-right-after-login flood). Matches
+    // xterm's TimeBasedDebouncer synchronous leading refresh; subsequent frames in the
+    // active window still coalesce via the debounce+cap below.
+    if (this.firstPendingAt === undefined && this.idleForLeadingEdge()) {
+      this.flush();
+      return;
+    }
     // Coalesce streaming frames: (re)arm the 200ms quiet-period timer. But cap the
     // total wait at ANNOUNCE_MAX_WAIT_MS from the batch's first push (#153) — else an
     // unbroken sub-200ms stream (`yes`) re-arms forever and the SR stays silent until
@@ -256,9 +279,20 @@ export class AccessibilityController {
     this.timer = undefined;
     this.firstPendingAt = undefined;
     if (this.pending.length === 0) return;
+    // Record when we last emitted, for the #215 leading-edge idle test. Only on a
+    // real announce — an empty flush (a timer that fired after a cancel) mustn't
+    // reset the idle clock, so this sits below the empty guard.
+    this.lastFlushAt = this.now();
     const text = this.pending.join("\n");
     this.pending = [];
     this.live.announce(text.split("\n").length > MAX_ROWS_TO_READ ? TOO_MUCH_OUTPUT : text);
+  }
+
+  /** Whether the current (about-to-start) batch follows a quiet gap of at least the
+   * cap — the #215 leading-edge condition. True when nothing has been announced yet
+   * (idle since forever) or the last announce was ≥ {@link ANNOUNCE_MAX_WAIT_MS} ago. */
+  private idleForLeadingEdge(): boolean {
+    return this.lastFlushAt === undefined || this.now() - this.lastFlushAt >= ANNOUNCE_MAX_WAIT_MS;
   }
 
   /** Strip echoed keystrokes from `fresh`. Drains the consume queue at the output
