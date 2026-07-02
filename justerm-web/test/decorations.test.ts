@@ -19,6 +19,12 @@ function frame(...records: number[][]) {
   return { markerPositions: records.flat() };
 }
 
+/** A frame with viewport geometry (cols/rows) — needed for right-anchored columns
+ * and multi-row (`height`) clipping. */
+function frameGeom(cols: number, rows: number, ...records: number[][]) {
+  return { cols, rows, markerPositions: records.flat() };
+}
+
 describe("DecorationRegistry (#120 S1)", () => {
   // The core join: a decoration registered against a marker id projects onto that
   // marker's CURRENT viewport row each frame, with its x-range/layer/colour refs.
@@ -113,6 +119,82 @@ describe("DecorationRegistry (#120 S1)", () => {
       { row: 3, left: 0, right: 0, layer: "bottom", bg: undefined, fg: undefined },
       { row: 3, left: 5, right: 5, layer: "top", bg: undefined, fg: undefined },
       { row: 8, left: 2, right: 2, layer: "bottom", bg: undefined, fg: undefined },
+    ]);
+  });
+
+  // #202: a multi-row decoration (`height` > 1) projects one single-row rect per
+  // row it spans, starting at the marker's row and extending DOWN (xterm `top =
+  // marker.line`, `height` rows). The rect shape stays single-row so the S2 render
+  // is untouched.
+  it("projects one rect per row for a multi-row height", () => {
+    const reg = new DecorationRegistry();
+    reg.register({ markerId: 1, x: 0, width: 2, height: 3, bg: 0x111111 });
+
+    expect(reg.decorationsForFrame(frameGeom(20, 10, mk(1, 4)))).toEqual([
+      { row: 4, left: 0, right: 1, layer: "bottom", bg: 0x111111, fg: undefined },
+      { row: 5, left: 0, right: 1, layer: "bottom", bg: 0x111111, fg: undefined },
+      { row: 6, left: 0, right: 1, layer: "bottom", bg: 0x111111, fg: undefined },
+    ]);
+  });
+
+  // A multi-row decoration whose span runs past the viewport bottom is clipped to
+  // the visible rows (no rects for rows that don't exist).
+  it("clips a multi-row height to the viewport bottom", () => {
+    const reg = new DecorationRegistry();
+    reg.register({ markerId: 1, height: 5 }); // marker at row 3, only rows 3..4 visible
+
+    expect(reg.decorationsForFrame(frameGeom(20, 5, mk(1, 3)))).toEqual([
+      { row: 3, left: 0, right: 0, layer: "bottom", bg: undefined, fg: undefined },
+      { row: 4, left: 0, right: 0, layer: "bottom", bg: undefined, fg: undefined },
+    ]);
+  });
+
+  // #202: a right-anchored decoration counts columns from the RIGHT edge. x=0,
+  // width=1 → the rightmost cell (cols-1); the span extends leftward by width.
+  it("anchors columns to the right edge", () => {
+    const reg = new DecorationRegistry();
+    reg.register({ markerId: 1, anchor: "right", x: 0, width: 1 });
+
+    expect(reg.decorationsForFrame(frameGeom(20, 10, mk(1, 2)))).toEqual([
+      { row: 2, left: 19, right: 19, layer: "bottom", bg: undefined, fg: undefined },
+    ]);
+  });
+
+  // Right anchor with an x offset and width: x cells in from the right, extending
+  // leftward. cols=20, x=1, width=3 → right = 20-1-1 = 18, left = 20-1-3 = 16.
+  it("offsets a right-anchored span inward by x", () => {
+    const reg = new DecorationRegistry();
+    reg.register({ markerId: 1, anchor: "right", x: 1, width: 3 });
+
+    expect(reg.decorationsForFrame(frameGeom(20, 10, mk(1, 0)))).toEqual([
+      { row: 0, left: 16, right: 18, layer: "bottom", bg: undefined, fg: undefined },
+    ]);
+  });
+
+  // A right-anchored span wider than the screen overflows the LEFT edge: columns
+  // pass through un-clamped (like the negative-x case), so `left` goes negative.
+  // The renderer's `decorationAt` intersects with the visible cells, painting only
+  // [0, right] — matching xterm, which clips an on-screen-anchored overflow (and
+  // hides only when the anchor x itself is off-screen, where right < 0 here → no
+  // cell matches). Locks in the completeness-pass edge.
+  it("passes a right-anchored overflow through un-clamped (renderer clips)", () => {
+    const reg = new DecorationRegistry();
+    reg.register({ markerId: 1, anchor: "right", x: 0, width: 25 }); // wider than 20 cols
+
+    expect(reg.decorationsForFrame(frameGeom(20, 10, mk(1, 0)))).toEqual([
+      { row: 0, left: -5, right: 19, layer: "bottom", bg: undefined, fg: undefined },
+    ]);
+  });
+
+  // Defaults are unchanged (height 1, anchor left) — a plain decoration still
+  // projects exactly one left-anchored rect (guards against the additive fields
+  // shifting existing behaviour).
+  it("defaults to height 1, anchor left (single left rect)", () => {
+    const reg = new DecorationRegistry();
+    reg.register({ markerId: 1, x: 2, width: 3 });
+
+    expect(reg.decorationsForFrame(frameGeom(20, 10, mk(1, 1)))).toEqual([
+      { row: 1, left: 2, right: 4, layer: "bottom", bg: undefined, fg: undefined },
     ]);
   });
 

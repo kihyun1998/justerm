@@ -276,6 +276,7 @@ function toggleDecorateLine(): void {
       markerId: DECO_MARKER_ID,
       x: 0,
       width: COLS,
+      height: 3, // #202: a multi-row highlight — tints 3 rows from the marker down
       layer: "bottom",
       bg: 0x008f00, // green — distinct from defaultBg, glyphs stay readable above
       // #120 S3: also mark it on the overview ruler (orange), to demo the scrollbar
