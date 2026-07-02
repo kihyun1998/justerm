@@ -756,28 +756,56 @@ impl Term {
         }
     }
 
-    /// The cells of absolute buffer line `line` (`[scrollback ++ screen]`).
+    /// The primary-screen grid, wherever it currently lives — swapped into
+    /// `alt_grid` while on the alt screen (#192). Command marks anchor *primary*
+    /// content, so extracting their text must read this, not the active grid.
+    fn primary_grid(&self) -> &Grid {
+        if self.on_alt {
+            &self.alt_grid
+        } else {
+            &self.grid
+        }
+    }
+
+    /// The cells of absolute buffer line `line`, reading the screen portion from
+    /// `grid` (scrollback is shared). Callers pick the active grid (`abs_line`) or
+    /// the primary grid (`primary_grid`, for command-mark text on the alt screen).
+    fn line_in<'a>(&'a self, grid: &'a Grid, line: usize) -> &'a [Cell] {
+        if line < self.scrollback.len() {
+            &self.scrollback[line]
+        } else {
+            grid.row(line - self.scrollback.len())
+        }
+    }
+
+    /// The whole row of absolute buffer line `line` from `grid` (see `line_in`).
+    fn row_in<'a>(&'a self, grid: &'a Grid, line: usize) -> &'a Row {
+        if line < self.scrollback.len() {
+            &self.scrollback[line]
+        } else {
+            grid.row_ref(line - self.scrollback.len())
+        }
+    }
+
+    /// The cells of absolute buffer line `line` on the *active* screen.
     fn abs_line(&self, line: usize) -> &[Cell] {
-        if line < self.scrollback.len() {
-            &self.scrollback[line]
-        } else {
-            self.grid.row(line - self.scrollback.len())
-        }
+        self.line_in(&self.grid, line)
     }
 
-    /// The whole row (cells + combining map) of absolute buffer line `line`.
+    /// The whole row of absolute buffer line `line` on the *active* screen.
     fn abs_row(&self, line: usize) -> &Row {
-        if line < self.scrollback.len() {
-            &self.scrollback[line]
-        } else {
-            self.grid.row_ref(line - self.scrollback.len())
-        }
+        self.row_in(&self.grid, line)
     }
 
-    /// The combining marks at absolute `(line, col)`, or `None` — flag-gated
-    /// through the row's map, so a stale entry is never surfaced.
+    /// The combining marks at absolute `(line, col)` reading `grid`, or `None` —
+    /// flag-gated through the row's map, so a stale entry is never surfaced.
+    fn combining_in<'a>(&'a self, grid: &'a Grid, line: usize, col: usize) -> Option<&'a [char]> {
+        self.row_in(grid, line).combining_at(col)
+    }
+
+    /// The combining marks at absolute `(line, col)` on the *active* screen.
     fn combining_at(&self, line: usize, col: usize) -> Option<&[char]> {
-        self.abs_row(line).combining_at(col)
+        self.combining_in(&self.grid, line, col)
     }
 
     /// The hyperlink-pool index at **screen** `(row, col)` (the live grid), or
@@ -1098,9 +1126,12 @@ impl Term {
                         // Columns bound the command precisely even though output was
                         // written after C — `extract_lines` reads current cells but
                         // clips to `[b_col, c_col)`, excluding both prompt and output.
-                        let command = self.extract_lines(b_line, b_col, m.line, m.col);
+                        // Command marks anchor primary content — read the primary
+                        // grid so the text is right even while on the alt screen (#192).
+                        let command =
+                            self.extract_lines(self.primary_grid(), b_line, b_col, m.line, m.col);
                         out.push(CommandLine {
-                            line: self.doc_line_of(b_line),
+                            line: self.doc_line_of(self.primary_grid(), b_line),
                             command,
                             exit: None,
                         });
@@ -1127,9 +1158,14 @@ impl Term {
     /// matching `accessible_text`'s `start = 0` for the primary screen; command
     /// marks are primary-only. O(abs) per call — fine for an on-demand query over
     /// the handful of commands in a session.
-    fn doc_line_of(&self, abs: usize) -> usize {
+    fn doc_line_of(&self, grid: &Grid, abs: usize) -> usize {
         (0..abs)
-            .filter(|&l| !self.abs_line(l).last().is_some_and(|c| c.is_wrapline()))
+            .filter(|&l| {
+                !self
+                    .line_in(grid, l)
+                    .last()
+                    .is_some_and(|c| c.is_wrapline())
+            })
             .count()
     }
 
@@ -1483,7 +1519,7 @@ impl Term {
                 from,
                 end_line,
                 to,
-            } => Some(self.extract_lines(start_line, from, end_line, to)),
+            } => Some(self.extract_lines(&self.grid, start_line, from, end_line, to)),
             Resolved::Block {
                 line0,
                 line1,
@@ -1496,7 +1532,7 @@ impl Term {
                     let hi = to.min(self.abs_line(line).len());
                     let mut seg = String::new();
                     for col in from..hi {
-                        self.append_cell(&mut seg, line, col);
+                        self.append_cell(&self.grid, &mut seg, line, col);
                     }
                     out.push_str(seg.trim_end());
                     if line != line1 {
@@ -1511,13 +1547,13 @@ impl Term {
     /// Append the text at absolute `(line, col)` — its base glyph plus any
     /// combining marks from the row's map — to `out`. Wide-char spacers
     /// contribute nothing.
-    fn append_cell(&self, out: &mut String, line: usize, col: usize) {
-        let cell = &self.abs_line(line)[col];
+    fn append_cell(&self, grid: &Grid, out: &mut String, line: usize, col: usize) {
+        let cell = &self.line_in(grid, line)[col];
         if cell.is_spacer() {
             return;
         }
         out.push(cell.c());
-        if let Some(marks) = self.combining_at(line, col) {
+        if let Some(marks) = self.combining_in(grid, line, col) {
             out.extend(marks);
         }
     }
@@ -1540,7 +1576,7 @@ impl Term {
         } else {
             0
         };
-        let mut doc = self.extract_lines(start, 0, total - 1, usize::MAX);
+        let mut doc = self.extract_lines(&self.grid, start, 0, total - 1, usize::MAX);
         // Trim *trailing* empty lines (blank screen rows below the content) — pure
         // noise to a listener, and what a fresh screen would otherwise emit. Keep
         // *internal* blank lines (paragraph breaks between command outputs) — a
@@ -1556,6 +1592,7 @@ impl Term {
     /// at a wrap boundary are real content. A hard line-end flushes with `\n`.
     fn extract_lines(
         &self,
+        grid: &Grid,
         start_line: usize,
         from: usize,
         end_line: usize,
@@ -1564,7 +1601,7 @@ impl Term {
         let mut out = String::new();
         let mut current = String::new();
         for line in start_line..=end_line {
-            let cells = self.abs_line(line);
+            let cells = self.line_in(grid, line);
             let left = if line == start_line { from } else { 0 };
             let right = if line == end_line {
                 to_end.min(cells.len())
@@ -1575,7 +1612,7 @@ impl Term {
             // clamp to empty rather than panic on the slice.
             let right = right.max(left);
             for col in left..right {
-                self.append_cell(&mut current, line, col);
+                self.append_cell(grid, &mut current, line, col);
             }
 
             let is_last = line == end_line;
