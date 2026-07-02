@@ -1,0 +1,68 @@
+/**
+ * Rendering decorations (#120 S2): the per-cell query and colour composition that
+ * turn {@link DecorationRect}s (from {@link DecorationRegistry}) into a cell's
+ * final `(fg, bg)`. beamterm has no overlay layer, so — like the selection blend
+ * and the cursor's cell-invert — a decoration is a per-cell colour override, and
+ * the two layers (`bottom`/`top`) are expressed as *precedence* around the
+ * selection/match highlight rather than true z-stacked draws.
+ *
+ * Pure logic (no beamterm, no DOM): the renderer resolves the highlight kind to a
+ * theme colour and calls {@link composeCellColors}; the layering lives here so it
+ * is unit-tested (the GL adapter is not).
+ */
+
+import type { DecorationLayer, DecorationRect } from "./decorations";
+
+/**
+ * The decoration covering viewport cell `(col, row)` on `layer`, or `null`. Columns
+ * are inclusive (`left..=right`), mirroring `overlay.ts` `highlightAt`. When several
+ * decorations at the same layer overlap the cell, the LAST wins (later registration
+ * paints on top — xterm's draw order).
+ */
+export function decorationAt(
+  rects: DecorationRect[],
+  col: number,
+  row: number,
+  layer: DecorationLayer,
+): DecorationRect | null {
+  let hit: DecorationRect | null = null;
+  for (const r of rects) {
+    if (r.layer === layer && r.row === row && col >= r.left && col <= r.right) hit = r;
+  }
+  return hit;
+}
+
+/**
+ * A cell's final `(fg, bg)` after layering, back-to-front: base < bottom
+ * decoration < selection/match highlight < top decoration. Each decoration
+ * overrides `bg` and/or `fg` only where it sets one — so a `bottom` decoration
+ * tints the background under a legible glyph, while `highlightBg` (the resolved
+ * selection/match colour, or `null`) sits above it, and a `top` decoration is
+ * foreground-most and wins over the highlight.
+ *
+ * This order follows xterm's DOCUMENTED contract (`xterm.d.ts`: "'bottom' will
+ * render under the selection, 'top' will render above the selection"). Note it
+ * diverges from xterm's *actual* `DomRendererRowFactory` implementation, which
+ * SKIPS the selection entirely on a cell that has a top decoration — silently
+ * suppressing the selection. justerm keeps the selection always visible (spec-
+ * faithful, and arguably better UX); a consumer porting code that relied on a top
+ * decoration hiding the selection would see the selection here instead.
+ */
+export function composeCellColors(
+  base: { fg: number; bg: number },
+  bottom: DecorationRect | null,
+  highlightBg: number | null,
+  top: DecorationRect | null,
+): { fg: number; bg: number } {
+  let { fg, bg } = base;
+  if (bottom) {
+    if (bottom.bg !== undefined) bg = bottom.bg;
+    if (bottom.fg !== undefined) fg = bottom.fg;
+  }
+  if (highlightBg !== null) bg = highlightBg;
+  if (top) {
+    if (top.bg !== undefined) bg = top.bg;
+    if (top.fg !== undefined) fg = top.fg;
+  }
+  return { fg, bg };
+}

@@ -2,6 +2,8 @@ import type { BeamtermRenderer as Backend, Batch, Cell, CellStyle } from "@beamt
 import type { Palette } from "justerm-wasm-decode/colors.js";
 import { CellMirror } from "./cell-mirror";
 import { CursorBlink, cursorOp } from "./cursor";
+import type { DecorationRect } from "./decorations";
+import { composeCellColors, decorationAt } from "./decoration-render";
 import { highlightAt, highlightRects } from "./overlay";
 import type { DrawOp, FlagBits } from "./render-core";
 import type { DecodedFrame } from "./types";
@@ -71,6 +73,10 @@ export class BeamtermRenderer implements Renderer {
   private cursor: { row: number; col: number; shape: number; visible: boolean } | undefined;
   private lastBlinkOn = true;
   private rafId: number | undefined;
+  /** Per-frame decoration rects (#120 S2). Decorations are consumer-side (not on
+   * the frame wire like selection/match), so the consumer injects a source bound
+   * to its {@link DecorationRegistry}; absent → no decorations. */
+  private decorationSource: ((frame: DecodedFrame) => DecorationRect[]) | undefined;
 
   private constructor(
     private readonly backend: Backend,
@@ -87,6 +93,14 @@ export class BeamtermRenderer implements Renderer {
     const mq = window.matchMedia("(prefers-reduced-motion: reduce)");
     this.blink.setReducedMotion(mq.matches);
     mq.addEventListener("change", (e) => this.blink.setReducedMotion(e.matches));
+  }
+
+  /** Wire marker-anchored decorations (#120 S2): the source projects the frame's
+   * decoration rects (typically `(frame) => registry.decorationsForFrame(frame)`),
+   * which `applyFrame` composes into each cell's colour under/over the
+   * selection/match highlight. Pass `undefined` to detach. */
+  setDecorationSource(source: ((frame: DecodedFrame) => DecorationRect[]) | undefined): void {
+    this.decorationSource = source;
   }
 
   /** The cell-decoding context the renderer resolved from the wasm decoder
@@ -173,18 +187,32 @@ export class BeamtermRenderer implements Renderer {
     // Full frames repaint the whole viewport; partial frames retain untouched
     // cells (damage-only), so only full clears.
     if (frame.kind === 0) batch.clear(this.clearColor);
-    // Blend selection/search highlights into each painted cell's background —
-    // beamterm has no overlay layer, so a highlight is a per-cell bg swap (like
-    // the cursor's cell-invert). NB: this tints only the cells in `ops`; on a
-    // partial frame a cell whose highlight state just flipped isn't repainted —
-    // needs old+new overlay-cell damage like the cursor (#140). Correct today
-    // only on Full frames (the demo pushes Full).
+    // Blend selection/search highlights AND marker decorations (#120 S2) into each
+    // painted cell's colour — beamterm has no overlay layer, so both are per-cell
+    // colour overrides (like the cursor's cell-invert), layered back-to-front:
+    // base < bottom decoration < highlight < top decoration. NB: this tints only
+    // the cells in `ops`; on a partial frame a cell whose overlay state just
+    // flipped isn't repainted — needs old+new overlay-cell damage like the cursor
+    // (#140). Correct today only on Full frames (the demo pushes Full).
     const rects = highlightRects(frame);
+    const decoRects = this.decorationSource?.(frame) ?? [];
     for (const op of ops) {
       const kind = rects.length ? highlightAt(rects, op.x, op.y) : null;
-      this.drawOp(batch, kind ? { ...op, bg: kind === "selection" ? this.selectionBg : this.matchBg } : op);
+      const highlightBg = kind ? (kind === "selection" ? this.selectionBg : this.matchBg) : null;
+      const bottom = decoRects.length ? decorationAt(decoRects, op.x, op.y, "bottom") : null;
+      const top = decoRects.length ? decorationAt(decoRects, op.x, op.y, "top") : null;
+      if (highlightBg === null && bottom === null && top === null) {
+        this.drawOp(batch, op);
+        continue;
+      }
+      const { fg, bg } = composeCellColors({ fg: op.fg, bg: op.bg }, bottom, highlightBg, top);
+      this.drawOp(batch, { ...op, fg, bg });
     }
-    // Overlay the cursor into the same batch (it draws over its mirror cell).
+    // Overlay the cursor into the same batch — it draws over its mirror cell,
+    // AFTER the decoration/highlight compose above, and cell-inverts the cell's
+    // ORIGINAL (un-composed) colours. So the cursor takes visual precedence over a
+    // decoration on its cell (cursor visibility wins); a decoration under the
+    // cursor is momentarily hidden by the inverted block, like a selection is.
     this.lastBlinkOn = this.blink.isVisible(now());
     this.overlayCursor(batch, this.lastBlinkOn);
     this.startBlinkLoop();
