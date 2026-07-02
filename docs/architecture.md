@@ -266,13 +266,16 @@ deferred behavior) it tracks — then add what you find here.** Seeds (caught in
   `viewport_logical_lines`, and word-selection assemble a `WRAPLINE` run into one logical line with **no
   per-run length cap** — bounded only physically by the scrollback cap (`O(scrollback)` per call, never
   infinite). This is a deliberate completeness/a11y choice: an edge-spanning URL wrapped across many rows
-  still matches (link detection), and the a11y view reads the whole logical line (#119). xterm's *search*
-  wrap-assembly is likewise uncapped (only a 1000-*result* cap; its 2048-char/direction cap is in the
-  separate *link provider*), so a cap here would *exceed* xterm parity while *regressing* justerm's
-  completeness. It is therefore **deferred** until profiling shows the pathological single-multi-KB-line
-  case matters (a ReDoS-amplification surface only for the consumer's own regex, which the consumer bounds
-  at its layer — ADR-0017 policy-in-consumer). If ever added, it caps all three walks uniformly with a
-  whitespace stop. [#206]
+  still matches (link detection), and the a11y view reads the whole logical line (#119). This *matches*
+  xterm's structure (verified against real source): its **search** wrap-assembly
+  (`SearchLineCache.ts::translateBufferLineToStringWithWrap`, a `while (isWrapped)` walk) is **uncapped**
+  too — its only cap is a 1000-*result* count (`SearchAddon.ts`), and search does a *literal* match (no
+  ReDoS). The 2048-char/direction + whitespace-stop cap lives **only in the link provider**
+  (`WebLinkProvider.ts::_getWindowedLineStrings`), because *that* path runs a URL **regex** over the
+  assembled text. So the bound belongs with the **regex-runner**, not the buffer walk. In justerm link
+  detection is the consumer's job (ADR-0017), so if the pathological single-multi-KB-line case ever
+  bites, the fix is the **consumer** capping its own regex input — exactly where xterm puts it — not a
+  core cap. Deferred until profiling shows it matters. [#206]
 
 - **Editing CSIs are BCE-filled and region/line-scoped — and must not orphan a wide-char half.**
   ICH (`@`, insert blanks), DCH (`P`, delete chars), ECH (`X`, erase chars) operate *within the
