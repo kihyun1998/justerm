@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
   type AnnouncePolicy,
+  type AnnounceText,
   CommandAnnounceController,
   type Enablement,
   type SignalSink,
+  TERSE_ANNOUNCE_TEXT,
 } from "../src/command-announce";
 import type { LiveRegionSink } from "../src/accessibility";
 import { MarkerKind } from "../src/markers";
@@ -57,7 +59,11 @@ function seeded(live: LiveRegionSink, signal: SignalSink) {
 function seededWith(
   live: LiveRegionSink,
   signal: SignalSink,
-  opts: { policy?: AnnouncePolicy; screenReaderActive?: () => boolean },
+  opts: {
+    policy?: AnnouncePolicy;
+    screenReaderActive?: () => boolean;
+    announceText?: AnnounceText;
+  },
 ) {
   const c = new CommandAnnounceController(live, signal, opts);
   c.onFrame(frame(PARTIAL));
@@ -329,5 +335,79 @@ describe("CommandAnnounceController per-outcome policy (#167)", () => {
 
     expect(live.said).toEqual(["Command failed, exit 7"]);
     expect(signal.signals).toEqual(["fail"]);
+  });
+});
+
+describe("CommandAnnounceController announce-text verbosity (#179)", () => {
+  // The default text is the pre-#179 verbose wording: a failure carries its exit
+  // code (#167 F2, an intentional enhancement over VSCode's exit-less
+  // "Command Failed"). No formatter → current behaviour, unchanged.
+  it("defaults to verbose text (failure carries the exit code)", () => {
+    const live = new RecLive();
+    const c = seeded(live, new RecSignal());
+
+    c.onFrame(frame(PARTIAL, marker(1, MarkerKind.CommandFinished, 2)));
+
+    expect(live.said).toEqual(["Command failed, exit 2"]);
+  });
+
+  // TERSE_ANNOUNCE_TEXT is VSCode parity (accessibilitySignalService.ts
+  // `announcementMessage` = "Command Failed", no exit): the failure drops the
+  // code — a sighted user reads it from the red decoration, so it is redundant in
+  // speech. This is the "knob" the consumer flips by injecting the preset.
+  it("terse preset drops the exit code on failure (VSCode parity)", () => {
+    const live = new RecLive();
+    const c = seededWith(live, new RecSignal(), { announceText: TERSE_ANNOUNCE_TEXT });
+
+    c.onFrame(frame(PARTIAL, marker(1, MarkerKind.CommandFinished, 2)));
+
+    expect(live.said).toEqual(["Command failed"]);
+  });
+
+  // Success carries no exit in either mode, so terse and verbose success text are
+  // identical — only the failure wording differs.
+  it("terse success text matches verbose (no exit either way)", () => {
+    const live = new RecLive();
+    const c = seededWith(live, new RecSignal(), { announceText: TERSE_ANNOUNCE_TEXT });
+
+    c.onFrame(frame(PARTIAL, marker(1, MarkerKind.CommandFinished, 0)));
+
+    expect(live.said).toEqual(["Command succeeded"]);
+  });
+
+  // The seam is arbitrary: a consumer can inject any `(outcome, exit) => string`
+  // (a localized or differently-worded formatter) and the controller speaks
+  // exactly that. Proves the text is fully externalized policy (ADR-0017), not a
+  // fixed enum the controller bakes in.
+  it("uses a custom injected formatter verbatim", () => {
+    const live = new RecLive();
+    const fmt: AnnounceText = (outcome, exit) =>
+      outcome === "failed" ? `boom(${exit})` : "ok!";
+    const c = seededWith(live, new RecSignal(), { announceText: fmt });
+
+    c.onFrame(frame(PARTIAL, marker(1, MarkerKind.CommandFinished, 9)));
+    c.onFrame(frame(PARTIAL, marker(2, MarkerKind.CommandFinished, 0)));
+
+    expect(live.said).toEqual(["boom(9)", "ok!"]);
+  });
+
+  // Verbosity is orthogonal to the #167 enable matrix: a terse formatter still
+  // obeys the announce gate (off → nothing spoken), and the signal earcon is
+  // unaffected by text at all. The two axes compose without interference.
+  it("verbosity is orthogonal to the #167 enable policy", () => {
+    const live = new RecLive();
+    const signal = new RecSignal();
+    const c = seededWith(live, signal, {
+      announceText: TERSE_ANNOUNCE_TEXT,
+      policy: {
+        succeeded: { announce: "auto", signal: "auto" },
+        failed: { announce: "off", signal: "on" },
+      },
+    });
+
+    c.onFrame(frame(PARTIAL, marker(1, MarkerKind.CommandFinished, 4)));
+
+    expect(live.said).toEqual([]); // announce gated off by policy
+    expect(signal.signals).toEqual(["fail"]); // signal fires, independent of text
   });
 });

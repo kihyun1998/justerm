@@ -27,6 +27,8 @@ import {
   StubCommandNavPort,
   StubFrameSource,
   Terminal,
+  TERSE_ANNOUNCE_TEXT,
+  VERBOSE_ANNOUNCE_TEXT,
 } from "../src/index";
 import type { AccessiblePort, SignalSink } from "../src/index";
 import type { CellGeometry, LogicalLine, SearchPort, SelectionPort } from "../src/index";
@@ -173,11 +175,20 @@ const cmdCtrl = new CommandAnnounceController(
     },
   },
   cmdSignal,
-  { screenReaderActive: () => srState.isActive() },
+  {
+    screenReaderActive: () => srState.isActive(),
+    // #179: the announce *text* is consumer policy (ADR-0017). The injected
+    // formatter dispatches to a preset by the live `terseAnnounce` toggle, so the
+    // Terse button flips verbose ("Command failed, exit N") ↔ VSCode-parity terse
+    // ("Command failed") through the real controller, not a fixed string.
+    announceText: (outcome, exit) =>
+      (terseAnnounce ? TERSE_ANNOUNCE_TEXT : VERBOSE_ANNOUNCE_TEXT)(outcome, exit),
+  },
 );
 let nextMarkId = 1;
 let commandMarks: number[] = [];
 let cmdFailToggle = false;
+let terseAnnounce = false;
 
 // #166 command navigation: Prev/Next walk the command history inside the
 // accessible view. A real backend returns core `command_lines` (document line +
@@ -237,6 +248,14 @@ function finishCommand(): void {
   render({ scrollCount: 0 }); // a Partial frame carries the mark → cmdCtrl announces
   cmdBtn.textContent = `Finish command (next exit ${cmdFailToggle ? 1 : 0})`;
 }
+function toggleTerse(): void {
+  // #179: flip the announce-text verbosity. Verbose (default) speaks the exit code
+  // on failure; terse drops it (VSCode parity). Only the failure wording changes —
+  // success is "Command succeeded" either way.
+  terseAnnounce = !terseAnnounce;
+  terseBtn.textContent = `Announce: ${terseAnnounce ? "TERSE" : "VERBOSE"}`;
+  console.log(`[demo] announceText = ${terseAnnounce ? "terse" : "verbose"}`);
+}
 function toggleScreenReader(): void {
   // Route through the a11y seam (not srState directly) so reactivation re-syncs
   // the row tree (#169). The shared srState still updates, so the command
@@ -293,10 +312,11 @@ function demoButton(
 const viewBtn = demoButton("Accessible view (log)", summonAccessibleView);
 const altBtn = demoButton("Alt screen: OFF", toggleAltScreen);
 const cmdBtn = demoButton("Finish command (next exit 0)", finishCommand);
+const terseBtn = demoButton("Announce: VERBOSE", toggleTerse);
 const srBtn = demoButton("Screen reader: ON", toggleScreenReader);
 const prevBtn = demoButton("Prev command", navPrevCommand, false);
 const nextBtn = demoButton("Next command", navNextCommand, false);
-controls.append(viewBtn, altBtn, cmdBtn, srBtn, prevBtn, nextBtn);
+controls.append(viewBtn, altBtn, cmdBtn, terseBtn, srBtn, prevBtn, nextBtn);
 document.body.appendChild(controls);
 
 // Forward printable keystrokes for echo dedup (this demo doesn't echo, so it's a

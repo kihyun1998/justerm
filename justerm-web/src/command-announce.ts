@@ -70,6 +70,36 @@ function enabled(state: Enablement, srActive: boolean): boolean {
 }
 
 /**
+ * Formats the spoken text for a finished command (#179). The *text* is pure
+ * presentation policy (ADR-0017), so the consumer injects it wholesale — the
+ * controller owns only *when* to speak (dedup + the #167 enable gate), never
+ * *what*. `exit` is the non-zero code on `"failed"` and `undefined`/`0` on
+ * `"succeeded"` (which never renders it). Parameterizing this instead of an enum
+ * subsumes terse/verbose *and* localization in one seam. Mirrors VSCode's
+ * localized `announcementMessage` (`accessibilitySignalService.ts`).
+ */
+export type AnnounceText = (outcome: "succeeded" | "failed", exit: number | undefined) => string;
+
+/**
+ * Default formatter = the pre-#179 verbose wording: a failure carries its exit
+ * code. This is #167 F2 — an intentional enhancement over VSCode's exit-less
+ * `"Command Failed"` (the code is useful to a non-sighted user who has no red
+ * decoration to read) — so wiring the controller with no formatter is a no-op.
+ */
+export const VERBOSE_ANNOUNCE_TEXT: AnnounceText = (outcome, exit) =>
+  outcome === "failed" ? `Command failed, exit ${exit}` : "Command succeeded";
+
+/**
+ * VSCode-parity formatter: the failure omits the exit code, matching
+ * `accessibilitySignalService.ts`'s `announcementMessage` (`"Command Failed"`).
+ * A sighted user reads the code off the red decoration, so terse mode drops the
+ * redundant number. Success text is identical to {@link VERBOSE_ANNOUNCE_TEXT}
+ * (success never renders an exit either way).
+ */
+export const TERSE_ANNOUNCE_TEXT: AnnounceText = (outcome) =>
+  outcome === "failed" ? "Command failed" : "Command succeeded";
+
+/**
  * The exit-driven outcome signal — a success/failure earcon or aria cue the
  * consumer plays (the a11y counterpart to a green/red prompt a sighted user
  * sees). Web policy; a thin adapter over the Web Audio API / a live region
@@ -114,6 +144,11 @@ export class CommandAnnounceController {
    *   and do NOT also wrap these sinks with `gateLive`/`gateSignal` — this
    *   controller now owns the gating, and double-gating would break `on`.
    *   Defaults to `() => true` (SR active), matching #161's default.
+   * @param opts.announceText formats the spoken text per outcome (#179). Defaults
+   *   to {@link VERBOSE_ANNOUNCE_TEXT} (failure carries its exit code); pass
+   *   {@link TERSE_ANNOUNCE_TEXT} for VSCode-parity terse wording, or any custom
+   *   `(outcome, exit) => string`. Orthogonal to `policy`: the enable gate decides
+   *   *whether* to speak, this decides *what*.
    */
   constructor(
     private readonly live: LiveRegionSink,
@@ -121,6 +156,7 @@ export class CommandAnnounceController {
     private readonly opts: {
       policy?: AnnouncePolicy;
       screenReaderActive?: () => boolean;
+      announceText?: AnnounceText;
     } = {},
   ) {}
 
@@ -147,6 +183,7 @@ export class CommandAnnounceController {
     // Read SR presence once per frame (all its marks share one instant). Resolved
     // here rather than in a sink wrapper so `on` can override an SR-off state.
     const srActive = this.opts.screenReaderActive?.() ?? true;
+    const announceText = this.opts.announceText ?? VERBOSE_ANNOUNCE_TEXT;
     for (const m of finished) {
       if (this.seen.has(m.id)) continue;
       // Mark seen UNCONDITIONALLY — before any enable check — so a policy- or
@@ -156,7 +193,7 @@ export class CommandAnnounceController {
       const failed = m.exit !== undefined && m.exit !== 0;
       const rule = failed ? policy.failed : policy.succeeded;
       if (enabled(rule.announce, srActive)) {
-        this.live.announce(failed ? `Command failed, exit ${m.exit}` : "Command succeeded");
+        this.live.announce(announceText(failed ? "failed" : "succeeded", m.exit));
       }
       if (enabled(rule.signal, srActive)) {
         if (failed) this.signal.commandFailed();
