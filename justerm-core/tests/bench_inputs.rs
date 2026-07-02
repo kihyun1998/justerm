@@ -100,6 +100,54 @@ fn flood_is_several_megabytes() {
     assert!(n >= 4 * 1024 * 1024, "flood should be >= 4 MiB, got {n}");
 }
 
+/// The wrap-run bench (#206) rests on one structural claim: `one_wrap_run_input`
+/// collapses to a *single* logical line spanning the whole buffer (the
+/// `O(scrollback)` assembly a cap would target), while `many_lines_input` — same
+/// content chars — stays many short lines. If that structure ever broke, the
+/// bench would silently measure the wrong thing, so pin it here.
+#[test]
+fn one_wrap_run_is_a_single_buffer_spanning_logical_line() {
+    let mut term = Engine::with_scrollback(WRAP_COLS, ROWS, WRAP_ROWS);
+    term.feed(&one_wrap_run_input());
+
+    // The whole buffer is one soft-wrap run, so it joins into ONE logical line
+    // whose text is every content char — the walk the bench times.
+    let lines = term.viewport_logical_lines();
+    assert_eq!(
+        lines.len(),
+        1,
+        "one unbroken line must assemble into a single logical line"
+    );
+    assert_eq!(
+        lines[0].text.chars().count(),
+        WRAP_COLS * WRAP_ROWS,
+        "the single logical line must span the whole run (the O(scrollback) assembly)"
+    );
+}
+
+#[test]
+fn many_lines_stays_bounded_per_viewport() {
+    let mut term = Engine::with_scrollback(WRAP_COLS, ROWS, WRAP_ROWS);
+    term.feed(&many_lines_input());
+
+    // The control shape: hard line-ends mean no run to walk, so each returned
+    // logical line is one short (WRAP_COLS-wide) row and the count is bounded by
+    // the viewport — O(viewport), the baseline the one_run cost is measured against.
+    let lines = term.viewport_logical_lines();
+    assert!(
+        lines.len() <= ROWS,
+        "many-lines must stay viewport-bounded, got {} lines",
+        lines.len()
+    );
+    for l in &lines {
+        assert_eq!(
+            l.text.chars().count(),
+            WRAP_COLS,
+            "each many-lines logical line is a single full row, not a joined run"
+        );
+    }
+}
+
 #[test]
 fn every_input_is_non_empty_and_feeds_cleanly() {
     // criterion divides by buffer length for MB/s, so an empty buffer would be a

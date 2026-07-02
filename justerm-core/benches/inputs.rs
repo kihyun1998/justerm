@@ -7,6 +7,12 @@
 //!
 //! No external files and no RNG: each stream is reproducible across runs.
 
+// This module is `#[path]`-included by several consumers (the two bench harnesses,
+// the dump example, the pinning test), and each uses only the subset of generators
+// it needs — so a given generator being unused *in one consumer* is expected, not a
+// defect. Silence dead-code here rather than sprinkling `#[allow]` at each include.
+#![allow(dead_code)]
+
 /// ~28 KiB of plain printable ASCII in CRLF-terminated lines. Real PTY output
 /// arrives CRLF (the tty's ONLCR maps `\n` -> `\r\n`), so a bare `\n` here would
 /// be both unrepresentative and a staircase — justerm's LF is a raw line feed
@@ -59,6 +65,56 @@ pub fn scrolling_input() -> Vec<u8> {
     let mut buf = Vec::with_capacity(48 * 1024);
     for i in 0..2000u32 {
         buf.extend_from_slice(format!("line {:05}: scrolling through history\r\n", i).as_bytes());
+    }
+    buf
+}
+
+/// Cols the wrap-run inputs (#206) assume: fed at this width, a full row is
+/// exactly `WRAP_COLS` printable chars, so `one_wrap_run_input` auto-wraps every
+/// row into one continuous `WRAPLINE` run. The `wrap_run` bench and its pinning
+/// test build the engine at this width.
+pub const WRAP_COLS: usize = 80;
+
+/// Content rows both wrap-run shapes lay down — chosen far larger than any
+/// viewport so the single-run walk's `O(scrollback)` cost dwarfs the
+/// `O(viewport)` cost the many-lines control pays. The bench's scrollback cap is
+/// sized to `WRAP_ROWS`, so the whole run is retained (never evicted).
+pub const WRAP_ROWS: usize = 10_000;
+
+/// The printable, whitespace-free, newline-free pattern both wrap-run inputs lay
+/// down. No whitespace so nothing hard-breaks the run; the exact bytes are
+/// irrelevant to the assembly cost being measured, but the two shapes share them
+/// so a `search` over either walks identical content.
+const WRAP_PATTERN: &[u8] = b"abcdefghijklmnopqrstuvwxyz0123456789";
+
+/// A single unbroken, newline-free line of `WRAP_COLS * WRAP_ROWS` printable
+/// chars. Fed at width `WRAP_COLS` it auto-wraps every row, so the *whole buffer
+/// is ONE `WRAPLINE` run* — the pathological logical line #206 tracks: one
+/// `search` / `viewport_logical_lines` call must assemble the entire run into a
+/// single `String`/`Vec<char>` (`O(scrollback)`).
+pub fn one_wrap_run_input() -> Vec<u8> {
+    let n = WRAP_COLS * WRAP_ROWS;
+    let mut buf = Vec::with_capacity(n);
+    for i in 0..n {
+        buf.push(WRAP_PATTERN[i % WRAP_PATTERN.len()]);
+    }
+    buf
+}
+
+/// The *same* `WRAP_COLS * WRAP_ROWS` content chars as `one_wrap_run_input`, but
+/// hard-broken with CRLF every `WRAP_COLS` chars: many short logical lines and
+/// *no* long wrap run. The control shape — `viewport_logical_lines` over it is
+/// `O(viewport)` (only visible rows join), so the delta against
+/// `one_wrap_run_input` isolates the single-run blow-up the cap would target.
+pub fn many_lines_input() -> Vec<u8> {
+    let mut buf = Vec::with_capacity(WRAP_COLS * WRAP_ROWS + WRAP_ROWS * 2);
+    let mut k = 0usize;
+    for _ in 0..WRAP_ROWS {
+        for _ in 0..WRAP_COLS {
+            buf.push(WRAP_PATTERN[k % WRAP_PATTERN.len()]);
+            k += 1;
+        }
+        buf.extend_from_slice(b"\r\n");
     }
     buf
 }
