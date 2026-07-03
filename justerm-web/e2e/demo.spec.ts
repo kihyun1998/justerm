@@ -272,3 +272,30 @@ test("asymmetric spanning selection (row → documentElement) still clamps (#217
   await expect.poll(() => selLog.some((l) => l.includes("[a11y-sel] begin"))).toBe(true);
   expect(selLog.some((l) => l.includes("[a11y-sel] extend"))).toBe(true);
 });
+
+// #114: on container resize the demo auto-fits — computes cols/rows from the CSS box +
+// cell size and drives a debounced resize intent (the demo logs `[fit] resize CxR`). Proven
+// live: the ResizeObserver + FitController + proposeDimensions path runs in real Chromium,
+// which the DOM-less unit tests can't exercise. Shrinking the viewport yields fewer cols.
+test("container resize drives a debounced fit intent with a smaller grid (#114)", async ({
+  page,
+}) => {
+  const fits: string[] = [];
+  page.on("console", (m) => {
+    const t = m.text();
+    if (t.includes("[fit] resize")) fits.push(t);
+  });
+  const colsOf = (line: string): number => Number(line.match(/resize (\d+)x/)?.[1]);
+
+  // The observer fires once on mount with the initial (large) viewport.
+  await expect.poll(() => fits.length).toBeGreaterThan(0);
+  const firstCols = colsOf(fits[0]);
+
+  // Shrink the viewport → smaller box → a new, smaller grid (debounced ~100ms).
+  await page.setViewportSize({ width: 360, height: 300 });
+  await expect.poll(() => fits.length).toBeGreaterThan(1);
+
+  const lastCols = colsOf(fits[fits.length - 1]);
+  expect(lastCols).toBeGreaterThanOrEqual(2); // MINIMUM_COLS
+  expect(lastCols).toBeLessThan(firstCols); // the fit tracked the smaller box
+});
