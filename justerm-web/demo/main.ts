@@ -31,8 +31,9 @@ import {
   TERSE_ANNOUNCE_TEXT,
   VERBOSE_ANNOUNCE_TEXT,
 } from "../src/index";
+import { FitController, observeResize } from "../src/index";
 import type { AccessiblePort, SignalSink } from "../src/index";
-import type { CellGeometry, LogicalLine, SearchPort, SelectionPort } from "../src/index";
+import type { CellGeometry, FitInput, LogicalLine, ResizePort, SearchPort, SelectionPort } from "../src/index";
 import type { DecodedFrame } from "../src/types";
 import { FakeSelectionEngine } from "./fake-select";
 import { FakeSearchEngine } from "./fake-search";
@@ -701,3 +702,33 @@ setInterval(() => {
   else bar.update({ displayOffset, scrollbackLen: maxOffset(), rows: ROWS });
 }, 300);
 render();
+
+// #114 S11: auto-fit. On container (viewport) resize, compute the grid from the CSS box +
+// the renderer's cell size and drive a debounced resize INTENT — the backend's job is to
+// apply Engine::resize + PTY SIGWINCH (here the demo just logs the intent so the fit path
+// is observable). The demo scrollbar is an overlay (no layout width), so scrollbarWidth 0.
+const readFitInput = (): FitInput => {
+  const boxPx = canvas.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  const cell = renderer.cellSize(); // buffer px → CSS px per cell (DPR-independent)
+  return {
+    parentWidth: boxPx.width,
+    parentHeight: boxPx.height,
+    padding: { top: 0, bottom: 0, left: 0, right: 0 },
+    cellWidth: cell.width / dpr,
+    cellHeight: cell.height / dpr,
+    scrollbarWidth: 0,
+    scrollback: maxOffset(),
+  };
+};
+const fitPort: ResizePort = {
+  resize: (cols, rows) => console.log(`[fit] resize ${cols}x${rows}`),
+};
+const fitController = new FitController({ port: fitPort });
+// Keep the disposer + controller so a real consumer tears them down on unmount (the
+// ResizeObserver + the pending debounce timer). The demo lives for the page lifetime so it
+// never calls these, but capturing them models the convention — and Terminal-level fit
+// ownership (who calls disposeFit + fitController.dispose) lands with the widget integration
+// in S16 (#133), which this demo wiring stands in for.
+const disposeFit = observeResize(canvas, readFitInput, fitController);
+void disposeFit;
