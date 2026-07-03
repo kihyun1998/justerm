@@ -58,6 +58,7 @@ export function frameToDrawOps(
   palette: Palette,
   F: FlagBits,
   policy: RenderPolicy = identityPolicy,
+  boldToBright = false,
 ): DrawOp[] {
   const ops: DrawOp[] = [];
   const { spans } = frame;
@@ -77,7 +78,7 @@ export function frameToDrawOps(
       const code = frame.codepoints[idx]!;
       const symbol =
         extra !== 0 ? frame.sideTable[extra - 1]! : code === 0 ? " " : String.fromCodePoint(code);
-      ops.push(cellToDrawOp(left + i, line, symbol, frame.fg[idx]!, frame.bg[idx]!, flags, palette, F, policy));
+      ops.push(cellToDrawOp(left + i, line, symbol, frame.fg[idx]!, frame.bg[idx]!, flags, palette, F, policy, boldToBright));
     }
   }
   return ops;
@@ -99,10 +100,11 @@ export function cellToDrawOp(
   palette: Palette,
   F: FlagBits,
   policy: RenderPolicy = identityPolicy,
+  boldToBright = false,
 ): DrawOp {
-  // Stage-1: resolve refs to RGB, applying inverse (bold→bright is #223). Stage-2:
-  // the RGB-space RenderPolicy (dim, minimumContrastRatio) — identity until #115.
-  const resolved = resolveCell(fgRef, bgRef, flags, palette, F);
+  // Stage-1: resolve refs to RGB, applying inverse + bold→bright (#223). Stage-2:
+  // the RGB-space RenderPolicy (dim, minimumContrastRatio).
+  const resolved = resolveCell(fgRef, bgRef, flags, palette, F, boldToBright);
   const { fg, bg } = policy(resolved.fg, resolved.bg, flags);
   return {
     x,

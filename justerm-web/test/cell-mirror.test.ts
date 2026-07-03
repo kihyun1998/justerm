@@ -114,6 +114,31 @@ describe("CellMirror.applyFrame", () => {
     expect({ fg: op!.fg, bg: op!.bg }).toEqual({ fg: 0x808080, bg: 0x000000 });
   });
 
+  // #223 bold→bright: the mirror path passes boldToBright to cellToDrawOp, so a
+  // bold ANSI 0-7 indexed fg draws with its bright variant when the theme enables it.
+  it("applies bold→bright through the mirror path when enabled", () => {
+    const pal: Palette = { colors: new Uint32Array(256), defaultFg: 0xc0c0c0, defaultBg: 0x101010 };
+    pal.colors[3] = 0x808000; // ANSI 3 (dim)
+    pal.colors[11] = 0xffff00; // ANSI 11 (bright)
+    const mirror = new CellMirror(1, 1, pal, F, makeRenderPolicy(F), true);
+    const boldFrame = {
+      cols: 1,
+      rows: 1,
+      kind: 0,
+      codepoints: [cp("a")],
+      fg: [0x01000003], // Indexed(3)
+      bg: [0],
+      flags: [F.bold],
+      extra: [0],
+      spans: [0, 0, 0, 0, 1],
+      sideTable: [],
+    } as DecodedFrame;
+
+    const [op] = mirror.applyFrame(boldFrame);
+
+    expect(op!.fg).toBe(0xffff00); // bright colors[11], not dim colors[3]
+  });
+
   // #115 theme switch: cells are stored as colour refs, so a new palette re-resolves
   // them without re-decoding a frame. recolor() swaps the palette/policy and returns
   // a full repaint of every stored cell.
