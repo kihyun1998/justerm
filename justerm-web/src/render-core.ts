@@ -18,6 +18,10 @@ export interface DrawOp {
    * cell has a non-default bg or is inverse — so a coloured cell shows through the
    * selection, but plain text on the default bg gets a crisp solid highlight. */
   blendHighlight: boolean;
+  /** The fg this cell would have WITHOUT dim (#224). Equals `fg` unless the cell is
+   * dim; the overlay swaps it in under a selection, since xterm force-clears DIM
+   * on selected cells so the text stays legible over the highlight. */
+  fgUndimmed: number;
 }
 
 /** Flag bit positions, from the decoder's `flags()`. Structural for testability. */
@@ -106,6 +110,10 @@ export function cellToDrawOp(
   // the RGB-space RenderPolicy (dim, minimumContrastRatio).
   const resolved = resolveCell(fgRef, bgRef, flags, palette, F, boldToBright);
   const { fg, bg } = policy(resolved.fg, resolved.bg, flags);
+  // #224: the undimmed fg = the same policy with DIM cleared (so contrast reverts
+  // to its full ratio too, as xterm does under selection). Equals fg when not dim.
+  const fgUndimmed =
+    (flags & F.dim) !== 0 ? policy(resolved.fg, resolved.bg, flags & ~F.dim).fg : fg;
   return {
     x,
     y,
@@ -122,5 +130,6 @@ export function cellToDrawOp(
     // Blend the highlight only for a non-default (Indexed/Rgb) bg or an inverse
     // cell — matches xterm's CellColorResolver branch (else = solid selection).
     blendHighlight: (flags & F.inverse) !== 0 || bgRef >>> 24 !== 0,
+    fgUndimmed,
   };
 }

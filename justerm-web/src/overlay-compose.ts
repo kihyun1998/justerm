@@ -82,7 +82,15 @@ export function overlayTint(
   const bottom = decorations.length ? decorationAt(decorations as DecorationRect[], x, y, "bottom") : null;
   const top = decorations.length ? decorationAt(decorations as DecorationRect[], x, y, "top") : null;
   if (highlightBg === null && bottom === null && top === null) return base;
-  const { fg, bg } = composeCellColors({ fg: base.fg, bg: base.bg }, bottom, highlightBg, top, base.blendHighlight);
+  const { fg, bg } = composeCellColors(
+    { fg: base.fg, bg: base.bg },
+    bottom,
+    highlightBg,
+    top,
+    base.blendHighlight,
+    kind === "selection", // #224: only a selection un-dims (not a search match)
+    base.fgUndimmed,
+  );
   return { ...base, fg, bg };
 }
 

@@ -112,6 +112,8 @@ describe("CellMirror.applyFrame", () => {
     const [op] = mirror.applyFrame(dimFrame);
 
     expect({ fg: op!.fg, bg: op!.bg }).toEqual({ fg: 0x808080, bg: 0x000000 });
+    // #224: the op carries the undimmed fg (white) for un-dim under selection.
+    expect(op!.fgUndimmed).toBe(0xffffff);
   });
 
   // #223 bold→bright: the mirror path passes boldToBright to cellToDrawOp, so a
