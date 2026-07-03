@@ -54,6 +54,15 @@ describe("composeCellColors — layered cell colour (#120 S2)", () => {
     expect(composeCellColors(base, null, null, null)).toEqual(base);
   });
 
+  // #115: the selection/search highlight is an alpha blend over the cell's own
+  // background (xterm CellColorResolver blends the selection colour at alpha
+  // 0x80), NOT a solid fill — so a coloured cell shows through the highlight.
+  // Independent check: white at ~50% over black is mid-grey.
+  it("blends the highlight bg over the cell bg (alpha 0x80), not a solid fill", () => {
+    const onBlack = { fg: 0xaaaaaa, bg: 0x000000 };
+    expect(composeCellColors(onBlack, null, 0xffffff, null).bg).toBe(0x808080);
+  });
+
   // A bottom decoration overrides the cell background beneath the glyph; the
   // glyph colour (fg) is unchanged, so text stays legible (AC: bottom = bg under text).
   it("bottom decoration overrides bg, leaving fg (glyph) legible", () => {
@@ -66,12 +75,13 @@ describe("composeCellColors — layered cell colour (#120 S2)", () => {
     expect(composeCellColors(base, bottom, null, null)).toEqual({ fg: 0x00ff00, bg: 0x111111 });
   });
 
-  // The selection/match highlight (a resolved bg) sits ABOVE a bottom decoration:
-  // an active selection over a decorated line shows the selection colour, but the
-  // decoration's fg override (if any) still applies underneath.
-  it("highlight bg wins over a bottom decoration's bg, but keeps its fg", () => {
+  // The selection/match highlight sits ABOVE a bottom decoration: an active
+  // selection over a decorated line blends its colour over the decoration's bg
+  // (so the decoration shows through, #115), while the decoration's fg override
+  // still applies underneath. Expected bg = blendOver(0xbb0000, 0x445566, 0x80).
+  it("blends the highlight over a bottom decoration's bg, keeping its fg", () => {
     const bottom = rect(0, 0, 0, "bottom", { bg: 0xbb0000, fg: 0x00ff00 });
-    expect(composeCellColors(base, bottom, 0x445566, null)).toEqual({ fg: 0x00ff00, bg: 0x445566 });
+    expect(composeCellColors(base, bottom, 0x445566, null)).toEqual({ fg: 0x00ff00, bg: 0x7f2b33 });
   });
 
   // A top decoration is foreground-most — it wins over the selection/match

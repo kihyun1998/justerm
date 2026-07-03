@@ -14,6 +14,7 @@ const F: FlagBits = {
   underline: 0x04,
   strikethrough: 0x08,
   wide_char_spacer: 0x100,
+  inverse: 0x200,
 };
 
 const cp = (s: string): number => s.codePointAt(0)!;
@@ -61,6 +62,30 @@ describe("CellMirror.applyFrame", () => {
       { x: 0, y: 0, symbol: "h" },
       { x: 1, y: 0, symbol: "i" },
     ]);
+  });
+
+  // #115 stage-1: the mirror path (scroll-shifted repaint) shares cellToDrawOp, so
+  // an inverse cell must swap fg/bg here too — a per-path regression guard (the
+  // family has had reader-path-specific bugs, #113/#207).
+  it("applies inverse through the mirror path", () => {
+    const mirror = new CellMirror(1, 1, palette(), F);
+    const invFrame = {
+      cols: 1,
+      rows: 1,
+      kind: 0,
+      codepoints: [cp("a")],
+      fg: [0],
+      bg: [0],
+      flags: [F.inverse],
+      extra: [0],
+      spans: [0, 0, 0, 0, 1],
+      sideTable: [],
+    } as DecodedFrame;
+
+    const [op] = mirror.applyFrame(invFrame);
+
+    // Default fg=0xc0c0c0 / bg=0x101010 resolved, then swapped by inverse.
+    expect({ fg: op!.fg, bg: op!.bg }).toEqual({ fg: 0x101010, bg: 0xc0c0c0 });
   });
 
   // The core of ADR-0011: a scroll-op frame shifts the stored region so the moved

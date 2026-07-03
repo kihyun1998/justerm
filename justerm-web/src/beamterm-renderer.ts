@@ -149,6 +149,7 @@ export class BeamtermRenderer implements Renderer {
       underline: f.underline,
       strikethrough: f.strikethrough,
       wide_char_spacer: f.wide_char_spacer,
+      inverse: f.inverse,
     };
     const factory: Factory = { style: beamterm.style, cell: beamterm.cell };
     return new BeamtermRenderer(

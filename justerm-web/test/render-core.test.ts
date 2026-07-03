@@ -20,6 +20,7 @@ const F: FlagBits = {
   underline: 0x04,
   strikethrough: 0x08,
   wide_char_spacer: 0x100,
+  inverse: 0x200,
 };
 
 const cp = (s: string): number => s.codePointAt(0)!;
@@ -180,6 +181,18 @@ describe("frameToDrawOps — span walk", () => {
     const [op] = frameToDrawOps(frame, palette(), F, swap);
 
     // resolved fg=defaultFg(0xc0c0c0), bg=defaultBg(0x101010) → swapped
+    expect({ fg: op!.fg, bg: op!.bg }).toEqual({ fg: 0x101010, bg: 0xc0c0c0 });
+  });
+
+  // #115 stage-1: the INVERSE flag must swap the cell's resolved fg/bg in the
+  // real render path (via resolveCell), not only in the isolated unit. A Default
+  // inverse cell paints with the theme bg as fg and vice versa.
+  it("applies inverse (stage-1 resolveCell) in the span walk", () => {
+    const frame = spanFrame(0, 0, [{ cp: cp("a"), flags: F.inverse }]);
+
+    const [op] = frameToDrawOps(frame, palette(), F);
+
+    // Non-inverse would be fg=defaultFg(0xc0c0c0), bg=defaultBg(0x101010).
     expect({ fg: op!.fg, bg: op!.bg }).toEqual({ fg: 0x101010, bg: 0xc0c0c0 });
   });
 });

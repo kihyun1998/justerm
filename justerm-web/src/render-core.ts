@@ -1,5 +1,5 @@
-import { BG, FG, resolveRgb } from "justerm-wasm-decode/colors.js";
 import type { Palette } from "justerm-wasm-decode/colors.js";
+import { resolveCell } from "./render-policy";
 import type { DecodedFrame } from "./types";
 
 /** One cell to paint, in viewport coords. Colours are packed `0xRRGGBB`. */
@@ -22,13 +22,16 @@ export interface FlagBits {
   underline: number;
   strikethrough: number;
   wide_char_spacer: number;
+  inverse: number;
 }
 
 /**
- * Post-resolve colour policy: maps a cell's resolved `(fg, bg)` plus its raw
- * `flags` to final colours. This is the seam #115 fills with xterm's
- * CellColorResolver policy (inverse colour-mode swap, selection blend, dim,
- * minimumContrastRatio). S2 ships {@link identityPolicy}.
+ * Stage-2 (RGB-space) colour policy: maps a cell's already-resolved `(fg, bg)`
+ * plus its raw `flags` to final colours. Runs after {@link resolveCell} (stage-1:
+ * inverse). This is the seam #115 fills with the RGB-space parts of xterm's
+ * colour pipeline — `dim` and `minimumContrastRatio`. (Inverse is stage-1; the
+ * selection/match blend is the overlay layer, `composeCellColors`.) S2 ships
+ * {@link identityPolicy}.
  */
 export type RenderPolicy = (fg: number, bg: number, flags: number) => { fg: number; bg: number };
 
@@ -90,7 +93,10 @@ export function cellToDrawOp(
   F: FlagBits,
   policy: RenderPolicy = identityPolicy,
 ): DrawOp {
-  const { fg, bg } = policy(resolveRgb(fgRef, palette, FG), resolveRgb(bgRef, palette, BG), flags);
+  // Stage-1: resolve refs to RGB, applying inverse (bold→bright is #223). Stage-2:
+  // the RGB-space RenderPolicy (dim, minimumContrastRatio) — identity until #115.
+  const resolved = resolveCell(fgRef, bgRef, flags, palette, F);
+  const { fg, bg } = policy(resolved.fg, resolved.bg, flags);
   return {
     x,
     y,
