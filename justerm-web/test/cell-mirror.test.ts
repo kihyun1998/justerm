@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { CellMirror } from "../src/cell-mirror";
+import { makeRenderPolicy } from "../src/render-policy";
 import type { FlagBits } from "../src/render-core";
 import type { DecodedFrame } from "../src/types";
 import type { Palette } from "justerm-wasm-decode/colors.js";
@@ -15,6 +16,7 @@ const F: FlagBits = {
   strikethrough: 0x08,
   wide_char_spacer: 0x100,
   inverse: 0x200,
+  dim: 0x400,
 };
 
 const cp = (s: string): number => s.codePointAt(0)!;
@@ -86,6 +88,29 @@ describe("CellMirror.applyFrame", () => {
 
     // Default fg=0xc0c0c0 / bg=0x101010 resolved, then swapped by inverse.
     expect({ fg: op!.fg, bg: op!.bg }).toEqual({ fg: 0x101010, bg: 0xc0c0c0 });
+  });
+
+  // #115 stage-2: the dim policy the renderer injects must flow through the live
+  // mirror path (cellToDrawOp). A dim white-on-black cell renders its fg halved
+  // toward the bg (0x808080); the bg is untouched.
+  it("applies the stage-2 dim policy through the mirror path", () => {
+    const mirror = new CellMirror(1, 1, palette(), F, makeRenderPolicy(F));
+    const dimFrame = {
+      cols: 1,
+      rows: 1,
+      kind: 0,
+      codepoints: [cp("a")],
+      fg: [0x02ffffff], // Rgb white
+      bg: [0x02000000], // Rgb black
+      flags: [F.dim],
+      extra: [0],
+      spans: [0, 0, 0, 0, 1],
+      sideTable: [],
+    } as DecodedFrame;
+
+    const [op] = mirror.applyFrame(dimFrame);
+
+    expect({ fg: op!.fg, bg: op!.bg }).toEqual({ fg: 0x808080, bg: 0x000000 });
   });
 
   // The core of ADR-0011: a scroll-op frame shifts the stored region so the moved

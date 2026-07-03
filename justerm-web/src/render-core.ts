@@ -23,6 +23,7 @@ export interface FlagBits {
   strikethrough: number;
   wide_char_spacer: number;
   inverse: number;
+  dim: number;
 }
 
 /**

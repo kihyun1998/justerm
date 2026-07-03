@@ -6,6 +6,7 @@ import type { DecorationRect } from "./decorations";
 import { type HighlightRect, highlightRects } from "./overlay";
 import { composeOverlayDraws, cursorCellDraw } from "./overlay-compose";
 import type { DrawOp, FlagBits } from "./render-core";
+import { makeRenderPolicy } from "./render-policy";
 import type { DecodedFrame } from "./types";
 import type { Renderer } from "./renderer";
 
@@ -23,6 +24,9 @@ export interface Theme {
   selectionBg?: number;
   /** Search-match highlight background (`0xRRGGBB`). Defaults to a muted amber. */
   matchBg?: number;
+  /** Minimum fg/bg contrast ratio (WCAG, 1..21). Below it the renderer lightens
+   * or darkens the fg to stay legible (#115). Defaults to 1 (off, like xterm). */
+  minimumContrastRatio?: number;
 }
 
 export interface BeamtermOptions {
@@ -98,6 +102,7 @@ export class BeamtermRenderer implements Renderer {
     private readonly cursorColor: number,
     private readonly selectionBg: number,
     private readonly matchBg: number,
+    private readonly minimumContrastRatio: number,
   ) {
     // Honour prefers-reduced-motion (#119): suppress the cursor blink, tracking
     // changes live. Browser-only; the renderer is only built via `create`.
@@ -150,6 +155,7 @@ export class BeamtermRenderer implements Renderer {
       strikethrough: f.strikethrough,
       wide_char_spacer: f.wide_char_spacer,
       inverse: f.inverse,
+      dim: f.dim,
     };
     const factory: Factory = { style: beamterm.style, cell: beamterm.cell };
     return new BeamtermRenderer(
@@ -161,6 +167,7 @@ export class BeamtermRenderer implements Renderer {
       opts.theme.cursorColor ?? opts.theme.defaultFg,
       opts.theme.selectionBg ?? 0x45475a,
       opts.theme.matchBg ?? 0x6e5c00,
+      opts.theme.minimumContrastRatio ?? 1,
     );
   }
 
@@ -190,7 +197,13 @@ export class BeamtermRenderer implements Renderer {
     if (!this.mirror || this.cols !== frame.cols || this.rows !== frame.rows) {
       this.cols = frame.cols;
       this.rows = frame.rows;
-      this.mirror = new CellMirror(frame.cols, frame.rows, this.palette, this.flagBits);
+      this.mirror = new CellMirror(
+        frame.cols,
+        frame.rows,
+        this.palette,
+        this.flagBits,
+        makeRenderPolicy(this.flagBits, this.minimumContrastRatio),
+      );
       // The mirror is fresh and the old overlay keys (`y·cols + x`) index a different
       // grid — drop them so the #140 delta doesn't repaint stale coordinates.
       this.prevOverlay = new Set();
