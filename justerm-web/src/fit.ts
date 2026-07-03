@@ -26,9 +26,10 @@ export interface FitInput {
   /** The renderer's CSS cell size, px (beamterm cell). */
   cellWidth: number;
   cellHeight: number;
-  /** Px reserved for the scrollbar when it shows. */
+  /** Px a *layout* scrollbar occupies (subtracted from width). Pass `0` for an overlay
+   * scrollbar like justerm's #112 (which floats over the canvas and reserves no width). */
   scrollbarWidth: number;
-  /** Scrollback lines; `0` reserves no scrollbar width (#112 coupling). */
+  /** Scrollback lines; `0` means no scrollbar can show, so its width isn't reserved. */
   scrollback: number;
 }
 
@@ -48,16 +49,22 @@ const MINIMUM_ROWS = 1;
 export function proposeDimensions(input: FitInput): Dimensions | undefined {
   // The renderer hasn't measured a cell yet → can't fit (xterm's `cell.width === 0` guard).
   if (input.cellWidth === 0 || input.cellHeight === 0) return undefined;
-  // The scrollbar only shows (and only reserves width) when there is scrollback — matches
-  // xterm `FitAddon` (`scrollback === 0 ? 0 : ...`) and the #112 scrollbar's hide-at-0.
+  // A *layout* scrollbar (one that occupies width) only reserves it when there is scrollback
+  // to scroll — matches xterm `FitAddon` (`scrollback === 0 ? 0 : ...`). NB: justerm's own
+  // #112 scrollbar is an OVERLAY (`position:absolute`, no layout width) — content sits under
+  // it — so a consumer using that scrollbar must pass `scrollbarWidth: 0` (as the demo does);
+  // this path exists for xterm parity / a hypothetical layout scrollbar, not the #112 overlay.
   const scrollbarWidth = input.scrollback === 0 ? 0 : input.scrollbarWidth;
   const availWidth = input.parentWidth - (input.padding.left + input.padding.right) - scrollbarWidth;
   const availHeight = input.parentHeight - (input.padding.top + input.padding.bottom);
   const cols = Math.max(MINIMUM_COLS, Math.floor(availWidth / input.cellWidth));
   const rows = Math.max(MINIMUM_ROWS, Math.floor(availHeight / input.cellHeight));
-  // NaN box metrics (a detached/unmeasured element) propose a NaN grid — skip (xterm's
-  // `isNaN(dims.cols) || isNaN(dims.rows)` guard).
-  if (Number.isNaN(cols) || Number.isNaN(rows)) return undefined;
+  // Non-finite box metrics (NaN from a detached/unmeasured element, or Infinity from a
+  // degenerate input) propose a non-finite grid — skip (widening xterm's `isNaN(dims.cols)`
+  // guard to all non-finite values). Deliberately more conservative than xterm, which
+  // clamps a NaN parent to 0 and resizes to the 2×1 minimum: a non-finite box means "not
+  // measured", exactly when we should NOT shrink the terminal.
+  if (!Number.isFinite(cols) || !Number.isFinite(rows)) return undefined;
   return { cols, rows };
 }
 

@@ -724,4 +724,11 @@ const readFitInput = (): FitInput => {
 const fitPort: ResizePort = {
   resize: (cols, rows) => console.log(`[fit] resize ${cols}x${rows}`),
 };
-observeResize(canvas, readFitInput, new FitController({ port: fitPort }));
+const fitController = new FitController({ port: fitPort });
+// Keep the disposer + controller so a real consumer tears them down on unmount (the
+// ResizeObserver + the pending debounce timer). The demo lives for the page lifetime so it
+// never calls these, but capturing them models the convention — and Terminal-level fit
+// ownership (who calls disposeFit + fitController.dispose) lands with the widget integration
+// in S16 (#133), which this demo wiring stands in for.
+const disposeFit = observeResize(canvas, readFitInput, fitController);
+void disposeFit;

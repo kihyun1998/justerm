@@ -82,11 +82,13 @@ describe("proposeDimensions (#114 fit: px → cols/rows)", () => {
     expect(proposeDimensions({ ...base(), cellHeight: 0 })).toBeUndefined();
   });
 
-  // A detached/unmeasured element gives NaN box metrics; fitting NaN would propose a NaN
-  // grid. Return undefined so the caller skips (xterm's `isNaN(dims.cols)` guard).
-  it("returns undefined when the box metrics are NaN", () => {
+  // A detached/unmeasured element gives non-finite box metrics (NaN, or Infinity from a
+  // degenerate input); fitting them would propose a non-finite grid. Return undefined so
+  // the caller skips (xterm's `isNaN(dims.cols)` guard, widened to all non-finite).
+  it("returns undefined when the box metrics are non-finite", () => {
     expect(proposeDimensions({ ...base(), parentWidth: NaN })).toBeUndefined();
     expect(proposeDimensions({ ...base(), parentHeight: NaN })).toBeUndefined();
+    expect(proposeDimensions({ ...base(), parentWidth: Infinity })).toBeUndefined();
   });
 });
 
