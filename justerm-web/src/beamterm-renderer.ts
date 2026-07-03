@@ -6,6 +6,7 @@ import type { DecorationRect } from "./decorations";
 import { type HighlightRect, highlightRects } from "./overlay";
 import { composeOverlayDraws, cursorCellDraw } from "./overlay-compose";
 import type { DrawOp, FlagBits } from "./render-core";
+import { makeRenderPolicy } from "./render-policy";
 import type { DecodedFrame } from "./types";
 import type { Renderer } from "./renderer";
 
@@ -23,6 +24,12 @@ export interface Theme {
   selectionBg?: number;
   /** Search-match highlight background (`0xRRGGBB`). Defaults to a muted amber. */
   matchBg?: number;
+  /** Selection background when the terminal is UNFOCUSED (`0xRRGGBB`). xterm's
+   * selectionInactiveBackgroundOpaque; a dimmer tint. Defaults to a muted slate. */
+  selectionInactiveBg?: number;
+  /** Minimum fg/bg contrast ratio (WCAG, 1..21). Below it the renderer lightens
+   * or darkens the fg to stay legible (#115). Defaults to 1 (off, like xterm). */
+  minimumContrastRatio?: number;
 }
 
 export interface BeamtermOptions {
@@ -89,15 +96,22 @@ export class BeamtermRenderer implements Renderer {
   private lastHighlights: HighlightRect[] = [];
   private lastDecorations: DecorationRect[] = [];
 
+  /** Focus gates the selection colour: an unfocused terminal shows the inactive
+   * selection tint (xterm's selectionInactiveBackgroundOpaque). #115. */
+  private focused = true;
+
   private constructor(
     private readonly backend: Backend,
     private readonly factory: Factory,
-    private readonly palette: Palette,
+    private palette: Palette,
     private readonly flagBits: FlagBits,
-    private readonly clearColor: number,
-    private readonly cursorColor: number,
-    private readonly selectionBg: number,
-    private readonly matchBg: number,
+    private readonly buildPalette: (ansi: Uint32Array) => Uint32Array,
+    private clearColor: number,
+    private cursorColor: number,
+    private selectionBg: number,
+    private matchBg: number,
+    private selectionInactiveBg: number,
+    private minimumContrastRatio: number,
   ) {
     // Honour prefers-reduced-motion (#119): suppress the cursor blink, tracking
     // changes live. Browser-only; the renderer is only built via `create`.
@@ -149,6 +163,9 @@ export class BeamtermRenderer implements Renderer {
       underline: f.underline,
       strikethrough: f.strikethrough,
       wide_char_spacer: f.wide_char_spacer,
+      inverse: f.inverse,
+      dim: f.dim,
+      hidden: f.hidden,
     };
     const factory: Factory = { style: beamterm.style, cell: beamterm.cell };
     return new BeamtermRenderer(
@@ -156,10 +173,13 @@ export class BeamtermRenderer implements Renderer {
       factory,
       palette,
       flagBits,
+      (ansi) => decoder.buildPalette(ansi),
       opaque(opts.theme.defaultBg),
       opts.theme.cursorColor ?? opts.theme.defaultFg,
       opts.theme.selectionBg ?? 0x45475a,
       opts.theme.matchBg ?? 0x6e5c00,
+      opts.theme.selectionInactiveBg ?? 0x30313d,
+      opts.theme.minimumContrastRatio ?? 1,
     );
   }
 
@@ -189,7 +209,13 @@ export class BeamtermRenderer implements Renderer {
     if (!this.mirror || this.cols !== frame.cols || this.rows !== frame.rows) {
       this.cols = frame.cols;
       this.rows = frame.rows;
-      this.mirror = new CellMirror(frame.cols, frame.rows, this.palette, this.flagBits);
+      this.mirror = new CellMirror(
+        frame.cols,
+        frame.rows,
+        this.palette,
+        this.flagBits,
+        makeRenderPolicy(this.flagBits, this.minimumContrastRatio),
+      );
       // The mirror is fresh and the old overlay keys (`y·cols + x`) index a different
       // grid — drop them so the #140 delta doesn't repaint stale coordinates.
       this.prevOverlay = new Set();
@@ -197,19 +223,20 @@ export class BeamtermRenderer implements Renderer {
     const ops = this.mirror.applyFrame(frame);
     this.updateCursor(frame);
 
+    this.paint(ops, highlightRects(frame), this.decorationSource?.(frame) ?? [], frame.kind === 0);
+  }
+
+  /**
+   * Composite `ops` with the overlay tints (selection/search + #120 decorations)
+   * AND the cursor into a batch, then present. `full` clears first — a Full frame
+   * or a themeless full repaint (setTheme/setFocused). beamterm has no overlay
+   * layer, so highlights/decorations are per-cell colour overrides layered
+   * back-to-front (base < bottom < highlight < top); `composeOverlayDraws` also
+   * adds the #140 delta for cells whose overlay membership flipped off-damage.
+   */
+  private paint(ops: DrawOp[], highlights: HighlightRect[], decorations: DecorationRect[], full: boolean): void {
     const batch = this.backend.batch();
-    // Full frames repaint the whole viewport; partial frames retain untouched
-    // cells (damage-only), so only full clears.
-    if (frame.kind === 0) batch.clear(this.clearColor);
-    // Blend selection/search highlights AND marker decorations (#120 S2) into each
-    // painted cell's colour — beamterm has no overlay layer, so both are per-cell
-    // colour overrides (like the cursor's cell-invert), layered back-to-front:
-    // base < bottom decoration < highlight < top decoration. `composeOverlayDraws`
-    // tints the damaged cells AND adds the #140 delta: a cell whose overlay
-    // membership flipped but that this partial frame doesn't damage is repainted from
-    // the mirror (re-tint or restore), the cursor's old+new cell damage pattern.
-    const highlights = highlightRects(frame);
-    const decorations = this.decorationSource?.(frame) ?? [];
+    if (full) batch.clear(this.clearColor);
     const { draws, overlay } = composeOverlayDraws({
       ops,
       highlights,
@@ -217,7 +244,7 @@ export class BeamtermRenderer implements Renderer {
       prevOverlay: this.prevOverlay,
       cols: this.cols,
       rows: this.rows,
-      colors: { selectionBg: this.selectionBg, matchBg: this.matchBg },
+      colors: { selectionBg: this.activeSelectionBg(), matchBg: this.matchBg },
       cellAt: (x, y) => this.mirror!.cellAt(x, y),
     });
     for (const d of draws) this.drawOp(batch, d);
@@ -227,12 +254,38 @@ export class BeamtermRenderer implements Renderer {
     this.lastDecorations = decorations;
     // Overlay the cursor into the same batch — it draws over its mirror cell,
     // AFTER the decoration/highlight compose above, and cell-inverts the cell's
-    // ORIGINAL (un-composed) colours. So the cursor takes visual precedence over a
-    // decoration on its cell (cursor visibility wins); a decoration under the
-    // cursor is momentarily hidden by the inverted block, like a selection is.
+    // ORIGINAL (un-composed) colours, taking visual precedence over a decoration.
     this.lastBlinkOn = this.blink.isVisible(now());
     this.overlayCursor(batch, this.lastBlinkOn);
     this.startBlinkLoop();
+  }
+
+  /** The selection tint for the current focus state (#115): focused → selectionBg,
+   * blurred → the dimmer selectionInactiveBg (xterm's two selection colours). */
+  private activeSelectionBg(): number {
+    return this.focused ? this.selectionBg : this.selectionInactiveBg;
+  }
+
+  /**
+   * Swap the theme (#115): rebuild the palette + render policy + overlay colours,
+   * then re-resolve every stored cell (the mirror keeps colour refs) and full-
+   * repaint. No new frame is needed — a live theme change reflows all colours.
+   */
+  setTheme(theme: Theme): void {
+    this.palette = {
+      colors: this.buildPalette(Uint32Array.from(theme.ansi)),
+      defaultFg: theme.defaultFg,
+      defaultBg: theme.defaultBg,
+    };
+    this.clearColor = opaque(theme.defaultBg);
+    this.cursorColor = theme.cursorColor ?? theme.defaultFg;
+    this.selectionBg = theme.selectionBg ?? 0x45475a;
+    this.matchBg = theme.matchBg ?? 0x6e5c00;
+    this.selectionInactiveBg = theme.selectionInactiveBg ?? 0x30313d;
+    this.minimumContrastRatio = theme.minimumContrastRatio ?? 1;
+    if (!this.mirror) return;
+    const ops = this.mirror.recolor(this.palette, makeRenderPolicy(this.flagBits, this.minimumContrastRatio));
+    this.paint(ops, this.lastHighlights, this.lastDecorations, true);
   }
 
   /**
@@ -243,7 +296,16 @@ export class BeamtermRenderer implements Renderer {
    */
   setFocused(focused: boolean): void {
     this.blink.setFocused(focused);
-    this.redrawCursor();
+    if (this.focused === focused) {
+      this.redrawCursor();
+      return;
+    }
+    // #115: focus flips the selection colour (active ↔ inactive). No frame changed,
+    // so full-repaint the mirror through the overlay compose to re-tint (the cursor
+    // is redrawn as part of paint), like a live theme change.
+    this.focused = focused;
+    if (this.mirror) this.paint(this.mirror.repaintAll(), this.lastHighlights, this.lastDecorations, true);
+    else this.redrawCursor();
   }
 
   /** Stop the blink loop. */
@@ -282,7 +344,7 @@ export class BeamtermRenderer implements Renderer {
     this.drawOp(
       batch,
       cursorCellDraw(base, on, styled, this.lastHighlights, this.lastDecorations, {
-        selectionBg: this.selectionBg,
+        selectionBg: this.activeSelectionBg(),
         matchBg: this.matchBg,
       }),
     );

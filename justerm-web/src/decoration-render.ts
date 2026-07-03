@@ -12,6 +12,7 @@
  */
 
 import type { DecorationLayer, DecorationRect } from "./decorations";
+import { HIGHLIGHT_BLEND_ALPHA, blendOver } from "./render-policy";
 
 /**
  * The decoration covering viewport cell `(col, row)` on `layer`, or `null`. Columns
@@ -37,8 +38,9 @@ export function decorationAt(
  * decoration < selection/match highlight < top decoration. Each decoration
  * overrides `bg` and/or `fg` only where it sets one — so a `bottom` decoration
  * tints the background under a legible glyph, while `highlightBg` (the resolved
- * selection/match colour, or `null`) sits above it, and a `top` decoration is
- * foreground-most and wins over the highlight.
+ * selection/match colour, or `null`) is alpha-blended over it (#115, so the cell
+ * colour shows through), and a `top` decoration is foreground-most and wins over
+ * the highlight.
  *
  * This order follows xterm's DOCUMENTED contract (`xterm.d.ts`: "'bottom' will
  * render under the selection, 'top' will render above the selection"). Note it
@@ -53,13 +55,20 @@ export function composeCellColors(
   bottom: DecorationRect | null,
   highlightBg: number | null,
   top: DecorationRect | null,
+  blendHighlight = false,
 ): { fg: number; bg: number } {
   let { fg, bg } = base;
   if (bottom) {
     if (bottom.bg !== undefined) bg = bottom.bg;
     if (bottom.fg !== undefined) fg = bottom.fg;
   }
-  if (highlightBg !== null) bg = highlightBg;
+  // #115: apply the highlight over the running bg (base or a bottom decoration).
+  // `blendHighlight` cells (non-default/inverse bg) alpha-blend so the cell colour
+  // shows through; the rest paint the highlight SOLID (xterm's default-bg branch).
+  // A top decoration still overrides it below either way.
+  if (highlightBg !== null) {
+    bg = blendHighlight ? blendOver(bg, highlightBg, HIGHLIGHT_BLEND_ALPHA) : highlightBg;
+  }
   if (top) {
     if (top.bg !== undefined) bg = top.bg;
     if (top.fg !== undefined) fg = top.fg;

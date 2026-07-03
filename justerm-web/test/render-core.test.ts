@@ -20,6 +20,9 @@ const F: FlagBits = {
   underline: 0x04,
   strikethrough: 0x08,
   wide_char_spacer: 0x100,
+  inverse: 0x200,
+  dim: 0x400,
+  hidden: 0x800,
 };
 
 const cp = (s: string): number => s.codePointAt(0)!;
@@ -170,6 +173,18 @@ describe("frameToDrawOps — span walk", () => {
     ]);
   });
 
+  // #115: a HIDDEN cell (SGR 8 conceal) must not show its glyph — xterm draws a
+  // NULL glyph. beamterm always paints a glyph, so the op carries a blank symbol
+  // instead (bg is drawn, a space has no ink), which stays invisible even once an
+  // overlay changes the bg.
+  it("blanks the glyph of a hidden cell (SGR 8 conceal)", () => {
+    const frame = spanFrame(0, 0, [{ cp: cp("X"), flags: F.hidden }]);
+
+    const [op] = frameToDrawOps(frame, palette(), F);
+
+    expect(op!.symbol).toBe(" ");
+  });
+
   // The render-policy seam runs after resolveRgb, mapping (fg, bg, flags) → final
   // colours. S2 ships identity; #115 plugs in inverse/selection/dim/contrast here.
   // A swap policy proves the resolved colours flow through it.
@@ -180,6 +195,18 @@ describe("frameToDrawOps — span walk", () => {
     const [op] = frameToDrawOps(frame, palette(), F, swap);
 
     // resolved fg=defaultFg(0xc0c0c0), bg=defaultBg(0x101010) → swapped
+    expect({ fg: op!.fg, bg: op!.bg }).toEqual({ fg: 0x101010, bg: 0xc0c0c0 });
+  });
+
+  // #115 stage-1: the INVERSE flag must swap the cell's resolved fg/bg in the
+  // real render path (via resolveCell), not only in the isolated unit. A Default
+  // inverse cell paints with the theme bg as fg and vice versa.
+  it("applies inverse (stage-1 resolveCell) in the span walk", () => {
+    const frame = spanFrame(0, 0, [{ cp: cp("a"), flags: F.inverse }]);
+
+    const [op] = frameToDrawOps(frame, palette(), F);
+
+    // Non-inverse would be fg=defaultFg(0xc0c0c0), bg=defaultBg(0x101010).
     expect({ fg: op!.fg, bg: op!.bg }).toEqual({ fg: 0x101010, bg: 0xc0c0c0 });
   });
 });

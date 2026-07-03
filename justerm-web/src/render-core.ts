@@ -1,5 +1,5 @@
-import { BG, FG, resolveRgb } from "justerm-wasm-decode/colors.js";
 import type { Palette } from "justerm-wasm-decode/colors.js";
+import { resolveCell } from "./render-policy";
 import type { DecodedFrame } from "./types";
 
 /** One cell to paint, in viewport coords. Colours are packed `0xRRGGBB`. */
@@ -13,6 +13,11 @@ export interface DrawOp {
   italic: boolean;
   underline: boolean;
   strikethrough: boolean;
+  /** Whether a selection/match highlight should ALPHA-BLEND over this cell's bg
+   * (true) or paint the highlight colour SOLID (false). xterm blends only when the
+   * cell has a non-default bg or is inverse — so a coloured cell shows through the
+   * selection, but plain text on the default bg gets a crisp solid highlight. */
+  blendHighlight: boolean;
 }
 
 /** Flag bit positions, from the decoder's `flags()`. Structural for testability. */
@@ -22,13 +27,18 @@ export interface FlagBits {
   underline: number;
   strikethrough: number;
   wide_char_spacer: number;
+  inverse: number;
+  dim: number;
+  hidden: number;
 }
 
 /**
- * Post-resolve colour policy: maps a cell's resolved `(fg, bg)` plus its raw
- * `flags` to final colours. This is the seam #115 fills with xterm's
- * CellColorResolver policy (inverse colour-mode swap, selection blend, dim,
- * minimumContrastRatio). S2 ships {@link identityPolicy}.
+ * Stage-2 (RGB-space) colour policy: maps a cell's already-resolved `(fg, bg)`
+ * plus its raw `flags` to final colours. Runs after {@link resolveCell} (stage-1:
+ * inverse). This is the seam #115 fills with the RGB-space parts of xterm's
+ * colour pipeline — `dim` and `minimumContrastRatio`. (Inverse is stage-1; the
+ * selection/match blend is the overlay layer, `composeCellColors`.) S2 ships
+ * {@link identityPolicy}.
  */
 export type RenderPolicy = (fg: number, bg: number, flags: number) => { fg: number; bg: number };
 
@@ -90,16 +100,25 @@ export function cellToDrawOp(
   F: FlagBits,
   policy: RenderPolicy = identityPolicy,
 ): DrawOp {
-  const { fg, bg } = policy(resolveRgb(fgRef, palette, FG), resolveRgb(bgRef, palette, BG), flags);
+  // Stage-1: resolve refs to RGB, applying inverse (bold→bright is #223). Stage-2:
+  // the RGB-space RenderPolicy (dim, minimumContrastRatio) — identity until #115.
+  const resolved = resolveCell(fgRef, bgRef, flags, palette, F);
+  const { fg, bg } = policy(resolved.fg, resolved.bg, flags);
   return {
     x,
     y,
-    symbol,
+    // HIDDEN (SGR 8 conceal): draw no glyph (xterm's NULL glyph). A blank has no
+    // ink, so only the bg shows — and it stays invisible when an overlay later
+    // recolours the bg (unlike collapsing fg→bg, which an overlay would undo).
+    symbol: (flags & F.hidden) !== 0 ? " " : symbol,
     fg,
     bg,
     bold: (flags & F.bold) !== 0,
     italic: (flags & F.italic) !== 0,
     underline: (flags & F.underline) !== 0,
     strikethrough: (flags & F.strikethrough) !== 0,
+    // Blend the highlight only for a non-default (Indexed/Rgb) bg or an inverse
+    // cell — matches xterm's CellColorResolver branch (else = solid selection).
+    blendHighlight: (flags & F.inverse) !== 0 || bgRef >>> 24 !== 0,
   };
 }

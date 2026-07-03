@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { CellMirror } from "../src/cell-mirror";
+import { makeRenderPolicy } from "../src/render-policy";
 import type { FlagBits } from "../src/render-core";
 import type { DecodedFrame } from "../src/types";
 import type { Palette } from "justerm-wasm-decode/colors.js";
@@ -14,6 +15,9 @@ const F: FlagBits = {
   underline: 0x04,
   strikethrough: 0x08,
   wide_char_spacer: 0x100,
+  inverse: 0x200,
+  dim: 0x400,
+  hidden: 0x800,
 };
 
 const cp = (s: string): number => s.codePointAt(0)!;
@@ -61,6 +65,80 @@ describe("CellMirror.applyFrame", () => {
       { x: 0, y: 0, symbol: "h" },
       { x: 1, y: 0, symbol: "i" },
     ]);
+  });
+
+  // #115 stage-1: the mirror path (scroll-shifted repaint) shares cellToDrawOp, so
+  // an inverse cell must swap fg/bg here too — a per-path regression guard (the
+  // family has had reader-path-specific bugs, #113/#207).
+  it("applies inverse through the mirror path", () => {
+    const mirror = new CellMirror(1, 1, palette(), F);
+    const invFrame = {
+      cols: 1,
+      rows: 1,
+      kind: 0,
+      codepoints: [cp("a")],
+      fg: [0],
+      bg: [0],
+      flags: [F.inverse],
+      extra: [0],
+      spans: [0, 0, 0, 0, 1],
+      sideTable: [],
+    } as DecodedFrame;
+
+    const [op] = mirror.applyFrame(invFrame);
+
+    // Default fg=0xc0c0c0 / bg=0x101010 resolved, then swapped by inverse.
+    expect({ fg: op!.fg, bg: op!.bg }).toEqual({ fg: 0x101010, bg: 0xc0c0c0 });
+  });
+
+  // #115 stage-2: the dim policy the renderer injects must flow through the live
+  // mirror path (cellToDrawOp). A dim white-on-black cell renders its fg halved
+  // toward the bg (0x808080); the bg is untouched.
+  it("applies the stage-2 dim policy through the mirror path", () => {
+    const mirror = new CellMirror(1, 1, palette(), F, makeRenderPolicy(F));
+    const dimFrame = {
+      cols: 1,
+      rows: 1,
+      kind: 0,
+      codepoints: [cp("a")],
+      fg: [0x02ffffff], // Rgb white
+      bg: [0x02000000], // Rgb black
+      flags: [F.dim],
+      extra: [0],
+      spans: [0, 0, 0, 0, 1],
+      sideTable: [],
+    } as DecodedFrame;
+
+    const [op] = mirror.applyFrame(dimFrame);
+
+    expect({ fg: op!.fg, bg: op!.bg }).toEqual({ fg: 0x808080, bg: 0x000000 });
+  });
+
+  // #115 theme switch: cells are stored as colour refs, so a new palette re-resolves
+  // them without re-decoding a frame. recolor() swaps the palette/policy and returns
+  // a full repaint of every stored cell.
+  it("re-resolves stored cells under a new palette (theme switch)", () => {
+    const paletteA: Palette = { colors: new Uint32Array(256), defaultFg: 0xc0c0c0, defaultBg: 0x101010 };
+    paletteA.colors[1] = 0xff0000; // ANSI 1 = red under theme A
+    const mirror = new CellMirror(1, 1, paletteA, F);
+    mirror.applyFrame({
+      cols: 1,
+      rows: 1,
+      kind: 0,
+      codepoints: [cp("a")],
+      fg: [0x01000001], // Indexed(1)
+      bg: [0],
+      flags: [0],
+      extra: [0],
+      spans: [0, 0, 0, 0, 1],
+      sideTable: [],
+    } as DecodedFrame);
+
+    const paletteB: Palette = { colors: new Uint32Array(256), defaultFg: 0xc0c0c0, defaultBg: 0x101010 };
+    paletteB.colors[1] = 0x00ff00; // ANSI 1 = green under theme B
+    const ops = mirror.recolor(paletteB, makeRenderPolicy(F));
+
+    expect(ops[0]!.fg).toBe(0x00ff00);
   });
 
   // The core of ADR-0011: a scroll-op frame shifts the stored region so the moved

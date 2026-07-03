@@ -16,6 +16,7 @@ const baseOp = (over: Partial<DrawOp> = {}): DrawOp => ({
   italic: false,
   underline: false,
   strikethrough: false,
+  blendHighlight: false,
   ...over,
 });
 

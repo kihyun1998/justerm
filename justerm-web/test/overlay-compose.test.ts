@@ -12,11 +12,16 @@ import type { DrawOp } from "../src/render-core";
 const SEL = 0x111111;
 const MATCH = 0x222222;
 const colors = { selectionBg: SEL, matchBg: MATCH };
+// #115: a highlight is SOLID on a default-bg cell (blendHighlight=false) but an
+// alpha-0x80 blend on a non-default/inverse cell. SEL_ON_BLACK is the blended
+// value for a blendHighlight cell over a black bg: blendOver(0x000000, SEL, 0x80).
+const SEL_ON_BLACK = 0x090909;
 
-function op(x: number, y: number, bg = 0, fg = 0xffffff): DrawOp {
-  return { x, y, symbol: "a", fg, bg, bold: false, italic: false, underline: false, strikethrough: false };
+function op(x: number, y: number, bg = 0, fg = 0xffffff, blendHighlight = false): DrawOp {
+  return { x, y, symbol: "a", fg, bg, bold: false, italic: false, underline: false, strikethrough: false, blendHighlight };
 }
 const sel = (row: number, left: number, right: number): HighlightRect => ({ row, left, right, kind: "selection" });
+const match = (row: number, left: number, right: number): HighlightRect => ({ row, left, right, kind: "match" });
 
 describe("overlayCellKeys", () => {
   // Highlight cols are on-viewport; a decoration may start left of 0 or run past the
@@ -66,6 +71,40 @@ describe("composeOverlayDraws (#140 partial-frame overlay damage)", () => {
     expect(draws.find((d) => d.x === 1)!.bg).toBe(SEL); // (1,0) tinted
     expect(draws.find((d) => d.x === 0)!.bg).toBe(0); // (0,0) plain
     expect([...overlay]).toEqual([1]); // key = 0*3 + 1
+  });
+
+  // #115: on a default-bg cell (blendHighlight=false) the search-match highlight
+  // is painted SOLID — the same solid rule as the selection (xterm's default-bg
+  // branch, CellColorResolver else-clause).
+  it("paints a search-match highlight solid on a default-bg cell", () => {
+    const { draws } = composeOverlayDraws({
+      ops: [op(0, 0)],
+      highlights: [match(0, 0, 0)],
+      decorations: [],
+      prevOverlay: new Set(),
+      cols: 1,
+      rows: 1,
+      colors,
+      cellAt,
+    });
+    expect(draws[0]!.bg).toBe(MATCH);
+  });
+
+  // #115: a non-default / inverse cell (blendHighlight=true) alpha-blends the
+  // highlight over its own bg, so the cell colour shows through. Over black,
+  // blendOver(0x000000, SEL, 0x80) = SEL_ON_BLACK.
+  it("blends the highlight over a non-default-bg cell (blendHighlight)", () => {
+    const { draws } = composeOverlayDraws({
+      ops: [op(0, 0, 0x000000, 0xffffff, true)],
+      highlights: [sel(0, 0, 0)],
+      decorations: [],
+      prevOverlay: new Set(),
+      cols: 1,
+      rows: 1,
+      colors,
+      cellAt,
+    });
+    expect(draws[0]!.bg).toBe(SEL_ON_BLACK);
   });
 
   // The core #140 fix (restore): a cell that WAS selected last frame is now
