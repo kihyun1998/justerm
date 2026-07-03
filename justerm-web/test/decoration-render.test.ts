@@ -106,6 +106,22 @@ describe("composeCellColors — layered cell colour (#120 S2)", () => {
     expect(fg).toBe(0x808080); // match is not a selection → no un-dim
   });
 
+  // #225: minimumContrastRatio is applied against the EFFECTIVE bg (after the
+  // highlight/decoration changes it), not the cell's own bg — matching xterm,
+  // which bakes the selection bg in before computing contrast. A white fg over a
+  // white (solid) selection is illegible; at ratio 21 it must darken to black.
+  it("re-applies contrast against the effective (highlight) bg", () => {
+    const onBlack = { fg: 0xffffff, bg: 0x000000 }; // white fg, fine on black
+    const { fg, bg } = composeCellColors(onBlack, null, 0xffffff, null, false, false, 0xffffff, 21);
+    expect({ fg, bg }).toEqual({ fg: 0x000000, bg: 0xffffff }); // fg darkened for the white bg
+  });
+
+  it("does not adjust contrast when minimumContrastRatio is 1 (default)", () => {
+    const onBlack = { fg: 0xffffff, bg: 0x000000 };
+    const { fg } = composeCellColors(onBlack, null, 0xffffff, null, false, false, 0xffffff, 1);
+    expect(fg).toBe(0xffffff); // no contrast pass → white stays
+  });
+
   // A top decoration is foreground-most — it wins over the selection/match
   // highlight (AC: top paints over the cell).
   it("top decoration wins over the highlight bg", () => {

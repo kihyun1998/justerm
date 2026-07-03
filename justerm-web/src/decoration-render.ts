@@ -11,6 +11,7 @@
  * is unit-tested (the GL adapter is not).
  */
 
+import { ensureContrastRatio } from "./contrast";
 import type { DecorationLayer, DecorationRect } from "./decorations";
 import { HIGHLIGHT_BLEND_ALPHA, blendOver } from "./render-policy";
 
@@ -58,6 +59,7 @@ export function composeCellColors(
   blendHighlight = false,
   isSelection = false,
   fgUndimmed: number = base.fg,
+  minimumContrastRatio = 1,
 ): { fg: number; bg: number } {
   // #224: a selected cell is un-dimmed (xterm force-clears DIM under selection), so
   // it starts from the undimmed fg. Only selection un-dims (not a search match); a
@@ -78,6 +80,15 @@ export function composeCellColors(
   if (top) {
     if (top.bg !== undefined) bg = top.bg;
     if (top.fg !== undefined) fg = top.fg;
+  }
+  // #225: minimumContrastRatio is applied against the EFFECTIVE bg (the one the
+  // glyph is actually drawn over, after the highlight/decoration changed it) — not
+  // the cell's own bg the stage-2 policy saw. xterm bakes the selection bg in
+  // before computing contrast, so a fg made legible on the cell bg is re-corrected
+  // for the highlight bg here.
+  if (minimumContrastRatio > 1) {
+    const adjusted = ensureContrastRatio(bg, fg, minimumContrastRatio);
+    if (adjusted !== undefined) fg = adjusted;
   }
   return { fg, bg };
 }

@@ -11,7 +11,7 @@ import type { DrawOp } from "../src/render-core";
 
 const SEL = 0x111111;
 const MATCH = 0x222222;
-const colors = { selectionBg: SEL, matchBg: MATCH };
+const colors = { selectionBg: SEL, matchBg: MATCH, minimumContrastRatio: 1 };
 // #115: a highlight is SOLID on a default-bg cell (blendHighlight=false) but an
 // alpha-0x80 blend on a non-default/inverse cell. SEL_ON_BLACK is the blended
 // value for a blendHighlight cell over a black bg: blendOver(0x000000, SEL, 0x80).
@@ -137,6 +137,24 @@ describe("composeOverlayDraws (#140 partial-frame overlay damage)", () => {
       cellAt,
     });
     expect(draws[0]!.fg).toBe(0x808080); // match doesn't un-dim
+  });
+
+  // #225: contrast is applied against the EFFECTIVE (selection) bg, not the cell's
+  // own bg. A white fg is fine on the black cell but illegible over a white
+  // selection — at ratio 21 it must darken to black.
+  it("re-contrasts a selected cell against the selection bg", () => {
+    const whiteSel = { selectionBg: 0xffffff, matchBg: MATCH, minimumContrastRatio: 21 };
+    const { draws } = composeOverlayDraws({
+      ops: [op(0, 0, 0x000000, 0xffffff)], // white fg on black cell
+      highlights: [sel(0, 0, 0)],
+      decorations: [],
+      prevOverlay: new Set(),
+      cols: 1,
+      rows: 1,
+      colors: whiteSel,
+      cellAt,
+    });
+    expect({ fg: draws[0]!.fg, bg: draws[0]!.bg }).toEqual({ fg: 0x000000, bg: 0xffffff });
   });
 
   // The core #140 fix (restore): a cell that WAS selected last frame is now
