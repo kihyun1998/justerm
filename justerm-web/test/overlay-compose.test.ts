@@ -17,8 +17,8 @@ const colors = { selectionBg: SEL, matchBg: MATCH };
 // value for a blendHighlight cell over a black bg: blendOver(0x000000, SEL, 0x80).
 const SEL_ON_BLACK = 0x090909;
 
-function op(x: number, y: number, bg = 0, fg = 0xffffff, blendHighlight = false): DrawOp {
-  return { x, y, symbol: "a", fg, bg, bold: false, italic: false, underline: false, strikethrough: false, blendHighlight };
+function op(x: number, y: number, bg = 0, fg = 0xffffff, blendHighlight = false, fgUndimmed = fg): DrawOp {
+  return { x, y, symbol: "a", fg, bg, bold: false, italic: false, underline: false, strikethrough: false, blendHighlight, fgUndimmed };
 }
 const sel = (row: number, left: number, right: number): HighlightRect => ({ row, left, right, kind: "selection" });
 const match = (row: number, left: number, right: number): HighlightRect => ({ row, left, right, kind: "match" });
@@ -105,6 +105,38 @@ describe("composeOverlayDraws (#140 partial-frame overlay damage)", () => {
       cellAt,
     });
     expect(draws[0]!.bg).toBe(SEL_ON_BLACK);
+  });
+
+  // #224: a selected dim cell renders its UNDIMMED fg (xterm clears DIM under
+  // selection) — the op carries fgUndimmed and overlayTint swaps it in.
+  it("un-dims a selected cell's fg", () => {
+    const dimOp = op(0, 0, 0x000000, 0x808080, false, 0xffffff); // fg dimmed, undimmed bright
+    const { draws } = composeOverlayDraws({
+      ops: [dimOp],
+      highlights: [sel(0, 0, 0)],
+      decorations: [],
+      prevOverlay: new Set(),
+      cols: 1,
+      rows: 1,
+      colors,
+      cellAt,
+    });
+    expect(draws[0]!.fg).toBe(0xffffff);
+  });
+
+  it("keeps a matched (not selected) dim cell dimmed", () => {
+    const dimOp = op(0, 0, 0x000000, 0x808080, false, 0xffffff);
+    const { draws } = composeOverlayDraws({
+      ops: [dimOp],
+      highlights: [match(0, 0, 0)],
+      decorations: [],
+      prevOverlay: new Set(),
+      cols: 1,
+      rows: 1,
+      colors,
+      cellAt,
+    });
+    expect(draws[0]!.fg).toBe(0x808080); // match doesn't un-dim
   });
 
   // The core #140 fix (restore): a cell that WAS selected last frame is now

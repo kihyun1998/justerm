@@ -91,6 +91,21 @@ describe("composeCellColors — layered cell colour (#120 S2)", () => {
     expect(composeCellColors(base, bottom, 0x445566, null, true)).toEqual({ fg: 0x00ff00, bg: 0x7f2b33 });
   });
 
+  // #224: a SELECTED cell is un-dimmed — xterm force-clears DIM under selection so
+  // the text stays legible over the highlight. composeCellColors swaps in the
+  // caller's undimmed fg for a selection (not a search match).
+  it("un-dims the fg under a selection (uses fgUndimmed)", () => {
+    const dimBase = { fg: 0x808080, bg: 0x000000 }; // dimmed fg
+    const { fg } = composeCellColors(dimBase, null, 0x445566, null, false, true, 0xffffff);
+    expect(fg).toBe(0xffffff); // restored to the undimmed fg
+  });
+
+  it("keeps the dimmed fg under a search match (only selection un-dims)", () => {
+    const dimBase = { fg: 0x808080, bg: 0x000000 };
+    const { fg } = composeCellColors(dimBase, null, 0x445566, null, false, false, 0xffffff);
+    expect(fg).toBe(0x808080); // match is not a selection → no un-dim
+  });
+
   // A top decoration is foreground-most — it wins over the selection/match
   // highlight (AC: top paints over the cell).
   it("top decoration wins over the highlight bg", () => {

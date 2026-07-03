@@ -56,8 +56,14 @@ export function composeCellColors(
   highlightBg: number | null,
   top: DecorationRect | null,
   blendHighlight = false,
+  isSelection = false,
+  fgUndimmed: number = base.fg,
 ): { fg: number; bg: number } {
-  let { fg, bg } = base;
+  // #224: a selected cell is un-dimmed (xterm force-clears DIM under selection), so
+  // it starts from the undimmed fg. Only selection un-dims (not a search match); a
+  // bottom/top decoration fg override below still wins.
+  let fg = isSelection ? fgUndimmed : base.fg;
+  let { bg } = base;
   if (bottom) {
     if (bottom.bg !== undefined) bg = bottom.bg;
     if (bottom.fg !== undefined) fg = bottom.fg;
