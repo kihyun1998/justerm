@@ -23,6 +23,9 @@ import type { DrawOp } from "./render-core";
 export interface OverlayColors {
   readonly selectionBg: number;
   readonly matchBg: number;
+  /** Applied against the EFFECTIVE (post-overlay) bg so a highlight can't leave the
+   * fg illegible (#225). 1 = off (the default). */
+  readonly minimumContrastRatio: number;
 }
 
 /** The set of viewport cell keys (`y * cols + x`) tinted by any overlay this frame —
@@ -90,6 +93,7 @@ export function overlayTint(
     base.blendHighlight,
     kind === "selection", // #224: only a selection un-dims (not a search match)
     base.fgUndimmed,
+    colors.minimumContrastRatio, // #225: contrast against the effective bg
   );
   return { ...base, fg, bg };
 }

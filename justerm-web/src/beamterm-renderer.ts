@@ -250,7 +250,11 @@ export class BeamtermRenderer implements Renderer {
       prevOverlay: this.prevOverlay,
       cols: this.cols,
       rows: this.rows,
-      colors: { selectionBg: this.activeSelectionBg(), matchBg: this.matchBg },
+      colors: {
+        selectionBg: this.activeSelectionBg(),
+        matchBg: this.matchBg,
+        minimumContrastRatio: this.minimumContrastRatio,
+      },
       cellAt: (x, y) => this.mirror!.cellAt(x, y),
     });
     for (const d of draws) this.drawOp(batch, d);
@@ -357,6 +361,7 @@ export class BeamtermRenderer implements Renderer {
       cursorCellDraw(base, on, styled, this.lastHighlights, this.lastDecorations, {
         selectionBg: this.activeSelectionBg(),
         matchBg: this.matchBg,
+        minimumContrastRatio: this.minimumContrastRatio,
       }),
     );
   }
