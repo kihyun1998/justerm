@@ -30,6 +30,9 @@ export interface Theme {
   /** Minimum fg/bg contrast ratio (WCAG, 1..21). Below it the renderer lightens
    * or darkens the fg to stay legible (#115). Defaults to 1 (off, like xterm). */
   minimumContrastRatio?: number;
+  /** Draw bold text in the bright (8-15) ANSI colour — xterm's
+   * drawBoldTextInBrightColors (#223). Defaults to true (xterm's default). */
+  boldToBright?: boolean;
 }
 
 export interface BeamtermOptions {
@@ -112,6 +115,7 @@ export class BeamtermRenderer implements Renderer {
     private matchBg: number,
     private selectionInactiveBg: number,
     private minimumContrastRatio: number,
+    private boldToBright: boolean,
   ) {
     // Honour prefers-reduced-motion (#119): suppress the cursor blink, tracking
     // changes live. Browser-only; the renderer is only built via `create`.
@@ -180,6 +184,7 @@ export class BeamtermRenderer implements Renderer {
       opts.theme.matchBg ?? 0x6e5c00,
       opts.theme.selectionInactiveBg ?? 0x30313d,
       opts.theme.minimumContrastRatio ?? 1,
+      opts.theme.boldToBright ?? true,
     );
   }
 
@@ -215,6 +220,7 @@ export class BeamtermRenderer implements Renderer {
         this.palette,
         this.flagBits,
         makeRenderPolicy(this.flagBits, this.minimumContrastRatio),
+        this.boldToBright,
       );
       // The mirror is fresh and the old overlay keys (`y·cols + x`) index a different
       // grid — drop them so the #140 delta doesn't repaint stale coordinates.
@@ -283,8 +289,13 @@ export class BeamtermRenderer implements Renderer {
     this.matchBg = theme.matchBg ?? 0x6e5c00;
     this.selectionInactiveBg = theme.selectionInactiveBg ?? 0x30313d;
     this.minimumContrastRatio = theme.minimumContrastRatio ?? 1;
+    this.boldToBright = theme.boldToBright ?? true;
     if (!this.mirror) return;
-    const ops = this.mirror.recolor(this.palette, makeRenderPolicy(this.flagBits, this.minimumContrastRatio));
+    const ops = this.mirror.recolor(
+      this.palette,
+      makeRenderPolicy(this.flagBits, this.minimumContrastRatio),
+      this.boldToBright,
+    );
     this.paint(ops, this.lastHighlights, this.lastDecorations, true);
   }
 

@@ -33,6 +33,7 @@ export class CellMirror {
     private palette: Palette,
     private readonly F: FlagBits,
     private policy: RenderPolicy = identityPolicy,
+    private boldToBright = false,
   ) {
     this.cells = Array.from({ length: cols * rows }, blank);
   }
@@ -43,9 +44,10 @@ export class CellMirror {
    * refs (see {@link MirrorCell}), so this re-resolves without a new frame — the
    * adapter clears beamterm and feeds the ops, exactly like a Full frame.
    */
-  recolor(palette: Palette, policy: RenderPolicy): DrawOp[] {
+  recolor(palette: Palette, policy: RenderPolicy, boldToBright = this.boldToBright): DrawOp[] {
     this.palette = palette;
     this.policy = policy;
+    this.boldToBright = boldToBright;
     return this.repaintAll();
   }
 
@@ -59,7 +61,7 @@ export class CellMirror {
       if ((cell.flags & this.F.wide_char_spacer) !== 0) continue;
       const x = i % this.cols;
       const y = (i - x) / this.cols;
-      ops.push(cellToDrawOp(x, y, cell.symbol, cell.fg, cell.bg, cell.flags, this.palette, this.F, this.policy));
+      ops.push(cellToDrawOp(x, y, cell.symbol, cell.fg, cell.bg, cell.flags, this.palette, this.F, this.policy, this.boldToBright));
     }
     return ops;
   }
@@ -112,7 +114,7 @@ export class CellMirror {
       if ((cell.flags & this.F.wide_char_spacer) !== 0) continue;
       const x = i % this.cols;
       const y = (i - x) / this.cols;
-      ops.push(cellToDrawOp(x, y, cell.symbol, cell.fg, cell.bg, cell.flags, this.palette, this.F, this.policy));
+      ops.push(cellToDrawOp(x, y, cell.symbol, cell.fg, cell.bg, cell.flags, this.palette, this.F, this.policy, this.boldToBright));
     }
     return ops;
   }
@@ -155,7 +157,7 @@ export class CellMirror {
   cellAt(x: number, y: number): DrawOp | undefined {
     const cell = this.cells[y * this.cols + x]!;
     if ((cell.flags & this.F.wide_char_spacer) !== 0) return undefined;
-    return cellToDrawOp(x, y, cell.symbol, cell.fg, cell.bg, cell.flags, this.palette, this.F, this.policy);
+    return cellToDrawOp(x, y, cell.symbol, cell.fg, cell.bg, cell.flags, this.palette, this.F, this.policy, this.boldToBright);
   }
 
   /** Shift rows `[top, bottom]` by `count` (>0 = up, exposing blanks at the

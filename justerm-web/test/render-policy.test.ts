@@ -62,6 +62,55 @@ describe("resolveCell — stage-1 ref resolution", () => {
 
     expect({ fg, bg }).toEqual({ fg: 0xff0000, bg: 0x101010 });
   });
+
+  // #223 bold→bright: a bold cell whose fg is an ANSI 0-7 palette index draws with
+  // the bright 8-15 variant (xterm drawBoldTextInBrightColors). Only when the
+  // caller enables it (last arg) — off, the dim index stays.
+  function brightPalette(): Palette {
+    const colors = new Uint32Array(256);
+    colors[3] = 0x808000; // ANSI 3 (dim yellow)
+    colors[11] = 0xffff00; // ANSI 11 (bright yellow)
+    return { colors, defaultFg: 0xc0c0c0, defaultBg: 0x101010 };
+  }
+  const INDEXED_3 = 0x01000003;
+
+  it("brightens a bold ANSI 0-7 indexed fg to its 8-15 variant when enabled", () => {
+    const { fg } = resolveCell(INDEXED_3, DEFAULT, F.bold, brightPalette(), F, true);
+
+    expect(fg).toBe(0xffff00); // colors[11], not colors[3]
+  });
+
+  it("does not brighten when boldToBright is disabled (the default)", () => {
+    const { fg } = resolveCell(INDEXED_3, DEFAULT, F.bold, brightPalette(), F, false);
+
+    expect(fg).toBe(0x808000); // colors[3] unchanged
+  });
+
+  // The coupling #115 flagged: inverse swaps the slots FIRST, so bold+inverse
+  // brightens whatever ref becomes the drawn fg — the original BG index. fg=Indexed
+  // (2), bg=Indexed(5), bold+inverse → drawn fg = Indexed(5) → bright Indexed(13).
+  it("brightens the post-inverse fg (the original bg index) under bold+inverse", () => {
+    const pal = brightPalette();
+    pal.colors[5] = 0x008000; // ANSI 5 (dim)
+    pal.colors[13] = 0x00ff00; // ANSI 13 (bright)
+    const INDEXED_2 = 0x01000002;
+    const INDEXED_5 = 0x01000005;
+
+    const { fg } = resolveCell(INDEXED_2, INDEXED_5, F.bold | F.inverse, pal, F, true);
+
+    expect(fg).toBe(0x00ff00); // colors[13], the bright of the swapped-in bg index 5
+  });
+
+  // Only ANSI 0-7 brighten; an already-bright (8-15) or higher index is untouched.
+  it("leaves an index >= 8 unchanged under bold", () => {
+    const pal = brightPalette();
+    pal.colors[11] = 0xffff00;
+    const INDEXED_11 = 0x0100000b;
+
+    const { fg } = resolveCell(INDEXED_11, DEFAULT, F.bold, pal, F, true);
+
+    expect(fg).toBe(0xffff00); // colors[11], no +8 into 19
+  });
 });
 
 describe("makeRenderPolicy — stage-2 RGB policy", () => {
