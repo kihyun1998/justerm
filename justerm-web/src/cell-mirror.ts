@@ -30,11 +30,38 @@ export class CellMirror {
   constructor(
     private readonly cols: number,
     private readonly rows: number,
-    private readonly palette: Palette,
+    private palette: Palette,
     private readonly F: FlagBits,
-    private readonly policy: RenderPolicy = identityPolicy,
+    private policy: RenderPolicy = identityPolicy,
   ) {
     this.cells = Array.from({ length: cols * rows }, blank);
+  }
+
+  /**
+   * Swap the palette/policy (a theme or minimumContrastRatio change) and return a
+   * full repaint of every stored cell under the new colours. Cells are kept as
+   * refs (see {@link MirrorCell}), so this re-resolves without a new frame — the
+   * adapter clears beamterm and feeds the ops, exactly like a Full frame.
+   */
+  recolor(palette: Palette, policy: RenderPolicy): DrawOp[] {
+    this.palette = palette;
+    this.policy = policy;
+    return this.repaintAll();
+  }
+
+  /** A full repaint of every stored (non-spacer) cell under the CURRENT palette/
+   * policy — the base draws for a themeless full redraw (e.g. a focus change that
+   * only re-tints the selection overlay). {@link recolor} is this after a swap. */
+  repaintAll(): DrawOp[] {
+    const ops: DrawOp[] = [];
+    for (let i = 0; i < this.cells.length; i++) {
+      const cell = this.cells[i]!;
+      if ((cell.flags & this.F.wide_char_spacer) !== 0) continue;
+      const x = i % this.cols;
+      const y = (i - x) / this.cols;
+      ops.push(cellToDrawOp(x, y, cell.symbol, cell.fg, cell.bg, cell.flags, this.palette, this.F, this.policy));
+    }
+    return ops;
   }
 
   applyFrame(frame: DecodedFrame): DrawOp[] {

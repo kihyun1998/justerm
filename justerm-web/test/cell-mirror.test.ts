@@ -114,6 +114,33 @@ describe("CellMirror.applyFrame", () => {
     expect({ fg: op!.fg, bg: op!.bg }).toEqual({ fg: 0x808080, bg: 0x000000 });
   });
 
+  // #115 theme switch: cells are stored as colour refs, so a new palette re-resolves
+  // them without re-decoding a frame. recolor() swaps the palette/policy and returns
+  // a full repaint of every stored cell.
+  it("re-resolves stored cells under a new palette (theme switch)", () => {
+    const paletteA: Palette = { colors: new Uint32Array(256), defaultFg: 0xc0c0c0, defaultBg: 0x101010 };
+    paletteA.colors[1] = 0xff0000; // ANSI 1 = red under theme A
+    const mirror = new CellMirror(1, 1, paletteA, F);
+    mirror.applyFrame({
+      cols: 1,
+      rows: 1,
+      kind: 0,
+      codepoints: [cp("a")],
+      fg: [0x01000001], // Indexed(1)
+      bg: [0],
+      flags: [0],
+      extra: [0],
+      spans: [0, 0, 0, 0, 1],
+      sideTable: [],
+    } as DecodedFrame);
+
+    const paletteB: Palette = { colors: new Uint32Array(256), defaultFg: 0xc0c0c0, defaultBg: 0x101010 };
+    paletteB.colors[1] = 0x00ff00; // ANSI 1 = green under theme B
+    const ops = mirror.recolor(paletteB, makeRenderPolicy(F));
+
+    expect(ops[0]!.fg).toBe(0x00ff00);
+  });
+
   // The core of ADR-0011: a scroll-op frame shifts the stored region so the moved
   // cells repaint at their new rows (beamterm can't shift them). 2×3 mirror holds
   // AA/BB/CC; scroll up 1 in [0,2] + a new bottom span "DD" → BB/CC/DD. Damage is
