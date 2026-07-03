@@ -55,16 +55,20 @@ export function composeCellColors(
   bottom: DecorationRect | null,
   highlightBg: number | null,
   top: DecorationRect | null,
+  blendHighlight = false,
 ): { fg: number; bg: number } {
   let { fg, bg } = base;
   if (bottom) {
     if (bottom.bg !== undefined) bg = bottom.bg;
     if (bottom.fg !== undefined) fg = bottom.fg;
   }
-  // #115: the highlight is an alpha blend over the running bg (base or a bottom
-  // decoration), not a solid fill — the cell's own colour shows through, and a
-  // top decoration still overrides it below.
-  if (highlightBg !== null) bg = blendOver(bg, highlightBg, HIGHLIGHT_BLEND_ALPHA);
+  // #115: apply the highlight over the running bg (base or a bottom decoration).
+  // `blendHighlight` cells (non-default/inverse bg) alpha-blend so the cell colour
+  // shows through; the rest paint the highlight SOLID (xterm's default-bg branch).
+  // A top decoration still overrides it below either way.
+  if (highlightBg !== null) {
+    bg = blendHighlight ? blendOver(bg, highlightBg, HIGHLIGHT_BLEND_ALPHA) : highlightBg;
+  }
   if (top) {
     if (top.bg !== undefined) bg = top.bg;
     if (top.fg !== undefined) fg = top.fg;

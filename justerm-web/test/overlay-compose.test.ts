@@ -12,13 +12,13 @@ import type { DrawOp } from "../src/render-core";
 const SEL = 0x111111;
 const MATCH = 0x222222;
 const colors = { selectionBg: SEL, matchBg: MATCH };
-// #115: a highlight is an alpha-0x80 blend over the cell bg, not a solid fill.
-// These plumbing tests paint over a base bg of 0, so the tint they observe is
-// blendOver(0x000000, SEL, 0x80) — the selection colour at ~50% over black.
+// #115: a highlight is SOLID on a default-bg cell (blendHighlight=false) but an
+// alpha-0x80 blend on a non-default/inverse cell. SEL_ON_BLACK is the blended
+// value for a blendHighlight cell over a black bg: blendOver(0x000000, SEL, 0x80).
 const SEL_ON_BLACK = 0x090909;
 
-function op(x: number, y: number, bg = 0, fg = 0xffffff): DrawOp {
-  return { x, y, symbol: "a", fg, bg, bold: false, italic: false, underline: false, strikethrough: false };
+function op(x: number, y: number, bg = 0, fg = 0xffffff, blendHighlight = false): DrawOp {
+  return { x, y, symbol: "a", fg, bg, bold: false, italic: false, underline: false, strikethrough: false, blendHighlight };
 }
 const sel = (row: number, left: number, right: number): HighlightRect => ({ row, left, right, kind: "selection" });
 const match = (row: number, left: number, right: number): HighlightRect => ({ row, left, right, kind: "match" });
@@ -68,15 +68,15 @@ describe("composeOverlayDraws (#140 partial-frame overlay damage)", () => {
       cellAt,
     });
     expect(draws).toHaveLength(3); // the 3 damaged cells only, no delta
-    expect(draws.find((d) => d.x === 1)!.bg).toBe(SEL_ON_BLACK); // (1,0) tinted
+    expect(draws.find((d) => d.x === 1)!.bg).toBe(SEL); // (1,0) tinted
     expect(draws.find((d) => d.x === 0)!.bg).toBe(0); // (0,0) plain
     expect([...overlay]).toEqual([1]); // key = 0*3 + 1
   });
 
-  // #115: a search-match highlight blends over the cell bg too (not only the
-  // selection) — the policy is uniform per kind. MATCH over black at 0x80 is
-  // blendOver(0x000000, 0x222222, 0x80) = 0x111111.
-  it("blends a search-match highlight over the cell bg, not just selection", () => {
+  // #115: on a default-bg cell (blendHighlight=false) the search-match highlight
+  // is painted SOLID — the same solid rule as the selection (xterm's default-bg
+  // branch, CellColorResolver else-clause).
+  it("paints a search-match highlight solid on a default-bg cell", () => {
     const { draws } = composeOverlayDraws({
       ops: [op(0, 0)],
       highlights: [match(0, 0, 0)],
@@ -87,7 +87,24 @@ describe("composeOverlayDraws (#140 partial-frame overlay damage)", () => {
       colors,
       cellAt,
     });
-    expect(draws[0]!.bg).toBe(0x111111);
+    expect(draws[0]!.bg).toBe(MATCH);
+  });
+
+  // #115: a non-default / inverse cell (blendHighlight=true) alpha-blends the
+  // highlight over its own bg, so the cell colour shows through. Over black,
+  // blendOver(0x000000, SEL, 0x80) = SEL_ON_BLACK.
+  it("blends the highlight over a non-default-bg cell (blendHighlight)", () => {
+    const { draws } = composeOverlayDraws({
+      ops: [op(0, 0, 0x000000, 0xffffff, true)],
+      highlights: [sel(0, 0, 0)],
+      decorations: [],
+      prevOverlay: new Set(),
+      cols: 1,
+      rows: 1,
+      colors,
+      cellAt,
+    });
+    expect(draws[0]!.bg).toBe(SEL_ON_BLACK);
   });
 
   // The core #140 fix (restore): a cell that WAS selected last frame is now
@@ -122,7 +139,7 @@ describe("composeOverlayDraws (#140 partial-frame overlay damage)", () => {
       cellAt,
     });
     expect(draws).toHaveLength(1);
-    expect(draws[0]).toMatchObject({ x: 2, y: 0, bg: SEL_ON_BLACK });
+    expect(draws[0]).toMatchObject({ x: 2, y: 0, bg: SEL });
     expect([...overlay]).toEqual([2]);
   });
 
@@ -140,7 +157,7 @@ describe("composeOverlayDraws (#140 partial-frame overlay damage)", () => {
       cellAt,
     });
     expect(draws).toHaveLength(1); // damaged cell only
-    expect(draws[0]!.bg).toBe(SEL_ON_BLACK);
+    expect(draws[0]!.bg).toBe(SEL);
   });
 
   // A wide-char spacer half in the delta is skipped: `cellAt` returns undefined for
@@ -160,7 +177,7 @@ describe("composeOverlayDraws (#140 partial-frame overlay damage)", () => {
       cellAt: cellAtSpacer,
     });
     expect(draws).toHaveLength(1); // only the lead repainted; spacer skipped
-    expect(draws[0]).toMatchObject({ x: 0, y: 0, bg: SEL_ON_BLACK });
+    expect(draws[0]).toMatchObject({ x: 0, y: 0, bg: SEL });
   });
 
   // Decorations share the delta path: a bottom decoration that left a cell restores
@@ -195,7 +212,7 @@ describe("cursorCellDraw (#210 blink-off keeps the overlay tint)", () => {
   // of flashing to the bare cell (the #210 fix).
   it("blink OFF composites the selection tint, not the bare cell", () => {
     const out = cursorCellDraw(base, false, styled, [sel(0, 1, 1)], [], colors);
-    expect(out.bg).toBe(SEL_ON_BLACK); // NOT base bg 0, NOT the cursor colour
+    expect(out.bg).toBe(SEL); // NOT base bg 0, NOT the cursor colour
   });
 
   // Blink OFF composites a decoration too (the cursor cell need not be selected).

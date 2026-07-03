@@ -54,13 +54,20 @@ describe("composeCellColors — layered cell colour (#120 S2)", () => {
     expect(composeCellColors(base, null, null, null)).toEqual(base);
   });
 
-  // #115: the selection/search highlight is an alpha blend over the cell's own
-  // background (xterm CellColorResolver blends the selection colour at alpha
-  // 0x80), NOT a solid fill — so a coloured cell shows through the highlight.
+  // #115: for a blendHighlight cell (non-default/inverse bg) the highlight is an
+  // alpha-0x80 blend over the cell's own bg, so the cell colour shows through.
   // Independent check: white at ~50% over black is mid-grey.
-  it("blends the highlight bg over the cell bg (alpha 0x80), not a solid fill", () => {
+  it("blends the highlight over the cell bg for a blendHighlight cell", () => {
     const onBlack = { fg: 0xaaaaaa, bg: 0x000000 };
-    expect(composeCellColors(onBlack, null, 0xffffff, null).bg).toBe(0x808080);
+    expect(composeCellColors(onBlack, null, 0xffffff, null, true).bg).toBe(0x808080);
+  });
+
+  // #115: for a default-bg cell (blendHighlight=false, the default) the highlight
+  // is painted SOLID — xterm's default-bg branch paints selectionBackgroundOpaque
+  // with no blend, giving a crisp highlight on plain text.
+  it("paints the highlight solid for a default-bg cell", () => {
+    const onBlack = { fg: 0xaaaaaa, bg: 0x000000 };
+    expect(composeCellColors(onBlack, null, 0xffffff, null).bg).toBe(0xffffff);
   });
 
   // A bottom decoration overrides the cell background beneath the glyph; the
@@ -81,7 +88,7 @@ describe("composeCellColors — layered cell colour (#120 S2)", () => {
   // still applies underneath. Expected bg = blendOver(0xbb0000, 0x445566, 0x80).
   it("blends the highlight over a bottom decoration's bg, keeping its fg", () => {
     const bottom = rect(0, 0, 0, "bottom", { bg: 0xbb0000, fg: 0x00ff00 });
-    expect(composeCellColors(base, bottom, 0x445566, null)).toEqual({ fg: 0x00ff00, bg: 0x7f2b33 });
+    expect(composeCellColors(base, bottom, 0x445566, null, true)).toEqual({ fg: 0x00ff00, bg: 0x7f2b33 });
   });
 
   // A top decoration is foreground-most — it wins over the selection/match

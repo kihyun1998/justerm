@@ -18,6 +18,7 @@ const F: FlagBits = {
   wide_char_spacer: 0x100,
   inverse: 0x200,
   dim: 0x400,
+  hidden: 0x800,
 };
 
 // justerm colour refs (tag = high byte): 0 Default, 1 Indexed, 2 Rgb.

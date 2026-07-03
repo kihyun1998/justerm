@@ -54,17 +54,19 @@ export function blendOver(base: number, over: number, alpha: number): number {
 }
 
 /**
- * DIM (xterm `BgFlags.DIM`): halve the foreground toward the background. xterm
- * rasterises the glyph at `DIM_OPACITY` (0.5) over the cell bg; beamterm has no
- * per-glyph alpha, so the dim is baked in as the exact midpoint of `fg` and `bg`
- * per channel. The alpha is exactly 0.5 (not `blendOver`'s integer alpha), so this
- * averages rather than reusing the highlight blend.
+ * Alpha of the DIM blend. xterm's `multiplyOpacity(fg, DIM_OPACITY=0.5)` sets the
+ * fg's alpha byte to `round(0.5 * 255) = 128`, then source-over-composites it over
+ * the bg — so the effective blend fraction is `128/255`, NOT an exact 0.5.
+ */
+export const DIM_BLEND_ALPHA = 0x80;
+
+/**
+ * DIM (xterm `BgFlags.DIM`): fade the foreground toward the background. beamterm
+ * has no per-glyph alpha, so the dim is baked into the fg RGB — the same
+ * {@link blendOver} composite xterm performs (fg at alpha 128 over the cell bg).
  */
 export function dimForeground(fg: number, bg: number): number {
-  const r = ((fg >> 16) & 0xff) + ((bg >> 16) & 0xff);
-  const g = ((fg >> 8) & 0xff) + ((bg >> 8) & 0xff);
-  const b = (fg & 0xff) + (bg & 0xff);
-  return (Math.round(r / 2) << 16) | (Math.round(g / 2) << 8) | Math.round(b / 2);
+  return blendOver(bg, fg, DIM_BLEND_ALPHA);
 }
 
 /**

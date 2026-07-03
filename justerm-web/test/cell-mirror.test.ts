@@ -17,6 +17,7 @@ const F: FlagBits = {
   wide_char_spacer: 0x100,
   inverse: 0x200,
   dim: 0x400,
+  hidden: 0x800,
 };
 
 const cp = (s: string): number => s.codePointAt(0)!;

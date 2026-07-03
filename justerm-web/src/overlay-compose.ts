@@ -82,7 +82,7 @@ export function overlayTint(
   const bottom = decorations.length ? decorationAt(decorations as DecorationRect[], x, y, "bottom") : null;
   const top = decorations.length ? decorationAt(decorations as DecorationRect[], x, y, "top") : null;
   if (highlightBg === null && bottom === null && top === null) return base;
-  const { fg, bg } = composeCellColors({ fg: base.fg, bg: base.bg }, bottom, highlightBg, top);
+  const { fg, bg } = composeCellColors({ fg: base.fg, bg: base.bg }, bottom, highlightBg, top, base.blendHighlight);
   return { ...base, fg, bg };
 }
 

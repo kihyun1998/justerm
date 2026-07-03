@@ -156,6 +156,7 @@ export class BeamtermRenderer implements Renderer {
       wide_char_spacer: f.wide_char_spacer,
       inverse: f.inverse,
       dim: f.dim,
+      hidden: f.hidden,
     };
     const factory: Factory = { style: beamterm.style, cell: beamterm.cell };
     return new BeamtermRenderer(
