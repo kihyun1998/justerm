@@ -530,6 +530,20 @@ test.describe("S7 IME composition (#116)", () => {
     await expect.poll(() => page.evaluate(() => document.querySelector("textarea")?.value)).toBe("");
   });
 
+  test("the input textarea is a labeled accessible input, not aria-hidden (#248)", async ({
+    page,
+  }) => {
+    // It's programmatically focused to type; focusing an aria-hidden element is a WCAG
+    // 4.1.2 violation. It must instead be a named, visually-hidden input (xterm's helper
+    // textarea) — the #119 row-tree stays the separate review/announce surface.
+    await page.locator("#term").click({ position: { x: 50, y: 50 } });
+    const ta = page.locator("textarea");
+    await expect(ta).toBeFocused();
+    await expect(ta).not.toHaveAttribute("aria-hidden", "true"); // not hidden while focused
+    await expect(ta).toHaveAttribute("aria-label", /\S/); // has an accessible name
+    await expect(ta).toHaveAttribute("aria-multiline", "false"); // a single-line prompt (xterm)
+  });
+
   test("focus returns to the input textarea after the accessible view closes", async ({ page }) => {
     // The input target moved to the hidden textarea; focus-restore paths must target it,
     // not the (now inert) canvas — else typing/IME is dead after the overlay closes.
