@@ -92,6 +92,25 @@ export function composeCellColors(
   if (isSelection && selectionForeground !== undefined) {
     fg = selectionForeground;
   }
+  // #239: a Powerline/box glyph under a SELECTION tiles with the highlight — xterm
+  // re-resolves the cell's OWN fg from the model (CellColorResolver:141-166) and
+  // blends it 50% toward the selection bg so the glyph fuses into the band instead of
+  // standing out as a hard stroke. Reuses the #226 `excludeFromContrast` signal
+  // (= treatGlyphAsBackgroundColor). Two deliberate details, both xterm-faithful:
+  //   - START = `fgUndimmed`, the cell's own undimmed fg (a selection clears DIM).
+  //     Because xterm re-resolves the MODEL fg here, it discards BOTH selectionForeground
+  //     AND a bottom decoration's fg override for these glyphs — so do we.
+  //   - TARGET = the RAW selection colour (`highlightBg`), NOT the effective post-blend
+  //     `bg`. Unlike the contrast pass (which uses the effective bg), xterm blends the
+  //     glyph toward the raw selectionBackgroundOpaque (CellColorResolver:168-171), so a
+  //     blendHighlight cell still fuses toward the one shared selection colour.
+  // Runs after selectionForeground (overrides it) and before a top decoration (which
+  // still wins); the contrast pass is already skipped for these glyphs (#226). The
+  // xterm inverse-default "transparent" special case (CellColorResolver:135-139, fg =
+  // raw selection bg) is a niche divergence tracked in #241 — justerm half-blends there.
+  if (isSelection && excludeFromContrast && highlightBg !== null) {
+    fg = blendOver(fgUndimmed, highlightBg, HIGHLIGHT_BLEND_ALPHA);
+  }
   if (top) {
     if (top.bg !== undefined) bg = top.bg;
     if (top.fg !== undefined) {

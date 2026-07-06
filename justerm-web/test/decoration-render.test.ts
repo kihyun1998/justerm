@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { DecorationRect } from "../src/decorations";
 import { composeCellColors, decorationAt } from "../src/decoration-render";
 import { ensureContrastRatio } from "../src/contrast";
-import { dimForeground } from "../src/render-policy";
+import { HIGHLIGHT_BLEND_ALPHA, blendOver, dimForeground } from "../src/render-policy";
 
 /** A decoration rect on one viewport row, columns `left..=right` inclusive. */
 function rect(
@@ -302,6 +302,67 @@ describe("composeCellColors — layered cell colour (#120 S2)", () => {
   it("applies a black (0x000000) selectionForeground", () => {
     const { fg } = composeCellColors(base, null, 0x445566, null, false, true, base.fg, 1, false, false, 0x000000);
     expect(fg).toBe(0x000000);
+  });
+
+  // #239: a Powerline/box glyph under a SELECTION tiles with the highlight — its fg is
+  // blended 50% toward the selection bg (from the cell's undimmed fg). Reuses the #226
+  // excludeFromContrast signal (10th arg). White fg over a black selection → mid-grey.
+  it("blends a powerline/box glyph's fg toward the selection bg", () => {
+    const white = { fg: 0xffffff, bg: 0x111111 };
+    const { fg } = composeCellColors(white, null, 0x000000, null, false, true, 0xffffff, 1, false, true);
+    expect(fg).toBe(blendOver(0xffffff, 0x000000, HIGHLIGHT_BLEND_ALPHA)); // 0x7f7f7f
+  });
+
+  // The recolor overrides selectionForeground (xterm re-resolves the cell fg here,
+  // discarding the explicit override for a background-tile glyph).
+  it("overrides selectionForeground for a powerline glyph under selection", () => {
+    const white = { fg: 0xffffff, bg: 0x111111 };
+    const { fg } = composeCellColors(white, null, 0x000000, null, false, true, 0xffffff, 1, false, true, 0x00ff00);
+    expect(fg).toBe(blendOver(0xffffff, 0x000000, HIGHLIGHT_BLEND_ALPHA)); // not 0x00ff00
+  });
+
+  // Not a selection (a search match) → no recolor, even for a powerline glyph.
+  it("does not recolor a powerline glyph on a search match (selection only)", () => {
+    const { fg } = composeCellColors(base, null, 0x000000, null, false, false, base.fg, 1, false, true);
+    expect(fg).toBe(base.fg);
+  });
+
+  // A non-tile glyph under selection is untouched by the recolor (excludeFromContrast
+  // false → keeps its own fg / the #227 override path).
+  it("does not recolor an ordinary glyph under selection", () => {
+    const white = { fg: 0xffffff, bg: 0x111111 };
+    const { fg } = composeCellColors(white, null, 0x000000, null, false, true, 0xffffff, 1, false, false);
+    expect(fg).toBe(0xffffff); // no blend
+  });
+
+  // A top decoration fg still wins over the recolor (xterm applies the top layer last).
+  it("lets a top decoration fg win over the powerline recolor", () => {
+    const white = { fg: 0xffffff, bg: 0x111111 };
+    const top = rect(0, 0, 0, "top", { fg: 0x0000ee });
+    const { fg } = composeCellColors(white, null, 0x000000, top, false, true, 0xffffff, 1, false, true);
+    expect(fg).toBe(0x0000ee);
+  });
+
+  // The recolor blends toward the RAW selection colour (highlightBg), NOT the effective
+  // post-blend bg — so a blendHighlight cell (its own bg shows through) still fuses
+  // toward the one shared selection colour (xterm blends fg → raw selectionBg, unlike
+  // the contrast pass which uses the effective bg). Here the effective bg (0x404040)
+  // differs from the raw highlightBg (0x000000); the fg blends toward the raw colour.
+  it("blends a powerline glyph toward the raw selection colour on a blendHighlight cell", () => {
+    const white = { fg: 0xffffff, bg: 0x808080 };
+    const { fg, bg } = composeCellColors(white, null, 0x000000, null, true, true, 0xffffff, 1, false, true);
+    expect(bg).toBe(blendOver(0x808080, 0x000000, HIGHLIGHT_BLEND_ALPHA)); // effective bg = 0x404040
+    expect(fg).toBe(blendOver(0xffffff, 0x000000, HIGHLIGHT_BLEND_ALPHA)); // fg → raw 0x000000, not 0x404040
+  });
+
+  // The recolor re-resolves the cell's OWN fg (fgUndimmed), so a bottom decoration's fg
+  // override is discarded for a tile glyph under selection — matching xterm, which
+  // re-reads the model fg here (not the decoration's $fg).
+  it("ignores a bottom decoration fg when recoloring a powerline glyph under selection", () => {
+    const white = { fg: 0xffffff, bg: 0x111111 };
+    const bottom = rect(0, 0, 0, "bottom", { fg: 0x00ff00 });
+    const { fg } = composeCellColors(white, bottom, 0x000000, null, false, true, 0xffffff, 1, false, true);
+    expect(fg).toBe(blendOver(0xffffff, 0x000000, HIGHLIGHT_BLEND_ALPHA)); // from fgUndimmed, not 0x00ff00
   });
 
   // A top decoration is foreground-most — it wins over the selection/match
