@@ -368,6 +368,19 @@ function toggleAppMouse(): void {
   console.log(`[demo] appMouse = ${appMouse} (wheel → ${appMouse ? "app (intent)" : "scrollback"})`);
   render(); // re-emit so the next frame carries the new mask
 }
+// #117: push consumer events through the source's event channel (a real backend
+// drains them from core). The widget routes each to the events handlers above.
+let titleN = 0;
+let cwdN = 0;
+function emitTitle(): void {
+  source.pushEvent({ type: "title", title: `justerm — tab ${++titleN}` });
+}
+function emitBell(): void {
+  source.pushEvent({ type: "bell" });
+}
+function emitCwd(): void {
+  source.pushEvent({ type: "cwd", cwd: `file://host/home/ki/dir${++cwdN}` });
+}
 
 const controls = document.createElement("div");
 Object.assign(controls.style, {
@@ -418,9 +431,25 @@ const decoBtn = demoButton("Decorate line: OFF", toggleDecorateLine);
 const terseBtn = demoButton("Announce: VERBOSE", toggleTerse);
 const srBtn = demoButton("Screen reader: ON", toggleScreenReader);
 const appMouseBtn = demoButton("App mouse: OFF", toggleAppMouse);
+const titleBtn = demoButton("Set title", emitTitle); // #117
+const bellBtn = demoButton("Bell", emitBell); // #117
+const cwdBtn = demoButton("Set cwd", emitCwd); // #117
 const prevBtn = demoButton("Prev command", navPrevCommand, false);
 const nextBtn = demoButton("Next command", navNextCommand, false);
-controls.append(viewBtn, altBtn, cmdBtn, decoBtn, terseBtn, srBtn, appMouseBtn, prevBtn, nextBtn);
+controls.append(
+  viewBtn,
+  altBtn,
+  cmdBtn,
+  decoBtn,
+  terseBtn,
+  srBtn,
+  appMouseBtn,
+  titleBtn,
+  bellBtn,
+  cwdBtn,
+  prevBtn,
+  nextBtn,
+);
 document.body.appendChild(controls);
 
 // Echo-dedup (#119) is fed from the OUTBOUND intents so it covers IME commits and
@@ -573,6 +602,17 @@ term = new Terminal(source, renderer, {
     displayOffset = offset;
     console.log(`[wheel] scroll → displayOffset ${offset}`); // observable signal (e2e/live proxy)
     render();
+  },
+  // #117: fire-and-forget consumer notifications. A real backend drains core events
+  // and pushes them through the source's event channel; the demo pushes them from the
+  // buttons below. onTitle drives the document title (xterm parity), onBell/onCwd log.
+  events: {
+    onTitle: (t) => {
+      document.title = t;
+      console.log(`[event] title ${JSON.stringify(t)}`);
+    },
+    onBell: () => console.log("[event] bell"),
+    onCwd: (uri) => console.log(`[event] cwd ${JSON.stringify(uri)}`),
   },
 });
 term.mount();

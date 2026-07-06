@@ -507,6 +507,35 @@ test.describe("S7 IME composition (#116)", () => {
   });
 });
 
+// #117 (S13): consumer event surface. The demo pushes title/bell/cwd through the source's
+// event channel (a real backend drains them from core); the widget routes each to the
+// consumer handlers. onTitle drives the real document title (DOM-observable); onBell/onCwd
+// are proven via their console signal (fire-and-forget, no DOM effect of their own).
+test.describe("S13 consumer events (#117)", () => {
+  test("Set title drives the document title (onTitle → xterm onTitleChange parity)", async ({
+    page,
+  }) => {
+    await page.getByRole("button", { name: "Set title" }).click();
+    await expect(page).toHaveTitle("justerm — tab 1");
+    await page.getByRole("button", { name: "Set title" }).click();
+    await expect(page).toHaveTitle("justerm — tab 2"); // a second event re-fires the handler
+  });
+
+  test("Bell and Set cwd fire their handlers", async ({ page }) => {
+    const events: string[] = [];
+    page.on("console", (m) => {
+      const t = m.text();
+      if (t.includes("[event]")) events.push(t);
+    });
+    await page.getByRole("button", { name: "Bell" }).click();
+    await page.getByRole("button", { name: "Set cwd" }).click();
+    await expect.poll(() => events.some((e) => e === "[event] bell")).toBe(true);
+    await expect
+      .poll(() => events.some((e) => e.startsWith("[event] cwd") && e.includes("file://")))
+      .toBe(true);
+  });
+});
+
 // #114: on container resize the demo auto-fits — computes cols/rows from the CSS box +
 // cell size and drives a debounced resize intent (the demo logs `[fit] resize CxR`). Proven
 // live: the ResizeObserver + FitController + proposeDimensions path runs in real Chromium,
