@@ -89,20 +89,20 @@ export function overlayTint(
   const bottom = decorations.length ? decorationAt(decorations as DecorationRect[], x, y, "bottom") : null;
   const top = decorations.length ? decorationAt(decorations as DecorationRect[], x, y, "top") : null;
   if (highlightBg === null && bottom === null && top === null) return base;
-  const { fg, bg } = composeCellColors(
-    { fg: base.fg, bg: base.bg },
+  const { fg, bg } = composeCellColors({
+    base: { fg: base.fg, bg: base.bg },
     bottom,
     highlightBg,
     top,
-    base.blendHighlight,
-    kind === "selection", // #224: only a selection un-dims (not a search match)
-    base.fgUndimmed,
-    colors.minimumContrastRatio, // #225: contrast against the effective bg
-    base.dim, // #232: halve the ratio for a dim non-selection cell
-    base.excludeFromContrast, // #226: skip contrast for a powerline/box glyph
-    colors.selectionForeground, // #227: override fg on a selected cell
-    base.inverseDefaultBg, // #241: transparent tile glyph under selection
-  );
+    blendHighlight: base.blendHighlight,
+    isSelection: kind === "selection", // #224: only a selection un-dims (not a search match)
+    fgUndimmed: base.fgUndimmed,
+    minimumContrastRatio: colors.minimumContrastRatio, // #225: contrast against the effective bg
+    dim: base.dim, // #232: halve the ratio for a dim non-selection cell
+    excludeFromContrast: base.excludeFromContrast, // #226: skip contrast for a powerline/box glyph
+    selectionForeground: colors.selectionForeground, // #227: override fg on a selected cell
+    inverseDefaultBg: base.inverseDefaultBg, // #241: transparent tile glyph under selection
+  });
   return { ...base, fg, bg };
 }
 

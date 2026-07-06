@@ -100,6 +100,7 @@ export type {
 // (base < bottom decoration < selection/match highlight < top decoration). Pure;
 // a custom renderer composes decorations the same way BeamtermRenderer does.
 export { composeCellColors, decorationAt } from "./decoration-render";
+export type { ComposeCellColorsArgs } from "./decoration-render";
 // Screen-reader-active gate (#161) — the host injects SR presence (a browser
 // can't detect it); while inactive, the a11y announce/signal sinks no-op. Share
 // one instance across #119 + #160 so a single toggle governs both.
