@@ -62,6 +62,7 @@ export function composeCellColors(
   minimumContrastRatio = 1,
   dim = false,
   excludeFromContrast = false,
+  selectionForeground?: number,
 ): { fg: number; bg: number } {
   // #224: a selected cell is un-dimmed (xterm force-clears DIM under selection), so
   // it starts from the undimmed fg. Only selection un-dims (not a search match); a
@@ -82,6 +83,14 @@ export function composeCellColors(
   // A top decoration still overrides it below either way.
   if (highlightBg !== null) {
     bg = blendHighlight ? blendOver(bg, highlightBg, HIGHLIGHT_BLEND_ALPHA) : highlightBg;
+  }
+  // #227: an explicit theme selectionForeground overrides the fg on a SELECTED cell
+  // (xterm CellColorResolver, inside the $isSelected block — focus-independent, and
+  // only for a selection, never a search match). It supersedes the #224 un-dim and a
+  // bottom decoration's fg; a TOP decoration fg still wins (applied after, matching
+  // xterm's order), and the contrast pass below still runs on the result.
+  if (isSelection && selectionForeground !== undefined) {
+    fg = selectionForeground;
   }
   if (top) {
     if (top.bg !== undefined) bg = top.bg;

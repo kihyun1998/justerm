@@ -252,6 +252,58 @@ describe("composeCellColors — layered cell colour (#120 S2)", () => {
     expect(fg).toBe(0xffffff); // excluded → not darkened for the white highlight
   });
 
+  // #227: an explicit selectionForeground (last arg) overrides the fg on a SELECTED
+  // cell — xterm forces the text colour under a selection. Focus-independent, and only
+  // for a selection.
+  it("overrides the fg with selectionForeground on a selected cell", () => {
+    const { fg } = composeCellColors(base, null, 0x445566, null, false, true, base.fg, 1, false, false, 0x00ff00);
+    expect(fg).toBe(0x00ff00);
+  });
+
+  // A search MATCH is not a selection, so selectionForeground does not apply (xterm
+  // sets it only in the $isSelected branch).
+  it("does not apply selectionForeground to a search match (only a selection)", () => {
+    const { fg } = composeCellColors(base, null, 0x445566, null, false, false, base.fg, 1, false, false, 0x00ff00);
+    expect(fg).toBe(base.fg); // match → cell's own fg
+  });
+
+  // Option off (undefined, the default): the selected cell keeps its own (undimmed) fg.
+  it("keeps the cell fg when selectionForeground is unset", () => {
+    const { fg } = composeCellColors(base, null, 0x445566, null, false, true, base.fg);
+    expect(fg).toBe(base.fg);
+  });
+
+  // A TOP decoration fg wins over selectionForeground (xterm applies the top layer
+  // after the selection block).
+  it("lets a top decoration fg win over selectionForeground", () => {
+    const top = rect(0, 0, 0, "top", { fg: 0x0000ee });
+    const { fg } = composeCellColors(base, null, 0x445566, top, false, true, base.fg, 1, false, false, 0x00ff00);
+    expect(fg).toBe(0x0000ee); // top decoration wins
+  });
+
+  // selectionForeground supersedes a BOTTOM decoration fg and the #224 un-dim (the
+  // selection block runs after the bottom layer in xterm).
+  it("overrides a bottom decoration fg with selectionForeground", () => {
+    const bottom = rect(0, 0, 0, "bottom", { fg: 0x00ff00 });
+    const { fg } = composeCellColors(base, bottom, 0x445566, null, false, true, base.fg, 1, false, false, 0xff0000);
+    expect(fg).toBe(0xff0000); // selectionForeground wins over the bottom decoration
+  });
+
+  // selectionForeground is still subject to the contrast pass (xterm resolves it then
+  // runs minimumContrastRatio): a white selectionForeground over a white selection bg
+  // at ratio 21 is darkened to black.
+  it("still contrast-corrects a selectionForeground that is illegible on the selection bg", () => {
+    const { fg } = composeCellColors(base, null, 0xffffff, null, false, true, base.fg, 21, false, false, 0xffffff);
+    expect(fg).toBe(0x000000);
+  });
+
+  // Black (0x000000) is a valid selectionForeground — the `!== undefined` guard must
+  // admit it, not treat the falsy 0 as "unset".
+  it("applies a black (0x000000) selectionForeground", () => {
+    const { fg } = composeCellColors(base, null, 0x445566, null, false, true, base.fg, 1, false, false, 0x000000);
+    expect(fg).toBe(0x000000);
+  });
+
   // A top decoration is foreground-most — it wins over the selection/match
   // highlight (AC: top paints over the cell).
   it("top decoration wins over the highlight bg", () => {

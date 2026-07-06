@@ -177,6 +177,36 @@ describe("composeOverlayDraws (#140 partial-frame overlay damage)", () => {
     expect(draws[0]!.fg).toBe(0x808080); // meets mcr/2 → unchanged, stays dim
   });
 
+  // #227: a theme selectionForeground overrides the fg of a SELECTED cell, threaded
+  // through OverlayColors — but never a search match (xterm sets it only under
+  // selection).
+  it("applies selectionForeground to a selected cell but not a match", () => {
+    const selFg = { selectionBg: SEL, matchBg: MATCH, minimumContrastRatio: 1, selectionForeground: 0x00ff00 };
+    const selected = composeOverlayDraws({
+      ops: [op(0, 0)],
+      highlights: [sel(0, 0, 0)],
+      decorations: [],
+      prevOverlay: new Set(),
+      cols: 1,
+      rows: 1,
+      colors: selFg,
+      cellAt,
+    }).draws[0]!;
+    expect(selected.fg).toBe(0x00ff00); // selected → fg overridden
+
+    const matched = composeOverlayDraws({
+      ops: [op(0, 0)],
+      highlights: [match(0, 0, 0)],
+      decorations: [],
+      prevOverlay: new Set(),
+      cols: 1,
+      rows: 1,
+      colors: selFg,
+      cellAt,
+    }).draws[0]!;
+    expect(matched.fg).toBe(0xffffff); // match → cell's own fg (op default 0xffffff)
+  });
+
   // The core #140 fix (restore): a cell that WAS selected last frame is now
   // de-selected. On a partial frame that doesn't damage it, it must be repainted
   // PLAIN from the mirror — otherwise its stale tint lingers.
@@ -295,5 +325,15 @@ describe("cursorCellDraw (#210 blink-off keeps the overlay tint)", () => {
   // Blink OFF with no overlay on the cursor cell returns the bare cell (unchanged).
   it("blink OFF returns the bare cell when no overlay covers it", () => {
     expect(cursorCellDraw(base, false, styled, [], [], colors)).toBe(base);
+  });
+
+  // #227: on the blink-off gap a SELECTED cursor cell must show the theme
+  // selectionForeground — same as its selected neighbours (drawn via the paint pass).
+  // Regression for the OverlayColors-drift gap: both builders now share one helper, so
+  // the cursor cell's colours can't silently drop the override.
+  it("blink OFF applies selectionForeground on a selected cursor cell", () => {
+    const selFg = { selectionBg: SEL, matchBg: MATCH, minimumContrastRatio: 1, selectionForeground: 0x00ff00 };
+    const out = cursorCellDraw(base, false, styled, [sel(0, 1, 1)], [], selFg);
+    expect(out.fg).toBe(0x00ff00);
   });
 });
