@@ -418,6 +418,41 @@ test.describe("S16 input + wheel + focus wiring (#133)", () => {
     expect(prevented).toBe(false); // native scroll not suppressed (WheelScroller bailed)
     expect(signals).toHaveLength(0); // no spurious app report / scroll
   });
+
+  test("Alt+wheel fast-scrolls 5× a normal notch (#246)", async ({ page }) => {
+    const scrolls: number[] = [];
+    page.on("console", (m) => {
+      const n = m.text().match(/\[wheel\] scroll → displayOffset (\d+)/);
+      if (n) scrolls.push(Number(n[1]));
+    });
+    const notch = (alt: boolean) =>
+      page.evaluate((alt) => {
+        const c = document.querySelector("#term") as HTMLElement;
+        const r = c.getBoundingClientRect();
+        c.dispatchEvent(
+          new WheelEvent("wheel", {
+            deltaY: -1, // one line up
+            deltaMode: 1, // LINE — deterministic (no trackpad accumulation)
+            altKey: alt,
+            bubbles: true,
+            cancelable: true,
+            clientX: r.left + 50,
+            clientY: r.top + 50,
+          }),
+        );
+      }, alt);
+    // Build ample scrollback (a line appends every 300ms) so the Alt +5 jump has room
+    // and doesn't clamp at the history top; then measure from the bottom (following).
+    await page.waitForTimeout(16_000);
+    await notch(false);
+    const a = scrolls.at(-1)!; // offset 1
+    await notch(false);
+    const b = scrolls.at(-1)!; // offset 2
+    await notch(true);
+    const c = scrolls.at(-1)!; // offset 7 (Alt = 5×)
+    expect(b - a).toBe(1); // a normal notch = 1 line
+    expect(c - b).toBe(5); // Alt = fastScrollSensitivity (5) lines
+  });
 });
 
 // #116 (S7): IME composition through the hidden textarea. Headless can't run a real IME,

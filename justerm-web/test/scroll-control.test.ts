@@ -26,6 +26,41 @@ describe("WheelScroller.consumeWheelEvent", () => {
     expect(lines).toBe(3);
   });
 
+  // #246: a held Alt fast-scrolls by fastScrollSensitivity (xterm default 5,
+  // _applyScrollModifier). Shift is excluded — it already bails to 0 at the top.
+  it("multiplies by the default fast sensitivity (5) when Alt is held", () => {
+    const s = new WheelScroller();
+
+    const lines = s.consumeWheelEvent(wheel({ deltaY: 3, deltaMode: LINE, altKey: true }), ctx);
+
+    expect(lines).toBe(15); // 3 × 5
+  });
+
+  it("fast-scrolls on Ctrl too, and applies to the accumulated pixel path", () => {
+    const s = new WheelScroller();
+    expect(s.consumeWheelEvent(wheel({ deltaY: 2, deltaMode: LINE, ctrlKey: true }), ctx)).toBe(10);
+    // Pixel mode (deltaY 100 ≥ 50, so no trackpad damping): 100 × 5 = 500 px;
+    // 500 / (cellHeight 20 / dpr 1) = 25 whole lines (5× the un-modified 5).
+    const s2 = new WheelScroller();
+    expect(s2.consumeWheelEvent(wheel({ deltaY: 100, deltaMode: PIXEL, altKey: true }), ctx)).toBe(25);
+  });
+
+  it("honors a custom fastScrollSensitivity, composed with scrollSensitivity", () => {
+    const s = new WheelScroller({ fastScrollSensitivity: 3 });
+    expect(s.consumeWheelEvent(wheel({ deltaY: 2, deltaMode: LINE, altKey: true }), ctx)).toBe(6); // 2×3
+
+    // xterm multiplies BOTH: amount × fastScrollSensitivity × scrollSensitivity.
+    const s2 = new WheelScroller({ scrollSensitivity: 2, fastScrollSensitivity: 5 });
+    expect(s2.consumeWheelEvent(wheel({ deltaY: 3, deltaMode: LINE, altKey: true }), ctx)).toBe(30); // 3×2×5
+  });
+
+  it("Alt+Shift+wheel still bails to 0 (the shift bail wins over fast-scroll)", () => {
+    const s = new WheelScroller();
+    expect(
+      s.consumeWheelEvent(wheel({ deltaY: 3, deltaMode: LINE, altKey: true, shiftKey: true }), ctx),
+    ).toBe(0);
+  });
+
   // xterm bails on shiftKey (it's a horizontal scroll) and on a zero deltaY.
   it("ignores shift-wheel and zero-delta as no scroll", () => {
     const s = new WheelScroller();

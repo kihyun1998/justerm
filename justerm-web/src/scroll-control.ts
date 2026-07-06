@@ -33,11 +33,13 @@ const DOM_DELTA_PAGE = 2;
 
 export class WheelScroller {
   private readonly scrollSensitivity: number;
+  private readonly fastScrollSensitivity: number;
   /** Sub-line remainder carried between pixel (trackpad) wheel events. */
   private wheelPartialScroll = 0;
 
   constructor(opts: ScrollOptions = {}) {
     this.scrollSensitivity = opts.scrollSensitivity ?? 1;
+    this.fastScrollSensitivity = opts.fastScrollSensitivity ?? 5;
   }
 
   /** Lines to scroll (sign = direction, positive = down/newer); `0` = none. */
@@ -46,7 +48,10 @@ export class WheelScroller {
     if (ev.deltaY === 0 || ev.shiftKey) {
       return 0;
     }
-    let amount = ev.deltaY * this.scrollSensitivity;
+    // A held Alt/Ctrl fast-scrolls (xterm `_applyScrollModifier`). Shift is in xterm's
+    // condition too, but it already bailed above — so the reachable trigger is Alt/Ctrl.
+    const fast = ev.altKey || ev.ctrlKey;
+    let amount = ev.deltaY * this.scrollSensitivity * (fast ? this.fastScrollSensitivity : 1);
 
     if (ev.deltaMode === DOM_DELTA_PIXEL) {
       amount /= ctx.cellHeight / ctx.dpr;
