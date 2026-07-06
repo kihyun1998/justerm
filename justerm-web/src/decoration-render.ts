@@ -51,20 +51,57 @@ export function decorationAt(
  * faithful, and arguably better UX); a consumer porting code that relied on a top
  * decoration hiding the selection would see the selection here instead.
  */
-export function composeCellColors(
-  base: { fg: number; bg: number },
-  bottom: DecorationRect | null,
-  highlightBg: number | null,
-  top: DecorationRect | null,
-  blendHighlight = false,
-  isSelection = false,
-  fgUndimmed: number = base.fg,
-  minimumContrastRatio = 1,
-  dim = false,
-  excludeFromContrast = false,
-  selectionForeground?: number,
-  inverseDefaultBg = false,
-): { fg: number; bg: number } {
+export interface ComposeCellColorsArgs {
+  /** The cell's resolved base colours before any overlay. */
+  base: { fg: number; bg: number };
+  /** Bottom-layer decoration (under the highlight), or null/absent. */
+  bottom?: DecorationRect | null;
+  /** The resolved selection/match highlight colour, or null/absent for none. */
+  highlightBg?: number | null;
+  /** Top-layer decoration (over the highlight), or null/absent. */
+  top?: DecorationRect | null;
+  /** Alpha-blend the highlight over the cell bg (non-default/inverse cell) instead of
+   * painting it solid (#115). */
+  blendHighlight?: boolean;
+  /** The highlight is a selection (vs a search match) — only a selection un-dims (#224),
+   * takes selectionForeground (#227), and tiles a powerline glyph (#239). */
+  isSelection?: boolean;
+  /** The fg with DIM cleared (#224); defaults to `base.fg`. */
+  fgUndimmed?: number;
+  /** Minimum fg/bg contrast ratio, WCAG 1..21 (1 = off, #225). */
+  minimumContrastRatio?: number;
+  /** The cell carries SGR DIM (#232). */
+  dim?: boolean;
+  /** The glyph tiles with the bg — a powerline/box glyph excluded from the contrast
+   * demand (#226) and recoloured under selection (#239/#241). */
+  excludeFromContrast?: boolean;
+  /** Theme override for a selected cell's fg (#227); undefined = keep the cell's fg. */
+  selectionForeground?: number;
+  /** The cell is inverse with a default bg — a tile glyph renders transparent under
+   * selection (#241). */
+  inverseDefaultBg?: boolean;
+}
+
+/**
+ * (#243) A single options object rather than 12 positional parameters — the layer,
+ * flag, and colour inputs are all named, so a call site can't silently transpose two
+ * of the many adjacent booleans/decorations.
+ */
+export function composeCellColors(args: ComposeCellColorsArgs): { fg: number; bg: number } {
+  const {
+    base,
+    bottom = null,
+    highlightBg = null,
+    top = null,
+    blendHighlight = false,
+    isSelection = false,
+    fgUndimmed = base.fg,
+    minimumContrastRatio = 1,
+    dim = false,
+    excludeFromContrast = false,
+    selectionForeground,
+    inverseDefaultBg = false,
+  } = args;
   // #224: a selected cell is un-dimmed (xterm force-clears DIM under selection), so
   // it starts from the undimmed fg. Only selection un-dims (not a search match); a
   // bottom/top decoration fg override below still wins.

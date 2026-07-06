@@ -53,7 +53,7 @@ describe("composeCellColors — layered cell colour (#120 S2)", () => {
   // highlight < top-decoration. Each layer overrides bg (and fg if it sets one).
 
   it("returns the base unchanged with no overlays", () => {
-    expect(composeCellColors(base, null, null, null)).toEqual(base);
+    expect(composeCellColors({ base, bottom: null, highlightBg: null, top: null })).toEqual(base);
   });
 
   // #115: for a blendHighlight cell (non-default/inverse bg) the highlight is an
@@ -61,7 +61,7 @@ describe("composeCellColors — layered cell colour (#120 S2)", () => {
   // Independent check: white at ~50% over black is mid-grey.
   it("blends the highlight over the cell bg for a blendHighlight cell", () => {
     const onBlack = { fg: 0xaaaaaa, bg: 0x000000 };
-    expect(composeCellColors(onBlack, null, 0xffffff, null, true).bg).toBe(0x808080);
+    expect(composeCellColors({ base: onBlack, bottom: null, highlightBg: 0xffffff, top: null, blendHighlight: true }).bg).toBe(0x808080);
   });
 
   // #115: for a default-bg cell (blendHighlight=false, the default) the highlight
@@ -69,19 +69,19 @@ describe("composeCellColors — layered cell colour (#120 S2)", () => {
   // with no blend, giving a crisp highlight on plain text.
   it("paints the highlight solid for a default-bg cell", () => {
     const onBlack = { fg: 0xaaaaaa, bg: 0x000000 };
-    expect(composeCellColors(onBlack, null, 0xffffff, null).bg).toBe(0xffffff);
+    expect(composeCellColors({ base: onBlack, bottom: null, highlightBg: 0xffffff, top: null }).bg).toBe(0xffffff);
   });
 
   // A bottom decoration overrides the cell background beneath the glyph; the
   // glyph colour (fg) is unchanged, so text stays legible (AC: bottom = bg under text).
   it("bottom decoration overrides bg, leaving fg (glyph) legible", () => {
     const bottom = rect(0, 0, 0, "bottom", { bg: 0xbb0000 });
-    expect(composeCellColors(base, bottom, null, null)).toEqual({ fg: 0xaaaaaa, bg: 0xbb0000 });
+    expect(composeCellColors({ base, bottom, highlightBg: null, top: null })).toEqual({ fg: 0xaaaaaa, bg: 0xbb0000 });
   });
 
   it("a decoration that sets only fg recolours the glyph, leaving bg", () => {
     const bottom = rect(0, 0, 0, "bottom", { fg: 0x00ff00 });
-    expect(composeCellColors(base, bottom, null, null)).toEqual({ fg: 0x00ff00, bg: 0x111111 });
+    expect(composeCellColors({ base, bottom, highlightBg: null, top: null })).toEqual({ fg: 0x00ff00, bg: 0x111111 });
   });
 
   // The selection/match highlight sits ABOVE a bottom decoration: an active
@@ -90,7 +90,7 @@ describe("composeCellColors — layered cell colour (#120 S2)", () => {
   // still applies underneath. Expected bg = blendOver(0xbb0000, 0x445566, 0x80).
   it("blends the highlight over a bottom decoration's bg, keeping its fg", () => {
     const bottom = rect(0, 0, 0, "bottom", { bg: 0xbb0000, fg: 0x00ff00 });
-    expect(composeCellColors(base, bottom, 0x445566, null, true)).toEqual({ fg: 0x00ff00, bg: 0x7f2b33 });
+    expect(composeCellColors({ base, bottom, highlightBg: 0x445566, top: null, blendHighlight: true })).toEqual({ fg: 0x00ff00, bg: 0x7f2b33 });
   });
 
   // #224: a SELECTED cell is un-dimmed — xterm force-clears DIM under selection so
@@ -98,13 +98,13 @@ describe("composeCellColors — layered cell colour (#120 S2)", () => {
   // caller's undimmed fg for a selection (not a search match).
   it("un-dims the fg under a selection (uses fgUndimmed)", () => {
     const dimBase = { fg: 0x808080, bg: 0x000000 }; // dimmed fg
-    const { fg } = composeCellColors(dimBase, null, 0x445566, null, false, true, 0xffffff);
+    const { fg } = composeCellColors({ base: dimBase, bottom: null, highlightBg: 0x445566, top: null, blendHighlight: false, isSelection: true, fgUndimmed: 0xffffff });
     expect(fg).toBe(0xffffff); // restored to the undimmed fg
   });
 
   it("keeps the dimmed fg under a search match (only selection un-dims)", () => {
     const dimBase = { fg: 0x808080, bg: 0x000000 };
-    const { fg } = composeCellColors(dimBase, null, 0x445566, null, false, false, 0xffffff);
+    const { fg } = composeCellColors({ base: dimBase, bottom: null, highlightBg: 0x445566, top: null, blendHighlight: false, isSelection: false, fgUndimmed: 0xffffff });
     expect(fg).toBe(0x808080); // match is not a selection → no un-dim
   });
 
@@ -114,13 +114,13 @@ describe("composeCellColors — layered cell colour (#120 S2)", () => {
   // white (solid) selection is illegible; at ratio 21 it must darken to black.
   it("re-applies contrast against the effective (highlight) bg", () => {
     const onBlack = { fg: 0xffffff, bg: 0x000000 }; // white fg, fine on black
-    const { fg, bg } = composeCellColors(onBlack, null, 0xffffff, null, false, false, 0xffffff, 21);
+    const { fg, bg } = composeCellColors({ base: onBlack, bottom: null, highlightBg: 0xffffff, top: null, blendHighlight: false, isSelection: false, fgUndimmed: 0xffffff, minimumContrastRatio: 21 });
     expect({ fg, bg }).toEqual({ fg: 0x000000, bg: 0xffffff }); // fg darkened for the white bg
   });
 
   it("does not adjust contrast when minimumContrastRatio is 1 (default)", () => {
     const onBlack = { fg: 0xffffff, bg: 0x000000 };
-    const { fg } = composeCellColors(onBlack, null, 0xffffff, null, false, false, 0xffffff, 1);
+    const { fg } = composeCellColors({ base: onBlack, bottom: null, highlightBg: 0xffffff, top: null, blendHighlight: false, isSelection: false, fgUndimmed: 0xffffff, minimumContrastRatio: 1 });
     expect(fg).toBe(0xffffff); // no contrast pass → white stays
   });
 
@@ -133,7 +133,7 @@ describe("composeCellColors — layered cell colour (#120 S2)", () => {
   // target 3.5 (mcr=7) so it must stay put, where the full 7 would darken it.
   it("halves the contrast ratio for a non-selection dim cell (xterm ratio/2)", () => {
     const dimGrey = { fg: 0x808080, bg: 0x000000 };
-    const { fg } = composeCellColors(dimGrey, null, 0xffffff, null, false, false, 0x808080, 7, true);
+    const { fg } = composeCellColors({ base: dimGrey, bottom: null, highlightBg: 0xffffff, top: null, blendHighlight: false, isSelection: false, fgUndimmed: 0x808080, minimumContrastRatio: 7, dim: true });
     expect(fg).toBe(0x808080); // meets mcr/2 → unchanged, stays dim
   });
 
@@ -141,7 +141,7 @@ describe("composeCellColors — layered cell colour (#120 S2)", () => {
   // corrected at the full ratio 7 (3.95 < 7 → darkens).
   it("uses the full ratio for a non-dim cell in the same spot", () => {
     const grey = { fg: 0x808080, bg: 0x000000 };
-    const { fg } = composeCellColors(grey, null, 0xffffff, null, false, false, 0x808080, 7, false);
+    const { fg } = composeCellColors({ base: grey, bottom: null, highlightBg: 0xffffff, top: null, blendHighlight: false, isSelection: false, fgUndimmed: 0x808080, minimumContrastRatio: 7, dim: false });
     expect(fg).not.toBe(0x808080); // full ratio corrects (darkens)
   });
 
@@ -150,7 +150,7 @@ describe("composeCellColors — layered cell colour (#120 S2)", () => {
   // (0xeeeeee) on white is ratio ≈1.16, below mcr/2=3.5 → must darken.
   it("still corrects a dim cell that is illegible even at the halved ratio", () => {
     const nearWhiteDim = { fg: 0xeeeeee, bg: 0x000000 };
-    const { fg } = composeCellColors(nearWhiteDim, null, 0xffffff, null, false, false, 0xeeeeee, 7, true);
+    const { fg } = composeCellColors({ base: nearWhiteDim, bottom: null, highlightBg: 0xffffff, top: null, blendHighlight: false, isSelection: false, fgUndimmed: 0xeeeeee, minimumContrastRatio: 7, dim: true });
     expect(fg).not.toBe(0xeeeeee);
   });
 
@@ -159,7 +159,7 @@ describe("composeCellColors — layered cell colour (#120 S2)", () => {
   // undimmed grey at full 7 is corrected (3.95 < 7).
   it("uses the full ratio under a selection even for a dim cell (DIM cleared)", () => {
     const dimGrey = { fg: 0x808080, bg: 0x000000 };
-    const { fg } = composeCellColors(dimGrey, null, 0xffffff, null, false, true, 0x808080, 7, true);
+    const { fg } = composeCellColors({ base: dimGrey, bottom: null, highlightBg: 0xffffff, top: null, blendHighlight: false, isSelection: true, fgUndimmed: 0x808080, minimumContrastRatio: 7, dim: true });
     expect(fg).not.toBe(0x808080); // selection clears DIM → full ratio corrects
   });
 
@@ -171,7 +171,7 @@ describe("composeCellColors — layered cell colour (#120 S2)", () => {
   it("dims a bottom decoration fg override on a non-selected dim cell (#230)", () => {
     const dimBase = { fg: 0x808080, bg: 0x000000 };
     const bottom = rect(0, 0, 0, "bottom", { fg: 0x00ff00 });
-    const { fg } = composeCellColors(dimBase, bottom, null, null, false, false, dimBase.fg, 1, true);
+    const { fg } = composeCellColors({ base: dimBase, bottom, highlightBg: null, top: null, blendHighlight: false, isSelection: false, fgUndimmed: dimBase.fg, minimumContrastRatio: 1, dim: true });
     expect(fg).toBe(dimForeground(0x00ff00, 0x000000)); // 0x008000, not 0x00ff00
   });
 
@@ -179,7 +179,7 @@ describe("composeCellColors — layered cell colour (#120 S2)", () => {
   it("dims a top decoration fg override on a non-selected dim cell", () => {
     const dimBase = { fg: 0x808080, bg: 0x000000 };
     const top = rect(0, 0, 0, "top", { fg: 0x00ff00 });
-    const { fg } = composeCellColors(dimBase, null, null, top, false, false, dimBase.fg, 1, true);
+    const { fg } = composeCellColors({ base: dimBase, bottom: null, highlightBg: null, top, blendHighlight: false, isSelection: false, fgUndimmed: dimBase.fg, minimumContrastRatio: 1, dim: true });
     expect(fg).toBe(dimForeground(0x00ff00, 0x000000));
   });
 
@@ -188,7 +188,7 @@ describe("composeCellColors — layered cell colour (#120 S2)", () => {
   it("dims a decoration fg against the effective (highlight) bg", () => {
     const dimBase = { fg: 0x808080, bg: 0x000000 };
     const bottom = rect(0, 0, 0, "bottom", { fg: 0x00ff00 });
-    const { fg, bg } = composeCellColors(dimBase, bottom, 0xffffff, null, false, false, dimBase.fg, 1, true);
+    const { fg, bg } = composeCellColors({ base: dimBase, bottom, highlightBg: 0xffffff, top: null, blendHighlight: false, isSelection: false, fgUndimmed: dimBase.fg, minimumContrastRatio: 1, dim: true });
     expect(bg).toBe(0xffffff); // solid match highlight
     expect(fg).toBe(dimForeground(0x00ff00, 0xffffff)); // dimmed toward white
   });
@@ -198,14 +198,14 @@ describe("composeCellColors — layered cell colour (#120 S2)", () => {
   it("does not dim a decoration fg override under a selection (DIM cleared)", () => {
     const dimBase = { fg: 0x808080, bg: 0x000000 };
     const bottom = rect(0, 0, 0, "bottom", { fg: 0x00ff00 });
-    const { fg } = composeCellColors(dimBase, bottom, null, null, false, true, 0xffffff, 1, true);
+    const { fg } = composeCellColors({ base: dimBase, bottom, highlightBg: null, top: null, blendHighlight: false, isSelection: true, fgUndimmed: 0xffffff, minimumContrastRatio: 1, dim: true });
     expect(fg).toBe(0x00ff00); // selection → full-opacity decoration fg
   });
 
   // Control: a NON-dim cell's decoration fg is full opacity (nothing to dim).
   it("leaves a decoration fg at full opacity on a non-dim cell", () => {
     const bottom = rect(0, 0, 0, "bottom", { fg: 0x00ff00 });
-    const { fg } = composeCellColors(base, bottom, null, null, false, false, base.fg, 1, false);
+    const { fg } = composeCellColors({ base, bottom, highlightBg: null, top: null, blendHighlight: false, isSelection: false, fgUndimmed: base.fg, minimumContrastRatio: 1, dim: false });
     expect(fg).toBe(0x00ff00);
   });
 
@@ -213,7 +213,7 @@ describe("composeCellColors — layered cell colour (#120 S2)", () => {
   // decoration override it must pass through unchanged (only an override is re-dimmed).
   it("does not re-dim the already-dimmed base fg when no decoration overrides it", () => {
     const dimBase = { fg: 0x808080, bg: 0x000000 }; // stage-2 dimmed
-    const { fg } = composeCellColors(dimBase, null, null, null, false, false, dimBase.fg, 1, true);
+    const { fg } = composeCellColors({ base: dimBase, bottom: null, highlightBg: null, top: null, blendHighlight: false, isSelection: false, fgUndimmed: dimBase.fg, minimumContrastRatio: 1, dim: true });
     expect(fg).toBe(0x808080); // unchanged
   });
 
@@ -225,7 +225,7 @@ describe("composeCellColors — layered cell colour (#120 S2)", () => {
   it("dims a decoration fg override THEN halves contrast on it (mcr>1)", () => {
     const dimBase = { fg: 0x808080, bg: 0x000000 };
     const bottom = rect(0, 0, 0, "bottom", { fg: 0x00ff00 });
-    const { fg } = composeCellColors(dimBase, bottom, null, null, false, false, dimBase.fg, 21, true);
+    const { fg } = composeCellColors({ base: dimBase, bottom, highlightBg: null, top: null, blendHighlight: false, isSelection: false, fgUndimmed: dimBase.fg, minimumContrastRatio: 21, dim: true });
     const dimmed = dimForeground(0x00ff00, 0x000000);
     const expected = ensureContrastRatio(0x000000, dimmed, 21 / 2) ?? dimmed;
     expect(fg).toBe(expected);
@@ -237,7 +237,7 @@ describe("composeCellColors — layered cell colour (#120 S2)", () => {
     const dimBase = { fg: 0x808080, bg: 0x000000 };
     const bottom = rect(0, 0, 0, "bottom", { fg: 0x00ff00 });
     // blendHighlight=true → bg = blendOver(0x000000, 0xffffff, 0x80) = 0x808080.
-    const { fg, bg } = composeCellColors(dimBase, bottom, 0xffffff, null, true, false, dimBase.fg, 1, true);
+    const { fg, bg } = composeCellColors({ base: dimBase, bottom, highlightBg: 0xffffff, top: null, blendHighlight: true, isSelection: false, fgUndimmed: dimBase.fg, minimumContrastRatio: 1, dim: true });
     expect(bg).toBe(0x808080);
     expect(fg).toBe(dimForeground(0x00ff00, 0x808080)); // dimmed toward the blended bg
   });
@@ -248,7 +248,7 @@ describe("composeCellColors — layered cell colour (#120 S2)", () => {
   // glyph keeps tiling with the neighbour instead of seaming.
   it("skips the overlay contrast correction for an excluded glyph", () => {
     const onBlack = { fg: 0xffffff, bg: 0x000000 };
-    const { fg } = composeCellColors(onBlack, null, 0xffffff, null, false, false, 0xffffff, 21, false, true);
+    const { fg } = composeCellColors({ base: onBlack, bottom: null, highlightBg: 0xffffff, top: null, blendHighlight: false, isSelection: false, fgUndimmed: 0xffffff, minimumContrastRatio: 21, dim: false, excludeFromContrast: true });
     expect(fg).toBe(0xffffff); // excluded → not darkened for the white highlight
   });
 
@@ -256,20 +256,20 @@ describe("composeCellColors — layered cell colour (#120 S2)", () => {
   // cell — xterm forces the text colour under a selection. Focus-independent, and only
   // for a selection.
   it("overrides the fg with selectionForeground on a selected cell", () => {
-    const { fg } = composeCellColors(base, null, 0x445566, null, false, true, base.fg, 1, false, false, 0x00ff00);
+    const { fg } = composeCellColors({ base, bottom: null, highlightBg: 0x445566, top: null, blendHighlight: false, isSelection: true, fgUndimmed: base.fg, minimumContrastRatio: 1, dim: false, excludeFromContrast: false, selectionForeground: 0x00ff00 });
     expect(fg).toBe(0x00ff00);
   });
 
   // A search MATCH is not a selection, so selectionForeground does not apply (xterm
   // sets it only in the $isSelected branch).
   it("does not apply selectionForeground to a search match (only a selection)", () => {
-    const { fg } = composeCellColors(base, null, 0x445566, null, false, false, base.fg, 1, false, false, 0x00ff00);
+    const { fg } = composeCellColors({ base, bottom: null, highlightBg: 0x445566, top: null, blendHighlight: false, isSelection: false, fgUndimmed: base.fg, minimumContrastRatio: 1, dim: false, excludeFromContrast: false, selectionForeground: 0x00ff00 });
     expect(fg).toBe(base.fg); // match → cell's own fg
   });
 
   // Option off (undefined, the default): the selected cell keeps its own (undimmed) fg.
   it("keeps the cell fg when selectionForeground is unset", () => {
-    const { fg } = composeCellColors(base, null, 0x445566, null, false, true, base.fg);
+    const { fg } = composeCellColors({ base, bottom: null, highlightBg: 0x445566, top: null, blendHighlight: false, isSelection: true, fgUndimmed: base.fg });
     expect(fg).toBe(base.fg);
   });
 
@@ -277,7 +277,7 @@ describe("composeCellColors — layered cell colour (#120 S2)", () => {
   // after the selection block).
   it("lets a top decoration fg win over selectionForeground", () => {
     const top = rect(0, 0, 0, "top", { fg: 0x0000ee });
-    const { fg } = composeCellColors(base, null, 0x445566, top, false, true, base.fg, 1, false, false, 0x00ff00);
+    const { fg } = composeCellColors({ base, bottom: null, highlightBg: 0x445566, top, blendHighlight: false, isSelection: true, fgUndimmed: base.fg, minimumContrastRatio: 1, dim: false, excludeFromContrast: false, selectionForeground: 0x00ff00 });
     expect(fg).toBe(0x0000ee); // top decoration wins
   });
 
@@ -285,7 +285,7 @@ describe("composeCellColors — layered cell colour (#120 S2)", () => {
   // selection block runs after the bottom layer in xterm).
   it("overrides a bottom decoration fg with selectionForeground", () => {
     const bottom = rect(0, 0, 0, "bottom", { fg: 0x00ff00 });
-    const { fg } = composeCellColors(base, bottom, 0x445566, null, false, true, base.fg, 1, false, false, 0xff0000);
+    const { fg } = composeCellColors({ base, bottom, highlightBg: 0x445566, top: null, blendHighlight: false, isSelection: true, fgUndimmed: base.fg, minimumContrastRatio: 1, dim: false, excludeFromContrast: false, selectionForeground: 0xff0000 });
     expect(fg).toBe(0xff0000); // selectionForeground wins over the bottom decoration
   });
 
@@ -293,14 +293,14 @@ describe("composeCellColors — layered cell colour (#120 S2)", () => {
   // runs minimumContrastRatio): a white selectionForeground over a white selection bg
   // at ratio 21 is darkened to black.
   it("still contrast-corrects a selectionForeground that is illegible on the selection bg", () => {
-    const { fg } = composeCellColors(base, null, 0xffffff, null, false, true, base.fg, 21, false, false, 0xffffff);
+    const { fg } = composeCellColors({ base, bottom: null, highlightBg: 0xffffff, top: null, blendHighlight: false, isSelection: true, fgUndimmed: base.fg, minimumContrastRatio: 21, dim: false, excludeFromContrast: false, selectionForeground: 0xffffff });
     expect(fg).toBe(0x000000);
   });
 
   // Black (0x000000) is a valid selectionForeground — the `!== undefined` guard must
   // admit it, not treat the falsy 0 as "unset".
   it("applies a black (0x000000) selectionForeground", () => {
-    const { fg } = composeCellColors(base, null, 0x445566, null, false, true, base.fg, 1, false, false, 0x000000);
+    const { fg } = composeCellColors({ base, bottom: null, highlightBg: 0x445566, top: null, blendHighlight: false, isSelection: true, fgUndimmed: base.fg, minimumContrastRatio: 1, dim: false, excludeFromContrast: false, selectionForeground: 0x000000 });
     expect(fg).toBe(0x000000);
   });
 
@@ -309,7 +309,7 @@ describe("composeCellColors — layered cell colour (#120 S2)", () => {
   // excludeFromContrast signal (10th arg). White fg over a black selection → mid-grey.
   it("blends a powerline/box glyph's fg toward the selection bg", () => {
     const white = { fg: 0xffffff, bg: 0x111111 };
-    const { fg } = composeCellColors(white, null, 0x000000, null, false, true, 0xffffff, 1, false, true);
+    const { fg } = composeCellColors({ base: white, bottom: null, highlightBg: 0x000000, top: null, blendHighlight: false, isSelection: true, fgUndimmed: 0xffffff, minimumContrastRatio: 1, dim: false, excludeFromContrast: true });
     expect(fg).toBe(blendOver(0xffffff, 0x000000, HIGHLIGHT_BLEND_ALPHA)); // 0x7f7f7f
   });
 
@@ -317,13 +317,13 @@ describe("composeCellColors — layered cell colour (#120 S2)", () => {
   // discarding the explicit override for a background-tile glyph).
   it("overrides selectionForeground for a powerline glyph under selection", () => {
     const white = { fg: 0xffffff, bg: 0x111111 };
-    const { fg } = composeCellColors(white, null, 0x000000, null, false, true, 0xffffff, 1, false, true, 0x00ff00);
+    const { fg } = composeCellColors({ base: white, bottom: null, highlightBg: 0x000000, top: null, blendHighlight: false, isSelection: true, fgUndimmed: 0xffffff, minimumContrastRatio: 1, dim: false, excludeFromContrast: true, selectionForeground: 0x00ff00 });
     expect(fg).toBe(blendOver(0xffffff, 0x000000, HIGHLIGHT_BLEND_ALPHA)); // not 0x00ff00
   });
 
   // Not a selection (a search match) → no recolor, even for a powerline glyph.
   it("does not recolor a powerline glyph on a search match (selection only)", () => {
-    const { fg } = composeCellColors(base, null, 0x000000, null, false, false, base.fg, 1, false, true);
+    const { fg } = composeCellColors({ base, bottom: null, highlightBg: 0x000000, top: null, blendHighlight: false, isSelection: false, fgUndimmed: base.fg, minimumContrastRatio: 1, dim: false, excludeFromContrast: true });
     expect(fg).toBe(base.fg);
   });
 
@@ -331,7 +331,7 @@ describe("composeCellColors — layered cell colour (#120 S2)", () => {
   // false → keeps its own fg / the #227 override path).
   it("does not recolor an ordinary glyph under selection", () => {
     const white = { fg: 0xffffff, bg: 0x111111 };
-    const { fg } = composeCellColors(white, null, 0x000000, null, false, true, 0xffffff, 1, false, false);
+    const { fg } = composeCellColors({ base: white, bottom: null, highlightBg: 0x000000, top: null, blendHighlight: false, isSelection: true, fgUndimmed: 0xffffff, minimumContrastRatio: 1, dim: false, excludeFromContrast: false });
     expect(fg).toBe(0xffffff); // no blend
   });
 
@@ -339,7 +339,7 @@ describe("composeCellColors — layered cell colour (#120 S2)", () => {
   it("lets a top decoration fg win over the powerline recolor", () => {
     const white = { fg: 0xffffff, bg: 0x111111 };
     const top = rect(0, 0, 0, "top", { fg: 0x0000ee });
-    const { fg } = composeCellColors(white, null, 0x000000, top, false, true, 0xffffff, 1, false, true);
+    const { fg } = composeCellColors({ base: white, bottom: null, highlightBg: 0x000000, top, blendHighlight: false, isSelection: true, fgUndimmed: 0xffffff, minimumContrastRatio: 1, dim: false, excludeFromContrast: true });
     expect(fg).toBe(0x0000ee);
   });
 
@@ -350,7 +350,7 @@ describe("composeCellColors — layered cell colour (#120 S2)", () => {
   // differs from the raw highlightBg (0x000000); the fg blends toward the raw colour.
   it("blends a powerline glyph toward the raw selection colour on a blendHighlight cell", () => {
     const white = { fg: 0xffffff, bg: 0x808080 };
-    const { fg, bg } = composeCellColors(white, null, 0x000000, null, true, true, 0xffffff, 1, false, true);
+    const { fg, bg } = composeCellColors({ base: white, bottom: null, highlightBg: 0x000000, top: null, blendHighlight: true, isSelection: true, fgUndimmed: 0xffffff, minimumContrastRatio: 1, dim: false, excludeFromContrast: true });
     expect(bg).toBe(blendOver(0x808080, 0x000000, HIGHLIGHT_BLEND_ALPHA)); // effective bg = 0x404040
     expect(fg).toBe(blendOver(0xffffff, 0x000000, HIGHLIGHT_BLEND_ALPHA)); // fg → raw 0x000000, not 0x404040
   });
@@ -361,7 +361,7 @@ describe("composeCellColors — layered cell colour (#120 S2)", () => {
   it("ignores a bottom decoration fg when recoloring a powerline glyph under selection", () => {
     const white = { fg: 0xffffff, bg: 0x111111 };
     const bottom = rect(0, 0, 0, "bottom", { fg: 0x00ff00 });
-    const { fg } = composeCellColors(white, bottom, 0x000000, null, false, true, 0xffffff, 1, false, true);
+    const { fg } = composeCellColors({ base: white, bottom, highlightBg: 0x000000, top: null, blendHighlight: false, isSelection: true, fgUndimmed: 0xffffff, minimumContrastRatio: 1, dim: false, excludeFromContrast: true });
     expect(fg).toBe(blendOver(0xffffff, 0x000000, HIGHLIGHT_BLEND_ALPHA)); // from fgUndimmed, not 0x00ff00
   });
 
@@ -370,7 +370,7 @@ describe("composeCellColors — layered cell colour (#120 S2)", () => {
   // into the band), unlike the #239 half-blend every other tile glyph gets (12th arg).
   it("renders an inverse-default tile glyph as the pure selection bg under selection", () => {
     const white = { fg: 0xffffff, bg: 0x111111 };
-    const { fg } = composeCellColors(white, null, 0x445566, null, true, true, 0xffffff, 1, false, true, undefined, true);
+    const { fg } = composeCellColors({ base: white, bottom: null, highlightBg: 0x445566, top: null, blendHighlight: true, isSelection: true, fgUndimmed: 0xffffff, minimumContrastRatio: 1, dim: false, excludeFromContrast: true, inverseDefaultBg: true });
     expect(fg).toBe(0x445566); // pure highlightBg, NOT blendOver(0xffffff, 0x445566, 0x80)
   });
 
@@ -378,7 +378,7 @@ describe("composeCellColors — layered cell colour (#120 S2)", () => {
   // 12th arg is what makes it transparent.
   it("half-blends a NON-inverse-default tile glyph (the #239 default)", () => {
     const white = { fg: 0xffffff, bg: 0x111111 };
-    const { fg } = composeCellColors(white, null, 0x445566, null, true, true, 0xffffff, 1, false, true, undefined, false);
+    const { fg } = composeCellColors({ base: white, bottom: null, highlightBg: 0x445566, top: null, blendHighlight: true, isSelection: true, fgUndimmed: 0xffffff, minimumContrastRatio: 1, dim: false, excludeFromContrast: true, inverseDefaultBg: false });
     expect(fg).toBe(blendOver(0xffffff, 0x445566, HIGHLIGHT_BLEND_ALPHA));
   });
 
@@ -389,7 +389,7 @@ describe("composeCellColors — layered cell colour (#120 S2)", () => {
   // band, it does not collapse to one flat colour.
   it("keeps the blended selection bg for an inverse-default tile glyph", () => {
     const white = { fg: 0xffffff, bg: 0x111111 };
-    const { fg, bg } = composeCellColors(white, null, 0x445566, null, true, true, 0xffffff, 1, false, true, undefined, true);
+    const { fg, bg } = composeCellColors({ base: white, bottom: null, highlightBg: 0x445566, top: null, blendHighlight: true, isSelection: true, fgUndimmed: 0xffffff, minimumContrastRatio: 1, dim: false, excludeFromContrast: true, inverseDefaultBg: true });
     expect(fg).toBe(0x445566); // fg = pure selection colour
     expect(bg).toBe(blendOver(0x111111, 0x445566, HIGHLIGHT_BLEND_ALPHA)); // bg = blend, NOT solid selBg
   });
@@ -398,7 +398,7 @@ describe("composeCellColors — layered cell colour (#120 S2)", () => {
   // highlight (AC: top paints over the cell).
   it("top decoration wins over the highlight bg", () => {
     const top = rect(0, 0, 0, "top", { bg: 0x0000ee });
-    expect(composeCellColors(base, null, 0x445566, top)).toEqual({ fg: 0xaaaaaa, bg: 0x0000ee });
+    expect(composeCellColors({ base, bottom: null, highlightBg: 0x445566, top })).toEqual({ fg: 0xaaaaaa, bg: 0x0000ee });
   });
 
   // Full stack: bottom bg, then highlight over it, then top over that. Top's bg
@@ -406,6 +406,6 @@ describe("composeCellColors — layered cell colour (#120 S2)", () => {
   it("layers bottom → highlight → top in order", () => {
     const bottom = rect(0, 0, 0, "bottom", { bg: 0xbb0000, fg: 0x00ff00 });
     const top = rect(0, 0, 0, "top", { bg: 0x0000ee });
-    expect(composeCellColors(base, bottom, 0x445566, top)).toEqual({ fg: 0x00ff00, bg: 0x0000ee });
+    expect(composeCellColors({ base, bottom, highlightBg: 0x445566, top })).toEqual({ fg: 0x00ff00, bg: 0x0000ee });
   });
 });
