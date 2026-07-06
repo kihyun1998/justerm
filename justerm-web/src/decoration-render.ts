@@ -13,7 +13,7 @@
 
 import { ensureContrastRatio } from "./contrast";
 import type { DecorationLayer, DecorationRect } from "./decorations";
-import { HIGHLIGHT_BLEND_ALPHA, blendOver } from "./render-policy";
+import { HIGHLIGHT_BLEND_ALPHA, blendOver, dimForeground } from "./render-policy";
 
 /**
  * The decoration covering viewport cell `(col, row)` on `layer`, or `null`. Columns
@@ -66,10 +66,14 @@ export function composeCellColors(
   // it starts from the undimmed fg. Only selection un-dims (not a search match); a
   // bottom/top decoration fg override below still wins.
   let fg = isSelection ? fgUndimmed : base.fg;
+  let fgOverridden = false;
   let { bg } = base;
   if (bottom) {
     if (bottom.bg !== undefined) bg = bottom.bg;
-    if (bottom.fg !== undefined) fg = bottom.fg;
+    if (bottom.fg !== undefined) {
+      fg = bottom.fg;
+      fgOverridden = true;
+    }
   }
   // #115: apply the highlight over the running bg (base or a bottom decoration).
   // `blendHighlight` cells (non-default/inverse bg) alpha-blend so the cell colour
@@ -80,7 +84,19 @@ export function composeCellColors(
   }
   if (top) {
     if (top.bg !== undefined) bg = top.bg;
-    if (top.fg !== undefined) fg = top.fg;
+    if (top.fg !== undefined) {
+      fg = top.fg;
+      fgOverridden = true;
+    }
+  }
+  // #230: a decoration fg override KEEPS the cell's DIM on a non-selected cell —
+  // xterm leaves BgFlags.DIM set (CellColorResolver else-branch), so the atlas
+  // `multiplyOpacity(DIM_OPACITY)`s the resolved override fg. The base fg is already
+  // dimmed by stage-2, so re-dim ONLY an override — against the final effective bg
+  // (what the glyph is drawn over). Mutually exclusive with the selection un-dim
+  // (`!isSelection`): a selection clears DIM, so its decoration fg stays full opacity.
+  if (dim && !isSelection && fgOverridden) {
+    fg = dimForeground(fg, bg);
   }
   // #225: minimumContrastRatio is applied against the EFFECTIVE bg (the one the
   // glyph is actually drawn over, after the highlight/decoration changed it) — not
