@@ -611,3 +611,22 @@ test("container resize drives a debounced fit intent with a smaller grid (#114)"
   expect(lastCols).toBeGreaterThanOrEqual(2); // MINIMUM_COLS
   expect(lastCols).toBeLessThan(firstCols); // the fit tracked the smaller box
 });
+
+// #252: the demo's fit() must pass CSS px to beamterm's resize() (which applies
+// devicePixelRatio itself) — NOT pre-multiply by dpr. Pre-multiplying made the backing
+// buffer css × dpr² (an over-large atlas). A HiDPI context (deviceScaleFactor 2) makes
+// the two distinguishable: the correct backing is css × 2, the bug's was css × 4.
+test.describe("HiDPI fit sizes the backing buffer to dpr, not dpr² (#252)", () => {
+  test.use({ deviceScaleFactor: 2 });
+
+  test("canvas backing = CSS box × devicePixelRatio", async ({ page }) => {
+    const r = await page.evaluate(() => {
+      const c = document.querySelector("#term") as HTMLCanvasElement;
+      const box = c.getBoundingClientRect();
+      return { widthRatio: c.width / box.width, heightRatio: c.height / box.height, dpr: window.devicePixelRatio };
+    });
+    expect(r.dpr).toBe(2);
+    expect(Math.abs(r.widthRatio - 2)).toBeLessThan(0.05); // dpr (2), not dpr² (4)
+    expect(Math.abs(r.heightRatio - 2)).toBeLessThan(0.05);
+  });
+});

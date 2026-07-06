@@ -63,19 +63,18 @@ canvas.style.cursor = "text";
 let term: Terminal | undefined;
 const focusTerminal = (): void => term?.focus();
 
-// Match the canvas backing buffer to its CSS box × devicePixelRatio (the crisp
-// HiDPI pattern), then let beamterm tell us the grid it fits. Sizing the buffer
-// to the CSS box keeps on-screen px == CSS px per cell, so pointer→cell mapping
-// (which works in CSS px) is exact; deriving COLS/ROWS from the backend avoids a
-// hardcoded grid that wouldn't match the window.
+// Size the renderer to the canvas CSS box, then let beamterm tell us the grid it
+// fits. beamterm's resize() takes CSS px and applies devicePixelRatio ITSELF (its
+// backing buffer = css × dpr; auto_resize_canvas_css=false lets external CSS own the
+// display size). So pass the CSS box — do NOT pre-multiply by dpr or set canvas.width
+// (that made the backing buffer css × dpr², #252). Deriving COLS/ROWS from the backend
+// avoids a hardcoded grid; pointer→cell mapping works in CSS px (rect ÷ COLS), so it's
+// dpr-independent regardless.
 let COLS = 80;
 let ROWS = 24;
 function fit(): void {
-  const dpr = window.devicePixelRatio || 1;
   const box = canvas.getBoundingClientRect();
-  canvas.width = Math.max(1, Math.round(box.width * dpr));
-  canvas.height = Math.max(1, Math.round(box.height * dpr));
-  renderer.resize(canvas.width, canvas.height);
+  renderer.resize(Math.max(1, Math.round(box.width)), Math.max(1, Math.round(box.height)));
   const ts = renderer.terminalSize();
   COLS = ts.cols;
   ROWS = ts.rows;
