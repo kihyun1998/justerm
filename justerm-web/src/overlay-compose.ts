@@ -94,6 +94,7 @@ export function overlayTint(
     kind === "selection", // #224: only a selection un-dims (not a search match)
     base.fgUndimmed,
     colors.minimumContrastRatio, // #225: contrast against the effective bg
+    base.dim, // #232: halve the ratio for a dim non-selection cell
   );
   return { ...base, fg, bg };
 }

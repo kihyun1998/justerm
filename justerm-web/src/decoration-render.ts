@@ -60,6 +60,7 @@ export function composeCellColors(
   isSelection = false,
   fgUndimmed: number = base.fg,
   minimumContrastRatio = 1,
+  dim = false,
 ): { fg: number; bg: number } {
   // #224: a selected cell is un-dimmed (xterm force-clears DIM under selection), so
   // it starts from the undimmed fg. Only selection un-dims (not a search match); a
@@ -86,8 +87,16 @@ export function composeCellColors(
   // the cell's own bg the stage-2 policy saw. xterm bakes the selection bg in
   // before computing contrast, so a fg made legible on the cell bg is re-corrected
   // for the highlight bg here.
+  // #232: a dim NON-selection cell (e.g. a search match) keeps its DIM flag, so
+  // xterm halves the target — `ensureContrastRatio(bg, fg, mcr / (dim ? 2 : 1))`
+  // (TextureAtlas). A selection clears DIM (CellColorResolver `& ~BgFlags.DIM`), so
+  // its full ratio applies; hence `dim && !isSelection`. Without the halving a dim
+  // glyph is corrected to full contrast and loses its dim look (never illegible —
+  // just the wrong colour). Note this halves the ALREADY-dimmed fg (the #225
+  // double-pass compromise), not the raw pre-dim fg xterm single-passes.
   if (minimumContrastRatio > 1) {
-    const adjusted = ensureContrastRatio(bg, fg, minimumContrastRatio);
+    const ratio = dim && !isSelection ? minimumContrastRatio / 2 : minimumContrastRatio;
+    const adjusted = ensureContrastRatio(bg, fg, ratio);
     if (adjusted !== undefined) fg = adjusted;
   }
   return { fg, bg };

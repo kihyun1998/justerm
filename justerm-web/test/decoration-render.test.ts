@@ -122,6 +122,45 @@ describe("composeCellColors — layered cell colour (#120 S2)", () => {
     expect(fg).toBe(0xffffff); // no contrast pass → white stays
   });
 
+  // #232: a non-selection dim cell (e.g. a search match) KEEPS its DIM flag —
+  // xterm clears DIM only under a selection (CellColorResolver `& ~BgFlags.DIM`).
+  // So the overlay contrast pass must halve the ratio for it (TextureAtlas
+  // `ensureContrastRatio(bg, fg, mcr / (dim ? 2 : 1))`), else a dim glyph is
+  // over-corrected to full contrast and loses its dim look. A dimmed grey
+  // (0x808080) over a white match bg has ratio ≈3.95: it clears the halved
+  // target 3.5 (mcr=7) so it must stay put, where the full 7 would darken it.
+  it("halves the contrast ratio for a non-selection dim cell (xterm ratio/2)", () => {
+    const dimGrey = { fg: 0x808080, bg: 0x000000 };
+    const { fg } = composeCellColors(dimGrey, null, 0xffffff, null, false, false, 0x808080, 7, true);
+    expect(fg).toBe(0x808080); // meets mcr/2 → unchanged, stays dim
+  });
+
+  // Control (proves the halving is what spared it): the SAME cell without DIM is
+  // corrected at the full ratio 7 (3.95 < 7 → darkens).
+  it("uses the full ratio for a non-dim cell in the same spot", () => {
+    const grey = { fg: 0x808080, bg: 0x000000 };
+    const { fg } = composeCellColors(grey, null, 0xffffff, null, false, false, 0x808080, 7, false);
+    expect(fg).not.toBe(0x808080); // full ratio corrects (darkens)
+  });
+
+  // Never illegible: a dim cell that fails EVEN the halved ratio is still
+  // corrected — halving softens the pull, it does not disable it. Near-white
+  // (0xeeeeee) on white is ratio ≈1.16, below mcr/2=3.5 → must darken.
+  it("still corrects a dim cell that is illegible even at the halved ratio", () => {
+    const nearWhiteDim = { fg: 0xeeeeee, bg: 0x000000 };
+    const { fg } = composeCellColors(nearWhiteDim, null, 0xffffff, null, false, false, 0xeeeeee, 7, true);
+    expect(fg).not.toBe(0xeeeeee);
+  });
+
+  // Under a SELECTION the DIM flag is cleared (xterm), so even a dim cell uses the
+  // FULL ratio — the `dim && !isSelection` gate must exclude selection. Here the
+  // undimmed grey at full 7 is corrected (3.95 < 7).
+  it("uses the full ratio under a selection even for a dim cell (DIM cleared)", () => {
+    const dimGrey = { fg: 0x808080, bg: 0x000000 };
+    const { fg } = composeCellColors(dimGrey, null, 0xffffff, null, false, true, 0x808080, 7, true);
+    expect(fg).not.toBe(0x808080); // selection clears DIM → full ratio corrects
+  });
+
   // A top decoration is foreground-most — it wins over the selection/match
   // highlight (AC: top paints over the cell).
   it("top decoration wins over the highlight bg", () => {
