@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { DecorationRect } from "../src/decorations";
 import { composeCellColors, decorationAt } from "../src/decoration-render";
+import { ensureContrastRatio } from "../src/contrast";
+import { dimForeground } from "../src/render-policy";
 
 /** A decoration rect on one viewport row, columns `left..=right` inclusive. */
 function rect(
@@ -159,6 +161,85 @@ describe("composeCellColors — layered cell colour (#120 S2)", () => {
     const dimGrey = { fg: 0x808080, bg: 0x000000 };
     const { fg } = composeCellColors(dimGrey, null, 0xffffff, null, false, true, 0x808080, 7, true);
     expect(fg).not.toBe(0x808080); // selection clears DIM → full ratio corrects
+  });
+
+  // #230: a decoration fg override KEEPS the cell's DIM on a non-selected cell —
+  // xterm leaves BgFlags.DIM set (CellColorResolver else-branch), so the atlas
+  // `multiplyOpacity(DIM_OPACITY)`s the override fg. justerm bakes the same:
+  // dimForeground(overrideFg, effectiveBg). A bottom decoration's 0x00ff00 over a
+  // black cell dims to 0x008000, not the full-opacity 0x00ff00.
+  it("dims a bottom decoration fg override on a non-selected dim cell (#230)", () => {
+    const dimBase = { fg: 0x808080, bg: 0x000000 };
+    const bottom = rect(0, 0, 0, "bottom", { fg: 0x00ff00 });
+    const { fg } = composeCellColors(dimBase, bottom, null, null, false, false, dimBase.fg, 1, true);
+    expect(fg).toBe(dimForeground(0x00ff00, 0x000000)); // 0x008000, not 0x00ff00
+  });
+
+  // A TOP decoration fg override is dimmed the same way, against the final bg.
+  it("dims a top decoration fg override on a non-selected dim cell", () => {
+    const dimBase = { fg: 0x808080, bg: 0x000000 };
+    const top = rect(0, 0, 0, "top", { fg: 0x00ff00 });
+    const { fg } = composeCellColors(dimBase, null, null, top, false, false, dimBase.fg, 1, true);
+    expect(fg).toBe(dimForeground(0x00ff00, 0x000000));
+  });
+
+  // The dim is baked against the EFFECTIVE bg (after a highlight changed it), like
+  // xterm's multiplyOpacity composites the override fg over the drawn bg.
+  it("dims a decoration fg against the effective (highlight) bg", () => {
+    const dimBase = { fg: 0x808080, bg: 0x000000 };
+    const bottom = rect(0, 0, 0, "bottom", { fg: 0x00ff00 });
+    const { fg, bg } = composeCellColors(dimBase, bottom, 0xffffff, null, false, false, dimBase.fg, 1, true);
+    expect(bg).toBe(0xffffff); // solid match highlight
+    expect(fg).toBe(dimForeground(0x00ff00, 0xffffff)); // dimmed toward white
+  });
+
+  // Selection un-dims (xterm clears DIM), so a decoration fg under a selection stays
+  // FULL opacity — the `dim && !isSelection` gate must exclude selection.
+  it("does not dim a decoration fg override under a selection (DIM cleared)", () => {
+    const dimBase = { fg: 0x808080, bg: 0x000000 };
+    const bottom = rect(0, 0, 0, "bottom", { fg: 0x00ff00 });
+    const { fg } = composeCellColors(dimBase, bottom, null, null, false, true, 0xffffff, 1, true);
+    expect(fg).toBe(0x00ff00); // selection → full-opacity decoration fg
+  });
+
+  // Control: a NON-dim cell's decoration fg is full opacity (nothing to dim).
+  it("leaves a decoration fg at full opacity on a non-dim cell", () => {
+    const bottom = rect(0, 0, 0, "bottom", { fg: 0x00ff00 });
+    const { fg } = composeCellColors(base, bottom, null, null, false, false, base.fg, 1, false);
+    expect(fg).toBe(0x00ff00);
+  });
+
+  // Guard against double-dim: the base fg is ALREADY dimmed by stage-2, so with no
+  // decoration override it must pass through unchanged (only an override is re-dimmed).
+  it("does not re-dim the already-dimmed base fg when no decoration overrides it", () => {
+    const dimBase = { fg: 0x808080, bg: 0x000000 }; // stage-2 dimmed
+    const { fg } = composeCellColors(dimBase, null, null, null, false, false, dimBase.fg, 1, true);
+    expect(fg).toBe(0x808080); // unchanged
+  });
+
+  // #230 × #232 order lock (adversarial coverage gap): a dim decoration fg override
+  // with mcr>1 is DIMMED first, then the halved-ratio contrast pass runs on the
+  // dimmed colour (justerm's double-pass, mirroring how a base dim fg is treated).
+  // Pinning the composition catches a regression that skips the dim, uses the full
+  // ratio, or reverses the order.
+  it("dims a decoration fg override THEN halves contrast on it (mcr>1)", () => {
+    const dimBase = { fg: 0x808080, bg: 0x000000 };
+    const bottom = rect(0, 0, 0, "bottom", { fg: 0x00ff00 });
+    const { fg } = composeCellColors(dimBase, bottom, null, null, false, false, dimBase.fg, 21, true);
+    const dimmed = dimForeground(0x00ff00, 0x000000);
+    const expected = ensureContrastRatio(0x000000, dimmed, 21 / 2) ?? dimmed;
+    expect(fg).toBe(expected);
+  });
+
+  // #230 × #115 (adversarial coverage gap): the effective bg a decoration fg is
+  // dimmed against can itself be a BLENDED highlight bg, not just a solid one.
+  it("dims a decoration fg against a blended highlight bg", () => {
+    const dimBase = { fg: 0x808080, bg: 0x000000 };
+    const bottom = rect(0, 0, 0, "bottom", { fg: 0x00ff00 });
+    // blendHighlight=true → bg = blendOver(0x000000, 0xffffff, 0x80) = 0x808080.
+    const { fg, bg } = composeCellColors(dimBase, bottom, 0xffffff, null, true, false, dimBase.fg, 1, true);
+    expect(bg).toBe(0x808080);
+    expect(fg).toBe(dimForeground(0x00ff00, 0x808080)); // dimmed toward the blended bg
   });
 
   // A top decoration is foreground-most — it wins over the selection/match
