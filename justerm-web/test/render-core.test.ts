@@ -229,4 +229,19 @@ describe("frameToDrawOps — span walk", () => {
     expect(box!.fg).toBe(0x101010); // excluded → left as-is (would seam if nudged)
     expect(normal!.fg).not.toBe(0x101010); // ordinary glyph raised for legibility
   });
+
+  // #241: inverseDefaultBg is set only for an INVERSE cell with a DEFAULT bg ref — the
+  // raw signal a tile glyph needs to render transparent under selection (the colour is
+  // resolved away by stage-1). Derived from the flags + bg ref, not the resolved bg.
+  it("sets inverseDefaultBg for an inverse cell with a default bg ref (#241)", () => {
+    const frame = spanFrame(0, 0, [
+      { cp: 0x2500, flags: F.inverse }, // inverse, default bg → true
+      { cp: 0x2500, flags: F.inverse, bg: 0x02112233 }, // inverse, RGB bg → false
+      { cp: 0x2500, flags: 0 }, // non-inverse, default bg → false
+    ]);
+
+    const ops = frameToDrawOps(frame, palette(), F);
+
+    expect(ops.map((o) => o.inverseDefaultBg)).toEqual([true, false, false]);
+  });
 });

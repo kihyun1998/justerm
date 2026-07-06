@@ -63,6 +63,7 @@ export function composeCellColors(
   dim = false,
   excludeFromContrast = false,
   selectionForeground?: number,
+  inverseDefaultBg = false,
 ): { fg: number; bg: number } {
   // #224: a selected cell is un-dimmed (xterm force-clears DIM under selection), so
   // it starts from the undimmed fg. Only selection un-dims (not a search match); a
@@ -105,11 +106,16 @@ export function composeCellColors(
   //     glyph toward the raw selectionBackgroundOpaque (CellColorResolver:168-171), so a
   //     blendHighlight cell still fuses toward the one shared selection colour.
   // Runs after selectionForeground (overrides it) and before a top decoration (which
-  // still wins); the contrast pass is already skipped for these glyphs (#226). The
-  // xterm inverse-default "transparent" special case (CellColorResolver:135-139, fg =
-  // raw selection bg) is a niche divergence tracked in #241 — justerm half-blends there.
+  // still wins); the contrast pass is already skipped for these glyphs (#226).
+  //   - #241: an INVERSE cell with a DEFAULT bg is "treated as transparent"
+  //     (CellColorResolver:135-139) — its fg becomes the raw selection colour with NO
+  //     blend (the other tile glyphs half-blend their own fg). The drawn `bg` is NOT
+  //     forced solid: an inverse cell is a blendHighlight cell, so its bg is the
+  //     standard selection blend (matching xterm, whose selection-bg block also blends
+  //     for any inverse cell, CellColorResolver:87-122) — the glyph reads as part of
+  //     the band rather than dissolving to a single flat colour.
   if (isSelection && excludeFromContrast && highlightBg !== null) {
-    fg = blendOver(fgUndimmed, highlightBg, HIGHLIGHT_BLEND_ALPHA);
+    fg = inverseDefaultBg ? highlightBg : blendOver(fgUndimmed, highlightBg, HIGHLIGHT_BLEND_ALPHA);
   }
   if (top) {
     if (top.bg !== undefined) bg = top.bg;

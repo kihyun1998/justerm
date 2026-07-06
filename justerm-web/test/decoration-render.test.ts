@@ -365,6 +365,35 @@ describe("composeCellColors — layered cell colour (#120 S2)", () => {
     expect(fg).toBe(blendOver(0xffffff, 0x000000, HIGHLIGHT_BLEND_ALPHA)); // from fgUndimmed, not 0x00ff00
   });
 
+  // #241: an INVERSE cell with a DEFAULT bg is "treated as transparent" under selection
+  // — its tile glyph's fg becomes the RAW selection bg with NO blend (dissolves fully
+  // into the band), unlike the #239 half-blend every other tile glyph gets (12th arg).
+  it("renders an inverse-default tile glyph as the pure selection bg under selection", () => {
+    const white = { fg: 0xffffff, bg: 0x111111 };
+    const { fg } = composeCellColors(white, null, 0x445566, null, true, true, 0xffffff, 1, false, true, undefined, true);
+    expect(fg).toBe(0x445566); // pure highlightBg, NOT blendOver(0xffffff, 0x445566, 0x80)
+  });
+
+  // Contrast: the SAME cell without the inverse-default flag half-blends (#239) — the
+  // 12th arg is what makes it transparent.
+  it("half-blends a NON-inverse-default tile glyph (the #239 default)", () => {
+    const white = { fg: 0xffffff, bg: 0x111111 };
+    const { fg } = composeCellColors(white, null, 0x445566, null, true, true, 0xffffff, 1, false, true, undefined, false);
+    expect(fg).toBe(blendOver(0xffffff, 0x445566, HIGHLIGHT_BLEND_ALPHA));
+  });
+
+  // The inverse-default carve-out only forces the FG to the raw selection colour — the
+  // drawn bg is NOT forced solid. An inverse cell is a blendHighlight cell, so its bg
+  // stays the standard selection blend (matching xterm, whose selection-bg block also
+  // blends for any inverse cell). fg pure, bg blended — the glyph reads as part of the
+  // band, it does not collapse to one flat colour.
+  it("keeps the blended selection bg for an inverse-default tile glyph", () => {
+    const white = { fg: 0xffffff, bg: 0x111111 };
+    const { fg, bg } = composeCellColors(white, null, 0x445566, null, true, true, 0xffffff, 1, false, true, undefined, true);
+    expect(fg).toBe(0x445566); // fg = pure selection colour
+    expect(bg).toBe(blendOver(0x111111, 0x445566, HIGHLIGHT_BLEND_ALPHA)); // bg = blend, NOT solid selBg
+  });
+
   // A top decoration is foreground-most — it wins over the selection/match
   // highlight (AC: top paints over the cell).
   it("top decoration wins over the highlight bg", () => {

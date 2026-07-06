@@ -101,6 +101,7 @@ export function overlayTint(
     base.dim, // #232: halve the ratio for a dim non-selection cell
     base.excludeFromContrast, // #226: skip contrast for a powerline/box glyph
     colors.selectionForeground, // #227: override fg on a selected cell
+    base.inverseDefaultBg, // #241: transparent tile glyph under selection
   );
   return { ...base, fg, bg };
 }
