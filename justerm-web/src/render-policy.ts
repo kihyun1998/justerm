@@ -99,9 +99,13 @@ export function dimForeground(fg: number, bg: number): number {
  * are mutually exclusive on the fg). A dim cell needs only half the ratio.
  */
 export function makeRenderPolicy(F: FlagBits, minimumContrastRatio = 1): RenderPolicy {
-  return (fg, bg, flags) => {
+  return (fg, bg, flags, excludeFromContrast = false) => {
     const dim = (flags & F.dim) !== 0;
-    if (minimumContrastRatio > 1) {
+    // #226: a Powerline/box glyph tiles with the bg, so xterm excludes it from the
+    // contrast demand (`excludeFromContrastRatioDemands` → early-return undefined) —
+    // a nudge would seam it against the neighbour. Only contrast is skipped; dim below
+    // still applies (xterm resolves the fg normally and multiplyOpacity's it).
+    if (minimumContrastRatio > 1 && !excludeFromContrast) {
       const adjusted = ensureContrastRatio(bg, fg, dim ? minimumContrastRatio / 2 : minimumContrastRatio);
       if (adjusted !== undefined) return { fg: adjusted, bg };
     }

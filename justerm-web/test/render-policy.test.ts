@@ -153,4 +153,22 @@ describe("makeRenderPolicy — stage-2 RGB policy", () => {
     const { fg } = policy(0x000000, 0x000000, F.dim);
     expect(fg).toBeGreaterThan(0); // lightened by contrast, not left black by dim
   });
+
+  // #226: a Powerline/box glyph tiles with the background, so its fg is excluded
+  // from the contrast correction (excludeFromContrast=true) — nudging it would open a
+  // seam against the neighbour. Black-on-black, which the test above raises to white,
+  // is left BLACK when excluded.
+  it("skips the contrast correction for an excluded (powerline/box) glyph", () => {
+    const policy = makeRenderPolicy(F, 21);
+
+    expect(policy(0x000000, 0x000000, 0, true)).toEqual({ fg: 0x000000, bg: 0x000000 });
+  });
+
+  // Exclude gates ONLY contrast, not dim: a dim excluded cell that would otherwise be
+  // contrast-lightened is instead just dimmed (dimForeground(black, black) = black).
+  it("still dims (does not contrast) an excluded dim glyph", () => {
+    const policy = makeRenderPolicy(F, 21);
+
+    expect(policy(0x000000, 0x000000, F.dim, true)).toEqual({ fg: 0x000000, bg: 0x000000 });
+  });
 });

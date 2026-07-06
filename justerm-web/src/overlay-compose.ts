@@ -95,6 +95,7 @@ export function overlayTint(
     base.fgUndimmed,
     colors.minimumContrastRatio, // #225: contrast against the effective bg
     base.dim, // #232: halve the ratio for a dim non-selection cell
+    base.excludeFromContrast, // #226: skip contrast for a powerline/box glyph
   );
   return { ...base, fg, bg };
 }

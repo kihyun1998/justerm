@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { frameToDrawOps } from "../src/render-core";
+import { makeRenderPolicy } from "../src/render-policy";
 import type { FlagBits } from "../src/render-core";
 import type { DecodedFrame } from "../src/types";
 import type { Palette } from "justerm-wasm-decode/colors.js";
@@ -208,5 +209,24 @@ describe("frameToDrawOps — span walk", () => {
 
     // Non-inverse would be fg=defaultFg(0xc0c0c0), bg=defaultBg(0x101010).
     expect({ fg: op!.fg, bg: op!.bg }).toEqual({ fg: 0x101010, bg: 0xc0c0c0 });
+  });
+
+  // #226 end-to-end: a box-drawing glyph (U+2500) sets DrawOp.excludeFromContrast,
+  // and stage-2 leaves its fg uncorrected even at mcr 21 — a dark-on-dark pair that a
+  // normal glyph in the same span IS corrected for. Proves the glyph class flows from
+  // the symbol through cellToDrawOp into the policy's contrast skip.
+  it("excludes a box-drawing glyph's fg from the contrast correction (#226)", () => {
+    const frame = spanFrame(0, 0, [
+      { cp: 0x2500, fg: 0x02101010 }, // ─ box glyph, Rgb dark fg == default dark bg
+      { cp: cp("A"), fg: 0x02101010 }, // ordinary glyph, same colours
+    ]);
+    const policy = makeRenderPolicy(F, 21);
+
+    const [box, normal] = frameToDrawOps(frame, palette(), F, policy);
+
+    expect(box!.excludeFromContrast).toBe(true);
+    expect(normal!.excludeFromContrast).toBe(false);
+    expect(box!.fg).toBe(0x101010); // excluded → left as-is (would seam if nudged)
+    expect(normal!.fg).not.toBe(0x101010); // ordinary glyph raised for legibility
   });
 });
