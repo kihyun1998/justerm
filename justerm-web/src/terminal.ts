@@ -9,6 +9,7 @@ import {
   type NamedKey,
 } from "./input";
 import { WheelScroller, type ScrollOptions } from "./scroll-control";
+import { CompositionController } from "./composition";
 
 /**
  * Whether a wheel notch reports to the app rather than scrolling scrollback
@@ -84,7 +85,8 @@ export function routeWheel(
 export function rendererNotifyingSink(sink: InputSink, renderer: Renderer): InputSink {
   return {
     send(intent) {
-      if (intent.kind === "key") renderer.restartCursorBlink?.();
+      // Typed text — a key OR committed IME text — keeps the caret solid (#116).
+      if (intent.kind === "key" || intent.kind === "text") renderer.restartCursorBlink?.();
       else if (intent.kind === "focus") renderer.setFocused?.(intent.focused);
       sink.send(intent);
     },
@@ -143,6 +145,13 @@ export class Terminal {
   private scrollbackLen = 0;
   private rows = 0;
   private altScreen = false;
+  /** The hidden `<textarea>` that is the real keyboard/IME/clipboard target (a
+   * canvas can't receive composition events); created on mount w/ options. */
+  private textarea: HTMLTextAreaElement | undefined;
+  private composition: CompositionController | undefined;
+  /** Last cursor cell the textarea was moved to, so it repositions only on a move
+   * (not every frame — that would force a layout read+write per output flush). */
+  private textareaCell = "";
 
   constructor(
     private readonly source: FrameSource,
@@ -150,12 +159,20 @@ export class Terminal {
     private readonly options?: TerminalOptions,
   ) {}
 
+  /** Focus the keyboard/IME input target (the hidden textarea, #116). Consumers
+   * that move focus away — an accessible-view overlay, a control button — call this
+   * to return it, since the real input target is the textarea, not the canvas. */
+  focus(): void {
+    this.textarea?.focus();
+  }
+
   /** Begin consuming frames from the source; wire the DOM if options were given. */
   mount(): void {
     this.unsubscribe = this.source.subscribe((frame) => {
       this.renderer.applyFrame(frame);
       this.renderer.render();
       this.track(frame);
+      this.positionTextarea(frame);
     });
     if (this.options) this.attach(this.options);
   }
@@ -175,21 +192,56 @@ export class Terminal {
     }
   }
 
-  /** Attach the DOM listeners (browser-only glue). Make the element focusable and
-   * focus it on pointer-down (a canvas is not focusable by default, and a
-   * consumer's selection handler may `preventDefault` the native focus); keys/
-   * paste/focus report via {@link captureInput}; mouse clicks stay local (out of
-   * S16 scope), so its `mouseReporting` is off and the widget owns the wheel. */
+  /** Attach the DOM listeners (browser-only glue). A hidden `<textarea>` over the
+   * cursor is the real keyboard/IME/clipboard target (a canvas can't receive
+   * composition events, #116); keys/paste/focus flow through it via {@link
+   * captureInput}, gated by the {@link CompositionController} so an IME owns its
+   * keys. The element (a container over the canvas) keeps the wheel + a pointer-down
+   * that focuses the textarea. */
   private attach(o: TerminalOptions): void {
-    if (o.element.tabIndex < 0) o.element.tabIndex = 0;
     const sink = rendererNotifyingSink(o.input, this.renderer);
+    const ta = makeHiddenTextarea();
+    o.element.appendChild(ta);
+    this.textarea = ta;
+    const composition = new CompositionController(ta, sink);
+    this.composition = composition;
+
+    // Keys flow through the textarea; the IME gate vetoes composition keys. A key
+    // that finalizes a composition (Enter) still reports — the commit went first.
     this.detach.push(
-      captureInput(o.element, sink, { getGeometry: o.getGeometry, mouseReporting: () => false }),
+      captureInput(ta, sink, {
+        getGeometry: o.getGeometry,
+        mouseReporting: () => false,
+        beforeKey: (e) => {
+          const proceed = composition.keydown(e.keyCode);
+          // Clear once idle whether the key was swallowed (229 diff) or finalized a
+          // composition (Enter, proceed=true) — both leave committed text behind.
+          this.clearTextareaWhenIdle();
+          return proceed;
+        },
+      }),
     );
-    // Focus (and reset the blink phase, xterm restartBlinkAnimation) on pointer-down,
-    // so a click into the terminal starts capturing keys and shows a solid caret.
+    // Composition events only fire on the focused textarea; route them to the
+    // controller, then clear the textarea once its deferred read has run.
+    const onStart = (): void => composition.compositionStart();
+    const onUpdate = (e: CompositionEvent): void => composition.compositionUpdate(e.data);
+    const onEnd = (): void => {
+      composition.compositionEnd();
+      this.clearTextareaWhenIdle();
+    };
+    ta.addEventListener("compositionstart", onStart);
+    ta.addEventListener("compositionupdate", onUpdate);
+    ta.addEventListener("compositionend", onEnd);
+    this.detach.push(() => {
+      ta.removeEventListener("compositionstart", onStart);
+      ta.removeEventListener("compositionupdate", onUpdate);
+      ta.removeEventListener("compositionend", onEnd);
+    });
+
+    // Pointer-down focuses the textarea (it's pointer-events:none so the canvas
+    // still gets the click for selection) and resets the blink phase.
     const onDown = (): void => {
-      o.element.focus();
+      ta.focus();
       this.renderer.restartCursorBlink?.();
     };
     o.element.addEventListener("mousedown", onDown);
@@ -199,6 +251,33 @@ export class Terminal {
     const onWheel = (e: WheelEvent): void => this.onWheel(e, o);
     o.element.addEventListener("wheel", onWheel, { passive: false });
     this.detach.push(() => o.element.removeEventListener("wheel", onWheel));
+  }
+
+  /** Clear the textarea once the controller's deferred read has run (same macro-task
+   * queue → FIFO), but only if no composition is still in flight — so it doesn't
+   * grow unbounded as IME text accumulates, without truncating a live composition. */
+  private clearTextareaWhenIdle(): void {
+    setTimeout(() => {
+      if (this.textarea && this.composition && !this.composition.active) this.textarea.value = "";
+    }, 0);
+  }
+
+  /** Move the hidden textarea over the cursor cell so the IME candidate window
+   * appears there (xterm's updateCompositionElements). Geometry from the same
+   * source the input uses; skipped when the cursor is absent/hidden. */
+  private positionTextarea(frame: DecodedFrame): void {
+    const ta = this.textarea;
+    if (!ta || !this.options || frame.cursorRow === undefined || frame.cursorVisible === false) return;
+    const col = frame.cursorCol ?? 0;
+    const row = frame.cursorRow;
+    // Only touch the DOM (a layout read via getGeometry + two style writes) when the
+    // cursor actually moved, not on every output frame.
+    const cell = `${col},${row}`;
+    if (cell === this.textareaCell) return;
+    this.textareaCell = cell;
+    const g = this.options.getGeometry();
+    ta.style.left = `${col * g.cellWidth}px`;
+    ta.style.top = `${row * g.cellHeight}px`;
   }
 
   /** Route a wheel notch through the shared accumulator, then dispatch: a
@@ -245,5 +324,42 @@ export class Terminal {
     for (const off of this.detach) off();
     this.detach = [];
     this.scroller = undefined;
+    this.textarea?.remove();
+    this.textarea = undefined;
+    this.composition = undefined;
   }
+}
+
+/** The hidden `<textarea>` input proxy (#116). Positioned over the cursor so the
+ * IME candidate window appears there, but visually invisible and click-through
+ * (`pointer-events: none`) so the canvas owns the pointer; focus is programmatic.
+ * `aria-hidden` because the screen-reader surface is the a11y mirror (#119), not
+ * this element. */
+function makeHiddenTextarea(): HTMLTextAreaElement {
+  const ta = document.createElement("textarea");
+  ta.setAttribute("aria-hidden", "true");
+  ta.autocapitalize = "off";
+  ta.autocomplete = "off";
+  ta.spellcheck = false;
+  Object.assign(ta.style, {
+    position: "absolute",
+    left: "0",
+    top: "0",
+    width: "1px",
+    height: "1em",
+    padding: "0",
+    border: "0",
+    margin: "0",
+    outline: "none",
+    resize: "none",
+    opacity: "0",
+    background: "transparent",
+    color: "transparent",
+    caretColor: "transparent",
+    overflow: "hidden",
+    whiteSpace: "nowrap",
+    pointerEvents: "none",
+    zIndex: "1",
+  } satisfies Partial<CSSStyleDeclaration>);
+  return ta;
 }

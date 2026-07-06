@@ -104,7 +104,21 @@ export type Intent =
   | { kind: "key"; event: KeyEvent }
   | { kind: "mouse"; event: MouseEvent }
   | { kind: "paste"; text: string }
-  | { kind: "focus"; focused: boolean };
+  | { kind: "focus"; focused: boolean }
+  /** Committed text from an IME composition (#116) — RAW, unbracketed, unlike a
+   * clipboard `paste` (?2004). The backend encodes it with `encode_paste(text,
+   * false)` (core's raw path). Distinct kind so the backend picks the right
+   * `bracketed` — IME insertion behaves like typing, not a paste. */
+  | { kind: "text"; text: string };
+
+/** The subset of a DOM `<textarea>` the IME composition controller reads (#116).
+ * A real `HTMLTextAreaElement` satisfies it; tests pass a mutable plain object so
+ * the controller is exercised without a DOM. */
+export interface TextareaLike {
+  value: string;
+  selectionStart: number | null;
+  selectionEnd: number | null;
+}
 
 /**
  * The outbound seam — where normalised intents go. Frame mode wires this to the
@@ -236,12 +250,20 @@ export interface CaptureOptions {
    * consumer supplies it; default `false` (no app reporting).
    */
   mouseReporting?(): boolean;
+  /**
+   * A gate consulted on each keydown before it becomes a key intent (#116). When
+   * it returns `false` the key is left alone — no intent, no `preventDefault` — so
+   * an IME can own it (a `keyCode` 229 composition key, or a key that finalizes a
+   * composition). Return `true` (the default when absent) to send it as a key.
+   */
+  beforeKey?(ev: KeyboardEvent): boolean;
 }
 
 /**
  * Attach DOM listeners to `target` that normalise events and push intents to
- * `sink`. Keys always report; mouse/wheel report only when `mouseReporting()`
- * (else the consumer handles them locally). Returns a disposer.
+ * `sink`. Keys always report (unless {@link CaptureOptions.beforeKey} vetoes them
+ * for an IME); mouse/wheel report only when `mouseReporting()` (else the consumer
+ * handles them locally). Returns a disposer.
  *
  * Browser-only glue — not unit-tested; the per-event normalisation it calls
  * ({@link keyFromDom} / {@link mouseFromDom} / {@link wheelMouseFromDom}) is.
@@ -249,6 +271,7 @@ export interface CaptureOptions {
 export function captureInput(target: HTMLElement, sink: InputSink, opts: CaptureOptions): () => void {
   const reporting = (): boolean => opts.mouseReporting?.() ?? false;
   const onKey = (e: KeyboardEvent): void => {
+    if (opts.beforeKey && !opts.beforeKey(e)) return; // an IME owns this key
     e.preventDefault();
     sink.send({ kind: "key", event: keyFromDom(e) });
   };
@@ -263,6 +286,9 @@ export function captureInput(target: HTMLElement, sink: InputSink, opts: Capture
     sink.send({ kind: "mouse", event: wheelMouseFromDom(e, e.deltaY, opts.getGeometry()) });
   };
   const onPaste = (e: ClipboardEvent): void => {
+    // preventDefault so the pasted text doesn't also land in the (hidden IME) textarea
+    // and accumulate there (#116); we forward it as an intent instead. xterm does the same.
+    e.preventDefault();
     sink.send({ kind: "paste", text: e.clipboardData?.getData("text") ?? "" });
   };
   const onFocus = (): void => sink.send({ kind: "focus", focused: true });

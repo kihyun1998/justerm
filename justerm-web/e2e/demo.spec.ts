@@ -311,14 +311,12 @@ test.describe("S16 input + wheel + focus wiring (#133)", () => {
       return t ? parseFloat(t.style.top) : null;
     });
 
-  test("clicking the terminal focuses it (canvas is not focusable by default)", async ({
-    page,
-  }) => {
-    await expect
-      .poll(() => page.evaluate(() => document.activeElement?.id))
-      .not.toBe("term"); // not focused until clicked
+  test("clicking the terminal focuses its hidden IME textarea (#116)", async ({ page }) => {
+    // The real input target is a hidden textarea (a canvas can't receive composition
+    // events); a pointer-down on the canvas focuses it via the container.
+    expect(await page.evaluate(() => document.activeElement?.tagName)).not.toBe("TEXTAREA");
     await page.locator("#term").click({ position: { x: 50, y: 50 } });
-    expect(await page.evaluate(() => document.activeElement?.id)).toBe("term");
+    expect(await page.evaluate(() => document.activeElement?.tagName)).toBe("TEXTAREA");
   });
 
   test("keystrokes and paste reach the input sink", async ({ page }) => {
@@ -419,6 +417,93 @@ test.describe("S16 input + wheel + focus wiring (#133)", () => {
     });
     expect(prevented).toBe(false); // native scroll not suppressed (WheelScroller bailed)
     expect(signals).toHaveLength(0); // no spurious app report / scroll
+  });
+});
+
+// #116 (S7): IME composition through the hidden textarea. Headless can't run a real IME,
+// but the demo dispatches the same composition/keydown events a Korean IME fires — the
+// real CompositionController + Terminal wiring run, and the committed `text` intent is the
+// DOM-observable proof (the demo logs `[input] text "…"`). The committed value comes from
+// the textarea, never the (misleading) event data — the whole point of the mechanism.
+test.describe("S7 IME composition (#116)", () => {
+  // Focus the textarea (via a canvas click) and drive a composition that commits `committed`
+  // while the last update `data` lies — returns the `[input] text` payloads that were logged.
+  const compose = (page: import("@playwright/test").Page, data: string, committed: string) =>
+    page.evaluate(
+      ({ data, committed }) => {
+        const ta = document.querySelector("textarea")!;
+        (document.querySelector("#term") as HTMLElement).dispatchEvent(
+          new MouseEvent("mousedown", { bubbles: true }),
+        ); // focus the textarea
+        ta.dispatchEvent(new CompositionEvent("compositionstart"));
+        ta.dispatchEvent(new CompositionEvent("compositionupdate", { data }));
+        ta.value = committed;
+        ta.selectionStart = committed.length;
+        ta.selectionEnd = committed.length;
+        ta.dispatchEvent(new CompositionEvent("compositionend", { data }));
+      },
+      { data, committed },
+    );
+
+  test("commits the textarea value as a text intent, ignoring the event data", async ({
+    page,
+  }) => {
+    const texts: string[] = [];
+    page.on("console", (m) => {
+      const x = m.text().match(/\[input\] text "(.+)"/);
+      if (x) texts.push(x[1]);
+    });
+    // The last update data ("니") lies (jongseong migrated); the textarea holds "아니".
+    await compose(page, "니", "아니");
+    await expect.poll(() => texts).toContain("아니");
+    expect(texts).not.toContain("니"); // never the event data
+  });
+
+  test("Enter finalizes an in-progress composition before sending the key", async ({ page }) => {
+    const intents: string[] = [];
+    page.on("console", (m) => {
+      const t = m.text();
+      if (t.includes("[input] text") || t.includes("[input] key")) intents.push(t);
+    });
+    await page.evaluate(() => {
+      const ta = document.querySelector("textarea")!;
+      (document.querySelector("#term") as HTMLElement).dispatchEvent(
+        new MouseEvent("mousedown", { bubbles: true }),
+      );
+      ta.dispatchEvent(new CompositionEvent("compositionstart"));
+      ta.dispatchEvent(new CompositionEvent("compositionupdate", { data: "가" }));
+      ta.value = "가";
+      ta.selectionStart = 1;
+      ta.selectionEnd = 1;
+    });
+    await page.waitForTimeout(20); // let the compositionupdate end-tracking settle
+    await page.evaluate(() => {
+      document
+        .querySelector("textarea")!
+        .dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    });
+    await expect.poll(() => intents.filter((t) => t.includes('text "가"'))).toHaveLength(1);
+    // The commit precedes the Enter key in the intent stream (composition sent first).
+    const commitIdx = intents.findIndex((t) => t.includes('text "가"'));
+    const enterIdx = intents.findIndex((t) => t.includes('"type":"enter"'));
+    expect(commitIdx).toBeGreaterThanOrEqual(0);
+    expect(enterIdx).toBeGreaterThan(commitIdx);
+  });
+
+  test("the hidden textarea is cleared after a commit (no unbounded growth)", async ({ page }) => {
+    await compose(page, "한", "한");
+    await expect.poll(() => page.evaluate(() => document.querySelector("textarea")?.value)).toBe("");
+  });
+
+  test("focus returns to the input textarea after the accessible view closes", async ({ page }) => {
+    // The input target moved to the hidden textarea; focus-restore paths must target it,
+    // not the (now inert) canvas — else typing/IME is dead after the overlay closes.
+    await page.locator("#term").click({ position: { x: 50, y: 50 } });
+    await page.getByRole("button", { name: /Accessible view/ }).click();
+    await expect(page.locator("[role='document']")).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(page.locator("[role='document']")).toBeHidden();
+    expect(await page.evaluate(() => document.activeElement?.tagName)).toBe("TEXTAREA");
   });
 });
 
