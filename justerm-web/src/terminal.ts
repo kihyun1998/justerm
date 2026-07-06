@@ -362,11 +362,17 @@ export class Terminal {
 /** The hidden `<textarea>` input proxy (#116). Positioned over the cursor so the
  * IME candidate window appears there, but visually invisible and click-through
  * (`pointer-events: none`) so the canvas owns the pointer; focus is programmatic.
- * `aria-hidden` because the screen-reader surface is the a11y mirror (#119), not
- * this element. */
+ *
+ * It is a LABELED accessible input (xterm's helper textarea), NOT `aria-hidden`
+ * (#248): it's programmatically focused to type, and focusing an aria-hidden element
+ * is a WCAG 4.1.2 violation (a screen reader lands on it and announces "blank"). The
+ * #119 row-tree is the separate review/announce surface — the two coexist as they do
+ * in xterm (no `aria-owns`); typed-echo dedup (#119 onKey) keeps output from
+ * double-reading what the AT already announced on input. */
 function makeHiddenTextarea(): HTMLTextAreaElement {
   const ta = document.createElement("textarea");
-  ta.setAttribute("aria-hidden", "true");
+  ta.setAttribute("aria-label", "Terminal input");
+  ta.setAttribute("aria-multiline", "false");
   ta.autocapitalize = "off";
   ta.autocomplete = "off";
   ta.spellcheck = false;
