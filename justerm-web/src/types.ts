@@ -99,6 +99,17 @@ export interface DecodedFrame {
    */
   readonly altScreen?: boolean;
   /**
+   * Mouse wanted-events mask (#129, wire from #135) — `justerm-wasm-decode`'s
+   * `mouseWantedEvents` getter. Which event categories the active tracking mode
+   * reports (bit 0 DOWN, 1 UP, 2 WHEEL, 3 DRAG, 4 MOVE; `0` = no reporting), the
+   * {@link import("./input").MouseEvents} bitflags. The widget routes a mouse/wheel
+   * event to the app when its bit is set, else keeps it local (selection /
+   * scrollback) — S16 (#133) reads the WHEEL bit for wheel routing. Encoding the
+   * report bytes stays the backend's (`encode_mouse`); only this routing mask
+   * crosses. Optional — a frame may omit it (treated as `0`, no reporting).
+   */
+  readonly mouseWantedEvents?: number;
+  /**
    * Scroll op (applied before spans): rows `[scrollTop, scrollBottom]` shifted by
    * `scrollCount` (positive = up). Optional — absent/`hasScroll: false` means no
    * shift. The cell mirror applies it; a span-only frame omits it.
