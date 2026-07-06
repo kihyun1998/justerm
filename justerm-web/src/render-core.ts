@@ -32,6 +32,11 @@ export interface DrawOp {
    * excluded from the minimumContrastRatio correction (stage-2 AND overlay) so a
    * contrast nudge can't seam it against the neighbouring cell. */
   excludeFromContrast: boolean;
+  /** Whether the cell is INVERSE with a DEFAULT background (#241). xterm treats a
+   * tile glyph (`excludeFromContrast`) in such a cell under selection as *transparent*
+   * — its fg becomes the raw selection bg (no blend), so the glyph dissolves cleanly
+   * into the highlight. Derived from the raw refs/flags (lost after stage-1 resolve). */
+  inverseDefaultBg: boolean;
 }
 
 /** Flag bit positions, from the decoder's `flags()`. Structural for testability. */
@@ -152,5 +157,8 @@ export function cellToDrawOp(
     fgUndimmed,
     dim: (flags & F.dim) !== 0,
     excludeFromContrast,
+    // #241: inverse + a DEFAULT bg ref — the raw signal a tile glyph needs to render
+    // transparent under selection (stage-1 has already resolved the colour away).
+    inverseDefaultBg: (flags & F.inverse) !== 0 && bgRef >>> 24 === 0,
   };
 }

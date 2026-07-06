@@ -20,6 +20,7 @@ const baseOp = (over: Partial<DrawOp> = {}): DrawOp => ({
   fgUndimmed: 0,
   dim: false,
   excludeFromContrast: false,
+  inverseDefaultBg: false,
   ...over,
 });
 
