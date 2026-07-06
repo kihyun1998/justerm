@@ -17,8 +17,8 @@ const colors = { selectionBg: SEL, matchBg: MATCH, minimumContrastRatio: 1 };
 // value for a blendHighlight cell over a black bg: blendOver(0x000000, SEL, 0x80).
 const SEL_ON_BLACK = 0x090909;
 
-function op(x: number, y: number, bg = 0, fg = 0xffffff, blendHighlight = false, fgUndimmed = fg): DrawOp {
-  return { x, y, symbol: "a", fg, bg, bold: false, italic: false, underline: false, strikethrough: false, blendHighlight, fgUndimmed };
+function op(x: number, y: number, bg = 0, fg = 0xffffff, blendHighlight = false, fgUndimmed = fg, dim = false): DrawOp {
+  return { x, y, symbol: "a", fg, bg, bold: false, italic: false, underline: false, strikethrough: false, blendHighlight, fgUndimmed, dim };
 }
 const sel = (row: number, left: number, right: number): HighlightRect => ({ row, left, right, kind: "selection" });
 const match = (row: number, left: number, right: number): HighlightRect => ({ row, left, right, kind: "match" });
@@ -155,6 +155,26 @@ describe("composeOverlayDraws (#140 partial-frame overlay damage)", () => {
       cellAt,
     });
     expect({ fg: draws[0]!.fg, bg: draws[0]!.bg }).toEqual({ fg: 0x000000, bg: 0xffffff });
+  });
+
+  // #232: a matched (non-selection) dim cell keeps DIM, so the overlay contrast
+  // pass halves the ratio (xterm TextureAtlas `mcr / (dim?2:1)`). The op carries
+  // `dim`; over a white match bg the dimmed grey (ratio ≈3.95) clears the halved
+  // 3.5 (mcr=7) and stays dim — full 7 would darken it.
+  it("keeps a matched dim cell dim with the halved contrast ratio", () => {
+    const whiteMatch = { selectionBg: SEL, matchBg: 0xffffff, minimumContrastRatio: 7 };
+    const dimOp = op(0, 0, 0x000000, 0x808080, false, 0x808080, true);
+    const { draws } = composeOverlayDraws({
+      ops: [dimOp],
+      highlights: [match(0, 0, 0)],
+      decorations: [],
+      prevOverlay: new Set(),
+      cols: 1,
+      rows: 1,
+      colors: whiteMatch,
+      cellAt,
+    });
+    expect(draws[0]!.fg).toBe(0x808080); // meets mcr/2 → unchanged, stays dim
   });
 
   // The core #140 fix (restore): a cell that WAS selected last frame is now

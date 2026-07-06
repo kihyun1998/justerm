@@ -22,6 +22,10 @@ export interface DrawOp {
    * dim; the overlay swaps it in under a selection, since xterm force-clears DIM
    * on selected cells so the text stays legible over the highlight. */
   fgUndimmed: number;
+  /** Whether the cell carries SGR DIM (#232). The overlay contrast pass halves the
+   * minimumContrastRatio for a dim NON-selection cell (a search match keeps DIM,
+   * xterm `mcr / (dim ? 2 : 1)`); a selection clears DIM, so its full ratio applies. */
+  dim: boolean;
 }
 
 /** Flag bit positions, from the decoder's `flags()`. Structural for testability. */
@@ -131,5 +135,6 @@ export function cellToDrawOp(
     // cell — matches xterm's CellColorResolver branch (else = solid selection).
     blendHighlight: (flags & F.inverse) !== 0 || bgRef >>> 24 !== 0,
     fgUndimmed,
+    dim: (flags & F.dim) !== 0,
   };
 }
