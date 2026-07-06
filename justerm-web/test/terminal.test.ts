@@ -57,6 +57,34 @@ describe("Terminal wiring", () => {
     expect(renderer.applied).toEqual([]);
     expect(renderer.renderCount).toBe(0);
   });
+
+  // #117: the event channel is independent of the DOM group, so it wires with no
+  // element (an output-only widget) — testable in node.
+  it("routes source events to the consumer handlers", () => {
+    const source = new StubFrameSource();
+    const onTitle = vi.fn();
+    const onBell = vi.fn();
+    const term = new Terminal(source, new FakeRenderer(), { events: { onTitle, onBell } });
+    term.mount();
+
+    source.pushEvent({ type: "title", title: "make — build" });
+    source.pushEvent({ type: "bell" });
+
+    expect(onTitle).toHaveBeenCalledWith("make — build");
+    expect(onBell).toHaveBeenCalledTimes(1);
+  });
+
+  it("stops routing events after dispose", () => {
+    const source = new StubFrameSource();
+    const onTitle = vi.fn();
+    const term = new Terminal(source, new FakeRenderer(), { events: { onTitle } });
+    term.mount();
+    term.dispose();
+
+    source.pushEvent({ type: "title", title: "x" });
+
+    expect(onTitle).not.toHaveBeenCalled();
+  });
 });
 
 // --- S16 (#133): wheel routing — app vs scrollback (the #129 mask) ---

@@ -10,6 +10,7 @@ import {
 } from "./input";
 import { WheelScroller, type ScrollOptions } from "./scroll-control";
 import { CompositionController } from "./composition";
+import { dispatchTermEvent, type EventHandlers } from "./events";
 
 /**
  * Whether a wheel notch reports to the app rather than scrolling scrollback
@@ -102,15 +103,17 @@ export function rendererNotifyingSink(sink: InputSink, renderer: Renderer): Inpu
 export interface TerminalOptions {
   /** The element input listeners attach to (the canvas or a wrapper). The widget
    * makes it focusable and focuses it on pointer-down so keystrokes are captured
-   * (a canvas is not focusable by default). */
-  element: HTMLElement;
+   * (a canvas is not focusable by default). Provide it WITH `input` + `getGeometry`
+   * to wire keyboard/IME/wheel; omit the group for an output-only widget (e.g. one
+   * that only wants {@link events}). */
+  element?: HTMLElement;
   /** Where normalised input intents go — keys/paste/focus, a wheel notch when the
    * app tracks the wheel, and cursor keys from a wheel on the alt screen. The
-   * backend feeds them to core's encoders. */
-  input: InputSink;
+   * backend feeds them to core's encoders. Required with `element`. */
+  input?: InputSink;
   /** Canvas origin + cell size, read per event (it changes on resize) — maps a
-   * wheel notch to cell coords for the app-reporting path. */
-  getGeometry(): CellGeometry;
+   * wheel notch to cell coords for the app-reporting path. Required with `element`. */
+  getGeometry?(): CellGeometry;
   /** A local scroll request: scroll the viewport to this display offset (lines up
    * from the bottom). Wheel (normal buffer, no app tracking) funnels here; the
    * consumer's scrollbar drag funnels to the SAME callback for one coherent
@@ -118,6 +121,12 @@ export interface TerminalOptions {
   onScroll?(displayOffset: number): void;
   /** Wheel scroll tuning (xterm `scrollSensitivity`). */
   scroll?: ScrollOptions;
+  /** Fire-and-forget consumer notifications (#117) — title/bell/cwd. The widget
+   * subscribes the source's {@link import("./types").FrameSource.subscribeEvents}
+   * channel and routes each event to these callbacks. Independent of the DOM group
+   * above (works on an output-only widget). onLinkActivate stays with the link
+   * controller (#113), not this stream. */
+  events?: EventHandlers;
 }
 
 /**
@@ -134,6 +143,8 @@ export interface TerminalOptions {
  */
 export class Terminal {
   private unsubscribe: Unsubscribe | undefined;
+  /** Unsubscribe from the source's event channel (#117), if subscribed. */
+  private eventUnsub: Unsubscribe | undefined;
   /** Detachers for the input capture + wheel + focus listeners (mount w/ options). */
   private detach: Array<() => void> = [];
   /** Wheel → line delta (stateful: carries trackpad sub-line remainders). Shared
@@ -174,7 +185,13 @@ export class Terminal {
       this.track(frame);
       this.positionTextarea(frame);
     });
-    if (this.options) this.attach(this.options);
+    if (this.options?.element) this.attach(this.options);
+    // Consumer events (#117) — independent of the DOM group; wire whenever the
+    // source has an event channel and the consumer supplied handlers.
+    const events = this.options?.events;
+    if (events && this.source.subscribeEvents) {
+      this.eventUnsub = this.source.subscribeEvents((e) => dispatchTermEvent(e, events));
+    }
   }
 
   /** Retain the scroll/routing state each frame carries; drop the wheel remainder
@@ -199,9 +216,14 @@ export class Terminal {
    * keys. The element (a container over the canvas) keeps the wheel + a pointer-down
    * that focuses the textarea. */
   private attach(o: TerminalOptions): void {
-    const sink = rendererNotifyingSink(o.input, this.renderer);
+    // The DOM group is all-or-nothing: element requires input + getGeometry.
+    const element = o.element;
+    const input = o.input;
+    const getGeometry = o.getGeometry;
+    if (!element || !input || !getGeometry) return;
+    const sink = rendererNotifyingSink(input, this.renderer);
     const ta = makeHiddenTextarea();
-    o.element.appendChild(ta);
+    element.appendChild(ta);
     this.textarea = ta;
     const composition = new CompositionController(ta, sink);
     this.composition = composition;
@@ -210,7 +232,7 @@ export class Terminal {
     // that finalizes a composition (Enter) still reports — the commit went first.
     this.detach.push(
       captureInput(ta, sink, {
-        getGeometry: o.getGeometry,
+        getGeometry,
         mouseReporting: () => false,
         beforeKey: (e) => {
           const proceed = composition.keydown(e.keyCode);
@@ -244,13 +266,13 @@ export class Terminal {
       ta.focus();
       this.renderer.restartCursorBlink?.();
     };
-    o.element.addEventListener("mousedown", onDown);
-    this.detach.push(() => o.element.removeEventListener("mousedown", onDown));
+    element.addEventListener("mousedown", onDown);
+    this.detach.push(() => element.removeEventListener("mousedown", onDown));
 
     this.scroller = new WheelScroller(o.scroll);
     const onWheel = (e: WheelEvent): void => this.onWheel(e, o);
-    o.element.addEventListener("wheel", onWheel, { passive: false });
-    this.detach.push(() => o.element.removeEventListener("wheel", onWheel));
+    element.addEventListener("wheel", onWheel, { passive: false });
+    this.detach.push(() => element.removeEventListener("wheel", onWheel));
   }
 
   /** Clear the textarea once the controller's deferred read has run (same macro-task
@@ -267,7 +289,8 @@ export class Terminal {
    * source the input uses; skipped when the cursor is absent/hidden. */
   private positionTextarea(frame: DecodedFrame): void {
     const ta = this.textarea;
-    if (!ta || !this.options || frame.cursorRow === undefined || frame.cursorVisible === false) return;
+    const getGeometry = this.options?.getGeometry;
+    if (!ta || !getGeometry || frame.cursorRow === undefined || frame.cursorVisible === false) return;
     const col = frame.cursorCol ?? 0;
     const row = frame.cursorRow;
     // Only touch the DOM (a layout read via getGeometry + two style writes) when the
@@ -275,7 +298,7 @@ export class Terminal {
     const cell = `${col},${row}`;
     if (cell === this.textareaCell) return;
     this.textareaCell = cell;
-    const g = this.options.getGeometry();
+    const g = getGeometry();
     ta.style.left = `${col * g.cellWidth}px`;
     ta.style.top = `${row * g.cellHeight}px`;
   }
@@ -284,10 +307,14 @@ export class Terminal {
    * wheel-button report to the app, cursor keys on the alt screen, or a local
    * scroll request. `none` (sub-line/zero) leaves the event for native scroll. */
   private onWheel(e: WheelEvent, o: TerminalOptions): void {
+    // Attached only with the DOM group, so these are present; narrow for the types.
+    const getGeometry = o.getGeometry;
+    const input = o.input;
+    if (!getGeometry || !input) return;
     // getGeometry's cellHeight is CSS px, matching pixel-mode deltaY; dpr 1 keeps
     // the scroller's `cellHeight / dpr` at CSS-px-per-cell.
     const lines = this.scroller!.consumeWheelEvent(e, {
-      cellHeight: o.getGeometry().cellHeight,
+      cellHeight: getGeometry().cellHeight,
       dpr: 1,
       rows: this.rows,
     });
@@ -297,14 +324,14 @@ export class Terminal {
     switch (action.kind) {
       case "app":
         // Direction from the accumulated lines (not raw deltaY) — coords from the event.
-        o.input.send({ kind: "mouse", event: wheelMouseFromDom(e, lines, o.getGeometry()) });
+        input.send({ kind: "mouse", event: wheelMouseFromDom(e, lines, getGeometry()) });
         return;
       case "altKeys": {
         // The alt buffer has no scrollback; a wheel becomes a cursor key (xterm).
         // DECCKM (application-cursor-keys) is core's encode_key job — the web only
         // picks the direction.
         const key: NamedKey = action.direction === "up" ? "up" : "down";
-        o.input.send({ kind: "key", event: { key: { type: key }, mods: 0, action: "press" } });
+        input.send({ kind: "key", event: { key: { type: key }, mods: 0, action: "press" } });
         return;
       }
       case "scroll":
@@ -321,6 +348,8 @@ export class Terminal {
   dispose(): void {
     this.unsubscribe?.();
     this.unsubscribe = undefined;
+    this.eventUnsub?.();
+    this.eventUnsub = undefined;
     for (const off of this.detach) off();
     this.detach = [];
     this.scroller = undefined;

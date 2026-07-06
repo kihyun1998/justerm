@@ -2,6 +2,11 @@
 export type { DecodedFrame, FrameSource, Unsubscribe } from "./types";
 export type { Renderer } from "./renderer";
 export { StubFrameSource } from "./frame-source";
+// Consumer events (#117) — fire-and-forget title/bell/cwd notifications from core's
+// drain_events, delivered out-of-band via FrameSource.subscribeEvents and routed to
+// EventHandlers. onLinkActivate stays with the link controller (#113).
+export { dispatchTermEvent } from "./events";
+export type { EventHandlers, TermEvent } from "./events";
 // Terminal — the frame→renderer pump; with TerminalOptions it also captures input,
 // routes the wheel (app / alt-cursor-keys / scrollback, #129 mask), restarts the
 // cursor blink on typing, and tracks focus (S16 #133). The routing/notify decisions
