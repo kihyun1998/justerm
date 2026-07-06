@@ -127,6 +127,12 @@ export {
   StubInputSink,
   wheelMouseFromDom,
 } from "./input";
+export type { TextareaLike } from "./input";
+// IME composition (#116) — a hidden textarea's composition events → committed text
+// (read from the textarea value, never the unreliable event data; Korean jongseong
+// migration is why). Emits raw `text` intents on the InputSink. Pure logic; the DOM
+// textarea + its listeners are the consumer's glue.
+export { CompositionController } from "./composition";
 export type {
   CaptureOptions,
   CellGeometry,

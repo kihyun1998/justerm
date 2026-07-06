@@ -57,6 +57,12 @@ const renderer = await BeamtermRenderer.create({
 const canvas = document.querySelector<HTMLCanvasElement>("#term")!;
 canvas.style.cursor = "text";
 
+// The widget, assigned below once its wiring deps exist. Focus-restore paths
+// (accessible view, control buttons) return focus HERE — the real input target is
+// the widget's hidden IME textarea, not the canvas (#116).
+let term: Terminal | undefined;
+const focusTerminal = (): void => term?.focus();
+
 // Match the canvas backing buffer to its CSS box × devicePixelRatio (the crisp
 // HiDPI pattern), then let beamterm tell us the grid it fits. Sizing the buffer
 // to the CSS box keeps on-screen px == CSS px per cell, so pointer→cell mapping
@@ -142,7 +148,7 @@ const accessiblePort: AccessiblePort = { text: async () => log.join("\n") };
 const accessibleView = new DomAccessibleView(document, () => viewCtrl.close());
 document.body.appendChild(accessibleView.el);
 const viewCtrl = new AccessibleViewController(accessiblePort, accessibleView, {
-  restoreFocus: () => canvas.focus(),
+  restoreFocus: () => focusTerminal(),
 });
 
 // #160 command announce: an OSC-133 CommandFinished mark on a frame → a screen-
@@ -399,9 +405,9 @@ function demoButton(
   });
   b.addEventListener("click", () => {
     onClick();
-    // Return focus to the canvas so keyboard interaction continues — except for
-    // command nav, which moves focus to the revealed accessible-view line (#166).
-    if (restoreFocus) canvas.focus();
+    // Return focus to the widget's input textarea so keyboard/IME continues — except
+    // for command nav, which moves focus to the revealed accessible-view line (#166).
+    if (restoreFocus) focusTerminal();
   });
   return b;
 }
@@ -417,11 +423,10 @@ const nextBtn = demoButton("Next command", navNextCommand, false);
 controls.append(viewBtn, altBtn, cmdBtn, decoBtn, terseBtn, srBtn, appMouseBtn, prevBtn, nextBtn);
 document.body.appendChild(controls);
 
-// Forward printable keystrokes for echo dedup (this demo doesn't echo, so it's a
-// no-op here — the dedup is unit-tested; this wires the seam).
-window.addEventListener("keydown", (e) => {
-  if (e.key.length === 1) a11y.onKey(e.key);
-});
+// Echo-dedup (#119) is fed from the OUTBOUND intents so it covers IME commits and
+// pasted runs too (a `text` intent), not just single keydowns — otherwise a screen
+// reader announces IME-typed characters twice (once as they're typed, once as the
+// shell echoes them). Wired via the input sink below.
 
 /** Absolute log line shown at viewport row 0 for the current scroll. */
 const viewTop = (): number => Math.max(0, log.length - ROWS - displayOffset);
@@ -538,15 +543,28 @@ const getGeometry = (): CellGeometry => {
 // via onScroll — the SAME shape the scrollbar drag uses (one coherent request).
 const inputSink: InputSink = {
   send: (intent) => {
-    if (intent.kind === "key") console.log(`[input] key ${JSON.stringify(intent.event.key)} mods=${intent.event.mods}`);
-    else if (intent.kind === "mouse")
+    if (intent.kind === "key") {
+      console.log(`[input] key ${JSON.stringify(intent.event.key)} mods=${intent.event.mods}`);
+      // Feed printable typed chars to the a11y echo-dedup (#119).
+      if (intent.event.key.type === "char") a11y.onKey(intent.event.key.char);
+    } else if (intent.kind === "mouse")
       console.log(`[input] mouse ${intent.event.button} @${intent.event.col},${intent.event.row}`);
     else if (intent.kind === "paste") console.log(`[input] paste ${JSON.stringify(intent.text)}`);
-    else console.log(`[input] focus ${intent.focused}`);
+    else if (intent.kind === "text") {
+      console.log(`[input] text ${JSON.stringify(intent.text)}`); // #116 IME commit
+      a11y.onKey(intent.text); // dedup the committed run so its echo isn't re-announced
+    } else console.log(`[input] focus ${intent.focused}`);
   },
 };
-new Terminal(source, renderer, {
-  element: canvas,
+// #116: the widget mounts its hidden IME textarea into `element`, which a canvas
+// can't parent — so wrap the canvas in a relative container and hand THAT over. The
+// canvas keeps the pointer (selection); the textarea is the keyboard/IME target.
+const termContainer = document.createElement("div");
+Object.assign(termContainer.style, { position: "relative", width: "100vw", height: "100vh" });
+document.body.insertBefore(termContainer, canvas);
+termContainer.appendChild(canvas);
+term = new Terminal(source, renderer, {
+  element: termContainer,
   input: inputSink,
   getGeometry,
   // Local wheel scroll → move the demo backend's viewport and re-render. Clamped
@@ -556,7 +574,8 @@ new Terminal(source, renderer, {
     console.log(`[wheel] scroll → displayOffset ${offset}`); // observable signal (e2e/live proxy)
     render();
   },
-}).mount();
+});
+term.mount();
 
 let primaryBuffer = "";
 const controller = new SelectionController(port, getGeometry, {
