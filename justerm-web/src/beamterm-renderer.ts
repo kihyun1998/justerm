@@ -341,6 +341,16 @@ export class BeamtermRenderer implements Renderer {
     else this.redrawCursor();
   }
 
+  /** Show the cursor and reset its blink phase (#107) — the widget calls this on
+   * a key intent so the caret stays solid while typing (the echo frame's cursor
+   * move would restart it too, but only after a round-trip). Repaints the cursor
+   * cell so the change is immediate, not deferred to the next blink tick. */
+  restartCursorBlink(): void {
+    this.blink.restart(now());
+    this.lastBlinkOn = true;
+    this.redrawCursor();
+  }
+
   /** Stop the blink loop. */
   dispose(): void {
     if (this.rafId !== undefined) {

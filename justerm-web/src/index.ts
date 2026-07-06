@@ -2,7 +2,12 @@
 export type { DecodedFrame, FrameSource, Unsubscribe } from "./types";
 export type { Renderer } from "./renderer";
 export { StubFrameSource } from "./frame-source";
-export { Terminal } from "./terminal";
+// Terminal — the frame→renderer pump; with TerminalOptions it also captures input,
+// routes the wheel (app / alt-cursor-keys / scrollback, #129 mask), restarts the
+// cursor blink on typing, and tracks focus (S16 #133). The routing/notify decisions
+// are pure + exported for reuse.
+export { rendererNotifyingSink, routeWheel, Terminal, wheelGoesToApp, wheelScrollTarget } from "./terminal";
+export type { TerminalOptions, WheelAction } from "./terminal";
 export { BeamtermRenderer } from "./beamterm-renderer";
 export type { BeamtermOptions, Theme } from "./beamterm-renderer";
 // Render core — the pure DecodedFrame → draw-op mapping (testable, no GL/wasm).
@@ -113,7 +118,15 @@ export { Accessibility } from "./accessibility-dom";
 export { a11ySelectionToPort } from "./a11y-selection";
 export type { TreeSelection } from "./a11y-selection";
 // Input — DOM events → intent (the backend encodes); outbound seam.
-export { captureInput, keyFromDom, Mod, mouseFromDom, StubInputSink, wheelMouseFromDom } from "./input";
+export {
+  captureInput,
+  keyFromDom,
+  Mod,
+  MouseEvents,
+  mouseFromDom,
+  StubInputSink,
+  wheelMouseFromDom,
+} from "./input";
 export type {
   CaptureOptions,
   CellGeometry,

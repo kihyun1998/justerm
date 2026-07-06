@@ -21,6 +21,7 @@ import {
   DomAccessibleView,
   LinkController,
   MarkerKind,
+  MouseEvents,
   Scrollbar,
   ScreenReaderState,
   SearchController,
@@ -33,7 +34,7 @@ import {
 } from "../src/index";
 import { FitController, observeResize } from "../src/index";
 import type { AccessiblePort, SignalSink } from "../src/index";
-import type { CellGeometry, FitInput, LogicalLine, ResizePort, SearchPort, SelectionPort } from "../src/index";
+import type { CellGeometry, FitInput, InputSink, LogicalLine, ResizePort, SearchPort, SelectionPort } from "../src/index";
 import type { DecodedFrame } from "../src/types";
 import { FakeSelectionEngine } from "./fake-select";
 import { FakeSearchEngine } from "./fake-search";
@@ -75,8 +76,9 @@ function fit(): void {
 }
 fit();
 
+// S16 (#133): the Terminal is created *after* its wiring deps (getGeometry,
+// displayOffset, render) exist — see the `new Terminal(...)` below with options.
 const source = new StubFrameSource();
-new Terminal(source, renderer).mount();
 
 // #120 S2: marker-anchored decorations. The registry is consumer-side; the
 // renderer pulls its rects per frame (joined with the frame's markerPositions)
@@ -126,6 +128,12 @@ canvas.addEventListener("blur", () => a11y.onBlur());
 // "new output") while the hidden row tree keeps mirroring — the alt-screen bit
 // (#149 wire v9) driving the announce policy (#119), assembled.
 let altScreen = false;
+
+// S16 (#133): the "App mouse" button flips whether the frame advertises mouse
+// tracking (the #129 mouseWantedEvents mask). With it ON, the widget routes a
+// wheel notch to the app (logged via the input sink) instead of scrolling
+// scrollback — the app-vs-local wheel branch, driven by the real frame mask.
+let appMouse = false;
 
 // #150 accessible view: the Accessible view button summons the whole-log document (a real backend runs
 // core `accessible_text`; the demo joins its log), Escape closes + returns focus.
@@ -346,6 +354,15 @@ function toggleScreenReader(): void {
   );
 }
 
+function toggleAppMouse(): void {
+  // S16 (#133): flip the frame's mouse-tracking mask. ON → the widget reports a
+  // wheel notch to the app (input sink logs it); OFF → wheel scrolls scrollback.
+  appMouse = !appMouse;
+  appMouseBtn.textContent = `App mouse: ${appMouse ? "ON" : "OFF"}`;
+  console.log(`[demo] appMouse = ${appMouse} (wheel → ${appMouse ? "app (intent)" : "scrollback"})`);
+  render(); // re-emit so the next frame carries the new mask
+}
+
 const controls = document.createElement("div");
 Object.assign(controls.style, {
   position: "fixed",
@@ -394,9 +411,10 @@ const cmdBtn = demoButton("Finish command (next exit 0)", finishCommand);
 const decoBtn = demoButton("Decorate line: OFF", toggleDecorateLine);
 const terseBtn = demoButton("Announce: VERBOSE", toggleTerse);
 const srBtn = demoButton("Screen reader: ON", toggleScreenReader);
+const appMouseBtn = demoButton("App mouse: OFF", toggleAppMouse);
 const prevBtn = demoButton("Prev command", navPrevCommand, false);
 const nextBtn = demoButton("Next command", navNextCommand, false);
-controls.append(viewBtn, altBtn, cmdBtn, decoBtn, terseBtn, srBtn, prevBtn, nextBtn);
+controls.append(viewBtn, altBtn, cmdBtn, decoBtn, terseBtn, srBtn, appMouseBtn, prevBtn, nextBtn);
 document.body.appendChild(controls);
 
 // Forward printable keystrokes for echo dedup (this demo doesn't echo, so it's a
@@ -446,6 +464,9 @@ function viewportFrame(out?: { scrollCount: number }): DecodedFrame {
     displayOffset,
     scrollbackLen: maxOffset(),
     altScreen, // #149: drives the a11y announce policy (Alt screen button)
+    // S16/#129: the wheel-routing mask. App mouse ON = Normal protocol (DOWN|UP|
+    // WHEEL) → the widget sends a wheel notch to the app; OFF = 0 → scrollback.
+    mouseWantedEvents: appMouse ? MouseEvents.Down | MouseEvents.Up | MouseEvents.Wheel : 0,
     selectionSpans: engine.range(), // S8: the live selection projected onto the view
     matchSpans: searchEngine.matchSpans(top, ROWS), // S9: search matches on the view
     // #160 command marks (Finish command) + #120 S2 decoration marker (Decorate line).
@@ -508,6 +529,34 @@ const getGeometry = (): CellGeometry => {
   const r = canvas.getBoundingClientRect();
   return { originX: r.left, originY: r.top, cellWidth: r.width / COLS, cellHeight: r.height / ROWS };
 };
+
+// S16 (#133): mount the widget as a COMPLETE terminal — it captures input, routes
+// the wheel, and restarts the cursor blink on typing. In frame mode the sink
+// forwards intents to the backend's encoders (encode_key/…); the demo has no
+// backend, so it logs them — proving keys/paste/focus (and a wheel notch when
+// "App mouse" is ON) reach the seam. The wheel's LOCAL branch scrolls scrollback
+// via onScroll — the SAME shape the scrollbar drag uses (one coherent request).
+const inputSink: InputSink = {
+  send: (intent) => {
+    if (intent.kind === "key") console.log(`[input] key ${JSON.stringify(intent.event.key)} mods=${intent.event.mods}`);
+    else if (intent.kind === "mouse")
+      console.log(`[input] mouse ${intent.event.button} @${intent.event.col},${intent.event.row}`);
+    else if (intent.kind === "paste") console.log(`[input] paste ${JSON.stringify(intent.text)}`);
+    else console.log(`[input] focus ${intent.focused}`);
+  },
+};
+new Terminal(source, renderer, {
+  element: canvas,
+  input: inputSink,
+  getGeometry,
+  // Local wheel scroll → move the demo backend's viewport and re-render. Clamped
+  // by the widget already; this just applies the requested offset.
+  onScroll: (offset) => {
+    displayOffset = offset;
+    console.log(`[wheel] scroll → displayOffset ${offset}`); // observable signal (e2e/live proxy)
+    render();
+  },
+}).mount();
 
 let primaryBuffer = "";
 const controller = new SelectionController(port, getGeometry, {

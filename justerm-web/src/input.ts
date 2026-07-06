@@ -3,6 +3,25 @@
 // normalises events; the protocol/encoding bytes are the backend's job. These
 // intent types mirror `justerm-core/src/input.rs` (the backend contract).
 
+/**
+ * Mouse event categories the active tracking mode reports — the frame's
+ * {@link import("./types").DecodedFrame.mouseWantedEvents} mask (#129, mirroring
+ * core `MouseEvents`). A set bit routes that category to the app; else it stays
+ * local (selection / scrollback). `Wheel` is the bit S16's wheel routing reads.
+ */
+export const MouseEvents = {
+  /** Button press (every protocol except Off). */
+  Down: 1 << 0,
+  /** Button release (`?1000`+). */
+  Up: 1 << 1,
+  /** Wheel turn (`?1000`+ — X10 excludes it). */
+  Wheel: 1 << 2,
+  /** Motion while a button is held — drag (`?1002`+). */
+  Drag: 1 << 3,
+  /** Bare motion, no button held (`?1003`). */
+  Move: 1 << 4,
+} as const;
+
 /** Modifier bitmask — the kitty scheme core uses (Shift=1, Alt=2, Ctrl=4, …). */
 export const Mod = {
   None: 0,

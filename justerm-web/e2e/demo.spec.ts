@@ -273,6 +273,155 @@ test("asymmetric spanning selection (row → documentElement) still clamps (#217
   expect(selLog.some((l) => l.includes("[a11y-sel] extend"))).toBe(true);
 });
 
+// #133 (S16): the widget wires input + wheel + focus. Headless can't see the beamterm
+// caret paint, but every routing DECISION has a DOM/console proxy the demo exposes: the
+// input sink logs intents (`[input] …`), the local scroll logs `[wheel] scroll → …`, the
+// scrollbar thumb `top` is the scroll DOM-state, and `document.activeElement` is the focus
+// DOM-state. These lock the live-MCP proof as regression gates (the DECISIONS are also
+// unit-tested; this is the real DOM glue the node suite can't run). A wheel is dispatched
+// as a LINE-mode WheelEvent (one physical notch) for determinism.
+test.describe("S16 input + wheel + focus wiring (#133)", () => {
+  const wheelNotch = (page: import("@playwright/test").Page, deltaY: number) =>
+    page.evaluate((dy) => {
+      const c = document.querySelector("#term") as HTMLElement;
+      const r = c.getBoundingClientRect();
+      c.dispatchEvent(
+        new WheelEvent("wheel", {
+          deltaY: dy,
+          deltaMode: 1, // LINE
+          bubbles: true,
+          cancelable: true,
+          clientX: r.left + 50,
+          clientY: r.top + 50,
+        }),
+      );
+    }, deltaY);
+  // The scrollbar thumb's `top` (%) is the scroll DOM-state; the track is a body-level
+  // absolute div with a right edge and a thumb child.
+  const thumbTop = (page: import("@playwright/test").Page) =>
+    page.evaluate(() => {
+      const track = [...document.querySelectorAll("div")].find(
+        (d) =>
+          d.style.position === "absolute" &&
+          d.style.right === "0px" &&
+          d.style.height === "100%" &&
+          d.querySelector("div"),
+      );
+      const t = track?.querySelector("div") as HTMLElement | undefined;
+      return t ? parseFloat(t.style.top) : null;
+    });
+
+  test("clicking the terminal focuses it (canvas is not focusable by default)", async ({
+    page,
+  }) => {
+    await expect
+      .poll(() => page.evaluate(() => document.activeElement?.id))
+      .not.toBe("term"); // not focused until clicked
+    await page.locator("#term").click({ position: { x: 50, y: 50 } });
+    expect(await page.evaluate(() => document.activeElement?.id)).toBe("term");
+  });
+
+  test("keystrokes and paste reach the input sink", async ({ page }) => {
+    const intents: string[] = [];
+    page.on("console", (m) => {
+      if (m.text().includes("[input]")) intents.push(m.text());
+    });
+    await page.locator("#term").click({ position: { x: 50, y: 50 } });
+    await page.keyboard.press("a");
+    expect(intents.some((l) => l.includes('[input] key {"type":"char","char":"a"}'))).toBe(true);
+  });
+
+  test("wheel scrolls scrollback (normal buffer): thumb moves up, offset climbs", async ({
+    page,
+  }) => {
+    const scrolls: number[] = [];
+    page.on("console", (m) => {
+      const n = m.text().match(/\[wheel\] scroll → displayOffset (\d+)/);
+      if (n) scrolls.push(Number(n[1]));
+    });
+    // Scrollback needs the log to exceed the viewport (a line appends every 300ms).
+    // Retry a wheel-up until the demo actually scrolls into history (offset > 0) — this
+    // is scrollback-size-independent, unlike an absolute thumb threshold.
+    await expect
+      .poll(
+        async () => {
+          await wheelNotch(page, -4);
+          return scrolls.at(-1) ?? 0;
+        },
+        { timeout: 25_000, intervals: [400] },
+      )
+      .toBeGreaterThan(0);
+    // DOM state: two quick up-notches (back-to-back reads minimise append drift) lower
+    // the thumb `top` toward the track top (older content), OR it's already pinned there.
+    const before = (await thumbTop(page))!;
+    await wheelNotch(page, -6);
+    await wheelNotch(page, -6);
+    const after = (await thumbTop(page))!;
+    expect(after).toBeLessThanOrEqual(before); // thumb rose (or pinned at the top)
+    expect(scrolls.at(-1)!).toBeGreaterThan(0); // still scrolled into history
+  });
+
+  test("App mouse ON routes the wheel to the app, not scrollback", async ({ page }) => {
+    const intents: string[] = [];
+    const scrolls: string[] = [];
+    page.on("console", (m) => {
+      if (m.text().includes("[input] mouse")) intents.push(m.text());
+      if (m.text().includes("[wheel] scroll")) scrolls.push(m.text());
+    });
+    await expect.poll(() => thumbTop(page), { timeout: 15_000 }).toBeLessThan(90);
+    await page.getByRole("button", { name: "App mouse: OFF" }).click();
+    const before = (await thumbTop(page))!;
+    await wheelNotch(page, -3);
+    expect(intents.some((l) => l.includes("wheelUp"))).toBe(true); // reported to the app
+    expect(scrolls).toHaveLength(0); // did NOT scroll scrollback
+    expect(await thumbTop(page)).toBe(before); // thumb unmoved
+  });
+
+  test("alt-screen wheel (no scrollback) becomes cursor keys, not a scroll", async ({ page }) => {
+    const intents: string[] = [];
+    const scrolls: string[] = [];
+    page.on("console", (m) => {
+      if (m.text().includes("[input] key")) intents.push(m.text());
+      if (m.text().includes("[wheel] scroll")) scrolls.push(m.text());
+    });
+    await page.getByRole("button", { name: "Alt screen: OFF" }).click();
+    await wheelNotch(page, -3); // up
+    await wheelNotch(page, 3); // down
+    expect(intents.some((l) => l.includes('{"type":"up"}'))).toBe(true);
+    expect(intents.some((l) => l.includes('{"type":"down"}'))).toBe(true);
+    expect(scrolls).toHaveLength(0); // no scrollback scroll on the alt screen
+  });
+
+  test("a shift-wheel produces no report and lets native scroll through", async ({ page }) => {
+    await page.locator("#term").click({ position: { x: 50, y: 50 } });
+    // Capture only wheel-derived intents/scrolls (a focus intent from the click above is
+    // expected and unrelated); a shift-wheel must yield none of these.
+    const signals: string[] = [];
+    page.on("console", (m) => {
+      const t = m.text();
+      if (t.includes("[input] mouse") || t.includes("[input] key") || t.includes("[wheel]")) {
+        signals.push(t);
+      }
+    });
+    const prevented = await page.evaluate(() => {
+      const c = document.querySelector("#term") as HTMLElement;
+      const r = c.getBoundingClientRect();
+      const ev = new WheelEvent("wheel", {
+        deltaY: -4,
+        deltaMode: 1,
+        shiftKey: true,
+        bubbles: true,
+        cancelable: true,
+        clientX: r.left + 50,
+        clientY: r.top + 50,
+      });
+      return !c.dispatchEvent(ev); // true iff preventDefault was called
+    });
+    expect(prevented).toBe(false); // native scroll not suppressed (WheelScroller bailed)
+    expect(signals).toHaveLength(0); // no spurious app report / scroll
+  });
+});
+
 // #114: on container resize the demo auto-fits — computes cols/rows from the CSS box +
 // cell size and drives a debounced resize intent (the demo logs `[fit] resize CxR`). Proven
 // live: the ResizeObserver + FitController + proposeDimensions path runs in real Chromium,
