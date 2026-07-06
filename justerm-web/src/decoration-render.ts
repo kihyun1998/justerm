@@ -61,6 +61,7 @@ export function composeCellColors(
   fgUndimmed: number = base.fg,
   minimumContrastRatio = 1,
   dim = false,
+  excludeFromContrast = false,
 ): { fg: number; bg: number } {
   // #224: a selected cell is un-dimmed (xterm force-clears DIM under selection), so
   // it starts from the undimmed fg. Only selection un-dims (not a search match); a
@@ -110,7 +111,9 @@ export function composeCellColors(
   // glyph is corrected to full contrast and loses its dim look (never illegible —
   // just the wrong colour). Note this halves the ALREADY-dimmed fg (the #225
   // double-pass compromise), not the raw pre-dim fg xterm single-passes.
-  if (minimumContrastRatio > 1) {
+  // #226: a Powerline/box glyph is excluded from the contrast demand in the overlay
+  // too (matching stage-2 and xterm), so a highlight can't nudge it into a seam.
+  if (minimumContrastRatio > 1 && !excludeFromContrast) {
     const ratio = dim && !isSelection ? minimumContrastRatio / 2 : minimumContrastRatio;
     const adjusted = ensureContrastRatio(bg, fg, ratio);
     if (adjusted !== undefined) fg = adjusted;

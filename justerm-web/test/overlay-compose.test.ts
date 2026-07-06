@@ -18,7 +18,7 @@ const colors = { selectionBg: SEL, matchBg: MATCH, minimumContrastRatio: 1 };
 const SEL_ON_BLACK = 0x090909;
 
 function op(x: number, y: number, bg = 0, fg = 0xffffff, blendHighlight = false, fgUndimmed = fg, dim = false): DrawOp {
-  return { x, y, symbol: "a", fg, bg, bold: false, italic: false, underline: false, strikethrough: false, blendHighlight, fgUndimmed, dim };
+  return { x, y, symbol: "a", fg, bg, bold: false, italic: false, underline: false, strikethrough: false, blendHighlight, fgUndimmed, dim, excludeFromContrast: false };
 }
 const sel = (row: number, left: number, right: number): HighlightRect => ({ row, left, right, kind: "selection" });
 const match = (row: number, left: number, right: number): HighlightRect => ({ row, left, right, kind: "match" });

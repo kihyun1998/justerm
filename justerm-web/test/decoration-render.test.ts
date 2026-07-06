@@ -242,6 +242,16 @@ describe("composeCellColors — layered cell colour (#120 S2)", () => {
     expect(fg).toBe(dimForeground(0x00ff00, 0x808080)); // dimmed toward the blended bg
   });
 
+  // #226: a Powerline/box glyph is excluded from the OVERLAY contrast pass too. The
+  // "re-applies contrast against the effective bg" case above darkens a white fg to
+  // black over a white highlight; excluded (last arg true) it is LEFT white so the
+  // glyph keeps tiling with the neighbour instead of seaming.
+  it("skips the overlay contrast correction for an excluded glyph", () => {
+    const onBlack = { fg: 0xffffff, bg: 0x000000 };
+    const { fg } = composeCellColors(onBlack, null, 0xffffff, null, false, false, 0xffffff, 21, false, true);
+    expect(fg).toBe(0xffffff); // excluded → not darkened for the white highlight
+  });
+
   // A top decoration is foreground-most — it wins over the selection/match
   // highlight (AC: top paints over the cell).
   it("top decoration wins over the highlight bg", () => {

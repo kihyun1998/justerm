@@ -1,4 +1,5 @@
 import type { Palette } from "justerm-wasm-decode/colors.js";
+import { treatGlyphAsBackgroundColor } from "./glyph-class";
 import { resolveCell } from "./render-policy";
 import type { DecodedFrame } from "./types";
 
@@ -26,6 +27,11 @@ export interface DrawOp {
    * minimumContrastRatio for a dim NON-selection cell (a search match keeps DIM,
    * xterm `mcr / (dim ? 2 : 1)`); a selection clears DIM, so its full ratio applies. */
   dim: boolean;
+  /** Whether this cell's glyph tiles with the background — a Powerline separator or
+   * box-drawing/block element (#226, xterm `treatGlyphAsBackgroundColor`). Its fg is
+   * excluded from the minimumContrastRatio correction (stage-2 AND overlay) so a
+   * contrast nudge can't seam it against the neighbouring cell. */
+  excludeFromContrast: boolean;
 }
 
 /** Flag bit positions, from the decoder's `flags()`. Structural for testability. */
@@ -48,7 +54,12 @@ export interface FlagBits {
  * selection/match blend is the overlay layer, `composeCellColors`.) S2 ships
  * {@link identityPolicy}.
  */
-export type RenderPolicy = (fg: number, bg: number, flags: number) => { fg: number; bg: number };
+export type RenderPolicy = (
+  fg: number,
+  bg: number,
+  flags: number,
+  excludeFromContrast?: boolean,
+) => { fg: number; bg: number };
 
 /** No-op policy — colours pass through unchanged. The S2 default. */
 export const identityPolicy: RenderPolicy = (fg, bg) => ({ fg, bg });
@@ -113,11 +124,15 @@ export function cellToDrawOp(
   // Stage-1: resolve refs to RGB, applying inverse + bold→bright (#223). Stage-2:
   // the RGB-space RenderPolicy (dim, minimumContrastRatio).
   const resolved = resolveCell(fgRef, bgRef, flags, palette, F, boldToBright);
-  const { fg, bg } = policy(resolved.fg, resolved.bg, flags);
+  // #226: a Powerline/box glyph tiles with the bg, so its fg is excluded from the
+  // minimumContrastRatio correction (computed from the real glyph, not the HIDDEN
+  // substitution below). Both ranges are BMP → the first code point suffices.
+  const excludeFromContrast = symbol.length > 0 && treatGlyphAsBackgroundColor(symbol.codePointAt(0)!);
+  const { fg, bg } = policy(resolved.fg, resolved.bg, flags, excludeFromContrast);
   // #224: the undimmed fg = the same policy with DIM cleared (so contrast reverts
   // to its full ratio too, as xterm does under selection). Equals fg when not dim.
   const fgUndimmed =
-    (flags & F.dim) !== 0 ? policy(resolved.fg, resolved.bg, flags & ~F.dim).fg : fg;
+    (flags & F.dim) !== 0 ? policy(resolved.fg, resolved.bg, flags & ~F.dim, excludeFromContrast).fg : fg;
   return {
     x,
     y,
@@ -136,5 +151,6 @@ export function cellToDrawOp(
     blendHighlight: (flags & F.inverse) !== 0 || bgRef >>> 24 !== 0,
     fgUndimmed,
     dim: (flags & F.dim) !== 0,
+    excludeFromContrast,
   };
 }
