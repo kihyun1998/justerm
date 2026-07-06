@@ -26,6 +26,10 @@ export interface OverlayColors {
   /** Applied against the EFFECTIVE (post-overlay) bg so a highlight can't leave the
    * fg illegible (#225). 1 = off (the default). */
   readonly minimumContrastRatio: number;
+  /** Optional theme override for the fg of a SELECTED cell (#227, xterm
+   * `selectionForeground`). `undefined` = keep the cell's own fg (the default). Only
+   * a selection uses it, never a search match; it is focus-independent. */
+  readonly selectionForeground?: number;
 }
 
 /** The set of viewport cell keys (`y * cols + x`) tinted by any overlay this frame —
@@ -96,6 +100,7 @@ export function overlayTint(
     colors.minimumContrastRatio, // #225: contrast against the effective bg
     base.dim, // #232: halve the ratio for a dim non-selection cell
     base.excludeFromContrast, // #226: skip contrast for a powerline/box glyph
+    colors.selectionForeground, // #227: override fg on a selected cell
   );
   return { ...base, fg, bg };
 }

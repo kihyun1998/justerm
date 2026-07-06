@@ -5,6 +5,7 @@ import { CursorBlink, cursorOp } from "./cursor";
 import type { DecorationRect } from "./decorations";
 import { type HighlightRect, highlightRects } from "./overlay";
 import { composeOverlayDraws, cursorCellDraw } from "./overlay-compose";
+import type { OverlayColors } from "./overlay-compose";
 import type { DrawOp, FlagBits } from "./render-core";
 import { makeRenderPolicy } from "./render-policy";
 import type { DecodedFrame } from "./types";
@@ -27,6 +28,11 @@ export interface Theme {
   /** Selection background when the terminal is UNFOCUSED (`0xRRGGBB`). xterm's
    * selectionInactiveBackgroundOpaque; a dimmer tint. Defaults to a muted slate. */
   selectionInactiveBg?: number;
+  /** Optional fg for SELECTED cells (`0xRRGGBB`), xterm's `selectionForeground` —
+   * forces the text colour under a selection. Unset (the default) keeps each cell's
+   * own fg. Applies to a selection only (never a search match) and is focus-
+   * independent. (#227) */
+  selectionForeground?: number;
   /** Minimum fg/bg contrast ratio (WCAG, 1..21). Below it the renderer lightens
    * or darkens the fg to stay legible (#115). Defaults to 1 (off, like xterm). */
   minimumContrastRatio?: number;
@@ -116,6 +122,7 @@ export class BeamtermRenderer implements Renderer {
     private selectionInactiveBg: number,
     private minimumContrastRatio: number,
     private boldToBright: boolean,
+    private selectionForeground: number | undefined,
   ) {
     // Honour prefers-reduced-motion (#119): suppress the cursor blink, tracking
     // changes live. Browser-only; the renderer is only built via `create`.
@@ -185,6 +192,7 @@ export class BeamtermRenderer implements Renderer {
       opts.theme.selectionInactiveBg ?? 0x30313d,
       opts.theme.minimumContrastRatio ?? 1,
       opts.theme.boldToBright ?? true,
+      opts.theme.selectionForeground,
     );
   }
 
@@ -250,11 +258,7 @@ export class BeamtermRenderer implements Renderer {
       prevOverlay: this.prevOverlay,
       cols: this.cols,
       rows: this.rows,
-      colors: {
-        selectionBg: this.activeSelectionBg(),
-        matchBg: this.matchBg,
-        minimumContrastRatio: this.minimumContrastRatio,
-      },
+      colors: this.overlayColors(),
       cellAt: (x, y) => this.mirror!.cellAt(x, y),
     });
     for (const d of draws) this.drawOp(batch, d);
@@ -276,6 +280,19 @@ export class BeamtermRenderer implements Renderer {
     return this.focused ? this.selectionBg : this.selectionInactiveBg;
   }
 
+  /** The overlay blend colours for this frame — the SINGLE source shared by the
+   * paint pass and the cursor-cell draw so they never drift. A field dropped from
+   * only one builder (e.g. #227 selectionForeground) would silently un-override the
+   * cursor cell on the blink-off gap while its selected neighbours keep the tint. */
+  private overlayColors(): OverlayColors {
+    return {
+      selectionBg: this.activeSelectionBg(),
+      matchBg: this.matchBg,
+      minimumContrastRatio: this.minimumContrastRatio,
+      selectionForeground: this.selectionForeground,
+    };
+  }
+
   /**
    * Swap the theme (#115): rebuild the palette + render policy + overlay colours,
    * then re-resolve every stored cell (the mirror keeps colour refs) and full-
@@ -292,6 +309,7 @@ export class BeamtermRenderer implements Renderer {
     this.selectionBg = theme.selectionBg ?? 0x45475a;
     this.matchBg = theme.matchBg ?? 0x6e5c00;
     this.selectionInactiveBg = theme.selectionInactiveBg ?? 0x30313d;
+    this.selectionForeground = theme.selectionForeground;
     this.minimumContrastRatio = theme.minimumContrastRatio ?? 1;
     this.boldToBright = theme.boldToBright ?? true;
     if (!this.mirror) return;
@@ -358,11 +376,7 @@ export class BeamtermRenderer implements Renderer {
     const styled = cursorOp(base, shape, this.cursorColor);
     this.drawOp(
       batch,
-      cursorCellDraw(base, on, styled, this.lastHighlights, this.lastDecorations, {
-        selectionBg: this.activeSelectionBg(),
-        matchBg: this.matchBg,
-        minimumContrastRatio: this.minimumContrastRatio,
-      }),
+      cursorCellDraw(base, on, styled, this.lastHighlights, this.lastDecorations, this.overlayColors()),
     );
   }
 
