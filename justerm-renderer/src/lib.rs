@@ -17,6 +17,7 @@
 //! the GPU pipeline (instanced grid, glyph atlas, shaders) lands in #260+.
 
 pub mod attrs;
+pub mod bitmap;
 pub mod color;
 pub mod frame;
 pub mod glyph_cache;

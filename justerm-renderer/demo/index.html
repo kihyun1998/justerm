@@ -1,21 +1,23 @@
 <!doctype html>
 <meta charset="utf-8" />
-<title>justerm-renderer SGR attrs proof (#267)</title>
+<title>justerm-renderer wide/CJK proof (#268)</title>
 <style>
   body { margin: 0; background: #000; }
   #c { display: block; image-rendering: pixelated; }
 </style>
 <!--
-  SGR attrs proof (#267): underline/strikethrough lines, inverse fg/bg swap, bold render.
-  readPixels on the same WebGL2 context proves each attribute. Build:
+  Wide/CJK proof (#268): a double-width glyph ('中') is rasterised at 2*cell_w, split into
+  two atlas slots, and rendered across its lead cell + spacer cell. readPixels proves BOTH
+  cells carry glyph coverage — the spacer cell (codepoint space) is NOT blank, which only
+  happens if the wide right-half slot was assigned to it. Build:
     wasm-pack build --target web --dev --out-dir pkg
 -->
 <canvas id="c" width="320" height="200"></canvas>
 <script type="module">
   import init, { JustermRenderer } from "../pkg/justerm_renderer.js";
 
-  // CellFlags bits (mirror justerm-core).
-  const BOLD = 1, ITALIC = 4, UNDERLINE = 8, INVERSE = 32, STRIKE = 128;
+  // CellFlags bits.
+  const WIDE_CHAR = 1 << 8, WIDE_SPACER = 1 << 9;
   const FG = 0xffffff, BG = 0x1e1e2e, H = 200;
   await init();
 
@@ -24,53 +26,37 @@
   r.resize(320, H);
   const CW = r.cell_width(), CH = r.cell_height();
 
-  // 5 cells: normal A, underlined space, strikethrough space, inverse space, bold A.
-  const cps   = new Uint32Array([0x41, 0x20, 0x20, 0x20, 0x41]);
-  const flags = new Uint16Array([0,    UNDERLINE, STRIKE, INVERSE, BOLD]);
-  const zeros = new Uint32Array([0, 0, 0, 0, 0]);
-  r.apply_frame(5, 1, zeros, zeros, cps, flags);
+  // 4 cells: 中 (wide lead) + its spacer, then 'A' (normal), then a blank space (control).
+  const cps   = new Uint32Array([0x4e2d, 0x20,         0x41, 0x20]);
+  const flags = new Uint16Array([WIDE_CHAR, WIDE_SPACER, 0,   0]);
+  const zeros = new Uint32Array([0, 0, 0, 0]);
+  r.apply_frame(4, 1, zeros, zeros, cps, flags);
   r.render();
 
   const gl = document.querySelector("#c").getContext("webgl2");
-  const readAt = (x, yTop) => {
-    const px = new Uint8Array(4);
-    gl.readPixels(x, H - 1 - yTop, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
-    return [px[0], px[1], px[2]];
-  };
-  const cx = (col) => col * CW + (CW >> 1);
   const scanBright = (col) => {
     const buf = new Uint8Array(CW * CH * 4);
     gl.readPixels(col * CW, H - CH, CW, CH, gl.RGBA, gl.UNSIGNED_BYTE, buf);
-    for (let i = 0; i < buf.length; i += 4) if (buf[i] > 200) return true;
-    return false;
+    let n = 0;
+    for (let i = 0; i < buf.length; i += 4) if (buf[i] > 150) n++;
+    return n; // count of fg-ish pixels
   };
-  const near = (a, b, t = 30) => a.every((v, i) => Math.abs(v - b[i]) <= t);
 
-  // Underline (col1): a fg line near the bottom (y≈0.88), bg above it.
-  const ulLine = readAt(cx(1), Math.round(0.88 * CH));
-  const ulAbove = readAt(cx(1), Math.round(0.3 * CH));
-  // Strikethrough (col2): a fg line through the middle (y≈0.5), bg near the top.
-  const stLine = readAt(cx(2), Math.round(0.5 * CH));
-  const stTop = readAt(cx(2), Math.round(0.12 * CH));
-  // Inverse space (col3): the whole cell is fg (bg swapped to fg).
-  const inv = readAt(cx(3), CH >> 1);
-  // Bold A (col4): renders (non-blank).
-  const boldRenders = scanBright(4);
+  const leadHalf = scanBright(0);   // 中 left half
+  const spacerHalf = scanBright(1); // 中 right half (the spacer cell)
+  const letterA = scanBright(2);    // normal glyph renders
+  const blank = scanBright(3);      // a real blank space → ~0
 
-  // The decoration lines are thin + antialiased (smoothstep), so the sampled pixel is a
-  // partial fg/bg blend, not pure fg. Prove the line by its brightness ABOVE bg + a clear
-  // margin over the (bg) non-line row at the same column.
-  const checks = {
-    underlineLine: ulLine[0] > 90 && ulLine[0] - ulAbove[0] > 60,
-    underlineAboveBg: near(ulAbove, [30, 30, 46]),
-    strikeLine: stLine[0] > 90 && stLine[0] - stTop[0] > 60,
-    strikeTopBg: near(stTop, [30, 30, 46]),
-    inverseSwap: near(inv, [255, 255, 255]),
-    boldRenders,
-  };
   window.__proof = {
-    cell: [CW, CH], ulLine, stLine, inv, checks,
-    ok: Object.values(checks).every(Boolean),
+    cell: [CW, CH],
+    leadHalf, spacerHalf, letterA, blank,
+    checks: {
+      leadRenders: leadHalf > 0,
+      spacerRenders: spacerHalf > 0, // the key: spacer is NOT blank
+      letterRenders: letterA > 0,
+      blankIsBlank: blank === 0,
+    },
+    ok: leadHalf > 0 && spacerHalf > 0 && letterA > 0 && blank === 0,
   };
   window.__done = true;
 </script>

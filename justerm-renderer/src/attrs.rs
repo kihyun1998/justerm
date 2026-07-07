@@ -11,6 +11,20 @@ pub const ITALIC: u16 = 1 << 2;
 pub const UNDERLINE: u16 = 1 << 3;
 pub const INVERSE: u16 = 1 << 5;
 pub const STRIKETHROUGH: u16 = 1 << 7;
+/// A double-width glyph's lead cell (it renders the glyph's left half).
+pub const WIDE_CHAR: u16 = 1 << 8;
+/// The trailing cell a wide glyph occupies (it renders the glyph's right half).
+pub const WIDE_CHAR_SPACER: u16 = 1 << 9;
+
+/// Whether the cell is a wide glyph's lead (occupies this + the next column).
+pub fn is_wide_lead(flags: u16) -> bool {
+    flags & WIDE_CHAR != 0
+}
+
+/// Whether the cell is a wide glyph's trailing spacer.
+pub fn is_wide_spacer(flags: u16) -> bool {
+    flags & WIDE_CHAR_SPACER != 0
+}
 
 /// Underline/strikethrough are packed into the glyph field's high bits (mirrors beamterm
 /// `cell.frag`: bit 13 = underline, bit 14 = strikethrough; the slot address is bits 0..12).
@@ -76,5 +90,14 @@ mod tests {
         assert!(!is_inverse(0));
         assert!(is_inverse(INVERSE));
         assert!(is_inverse(INVERSE | BOLD));
+    }
+
+    #[test]
+    fn wide_lead_and_spacer_read_their_bits() {
+        assert!(is_wide_lead(WIDE_CHAR));
+        assert!(!is_wide_lead(WIDE_CHAR_SPACER));
+        assert!(is_wide_spacer(WIDE_CHAR_SPACER));
+        assert!(!is_wide_spacer(WIDE_CHAR));
+        assert!(!is_wide_lead(0) && !is_wide_spacer(0));
     }
 }

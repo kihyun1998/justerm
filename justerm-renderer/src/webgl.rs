@@ -4,26 +4,30 @@
 //! cell's bg/fg references (injected palette) and its glyph slot (glyph cache, rasterising
 //! and uploading new glyphs on demand), packs one instance per cell, and `render`
 //! composites each glyph's coverage from the atlas over its background, plus SGR attrs
-//! (#267: bold/italic font variants, underline/strikethrough lines, inverse fg/bg swap).
-//! ASCII (`0x20..=0x7E`) is pre-rasterised at construction. Wide/emoji are #268.
+//! (#267: bold/italic font variants, underline/strikethrough lines, inverse fg/bg swap) and
+//! double-width glyphs (#268: a wide glyph splits across two atlas slots / two grid cells).
+//! ASCII (`0x20..=0x7E`) is pre-rasterised. Colour emoji (#284) + clusters (#285) follow.
 
 use glow::HasContext;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 use web_sys::{HtmlCanvasElement, WebGl2RenderingContext};
 
-use crate::attrs::font_style;
+use crate::attrs::{font_style, is_wide_lead, is_wide_spacer};
+use crate::bitmap::split_wide_bitmap;
 use crate::color::gl_rgb;
 use crate::frame::pack_instances;
 use crate::glyph_cache::{
-    FontStyle, GLYPHS_PER_LAYER, GlyphCache, GlyphKey, GlyphKind, NORMAL_CAPACITY, slot_texcoord,
+    FontStyle, GLYPHS_PER_LAYER, GlyphCache, GlyphKey, GlyphKind, WIDE_BASE, WIDE_CAPACITY,
+    slot_texcoord,
 };
 use crate::mat4::Mat4;
 use crate::palette::Palette;
 use crate::rasterizer::Rasterizer;
 
-/// Texture-array layers covering the normal region (2048 slots / 32 per layer = 64).
-const NORMAL_LAYERS: i32 = (NORMAL_CAPACITY / GLYPHS_PER_LAYER) as i32;
+/// Texture-array layers covering the whole slot space (normal + wide = 6144 / 32 = 192),
+/// so wide/emoji slots (layers 64..191) have storage.
+const TOTAL_LAYERS: i32 = ((WIDE_BASE + WIDE_CAPACITY * 2) / GLYPHS_PER_LAYER) as i32;
 /// Default font size (CSS px) for the atlas rasteriser.
 const FONT_SIZE: f32 = 16.0;
 
@@ -229,7 +233,7 @@ impl JustermRenderer {
         }
     }
 
-    /// Allocate the glyph atlas texture array: `cell_w` × (`32*cell_h`) × `NORMAL_LAYERS`,
+    /// Allocate the glyph atlas texture array: `cell_w` × (`32*cell_h`) × `TOTAL_LAYERS`,
     /// RGBA8 (glyph coverage in the alpha channel).
     fn build_atlas(gl: &glow::Context, cell_w: u32, cell_h: u32) -> Result<glow::Texture, JsValue> {
         // Safety: live GL context.
@@ -242,7 +246,7 @@ impl JustermRenderer {
                 glow::RGBA8,
                 cell_w as i32,
                 (cell_h * GLYPHS_PER_LAYER as u32) as i32,
-                NORMAL_LAYERS,
+                TOTAL_LAYERS,
             );
             // NEAREST (matching beamterm): 32 glyphs pack vertically per layer with no
             // guard band, so LINEAR would interpolate across a band seam (adjacent glyph
@@ -305,7 +309,7 @@ impl JustermRenderer {
             let ch = char::from_u32(cp).unwrap();
             let rgba = self
                 .rasterizer
-                .rasterize(&ch.to_string(), FontStyle::Normal)?;
+                .rasterize(&ch.to_string(), FontStyle::Normal, false)?;
             self.upload_glyph((cp - 0x20) as u16, &rgba);
         }
         Ok(())
@@ -354,17 +358,14 @@ impl JustermRenderer {
     }
 
     /// Apply a `cols`×`rows` frame (dense row-major, length `cols*rows` — see #277 for the
-    /// Partial-frame adapter): `bg`/`fg` are tagged-u32 colour refs, `codepoints` is the
-    /// glyph per cell. New glyphs are rasterised + uploaded on demand.
+    /// Partial-frame adapter): `bg`/`fg` are tagged-u32 colour refs, `codepoints` the glyph
+    /// per cell, `flags` the `CellFlags`. A `WIDE_CHAR` lead cell rasterises a double-width
+    /// glyph and splits it into two atlas slots; its `WIDE_CHAR_SPACER` cell reuses the
+    /// right-half slot. New glyphs are rasterised + uploaded on demand.
     ///
-    /// #264 scope = ASCII / single-width. Known limits tracked for the wide/emoji slice
-    /// (surfaced by the #264 adversarial pass, not silent):
-    /// - every glyph is treated as single-width (`GlyphKind::Normal`) — CJK/emoji render
-    ///   clipped/monochrome until #268;
-    /// - a frame with more distinct non-ASCII glyphs than the normal region's free capacity
-    ///   would evict a glyph still referenced in the same frame (a working-set pin is needed);
-    /// - a `rasterize` failure leaves the cache entry committed but the atlas slot unwritten.
-    ///   ASCII on the primary monospace font never hits these.
+    /// Tracked limits (surfaced by adversarial passes, not silent): colour emoji (#284) and
+    /// ZWJ/grapheme clusters (#285) are separate slices; a frame with more distinct glyphs
+    /// than a region's capacity, or a rasterise failure, can strand a slot (#280).
     pub fn apply_frame(
         &mut self,
         cols: u32,
@@ -376,21 +377,58 @@ impl JustermRenderer {
     ) -> Result<(), JsValue> {
         let count = (cols * rows) as usize;
         let mut slots = Vec::with_capacity(count);
+        // A wide lead assigns its right half to the next (spacer) cell.
+        let mut pending_right: Option<u16> = None;
         for idx in 0..count {
+            // A wide glyph never spans rows (justerm-core wraps a lead off the last column),
+            // so a pending right-half must not leak across a row boundary — reset at col 0
+            // to stay correct even on a malformed (direct-caller) frame.
+            if (idx as u32).is_multiple_of(cols) {
+                pending_right = None;
+            }
+            let cell_flags = flags.get(idx).copied().unwrap_or(0);
+
+            // A spacer draws the lead glyph's right-half slot (no rasterise of its own).
+            if is_wide_spacer(cell_flags) {
+                slots.push(pending_right.take().unwrap_or(0));
+                continue;
+            }
+            pending_right = None;
+
             let cp = codepoints.get(idx).copied().unwrap_or(0x20);
             let ch = char::from_u32(cp).filter(|c| *c != '\0').unwrap_or(' ');
             let text = ch.to_string();
-            let style = font_style(flags.get(idx).copied().unwrap_or(0));
-            let key = GlyphKey {
-                text: text.clone(),
-                style,
+            let style = font_style(cell_flags);
+            let wide = is_wide_lead(cell_flags);
+            let kind = if wide {
+                GlyphKind::Wide
+            } else {
+                GlyphKind::Normal
             };
-            let alloc = self.cache.get_or_insert(key, GlyphKind::Normal);
+
+            let alloc = self.cache.get_or_insert(
+                GlyphKey {
+                    text: text.clone(),
+                    style,
+                },
+                kind,
+            );
+            let base = alloc.slot.slot_id();
             if alloc.is_new {
-                let rgba = self.rasterizer.rasterize(&text, style)?;
-                self.upload_glyph(alloc.slot.slot_id(), &rgba);
+                let rgba = self.rasterizer.rasterize(&text, style, wide)?;
+                if wide {
+                    let (left, right) =
+                        split_wide_bitmap(&rgba, self.cell_size.0 as u32, self.cell_size.1 as u32);
+                    self.upload_glyph(base, &left);
+                    self.upload_glyph(base + 1, &right);
+                } else {
+                    self.upload_glyph(base, &rgba);
+                }
             }
-            slots.push(alloc.slot.slot_id());
+            slots.push(base);
+            if wide {
+                pending_right = Some(base + 1);
+            }
         }
         self.instances = pack_instances(cols, rows, bg, fg, &slots, flags, &self.palette);
         self.instance_count = count as i32;
