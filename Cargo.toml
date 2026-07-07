@@ -4,7 +4,12 @@ members = ["justerm-core", "justerm-wasm-decode"]
 # 0.5.1 tombstone, frozen at its own version) are deliberately OUTSIDE the workspace:
 # the fuzz crate carries its own `[workspace]`, and the facade must not be dragged by
 # the version-lockstep below. Verify them via `--manifest-path` (see CLAUDE.md).
-exclude = ["fuzz", "justerm-facade"]
+# `justerm-renderer` (first-party WebGL2 renderer, ADR-0018) is also excluded: its
+# web-sys/glow deps are wasm32-only, so it would break the host `cargo test --workspace`
+# gate. It carries its own version track and is gated with
+# `cargo build --manifest-path justerm-renderer/Cargo.toml --target wasm32-unknown-unknown`
+# (host `cargo test` runs its pure `color` module).
+exclude = ["fuzz", "justerm-facade", "justerm-renderer"]
 resolver = "3"
 
 # Shared across the core crate and the `justerm-wasm-decode` binding so one version bump
