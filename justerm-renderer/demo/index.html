@@ -1,0 +1,35 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>justerm-renderer scaffold proof (#259)</title>
+<style>
+  body { margin: 0; background: #000; }
+  #c { display: block; }
+</style>
+<!--
+  Scaffold proof harness (#259): loads the real justerm-renderer wasm, binds it to the
+  canvas, and clears to an injected default background (0x1E1E2E). A JS-side readPixels
+  confirms the real WebGL2 context painted the exact injected colour — no fake backend.
+  Build the pkg first:  wasm-pack build --target web --dev --out-dir pkg
+  The #260+ slices grow this into the real grid demo; #273 wires it into justerm-web.
+-->
+<canvas id="c" width="320" height="200"></canvas>
+<script type="module">
+  import init, { JustermRenderer } from "../pkg/justerm_renderer.js";
+
+  const DEFAULT_BG = 0x1e1e2e; // distinctive dark slate: rgb(30, 30, 46)
+  await init();
+
+  const renderer = new JustermRenderer("#c", DEFAULT_BG);
+  renderer.resize(320, 200);
+  renderer.render();
+
+  // Read back a pixel from the SAME WebGL2 context (getContext returns the existing
+  // one). Done synchronously right after render() so the drawing buffer still holds
+  // the cleared colour (no preserveDrawingBuffer needed).
+  const gl = document.querySelector("#c").getContext("webgl2");
+  const px = new Uint8Array(4);
+  gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+
+  window.__proof = { pixel: Array.from(px), expected: [30, 30, 46, 255] };
+  window.__done = true;
+</script>
