@@ -1,62 +1,88 @@
 <!doctype html>
 <meta charset="utf-8" />
-<title>justerm-renderer wide/CJK proof (#268)</title>
+<title>justerm-renderer proof — wide (#268) + guard-band/ink-scan (#288)</title>
 <style>
   body { margin: 0; background: #000; }
   #c { display: block; image-rendering: pixelated; }
 </style>
 <!--
-  Wide/CJK proof (#268): a double-width glyph ('中') is rasterised at 2*cell_w, split into
-  two atlas slots, and rendered across its lead cell + spacer cell. readPixels proves BOTH
-  cells carry glyph coverage — the spacer cell (codepoint space) is NOT blank, which only
-  happens if the wide right-half slot was assigned to it. Build:
-    wasm-pack build --target web --dev --out-dir pkg
+  Proof harness. readPixels reads coverage straight off the canvas (bottom-left origin; row 0
+  is drawn at the top, so its band is [H-CH, H)). window.__proof carries the assertions.
+
+  #268 wide/CJK: '中' (wide lead) + its spacer both carry glyph coverage (the spacer is NOT
+  blank), and 'A' renders, a real space is blank.
+
+  #288 guard band + ink-scan: two box-drawing '─' in adjacent cells form a CONTINUOUS line
+  across the cell seam. This only holds if the padded atlas cell's *content* maps edge-to-edge
+  (the shader insets the texcoord past the guard band); a transparent-margin bug would leave a
+  dark notch at every seam. Build: wasm-pack build --target web --dev --out-dir pkg
 -->
-<canvas id="c" width="320" height="200"></canvas>
+<canvas id="c" width="320" height="120"></canvas>
 <script type="module">
   import init, { JustermRenderer } from "../pkg/justerm_renderer.js";
 
-  // CellFlags bits.
   const WIDE_CHAR = 1 << 8, WIDE_SPACER = 1 << 9;
-  const FG = 0xffffff, BG = 0x1e1e2e, H = 200;
+  const FG = 0xffffff, BG = 0x1e1e2e;
   await init();
 
   const palette = new Uint32Array(256);
   const r = new JustermRenderer("#c", palette, FG, BG);
-  r.resize(320, H);
   const CW = r.cell_width(), CH = r.cell_height();
 
-  // 4 cells: 中 (wide lead) + its spacer, then 'A' (normal), then a blank space (control).
-  const cps   = new Uint32Array([0x4e2d, 0x20,         0x41, 0x20]);
-  const flags = new Uint16Array([WIDE_CHAR, WIDE_SPACER, 0,   0]);
-  const zeros = new Uint32Array([0, 0, 0, 0]);
-  r.apply_frame(4, 1, zeros, zeros, cps, flags);
+  // 6 cells, 1 row: [─][─][A][中(lead)][spacer][space]
+  const COLS = 6, H = 120;
+  r.resize(COLS * CW, H);
+  const cps   = new Uint32Array([0x2500, 0x2500, 0x41, 0x4e2d, 0x20,        0x20]);
+  const flags = new Uint16Array([0,      0,      0,    WIDE_CHAR, WIDE_SPACER, 0]);
+  const zeros = new Uint32Array(COLS).fill(0);
+  r.apply_frame(COLS, 1, zeros, zeros, cps, flags);
   r.render();
 
   const gl = document.querySelector("#c").getContext("webgl2");
-  const scanBright = (col) => {
-    const buf = new Uint8Array(CW * CH * 4);
-    gl.readPixels(col * CW, H - CH, CW, CH, gl.RGBA, gl.UNSIGNED_BYTE, buf);
+  // Read a `w`-wide strip at column `x0` over the top row band; return {buf,w}.
+  const readStrip = (x0, w) => {
+    const buf = new Uint8Array(w * CH * 4);
+    gl.readPixels(x0, H - CH, w, CH, gl.RGBA, gl.UNSIGNED_BYTE, buf);
+    return { buf, w };
+  };
+  const litAt = ({ buf, w }, x, y) => buf[(y * w + x) * 4] > 150; // R channel of fg-ish px
+  const countLit = (strip) => {
     let n = 0;
-    for (let i = 0; i < buf.length; i += 4) if (buf[i] > 150) n++;
-    return n; // count of fg-ish pixels
+    for (let i = 0; i < strip.buf.length; i += 4) if (strip.buf[i] > 150) n++;
+    return n;
   };
 
-  const leadHalf = scanBright(0);   // 中 left half
-  const spacerHalf = scanBright(1); // 中 right half (the spacer cell)
-  const letterA = scanBright(2);    // normal glyph renders
-  const blank = scanBright(3);      // a real blank space → ~0
+  const cell = (col) => readStrip(col * CW, CW);
+  const leadHalf = countLit(cell(3));   // 中 left half
+  const spacerHalf = countLit(cell(4)); // 中 right half (the spacer cell)
+  const letterA = countLit(cell(2));
+  const blank = countLit(cell(5));
+
+  // Box connection: read the two '─' cells as one 2*CW strip; find the horizontal-line row
+  // (most lit), then require the seam columns (CW-1 and CW) both lit → the line bridges cells.
+  const box = readStrip(0, 2 * CW);
+  let lineRow = 0, best = -1;
+  for (let y = 0; y < CH; y++) {
+    let n = 0;
+    for (let x = 0; x < 2 * CW; x++) if (litAt(box, x, y)) n++;
+    if (n > best) { best = n; lineRow = y; }
+  }
+  const seamBridged = litAt(box, CW - 1, lineRow) && litAt(box, CW, lineRow);
 
   window.__proof = {
     cell: [CW, CH],
-    leadHalf, spacerHalf, letterA, blank,
+    leadHalf, spacerHalf, letterA, blank, lineRow, seamBridged,
     checks: {
+      // #268 regression
       leadRenders: leadHalf > 0,
-      spacerRenders: spacerHalf > 0, // the key: spacer is NOT blank
+      spacerRenders: spacerHalf > 0,
       letterRenders: letterA > 0,
       blankIsBlank: blank === 0,
+      // #288
+      boxSeamBridged: seamBridged,
     },
-    ok: leadHalf > 0 && spacerHalf > 0 && letterA > 0 && blank === 0,
+    ok:
+      leadHalf > 0 && spacerHalf > 0 && letterA > 0 && blank === 0 && seamBridged,
   };
   window.__done = true;
 </script>
