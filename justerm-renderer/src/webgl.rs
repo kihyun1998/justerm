@@ -13,14 +13,13 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 use web_sys::{HtmlCanvasElement, WebGl2RenderingContext};
 
-use crate::attrs::{font_style, is_wide_lead, is_wide_spacer};
 use crate::bitmap::split_wide_bitmap;
 use crate::color::gl_rgb;
 use crate::frame::pack_instances;
 use crate::glyph_cache::{
-    FontStyle, GLYPHS_PER_LAYER, GlyphCache, GlyphKey, GlyphKind, WIDE_BASE, WIDE_CAPACITY,
-    slot_texcoord,
+    FontStyle, GLYPHS_PER_LAYER, GlyphCache, WIDE_BASE, WIDE_CAPACITY, slot_texcoord,
 };
+use crate::glyph_resolve::{ResolveError, resolve_frame};
 use crate::mat4::Mat4;
 use crate::palette::Palette;
 use crate::rasterizer::Rasterizer;
@@ -114,6 +113,37 @@ pub struct JustermRenderer {
 fn f32_bytes(v: &[f32]) -> &[u8] {
     // Safety: `f32` has no padding/invalid bytes; length is exact.
     unsafe { core::slice::from_raw_parts(v.as_ptr().cast::<u8>(), std::mem::size_of_val(v)) }
+}
+
+/// Upload one glyph's RGBA bitmap to its `(layer, band)` in the atlas. A free function (not
+/// a `&self` method) so the frame resolver's upload closure can borrow only the GL fields,
+/// leaving `&mut self.cache` free for [`glyph_resolve::resolve_frame`].
+fn upload_glyph(
+    gl: &glow::Context,
+    atlas: glow::Texture,
+    cell_size: (f32, f32),
+    slot: u16,
+    rgba: &[u8],
+) {
+    let (cell_w, cell_h) = (cell_size.0 as i32, cell_size.1 as i32);
+    let (layer, band) = slot_texcoord(slot);
+    // Safety: live GL context; the sub-image fits the allocated storage.
+    unsafe {
+        gl.bind_texture(glow::TEXTURE_2D_ARRAY, Some(atlas));
+        gl.tex_sub_image_3d(
+            glow::TEXTURE_2D_ARRAY,
+            0,
+            0,
+            band as i32 * cell_h,
+            layer as i32,
+            cell_w,
+            cell_h,
+            1,
+            glow::RGBA,
+            glow::UNSIGNED_BYTE,
+            glow::PixelUnpackData::Slice(Some(rgba)),
+        );
+    }
 }
 
 #[wasm_bindgen]
@@ -310,33 +340,15 @@ impl JustermRenderer {
             let rgba = self
                 .rasterizer
                 .rasterize(&ch.to_string(), FontStyle::Normal, false)?;
-            self.upload_glyph((cp - 0x20) as u16, &rgba);
-        }
-        Ok(())
-    }
-
-    /// Upload one glyph's RGBA bitmap to its `(layer, band)` in the atlas.
-    fn upload_glyph(&self, slot: u16, rgba: &[u8]) {
-        let (cell_w, cell_h) = (self.cell_size.0 as i32, self.cell_size.1 as i32);
-        let (layer, band) = slot_texcoord(slot);
-        // Safety: live GL context; the sub-image fits the allocated storage.
-        unsafe {
-            self.gl
-                .bind_texture(glow::TEXTURE_2D_ARRAY, Some(self.atlas));
-            self.gl.tex_sub_image_3d(
-                glow::TEXTURE_2D_ARRAY,
-                0,
-                0,
-                band as i32 * cell_h,
-                layer as i32,
-                cell_w,
-                cell_h,
-                1,
-                glow::RGBA,
-                glow::UNSIGNED_BYTE,
-                glow::PixelUnpackData::Slice(Some(rgba)),
+            upload_glyph(
+                &self.gl,
+                self.atlas,
+                self.cell_size,
+                (cp - 0x20) as u16,
+                &rgba,
             );
         }
+        Ok(())
     }
 
     /// Measured cell width in device pixels (from the atlas rasteriser).
@@ -376,60 +388,41 @@ impl JustermRenderer {
         flags: &[u16],
     ) -> Result<(), JsValue> {
         let count = (cols * rows) as usize;
-        let mut slots = Vec::with_capacity(count);
-        // A wide lead assigns its right half to the next (spacer) cell.
-        let mut pending_right: Option<u16> = None;
-        for idx in 0..count {
-            // A wide glyph never spans rows (justerm-core wraps a lead off the last column),
-            // so a pending right-half must not leak across a row boundary — reset at col 0
-            // to stay correct even on a malformed (direct-caller) frame.
-            if (idx as u32).is_multiple_of(cols) {
-                pending_right = None;
-            }
-            let cell_flags = flags.get(idx).copied().unwrap_or(0);
-
-            // A spacer draws the lead glyph's right-half slot (no rasterise of its own).
-            if is_wide_spacer(cell_flags) {
-                slots.push(pending_right.take().unwrap_or(0));
-                continue;
-            }
-            pending_right = None;
-
-            let cp = codepoints.get(idx).copied().unwrap_or(0x20);
-            let ch = char::from_u32(cp).filter(|c| *c != '\0').unwrap_or(' ');
-            let text = ch.to_string();
-            let style = font_style(cell_flags);
-            let wide = is_wide_lead(cell_flags);
-            let kind = if wide {
-                GlyphKind::Wide
-            } else {
-                GlyphKind::Normal
-            };
-
-            let alloc = self.cache.get_or_insert(
-                GlyphKey {
-                    text: text.clone(),
-                    style,
-                },
-                kind,
-            );
-            let base = alloc.slot.slot_id();
-            if alloc.is_new {
-                let rgba = self.rasterizer.rasterize(&text, style, wide)?;
+        // Resolve the per-cell glyph slots via the pure host-tested resolver (#280): it
+        // rasterises before committing (a failure strands nothing), pins this frame's
+        // working set (an over-capacity frame is surfaced, not silently corrupted), and
+        // sanitises control codepoints to space. Field-level borrows keep `&mut cache`
+        // disjoint from the GL fields the upload closure needs.
+        let cache = &mut self.cache;
+        let rasterizer = &self.rasterizer;
+        let gl = &self.gl;
+        let atlas = self.atlas;
+        let cell_size = self.cell_size;
+        let slots = resolve_frame(
+            cols,
+            rows,
+            codepoints,
+            flags,
+            cache,
+            |text, style, wide| rasterizer.rasterize(text, style, wide),
+            |base, wide, rgba: Vec<u8>| {
                 if wide {
                     let (left, right) =
-                        split_wide_bitmap(&rgba, self.cell_size.0 as u32, self.cell_size.1 as u32);
-                    self.upload_glyph(base, &left);
-                    self.upload_glyph(base + 1, &right);
+                        split_wide_bitmap(&rgba, cell_size.0 as u32, cell_size.1 as u32);
+                    upload_glyph(gl, atlas, cell_size, base, &left);
+                    upload_glyph(gl, atlas, cell_size, base + 1, &right);
                 } else {
-                    self.upload_glyph(base, &rgba);
+                    upload_glyph(gl, atlas, cell_size, base, &rgba);
                 }
-            }
-            slots.push(base);
-            if wide {
-                pending_right = Some(base + 1);
-            }
-        }
+            },
+        )
+        .map_err(|e| match e {
+            ResolveError::Rasterize(js) => js,
+            ResolveError::FrameExceedsCapacity => JsValue::from_str(
+                "justerm-renderer: frame references more distinct glyphs than the atlas can hold",
+            ),
+        })?;
+
         self.instances = pack_instances(cols, rows, bg, fg, &slots, flags, &self.palette);
         self.instance_count = count as i32;
         Ok(())
