@@ -58,8 +58,9 @@ impl Rasterizer {
         let cell_h =
             ((m.font_bounding_box_ascent() + m.font_bounding_box_descent()).ceil() as u32).max(1);
 
-        // Resize the canvas to one cell; a resize clears the 2D state, so re-apply it.
-        canvas.set_width(cell_w);
+        // Size the canvas to a DOUBLE cell (so a wide glyph fits); a resize clears the 2D
+        // state, so re-apply it.
+        canvas.set_width(cell_w * 2);
         canvas.set_height(cell_h);
         Self::apply_state(
             &ctx,
@@ -88,13 +89,16 @@ impl Rasterizer {
         (self.cell_w, self.cell_h)
     }
 
-    /// Rasterise one grapheme in the given font `style` into a `cell_w × cell_h` RGBA
-    /// bitmap (white, alpha = coverage). Row-major, 4 bytes/pixel — ready for upload.
-    pub fn rasterize(&self, text: &str, style: FontStyle) -> Result<Vec<u8>, JsValue> {
-        let (w, h) = (self.cell_w as f64, self.cell_h as f64);
+    /// Rasterise one grapheme in the given font `style` into a white/coverage RGBA bitmap,
+    /// row-major. A `wide` glyph is `2*cell_w × cell_h` (split into two cells for upload);
+    /// a normal glyph is `cell_w × cell_h`.
+    pub fn rasterize(&self, text: &str, style: FontStyle, wide: bool) -> Result<Vec<u8>, JsValue> {
+        let w = if wide { self.cell_w * 2 } else { self.cell_w } as f64;
+        let h = self.cell_h as f64;
         self.ctx
             .set_font(&font_string(&self.font_family, self.font_size, style));
-        self.ctx.clear_rect(0.0, 0.0, w, h);
+        // Always clear the full (double) canvas so a previous wide glyph can't linger.
+        self.ctx.clear_rect(0.0, 0.0, (self.cell_w * 2) as f64, h);
         self.ctx.fill_text(text, 0.0, 0.0)?;
         let img = self.ctx.get_image_data(0.0, 0.0, w, h)?;
         Ok(img.data().to_vec())
