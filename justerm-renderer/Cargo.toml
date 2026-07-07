@@ -32,6 +32,11 @@ features = [
     "Element",
     "HtmlCanvasElement",
     "WebGl2RenderingContext",
+    "WebGlTexture",
+    "OffscreenCanvas",
+    "OffscreenCanvasRenderingContext2d",
+    "TextMetrics",
+    "ImageData",
 ]
 
 [dev-dependencies]

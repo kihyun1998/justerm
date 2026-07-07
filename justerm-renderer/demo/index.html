@@ -1,65 +1,68 @@
 <!doctype html>
 <meta charset="utf-8" />
-<title>justerm-renderer bg-grid proof (#261)</title>
+<title>justerm-renderer glyph proof (#264)</title>
 <style>
   body { margin: 0; background: #000; }
-  #c { display: block; }
+  #c { display: block; image-rendering: pixelated; }
 </style>
 <!--
-  Bg-grid proof harness (#261): loads the real justerm-renderer wasm, injects a palette,
-  and applies a small frame of background colour references (Default / Indexed / Rgb).
-  readPixels on the same WebGL2 context proves each cell resolves via the palette, and
-  that the canvas margin outside the grid is the default bg (no un-drawn-cell bleed, #255).
-  Build first:  wasm-pack build --target web --dev --out-dir pkg
+  Glyph proof harness (#264): loads the real justerm-renderer wasm, applies a frame with
+  text (codepoints per cell), and lets the renderer rasterise glyphs on demand via
+  OffscreenCanvas + upload them to the atlas texture array. readPixels on the same WebGL2
+  context proves the glyph coverage composited fg over bg: '█' (full block) = fg, ' ' = bg,
+  and 'A' is a mix (a real letter shape). Build: wasm-pack build --target web --dev --out-dir pkg
 -->
 <canvas id="c" width="320" height="200"></canvas>
 <script type="module">
   import init, { JustermRenderer } from "../pkg/justerm_renderer.js";
 
-  const DEFAULT_FG = 0xffffff, DEFAULT_BG = 0x1e1e2e;
-  const CW = 16, CH = 32, H = 200;
-  const def = () => 0;                       // tag 0 Default
-  const idx = (i) => (1 << 24) | i;          // tag 1 Indexed
-  const rgb = (v) => (2 << 24) | v;          // tag 2 Rgb
-
+  const FG = 0xffffff, BG = 0x1e1e2e;
+  const H = 200;
   await init();
 
   const palette = new Uint32Array(256);
-  palette[1] = 0x00ff00;                     // indexed slot 1 = green
-
-  const r = new JustermRenderer("#c", palette, DEFAULT_FG, DEFAULT_BG);
+  const r = new JustermRenderer("#c", palette, FG, BG);
   r.resize(320, H);
+  const CW = r.cell_width(), CH = r.cell_height();
 
-  // 4×2 grid, row-major bg refs mixing all three reference kinds.
-  const bg = new Uint32Array([
-    rgb(0xe06c75), idx(1), def(),         rgb(0x2244aa), // row 0
-    idx(1),        rgb(0xffffff), def(),  rgb(0x000000), // row 1
-  ]);
-  r.apply_frame(4, 2, bg);
+  // Row 0: █ (full block), space, A, B — all default bg, default fg (white).
+  const cps = new Uint32Array([0x2588, 0x20, 0x41, 0x42]);
+  const zeros = new Uint32Array([0, 0, 0, 0]);
+  r.apply_frame(4, 1, zeros, zeros, cps);
   r.render();
 
   const gl = document.querySelector("#c").getContext("webgl2");
-  const read = (col, row) => {
-    const x = col * CW + CW / 2, yTop = row * CH + CH / 2;
+  const readAt = (x, yTop) => {
     const px = new Uint8Array(4);
     gl.readPixels(x, H - 1 - yTop, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
     return [px[0], px[1], px[2]];
   };
-  const readXY = (x, yTop) => {
-    const px = new Uint8Array(4);
-    gl.readPixels(x, H - 1 - yTop, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
-    return [px[0], px[1], px[2]];
+  const center = (col) => readAt(col * CW + (CW >> 1), CH >> 1);
+
+  // Scan cell 'A' for a fg-ish (bright) and a bg-ish (dark) pixel → proves a real glyph.
+  const scanMixed = (col) => {
+    const w = CW, h = CH, x0 = col * CW;
+    const buf = new Uint8Array(w * h * 4);
+    gl.readPixels(x0, H - h, w, h, gl.RGBA, gl.UNSIGNED_BYTE, buf);
+    let hasBright = false, hasDark = false;
+    for (let i = 0; i < buf.length; i += 4) {
+      if (buf[i] > 200) hasBright = true;
+      if (buf[i] < 80) hasDark = true;
+    }
+    return { hasBright, hasDark };
   };
 
-  const checks = [
-    { name: "rgb cell (0,0)", got: read(0, 0), want: [224, 108, 117] },
-    { name: "indexed cell (1,0)", got: read(1, 0), want: [0, 255, 0] },
-    { name: "default cell (2,0)", got: read(2, 0), want: [30, 30, 46] },
-    { name: "white rgb cell (1,1)", got: read(1, 1), want: [255, 255, 255] },
-    { name: "margin outside grid", got: readXY(300, 150), want: [30, 30, 46] },
-  ];
-  const eq = (a, b) => a.every((v, i) => Math.abs(v - b[i]) <= 1);
+  const near = (a, b) => a.every((v, i) => Math.abs(v - b[i]) <= 12);
+  const block = center(0);   // █ → fg
+  const space = center(1);   // ' ' → bg
+  const letterA = scanMixed(2);
 
-  window.__proof = { checks, allMatch: checks.every((c) => eq(c.got, c.want)) };
+  window.__proof = {
+    cell: [CW, CH],
+    block, blockIsFg: near(block, [255, 255, 255]),
+    space, spaceIsBg: near(space, [30, 30, 46]),
+    letterA, letterMixed: letterA.hasBright && letterA.hasDark,
+    ok: near(block, [255, 255, 255]) && near(space, [30, 30, 46]) && letterA.hasBright && letterA.hasDark,
+  };
   window.__done = true;
 </script>

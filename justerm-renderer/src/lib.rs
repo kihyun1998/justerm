@@ -26,6 +26,8 @@ pub mod palette;
 // crate's pure core stays `cargo test`-able without a wasm runtime — the same split
 // justerm-wasm-decode uses (pure `flatten` vs the `#[wasm_bindgen]` layer).
 #[cfg(target_arch = "wasm32")]
+mod rasterizer;
+#[cfg(target_arch = "wasm32")]
 mod webgl;
 #[cfg(target_arch = "wasm32")]
 pub use webgl::JustermRenderer;
