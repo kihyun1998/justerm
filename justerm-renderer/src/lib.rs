@@ -16,6 +16,7 @@
 //! skeleton, and a stub that clears the canvas to the injected default background;
 //! the GPU pipeline (instanced grid, glyph atlas, shaders) lands in #260+.
 
+pub mod attrs;
 pub mod color;
 pub mod frame;
 pub mod glyph_cache;

@@ -9,14 +9,31 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 use web_sys::{OffscreenCanvas, OffscreenCanvasRenderingContext2d};
 
-/// A browser-backed glyph rasteriser bound to one font + size.
+use crate::glyph_cache::FontStyle;
+
+/// A browser-backed glyph rasteriser bound to one font family + size.
 pub struct Rasterizer {
     /// Held only to keep the JS canvas alive for the context's lifetime.
     #[allow(dead_code)]
     canvas: OffscreenCanvas,
     ctx: OffscreenCanvasRenderingContext2d,
+    font_family: String,
+    font_size: f32,
     cell_w: u32,
     cell_h: u32,
+}
+
+/// A CSS `font` string for the family/size/style (mirrors beamterm `build_font_string`).
+fn font_string(family: &str, size: f32, style: FontStyle) -> String {
+    let (bold, italic) = match style {
+        FontStyle::Normal => (false, false),
+        FontStyle::Bold => (true, false),
+        FontStyle::Italic => (false, true),
+        FontStyle::BoldItalic => (true, true),
+    };
+    let italic = if italic { "italic " } else { "" };
+    let bold = if bold { "bold " } else { "" };
+    format!("{italic}{bold}{size}px {family}, monospace")
 }
 
 impl Rasterizer {
@@ -29,8 +46,11 @@ impl Rasterizer {
             .ok_or_else(|| JsValue::from_str("justerm-renderer: no 2d context"))?
             .dyn_into::<OffscreenCanvasRenderingContext2d>()?;
 
-        let font = format!("{font_size}px {font_family}");
-        Self::apply_state(&ctx, &font);
+        // Cell metrics are style-independent for monospace (bold/italic keep the advance).
+        Self::apply_state(
+            &ctx,
+            &font_string(font_family, font_size, FontStyle::Normal),
+        );
 
         // Measure the cell from the full block (fills the em box in monospace fonts).
         let m = ctx.measure_text("\u{2588}")?;
@@ -41,11 +61,16 @@ impl Rasterizer {
         // Resize the canvas to one cell; a resize clears the 2D state, so re-apply it.
         canvas.set_width(cell_w);
         canvas.set_height(cell_h);
-        Self::apply_state(&ctx, &font);
+        Self::apply_state(
+            &ctx,
+            &font_string(font_family, font_size, FontStyle::Normal),
+        );
 
         Ok(Rasterizer {
             canvas,
             ctx,
+            font_family: font_family.to_string(),
+            font_size,
             cell_w,
             cell_h,
         })
@@ -63,10 +88,12 @@ impl Rasterizer {
         (self.cell_w, self.cell_h)
     }
 
-    /// Rasterise one grapheme into a `cell_w × cell_h` RGBA bitmap (white, alpha =
-    /// coverage). Row-major, 4 bytes/pixel — ready for a texture-array upload.
-    pub fn rasterize(&self, text: &str) -> Result<Vec<u8>, JsValue> {
+    /// Rasterise one grapheme in the given font `style` into a `cell_w × cell_h` RGBA
+    /// bitmap (white, alpha = coverage). Row-major, 4 bytes/pixel — ready for upload.
+    pub fn rasterize(&self, text: &str, style: FontStyle) -> Result<Vec<u8>, JsValue> {
         let (w, h) = (self.cell_w as f64, self.cell_h as f64);
+        self.ctx
+            .set_font(&font_string(&self.font_family, self.font_size, style));
         self.ctx.clear_rect(0.0, 0.0, w, h);
         self.ctx.fill_text(text, 0.0, 0.0)?;
         let img = self.ctx.get_image_data(0.0, 0.0, w, h)?;
