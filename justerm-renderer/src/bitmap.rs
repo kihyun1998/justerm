@@ -3,8 +3,9 @@
 /// Split a double-width glyph bitmap (`2*cell_w × cell_h`, RGBA, row-major) into its two
 /// `cell_w × cell_h` halves: the left half (columns `0..cell_w`) uploads to the lead cell's
 /// slot, the right half (columns `cell_w..2*cell_w`) to the spacer's slot (`slot+1`), so the
-/// two grid cells together show the whole wide glyph. (No padding yet — #280 adds the guard
-/// band, which will split the *content* region like beamterm's `split_double_width_glyph`.)
+/// two grid cells together show the whole wide glyph. (No padding yet — a PADDING guard band
+/// with ink-scan cell metrics, splitting the *content* region like beamterm's
+/// `split_double_width_glyph`, is a tracked follow-up under #280, not yet implemented.)
 pub fn split_wide_bitmap(rgba: &[u8], cell_w: u32, cell_h: u32) -> (Vec<u8>, Vec<u8>) {
     let dst_stride = cell_w as usize * 4;
     let src_stride = dst_stride * 2;

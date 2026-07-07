@@ -130,6 +130,44 @@ impl GlyphCache {
         }
     }
 
+    /// Peek a glyph's slot **without allocating**: returns `Some` for a fast-path ASCII
+    /// glyph or a resident cached glyph (marking it most-recently-used), `None` for a miss.
+    /// Unlike [`get_or_insert`](Self::get_or_insert) a miss commits nothing — the caller can
+    /// rasterise *before* committing (so a rasterise failure never strands a slot, #280).
+    pub fn touch(&mut self, key: &GlyphKey, kind: GlyphKind) -> Option<GlyphSlot> {
+        if kind == GlyphKind::Normal {
+            if let Some(slot) = ascii_fast_path(key) {
+                return Some(slot);
+            }
+            self.normal.get(key).copied()
+        } else {
+            self.wide.get(key).copied()
+        }
+    }
+
+    /// The glyph a *new* insertion of `kind` would evict right now, or `None` if the region
+    /// still has a fresh slot (no eviction). Peeks without disturbing LRU order — the
+    /// resolver uses this to reject a frame *before* committing, so an over-capacity frame
+    /// never evicts a glyph it still references nor strands an uploaded-less slot (#280 P0).
+    pub fn next_eviction(&self, kind: GlyphKind) -> Option<&GlyphKey> {
+        match kind {
+            GlyphKind::Normal => {
+                if self.normal_next >= NORMAL_CAPACITY {
+                    self.normal.peek_lru().map(|(k, _)| k)
+                } else {
+                    None
+                }
+            }
+            GlyphKind::Wide | GlyphKind::Emoji => {
+                if self.wide_next >= WIDE_BASE + WIDE_CAPACITY * 2 {
+                    self.wide.peek_lru().map(|(k, _)| k)
+                } else {
+                    None
+                }
+            }
+        }
+    }
+
     /// Get the slot for a glyph, allocating (and evicting the LRU glyph if the region is
     /// full) when it is new. Marks the glyph most-recently-used.
     pub fn get_or_insert(&mut self, key: GlyphKey, kind: GlyphKind) -> Allocation {
