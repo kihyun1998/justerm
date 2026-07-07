@@ -474,13 +474,17 @@ function viewportFrame(out?: { scrollCount: number }): DecodedFrame {
   const codepoints: number[] = [];
   const spans: number[] = [];
   let offset = 0;
-  rows.forEach((text, line) => {
-    const chars = [...text];
-    if (chars.length === 0) return;
-    spans.push(line, 0, chars.length - 1, offset, chars.length);
-    for (const c of chars) codepoints.push(c.codePointAt(0)!);
-    offset += chars.length;
-  });
+  // #255: emit EVERY cell of every row (pad to COLS with spaces), like a real core —
+  // which sends the whole viewport, not just non-empty content. Blank cells then paint
+  // space-on-defaultBg (dark); a sparse frame left them unpainted, showing beamterm's
+  // GL-default (blue) since `batch.clear` doesn't back-fill un-drawn cells.
+  for (let line = 0; line < ROWS; line++) {
+    const chars = [...(rows[line] ?? "")];
+    chars.length = COLS; // clamp long lines; pad short ones (holes → spaces below)
+    spans.push(line, 0, COLS - 1, offset, COLS);
+    for (const c of chars) codepoints.push(c ? c.codePointAt(0)! : 0x20);
+    offset += COLS;
+  }
   const n = codepoints.length;
   return {
     cols: COLS,
