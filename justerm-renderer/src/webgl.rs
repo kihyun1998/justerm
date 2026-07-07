@@ -1,9 +1,10 @@
 //! Thin `#[wasm_bindgen]` + WebGL2 glue — browser-only (wasm32), verified in the demo.
 //!
-//! Tracer (#260): the full instanced pipeline drawing ONE background cell — GL context
-//! → program → quad + per-instance buffers → ortho projection uniform → a single
-//! `drawArraysInstanced`. `set_cell` places it; the bare `render` clears then draws it.
-//! #261 scales this to the whole grid from a decoded frame; glyphs land in #264.
+//! The instanced pipeline — GL context → program → quad + per-instance buffers → ortho
+//! projection uniform → one `drawArraysInstanced`. `apply_frame` resolves a frame's
+//! background references with the injected palette and packs one instance per cell (#261,
+//! pure logic in `frame`/`palette`); `render` clears then draws the whole grid in one
+//! call. Glyphs land in #264.
 
 use glow::HasContext;
 use wasm_bindgen::JsCast;
@@ -11,7 +12,9 @@ use wasm_bindgen::prelude::*;
 use web_sys::{HtmlCanvasElement, WebGl2RenderingContext};
 
 use crate::color::gl_rgb;
+use crate::frame::pack_bg_instances;
 use crate::mat4::Mat4;
+use crate::palette::Palette;
 
 /// Unit-quad corners (triangle strip): the geometry each cell instance is scaled by.
 const QUAD: [f32; 8] = [0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 1.0, 1.0];
@@ -41,8 +44,9 @@ void main() { FragColor = vec4(v_bg, 1.0); }
 /// The justerm-family WebGL2 terminal renderer.
 ///
 /// Consumer-side (ADR-0018): consumes a decoded frame + an injected palette and paints
-/// via WebGL2. `justerm-core` stays render-agnostic. Tracer slice — exposes `set_cell`
-/// to place one background cell; #261 replaces it with `apply_frame`.
+/// via WebGL2. `justerm-core` stays render-agnostic. `apply_frame` resolves each cell's
+/// background reference with the injected palette and packs one instance per cell (#261);
+/// glyphs land in #264.
 #[wasm_bindgen]
 pub struct JustermRenderer {
     gl: glow::Context,
@@ -51,14 +55,16 @@ pub struct JustermRenderer {
     instance_vbo: glow::Buffer,
     u_projection: glow::UniformLocation,
     u_cell_size: glow::UniformLocation,
-    /// Injected default background (`0xRRGGBB`) — the consumer owns the theme (ADR-0002).
-    default_bg: u32,
+    /// The consumer's frozen colour scheme (ADR-0002: the consumer owns hex).
+    palette: Palette,
     /// Cell size in device pixels (a fixed placeholder until the glyph atlas sets it, #264).
     cell_size: (f32, f32),
     /// Drawing-buffer size in device pixels.
     size: (i32, i32),
-    /// The single tracer cell: `(col, row, rgb)`. `None` → nothing drawn over the clear.
-    cell: Option<(f32, f32, [f32; 3])>,
+    /// Packed per-cell instance data `[col, row, r, g, b]` for the current frame.
+    instances: Vec<f32>,
+    /// Number of cells (instances) to draw.
+    instance_count: i32,
 }
 
 /// Reinterpret an `f32` slice as bytes for `buffer_data` upload.
@@ -69,10 +75,18 @@ fn f32_bytes(v: &[f32]) -> &[u8] {
 
 #[wasm_bindgen]
 impl JustermRenderer {
-    /// Bind a renderer to the canvas matched by `canvas_selector`, clearing to
-    /// `default_bg` (`0xRRGGBB`, injected by the consumer).
+    /// Bind a renderer to the canvas matched by `canvas_selector`. The consumer injects
+    /// the colour scheme: `palette_colors` must be the **256** pre-built indexed colours
+    /// (`0xRRGGBB`) — e.g. justerm-wasm-decode `buildPalette` (16 ANSI + 6×6×6 cube +
+    /// grayscale) — plus the two defaults. A length other than 256 is rejected, not padded
+    /// (padding with black would resolve `Indexed(16..=255)` to `0x000000`).
     #[wasm_bindgen(constructor)]
-    pub fn new(canvas_selector: &str, default_bg: u32) -> Result<JustermRenderer, JsValue> {
+    pub fn new(
+        canvas_selector: &str,
+        palette_colors: Vec<u32>,
+        default_fg: u32,
+        default_bg: u32,
+    ) -> Result<JustermRenderer, JsValue> {
         console_error_panic_hook::set_once();
 
         let document = web_sys::window()
@@ -90,6 +104,14 @@ impl JustermRenderer {
         let gl = glow::Context::from_webgl2_context(webgl2);
         let size = (canvas.width() as i32, canvas.height() as i32);
 
+        let palette =
+            Palette::from_colors(&palette_colors, default_fg, default_bg).map_err(|e| {
+                JsValue::from_str(&format!(
+                    "justerm-renderer: palette must be 256 colours, got {}",
+                    e.got
+                ))
+            })?;
+
         let (program, vao, instance_vbo, u_projection, u_cell_size) = Self::build_pipeline(&gl)?;
 
         Ok(JustermRenderer {
@@ -99,10 +121,11 @@ impl JustermRenderer {
             instance_vbo,
             u_projection,
             u_cell_size,
-            default_bg,
+            palette,
             cell_size: (16.0, 32.0),
             size,
-            cell: None,
+            instances: Vec::new(),
+            instance_count: 0,
         })
     }
 
@@ -192,30 +215,30 @@ impl JustermRenderer {
         }
     }
 
-    /// Place the single tracer cell at `(col, row)` filled with `bg` (`0xRRGGBB`).
-    /// Superseded by `apply_frame` in #261.
-    pub fn set_cell(&mut self, col: u32, row: u32, bg: u32) {
-        self.cell = Some((col as f32, row as f32, gl_rgb(bg)));
+    /// Apply a `cols`×`rows` frame's background: `bg` holds one tagged-u32 colour
+    /// reference per cell in **dense row-major** order (length `cols*rows`), each in the
+    /// `justerm_core::encode_color` encoding. A **Full** decoded frame is already dense
+    /// row-major; a **Partial** frame is a span-ordered damaged *subset* and must be
+    /// scattered into a full grid before it reaches here — that decoder→renderer frame
+    /// adapter is tracked as its own slice. Each ref is resolved with the injected palette
+    /// and packed into one instance per cell — the hot path stays in Rust (ADR-0018 "A-ii").
+    /// #264 adds glyphs.
+    pub fn apply_frame(&mut self, cols: u32, rows: u32, bg: &[u32]) {
+        self.instances = pack_bg_instances(cols, rows, bg, &self.palette);
+        self.instance_count = (cols * rows) as i32;
     }
 
-    /// Apply a decoded frame. Seam only in this scaffold — #261 decodes the frame +
-    /// injected palette into per-cell instances (reference→RGB resolution in Rust).
-    pub fn apply_frame(&mut self, _frame: &[u8]) {
-        // #261: decode → instance packing (A-ii, hot path in wasm).
-    }
-
-    /// Clear to the injected default background, then draw the tracer cell (if any) via
-    /// one instanced draw call.
+    /// Clear to the palette's default background, then draw every cell of the current
+    /// frame with one instanced draw call.
     pub fn render(&self) {
-        let [dr, dg, db] = gl_rgb(self.default_bg);
+        let [dr, dg, db] = gl_rgb(self.palette.default_bg);
         unsafe {
             self.gl.clear_color(dr, dg, db, 1.0);
             self.gl.clear(glow::COLOR_BUFFER_BIT);
 
-            let Some((col, row, rgb)) = self.cell else {
+            if self.instance_count == 0 {
                 return;
-            };
-            let instance = [col, row, rgb[0], rgb[1], rgb[2]];
+            }
 
             self.gl.use_program(Some(self.program));
             self.gl.bind_vertex_array(Some(self.vao));
@@ -223,7 +246,7 @@ impl JustermRenderer {
                 .bind_buffer(glow::ARRAY_BUFFER, Some(self.instance_vbo));
             self.gl.buffer_data_u8_slice(
                 glow::ARRAY_BUFFER,
-                f32_bytes(&instance),
+                f32_bytes(&self.instances),
                 glow::DYNAMIC_DRAW,
             );
 
@@ -233,7 +256,8 @@ impl JustermRenderer {
             self.gl
                 .uniform_2_f32(Some(&self.u_cell_size), self.cell_size.0, self.cell_size.1);
 
-            self.gl.draw_arrays_instanced(glow::TRIANGLE_STRIP, 0, 4, 1);
+            self.gl
+                .draw_arrays_instanced(glow::TRIANGLE_STRIP, 0, 4, self.instance_count);
         }
     }
 }
