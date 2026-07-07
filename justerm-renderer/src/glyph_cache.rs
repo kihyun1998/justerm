@@ -56,6 +56,16 @@ impl GlyphSlot {
     }
 }
 
+/// Glyphs per texture-array layer (a 1×32 vertical strip). Also `NUM_LAYERS = slots/32`.
+pub const GLYPHS_PER_LAYER: u16 = 32;
+
+/// Map a bare slot index to its `(layer, band)` in the texture array: 32 glyphs stack
+/// vertically per layer, so `layer = slot / 32` and `band = slot % 32`. The upload path
+/// and the fragment shader must agree on this (shader: `layer = idx >> 5`, `pos = idx & 31`).
+pub fn slot_texcoord(slot: u16) -> (u16, u16) {
+    (slot / GLYPHS_PER_LAYER, slot % GLYPHS_PER_LAYER)
+}
+
 /// Caller-supplied glyph classification (the cache does not run unicode-width/emoji
 /// detection — that is the rasteriser's job).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -250,6 +260,16 @@ mod tests {
             text: text.to_string(),
             style,
         }
+    }
+
+    #[test]
+    fn slot_texcoord_splits_into_layer_and_band() {
+        // 32 glyphs per layer. Worked by hand: layer = slot/32, band = slot%32.
+        assert_eq!(slot_texcoord(0), (0, 0));
+        assert_eq!(slot_texcoord(31), (0, 31));
+        assert_eq!(slot_texcoord(32), (1, 0));
+        assert_eq!(slot_texcoord(95), (2, 31)); // last ASCII slot
+        assert_eq!(slot_texcoord(WIDE_BASE), (64, 0)); // 2048/32
     }
 
     #[test]

@@ -1,10 +1,10 @@
 //! Thin `#[wasm_bindgen]` + WebGL2 glue — browser-only (wasm32), verified in the demo.
 //!
-//! The instanced pipeline — GL context → program → quad + per-instance buffers → ortho
-//! projection uniform → one `drawArraysInstanced`. `apply_frame` resolves a frame's
-//! background references with the injected palette and packs one instance per cell (#261,
-//! pure logic in `frame`/`palette`); `render` clears then draws the whole grid in one
-//! call. Glyphs land in #264.
+//! The instanced pipeline draws the whole grid in one call: `apply_frame` resolves each
+//! cell's bg/fg references (injected palette) and its glyph slot (glyph cache, rasterising
+//! and uploading new glyphs on demand), packs one instance per cell, and `render`
+//! composites each glyph's coverage from the atlas over its background. ASCII
+//! (`0x20..=0x7E`) is pre-rasterised at construction. Wide/emoji + SGR attrs are #267/#268.
 
 use glow::HasContext;
 use wasm_bindgen::JsCast;
@@ -12,58 +12,83 @@ use wasm_bindgen::prelude::*;
 use web_sys::{HtmlCanvasElement, WebGl2RenderingContext};
 
 use crate::color::gl_rgb;
-use crate::frame::pack_bg_instances;
+use crate::frame::pack_instances;
+use crate::glyph_cache::{
+    FontStyle, GLYPHS_PER_LAYER, GlyphCache, GlyphKey, GlyphKind, NORMAL_CAPACITY, slot_texcoord,
+};
 use crate::mat4::Mat4;
 use crate::palette::Palette;
+use crate::rasterizer::Rasterizer;
 
-/// Unit-quad corners (triangle strip): the geometry each cell instance is scaled by.
+/// Texture-array layers covering the normal region (2048 slots / 32 per layer = 64).
+const NORMAL_LAYERS: i32 = (NORMAL_CAPACITY / GLYPHS_PER_LAYER) as i32;
+/// Default font size (CSS px) for the atlas rasteriser.
+const FONT_SIZE: f32 = 16.0;
+
+/// Unit-quad corners (triangle strip): geometry + per-cell glyph texture coordinate.
 const QUAD: [f32; 8] = [0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 1.0, 1.0];
+/// Floats per instance: col, row, bg(3), fg(3), glyph_slot.
+const INSTANCE_STRIDE: i32 = 9 * 4;
 
 const VERT_SRC: &str = r#"#version 300 es
-layout(location = 0) in vec2 a_pos;   // unit-quad corner (0..1)
-layout(location = 1) in vec2 a_cell;  // instance: (col, row)
-layout(location = 2) in vec3 a_bg;    // instance: background rgb (0..1)
+layout(location = 0) in vec2 a_pos;    // unit-quad corner (0..1) = local glyph texcoord
+layout(location = 1) in vec2 a_cell;   // instance: (col, row)
+layout(location = 2) in vec3 a_bg;     // instance: background rgb
+layout(location = 3) in vec3 a_fg;     // instance: foreground rgb
+layout(location = 4) in float a_glyph; // instance: atlas slot index
 uniform mat4 u_projection;
-uniform vec2 u_cell_size;             // cell size in device pixels
+uniform vec2 u_cell_size;
 out vec3 v_bg;
+out vec3 v_fg;
+flat out uint v_glyph;
+out vec2 v_tex;
 void main() {
     vec2 origin = a_cell * u_cell_size;
     vec2 pos = floor(origin + a_pos * u_cell_size + 0.5); // pixel-snapped
     gl_Position = u_projection * vec4(pos, 0.0, 1.0);
     v_bg = a_bg;
+    v_fg = a_fg;
+    v_glyph = uint(a_glyph);
+    v_tex = a_pos;
 }
 "#;
 
 const FRAG_SRC: &str = r#"#version 300 es
 precision mediump float;
+uniform mediump sampler2DArray u_atlas;
 in vec3 v_bg;
+in vec3 v_fg;
+flat in uint v_glyph;
+in vec2 v_tex;
 out vec4 FragColor;
-void main() { FragColor = vec4(v_bg, 1.0); }
+void main() {
+    // 32 glyphs stack vertically per layer: layer = slot/32, band = slot%32.
+    uint layer = v_glyph >> 5u;
+    uint band = v_glyph & 31u;
+    vec3 tc = vec3(v_tex.x, (float(band) + v_tex.y) / 32.0, float(layer));
+    float coverage = texture(u_atlas, tc).a;
+    FragColor = vec4(mix(v_bg, v_fg, coverage), 1.0);
+}
 "#;
 
 /// The justerm-family WebGL2 terminal renderer.
-///
-/// Consumer-side (ADR-0018): consumes a decoded frame + an injected palette and paints
-/// via WebGL2. `justerm-core` stays render-agnostic. `apply_frame` resolves each cell's
-/// background reference with the injected palette and packs one instance per cell (#261);
-/// glyphs land in #264.
 #[wasm_bindgen]
 pub struct JustermRenderer {
     gl: glow::Context,
     program: glow::Program,
     vao: glow::VertexArray,
     instance_vbo: glow::Buffer,
+    atlas: glow::Texture,
     u_projection: glow::UniformLocation,
     u_cell_size: glow::UniformLocation,
-    /// The consumer's frozen colour scheme (ADR-0002: the consumer owns hex).
     palette: Palette,
-    /// Cell size in device pixels (a fixed placeholder until the glyph atlas sets it, #264).
+    rasterizer: Rasterizer,
+    cache: GlyphCache,
+    /// Measured cell size in device pixels.
     cell_size: (f32, f32),
     /// Drawing-buffer size in device pixels.
     size: (i32, i32),
-    /// Packed per-cell instance data `[col, row, r, g, b]` for the current frame.
     instances: Vec<f32>,
-    /// Number of cells (instances) to draw.
     instance_count: i32,
 }
 
@@ -75,11 +100,8 @@ fn f32_bytes(v: &[f32]) -> &[u8] {
 
 #[wasm_bindgen]
 impl JustermRenderer {
-    /// Bind a renderer to the canvas matched by `canvas_selector`. The consumer injects
-    /// the colour scheme: `palette_colors` must be the **256** pre-built indexed colours
-    /// (`0xRRGGBB`) — e.g. justerm-wasm-decode `buildPalette` (16 ANSI + 6×6×6 cube +
-    /// grayscale) — plus the two defaults. A length other than 256 is rejected, not padded
-    /// (padding with black would resolve `Indexed(16..=255)` to `0x000000`).
+    /// Bind a renderer to the canvas matched by `canvas_selector`. `palette_colors` must be
+    /// the 256 pre-built indexed colours (see [`Palette::from_colors`]).
     #[wasm_bindgen(constructor)]
     pub fn new(
         canvas_selector: &str,
@@ -112,25 +134,32 @@ impl JustermRenderer {
                 ))
             })?;
 
-        let (program, vao, instance_vbo, u_projection, u_cell_size) = Self::build_pipeline(&gl)?;
+        let rasterizer = Rasterizer::new("monospace", FONT_SIZE)?;
+        let (cell_w, cell_h) = rasterizer.cell_size();
 
-        Ok(JustermRenderer {
+        let (program, vao, instance_vbo, u_projection, u_cell_size) = Self::build_pipeline(&gl)?;
+        let atlas = Self::build_atlas(&gl, cell_w, cell_h)?;
+
+        let mut renderer = JustermRenderer {
             gl,
             program,
             vao,
             instance_vbo,
+            atlas,
             u_projection,
             u_cell_size,
             palette,
-            cell_size: (16.0, 32.0),
+            rasterizer,
+            cache: GlyphCache::new(),
+            cell_size: (cell_w as f32, cell_h as f32),
             size,
             instances: Vec::new(),
             instance_count: 0,
-        })
+        };
+        renderer.prebake_ascii()?;
+        Ok(renderer)
     }
 
-    /// Compile the program and wire the quad + per-instance vertex arrays. The instance
-    /// buffer stays empty until `render` uploads the cell.
     fn build_pipeline(
         gl: &glow::Context,
     ) -> Result<
@@ -157,26 +186,74 @@ impl JustermRenderer {
             gl.vertex_attrib_pointer_f32(0, 2, glow::FLOAT, false, 8, 0);
             gl.enable_vertex_attrib_array(0);
 
-            // Per-instance [col, row, r, g, b] (stride 20) → locations 1 (cell) & 2 (bg).
+            // Per-instance [col, row, bg(3), fg(3), glyph] → locations 1..4.
             let instance_vbo = gl.create_buffer().map_err(js_err)?;
             gl.bind_buffer(glow::ARRAY_BUFFER, Some(instance_vbo));
-            gl.vertex_attrib_pointer_f32(1, 2, glow::FLOAT, false, 20, 0);
-            gl.enable_vertex_attrib_array(1);
-            gl.vertex_attrib_divisor(1, 1);
-            gl.vertex_attrib_pointer_f32(2, 3, glow::FLOAT, false, 20, 8);
-            gl.enable_vertex_attrib_array(2);
-            gl.vertex_attrib_divisor(2, 1);
+            for (loc, size, offset) in [(1u32, 2i32, 0i32), (2, 3, 8), (3, 3, 20), (4, 1, 32)] {
+                gl.vertex_attrib_pointer_f32(
+                    loc,
+                    size,
+                    glow::FLOAT,
+                    false,
+                    INSTANCE_STRIDE,
+                    offset,
+                );
+                gl.enable_vertex_attrib_array(loc);
+                gl.vertex_attrib_divisor(loc, 1);
+            }
 
             gl.bind_vertex_array(None);
 
-            let u_projection = gl
-                .get_uniform_location(program, "u_projection")
-                .ok_or_else(|| JsValue::from_str("justerm-renderer: no u_projection"))?;
-            let u_cell_size = gl
-                .get_uniform_location(program, "u_cell_size")
-                .ok_or_else(|| JsValue::from_str("justerm-renderer: no u_cell_size"))?;
+            let u_projection = uniform(gl, program, "u_projection")?;
+            let u_cell_size = uniform(gl, program, "u_cell_size")?;
+            // The atlas sampler stays on texture unit 0.
+            gl.use_program(Some(program));
+            let u_atlas = uniform(gl, program, "u_atlas")?;
+            gl.uniform_1_i32(Some(&u_atlas), 0);
 
             Ok((program, vao, instance_vbo, u_projection, u_cell_size))
+        }
+    }
+
+    /// Allocate the glyph atlas texture array: `cell_w` × (`32*cell_h`) × `NORMAL_LAYERS`,
+    /// RGBA8 (glyph coverage in the alpha channel).
+    fn build_atlas(gl: &glow::Context, cell_w: u32, cell_h: u32) -> Result<glow::Texture, JsValue> {
+        // Safety: live GL context.
+        unsafe {
+            let tex = gl.create_texture().map_err(js_err)?;
+            gl.bind_texture(glow::TEXTURE_2D_ARRAY, Some(tex));
+            gl.tex_storage_3d(
+                glow::TEXTURE_2D_ARRAY,
+                1,
+                glow::RGBA8,
+                cell_w as i32,
+                (cell_h * GLYPHS_PER_LAYER as u32) as i32,
+                NORMAL_LAYERS,
+            );
+            // NEAREST (matching beamterm): 32 glyphs pack vertically per layer with no
+            // guard band, so LINEAR would interpolate across a band seam (adjacent glyph
+            // bleed) under mediump precision or a non-1:1 cell↔texel mapping (#265 DPR).
+            gl.tex_parameter_i32(
+                glow::TEXTURE_2D_ARRAY,
+                glow::TEXTURE_MIN_FILTER,
+                glow::NEAREST as i32,
+            );
+            gl.tex_parameter_i32(
+                glow::TEXTURE_2D_ARRAY,
+                glow::TEXTURE_MAG_FILTER,
+                glow::NEAREST as i32,
+            );
+            gl.tex_parameter_i32(
+                glow::TEXTURE_2D_ARRAY,
+                glow::TEXTURE_WRAP_S,
+                glow::CLAMP_TO_EDGE as i32,
+            );
+            gl.tex_parameter_i32(
+                glow::TEXTURE_2D_ARRAY,
+                glow::TEXTURE_WRAP_T,
+                glow::CLAMP_TO_EDGE as i32,
+            );
+            Ok(tex)
         }
     }
 
@@ -207,6 +284,51 @@ impl JustermRenderer {
         }
     }
 
+    /// Rasterise + upload the 95 normal-styled ASCII glyphs into their fixed fast-path
+    /// slots (`0..=94`), so a cell using the ASCII fast path samples a real bitmap.
+    fn prebake_ascii(&mut self) -> Result<(), JsValue> {
+        for cp in 0x20u32..=0x7E {
+            let ch = char::from_u32(cp).unwrap();
+            let rgba = self.rasterizer.rasterize(&ch.to_string())?;
+            self.upload_glyph((cp - 0x20) as u16, &rgba);
+        }
+        Ok(())
+    }
+
+    /// Upload one glyph's RGBA bitmap to its `(layer, band)` in the atlas.
+    fn upload_glyph(&self, slot: u16, rgba: &[u8]) {
+        let (cell_w, cell_h) = (self.cell_size.0 as i32, self.cell_size.1 as i32);
+        let (layer, band) = slot_texcoord(slot);
+        // Safety: live GL context; the sub-image fits the allocated storage.
+        unsafe {
+            self.gl
+                .bind_texture(glow::TEXTURE_2D_ARRAY, Some(self.atlas));
+            self.gl.tex_sub_image_3d(
+                glow::TEXTURE_2D_ARRAY,
+                0,
+                0,
+                band as i32 * cell_h,
+                layer as i32,
+                cell_w,
+                cell_h,
+                1,
+                glow::RGBA,
+                glow::UNSIGNED_BYTE,
+                glow::PixelUnpackData::Slice(Some(rgba)),
+            );
+        }
+    }
+
+    /// Measured cell width in device pixels (from the atlas rasteriser).
+    pub fn cell_width(&self) -> u32 {
+        self.cell_size.0 as u32
+    }
+
+    /// Measured cell height in device pixels.
+    pub fn cell_height(&self) -> u32 {
+        self.cell_size.1 as u32
+    }
+
     /// Resize the drawing buffer to `width`×`height` device pixels.
     pub fn resize(&mut self, width: i32, height: i32) {
         self.size = (width.max(1), height.max(1));
@@ -215,21 +337,50 @@ impl JustermRenderer {
         }
     }
 
-    /// Apply a `cols`×`rows` frame's background: `bg` holds one tagged-u32 colour
-    /// reference per cell in **dense row-major** order (length `cols*rows`), each in the
-    /// `justerm_core::encode_color` encoding. A **Full** decoded frame is already dense
-    /// row-major; a **Partial** frame is a span-ordered damaged *subset* and must be
-    /// scattered into a full grid before it reaches here — that decoder→renderer frame
-    /// adapter is tracked as its own slice. Each ref is resolved with the injected palette
-    /// and packed into one instance per cell — the hot path stays in Rust (ADR-0018 "A-ii").
-    /// #264 adds glyphs.
-    pub fn apply_frame(&mut self, cols: u32, rows: u32, bg: &[u32]) {
-        self.instances = pack_bg_instances(cols, rows, bg, &self.palette);
-        self.instance_count = (cols * rows) as i32;
+    /// Apply a `cols`×`rows` frame (dense row-major, length `cols*rows` — see #277 for the
+    /// Partial-frame adapter): `bg`/`fg` are tagged-u32 colour refs, `codepoints` is the
+    /// glyph per cell. New glyphs are rasterised + uploaded on demand.
+    ///
+    /// #264 scope = ASCII / single-width. Known limits tracked for the wide/emoji slice
+    /// (surfaced by the #264 adversarial pass, not silent):
+    /// - every glyph is treated as single-width (`GlyphKind::Normal`) — CJK/emoji render
+    ///   clipped/monochrome until #268;
+    /// - a frame with more distinct non-ASCII glyphs than the normal region's free capacity
+    ///   would evict a glyph still referenced in the same frame (a working-set pin is needed);
+    /// - a `rasterize` failure leaves the cache entry committed but the atlas slot unwritten.
+    ///   ASCII on the primary monospace font never hits these.
+    pub fn apply_frame(
+        &mut self,
+        cols: u32,
+        rows: u32,
+        bg: &[u32],
+        fg: &[u32],
+        codepoints: &[u32],
+    ) -> Result<(), JsValue> {
+        let count = (cols * rows) as usize;
+        let mut slots = Vec::with_capacity(count);
+        for idx in 0..count {
+            let cp = codepoints.get(idx).copied().unwrap_or(0x20);
+            let ch = char::from_u32(cp).filter(|c| *c != '\0').unwrap_or(' ');
+            let text = ch.to_string();
+            let key = GlyphKey {
+                text: text.clone(),
+                style: FontStyle::Normal,
+            };
+            let alloc = self.cache.get_or_insert(key, GlyphKind::Normal);
+            if alloc.is_new {
+                let rgba = self.rasterizer.rasterize(&text)?;
+                self.upload_glyph(alloc.slot.slot_id(), &rgba);
+            }
+            slots.push(alloc.slot.slot_id());
+        }
+        self.instances = pack_instances(cols, rows, bg, fg, &slots, &self.palette);
+        self.instance_count = count as i32;
+        Ok(())
     }
 
-    /// Clear to the palette's default background, then draw every cell of the current
-    /// frame with one instanced draw call.
+    /// Clear to the palette's default background, then draw every cell of the current frame
+    /// (glyph composited over background) with one instanced draw call.
     pub fn render(&self) {
         let [dr, dg, db] = gl_rgb(self.palette.default_bg);
         unsafe {
@@ -241,6 +392,9 @@ impl JustermRenderer {
             }
 
             self.gl.use_program(Some(self.program));
+            self.gl.active_texture(glow::TEXTURE0);
+            self.gl
+                .bind_texture(glow::TEXTURE_2D_ARRAY, Some(self.atlas));
             self.gl.bind_vertex_array(Some(self.vao));
             self.gl
                 .bind_buffer(glow::ARRAY_BUFFER, Some(self.instance_vbo));
@@ -259,6 +413,19 @@ impl JustermRenderer {
             self.gl
                 .draw_arrays_instanced(glow::TRIANGLE_STRIP, 0, 4, self.instance_count);
         }
+    }
+}
+
+/// Fetch a required uniform location or error.
+fn uniform(
+    gl: &glow::Context,
+    program: glow::Program,
+    name: &str,
+) -> Result<glow::UniformLocation, JsValue> {
+    // Safety: live GL context.
+    unsafe {
+        gl.get_uniform_location(program, name)
+            .ok_or_else(|| JsValue::from_str(&format!("justerm-renderer: no uniform {name}")))
     }
 }
 
