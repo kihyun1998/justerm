@@ -1,35 +1,49 @@
 <!doctype html>
 <meta charset="utf-8" />
-<title>justerm-renderer scaffold proof (#259)</title>
+<title>justerm-renderer tracer proof (#260)</title>
 <style>
   body { margin: 0; background: #000; }
   #c { display: block; }
 </style>
 <!--
-  Scaffold proof harness (#259): loads the real justerm-renderer wasm, binds it to the
-  canvas, and clears to an injected default background (0x1E1E2E). A JS-side readPixels
-  confirms the real WebGL2 context painted the exact injected colour — no fake backend.
-  Build the pkg first:  wasm-pack build --target web --dev --out-dir pkg
-  The #260+ slices grow this into the real grid demo; #273 wires it into justerm-web.
+  Tracer proof harness (#260): loads the real justerm-renderer wasm, clears to a default
+  background, and draws ONE instanced cell. readPixels at two points on the same WebGL2
+  context proves the cell landed at its grid position (inside = cell colour) and nowhere
+  else (outside = default bg) — no fake backend. Build first:
+    wasm-pack build --target web --dev --out-dir pkg
+  #261 scales this to a whole decoded frame; #264 adds glyphs.
 -->
 <canvas id="c" width="320" height="200"></canvas>
 <script type="module">
   import init, { JustermRenderer } from "../pkg/justerm_renderer.js";
 
-  const DEFAULT_BG = 0x1e1e2e; // distinctive dark slate: rgb(30, 30, 46)
+  const DEFAULT_BG = 0x1e1e2e; // rgb(30, 30, 46)
+  const CELL_BG = 0xe06c75; // rgb(224, 108, 117)
+  const CW = 16, CH = 32; // cell size (matches the renderer's placeholder)
+  const H = 200;
+
   await init();
+  const r = new JustermRenderer("#c", DEFAULT_BG);
+  r.resize(320, H);
+  r.set_cell(2, 1, CELL_BG); // cell col=2,row=1 → top-left px x∈[32,48), y∈[32,64)
+  r.render();
 
-  const renderer = new JustermRenderer("#c", DEFAULT_BG);
-  renderer.resize(320, 200);
-  renderer.render();
-
-  // Read back a pixel from the SAME WebGL2 context (getContext returns the existing
-  // one). Done synchronously right after render() so the drawing buffer still holds
-  // the cleared colour (no preserveDrawingBuffer needed).
   const gl = document.querySelector("#c").getContext("webgl2");
-  const px = new Uint8Array(4);
-  gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+  const read = (x, yTop) => {
+    // readPixels is bottom-left origin; convert from our top-left y.
+    const px = new Uint8Array(4);
+    gl.readPixels(x, H - 1 - yTop, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    return Array.from(px);
+  };
 
-  window.__proof = { pixel: Array.from(px), expected: [30, 30, 46, 255] };
+  const inside = read(2 * CW + CW / 2, 1 * CH + CH / 2); // cell centre (40, 48)
+  const outside = read(300, 10); // far from the only cell
+
+  window.__proof = {
+    inside,
+    insideExpected: [224, 108, 117, 255],
+    outside,
+    outsideExpected: [30, 30, 46, 255],
+  };
   window.__done = true;
 </script>
