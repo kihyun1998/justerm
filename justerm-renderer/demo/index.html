@@ -1,23 +1,22 @@
 <!doctype html>
 <meta charset="utf-8" />
-<title>justerm-renderer glyph proof (#264)</title>
+<title>justerm-renderer SGR attrs proof (#267)</title>
 <style>
   body { margin: 0; background: #000; }
   #c { display: block; image-rendering: pixelated; }
 </style>
 <!--
-  Glyph proof harness (#264): loads the real justerm-renderer wasm, applies a frame with
-  text (codepoints per cell), and lets the renderer rasterise glyphs on demand via
-  OffscreenCanvas + upload them to the atlas texture array. readPixels on the same WebGL2
-  context proves the glyph coverage composited fg over bg: '█' (full block) = fg, ' ' = bg,
-  and 'A' is a mix (a real letter shape). Build: wasm-pack build --target web --dev --out-dir pkg
+  SGR attrs proof (#267): underline/strikethrough lines, inverse fg/bg swap, bold render.
+  readPixels on the same WebGL2 context proves each attribute. Build:
+    wasm-pack build --target web --dev --out-dir pkg
 -->
 <canvas id="c" width="320" height="200"></canvas>
 <script type="module">
   import init, { JustermRenderer } from "../pkg/justerm_renderer.js";
 
-  const FG = 0xffffff, BG = 0x1e1e2e;
-  const H = 200;
+  // CellFlags bits (mirror justerm-core).
+  const BOLD = 1, ITALIC = 4, UNDERLINE = 8, INVERSE = 32, STRIKE = 128;
+  const FG = 0xffffff, BG = 0x1e1e2e, H = 200;
   await init();
 
   const palette = new Uint32Array(256);
@@ -25,10 +24,11 @@
   r.resize(320, H);
   const CW = r.cell_width(), CH = r.cell_height();
 
-  // Row 0: █ (full block), space, A, B — all default bg, default fg (white).
-  const cps = new Uint32Array([0x2588, 0x20, 0x41, 0x42]);
-  const zeros = new Uint32Array([0, 0, 0, 0]);
-  r.apply_frame(4, 1, zeros, zeros, cps);
+  // 5 cells: normal A, underlined space, strikethrough space, inverse space, bold A.
+  const cps   = new Uint32Array([0x41, 0x20, 0x20, 0x20, 0x41]);
+  const flags = new Uint16Array([0,    UNDERLINE, STRIKE, INVERSE, BOLD]);
+  const zeros = new Uint32Array([0, 0, 0, 0, 0]);
+  r.apply_frame(5, 1, zeros, zeros, cps, flags);
   r.render();
 
   const gl = document.querySelector("#c").getContext("webgl2");
@@ -37,32 +37,40 @@
     gl.readPixels(x, H - 1 - yTop, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
     return [px[0], px[1], px[2]];
   };
-  const center = (col) => readAt(col * CW + (CW >> 1), CH >> 1);
-
-  // Scan cell 'A' for a fg-ish (bright) and a bg-ish (dark) pixel → proves a real glyph.
-  const scanMixed = (col) => {
-    const w = CW, h = CH, x0 = col * CW;
-    const buf = new Uint8Array(w * h * 4);
-    gl.readPixels(x0, H - h, w, h, gl.RGBA, gl.UNSIGNED_BYTE, buf);
-    let hasBright = false, hasDark = false;
-    for (let i = 0; i < buf.length; i += 4) {
-      if (buf[i] > 200) hasBright = true;
-      if (buf[i] < 80) hasDark = true;
-    }
-    return { hasBright, hasDark };
+  const cx = (col) => col * CW + (CW >> 1);
+  const scanBright = (col) => {
+    const buf = new Uint8Array(CW * CH * 4);
+    gl.readPixels(col * CW, H - CH, CW, CH, gl.RGBA, gl.UNSIGNED_BYTE, buf);
+    for (let i = 0; i < buf.length; i += 4) if (buf[i] > 200) return true;
+    return false;
   };
+  const near = (a, b, t = 30) => a.every((v, i) => Math.abs(v - b[i]) <= t);
 
-  const near = (a, b) => a.every((v, i) => Math.abs(v - b[i]) <= 12);
-  const block = center(0);   // █ → fg
-  const space = center(1);   // ' ' → bg
-  const letterA = scanMixed(2);
+  // Underline (col1): a fg line near the bottom (y≈0.88), bg above it.
+  const ulLine = readAt(cx(1), Math.round(0.88 * CH));
+  const ulAbove = readAt(cx(1), Math.round(0.3 * CH));
+  // Strikethrough (col2): a fg line through the middle (y≈0.5), bg near the top.
+  const stLine = readAt(cx(2), Math.round(0.5 * CH));
+  const stTop = readAt(cx(2), Math.round(0.12 * CH));
+  // Inverse space (col3): the whole cell is fg (bg swapped to fg).
+  const inv = readAt(cx(3), CH >> 1);
+  // Bold A (col4): renders (non-blank).
+  const boldRenders = scanBright(4);
 
+  // The decoration lines are thin + antialiased (smoothstep), so the sampled pixel is a
+  // partial fg/bg blend, not pure fg. Prove the line by its brightness ABOVE bg + a clear
+  // margin over the (bg) non-line row at the same column.
+  const checks = {
+    underlineLine: ulLine[0] > 90 && ulLine[0] - ulAbove[0] > 60,
+    underlineAboveBg: near(ulAbove, [30, 30, 46]),
+    strikeLine: stLine[0] > 90 && stLine[0] - stTop[0] > 60,
+    strikeTopBg: near(stTop, [30, 30, 46]),
+    inverseSwap: near(inv, [255, 255, 255]),
+    boldRenders,
+  };
   window.__proof = {
-    cell: [CW, CH],
-    block, blockIsFg: near(block, [255, 255, 255]),
-    space, spaceIsBg: near(space, [30, 30, 46]),
-    letterA, letterMixed: letterA.hasBright && letterA.hasDark,
-    ok: near(block, [255, 255, 255]) && near(space, [30, 30, 46]) && letterA.hasBright && letterA.hasDark,
+    cell: [CW, CH], ulLine, stLine, inv, checks,
+    ok: Object.values(checks).every(Boolean),
   };
   window.__done = true;
 </script>

@@ -3,14 +3,16 @@
 //! The instanced pipeline draws the whole grid in one call: `apply_frame` resolves each
 //! cell's bg/fg references (injected palette) and its glyph slot (glyph cache, rasterising
 //! and uploading new glyphs on demand), packs one instance per cell, and `render`
-//! composites each glyph's coverage from the atlas over its background. ASCII
-//! (`0x20..=0x7E`) is pre-rasterised at construction. Wide/emoji + SGR attrs are #267/#268.
+//! composites each glyph's coverage from the atlas over its background, plus SGR attrs
+//! (#267: bold/italic font variants, underline/strikethrough lines, inverse fg/bg swap).
+//! ASCII (`0x20..=0x7E`) is pre-rasterised at construction. Wide/emoji are #268.
 
 use glow::HasContext;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 use web_sys::{HtmlCanvasElement, WebGl2RenderingContext};
 
+use crate::attrs::font_style;
 use crate::color::gl_rgb;
 use crate::frame::pack_instances;
 use crate::glyph_cache::{
@@ -61,13 +63,25 @@ in vec3 v_fg;
 flat in uint v_glyph;
 in vec2 v_tex;
 out vec4 FragColor;
+// A horizontal line centred at `c` (cell-local y, 0..1) with soft edges (beamterm cell.frag).
+float hline(float y, float c, float thick) {
+    return 1.0 - smoothstep(0.0, thick, abs(y - c));
+}
 void main() {
-    // 32 glyphs stack vertically per layer: layer = slot/32, band = slot%32.
-    uint layer = v_glyph >> 5u;
-    uint band = v_glyph & 31u;
+    // The glyph field packs slot (bits 0..12), underline (bit 13), strikethrough (bit 14).
+    uint slot = v_glyph & 0x1FFFu;
+    uint layer = slot >> 5u;   // 32 glyphs stack vertically per layer
+    uint band = slot & 31u;
     vec3 tc = vec3(v_tex.x, (float(band) + v_tex.y) / 32.0, float(layer));
     float coverage = texture(u_atlas, tc).a;
-    FragColor = vec4(mix(v_bg, v_fg, coverage), 1.0);
+
+    float underline = float((v_glyph >> 13u) & 1u);
+    float strike = float((v_glyph >> 14u) & 1u);
+    // Fixed cell-local positions (underline below baseline, strikethrough mid-cell). beamterm
+    // derives these per-font from metrics; a font-metric-driven position is a later refinement.
+    float line = max(hline(v_tex.y, 0.88, 0.05) * underline, hline(v_tex.y, 0.5, 0.05) * strike);
+
+    FragColor = vec4(mix(v_bg, v_fg, max(coverage, line)), 1.0);
 }
 "#;
 
@@ -289,7 +303,9 @@ impl JustermRenderer {
     fn prebake_ascii(&mut self) -> Result<(), JsValue> {
         for cp in 0x20u32..=0x7E {
             let ch = char::from_u32(cp).unwrap();
-            let rgba = self.rasterizer.rasterize(&ch.to_string())?;
+            let rgba = self
+                .rasterizer
+                .rasterize(&ch.to_string(), FontStyle::Normal)?;
             self.upload_glyph((cp - 0x20) as u16, &rgba);
         }
         Ok(())
@@ -356,6 +372,7 @@ impl JustermRenderer {
         bg: &[u32],
         fg: &[u32],
         codepoints: &[u32],
+        flags: &[u16],
     ) -> Result<(), JsValue> {
         let count = (cols * rows) as usize;
         let mut slots = Vec::with_capacity(count);
@@ -363,18 +380,19 @@ impl JustermRenderer {
             let cp = codepoints.get(idx).copied().unwrap_or(0x20);
             let ch = char::from_u32(cp).filter(|c| *c != '\0').unwrap_or(' ');
             let text = ch.to_string();
+            let style = font_style(flags.get(idx).copied().unwrap_or(0));
             let key = GlyphKey {
                 text: text.clone(),
-                style: FontStyle::Normal,
+                style,
             };
             let alloc = self.cache.get_or_insert(key, GlyphKind::Normal);
             if alloc.is_new {
-                let rgba = self.rasterizer.rasterize(&text)?;
+                let rgba = self.rasterizer.rasterize(&text, style)?;
                 self.upload_glyph(alloc.slot.slot_id(), &rgba);
             }
             slots.push(alloc.slot.slot_id());
         }
-        self.instances = pack_instances(cols, rows, bg, fg, &slots, &self.palette);
+        self.instances = pack_instances(cols, rows, bg, fg, &slots, flags, &self.palette);
         self.instance_count = count as i32;
         Ok(())
     }
