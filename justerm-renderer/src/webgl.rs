@@ -13,7 +13,7 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 use web_sys::{HtmlCanvasElement, WebGl2RenderingContext};
 
-use crate::bitmap::split_wide_bitmap;
+use crate::bitmap::{PADDING, split_wide_bitmap};
 use crate::color::gl_rgb;
 use crate::frame::pack_instances;
 use crate::glyph_cache::{
@@ -61,6 +61,7 @@ void main() {
 const FRAG_SRC: &str = r#"#version 300 es
 precision mediump float;
 uniform mediump sampler2DArray u_atlas;
+uniform vec2 u_padding_frac; // guard band as a fraction of the padded atlas cell (#288)
 in vec3 v_bg;
 in vec3 v_fg;
 flat in uint v_glyph;
@@ -75,7 +76,13 @@ void main() {
     uint slot = v_glyph & 0x1FFFu;
     uint layer = slot >> 5u;   // 32 glyphs stack vertically per layer
     uint band = slot & 31u;
-    vec3 tc = vec3(v_tex.x, (float(band) + v_tex.y) / 32.0, float(layer));
+    // Inset the physical-cell texcoord into the padded atlas cell's content region, so the
+    // transparent guard band is never sampled (beamterm cell.frag) — stops band bleed while
+    // the content still maps edge-to-edge (box-drawing connects across cells).
+    vec2 inner = v_tex * (1.0 - 2.0 * u_padding_frac) + u_padding_frac;
+    // Nudge off the exact texel edge so NEAREST can't round to a neighbour (beamterm cell.frag);
+    // belt-and-suspenders for a fractional cell↔texel mapping (DPR != 1, #265).
+    vec3 tc = vec3(inner.x + 0.001, (float(band) + inner.y + 0.001) / 32.0, float(layer));
     float coverage = texture(u_atlas, tc).a;
 
     float underline = float((v_glyph >> 13u) & 1u);
@@ -101,8 +108,10 @@ pub struct JustermRenderer {
     palette: Palette,
     rasterizer: Rasterizer,
     cache: GlyphCache,
-    /// Measured cell size in device pixels.
+    /// Physical (content) cell size in device pixels — the on-screen grid cell.
     cell_size: (f32, f32),
+    /// Padded atlas cell size in device pixels (physical + `2*PADDING`) — glyph upload dims.
+    atlas_cell: (u32, u32),
     /// Drawing-buffer size in device pixels.
     size: (i32, i32),
     instances: Vec<f32>,
@@ -121,7 +130,7 @@ fn f32_bytes(v: &[f32]) -> &[u8] {
 fn upload_glyph(
     gl: &glow::Context,
     atlas: glow::Texture,
-    cell_size: (f32, f32),
+    cell_size: (u32, u32),
     slot: u16,
     rgba: &[u8],
 ) {
@@ -183,10 +192,23 @@ impl JustermRenderer {
             })?;
 
         let rasterizer = Rasterizer::new("monospace", FONT_SIZE)?;
-        let (cell_w, cell_h) = rasterizer.cell_size();
+        let (cell_w, cell_h) = rasterizer.cell_size(); // physical (on-screen grid) cell
+        let (pad_w, pad_h) = rasterizer.padded_size(); // padded atlas cell
 
-        let (program, vao, instance_vbo, u_projection, u_cell_size) = Self::build_pipeline(&gl)?;
-        let atlas = Self::build_atlas(&gl, cell_w, cell_h)?;
+        let (program, vao, instance_vbo, u_projection, u_cell_size, u_padding_frac) =
+            Self::build_pipeline(&gl)?;
+        // The atlas stores padded cells; the glyph is drawn inset by PADDING.
+        let atlas = Self::build_atlas(&gl, pad_w, pad_h)?;
+        // Tell the shader how much of each padded atlas cell is guard band, so it insets the
+        // texcoord to the content region (see FRAG_SRC).
+        unsafe {
+            gl.use_program(Some(program));
+            gl.uniform_2_f32(
+                Some(&u_padding_frac),
+                PADDING as f32 / pad_w as f32,
+                PADDING as f32 / pad_h as f32,
+            );
+        }
 
         let mut renderer = JustermRenderer {
             gl,
@@ -200,6 +222,7 @@ impl JustermRenderer {
             rasterizer,
             cache: GlyphCache::new(),
             cell_size: (cell_w as f32, cell_h as f32),
+            atlas_cell: (pad_w, pad_h),
             size,
             instances: Vec::new(),
             instance_count: 0,
@@ -215,6 +238,7 @@ impl JustermRenderer {
             glow::Program,
             glow::VertexArray,
             glow::Buffer,
+            glow::UniformLocation,
             glow::UniformLocation,
             glow::UniformLocation,
         ),
@@ -254,12 +278,20 @@ impl JustermRenderer {
 
             let u_projection = uniform(gl, program, "u_projection")?;
             let u_cell_size = uniform(gl, program, "u_cell_size")?;
+            let u_padding_frac = uniform(gl, program, "u_padding_frac")?;
             // The atlas sampler stays on texture unit 0.
             gl.use_program(Some(program));
             let u_atlas = uniform(gl, program, "u_atlas")?;
             gl.uniform_1_i32(Some(&u_atlas), 0);
 
-            Ok((program, vao, instance_vbo, u_projection, u_cell_size))
+            Ok((
+                program,
+                vao,
+                instance_vbo,
+                u_projection,
+                u_cell_size,
+                u_padding_frac,
+            ))
         }
     }
 
@@ -343,7 +375,7 @@ impl JustermRenderer {
             upload_glyph(
                 &self.gl,
                 self.atlas,
-                self.cell_size,
+                self.atlas_cell,
                 (cp - 0x20) as u16,
                 &rgba,
             );
@@ -397,7 +429,8 @@ impl JustermRenderer {
         let rasterizer = &self.rasterizer;
         let gl = &self.gl;
         let atlas = self.atlas;
-        let cell_size = self.cell_size;
+        let atlas_cell = self.atlas_cell; // padded (upload) dims
+        let (pad_w, pad_h) = atlas_cell;
         let slots = resolve_frame(
             cols,
             rows,
@@ -407,12 +440,14 @@ impl JustermRenderer {
             |text, style, wide| rasterizer.rasterize(text, style, wide),
             |base, wide, rgba: Vec<u8>| {
                 if wide {
+                    // The wide source is 2*padded_w - 2*PADDING wide (two content halves plus
+                    // one outer guard band each side); split into two padded cells.
                     let (left, right) =
-                        split_wide_bitmap(&rgba, cell_size.0 as u32, cell_size.1 as u32);
-                    upload_glyph(gl, atlas, cell_size, base, &left);
-                    upload_glyph(gl, atlas, cell_size, base + 1, &right);
+                        split_wide_bitmap(&rgba, 2 * pad_w - 2 * PADDING, pad_w, pad_h);
+                    upload_glyph(gl, atlas, atlas_cell, base, &left);
+                    upload_glyph(gl, atlas, atlas_cell, base + 1, &right);
                 } else {
-                    upload_glyph(gl, atlas, cell_size, base, &rgba);
+                    upload_glyph(gl, atlas, atlas_cell, base, &rgba);
                 }
             },
         )
