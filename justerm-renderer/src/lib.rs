@@ -18,6 +18,7 @@
 
 pub mod color;
 pub mod frame;
+pub mod glyph_cache;
 pub mod mat4;
 pub mod palette;
 
