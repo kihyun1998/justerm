@@ -1,49 +1,65 @@
 <!doctype html>
 <meta charset="utf-8" />
-<title>justerm-renderer tracer proof (#260)</title>
+<title>justerm-renderer bg-grid proof (#261)</title>
 <style>
   body { margin: 0; background: #000; }
   #c { display: block; }
 </style>
 <!--
-  Tracer proof harness (#260): loads the real justerm-renderer wasm, clears to a default
-  background, and draws ONE instanced cell. readPixels at two points on the same WebGL2
-  context proves the cell landed at its grid position (inside = cell colour) and nowhere
-  else (outside = default bg) — no fake backend. Build first:
-    wasm-pack build --target web --dev --out-dir pkg
-  #261 scales this to a whole decoded frame; #264 adds glyphs.
+  Bg-grid proof harness (#261): loads the real justerm-renderer wasm, injects a palette,
+  and applies a small frame of background colour references (Default / Indexed / Rgb).
+  readPixels on the same WebGL2 context proves each cell resolves via the palette, and
+  that the canvas margin outside the grid is the default bg (no un-drawn-cell bleed, #255).
+  Build first:  wasm-pack build --target web --dev --out-dir pkg
 -->
 <canvas id="c" width="320" height="200"></canvas>
 <script type="module">
   import init, { JustermRenderer } from "../pkg/justerm_renderer.js";
 
-  const DEFAULT_BG = 0x1e1e2e; // rgb(30, 30, 46)
-  const CELL_BG = 0xe06c75; // rgb(224, 108, 117)
-  const CW = 16, CH = 32; // cell size (matches the renderer's placeholder)
-  const H = 200;
+  const DEFAULT_FG = 0xffffff, DEFAULT_BG = 0x1e1e2e;
+  const CW = 16, CH = 32, H = 200;
+  const def = () => 0;                       // tag 0 Default
+  const idx = (i) => (1 << 24) | i;          // tag 1 Indexed
+  const rgb = (v) => (2 << 24) | v;          // tag 2 Rgb
 
   await init();
-  const r = new JustermRenderer("#c", DEFAULT_BG);
+
+  const palette = new Uint32Array(256);
+  palette[1] = 0x00ff00;                     // indexed slot 1 = green
+
+  const r = new JustermRenderer("#c", palette, DEFAULT_FG, DEFAULT_BG);
   r.resize(320, H);
-  r.set_cell(2, 1, CELL_BG); // cell col=2,row=1 → top-left px x∈[32,48), y∈[32,64)
+
+  // 4×2 grid, row-major bg refs mixing all three reference kinds.
+  const bg = new Uint32Array([
+    rgb(0xe06c75), idx(1), def(),         rgb(0x2244aa), // row 0
+    idx(1),        rgb(0xffffff), def(),  rgb(0x000000), // row 1
+  ]);
+  r.apply_frame(4, 2, bg);
   r.render();
 
   const gl = document.querySelector("#c").getContext("webgl2");
-  const read = (x, yTop) => {
-    // readPixels is bottom-left origin; convert from our top-left y.
+  const read = (col, row) => {
+    const x = col * CW + CW / 2, yTop = row * CH + CH / 2;
     const px = new Uint8Array(4);
     gl.readPixels(x, H - 1 - yTop, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
-    return Array.from(px);
+    return [px[0], px[1], px[2]];
+  };
+  const readXY = (x, yTop) => {
+    const px = new Uint8Array(4);
+    gl.readPixels(x, H - 1 - yTop, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    return [px[0], px[1], px[2]];
   };
 
-  const inside = read(2 * CW + CW / 2, 1 * CH + CH / 2); // cell centre (40, 48)
-  const outside = read(300, 10); // far from the only cell
+  const checks = [
+    { name: "rgb cell (0,0)", got: read(0, 0), want: [224, 108, 117] },
+    { name: "indexed cell (1,0)", got: read(1, 0), want: [0, 255, 0] },
+    { name: "default cell (2,0)", got: read(2, 0), want: [30, 30, 46] },
+    { name: "white rgb cell (1,1)", got: read(1, 1), want: [255, 255, 255] },
+    { name: "margin outside grid", got: readXY(300, 150), want: [30, 30, 46] },
+  ];
+  const eq = (a, b) => a.every((v, i) => Math.abs(v - b[i]) <= 1);
 
-  window.__proof = {
-    inside,
-    insideExpected: [224, 108, 117, 255],
-    outside,
-    outsideExpected: [30, 30, 46, 255],
-  };
+  window.__proof = { checks, allMatch: checks.every((c) => eq(c.got, c.want)) };
   window.__done = true;
 </script>

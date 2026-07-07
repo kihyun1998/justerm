@@ -17,7 +17,9 @@
 //! the GPU pipeline (instanced grid, glyph atlas, shaders) lands in #260+.
 
 pub mod color;
+pub mod frame;
 pub mod mat4;
+pub mod palette;
 
 // The browser/GL glue is wasm32-only (web-sys/glow-web). Host builds skip it so the
 // crate's pure core stays `cargo test`-able without a wasm runtime — the same split
