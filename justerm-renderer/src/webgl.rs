@@ -20,7 +20,7 @@ use crate::frame_grid::{DamageFrame, FrameGrid};
 use crate::glyph_cache::{
     FontStyle, GLYPHS_PER_LAYER, GlyphCache, WIDE_BASE, WIDE_CAPACITY, slot_texcoord,
 };
-use crate::glyph_resolve::{ResolveError, resolve_frame};
+use crate::glyph_resolve::{Cells, ResolveError, resolve_frame};
 use crate::mat4::Mat4;
 use crate::palette::Palette;
 use crate::rasterizer::Rasterizer;
@@ -426,7 +426,30 @@ impl JustermRenderer {
         flags: &[u16],
         blink_on: bool,
     ) -> Result<(), JsValue> {
-        let count = (cols * rows) as usize;
+        // The direct (dense, cluster-free) path: one base codepoint per cell.
+        let cells = Cells {
+            cols,
+            rows,
+            codepoints,
+            flags,
+            clusters: &[],
+        };
+        self.resolve_and_pack(&cells, bg, fg, blink_on)
+    }
+
+    /// Resolve each cell's glyph slot then pack the instance buffer. Shared by [`apply_frame`]
+    /// (no clusters) and [`apply_damage`] (grapheme clusters from the persistent grid, #285).
+    ///
+    /// [`apply_frame`]: Self::apply_frame
+    /// [`apply_damage`]: Self::apply_damage
+    fn resolve_and_pack(
+        &mut self,
+        cells: &Cells,
+        bg: &[u32],
+        fg: &[u32],
+        blink_on: bool,
+    ) -> Result<(), JsValue> {
+        let count = (cells.cols * cells.rows) as usize;
         // Resolve the per-cell glyph slots via the pure host-tested resolver (#280): it
         // rasterises before committing (a failure strands nothing), pins this frame's
         // working set (an over-capacity frame is surfaced, not silently corrupted), and
@@ -439,10 +462,7 @@ impl JustermRenderer {
         let atlas_cell = self.atlas_cell; // padded (upload) dims
         let (pad_w, pad_h) = atlas_cell;
         let slots = resolve_frame(
-            cols,
-            rows,
-            codepoints,
-            flags,
+            cells,
             cache,
             |text, style, wide| rasterizer.rasterize(text, style, wide),
             |base, wide, rgba: Vec<u8>| {
@@ -466,12 +486,12 @@ impl JustermRenderer {
         })?;
 
         let frame = Frame {
-            cols,
-            rows,
+            cols: cells.cols,
+            rows: cells.rows,
             bg,
             fg,
             slots: &slots,
-            flags,
+            flags: cells.flags,
         };
         self.instances = pack_instances(&frame, &self.palette, blink_on);
         self.instance_count = count as i32;
@@ -479,16 +499,19 @@ impl JustermRenderer {
     }
 
     /// Consume a decoded **damage** frame directly (#277 adapter): scatter its span-ordered
-    /// cells into the persistent grid, then resolve + pack the full viewport via [`apply_frame`].
-    /// A Full frame wipes the grid first, a scroll op shifts it before spans — so a Partial
-    /// frame (the common case) no longer misaligns as dense row-major.
+    /// cells into the persistent grid, then resolve + pack the full viewport. A Full frame wipes
+    /// the grid first, a scroll op shifts it before spans — so a Partial frame (the common case)
+    /// no longer misaligns as dense row-major. Grapheme clusters (#285) ride the `extra` column
+    /// + `side_table` and are resolved to text at scatter (the index is frame-local).
     ///
     /// `header` carries the frame's scalars, `[cols, rows, kind, has_scroll, scroll_top,
-    /// scroll_bottom, scroll_count]` (kind `0` = Full / `1` = Partial; `scroll_count`
-    /// reinterpreted as `i16`). `spans` is the span directory ([`SPAN_STRIDE`](crate::frame_grid::SPAN_STRIDE)
-    /// `u32`s each); `codepoints`/`fg`/`bg`/`flags` are the span-ordered cell columns.
-    ///
-    /// [`apply_frame`]: Self::apply_frame
+    /// scroll_bottom, scroll_count, blink_on]` (kind `0` = Full / `1` = Partial; `scroll_count`
+    /// reinterpreted as `i16`; `blink_on` `0`/`1`). `spans` is the span directory
+    /// ([`SPAN_STRIDE`](crate::frame_grid::SPAN_STRIDE) `u32`s each);
+    /// `codepoints`/`fg`/`bg`/`flags`/`extra` are the span-ordered cell columns.
+    // 8 typed-array / vec columns at the wasm-bindgen boundary; each is a distinct JS view that
+    // can't be structurally grouped without an AoS rewrite that would break the zero-copy SoA.
+    #[allow(clippy::too_many_arguments)]
     pub fn apply_damage(
         &mut self,
         header: &[u32],
@@ -497,11 +520,12 @@ impl JustermRenderer {
         fg: &[u32],
         bg: &[u32],
         flags: &[u16],
-        blink_on: bool,
+        extra: &[u16],
+        side_table: Vec<String>,
     ) -> Result<(), JsValue> {
-        if header.len() < 7 {
+        if header.len() < 8 {
             return Err(JsValue::from_str(
-                "justerm-renderer: apply_damage header needs 7 u32s [cols, rows, kind, has_scroll, scroll_top, scroll_bottom, scroll_count]",
+                "justerm-renderer: apply_damage header needs 8 u32s [cols, rows, kind, has_scroll, scroll_top, scroll_bottom, scroll_count, blink_on]",
             ));
         }
         let cols = header[0];
@@ -512,8 +536,9 @@ impl JustermRenderer {
         } else {
             None
         };
+        let blink_on = header[7] != 0;
 
-        // Take the grid out so scattering (`&mut grid`) and the `&mut self` apply_frame don't
+        // Take the grid out so scattering (`&mut grid`) and the `&mut self` resolve/pack don't
         // borrow-conflict; the grid is a local during the call and moves back after. Re-create
         // it when the dimensions change (a resize is followed by a Full frame).
         let mut grid = match self.grid.take() {
@@ -528,16 +553,17 @@ impl JustermRenderer {
             fg,
             bg,
             flags,
+            extra,
+            side_table: &side_table,
         });
-        let result = self.apply_frame(
+        let cells = Cells {
             cols,
             rows,
-            grid.bg(),
-            grid.fg(),
-            grid.codepoints(),
-            grid.flags(),
-            blink_on,
-        );
+            codepoints: grid.codepoints(),
+            flags: grid.flags(),
+            clusters: grid.clusters(),
+        };
+        let result = self.resolve_and_pack(&cells, grid.bg(), grid.fg(), blink_on);
         self.grid = Some(grid);
         result
     }

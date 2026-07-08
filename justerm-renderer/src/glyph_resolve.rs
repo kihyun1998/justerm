@@ -14,8 +14,25 @@
 
 use std::collections::HashSet;
 
+use unicode_normalization::UnicodeNormalization;
+
 use crate::attrs::{font_style, is_wide_lead, is_wide_spacer};
 use crate::glyph_cache::{FontStyle, GlyphCache, GlyphKey, GlyphKind};
+
+/// A frame's per-cell glyph inputs (dense row-major). Grouped so the resolver stays within the
+/// argument budget once grapheme clusters (#285) join codepoints + flags.
+pub struct Cells<'a> {
+    pub cols: u32,
+    pub rows: u32,
+    /// Per-cell **base** codepoint (used when the cell has no cluster override).
+    pub codepoints: &'a [u32],
+    pub flags: &'a [u16],
+    /// Per-cell grapheme-cluster override (#285): a non-empty string is the full grapheme (ZWJ
+    /// sequence, skin-tone, flag, combining marks) to rasterise instead of the base codepoint.
+    /// Empty (or a short slice) means "use the codepoint". The renderer NFC-normalises it when
+    /// keying so a decomposed cluster and its precomposed form share one slot.
+    pub clusters: &'a [String],
+}
 
 /// Why a frame could not be resolved. `Rasterize` carries the injected rasteriser's error;
 /// `FrameExceedsCapacity` fires when one frame references more distinct glyphs than a
@@ -38,16 +55,20 @@ fn sanitize_codepoint(cp: u32) -> char {
     }
 }
 
-/// Resolve a `cols`×`rows` frame (dense row-major) to one atlas slot per cell.
+/// Resolve a frame ([`Cells`], dense row-major) to one atlas slot per cell.
 pub fn resolve_frame<B, E>(
-    cols: u32,
-    rows: u32,
-    codepoints: &[u32],
-    flags: &[u16],
+    cells: &Cells,
     cache: &mut GlyphCache,
     mut rasterize: impl FnMut(&str, FontStyle, bool) -> Result<B, E>,
     mut upload: impl FnMut(u16, bool, B),
 ) -> Result<Vec<u16>, ResolveError<E>> {
+    let Cells {
+        cols,
+        rows,
+        codepoints,
+        flags,
+        clusters,
+    } = *cells;
     let count = (cols * rows) as usize;
     let mut slots = Vec::with_capacity(count);
     // Glyphs already resolved in THIS frame — evicting one would corrupt an earlier cell.
@@ -72,16 +93,24 @@ pub fn resolve_frame<B, E>(
         }
         pending_right = None;
 
-        let cp = codepoints.get(idx).copied().unwrap_or(0x20);
-        let ch = sanitize_codepoint(cp);
         let wide = is_wide_lead(cell_flags);
         let kind = if wide {
             GlyphKind::Wide
         } else {
             GlyphKind::Normal
         };
+        // A cell with a grapheme-cluster override (#285) keys the whole cluster — NFC-normalised
+        // so a decomposed form and its precomposed equal share one slot — else its base codepoint
+        // (controls fold to space, #280 S).
+        let text = match clusters.get(idx) {
+            Some(cluster) if !cluster.is_empty() => cluster.nfc().collect::<String>(),
+            _ => {
+                let cp = codepoints.get(idx).copied().unwrap_or(0x20);
+                sanitize_codepoint(cp).to_string()
+            }
+        };
         let key = GlyphKey {
-            text: ch.to_string(),
+            text,
             style: font_style(cell_flags),
         };
 
@@ -137,6 +166,17 @@ mod tests {
         panic!("upload must not be called for this frame");
     }
 
+    /// Build a cluster-free [`Cells`] (the common case — one codepoint per cell).
+    fn cells<'a>(cols: u32, rows: u32, codepoints: &'a [u32], flags: &'a [u16]) -> Cells<'a> {
+        Cells {
+            cols,
+            rows,
+            codepoints,
+            flags,
+            clusters: &[],
+        }
+    }
+
     #[test]
     fn all_ascii_frame_resolves_to_fast_path_slots_without_rasterising() {
         // "AB" on one row. Fast-path slot = codepoint - 0x20 (worked by hand from the
@@ -144,10 +184,7 @@ mod tests {
         // the rasterize nor the upload seam is touched.
         let mut cache = GlyphCache::new();
         let slots = resolve_frame(
-            2,
-            1,
-            &[0x41, 0x42],
-            &[0, 0],
+            &cells(2, 1, &[0x41, 0x42], &[0, 0]),
             &mut cache,
             no_raster,
             no_upload,
@@ -165,10 +202,7 @@ mod tests {
         let mut rasterized: Vec<(String, FontStyle, bool)> = Vec::new();
         let mut uploaded: Vec<(u16, bool, String)> = Vec::new();
         let slots = resolve_frame(
-            1,
-            1,
-            &[0x2192],
-            &[0],
+            &cells(1, 1, &[0x2192], &[0]),
             &mut cache,
             |t, s, w| {
                 rasterized.push((t.to_string(), s, w));
@@ -194,10 +228,7 @@ mod tests {
         let mut cache = GlyphCache::new();
         let mut uploads = 0;
         let err = resolve_frame(
-            1,
-            1,
-            &[0x2192],
-            &[0],
+            &cells(1, 1, &[0x2192], &[0]),
             &mut cache,
             |_, _, _| Err::<String, &str>("boom"),
             |_, _, _| uploads += 1,
@@ -222,10 +253,7 @@ mod tests {
         let flags = vec![0u16; n as usize];
         let mut cache = GlyphCache::new();
         let err = resolve_frame(
-            n,
-            1,
-            &cps,
-            &flags,
+            &cells(n, 1, &cps, &flags),
             &mut cache,
             |t, _, _| Ok::<String, ()>(t.to_string()),
             |_, _, _| {},
@@ -247,10 +275,7 @@ mod tests {
         let flags = vec![WIDE_CHAR; n as usize];
         let mut cache = GlyphCache::new();
         let err = resolve_frame(
-            n,
-            1,
-            &cps,
-            &flags,
+            &cells(n, 1, &cps, &flags),
             &mut cache,
             |t, _, _| Ok::<String, ()>(t.to_string()),
             |_, _, _| {},
@@ -265,10 +290,7 @@ mod tests {
         // Two distinct glyphs (well within capacity), pattern [X, Y, X] → [95, 96, 95].
         let mut cache = GlyphCache::new();
         let slots = resolve_frame(
-            3,
-            1,
-            &[0x2192, 0x2190, 0x2192],
-            &[0, 0, 0],
+            &cells(3, 1, &[0x2192, 0x2190, 0x2192], &[0, 0, 0]),
             &mut cache,
             |t, _, _| Ok::<String, ()>(t.to_string()),
             |_, _, _| {},
@@ -288,10 +310,12 @@ mod tests {
         let mut rasterized: Vec<(String, FontStyle, bool)> = Vec::new();
         let mut uploaded: Vec<(u16, bool, String)> = Vec::new();
         let slots = resolve_frame(
-            3,
-            1,
-            &[0x4E2D, 0x0, 0x41],
-            &[WIDE_CHAR, WIDE_CHAR_SPACER, 0],
+            &cells(
+                3,
+                1,
+                &[0x4E2D, 0x0, 0x41],
+                &[WIDE_CHAR, WIDE_CHAR_SPACER, 0],
+            ),
             &mut cache,
             |t, s, w| {
                 rasterized.push((t.to_string(), s, w));
@@ -315,10 +339,7 @@ mod tests {
         // rasterise and consume a normal-region slot. No rasterise/upload happens.
         let mut cache = GlyphCache::new();
         let slots = resolve_frame(
-            5,
-            1,
-            &[0x01, 0x1F, 0x7F, 0x80, 0x9F],
-            &[0, 0, 0, 0, 0],
+            &cells(5, 1, &[0x01, 0x1F, 0x7F, 0x80, 0x9F], &[0, 0, 0, 0, 0]),
             &mut cache,
             no_raster,
             no_upload,
@@ -330,5 +351,76 @@ mod tests {
             "every control resolves to the space slot"
         );
         assert_eq!(cache.len(), 0, "controls burn no cache slot");
+    }
+
+    #[test]
+    fn a_cluster_override_rasterises_the_whole_grapheme_not_the_base_codepoint() {
+        // #285: a ZWJ sequence 👨‍👩‍👧 rides the cluster column; its cell's base codepoint is only
+        // the first scalar (👨). The resolver must rasterise the FULL cluster string, keyed once.
+        let family = "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}";
+        let mut cache = GlyphCache::new();
+        let mut rasterized: Vec<String> = Vec::new();
+        let slots = resolve_frame(
+            &Cells {
+                cols: 1,
+                rows: 1,
+                codepoints: &[0x1F468], // base scalar only
+                flags: &[0],
+                clusters: &[family.to_string()],
+            },
+            &mut cache,
+            |t, _, _| {
+                rasterized.push(t.to_string());
+                Ok::<String, ()>(t.to_string())
+            },
+            |_, _, _| {},
+        )
+        .expect("frame resolves");
+        assert_eq!(
+            slots,
+            vec![ASCII_SLOTS],
+            "cluster lands at the first cached slot"
+        );
+        assert_eq!(
+            rasterized,
+            vec![family],
+            "the whole cluster is rasterised, not just 👨"
+        );
+    }
+
+    #[test]
+    fn a_decomposed_cluster_is_nfc_keyed_to_share_its_precomposed_slot() {
+        // "é" as base 'e' + combining acute (decomposed) must NFC-normalise to U+00E9 and share
+        // one slot with a precomposed "é" — no duplicate glyph burned. Two cells: [decomposed
+        // cluster, precomposed base] → both resolve to the same single new slot, rasterised once.
+        let mut cache = GlyphCache::new();
+        let mut rasterized: Vec<String> = Vec::new();
+        let slots = resolve_frame(
+            &Cells {
+                cols: 2,
+                rows: 1,
+                codepoints: &[0x65, 0x00E9], // 'e' (base of the decomposed cell), precomposed 'é'
+                flags: &[0, 0],
+                clusters: &["e\u{0301}".to_string(), String::new()], // cell0 = decomposed cluster
+            },
+            &mut cache,
+            |t, _, _| {
+                rasterized.push(t.to_string());
+                Ok::<String, ()>(t.to_string())
+            },
+            |_, _, _| {},
+        )
+        .expect("frame resolves");
+        assert_eq!(
+            slots,
+            vec![ASCII_SLOTS, ASCII_SLOTS],
+            "both cells share one slot"
+        );
+        assert_eq!(
+            rasterized,
+            vec!["é".to_string()],
+            "keyed once as NFC 'é' (U+00E9)"
+        );
+        assert_eq!(cache.len(), 1, "no duplicate slot burned");
     }
 }
