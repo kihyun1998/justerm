@@ -1,6 +1,6 @@
 <!doctype html>
 <meta charset="utf-8" />
-<title>justerm-renderer proof — wide (#268) + guard-band/ink-scan (#288)</title>
+<title>justerm-renderer proof — wide (#268) + guard-band/ink-scan (#288) + hidden/blink (#282)</title>
 <style>
   body { margin: 0; background: #000; }
   #c { display: block; image-rendering: pixelated; }
@@ -15,13 +15,19 @@
   #288 guard band + ink-scan: two box-drawing '─' in adjacent cells form a CONTINUOUS line
   across the cell seam. This only holds if the padded atlas cell's *content* maps edge-to-edge
   (the shader insets the texcoord past the guard band); a transparent-margin bug would leave a
-  dark notch at every seam. Build: wasm-pack build --target web --dev --out-dir pkg
+  dark notch at every seam.
+
+  #282 hidden/blink: a HIDDEN 'A' (col 6) renders background only (glyph suppressed). A BLINK
+  'A' (col 7) draws its glyph on the phase-on frame and is suppressed on the phase-off frame,
+  while a plain 'A' (col 2) is identical across phases (blink phase never touches non-blink
+  cells). Build: wasm-pack build --target web --dev --out-dir pkg
 -->
 <canvas id="c" width="320" height="120"></canvas>
 <script type="module">
   import init, { JustermRenderer } from "../pkg/justerm_renderer.js";
 
   const WIDE_CHAR = 1 << 8, WIDE_SPACER = 1 << 9;
+  const BLINK = 1 << 4, HIDDEN = 1 << 6;
   const FG = 0xffffff, BG = 0x1e1e2e;
   await init();
 
@@ -29,13 +35,14 @@
   const r = new JustermRenderer("#c", palette, FG, BG);
   const CW = r.cell_width(), CH = r.cell_height();
 
-  // 6 cells, 1 row: [─][─][A][中(lead)][spacer][space]
-  const COLS = 6, H = 120;
+  // 8 cells, 1 row: [─][─][A][中(lead)][spacer][space][A+HIDDEN][A+BLINK]
+  const COLS = 8, H = 120;
   r.resize(COLS * CW, H);
-  const cps   = new Uint32Array([0x2500, 0x2500, 0x41, 0x4e2d, 0x20,        0x20]);
-  const flags = new Uint16Array([0,      0,      0,    WIDE_CHAR, WIDE_SPACER, 0]);
+  const cps   = new Uint32Array([0x2500, 0x2500, 0x41, 0x4e2d, 0x20,        0x20, 0x41,   0x41]);
+  const flags = new Uint16Array([0,      0,      0,    WIDE_CHAR, WIDE_SPACER, 0,   HIDDEN, BLINK]);
   const zeros = new Uint32Array(COLS).fill(0);
-  r.apply_frame(COLS, 1, zeros, zeros, cps, flags);
+  // Frame 1: blink phase ON — the blink cell's glyph is drawn.
+  r.apply_frame(COLS, 1, zeros, zeros, cps, flags, true);
   r.render();
 
   const gl = document.querySelector("#c").getContext("webgl2");
@@ -57,6 +64,18 @@
   const spacerHalf = countLit(cell(4)); // 中 right half (the spacer cell)
   const letterA = countLit(cell(2));
   const blank = countLit(cell(5));
+  // #282: phase-ON readings. Hidden 'A' is background-only; blink 'A' draws its glyph.
+  const hiddenLit = countLit(cell(6));
+  const blinkOnLit = countLit(cell(7));
+  const plainOnLit = letterA; // plain 'A' under phase ON
+
+  // Frame 2: flip the blink phase OFF and redraw. The blink cell's glyph is now suppressed;
+  // the plain 'A' and the hidden 'A' are unchanged (phase never touches non-blink cells).
+  r.apply_frame(COLS, 1, zeros, zeros, cps, flags, false);
+  r.render();
+  const blinkOffLit = countLit(cell(7));
+  const hiddenOffLit = countLit(cell(6));
+  const plainOffLit = countLit(cell(2));
 
   // Box connection: read the two '─' cells as one 2*CW strip; find the horizontal-line row
   // (most lit), then require the seam columns (CW-1 and CW) both lit → the line bridges cells.
@@ -72,6 +91,7 @@
   window.__proof = {
     cell: [CW, CH],
     leadHalf, spacerHalf, letterA, blank, lineRow, seamBridged,
+    hiddenLit, blinkOnLit, blinkOffLit, plainOnLit, plainOffLit, hiddenOffLit,
     checks: {
       // #268 regression
       leadRenders: leadHalf > 0,
@@ -80,9 +100,18 @@
       blankIsBlank: blank === 0,
       // #288
       boxSeamBridged: seamBridged,
+      // #282 hidden: background only, on either phase
+      hiddenIsBlank: hiddenLit === 0 && hiddenOffLit === 0,
+      // #282 blink: glyph on the phase-on frame, suppressed on the phase-off frame
+      blinkDrawsWhenOn: blinkOnLit > 0,
+      blinkSuppressedWhenOff: blinkOffLit === 0,
+      // #282 plain cell is phase-invariant (blink never touches non-blink cells)
+      plainPhaseInvariant: plainOnLit > 0 && plainOnLit === plainOffLit,
     },
     ok:
-      leadHalf > 0 && spacerHalf > 0 && letterA > 0 && blank === 0 && seamBridged,
+      leadHalf > 0 && spacerHalf > 0 && letterA > 0 && blank === 0 && seamBridged &&
+      hiddenLit === 0 && hiddenOffLit === 0 && blinkOnLit > 0 && blinkOffLit === 0 &&
+      plainOnLit > 0 && plainOnLit === plainOffLit,
   };
   window.__done = true;
 </script>
