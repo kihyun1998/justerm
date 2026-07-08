@@ -18,7 +18,7 @@ use crate::input::{
     encode_paste,
 };
 use crate::logical::LogicalLine;
-use crate::search::Match;
+use crate::search::{Match, SearchOptions};
 use crate::selection::{Anchor, BufferPoint, Selection, SelectionSpan, SelectionType, Side};
 use crate::serialize::{
     Frame, FrameKind, MarkerId, MarkerKind, MarkerLine, MarkerPosition, Overlay, Span,
@@ -920,11 +920,21 @@ impl Term {
     /// cross soft-wrapped rows (one logical line) and skip wide-char spacers.
     /// Smart-case: a query with no uppercase matches case-insensitively.
     pub fn search(&self, query: &str) -> Vec<Match> {
+        self.search_with(query, SearchOptions::default())
+    }
+
+    /// Search with explicit [`SearchOptions`] — regex, whole-word, and a case-sensitivity override
+    /// on top of the literal + smart-case [`search`](Self::search) (#314). Same coordinates,
+    /// soft-wrap join, spacer skip, and grapheme-mark inclusion (#304) as `search`.
+    pub fn search_with(&self, query: &str, opts: SearchOptions) -> Vec<Match> {
         let q: Vec<char> = query.chars().collect();
         if q.is_empty() {
             return Vec::new();
         }
-        let ci = !q.iter().any(|c| c.is_uppercase());
+        // Smart-case unless overridden: case-insensitive iff the query has no uppercase.
+        let ci = opts
+            .case_sensitive
+            .map_or_else(|| !q.iter().any(|c| c.is_uppercase()), |cs| !cs);
         // Fold to a single representative char so the haystack stays 1:1 with its
         // positions (rare multi-char case expansions take their first char).
         let fold = |c: char| {
@@ -935,6 +945,16 @@ impl Term {
             }
         };
         let needle: Vec<char> = q.iter().map(|&c| fold(c)).collect();
+        // Regex mode: build the pattern once (case-insensitivity from the same smart-case/override
+        // decision). An invalid pattern yields no matches rather than erroring (#314).
+        let re = if opts.regex {
+            match regex::RegexBuilder::new(query).case_insensitive(ci).build() {
+                Ok(re) => Some(re),
+                Err(_) => return Vec::new(),
+            }
+        } else {
+            None
+        };
         let total = self.scrollback.len() + self.grid.rows();
 
         // On the alt screen the scrollback belongs to the *primary* buffer, so the
@@ -962,7 +982,9 @@ impl Term {
                     if cell.is_spacer() {
                         continue;
                     }
-                    hay.push(fold(cell.c()));
+                    // Build the haystack UNFOLDED (regex needs the original text; its own
+                    // case-insensitive flag handles case). The literal path folds at compare time.
+                    hay.push(cell.c());
                     pos.push((line, col));
                     // Include the cell's grapheme side-table marks — combining marks, and under
                     // mode 2027 the joined emoji scalars (2nd RI, ZWJ-joined emoji, skin tone) —
@@ -970,7 +992,7 @@ impl Term {
                     // same cell column, mirroring `append_cell`'s base+marks extraction.
                     if let Some(marks) = self.combining_at(line, col) {
                         for &m in marks {
-                            hay.push(fold(m));
+                            hay.push(m);
                             pos.push((line, col));
                         }
                     }
@@ -982,28 +1004,64 @@ impl Term {
                     break;
                 }
             }
+            // Trim trailing blank padding (only a logical line's tail can be blank), so a regex `$`
+            // anchor or a greedy `.*` doesn't run into the grid's blank cells — mirrors
+            // `viewport_logical_lines`'s trim (#314 Lens 1). Keeps hay/pos in lockstep.
+            while hay.last().is_some_and(|c| c.is_whitespace()) {
+                hay.pop();
+                pos.pop();
+            }
 
-            // Slide the needle over the logical line (non-overlapping).
-            let mut i = 0;
-            while needle.len() <= hay.len() && i + needle.len() <= hay.len() {
-                if hay[i..i + needle.len()] == needle[..] {
-                    let (start_line, start_col) = pos[i];
-                    let (end_line, end_col) = pos[i + needle.len() - 1];
-                    let m = Match {
-                        start_line,
-                        start_col,
-                        end_line,
-                        end_col,
-                    };
-                    // Multiple side-table marks map to the same cell column (#304), so a repeated
-                    // in-cluster scalar can yield consecutive matches at identical coordinates —
-                    // collapse them to one (a duplicate nav/highlight entry is not a real match).
-                    if matches.last() != Some(&m) {
-                        matches.push(m);
+            // A match at char-index range [cs, ce) → a Match, whole-word-filtered and deduped.
+            // (Marks map many hay entries to one column (#304), so a repeated in-cluster scalar can
+            // yield consecutive identical Matches — collapse them.)
+            let push_range = |cs: usize, ce: usize, matches: &mut Vec<Match>| {
+                if opts.whole_word && !word_bounded(&hay, cs, ce - cs) {
+                    return;
+                }
+                let m = Match {
+                    start_line: pos[cs].0,
+                    start_col: pos[cs].1,
+                    end_line: pos[ce - 1].0,
+                    end_col: pos[ce - 1].1,
+                };
+                if matches.last() != Some(&m) {
+                    matches.push(m);
+                }
+            };
+
+            if let Some(re) = &re {
+                // Regex over the (unfolded) logical line; map each match's byte range to char indices.
+                let hay_str: String = hay.iter().collect();
+                for mat in re.find_iter(&hay_str) {
+                    if mat.start() == mat.end() {
+                        continue; // skip empty matches (e.g. `a*` between chars)
                     }
-                    i += needle.len();
-                } else {
-                    i += 1;
+                    let cs = hay_str[..mat.start()].chars().count();
+                    let ce = hay_str[..mat.end()].chars().count();
+                    push_range(cs, ce, &mut matches);
+                }
+            } else {
+                // Slide the literal needle non-overlapping, folding each hay char at compare time.
+                let mut i = 0;
+                while needle.len() <= hay.len() && i + needle.len() <= hay.len() {
+                    let hit = hay[i..i + needle.len()]
+                        .iter()
+                        .enumerate()
+                        .all(|(k, &c)| fold(c) == needle[k]);
+                    if hit {
+                        let before = matches.len();
+                        push_range(i, i + needle.len(), &mut matches);
+                        // Advance past a real (accepted) match; a whole-word-rejected run advances by
+                        // one so a later, word-bounded position at an overlapping offset is still tried.
+                        i += if matches.len() > before {
+                            needle.len()
+                        } else {
+                            1
+                        };
+                    } else {
+                        i += 1;
+                    }
                 }
             }
             r = line + 1;
@@ -3132,6 +3190,20 @@ fn reflow_pane(
 /// path/URL-ish runs (`.`, `/`, `-`) stay one word.
 fn is_word_boundary(c: char) -> bool {
     c.is_whitespace() || ",│`|:\"'()[]{}<>".contains(c)
+}
+
+/// Whether the run `hay[i..i+len]` is bounded by non-word characters on both sides — the `\bword\b`
+/// sense for whole-word search (#314). A word char is alphanumeric or `_` (the regex `\w` set),
+/// deliberately distinct from `is_word_boundary`'s wider semantic-selection set.
+fn word_bounded(hay: &[char], i: usize, len: usize) -> bool {
+    // A word char is alphanumeric, `_`, OR a grapheme-extending mark (width 0: combining marks,
+    // ZWJ, variation selectors) — so a mark attached to a base is never read as a word boundary,
+    // matching the regex `\b` sense (`\w` includes `\p{M}`) and staying consistent across the
+    // literal and regex paths on decomposed graphemes (#314 Lens 1).
+    let is_word = |c: char| c.is_alphanumeric() || c == '_' || c.width() == Some(0);
+    let left = i == 0 || !is_word(hay[i - 1]);
+    let right = i + len == hay.len() || !is_word(hay[i + len]);
+    left && right
 }
 
 /// Default tab stops: one every 8 columns (incl. column 0), matching xterm.

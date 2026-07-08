@@ -236,3 +236,174 @@ fn search_does_not_duplicate_a_match_for_a_repeated_in_cluster_scalar() {
     assert_eq!(m.len(), 1, "one match, not one per stacked mark");
     assert_eq!((m[0].start_col, m[0].end_col), (0, 0));
 }
+
+#[test]
+fn search_with_case_sensitive_option_overrides_smart_case() {
+    use justerm_core::SearchOptions;
+    let mut term = Engine::new(20, 1);
+    term.feed(b"Hello hello");
+    // Smart-case (default): a lowercase query matches both.
+    assert_eq!(term.search("hello").len(), 2);
+    // case_sensitive = Some(true): only the exact-case "hello" (col 6) matches.
+    let opts = SearchOptions {
+        case_sensitive: Some(true),
+        ..Default::default()
+    };
+    let m = term.search_with("hello", opts);
+    assert_eq!(m.len(), 1);
+    assert_eq!(m[0].start_col, 6);
+    // case_sensitive = Some(false): force case-insensitive even for an uppercase query.
+    let ci = SearchOptions {
+        case_sensitive: Some(false),
+        ..Default::default()
+    };
+    assert_eq!(term.search_with("HELLO", ci).len(), 2);
+}
+
+#[test]
+fn search_with_whole_word_bounds_the_match() {
+    use justerm_core::SearchOptions;
+    let mut term = Engine::new(30, 1);
+    term.feed(b"cat category scattered cat.");
+    // Literal "cat" matches inside "category" and "scattered" too.
+    assert_eq!(term.search("cat").len(), 4);
+    // whole_word: only the standalone "cat" tokens (col 0, and col 23 before '.').
+    let opts = SearchOptions {
+        whole_word: true,
+        ..Default::default()
+    };
+    let m = term.search_with("cat", opts);
+    assert_eq!(m.len(), 2, "only standalone 'cat'");
+    assert_eq!((m[0].start_col, m[1].start_col), (0, 23));
+}
+
+#[test]
+fn search_with_regex_matches_a_pattern() {
+    use justerm_core::SearchOptions;
+    let mut term = Engine::new(30, 1);
+    term.feed(b"err 42 err 7 warn 99");
+    let opts = SearchOptions {
+        regex: true,
+        ..Default::default()
+    };
+    let m = term.search_with(r"\d+", opts); // digit runs: 42, 7, 99
+    assert_eq!(m.len(), 3);
+    assert_eq!((m[0].start_col, m[0].end_col), (4, 5)); // "42"
+    assert_eq!((m[1].start_col, m[1].end_col), (11, 11)); // "7"
+    assert_eq!((m[2].start_col, m[2].end_col), (18, 19)); // "99"
+}
+
+#[test]
+fn search_with_invalid_regex_returns_no_matches() {
+    use justerm_core::SearchOptions;
+    let mut term = Engine::new(20, 1);
+    term.feed(b"abc");
+    let opts = SearchOptions {
+        regex: true,
+        ..Default::default()
+    };
+    assert_eq!(term.search_with("(unclosed", opts).len(), 0);
+}
+
+#[test]
+fn search_with_regex_respects_smart_case_and_override() {
+    use justerm_core::SearchOptions;
+    let mut term = Engine::new(20, 1);
+    term.feed("Err err ERR".as_bytes());
+    // Smart-case regex (lowercase pattern) → all 3.
+    let re = SearchOptions {
+        regex: true,
+        ..Default::default()
+    };
+    assert_eq!(term.search_with("err", re).len(), 3);
+    // Case-sensitive override → only the lowercase "err" (col 4).
+    let cs = SearchOptions {
+        regex: true,
+        case_sensitive: Some(true),
+        ..Default::default()
+    };
+    let m = term.search_with("err", cs);
+    assert_eq!(m.len(), 1);
+    assert_eq!(m[0].start_col, 4);
+}
+
+#[test]
+fn search_with_regex_maps_multibyte_columns_correctly() {
+    use justerm_core::SearchOptions;
+    let mut term = Engine::new(20, 1);
+    // 'é' is 2 UTF-8 bytes but ONE column; the byte→char→column mapping must not drift.
+    term.feed("café 42".as_bytes());
+    let opts = SearchOptions {
+        regex: true,
+        ..Default::default()
+    };
+    let m = term.search_with(r"\d+", opts);
+    assert_eq!(m.len(), 1);
+    assert_eq!(
+        (m[0].start_col, m[0].end_col),
+        (5, 6),
+        "42 sits at cols 5-6 after 'café '"
+    );
+}
+
+#[test]
+fn search_with_regex_matches_across_a_soft_wrap() {
+    use justerm_core::SearchOptions;
+    let mut term = Engine::new(4, 2); // 4 cols → "abcd" wraps
+    term.feed(b"abcdef");
+    let opts = SearchOptions {
+        regex: true,
+        ..Default::default()
+    };
+    let m = term.search_with("cde", opts); // spans the soft-wrap (c,d on row0; e on row1)
+    assert_eq!(m.len(), 1);
+    assert_eq!((m[0].start_line, m[0].start_col), (0, 2));
+    assert_eq!((m[0].end_line, m[0].end_col), (1, 0));
+}
+
+#[test]
+fn search_with_whole_word_treats_a_combining_mark_as_part_of_the_word() {
+    use justerm_core::SearchOptions;
+    // #314 2-lens (Lens 1): "cat" + a combining acute on 't' + "s" renders ONE word "catś".
+    // Whole-word "cat" must NOT match (it's only a prefix) — a combining mark is not a boundary.
+    let mut term = Engine::new(20, 1);
+    term.feed("cat\u{0301}s".as_bytes());
+    let opts = SearchOptions {
+        whole_word: true,
+        ..Default::default()
+    };
+    assert_eq!(
+        term.search_with("cat", opts).len(),
+        0,
+        "cat is a prefix of catś, not whole"
+    );
+    // A left-edge mark is symmetric: "s´cat" → 'cat' is a suffix, not whole.
+    let mut t2 = Engine::new(20, 1);
+    t2.feed("s\u{0301}cat".as_bytes());
+    assert_eq!(t2.search_with("cat", opts).len(), 0);
+    // Control: a real word boundary (space) still matches.
+    let mut t3 = Engine::new(20, 1);
+    t3.feed("a cat s".as_bytes());
+    assert_eq!(t3.search_with("cat", opts).len(), 1);
+}
+
+#[test]
+fn search_with_regex_ignores_trailing_blank_padding() {
+    use justerm_core::SearchOptions;
+    let mut term = Engine::new(20, 1); // "hi" then 18 blank padding cols
+    term.feed(b"hi");
+    let opts = SearchOptions {
+        regex: true,
+        ..Default::default()
+    };
+    // `$` anchors to the visible end, not after the padding.
+    assert_eq!(
+        term.search_with("hi$", opts).len(),
+        1,
+        "$ matches after 'hi', not padding"
+    );
+    // Greedy `.*` stops at the visible text end (col 1), not the padded col 19.
+    let g = term.search_with("h.*", opts);
+    assert_eq!(g.len(), 1);
+    assert_eq!(g[0].end_col, 1, "greedy stops at visible text, not padding");
+}
