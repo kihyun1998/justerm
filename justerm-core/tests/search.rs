@@ -188,3 +188,39 @@ fn search_on_alt_does_not_cross_into_primary_scrollback() {
     assert_eq!((m[0].start_line, m[0].start_col), (1, 0));
     assert_eq!((m[0].end_line, m[0].end_col), (1, 1));
 }
+
+#[test]
+fn search_matches_a_combining_mark_in_the_side_table() {
+    // #304: a combining cluster's marks live in the row's side-table, not the codepoint column, so
+    // search must include them — "e\u{0301}" (é decomposed) must be findable, not just its base 'e'.
+    let mut term = Engine::new(20, 1);
+    term.feed("xe\u{0301}y".as_bytes()); // 'x', é (e + combining acute), 'y'
+    let m = term.search("e\u{0301}");
+    assert_eq!(m.len(), 1, "the decomposed grapheme is found");
+    assert_eq!(
+        (m[0].start_line, m[0].start_col),
+        (0, 1),
+        "starts at the 'e' cell"
+    );
+    assert_eq!(
+        (m[0].end_line, m[0].end_col),
+        (0, 1),
+        "the mark maps to the same cell"
+    );
+}
+
+#[test]
+fn search_matches_a_clustered_emoji_scalar_under_mode_2027() {
+    // #304 (amplified by #295): under mode 2027 a flag clusters into one cell — base RI + the 2nd RI
+    // in the side-table. Search must find the 2nd RI (with mode OFF it was its own searchable cell).
+    let mut term = Engine::new(20, 1);
+    term.feed(b"\x1b[?2027h");
+    term.feed("\u{1F1F0}\u{1F1F7}".as_bytes()); // 🇰🇷 clustered into one wide cell
+    let m = term.search("\u{1F1F7}"); // the 2nd regional indicator (🇷)
+    assert_eq!(m.len(), 1, "the clustered 2nd RI is findable");
+    assert_eq!(
+        (m[0].start_col, m[0].end_col),
+        (0, 0),
+        "maps to the flag's single cell"
+    );
+}

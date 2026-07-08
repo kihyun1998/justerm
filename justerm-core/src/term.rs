@@ -964,6 +964,16 @@ impl Term {
                     }
                     hay.push(fold(cell.c()));
                     pos.push((line, col));
+                    // Include the cell's grapheme side-table marks — combining marks, and under
+                    // mode 2027 the joined emoji scalars (2nd RI, ZWJ-joined emoji, skin tone) —
+                    // so a clustered scalar is findable, not just the base (#304). Each maps to the
+                    // same cell column, mirroring `append_cell`'s base+marks extraction.
+                    if let Some(marks) = self.combining_at(line, col) {
+                        for &m in marks {
+                            hay.push(fold(m));
+                            pos.push((line, col));
+                        }
+                    }
                 }
                 let soft = cells.last().is_some_and(|c| c.is_wrapline());
                 if soft && line + 1 < total {
