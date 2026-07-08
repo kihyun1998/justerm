@@ -12,21 +12,23 @@
 //!
 //! ## Relationship to beamterm `beamterm-unicode::is_emoji`
 //! The [`is_emoji_presentation`] codepoint table is mirrored **verbatim** from beamterm (a pure
-//! Unicode fact). The multi-codepoint classification, however, deliberately diverges. beamterm
-//! decides a multi-codepoint cluster with `UnicodeWidthStr::width() >= 2`; this crate does not
-//! depend on `unicode-width` (the glyph_cache contract: width is core's job) and, more importantly,
-//! `width() >= 2` is the *wrong* signal under justerm's per-char width — it misfires two ways:
-//! - it **misses** a text-base + VS16 (`▶️`, `❤️`) or a keycap (`1️⃣`): justerm-core computes width
-//!   per character (`UnicodeWidthChar`) with no VS16 promotion, so the base stays width-1 and the
-//!   frame delivers `wide=false` where beamterm's string width would see 2;
-//! - it **falsely matches** a wide *text* base + combining mark (CJK + a diacritic): wide, but not
-//!   emoji — colour-sampling its grayscale glyph would render it white.
+//! Unicode fact). The multi-codepoint classification diverges: beamterm decides a cluster with
+//! `UnicodeWidthStr::width() >= 2`, but this crate does not depend on `unicode-width` (the
+//! glyph_cache contract: width is core's job) and `width() >= 2` is the wrong signal anyway — it
+//! **falsely matches** a wide *text* base + combining mark (CJK + a diacritic: wide, but not emoji;
+//! colour-sampling its grayscale glyph would render it white). So a cluster is classified by a
+//! structural signal that is legitimately renderer-side: a ZWJ (U+200D) joiner, or an
+//! emoji-presentation lead (flags, skin-tone sequences) — both of which core delivers `wide=true`.
+//! A single codepoint uses the table (BMP) or the table gated on `wide` (SMP, whose range is broad).
 //!
-//! So a multi-codepoint cluster is classified by **structural signals** instead: a VS16 (U+FE0F)
-//! selector (VS15 U+FE0E, the text selector, excluded), a ZWJ (U+200D) joiner, or an
-//! emoji-presentation lead (flags, skin-tone sequences). A single codepoint uses the table (BMP)
-//! or the table gated on `wide` (SMP, whose range is broad). This is *more* correct than beamterm
-//! on both misfire classes.
+//! ## What is deliberately NOT handled here (a core gap, not a renderer workaround)
+//! justerm-core computes width **per character** (`UnicodeWidthChar`, no VS16 promotion), so a
+//! text-base + VS16 (`▶️`, `❤️`) or a keycap (`1️⃣`) arrives `wide=false` where beamterm's
+//! string-level width sees 2. A renderer-side VS16 (`U+FE0F`) check *could* reclassify them, but
+//! that would be a **consumer workaround masking a core defect** (CLAUDE.md "우회 금지") — it hides
+//! the bug and puts width knowledge in the wrong layer. The core width policy is tracked in **#301**.
+//! Meanwhile colour VS16 emoji are still recovered by the bitmap half of the hybrid; only an
+//! *achromatic* VS16 emoji is a visible, tracked gap — intentionally not papered over.
 //!
 //! ## Known tradeoff (accepted, #297)
 //! The hybrid `is_emoji_text || is_color_bitmap` cannot distinguish a *correctly* achromatic emoji
@@ -39,9 +41,9 @@
 /// Whether a grapheme is an emoji that should be colour-sampled from the atlas even if the font
 /// drew it monochrome (#297 case 2). `wide` is the core frame's width flag for the cell
 /// (`WIDE_CHAR`), used only to gate the broad single-codepoint SMP range. A single BMP scalar is
-/// decided by the exact [`is_emoji_presentation`] table; a multi-codepoint cluster by its
-/// structural signals (VS16 / ZWJ / emoji-presentation lead) — see the module docs for why `wide`
-/// alone is the wrong signal there.
+/// decided by the exact [`is_emoji_presentation`] table; a multi-codepoint cluster by a structural
+/// signal (ZWJ joiner / emoji-presentation lead). A text-base + VS16 / keycap is deliberately NOT
+/// reclassified here — that is a core width gap (#301), not a renderer concern (see module docs).
 #[must_use]
 pub fn is_emoji_text(s: &str, wide: bool) -> bool {
     let mut chars = s.chars();
@@ -61,17 +63,20 @@ pub fn is_emoji_text(s: &str, wide: bool) -> bool {
         };
     }
 
-    // Multi-codepoint cluster. It is an emoji sequence iff a structural signal says so — NOT
-    // merely because it is wide. beamterm proxies this with `s.width() >= 2`, but that misfires
-    // two ways under justerm's per-char width: (a) it MISSES a text-base + VS16 / keycap, which
-    // justerm-core never promotes to width 2 (base width-1, FE0F is a width-0 combining mark), and
-    // (b) it FALSELY matches a wide *text* base + combining mark (CJK + a diacritic), which is wide
-    // but not emoji — colour-sampling it would render the grayscale glyph white. The structural
-    // signals below get both right:
-    //  - VS16 (U+FE0F) forces emoji presentation (VS15 U+FE0E, the text selector, is excluded);
+    // Multi-codepoint cluster. Classified by a structural signal that is legitimately renderer-side
+    // (emoji-ness for colour is the consumer's job, ADR-0017):
     //  - a ZWJ (U+200D) joiner marks a family/role sequence;
     //  - an emoji-presentation lead covers flags (regional indicators) and skin-tone sequences.
-    s.contains('\u{FE0F}') || s.contains('\u{200D}') || is_emoji_presentation(first)
+    // These arrive `wide=true` from core (an emoji-presentation SMP lead is per-char width 2), so we
+    // are NOT compensating for core here. A wide *text* base + combining mark (CJK + a diacritic) is
+    // correctly excluded (no joiner, non-emoji lead) — beamterm's bare `width >= 2` would misfire.
+    //
+    // A text-base + VS16 (`▶️`) / keycap (`1️⃣`) is DELIBERATELY not special-cased: core computes
+    // width per-char and never promotes a VS16 sequence to width 2, so a renderer VS16 check would
+    // be a workaround masking that core gap (#301). Colour VS16 emoji are still recovered by the
+    // bitmap half of the hybrid; only an *achromatic* VS16 emoji is a visible gap, owned by #301 —
+    // not papered over here (CLAUDE.md "우회 금지").
+    s.contains('\u{200D}') || is_emoji_presentation(first)
 }
 
 /// `true` for characters with emoji-presentation-by-default (rendered as colour emoji without a
@@ -192,43 +197,25 @@ mod tests {
     }
 
     #[test]
-    fn text_presentation_with_fe0f_is_emoji_even_when_core_marks_it_narrow() {
-        // A text-presentation base + VS16 (FE0F) forces emoji presentation. CRITICAL: justerm-core
-        // uses per-char UnicodeWidthChar with NO VS16 promotion (term.rs: the base gets width 1,
-        // FE0F is width 0 → attached as a combining mark, the lead cell is NOT flagged WIDE_CHAR),
-        // so the real pipeline delivers `wide=FALSE` for these — unlike beamterm's string-level
-        // width. The VS16 code point itself is the robust signal, independent of `wide`.
+    fn text_base_plus_vs16_is_not_reclassified_here_core_width_gap_301() {
+        // A text-presentation base + VS16 (`▶️ ❤️`) is NOT reclassified as emoji by this function.
+        // justerm-core computes width per-char with no VS16 promotion, so the real pipeline delivers
+        // `wide=false` for these. Adding a renderer-side FE0F check to force emoji would be a
+        // consumer workaround masking that core gap (CLAUDE.md "우회 금지") — the fix belongs in core
+        // (#301). So is_emoji_text returns FALSE; colour VS16 emoji are still recovered by the bitmap
+        // half of the hybrid, and only an achromatic VS16 emoji is a visible, tracked gap.
         assert!(
-            is_emoji_text("\u{25B6}\u{FE0F}", false),
-            "▶️ (VS16) with wide=false"
+            !is_emoji_text("\u{25B6}\u{FE0F}", false),
+            "▶️ (VS16) — bitmap decides"
         );
         assert!(
-            is_emoji_text("\u{2764}\u{FE0F}", false),
-            "❤️ (VS16) with wide=false"
+            !is_emoji_text("\u{2764}\u{FE0F}", false),
+            "❤️ (VS16) — bitmap decides"
         );
-    }
-
-    #[test]
-    fn text_presentation_with_fe0e_text_selector_is_not_emoji() {
-        // The mirror-image guard: VS15 (U+FE0E) requests TEXT presentation — it must NOT be
-        // classified as emoji, even though it is also a variation selector following the same base.
+        // A keycap "1️⃣" = '1' + FE0F + 20E3 is the same story (ASCII base, core width 1).
         assert!(
-            !is_emoji_text("\u{25B6}\u{FE0E}", false),
-            "▶︎ (VS15) is text"
-        );
-        assert!(
-            !is_emoji_text("\u{2764}\u{FE0E}", false),
-            "❤︎ (VS15) is text"
-        );
-    }
-
-    #[test]
-    fn keycap_is_emoji_via_vs16_even_when_core_marks_it_narrow() {
-        // Keycap "1️⃣" = '1' + FE0F + 20E3. The base '1' is ASCII width 1 → core delivers
-        // wide=false; the VS16 signal recovers it.
-        assert!(
-            is_emoji_text("1\u{FE0F}\u{20E3}", false),
-            "keycap 1️⃣ with wide=false"
+            !is_emoji_text("1\u{FE0F}\u{20E3}", false),
+            "keycap 1️⃣ — bitmap decides"
         );
     }
 
