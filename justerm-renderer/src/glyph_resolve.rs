@@ -143,15 +143,15 @@ pub fn resolve_frame<B, E>(
                 // success do we commit + upload.
                 let (bitmap, is_emoji) =
                     rasterize(&key.text, key.style, wide).map_err(ResolveError::Rasterize)?;
-                // Emoji live in the wide region (EMOJI_FLAG + a 2-slot span), so only a *wide*
-                // colour glyph is upgraded to `Emoji`. A width-1 colour glyph (is_emoji && !wide)
-                // stays `Normal` — routing it to the wide region would store it in the wide LRU
-                // but look it up in the normal LRU (via `kind` above), re-rasterising it every
-                // frame. It renders monochrome instead; colour width-1 glyphs are tracked (#297).
-                let alloc_kind = if is_emoji && wide {
-                    GlyphKind::Emoji
-                } else {
-                    kind
+                // Emoji-ness is orthogonal to region (#297): a *wide* colour glyph upgrades to the
+                // wide-region `Emoji` (EMOJI_FLAG + a 2-slot span), a *width-1* colour glyph to
+                // `EmojiNarrow` — a normal-region slot that still carries EMOJI_FLAG (bit 15 is
+                // free below 0x800), so the shader colour-samples it without the wide-LRU thrash a
+                // wide-region route would cause (stored wide, looked up normal via `kind`).
+                let alloc_kind = match (is_emoji, wide) {
+                    (true, true) => GlyphKind::Emoji,
+                    (true, false) => GlyphKind::EmojiNarrow,
+                    (false, _) => kind,
                 };
                 let alloc = cache.get_or_insert(key.clone(), alloc_kind);
                 upload(alloc.slot.slot_id(), wide, bitmap);
@@ -391,12 +391,12 @@ mod tests {
     }
 
     #[test]
-    fn a_narrow_colour_glyph_stays_normal_and_caches_without_thrash() {
+    fn a_narrow_colour_glyph_is_emoji_flagged_in_the_normal_region_without_thrash() {
         use crate::glyph_cache::NORMAL_CAPACITY;
-        // A width-1 glyph (no WIDE_CHAR) the font colour-draws reports is_emoji=true but is NOT
-        // wide. Emoji occupy the wide region, so upgrading it there would store it in the wide
-        // LRU while `touch` looks in the normal LRU → a re-rasterise every frame. Gating the
-        // upgrade on `wide` keeps it Normal (rendered monochrome), region-consistent + cached.
+        // #297 case 1: a width-1 glyph (no WIDE_CHAR) the font colour-draws reports is_emoji=true
+        // but is NOT wide. The normal-region emoji path (EmojiNarrow) flags it so the shader
+        // colour-samples it, while it stays in the NORMAL region — bit 15 is free for a ≤ 0x7FF
+        // normal slot, so no wide-region LRU thrash and the glyph caches across frames.
         let mut cache = GlyphCache::new();
         let mut raster_calls = 0;
         let f1 = resolve_frame(
@@ -409,12 +409,15 @@ mod tests {
             |_s, _w, _b| {},
         )
         .expect("resolves")[0];
-        assert_eq!(
+        assert_ne!(
             f1 & EMOJI_FLAG,
             0,
-            "narrow colour glyph is not emoji-flagged"
+            "narrow colour glyph IS emoji-flagged so the shader colour-samples it"
         );
-        assert!(f1 < NORMAL_CAPACITY, "stays in the normal region");
+        assert!(
+            (f1 & !EMOJI_FLAG) < NORMAL_CAPACITY,
+            "the bare slot stays in the normal region (no wide-region thrash)"
+        );
         // Second frame: cached in the normal region → touch hits, no re-rasterise (no thrash).
         let f2 = resolve_frame(
             &cells(1, 1, &[0x2764], &[0]),
@@ -426,7 +429,7 @@ mod tests {
             |_s, _w, _b| {},
         )
         .expect("resolves")[0];
-        assert_eq!(f2, f1, "same slot, region-consistent");
+        assert_eq!(f2, f1, "same emoji-flagged slot, region-consistent");
         assert_eq!(
             raster_calls, 1,
             "rasterised once, not re-rasterised each frame"

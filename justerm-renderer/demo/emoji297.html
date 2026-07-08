@@ -1,0 +1,117 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>justerm-renderer proof — #297 achromatic + narrow colour emoji</title>
+<style>
+  body { margin: 0; background: #000; }
+  #c { display: block; image-rendering: pixelated; }
+</style>
+<!--
+  #297 proof. The shader does `fg = mix(v_fg, texel.rgb, emoji)`: an emoji-flagged cell IGNORES
+  the cell foreground and samples the atlas rgb; a text cell uses the foreground. So we set the
+  foreground to RED and read back each cell:
+    - text path        → pixels are RED-dominant.
+    - emoji path (fix) → pixels are the glyph's OWN colour (never red).
+
+  Case 2 (achromatic emoji ⬛ ⚫): the font draws them in pure gray (R=G=B), so is_color_bitmap
+  MISSES them — only the new is_emoji_text can route them to the emoji path. Proof: ⬛/⚫ render
+  NON-red (their own black/gray), and their pixel spread is ~0 (confirming they were achromatic,
+  i.e. is_color_bitmap could not have caught them — the fix did).
+
+  Case 1 (narrow colour glyph): a width-1 cell the font colour-draws. Probed informationally —
+  font-dependent in headless Chromium. If the browser colours it, the EmojiNarrow path renders it
+  in COLOUR in a SINGLE cell (non-red, spread>0), proving the normal-region emoji path end-to-end.
+
+  🚀 is a colour emoji regression check (#284 still works). 'A' is the negative control (must be
+  RED — the foreground really is red, and text uses it). Build:
+    wasm-pack build --target web --dev --out-dir pkg
+-->
+<canvas id="c" width="384" height="32"></canvas>
+<script type="module">
+  import init, { JustermRenderer } from "../pkg/justerm_renderer.js";
+  const FG = 0xff0000, BG = 0x808080; // RED fg, GRAY bg — the discriminator
+  const WIDE_CHAR = 1 << 8, WIDE_SPACER = 1 << 9;
+  await init();
+
+  const palette = new Uint32Array(256);
+  const r = new JustermRenderer("#c", palette, FG, BG);
+  const CW = r.cell_width(), CH = r.cell_height();
+
+  // col: [content, flag, label]. Wide glyphs occupy two cells (lead + spacer).
+  const W = WIDE_CHAR, S = WIDE_SPACER;
+  const layout = [
+    [0x2B1B, W, "sq_lead"], [0x20, S, "sq_spacer"],   // ⬛ achromatic emoji (case 2)
+    [0x26AB, W, "circ_lead"], [0x20, S, "circ_spacer"],// ⚫ achromatic emoji (case 2)
+    [0x1F680, W, "rocket_lead"], [0x20, S, "rocket_sp"],// 🚀 colour emoji (regression)
+    [0x41, 0, "A_control"],                             // A text → must be RED
+    [0x2764, 0, "heart_2764"],                          // ❤ narrow probe (case 1)
+    [0x2665, 0, "heart_2665"],                          // ♥ narrow probe
+    [0x263A, 0, "smiley_263A"],                         // ☺ narrow probe
+    [0x2708, 0, "plane_2708"],                          // ✈ narrow probe
+  ];
+  const COLS = layout.length;
+  r.resize(COLS * CW, CH);
+
+  const cps = new Uint32Array(layout.map((x) => x[0]));
+  const flags = new Uint16Array(layout.map((x) => x[1]));
+  const zeros = new Uint32Array(COLS);
+  r.apply_frame(COLS, 1, zeros, zeros, cps, flags, true);
+  r.render();
+
+  const gl = document.querySelector("#c").getContext("webgl2");
+  const scan = (col) => {
+    const buf = new Uint8Array(CW * CH * 4);
+    gl.readPixels(col * CW, 0, CW, CH, gl.RGBA, gl.UNSIGNED_BYTE, buf);
+    let lit = 0, coloured = 0, redDom = 0, maxSpread = 0;
+    for (let i = 0; i < buf.length; i += 4) {
+      const rr = buf[i], gg = buf[i + 1], bb = buf[i + 2];
+      const hi = Math.max(rr, gg, bb), lo = Math.min(rr, gg, bb);
+      const isLit = Math.abs(rr - 128) > 12 || Math.abs(gg - 128) > 12 || Math.abs(bb - 128) > 12;
+      if (!isLit) continue;
+      lit++;
+      const spread = hi - lo;
+      if (spread > maxSpread) maxSpread = spread;
+      if (spread > 24) coloured++;
+      // Red-dominant = foreground tint: red channel clearly above the other two.
+      if (rr - Math.max(gg, bb) > 40) redDom++;
+    }
+    return { lit, coloured, redDom, maxSpread };
+  };
+
+  const cells = {};
+  layout.forEach((x, col) => { cells[x[2]] = scan(col); });
+
+  // An ACHROMATIC cell is on the emoji path iff it is lit but NOT red-dominant (it kept its own
+  // gray/black instead of taking the red foreground). Used for ⬛ ⚫.
+  const achromaticEmojiPath = (c) => c.lit > 0 && c.redDom === 0;
+  // A MULTI-COLOUR emoji is proven by colour the red foreground cannot fake: coloured pixels that
+  // are NOT all red-dominant (`coloured > redDom`). Flat red text has coloured === redDom, so this
+  // rejects it; a colour emoji (🚀) has blue/white/green parts → coloured > redDom. Used for 🚀.
+  const colourEmojiPath = (c) => c.coloured > 0 && c.coloured > c.redDom;
+  // Flat text tinted to the red foreground: lit, and every coloured pixel is red-dominant.
+  const textPath = (c) => c.lit > 0 && c.redDom > 0 && c.coloured === c.redDom;
+
+  const narrowProbes = ["heart_2764", "heart_2665", "smiley_263A", "plane_2708"];
+  const narrowColoured = narrowProbes.filter((k) => colourEmojiPath(cells[k]));
+
+  window.__proof = {
+    cell: [CW, CH],
+    cells,
+    checks: {
+      // Case 2: achromatic emoji take the emoji path (NOT red) despite is_color_bitmap missing them…
+      squareEmojiPath: achromaticEmojiPath(cells.sq_lead) && achromaticEmojiPath(cells.sq_spacer),
+      circleEmojiPath: achromaticEmojiPath(cells.circ_lead) && achromaticEmojiPath(cells.circ_spacer),
+      // …and they were genuinely achromatic (low spread), so ONLY is_emoji_text could have caught them.
+      squareWasAchromatic: cells.sq_lead.maxSpread <= 24,
+      circleWasAchromatic: cells.circ_lead.maxSpread <= 24,
+      // Regression: the colour emoji still renders in colour via the emoji path (colour the red fg
+      // cannot fake — coloured pixels that are not all red-dominant).
+      rocketColoured: colourEmojiPath(cells.rocket_lead) || colourEmojiPath(cells.rocket_sp),
+      // Negative control: plain text really does take the RED foreground.
+      controlIsRedText: textPath(cells.A_control),
+    },
+    // Informational (font-dependent): which narrow glyphs the browser colour-drew via EmojiNarrow.
+    narrowColouredGlyphs: narrowColoured,
+  };
+  window.__proof.ok = Object.values(window.__proof.checks).every(Boolean);
+  window.__done = true;
+</script>

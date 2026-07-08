@@ -73,6 +73,20 @@ pub enum GlyphKind {
     Normal,
     Wide,
     Emoji,
+    /// A **width-1 colour emoji** (#297 case 1): a glyph the font colour-draws but core marks
+    /// single-width (`❤` without VS16). It lives in the **normal** region (so it never thrashes
+    /// the wide LRU) yet allocates as [`GlyphSlot::Emoji`] carrying [`EMOJI_FLAG`], so the shader
+    /// still colour-samples it — bit 15 is free for a normal slot (`≤ 0x7FF`), independent of the
+    /// 13-bit slot address.
+    EmojiNarrow,
+}
+
+impl GlyphKind {
+    /// Whether this kind allocates in (and is looked up from) the **normal** region. Emoji-ness
+    /// is orthogonal to region: [`GlyphKind::EmojiNarrow`] is a normal-region emoji.
+    fn is_normal_region(self) -> bool {
+        matches!(self, GlyphKind::Normal | GlyphKind::EmojiNarrow)
+    }
 }
 
 /// Pre-allocated slots for normal-styled ASCII glyphs (`0x20..=0x7E`).
@@ -135,8 +149,12 @@ impl GlyphCache {
     /// Unlike [`get_or_insert`](Self::get_or_insert) a miss commits nothing — the caller can
     /// rasterise *before* committing (so a rasterise failure never strands a slot, #280).
     pub fn touch(&mut self, key: &GlyphKey, kind: GlyphKind) -> Option<GlyphSlot> {
-        if kind == GlyphKind::Normal {
-            if let Some(slot) = ascii_fast_path(key) {
+        if kind.is_normal_region() {
+            // The ASCII fast path is Normal-only: an emoji is never ASCII, and routing an
+            // EmojiNarrow through it would drop the emoji flag.
+            if kind == GlyphKind::Normal
+                && let Some(slot) = ascii_fast_path(key)
+            {
                 return Some(slot);
             }
             self.normal.get(key).copied()
@@ -150,42 +168,41 @@ impl GlyphCache {
     /// resolver uses this to reject a frame *before* committing, so an over-capacity frame
     /// never evicts a glyph it still references nor strands an uploaded-less slot (#280 P0).
     pub fn next_eviction(&self, kind: GlyphKind) -> Option<&GlyphKey> {
-        match kind {
-            GlyphKind::Normal => {
-                if self.normal_next >= NORMAL_CAPACITY {
-                    self.normal.peek_lru().map(|(k, _)| k)
-                } else {
-                    None
-                }
+        if kind.is_normal_region() {
+            if self.normal_next >= NORMAL_CAPACITY {
+                self.normal.peek_lru().map(|(k, _)| k)
+            } else {
+                None
             }
-            GlyphKind::Wide | GlyphKind::Emoji => {
-                if self.wide_next >= WIDE_BASE + WIDE_CAPACITY * 2 {
-                    self.wide.peek_lru().map(|(k, _)| k)
-                } else {
-                    None
-                }
-            }
+        } else if self.wide_next >= WIDE_BASE + WIDE_CAPACITY * 2 {
+            self.wide.peek_lru().map(|(k, _)| k)
+        } else {
+            None
         }
     }
 
     /// Get the slot for a glyph, allocating (and evicting the LRU glyph if the region is
     /// full) when it is new. Marks the glyph most-recently-used.
     pub fn get_or_insert(&mut self, key: GlyphKey, kind: GlyphKind) -> Allocation {
-        if kind == GlyphKind::Normal {
-            if let Some(slot) = ascii_fast_path(&key) {
-                return Allocation {
-                    slot,
-                    is_new: false,
-                    evicted: None,
-                };
+        match kind {
+            GlyphKind::Normal => {
+                if let Some(slot) = ascii_fast_path(&key) {
+                    return Allocation {
+                        slot,
+                        is_new: false,
+                        evicted: None,
+                    };
+                }
+                self.alloc_normal(key, false)
             }
-            self.alloc_normal(key)
-        } else {
-            self.alloc_wide(key, kind == GlyphKind::Emoji)
+            // A width-1 colour emoji (#297): normal region, but flagged Emoji.
+            GlyphKind::EmojiNarrow => self.alloc_normal(key, true),
+            GlyphKind::Wide => self.alloc_wide(key, false),
+            GlyphKind::Emoji => self.alloc_wide(key, true),
         }
     }
 
-    fn alloc_normal(&mut self, key: GlyphKey) -> Allocation {
+    fn alloc_normal(&mut self, key: GlyphKey, is_emoji: bool) -> Allocation {
         if let Some(&slot) = self.normal.get(&key) {
             return Allocation {
                 slot,
@@ -193,16 +210,25 @@ impl GlyphCache {
                 evicted: None,
             };
         }
-        let (slot, evicted) = if self.normal_next < NORMAL_CAPACITY {
-            let s = GlyphSlot::Normal(self.normal_next);
+        // A normal glyph takes ONE slot (a wide/emoji-wide glyph takes two — that path is
+        // alloc_wide). On eviction reuse the LRU's BARE index and rebuild the variant from
+        // `is_emoji`, so an evicted Emoji slot never carries its stale flag into a plain Normal
+        // (and vice versa) — mirrors alloc_wide's reconstruction.
+        let (idx, evicted) = if self.normal_next < NORMAL_CAPACITY {
+            let i = self.normal_next;
             self.normal_next += 1;
-            (s, None)
+            (i, None)
         } else {
             let (ek, es) = self
                 .normal
                 .pop_lru()
                 .expect("normal region non-empty when full");
-            (es, Some(ek))
+            (es.slot_id(), Some(ek))
+        };
+        let slot = if is_emoji {
+            GlyphSlot::Emoji(idx | EMOJI_FLAG)
+        } else {
+            GlyphSlot::Normal(idx)
         };
         self.normal.put(key, slot);
         Allocation {
@@ -381,6 +407,38 @@ mod tests {
     }
 
     #[test]
+    fn emoji_narrow_allocates_in_the_normal_region_carrying_the_emoji_flag() {
+        let mut c = GlyphCache::new();
+        // #297 case 1: a width-1 colour glyph (❤ U+2764) allocates in the NORMAL region — its
+        // slot address is below WIDE_BASE — yet it is an Emoji slot carrying EMOJI_FLAG so the
+        // shader colour-samples it. bit 15 never collides with the ≤ 0x7FF normal slot address.
+        let a = c.get_or_insert(key("\u{2764}", FontStyle::Normal), GlyphKind::EmojiNarrow);
+        assert!(a.is_new);
+        assert_eq!(a.slot, GlyphSlot::Emoji(ASCII_SLOTS | EMOJI_FLAG));
+        assert_eq!(
+            a.slot.slot_id(),
+            ASCII_SLOTS,
+            "bare slot addresses the normal region"
+        );
+        assert!(a.slot.slot_id() < WIDE_BASE, "not in the wide region");
+
+        // Re-request: a cache hit, no new alloc — the glyph is resident across frames (no
+        // re-rasterise thrash, the whole point of the normal-region path).
+        let b = c.get_or_insert(key("\u{2764}", FontStyle::Normal), GlyphKind::EmojiNarrow);
+        assert!(!b.is_new);
+        assert_eq!(b.slot, a.slot);
+
+        // The resolver looks a narrow glyph up as GlyphKind::Normal (width is known before the
+        // rasteriser reports emoji-ness). EmojiNarrow shares the normal region, so that touch hits.
+        assert_eq!(
+            c.touch(&key("\u{2764}", FontStyle::Normal), GlyphKind::Normal),
+            Some(a.slot),
+            "reachable via a Normal-kind touch — same region"
+        );
+        assert_eq!(c.len(), 1, "one cached glyph");
+    }
+
+    #[test]
     fn full_normal_region_evicts_lru_and_reuses_its_slot() {
         let mut c = GlyphCache::new();
         // Fill the whole normal region: slots ASCII_SLOTS..NORMAL_CAPACITY.
@@ -413,6 +471,37 @@ mod tests {
             fill as usize,
             "count is unchanged after an eviction"
         );
+    }
+
+    #[test]
+    fn full_normal_region_evicting_an_emoji_reuses_the_bare_slot_without_the_flag() {
+        let mut c = GlyphCache::new();
+        // Fill the whole normal region with narrow colour emoji (EmojiNarrow, 1 slot each).
+        let fill = NORMAL_CAPACITY - ASCII_SLOTS; // 1953
+        let first = '\u{2764}';
+        for i in 0..fill {
+            let ch = char::from_u32(0x2764 + i as u32).unwrap();
+            let a = c.get_or_insert(
+                key(&ch.to_string(), FontStyle::Normal),
+                GlyphKind::EmojiNarrow,
+            );
+            assert!(a.is_new && a.evicted.is_none());
+            assert!(
+                matches!(a.slot, GlyphSlot::Emoji(_)),
+                "each is a normal-region emoji"
+            );
+        }
+        // Overflow with a plain Normal glyph: it evicts the LRU emoji and reuses its BARE index
+        // as a Normal — the stale EMOJI_FLAG must NOT survive, else the shader would wrongly
+        // colour-sample a text glyph. (The normal-region mirror of the wide-region guard below.)
+        let a = c.get_or_insert(key("\u{2192}", FontStyle::Normal), GlyphKind::Normal);
+        assert!(a.is_new);
+        assert_eq!(
+            a.slot,
+            GlyphSlot::Normal(ASCII_SLOTS),
+            "reuses the evicted emoji's bare slot as a plain Normal (no emoji flag)"
+        );
+        assert_eq!(a.evicted, Some(key(&first.to_string(), FontStyle::Normal)));
     }
 
     #[test]

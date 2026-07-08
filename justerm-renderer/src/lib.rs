@@ -19,6 +19,7 @@
 pub mod attrs;
 pub mod bitmap;
 pub mod color;
+pub mod emoji;
 pub mod frame;
 pub mod frame_grid;
 pub mod glyph_cache;
