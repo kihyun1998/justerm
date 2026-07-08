@@ -144,22 +144,69 @@ fn mode_off_flag_and_vs16_stay_per_char() {
 }
 
 #[test]
-fn mode_2027_promotion_at_last_column_stays_narrow_known_gap() {
-    // KNOWN GAP (#303): a narrow base that would promote-to-wide but sits at the last column has
-    // no room for its spacer, so it stays narrow. Documented here so the tail edge is tracked, not
-    // silent — the common (non-edge) promotion is covered above.
-    let mut t = Engine::new(2, 1); // 2 columns: put the 1st RI at the last column
+fn mode_2027_promotion_at_last_column_relocates_the_cluster_to_the_next_line() {
+    // #303: a narrow base that must promote-to-wide but sits at the last column has no spacer room,
+    // so the WHOLE cluster relocates to the next line as a wide cell and the row soft-wraps —
+    // matching ghostty. (2 cols → the 1st RI lands at the last column; 2 rows → no scroll.)
+    let mut t = Engine::new(2, 2);
     t.feed(b"\x1b[?2027h");
-    t.feed("X".as_bytes()); // col 0
-    t.feed("\u{1F1F0}".as_bytes()); // 🇰 → narrow at col 1 (last), cursor pending-wrap
-    t.feed("\u{1F1F7}".as_bytes()); // 🇷 joins but cannot promote (no col 2)
+    t.feed("X".as_bytes()); // (0,0)
+    t.feed("\u{1F1F0}".as_bytes()); // 🇰 → narrow at (0,1) last column, cursor pending-wrap
+    t.feed("\u{1F1F7}".as_bytes()); // 🇷 joins → promote → no room → relocate to row 1
+    let g = t.grid();
+    // Row 0 soft-wraps: 'X' stays, the vacated last column carries WRAPLINE.
+    assert_eq!(g.cell(0, 0).c(), 'X');
+    assert!(
+        g.cell(0, 1).is_wrapline(),
+        "row 0 soft-wraps at the vacated last column"
+    );
+    // The flag is relocated to row 1 as ONE wide cell.
+    assert_eq!(
+        g.cell(1, 0).c(),
+        '\u{1F1F0}',
+        "flag lead relocated to row 1"
+    );
+    assert!(g.cell(1, 0).is_wide(), "and is now wide");
+    assert!(g.cell(1, 1).is_wide_spacer(), "with its spacer");
+    // The two rows read back as ONE logical line (soft-wrap join, vacated leading spacer skipped):
+    // "X" + the full flag — proving logical_lines/accessible_text stay coherent across relocation.
+    assert_eq!(t.accessible_text().trim_end(), "X\u{1F1F0}\u{1F1F7}");
+}
+
+#[test]
+fn mode_2027_last_column_relocation_scrolls_when_at_the_bottom() {
+    // On a single-row screen the relocation's wrap scrolls: the vacated 'X' row moves to
+    // scrollback and the flag lands wide on the (now sole) visible row.
+    let mut t = Engine::new(2, 1);
+    t.feed(b"\x1b[?2027h");
+    t.feed("X\u{1F1F0}\u{1F1F7}".as_bytes()); // X, then the flag clustered at the last column
+    let g = t.grid();
+    assert_eq!(
+        g.cell(0, 0).c(),
+        '\u{1F1F0}',
+        "flag scrolled onto the visible row"
+    );
+    assert!(g.cell(0, 0).is_wide());
+    assert!(g.cell(0, 1).is_wide_spacer());
+    assert_eq!(t.scrollback_len(), 1, "the 'X' row scrolled into history");
+    // The whole document still reads "X🇰🇷" (scrollback + screen).
+    assert_eq!(t.accessible_text().trim_end(), "X\u{1F1F0}\u{1F1F7}");
+}
+
+#[test]
+fn mode_2027_no_relocation_at_last_column_with_autowrap_off() {
+    // With autowrap off (?7l) a last-column base never gets pending-wrap, so a following scalar
+    // can't reach it to cluster — the flag never forms and nothing relocates (the 2nd RI overwrites
+    // the 1st in place, standard xterm autowrap-off). The last cell stays narrow; row 1 is untouched.
+    let mut t = Engine::new(2, 2);
+    t.feed(b"\x1b[?2027h\x1b[?7l"); // grapheme mode on, autowrap OFF
+    t.feed("X\u{1F1F0}\u{1F1F7}".as_bytes());
     let g = t.grid();
     assert!(
         !g.cell(0, 1).is_wide(),
-        "last-column flag stays narrow until relocation lands (#303)"
+        "no wide cluster at the last column"
     );
-    // The full flag is still preserved in the side-table (copy fidelity holds).
-    assert!(t.accessible_text().contains("\u{1F1F0}\u{1F1F7}"));
+    assert_eq!(g.cell(1, 0).c(), ' ', "nothing relocated to row 1");
 }
 
 #[test]
