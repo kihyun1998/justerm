@@ -100,8 +100,11 @@ export class CellMirror {
         const flags = frame.flags[idx]!;
         const extra = frame.extra[idx]!;
         const code = frame.codepoints[idx]!;
-        const symbol =
-          extra !== 0 ? frame.sideTable[extra - 1]! : code === 0 ? " " : String.fromCodePoint(code);
+        // The side table holds ONLY the trailing width-0 combining marks (justerm-core convention,
+        // #294); the base glyph stays in `code`. Prepend the base to the marks so "é" (e + U+0301)
+        // and "🚀‍" (emoji + trailing ZWJ) keep their base instead of rendering a bare mark.
+        const marks = extra !== 0 ? frame.sideTable[extra - 1]! : "";
+        const symbol = code === 0 ? " " : String.fromCodePoint(code) + marks;
         this.cells[line * this.cols + x] = { symbol, fg: frame.fg[idx]!, bg: frame.bg[idx]!, flags };
         damaged.add(line * this.cols + x);
       }
