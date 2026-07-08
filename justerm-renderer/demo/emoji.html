@@ -1,0 +1,70 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>justerm-renderer proof — colour emoji (#284)</title>
+<style>
+  body { margin: 0; background: #000; }
+  #c { display: block; image-rendering: pixelated; }
+</style>
+<!--
+  #284 proof: a colour emoji renders in COLOUR across its two cells. Classification is font
+  ground-truth (is_color_bitmap): the rasteriser fills text in white (grayscale), but the
+  browser draws a colour emoji in its own palette, so the pipeline sets EMOJI_FLAG (bit 15) and
+  the shader samples the atlas rgb instead of the foreground.
+
+  Background is GRAY (R=G=B) so any non-gray pixel is unambiguously emoji colour — if the emoji
+  were wrongly drawn via the (white) foreground, the whole cell would stay grayscale. Both
+  halves (lead + spacer) must carry colour. Build: wasm-pack build --target web --dev --out-dir pkg
+-->
+<canvas id="c" width="128" height="32"></canvas>
+<script type="module">
+  import init, { JustermRenderer } from "../pkg/justerm_renderer.js";
+  const FG = 0xffffff, BG = 0x808080; // white fg, GRAY bg
+  const WIDE_CHAR = 1 << 8, WIDE_SPACER = 1 << 9;
+  await init();
+
+  const palette = new Uint32Array(256);
+  const r = new JustermRenderer("#c", palette, FG, BG);
+  const CW = r.cell_width(), CH = r.cell_height();
+  const COLS = 4, H = CH;
+  r.resize(COLS * CW, H);
+
+  // Row: [🚀 lead][spacer][A][space]. Default fg/bg refs (0) → white on gray.
+  const cps   = new Uint32Array([0x1F680, 0x20,          0x41, 0x20]);
+  const flags = new Uint16Array([WIDE_CHAR, WIDE_SPACER, 0,    0]);
+  const zeros = new Uint32Array(COLS);
+  r.apply_frame(COLS, 1, zeros, zeros, cps, flags, true);
+  r.render();
+
+  const gl = document.querySelector("#c").getContext("webgl2");
+  // For cell (col,row) return {lit, coloured}: lit = pixels differing from the gray bg;
+  // coloured = pixels whose R/G/B spread exceeds a threshold (emoji palette, never gray text).
+  const scan = (col) => {
+    const buf = new Uint8Array(CW * CH * 4);
+    gl.readPixels(col * CW, 0, CW, CH, gl.RGBA, gl.UNSIGNED_BYTE, buf);
+    let lit = 0, coloured = 0;
+    for (let i = 0; i < buf.length; i += 4) {
+      const [rr, gg, bb] = [buf[i], buf[i + 1], buf[i + 2]];
+      const hi = Math.max(rr, gg, bb), lo = Math.min(rr, gg, bb);
+      if (Math.abs(rr - 128) > 12 || Math.abs(gg - 128) > 12 || Math.abs(bb - 128) > 12) lit++;
+      if (hi - lo > 24) coloured++;
+    }
+    return { lit, coloured };
+  };
+
+  const lead = scan(0), spacer = scan(1), letter = scan(2), blank = scan(3);
+  window.__proof = {
+    cell: [CW, CH], lead, spacer, letter, blank,
+    checks: {
+      leadRenders: lead.lit > 0,
+      spacerRenders: spacer.lit > 0,
+      // The emoji renders in COLOUR across BOTH halves (not grayscale via the fg).
+      leadColoured: lead.coloured > 0,
+      spacerColoured: spacer.coloured > 0,
+      // A plain white letter and a blank cell carry NO colour (grayscale only).
+      letterMonochrome: letter.lit > 0 && letter.coloured === 0,
+      blankMonochrome: blank.coloured === 0,
+    },
+  };
+  window.__proof.ok = Object.values(window.__proof.checks).every(Boolean);
+  window.__done = true;
+</script>

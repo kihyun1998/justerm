@@ -58,6 +58,33 @@ pub fn ink_bounds(pixels: &[u8], w: u32, h: u32, alpha_threshold: u8) -> Option<
     })
 }
 
+/// Minimum alpha for a pixel to count when detecting colour — skips near-transparent
+/// anti-aliasing fringe that could carry stray channel noise.
+const COLOR_ALPHA_MIN: u8 = 16;
+/// Minimum channel spread (max − min of R/G/B) for a pixel to read as coloured. The rasteriser
+/// fills text in white, and the canvas's grayscale AA sets `R = G = B` exactly, so any real
+/// spread signals a colour glyph; the small floor absorbs stray rounding.
+const COLOR_SPREAD_MIN: u8 = 8;
+
+/// Whether an RGBA bitmap (row-major) contains colour — a colour emoji the browser drew in its
+/// own palette (COLR/CBDT/SVG), versus a text glyph the rasteriser drew in white (grayscale,
+/// with coverage in the alpha channel only). True if any sufficiently-opaque pixel's R/G/B are
+/// not near-equal. This is **font ground-truth** emoji detection (#284): it classifies by what
+/// the font actually rendered, so a text-presentation glyph (e.g. `✂` with no VS16) that the
+/// font draws monochrome is correctly treated as text — not colour-sampled like a unicode
+/// range check would mis-do.
+pub fn is_color_bitmap(rgba: &[u8]) -> bool {
+    rgba.chunks_exact(4).any(|px| {
+        let (r, g, b, a) = (px[0], px[1], px[2], px[3]);
+        if a < COLOR_ALPHA_MIN {
+            return false;
+        }
+        let hi = r.max(g).max(b);
+        let lo = r.min(g).min(b);
+        hi - lo >= COLOR_SPREAD_MIN
+    })
+}
+
 /// The transparent guard band (in pixels) around every atlas glyph cell: the atlas cell is the
 /// physical cell grown by `2*PADDING` in each dimension, with the glyph drawn inset. The band
 /// stops adjacent glyph bands bleeding under `NEAREST` sampling and gives over-tall / fallback
@@ -135,6 +162,47 @@ mod tests {
             buf[i..i + 4].copy_from_slice(&[255, 255, 255, a]);
         }
         buf
+    }
+
+    /// A `w`×`h` RGBA bitmap from a list of `(x, y, [r,g,b,a])` pixels (rest transparent).
+    fn rgba(w: u32, h: u32, px: &[(u32, u32, [u8; 4])]) -> Vec<u8> {
+        let mut buf = vec![0u8; (w * h * 4) as usize];
+        for &(x, y, c) in px {
+            let i = ((y * w + x) * 4) as usize;
+            buf[i..i + 4].copy_from_slice(&c);
+        }
+        buf
+    }
+
+    #[test]
+    fn is_color_bitmap_false_for_a_grayscale_text_glyph() {
+        // A white text glyph: R=G=B=255, coverage in alpha. No pixel is coloured.
+        let buf = bitmap(3, 3, &[(0, 0, 255), (1, 1, 128), (2, 2, 40)]);
+        assert!(!is_color_bitmap(&buf));
+        // Pure black/gray coverage is also not colour.
+        let gray = rgba(2, 1, &[(0, 0, [90, 90, 90, 255])]);
+        assert!(!is_color_bitmap(&gray));
+    }
+
+    #[test]
+    fn is_color_bitmap_true_for_a_coloured_emoji_pixel() {
+        // One opaque red-ish pixel (spread 255 ≥ 8) among grayscale → colour emoji.
+        let buf = rgba(
+            3,
+            1,
+            &[(0, 0, [200, 200, 200, 255]), (1, 0, [220, 40, 40, 255])],
+        );
+        assert!(is_color_bitmap(&buf));
+    }
+
+    #[test]
+    fn is_color_bitmap_ignores_near_transparent_and_low_spread_pixels() {
+        // A coloured pixel but almost transparent (alpha < 16) → ignored (AA fringe).
+        let faint = rgba(1, 1, &[(0, 0, [255, 0, 0, 8])]);
+        assert!(!is_color_bitmap(&faint));
+        // Opaque but tiny channel spread (< 8, rounding noise) → not colour.
+        let noise = rgba(1, 1, &[(0, 0, [200, 204, 199, 255])]);
+        assert!(!is_color_bitmap(&noise));
     }
 
     #[test]

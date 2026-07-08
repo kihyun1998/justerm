@@ -13,7 +13,7 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 use web_sys::{HtmlCanvasElement, WebGl2RenderingContext};
 
-use crate::bitmap::{PADDING, split_wide_bitmap};
+use crate::bitmap::{PADDING, is_color_bitmap, split_wide_bitmap};
 use crate::color::gl_rgb;
 use crate::frame::{Frame, pack_instances};
 use crate::frame_grid::{DamageFrame, FrameGrid};
@@ -73,7 +73,8 @@ float hline(float y, float c, float thick) {
     return 1.0 - smoothstep(0.0, thick, abs(y - c));
 }
 void main() {
-    // The glyph field packs slot (bits 0..12), underline (bit 13), strikethrough (bit 14).
+    // The glyph field packs slot (bits 0..12), underline (bit 13), strikethrough (bit 14),
+    // and the colour-emoji flag (bit 15, #284).
     uint slot = v_glyph & 0x1FFFu;
     uint layer = slot >> 5u;   // 32 glyphs stack vertically per layer
     uint band = slot & 31u;
@@ -84,15 +85,23 @@ void main() {
     // Nudge off the exact texel edge so NEAREST can't round to a neighbour (beamterm cell.frag);
     // belt-and-suspenders for a fractional cell↔texel mapping (DPR != 1, #265).
     vec3 tc = vec3(inner.x + 0.001, (float(band) + inner.y + 0.001) / 32.0, float(layer));
-    float coverage = texture(u_atlas, tc).a;
+    vec4 texel = texture(u_atlas, tc);
+    float coverage = texel.a;
+
+    // A colour emoji (bit 15) samples the atlas RGB (the font's own colours); a text glyph uses
+    // the packed foreground (beamterm cell.frag `mix(base_fg, glyph.rgb, emoji_factor)`).
+    float emoji = float((v_glyph >> 15u) & 1u);
+    vec3 fg = mix(v_fg, texel.rgb, emoji);
 
     float underline = float((v_glyph >> 13u) & 1u);
     float strike = float((v_glyph >> 14u) & 1u);
     // Fixed cell-local positions (underline below baseline, strikethrough mid-cell). beamterm
     // derives these per-font from metrics; a font-metric-driven position is a later refinement.
     float line = max(hline(v_tex.y, 0.88, 0.05) * underline, hline(v_tex.y, 0.5, 0.05) * strike);
+    // Underline/strikethrough always draw in the base foreground, even over an emoji.
+    fg = mix(fg, v_fg, line);
 
-    FragColor = vec4(mix(v_bg, v_fg, max(coverage, line)), 1.0);
+    FragColor = vec4(mix(v_bg, fg, max(coverage, line)), 1.0);
 }
 "#;
 
@@ -464,7 +473,13 @@ impl JustermRenderer {
         let slots = resolve_frame(
             cells,
             cache,
-            |text, style, wide| rasterizer.rasterize(text, style, wide),
+            |text, style, wide| {
+                // Rasterise, then classify by the pixels drawn: a colour emoji comes back with
+                // its own palette (COLR/CBDT/SVG), a text glyph is grayscale white (#284).
+                let rgba = rasterizer.rasterize(text, style, wide)?;
+                let is_emoji = is_color_bitmap(&rgba);
+                Ok((rgba, is_emoji))
+            },
             |base, wide, rgba: Vec<u8>| {
                 if wide {
                     // The wide source is 2*padded_w - 2*PADDING wide (two content halves plus

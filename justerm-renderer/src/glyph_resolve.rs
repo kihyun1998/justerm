@@ -17,7 +17,7 @@ use std::collections::HashSet;
 use unicode_normalization::UnicodeNormalization;
 
 use crate::attrs::{font_style, is_wide_lead, is_wide_spacer};
-use crate::glyph_cache::{FontStyle, GlyphCache, GlyphKey, GlyphKind};
+use crate::glyph_cache::{EMOJI_FLAG, FontStyle, GlyphCache, GlyphKey, GlyphKind, GlyphSlot};
 
 /// A frame's per-cell glyph inputs (dense row-major). Grouped so the resolver stays within the
 /// argument budget once grapheme clusters (#285) join codepoints + flags.
@@ -59,7 +59,10 @@ fn sanitize_codepoint(cp: u32) -> char {
 pub fn resolve_frame<B, E>(
     cells: &Cells,
     cache: &mut GlyphCache,
-    mut rasterize: impl FnMut(&str, FontStyle, bool) -> Result<B, E>,
+    // Rasterise a grapheme and report whether the bitmap is a **colour emoji** (`is_color_bitmap`)
+    // — the caller inspects the pixels it just drew (#284). An emoji is allocated in the wide
+    // region with `EMOJI_FLAG`, so its glyph field tells the shader to sample the texture colour.
+    mut rasterize: impl FnMut(&str, FontStyle, bool) -> Result<(B, bool), E>,
     mut upload: impl FnMut(u16, bool, B),
 ) -> Result<Vec<u16>, ResolveError<E>> {
     let Cells {
@@ -120,13 +123,14 @@ pub fn resolve_frame<B, E>(
             &mut wide_frame
         };
 
-        let base = match cache.touch(&key, kind) {
-            Some(slot) => slot.slot_id(),
+        let slot = match cache.touch(&key, kind) {
+            Some(slot) => slot,
             None => {
                 // Reject the frame BEFORE any mutation if the next eviction would drop a
                 // glyph this frame still references (#280 P0): more distinct glyphs than the
                 // region can hold is impossible to pack, so surface it rather than silently
                 // corrupt the earlier cell — and don't strand a committed-but-unuploaded slot.
+                // (Emoji share the wide region, so the `kind` used here is region-correct.)
                 if let Some(victim) = cache.next_eviction(kind)
                     && region.contains(victim)
                 {
@@ -134,19 +138,40 @@ pub fn resolve_frame<B, E>(
                 }
                 // Rasterise BEFORE committing the cache entry: a failure returns here with
                 // the cache untouched, so no slot is left "resident but never uploaded"
-                // (#280 P1). Only on success do we commit + upload.
-                let bitmap =
+                // (#280 P1). The rasteriser reports colour-emoji-ness from the pixels it drew;
+                // an emoji is committed as `Emoji` (wide region + `EMOJI_FLAG`). Only on
+                // success do we commit + upload.
+                let (bitmap, is_emoji) =
                     rasterize(&key.text, key.style, wide).map_err(ResolveError::Rasterize)?;
-                let alloc = cache.get_or_insert(key.clone(), kind);
-                let base = alloc.slot.slot_id();
-                upload(base, wide, bitmap);
-                base
+                // Emoji live in the wide region (EMOJI_FLAG + a 2-slot span), so only a *wide*
+                // colour glyph is upgraded to `Emoji`. A width-1 colour glyph (is_emoji && !wide)
+                // stays `Normal` — routing it to the wide region would store it in the wide LRU
+                // but look it up in the normal LRU (via `kind` above), re-rasterising it every
+                // frame. It renders monochrome instead; colour width-1 glyphs are tracked (#297).
+                let alloc_kind = if is_emoji && wide {
+                    GlyphKind::Emoji
+                } else {
+                    kind
+                };
+                let alloc = cache.get_or_insert(key.clone(), alloc_kind);
+                upload(alloc.slot.slot_id(), wide, bitmap);
+                alloc.slot
             }
         };
         region.insert(key);
-        slots.push(base);
+        // The glyph field carries the bare slot for a text/CJK glyph, or the slot | EMOJI_FLAG
+        // (bit 15) for a colour emoji so the shader samples the atlas colour. The wide spacer
+        // (right half) carries the same emoji bit.
+        let base = slot.slot_id();
+        let is_emoji = matches!(slot, GlyphSlot::Emoji(_));
+        let field = if is_emoji { base | EMOJI_FLAG } else { base };
+        slots.push(field);
         if wide {
-            pending_right = Some(base + 1);
+            pending_right = Some(if is_emoji {
+                (base + 1) | EMOJI_FLAG
+            } else {
+                base + 1
+            });
         }
     }
     Ok(slots)
@@ -159,7 +184,7 @@ mod tests {
 
     /// A rasterise/upload seam that panics if touched — for frames that must resolve
     /// entirely from pre-baked/resident slots.
-    fn no_raster(_: &str, _: FontStyle, _: bool) -> Result<String, ()> {
+    fn no_raster(_: &str, _: FontStyle, _: bool) -> Result<(String, bool), ()> {
         panic!("rasterize must not be called for this frame");
     }
     fn no_upload(_: u16, _: bool, _: String) {
@@ -206,7 +231,7 @@ mod tests {
             &mut cache,
             |t, s, w| {
                 rasterized.push((t.to_string(), s, w));
-                Ok::<String, ()>(t.to_string())
+                Ok::<(String, bool), ()>((t.to_string(), false))
             },
             |slot, w, b| uploaded.push((slot, w, b)),
         )
@@ -230,7 +255,7 @@ mod tests {
         let err = resolve_frame(
             &cells(1, 1, &[0x2192], &[0]),
             &mut cache,
-            |_, _, _| Err::<String, &str>("boom"),
+            |_, _, _| Err::<(String, bool), &str>("boom"),
             |_, _, _| uploads += 1,
         )
         .unwrap_err();
@@ -255,7 +280,7 @@ mod tests {
         let err = resolve_frame(
             &cells(n, 1, &cps, &flags),
             &mut cache,
-            |t, _, _| Ok::<String, ()>(t.to_string()),
+            |t, _, _| Ok::<(String, bool), ()>((t.to_string(), false)),
             |_, _, _| {},
         )
         .unwrap_err();
@@ -277,7 +302,7 @@ mod tests {
         let err = resolve_frame(
             &cells(n, 1, &cps, &flags),
             &mut cache,
-            |t, _, _| Ok::<String, ()>(t.to_string()),
+            |t, _, _| Ok::<(String, bool), ()>((t.to_string(), false)),
             |_, _, _| {},
         )
         .unwrap_err();
@@ -292,7 +317,7 @@ mod tests {
         let slots = resolve_frame(
             &cells(3, 1, &[0x2192, 0x2190, 0x2192], &[0, 0, 0]),
             &mut cache,
-            |t, _, _| Ok::<String, ()>(t.to_string()),
+            |t, _, _| Ok::<(String, bool), ()>((t.to_string(), false)),
             |_, _, _| {},
         )
         .expect("frame within capacity resolves");
@@ -319,7 +344,7 @@ mod tests {
             &mut cache,
             |t, s, w| {
                 rasterized.push((t.to_string(), s, w));
-                Ok::<String, ()>(t.to_string())
+                Ok::<(String, bool), ()>((t.to_string(), false))
             },
             |slot, w, b| uploaded.push((slot, w, b)),
         )
@@ -330,6 +355,82 @@ mod tests {
             vec![("中".to_string(), FontStyle::Normal, true)]
         );
         assert_eq!(uploaded, vec![(2048, true, "中".to_string())]);
+    }
+
+    #[test]
+    fn a_colour_emoji_is_flagged_in_the_wide_region_lead_and_spacer() {
+        use crate::attrs::{WIDE_CHAR, WIDE_CHAR_SPACER};
+        use crate::glyph_cache::WIDE_BASE;
+        // A wide emoji lead at col 0 + its spacer at col 1. The rasteriser reports is_emoji=true,
+        // so the glyph allocates in the wide region (base WIDE_BASE) AND its field carries
+        // EMOJI_FLAG (bit 15) — the shader's colour-sample signal. The spacer draws the right half
+        // (base+1) with the same emoji bit. Upload addresses the texture with the BARE slot.
+        let mut cache = GlyphCache::new();
+        let mut uploaded: Vec<(u16, bool)> = Vec::new();
+        let slots = resolve_frame(
+            &cells(2, 1, &[0x1F680, 0x0], &[WIDE_CHAR, WIDE_CHAR_SPACER]),
+            &mut cache,
+            |_t, _s, _w| Ok::<(String, bool), ()>(("rocket".to_string(), true)),
+            |slot, w, _b| uploaded.push((slot, w)),
+        )
+        .expect("frame resolves");
+        assert_eq!(
+            slots,
+            vec![WIDE_BASE | EMOJI_FLAG, (WIDE_BASE + 1) | EMOJI_FLAG]
+        );
+        assert_eq!(
+            slots[0] & !EMOJI_FLAG,
+            WIDE_BASE,
+            "bare slot addresses the texture"
+        );
+        assert_eq!(
+            uploaded,
+            vec![(WIDE_BASE, true)],
+            "upload uses the bare (flag-free) slot"
+        );
+    }
+
+    #[test]
+    fn a_narrow_colour_glyph_stays_normal_and_caches_without_thrash() {
+        use crate::glyph_cache::NORMAL_CAPACITY;
+        // A width-1 glyph (no WIDE_CHAR) the font colour-draws reports is_emoji=true but is NOT
+        // wide. Emoji occupy the wide region, so upgrading it there would store it in the wide
+        // LRU while `touch` looks in the normal LRU → a re-rasterise every frame. Gating the
+        // upgrade on `wide` keeps it Normal (rendered monochrome), region-consistent + cached.
+        let mut cache = GlyphCache::new();
+        let mut raster_calls = 0;
+        let f1 = resolve_frame(
+            &cells(1, 1, &[0x2764], &[0]), // ❤ codepoint, flags have no WIDE_CHAR
+            &mut cache,
+            |_t, _s, _w| {
+                raster_calls += 1;
+                Ok::<(String, bool), ()>(("x".to_string(), true)) // font drew it in colour
+            },
+            |_s, _w, _b| {},
+        )
+        .expect("resolves")[0];
+        assert_eq!(
+            f1 & EMOJI_FLAG,
+            0,
+            "narrow colour glyph is not emoji-flagged"
+        );
+        assert!(f1 < NORMAL_CAPACITY, "stays in the normal region");
+        // Second frame: cached in the normal region → touch hits, no re-rasterise (no thrash).
+        let f2 = resolve_frame(
+            &cells(1, 1, &[0x2764], &[0]),
+            &mut cache,
+            |_t, _s, _w| {
+                raster_calls += 1;
+                Ok::<(String, bool), ()>(("x".to_string(), true))
+            },
+            |_s, _w, _b| {},
+        )
+        .expect("resolves")[0];
+        assert_eq!(f2, f1, "same slot, region-consistent");
+        assert_eq!(
+            raster_calls, 1,
+            "rasterised once, not re-rasterised each frame"
+        );
     }
 
     #[test]
@@ -371,7 +472,7 @@ mod tests {
             &mut cache,
             |t, _, _| {
                 rasterized.push(t.to_string());
-                Ok::<String, ()>(t.to_string())
+                Ok::<(String, bool), ()>((t.to_string(), false))
             },
             |_, _, _| {},
         )
@@ -406,7 +507,7 @@ mod tests {
             &mut cache,
             |t, _, _| {
                 rasterized.push(t.to_string());
-                Ok::<String, ()>(t.to_string())
+                Ok::<(String, bool), ()>((t.to_string(), false))
             },
             |_, _, _| {},
         )
