@@ -4,7 +4,7 @@
 
 use std::collections::VecDeque;
 
-use unicode_width::UnicodeWidthChar;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use vte::{Params, Perform};
 
 use crate::cell::{Cell, CellFlags};
@@ -70,6 +70,11 @@ pub struct Term {
     /// tracks the flag; the consumer (which knows the scheme) drives the ?997
     /// notification via `report_color_scheme` (#85).
     color_scheme_updates: bool,
+    /// Grapheme-cluster mode (DEC ?2027, default OFF): the app opted into UAX #29 grapheme-cluster
+    /// width — a ZWJ / skin-tone / flag / emoji+VS16 sequence is clustered into ONE cell instead of
+    /// one cell per scalar (#295). OFF keeps the per-char (wcwidth-compatible) behaviour so the
+    /// cursor stays in sync with wcwidth apps — clustering is opt-in for exactly that reason (#301).
+    grapheme_clustering: bool,
     /// win32-input-mode (DEC ?9001): the app asked for keys as raw Windows
     /// key-records. The engine only *tracks* the flag — the raw record encoding
     /// (`CSI Vk;Sc;Uc;Kd;Cs;Rc _`) is a non-goal (raw passthrough, no semantic
@@ -357,6 +362,7 @@ impl Term {
             bracketed_paste: false,
             synchronized_output: false,
             color_scheme_updates: false,
+            grapheme_clustering: false,
             win32_input_mode: false,
             app_cursor_keys: false,
             application_keypad: false,
@@ -642,6 +648,12 @@ impl Term {
     /// Whether the app enabled color-scheme-update notifications (DEC ?2031, #85).
     pub fn color_scheme_updates(&self) -> bool {
         self.color_scheme_updates
+    }
+
+    /// Whether the app enabled grapheme-cluster mode (DEC ?2027, #295): emoji ZWJ / skin-tone /
+    /// flag / VS16 sequences are clustered into one cell. OFF (default) is per-char, wcwidth-compat.
+    pub fn grapheme_clustering(&self) -> bool {
+        self.grapheme_clustering
     }
 
     /// Whether the app enabled win32-input-mode (DEC ?9001, #86). The engine does
@@ -2014,6 +2026,7 @@ impl Term {
             47 | 1047 | 1049 => Some(self.on_alt),
             2004 => Some(self.bracketed_paste),
             2026 => Some(self.synchronized_output),
+            2027 => Some(self.grapheme_clustering),
             2031 => Some(self.color_scheme_updates),
             9001 => Some(self.win32_input_mode),
             _ => None,
@@ -2300,6 +2313,7 @@ impl Term {
         self.origin_mode = false;
         self.app_cursor_keys = false;
         self.bracketed_paste = false;
+        self.grapheme_clustering = false; // ?2027 back to the wcwidth-compat default (#295)
         self.autowrap = true; // xterm default is ON (not the VT100 "off")
         self.insert_mode = false;
         self.charsets = [Charset::Ascii; 4];
@@ -2511,6 +2525,109 @@ impl Term {
         // cell's combining bit). No global pool — the cluster rides the row.
         self.grid.row_mut(row).push_combining(col, c);
         self.damage_span(row, col, col);
+    }
+
+    /// Mode 2027 (#295): if `c` **extends** the previous cell's grapheme cluster (UAX #29), append
+    /// it to that cell's side-table — no new cell, no cursor advance — and return `true`. Otherwise
+    /// return `false` so `print` takes the normal per-scalar path (a break starts a new cell).
+    ///
+    /// The break state is reconstructed fresh from the previous cell's stored cluster (base scalar +
+    /// side-table marks) rather than persisted across calls, so cursor moves / CR-LF can't corrupt
+    /// it (mirrors ghostty). Width promotion for a narrow base (a flag's second RI, a text-base +
+    /// VS16) is handled by the caller in a later step; here the base's existing width holds.
+    fn try_grapheme_join(&mut self, c: char) -> bool {
+        let row = self.cursor.row;
+        // Locate the previous cluster's base cell, exactly as `push_combining`: with pending-wrap
+        // the cursor still sits on the last glyph; else step back one, and over a wide spacer.
+        let col = if self.cursor.pending_wrap {
+            self.cursor.col
+        } else if self.cursor.col == 0 {
+            return false; // nothing precedes on this row
+        } else {
+            self.cursor.col - 1
+        };
+        let col = if self.grid.cell(row, col).is_wide_spacer() {
+            col.saturating_sub(1)
+        } else {
+            col
+        };
+        // Reconstruct the previous cluster's text: base scalar + any already-joined scalars.
+        let mut prev = String::new();
+        prev.push(self.grid.cell(row, col).c());
+        if let Some(marks) = self.grid.row_ref(row).combining_at(col) {
+            prev.extend(marks.iter().copied());
+        }
+        if !crate::grapheme::grapheme_extends(&prev, c) {
+            return false;
+        }
+        // Join: ride the side-table (no new cell).
+        self.grid.row_mut(row).push_combining(col, c);
+        // Width promotion: a flag's second regional indicator, or a text-base + VS16, grows the
+        // cluster to width 2. `UnicodeWidthStr` gives the cluster width (RI-pair → 2, VS16 → 2). If
+        // the base cell is still narrow, widen it in place.
+        let cluster_w = {
+            prev.push(c);
+            UnicodeWidthStr::width(prev.as_str())
+        };
+        if cluster_w == 2 && !self.grid.cell(row, col).is_wide() {
+            self.promote_cluster_to_wide(row, col);
+        } else if cluster_w == 1 && self.grid.cell(row, col).is_wide() {
+            // The mirror case: a default-wide emoji + VS15 (text selector) shrinks to width 1.
+            self.demote_cluster_to_narrow(row, col);
+        }
+        self.damage_span(row, col, col);
+        true
+    }
+
+    /// Shrink a wide cluster cell back to a single-width cell (#295): a default-wide emoji joined by
+    /// VS15 (U+FE0E, the text selector) requests text presentation → width 1. Remove `WIDE_CHAR`,
+    /// free the spacer, and back the cursor up over it (the inverse of `promote_cluster_to_wide`).
+    fn demote_cluster_to_narrow(&mut self, row: usize, col: usize) {
+        let cols = self.grid.cols();
+        self.grid
+            .cell_mut(row, col)
+            .remove_flags(CellFlags::WIDE_CHAR);
+        if col + 1 < cols {
+            self.grid.cell_mut(row, col + 1).reset(); // free the now-unused spacer
+        }
+        // The cluster shrank 2→1: the cursor sat just past the wide cell (col+2, or pending-wrap on
+        // the last column); it now sits just past the single-width cell at col+1.
+        self.cursor.pending_wrap = false;
+        self.cursor.col = (col + 1).min(cols - 1);
+        self.damage_span(row, col, (col + 1).min(cols - 1));
+    }
+
+    /// Widen a narrow base cell to a double-width cluster in place (#295): set `WIDE_CHAR`, write
+    /// its spacer, and step the cursor over it. Only reached when a joining scalar (flag's 2nd RI,
+    /// VS16) promotes the cluster to width 2. A base pinned at the last column has no room for a
+    /// spacer — relocation is a later step; until then it stays narrow (rare, renders single-width).
+    fn promote_cluster_to_wide(&mut self, row: usize, col: usize) {
+        let cols = self.grid.cols();
+        if col + 1 >= cols {
+            return; // last-column narrow base: no spacer room — relocation tracked in #303
+        }
+        // Overwriting col+1 with the spacer can orphan the far half of a WIDE glyph standing there
+        // (the cursor may have been repositioned before the joining scalar arrived). Reset that
+        // orphan, exactly as write_glyph does (2462-2470), so no dangling spacer survives.
+        if self.grid.cell(row, col + 1).is_wide() && col + 2 < cols {
+            self.grid.cell_mut(row, col + 2).reset();
+        }
+        self.grid
+            .cell_mut(row, col)
+            .insert_flags(CellFlags::WIDE_CHAR);
+        let mut spacer = self.cursor.pen.cell(' ');
+        spacer.insert_flags(CellFlags::WIDE_CHAR_SPACER);
+        *self.grid.cell_mut(row, col + 1) = spacer;
+        // The cursor sat at col+1 (just past the narrow base); move it over the new spacer, applying
+        // the same last-column pending-wrap rule as a wide write.
+        let new_col = col + 2;
+        if new_col >= cols {
+            self.cursor.col = cols - 1;
+            self.cursor.pending_wrap = self.autowrap;
+        } else {
+            self.cursor.col = new_col;
+        }
+        self.damage_span(row, col, col + 1);
     }
 
     // ---- cursor movement (CSI A/B/C/D/G/d/H/f) -------------------------------
@@ -3002,6 +3119,8 @@ impl Term {
             ('l', 2004) => self.bracketed_paste = false,
             ('h', 2026) => self.synchronized_output = true, // synchronized output (#73)
             ('l', 2026) => self.synchronized_output = false,
+            ('h', 2027) => self.grapheme_clustering = true, // grapheme-cluster mode (#295)
+            ('l', 2027) => self.grapheme_clustering = false,
             ('h', 2031) => self.color_scheme_updates = true, // color-scheme notifications (#85)
             ('l', 2031) => self.color_scheme_updates = false,
             ('h', 9001) => self.win32_input_mode = true, // win32-input-mode (#86)
@@ -3100,6 +3219,11 @@ impl Perform for Term {
         // Translate through the active (GL) character set first (#62): under DEC
         // Special Graphics a printable byte becomes a line-drawing glyph.
         let c = self.charsets[self.gl].map(c);
+        // Grapheme-cluster mode (DEC ?2027, #295): if `c` extends the previous cell's cluster,
+        // join it there instead of placing a new cell. OFF → the per-char (wcwidth) path below.
+        if self.grapheme_clustering && self.try_grapheme_join(c) {
+            return;
+        }
         match c.width() {
             // Zero-width (combining marks): the grapheme-cluster side-table is a
             // later slice; drop for now rather than mis-place it as its own cell.

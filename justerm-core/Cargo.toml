@@ -14,6 +14,7 @@ autobenches = false
 
 [dependencies]
 bitflags = "2"
+unicode-segmentation = "1.13"
 unicode-width = "0.2"
 vte = "0.15"
 
