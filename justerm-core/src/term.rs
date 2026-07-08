@@ -1004,6 +1004,13 @@ impl Term {
                     break;
                 }
             }
+            // Trim trailing blank padding (only a logical line's tail can be blank), so a regex `$`
+            // anchor or a greedy `.*` doesn't run into the grid's blank cells — mirrors
+            // `viewport_logical_lines`'s trim (#314 Lens 1). Keeps hay/pos in lockstep.
+            while hay.last().is_some_and(|c| c.is_whitespace()) {
+                hay.pop();
+                pos.pop();
+            }
 
             // A match at char-index range [cs, ce) → a Match, whole-word-filtered and deduped.
             // (Marks map many hay entries to one column (#304), so a repeated in-cluster scalar can
@@ -3189,7 +3196,11 @@ fn is_word_boundary(c: char) -> bool {
 /// sense for whole-word search (#314). A word char is alphanumeric or `_` (the regex `\w` set),
 /// deliberately distinct from `is_word_boundary`'s wider semantic-selection set.
 fn word_bounded(hay: &[char], i: usize, len: usize) -> bool {
-    let is_word = |c: char| c.is_alphanumeric() || c == '_';
+    // A word char is alphanumeric, `_`, OR a grapheme-extending mark (width 0: combining marks,
+    // ZWJ, variation selectors) — so a mark attached to a base is never read as a word boundary,
+    // matching the regex `\b` sense (`\w` includes `\p{M}`) and staying consistent across the
+    // literal and regex paths on decomposed graphemes (#314 Lens 1).
+    let is_word = |c: char| c.is_alphanumeric() || c == '_' || c.width() == Some(0);
     let left = i == 0 || !is_word(hay[i - 1]);
     let right = i + len == hay.len() || !is_word(hay[i + len]);
     left && right

@@ -21,6 +21,14 @@ pub struct Match {
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct SearchOptions {
     /// Treat the query as a regular expression (the `regex` crate) instead of a literal substring.
+    ///
+    /// Caveats vs a JS `RegExp` (xterm.js): the `regex` crate has **no lookaround/backreferences**
+    /// and its `\w \d \b` are **Unicode-aware** by default. An **invalid or unsupported pattern
+    /// yields no matches** (an empty result) rather than an error — the current API has no error
+    /// channel, so a consumer cannot distinguish a bad pattern from a genuine no-match (#314).
+    /// Smart-case (see [`case_sensitive`](Self::case_sensitive)) infers case from the *raw* pattern,
+    /// so an uppercase metacharacter (`\B`, `\D`, `\x1B`…) can flip case-sensitivity — set
+    /// `case_sensitive` explicitly, or use an inline `(?i)`/`(?-i)`, to be sure.
     pub regex: bool,
     /// Match only where the run is bounded by non-word characters (a word char is alphanumeric or
     /// `_`) — the `\bword\b` sense, applied to both literal and regex queries.

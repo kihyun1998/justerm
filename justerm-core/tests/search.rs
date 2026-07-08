@@ -360,3 +360,50 @@ fn search_with_regex_matches_across_a_soft_wrap() {
     assert_eq!((m[0].start_line, m[0].start_col), (0, 2));
     assert_eq!((m[0].end_line, m[0].end_col), (1, 0));
 }
+
+#[test]
+fn search_with_whole_word_treats_a_combining_mark_as_part_of_the_word() {
+    use justerm_core::SearchOptions;
+    // #314 2-lens (Lens 1): "cat" + a combining acute on 't' + "s" renders ONE word "catś".
+    // Whole-word "cat" must NOT match (it's only a prefix) — a combining mark is not a boundary.
+    let mut term = Engine::new(20, 1);
+    term.feed("cat\u{0301}s".as_bytes());
+    let opts = SearchOptions {
+        whole_word: true,
+        ..Default::default()
+    };
+    assert_eq!(
+        term.search_with("cat", opts).len(),
+        0,
+        "cat is a prefix of catś, not whole"
+    );
+    // A left-edge mark is symmetric: "s´cat" → 'cat' is a suffix, not whole.
+    let mut t2 = Engine::new(20, 1);
+    t2.feed("s\u{0301}cat".as_bytes());
+    assert_eq!(t2.search_with("cat", opts).len(), 0);
+    // Control: a real word boundary (space) still matches.
+    let mut t3 = Engine::new(20, 1);
+    t3.feed("a cat s".as_bytes());
+    assert_eq!(t3.search_with("cat", opts).len(), 1);
+}
+
+#[test]
+fn search_with_regex_ignores_trailing_blank_padding() {
+    use justerm_core::SearchOptions;
+    let mut term = Engine::new(20, 1); // "hi" then 18 blank padding cols
+    term.feed(b"hi");
+    let opts = SearchOptions {
+        regex: true,
+        ..Default::default()
+    };
+    // `$` anchors to the visible end, not after the padding.
+    assert_eq!(
+        term.search_with("hi$", opts).len(),
+        1,
+        "$ matches after 'hi', not padding"
+    );
+    // Greedy `.*` stops at the visible text end (col 1), not the padded col 19.
+    let g = term.search_with("h.*", opts);
+    assert_eq!(g.len(), 1);
+    assert_eq!(g[0].end_col, 1, "greedy stops at visible text, not padding");
+}
