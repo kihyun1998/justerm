@@ -14,7 +14,7 @@
 #![cfg(target_arch = "wasm32")]
 
 use justerm_core::{Cell, CellFlags, Color, Frame, FrameKind, Span, encode_color};
-use justerm_wasm_decode::{build_palette, decode_frame, wire_version};
+use justerm_wasm_decode::{build_palette, decode_frame, is_valid_regex, wire_version};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_test::*;
 
@@ -79,6 +79,16 @@ fn sample_frame() -> Frame {
 #[wasm_bindgen_test]
 fn wire_version_is_eleven() {
     assert_eq!(wire_version(), 11); // #120 S3 bumped 10 -> 11 for the marker-lines group
+}
+
+// #316 D2: the regex validator crosses the boundary with core's dialect, so the web
+// can red-flag a regex-mode query as-you-type. `(?=x)` (lookahead) is legal in JS but
+// rejected by the `regex` crate — the exact case a JS-side check would get wrong.
+#[wasm_bindgen_test]
+fn is_valid_regex_crosses_the_boundary() {
+    assert!(is_valid_regex(r"f.o"));
+    assert!(!is_valid_regex("foo(")); // unbalanced group
+    assert!(!is_valid_regex("(?=x)")); // lookahead — unsupported by the regex crate
 }
 
 #[wasm_bindgen_test]

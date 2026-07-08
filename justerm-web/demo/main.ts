@@ -34,7 +34,16 @@ import {
 } from "../src/index";
 import { FitController, observeResize } from "../src/index";
 import type { AccessiblePort, SignalSink } from "../src/index";
-import type { CellGeometry, FitInput, InputSink, LogicalLine, ResizePort, SearchPort, SelectionPort } from "../src/index";
+import type {
+  CellGeometry,
+  FitInput,
+  InputSink,
+  LogicalLine,
+  ResizePort,
+  SearchOptions,
+  SearchPort,
+  SelectionPort,
+} from "../src/index";
 import type { DecodedFrame } from "../src/types";
 import { FakeSelectionEngine } from "./fake-select";
 import { FakeSearchEngine } from "./fake-search";
@@ -668,8 +677,8 @@ window.addEventListener("keydown", (e) => {
 // --- S9 wiring: search box → SearchController → fake search engine ---
 
 const searchPort: SearchPort = {
-  search: async (q) => {
-    const n = searchEngine.search(q, log);
+  search: async (q, options) => {
+    const n = searchEngine.search(q, log, options);
     render(); // matchSpans now carry the highlights
     return n;
   },
@@ -696,25 +705,69 @@ const searchPort: SearchPort = {
   },
 };
 
-const search = new SearchController(searchPort);
+// Real wasm regex validator (core's dialect, #316 D2) — the search box red-flags
+// an invalid regex-mode query as-you-type rather than showing a silent 0 matches.
+// JS `RegExp` can't stand in: its grammar differs from core's `regex` crate.
+const { isValidRegex } = await import("justerm-wasm-decode");
+const search = new SearchController(searchPort, { isValidRegex });
 
 const box = document.createElement("div");
 box.style.cssText =
-  "position:fixed;top:8px;right:24px;display:none;gap:6px;align-items:center;background:#313244;color:#cdd6f4;font:14px monospace;padding:6px 10px;border-radius:6px;z-index:10";
+  "position:fixed;top:8px;right:24px;display:none;gap:8px;align-items:center;background:#313244;color:#cdd6f4;font:14px monospace;padding:6px 10px;border-radius:6px;z-index:10";
 const input = document.createElement("input");
 input.placeholder = "search";
 input.style.cssText =
   "background:#1e1e2e;color:#cdd6f4;border:1px solid #45475a;padding:2px 6px;font:14px monospace;outline:none";
+
+// Mode toggles (#316) — regex / whole-word / case-sensitive, mirroring xterm.
+function modeToggle(id: string, label: string): HTMLInputElement {
+  const cb = document.createElement("input");
+  cb.type = "checkbox";
+  cb.id = `search-${id}`;
+  cb.style.cssText = "margin:0;cursor:pointer";
+  const l = document.createElement("label");
+  l.htmlFor = cb.id;
+  l.textContent = label;
+  l.style.cssText = "cursor:pointer;user-select:none;font-size:12px";
+  const wrap = document.createElement("span");
+  wrap.style.cssText = "display:inline-flex;gap:3px;align-items:center";
+  wrap.append(cb, l);
+  box.append(wrap);
+  return cb;
+}
 const countLabel = document.createElement("span");
 countLabel.textContent = "0/0";
-box.append(input, countLabel);
+const regexToggle = modeToggle("regex", ".*");
+const wordToggle = modeToggle("word", "W");
+const caseToggle = modeToggle("case", "Aa");
+box.insertBefore(input, box.firstChild);
+box.append(countLabel);
 document.body.append(box);
 
+function currentOptions(): SearchOptions {
+  return {
+    regex: regexToggle.checked,
+    wholeWord: wordToggle.checked,
+    // Checked = force case-sensitive; unchecked = smart-case (omit the override).
+    caseSensitive: caseToggle.checked || undefined,
+  };
+}
+
 function updateCount(): void {
+  if (search.isInvalidRegex()) {
+    countLabel.textContent = "invalid";
+    input.style.borderColor = "#f38ba8"; // red — regex the engine can't run
+    return;
+  }
+  input.style.borderColor = "#45475a";
   const r = search.result();
   countLabel.textContent = `${r.current}/${r.total}`;
 }
-input.addEventListener("input", () => void search.search(input.value).then(updateCount));
+function runSearch(): void {
+  void search.search(input.value, currentOptions()).then(updateCount);
+}
+input.addEventListener("input", runSearch);
+for (const t of [regexToggle, wordToggle, caseToggle]) t.addEventListener("change", runSearch);
 input.addEventListener("keydown", (e) => {
   if (e.key === "Enter") {
     e.preventDefault();

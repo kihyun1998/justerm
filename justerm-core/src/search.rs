@@ -6,6 +6,29 @@
 //! (holding the `Vec<Match>` and calling `scroll_to_match`), mirroring
 //! Alacritty's "engine finds, frontend navigates" split.
 
+/// Whether `pattern` is a regex [`Term::search_with`](crate::Term::search_with) can run
+/// (`opts.regex = true`) — a `true` guarantees `search_with` will *build* the pattern, and a
+/// `false` is exactly the case it silently swallows into an empty result (#316 D2).
+///
+/// Validated under **case-insensitive** compilation, the most expansive: Unicode case-folding
+/// grows the compiled program, so a `true` here holds whichever case mode smart-case / the
+/// `case_sensitive` override later picks for the search. A case-*sensitive*-only check could pass
+/// a pattern that then exceeds the `regex` size limit under `search_with`'s case-insensitive build
+/// (`CompiledTooBig`), reintroducing the silent swallow for an all-lowercase near-limit pattern.
+/// Grammar validity itself is case-flag-independent, so an invalid pattern (unbalanced group,
+/// lookaround / backreferences the `regex` crate lacks) is rejected regardless.
+///
+/// A consumer surfaces invalid-regex with this rather than JS `RegExp`: the `regex` crate's grammar
+/// differs (no lookaround/backreferences, Unicode-aware `\w \d \b`), so a JS-side check would
+/// misjudge patterns and reproduce the D2 gap. Pattern-only (no `SearchOptions`) — the case flag
+/// changes only compile size, covered here by validating the worst case.
+pub fn is_valid_regex(pattern: &str) -> bool {
+    regex::RegexBuilder::new(pattern)
+        .case_insensitive(true)
+        .build()
+        .is_ok()
+}
+
 /// One literal match, inclusive on both ends, in absolute buffer coordinates.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Match {

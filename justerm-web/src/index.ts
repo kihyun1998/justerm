@@ -42,7 +42,7 @@ export type { HighlightKind, HighlightRect, HighlightSpan } from "./overlay";
 // Matches stay backend-side (only their matchSpans cross the wire); navigation
 // is by index. Active match = selection (reuses the selection highlight).
 export { SearchController, StubSearchPort } from "./search";
-export type { SearchPort, SearchResult } from "./search";
+export type { SearchOptions, SearchPort, SearchResult } from "./search";
 // Fit (#114) — container px → cols/rows (xterm FitAddon parity: padding + scrollbar
 // subtract, floor, min 2×1, guards) → a debounced resize intent (ResizePort) the backend
 // applies as Engine::resize + PTY SIGWINCH. `observeResize` wires the ResizeObserver.

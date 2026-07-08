@@ -407,3 +407,47 @@ fn search_with_regex_ignores_trailing_blank_padding() {
     assert_eq!(g.len(), 1);
     assert_eq!(g[0].end_col, 1, "greedy stops at visible text, not padding");
 }
+
+// #316 D2: `search_with(regex)` silently swallows an invalid/unsupported pattern
+// into an *empty* result, so a consumer cannot tell a bad pattern from a genuine
+// no-match. `is_valid_regex` closes that gap using the *same* `regex` dialect as
+// `search_with`, so the web can red-flag the box as-you-type (via wasm
+// `isValidRegex`) before it ever runs a search. The two must agree: exactly the
+// patterns the helper rejects are the ones `search_with(regex)` returns empty for
+// irrespective of buffer content.
+#[test]
+fn is_valid_regex_distinguishes_bad_pattern_from_no_match() {
+    use justerm_core::{SearchOptions, is_valid_regex};
+    let mut term = Engine::new(20, 1);
+    term.feed(b"foo(bar"); // the text literally contains "foo("
+    let opts = SearchOptions {
+        regex: true,
+        ..Default::default()
+    };
+
+    // "foo(" is an unbalanced group → invalid regex. `search_with` returns empty
+    // even though the text contains "foo(" — indistinguishable from a real
+    // no-match without the helper. `is_valid_regex` reports the invalidity.
+    assert_eq!(term.search_with("foo(", opts).len(), 0);
+    assert!(!is_valid_regex("foo("));
+
+    // A supported pattern that matches: the helper says valid AND search finds it.
+    assert!(is_valid_regex(r"f.o"));
+    assert_eq!(term.search_with(r"f.o", opts).len(), 1); // matches "foo"
+}
+
+// The helper mirrors the `regex` crate's dialect — not JS `RegExp`. A JS-side
+// validator would misjudge these (lookaround is legal in JS, rejected here), which
+// is exactly why validation must round-trip through core, not `new RegExp()`.
+#[test]
+fn is_valid_regex_rejects_unsupported_dialect() {
+    use justerm_core::is_valid_regex;
+    assert!(is_valid_regex("plain")); // a literal is a valid regex
+    assert!(is_valid_regex(r"\d+"));
+    // An empty pattern is a valid regex; `search_with` early-returns it as a no-match (not a
+    // bad pattern), so the box shows 0/0, never "invalid". (Lens A benign edge.)
+    assert!(is_valid_regex(""));
+    assert!(!is_valid_regex("[")); // unterminated character class
+    assert!(!is_valid_regex("a{2,1}")); // repetition range with min > max
+    assert!(!is_valid_regex("(?=x)")); // lookahead — unsupported by the regex crate
+}
