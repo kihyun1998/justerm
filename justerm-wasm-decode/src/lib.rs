@@ -774,6 +774,28 @@ mod tests {
         assert_eq!(flat.link_table, vec!["https://example.com".to_string()]);
     }
 
+    #[test]
+    fn flatten_side_table_from_a_real_feed_holds_marks_only_not_the_base_294() {
+        // #294 real-core convention lock (via a REAL feed, not a hand-built frame): justerm-core
+        // stores a combining cluster's BASE in the codepoint column and only the trailing width-0
+        // MARKS in the side-table. This is the exact DecodedFrame contract justerm-web's cell-mirror
+        // consumes, so the mirror must PREPEND the base to the marks — never render the mark alone.
+        let mut e = justerm_core::Engine::new(4, 1);
+        e.feed("e\u{0301}".as_bytes()); // 'e' + combining acute
+        let flat = flatten(&e.frame());
+        assert_eq!(
+            flat.codepoints[0], 'e' as u32,
+            "base 'e' lives in the codepoint column"
+        );
+        assert_ne!(flat.extra[0], 0, "the cell indexes into the side-table");
+        let marks = &flat.side_table[(flat.extra[0] - 1) as usize];
+        assert_eq!(
+            marks,
+            &vec!['\u{0301}'],
+            "side-table holds ONLY the combining mark, NOT the base 'e'"
+        );
+    }
+
     // --- #108: overlay highlight spans carried through (selection + matches) ---
 
     #[test]

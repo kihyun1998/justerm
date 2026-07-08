@@ -364,25 +364,51 @@ describe("CellMirror.rowCells (#152 column map)", () => {
     expect(mirror.rowCells(0)).toEqual({ text: "\u{1F600}b", columns: [0, 0, 1] });
   });
 
-  // A combining/grapheme cluster arrives as a multi-unit `symbol` via the side table
-  // (`extra` → `sideTable`). Each of its UTF-16 units maps to the one cell's column, so
-  // a mid-cluster AT offset still reverses to that column and text/columns stay aligned.
-  it("maps every UTF-16 unit of a side-table grapheme cluster to its cell column", () => {
+  // A combining/grapheme cluster's marks arrive via the side table (`extra` -> `sideTable`), but
+  // justerm-core stores ONLY the trailing width-0 marks there — the BASE glyph stays in the
+  // codepoint column (verified: `Engine::feed("e\u{0301}")` -> side_table=[['\u{0301}']],
+  // cell.c()='e'). So the mirror must PREPEND the base codepoint to the marks (#294). Each UTF-16
+  // unit of the assembled cluster maps to the one cell's column, so a mid-cluster AT offset still
+  // reverses to that column and text/columns stay aligned.
+  it("prepends the base codepoint to side-table combining marks (core stores marks only)", () => {
     const mirror = new CellMirror(4, 1, palette(), F);
     const f: DecodedFrame = {
       cols: 4,
       rows: 1,
       kind: 0,
-      codepoints: [cp("e"), cp("x")], // cell 0's base cp is overridden by `extra`
+      codepoints: [cp("e"), cp("x")], // cell 0's base is 'e' — in the codepoint column
       fg: [0, 0],
       bg: [0, 0],
       flags: [0, 0],
-      extra: [1, 0], // cell 0 → sideTable[0]
+      extra: [1, 0], // cell 0 -> sideTable[0]
       spans: [0, 0, 1, 0, 2],
-      sideTable: ["é"], // "é" as e + combining acute — two UTF-16 units
+      sideTable: ["\u{0301}"], // core stores ONLY the combining acute (not the base 'e')
     } as DecodedFrame;
     mirror.applyFrame(f);
 
-    expect(mirror.rowCells(0)).toEqual({ text: "éx", columns: [0, 0, 1] });
+    // "é" = 'e' (base) + U+0301 (mark) = two UTF-16 units, both at column 0.
+    expect(mirror.rowCells(0)).toEqual({ text: "e\u{0301}x", columns: [0, 0, 1] });
+  });
+
+  it("keeps a wide emoji whose cell carries a trailing ZWJ/VS16 mark (not a blank cell)", () => {
+    // A wide emoji + a trailing width-0 mark (ZWJ/VS16) lands as base=emoji, side-table=[mark].
+    // Dropping the base (the old bug) rendered a blank wide cell; the base must survive.
+    const mirror = new CellMirror(4, 1, palette(), F);
+    const f: DecodedFrame = {
+      cols: 4,
+      rows: 1,
+      kind: 0,
+      codepoints: [0x1f680, 0], // 🚀 lead, then its wide spacer
+      fg: [0, 0],
+      bg: [0, 0],
+      flags: [0, F.wide_char_spacer],
+      extra: [1, 0], // cell 0 carries the trailing mark
+      spans: [0, 0, 1, 0, 2],
+      sideTable: ["\u{200D}"], // a lone trailing ZWJ (width-0)
+    } as DecodedFrame;
+    mirror.applyFrame(f);
+
+    // The rocket survives with its ZWJ appended — not replaced by a bare ZWJ (blank).
+    expect(mirror.rowCells(0).text).toBe("\u{1F680}\u{200D}");
   });
 });
