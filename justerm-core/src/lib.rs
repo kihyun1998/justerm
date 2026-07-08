@@ -39,7 +39,7 @@ pub use input::{
     MouseEvents,
 };
 pub use logical::LogicalLine;
-pub use search::Match;
+pub use search::{Match, SearchOptions};
 pub use selection::{SelectionSpan, SelectionType, Side};
 pub use serialize::{
     CELL_RECORD_LEN, DecodeError, Frame, FrameKind, MarkerId, MarkerKind, MarkerLine,
@@ -320,6 +320,12 @@ impl Engine {
     /// walking the returned `Vec` and calling [`Engine::scroll_to_match`].
     pub fn search(&self, query: &str) -> Vec<Match> {
         self.term.search(query)
+    }
+
+    /// Search with explicit [`SearchOptions`] — regex, whole-word, and a case-sensitivity override
+    /// beyond the literal + smart-case [`search`](Self::search) (#314).
+    pub fn search_with(&self, query: &str, opts: SearchOptions) -> Vec<Match> {
+        self.term.search_with(query, opts)
     }
 
     /// The viewport's logical lines (#113/ADR-0017): each soft-wrap-joined line's
