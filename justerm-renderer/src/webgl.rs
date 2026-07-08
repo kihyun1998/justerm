@@ -15,6 +15,7 @@ use web_sys::{HtmlCanvasElement, WebGl2RenderingContext};
 
 use crate::bitmap::{PADDING, is_color_bitmap, split_wide_bitmap};
 use crate::color::gl_rgb;
+use crate::emoji::is_emoji_text;
 use crate::frame::{Frame, pack_instances};
 use crate::frame_grid::{DamageFrame, FrameGrid};
 use crate::glyph_cache::{
@@ -474,10 +475,13 @@ impl JustermRenderer {
             cells,
             cache,
             |text, style, wide| {
-                // Rasterise, then classify by the pixels drawn: a colour emoji comes back with
-                // its own palette (COLR/CBDT/SVG), a text glyph is grayscale white (#284).
+                // Rasterise, then classify with the hybrid signal (#297): a colour emoji comes
+                // back in its own palette (COLR/CBDT/SVG) → is_color_bitmap; an emoji the font
+                // draws in pure grayscale (`⬛ ⬜ ⚫ ⚪`) has R=G=B so the bitmap misses it → the
+                // unicode `is_emoji_text` (keyed off core's `wide`) recovers it. Either signal
+                // routes the glyph to a colour-sampled slot; a text glyph satisfies neither.
                 let rgba = rasterizer.rasterize(text, style, wide)?;
-                let is_emoji = is_color_bitmap(&rgba);
+                let is_emoji = is_emoji_text(text, wide) || is_color_bitmap(&rgba);
                 Ok((rgba, is_emoji))
             },
             |base, wide, rgba: Vec<u8>| {
