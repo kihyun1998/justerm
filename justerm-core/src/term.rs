@@ -2614,7 +2614,10 @@ impl Term {
     fn promote_cluster_to_wide(&mut self, row: usize, col: usize) {
         let cols = self.grid.cols();
         if col + 1 >= cols {
-            return; // last-column narrow base: no spacer room — relocation tracked in #303
+            // No spacer room at the last column: relocate the whole cluster to the next line as a
+            // wide cell (the row soft-wraps), mirroring write_glyph's wide-at-boundary wrap (#303).
+            self.relocate_cluster_wide(row, col);
+            return;
         }
         // Overwriting col+1 with the spacer can orphan the far half of a WIDE glyph standing there
         // (the cursor may have been repositioned before the joining scalar arrived). Reset that
@@ -2638,6 +2641,54 @@ impl Term {
             self.cursor.col = new_col;
         }
         self.damage_span(row, col, col + 1);
+    }
+
+    /// Relocate a last-column narrow cluster to the next line as a wide cell (#303): its base +
+    /// side-table marks move to `(next_row, 0..=1)` and the vacated last column becomes a soft-wrap
+    /// (WRAPLINE + leading spacer), exactly as `write_glyph` wraps a wide glyph that can't fit. With
+    /// autowrap off, or a 1-column screen (no room for a wide cell anywhere), it stays narrow.
+    fn relocate_cluster_wide(&mut self, row: usize, col: usize) {
+        let cols = self.grid.cols();
+        if cols < 2 || !self.autowrap {
+            return; // nowhere to place a wide cell — leave it narrow
+        }
+        // Capture the base cell (glyph + attrs) and its marks before vacating.
+        let base = *self.grid.cell(row, col);
+        let marks: Vec<char> = self
+            .combining_at(row, col)
+            .map(<[char]>::to_vec)
+            .unwrap_or_default();
+        // Vacate the last column as a soft-wrap leading spacer (mirrors write_glyph 2457-2459).
+        // reset() clears the base's combining bit, so its stale marks entry is never read again.
+        let vacated = self.grid.cell_mut(row, col);
+        vacated.reset();
+        vacated.insert_flags(CellFlags::WRAPLINE);
+        vacated.set_leading_spacer();
+        self.damage_span(row, col, col);
+        // Advance to the next line (scrolls if at the bottom); cursor lands at col 0.
+        self.wrapline();
+        let nr = self.cursor.row;
+        // Re-place the base as a wide lead + spacer, re-attaching the marks fresh (drop the combining
+        // bit so push_combining starts a clean cluster at the new column).
+        let mut lead = base;
+        lead.set_combined(false);
+        lead.insert_flags(CellFlags::WIDE_CHAR);
+        *self.grid.cell_mut(nr, 0) = lead;
+        for m in marks {
+            self.grid.row_mut(nr).push_combining(0, m);
+        }
+        let mut spacer = self.cursor.pen.cell(' ');
+        spacer.insert_flags(CellFlags::WIDE_CHAR_SPACER);
+        *self.grid.cell_mut(nr, 1) = spacer;
+        // Cursor just past the wide cell (pending-wrap if it fills a 2-column row).
+        if cols <= 2 {
+            self.cursor.col = cols - 1;
+            self.cursor.pending_wrap = self.autowrap;
+        } else {
+            self.cursor.col = 2;
+            self.cursor.pending_wrap = false;
+        }
+        self.damage_span(nr, 0, 1);
     }
 
     // ---- cursor movement (CSI A/B/C/D/G/d/H/f) -------------------------------
