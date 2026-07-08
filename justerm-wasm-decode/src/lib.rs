@@ -982,4 +982,28 @@ mod tests {
         assert_eq!(flat.link, exp_link);
         assert_eq!(flat.spans, expected_spans);
     }
+
+    #[test]
+    fn real_core_emits_marks_only_side_table_for_a_combining_sequence() {
+        // Cross-crate contract lock for justerm-renderer #285: the renderer assembles a grapheme
+        // as base (from the codepoint column) + marks (from side_table). That is only correct
+        // because justerm-core stores ONLY the trailing width-0 combining marks in side_table,
+        // leaving the base glyph in the cell's codepoint. Verify that against the REAL engine —
+        // not a hand-built fixture (the other flatten tests set side_table by hand, so none of
+        // them would catch core changing this convention). Feed "e" + U+0301 (combining acute).
+        let mut eng = justerm_core::Engine::new(4, 1);
+        eng.feed("e\u{0301}".as_bytes());
+        let flat = flatten(&eng.frame());
+
+        assert_eq!(
+            flat.codepoints[0], 0x65,
+            "the base 'e' stays in the codepoint column"
+        );
+        assert_eq!(flat.extra[0], 1, "cell 0 references side_table[0]");
+        assert_eq!(
+            flat.side_table,
+            vec![vec!['\u{0301}']],
+            "side_table holds ONLY the combining mark, never the base 'e'"
+        );
+    }
 }

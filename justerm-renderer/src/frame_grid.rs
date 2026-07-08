@@ -17,7 +17,9 @@ pub const SPAN_STRIDE: usize = 5;
 
 /// A decoded damage frame as the renderer receives it: the `kind`/`scroll` header plus the
 /// span directory and the span-ordered cell columns. Borrowed — the caller owns the buffers
-/// (the wasm decoder's views).
+/// (the wasm decoder's views). `Default` is the empty frame (no damage), so a test can spread
+/// `..Default::default()` for the columns it doesn't exercise.
+#[derive(Default)]
 pub struct DamageFrame<'a> {
     /// `0` = Full (whole viewport), `1` = Partial (damaged subset).
     pub kind: u8,
@@ -25,14 +27,21 @@ pub struct DamageFrame<'a> {
     pub scroll: Option<(u16, u16, i16)>,
     /// Span directory, [`SPAN_STRIDE`] `u32`s per span.
     pub spans: &'a [u32],
-    /// Span-ordered cell columns (indexed by a span's `cell_offset + i`). Each cell carries its
-    /// **base** codepoint only; the decoder's `extra`/`side_table` grapheme-cluster columns are
-    /// not scattered here — the renderer's glyph resolver is single-codepoint today, so wiring
-    /// combining clusters / ZWJ sequences through is deferred to #285.
+    /// Span-ordered cell columns (indexed by a span's `cell_offset + i`).
     pub codepoints: &'a [u32],
     pub fg: &'a [u32],
     pub bg: &'a [u32],
     pub flags: &'a [u16],
+    /// Span-ordered combining-cluster index per cell (#285): `0` = none (use the base
+    /// codepoint), else a 1-based index into `side_table` for this cell's trailing combining
+    /// marks. Frame-local — resolved to text at scatter time so a later frame's differing
+    /// `side_table` can't invalidate a stored index.
+    pub extra: &'a [u16],
+    /// This frame's combining-mark clusters, referenced by a cell's `extra - 1`. Each entry is
+    /// only the trailing width-0 **marks** (e.g. `"\u{0301}"`) — justerm-core stores the base
+    /// glyph in `codepoints`, and never unifies ZWJ / skin-tone / flag sequences (each of those
+    /// is its own cell), so the base must be prepended to render the whole grapheme.
+    pub side_table: &'a [String],
 }
 
 /// A persistent dense (row-major) copy of the viewport's cells, updated by scattering each
@@ -44,6 +53,11 @@ pub struct FrameGrid {
     fg: Vec<u32>,
     bg: Vec<u32>,
     flags: Vec<u16>,
+    /// Per-cell resolved grapheme-cluster text (#285): a non-empty string overrides the base
+    /// codepoint at render time. Resolved from the frame's `extra`/`side_table` at scatter (the
+    /// index is frame-local, so it must be dereferenced while its frame is current), then
+    /// persists like the other columns.
+    clusters: Vec<String>,
 }
 
 impl FrameGrid {
@@ -58,6 +72,7 @@ impl FrameGrid {
             fg: vec![0; n],
             bg: vec![0; n],
             flags: vec![0; n],
+            clusters: vec![String::new(); n],
         }
     }
 
@@ -79,6 +94,9 @@ impl FrameGrid {
     pub fn flags(&self) -> &[u16] {
         &self.flags
     }
+    pub fn clusters(&self) -> &[String] {
+        &self.clusters
+    }
 
     /// Scatter a decoded frame's damage into the grid.
     pub fn apply(&mut self, frame: &DamageFrame) {
@@ -95,6 +113,9 @@ impl FrameGrid {
             self.fg.fill(0);
             self.bg.fill(0);
             self.flags.fill(0);
+            for c in &mut self.clusters {
+                c.clear();
+            }
         } else if let Some((top, bottom, count)) = frame.scroll {
             // A Partial's scroll op precedes its spans: shift the stored region so retained
             // cells move with it; the spans then repaint the exposed line (core ships it as a
@@ -120,6 +141,22 @@ impl FrameGrid {
                 self.fg[dst] = frame.fg[src];
                 self.bg[dst] = frame.bg[src];
                 self.flags[dst] = frame.flags[src];
+                // Resolve the frame-local grapheme index to its cluster text NOW (while this
+                // frame's side_table is current) and store the text — a `0` index (or an empty
+                // side_table) clears any stale cluster on the cell. justerm-core's side_table
+                // holds ONLY the trailing width-0 combining marks (grid.rs `Combining`), not the
+                // base glyph — that stays in `codepoints`. Assemble the full grapheme = base +
+                // marks so the resolver rasterises e.g. "e\u{301}", not a lone floating accent.
+                let ex = frame.extra.get(src).copied().unwrap_or(0) as usize;
+                let cluster = &mut self.clusters[dst];
+                match ex.checked_sub(1).and_then(|i| frame.side_table.get(i)) {
+                    Some(marks) => {
+                        cluster.clear();
+                        cluster.push(char::from_u32(frame.codepoints[src]).unwrap_or(' '));
+                        cluster.push_str(marks);
+                    }
+                    None => cluster.clear(),
+                }
             }
             s += SPAN_STRIDE;
         }
@@ -155,11 +192,13 @@ impl FrameGrid {
                 self.fg[dst] = self.fg[s];
                 self.bg[dst] = self.bg[s];
                 self.flags[dst] = self.flags[s];
+                self.clusters[dst] = self.clusters[s].clone();
             } else {
                 self.codepoints[dst] = 0;
                 self.fg[dst] = 0;
                 self.bg[dst] = 0;
                 self.flags[dst] = 0;
+                self.clusters[dst].clear();
             }
         }
     }
@@ -181,6 +220,7 @@ mod tests {
             fg: &[10, 11],
             bg: &[20, 21],
             flags: &[0, 0],
+            ..Default::default()
         };
         g.apply(&f);
         // idx = row*cols + col. (1,1) = 4, (1,2) = 5.
@@ -207,6 +247,7 @@ mod tests {
             fg: &[1],
             bg: &[2],
             flags: &[0],
+            ..Default::default()
         });
         assert_eq!(g.codepoints()[0], 0x58);
         // A Full frame whose only span covers (1,1): (0,0) must be wiped, not resurrected.
@@ -218,6 +259,7 @@ mod tests {
             fg: &[3],
             bg: &[4],
             flags: &[0],
+            ..Default::default()
         });
         assert_eq!(g.codepoints()[0], 0, "Full wipes the stale (0,0)");
         assert_eq!(g.fg()[0], 0, "wiped cell's colour ref reset too");
@@ -246,6 +288,7 @@ mod tests {
             fg: &zeros_u32,
             bg: &zeros_u32,
             flags: &zeros_u16,
+            ..Default::default()
         });
         g
     }
@@ -259,9 +302,7 @@ mod tests {
             scroll: Some((0, 3, 1)), // top=0, bottom=3, count=+1 (up)
             spans: &[],
             codepoints: &[],
-            fg: &[],
-            bg: &[],
-            flags: &[],
+            ..Default::default()
         });
         assert_eq!(g.codepoints(), &[0x42, 0x43, 0x44, 0]);
     }
@@ -275,9 +316,7 @@ mod tests {
             scroll: Some((0, 3, -1)), // count = -1 (down)
             spans: &[],
             codepoints: &[],
-            fg: &[],
-            bg: &[],
-            flags: &[],
+            ..Default::default()
         });
         assert_eq!(g.codepoints(), &[0, 0x41, 0x42, 0x43]);
     }
@@ -295,6 +334,7 @@ mod tests {
             fg: &[0],
             bg: &[0],
             flags: &[0],
+            ..Default::default()
         });
         assert_eq!(g.codepoints(), &[0x42, 0x43, 0x44, 0x5A]);
     }
@@ -312,6 +352,7 @@ mod tests {
             fg: &[0],
             bg: &[0],
             flags: &[0],
+            ..Default::default()
         });
         g.apply(&DamageFrame {
             kind: 1,
@@ -321,6 +362,7 @@ mod tests {
             fg: &[0],
             bg: &[0],
             flags: &[0],
+            ..Default::default()
         });
         assert_eq!(
             g.codepoints(),
@@ -338,9 +380,7 @@ mod tests {
             scroll: Some((1, 2, 1)),
             spans: &[],
             codepoints: &[],
-            fg: &[],
-            bg: &[],
-            flags: &[],
+            ..Default::default()
         });
         // row0 (A) untouched; [1,2] shift up → row1=C, row2=blank; row3 (D) untouched.
         assert_eq!(g.codepoints(), &[0x41, 0x43, 0, 0x44]);
@@ -357,9 +397,7 @@ mod tests {
             scroll: Some((0, 3, 9)), // count 9 >> region height 4
             spans: &[],
             codepoints: &[],
-            fg: &[],
-            bg: &[],
-            flags: &[],
+            ..Default::default()
         });
         assert_eq!(g.codepoints(), &[0, 0, 0, 0]);
     }
@@ -379,11 +417,90 @@ mod tests {
             fg: &[0, 0],
             bg: &[0, 0],
             flags: &[0, 0],
+            ..Default::default()
         });
         assert_eq!(
             g.codepoints(),
             &[0x41, 0x42],
             "Full spans authoritative, scroll ignored"
+        );
+    }
+
+    #[test]
+    fn scatter_assembles_base_plus_marks_and_persists() {
+        // #285: a cell's `extra` is a 1-based index into THIS frame's side_table, which holds
+        // only the trailing combining MARKS (justerm-core grid.rs). The base glyph is in
+        // `codepoints`, so the grid stores base + marks. Resolve at scatter (while the frame is
+        // current) so a later frame's different side_table can't invalidate a stored index.
+        let mut g = FrameGrid::new(2, 1);
+        g.apply(&DamageFrame {
+            kind: 1,
+            spans: &[0, 0, 1, 0, 2],   // both cells on row 0
+            codepoints: &[0x65, 0x41], // base 'e' (cell0), 'A' (cell1)
+            fg: &[0, 0],
+            bg: &[0, 0],
+            flags: &[0, 0],
+            extra: &[1, 0], // cell0 → side_table[0]; cell1 no cluster
+            side_table: &["\u{0301}".to_string()], // combining acute (marks only, as core emits)
+            ..Default::default()
+        });
+        assert_eq!(g.clusters()[0], "e\u{0301}", "grid assembles base + marks");
+        assert_eq!(g.clusters()[1], "", "cell1 has no cluster");
+        // A later Partial (its own, cluster-free side_table) touching only cell1 must leave
+        // cell0's stored cluster intact — the resolved text doesn't depend on the new frame.
+        g.apply(&DamageFrame {
+            kind: 1,
+            spans: &[0, 1, 1, 0, 1],
+            codepoints: &[0x42],
+            fg: &[0],
+            bg: &[0],
+            flags: &[0],
+            ..Default::default()
+        });
+        assert_eq!(
+            g.clusters()[0],
+            "e\u{0301}",
+            "cluster persists across Partials"
+        );
+    }
+
+    #[test]
+    fn full_wipes_and_scroll_moves_the_cluster_column() {
+        let mut g = FrameGrid::new(1, 2);
+        g.apply(&DamageFrame {
+            kind: 1,
+            spans: &[0, 0, 0, 0, 1],
+            codepoints: &[0x61], // base 'a'
+            fg: &[0],
+            bg: &[0],
+            flags: &[0],
+            extra: &[1],
+            side_table: &["\u{0308}".to_string()], // combining diaeresis → "a\u{0308}"
+            ..Default::default()
+        });
+        assert_eq!(g.clusters()[0], "a\u{0308}");
+        // Scroll down 1 over [0,1]: the cluster moves with its row; the exposed top clears.
+        g.apply(&DamageFrame {
+            kind: 1,
+            scroll: Some((0, 1, -1)),
+            ..Default::default()
+        });
+        assert_eq!(g.clusters()[1], "a\u{0308}", "cluster shifts with the row");
+        assert_eq!(g.clusters()[0], "", "exposed row's cluster cleared");
+        // A Full frame with no cluster wipes the column.
+        g.apply(&DamageFrame {
+            kind: 0,
+            spans: &[0, 0, 0, 0, 1, 1, 0, 0, 1, 1],
+            codepoints: &[0x41, 0x42],
+            fg: &[0, 0],
+            bg: &[0, 0],
+            flags: &[0, 0],
+            ..Default::default()
+        });
+        assert_eq!(
+            g.clusters(),
+            &["".to_string(), "".to_string()],
+            "Full wipes clusters"
         );
     }
 }

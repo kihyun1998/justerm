@@ -35,38 +35,49 @@
   };
   const zeros16 = new Uint16Array(0);
   const emptyU32 = new Uint32Array(0);
-  // header = [cols, rows, kind, has_scroll, scroll_top, scroll_bottom, scroll_count]
-  const hdr = (kind, scroll) =>
-    new Uint32Array([COLS, ROWS, kind, scroll ? 1 : 0, scroll?.[0] ?? 0, scroll?.[1] ?? 0, (scroll?.[2] ?? 0) >>> 0]);
+  // header = [cols, rows, kind, has_scroll, scroll_top, scroll_bottom, scroll_count, blink_on]
+  const hdr = (kind, scroll, blinkOn = true) =>
+    new Uint32Array([COLS, ROWS, kind, scroll ? 1 : 0, scroll?.[0] ?? 0, scroll?.[1] ?? 0, (scroll?.[2] ?? 0) >>> 0, blinkOn ? 1 : 0]);
   const cps = (a) => new Uint32Array(a);
   const zerosN = (n) => new Uint32Array(n);
   const flagsN = (n) => new Uint16Array(n);
+  const extraN = (n) => new Uint16Array(n); // no clusters (all zero)
 
   // Frame 1 — Full: row 0 = "ABCD" (one span, cols 0..=3). Rows 1,2 blank.
-  r.apply_damage(hdr(0), new Uint32Array([0, 0, 3, 0, 4]), cps([0x41, 0x42, 0x43, 0x44]), zerosN(4), zerosN(4), flagsN(4), true);
+  r.apply_damage(hdr(0), new Uint32Array([0, 0, 3, 0, 4]), cps([0x41, 0x42, 0x43, 0x44]), zerosN(4), zerosN(4), flagsN(4), extraN(4), []);
   r.render();
   const full = { r0: [cellLit(0,0), cellLit(1,0), cellLit(2,0), cellLit(3,0)], r1c1: cellLit(1,1), r2: cellLit(2,2) };
 
   // Frame 2 — Partial: set (1,1) = 'E' only. Row 0 must PERSIST (not wiped).
-  r.apply_damage(hdr(1), new Uint32Array([1, 1, 1, 0, 1]), cps([0x45]), zerosN(1), zerosN(1), flagsN(1), true);
+  r.apply_damage(hdr(1), new Uint32Array([1, 1, 1, 0, 1]), cps([0x45]), zerosN(1), zerosN(1), flagsN(1), extraN(1), []);
   r.render();
   const partial = { r0: [cellLit(0,0), cellLit(1,0), cellLit(2,0), cellLit(3,0)], e11: cellLit(1,1), r0c0blank: cellLit(0,1) };
 
   // Frame 3 — Partial + scroll up 1 over rows [0,2], no spans. Content shifts up: the 'E' at
   // (1,1) moves to (1,0); old row 0 (ABCD) is scrolled off; bottom row exposed blank.
-  r.apply_damage(hdr(1, [0, 2, 1]), new Uint32Array([]), emptyU32, emptyU32, emptyU32, zeros16, true);
+  r.apply_damage(hdr(1, [0, 2, 1]), new Uint32Array([]), emptyU32, emptyU32, emptyU32, zeros16, zeros16, []);
   r.render();
   const scrolled = { e10: cellLit(1,0), r0c0: cellLit(0,0), r0c2: cellLit(2,0), r1: cellLit(1,1), r2: cellLit(2,2) };
 
   // Frame 4 — Partial + scroll DOWN 1 over [0,2], no spans. Exercises the NEGATIVE scroll_count
   // wire path (JS `-1 >>> 0` = 0xFFFFFFFF → Rust `as i32 as i16` = -1). The 'E' at (1,0) shifts
   // back down to (1,1); the top row is exposed blank.
-  r.apply_damage(hdr(1, [0, 2, -1]), new Uint32Array([]), emptyU32, emptyU32, emptyU32, zeros16, true);
+  r.apply_damage(hdr(1, [0, 2, -1]), new Uint32Array([]), emptyU32, emptyU32, emptyU32, zeros16, zeros16, []);
   r.render();
   const scrolledDown = { e11: cellLit(1,1), r0: cellLit(1,0), r2: cellLit(2,2) };
 
+  // Frame 5 -- #285 cluster proof (Full). Both cells share the base codepoint 0x65 (e).
+  // Cell 0 also carries a combining acute in the MARKS-ONLY side_table (extra=1) -- the exact
+  // shape justerm-core emits (base in codepoints, only the width-0 mark in side_table). The grid
+  // assembles base + mark, NFC-keys it to U+00E9 (e-acute), which has MORE ink than the plain e
+  // at cell 1 -- proof the whole grapheme (not the base alone, nor the bare mark) rendered.
+  r.apply_damage(hdr(0), new Uint32Array([0, 0, 1, 0, 2]), cps([0x65, 0x65]), zerosN(2), zerosN(2), flagsN(2),
+    new Uint16Array([1, 0]), ["́"]); // combining acute only (marks); base is in codepoints
+  r.render();
+  const cluster = { accented: cellLit(0, 0), plain: cellLit(1, 0) };
+
   window.__proof = {
-    cell: [CW, CH], full, partial, scrolled, scrolledDown,
+    cell: [CW, CH], full, partial, scrolled, scrolledDown, cluster,
     checks: {
       fullRow0Renders: full.r0.every((n) => n > 0),
       fullRestBlank: full.r1c1 === 0 && full.r2 === 0,
@@ -79,6 +90,9 @@
       scrollExposedBlank: scrolled.r1 === 0 && scrolled.r2 === 0,
       // negative scroll_count wire round-trip: E shifts back down to (1,1), top exposed blank.
       scrollDownMovedEBack: scrolledDown.e11 > 0 && scrolledDown.r0 === 0 && scrolledDown.r2 === 0,
+      // #285: the accented cluster cell renders (lit) AND has more ink than the plain 'e' at the
+      // same base codepoint — the whole grapheme, not the base, went through apply_damage.
+      clusterRendersWholeGrapheme: cluster.plain > 0 && cluster.accented > cluster.plain,
     },
   };
   window.__proof.ok = Object.values(window.__proof.checks).every(Boolean);
