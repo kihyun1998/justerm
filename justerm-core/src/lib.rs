@@ -19,6 +19,7 @@ mod color;
 mod cursor;
 mod damage;
 mod event;
+mod grapheme;
 mod grid;
 mod input;
 mod logical;
