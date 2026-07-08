@@ -454,6 +454,16 @@ pub fn wire_version() -> u8 {
     justerm_core::WIRE_VERSION
 }
 
+/// Whether `pattern` is a regex the engine's `search_with(regex)` can run — the
+/// **same `regex` dialect**, so the web validates a regex-mode query as-you-type
+/// instead of guessing with JS `RegExp` (whose grammar differs and would misjudge,
+/// reproducing the silent bad-pattern-vs-no-match gap, #316 D2). Thin delegate to
+/// `justerm_core::is_valid_regex` — no JS mirror to drift.
+#[wasm_bindgen(js_name = isValidRegex)]
+pub fn is_valid_regex(pattern: &str) -> bool {
+    justerm_core::is_valid_regex(pattern)
+}
+
 /// The `CellFlags` bit positions, exported so a consumer tests `flags[i] & F.bold`
 /// without hard-coding bit values (#36). The values come straight from Rust
 /// `CellFlags`, so there is no JS mirror to drift. Read once and cache (e.g.

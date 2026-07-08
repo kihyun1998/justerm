@@ -8,10 +8,32 @@
  * viewport `matchSpans` do), so navigation is by **index**: the controller asks
  * for match `i`, the backend selects + scrolls to it.
  */
+/**
+ * Search modes on top of the literal + smart-case default — the TS mirror of core's
+ * `SearchOptions` (#314/#316), matching xterm.js's `ISearchOptions`. Every field is
+ * optional; an omitted / empty object is exactly the literal, smart-case {@link
+ * SearchPort.search}. The backend runs core's `search_with` with these.
+ *
+ * In `regex` mode a consumer validates the query as-you-type with the wasm
+ * `isValidRegex` (core's dialect, not JS `RegExp`) before searching, since an
+ * invalid pattern otherwise yields a silent empty result (#316 D2).
+ */
+export interface SearchOptions {
+  /** Treat the query as a regular expression (core's `regex` crate dialect: no
+   * lookaround/backreferences, Unicode-aware `\w \d \b`) instead of a literal. */
+  regex?: boolean;
+  /** Match only where the run is bounded by non-word characters (`\bword\b`). */
+  wholeWord?: boolean;
+  /** Override smart-case: `true` = case-sensitive, `false` = force insensitive,
+   * omitted = smart-case (insensitive iff the query has no uppercase). */
+  caseSensitive?: boolean;
+}
+
 export interface SearchPort {
-  /** Run the query; highlight up to the backend's cap and return the *full*
-   * match count (the cap limits highlights, not the count). */
-  search(query: string): Promise<number>;
+  /** Run the query (with optional {@link SearchOptions}); highlight up to the
+   * backend's cap and return the *full* match count (the cap limits highlights,
+   * not the count). */
+  search(query: string, options?: SearchOptions): Promise<number>;
   /** Make match `index` the active one — select it and scroll it into view
    * (off-screen → centered; on-screen → just selected), backend-side. */
   showMatch(index: number): Promise<void>;
@@ -24,10 +46,14 @@ export interface SearchPort {
 export class StubSearchPort implements SearchPort {
   count = 0;
   readonly searched: string[] = [];
+  /** The options passed alongside each {@link search} query (parallel to
+   * {@link searched}); `undefined` for a plain literal search. */
+  readonly searchedOptions: (SearchOptions | undefined)[] = [];
   readonly shown: number[] = [];
   cleared = 0;
-  search(query: string): Promise<number> {
+  search(query: string, options?: SearchOptions): Promise<number> {
     this.searched.push(query);
+    this.searchedOptions.push(options);
     return Promise.resolve(this.count);
   }
   showMatch(index: number): Promise<void> {
@@ -60,25 +86,55 @@ export class SearchController {
   private index = 0;
   /** The active query (empty = no search), so output frames can re-run it. */
   private query = "";
+  /** The active query's modes, so an incremental re-search reuses them (#316). */
+  private options: SearchOptions | undefined;
+  /** The active regex-mode query failed validation — the box shows "invalid" and
+   * no search ran (#316 D2). Only ever true in regex mode with a validator. */
+  private invalid = false;
   private pending: number | undefined;
   private readonly setTimer: (fn: () => void, ms: number) => number;
   private readonly clearTimer: (handle: number) => void;
+  /** Validate a regex-mode query against core's dialect (the wasm `isValidRegex`)
+   * before searching — a JS `RegExp` check would misjudge (#316 D2). Absent =
+   * best-effort skipped (a consumer without the wasm helper still searches). */
+  private readonly validateRegex?: (pattern: string) => boolean;
 
   constructor(
     private readonly port: SearchPort,
     opts: {
       setTimer?: (fn: () => void, ms: number) => number;
       clearTimer?: (handle: number) => void;
+      isValidRegex?: (pattern: string) => boolean;
     } = {},
   ) {
     this.setTimer = opts.setTimer ?? ((fn, ms) => setTimeout(fn, ms) as unknown as number);
     this.clearTimer = opts.clearTimer ?? ((h) => clearTimeout(h));
+    this.validateRegex = opts.isValidRegex;
   }
 
-  /** Run a new query and track its match count, landing on the first match. */
-  async search(query: string): Promise<void> {
+  /** Whether the active regex-mode query is invalid (#316 D2) — the box red-flags
+   * it and no search ran. Always `false` for literal queries or when no validator
+   * is injected. */
+  isInvalidRegex(): boolean {
+    return this.invalid;
+  }
+
+  /** Run a new query (with optional {@link SearchOptions}) and track its match
+   * count, landing on the first match. The options stick to the query so an
+   * incremental re-search on output reuses them (#316). */
+  async search(query: string, options?: SearchOptions): Promise<void> {
     this.query = query;
-    this.total = await this.port.search(query);
+    this.options = options;
+    // Regex mode: reject an invalid pattern up front (core's dialect) so a bad
+    // pattern shows as "invalid", not a silent 0 matches (#316 D2).
+    if (options?.regex && this.validateRegex && !this.validateRegex(query)) {
+      this.invalid = true;
+      this.total = 0;
+      this.index = 0;
+      return;
+    }
+    this.invalid = false;
+    this.total = await this.port.search(query, options);
     this.index = 0;
     if (this.total > 0) await this.port.showMatch(0);
   }
@@ -94,7 +150,8 @@ export class SearchController {
 
   private async reSearch(): Promise<void> {
     this.pending = undefined;
-    this.total = await this.port.search(this.query);
+    if (this.invalid) return; // an invalid regex never became a live search
+    this.total = await this.port.search(this.query, this.options);
     // Keep the active match where it was, clamped to the new result set.
     this.index = this.total === 0 ? 0 : Math.min(this.index, this.total - 1);
   }
@@ -109,6 +166,8 @@ export class SearchController {
     this.total = 0;
     this.index = 0;
     this.query = "";
+    this.options = undefined;
+    this.invalid = false;
   }
 
   /** Advance to the next match, wrapping past the last back to the first. */

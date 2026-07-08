@@ -108,6 +108,107 @@ describe("SearchController — query → results", () => {
   });
 });
 
+describe("SearchController — search modes (#316)", () => {
+  // The query box can run in regex / whole-word / case-sensitive modes. The
+  // controller forwards the chosen SearchOptions to the port so the backend runs
+  // core's `search_with` — mirroring xterm's ISearchOptions. Omitted = core's
+  // default (literal, smart-case).
+  it("forwards SearchOptions to the port", async () => {
+    const port = new StubSearchPort();
+    port.count = 1;
+    const ctrl = new SearchController(port);
+
+    await ctrl.search("Foo", { regex: true, wholeWord: true, caseSensitive: true });
+
+    expect(port.searched).toEqual(["Foo"]);
+    expect(port.searchedOptions).toEqual([{ regex: true, wholeWord: true, caseSensitive: true }]);
+  });
+
+  // A plain search (no options) stays the literal default — the options argument
+  // is optional, so existing callers are unaffected.
+  it("defaults to no options for a plain search", async () => {
+    const port = new StubSearchPort();
+    port.count = 1;
+    const ctrl = new SearchController(port);
+
+    await ctrl.search("foo");
+
+    expect(port.searchedOptions).toEqual([undefined]);
+  });
+});
+
+describe("SearchController — invalid regex (#316 D2)", () => {
+  // A stand-in for the wasm `isValidRegex` (core's dialect) — rejects one pattern.
+  const validatorRejecting = (bad: string) => (p: string) => p !== bad;
+
+  // In regex mode an invalid pattern is caught *before* the backend runs — core's
+  // `search_with` would silently return empty (indistinguishable from a real
+  // no-match), so the controller flags it and skips the search entirely.
+  it("flags an invalid regex and does not search", async () => {
+    const port = new StubSearchPort();
+    port.count = 3; // would report matches if it ran
+    const ctrl = new SearchController(port, { isValidRegex: validatorRejecting("foo(") });
+
+    await ctrl.search("foo(", { regex: true });
+
+    expect(ctrl.isInvalidRegex()).toBe(true);
+    expect(ctrl.result()).toEqual({ current: 0, total: 0 });
+    expect(port.searched).toEqual([]); // never hit the backend
+    expect(port.shown).toEqual([]);
+  });
+
+  // Once the query becomes a valid pattern the flag clears and the search runs.
+  it("clears the invalid flag once the regex becomes valid", async () => {
+    const port = new StubSearchPort();
+    port.count = 1;
+    const ctrl = new SearchController(port, { isValidRegex: validatorRejecting("foo(") });
+    await ctrl.search("foo(", { regex: true }); // invalid
+
+    await ctrl.search("f.o", { regex: true }); // now valid
+
+    expect(ctrl.isInvalidRegex()).toBe(false);
+    expect(port.searched).toEqual(["f.o"]);
+    expect(ctrl.result()).toEqual({ current: 1, total: 1 });
+  });
+
+  // Validation is regex-mode only: in literal mode "(" is just a character, so a
+  // query that would be an invalid *regex* still searches.
+  it("only validates in regex mode — a literal query is never invalid", async () => {
+    const port = new StubSearchPort();
+    port.count = 2;
+    const ctrl = new SearchController(port, { isValidRegex: validatorRejecting("foo(") });
+
+    await ctrl.search("foo(", {}); // literal mode
+
+    expect(ctrl.isInvalidRegex()).toBe(false);
+    expect(port.searched).toEqual(["foo("]);
+  });
+
+  // With no validator injected (a consumer without the wasm helper) regex mode
+  // still runs — validation is a best-effort surface, not a hard gate.
+  it("searches normally when no validator is injected", async () => {
+    const port = new StubSearchPort();
+    port.count = 1;
+    const ctrl = new SearchController(port);
+
+    await ctrl.search("foo(", { regex: true });
+
+    expect(ctrl.isInvalidRegex()).toBe(false);
+    expect(port.searched).toEqual(["foo("]);
+  });
+
+  // clear() drops the invalid flag along with the rest of the search state.
+  it("clear() resets the invalid flag", async () => {
+    const port = new StubSearchPort();
+    const ctrl = new SearchController(port, { isValidRegex: validatorRejecting("foo(") });
+    await ctrl.search("foo(", { regex: true }); // invalid
+
+    ctrl.clear();
+
+    expect(ctrl.isInvalidRegex()).toBe(false);
+  });
+});
+
 describe("SearchController — incremental re-search on output", () => {
   function debounced(port: StubSearchPort, sched: ManualScheduler) {
     return new SearchController(port, { setTimer: sched.setTimer, clearTimer: sched.clearTimer });

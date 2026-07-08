@@ -1,7 +1,10 @@
 // DEMO-ONLY fake search engine — the search counterpart to fake-select.ts.
-// Mimics core's `search` (literal, smart-case) over the demo log so `pnpm demo`
-// can drive the real SearchController + matchSpans rendering without a backend.
-// The real engine is justerm-core; this is a throwaway stand-in.
+// Mimics core's `search_with` (literal/regex, whole-word, smart-case) over the
+// demo log so `pnpm demo` can drive the real SearchController + matchSpans
+// rendering without a backend. The real engine is justerm-core; this is a
+// throwaway stand-in. NOTE: regex here uses JS `RegExp`, whose dialect differs
+// from core's `regex` crate — the demo gates invalid patterns with the *real*
+// wasm `isValidRegex` (core's dialect) before ever reaching this fake.
 
 /** One match, inclusive, in absolute log coordinates (single line in the demo). */
 export interface Match {
@@ -11,21 +14,65 @@ export interface Match {
   endCol: number;
 }
 
+/** Demo mirror of the library `SearchOptions` (see src/search.ts). */
+export interface FakeSearchOptions {
+  regex?: boolean;
+  wholeWord?: boolean;
+  caseSensitive?: boolean;
+}
+
+const WORD = /\w/;
+const isWordBounded = (text: string, start: number, end: number): boolean =>
+  (start === 0 || !WORD.test(text[start - 1])) && (end === text.length - 1 || !WORD.test(text[end + 1]));
+
 export class FakeSearchEngine {
   private matches: Match[] = [];
 
-  /** Find every literal occurrence of `query` in `lines` (smart-case: a query
-   * with no uppercase matches case-insensitively). Returns the match count. */
-  search(query: string, lines: string[]): number {
+  /** Find every occurrence of `query` in `lines`, honouring `options` (regex,
+   * whole-word, case). Smart-case unless `caseSensitive` is set: a query with no
+   * uppercase matches case-insensitively. Returns the match count. */
+  search(query: string, lines: string[], options?: FakeSearchOptions): number {
     this.matches = [];
     if (!query) return 0;
-    const ci = !/[A-Z]/.test(query);
+    const ci = options?.caseSensitive === undefined ? !/[A-Z]/.test(query) : !options.caseSensitive;
+    const wholeWord = options?.wholeWord ?? false;
+
+    if (options?.regex) {
+      // A real backend gates invalid patterns with the wasm `isValidRegex` before
+      // ever searching (core returns empty, never throws). Mirror that here so the
+      // demo stays robust even if the validator is unavailable — an invalid pattern
+      // is 0 matches, not an exception.
+      let re: RegExp;
+      try {
+        re = new RegExp(query, ci ? "gi" : "g");
+      } catch {
+        return 0;
+      }
+      lines.forEach((text, line) => {
+        for (let m = re.exec(text); m !== null; m = re.exec(text)) {
+          if (m[0].length === 0) {
+            re.lastIndex++; // avoid an infinite loop on an empty match
+            continue;
+          }
+          const start = m.index;
+          const end = start + m[0].length - 1;
+          if (!wholeWord || isWordBounded(text, start, end)) {
+            this.matches.push({ startLine: line, startCol: start, endLine: line, endCol: end });
+          }
+        }
+      });
+      return this.matches.length;
+    }
+
     const needle = ci ? query.toLowerCase() : query;
     lines.forEach((text, line) => {
       const hay = ci ? text.toLowerCase() : text;
       let i = hay.indexOf(needle);
       while (i !== -1) {
-        this.matches.push({ startLine: line, startCol: i, endLine: line, endCol: i + needle.length - 1 });
+        const end = i + needle.length - 1;
+        if (!wholeWord || isWordBounded(text, i, end)) {
+          this.matches.push({ startLine: line, startCol: i, endLine: line, endCol: end });
+        }
         i = hay.indexOf(needle, i + needle.length);
       }
     });
