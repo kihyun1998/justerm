@@ -65,6 +65,7 @@ precision mediump float;
 uniform mediump sampler2DArray u_atlas;
 uniform vec2 u_padding_frac; // guard band as a fraction of the padded atlas cell (#288)
 uniform float u_bg_alpha;    // background cell opacity: 0 = transparent, 1 = opaque (#298)
+uniform vec3 u_default_bg;    // the default terminal background — only IT is made translucent (#298)
 in vec3 v_bg;
 in vec3 v_fg;
 flat in uint v_glyph;
@@ -103,10 +104,12 @@ void main() {
     // Underline/strikethrough always draw in the base foreground, even over an emoji.
     fg = mix(fg, v_fg, line);
 
-    // An uncovered cell emits the injected background opacity `u_bg_alpha`; a glyph/line pixel
-    // stays opaque — so the terminal background can be see-through while text is solid (#298).
+    // Only the DEFAULT terminal background is translucent (the see-through backdrop). An explicit
+    // SGR background or an inverse/selection/cursor background is *content* and stays opaque — else
+    // a highlight would vanish on a translucent terminal (#298). A glyph/line pixel is always opaque.
     float cov = max(coverage, line);
-    FragColor = vec4(mix(v_bg, fg, cov), mix(u_bg_alpha, 1.0, cov));
+    float bg_a = (v_bg == u_default_bg) ? mix(u_bg_alpha, 1.0, cov) : 1.0;
+    FragColor = vec4(mix(v_bg, fg, cov), bg_a);
 }
 "#;
 
@@ -119,6 +122,7 @@ struct Pipeline {
     u_cell_size: glow::UniformLocation,
     u_padding_frac: glow::UniformLocation,
     u_bg_alpha: glow::UniformLocation,
+    u_default_bg: glow::UniformLocation,
 }
 
 /// The justerm-family WebGL2 terminal renderer.
@@ -242,6 +246,7 @@ impl JustermRenderer {
             u_cell_size,
             u_padding_frac,
             u_bg_alpha,
+            u_default_bg,
         } = Self::build_pipeline(&gl)?;
         // The atlas stores padded cells; the glyph is drawn inset by PADDING.
         let atlas = Self::build_atlas(&gl, pad_w, pad_h)?;
@@ -254,6 +259,10 @@ impl JustermRenderer {
                 PADDING as f32 / pad_w as f32,
                 PADDING as f32 / pad_h as f32,
             );
+            // The default background is fixed for the life of the renderer (the palette is set at
+            // construction), so the shader can compare each cell's bg against it once (#298).
+            let [dbr, dbg, dbb] = gl_rgb(palette.default_bg);
+            gl.uniform_3_f32(Some(&u_default_bg), dbr, dbg, dbb);
         }
 
         let mut renderer = JustermRenderer {
@@ -317,6 +326,7 @@ impl JustermRenderer {
             let u_cell_size = uniform(gl, program, "u_cell_size")?;
             let u_padding_frac = uniform(gl, program, "u_padding_frac")?;
             let u_bg_alpha = uniform(gl, program, "u_bg_alpha")?;
+            let u_default_bg = uniform(gl, program, "u_default_bg")?;
             // The atlas sampler stays on texture unit 0.
             gl.use_program(Some(program));
             let u_atlas = uniform(gl, program, "u_atlas")?;
@@ -330,6 +340,7 @@ impl JustermRenderer {
                 u_cell_size,
                 u_padding_frac,
                 u_bg_alpha,
+                u_default_bg,
             })
         }
     }
