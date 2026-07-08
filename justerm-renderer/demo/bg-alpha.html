@@ -1,0 +1,76 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>justerm-renderer proof — #298 translucent background (u_bg_alpha)</title>
+<style>
+  body { margin: 0; background: #000; }
+  #c { display: block; image-rendering: pixelated; }
+</style>
+<!--
+  #298 proof. The fragment shader emits per-pixel alpha = mix(u_bg_alpha, 1.0, coverage): an
+  uncovered (background) pixel gets the injected u_bg_alpha, a glyph pixel stays opaque (1.0). The
+  context is non-premultiplied-alpha, so readPixels reads the framebuffer alpha straight.
+
+  We render the SAME frame twice and read back the ALPHA channel:
+    - default (bg_alpha = 1.0): a background cell's pixels are fully opaque (alpha 255).
+    - setBgAlpha(0.5):          a background cell's pixels are ~half alpha (~127), while the
+                                glyph 'A' still has opaque strokes (max alpha 255).
+  Build: wasm-pack build --target web --dev --out-dir pkg
+-->
+<canvas id="c" width="128" height="32"></canvas>
+<script type="module">
+  import init, { JustermRenderer } from "../pkg/justerm_renderer.js";
+  const FG = 0xffffff, BG = 0x3060a0; // white text on a blue-ish background
+  await init();
+
+  const palette = new Uint32Array(256);
+  const r = new JustermRenderer("#c", palette, FG, BG);
+  const CW = r.cell_width(), CH = r.cell_height();
+  const COLS = 4;
+  r.resize(COLS * CW, CH);
+
+  // Row: ['A'][space][space][space]. Cell 0 has a glyph; cells 1..3 are pure background.
+  const cps = new Uint32Array([0x41, 0x20, 0x20, 0x20]);
+  const flags = new Uint16Array(COLS);
+  const zeros = new Uint32Array(COLS);
+  const apply = () => r.apply_frame(COLS, 1, zeros, zeros, cps, flags, true);
+
+  const gl = document.querySelector("#c").getContext("webgl2");
+  // Alpha stats for cell `col`: min/max of the alpha channel over the cell's pixels.
+  const alphaStats = (col) => {
+    const buf = new Uint8Array(CW * CH * 4);
+    gl.readPixels(col * CW, 0, CW, CH, gl.RGBA, gl.UNSIGNED_BYTE, buf);
+    let min = 255, max = 0;
+    for (let i = 3; i < buf.length; i += 4) {
+      if (buf[i] < min) min = buf[i];
+      if (buf[i] > max) max = buf[i];
+    }
+    return { min, max };
+  };
+
+  // 1) Default (opaque): background cell fully opaque.
+  apply();
+  r.render();
+  const opaqueBg = alphaStats(1); // a pure-background cell
+
+  // 2) Translucent: half background opacity.
+  r.setBgAlpha(0.5);
+  apply();
+  r.render();
+  const transBg = alphaStats(1);   // background cell now ~half alpha
+  const transGlyph = alphaStats(0); // the 'A' cell: strokes stay opaque
+
+  window.__proof = {
+    cell: [CW, CH],
+    opaqueBg, transBg, transGlyph,
+    checks: {
+      // Default: an uncovered cell is fully opaque.
+      defaultOpaque: opaqueBg.min === 255 && opaqueBg.max === 255,
+      // setBgAlpha(0.5): the background cell drops to ~half alpha (well below opaque).
+      translucentBg: transBg.max <= 160 && transBg.min >= 96, // ~127 ± tolerance
+      // The glyph strokes stay opaque even with a translucent background.
+      glyphStaysOpaque: transGlyph.max === 255,
+    },
+  };
+  window.__proof.ok = Object.values(window.__proof.checks).every(Boolean);
+  window.__done = true;
+</script>

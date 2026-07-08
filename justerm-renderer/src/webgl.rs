@@ -64,6 +64,7 @@ const FRAG_SRC: &str = r#"#version 300 es
 precision mediump float;
 uniform mediump sampler2DArray u_atlas;
 uniform vec2 u_padding_frac; // guard band as a fraction of the padded atlas cell (#288)
+uniform float u_bg_alpha;    // background cell opacity: 0 = transparent, 1 = opaque (#298)
 in vec3 v_bg;
 in vec3 v_fg;
 flat in uint v_glyph;
@@ -102,9 +103,23 @@ void main() {
     // Underline/strikethrough always draw in the base foreground, even over an emoji.
     fg = mix(fg, v_fg, line);
 
-    FragColor = vec4(mix(v_bg, fg, max(coverage, line)), 1.0);
+    // An uncovered cell emits the injected background opacity `u_bg_alpha`; a glyph/line pixel
+    // stays opaque — so the terminal background can be see-through while text is solid (#298).
+    float cov = max(coverage, line);
+    FragColor = vec4(mix(v_bg, fg, cov), mix(u_bg_alpha, 1.0, cov));
 }
 "#;
+
+/// The GL program + buffers + uniform locations built once at startup (`build_pipeline`).
+struct Pipeline {
+    program: glow::Program,
+    vao: glow::VertexArray,
+    instance_vbo: glow::Buffer,
+    u_projection: glow::UniformLocation,
+    u_cell_size: glow::UniformLocation,
+    u_padding_frac: glow::UniformLocation,
+    u_bg_alpha: glow::UniformLocation,
+}
 
 /// The justerm-family WebGL2 terminal renderer.
 #[wasm_bindgen]
@@ -116,6 +131,9 @@ pub struct JustermRenderer {
     atlas: glow::Texture,
     u_projection: glow::UniformLocation,
     u_cell_size: glow::UniformLocation,
+    u_bg_alpha: glow::UniformLocation,
+    /// Background cell opacity (0 = transparent, 1 = opaque), consumer-injected policy (#298).
+    bg_alpha: f32,
     palette: Palette,
     rasterizer: Rasterizer,
     cache: GlyphCache,
@@ -190,8 +208,14 @@ impl JustermRenderer {
             .query_selector(canvas_selector)?
             .ok_or_else(|| JsValue::from_str("justerm-renderer: canvas not found"))?
             .dyn_into()?;
+        // Request a non-premultiplied alpha context so the shader's straight-colour output
+        // composites correctly over the page when the background is translucent (#298). `alpha`
+        // is already the WebGL default; setting it explicitly documents the intent.
+        let ctx_opts = js_sys::Object::new();
+        let _ = js_sys::Reflect::set(&ctx_opts, &"alpha".into(), &JsValue::TRUE);
+        let _ = js_sys::Reflect::set(&ctx_opts, &"premultipliedAlpha".into(), &JsValue::FALSE);
         let webgl2: WebGl2RenderingContext = canvas
-            .get_context("webgl2")?
+            .get_context_with_context_options("webgl2", &ctx_opts)?
             .ok_or_else(|| JsValue::from_str("justerm-renderer: no webgl2 context"))?
             .dyn_into()?;
 
@@ -210,8 +234,15 @@ impl JustermRenderer {
         let (cell_w, cell_h) = rasterizer.cell_size(); // physical (on-screen grid) cell
         let (pad_w, pad_h) = rasterizer.padded_size(); // padded atlas cell
 
-        let (program, vao, instance_vbo, u_projection, u_cell_size, u_padding_frac) =
-            Self::build_pipeline(&gl)?;
+        let Pipeline {
+            program,
+            vao,
+            instance_vbo,
+            u_projection,
+            u_cell_size,
+            u_padding_frac,
+            u_bg_alpha,
+        } = Self::build_pipeline(&gl)?;
         // The atlas stores padded cells; the glyph is drawn inset by PADDING.
         let atlas = Self::build_atlas(&gl, pad_w, pad_h)?;
         // Tell the shader how much of each padded atlas cell is guard band, so it insets the
@@ -233,6 +264,8 @@ impl JustermRenderer {
             atlas,
             u_projection,
             u_cell_size,
+            u_bg_alpha,
+            bg_alpha: 1.0, // opaque by default (#298)
             palette,
             rasterizer,
             cache: GlyphCache::new(),
@@ -247,19 +280,7 @@ impl JustermRenderer {
         Ok(renderer)
     }
 
-    fn build_pipeline(
-        gl: &glow::Context,
-    ) -> Result<
-        (
-            glow::Program,
-            glow::VertexArray,
-            glow::Buffer,
-            glow::UniformLocation,
-            glow::UniformLocation,
-            glow::UniformLocation,
-        ),
-        JsValue,
-    > {
+    fn build_pipeline(gl: &glow::Context) -> Result<Pipeline, JsValue> {
         let program = Self::link_program(gl, VERT_SRC, FRAG_SRC)?;
 
         // Safety: all calls are on a live GL context; buffers/attribs are set up once.
@@ -295,19 +316,21 @@ impl JustermRenderer {
             let u_projection = uniform(gl, program, "u_projection")?;
             let u_cell_size = uniform(gl, program, "u_cell_size")?;
             let u_padding_frac = uniform(gl, program, "u_padding_frac")?;
+            let u_bg_alpha = uniform(gl, program, "u_bg_alpha")?;
             // The atlas sampler stays on texture unit 0.
             gl.use_program(Some(program));
             let u_atlas = uniform(gl, program, "u_atlas")?;
             gl.uniform_1_i32(Some(&u_atlas), 0);
 
-            Ok((
+            Ok(Pipeline {
                 program,
                 vao,
                 instance_vbo,
                 u_projection,
                 u_cell_size,
                 u_padding_frac,
-            ))
+                u_bg_alpha,
+            })
         }
     }
 
@@ -587,12 +610,23 @@ impl JustermRenderer {
         result
     }
 
+    /// Set the background cell opacity: `0` = fully transparent, `1` = opaque (default). The
+    /// consumer injects this policy (ADR-0017) to make the terminal background see-through to the
+    /// page/desktop behind the canvas, while glyph pixels stay opaque. Clamped to `[0, 1]`; takes
+    /// effect on the next [`render`](Self::render) (#298).
+    #[wasm_bindgen(js_name = setBgAlpha)]
+    pub fn set_bg_alpha(&mut self, alpha: f32) {
+        self.bg_alpha = alpha.clamp(0.0, 1.0);
+    }
+
     /// Clear to the palette's default background, then draw every cell of the current frame
     /// (glyph composited over background) with one instanced draw call.
     pub fn render(&self) {
         let [dr, dg, db] = gl_rgb(self.palette.default_bg);
         unsafe {
-            self.gl.clear_color(dr, dg, db, 1.0);
+            // Clear with the injected background opacity so any area not covered by a cell (canvas
+            // margins) is see-through too; cells then write their own per-pixel alpha (#298).
+            self.gl.clear_color(dr, dg, db, self.bg_alpha);
             self.gl.clear(glow::COLOR_BUFFER_BIT);
 
             if self.instance_count == 0 {
@@ -617,6 +651,7 @@ impl JustermRenderer {
                 .uniform_matrix_4_f32_slice(Some(&self.u_projection), false, &proj.data);
             self.gl
                 .uniform_2_f32(Some(&self.u_cell_size), self.cell_size.0, self.cell_size.1);
+            self.gl.uniform_1_f32(Some(&self.u_bg_alpha), self.bg_alpha);
 
             self.gl
                 .draw_arrays_instanced(glow::TRIANGLE_STRIP, 0, 4, self.instance_count);
