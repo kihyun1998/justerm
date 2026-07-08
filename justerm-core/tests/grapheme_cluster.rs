@@ -195,9 +195,11 @@ fn mode_2027_last_column_relocation_scrolls_when_at_the_bottom() {
 
 #[test]
 fn mode_2027_no_relocation_at_last_column_with_autowrap_off() {
-    // With autowrap off (?7l) a last-column base never gets pending-wrap, so a following scalar
-    // can't reach it to cluster — the flag never forms and nothing relocates (the 2nd RI overwrites
-    // the 1st in place, standard xterm autowrap-off). The last cell stays narrow; row 1 is untouched.
+    // With autowrap off (?7l) a last-column base never gets pending-wrap, so `try_grapheme_join`
+    // steps back to col-1 (the wrong cell) — the flag never forms and nothing relocates: the 2nd RI
+    // overwrites the 1st in place. (ghostty instead picks the prev cell by `codepoint()==0` and keeps
+    // the *1st* RI narrow; both are degenerate — one RI is always lost with autowrap off. Upstream of
+    // #303's relocation charter.) The last cell stays narrow; row 1 is untouched.
     let mut t = Engine::new(2, 2);
     t.feed(b"\x1b[?2027h\x1b[?7l"); // grapheme mode on, autowrap OFF
     t.feed("X\u{1F1F0}\u{1F1F7}".as_bytes());
@@ -260,5 +262,38 @@ fn mode_2027_clustered_cell_survives_encode_decode_roundtrip() {
     assert!(
         joined.contains('\u{1F469}') && joined.contains('\u{1F467}'),
         "joined emoji live in the round-tripped side_table"
+    );
+}
+
+#[test]
+fn reflow_after_a_wide_char_wrap_injects_no_phantom_space() {
+    // #303-surfaced pre-existing bug: a wide char that wrapped at the boundary leaves a
+    // leading-spacer placeholder in the vacated last column. Reflow must DROP it on the soft-wrap
+    // join — else a column resize injects a phantom space into every text reader.
+    let mut t = Engine::new(2, 2);
+    t.feed("a\u{D55C}".as_bytes()); // 'a' + 한 (wide) → 한 wraps to row 1
+    assert_eq!(t.accessible_text().trim_end(), "a\u{D55C}");
+    t.resize(3, 2); // widen — 한 now fits on one line
+    assert_eq!(
+        t.accessible_text().trim_end(),
+        "a\u{D55C}",
+        "no phantom space after reflow"
+    );
+
+    // The relocation path (#303) is a second producer of leading spacers — same invariant.
+    let mut t2 = Engine::new(2, 2);
+    t2.feed(b"\x1b[?2027h");
+    t2.feed("X\u{1F1F0}\u{1F1F7}".as_bytes()); // relocate flag to row 1
+    assert_eq!(t2.accessible_text().trim_end(), "X\u{1F1F0}\u{1F1F7}");
+    t2.resize(3, 2);
+    assert_eq!(
+        t2.accessible_text().trim_end(),
+        "X\u{1F1F0}\u{1F1F7}",
+        "relocated cluster survives resize with no phantom space (#303)"
+    );
+    assert_eq!(
+        t2.search("X\u{1F1F0}\u{1F1F7}").len(),
+        1,
+        "still searchable across reflow"
     );
 }

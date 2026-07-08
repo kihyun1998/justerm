@@ -226,6 +226,15 @@ pub(crate) fn reflow(
             }
         }
         if soft {
+            let mut cells = cells;
+            // A wide char that wrapped at the boundary (write_glyph / relocate_cluster_wide) left a
+            // leading-spacer placeholder in the vacated last column. It is a wrap artefact, not
+            // content — drop it on the join so the logical line (and re-split) never carries a
+            // phantom blank into accessible_text / search / copy (#303). The `soft` flag was already
+            // read from this cell above, so removing it now is safe.
+            if cells.last().is_some_and(Cell::is_leading_spacer) {
+                cells.pop();
+            }
             current.extend(cells.into_iter().map(|mut c| {
                 c.remove_flags(CellFlags::WRAPLINE);
                 c
