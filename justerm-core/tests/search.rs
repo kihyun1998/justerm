@@ -224,3 +224,15 @@ fn search_matches_a_clustered_emoji_scalar_under_mode_2027() {
         "maps to the flag's single cell"
     );
 }
+
+#[test]
+fn search_does_not_duplicate_a_match_for_a_repeated_in_cluster_scalar() {
+    // #304 2-lens (Lens 1): two stacked identical marks in ONE cell's cluster ("a" + two combining
+    // acutes) both live in the side-table at the same column. Searching that mark must yield ONE
+    // Match at (0,0), not a duplicate per repeated hay entry.
+    let mut term = Engine::new(20, 1);
+    term.feed("a\u{0301}\u{0301}".as_bytes());
+    let m = term.search("\u{0301}");
+    assert_eq!(m.len(), 1, "one match, not one per stacked mark");
+    assert_eq!((m[0].start_col, m[0].end_col), (0, 0));
+}

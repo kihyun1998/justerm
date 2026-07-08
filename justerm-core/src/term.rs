@@ -989,12 +989,18 @@ impl Term {
                 if hay[i..i + needle.len()] == needle[..] {
                     let (start_line, start_col) = pos[i];
                     let (end_line, end_col) = pos[i + needle.len() - 1];
-                    matches.push(Match {
+                    let m = Match {
                         start_line,
                         start_col,
                         end_line,
                         end_col,
-                    });
+                    };
+                    // Multiple side-table marks map to the same cell column (#304), so a repeated
+                    // in-cluster scalar can yield consecutive matches at identical coordinates —
+                    // collapse them to one (a duplicate nav/highlight entry is not a real match).
+                    if matches.last() != Some(&m) {
+                        matches.push(m);
+                    }
                     i += needle.len();
                 } else {
                     i += 1;
