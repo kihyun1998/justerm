@@ -1,7 +1,8 @@
 //! SGR cell attributes — pure, host-testable. Bit positions mirror `justerm_core::CellFlags`
 //! (the `flags` column the wasm decoder emits). #267 handles bold/italic (font style),
 //! underline/strikethrough (glyph-field bits, shader-drawn) and inverse (fg/bg swap); dim
-//! (#272), blink, hidden come later.
+//! is #272. #282 adds hidden + blink as one *conceal* mechanism: a concealed cell renders
+//! background only (glyph coverage + decorations suppressed) by pointing at the blank slot.
 
 use crate::glyph_cache::FontStyle;
 
@@ -9,7 +10,16 @@ use crate::glyph_cache::FontStyle;
 pub const BOLD: u16 = 1 << 0;
 pub const ITALIC: u16 = 1 << 2;
 pub const UNDERLINE: u16 = 1 << 3;
+/// The cell blinks — its glyph is concealed on the render loop's "off" phase (#282). Timing
+/// is the consumer's policy (mirrors xterm.js `TextBlinkStateManager` living in the render
+/// loop, not the buffer); the renderer only takes the phase bool.
+pub const BLINK: u16 = 1 << 4;
 pub const INVERSE: u16 = 1 << 5;
+/// The cell's glyph is concealed (`ESC[8m`) — renders background only (#282). Prior-art:
+/// alacritty models HIDDEN as `fg == bg` (content.rs guards selection-reveal on it); we
+/// instead suppress glyph coverage, which also conceals a colour emoji (#284 samples the
+/// texture, not `fg`, so `fg == bg` would leak it).
+pub const HIDDEN: u16 = 1 << 6;
 pub const STRIKETHROUGH: u16 = 1 << 7;
 /// A double-width glyph's lead cell (it renders the glyph's left half).
 pub const WIDE_CHAR: u16 = 1 << 8;
@@ -58,6 +68,29 @@ pub fn is_inverse(flags: u16) -> bool {
     flags & INVERSE != 0
 }
 
+/// The glyph slot for a concealed cell: slot `0`, the pre-baked transparent ASCII space
+/// (the fast path maps `' '` = 0x20 to slot `codepoint - 0x20` = 0). Pointing a cell here
+/// gives zero coverage — background only — and, being a bare slot, carries no underline/
+/// strikethrough/emoji bit. See [`glyph_cache::ascii_fast_path`](crate::glyph_cache).
+pub const BLANK_SLOT: u16 = 0;
+
+/// Whether the cell is hidden/concealed (`ESC[8m`).
+pub fn is_hidden(flags: u16) -> bool {
+    flags & HIDDEN != 0
+}
+
+/// Whether the cell has the blink attribute set.
+pub fn is_blink(flags: u16) -> bool {
+    flags & BLINK != 0
+}
+
+/// Whether the cell's glyph is currently concealed — hidden cells always, blink cells only
+/// on the render loop's "off" phase (`blink_on == false`). A concealed cell renders
+/// background only; the consumer flips `blink_on` on its own cadence (timing is policy).
+pub fn is_concealed(flags: u16, blink_on: bool) -> bool {
+    is_hidden(flags) || (is_blink(flags) && !blink_on)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -90,6 +123,33 @@ mod tests {
         assert!(!is_inverse(0));
         assert!(is_inverse(INVERSE));
         assert!(is_inverse(INVERSE | BOLD));
+    }
+
+    #[test]
+    fn hidden_and_blink_read_their_bits() {
+        assert!(is_hidden(HIDDEN));
+        assert!(!is_hidden(BLINK));
+        assert!(is_blink(BLINK));
+        assert!(!is_blink(HIDDEN));
+        assert!(!is_hidden(0) && !is_blink(0));
+        // Bit positions match justerm_core::CellFlags (frozen wire format).
+        assert_eq!(HIDDEN, 1 << 6);
+        assert_eq!(BLINK, 1 << 4);
+    }
+
+    #[test]
+    fn concealed_covers_hidden_always_and_blink_on_the_off_phase() {
+        // Hidden is concealed regardless of the blink phase.
+        assert!(is_concealed(HIDDEN, true));
+        assert!(is_concealed(HIDDEN, false));
+        // Blink is concealed only when the phase is off.
+        assert!(!is_concealed(BLINK, true));
+        assert!(is_concealed(BLINK, false));
+        // A plain cell is never concealed.
+        assert!(!is_concealed(0, true));
+        assert!(!is_concealed(0, false));
+        // Hidden wins even mid-blink-on (hidden ⇒ concealed).
+        assert!(is_concealed(HIDDEN | BLINK, true));
     }
 
     #[test]

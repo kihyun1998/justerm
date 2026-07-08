@@ -15,7 +15,7 @@ use web_sys::{HtmlCanvasElement, WebGl2RenderingContext};
 
 use crate::bitmap::{PADDING, split_wide_bitmap};
 use crate::color::gl_rgb;
-use crate::frame::pack_instances;
+use crate::frame::{Frame, pack_instances};
 use crate::glyph_cache::{
     FontStyle, GLYPHS_PER_LAYER, GlyphCache, WIDE_BASE, WIDE_CAPACITY, slot_texcoord,
 };
@@ -418,6 +418,7 @@ impl JustermRenderer {
         fg: &[u32],
         codepoints: &[u32],
         flags: &[u16],
+        blink_on: bool,
     ) -> Result<(), JsValue> {
         let count = (cols * rows) as usize;
         // Resolve the per-cell glyph slots via the pure host-tested resolver (#280): it
@@ -458,7 +459,15 @@ impl JustermRenderer {
             ),
         })?;
 
-        self.instances = pack_instances(cols, rows, bg, fg, &slots, flags, &self.palette);
+        let frame = Frame {
+            cols,
+            rows,
+            bg,
+            fg,
+            slots: &slots,
+            flags,
+        };
+        self.instances = pack_instances(&frame, &self.palette, blink_on);
         self.instance_count = count as i32;
         Ok(())
     }
