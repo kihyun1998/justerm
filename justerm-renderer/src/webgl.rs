@@ -16,6 +16,7 @@ use web_sys::{HtmlCanvasElement, WebGl2RenderingContext};
 use crate::bitmap::{PADDING, split_wide_bitmap};
 use crate::color::gl_rgb;
 use crate::frame::{Frame, pack_instances};
+use crate::frame_grid::{DamageFrame, FrameGrid};
 use crate::glyph_cache::{
     FontStyle, GLYPHS_PER_LAYER, GlyphCache, WIDE_BASE, WIDE_CAPACITY, slot_texcoord,
 };
@@ -116,6 +117,10 @@ pub struct JustermRenderer {
     size: (i32, i32),
     instances: Vec<f32>,
     instance_count: i32,
+    /// Persistent dense grid for the decoder→renderer frame adapter (#277): a Partial frame's
+    /// span-ordered damage scatters into this before packing. `None` until the first
+    /// `apply_damage`; re-created when the grid dimensions change.
+    grid: Option<FrameGrid>,
 }
 
 /// Reinterpret an `f32` slice as bytes for `buffer_data` upload.
@@ -226,6 +231,7 @@ impl JustermRenderer {
             size,
             instances: Vec::new(),
             instance_count: 0,
+            grid: None,
         };
         renderer.prebake_ascii()?;
         Ok(renderer)
@@ -470,6 +476,70 @@ impl JustermRenderer {
         self.instances = pack_instances(&frame, &self.palette, blink_on);
         self.instance_count = count as i32;
         Ok(())
+    }
+
+    /// Consume a decoded **damage** frame directly (#277 adapter): scatter its span-ordered
+    /// cells into the persistent grid, then resolve + pack the full viewport via [`apply_frame`].
+    /// A Full frame wipes the grid first, a scroll op shifts it before spans — so a Partial
+    /// frame (the common case) no longer misaligns as dense row-major.
+    ///
+    /// `header` carries the frame's scalars, `[cols, rows, kind, has_scroll, scroll_top,
+    /// scroll_bottom, scroll_count]` (kind `0` = Full / `1` = Partial; `scroll_count`
+    /// reinterpreted as `i16`). `spans` is the span directory ([`SPAN_STRIDE`](crate::frame_grid::SPAN_STRIDE)
+    /// `u32`s each); `codepoints`/`fg`/`bg`/`flags` are the span-ordered cell columns.
+    ///
+    /// [`apply_frame`]: Self::apply_frame
+    pub fn apply_damage(
+        &mut self,
+        header: &[u32],
+        spans: &[u32],
+        codepoints: &[u32],
+        fg: &[u32],
+        bg: &[u32],
+        flags: &[u16],
+        blink_on: bool,
+    ) -> Result<(), JsValue> {
+        if header.len() < 7 {
+            return Err(JsValue::from_str(
+                "justerm-renderer: apply_damage header needs 7 u32s [cols, rows, kind, has_scroll, scroll_top, scroll_bottom, scroll_count]",
+            ));
+        }
+        let cols = header[0];
+        let rows = header[1];
+        let kind = header[2] as u8;
+        let scroll = if header[3] != 0 {
+            Some((header[4] as u16, header[5] as u16, header[6] as i32 as i16))
+        } else {
+            None
+        };
+
+        // Take the grid out so scattering (`&mut grid`) and the `&mut self` apply_frame don't
+        // borrow-conflict; the grid is a local during the call and moves back after. Re-create
+        // it when the dimensions change (a resize is followed by a Full frame).
+        let mut grid = match self.grid.take() {
+            Some(g) if g.cols() == cols && g.rows() == rows => g,
+            _ => FrameGrid::new(cols, rows),
+        };
+        grid.apply(&DamageFrame {
+            kind,
+            scroll,
+            spans,
+            codepoints,
+            fg,
+            bg,
+            flags,
+        });
+        let result = self.apply_frame(
+            cols,
+            rows,
+            grid.bg(),
+            grid.fg(),
+            grid.codepoints(),
+            grid.flags(),
+            blink_on,
+        );
+        self.grid = Some(grid);
+        result
     }
 
     /// Clear to the palette's default background, then draw every cell of the current frame

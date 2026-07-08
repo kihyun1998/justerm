@@ -20,6 +20,7 @@ pub mod attrs;
 pub mod bitmap;
 pub mod color;
 pub mod frame;
+pub mod frame_grid;
 pub mod glyph_cache;
 pub mod glyph_resolve;
 pub mod mat4;

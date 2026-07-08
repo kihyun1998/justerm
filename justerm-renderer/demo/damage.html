@@ -1,0 +1,86 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>justerm-renderer proof — decoder→renderer frame adapter (#277)</title>
+<style>
+  body { margin: 0; background: #000; }
+  #c { display: block; image-rendering: pixelated; }
+</style>
+<!--
+  #277 proof: drive the real `apply_damage` wasm path (header parse → scatter → pack → GL) with
+  a Full → Partial → scroll sequence and readPixels-verify. The key property is PERSISTENCE: a
+  Partial frame carries only its damage, so cells it doesn't touch must survive from the prior
+  frame (the whole reason FrameGrid is stateful). Build: wasm-pack build --target web --dev --out-dir pkg
+-->
+<canvas id="c" width="256" height="96"></canvas>
+<script type="module">
+  import init, { JustermRenderer } from "../pkg/justerm_renderer.js";
+  const FG = 0xffffff, BG = 0x1e1e2e;
+  await init();
+
+  const palette = new Uint32Array(256);
+  const r = new JustermRenderer("#c", palette, FG, BG);
+  const CW = r.cell_width(), CH = r.cell_height();
+  const COLS = 4, ROWS = 3, H = ROWS * CH;
+  r.resize(COLS * CW, H);
+
+  const gl = document.querySelector("#c").getContext("webgl2");
+  // Lit-pixel count in cell (col,row). readPixels is bottom-left origin; row 0 is drawn at the
+  // top, so row `y`'s band starts at H-(y+1)*CH.
+  const cellLit = (col, row) => {
+    const buf = new Uint8Array(CW * CH * 4);
+    gl.readPixels(col * CW, H - (row + 1) * CH, CW, CH, gl.RGBA, gl.UNSIGNED_BYTE, buf);
+    let n = 0;
+    for (let i = 0; i < buf.length; i += 4) if (buf[i] > 150) n++;
+    return n;
+  };
+  const zeros16 = new Uint16Array(0);
+  const emptyU32 = new Uint32Array(0);
+  // header = [cols, rows, kind, has_scroll, scroll_top, scroll_bottom, scroll_count]
+  const hdr = (kind, scroll) =>
+    new Uint32Array([COLS, ROWS, kind, scroll ? 1 : 0, scroll?.[0] ?? 0, scroll?.[1] ?? 0, (scroll?.[2] ?? 0) >>> 0]);
+  const cps = (a) => new Uint32Array(a);
+  const zerosN = (n) => new Uint32Array(n);
+  const flagsN = (n) => new Uint16Array(n);
+
+  // Frame 1 — Full: row 0 = "ABCD" (one span, cols 0..=3). Rows 1,2 blank.
+  r.apply_damage(hdr(0), new Uint32Array([0, 0, 3, 0, 4]), cps([0x41, 0x42, 0x43, 0x44]), zerosN(4), zerosN(4), flagsN(4), true);
+  r.render();
+  const full = { r0: [cellLit(0,0), cellLit(1,0), cellLit(2,0), cellLit(3,0)], r1c1: cellLit(1,1), r2: cellLit(2,2) };
+
+  // Frame 2 — Partial: set (1,1) = 'E' only. Row 0 must PERSIST (not wiped).
+  r.apply_damage(hdr(1), new Uint32Array([1, 1, 1, 0, 1]), cps([0x45]), zerosN(1), zerosN(1), flagsN(1), true);
+  r.render();
+  const partial = { r0: [cellLit(0,0), cellLit(1,0), cellLit(2,0), cellLit(3,0)], e11: cellLit(1,1), r0c0blank: cellLit(0,1) };
+
+  // Frame 3 — Partial + scroll up 1 over rows [0,2], no spans. Content shifts up: the 'E' at
+  // (1,1) moves to (1,0); old row 0 (ABCD) is scrolled off; bottom row exposed blank.
+  r.apply_damage(hdr(1, [0, 2, 1]), new Uint32Array([]), emptyU32, emptyU32, emptyU32, zeros16, true);
+  r.render();
+  const scrolled = { e10: cellLit(1,0), r0c0: cellLit(0,0), r0c2: cellLit(2,0), r1: cellLit(1,1), r2: cellLit(2,2) };
+
+  // Frame 4 — Partial + scroll DOWN 1 over [0,2], no spans. Exercises the NEGATIVE scroll_count
+  // wire path (JS `-1 >>> 0` = 0xFFFFFFFF → Rust `as i32 as i16` = -1). The 'E' at (1,0) shifts
+  // back down to (1,1); the top row is exposed blank.
+  r.apply_damage(hdr(1, [0, 2, -1]), new Uint32Array([]), emptyU32, emptyU32, emptyU32, zeros16, true);
+  r.render();
+  const scrolledDown = { e11: cellLit(1,1), r0: cellLit(1,0), r2: cellLit(2,2) };
+
+  window.__proof = {
+    cell: [CW, CH], full, partial, scrolled, scrolledDown,
+    checks: {
+      fullRow0Renders: full.r0.every((n) => n > 0),
+      fullRestBlank: full.r1c1 === 0 && full.r2 === 0,
+      // #277 core property: Partial keeps undamaged cells (row 0 letters survive).
+      partialPersistsRow0: partial.r0.every((n) => n > 0),
+      partialSetsE: partial.e11 > 0 && partial.r0c0blank === 0,
+      // scroll shifted the E up to row 0 col 1; ABCD scrolled off; bottom exposed blank.
+      scrollMovedEUp: scrolled.e10 > 0,
+      scrollDroppedOldRow0: scrolled.r0c0 === 0 && scrolled.r0c2 === 0,
+      scrollExposedBlank: scrolled.r1 === 0 && scrolled.r2 === 0,
+      // negative scroll_count wire round-trip: E shifts back down to (1,1), top exposed blank.
+      scrollDownMovedEBack: scrolledDown.e11 > 0 && scrolledDown.r0 === 0 && scrolledDown.r2 === 0,
+    },
+  };
+  window.__proof.ok = Object.values(window.__proof.checks).every(Boolean);
+  window.__done = true;
+</script>
