@@ -1,0 +1,55 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>justerm-renderer proof — devicePixelRatio + resize (#265)</title>
+<style>
+  body { margin: 0; background: #000; }
+  #c { display: block; image-rendering: pixelated; }
+</style>
+<!--
+  #265 proof: the renderer reads window.devicePixelRatio, rasterises the atlas at device px, and
+  `resize(CSS px)` sizes the GL buffer to CSS*dpr. Run this SAME page at deviceScaleFactor 1 and 2
+  (see the Node runner) and compare — the two falsifiable, DPR-unaware-impl-fails properties:
+    (a) buffer == CSS*dpr   → resize applies the DPR (a device-px `resize` would give buffer==CSS)
+    (b) cell_width() (CSS) is DPR-invariant → the atlas is rasterised at device px
+        (a CSS-px atlas would report a HALVED cell_width at dpr 2)
+  Build: wasm-pack build --target web --dev --out-dir pkg
+-->
+<canvas id="c" width="64" height="64"></canvas>
+<script type="module">
+  import init, { JustermRenderer } from "../pkg/justerm_renderer.js";
+  const FG = 0xffffff, BG = 0x1e1e2e;
+  await init();
+
+  const palette = new Uint32Array(256);
+  const r = new JustermRenderer("#c", palette, FG, BG);
+  const dpr = window.devicePixelRatio;
+
+  // cell_width/height are CSS px; the CSS box we resize to is a whole number of CSS cells.
+  const cellCssW = r.cell_width(), cellCssH = r.cell_height();
+  const COLS = 4, ROWS = 1;
+  const cssW = COLS * cellCssW, cssH = ROWS * cellCssH;
+  r.resize(cssW, cssH); // CSS px — the renderer multiplies by DPR internally
+
+  // Draw "A" in cell 0 (rest blank) and render.
+  const zeros = new Uint32Array(COLS);
+  const cps = new Uint32Array([0x41, 0x20, 0x20, 0x20]);
+  r.apply_frame(COLS, ROWS, zeros, zeros, cps, new Uint16Array(COLS), true);
+  r.render();
+
+  // Count lit pixels of "A" over its DEVICE cell (readPixels is on the device-px buffer).
+  const canvas = document.querySelector("#c");
+  const gl = canvas.getContext("webgl2");
+  const dcw = Math.round(cellCssW * dpr), dch = Math.round(cellCssH * dpr);
+  const px = new Uint8Array(dcw * dch * 4);
+  gl.readPixels(0, canvas.height - dch, dcw, dch, gl.RGBA, gl.UNSIGNED_BYTE, px);
+  let litA = 0;
+  for (let i = 0; i < px.length; i += 4) if (px[i] > 150) litA++;
+
+  window.__proof = {
+    dpr,
+    bufferW: canvas.width, bufferH: canvas.height,
+    cssW, cssH, cellCssW, cellCssH,
+    deviceCell: [dcw, dch], litA,
+  };
+  window.__done = true;
+</script>
