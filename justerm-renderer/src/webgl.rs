@@ -16,7 +16,7 @@ use web_sys::{HtmlCanvasElement, WebGl2RenderingContext};
 use crate::bitmap::{PADDING, is_color_bitmap, split_wide_bitmap};
 use crate::color::gl_rgb;
 use crate::emoji::is_emoji_text;
-use crate::frame::{Frame, pack_instances};
+use crate::frame::{Frame, INSTANCE_FLOATS, pack_instances};
 use crate::frame_grid::{DamageFrame, FrameGrid};
 use crate::glyph_cache::{
     FontStyle, GLYPHS_PER_LAYER, GlyphCache, WIDE_BASE, WIDE_CAPACITY, slot_texcoord,
@@ -25,6 +25,7 @@ use crate::glyph_resolve::{Cells, ResolveError, resolve_frame};
 use crate::mat4::Mat4;
 use crate::palette::Palette;
 use crate::rasterizer::Rasterizer;
+use crate::upload::{UploadPlan, plan_upload};
 
 /// Texture-array layers covering the whole slot space (normal + wide = 6144 / 32 = 192),
 /// so wide/emoji slots (layers 64..191) have storage.
@@ -149,6 +150,16 @@ pub struct JustermRenderer {
     size: (i32, i32),
     instances: Vec<f32>,
     instance_count: i32,
+    /// The instance floats currently in the GPU buffer — the baseline the next pack diffs against
+    /// so only changed cells re-upload (#263). Empty until the first upload (forces a `Full`).
+    ///
+    /// INVARIANT: this mirrors what the live `instance_vbo` holds, so it is valid ONLY while that
+    /// buffer persists. WebGL **context loss** destroys the buffer — the S9 (#269) restore path
+    /// MUST `self.uploaded.clear()` when it recreates the buffer, or the next identical frame diffs
+    /// to zero ranges and never refills the fresh (empty) buffer → a blank render that won't
+    /// self-heal. This is the diff-based analogue of beamterm's `DirtyRegions::mark_all()` on
+    /// `recreate_resources`. (Surfaced by the #263 adversarial 2-lens pass; tracked on #269.)
+    uploaded: Vec<f32>,
     /// Persistent dense grid for the decoder→renderer frame adapter (#277): a Partial frame's
     /// span-ordered damage scatters into this before packing. `None` until the first
     /// `apply_damage`; re-created when the grid dimensions change.
@@ -283,6 +294,7 @@ impl JustermRenderer {
             size,
             instances: Vec::new(),
             instance_count: 0,
+            uploaded: Vec::new(),
             grid: None,
         };
         renderer.prebake_ascii()?;
@@ -548,7 +560,46 @@ impl JustermRenderer {
         };
         self.instances = pack_instances(&frame, &self.palette, blink_on);
         self.instance_count = count as i32;
+        self.upload_instances();
         Ok(())
+    }
+
+    /// Reconcile the GPU instance buffer with the freshly packed `self.instances`, uploading
+    /// only the cells that changed since the last upload (#263). A size change (first frame /
+    /// resize) reallocates the whole buffer; otherwise each changed contiguous range goes up via
+    /// `buffer_sub_data` and an unchanged frame does no GL work at all. `self.uploaded` mirrors
+    /// what the GPU holds so the next frame can diff against it.
+    fn upload_instances(&mut self) {
+        match plan_upload(&self.uploaded, &self.instances, INSTANCE_FLOATS) {
+            UploadPlan::Full => unsafe {
+                self.gl
+                    .bind_buffer(glow::ARRAY_BUFFER, Some(self.instance_vbo));
+                self.gl.buffer_data_u8_slice(
+                    glow::ARRAY_BUFFER,
+                    f32_bytes(&self.instances),
+                    glow::DYNAMIC_DRAW,
+                );
+                self.uploaded.clone_from(&self.instances);
+            },
+            UploadPlan::Ranges(ranges) => {
+                if ranges.is_empty() {
+                    return; // nothing changed — skip the bind + upload entirely
+                }
+                unsafe {
+                    self.gl
+                        .bind_buffer(glow::ARRAY_BUFFER, Some(self.instance_vbo));
+                    for (start, end) in ranges {
+                        let (lo, hi) = (start * INSTANCE_FLOATS, end * INSTANCE_FLOATS);
+                        self.gl.buffer_sub_data_u8_slice(
+                            glow::ARRAY_BUFFER,
+                            (lo * std::mem::size_of::<f32>()) as i32,
+                            f32_bytes(&self.instances[lo..hi]),
+                        );
+                        self.uploaded[lo..hi].copy_from_slice(&self.instances[lo..hi]);
+                    }
+                }
+            }
+        }
     }
 
     /// Consume a decoded **damage** frame directly (#277 adapter): scatter its span-ordered
@@ -648,14 +699,9 @@ impl JustermRenderer {
             self.gl.active_texture(glow::TEXTURE0);
             self.gl
                 .bind_texture(glow::TEXTURE_2D_ARRAY, Some(self.atlas));
+            // The instance buffer already holds the current frame — `upload_instances` (in the
+            // pack path) uploaded only the changed cells (#263), so render just binds + draws.
             self.gl.bind_vertex_array(Some(self.vao));
-            self.gl
-                .bind_buffer(glow::ARRAY_BUFFER, Some(self.instance_vbo));
-            self.gl.buffer_data_u8_slice(
-                glow::ARRAY_BUFFER,
-                f32_bytes(&self.instances),
-                glow::DYNAMIC_DRAW,
-            );
 
             let proj = Mat4::orthographic_from_size(self.size.0 as f32, self.size.1 as f32);
             self.gl
