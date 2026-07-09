@@ -50,7 +50,7 @@
     [0x2708, 0, "plane_2708"],                          // ✈ narrow probe
   ];
   const COLS = layout.length;
-  r.resize(COLS * CW, CH);
+  r.resize(COLS, 1);
 
   const cps = new Uint32Array(layout.map((x) => x[0]));
   const flags = new Uint16Array(layout.map((x) => x[1]));
@@ -105,7 +105,7 @@
   const narrowColoured = narrowProbes.filter((k) => colourEmojiPath(cells[k]));
 
   window.__proof = {
-    dpr: window.devicePixelRatio, cssCell: [CW, CH], gridFit: gridFit(gl, r, COLS, 1),
+    dpr: window.devicePixelRatio, deviceCell: [CW, CH], gridFit: gridFit(gl, r, COLS, 1),
     cells,
     checks: {
       // Case 2: achromatic emoji take the emoji path (NOT red) despite is_color_bitmap missing them…

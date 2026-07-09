@@ -31,7 +31,7 @@
   const r = new JustermRenderer("#c", palette, FG, BG);
   const CW = r.cell_width(), CH = r.cell_height();
   const COLS = 6;
-  r.resize(COLS * CW, CH);
+  r.resize(COLS, 1);
 
   const canvas = document.querySelector("#c");
   const gl = canvas.getContext("webgl2"); // the SAME context the renderer holds
@@ -100,7 +100,7 @@
   const steady = row();
 
   window.__proof = {
-    cssCell: [CW, CH], deviceCell: deviceCell(r), dpr: window.devicePixelRatio,
+    deviceCell: deviceCell(r), cssCell: [r.cssCellWidth(), r.cssCellHeight()], dpr: window.devicePixelRatio,
     gridFit: gridFit(gl, r, COLS, 1),
     baseline, recovered, steady, lostFlag, restoredFlag,
     checks: {

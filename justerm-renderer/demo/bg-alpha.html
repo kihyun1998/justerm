@@ -27,7 +27,7 @@
   const r = new JustermRenderer("#c", palette, FG, BG);
   const CW = r.cell_width(), CH = r.cell_height();
   const COLS = 4;
-  r.resize(COLS * CW, CH);
+  r.resize(COLS, 1); // cols x rows — the buffer is COLS*CW x CH device px, exactly (#331)
 
   // Row: ['A'][default-bg space][INVERSE space][space]. Cell 0 has a glyph; cell 1 is pure default
   // background; cell 2 is an INVERSE space — its background is the swapped-in foreground (a
@@ -56,7 +56,7 @@
   const transInverse = cellAlpha(2); // the INVERSE space: its highlight bg must stay opaque
 
   window.__proof = {
-    dpr: window.devicePixelRatio, cssCell: [CW, CH], gridFit: gridFit(gl, r, COLS, 1),
+    dpr: window.devicePixelRatio, deviceCell: [CW, CH], gridFit: gridFit(gl, r, COLS, 1),
     opaqueBg, transBg, transGlyph, transInverse,
     checks: {
       // Default: an uncovered cell is fully opaque.

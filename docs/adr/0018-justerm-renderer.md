@@ -45,6 +45,45 @@ prior-art (as `justerm-core` studied xterm.js) and build fresh in justerm's own 
   documented blind spot, like the wasm32-only `justerm-wasm-decode/tests/web.rs`). Independent semver
   also matches beamterm's own model and the renderer's distinct release cadence.
 
+## Coordinate spaces: device pixels are the source of truth
+
+Decided in #331/#335 after the CSS-first shape of #252/#265 produced a real clipping bug.
+
+The cell is *measured* in device pixels — the rasteriser ink-scans `█` at `FONT_SIZE * devicePixelRatio`
+— and that integer is what the shader receives as `u_cell_size`. Everything else is derived from it:
+
+- `cell_width()` / `cell_height()` → **device px, `u32`**. The exact cell. The bare name carries it, as in
+  xterm.js's `dimensions.device.cell` and beamterm's `cell_size()`.
+- `cssCellWidth()` / `cssCellHeight()` → **CSS px, `f32`, unrounded**. The consumer divides its available
+  box by these to decide how many columns fit (xterm.js's `FitAddon` does exactly this against
+  `dimensions.css.cell.width`) and maps mouse coordinates through them.
+- `resize(cols, rows)` → the drawing buffer becomes `cols * cell_width()` × `rows * cell_height()`, an
+  exact multiple of the cell. xterm.js sizes its canvas the same way
+  (`device.canvas.width = cols * device.cell.width`).
+- `cssWidth()` / `cssHeight()` → the CSS display box for that buffer. The canvas's CSS box stays the
+  consumer's to set (as with beamterm's `auto_resize_canvas_css = false`).
+
+**Why the CSS view must be a float.** Rounding it to a whole CSS pixel destroys the cell: the ink-scan is
+16 device px tall at dpr 1 and 33 at dpr 2, i.e. 16.5 CSS px, and a rounded 17 does not scale back to 33.
+
+**What the bug actually was.** Not "rounding". The buffer came from `round(cssBox * dpr)` while the layout
+came from `cols * device_cell` — two quantities with no reason to agree. At `devicePixelRatio = 1.1`
+(browser zoom at 110 %) every grid overhung its buffer by 1–2 device px and the last column was clipped.
+
+Two cures are sound, and both ship:
+
+- **buffer ← grid** (xterm.js, `device.canvas.width = cols * device.cell.width`), leftover container space
+  outside the canvas. This is ours: the overhang becomes unrepresentable rather than absorbed.
+- **grid ← buffer, letterbox the remainder** (beamterm, `cols = canvas_width / cell_width`, sub-cell
+  remainder painted with `canvas_padding_color`). beamterm keeps a rounded CSS pixel box and is correct.
+
+We chose xterm's because it needs no padding colour and because the consumer already knows `cols`/`rows`
+— it computed them by dividing its box by the CSS cell (xterm's `FitAddon`; our `justerm-web/src/fit.ts`).
+The cost: the canvas is exactly the grid, so a consumer whose container is larger must size the container
+itself (`cssWidth()`/`cssHeight()`), or the gutter shows the page through (with #298 translucency, literally).
+
+The consumer still lays out in CSS px (#252 survives); it just no longer sizes the drawing buffer in them.
+
 ## Consequences
 
 - A GPU-discipline effort (glyph atlas, instancing, shaders, context-loss) — larger and longer than the

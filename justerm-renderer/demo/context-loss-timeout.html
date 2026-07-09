@@ -35,7 +35,7 @@
   const r = new JustermRenderer("#c", palette, FG, BG);
   const CW = r.cell_width(), CH = r.cell_height();
   const COLS = 4;
-  r.resize(COLS * CW, CH);
+  r.resize(COLS, 1);
 
   const canvas = document.querySelector("#c");
   const gl = canvas.getContext("webgl2");

@@ -1,18 +1,15 @@
 // Shared pixel-reading helpers for the `demo/*.html` proofs (#328).
 //
 // Every proof reads back the GL drawing buffer to check what was actually drawn, and the buffer is
-// addressed in **device pixels**. The renderer's cell is measured in device px too (the rasteriser
+// addressed in **device pixels**. The renderer's cell is measured in device px too — the rasteriser
 // ink-scans `█` at `FONT_SIZE * devicePixelRatio`, and that integer becomes the shader's
-// `u_cell_size`) — but `cell_width()`/`cell_height()` report it in *CSS* px, rounded to an integer.
-// Multiplying that back by the DPR does not recover the device cell, and neither does dividing the
-// drawing-buffer width by the column count. Both approximations were in use here and both misread
-// the buffer whenever `devicePixelRatio !== 1`.
+// `u_cell_size` — and since #331/#335 `cell_width()`/`cell_height()` report exactly that integer.
 //
-// So: ask the renderer. `cellWidthDevice()` / `cellHeightDevice()` are the exact numbers the shader
-// laid the grid out with. Nothing in this file re-derives them.
+// Never re-derive it. Neither `cssCellWidth() * dpr` nor `drawingBufferWidth / COLS` recovers it,
+// and both were in use here before #328, misreading the buffer whenever `devicePixelRatio !== 1`.
 
 /** The renderer's exact device-pixel cell, `[width, height]`. */
-export const deviceCell = (r) => [r.cellWidthDevice(), r.cellHeightDevice()];
+export const deviceCell = (r) => [r.cell_width(), r.cell_height()];
 
 /**
  * The device-pixel `readPixels` rect covering `cols` cells starting at grid cell `(col, row)`.
@@ -21,10 +18,8 @@ export const deviceCell = (r) => [r.cellWidthDevice(), r.cellHeightDevice()];
  * `top = 0`), while `readPixels` counts from the BOTTOM — hence the flip. A single-row demo must
  * still use it: reading at `y = 0` only happens to work when the buffer height is exactly one cell.
  *
- * This names the rect the SHADER fills, which is not always inside the buffer: when the grid
- * overhangs it (#331 — observed at dpr 1.1, and at dpr 1 after a mid-session DPR change) the rect
- * can start at `y = -1` or run past the buffer's right edge. That is faithful, not a bug: readPixels
- * returns zeros for the out-of-range pixels, and `gridFit` below is what reports the overhang.
+ * Since #331 the buffer is `cols * cell` device px exactly, so a rect for a cell inside the grid the
+ * renderer was sized to always lies inside the buffer.
  */
 export function cellRect(gl, r, col, row = 0, cols = 1) {
   const [cw, ch] = deviceCell(r);
@@ -68,10 +63,10 @@ export function alphaStats({ buf }) {
 /**
  * Whether a `cols × rows` grid of device cells fits inside the drawing buffer.
  *
- * A demo sizes its canvas with `resize(cols * cell_width(), rows * cell_height())` — CSS px — and the
- * renderer scales that by the DPR. Because the CSS cell is a *rounded* view of the device cell, the
- * resulting buffer is not guaranteed to be `cols * cellWidthDevice()` wide, so the grid can overhang
- * it. Reported (not asserted) by every proof so the runner can surface it; tracked as #331.
+ * Since #331 `resize(cols, rows)` sizes the buffer to `cols * cell_width()` exactly, so this is now
+ * an INVARIANT rather than a warning: `fits` is true and `grid` equals `buffer` for any grid the
+ * renderer was sized to. Kept, and asserted by the runner, because it is the property that used to
+ * fail — at dpr 1.1 every proof's grid overhung its buffer by 1–2 device px.
  */
 export function gridFit(gl, r, cols, rows) {
   const [cw, ch] = deviceCell(r);

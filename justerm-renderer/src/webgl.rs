@@ -20,7 +20,7 @@ use web_sys::{HtmlCanvasElement, WebGl2RenderingContext};
 use crate::bitmap::{PADDING, is_color_bitmap, split_wide_bitmap};
 use crate::color::gl_rgb;
 use crate::context_loss::{ContextState, DEFAULT_RESTORE_TIMEOUT_MS, FrameAction};
-use crate::dpr::{css_px, device_px, dpr_changed};
+use crate::dpr::{css_px, dpr_changed, grid_px};
 use crate::emoji::is_emoji_text;
 use crate::frame::{Frame, INSTANCE_FLOATS, pack_instances};
 use crate::frame_grid::{DamageFrame, FrameGrid};
@@ -286,16 +286,17 @@ pub struct JustermRenderer {
     palette: Palette,
     rasterizer: Rasterizer,
     cache: GlyphCache,
-    /// Physical (content) cell size in device pixels — the on-screen grid cell.
-    cell_size: (f32, f32),
+    /// Physical (content) cell size in **device pixels** — the on-screen grid cell, and the exact
+    /// `u_cell_size` the shader lays it out with. Integral by construction (an ink-scan).
+    cell_size: (u32, u32),
     /// Padded atlas cell size in device pixels (physical + `2*PADDING`) — glyph upload dims.
     atlas_cell: (u32, u32),
     /// Drawing-buffer size in device pixels.
     size: (i32, i32),
-    /// The last CSS-px size passed to [`resize`](Self::resize) (#322): a DPR change re-sizes the
-    /// buffer to `css × new_dpr` without the consumer re-passing it (mirrors beamterm's
-    /// `logical_size`). Defaults to the initial canvas size until the first resize.
-    css_size: (i32, i32),
+    /// The `cols`×`rows` grid last passed to [`resize`](Self::resize). A DPR change re-measures the
+    /// cell and re-derives the buffer from this, so nothing has to be re-passed and no CSS length is
+    /// rounded twice (#322/#331).
+    grid_size: (u32, u32),
     instances: Vec<f32>,
     instance_count: i32,
     /// The instance floats currently in the GPU buffer — the baseline the next pack diffs against
@@ -435,7 +436,7 @@ impl JustermRenderer {
             gl.uniform_3_f32(Some(&u_default_bg), dbr, dbg, dbb);
         }
 
-        let renderer = JustermRenderer {
+        let mut renderer = JustermRenderer {
             gl,
             canvas,
             dpr,
@@ -450,15 +451,14 @@ impl JustermRenderer {
             palette,
             rasterizer,
             cache: GlyphCache::new(),
-            cell_size: (cell_w as f32, cell_h as f32),
+            cell_size: (cell_w, cell_h),
             atlas_cell: (pad_w, pad_h),
             size,
-            // The initial canvas dims are device px; store their CSS equivalent so a `resize`-less
-            // `set_device_pixel_ratio` fallback stays dimensionally consistent (resize multiplies
-            // css_size back by the DPR). A real consumer calls `resize(css)` before rendering.
-            css_size: (
-                (size.0 as f32 / dpr).round().max(1.0) as i32,
-                (size.1 as f32 / dpr).round().max(1.0) as i32,
+            // Whole cells that fit the canvas as authored. `resize` below snaps the buffer to
+            // exactly that grid, so `size == grid_px(grid_size, cell_size)` holds from the start.
+            grid_size: (
+                (size.0 as u32 / cell_w).max(1),
+                (size.1 as u32 / cell_h).max(1),
             ),
             instances: Vec::new(),
             instance_count: 0,
@@ -467,6 +467,11 @@ impl JustermRenderer {
             ctx_loss,
         };
         renderer.prebake_ascii()?;
+        // Snap the drawing buffer to a whole number of cells straight away, so the invariant
+        // `size == grid_px(grid_size, cell_size)` holds for the renderer's whole life and never has
+        // to be re-established (beamterm's `create_with_canvas` likewise ends in a `resize`).
+        let (cols, rows) = renderer.grid_size;
+        renderer.resize(cols, rows);
         Ok(renderer)
     }
 
@@ -675,8 +680,8 @@ impl JustermRenderer {
     /// drives this from a resolution `matchMedia` listener — a DPR change at the *same* CSS size
     /// (dragging to another-density monitor) does not fire a resize, so it must be signalled
     /// explicitly. The atlas is re-baked at the new device size, the current grid re-resolved into
-    /// it (so glyphs stay present and sharpen), and the drawing buffer re-sized to the stored CSS
-    /// size × the new DPR. A no-op if the ratio is unchanged; on error the old atlas is left intact
+    /// it (so glyphs stay present and sharpen), and the drawing buffer re-derived from the stored
+    /// grid at the new cell size. A no-op if the ratio is unchanged; on error the old atlas is left intact
     /// and `dpr` unadvanced, so the next notification retries (self-healing).
     #[wasm_bindgen(js_name = setDevicePixelRatio)]
     pub fn set_device_pixel_ratio(&mut self, dpr: f32) -> Result<(), JsValue> {
@@ -717,14 +722,14 @@ impl JustermRenderer {
         let old_atlas = self.atlas;
         self.rasterizer = rasterizer;
         self.atlas = atlas;
-        self.cell_size = (cell_w as f32, cell_h as f32);
+        self.cell_size = (cell_w, cell_h);
         self.atlas_cell = (pad_w, pad_h);
         self.dpr = dpr;
         unsafe { self.gl.delete_texture(old_atlas) };
-        // 3. Re-size the buffer to the stored CSS size at the new DPR (the cells sharpen via the
+        // 3. Re-derive the buffer from the stored grid at the NEW cell size (the cells sharpen via the
         //    new atlas + the new device `cell_size` uniform on the next render).
-        let (cw, ch) = self.css_size;
-        self.resize(cw, ch);
+        let (cols, rows) = self.grid_size;
+        self.resize(cols, rows);
         Ok(())
     }
 
@@ -829,7 +834,7 @@ impl JustermRenderer {
         self.u_cell_size = pipeline.u_cell_size;
         self.u_bg_alpha = pipeline.u_bg_alpha;
         self.rasterizer = rasterizer;
-        self.cell_size = (cell_w as f32, cell_h as f32);
+        self.cell_size = (cell_w, cell_h);
         self.atlas_cell = (pad_w, pad_h);
         self.dpr = dpr;
         unsafe {
@@ -843,62 +848,96 @@ impl JustermRenderer {
         //    so the refill below plans a `Full` upload even when the frame is byte-identical (#263).
         invalidate_baseline(&mut self.uploaded);
 
-        // 4. The loss reset the drawing-buffer size and the viewport; re-apply the stored CSS box at
+        // 4. The loss reset the drawing-buffer size and the viewport; re-derive them from the grid at
         //    the (possibly new) DPR, then refill the buffer so `render` draws the pre-loss frame.
-        let (cw, ch) = self.css_size;
-        self.resize(cw, ch);
+        let (cols, rows) = self.grid_size;
+        self.resize(cols, rows);
         self.upload_instances();
         Ok(())
     }
 
-    /// Measured cell width in **CSS pixels** — the consumer lays out in CSS and the renderer owns
-    /// the DPR (#252/#265). Internally the cell is device px (`cell_size`); this divides it back.
+    /// The cell width in **device pixels** — exactly the `u_cell_size.x` the shader lays the grid
+    /// out with, ink-scanned by the rasteriser at `FONT_SIZE * dpr`.
     ///
-    /// Rounding to a whole CSS pixel is **lossy**: multiplying this back by the DPR does not in
-    /// general recover the device cell. Anything that addresses the drawing buffer — `readPixels`,
-    /// GL interop, a picking rect — must use [`cell_width_device`](Self::cell_width_device) instead
-    /// of re-deriving it from here (#328).
+    /// This is *the* cell (#331/#335). The bare name carries it because it is the exact, measured
+    /// one, as in xterm.js's `dimensions.device.cell` and beamterm's `cell_size()`. Anything that
+    /// addresses the drawing buffer — `readPixels`, GL interop, a picking rect — belongs here;
+    /// [`css_cell_width`](Self::css_cell_width) is the derived view for CSS layout.
     pub fn cell_width(&self) -> u32 {
+        self.cell_size.0
+    }
+
+    /// The cell height in **device pixels** (see [`cell_width`](Self::cell_width)).
+    pub fn cell_height(&self) -> u32 {
+        self.cell_size.1
+    }
+
+    /// The cell width in **CSS pixels**, unrounded. The consumer divides its available box by this
+    /// to decide how many columns fit, exactly as xterm.js's `FitAddon` divides by
+    /// `dimensions.css.cell.width`, and maps mouse coordinates through it (beamterm's
+    /// `css_cell_size` doc says the same).
+    ///
+    /// It is a **float on purpose**. Rounding it to a whole CSS pixel loses the device cell for
+    /// good — 33 device px at dpr 2 is 16.5, and 17 does not scale back to 33 (#331).
+    #[wasm_bindgen(js_name = cssCellWidth)]
+    pub fn css_cell_width(&self) -> f32 {
         css_px(self.cell_size.0, self.dpr)
     }
 
-    /// Measured cell height in **CSS pixels** (see [`cell_width`](Self::cell_width)).
-    pub fn cell_height(&self) -> u32 {
+    /// The cell height in **CSS pixels**, unrounded (see [`css_cell_width`](Self::css_cell_width)).
+    #[wasm_bindgen(js_name = cssCellHeight)]
+    pub fn css_cell_height(&self) -> f32 {
         css_px(self.cell_size.1, self.dpr)
     }
 
-    /// The cell width in **device pixels** — exactly the `u_cell_size.x` the shader lays the grid
-    /// out with, as ink-scanned by the rasteriser at `FONT_SIZE * dpr` (#328). This is the cell's
-    /// authoritative size; the CSS one is a rounded view of it. xterm.js likewise publishes both
-    /// (`dimensions.device.cell` and `dimensions.css.cell`).
-    #[wasm_bindgen(js_name = cellWidthDevice)]
-    pub fn cell_width_device(&self) -> u32 {
-        self.cell_size.0 as u32
-    }
-
-    /// The cell height in **device pixels** (see [`cell_width_device`](Self::cell_width_device)).
-    #[wasm_bindgen(js_name = cellHeightDevice)]
-    pub fn cell_height_device(&self) -> u32 {
-        self.cell_size.1 as u32
-    }
-
-    /// Resize to a `width`×`height` **CSS-pixel** box (#252/#265): the renderer sizes the GL
-    /// drawing buffer to `CSS × devicePixelRatio` (device px, so HiDPI is sharp) — the caller must
-    /// NOT pre-multiply by DPR. The atlas is kept (AC "아틀라스 유지"); the DPR is fixed at
-    /// construction, so a mid-session DPR change (dragging to another-density monitor) is not yet
-    /// re-baked (tracked follow-up) and stays at the construction density until recreation.
-    pub fn resize(&mut self, width: i32, height: i32) {
-        // Size the GL drawing buffer to device px; the canvas's CSS display box is owned by the
-        // consumer / external CSS (as with beamterm's `auto_resize_canvas_css = false`), so the
-        // device-px buffer shown in a CSS-px box gives the HiDPI density.
-        self.css_size = (width, height);
-        let (dw, dh) = (device_px(width, self.dpr), device_px(height, self.dpr));
+    /// Size the renderer to a `cols`×`rows` **grid**. The drawing buffer becomes
+    /// `cols * cell_width()` × `rows * cell_height()` device pixels — an exact multiple of the cell,
+    /// so no column or row can be clipped by the buffer that holds it.
+    ///
+    /// This takes a grid, not a pixel box, deliberately (#331). Sizing the buffer from a pixel box
+    /// while laying cells out as `cols * cell` computes the two from different quantities, and they
+    /// stopped agreeing at fractional device pixel ratios — the last column fell outside its own
+    /// buffer. xterm.js sizes its canvas from the grid the same way
+    /// (`device.canvas.width = cols * device.cell.width`); beamterm instead derives the grid from the
+    /// buffer and letterboxes the remainder with a padding colour. Both are sound; this one makes the
+    /// overhang unrepresentable. The consumer already knows `cols`/`rows` — it computed them by
+    /// dividing its box by [`css_cell_width`](Self::css_cell_width).
+    ///
+    /// **The consumer must size the canvas's CSS display box itself** (as with beamterm's
+    /// `auto_resize_canvas_css = false`): [`css_width`](Self::css_width) and
+    /// [`css_height`](Self::css_height) report what to set it to. Forget that and the device-px buffer
+    /// is displayed at device px — twice its intended size on a Retina display.
+    ///
+    /// The atlas survives; a DPR change re-derives the buffer from this grid.
+    pub fn resize(&mut self, cols: u32, rows: u32) {
+        // A grid must have at least one cell: `grid_px` floors the *buffer* to 1, and letting
+        // `grid_size` keep a 0 would break `size == grid_px(grid_size, cell_size)`.
+        let (cols, rows) = (cols.max(1), rows.max(1));
+        self.grid_size = (cols, rows);
+        let (dw, dh) = (
+            grid_px(cols, self.cell_size.0),
+            grid_px(rows, self.cell_size.1),
+        );
         self.canvas.set_width(dw as u32);
         self.canvas.set_height(dh as u32);
         self.size = (dw, dh);
         unsafe {
             self.gl.viewport(0, 0, self.size.0, self.size.1);
         }
+    }
+
+    /// The drawing buffer's width in **CSS pixels** — what the consumer should set the canvas's CSS
+    /// display box to, so the device-px buffer is shown at exactly the right size. Unrounded, for
+    /// the same reason as [`css_cell_width`](Self::css_cell_width).
+    #[wasm_bindgen(js_name = cssWidth)]
+    pub fn css_width(&self) -> f32 {
+        css_px(self.size.0 as u32, self.dpr)
+    }
+
+    /// The drawing buffer's height in **CSS pixels** (see [`css_width`](Self::css_width)).
+    #[wasm_bindgen(js_name = cssHeight)]
+    pub fn css_height(&self) -> f32 {
+        css_px(self.size.1 as u32, self.dpr)
     }
 
     /// Apply a `cols`×`rows` frame (dense row-major, length `cols*rows` — see #277 for the
@@ -1148,8 +1187,10 @@ impl JustermRenderer {
     fn draw(&self) {
         let [dr, dg, db] = gl_rgb(self.palette.default_bg);
         unsafe {
-            // Clear with the injected background opacity so any area not covered by a cell (canvas
-            // margins) is see-through too; cells then write their own per-pixel alpha (#298).
+            // Clear with the injected background opacity so any area not covered by a cell is
+            // see-through too; cells then write their own per-pixel alpha (#298). The buffer is now
+            // an exact multiple of the cell (#331), so the only uncovered area is a frame whose grid
+            // is smaller than the one `resize` was given.
             self.gl.clear_color(dr, dg, db, self.bg_alpha);
             self.gl.clear(glow::COLOR_BUFFER_BIT);
 
@@ -1169,7 +1210,7 @@ impl JustermRenderer {
             self.gl
                 .uniform_matrix_4_f32_slice(Some(&self.u_projection), false, &proj.data);
             self.gl
-                .uniform_2_f32(Some(&self.u_cell_size), self.cell_size.0, self.cell_size.1);
+                .uniform_2_f32(Some(&self.u_cell_size), self.cell_size.0 as f32, self.cell_size.1 as f32);
             self.gl.uniform_1_f32(Some(&self.u_bg_alpha), self.bg_alpha);
 
             self.gl

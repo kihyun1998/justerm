@@ -6,17 +6,18 @@
   #c { display: block; image-rendering: pixelated; }
 </style>
 <!--
-  #265 proof: the renderer reads window.devicePixelRatio, rasterises the atlas at device px, and
-  `resize(CSS px)` sizes the GL buffer to CSS*dpr. The Playwright runner loads this page at several
-  deviceScaleFactors; the checks below hold at each, and the runner additionally compares the CSS
-  cell across densities (property (b) needs two runs to be falsifiable).
-    (a) buffer == round(CSS * dpr)  → resize applies the DPR (a device-px resize gives buffer == CSS)
-    (b) the DEVICE cell scales with the DPR while the CSS cell does not → the atlas is rasterised at
-        device px (a CSS-px atlas would show the opposite: a fixed device cell and a cell_width()
-        that HALVES at dpr 2)  ← needs two densities, so the runner asserts it
-    (c) the CSS cell is the device cell divided by the DPR and rounded (#328). It is therefore not
-        perfectly constant: the ink-scanned cell is 16 device px tall at dpr 1 but 33 at dpr 2, so
-        cell_height() reports 16 and then 17. That rounding is tracked as #331.
+  #265/#331 proof: the renderer reads window.devicePixelRatio, rasterises the atlas at device px, and
+  sizes the GL buffer from the GRID. The Playwright runner loads this page at several
+  deviceScaleFactors; the checks below hold at each, and the runner additionally compares the cell
+  across densities (the atlas-space property needs two runs to be falsifiable).
+    (a) buffer == cols * cell_width() exactly → a column can never be clipped by its own buffer.
+        The pre-#331 `round(cssBox * dpr)` sizing came up 1-2 device px short at dpr 1.1.
+    (b) the DEVICE cell scales with the DPR while the CSS cell stays put → the atlas is rasterised at
+        device px (a CSS-px atlas would show the opposite: a fixed device cell and a cell that
+        HALVES at dpr 2)  ← needs two densities, so the runner asserts it
+    (c) the CSS view is the device cell divided by the DPR, UNROUNDED. The ink-scanned cell is 16
+        device px tall at dpr 1 and 33 at dpr 2, i.e. 16.5 CSS px — and 16.5 * 2 is 33 again, which
+        a rounded 17 would not be. That round trip is what lets a consumer lay out in CSS.
   Build: wasm-pack build --target web --dev --out-dir pkg
 -->
 <canvas id="c" width="64" height="64"></canvas>
@@ -30,11 +31,11 @@
   const r = new JustermRenderer("#c", palette, FG, BG);
   const dpr = window.devicePixelRatio;
 
-  // cell_width/height are CSS px; the CSS box we resize to is a whole number of CSS cells.
-  const cellCssW = r.cell_width(), cellCssH = r.cell_height();
+  // cell_width/height are DEVICE px (#331/#335); the CSS view is the unrounded quotient.
+  const cellW = r.cell_width(), cellH = r.cell_height();
+  const cellCssW = r.cssCellWidth(), cellCssH = r.cssCellHeight();
   const COLS = 4, ROWS = 1;
-  const cssW = COLS * cellCssW, cssH = ROWS * cellCssH;
-  r.resize(cssW, cssH); // CSS px — the renderer multiplies by DPR internally
+  r.resize(COLS, ROWS); // a GRID, not a pixel box — the buffer is COLS*cellW x ROWS*cellH exactly
 
   // Draw "A" in cell 0 (rest blank) and render.
   const zeros = new Uint32Array(COLS);
@@ -55,20 +56,24 @@
     // clamping), and `readPixels` addresses the buffer. One source of truth for both.
     bufferW: gl.drawingBufferWidth, bufferH: gl.drawingBufferHeight,
     canvasAttrs: [canvas.width, canvas.height],
-    cssW, cssH, cellCssW, cellCssH,
+    cellCssW, cellCssH, cssBox: [r.cssWidth(), r.cssHeight()],
     deviceCell: [dcw, dch], litA,
     gridFit: gridFit(gl, r, COLS, ROWS),
     checks: {
-      // (a) resize() speaks CSS px and the renderer applies the DPR to the drawing buffer.
-      bufferIsCssTimesDpr:
-        gl.drawingBufferWidth === Math.round(cssW * dpr) &&
-        gl.drawingBufferHeight === Math.round(cssH * dpr),
+      // (a) the buffer is the GRID, exactly — never a rounded pixel box (#331). At dpr 1.1 the old
+      //     `round(cols * cssCell * dpr)` sizing came up 1-2 device px short and clipped a column.
+      bufferIsExactlyTheGrid:
+        gl.drawingBufferWidth === COLS * cellW && gl.drawingBufferHeight === ROWS * cellH,
       // The glyph actually rendered where we looked.
       glyphRenders: litA > 0,
-      // (c) the CSS cell is exactly the rounded quotient of the device cell — the lossy conversion
-      //     #328 is about. This pins WHICH direction is authoritative: device is, CSS is derived.
-      cssCellIsRoundedDeviceCell:
-        cellCssW === Math.round(dcw / dpr) && cellCssH === Math.round(dch / dpr),
+      // (b) device is authoritative; the CSS view is its UNROUNDED quotient. `cellH / dpr` is 16.5 at
+      //     dpr 2 — a rounded 17 would not scale back, which is exactly what #331 was.
+      cssCellIsTheUnroundedQuotient:
+        Math.abs(cellCssW - dcw / dpr) < 1e-6 && Math.abs(cellCssH - dch / dpr) < 1e-6,
+      // (c) and the consumer's CSS box, built from that float, scales back onto the device grid.
+      cssBoxScalesBackToTheGrid:
+        Math.round(r.cssWidth() * dpr) === COLS * cellW &&
+        Math.round(r.cssHeight() * dpr) === ROWS * cellH,
     },
   };
   window.__proof.ok = Object.values(window.__proof.checks).every(Boolean);
