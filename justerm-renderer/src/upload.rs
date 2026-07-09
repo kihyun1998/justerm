@@ -45,6 +45,15 @@ pub fn plan_upload(prev: &[f32], curr: &[f32], stride: usize) -> UploadPlan {
     UploadPlan::Ranges(ranges)
 }
 
+/// Drop the upload baseline so the next [`plan_upload`] returns [`UploadPlan::Full`]. Call this
+/// whenever the GPU instance buffer stops matching `uploaded` for a reason a *diff* cannot see —
+/// i.e. the buffer itself was destroyed and reallocated, as a WebGL context loss does (#269).
+/// This is the diff-based analogue of beamterm's `DirtyRegions::mark_all()` in
+/// `recreate_resources` and of xterm.js's `_requestRedrawViewport()` on `webglcontextrestored`.
+pub fn invalidate_baseline(uploaded: &mut Vec<f32>) {
+    uploaded.clear();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -87,6 +96,27 @@ mod tests {
             plan_upload(&prev, &curr, 2),
             UploadPlan::Ranges(vec![(1, 3)])
         );
+    }
+
+    #[test]
+    fn a_restored_context_forces_a_full_reupload_of_an_identical_frame() {
+        // #269: a context loss destroys `instance_vbo`; the restore path allocates a fresh, EMPTY
+        // one. The baseline still mirrors the pre-loss frame, so an identical restored frame would
+        // diff to zero ranges, skip the upload, and leave the fresh buffer empty — a blank render
+        // that never self-heals. Invalidating the baseline is what makes the next plan `Full`.
+        let instances = vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0];
+        let mut uploaded = instances.clone();
+
+        // While the context lives, re-packing the same frame is genuinely zero GPU work (#263).
+        assert_eq!(
+            plan_upload(&uploaded, &instances, 2),
+            UploadPlan::Ranges(vec![])
+        );
+
+        invalidate_baseline(&mut uploaded);
+
+        // After the restore, the very same frame must refill the whole buffer.
+        assert_eq!(plan_upload(&uploaded, &instances, 2), UploadPlan::Full);
     }
 
     #[test]

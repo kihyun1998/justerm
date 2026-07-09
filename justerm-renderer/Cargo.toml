@@ -33,6 +33,9 @@ features = [
     "Window",
     "Document",
     "Element",
+    # `webglcontextlost` / `webglcontextrestored` listeners on the canvas (#269).
+    "EventTarget",
+    "Event",
     "HtmlCanvasElement",
     "WebGl2RenderingContext",
     "WebGlTexture",
