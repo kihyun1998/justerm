@@ -183,13 +183,20 @@ export interface MouseEventLike {
   timeStamp?: number;
 }
 
-/** Canvas origin + cell size, to map pixels to cells. */
+/** Canvas origin + cell size + grid dimensions, to map pixels to cells. `cols`/`rows` bound the
+ * result so a pointer outside the grid clamps to the edge cell instead of a negative / past-the-end
+ * coordinate — which would wrap to a huge value in core's `MouseEvent.col: usize` (#266). */
 export interface CellGeometry {
   originX: number;
   originY: number;
   cellWidth: number;
   cellHeight: number;
+  cols: number;
+  rows: number;
 }
+
+/** Clamp `n` to `[0, max]` (with `max` floored to 0 for a degenerate 0-dimension grid). */
+const clampTo = (n: number, max: number): number => Math.max(0, Math.min(Math.max(0, max), n));
 
 const DOM_BUTTON: Readonly<Record<number, MouseButton>> = { 0: "left", 1: "middle", 2: "right" };
 
@@ -224,13 +231,16 @@ function cellEvent(
 ): MouseEvent {
   const px = ev.clientX - geom.originX;
   const py = ev.clientY - geom.originY;
+  // Clamp to the grid: a pointer outside it (a drag past the edge) reports the edge cell, never a
+  // negative / out-of-range coord that would wrap to a huge `usize` in core's `encode_mouse`
+  // (#266). px/py are clamped to the grid's pixel extent for the same reason (`?1016` SGR-pixels).
   return {
     button,
     action,
-    col: Math.floor(px / geom.cellWidth),
-    row: Math.floor(py / geom.cellHeight),
-    px,
-    py,
+    col: clampTo(Math.floor(px / geom.cellWidth), geom.cols - 1),
+    row: clampTo(Math.floor(py / geom.cellHeight), geom.rows - 1),
+    px: clampTo(px, geom.cols * geom.cellWidth),
+    py: clampTo(py, geom.rows * geom.cellHeight),
     mods: modsOf(ev),
   };
 }
