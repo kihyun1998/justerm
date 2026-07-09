@@ -573,7 +573,7 @@ const port: SelectionPort = {
 // be off by devicePixelRatio and the selection would land on the wrong row.)
 const getGeometry = (): CellGeometry => {
   const r = canvas.getBoundingClientRect();
-  return { originX: r.left, originY: r.top, cellWidth: r.width / COLS, cellHeight: r.height / ROWS };
+  return { originX: r.left, originY: r.top, cellWidth: r.width / COLS, cellHeight: r.height / ROWS, cols: COLS, rows: ROWS };
 };
 
 // S16 (#133): mount the widget as a COMPLETE terminal — it captures input, routes

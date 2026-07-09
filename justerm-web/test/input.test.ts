@@ -62,7 +62,7 @@ function mouse(over: Partial<MouseEventLike> & { clientX: number; clientY: numbe
 }
 
 // 10×20 px cells, terminal at the origin.
-const geom = { originX: 0, originY: 0, cellWidth: 10, cellHeight: 20 };
+const geom = { originX: 0, originY: 0, cellWidth: 10, cellHeight: 20, cols: 40, rows: 24 };
 
 describe("mouseFromDom", () => {
   // Pixel coords → 0-based cell (col, row); DOM button 0/1/2 → Left/Middle/Right.
@@ -88,6 +88,18 @@ describe("mouseFromDom", () => {
     expect(mouseFromDom(mouse({ clientX: 5, clientY: 5, buttons: 1 }), "motion", geom).button).toBe("left");
     expect(mouseFromDom(mouse({ clientX: 5, clientY: 5, buttons: 2 }), "motion", geom).button).toBe("right");
     expect(mouseFromDom(mouse({ clientX: 5, clientY: 5, buttons: 0 }), "motion", geom).button).toBeNull();
+  });
+
+  // A mouse outside the grid clamps to the edge cell (#266) — never a negative or
+  // past-the-end col/row, which would wrap to a huge value in core's
+  // `MouseEvent.col: usize` / `encode_mouse` and leak a garbage SGR mouse report.
+  // Terminal convention: a drag past the edge stays on the last cell.
+  it("clamps a mouse outside the grid to the edge cell", () => {
+    const bounded = { originX: 0, originY: 0, cellWidth: 10, cellHeight: 20, cols: 40, rows: 24 };
+    const above = mouseFromDom(mouse({ clientX: -5, clientY: -5, button: 0 }), "press", bounded);
+    expect([above.col, above.row]).toEqual([0, 0]); // left/above → first cell, not -1
+    const below = mouseFromDom(mouse({ clientX: 900, clientY: 900, button: 0 }), "press", bounded);
+    expect([below.col, below.row]).toEqual([39, 23]); // right/below → last cell, not 90/45
   });
 
   // When the app requests wheel reporting, a wheel notch is a button press

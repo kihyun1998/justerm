@@ -8,7 +8,7 @@ import {
 import type { CellGeometry, MouseEventLike } from "../src/input";
 
 // 10×20 px cells at the canvas origin — a cell column is [col*10, col*10+10).
-const GEOM: CellGeometry = { originX: 0, originY: 0, cellWidth: 10, cellHeight: 20 };
+const GEOM: CellGeometry = { originX: 0, originY: 0, cellWidth: 10, cellHeight: 20, cols: 80, rows: 24 };
 
 // A bare-left-button DOM-ish event at pixel (clientX, clientY). `held` sets the
 // `buttons` bitmask for motion events (1 = left held); a press leaves it 0.
