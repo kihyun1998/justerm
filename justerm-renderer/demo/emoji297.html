@@ -28,7 +28,7 @@
 <canvas id="c" width="384" height="32"></canvas>
 <script type="module">
   import init, { JustermRenderer } from "../pkg/justerm_renderer.js";
-  import { readCells, gridFit } from "./proof.js";
+  import { readCells, inkCoverage, hasColourEmojiFont, gridFit } from "./proof.js";
   const FG = 0xff0000, BG = 0x808080; // RED fg, GRAY bg — the discriminator
   const WIDE_CHAR = 1 << 8, WIDE_SPACER = 1 << 9;
   await init();
@@ -70,14 +70,20 @@
   // `r - max(g, b)`) and a pure-red foreground. That is why FG/BG above are exactly 0xff0000 and
   // 0x808080; changing either breaks the discriminator, not just its thresholds.
   const CHROMA = 24;
+  // A pixel carries ink iff it differs from the gray background. Shared by the per-pixel scan and by
+  // `inkCoverage`, so the two can never disagree about what "lit" means.
+  const isLit = (rr, gg, bb) => Math.abs(rr - 128) > 12 || Math.abs(gg - 128) > 12 || Math.abs(bb - 128) > 12;
   const scan = (col) => {
-    const { buf } = readCells(gl, r, col); // exact device cell (#328)
+    const cell = readCells(gl, r, col); // exact device cell (#328)
+    const { buf } = cell;
+    // Filled glyph vs hollow missing-glyph box (#334). The ink here is "differs from the gray
+    // background", not "red" — these glyphs are BLACK, and the default predicate would see nothing.
+    const coverage = inkCoverage(cell, isLit);
     let lit = 0, coloured = 0, redDom = 0, maxSpread = 0;
     for (let i = 0; i < buf.length; i += 4) {
       const rr = buf[i], gg = buf[i + 1], bb = buf[i + 2];
       const hi = Math.max(rr, gg, bb), lo = Math.min(rr, gg, bb);
-      const isLit = Math.abs(rr - 128) > 12 || Math.abs(gg - 128) > 12 || Math.abs(bb - 128) > 12;
-      if (!isLit) continue;
+      if (!isLit(rr, gg, bb)) continue;
       lit++;
       const spread = hi - lo;
       if (spread > maxSpread) maxSpread = spread;
@@ -85,11 +91,13 @@
       // Red-dominant = foreground tint: red channel above the other two by the same margin.
       if (rr - Math.max(gg, bb) > CHROMA) redDom++;
     }
-    return { lit, coloured, redDom, maxSpread };
+    return { lit, coloured, redDom, maxSpread, coverage };
   };
 
   const cells = {};
   layout.forEach((x, col) => { cells[x[2]] = scan(col); });
+
+  const colourEmojiFontPresent = hasColourEmojiFont(); // #334 precondition, see proof.js
 
   // An ACHROMATIC cell is on the emoji path iff it is lit but NOT red-dominant (it kept its own
   // gray/black instead of taking the red foreground). Used for ⬛ ⚫.
@@ -106,7 +114,7 @@
 
   window.__proof = {
     dpr: window.devicePixelRatio, deviceCell: [CW, CH], gridFit: gridFit(gl, r, COLS, 1),
-    cells,
+    colourEmojiFontPresent, cells,
     checks: {
       // Case 2: achromatic emoji take the emoji path (NOT red) despite is_color_bitmap missing them…
       squareEmojiPath: achromaticEmojiPath(cells.sq_lead) && achromaticEmojiPath(cells.sq_spacer),
@@ -114,6 +122,19 @@
       // …and they were genuinely achromatic (low spread), so ONLY is_emoji_text could have caught them.
       squareWasAchromatic: cells.sq_lead.maxSpread <= 24,
       circleWasAchromatic: cells.circ_lead.maxSpread <= 24,
+      // …and they are the FONT'S glyphs, not the browser's missing-glyph box (#334). Tofu is
+      // achromatic and lit, so it satisfies every check above; it is a hollow outline, so it cannot
+      // satisfy this one. Verified by putting U+1FAFF (unassigned, but inside the renderer's
+      // emoji-classified range) here: the two checks above still passed, this one caught it.
+      //
+      // Coverage of the wide pair, measured: Segoe UI Emoji square 0.77 / circle 0.70; Noto Color
+      // Emoji (Linux CI) square 0.88 / circle 0.70; tofu 0.16. The CIRCLE has the least headroom —
+      // its LEAD cell alone is only ~0.45, below the threshold, so the pair must be averaged. A
+      // future font drawing U+26AB smaller would erode this first.
+      squareIsFilled: (cells.sq_lead.coverage + cells.sq_spacer.coverage) / 2 > 0.5,
+      circleIsFilled: (cells.circ_lead.coverage + cells.circ_spacer.coverage) / 2 > 0.5,
+      // The precondition, asserted so it is named when it fails rather than inferred from the rest.
+      colourEmojiFontPresent,
       // Regression: the colour emoji still renders in colour via the emoji path (colour the red fg
       // cannot fake — coloured pixels that are not all red-dominant).
       rocketColoured: colourEmojiPath(cells.rocket_lead) || colourEmojiPath(cells.rocket_sp),

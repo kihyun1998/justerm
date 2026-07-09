@@ -50,6 +50,30 @@ export function countLit({ buf }) {
 /** Whether the pixel at rect-local `(x, y)` (top-left origin flipped in `cellRect`) is lit. */
 export const litAt = ({ buf, w }, x, y) => buf[(y * w + x) * 4] > LIT_THRESHOLD;
 
+/** The default "lit" predicate: a foreground pixel on a dark background clears the red threshold. */
+export const litByRed = (r) => r > LIT_THRESHOLD;
+
+/**
+ * The fraction of a rect's pixels that count as ink, `0..1`.
+ *
+ * This is what tells a *filled* glyph from a *hollow* one, and therefore an emoji the font really
+ * drew from the browser's missing-glyph box (#334). Tofu is achromatic and has ink, so "achromatic
+ * and lit" — how `⬛`/`⚫` prove they took the emoji path — cannot reject it. "Filled" can: measured
+ * over the ink box at 24 px, `⬛` covers 0.99 and `⚫` 0.80, while tofu covers 0.23.
+ *
+ * `isLit(r, g, b, a)` is the caller's, because what counts as ink is the proof's policy, not this
+ * file's. The default reads the red channel, which is right for white-on-dark; a page probing a
+ * BLACK glyph on a GRAY background (`emoji297.html`) must pass "differs from the background" instead,
+ * or every pixel of `⬛` reads as unlit.
+ */
+export function inkCoverage({ buf, w, h }, isLit = (r) => litByRed(r)) {
+  let n = 0;
+  for (let i = 0; i < buf.length; i += 4) {
+    if (isLit(buf[i], buf[i + 1], buf[i + 2], buf[i + 3])) n++;
+  }
+  return n / (w * h);
+}
+
 /** Min/max of the alpha channel over a rect — the #298 translucency probe. */
 export function alphaStats({ buf }) {
   let min = 255, max = 0;
@@ -58,6 +82,29 @@ export function alphaStats({ buf }) {
     if (buf[i] > max) max = buf[i];
   }
   return { min, max };
+}
+
+/**
+ * Whether the runtime has a colour-emoji font (Segoe UI Emoji / Apple Color Emoji / Noto Color Emoji).
+ *
+ * A precondition, not a result. The emoji proofs assert that the browser draws emoji IN COLOUR, but the
+ * glyphs come from the browser's 2D text engine (`OffscreenCanvas.fillText`, via `rasterizer.rs`), not
+ * from the renderer. On a font-less host they rasterise monochrome or as tofu, and the proof fails for
+ * a reason that has nothing to do with justerm. Probing it lets the failure say so by name (#334).
+ */
+export function hasColourEmojiFont() {
+  const c = new OffscreenCanvas(64, 64);
+  const x = c.getContext("2d", { willReadFrequently: true });
+  x.font = "24px monospace";
+  x.textBaseline = "alphabetic";
+  x.fillStyle = "white"; // a monochrome font keeps this; a colour font overrides it
+  x.fillText("\u{1F680}", 8, 40);
+  const d = x.getImageData(0, 0, 64, 64).data;
+  for (let i = 0; i < d.length; i += 4) {
+    if (d[i + 3] < 32) continue;
+    if (Math.max(d[i], d[i + 1], d[i + 2]) - Math.min(d[i], d[i + 1], d[i + 2]) > 24) return true;
+  }
+  return false;
 }
 
 /**

@@ -62,10 +62,11 @@ cargo bench              # throughput 마이크로벤치(추세 기록)
 공개 API 를 바꾸는 변경은 `justerm-wasm-decode` 바인딩을 조용히 깨뜨릴 수 있으니(0.4.0 에서 발생), 공개
 표면을 건드릴 땐 `cargo test --workspace`/`cargo clippy --workspace --all-targets` 로 멤버 전부를 검증한다(CI 와 동일).
 
-**`--workspace` *밖* 사각지대**: `fuzz` 와 `justerm-facade` 는 의도적으로 워크스페이스 밖이다(루트
-`[workspace] exclude`; fuzz 는 자체 `[workspace]`, facade 는 버전 lockstep 바깥의 일회성 `justerm` 0.5.1
-묘비). `--workspace` 게이트가 이들을 *빌드조차 안 하므로*, 개명·공개경로 변경 후엔
-`cargo check --manifest-path fuzz/Cargo.toml` 로 별도 검증한다. 같은 류의 다른 사각:
+**`--workspace` *밖* 사각지대**: `fuzz`·`justerm-facade`·**`justerm-renderer`** 는 의도적으로 워크스페이스
+밖이다(루트 `[workspace] exclude`; fuzz 는 자체 `[workspace]`, facade 는 버전 lockstep 바깥의 일회성
+`justerm` 0.5.1 묘비, renderer 는 web-sys/glow 가 wasm32-전용). `--workspace` 게이트가 이들을 *빌드조차 안
+하므로*, 개명·공개경로 변경 후엔 `cargo check --manifest-path fuzz/Cargo.toml` 로 별도 검증한다. renderer 는
+CI 에 자기 잡(`renderer`, `renderer-proofs`)이 있다(#333) — 로컬 게이트는 아래 flow Step 6. 같은 류의 다른 사각:
 `cargo fmt --all --check`(핀 버전)와 wasm32-전용 `justerm-wasm-decode/tests/web.rs`(host 에선 0컴파일).
 
 ## 핵심 규칙
@@ -169,11 +170,13 @@ CI 의 `supply-chain` 게이트는 **just-shield**(같은 소유자=first-party,
 6. **게이트 & PR/머지.** 크레이트별 게이트 *전부*(사각 포함):
    - **core/wasm** → `cargo test --workspace` + `cargo fmt --all --check` + `cargo clippy --workspace --all-targets` + `cargo check --manifest-path fuzz/Cargo.toml`(워크스페이스 밖) + `cargo build -p justerm-wasm-decode --tests --target wasm32-unknown-unknown`(wasm32-only `web.rs` 는 host 에서 0컴파일 — *런타임 단언*은 브라우저 CI 에서만; 버전-핀 테스트를 host·wasm 양쪽 갱신).
    - **web** → `pnpm typecheck` + 전체 vitest + `pnpm demo` (+ a11y/UI 관찰가능 변경이면 `pnpm test:e2e`; **focus·scroll·reveal 같은 시각/DOM 부수효과면 e2e 가 그 DOM 상태(`document.activeElement`·`scrollTop`)까지 단언** — announce/signal 만 보고 넘기면 미검증 갭, Step 4 참조). e2e 는 CI 미배선(로컬 게이트) — 브라우저 설치 필요.
-   - **renderer(justerm-renderer)** → 워크스페이스 *밖*이라 `--workspace` 가 손도 안 댄다(#333). 전부 수동:
+   - **renderer(justerm-renderer)** → 워크스페이스 *밖*이라 `cargo fmt --all` 도 `--workspace` 도 **renderer 파일을 0개 방문한다**(#333 이 그 실증: 게이트를 켜자 미포맷 코드가 나옴). 전부 별도 지정:
+     `cargo fmt --manifest-path justerm-renderer/Cargo.toml --check` +
      `cargo test --manifest-path justerm-renderer/Cargo.toml`(순수층) +
      `cargo clippy --manifest-path justerm-renderer/Cargo.toml --target wasm32-unknown-unknown --all-targets` +
      `cargo build --manifest-path justerm-renderer/Cargo.toml --target wasm32-unknown-unknown`(GL/wasm 층은 host 에서 0컴파일) +
-     **GL 층을 건드렸으면 `cd justerm-renderer && pnpm run build:wasm && pnpm exec playwright test`** — `demo/*.html` 의
-     `window.__proof.ok` 를 dpr 1/1.5/2 로 쓸어 담는 헤드리스 러너(#328). 이것도 CI 미배선(로컬 게이트).
+     `cd justerm-renderer && pnpm run test:unit`(demo/proof.js 픽셀 헬퍼) +
+     **GL 층을 건드렸으면 `pnpm run test:proofs`** — `demo/*.html` 의 `window.__proof.ok` 를 dpr 1/1.1/1.5/2 로
+     쓸어 담는 헤드리스 러너(#328/#331). **#333 부터 CI 에도 배선됨**(`renderer-proofs` 잡).
      *데모를 dpr 1 에서 눈으로 보고 넘기지 말 것*: DPR≠1 에서만 깨지는 좌표 버그가 dpr 1 머신에선 전부 초록이었다(#328 이 그 실증).
-   - 브랜치 → `feat(<scope>): … (#issue)`(Co-Authored-By 금지) → squash PR(`Closes #issue`) → `test`/`wasm` CI 그린 확인.
+   - 브랜치 → `feat(<scope>): … (#issue)`(Co-Authored-By 금지) → squash PR(`Closes #issue`) → `test`/`wasm`/`renderer`/`renderer-proofs` CI 그린 확인.
