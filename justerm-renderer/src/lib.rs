@@ -19,6 +19,7 @@
 pub mod attrs;
 pub mod bitmap;
 pub mod color;
+pub mod context_loss;
 pub mod dpr;
 pub mod emoji;
 pub mod frame;

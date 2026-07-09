@@ -8,13 +8,18 @@
 //! double-width glyphs (#268: a wide glyph splits across two atlas slots / two grid cells).
 //! ASCII (`0x20..=0x7E`) is pre-rasterised. Colour emoji (#284) + clusters (#285) follow.
 
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use glow::HasContext;
 use wasm_bindgen::JsCast;
+use wasm_bindgen::closure::Closure;
 use wasm_bindgen::prelude::*;
 use web_sys::{HtmlCanvasElement, WebGl2RenderingContext};
 
 use crate::bitmap::{PADDING, is_color_bitmap, split_wide_bitmap};
 use crate::color::gl_rgb;
+use crate::context_loss::{ContextState, FrameAction};
 use crate::dpr::{device_px, dpr_changed};
 use crate::emoji::is_emoji_text;
 use crate::frame::{Frame, INSTANCE_FLOATS, pack_instances};
@@ -26,7 +31,7 @@ use crate::glyph_resolve::{Cells, ResolveError, resolve_frame};
 use crate::mat4::Mat4;
 use crate::palette::Palette;
 use crate::rasterizer::Rasterizer;
-use crate::upload::{UploadPlan, plan_upload};
+use crate::upload::{UploadPlan, invalidate_baseline, plan_upload};
 
 /// Texture-array layers covering the whole slot space (normal + wide = 6144 / 32 = 192),
 /// so wide/emoji slots (layers 64..191) have storage.
@@ -115,6 +120,67 @@ void main() {
 }
 "#;
 
+/// Canvas `webglcontextlost` / `webglcontextrestored` listeners feeding a shared [`ContextState`]
+/// (#269). The closures capture ONLY the `Rc`'d state — never the renderer — so they can fire while
+/// a `&mut JustermRenderer` method is on the stack without a `RefCell` double-borrow.
+struct ContextLossHandler {
+    canvas: HtmlCanvasElement,
+    state: Rc<RefCell<ContextState>>,
+    // Kept alive for as long as the listeners are attached; `Drop` detaches them.
+    on_lost: Closure<dyn FnMut(web_sys::Event)>,
+    on_restored: Closure<dyn FnMut(web_sys::Event)>,
+}
+
+impl ContextLossHandler {
+    fn new(canvas: &HtmlCanvasElement) -> Result<Self, JsValue> {
+        let state = Rc::new(RefCell::new(ContextState::default()));
+
+        let lost_state = Rc::clone(&state);
+        let on_lost = Self::listen(canvas, "webglcontextlost", move |event: web_sys::Event| {
+            // Without `preventDefault()` the browser never fires `webglcontextrestored` — the
+            // context stays dead forever. Every reference implementation does this first
+            // (beamterm context_loss.rs, xterm.js WebglRenderer.ts).
+            event.prevent_default();
+            lost_state.borrow_mut().on_lost();
+        })?;
+
+        let restored_state = Rc::clone(&state);
+        let on_restored = Self::listen(canvas, "webglcontextrestored", move |_event| {
+            restored_state.borrow_mut().on_restored();
+        })?;
+
+        Ok(Self {
+            canvas: canvas.clone(),
+            state,
+            on_lost,
+            on_restored,
+        })
+    }
+
+    fn listen(
+        canvas: &HtmlCanvasElement,
+        event: &str,
+        f: impl 'static + FnMut(web_sys::Event),
+    ) -> Result<Closure<dyn FnMut(web_sys::Event)>, JsValue> {
+        let closure = Closure::wrap(Box::new(f) as Box<dyn FnMut(_)>);
+        canvas.add_event_listener_with_callback(event, closure.as_ref().unchecked_ref())?;
+        Ok(closure)
+    }
+}
+
+impl Drop for ContextLossHandler {
+    fn drop(&mut self) {
+        for (event, closure) in [
+            ("webglcontextlost", self.on_lost.as_ref()),
+            ("webglcontextrestored", self.on_restored.as_ref()),
+        ] {
+            let _ = self
+                .canvas
+                .remove_event_listener_with_callback(event, closure.unchecked_ref());
+        }
+    }
+}
+
 /// The GL program + buffers + uniform locations built once at startup (`build_pipeline`).
 struct Pipeline {
     program: glow::Program,
@@ -164,16 +230,18 @@ pub struct JustermRenderer {
     /// so only changed cells re-upload (#263). Empty until the first upload (forces a `Full`).
     ///
     /// INVARIANT: this mirrors what the live `instance_vbo` holds, so it is valid ONLY while that
-    /// buffer persists. WebGL **context loss** destroys the buffer — the S9 (#269) restore path
-    /// MUST `self.uploaded.clear()` when it recreates the buffer, or the next identical frame diffs
-    /// to zero ranges and never refills the fresh (empty) buffer → a blank render that won't
-    /// self-heal. This is the diff-based analogue of beamterm's `DirtyRegions::mark_all()` on
-    /// `recreate_resources`. (Surfaced by the #263 adversarial 2-lens pass; tracked on #269.)
+    /// buffer persists. WebGL **context loss** destroys the buffer, so [`restore`](Self::restore)
+    /// calls [`invalidate_baseline`] on it — otherwise the next identical frame diffs to zero
+    /// ranges and never refills the fresh (empty) buffer → a blank render that won't self-heal.
+    /// (Surfaced by the #263 adversarial 2-lens pass; implemented in #269.)
     uploaded: Vec<f32>,
     /// Persistent dense grid for the decoder→renderer frame adapter (#277): a Partial frame's
     /// span-ordered damage scatters into this before packing. `None` until the first
     /// `apply_damage`; re-created when the grid dimensions change.
     grid: Option<FrameGrid>,
+    /// Canvas context-loss listeners + the shared lost/pending-rebuild state (#269). `render`
+    /// consults it every frame: skip while lost, rebuild once restored, otherwise draw.
+    ctx_loss: ContextLossHandler,
 }
 
 /// Reinterpret an `f32` slice as bytes for `buffer_data` upload.
@@ -246,6 +314,10 @@ impl JustermRenderer {
 
         let gl = glow::Context::from_webgl2_context(webgl2);
         let size = (canvas.width() as i32, canvas.height() as i32);
+
+        // Attach before ANY GL work, so a loss during construction is observed rather than missed
+        // (the pipeline/atlas built below would then be silently invalidated) (#269).
+        let ctx_loss = ContextLossHandler::new(&canvas)?;
 
         // devicePixelRatio: rasterise the atlas at device px (FONT_SIZE * dpr) so HiDPI is sharp,
         // and size the drawing buffer in device px. The consumer speaks CSS px (#252); the renderer
@@ -320,6 +392,7 @@ impl JustermRenderer {
             instance_count: 0,
             uploaded: Vec::new(),
             grid: None,
+            ctx_loss,
         };
         renderer.prebake_ascii()?;
         Ok(renderer)
@@ -474,6 +547,58 @@ impl JustermRenderer {
         Ok(())
     }
 
+    /// Bake the renderer's ENTIRE current glyph set — the 95 prebaked ASCII plus every resident
+    /// dynamic glyph — into `atlas`, each into the SAME slot it already occupies. Preserving the
+    /// slots is what lets the packed `instances` stay valid across the re-bake (no re-pack, no
+    /// re-resolve). Shared by the DPR re-bake (#322) and the context-loss restore (#269), which
+    /// both need "a fresh, correctly-sized atlas holding what the old one held".
+    fn bake_all_glyphs(
+        &self,
+        rasterizer: &Rasterizer,
+        atlas: glow::Texture,
+        atlas_cell: (u32, u32),
+    ) -> Result<(), JsValue> {
+        let (pad_w, pad_h) = atlas_cell;
+        self.prebake_ascii_into(rasterizer, atlas, atlas_cell)?;
+        for (k, slot) in self.cache.entries() {
+            // Two-cell iff the slot lives in the wide region — true for both `Wide` (CJK) and a
+            // *wide* `Emoji` (2-cell colour emoji); a narrow `Emoji` (#297 EmojiNarrow) sits in
+            // the normal region and is one cell. Keying off `slot_id() >= WIDE_BASE` (not
+            // `matches!(Wide)`) is what catches the wide-emoji case.
+            let wide = slot.slot_id() >= WIDE_BASE;
+            let rgba = rasterizer.rasterize(&k.text, k.style, wide)?;
+            let base = slot.slot_id();
+            if wide {
+                let (left, right) = split_wide_bitmap(&rgba, 2 * pad_w - 2 * PADDING, pad_w, pad_h);
+                upload_glyph(&self.gl, atlas, atlas_cell, base, &left);
+                upload_glyph(&self.gl, atlas, atlas_cell, base + 1, &right);
+            } else {
+                upload_glyph(&self.gl, atlas, atlas_cell, base, &rgba);
+            }
+        }
+        Ok(())
+    }
+
+    /// Point the shader at the guard-band fraction of a `pad_w`×`pad_h` atlas cell. The band is a
+    /// fixed pixel count, so its *fraction* shifts whenever the padded cell is resized (#288/#322)
+    /// — and the location belongs to `program`, so a relinked program (#269 restore) must re-set it.
+    fn set_padding_frac(
+        &self,
+        program: glow::Program,
+        u_padding_frac: &glow::UniformLocation,
+        pad_w: u32,
+        pad_h: u32,
+    ) {
+        unsafe {
+            self.gl.use_program(Some(program));
+            self.gl.uniform_2_f32(
+                Some(u_padding_frac),
+                PADDING as f32 / pad_w as f32,
+                PADDING as f32 / pad_h as f32,
+            );
+        }
+    }
+
     /// Notify the renderer that `window.devicePixelRatio` changed to `dpr` (#322). The consumer
     /// drives this from a resolution `matchMedia` listener — a DPR change at the *same* CSS size
     /// (dragging to another-density monitor) does not fire a resize, so it must be signalled
@@ -484,6 +609,12 @@ impl JustermRenderer {
     #[wasm_bindgen(js_name = setDevicePixelRatio)]
     pub fn set_device_pixel_ratio(&mut self, dpr: f32) -> Result<(), JsValue> {
         if !dpr_changed(self.dpr, dpr) {
+            return Ok(());
+        }
+        // A lost context can only hand back an invalidated atlas texture, so re-baking now would
+        // burn the work and commit an empty atlas. Drop the notification: `restore` re-reads the
+        // *live* DPR and bakes at that density anyway (#269).
+        if self.ctx_loss.state.borrow().is_lost() {
             return Ok(());
         }
         // 1. Build a new atlas at the new device size and re-rasterise the CURRENT glyphs into it —
@@ -497,36 +628,11 @@ impl JustermRenderer {
         let (pad_w, pad_h) = rasterizer.padded_size();
         let atlas = Self::build_atlas(&self.gl, pad_w, pad_h)?;
         let rebake = (|| -> Result<(), JsValue> {
-            self.prebake_ascii_into(&rasterizer, atlas, (pad_w, pad_h))?;
-            for (k, slot) in self.cache.entries() {
-                // Two-cell iff the slot lives in the wide region — true for both `Wide` (CJK) and a
-                // *wide* `Emoji` (2-cell colour emoji); a narrow `Emoji` (#297 EmojiNarrow) sits in
-                // the normal region and is one cell. Keying off `slot_id() >= WIDE_BASE` (not
-                // `matches!(Wide)`) is what catches the wide-emoji case.
-                let wide = slot.slot_id() >= WIDE_BASE;
-                let rgba = rasterizer.rasterize(&k.text, k.style, wide)?;
-                let base = slot.slot_id();
-                if wide {
-                    let (left, right) =
-                        split_wide_bitmap(&rgba, 2 * pad_w - 2 * PADDING, pad_w, pad_h);
-                    upload_glyph(&self.gl, atlas, (pad_w, pad_h), base, &left);
-                    upload_glyph(&self.gl, atlas, (pad_w, pad_h), base + 1, &right);
-                } else {
-                    upload_glyph(&self.gl, atlas, (pad_w, pad_h), base, &rgba);
-                }
-            }
-            // The guard band is a fixed pixel count, so its fraction of the (now device-sized)
-            // padded cell changes — re-point the shader at it (see FRAG_SRC). Inside the closure so
-            // a failure here is caught by the delete-on-error guard below (no leaked atlas).
+            self.bake_all_glyphs(&rasterizer, atlas, (pad_w, pad_h))?;
+            // The guard band's fraction of the (now device-sized) padded cell changed. Inside the
+            // closure so a failure here is caught by the delete-on-error guard below (no leaked atlas).
             let u_padding_frac = uniform(&self.gl, self.program, "u_padding_frac")?;
-            unsafe {
-                self.gl.use_program(Some(self.program));
-                self.gl.uniform_2_f32(
-                    Some(&u_padding_frac),
-                    PADDING as f32 / pad_w as f32,
-                    PADDING as f32 / pad_h as f32,
-                );
-            }
+            self.set_padding_frac(self.program, &u_padding_frac, pad_w, pad_h);
             Ok(())
         })();
         if let Err(e) = rebake {
@@ -547,6 +653,98 @@ impl JustermRenderer {
         //    new atlas + the new device `cell_size` uniform on the next render).
         let (cw, ch) = self.css_size;
         self.resize(cw, ch);
+        Ok(())
+    }
+
+    /// Whether the WebGL context is currently lost (#269). While lost the renderer draws nothing;
+    /// it recovers by itself when the browser fires `webglcontextrestored`. Exposed so the consumer
+    /// can surface the state (e.g. dim the terminal); no consumer action is required.
+    #[wasm_bindgen(js_name = isContextLost)]
+    pub fn is_context_lost(&self) -> bool {
+        self.ctx_loss.state.borrow().is_lost()
+    }
+
+    /// Recreate every GPU resource the lost context destroyed (#269), then refill the instance
+    /// buffer so the very next `render` paints the pre-loss frame. Called by [`render`](Self::render)
+    /// when the state machine reports [`FrameAction::Rebuild`] — never on a lost context.
+    ///
+    /// The context *object* survives a loss (the browser reuses it; xterm.js keeps its `_gl` and
+    /// beamterm's re-`getContext` hands back the same object), so only the objects it owned —
+    /// program, VAO, buffers, atlas texture, and the uniform locations bound to that program — are
+    /// rebuilt. CPU state (glyph cache, `instances`, `grid`, palette) survives untouched, which is
+    /// what preserves the terminal's content across the loss.
+    ///
+    /// The DPR is re-read *first*, because the display may have changed density while the context
+    /// was dead (#322 is the same re-bake driven by a `matchMedia` notification) — so the fresh
+    /// atlas is baked once at the live density instead of baked at the stale one and immediately
+    /// re-baked, as beamterm's `restore_context` → `handle_pixel_ratio_change` does.
+    ///
+    /// On any failure the old resources are left in place and `pending_rebuild` stays set, so the
+    /// next frame retries (self-healing, mirroring [`set_device_pixel_ratio`](Self::set_device_pixel_ratio)).
+    fn restore(&mut self) -> Result<(), JsValue> {
+        let dpr = web_sys::window().map_or(self.dpr, |w| w.device_pixel_ratio() as f32);
+        let rasterizer = Rasterizer::new("monospace", FONT_SIZE * dpr)?;
+        let (cell_w, cell_h) = rasterizer.cell_size();
+        let (pad_w, pad_h) = rasterizer.padded_size();
+
+        // 1. Build the replacements without touching any live field.
+        let pipeline = Self::build_pipeline(&self.gl)?;
+        let atlas = Self::build_atlas(&self.gl, pad_w, pad_h)?;
+        let rebake = (|| -> Result<(), JsValue> {
+            self.bake_all_glyphs(&rasterizer, atlas, (pad_w, pad_h))?;
+            // Both uniforms are set once per program at construction, so the relinked program needs
+            // them again: the guard-band fraction and the default background the shader compares
+            // each cell's bg against to decide translucency (#298).
+            self.set_padding_frac(pipeline.program, &pipeline.u_padding_frac, pad_w, pad_h);
+            let [dbr, dbg, dbb] = gl_rgb(self.palette.default_bg);
+            unsafe {
+                self.gl
+                    .uniform_3_f32(Some(&pipeline.u_default_bg), dbr, dbg, dbb);
+            }
+            Ok(())
+        })();
+        if let Err(e) = rebake {
+            // Don't leak the half-built replacements; the live ones stay in place.
+            unsafe {
+                self.gl.delete_texture(atlas);
+                self.gl.delete_program(pipeline.program);
+                self.gl.delete_vertex_array(pipeline.vao);
+                self.gl.delete_buffer(pipeline.instance_vbo);
+            }
+            return Err(e);
+        }
+
+        // 2. Commit. The outgoing GL objects died with the context, so deleting them is a no-op on
+        //    the GL side — it only frees glow's handle slots.
+        let (old_program, old_vao, old_vbo, old_atlas) =
+            (self.program, self.vao, self.instance_vbo, self.atlas);
+        self.program = pipeline.program;
+        self.vao = pipeline.vao;
+        self.instance_vbo = pipeline.instance_vbo;
+        self.atlas = atlas;
+        self.u_projection = pipeline.u_projection;
+        self.u_cell_size = pipeline.u_cell_size;
+        self.u_bg_alpha = pipeline.u_bg_alpha;
+        self.rasterizer = rasterizer;
+        self.cell_size = (cell_w as f32, cell_h as f32);
+        self.atlas_cell = (pad_w, pad_h);
+        self.dpr = dpr;
+        unsafe {
+            self.gl.delete_texture(old_atlas);
+            self.gl.delete_program(old_program);
+            self.gl.delete_vertex_array(old_vao);
+            self.gl.delete_buffer(old_vbo);
+        }
+
+        // 3. The new `instance_vbo` is empty and the baseline still describes the dead one — drop it
+        //    so the refill below plans a `Full` upload even when the frame is byte-identical (#263).
+        invalidate_baseline(&mut self.uploaded);
+
+        // 4. The loss reset the drawing-buffer size and the viewport; re-apply the stored CSS box at
+        //    the (possibly new) DPR, then refill the buffer so `render` draws the pre-loss frame.
+        let (cw, ch) = self.css_size;
+        self.resize(cw, ch);
+        self.upload_instances();
         Ok(())
     }
 
@@ -800,7 +998,31 @@ impl JustermRenderer {
 
     /// Clear to the palette's default background, then draw every cell of the current frame
     /// (glyph composited over background) with one instanced draw call.
-    pub fn render(&self) {
+    ///
+    /// Context loss (#269) is handled here, before any GL work: while the context is lost this is a
+    /// silent no-op (a draw call on a dead context accomplishes nothing), and on the frame after
+    /// `webglcontextrestored` it first rebuilds the destroyed resources. Recovery therefore needs
+    /// no consumer cooperation beyond continuing to call `render`. A failed rebuild propagates and
+    /// is retried on the next frame.
+    pub fn render(&mut self) -> Result<(), JsValue> {
+        // Bind the decision to a local: the `Ref` must be released before the `&mut self` calls.
+        let action = self.ctx_loss.state.borrow().action();
+        match action {
+            FrameAction::Skip => return Ok(()),
+            FrameAction::Rebuild => {
+                self.restore()?;
+                // Only now that the rebuild is committed does the retry latch clear.
+                self.ctx_loss.state.borrow_mut().rebuilt();
+            }
+            FrameAction::Draw => {}
+        }
+        self.draw();
+        Ok(())
+    }
+
+    /// Issue the frame's GL commands. The caller has established that the context is live and its
+    /// resources are intact.
+    fn draw(&self) {
         let [dr, dg, db] = gl_rgb(self.palette.default_bg);
         unsafe {
             // Clear with the injected background opacity so any area not covered by a cell (canvas

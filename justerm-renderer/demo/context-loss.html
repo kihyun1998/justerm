@@ -1,0 +1,143 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>justerm-renderer proof — WebGL context loss + auto recovery (#269)</title>
+<style>
+  body { margin: 0; background: #000; }
+  #c { display: block; image-rendering: pixelated; }
+</style>
+<!--
+  #269 proof: drive a REAL context loss through the real wasm renderer via the
+  `WEBGL_lose_context` extension, and verify it heals itself.
+
+  The load-bearing assertion is `recoveredMatchesBaseline`: after the restore we call `render()`
+  and NOTHING ELSE — no `apply_frame`, no re-resolve, no re-upload from the consumer. The pixels
+  must come back identical. That can only happen if `restore()` rebuilt the program/VAO/VBO/atlas,
+  re-baked the resident glyphs into their same slots, AND invalidated the dirty-region upload
+  baseline (#263's `uploaded` mirror still described the destroyed buffer, so a byte-identical
+  frame would otherwise diff to zero ranges and leave the fresh VBO empty → permanent blank).
+
+  Build: wasm-pack build --target web --dev --out-dir pkg
+-->
+<canvas id="c" width="256" height="32"></canvas>
+<script type="module">
+  import init, { JustermRenderer } from "../pkg/justerm_renderer.js";
+  const FG = 0xffffff, BG = 0x1e1e2e;
+  await init();
+
+  const WIDE_CHAR = 1 << 8, WIDE_SPACER = 1 << 9;
+
+  const palette = new Uint32Array(256);
+  const r = new JustermRenderer("#c", palette, FG, BG);
+  const CW = r.cell_width(), CH = r.cell_height();
+  const COLS = 6;
+  r.resize(COLS * CW, CH);
+
+  const canvas = document.querySelector("#c");
+  const gl = canvas.getContext("webgl2"); // the SAME context the renderer holds
+  const lose = gl.getExtension("WEBGL_lose_context");
+  if (!lose) throw new Error("WEBGL_lose_context unavailable — cannot prove #269");
+
+  // `cell_width`/`cell_height` are CSS px (#252/#265) but `readPixels` addresses the DEVICE-px
+  // drawing buffer, so derive the device cell from the buffer itself rather than assuming DPR 1.
+  // The restore re-reads the live DPR, so re-derive after it too.
+  const deviceCell = () => [gl.drawingBufferWidth / COLS, gl.drawingBufferHeight];
+
+  // Lit-pixel count of cell `col` (single row, so the whole buffer height).
+  const cellLit = (col) => {
+    const [dw, dh] = deviceCell();
+    const [x, w] = [Math.round(col * dw), Math.round(dw)];
+    const buf = new Uint8Array(w * dh * 4);
+    gl.readPixels(x, 0, w, dh, gl.RGBA, gl.UNSIGNED_BYTE, buf);
+    let n = 0;
+    for (let i = 0; i < buf.length; i += 4) if (buf[i] > 150) n++;
+    return n;
+  };
+  const row = () => Array.from({ length: COLS }, (_, i) => cellLit(i));
+  const once = (event) => new Promise((res) => canvas.addEventListener(event, res, { once: true }));
+
+  // The frame deliberately spans all three glyph paths, because `restore()` re-bakes each
+  // differently and an ASCII-only frame would prove only the easiest one:
+  //   cols 0-1  "WX"  — prebaked ASCII fast path (fixed slots 0..=94)
+  //   col  2    U+2500 ─ — a DYNAMIC glyph: lives in the glyph cache's normal region, so the
+  //                        restore must walk `cache.entries()` and re-rasterise it into its slot
+  //   cols 3-4  U+4E2D 中 — a DYNAMIC WIDE glyph: `slot_id >= WIDE_BASE`, so the restore must
+  //                        re-split one double-width bitmap across two adjacent atlas slots
+  //   col  5    "Z"   — ASCII again, after the wide pair, to catch a slot-offset error
+  // beamterm's restore drops exactly the middle two cases: `recreate_texture` clears the cache and
+  // re-uploads ASCII only (dynamic_atlas.rs), leaving every non-ASCII cell blank until new content
+  // re-resolves it. `recoveredMatchesBaseline` below is what forbids that.
+  const cps = new Uint32Array([0x57, 0x58, 0x2500, 0x4e2d, 0x20, 0x5a]);
+  const flags = new Uint16Array([0, 0, 0, WIDE_CHAR, WIDE_SPACER, 0]);
+  const zeros = new Uint32Array(COLS);
+
+  r.apply_frame(COLS, 1, zeros, zeros, cps, flags, true);
+  r.render();
+  const baseline = row();
+
+  // --- kill it -------------------------------------------------------------------------------
+  // Our `webglcontextlost` listener was registered in the constructor, i.e. before the one `once()`
+  // attaches, so the renderer's state is already updated when this resolves.
+  const lostEvent = once("webglcontextlost");
+  lose.loseContext();
+  await lostEvent;
+  const lostFlag = r.isContextLost();
+
+  // A frame issued while lost must be a silent no-op, not a throw and not a draw call.
+  let threwWhileLost = false;
+  try { r.render(); } catch { threwWhileLost = true; }
+
+  // --- bring it back -------------------------------------------------------------------------
+  // Chrome only permits `restoreContext()` once the `webglcontextlost` dispatch has fully
+  // completed and it has seen the event cancelled. Awaiting the event is NOT enough: the promise
+  // continuation is a microtask that runs while dispatch is still unwinding, and the call is
+  // rejected with `INVALID_OPERATION: context restoration not allowed`. Yield a real macrotask.
+  // (Verified in-browser: prevent+yield restores; prevent-only and yield-only both hang.)
+  await new Promise((res) => setTimeout(res, 0));
+
+  const restoredEvent = once("webglcontextrestored");
+  lose.restoreContext();
+  await restoredEvent;
+  const restoredFlag = r.isContextLost();
+
+  // The whole point: no `apply_frame`. The renderer alone must repaint the pre-loss frame.
+  let threwOnRestore = false;
+  try { r.render(); } catch (e) { threwOnRestore = true; console.error(e); }
+  const recovered = row();
+
+  // A subsequent identical frame still costs zero GPU work (the #263 diff is live again, with a
+  // baseline that now describes the REAL buffer contents rather than the destroyed one).
+  r.apply_frame(COLS, 1, zeros, zeros, cps, flags, true);
+  r.render();
+  const steady = row();
+
+  window.__proof = {
+    cssCell: [CW, CH], deviceCell: deviceCell(), dpr: window.devicePixelRatio,
+    baseline, recovered, steady, lostFlag, restoredFlag,
+    checks: {
+      // Sanity: every cell — ASCII, dynamic narrow, and both halves of the wide pair — has ink
+      // before the loss. (col 4 is the wide spacer: it shows 中's right half.)
+      baselineRenders: baseline.every((n) => n > 0),
+      // AC1: the lost event was detected and flipped the flag.
+      lossDetected: lostFlag === true,
+      // A dead context is skipped, not drawn on and not thrown from.
+      renderWhileLostIsSilent: threwWhileLost === false,
+      // AC2/AC3: the flag cleared and the rebuild+repaint happened without the consumer's help.
+      restoreClearsFlag: restoredFlag === false,
+      rebuildDidNotThrow: threwOnRestore === false,
+      // THE assertion. Identical pixels, from `render()` alone. Fails (all-zero) if `restore()`
+      // forgets `invalidate_baseline`, or skips the atlas re-bake, or leaves the viewport unset.
+      recoveredMatchesBaseline:
+        recovered.every((n) => n > 0) && recovered.join() === baseline.join(),
+      // Named sub-assertions so a failure says WHICH bake path regressed, rather than just "≠".
+      recoveredAsciiFastPath: recovered[0] > 0 && recovered[1] > 0 && recovered[5] > 0,
+      recoveredDynamicNarrowGlyph: recovered[2] === baseline[2] && recovered[2] > 0,
+      recoveredDynamicWideGlyph:
+        recovered[3] === baseline[3] && recovered[4] === baseline[4] &&
+        recovered[3] > 0 && recovered[4] > 0,
+      // The dirty-region diff is healthy again afterwards.
+      steadyStateHolds: steady.join() === baseline.join(),
+    },
+  };
+  window.__proof.ok = Object.values(window.__proof.checks).every(Boolean);
+  window.__done = true;
+</script>
