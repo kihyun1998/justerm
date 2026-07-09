@@ -95,6 +95,14 @@ cargo bench              # throughput 마이크로벤치(추세 기록)
 `grep -n`/`sed -n` 으로 *실제 줄* 을 읽어라. 기억/요약 아닌 실코드 대조가 원칙(메모리
 `feedback_proactive_adversarial_and_reference_verify`).
 
+**그리고 규칙의 나머지 절반: "확인 못 했다" ≠ "없다".** 요약이 어떤 사실을 안 보여줬을 때 그걸 *존재하지
+않는 사실*로 결론내고 설계를 얹지 마라. 미확인 사실은 **갭**이고, 갭은 이슈로 surfacing하거나 최소한 사용자에게
+*명시적으로 묻는다* — 조용히 설계 가정으로 승격시키지 않는다. 특히 그 가정이 하중을 받을 때(레이트리밋 상한·밴
+트리거·범위 제약), 그리고 *실험으로 확인하는 것 자체가 해로울 때*(429를 일부러 유발하면 IP 밴) 더 그렇다.
+실증(자매 repo `just-trade` #110·#121): 요약이 잘라먹은 문장을 두 번 "없는 것"으로 취급했고, 두 번 다
+문서에 명시돼 있었다. 두 번째는 `Retry-After` 를 "미확인"이라 *코드 주석에 적고* 10초로 클램프했는데, 그
+클램프가 문서상 정확히 2분→3일 밴 상승 트리거였다. 비대칭이다 — 재확인 비용은 `curl` 한 번, 오판 비용은 3일 밴.
+
 **결정 유형으로 라우팅한다.** 순수 기술 메커니즘(와이어 포맷·좌표계·API 모양 등 — 코드 + 명명된
 prior-art 로 *도출 가능*한 것)은 사용자에게 grilling 하지 말고 **직접 결정 → 실제 소스 대조 검증 →
 결과만 제시**(yes/no 승인). 답이 코드에 있는 걸 묻는 건 일 떠넘기기다. grilling/질문은 **제품·정체성·
@@ -147,7 +155,7 @@ CI 의 `supply-chain` 게이트는 **just-shield**(같은 소유자=first-party,
 
 **이건 `justerm-web` 전용이 아니다.** core(justerm-core)·wasm(justerm-wasm-decode)·web(justerm-web) 어느 크레이트든 *substantive 변경*이면 이 6단계로 짠다. 단계를 *생략*하려면 (건너뛰는 게 아니라) *왜 이 변경엔 해당 없는지를 명시*한다 — 유형이 다르면 *어느 참조를 보느냐*가 달라질 뿐, "본다·비교한다·검증한다"는 안 바뀐다. (web 슬라이스는 S8/#109 에서 이 형태로 확립됨.)
 
-1. **참조·선례 실측 대조 먼저 (추측 금지, 변경 유형으로 라우팅).** `gh api …/contents/<path> --jq .content | base64 -d` 로 *통째* 받아 grep/sed 로 실코드를 읽는다(WebFetch 금지). 상수·모드명·숨은동작을 기억이 아니라 실코드/선례로 박는다. **참조를 *뺄* 때는 "왜 이 층엔 N/A 인지"를 *명시 기록*한다** — 조용한 스킵 금지(Step 5 와 동일).
+1. **참조·선례 실측 대조 먼저 (추측 금지, 변경 유형으로 라우팅).** `gh api …/contents/<path> --jq .content | base64 -d` 로 *통째* 받아 grep/sed 로 실코드를 읽는다(WebFetch 금지). 상수·모드명·숨은동작을 기억이 아니라 실코드/선례로 박는다. **참조를 *뺄* 때는 "왜 이 층엔 N/A 인지"를 *명시 기록*한다** — 조용한 스킵 금지(Step 5 와 동일). **참조에서 *못 찾은* 사실도 마찬가지다: "확인 못 함"을 "없음"으로 승격시키지 말고 갭으로 남겨라**(위 "규칙의 나머지 절반").
    - **개념 ≠ 메커니즘 (핵심 함정).** 한 기능은 *두 참조 층*을 가진다: **개념/UX 층**(그 기능 전체)과 **메커니즘 층**(텍스트·좌표·wrap·wide-char 같은 하부 구성요소). 기능이 xterm.js 에 *없어도*(신규 개념) 그 *구성요소*는 대개 xterm/alacritty 버퍼·파서 층에 있다 → **둘 다 본다**. (실증 #150 accessible-view: 개념=VSCode `terminalAccessibleBufferProvider`, 하지만 추출 의미=xterm.js `translateToString`/`isWrapped` — "xterm 엔 없는 기능" 이라 xterm 을 통째 스킵하면 추출 층을 놓친다.)
    - **web 기능(개념)** → 그 기능의 실소스: 흔히 **xterm.js**(`repos/xtermjs/xterm.js`, 예: drag-scroll 50px/15, highlightLimit 1000, `_charsToConsume`), xterm 에 없는 상위 기능은 그걸 지은 소비처(예: **VSCode** `microsoft/vscode` terminal a11y).
    - **텍스트/좌표/VT-semantics(메커니즘)** → **xterm.js 버퍼 층 + alacritty 실소스** + *이 repo 형제 구현*(`docs/architecture.md` §"Hidden VT state" + search/selection/logical-lines 셀-walk). 참조가 추적하는 *숨은 상태*를 먼저 열거(pending-wrap·wide-char spacer·soft-wrap join·BCE 류).
