@@ -11,6 +11,12 @@ pub fn device_px(css: i32, dpr: f32) -> i32 {
     ((css as f32 * dpr).round() as i32).max(1)
 }
 
+/// Whether the DPR changed enough to re-bake the atlas at the new device size (#322). A tiny
+/// float delta is not a change — a re-notification at the same ratio is a no-op.
+pub fn dpr_changed(old: f32, new: f32) -> bool {
+    (old - new).abs() > 1e-3
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -37,5 +43,14 @@ mod tests {
     fn a_degenerate_size_floors_to_one() {
         // A zero/near-zero CSS size must never yield a 0-dimension buffer/viewport.
         assert_eq!(device_px(0, 2.0), 1);
+    }
+
+    #[test]
+    fn dpr_change_is_detected_only_when_it_actually_changes() {
+        // #322: a real DPR step re-bakes; a same-ratio re-notification / float noise is a no-op.
+        assert!(dpr_changed(1.0, 2.0));
+        assert!(dpr_changed(1.0, 1.5));
+        assert!(!dpr_changed(2.0, 2.0));
+        assert!(!dpr_changed(2.0, 2.0 + 1e-6));
     }
 }

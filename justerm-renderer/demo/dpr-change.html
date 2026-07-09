@@ -1,0 +1,71 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>justerm-renderer proof — mid-session devicePixelRatio change (#322)</title>
+<style>
+  body { margin: 0; background: #000; }
+  #c { display: block; image-rendering: pixelated; }
+</style>
+<!--
+  #322 proof: the mid-session DPR-change path that deviceScaleFactor (context-fixed) can't reach.
+  We inject the change via the test-hook `set_device_pixel_ratio(dpr)`. The falsifiable properties:
+    (a) a NON-ASCII (dynamic-cache) glyph — box-drawing U+2500 — stays LIT after the re-bake
+        (the removed rebake_atlas's GAP 1 blanked exactly these);
+    (b) the drawing buffer re-sizes to storedCSS * newDpr (no resize() call, via the stored css_size);
+    (c) the glyph re-rasterises at the higher device resolution (more ink pixels).
+  Build: wasm-pack build --target web --dev --out-dir pkg
+-->
+<canvas id="c" width="64" height="64"></canvas>
+<script type="module">
+  import init, { JustermRenderer } from "../pkg/justerm_renderer.js";
+  await init();
+
+  const r = new JustermRenderer("#c", new Uint32Array(256), 0xffffff, 0x1e1e2e);
+  const cellCssW = r.cell_width(), cellCssH = r.cell_height();
+  const COLS = 4, ROWS = 1;
+  r.resize(COLS * cellCssW, ROWS * cellCssH); // CSS px at the construction DPR (1 in this context)
+
+  // Cell 0: a NON-ASCII normal glyph (box-drawing '─' U+2500) — dynamic cache, not ASCII prebake.
+  // Cells 1-2: a WIDE CJK glyph '中' (U+4E2D) — exercises the wide (2-slot) re-rasterise branch
+  // (`slot_id >= WIDE_BASE`), which a `matches!(Wide)` check would get wrong for a wide emoji.
+  const WIDE_CHAR = 1 << 8, WIDE_SPACER = 1 << 9;
+  const zeros = new Uint32Array(COLS);
+  const cps = new Uint32Array([0x2500, 0x4e2d, 0x4e2d, 0x20]);
+  const flags = new Uint16Array([0, WIDE_CHAR, WIDE_SPACER, 0]);
+  r.apply_frame(COLS, ROWS, zeros, zeros, cps, flags, true);
+  r.render();
+
+  const canvas = document.querySelector("#c");
+  const gl = canvas.getContext("webgl2");
+  // Lit pixels of cell `col` over its device cell (readPixels is bottom-left; row 0 is the top).
+  const cellLit = (col, dpr) => {
+    const dcw = Math.round(cellCssW * dpr), dch = Math.round(cellCssH * dpr);
+    const px = new Uint8Array(dcw * dch * 4);
+    gl.readPixels(col * dcw, canvas.height - dch, dcw, dch, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    let n = 0;
+    for (let i = 0; i < px.length; i += 4) if (px[i] > 150) n++;
+    return n;
+  };
+
+  const before = { box: cellLit(0, 1), wide: cellLit(1, 1), bufferW: canvas.width, bufferH: canvas.height };
+
+  // Inject a mid-session DPR change to 2 (the consumer would do this from a matchMedia listener).
+  r.setDevicePixelRatio(2);
+  r.render();
+
+  const after = { box: cellLit(0, 2), wide: cellLit(1, 2), bufferW: canvas.width, bufferH: canvas.height };
+
+  const checks = {
+    // baseline: both the normal box-drawing and the wide CJK glyph rendered at dpr 1.
+    rendersBefore: before.box > 0 && before.wide > 0,
+    // (a) GAP-1 fix: BOTH dynamic glyphs are still lit after the re-bake (not blanked).
+    nonAsciiSurvivesRebake: after.box > 0,
+    // the WIDE glyph's 2-slot re-rasterise (slot_id >= WIDE_BASE branch) survives too.
+    wideSurvivesRebake: after.wide > 0,
+    // (b) the buffer re-sized to stored-CSS * 2 without a resize() call.
+    bufferResizedToCssX2: after.bufferW === 2 * before.bufferW && after.bufferH === 2 * before.bufferH,
+    // (c) re-rasterised at higher device resolution → more ink pixels (device cell ~4x area).
+    glyphSharpened: after.box > before.box * 1.9 && after.wide > before.wide * 1.9,
+  };
+  window.__proof = { before, after, checks, ok: Object.values(checks).every(Boolean) };
+  window.__done = true;
+</script>

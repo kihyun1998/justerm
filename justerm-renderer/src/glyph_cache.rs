@@ -183,6 +183,17 @@ impl GlyphCache {
 
     /// Get the slot for a glyph, allocating (and evicting the LRU glyph if the region is
     /// full) when it is new. Marks the glyph most-recently-used.
+    /// Every resident dynamic `(grapheme, style) → slot` across both regions — so a DPR re-bake
+    /// (#322) can re-rasterise each cached glyph into the *same* slot in the new atlas, keeping
+    /// instances valid. Iterating does not disturb LRU order. The fixed ASCII fast-path slots are
+    /// excluded (never cached; the re-bake re-prebakes them separately).
+    pub fn entries(&self) -> impl Iterator<Item = (&GlyphKey, GlyphSlot)> {
+        self.normal
+            .iter()
+            .chain(self.wide.iter())
+            .map(|(k, &s)| (k, s))
+    }
+
     pub fn get_or_insert(&mut self, key: GlyphKey, kind: GlyphKind) -> Allocation {
         match kind {
             GlyphKind::Normal => {
@@ -324,6 +335,40 @@ mod tests {
             text: text.to_string(),
             style,
         }
+    }
+
+    #[test]
+    fn entries_lists_resident_dynamic_glyphs_with_their_slots() {
+        // #322: a DPR re-bake re-rasterises the resident glyphs into the same slots, so the cache
+        // must expose (grapheme, style) → slot for both regions. ASCII fast-path slots are NOT
+        // enumerated (the re-bake re-prebakes those separately).
+        let mut c = GlyphCache::new();
+        c.get_or_insert(key("A", FontStyle::Normal), GlyphKind::Normal); // ASCII fast path
+        let star = c.get_or_insert(key("★", FontStyle::Bold), GlyphKind::Normal);
+        let wide = c.get_or_insert(key("한", FontStyle::Normal), GlyphKind::Wide);
+        let emoji = c.get_or_insert(key("😀", FontStyle::Normal), GlyphKind::Emoji); // wide colour emoji
+
+        let got: Vec<(String, FontStyle, u16)> = c
+            .entries()
+            .map(|(k, s)| (k.text.clone(), k.style, s.slot_id()))
+            .collect();
+
+        assert_eq!(
+            got.len(),
+            3,
+            "the three dynamic glyphs, not the ASCII fast path"
+        );
+        assert!(got.contains(&("★".to_string(), FontStyle::Bold, star.slot.slot_id())));
+        assert!(got.contains(&("한".to_string(), FontStyle::Normal, wide.slot.slot_id())));
+        // A *wide* colour emoji is a `GlyphSlot::Emoji` in the WIDE region, so its enumerated
+        // slot_id >= WIDE_BASE — the signal the #322 re-bake keys wide-ness off (a `matches!(Wide)`
+        // check would misread it as a `Normal`/narrow slot and re-rasterise only half of it).
+        let emoji_slot = got.iter().find(|(t, _, _)| t == "😀").unwrap().2;
+        assert_eq!(emoji_slot, emoji.slot.slot_id());
+        assert!(
+            emoji_slot >= WIDE_BASE,
+            "a wide emoji lives in the wide region"
+        );
     }
 
     #[test]
