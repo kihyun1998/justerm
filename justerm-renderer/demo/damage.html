@@ -21,8 +21,8 @@
   const palette = new Uint32Array(256);
   const r = new JustermRenderer("#c", palette, FG, BG);
   const CW = r.cell_width(), CH = r.cell_height();
-  const COLS = 4, ROWS = 3, H = ROWS * CH;
-  r.resize(COLS * CW, H);
+  const COLS = 4, ROWS = 3;
+  r.resize(COLS, ROWS);
 
   const gl = document.querySelector("#c").getContext("webgl2");
   // Lit-pixel count in cell (col,row), read over its exact DEVICE cell (#328).
@@ -80,7 +80,7 @@
   const disjoint = { x20: cellLit(0, 2), y23: cellLit(3, 2), gap21: cellLit(1, 2), gap22: cellLit(2, 2), row0: [cellLit(0, 0), cellLit(1, 0)] };
 
   window.__proof = {
-    dpr: window.devicePixelRatio, cssCell: [CW, CH], gridFit: gridFit(gl, r, COLS, ROWS),
+    dpr: window.devicePixelRatio, deviceCell: [CW, CH], gridFit: gridFit(gl, r, COLS, ROWS),
     full, partial, scrolled, scrolledDown, cluster, disjoint,
     checks: {
       fullRow0Renders: full.r0.every((n) => n > 0),

@@ -16,8 +16,10 @@ const DEMOS = readdirSync(DEMO_DIR)
   .filter((f) => f.endsWith(".html"))
   .sort();
 
-// 1 is the baseline; 1.5 is what a Windows machine at 150 % display scaling reports; 2 is Retina.
-const RATIOS = [1, 1.5, 2];
+// 1 is the baseline; 1.5 is a Windows box at 150 % display scaling; 2 is Retina. 1.1 earns its place:
+// it is browser zoom at 110 %, and it is the density at which every proof's grid used to overhang its
+// drawing buffer (#331). A sweep that skips the awkward ratios proves the easy half of the contract.
+const RATIOS = [1, 1.1, 1.5, 2];
 
 /** Load a proof page and return its `window.__proof` once it has published `__done`. */
 async function runProof(browser, deviceScaleFactor, demo) {
@@ -49,13 +51,14 @@ for (const deviceScaleFactor of RATIOS) {
         expect(failing, `failing checks in ${demo}`).toEqual([]);
         expect(proof.ok, `${demo} reported not-ok`).toBe(true);
 
-        // Reported, not asserted: the grid can overhang the drawing buffer because the CSS cell is
-        // a rounded view of the device cell. Tracked as #331 — surface it loudly instead of letting
-        // a passing suite imply it cannot happen.
-        if (proof.gridFit && !proof.gridFit.fits) {
-          console.warn(
-            `[#331] ${demo} @ dpr ${deviceScaleFactor}: grid ${proof.gridFit.grid} overhangs buffer ${proof.gridFit.buffer}`,
-          );
+        // #331: the drawing buffer IS the grid, so this is an invariant, not a warning. It used to
+        // fail on every demo at dpr 1.1 (grid 1-2 device px wider than the buffer holding it), which
+        // is why it is asserted here rather than left to a `console.warn` nobody reads on a green run.
+        if (proof.gridFit) {
+          expect(
+            proof.gridFit.grid,
+            `${demo} @ dpr ${deviceScaleFactor}: grid must equal the drawing buffer (#331)`,
+          ).toEqual(proof.gridFit.buffer);
         }
       });
     }
@@ -87,10 +90,10 @@ test("the atlas is rasterised in device pixels, not CSS pixels", async ({ browse
       expect(Math.abs(m.deviceCell[axis] - expectedDevice), `device cell @ dpr ${m.dpr}: ${label}`)
         .toBeLessThanOrEqual(1);
 
-      // The CSS cell does NOT track it. It is not perfectly constant either — it is the device cell
-      // divided by the DPR and rounded to a whole CSS pixel, so it drifts by at most one (33/2
-      // reports 17 where dpr 1 reports 16). That rounding is exactly what #331 is about; asserting
-      // strict equality here would assert something untrue.
+      // The CSS cell does NOT track it. It is an unrounded float now (#331), so it still drifts by
+      // up to a pixel — the ink-scan is 16 device px at dpr 1 and 33 (not 32) at dpr 2, i.e. 16.5
+      // CSS px. What matters is that it does not SCALE with the density, which is what a CSS-px
+      // atlas would do.
       expect(Math.abs(m.cssCell[axis] - at1.cssCell[axis]), `css cell @ dpr ${m.dpr}: ${label}`)
         .toBeLessThanOrEqual(1);
     }

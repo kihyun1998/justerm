@@ -26,8 +26,8 @@
   const palette = new Uint32Array(256);
   const r = new JustermRenderer("#c", palette, FG, BG);
   const CW = r.cell_width(), CH = r.cell_height();
-  const COLS = 4, H = CH;
-  r.resize(COLS * CW, H);
+  const COLS = 4;
+  r.resize(COLS, 1);
 
   // Row: [🚀 lead][spacer][A][space]. Default fg/bg refs (0) → white on gray.
   const cps   = new Uint32Array([0x1F680, 0x20,          0x41, 0x20]);
@@ -53,7 +53,7 @@
 
   const lead = scan(0), spacer = scan(1), letter = scan(2), blank = scan(3);
   window.__proof = {
-    dpr: window.devicePixelRatio, cssCell: [CW, CH], gridFit: gridFit(gl, r, COLS, 1),
+    dpr: window.devicePixelRatio, deviceCell: [CW, CH], gridFit: gridFit(gl, r, COLS, 1),
     lead, spacer, letter, blank,
     checks: {
       leadRenders: lead.lit > 0,

@@ -10,7 +10,8 @@
   We inject the change via the test-hook `set_device_pixel_ratio(dpr)`. The falsifiable properties:
     (a) a NON-ASCII (dynamic-cache) glyph — box-drawing U+2500 — stays LIT after the re-bake
         (the removed rebake_atlas's GAP 1 blanked exactly these);
-    (b) the drawing buffer re-sizes to storedCSS * newDpr (no resize() call, via the stored css_size);
+    (b) the drawing buffer is re-derived as storedGrid * the newly measured cell (no resize() call,
+        via the stored grid_size — no CSS length is rounded twice, #331);
     (c) the glyph re-rasterises at the higher device resolution (more ink pixels).
   Build: wasm-pack build --target web --dev --out-dir pkg
 -->
@@ -21,9 +22,8 @@
   await init();
 
   const r = new JustermRenderer("#c", new Uint32Array(256), 0xffffff, 0x1e1e2e);
-  const cellCssW = r.cell_width(), cellCssH = r.cell_height();
   const COLS = 4, ROWS = 1;
-  r.resize(COLS * cellCssW, ROWS * cellCssH); // CSS px at the construction DPR, whatever it is
+  r.resize(COLS, ROWS); // a grid; the buffer follows the cell, whatever the density
 
   // The DPR we start at is whatever the browser reports; the page must prove the same properties
   // from any starting density, so every expectation below is expressed as a ratio to it (#328).
@@ -61,11 +61,10 @@
     nonAsciiSurvivesRebake: after.box > 0,
     // the WIDE glyph's 2-slot re-rasterise (slot_id >= WIDE_BASE branch) survives too.
     wideSurvivesRebake: after.wide > 0,
-    // (b) the buffer re-sized to the STORED CSS box times the new DPR, without a resize() call.
-    //     Expressed against the CSS box rather than as `2 * before`, which only holds at dpr0 = 1.
-    bufferResizedToStoredCssTimesDpr:
-      after.bufferW === Math.round(COLS * cellCssW * DPR1) &&
-      after.bufferH === Math.round(ROWS * cellCssH * DPR1),
+    // (b) the buffer was re-derived from the STORED GRID at the newly measured cell, with no
+    //     resize() call and no CSS length rounded twice (#331). Exact, at any starting density.
+    bufferIsGridTimesNewCell:
+      after.bufferW === COLS * r.cell_width() && after.bufferH === ROWS * r.cell_height(),
     // (c) re-rasterised at higher device resolution → more ink pixels (device cell ~4x the area,
     //     since DPR1 = 2 * dpr0). 1.9 is a deliberately slack lower bound on that 4x.
     glyphSharpened: after.box > before.box * 1.9 && after.wide > before.wide * 1.9,

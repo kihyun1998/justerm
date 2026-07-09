@@ -37,8 +37,8 @@
   const CW = r.cell_width(), CH = r.cell_height();
 
   // 8 cells, 1 row: [─][─][A][中(lead)][spacer][space][A+HIDDEN][A+BLINK]
-  const COLS = 8, H = 120;
-  r.resize(COLS * CW, H);
+  const COLS = 8;
+  r.resize(COLS, 1);
   const cps   = new Uint32Array([0x2500, 0x2500, 0x41, 0x4e2d, 0x20,        0x20, 0x41,   0x41]);
   const flags = new Uint16Array([0,      0,      0,    WIDE_CHAR, WIDE_SPACER, 0,   HIDDEN, BLINK]);
   const zeros = new Uint32Array(COLS).fill(0);
@@ -79,7 +79,7 @@
   const seamBridged = litAt(box, dcw - 1, lineRow) && litAt(box, dcw, lineRow);
 
   window.__proof = {
-    dpr: window.devicePixelRatio, cssCell: [CW, CH], deviceCell: [dcw, dch],
+    dpr: window.devicePixelRatio, deviceCell: [dcw, dch], cssCell: [r.cssCellWidth(), r.cssCellHeight()],
     gridFit: gridFit(gl, r, COLS, 1),
     leadHalf, spacerHalf, letterA, blank, lineRow, seamBridged,
     hiddenLit, blinkOnLit, blinkOffLit, plainOnLit, plainOffLit, hiddenOffLit,
