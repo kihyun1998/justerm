@@ -15,7 +15,7 @@ use web_sys::{HtmlCanvasElement, WebGl2RenderingContext};
 
 use crate::bitmap::{PADDING, is_color_bitmap, split_wide_bitmap};
 use crate::color::gl_rgb;
-use crate::dpr::device_px;
+use crate::dpr::{device_px, dpr_changed};
 use crate::emoji::is_emoji_text;
 use crate::frame::{Frame, INSTANCE_FLOATS, pack_instances};
 use crate::frame_grid::{DamageFrame, FrameGrid};
@@ -154,6 +154,10 @@ pub struct JustermRenderer {
     atlas_cell: (u32, u32),
     /// Drawing-buffer size in device pixels.
     size: (i32, i32),
+    /// The last CSS-px size passed to [`resize`](Self::resize) (#322): a DPR change re-sizes the
+    /// buffer to `css × new_dpr` without the consumer re-passing it (mirrors beamterm's
+    /// `logical_size`). Defaults to the initial canvas size until the first resize.
+    css_size: (i32, i32),
     instances: Vec<f32>,
     instance_count: i32,
     /// The instance floats currently in the GPU buffer — the baseline the next pack diffs against
@@ -287,7 +291,7 @@ impl JustermRenderer {
             gl.uniform_3_f32(Some(&u_default_bg), dbr, dbg, dbb);
         }
 
-        let mut renderer = JustermRenderer {
+        let renderer = JustermRenderer {
             gl,
             canvas,
             dpr,
@@ -305,6 +309,13 @@ impl JustermRenderer {
             cell_size: (cell_w as f32, cell_h as f32),
             atlas_cell: (pad_w, pad_h),
             size,
+            // The initial canvas dims are device px; store their CSS equivalent so a `resize`-less
+            // `set_device_pixel_ratio` fallback stays dimensionally consistent (resize multiplies
+            // css_size back by the DPR). A real consumer calls `resize(css)` before rendering.
+            css_size: (
+                (size.0 as f32 / dpr).round().max(1.0) as i32,
+                (size.1 as f32 / dpr).round().max(1.0) as i32,
+            ),
             instances: Vec::new(),
             instance_count: 0,
             uploaded: Vec::new(),
@@ -441,20 +452,101 @@ impl JustermRenderer {
 
     /// Rasterise + upload the 95 normal-styled ASCII glyphs into their fixed fast-path
     /// slots (`0..=94`), so a cell using the ASCII fast path samples a real bitmap.
-    fn prebake_ascii(&mut self) -> Result<(), JsValue> {
+    fn prebake_ascii(&self) -> Result<(), JsValue> {
+        self.prebake_ascii_into(&self.rasterizer, self.atlas, self.atlas_cell)
+    }
+
+    /// Bake the 95 normal ASCII glyphs into `atlas` using `rasterizer` — parameterised so a DPR
+    /// re-bake (#322) can prime a *new* atlas before committing it (see [`set_device_pixel_ratio`]).
+    ///
+    /// [`set_device_pixel_ratio`]: Self::set_device_pixel_ratio
+    fn prebake_ascii_into(
+        &self,
+        rasterizer: &Rasterizer,
+        atlas: glow::Texture,
+        atlas_cell: (u32, u32),
+    ) -> Result<(), JsValue> {
         for cp in 0x20u32..=0x7E {
             let ch = char::from_u32(cp).unwrap();
-            let rgba = self
-                .rasterizer
-                .rasterize(&ch.to_string(), FontStyle::Normal, false)?;
-            upload_glyph(
-                &self.gl,
-                self.atlas,
-                self.atlas_cell,
-                (cp - 0x20) as u16,
-                &rgba,
-            );
+            let rgba = rasterizer.rasterize(&ch.to_string(), FontStyle::Normal, false)?;
+            upload_glyph(&self.gl, atlas, atlas_cell, (cp - 0x20) as u16, &rgba);
         }
+        Ok(())
+    }
+
+    /// Notify the renderer that `window.devicePixelRatio` changed to `dpr` (#322). The consumer
+    /// drives this from a resolution `matchMedia` listener — a DPR change at the *same* CSS size
+    /// (dragging to another-density monitor) does not fire a resize, so it must be signalled
+    /// explicitly. The atlas is re-baked at the new device size, the current grid re-resolved into
+    /// it (so glyphs stay present and sharpen), and the drawing buffer re-sized to the stored CSS
+    /// size × the new DPR. A no-op if the ratio is unchanged; on error the old atlas is left intact
+    /// and `dpr` unadvanced, so the next notification retries (self-healing).
+    #[wasm_bindgen(js_name = setDevicePixelRatio)]
+    pub fn set_device_pixel_ratio(&mut self, dpr: f32) -> Result<(), JsValue> {
+        if !dpr_changed(self.dpr, dpr) {
+            return Ok(());
+        }
+        // 1. Build a new atlas at the new device size and re-rasterise the CURRENT glyphs into it —
+        //    ASCII fast path + every resident dynamic glyph, each into its SAME slot — all before
+        //    committing. A failure leaves the old atlas / rasteriser / dpr untouched (the next
+        //    notify retries), and the glyph *slots* are preserved, so the existing instances stay
+        //    valid (no re-pack / re-upload). Independent of apply_frame vs apply_damage — both
+        //    populate the glyph cache. The ~tens-of-µs cost (#321) is fine for a rare DPR change.
+        let rasterizer = Rasterizer::new("monospace", FONT_SIZE * dpr)?;
+        let (cell_w, cell_h) = rasterizer.cell_size();
+        let (pad_w, pad_h) = rasterizer.padded_size();
+        let atlas = Self::build_atlas(&self.gl, pad_w, pad_h)?;
+        let rebake = (|| -> Result<(), JsValue> {
+            self.prebake_ascii_into(&rasterizer, atlas, (pad_w, pad_h))?;
+            for (k, slot) in self.cache.entries() {
+                // Two-cell iff the slot lives in the wide region — true for both `Wide` (CJK) and a
+                // *wide* `Emoji` (2-cell colour emoji); a narrow `Emoji` (#297 EmojiNarrow) sits in
+                // the normal region and is one cell. Keying off `slot_id() >= WIDE_BASE` (not
+                // `matches!(Wide)`) is what catches the wide-emoji case.
+                let wide = slot.slot_id() >= WIDE_BASE;
+                let rgba = rasterizer.rasterize(&k.text, k.style, wide)?;
+                let base = slot.slot_id();
+                if wide {
+                    let (left, right) =
+                        split_wide_bitmap(&rgba, 2 * pad_w - 2 * PADDING, pad_w, pad_h);
+                    upload_glyph(&self.gl, atlas, (pad_w, pad_h), base, &left);
+                    upload_glyph(&self.gl, atlas, (pad_w, pad_h), base + 1, &right);
+                } else {
+                    upload_glyph(&self.gl, atlas, (pad_w, pad_h), base, &rgba);
+                }
+            }
+            // The guard band is a fixed pixel count, so its fraction of the (now device-sized)
+            // padded cell changes — re-point the shader at it (see FRAG_SRC). Inside the closure so
+            // a failure here is caught by the delete-on-error guard below (no leaked atlas).
+            let u_padding_frac = uniform(&self.gl, self.program, "u_padding_frac")?;
+            unsafe {
+                self.gl.use_program(Some(self.program));
+                self.gl.uniform_2_f32(
+                    Some(&u_padding_frac),
+                    PADDING as f32 / pad_w as f32,
+                    PADDING as f32 / pad_h as f32,
+                );
+            }
+            Ok(())
+        })();
+        if let Err(e) = rebake {
+            unsafe { self.gl.delete_texture(atlas) }; // don't leak the half-built atlas
+            return Err(e);
+        }
+        // 2. Commit atomically: swap in the new atlas + rasteriser + metrics (KEEP the cache — its
+        //    slots are now valid in the new atlas — and the instances, whose slots are unchanged),
+        //    drop the old atlas, and advance `dpr` only now that the re-bake succeeded.
+        let old_atlas = self.atlas;
+        self.rasterizer = rasterizer;
+        self.atlas = atlas;
+        self.cell_size = (cell_w as f32, cell_h as f32);
+        self.atlas_cell = (pad_w, pad_h);
+        self.dpr = dpr;
+        unsafe { self.gl.delete_texture(old_atlas) };
+        // 3. Re-size the buffer to the stored CSS size at the new DPR (the cells sharpen via the
+        //    new atlas + the new device `cell_size` uniform on the next render).
+        let (cw, ch) = self.css_size;
+        self.resize(cw, ch);
         Ok(())
     }
 
@@ -478,6 +570,7 @@ impl JustermRenderer {
         // Size the GL drawing buffer to device px; the canvas's CSS display box is owned by the
         // consumer / external CSS (as with beamterm's `auto_resize_canvas_css = false`), so the
         // device-px buffer shown in a CSS-px box gives the HiDPI density.
+        self.css_size = (width, height);
         let (dw, dh) = (device_px(width, self.dpr), device_px(height, self.dpr));
         self.canvas.set_width(dw as u32);
         self.canvas.set_height(dh as u32);
