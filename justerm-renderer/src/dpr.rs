@@ -11,6 +11,11 @@ pub fn device_px(css: i32, dpr: f32) -> i32 {
     ((css as f32 * dpr).round() as i32).max(1)
 }
 
+/// Convert a device-pixel length back to CSS pixels at `dpr`.
+pub fn css_px(device: f32, dpr: f32) -> u32 {
+    (device / dpr).round().max(1.0) as u32
+}
+
 /// Whether the DPR changed enough to re-bake the atlas at the new device size (#322). A tiny
 /// float delta is not a change — a re-notification at the same ratio is a no-op.
 pub fn dpr_changed(old: f32, new: f32) -> bool {
@@ -20,6 +25,27 @@ pub fn dpr_changed(old: f32, new: f32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_device_length_converts_back_to_css() {
+        // The inverse of `device_px`: a 200-device-px cell on a dpr-2 display is 100 CSS px.
+        assert_eq!(css_px(200.0, 2.0), 100);
+    }
+
+    #[test]
+    fn a_device_length_does_not_survive_a_round_trip_through_css() {
+        // WHY the renderer must expose its device cell (#328). The cell is measured in device px
+        // (`Rasterizer::cell_size`, ink-scanned at FONT_SIZE * dpr) and handed to the shader as
+        // `u_cell_size`. Reporting it only as a rounded CSS integer loses it for good:
+        //
+        //   10 device px @ dpr 1.5  ->  10 / 1.5 = 6.67  ->  css 7
+        //   7 css px    @ dpr 1.5   ->  7 * 1.5  = 10.5  ->  device 11        (not 10)
+        //
+        // A consumer that re-multiplies the CSS cell — as every proof demo used to — reads a rect
+        // one pixel wide of the cell the shader actually drew.
+        assert_eq!(css_px(10.0, 1.5), 7);
+        assert_eq!(device_px(7, 1.5), 11);
+    }
 
     #[test]
     fn buffer_scales_by_dpr() {

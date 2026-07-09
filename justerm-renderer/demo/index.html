@@ -25,6 +25,7 @@
 <canvas id="c" width="320" height="120"></canvas>
 <script type="module">
   import init, { JustermRenderer } from "../pkg/justerm_renderer.js";
+  import { deviceCell, readCells, countLit, litAt, gridFit } from "./proof.js";
 
   const WIDE_CHAR = 1 << 8, WIDE_SPACER = 1 << 9;
   const BLINK = 1 << 4, HIDDEN = 1 << 6;
@@ -46,20 +47,9 @@
   r.render();
 
   const gl = document.querySelector("#c").getContext("webgl2");
-  // Read a `w`-wide strip at column `x0` over the top row band; return {buf,w}.
-  const readStrip = (x0, w) => {
-    const buf = new Uint8Array(w * CH * 4);
-    gl.readPixels(x0, H - CH, w, CH, gl.RGBA, gl.UNSIGNED_BYTE, buf);
-    return { buf, w };
-  };
-  const litAt = ({ buf, w }, x, y) => buf[(y * w + x) * 4] > 150; // R channel of fg-ish px
-  const countLit = (strip) => {
-    let n = 0;
-    for (let i = 0; i < strip.buf.length; i += 4) if (strip.buf[i] > 150) n++;
-    return n;
-  };
-
-  const cell = (col) => readStrip(col * CW, CW);
+  // Everything below addresses the DEVICE-px buffer via the renderer's own cell (#328).
+  const [dcw, dch] = deviceCell(r);
+  const cell = (col) => readCells(gl, r, col);
   const leadHalf = countLit(cell(3));   // 中 left half
   const spacerHalf = countLit(cell(4)); // 中 right half (the spacer cell)
   const letterA = countLit(cell(2));
@@ -77,19 +67,20 @@
   const hiddenOffLit = countLit(cell(6));
   const plainOffLit = countLit(cell(2));
 
-  // Box connection: read the two '─' cells as one 2*CW strip; find the horizontal-line row
-  // (most lit), then require the seam columns (CW-1 and CW) both lit → the line bridges cells.
-  const box = readStrip(0, 2 * CW);
+  // Box connection: read the two '─' cells as one 2-cell strip; find the horizontal-line row
+  // (most lit), then require the seam columns (dcw-1 and dcw) both lit → the line bridges cells.
+  const box = readCells(gl, r, 0, 0, 2);
   let lineRow = 0, best = -1;
-  for (let y = 0; y < CH; y++) {
+  for (let y = 0; y < dch; y++) {
     let n = 0;
-    for (let x = 0; x < 2 * CW; x++) if (litAt(box, x, y)) n++;
+    for (let x = 0; x < 2 * dcw; x++) if (litAt(box, x, y)) n++;
     if (n > best) { best = n; lineRow = y; }
   }
-  const seamBridged = litAt(box, CW - 1, lineRow) && litAt(box, CW, lineRow);
+  const seamBridged = litAt(box, dcw - 1, lineRow) && litAt(box, dcw, lineRow);
 
   window.__proof = {
-    cell: [CW, CH],
+    dpr: window.devicePixelRatio, cssCell: [CW, CH], deviceCell: [dcw, dch],
+    gridFit: gridFit(gl, r, COLS, 1),
     leadHalf, spacerHalf, letterA, blank, lineRow, seamBridged,
     hiddenLit, blinkOnLit, blinkOffLit, plainOnLit, plainOffLit, hiddenOffLit,
     checks: {

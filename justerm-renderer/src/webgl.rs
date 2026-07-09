@@ -20,7 +20,7 @@ use web_sys::{HtmlCanvasElement, WebGl2RenderingContext};
 use crate::bitmap::{PADDING, is_color_bitmap, split_wide_bitmap};
 use crate::color::gl_rgb;
 use crate::context_loss::{ContextState, DEFAULT_RESTORE_TIMEOUT_MS, FrameAction};
-use crate::dpr::{device_px, dpr_changed};
+use crate::dpr::{css_px, device_px, dpr_changed};
 use crate::emoji::is_emoji_text;
 use crate::frame::{Frame, INSTANCE_FLOATS, pack_instances};
 use crate::frame_grid::{DamageFrame, FrameGrid};
@@ -853,13 +853,33 @@ impl JustermRenderer {
 
     /// Measured cell width in **CSS pixels** — the consumer lays out in CSS and the renderer owns
     /// the DPR (#252/#265). Internally the cell is device px (`cell_size`); this divides it back.
+    ///
+    /// Rounding to a whole CSS pixel is **lossy**: multiplying this back by the DPR does not in
+    /// general recover the device cell. Anything that addresses the drawing buffer — `readPixels`,
+    /// GL interop, a picking rect — must use [`cell_width_device`](Self::cell_width_device) instead
+    /// of re-deriving it from here (#328).
     pub fn cell_width(&self) -> u32 {
-        (self.cell_size.0 / self.dpr).round().max(1.0) as u32
+        css_px(self.cell_size.0, self.dpr)
     }
 
     /// Measured cell height in **CSS pixels** (see [`cell_width`](Self::cell_width)).
     pub fn cell_height(&self) -> u32 {
-        (self.cell_size.1 / self.dpr).round().max(1.0) as u32
+        css_px(self.cell_size.1, self.dpr)
+    }
+
+    /// The cell width in **device pixels** — exactly the `u_cell_size.x` the shader lays the grid
+    /// out with, as ink-scanned by the rasteriser at `FONT_SIZE * dpr` (#328). This is the cell's
+    /// authoritative size; the CSS one is a rounded view of it. xterm.js likewise publishes both
+    /// (`dimensions.device.cell` and `dimensions.css.cell`).
+    #[wasm_bindgen(js_name = cellWidthDevice)]
+    pub fn cell_width_device(&self) -> u32 {
+        self.cell_size.0 as u32
+    }
+
+    /// The cell height in **device pixels** (see [`cell_width_device`](Self::cell_width_device)).
+    #[wasm_bindgen(js_name = cellHeightDevice)]
+    pub fn cell_height_device(&self) -> u32 {
+        self.cell_size.1 as u32
     }
 
     /// Resize to a `width`×`height` **CSS-pixel** box (#252/#265): the renderer sizes the GL

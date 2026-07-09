@@ -19,6 +19,7 @@
 <canvas id="c" width="128" height="32"></canvas>
 <script type="module">
   import init, { JustermRenderer } from "../pkg/justerm_renderer.js";
+  import { readCells, alphaStats, gridFit } from "./proof.js";
   const FG = 0xffffff, BG = 0x3060a0; // white text on a blue-ish background
   await init();
 
@@ -38,33 +39,24 @@
   const apply = () => r.apply_frame(COLS, 1, zeros, zeros, cps, flags, true);
 
   const gl = document.querySelector("#c").getContext("webgl2");
-  // Alpha stats for cell `col`: min/max of the alpha channel over the cell's pixels.
-  const alphaStats = (col) => {
-    const buf = new Uint8Array(CW * CH * 4);
-    gl.readPixels(col * CW, 0, CW, CH, gl.RGBA, gl.UNSIGNED_BYTE, buf);
-    let min = 255, max = 0;
-    for (let i = 3; i < buf.length; i += 4) {
-      if (buf[i] < min) min = buf[i];
-      if (buf[i] > max) max = buf[i];
-    }
-    return { min, max };
-  };
+  // Alpha stats for cell `col`: min/max of the alpha channel over the cell's DEVICE-px pixels.
+  const cellAlpha = (col) => alphaStats(readCells(gl, r, col));
 
   // 1) Default (opaque): background cell fully opaque.
   apply();
   r.render();
-  const opaqueBg = alphaStats(1); // a pure-background cell
+  const opaqueBg = cellAlpha(1); // a pure-background cell
 
   // 2) Translucent: half background opacity.
   r.setBgAlpha(0.5);
   apply();
   r.render();
-  const transBg = alphaStats(1);      // default-bg cell now ~half alpha
-  const transGlyph = alphaStats(0);   // the 'A' cell: strokes stay opaque
-  const transInverse = alphaStats(2); // the INVERSE space: its highlight bg must stay opaque
+  const transBg = cellAlpha(1);      // default-bg cell now ~half alpha
+  const transGlyph = cellAlpha(0);   // the 'A' cell: strokes stay opaque
+  const transInverse = cellAlpha(2); // the INVERSE space: its highlight bg must stay opaque
 
   window.__proof = {
-    cell: [CW, CH],
+    dpr: window.devicePixelRatio, cssCell: [CW, CH], gridFit: gridFit(gl, r, COLS, 1),
     opaqueBg, transBg, transGlyph, transInverse,
     checks: {
       // Default: an uncovered cell is fully opaque.

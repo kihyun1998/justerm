@@ -18,6 +18,7 @@
 <canvas id="c" width="128" height="32"></canvas>
 <script type="module">
   import init, { JustermRenderer } from "../pkg/justerm_renderer.js";
+  import { readCells, gridFit } from "./proof.js";
   const FG = 0xffffff, BG = 0x808080; // white fg, GRAY bg
   const WIDE_CHAR = 1 << 8, WIDE_SPACER = 1 << 9;
   await init();
@@ -39,8 +40,7 @@
   // For cell (col,row) return {lit, coloured}: lit = pixels differing from the gray bg;
   // coloured = pixels whose R/G/B spread exceeds a threshold (emoji palette, never gray text).
   const scan = (col) => {
-    const buf = new Uint8Array(CW * CH * 4);
-    gl.readPixels(col * CW, 0, CW, CH, gl.RGBA, gl.UNSIGNED_BYTE, buf);
+    const { buf } = readCells(gl, r, col); // exact device cell (#328)
     let lit = 0, coloured = 0;
     for (let i = 0; i < buf.length; i += 4) {
       const [rr, gg, bb] = [buf[i], buf[i + 1], buf[i + 2]];
@@ -53,7 +53,8 @@
 
   const lead = scan(0), spacer = scan(1), letter = scan(2), blank = scan(3);
   window.__proof = {
-    cell: [CW, CH], lead, spacer, letter, blank,
+    dpr: window.devicePixelRatio, cssCell: [CW, CH], gridFit: gridFit(gl, r, COLS, 1),
+    lead, spacer, letter, blank,
     checks: {
       leadRenders: lead.lit > 0,
       spacerRenders: spacer.lit > 0,

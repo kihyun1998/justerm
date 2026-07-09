@@ -27,6 +27,7 @@
 <canvas id="c" width="128" height="32"></canvas>
 <script type="module">
   import init, { JustermRenderer } from "../pkg/justerm_renderer.js";
+  import { readCells, countLit, gridFit } from "./proof.js";
   const FG = 0xffffff, BG = 0x1e1e2e;
   await init();
 
@@ -48,17 +49,9 @@
   const killContext = async () => { const e = once("webglcontextlost"); lose.loseContext(); await e; await sleep(0); };
   const reviveContext = async () => { const e = once("webglcontextrestored"); lose.restoreContext(); await e; };
 
-  // readPixels addresses the device-px drawing buffer; cell_width() is CSS px (#252/#265).
-  const litCells = () => {
-    const dw = gl.drawingBufferWidth / COLS, dh = gl.drawingBufferHeight;
-    return Array.from({ length: COLS }, (_, col) => {
-      const buf = new Uint8Array(Math.round(dw) * dh * 4);
-      gl.readPixels(Math.round(col * dw), 0, Math.round(dw), dh, gl.RGBA, gl.UNSIGNED_BYTE, buf);
-      let n = 0;
-      for (let i = 0; i < buf.length; i += 4) if (buf[i] > 150) n++;
-      return n;
-    });
-  };
+  // readPixels addresses the device-px drawing buffer; ask the renderer for its device cell (#328).
+  const litCells = () =>
+    Array.from({ length: COLS }, (_, col) => countLit(readCells(gl, r, col)));
 
   const cps = new Uint32Array([0x57, 0x58, 0x59, 0x5a]); // WXYZ
   const zeros = new Uint32Array(COLS), flags = new Uint16Array(COLS);
@@ -113,6 +106,7 @@
   r.render();
 
   window.__proof = {
+    dpr: window.devicePixelRatio, gridFit: gridFit(gl, r, COLS, 1),
     baseline, suppressed, overdue, stillOnce, lateHeal, staleQuiet, ownDeadlineFires,
     checks: {
       baselineRenders: baseline.every((n) => n > 0),
