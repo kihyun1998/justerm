@@ -76,8 +76,17 @@
   r.render();
   const cluster = { accented: cellLit(0, 0), plain: cellLit(1, 0) };
 
+  // Frame 6 (#263) — Partial changing TWO disjoint cells in one frame: (2,0)='X' and (2,3)='Y'
+  // (two spans, gap at (2,1)/(2,2)). Exercises the dirty-region upload's multi-range path — two
+  // `buffer_sub_data` ranges with a gap and non-zero byte offsets — while the untouched cells
+  // (row 0's cluster from frame 5, and the gap) must persist: proof the partial upload writes
+  // ONLY the changed instances to the right slots, not the whole buffer.
+  r.apply_damage(hdr(1), new Uint32Array([2, 0, 0, 0, 1, 2, 3, 3, 1, 1]), cps([0x58, 0x59]), zerosN(2), zerosN(2), flagsN(2), extraN(2), []);
+  r.render();
+  const disjoint = { x20: cellLit(0, 2), y23: cellLit(3, 2), gap21: cellLit(1, 2), gap22: cellLit(2, 2), row0: [cellLit(0, 0), cellLit(1, 0)] };
+
   window.__proof = {
-    cell: [CW, CH], full, partial, scrolled, scrolledDown, cluster,
+    cell: [CW, CH], full, partial, scrolled, scrolledDown, cluster, disjoint,
     checks: {
       fullRow0Renders: full.r0.every((n) => n > 0),
       fullRestBlank: full.r1c1 === 0 && full.r2 === 0,
@@ -93,6 +102,12 @@
       // #285: the accented cluster cell renders (lit) AND has more ink than the plain 'e' at the
       // same base codepoint — the whole grapheme, not the base, went through apply_damage.
       clusterRendersWholeGrapheme: cluster.plain > 0 && cluster.accented > cluster.plain,
+      // #263 dirty-region upload: two disjoint cells set in one Partial both render (multi-range
+      // buffer_sub_data at non-zero offsets), the gap between them stays blank, and undamaged
+      // cells elsewhere (row 0) persist — the partial upload touched only the changed instances.
+      disjointBothRender: disjoint.x20 > 0 && disjoint.y23 > 0,
+      disjointGapStaysBlank: disjoint.gap21 === 0 && disjoint.gap22 === 0,
+      disjointUndamagedPersists: disjoint.row0.every((n) => n > 0),
     },
   };
   window.__proof.ok = Object.values(window.__proof.checks).every(Boolean);

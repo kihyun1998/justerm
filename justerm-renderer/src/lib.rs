@@ -26,6 +26,7 @@ pub mod glyph_cache;
 pub mod glyph_resolve;
 pub mod mat4;
 pub mod palette;
+pub mod upload;
 
 // The browser/GL glue is wasm32-only (web-sys/glow-web). Host builds skip it so the
 // crate's pure core stays `cargo test`-able without a wasm runtime — the same split
