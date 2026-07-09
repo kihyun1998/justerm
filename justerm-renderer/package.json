@@ -2,10 +2,11 @@
   "name": "@justerm/renderer-proofs",
   "private": true,
   "type": "module",
-  "description": "Headless runner for justerm-renderer's demo/*.html GL proofs. Not the published wasm package — that is produced by wasm-pack into pkg/.",
+  "description": "Headless runner for justerm-renderer's demo/*.html GL proofs. Not the published wasm package \u2014 that is produced by wasm-pack into pkg/.",
   "scripts": {
     "build:wasm": "wasm-pack build --target web --dev --out-dir pkg",
     "serve": "node scripts/serve.mjs",
+    "test:unit": "node --test e2e/proof.test.mjs",
     "test:proofs": "pnpm build:wasm && playwright test"
   },
   "devDependencies": {

@@ -18,7 +18,7 @@
 <canvas id="c" width="128" height="32"></canvas>
 <script type="module">
   import init, { JustermRenderer } from "../pkg/justerm_renderer.js";
-  import { readCells, gridFit } from "./proof.js";
+  import { readCells, hasColourEmojiFont, gridFit } from "./proof.js";
   const FG = 0xffffff, BG = 0x808080; // white fg, GRAY bg
   const WIDE_CHAR = 1 << 8, WIDE_SPACER = 1 << 9;
   await init();
@@ -52,10 +52,15 @@
   };
 
   const lead = scan(0), spacer = scan(1), letter = scan(2), blank = scan(3);
+  const colourEmojiFontPresent = hasColourEmojiFont(); // #334 precondition, see proof.js
   window.__proof = {
     dpr: window.devicePixelRatio, deviceCell: [CW, CH], gridFit: gridFit(gl, r, COLS, 1),
     lead, spacer, letter, blank,
+    colourEmojiFontPresent,
     checks: {
+      // The colour checks below need a colour-emoji font in the runtime; name that when it is
+      // missing rather than reporting a mystery pixel failure (#334).
+      colourEmojiFontPresent,
       leadRenders: lead.lit > 0,
       spacerRenders: spacer.lit > 0,
       // The emoji renders in COLOUR across BOTH halves (not grayscale via the fg).

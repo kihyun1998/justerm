@@ -949,6 +949,9 @@ impl JustermRenderer {
     /// Tracked limits (surfaced by adversarial passes, not silent): colour emoji (#284) and
     /// ZWJ/grapheme clusters (#285) are separate slices; a frame with more distinct glyphs
     /// than a region's capacity, or a rasterise failure, can strand a slot (#280).
+    // Seven typed-array / scalar columns at the wasm-bindgen boundary; each is a distinct JS view
+    // that cannot be grouped without an AoS rewrite breaking the zero-copy SoA (as on `apply_damage`).
+    #[allow(clippy::too_many_arguments)]
     pub fn apply_frame(
         &mut self,
         cols: u32,
@@ -1209,8 +1212,11 @@ impl JustermRenderer {
             let proj = Mat4::orthographic_from_size(self.size.0 as f32, self.size.1 as f32);
             self.gl
                 .uniform_matrix_4_f32_slice(Some(&self.u_projection), false, &proj.data);
-            self.gl
-                .uniform_2_f32(Some(&self.u_cell_size), self.cell_size.0 as f32, self.cell_size.1 as f32);
+            self.gl.uniform_2_f32(
+                Some(&self.u_cell_size),
+                self.cell_size.0 as f32,
+                self.cell_size.1 as f32,
+            );
             self.gl.uniform_1_f32(Some(&self.u_bg_alpha), self.bg_alpha);
 
             self.gl

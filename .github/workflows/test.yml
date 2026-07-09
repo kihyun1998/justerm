@@ -28,6 +28,68 @@ jobs:
       - name: Test
         run: cargo test --workspace
 
+  # justerm-renderer is EXCLUDED from the root workspace (its web-sys/glow deps are wasm32-only), so
+  # `cargo test --workspace` above never touches it — for slices #259..#340 nothing gated it at all
+  # (#333). Its pure modules test on the host; its GL/wasm layer only compiles for wasm32.
+  renderer:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - name: Add wasm32 target
+        run: rustup target add wasm32-unknown-unknown
+      - name: Format
+        run: cargo fmt --manifest-path justerm-renderer/Cargo.toml --check
+      - name: Test (host — pure modules)
+        run: cargo test --manifest-path justerm-renderer/Cargo.toml
+      - name: Clippy (wasm32 — the GL layer is 0-compile on host)
+        run: cargo clippy --manifest-path justerm-renderer/Cargo.toml --target wasm32-unknown-unknown --all-targets -- -D warnings
+      - name: Build (wasm32)
+        run: cargo build --manifest-path justerm-renderer/Cargo.toml --target wasm32-unknown-unknown
+
+  # The `demo/*.html` readPixels proofs (#328), swept across device pixel ratios (#331). Separate from
+  # `renderer` on purpose: this job depends on a browser download, SwiftShader, and the runner's fonts,
+  # so a flake here must not redden the deterministic cargo gate next to it — a gate people learn to
+  # ignore is not a gate. Chromium only: xterm.js skips firefox/webkit on Linux because "webgl2 is
+  # often not supported in headless firefox on Linux" (addon-webgl/test/WebglRenderer.test.ts).
+  #
+  # The emoji proofs need a colour-emoji font, and it is installed TWICE OVER: GitHub's ubuntu images
+  # list `fonts-noto-color-emoji` in `toolsets/toolset-2404.json` apt.common_packages, and Playwright's
+  # own `install --with-deps` unconditionally apt-installs its `tools` group — which contains
+  # `fonts-noto-color-emoji`, `fonts-liberation` (box drawing) and `fonts-wqy-zenhei` (CJK) —
+  # regardless of which browser is named (playwright-core registry/index.ts `targets.add('tools')`).
+  # `demo/emoji*.html` still assert `colourEmojiFontPresent`, so a font-less runner fails by name
+  # rather than through a baffling pixel assertion (#334).
+  #
+  # No WebGL flags are needed: Playwright injects `--enable-unsafe-swiftshader` into Chromium's default
+  # args (chromium.ts), which is what lets headless fall back to SwiftShader for WebGL2.
+  renderer-proofs:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: justerm-renderer
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - name: Add wasm32 target
+        run: rustup target add wasm32-unknown-unknown
+      - name: Install wasm-pack
+        run: cargo install wasm-pack --locked
+      # No new third-party action (same reasoning as wasm-pack / cargo-fuzz above): the runner image
+      # already ships Node, and pnpm is one npm install away.
+      - name: Install pnpm
+        run: npm install -g pnpm@10
+        working-directory: .
+      - name: Install deps
+        run: pnpm install --frozen-lockfile
+      # The pixel helpers all nine proofs read their evidence through. Fast, browserless.
+      - name: Unit (demo/proof.js helpers)
+        run: pnpm run test:unit
+      - name: Install Playwright chromium
+        run: pnpm exec playwright install --with-deps chromium
+      - name: Proofs (dpr 1 / 1.1 / 1.5 / 2)
+        run: pnpm run test:proofs
+
   # The WASM decoder (#34, ADR-0008): build both wasm-pack targets and run the JS-boundary tests on
   # the wasm32 target. Separate from `test` because it needs the wasm32 target + wasm-pack, and the
   # tests/web.rs cases call js_sys (they self-exclude off-wasm via #![cfg(target_arch = "wasm32")]).
