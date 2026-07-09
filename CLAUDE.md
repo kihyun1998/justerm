@@ -169,4 +169,11 @@ CI 의 `supply-chain` 게이트는 **just-shield**(같은 소유자=first-party,
 6. **게이트 & PR/머지.** 크레이트별 게이트 *전부*(사각 포함):
    - **core/wasm** → `cargo test --workspace` + `cargo fmt --all --check` + `cargo clippy --workspace --all-targets` + `cargo check --manifest-path fuzz/Cargo.toml`(워크스페이스 밖) + `cargo build -p justerm-wasm-decode --tests --target wasm32-unknown-unknown`(wasm32-only `web.rs` 는 host 에서 0컴파일 — *런타임 단언*은 브라우저 CI 에서만; 버전-핀 테스트를 host·wasm 양쪽 갱신).
    - **web** → `pnpm typecheck` + 전체 vitest + `pnpm demo` (+ a11y/UI 관찰가능 변경이면 `pnpm test:e2e`; **focus·scroll·reveal 같은 시각/DOM 부수효과면 e2e 가 그 DOM 상태(`document.activeElement`·`scrollTop`)까지 단언** — announce/signal 만 보고 넘기면 미검증 갭, Step 4 참조). e2e 는 CI 미배선(로컬 게이트) — 브라우저 설치 필요.
+   - **renderer(justerm-renderer)** → 워크스페이스 *밖*이라 `--workspace` 가 손도 안 댄다(#333). 전부 수동:
+     `cargo test --manifest-path justerm-renderer/Cargo.toml`(순수층) +
+     `cargo clippy --manifest-path justerm-renderer/Cargo.toml --target wasm32-unknown-unknown --all-targets` +
+     `cargo build --manifest-path justerm-renderer/Cargo.toml --target wasm32-unknown-unknown`(GL/wasm 층은 host 에서 0컴파일) +
+     **GL 층을 건드렸으면 `cd justerm-renderer && pnpm run build:wasm && pnpm exec playwright test`** — `demo/*.html` 의
+     `window.__proof.ok` 를 dpr 1/1.5/2 로 쓸어 담는 헤드리스 러너(#328). 이것도 CI 미배선(로컬 게이트).
+     *데모를 dpr 1 에서 눈으로 보고 넘기지 말 것*: DPR≠1 에서만 깨지는 좌표 버그가 dpr 1 머신에선 전부 초록이었다(#328 이 그 실증).
    - 브랜치 → `feat(<scope>): … (#issue)`(Co-Authored-By 금지) → squash PR(`Closes #issue`) → `test`/`wasm` CI 그린 확인.

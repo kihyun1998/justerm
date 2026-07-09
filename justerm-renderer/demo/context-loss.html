@@ -21,6 +21,7 @@
 <canvas id="c" width="256" height="32"></canvas>
 <script type="module">
   import init, { JustermRenderer } from "../pkg/justerm_renderer.js";
+  import { deviceCell, readCells, countLit, gridFit } from "./proof.js";
   const FG = 0xffffff, BG = 0x1e1e2e;
   await init();
 
@@ -37,21 +38,9 @@
   const lose = gl.getExtension("WEBGL_lose_context");
   if (!lose) throw new Error("WEBGL_lose_context unavailable — cannot prove #269");
 
-  // `cell_width`/`cell_height` are CSS px (#252/#265) but `readPixels` addresses the DEVICE-px
-  // drawing buffer, so derive the device cell from the buffer itself rather than assuming DPR 1.
-  // The restore re-reads the live DPR, so re-derive after it too.
-  const deviceCell = () => [gl.drawingBufferWidth / COLS, gl.drawingBufferHeight];
-
-  // Lit-pixel count of cell `col` (single row, so the whole buffer height).
-  const cellLit = (col) => {
-    const [dw, dh] = deviceCell();
-    const [x, w] = [Math.round(col * dw), Math.round(dw)];
-    const buf = new Uint8Array(w * dh * 4);
-    gl.readPixels(x, 0, w, dh, gl.RGBA, gl.UNSIGNED_BYTE, buf);
-    let n = 0;
-    for (let i = 0; i < buf.length; i += 4) if (buf[i] > 150) n++;
-    return n;
-  };
+  // Lit-pixel count of cell `col`, over the renderer's exact device cell. Re-read every call: the
+  // restore re-reads the live DPR and can re-measure the cell (#328).
+  const cellLit = (col) => countLit(readCells(gl, r, col));
   const row = () => Array.from({ length: COLS }, (_, i) => cellLit(i));
   const once = (event) => new Promise((res) => canvas.addEventListener(event, res, { once: true }));
 
@@ -111,7 +100,8 @@
   const steady = row();
 
   window.__proof = {
-    cssCell: [CW, CH], deviceCell: deviceCell(), dpr: window.devicePixelRatio,
+    cssCell: [CW, CH], deviceCell: deviceCell(r), dpr: window.devicePixelRatio,
+    gridFit: gridFit(gl, r, COLS, 1),
     baseline, recovered, steady, lostFlag, restoredFlag,
     checks: {
       // Sanity: every cell — ASCII, dynamic narrow, and both halves of the wide pair — has ink

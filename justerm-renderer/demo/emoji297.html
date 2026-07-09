@@ -28,6 +28,7 @@
 <canvas id="c" width="384" height="32"></canvas>
 <script type="module">
   import init, { JustermRenderer } from "../pkg/justerm_renderer.js";
+  import { readCells, gridFit } from "./proof.js";
   const FG = 0xff0000, BG = 0x808080; // RED fg, GRAY bg — the discriminator
   const WIDE_CHAR = 1 << 8, WIDE_SPACER = 1 << 9;
   await init();
@@ -58,9 +59,19 @@
   r.render();
 
   const gl = document.querySelector("#c").getContext("webgl2");
+  // "Coloured" and "red-dominant" MUST share one threshold. An antialiased edge of the red
+  // foreground over the gray background at coverage `a` has r = 128 + 127a and g = b = 128 - 128a,
+  // so its spread (hi - lo) and its red dominance (r - max(g, b)) are BOTH exactly 255a — the same
+  // number. Judging them against different cutoffs invents a band of pixels (coverage ~10..16 %)
+  // that are "coloured but not red-dominant", which is impossible for flat red text. That band
+  // grows with resolution, and at dpr 2 it made the plain-'A' control look like a colour emoji.
+  //
+  // The equality needs BOTH an achromatic background (so g === b and `hi - lo` reduces to
+  // `r - max(g, b)`) and a pure-red foreground. That is why FG/BG above are exactly 0xff0000 and
+  // 0x808080; changing either breaks the discriminator, not just its thresholds.
+  const CHROMA = 24;
   const scan = (col) => {
-    const buf = new Uint8Array(CW * CH * 4);
-    gl.readPixels(col * CW, 0, CW, CH, gl.RGBA, gl.UNSIGNED_BYTE, buf);
+    const { buf } = readCells(gl, r, col); // exact device cell (#328)
     let lit = 0, coloured = 0, redDom = 0, maxSpread = 0;
     for (let i = 0; i < buf.length; i += 4) {
       const rr = buf[i], gg = buf[i + 1], bb = buf[i + 2];
@@ -70,9 +81,9 @@
       lit++;
       const spread = hi - lo;
       if (spread > maxSpread) maxSpread = spread;
-      if (spread > 24) coloured++;
-      // Red-dominant = foreground tint: red channel clearly above the other two.
-      if (rr - Math.max(gg, bb) > 40) redDom++;
+      if (spread > CHROMA) coloured++;
+      // Red-dominant = foreground tint: red channel above the other two by the same margin.
+      if (rr - Math.max(gg, bb) > CHROMA) redDom++;
     }
     return { lit, coloured, redDom, maxSpread };
   };
@@ -94,7 +105,7 @@
   const narrowColoured = narrowProbes.filter((k) => colourEmojiPath(cells[k]));
 
   window.__proof = {
-    cell: [CW, CH],
+    dpr: window.devicePixelRatio, cssCell: [CW, CH], gridFit: gridFit(gl, r, COLS, 1),
     cells,
     checks: {
       // Case 2: achromatic emoji take the emoji path (NOT red) despite is_color_bitmap missing them…
