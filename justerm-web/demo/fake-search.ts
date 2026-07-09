@@ -22,8 +22,17 @@ export interface FakeSearchOptions {
 }
 
 const WORD = /\w/;
+// Out of range means "no character there", and no character is not a word character - so `?? ""` says
+// exactly what a bound check means. It never actually fires: `start` is always a match index and `end`
+// is `start + len - 1` with `len >= 1`, so the `start === 0` / `end === text.length - 1`
+// short-circuits already cover precisely the two indices that would fall outside.
+//
+// It is not a pure formality either. `WORD.test(undefined)` coerces to `"undefined"` and returns TRUE,
+// so had the guard ever failed, the old code would have called the missing character word-y. `?? ""`
+// gives the opposite - and correct - answer.
 const isWordBounded = (text: string, start: number, end: number): boolean =>
-  (start === 0 || !WORD.test(text[start - 1])) && (end === text.length - 1 || !WORD.test(text[end + 1]));
+  (start === 0 || !WORD.test(text[start - 1] ?? "")) &&
+  (end === text.length - 1 || !WORD.test(text[end + 1] ?? ""));
 
 export class FakeSearchEngine {
   private matches: Match[] = [];

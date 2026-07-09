@@ -77,6 +77,12 @@ jobs:
         run: cargo install wasm-pack --locked
       # No new third-party action (same reasoning as wasm-pack / cargo-fuzz above): the runner image
       # already ships Node, and pnpm is one npm install away.
+      #
+      # The `@10` is load-bearing. pnpm 10 only WARNS about the dependency lifecycle scripts it skips
+      # (`Ignored build scripts: esbuild, @swc/core`); pnpm 11 defaults `strictDepBuilds` to true and
+      # turns that warning into `ERR_PNPM_IGNORED_BUILDS`, killing the install. Skipping them is
+      # harmless — esbuild resolves `@esbuild/linux-x64` from optionalDependencies at runtime, not
+      # from its postinstall — but `pnpm@latest` would not be.
       - name: Install pnpm
         run: npm install -g pnpm@10
         working-directory: .
@@ -89,6 +95,52 @@ jobs:
         run: pnpm exec playwright install --with-deps chromium
       - name: Proofs (dpr 1 / 1.1 / 1.5 / 2)
         run: pnpm run test:proofs
+
+  # justerm-web is a pnpm/TypeScript package with no cargo gate to hide behind, and until #341 nothing
+  # in CI ran its typecheck or its 387 vitest cases. `tsconfig.json` now also covers `demo/` and `e2e/`
+  # — the code that PROVES the a11y contract was itself never type-checked.
+  #
+  # It consumes the PUBLISHED justerm-wasm-decode (not a workspace link), so this job needs no Rust.
+  web:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: justerm-web
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      # No new third-party action, and the `@10` pin matters — see `renderer-proofs` above.
+      - name: Install pnpm
+        run: npm install -g pnpm@10
+        working-directory: .
+      - name: Install deps
+        run: pnpm install --frozen-lockfile
+      - name: Typecheck (src + test + demo + e2e)
+        run: pnpm run typecheck
+      - name: Test (vitest)
+        run: pnpm run test
+
+  # The a11y e2e (#160/#161): drives the real widget + real wasm decoder in headless Chromium and
+  # asserts the aria-live announce + signal paths a screen reader would consume. Split from `web` for
+  # the same reason `renderer-proofs` is split from `renderer`: a browser flake must not redden the
+  # fast, deterministic gate beside it.
+  web-e2e:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: justerm-web
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      # The `@10` pin matters — see `renderer-proofs` above.
+      - name: Install pnpm
+        run: npm install -g pnpm@10
+        working-directory: .
+      - name: Install deps
+        run: pnpm install --frozen-lockfile
+      - name: Install Playwright chromium
+        run: pnpm exec playwright install --with-deps chromium
+      # `webServer` in playwright.config.ts starts `pnpm demo` (vite), so the real decoder runs.
+      - name: E2E (a11y, input, wheel, fit)
+        run: pnpm run test:e2e
 
   # The WASM decoder (#34, ADR-0008): build both wasm-pack targets and run the JS-boundary tests on
   # the wasm32 target. Separate from `test` because it needs the wasm32 target + wasm-pack, and the

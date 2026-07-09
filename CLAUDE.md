@@ -169,7 +169,7 @@ CI 의 `supply-chain` 게이트는 **just-shield**(같은 소유자=first-party,
 5. **Adversarial completeness 패스 (subagent 2렌즈) — 성질로 판단.** 변경이 *내 숨은상태 enumeration 이 불완전할 수 있는* 성질(엣지/상태 다수, VT-semantics, 상호작용)이면 **필수**: 독립 비평가를 *서로 다른 렌즈*(① 이 repo 형제 ② 참조구현 xterm/alacritty)로 병렬 → 갭 surfacing 또는 *수렴 증명*. 반대로 *닫힌 표면*(컴파일러+round-trip 이 완전성을 exhaustive 하게 게이트하는 순수 기계적 변경)이면 생략 가능하나 **그 판단을 명시 기록**(생략 자체가 침묵 갭이 되지 않게). "web 이냐 core 냐"가 아니라 *enumeration 리스크가 있냐* 로 건다 — demo/spike 가 갭을 *연달아* 잡으면 그게 트리거.
 6. **게이트 & PR/머지.** 크레이트별 게이트 *전부*(사각 포함):
    - **core/wasm** → `cargo test --workspace` + `cargo fmt --all --check` + `cargo clippy --workspace --all-targets` + `cargo check --manifest-path fuzz/Cargo.toml`(워크스페이스 밖) + `cargo build -p justerm-wasm-decode --tests --target wasm32-unknown-unknown`(wasm32-only `web.rs` 는 host 에서 0컴파일 — *런타임 단언*은 브라우저 CI 에서만; 버전-핀 테스트를 host·wasm 양쪽 갱신).
-   - **web** → `pnpm typecheck` + 전체 vitest + `pnpm demo` (+ a11y/UI 관찰가능 변경이면 `pnpm test:e2e`; **focus·scroll·reveal 같은 시각/DOM 부수효과면 e2e 가 그 DOM 상태(`document.activeElement`·`scrollTop`)까지 단언** — announce/signal 만 보고 넘기면 미검증 갭, Step 4 참조). e2e 는 CI 미배선(로컬 게이트) — 브라우저 설치 필요.
+   - **web** → `pnpm typecheck` + 전체 vitest + `pnpm demo` (+ a11y/UI 관찰가능 변경이면 `pnpm test:e2e`; **focus·scroll·reveal 같은 시각/DOM 부수효과면 e2e 가 그 DOM 상태(`document.activeElement`·`scrollTop`)까지 단언** — announce/signal 만 보고 넘기면 미검증 갭, Step 4 참조). typecheck 는 `src`+`test`+**`demo`+`e2e`** 를 본다(#341 이전엔 src/test 만이라, a11y 를 증명하는 e2e 코드가 타입검사 밖이었다). **#341 부터 CI 배선됨**(`web`, `web-e2e` 잡) — 로컬 e2e 는 브라우저 설치 필요.
    - **renderer(justerm-renderer)** → 워크스페이스 *밖*이라 `cargo fmt --all` 도 `--workspace` 도 **renderer 파일을 0개 방문한다**(#333 이 그 실증: 게이트를 켜자 미포맷 코드가 나옴). 전부 별도 지정:
      `cargo fmt --manifest-path justerm-renderer/Cargo.toml --check` +
      `cargo test --manifest-path justerm-renderer/Cargo.toml`(순수층) +
@@ -179,4 +179,4 @@ CI 의 `supply-chain` 게이트는 **just-shield**(같은 소유자=first-party,
      **GL 층을 건드렸으면 `pnpm run test:proofs`** — `demo/*.html` 의 `window.__proof.ok` 를 dpr 1/1.1/1.5/2 로
      쓸어 담는 헤드리스 러너(#328/#331). **#333 부터 CI 에도 배선됨**(`renderer-proofs` 잡).
      *데모를 dpr 1 에서 눈으로 보고 넘기지 말 것*: DPR≠1 에서만 깨지는 좌표 버그가 dpr 1 머신에선 전부 초록이었다(#328 이 그 실증).
-   - 브랜치 → `feat(<scope>): … (#issue)`(Co-Authored-By 금지) → squash PR(`Closes #issue`) → `test`/`wasm`/`renderer`/`renderer-proofs` CI 그린 확인.
+   - 브랜치 → `feat(<scope>): … (#issue)`(Co-Authored-By 금지) → squash PR(`Closes #issue`) → `test`/`wasm`/`renderer`/`renderer-proofs`/`web`/`web-e2e` CI 그린 확인.
