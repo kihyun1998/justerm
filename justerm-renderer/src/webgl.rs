@@ -8,7 +8,7 @@
 //! double-width glyphs (#268: a wide glyph splits across two atlas slots / two grid cells).
 //! ASCII (`0x20..=0x7E`) is pre-rasterised. Colour emoji (#284) + clusters (#285) follow.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use glow::HasContext;
@@ -19,7 +19,7 @@ use web_sys::{HtmlCanvasElement, WebGl2RenderingContext};
 
 use crate::bitmap::{PADDING, is_color_bitmap, split_wide_bitmap};
 use crate::color::gl_rgb;
-use crate::context_loss::{ContextState, FrameAction};
+use crate::context_loss::{ContextState, DEFAULT_RESTORE_TIMEOUT_MS, FrameAction};
 use crate::dpr::{device_px, dpr_changed};
 use crate::emoji::is_emoji_text;
 use crate::frame::{Frame, INSTANCE_FLOATS, pack_instances};
@@ -126,22 +126,86 @@ void main() {
 struct ContextLossHandler {
     canvas: HtmlCanvasElement,
     state: Rc<RefCell<ContextState>>,
+    /// Consumer callback for "the context did not come back within the deadline" (#327). `None`
+    /// until injected, and cleared on `Drop` so a deadline that outlives the renderer finds nobody
+    /// to call — the reason no `clearTimeout` is needed (see [`arm_restore_deadline`]).
+    notify: Rc<RefCell<Option<js_sys::Function>>>,
+    /// Consumer-injected grace period, in ms (ADR-0017: the renderer times, the consumer decides
+    /// how long). Read when a loss arms its deadline.
+    timeout_ms: Rc<Cell<i32>>,
     // Kept alive for as long as the listeners are attached; `Drop` detaches them.
     on_lost: Closure<dyn FnMut(web_sys::Event)>,
     on_restored: Closure<dyn FnMut(web_sys::Event)>,
 }
 
+/// Schedule the restore deadline for the loss episode `epoch` (#327).
+///
+/// The timer is **never cancelled**. `clearTimeout` would work — a merely-queued timer task aborts
+/// when it finds its id gone from the map (HTML spec, timer initialization steps), which is how
+/// xterm.js does it — but cancelling means *owning* the `Closure`, and the consumer's notification
+/// handler is exactly the place that destroys the renderer (VSCode's `onContextLoss` calls
+/// `_disposeOfWebglRenderer()`). Dropping the handler would free the very closure whose body is
+/// running. JS gets away with this because its closures are garbage-collected; we cannot.
+///
+/// So the closure is handed to JS instead (`Closure::once_into_js` keeps it alive through an
+/// internal `Rc` cycle that the single invocation breaks, freeing it *after* the body returns), and
+/// every deadline that has nothing to say identifies itself: `on_restore_deadline` rejects it if the
+/// context came back, if we already notified, or if it belongs to an earlier loss. A stale deadline
+/// costs one no-op task.
+///
+/// The `epoch` is what makes this safe, and it also makes us stricter than xterm.js, whose single
+/// `_contextRestorationTimeout` handle is overwritten without being cleared when a second
+/// `webglcontextlost` arrives with no restore between (`WebglRenderer.ts:131`) — both timers then
+/// fire and its `onContextLoss` is delivered twice. Ours notifies once per loss, whatever the order.
+fn arm_restore_deadline(
+    state: &Rc<RefCell<ContextState>>,
+    notify: &Rc<RefCell<Option<js_sys::Function>>>,
+    epoch: u32,
+    timeout_ms: i32,
+) {
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    let (state, notify) = (Rc::clone(state), Rc::clone(notify));
+    let deadline = Closure::once_into_js(move || {
+        // Release the borrow before calling out to JS: the consumer's handler runs re-entrantly and
+        // may touch the renderer (dispose it, poll `isRestoreOverdue`).
+        let should_notify = state.borrow_mut().on_restore_deadline(epoch);
+        if !should_notify {
+            return;
+        }
+        // Clone the callback out for the same reason — the handler is free to replace it.
+        let callback = notify.borrow().clone();
+        if let Some(callback) = callback {
+            let _ = callback.call0(&JsValue::NULL);
+        }
+    });
+    let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(
+        deadline.unchecked_ref(),
+        timeout_ms,
+    );
+}
+
 impl ContextLossHandler {
     fn new(canvas: &HtmlCanvasElement) -> Result<Self, JsValue> {
         let state = Rc::new(RefCell::new(ContextState::default()));
+        let notify: Rc<RefCell<Option<js_sys::Function>>> = Rc::new(RefCell::new(None));
+        let timeout_ms = Rc::new(Cell::new(DEFAULT_RESTORE_TIMEOUT_MS));
 
         let lost_state = Rc::clone(&state);
+        let lost_notify = Rc::clone(&notify);
+        let lost_timeout = Rc::clone(&timeout_ms);
         let on_lost = Self::listen(canvas, "webglcontextlost", move |event: web_sys::Event| {
             // Without `preventDefault()` the browser never fires `webglcontextrestored` — the
             // context stays dead forever. Every reference implementation does this first
             // (beamterm context_loss.rs, xterm.js WebglRenderer.ts).
             event.prevent_default();
-            lost_state.borrow_mut().on_lost();
+            let epoch = {
+                let mut state = lost_state.borrow_mut();
+                state.on_lost();
+                state.loss_epoch()
+            };
+            arm_restore_deadline(&lost_state, &lost_notify, epoch, lost_timeout.get());
         })?;
 
         let restored_state = Rc::clone(&state);
@@ -152,6 +216,8 @@ impl ContextLossHandler {
         Ok(Self {
             canvas: canvas.clone(),
             state,
+            notify,
+            timeout_ms,
             on_lost,
             on_restored,
         })
@@ -170,6 +236,12 @@ impl ContextLossHandler {
 
 impl Drop for ContextLossHandler {
     fn drop(&mut self) {
+        // A restore deadline may still be pending in the browser and we do not cancel it (see
+        // `arm_restore_deadline`), so disarm it at the other end: with no callback there is nobody
+        // to notify, and the `Rc`s it captured keep its state alive until it runs once and frees
+        // itself. Same observable contract as xterm.js's `clearTimeout` on dispose
+        // (WebglRenderer.ts:161-163).
+        *self.notify.borrow_mut() = None;
         for (event, closure) in [
             ("webglcontextlost", self.on_lost.as_ref()),
             ("webglcontextrestored", self.on_restored.as_ref()),
@@ -662,6 +734,37 @@ impl JustermRenderer {
     #[wasm_bindgen(js_name = isContextLost)]
     pub fn is_context_lost(&self) -> bool {
         self.ctx_loss.state.borrow().is_lost()
+    }
+
+    /// Register a callback invoked when a lost context has not been restored within the deadline
+    /// (#327) — xterm.js's `onContextLoss`. It fires **at most once per loss**, and only if the
+    /// context is still lost when the deadline lands.
+    ///
+    /// This is a *warning*, not a verdict: Chromium keeps re-attempting a real context restore once
+    /// a second indefinitely, so a `webglcontextrestored` may still arrive afterwards, and the
+    /// renderer will rebuild and repaint as usual. What to do in the meantime is consumer policy
+    /// (ADR-0017) — VSCode tears its WebGL renderer down and falls back to a DOM one. The callback
+    /// may safely destroy this renderer.
+    #[wasm_bindgen(js_name = setOnContextLoss)]
+    pub fn set_on_context_loss(&mut self, callback: js_sys::Function) {
+        *self.ctx_loss.notify.borrow_mut() = Some(callback);
+    }
+
+    /// Override how long a lost context is given to come back before
+    /// [`setOnContextLoss`](Self::set_on_context_loss) fires. Defaults to
+    /// [`DEFAULT_RESTORE_TIMEOUT_MS`] (3000 ms, xterm.js parity). Applies to the *next* loss; a
+    /// deadline already armed keeps the duration it was armed with. Negative values clamp to 0.
+    #[wasm_bindgen(js_name = setContextRestoreTimeoutMs)]
+    pub fn set_context_restore_timeout_ms(&mut self, ms: i32) {
+        self.ctx_loss.timeout_ms.set(ms.max(0));
+    }
+
+    /// Whether a lost context has missed its restore deadline (#327). The poll counterpart of
+    /// [`setOnContextLoss`](Self::set_on_context_loss), for a consumer that attaches late. Cleared
+    /// by a late `webglcontextrestored`, which also heals the renderer.
+    #[wasm_bindgen(js_name = isRestoreOverdue)]
+    pub fn is_restore_overdue(&self) -> bool {
+        self.ctx_loss.state.borrow().restore_overdue()
     }
 
     /// Recreate every GPU resource the lost context destroyed (#269), then refill the instance
