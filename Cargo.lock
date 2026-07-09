@@ -342,7 +342,7 @@ dependencies = [
 
 [[package]]
 name = "justerm-core"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "bitflags",
  "criterion",
@@ -355,7 +355,7 @@ dependencies = [
 
 [[package]]
 name = "justerm-wasm-decode"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "js-sys",
  "justerm-core",
