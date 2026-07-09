@@ -53,8 +53,6 @@ jobs:
 
       # The crate is dual-licensed; copy the texts into the package (npm auto-includes LICENSE*) so
       # the npm artifact ships them, without duplicating the files in the source tree.
-      - name: Include licenses in the package
-        run: cp LICENSE-MIT LICENSE-APACHE justerm-wasm-decode/pkg/
 
       - name: Publish to npm
         env:
