@@ -337,26 +337,29 @@ test.describe("S16 input + wheel + focus wiring (#133)", () => {
       const n = m.text().match(/\[wheel\] scroll → displayOffset (\d+)/);
       if (n) scrolls.push(Number(n[1]));
     });
-    // Scrollback needs the log to exceed the viewport (a line appends every 300ms).
-    // Retry a wheel-up until the demo actually scrolls into history (offset > 0) — this
-    // is scrollback-size-independent, unlike an absolute thumb threshold.
+    // Measure `before` while the view is still FOLLOWING the bottom, so `displayOffset` is 0 and
+    // `thumbTopRatio = scrollbackLen / (scrollbackLen + rows)` sits at its maximum.
+    //
+    // Wheeling first, as this test used to, can pin the thumb at the very top. There `before` is 0,
+    // an up-notch cannot lower it, and the demo's 300ms line append RAISES `after` (scrollbackLen
+    // grows while displayOffset does not), so `after <= before` fails for a reason that has nothing
+    // to do with the wheel. Only a loaded machine gets there, which is exactly what CI is (#341).
+    //
+    // A line appends every 300ms, so scrollback grows on its own; `thumbTop >= 50` means it has
+    // reached the viewport height, and the 12 lines wheeled below cannot clamp against the top.
     await expect
-      .poll(
-        async () => {
-          await wheelNotch(page, -4);
-          return scrolls.at(-1) ?? 0;
-        },
-        { timeout: 25_000, intervals: [400] },
-      )
-      .toBeGreaterThan(0);
-    // DOM state: two quick up-notches (back-to-back reads minimise append drift) lower
-    // the thumb `top` toward the track top (older content), OR it's already pinned there.
+      .poll(async () => (await thumbTop(page)) ?? 0, { timeout: 25_000, intervals: [400] })
+      .toBeGreaterThanOrEqual(50);
+
+    // DOM state: two up-notches lower the thumb `top` toward the track top (older content). The
+    // wheel moves it by 12/total; a line appended in the same window moves it back by only 1/total,
+    // so the drop dominates and this can be a STRICT comparison rather than the old `<=`.
     const before = (await thumbTop(page))!;
     await wheelNotch(page, -6);
     await wheelNotch(page, -6);
     const after = (await thumbTop(page))!;
-    expect(after).toBeLessThanOrEqual(before); // thumb rose (or pinned at the top)
-    expect(scrolls.at(-1)!).toBeGreaterThan(0); // still scrolled into history
+    expect(after).toBeLessThan(before); // the thumb rose toward older content
+    expect(scrolls.at(-1)!).toBeGreaterThan(0); // and the engine really scrolled into history
   });
 
   test("App mouse ON routes the wheel to the app, not scrollback", async ({ page }) => {
@@ -485,8 +488,8 @@ test.describe("S7 IME composition (#116)", () => {
   }) => {
     const texts: string[] = [];
     page.on("console", (m) => {
-      const x = m.text().match(/\[input\] text "(.+)"/);
-      if (x) texts.push(x[1]);
+      const captured = m.text().match(/\[input\] text "(.+)"/)?.[1];
+      if (captured !== undefined) texts.push(captured);
     });
     // The last update data ("니") lies (jongseong migrated); the textarea holds "아니".
     await compose(page, "니", "아니");
@@ -601,13 +604,17 @@ test("container resize drives a debounced fit intent with a smaller grid (#114)"
 
   // The observer fires once on mount with the initial (large) viewport.
   await expect.poll(() => fits.length).toBeGreaterThan(0);
-  const firstCols = colsOf(fits[0]);
+  const first = fits[0];
+  if (!first) throw new Error("unreachable: the poll above proved fits is non-empty");
+  const firstCols = colsOf(first);
 
   // Shrink the viewport → smaller box → a new, smaller grid (debounced ~100ms).
   await page.setViewportSize({ width: 360, height: 300 });
   await expect.poll(() => fits.length).toBeGreaterThan(1);
 
-  const lastCols = colsOf(fits[fits.length - 1]);
+  const last = fits.at(-1);
+  if (!last) throw new Error("unreachable: the poll above proved fits has >1 entry");
+  const lastCols = colsOf(last);
   expect(lastCols).toBeGreaterThanOrEqual(2); // MINIMUM_COLS
   expect(lastCols).toBeLessThan(firstCols); // the fit tracked the smaller box
 });
