@@ -15,6 +15,7 @@ use web_sys::{HtmlCanvasElement, WebGl2RenderingContext};
 
 use crate::bitmap::{PADDING, is_color_bitmap, split_wide_bitmap};
 use crate::color::gl_rgb;
+use crate::dpr::device_px;
 use crate::emoji::is_emoji_text;
 use crate::frame::{Frame, INSTANCE_FLOATS, pack_instances};
 use crate::frame_grid::{DamageFrame, FrameGrid};
@@ -130,6 +131,11 @@ struct Pipeline {
 #[wasm_bindgen]
 pub struct JustermRenderer {
     gl: glow::Context,
+    /// The bound canvas — kept so `resize` can size its drawing buffer (device px) and CSS box.
+    canvas: HtmlCanvasElement,
+    /// devicePixelRatio the atlas + drawing buffer are currently sized for (#265). The atlas is
+    /// rasterised at `FONT_SIZE * dpr` (device px) so HiDPI stays sharp; a DPR change re-bakes it.
+    dpr: f32,
     program: glow::Program,
     vao: glow::VertexArray,
     instance_vbo: glow::Buffer,
@@ -237,6 +243,11 @@ impl JustermRenderer {
         let gl = glow::Context::from_webgl2_context(webgl2);
         let size = (canvas.width() as i32, canvas.height() as i32);
 
+        // devicePixelRatio: rasterise the atlas at device px (FONT_SIZE * dpr) so HiDPI is sharp,
+        // and size the drawing buffer in device px. The consumer speaks CSS px (#252); the renderer
+        // owns the DPR (beamterm `device_pixel_ratio`). Fallback 1.0 off the main thread / in tests.
+        let dpr = web_sys::window().map_or(1.0, |w| w.device_pixel_ratio() as f32);
+
         let palette =
             Palette::from_colors(&palette_colors, default_fg, default_bg).map_err(|e| {
                 JsValue::from_str(&format!(
@@ -245,7 +256,7 @@ impl JustermRenderer {
                 ))
             })?;
 
-        let rasterizer = Rasterizer::new("monospace", FONT_SIZE)?;
+        let rasterizer = Rasterizer::new("monospace", FONT_SIZE * dpr)?;
         let (cell_w, cell_h) = rasterizer.cell_size(); // physical (on-screen grid) cell
         let (pad_w, pad_h) = rasterizer.padded_size(); // padded atlas cell
 
@@ -278,6 +289,8 @@ impl JustermRenderer {
 
         let mut renderer = JustermRenderer {
             gl,
+            canvas,
+            dpr,
             program,
             vao,
             instance_vbo,
@@ -445,19 +458,30 @@ impl JustermRenderer {
         Ok(())
     }
 
-    /// Measured cell width in device pixels (from the atlas rasteriser).
+    /// Measured cell width in **CSS pixels** — the consumer lays out in CSS and the renderer owns
+    /// the DPR (#252/#265). Internally the cell is device px (`cell_size`); this divides it back.
     pub fn cell_width(&self) -> u32 {
-        self.cell_size.0 as u32
+        (self.cell_size.0 / self.dpr).round().max(1.0) as u32
     }
 
-    /// Measured cell height in device pixels.
+    /// Measured cell height in **CSS pixels** (see [`cell_width`](Self::cell_width)).
     pub fn cell_height(&self) -> u32 {
-        self.cell_size.1 as u32
+        (self.cell_size.1 / self.dpr).round().max(1.0) as u32
     }
 
-    /// Resize the drawing buffer to `width`×`height` device pixels.
+    /// Resize to a `width`×`height` **CSS-pixel** box (#252/#265): the renderer sizes the GL
+    /// drawing buffer to `CSS × devicePixelRatio` (device px, so HiDPI is sharp) — the caller must
+    /// NOT pre-multiply by DPR. The atlas is kept (AC "아틀라스 유지"); the DPR is fixed at
+    /// construction, so a mid-session DPR change (dragging to another-density monitor) is not yet
+    /// re-baked (tracked follow-up) and stays at the construction density until recreation.
     pub fn resize(&mut self, width: i32, height: i32) {
-        self.size = (width.max(1), height.max(1));
+        // Size the GL drawing buffer to device px; the canvas's CSS display box is owned by the
+        // consumer / external CSS (as with beamterm's `auto_resize_canvas_css = false`), so the
+        // device-px buffer shown in a CSS-px box gives the HiDPI density.
+        let (dw, dh) = (device_px(width, self.dpr), device_px(height, self.dpr));
+        self.canvas.set_width(dw as u32);
+        self.canvas.set_height(dh as u32);
+        self.size = (dw, dh);
         unsafe {
             self.gl.viewport(0, 0, self.size.0, self.size.1);
         }
