@@ -18,6 +18,7 @@
 
 pub mod attrs;
 pub mod bitmap;
+pub mod builtin;
 pub mod color;
 pub mod context_loss;
 pub mod dpr;

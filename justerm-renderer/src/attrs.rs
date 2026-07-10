@@ -40,13 +40,6 @@ pub fn is_wide_spacer(flags: u16) -> bool {
 /// `cell.frag`: bit 13 = underline, bit 14 = strikethrough; the slot address is bits 0..12).
 pub const GLYPH_UNDERLINE: u16 = 1 << 13;
 pub const GLYPH_STRIKETHROUGH: u16 = 1 << 14;
-// Bit 15 is the colour-emoji flag, set by the cache on the slot itself (`glyph_cache::EMOJI_FLAG`),
-// which fills the `u16`. The two below live above it: the instance carries the field as an `f32`,
-// exact for every integer below 2^24.
-/// This cell holds the LEFT half of a wide glyph (#338).
-pub const GLYPH_WIDE_LEAD: u32 = 1 << 16;
-/// This cell holds the RIGHT half of a wide glyph (#338).
-pub const GLYPH_WIDE_SPACER: u32 = 1 << 17;
 
 /// Font style from a cell's flags — bold + italic select the atlas variant.
 pub fn font_style(flags: u16) -> FontStyle {
@@ -58,25 +51,19 @@ pub fn font_style(flags: u16) -> FontStyle {
     }
 }
 
-/// Fold underline/strikethrough and the wide-half marker into the glyph field beside the slot.
+/// Fold underline/strikethrough into the glyph field alongside the slot index.
 ///
-/// The wide bits (#338) tell the shader which half of a two-cell glyph a cell carries, so it can
-/// keep the halves touching when `letterSpacing` pushes each cell's glyph inward. Without them a
-/// wide character tears down its middle — the slack meant for the outside of the letter opens up
-/// inside it instead.
-pub fn glyph_field(slot: u16, flags: u16) -> u32 {
-    let mut field = slot as u32;
+/// #338 briefly carried wide-lead / wide-spacer bits here so the shader could keep a split wide
+/// glyph's halves touching. #359 made the atlas slot the padded CELL, so the halves are cut from a
+/// bitmap that was baked centred over its two-cell advance — they touch by construction, and the
+/// bits are gone.
+pub fn glyph_field(slot: u16, flags: u16) -> u16 {
+    let mut field = slot;
     if flags & UNDERLINE != 0 {
-        field |= GLYPH_UNDERLINE as u32;
+        field |= GLYPH_UNDERLINE;
     }
     if flags & STRIKETHROUGH != 0 {
-        field |= GLYPH_STRIKETHROUGH as u32;
-    }
-    if is_wide_lead(flags) {
-        field |= GLYPH_WIDE_LEAD;
-    }
-    if is_wide_spacer(flags) {
-        field |= GLYPH_WIDE_SPACER;
+        field |= GLYPH_STRIKETHROUGH;
     }
     field
 }
@@ -124,41 +111,13 @@ mod tests {
     }
 
     #[test]
-    fn a_wide_glyphs_two_halves_are_marked_so_the_shader_can_keep_them_touching() {
-        // #338. A wide glyph is split into two half-slots, one per cell (`split_wide_bitmap`). With
-        // `letterSpacing != 0` every cell insets its glyph by `dx/2`, so the two halves pull apart
-        // and a `dx`-px hole opens through the middle of the character. Reproduced in Chromium: the
-        // continuous stroke of `一` came back `...#######....#######...`.
-        //
-        // The letter must be centred in its TWO-cell advance instead: the lead's half sits flush
-        // against the cell's right edge, the spacer's against its left. The shader can only do that
-        // if the instance says which half it is.
-        assert_eq!(glyph_field(95, WIDE_CHAR), 95 | GLYPH_WIDE_LEAD);
-        assert_eq!(glyph_field(95, WIDE_CHAR_SPACER), 95 | GLYPH_WIDE_SPACER);
-        // The bits live above the u16 the slot/decoration/emoji field already fills, and the
-        // instance carries the field as an f32 (exact to 2^24).
-        assert_eq!(GLYPH_WIDE_LEAD, 1 << 16);
-        assert_eq!(GLYPH_WIDE_SPACER, 1 << 17);
-        // A narrow cell sets neither, so today's pixels are unchanged.
-        assert_eq!(
-            glyph_field(95, UNDERLINE) & (GLYPH_WIDE_LEAD | GLYPH_WIDE_SPACER),
-            0
-        );
-        // And the slot still reads back out of the low bits.
-        assert_eq!(glyph_field(95, WIDE_CHAR) & 0x1FFF, 95);
-    }
-
-    #[test]
     fn glyph_field_sets_the_decoration_bits() {
         assert_eq!(glyph_field(95, 0), 95);
-        assert_eq!(glyph_field(95, UNDERLINE), 95 | GLYPH_UNDERLINE as u32);
-        assert_eq!(
-            glyph_field(95, STRIKETHROUGH),
-            95 | GLYPH_STRIKETHROUGH as u32
-        );
+        assert_eq!(glyph_field(95, UNDERLINE), 95 | GLYPH_UNDERLINE);
+        assert_eq!(glyph_field(95, STRIKETHROUGH), 95 | GLYPH_STRIKETHROUGH);
         assert_eq!(
             glyph_field(95, UNDERLINE | STRIKETHROUGH),
-            95 | GLYPH_UNDERLINE as u32 | GLYPH_STRIKETHROUGH as u32
+            95 | GLYPH_UNDERLINE | GLYPH_STRIKETHROUGH
         );
         // The slot address bits (0..12) survive; decoration is above them.
         assert_eq!(glyph_field(95, UNDERLINE) & 0x1FFF, 95);

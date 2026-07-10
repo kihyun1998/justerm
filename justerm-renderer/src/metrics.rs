@@ -28,6 +28,34 @@
 /// and below the smallest `MAX_TEXTURE_SIZE` we have measured (8192, headless SwiftShader).
 pub const MAX_CELL_PX: u32 = 4096;
 
+/// Shrink a cell until the atlas that must hold it fits the implementation's texture limit (#359).
+///
+/// The atlas is a 2D array texture: one padded cell wide, `glyphs_per_layer` cells tall. #338 let the
+/// consumer grow the cell, and #359 tied the atlas slot to it — so `lineHeight = 16` on a 16-px glyph
+/// asks for a `258 x 8256` texture, and `MAX_TEXTURE_SIZE` is 8192 under headless SwiftShader.
+///
+/// `glTexStorage3D` does not throw on that. It raises `GL_INVALID_VALUE`, glow does not look, and the
+/// texture is left storage-less: sampling it returns `(0,0,0,1)`, i.e. **coverage 1 for every cell**.
+/// The terminal fills solid with the foreground colour, and a proof drawn with `█` cannot see it.
+/// Measured: at `lineHeight = 16` an `M` came back with every pixel lit.
+///
+/// So ask, then adopt — as `resize` does with the drawing buffer (#339). The caller reports the cell
+/// it actually got through `cell_height()`.
+pub fn fit_cell_to_atlas(
+    cell: (u32, u32),
+    padding: u32,
+    glyphs_per_layer: u32,
+    max_texture_size: u32,
+) -> (u32, u32) {
+    let pad2 = 2 * padding;
+    let max_w = max_texture_size.saturating_sub(pad2).max(1);
+    // Every layer stacks `glyphs_per_layer` padded cells vertically.
+    let max_h = (max_texture_size / glyphs_per_layer.max(1))
+        .saturating_sub(pad2)
+        .max(1);
+    (cell.0.min(max_w), cell.1.min(max_h))
+}
+
 /// The device-pixel grid cell for a glyph box of `char_px`, given the consumer's policy.
 ///
 /// `letter_spacing_css` may be negative (xterm and alacritty both allow it, and some fonts want
@@ -144,6 +172,24 @@ mod tests {
         // dpr 1) and far below the smallest MAX_TEXTURE_SIZE we have measured (8192, SwiftShader).
         // A `const` assertion, so moving the bound out of that window fails the build, not a run.
         const { assert!(MAX_CELL_PX > 1000 && MAX_CELL_PX < 8192) };
+    }
+
+    #[test]
+    fn a_cell_the_atlas_texture_cannot_hold_is_shrunk_rather_than_silently_breaking_it() {
+        // #359. The atlas is `padded_w` wide and `padded_h * 32` tall. Headless SwiftShader reports
+        // MAX_TEXTURE_SIZE 8192, so the tallest padded cell is 8192/32 = 256, i.e. a 254-px cell at
+        // PADDING 1. Measured: at 258 the texture has no storage, sampling returns alpha 1, and every
+        // glyph renders as a solid block — `M` came back fully lit.
+        assert_eq!(fit_cell_to_atlas((10, 254), 1, 32, 8192), (10, 254));
+        assert_eq!(fit_cell_to_atlas((10, 255), 1, 32, 8192), (10, 254));
+        assert_eq!(fit_cell_to_atlas((10, 4096), 1, 32, 8192), (10, 254));
+        // The width is bounded by the texture directly, not by the layer stack.
+        assert_eq!(fit_cell_to_atlas((8190, 16), 1, 32, 8192), (8190, 16));
+        assert_eq!(fit_cell_to_atlas((9000, 16), 1, 32, 8192), (8190, 16));
+        // A real GPU's 16384 doubles both.
+        assert_eq!(fit_cell_to_atlas((10, 4096), 1, 32, 16384), (10, 510));
+        // Degenerate limits never produce a zero cell.
+        assert_eq!(fit_cell_to_atlas((10, 20), 1, 32, 1), (1, 1));
     }
 
     #[test]

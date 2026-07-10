@@ -109,6 +109,34 @@ px — xterm adds `Math.round(letterSpacing)` straight onto an already-DPR-scale
 should speak one unit. (Whether xterm's choice is deliberate is unknown: its source says nothing and no
 issue discusses it. We do not claim it is a bug; we claim the unit does not suit us.)
 
+**The atlas slot is the padded CELL, not the padded glyph box** (#359). #338 kept the slot at the glyph
+box and had the *shader* place and mask each glyph inside its cell. That was a workaround for a fixed-slot
+atlas, and it cost two things: block and box glyphs were masked to their ink box, so they stopped tiling
+(`██` seamed, and at `lineHeight = 1.5` the ink-scanned `█` that DEFINES the cell no longer filled it);
+and a wide glyph, split into two half-slots placed independently, tore down its middle.
+
+Sizing the slot to the cell removes both. The bitmap carries its own margins, so the shader samples
+cell-local texcoords again and the coverage mask is gone; a wide glyph is baked as one bitmap across its
+two-cell advance, so the cut at the cell boundary cannot tear it. `u_char_size`/`u_char_offset` survive
+only to place the underline and strikethrough, which must stay glyph-local — a cell-local `0.88` drops the
+underline below the text once `lineHeight` grows.
+
+Block elements `U+2580`–`U+259F` never reach the font: `builtin::block_glyph` draws them to the cell,
+mirroring alacritty's geometry (`builtin_font.rs:394-499`) down to the eighth fractions, the
+`round().max(1)` on every extent, and the four-quadrant decomposition. Shades are a flat alpha
+(`64/128/192`), as alacritty fills them; xterm dithers a 2×2 pattern instead — a real fork, and we follow
+the reference whose architecture matches, since a device-pixel dither baked into a texture-filtered atlas
+moirés. `U+1FB00`–`U+1FB9F` still tile-break (#361), as does box drawing `U+2500`–`U+257F`.
+
+The price is a re-bake on every spacing change: the slots change size. That is the same path a DPR change
+already takes (#322), and the setters roll back on failure rather than leaving a cell the atlas does not
+hold. And the cell itself is now bounded by the *texture*: the atlas is `padded_w × padded_h × 32`, so a
+tall `lineHeight` can ask for more than `MAX_TEXTURE_SIZE`. `glTexStorage3D` does not throw on that — it
+raises `GL_INVALID_VALUE`, glow does not look, and a storage-less sampler answers alpha 1, so every glyph
+renders as a solid block. Measured at `lineHeight = 16`. `fit_cell_to_atlas` asks the implementation and
+adopts what fits, reported back through `cell_height()` — the same contract `resize` keeps with the
+drawing buffer (#339).
+
 Two consequences worth naming. A **wide** glyph is stored as two half-slots, so each half must be placed
 against the seam rather than centred in its own cell, or the letter tears down its middle — the instance
 carries wide-lead / wide-spacer bits for exactly that. And **block and box-drawing glyphs stop tiling**

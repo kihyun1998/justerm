@@ -1,27 +1,28 @@
 <!doctype html>
 <meta charset="utf-8" />
-<title>justerm-renderer proof — letterSpacing / lineHeight (#338)</title>
+<title>justerm-renderer proof — letterSpacing / lineHeight / builtin blocks (#338, #359)</title>
 <style>
   body { margin: 0; background: #000; }
   #c { display: block; image-rendering: pixelated; }
 </style>
 <!--
-  #338 proof: the grid cell and the glyph box stop being the same rectangle.
+  The grid cell and the glyph box are two rectangles (#338), and the atlas slot is the padded CELL
+  (#359). Two things must hold, and they pull in opposite directions:
 
-  `█` fills its own ink box by definition — the rasteriser measures the cell BY ink-scanning it. So
-  the count of lit columns in a cell IS the glyph box's width, and the count of lit rows IS its
-  height. A cell that grew while the lit run stayed the same is a cell that SPACED the glyph; a cell
-  that grew while the lit run grew with it is a cell that STRETCHED it. That is the whole question.
+    - A BLOCK element (`U+2580`-`U+259F`) is meant to TILE. `█` must fill the cell edge to edge at any
+      spacing, or a TUI's solid-fill regions grow grid lines. It never reaches the font; the builtin
+      draws it to the cell.
+    - A LETTER must NOT stretch. `M`'s ink keeps the size the rasteriser measured and merely MOVES to
+      its place inside the wider cell — by exactly `floor(dx/2)` across and `ceil(dy/2)` down.
 
-  The runner sweeps this at dpr 1 / 1.1 / 1.5 / 2, which is the point: `letterSpacing` is CSS px, so
-  the DEVICE gap must scale with the density (`round(spacing * dpr)`), unlike xterm's device-px
-  option (`WebglRenderer.ts:671`). Only dpr 1.5 and 2 can tell the two rules apart — at 1 and 1.1,
-  `round(2 * dpr)` is 2 either way.
+  Measuring the move rather than the fill is what pins the placement. And `█` fills its own ink box by
+  definition — the rasteriser measures the cell BY ink-scanning it — so at the defaults the two agree,
+  which is how AC 4 ("defaults reproduce today's pixels") is checked here and by the other 46 proofs.
 
-  KNOWN GAP (#359): block and box-drawing glyphs are masked to their ink box like every other glyph,
-  so under non-default spacing they no longer tile — `██` seams, `──` breaks. Both references draw
-  U+2500-259F at CELL size ahead of the font. The checks below pin "the glyph is not stretched",
-  which is true and necessary; they must not be read as "the cell looks right for a block element".
+  The runner sweeps dpr 1 / 1.1 / 1.5 / 2, which is the point: `letterSpacing` is CSS px, so the DEVICE
+  gap tracks the density (`round(spacing * dpr)`), unlike xterm's device-px option
+  (`WebglRenderer.ts:671`). Only 1.5 and 2 tell the two rules apart — at 1 and 1.1 `round(2 * dpr)` is
+  2 either way.
   Build: wasm-pack build --target web --dev --out-dir pkg
 -->
 <canvas id="c" width="64" height="64"></canvas>
@@ -39,10 +40,10 @@
   // With both options at their defaults the cell IS the glyph box (`device_cell` is the identity).
   const charW = r.cell_width(), charH = r.cell_height();
 
-  /** Draw a single `█` cell and report which device columns / rows have any ink. */
-  const inkRun = () => {
+  /** Draw one cell of `cp` and report the extent and placement of its ink, in device px. */
+  const inkRun = (cp) => {
     r.resize(1, 1);
-    r.apply_frame(1, 1, new Uint32Array(1), new Uint32Array(1), new Uint32Array([0x2588]), new Uint16Array(1), true);
+    r.apply_frame(1, 1, new Uint32Array(1), new Uint32Array(1), new Uint32Array([cp]), new Uint16Array(1), true);
     r.render();
     const [w, h] = [gl.drawingBufferWidth, gl.drawingBufferHeight];
     const { buf } = readRect(gl, { x: 0, y: 0, w, h }); // same task as render()
@@ -54,10 +55,9 @@
     const topGap = rows.length ? h - 1 - rows[rows.length - 1] : -1;
     return { w, h, litCols: cols.length, litRows: rows.length, leftGap: cols[0] ?? -1, topGap };
   };
+  const BLOCK = 0x2588, LETTER = 0x4d; // `█`, `M`
 
-  const base = inkRun();
-
-  /** Draw `一` (one continuous horizontal stroke) as a wide lead + spacer across two cells. */
+  /** `一`: one continuous horizontal stroke across a wide lead + spacer. */
   const WIDE_CHAR = 1 << 8, WIDE_CHAR_SPACER = 1 << 9;
   const wideRun = () => {
     r.resize(2, 1);
@@ -65,8 +65,7 @@
       new Uint32Array([0x4e00, 0x20]), new Uint16Array([WIDE_CHAR, WIDE_CHAR_SPACER]), true);
     r.render();
     const [w, h] = [gl.drawingBufferWidth, gl.drawingBufferHeight];
-    const { buf } = readRect(gl, { x: 0, y: 0, w, h }); // same task as render()
-    // The row with the most ink is the stroke; a tear shows up as an unlit run inside it.
+    const { buf } = readRect(gl, { x: 0, y: 0, w, h });
     let row = 0, most = -1;
     for (let y = 0; y < h; y++) {
       let n = 0;
@@ -77,22 +76,27 @@
     for (let x = 0; x < w; x++) s += buf[(row * w + x) * 4 + 1] > 150 ? "#" : ".";
     const first = s.indexOf("#"), last = s.lastIndexOf("#");
     const interiorGaps = first < 0 ? [-1] : (s.slice(first, last + 1).match(/\.+/g) ?? []).map((g) => g.length);
-    return { w, lit: most, interiorGaps, span: last - first + 1 };
+    return { w, lit: most, interiorGaps, leftGap: first };
   };
+
+  const blockBase = inkRun(BLOCK);
+  const letterBase = inkRun(LETTER);
   const wideBase = wideRun();
 
   // --- letterSpacing: 2 CSS px, so `round(2 * dpr)` device px, split floor-left / rest-right.
   const SPACING = 2;
   r.setLetterSpacing(SPACING);
-  const spaced = inkRun();
+  const blockSpaced = inkRun(BLOCK);
+  const letterSpaced = inkRun(LETTER);
   const wideSpaced = wideRun();
   const dx = Math.round(SPACING * dpr);
   r.setLetterSpacing(0);
 
-  // --- lineHeight: 1.5, so `floor(charH * 1.5)`, glyph centred with the odd pixel above.
+  // --- lineHeight: 1.5, so `floor(charH * 1.5)`, the glyph centred with the odd pixel above.
   const LH = 1.5;
   r.setLineHeight(LH);
-  const tall = inkRun();
+  const blockTall = inkRun(BLOCK);
+  const letterTall = inkRun(LETTER);
   const cellH = Math.floor(charH * LH);
   const dy = cellH - charH;
 
@@ -110,26 +114,34 @@
   lose.loseContext();
   await lost;
   // Chrome only permits `restoreContext()` once the `webglcontextlost` dispatch has fully unwound —
-  // awaiting the event is a microtask and is NOT enough (`INVALID_OPERATION: context restoration not
-  // allowed`). Yield a real macrotask, exactly as `context-loss.html` documents.
+  // awaiting the event is a microtask and is NOT enough. Yield a real macrotask, as `context-loss.html`
+  // documents.
   await new Promise((res) => setTimeout(res, 0));
   const restored = once("webglcontextrestored");
   lose.restoreContext();
   await restored;
   r.render(); // the frame after `webglcontextrestored` rebuilds the pipeline + atlas
-  const afterRestore = inkRun();
+  const afterRestore = inkRun(BLOCK);
 
-  // --- a setter called WHILE the context is lost must not destroy the grid.
-  // `resize` reads `drawingBufferWidth` back (#339); on a lost context that is 0, so the
-  // adopt-what-fits loop shrinks to 1x1 and `restore` rebuilds the buffer from the wreckage.
-  // `set_device_pixel_ratio` guarded this from the start; the two new setters did not (#338).
+  // --- a cell the ATLAS TEXTURE cannot hold must be shrunk, not silently break the atlas (#359).
+  // The atlas is `padded_w x padded_h * 32`. Ask for a 1000x line height and the texture exceeds
+  // MAX_TEXTURE_SIZE; `glTexStorage3D` raises GL_INVALID_VALUE without throwing, glow does not look,
+  // and a storage-less sampler answers alpha 1 — so EVERY glyph renders as a solid block. Measured
+  // before the fix: `M` came back fully lit. A proof drawn with `█` alone cannot see that.
+  const maxTex = gl.getParameter(gl.MAX_TEXTURE_SIZE);
+  r.setLineHeight(1000);
+  const huge = { cellH: r.cell_height(), letter: inkRun(LETTER) };
+  const letterCoverage = huge.letter.litCols * huge.letter.litRows / (huge.letter.w * huge.letter.h);
+  r.setLineHeight(1);
+
+  // --- a setter called WHILE the context is lost must not destroy the grid (#338/#339).
   r.resize(20, 6);
   const gridBefore = [r.cols(), r.rows()];
   const lost2 = once("webglcontextlost");
   lose.loseContext();
   await lost2;
-  r.setLineHeight(2);       // <- on a lost context
-  r.setLetterSpacing(1);    // <- ditto
+  r.setLineHeight(2);
+  r.setLetterSpacing(1);
   const gridWhileLost = [r.cols(), r.rows()];
   await new Promise((res) => setTimeout(res, 0));
   const restored2 = once("webglcontextrestored");
@@ -139,55 +151,64 @@
   const gridAfter = [r.cols(), r.rows()];
 
   window.__proof = {
-    dpr, charW, charH, base, spaced, tall, dx, dy, cellH, afterDpr, charH2, afterRestore,
-    wideBase, wideSpaced, gridBefore, gridWhileLost, gridAfter,
+    dpr, charW, charH, dx, dy, cellH, charH2, afterDpr,
+    blockBase, blockSpaced, blockTall, letterBase, letterSpaced, letterTall,
+    wideBase, wideSpaced, afterRestore, gridBefore, gridWhileLost, gridAfter,
+    maxTex, huge, letterCoverage,
     checks: {
-      // Defaults: the cell IS the glyph box, and `█` fills it edge to edge (AC 4).
-      theDefaultCellIsTheGlyphBox:
-        base.w === charW && base.h === charH && base.litCols === charW && base.litRows === charH,
+      // The adopted cell fits the atlas, and the consumer can read back what it got (#339's contract).
+      anUnholdableCellIsShrunkToWhatTheAtlasCanHold:
+        huge.cellH <= Math.floor(maxTex / 32) - 2 && huge.cellH > charH,
+      // ...and the atlas still works: `M` is a letter, not a solid rectangle.
+      andTheAtlasStillHoldsRealGlyphs: letterCoverage < 0.5,
 
-      // letterSpacing widens the CELL by `round(spacing * dpr)` device px. `spaced.w` comes from the
-      // RENDERER; `dx` is what the page expects. That is the CSS-px claim, and the density sweep is
-      // what tests it: at dpr 1 and 1.1 `round(2 * dpr)` is 2, exactly what xterm's device-px rule
-      // would give, so only 1.5 and 2 can tell the two apart (verified by mutation: 2 of 4 redden).
-      spacingWidensTheCell: spaced.w === charW + dx && dx >= 1,
-      // ...without stretching the GLYPH: the ink run is still exactly one glyph box wide, and it is
-      // not taller either.
-      //
-      // Read this narrowly. `█` is a BLOCK element, and a block element is supposed to tile: under
-      // spacing it now leaves a seam, which is a real defect tracked in #359 (both references draw
-      // U+2500-259F at CELL size, ahead of the font). What this check pins is that the glyph is not
-      // STRETCHED — a stretched `█` would be worse and would hide #359 behind a full-looking cell.
-      spacingDoesNotStretchTheGlyph: spaced.litCols === charW && spaced.litRows === charH,
-      // ...centred, with the odd device pixel on the right (xterm's `floor(letterSpacing / 2)`).
-      spacingCentresTheGlyph: spaced.leftGap === Math.floor(dx / 2),
+      // AC 4: at the defaults the builtin `█` covers exactly the cell the rasteriser ink-scanned it
+      // to be. That is why the other 46 proofs' pixels are unchanged.
+      theDefaultCellIsTheBlockGlyph:
+        blockBase.w === charW && blockBase.h === charH &&
+        blockBase.litCols === charW && blockBase.litRows === charH,
 
-      // A WIDE glyph is stored as two half-slots, one per cell. Inset each half by the usual `dx/2`
-      // and the letter tears down its middle: reproduced in Chromium, `一`'s continuous stroke came
-      // back `...#######....#######...`. The letter must be centred in its TWO-cell advance, so the
-      // slack lands outside it. `█` alone can never see this — it is a narrow glyph (#338).
+      // #359: a BLOCK element fills the cell, whatever the spacing. Masked to its ink box it seamed:
+      // `██` grew vertical lines, and `lineHeight` a horizontal one.
+      aBlockFillsAWiderCell: blockSpaced.litCols === blockSpaced.w && blockSpaced.litRows === blockSpaced.h,
+      aBlockFillsATallerCell: blockTall.litCols === blockTall.w && blockTall.litRows === blockTall.h,
+
+      spacingWidensTheCell: blockSpaced.w === charW + dx && dx >= 1,
+      lineHeightRaisesTheCell: blockTall.h === cellH && dy >= 1,
+
+      // #338: a LETTER is not stretched. Its ink keeps the size the rasteriser measured...
+      aLetterKeepsItsInkWhenTheCellWidens:
+        letterSpaced.litCols === letterBase.litCols && letterSpaced.litRows === letterBase.litRows,
+      aLetterKeepsItsInkWhenTheCellGrowsTaller:
+        letterTall.litCols === letterBase.litCols && letterTall.litRows === letterBase.litRows,
+      // ...and merely MOVES, by exactly what `glyph_offset` computes: floor across, round down.
+      aLetterMovesByHalfTheHorizontalSlack:
+        letterSpaced.leftGap - letterBase.leftGap === Math.floor(dx / 2),
+      aLetterMovesByHalfTheVerticalSlack:
+        letterTall.topGap - letterBase.topGap === Math.ceil(dy / 2),
+
+      // A wide glyph is cut in half at the cell boundary. Since #359 bakes it as ONE bitmap across
+      // its two-cell advance, the cut cannot tear it — that was #338's bug, where the shader placed
+      // each half independently and the slack meant for the outside of `一` opened a `dx`-px hole
+      // through its middle. These two stay as regression tripwires; they can no longer fail on their
+      // own, which is the point.
       theWideStrokeIsContinuousByDefault: wideBase.interiorGaps.length === 0 && wideBase.lit > 2,
       spacingDoesNotTearAWideGlyph: wideSpaced.interiorGaps.length === 0,
-      // ...and does not stretch it either: the stroke spans the same ink either way.
       spacingDoesNotStretchAWideGlyph: wideSpaced.lit === wideBase.lit,
-      // The two cells grew, so the letter really was placed inside a wider advance.
       theWideCellPairGrewByTwiceTheSpacing: wideSpaced.w === wideBase.w + 2 * dx,
-
-      // lineHeight raises the CELL...
-      lineHeightRaisesTheCell: tall.h === cellH && dy >= 1,
-      // ...without stretching the glyph. Same narrow reading as above: the renderer measures its own
-      // cell by ink-scanning `█`, so at `lineHeight = 1.5` the glyph that DEFINES the cell no longer
-      // fills it. That seam is #359, not this check.
-      lineHeightDoesNotStretchTheGlyph: tall.litRows === charH && tall.litCols === charW,
-      // ...and centres it vertically, the odd pixel above (xterm's `round((cell - char) / 2)`).
-      lineHeightCentresTheGlyph: tall.topGap === Math.ceil(dy / 2),
+      // What CAN fail: the letter must be centred in its own two-cell advance, so its ink moves right
+      // by the WHOLE slack `dx`, not by `floor(dx/2)` as a narrow glyph does. (`2*cell - 2*phys` is
+      // `2*dx`, split `dx` each side.)
+      aWideGlyphIsCentredInItsTwoCellAdvance: wideSpaced.leftGap - wideBase.leftGap === dx,
 
       // The policy is not re-derived from the atlas: it outlives a DPR change (#322)...
       lineHeightSurvivesADprChange: afterDpr.cellH === Math.floor(charH2 * LH) && charH2 > charH,
-      // ...and a context restore (#269), which rebuilds the pipeline and re-bakes every glyph.
+      // ...and a context restore (#269), which rebuilds the pipeline and re-bakes every glyph — the
+      // builtin blocks among them, at the cell the policy still asks for.
       lineHeightSurvivesAContextRestore:
-        afterRestore.h === cellH && afterRestore.litRows === charH && afterRestore.topGap === Math.ceil(dy / 2),
-      // Measured: without the guard this reads `[1,1]` while lost AND after the restore.
+        afterRestore.h === cellH && afterRestore.litRows === cellH,
+
+      // Measured: without the lost-context guard this reads `[1,1]` while lost AND after restore.
       aSetterOnALostContextKeepsTheGrid:
         gridWhileLost[0] === gridBefore[0] && gridWhileLost[1] === gridBefore[1] &&
         gridAfter[0] === gridBefore[0] && gridAfter[1] === gridBefore[1],

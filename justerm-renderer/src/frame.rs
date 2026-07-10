@@ -73,7 +73,7 @@ pub fn pack_instances(frame: &Frame, palette: &Palette, blink_on: bool) -> Vec<f
             // A concealed cell points at the blank slot: zero coverage, no decoration bits,
             // so only the (already inverse-swapped) background shows.
             let field = if is_concealed(cell_flags, blink_on) {
-                BLANK_SLOT as u32
+                BLANK_SLOT
             } else {
                 glyph_field(slots.get(idx).copied().unwrap_or(0), cell_flags)
             };
