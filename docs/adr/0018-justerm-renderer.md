@@ -184,6 +184,53 @@ itself (`cssWidth()`/`cssHeight()`), or the gutter shows the page through (with 
 
 The consumer still lays out in CSS px (#252 survives); it just no longer sizes the drawing buffer in them.
 
+## The cursor is two mechanisms, not one (#270)
+
+A block cursor is **not a primitive**. Both references draw it by recolouring the cell, and neither
+emits geometry for it:
+
+- xterm `addons/addon-webgl/src/RectangleRenderer.ts:251` — `if (!cursor || cursor.style === 'block')
+  { vertices.count = 0; return; }`, with the colours set in `WebglRenderer.ts:556`
+  (`fg = cursorAccent; bg = cursor`).
+- alacritty `alacritty/src/display/cursor.rs:33` — `_ => CursorRects::default()`, with the colours set
+  in `display/content.rs:167` (`cell.fg = text_color; cell.bg = cursor_color`).
+
+So the block recolours the cursor cell *after* inverse and after conceal, and `bar` / `underline` /
+`hollow block` are sub-cell rectangles.
+
+justerm puts **all four in the fragment shader**, driven by a `u_cursor` vec4 `(col, row, span,
+shape)` — there is only ever one cursor per frame. The strokes are a per-pixel test rather than a
+second draw pass; the block substitutes `u_cursor_color` / `u_cursor_text_color` for the instance's
+`v_bg` / `v_fg`, which arrive already inverse-swapped and already concealed, so the ordering the
+references get by assignment we get by construction.
+
+The cursor therefore lives **outside the instance buffer**, and `setCursor` / `clearCursor` +
+`render()` is a complete update. That is not an optimisation, it is the contract: a blink tick
+produces no terminal output, so a block cursor packed into the instances could not blink off without
+the consumer re-feeding the frame. An earlier draft of #270 did exactly that, and its browser proof
+missed it because the proof's own helper re-applied the frame on every check.
+
+**Stroke thickness follows alacritty, not xterm.** alacritty takes `(thickness * cell_width).round()
+.max(1.)` with `thickness = 0.15` (`display/cursor.rs:25`, `config/cursor.rs:31`); xterm takes
+`dpr * cursorWidth` with `cursorWidth` in CSS px (`RectangleRenderer.ts:267`). Our cell is already in
+device pixels, so alacritty's fraction tracks dpr *and* font size, while xterm's gives a 32px font the
+same hairline caret as a 12px one.
+
+**Blink, focus and the inactive shape stay with the consumer.** The renderer takes `Option<Cursor>` and
+`clearCursor()`; the blink phase, `prefers-reduced-motion`, and the choice to go hollow on blur are
+policy under ADR-0017, exactly as `blink_on` already is for text blink (#282). The mechanism the
+renderer *must* own is the one needing the cell's flags: a wide char's cursor spans both halves
+(alacritty `display/content.rs:139`, xterm `cell.getWidth()`).
+
+The GLSL `stroke_coverage()` mirrors the pure `cursor::cursor_rects`, so `demo/cursor.html` holds the
+two to set-equality via the exported `cursorRects()` — two formulations of one spec, in two languages.
+
+**No pending-wrap clamp.** xterm clamps `cursorX = min(buffer.cursorX, cols - 1)`
+(`WebglRenderer.ts:447`) because its buffer parks the cursor *one past* the last column while
+autowrap is pending. `justerm-core` does not: it parks the cursor on the last column and carries
+`pending_wrap` as a separate bool (`term.rs:2570-2577`). Copying xterm's clamp would have hidden a
+genuinely out-of-grid cursor on the last cell instead. An out-of-grid cursor draws nothing.
+
 ## Consequences
 
 - A GPU-discipline effort (glyph atlas, instancing, shaders, context-loss) — larger and longer than the
