@@ -51,13 +51,21 @@ for (const deviceScaleFactor of RATIOS) {
         expect(failing, `failing checks in ${demo}`).toEqual([]);
         expect(proof.ok, `${demo} reported not-ok`).toBe(true);
 
-        // #331: the drawing buffer IS the grid, so this is an invariant, not a warning. It used to
-        // fail on every demo at dpr 1.1 (grid 1-2 device px wider than the buffer holding it), which
-        // is why it is asserted here rather than left to a `console.warn` nobody reads on a green run.
+        // #331: the drawing buffer IS the grid. Since resize() derives one from the other this can
+        // no longer fail on its own (#353) — it stays as a tripwire against re-deriving the buffer
+        // from a CSS box, which is what made every demo's grid overhang its buffer at dpr 1.1.
         if (proof.gridFit) {
           expect(
             proof.gridFit.grid,
             `${demo} @ dpr ${deviceScaleFactor}: grid must equal the drawing buffer (#331)`,
+          ).toEqual(proof.gridFit.buffer);
+          // #339: this one CAN fail. `canvas.width` is the size we asked for; `drawingBufferWidth`
+          // is the size WebGL granted. If they diverge the renderer is drawing a grid the viewport
+          // cannot hold, and nothing else in the harness would notice.
+          expect(
+            proof.gridFit.attr,
+            `${demo} @ dpr ${deviceScaleFactor}: the browser clamped the drawing buffer below ` +
+              `canvas.width and resize() did not adopt the grid that fits (#339)`,
           ).toEqual(proof.gridFit.buffer);
         }
       });

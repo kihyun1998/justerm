@@ -20,7 +20,7 @@ use web_sys::{HtmlCanvasElement, WebGl2RenderingContext};
 use crate::bitmap::{PADDING, is_color_bitmap, split_wide_bitmap};
 use crate::color::gl_rgb;
 use crate::context_loss::{ContextState, DEFAULT_RESTORE_TIMEOUT_MS, FrameAction};
-use crate::dpr::{css_px, dpr_changed, grid_px};
+use crate::dpr::{cells_that_fit, css_px, dpr_changed, grid_px};
 use crate::emoji::is_emoji_text;
 use crate::frame::{Frame, INSTANCE_FLOATS, pack_instances};
 use crate::frame_grid::{DamageFrame, FrameGrid};
@@ -291,6 +291,11 @@ pub struct JustermRenderer {
     cell_size: (u32, u32),
     /// Padded atlas cell size in device pixels (physical + `2*PADDING`) — glyph upload dims.
     atlas_cell: (u32, u32),
+    /// The same WebGL2 context `gl` wraps, kept for the handful of questions glow does not ask:
+    /// `drawingBufferWidth`/`drawingBufferHeight`, which are the ONLY way to learn that the browser
+    /// clamped the buffer we requested (#339). Context restore reuses the context object, so this
+    /// handle survives a loss.
+    raw_gl: WebGl2RenderingContext,
     /// Drawing-buffer size in device pixels.
     size: (i32, i32),
     /// The `cols`×`rows` grid last passed to [`resize`](Self::resize). A DPR change re-measures the
@@ -385,6 +390,7 @@ impl JustermRenderer {
             .ok_or_else(|| JsValue::from_str("justerm-renderer: no webgl2 context"))?
             .dyn_into()?;
 
+        let raw_gl = webgl2.clone();
         let gl = glow::Context::from_webgl2_context(webgl2);
         let size = (canvas.width() as i32, canvas.height() as i32);
 
@@ -453,6 +459,7 @@ impl JustermRenderer {
             cache: GlyphCache::new(),
             cell_size: (cell_w, cell_h),
             atlas_cell: (pad_w, pad_h),
+            raw_gl,
             size,
             // Whole cells that fit the canvas as authored. `resize` below snaps the buffer to
             // exactly that grid, so `size == grid_px(grid_size, cell_size)` holds from the start.
@@ -912,18 +919,97 @@ impl JustermRenderer {
     pub fn resize(&mut self, cols: u32, rows: u32) {
         // A grid must have at least one cell: `grid_px` floors the *buffer* to 1, and letting
         // `grid_size` keep a 0 would break `size == grid_px(grid_size, cell_size)`.
-        let (cols, rows) = (cols.max(1), rows.max(1));
+        let (mut cols, mut rows) = (cols.max(1), rows.max(1));
+
+        // WebGL is not obliged to give us the buffer we ask for (#339). The spec: "If the requested
+        // width or height cannot be satisfied … a drawing buffer with smaller dimensions shall be
+        // created. The dimensions actually used are implementation dependent and there is no
+        // guarantee that a buffer with the same aspect ratio will be created." No exception, no lost
+        // context (`webglcontextcreationerror` fires only at `getContext`), and `canvas.width` keeps
+        // the value we asked for while `drawingBufferWidth` reports what we got.
+        //
+        // **Do not try to predict the limit.** Chromium's `WebGLRenderingContextBase::Reshape` first
+        // clamps each axis to `min(max_texture_size, max_renderbuffer_size, max_viewport_dims[axis])`
+        // and *then* applies a hard-coded `5760 * 5760` area budget, scaling both axes by
+        // `sqrt(kMaxArea / area)`. Neither stage is derivable from a single `getParameter`, the area
+        // constant is derivable from none of them, and the spec promises no rule at all. Measured:
+        // 16385 wide comes back 16384 on a GPU / 8192 headless (texture size wins the `min` there),
+        // and a square 8192x8192 comes back 5760x5760 on both. So: ask, then adopt what fits.
+        //
+        // No reference does this. xterm, beamterm and three.js all set `canvas.width` to the request
+        // and draw into the granted buffer with `viewport(0, 0, drawingBufferWidth, …)`, leaving the
+        // attribute oversized — their grids then overhang a clamped buffer, silently. We re-set the
+        // canvas down instead, because #337 couples the CSS display box to `canvas.width`: a lying
+        // attribute would make `cssWidth()` describe a buffer that does not exist. The extra
+        // allocation is the price of that coupling; do not "simplify" it away.
+        //
+        // Two passes suffice, and the loop bound is only a backstop against a browser that clamps
+        // non-monotonically. Pass 2 asks for a buffer the browser already granted (per-axis and by
+        // area), so it cannot be clamped again; each pass shrinks at least one axis, so it ends.
+        //
+        // A pass that exhausts the bound without adopting anything would leave `canvas.width` at the
+        // last request while `size`/`grid_size` still held the *previous* grid — three values
+        // disagreeing. So the adoption is unconditional: the loop only refines what to adopt.
+        let (mut dw, mut dh) = (1, 1);
+        for _ in 0..4 {
+            (dw, dh) = (
+                grid_px(cols, self.cell_size.0),
+                grid_px(rows, self.cell_size.1),
+            );
+            self.canvas.set_width(dw as u32);
+            self.canvas.set_height(dh as u32);
+
+            let (bw, bh) = (
+                self.raw_gl.drawing_buffer_width(),
+                self.raw_gl.drawing_buffer_height(),
+            );
+            if bw >= dw && bh >= dh {
+                break; // granted in full; a larger grant is ignored, the grid still leads (#331)
+            }
+            (cols, rows) = (
+                cells_that_fit(bw, self.cell_size.0),
+                cells_that_fit(bh, self.cell_size.1),
+            );
+        }
         self.grid_size = (cols, rows);
-        let (dw, dh) = (
-            grid_px(cols, self.cell_size.0),
-            grid_px(rows, self.cell_size.1),
-        );
-        self.canvas.set_width(dw as u32);
-        self.canvas.set_height(dh as u32);
         self.size = (dw, dh);
+
+        // `size` is a whole number of cells, always: every caller of `orthographic_from_size` and
+        // `gl.viewport` below assumes it, and #331 is what happens when it stops being true.
+        debug_assert_eq!(
+            self.size,
+            (
+                grid_px(self.grid_size.0, self.cell_size.0),
+                grid_px(self.grid_size.1, self.cell_size.1)
+            ),
+        );
         unsafe {
             self.gl.viewport(0, 0, self.size.0, self.size.1);
         }
+    }
+
+    /// The number of columns actually adopted by the last [`resize`](Self::resize). Usually the
+    /// `cols` that was asked for; smaller when the browser clamped the drawing buffer (#339).
+    ///
+    /// A consumer that keeps sending frames of the grid it *asked* for does not corrupt anything —
+    /// every per-cell read is bounds-checked and the surplus cells are clipped by the viewport — but
+    /// its mouse mapping and reflow will be wrong, so read this back rather than assuming.
+    ///
+    /// The requested grid is **not remembered**. `set_device_pixel_ratio` and the context-restore
+    /// path both re-derive the buffer from *this* value, so a clamped grid stays clamped even if a
+    /// later DPR drop would shrink the cell enough for the original to fit. That is deliberate — the
+    /// consumer owns the grid (ADR-0017) and recomputes it from its own box, as xterm's `FitAddon`
+    /// does — but it is not obvious from the field alone.
+    #[wasm_bindgen(js_name = cols)]
+    pub fn cols(&self) -> u32 {
+        self.grid_size.0
+    }
+
+    /// The number of rows actually adopted by the last [`resize`](Self::resize) — see
+    /// [`cols`](Self::cols).
+    #[wasm_bindgen(js_name = rows)]
+    pub fn rows(&self) -> u32 {
+        self.grid_size.1
     }
 
     /// The drawing buffer's width in **CSS pixels** — what the consumer should set the canvas's CSS

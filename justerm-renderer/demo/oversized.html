@@ -1,0 +1,93 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>justerm-renderer proof — a grid the browser refuses to allocate (#339)</title>
+<style>
+  body { margin: 0; background: #000; }
+  #c { display: block; }
+</style>
+<!--
+  #339 proof: `resize(cols, rows)` asks for `cols * cell_width()` device px, and WebGL is free to
+  give less ("a drawing buffer with smaller dimensions shall be created… implementation dependent").
+  No exception, no lost context; `canvas.width` keeps the request, `drawingBufferWidth` tells the truth.
+
+  So the renderer does not predict the limit. It asks, and adopts the grid that fits.
+
+  MAX_TEXTURE_SIZE is used here as a **lower-bound trigger, never as the expected result.** Exceeding
+  it on one axis guarantees a clamp on every backend (it is 8192 under headless SwiftShader, 16384 on
+  a real GPU — a hard-coded oversize would prove nothing on one of them). But the granted size is NOT
+  MAX_TEXTURE_SIZE: Chromium clamps each axis to `min(texture, renderbuffer, viewport)` and then
+  applies a hard-coded 5760x5760 AREA budget. Asserting `granted === MAX_TEXTURE_SIZE` would flake
+  between backends. The checks below assert only that the request was clamped and that the adopted
+  grid fills the buffer we were actually given.
+
+  Only ROWS = 2, so the area budget cannot be what clamps us: this isolates the per-axis path.
+  Build: wasm-pack build --target web --dev --out-dir pkg
+-->
+<canvas id="c" width="64" height="64"></canvas>
+<script type="module">
+  import init, { JustermRenderer } from "../pkg/justerm_renderer.js";
+  import { gridFit } from "./proof.js";
+  const FG = 0xffffff, BG = 0x000000;
+  await init();
+
+  const palette = new Uint32Array(256);
+  const r = new JustermRenderer("#c", palette, FG, BG);
+  const canvas = document.querySelector("#c");
+  const gl = canvas.getContext("webgl2");
+
+  const maxTexture = gl.getParameter(gl.MAX_TEXTURE_SIZE);
+  const cellW = r.cell_width(), cellH = r.cell_height();
+
+  // One column past what the implementation can allocate along x. `+ 8` is slack: the clamp is on
+  // device px, and one extra cell is `cellW` of them.
+  const askedCols = Math.ceil(maxTexture / cellW) + 8;
+  const ROWS = 2;
+  r.resize(askedCols, ROWS);
+
+  const gotCols = r.cols(), gotRows = r.rows();
+
+  // Draw into the LAST column the renderer says it adopted. If `cols()` lied, this cell is outside
+  // the viewport and lights nothing.
+  const n = gotCols * gotRows;
+  const cps = new Uint32Array(n).fill(0x20);
+  cps[gotCols - 1] = 0x2588; // █ in the final column of row 0
+  r.apply_frame(gotCols, gotRows, new Uint32Array(n), new Uint32Array(n), cps, new Uint16Array(n), true);
+  r.render();
+
+  // readPixels must run in the same task as render() (the buffer is cleared on composite).
+  const x = (gotCols - 1) * cellW;
+  const y = gl.drawingBufferHeight - cellH; // row 0 is at the top; readPixels counts from the bottom
+  const px = new Uint8Array(cellW * cellH * 4);
+  gl.readPixels(x, y, cellW, cellH, gl.RGBA, gl.UNSIGNED_BYTE, px);
+  let lit = 0;
+  for (let i = 0; i < px.length; i += 4) if (px[i + 1] > 150) lit++;
+
+  const fit = gridFit(gl, r, gotCols, gotRows);
+
+  window.__proof = {
+    maxTexture, cellW, cellH, askedCols, gotCols, gotRows,
+    bufferW: gl.drawingBufferWidth, bufferH: gl.drawingBufferHeight,
+    canvasAttrs: [canvas.width, canvas.height],
+    lit, gridFit: fit,
+    checks: {
+      // The request really did exceed the implementation limit — otherwise this page proves nothing
+      // and would pass vacuously on a machine with a huge MAX_TEXTURE_SIZE.
+      theRequestWasOversized: askedCols * cellW > maxTexture,
+      // resize() adopted a smaller grid rather than keeping the one it could not draw.
+      theAdoptedGridIsSmallerThanAsked: gotCols < askedCols,
+      // ... and it is the grid that actually fits the buffer we were given.
+      theAdoptedGridFillsTheBuffer:
+        gotCols * cellW === gl.drawingBufferWidth && gotRows * cellH === gl.drawingBufferHeight,
+      // The invariant #339 exists to restore: what we asked the canvas for is what WebGL gave us.
+      // Before the fix `canvas.width` stayed at the oversized request while the buffer was clamped.
+      canvasAttributeMatchesTheDrawingBuffer:
+        canvas.width === gl.drawingBufferWidth && canvas.height === gl.drawingBufferHeight,
+      // And the last column the renderer claims is real: a glyph drawn there lands in the viewport.
+      theLastAdoptedColumnRenders: lit > 0,
+      // No exception, no lost context — the failure mode was always silence.
+      contextSurvived: !gl.isContextLost(),
+    },
+  };
+  window.__proof.ok = Object.values(window.__proof.checks).every(Boolean);
+  window.__done = true;
+</script>

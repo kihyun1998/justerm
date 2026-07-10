@@ -110,16 +110,26 @@ export function hasColourEmojiFont() {
 /**
  * Whether a `cols × rows` grid of device cells fits inside the drawing buffer.
  *
- * Since #331 `resize(cols, rows)` sizes the buffer to `cols * cell_width()` exactly, so this is now
- * an INVARIANT rather than a warning: `fits` is true and `grid` equals `buffer` for any grid the
- * renderer was sized to. Kept, and asserted by the runner, because it is the property that used to
- * fail — at dpr 1.1 every proof's grid overhung its buffer by 1–2 device px.
+ * Since #331 `resize(cols, rows)` sizes the buffer to `cols * cell_width()` exactly, `grid` equals
+ * `buffer` for any grid the renderer was sized to. On its own that comparison became an identity —
+ * both sides are the same product (#353): it is kept as a tripwire against re-deriving the buffer
+ * from a CSS box, not as a live check.
+ *
+ * `attr` is what makes this falsifiable again (#339). `canvas.width` is what we *asked* the browser
+ * for; `drawingBufferWidth` is what it *gave* us, and WebGL is free to give less. Measured in
+ * Chromium: `canvas.width = 16385` leaves the attribute at 16385 while the buffer comes back at
+ * MAX_TEXTURE_SIZE. So `clamped` is the only observable that separates "we sized the grid" from
+ * "the browser overruled us", and the caller should pass `r.cols()`/`r.rows()` — the grid actually
+ * adopted — rather than the numbers it hoped for.
  */
 export function gridFit(gl, r, cols, rows) {
   const [cw, ch] = deviceCell(r);
+  const canvas = gl.canvas;
   return {
     grid: [cols * cw, rows * ch],
     buffer: [gl.drawingBufferWidth, gl.drawingBufferHeight],
+    attr: [canvas.width, canvas.height],
     fits: cols * cw <= gl.drawingBufferWidth && rows * ch <= gl.drawingBufferHeight,
+    clamped: canvas.width !== gl.drawingBufferWidth || canvas.height !== gl.drawingBufferHeight,
   };
 }
