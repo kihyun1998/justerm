@@ -55,6 +55,18 @@ The GitHub Release track **starts at v0.3.1**. Tags `v0.1.0`–`v0.3.0` exist as
 and there is no supported way to backdate it, so a backfill would read as "published today" against
 much older tags. Backfilling is a non-goal, not an oversight — leave the pre-v0.3.1 tags as tags.
 
+**`v0.6.0`'s Release page was created late** (2026-07-10, for a 2026-06-26 tag; #351), so its
+`publishedAt` is wrong and the list is not in chronological order. That was a judged exception, not a
+new policy: v0.6.0 is the rename release (`justerm` → `justerm-core`, ADR-0010), and it is the page a
+reader lands on when asking why the bare crate name stopped moving. The wrong date is neutralised by
+saying so in the first line of the body — the objection to backfilling is that a silent wrong date
+misleads, and a stated one does not. **The tag is the record of truth**; publishing is tag-driven, so
+a missing Release page never affected a consumer.
+
+When backfilling, pass **`--latest=false`** — otherwise the older release steals the `Latest` badge
+from the newest one, and `gh release create` will not warn you. Check with
+`gh release list --json tagName,isLatest`; a green exit proves nothing.
+
 ## Notes
 
 - `v0.1.0` was published to crates.io manually before `publish-crate.yml` existed; re-tagging it would
