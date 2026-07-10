@@ -29,7 +29,7 @@ use crate::glyph_cache::{
 };
 use crate::glyph_resolve::{Cells, ResolveError, resolve_frame};
 use crate::mat4::Mat4;
-use crate::metrics::{device_cell, glyph_offset};
+use crate::metrics::{device_cell, fit_cell_to_atlas, glyph_offset};
 use crate::palette::Palette;
 use crate::rasterizer::Rasterizer;
 use crate::upload::{UploadPlan, invalidate_baseline, plan_upload};
@@ -52,13 +52,11 @@ layout(location = 2) in vec3 a_bg;     // instance: background rgb
 layout(location = 3) in vec3 a_fg;     // instance: foreground rgb
 layout(location = 4) in float a_glyph; // instance: atlas slot index
 uniform mat4 u_projection;
-uniform vec2 u_cell_size;   // the GRID cell in device px (glyph box + letterSpacing / lineHeight)
-uniform vec2 u_char_size;   // the GLYPH box in device px — the cell only when both options default
-uniform vec2 u_char_offset; // where the glyph box sits inside the cell (#338)
+uniform vec2 u_cell_size;   // the GRID cell in device px
 out vec3 v_bg;
 out vec3 v_fg;
 flat out uint v_glyph;
-out vec2 v_glyph_uv;
+out vec2 v_tex;
 void main() {
     vec2 origin = a_cell * u_cell_size;
     vec2 pos = floor(origin + a_pos * u_cell_size + 0.5); // pixel-snapped
@@ -66,19 +64,11 @@ void main() {
     v_bg = a_bg;
     v_fg = a_fg;
     v_glyph = uint(a_glyph);
-    // A wide glyph is stored as two half-slots, one per cell (`split_wide_bitmap`). Inset each half
-    // by the usual `dx/2` and the two pull apart: the slack meant for the OUTSIDE of the letter
-    // opens a `dx`-px hole through its middle (#338, reproduced with `一`). A wide letter is centred
-    // in its TWO-cell advance instead — the left half sits flush against its cell's right edge, the
-    // right half against its cell's left — so the slack lands outside the letter, `dx` each side.
-    float dx = u_cell_size.x - u_char_size.x;
-    float lead = float((uint(a_glyph) >> 16u) & 1u);
-    float spacer = float((uint(a_glyph) >> 17u) & 1u);
-    vec2 off = vec2(mix(mix(u_char_offset.x, dx, lead), 0.0, spacer), u_char_offset.y);
-    // Cell-local device px -> glyph-local 0..1. The background still fills the whole cell; only the
-    // glyph is confined to its box, so widening the cell spaces the text instead of stretching it.
-    // With the defaults `off == 0` and `u_char_size == u_cell_size`, so this is `a_pos`.
-    v_glyph_uv = (a_pos * u_cell_size - off) / u_char_size;
+    // Cell-local. The atlas slot IS the padded cell (#359), so the bitmap already carries the glyph
+    // at its offset inside it — the shader neither places nor masks it. Widening the cell spaces the
+    // text because the BITMAP has wider margins, and a wide glyph's halves touch because it was
+    // baked centred over its two-cell advance.
+    v_tex = a_pos;
 }
 "#;
 
@@ -88,10 +78,16 @@ uniform mediump sampler2DArray u_atlas;
 uniform vec2 u_padding_frac; // guard band as a fraction of the padded atlas cell (#288)
 uniform float u_bg_alpha;    // background cell opacity: 0 = transparent, 1 = opaque (#298)
 uniform vec3 u_default_bg;    // the default terminal background — only IT is made translucent (#298)
+// The same uniforms the vertex stage declares — one per program, so the PRECISION must match too.
+// This stage is `mediump float`, the vertex stage defaults to `highp`; an unqualified `vec2` here
+// would fail to link ("Precisions of uniform 'u_cell_size' differ").
+uniform highp vec2 u_cell_size;   // the grid cell in device px
+uniform highp vec2 u_char_size;   // the glyph box inside it (#338) — decorations only
+uniform highp vec2 u_char_offset; // where that box starts
 in vec3 v_bg;
 in vec3 v_fg;
 flat in uint v_glyph;
-in vec2 v_glyph_uv;
+in vec2 v_tex;
 out vec4 FragColor;
 // A horizontal line centred at `c` (cell-local y, 0..1) with soft edges (beamterm cell.frag).
 float hline(float y, float c, float thick) {
@@ -103,21 +99,15 @@ void main() {
     uint slot = v_glyph & 0x1FFFu;
     uint layer = slot >> 5u;   // 32 glyphs stack vertically per layer
     uint band = slot & 31u;
-    // Outside its own box the glyph contributes nothing — that is what makes a wider cell SPACE
-    // the text rather than stretch it (#338). A negative letterSpacing crops here instead.
-    vec2 uv = v_glyph_uv;
-    float inside = step(0.0, uv.x) * step(uv.x, 1.0) * step(0.0, uv.y) * step(uv.y, 1.0);
-    // Inset the glyph-local texcoord into the padded atlas cell's content region, so the
-    // transparent guard band is never sampled (beamterm cell.frag) — stops band bleed while the
-    // content maps edge-to-edge of the GLYPH BOX. At the default spacing that box IS the cell, so
-    // box-drawing still connects across cells; `letterSpacing`/`lineHeight` open a gap no glyph can
-    // reach across, which needs cell-sized builtin glyphs to fix (#359).
-    vec2 inner = clamp(uv, 0.0, 1.0) * (1.0 - 2.0 * u_padding_frac) + u_padding_frac;
+    // Inset the cell-local texcoord into the padded atlas slot's content region, so the transparent
+    // guard band is never sampled (beamterm cell.frag) — stops band bleed while the content maps
+    // edge-to-edge of the CELL. Block elements are baked at cell size (#359), so they tile.
+    vec2 inner = v_tex * (1.0 - 2.0 * u_padding_frac) + u_padding_frac;
     // Nudge off the exact texel edge so NEAREST can't round to a neighbour (beamterm cell.frag);
     // belt-and-suspenders for a fractional cell↔texel mapping (DPR != 1, #265).
     vec3 tc = vec3(inner.x + 0.001, (float(band) + inner.y + 0.001) / 32.0, float(layer));
     vec4 texel = texture(u_atlas, tc);
-    float coverage = texel.a * inside;
+    float coverage = texel.a;
 
     // A colour emoji (bit 15) samples the atlas RGB (the font's own colours); a text glyph uses
     // the packed foreground (beamterm cell.frag `mix(base_fg, glyph.rgb, emoji_factor)`).
@@ -128,10 +118,12 @@ void main() {
     float strike = float((v_glyph >> 14u) & 1u);
     // Fixed cell-local positions (underline below baseline, strikethrough mid-cell). beamterm
     // derives these per-font from metrics; a font-metric-driven position is a later refinement.
-    // Glyph-local, not cell-local: with `lineHeight = 1.5` a cell-local 0.88 would drop the
-    // underline far below the text it underlines. Identical at the default, where the two spaces
-    // coincide (#338).
-    float line = max(hline(uv.y, 0.88, 0.05) * underline, hline(uv.y, 0.5, 0.05) * strike);
+    // Decorations are GLYPH-local, not cell-local: with `lineHeight = 1.5` a cell-local 0.88 would
+    // drop the underline far below the text it underlines. The glyph's own coverage no longer needs
+    // these uniforms (#359 bakes the offset into the bitmap), but its decorations still do.
+    // Identical at the default, where the two spaces coincide (#338).
+    float gy = (v_tex.y * u_cell_size.y - u_char_offset.y) / u_char_size.y;
+    float line = max(hline(gy, 0.88, 0.05) * underline, hline(gy, 0.5, 0.05) * strike);
     // Underline/strikethrough always draw in the base foreground, even over an emoji.
     fg = mix(fg, v_fg, line);
 
@@ -316,6 +308,9 @@ pub struct JustermRenderer {
     char_size: (u32, u32),
     /// Where the glyph box sits inside the cell, device px from its top-left (#338).
     char_offset: (u32, u32),
+    /// `MAX_TEXTURE_SIZE`, read once. The atlas is `padded_w x padded_h * GLYPHS_PER_LAYER`, so a tall
+    /// `lineHeight` can ask for a texture the implementation refuses to allocate — silently (#359).
+    max_texture_size: u32,
     /// Consumer-injected policy (ADR-0017), in **CSS px** — see `metrics::device_cell` for why the
     /// references' device-px choice is not ours (#338).
     letter_spacing: f32,
@@ -430,6 +425,9 @@ impl JustermRenderer {
 
         let raw_gl = webgl2.clone();
         let gl = glow::Context::from_webgl2_context(webgl2);
+        // Read once: the atlas is sized from the cell (#359), and the cell is the consumer's to grow.
+        let max_texture_size =
+            unsafe { gl.get_parameter_i32(glow::MAX_TEXTURE_SIZE).max(1) as u32 };
         let size = (canvas.width() as i32, canvas.height() as i32);
 
         // Attach before ANY GL work, so a loss during construction is observed rather than missed
@@ -451,11 +449,19 @@ impl JustermRenderer {
 
         let rasterizer = Rasterizer::new("monospace", FONT_SIZE * dpr)?;
         // The rasteriser measures the GLYPH box; the grid cell is that box plus the consumer's
-        // spacing policy, which starts at its identity (#338).
-        let char_size = rasterizer.cell_size();
+        // spacing policy, which starts at its identity (#338). The atlas slot is the padded CELL
+        // (#359), so the rasteriser must know it before anything is sized from `padded_size()`.
+        let char_size = rasterizer.glyph_box();
         let (letter_spacing, line_height) = (0.0f32, 1.0f32);
-        let (cell_w, cell_h) = device_cell(char_size, letter_spacing, line_height, dpr);
+        let (cell_w, cell_h) = fit_cell_to_atlas(
+            device_cell(char_size, letter_spacing, line_height, dpr),
+            PADDING,
+            GLYPHS_PER_LAYER as u32,
+            max_texture_size,
+        );
         let char_offset = glyph_offset((cell_w, cell_h), char_size);
+        let mut rasterizer = rasterizer;
+        rasterizer.set_cell((cell_w, cell_h), char_offset)?;
         let (pad_w, pad_h) = rasterizer.padded_size(); // padded atlas cell
 
         let Pipeline {
@@ -510,6 +516,7 @@ impl JustermRenderer {
             letter_spacing,
             line_height,
             atlas_cell: (pad_w, pad_h),
+            max_texture_size,
             raw_gl,
             size,
             // Whole cells that fit the canvas as authored. `resize` below snaps the buffer to
@@ -762,8 +769,17 @@ impl JustermRenderer {
         //    notify retries), and the glyph *slots* are preserved, so the existing instances stay
         //    valid (no re-pack / re-upload). Independent of apply_frame vs apply_damage — both
         //    populate the glyph cache. The ~tens-of-µs cost (#321) is fine for a rare DPR change.
-        let rasterizer = Rasterizer::new("monospace", FONT_SIZE * dpr)?;
-        let char_size = rasterizer.cell_size();
+        let mut rasterizer = Rasterizer::new("monospace", FONT_SIZE * dpr)?;
+        // The glyph box is re-measured at the new density; the spacing policy survives, so the cell
+        // must be re-derived from both BEFORE the atlas is sized (#322 + #338 + #359).
+        let char_size = rasterizer.glyph_box();
+        let cell = fit_cell_to_atlas(
+            device_cell(char_size, self.letter_spacing, self.line_height, dpr),
+            PADDING,
+            GLYPHS_PER_LAYER as u32,
+            self.max_texture_size,
+        );
+        rasterizer.set_cell(cell, glyph_offset(cell, char_size))?;
         let (pad_w, pad_h) = rasterizer.padded_size();
         let atlas = Self::build_atlas(&self.gl, pad_w, pad_h)?;
         let rebake = (|| -> Result<(), JsValue> {
@@ -803,13 +819,97 @@ impl JustermRenderer {
     /// cannot drift apart. It does NOT resize the buffer; the caller does, because `resize` also
     /// re-reads what WebGL granted (#339).
     fn recompute_cell(&mut self) {
-        self.cell_size = device_cell(
+        let asked = device_cell(
             self.char_size,
             self.letter_spacing,
             self.line_height,
             self.dpr,
         );
+        // Ask the implementation, do not predict it (#339's lesson, #359's bug): a cell the atlas
+        // texture cannot hold leaves that texture storage-less, and a storage-less sampler answers
+        // alpha 1 for every glyph. The terminal fills solid instead of failing.
+        self.cell_size = fit_cell_to_atlas(
+            asked,
+            PADDING,
+            GLYPHS_PER_LAYER as u32,
+            self.max_texture_size,
+        );
         self.char_offset = glyph_offset(self.cell_size, self.char_size);
+    }
+
+    /// Adopt a new cell in the rasteriser and rebuild the atlas around it (#359).
+    ///
+    /// The atlas slot is the padded CELL, so a spacing change resizes every slot and every baked
+    /// bitmap: block elements must be redrawn at the new cell, and every other glyph re-inset. This
+    /// is the same shape as a DPR change (#322) — build the replacement, commit only on success —
+    /// and it is why `setLetterSpacing`/`setLineHeight` cost an atlas re-bake rather than a uniform.
+    fn rebake_for_cell(&mut self) -> Result<(), JsValue> {
+        self.rasterizer.set_cell(self.cell_size, self.char_offset)?;
+        let (pad_w, pad_h) = self.rasterizer.padded_size();
+        if (pad_w, pad_h) == self.atlas_cell {
+            return Ok(()); // same slot: the resident bitmaps are still right
+        }
+        let atlas = Self::build_atlas(&self.gl, pad_w, pad_h)?;
+        let rebake = (|| -> Result<(), JsValue> {
+            self.bake_all_glyphs(&self.rasterizer, atlas, (pad_w, pad_h))?;
+            let u_padding_frac = uniform(&self.gl, self.program, "u_padding_frac")?;
+            self.set_padding_frac(self.program, &u_padding_frac, pad_w, pad_h);
+            Ok(())
+        })();
+        if let Err(e) = rebake {
+            unsafe { self.gl.delete_texture(atlas) };
+            return Err(e);
+        }
+        let old = self.atlas;
+        self.atlas = atlas;
+        self.atlas_cell = (pad_w, pad_h);
+        unsafe { self.gl.delete_texture(old) };
+        Ok(())
+    }
+
+    /// Adopt a spacing policy, or leave every field exactly as it was (#338/#359).
+    ///
+    /// The atlas slot is the padded CELL, so a policy change re-bakes it. That can fail — the
+    /// rasteriser draws through the browser's 2D engine — and a half-applied change is worse than a
+    /// rejected one: `cell_size` would describe a cell the atlas does not hold, `draw` would send a
+    /// `u_cell_size` the viewport was not sized for, and the next `apply_frame` would upload bitmaps
+    /// of the wrong size into slots of the old one. `set_device_pixel_ratio` has always built its
+    /// replacement in a local and committed only on success; these setters did not, and their comment
+    /// claimed they did. Roll back instead.
+    fn adopt_spacing(&mut self, letter_spacing: f32, line_height: f32) {
+        let prev = (
+            self.letter_spacing,
+            self.line_height,
+            self.cell_size,
+            self.char_offset,
+        );
+        self.letter_spacing = letter_spacing;
+        self.line_height = line_height;
+        self.recompute_cell();
+
+        // `resize` reads `drawingBufferWidth` back (#339). On a lost context that is 0, so the
+        // adopt-what-fits loop shrinks the grid to 1x1 — and `restore` then rebuilds the buffer from
+        // that clobbered grid, so the terminal comes back one cell wide. Keep the policy, defer both
+        // the re-bake and the resize: `restore` re-derives everything from the stored grid (#269).
+        // `set_device_pixel_ratio` has had this guard all along; the asymmetry was the tell.
+        if self.ctx_loss.state.borrow().is_lost() {
+            return;
+        }
+        if self.rebake_for_cell().is_err() {
+            (
+                self.letter_spacing,
+                self.line_height,
+                self.cell_size,
+                self.char_offset,
+            ) = prev;
+            // The rasteriser was moved to the new cell before the bake; move it back, or it keeps
+            // drawing bitmaps sized for a cell nothing else believes in.
+            let _ = self.rasterizer.set_cell(prev.2, prev.3);
+            return;
+        }
+        debug_assert_eq!(self.atlas_cell, self.rasterizer.padded_size());
+        let (cols, rows) = self.grid_size;
+        self.resize(cols, rows);
     }
 
     /// Extra space between columns, in **CSS pixels** — the consumer's policy (ADR-0017), applied
@@ -821,42 +921,23 @@ impl JustermRenderer {
     /// the unit `FONT_SIZE` already speaks.
     #[wasm_bindgen(js_name = setLetterSpacing)]
     pub fn set_letter_spacing(&mut self, css_px: f32) {
-        self.letter_spacing = if css_px.is_finite() { css_px } else { 0.0 };
-        self.recompute_cell();
-        // `resize` reads `drawingBufferWidth` back (#339). On a lost context that is 0, so the
-        // adopt-what-fits loop shrinks the grid to 1x1 — and `restore` then rebuilds the buffer from
-        // that clobbered grid, so the terminal comes back one cell wide. Keep the policy, defer the
-        // resize: `restore` re-derives the buffer from the stored grid at the new cell (#269).
-        // `set_device_pixel_ratio` has had this guard all along; the asymmetry was the tell.
-        if self.ctx_loss.state.borrow().is_lost() {
-            return;
-        }
-        let (cols, rows) = self.grid_size;
-        self.resize(cols, rows);
+        let ls = if css_px.is_finite() { css_px } else { 0.0 };
+        self.adopt_spacing(ls, self.line_height);
     }
 
     /// A multiplier on the glyph height, `>= 1` — the consumer's policy (#338). Clamped rather than
     /// rejected: xterm throws from its option setter (`OptionsService.ts:182`), and a renderer that
     /// panics across the wasm boundary is a worse contract than one that reports what it adopted.
-    /// Read the result back with [`cell_height`](Self::cell_height).
+    /// Read the result back with [`cell_height`](Self::cell_height) — it may be smaller than asked,
+    /// because a cell the atlas texture cannot hold is shrunk to one it can (#359).
     #[wasm_bindgen(js_name = setLineHeight)]
     pub fn set_line_height(&mut self, multiplier: f32) {
-        self.line_height = if multiplier.is_finite() {
+        let lh = if multiplier.is_finite() {
             multiplier.max(1.0)
         } else {
             1.0
         };
-        self.recompute_cell();
-        // `resize` reads `drawingBufferWidth` back (#339). On a lost context that is 0, so the
-        // adopt-what-fits loop shrinks the grid to 1x1 — and `restore` then rebuilds the buffer from
-        // that clobbered grid, so the terminal comes back one cell wide. Keep the policy, defer the
-        // resize: `restore` re-derives the buffer from the stored grid at the new cell (#269).
-        // `set_device_pixel_ratio` has had this guard all along; the asymmetry was the tell.
-        if self.ctx_loss.state.borrow().is_lost() {
-            return;
-        }
-        let (cols, rows) = self.grid_size;
-        self.resize(cols, rows);
+        self.adopt_spacing(self.letter_spacing, lh);
     }
 
     /// Whether the WebGL context is currently lost (#269). While lost the renderer draws nothing;
@@ -917,8 +998,16 @@ impl JustermRenderer {
     /// next frame retries (self-healing, mirroring [`set_device_pixel_ratio`](Self::set_device_pixel_ratio)).
     fn restore(&mut self) -> Result<(), JsValue> {
         let dpr = web_sys::window().map_or(self.dpr, |w| w.device_pixel_ratio() as f32);
-        let rasterizer = Rasterizer::new("monospace", FONT_SIZE * dpr)?;
-        let (cell_w, cell_h) = rasterizer.cell_size();
+        let mut rasterizer = Rasterizer::new("monospace", FONT_SIZE * dpr)?;
+        let (cell_w, cell_h) = rasterizer.glyph_box();
+        // Same as the DPR path: the policy outlives the lost context, and the atlas slot is the cell.
+        let cell = fit_cell_to_atlas(
+            device_cell((cell_w, cell_h), self.letter_spacing, self.line_height, dpr),
+            PADDING,
+            GLYPHS_PER_LAYER as u32,
+            self.max_texture_size,
+        );
+        rasterizer.set_cell(cell, glyph_offset(cell, (cell_w, cell_h)))?;
         let (pad_w, pad_h) = rasterizer.padded_size();
 
         // 1. Build the replacements without touching any live field.
