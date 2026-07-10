@@ -60,12 +60,48 @@ pub struct FrameGrid {
     clusters: Vec<String>,
 }
 
+/// How many cells a `cols`×`rows` grid holds, or `None` if that does not fit a `u32` (#355).
+///
+/// The wire caps both at `u16` (`justerm-core`'s `serialize.rs`), so 65535×65535 — 4_294_836_225,
+/// just under `u32::MAX` — is the largest a frame from core can name, and it never overflows. But
+/// `apply_damage` reads `cols`/`rows` out of a JS-supplied header, and `apply_frame` takes them as
+/// bare `u32` arguments, so nothing binds a caller that does not come through core.
+pub fn cell_count(cols: u32, rows: u32) -> Option<usize> {
+    cols.checked_mul(rows).map(|n| n as usize)
+}
+
+/// Why a damage frame was refused (#355). Every variant is a *caller* error: the span directory or
+/// the scroll region names cells outside the grid, or the frame does not carry the cells its spans
+/// claim. `apply_damage` is wasm-exported, so these arrive from JS and are surfaced as thrown
+/// errors — never as a wasm trap, which used to poison the renderer for good.
+#[derive(Debug, PartialEq, Eq)]
+pub enum DamageError {
+    SpanOutsideGrid {
+        line: usize,
+        left: usize,
+        count: usize,
+        cols: usize,
+        rows: usize,
+    },
+    SpanCellsMissing {
+        cell_offset: usize,
+        count: usize,
+        cells: usize,
+    },
+    ScrollOutsideGrid {
+        top: usize,
+        bottom: usize,
+        rows: usize,
+    },
+}
+
 impl FrameGrid {
     /// A blank `cols`×`rows` grid (every cell codepoint `0` / colour ref `0` / no flags — the
-    /// renderer resolves these as space / Default).
-    pub fn new(cols: u32, rows: u32) -> Self {
-        let n = (cols * rows) as usize;
-        Self {
+    /// renderer resolves these as space / Default), or `None` if the grid has more cells than a
+    /// `u32` can count — checked *before* any of the five per-cell vectors is reserved (#355).
+    pub fn try_new(cols: u32, rows: u32) -> Option<Self> {
+        let n = cell_count(cols, rows)?;
+        Some(Self {
             cols,
             rows,
             codepoints: vec![0; n],
@@ -73,7 +109,7 @@ impl FrameGrid {
             bg: vec![0; n],
             flags: vec![0; n],
             clusters: vec![String::new(); n],
-        }
+        })
     }
 
     pub fn cols(&self) -> u32 {
@@ -98,8 +134,76 @@ impl FrameGrid {
         &self.clusters
     }
 
-    /// Scatter a decoded frame's damage into the grid.
-    pub fn apply(&mut self, frame: &DamageFrame) {
+    /// Check every index a scatter would produce, before it produces any of them (#355).
+    ///
+    /// `apply_damage` is wasm-exported: the span directory and the scroll region arrive as raw
+    /// `u32`s from a JS caller, bound by nothing. They used to index `self.codepoints` directly, so
+    /// a `line == rows` — an off-by-one, not an exotic value — trapped the module (`RuntimeError:
+    /// unreachable`) and left it poisoned: every later call failed with "recursive use of an
+    /// object". Reachable in a way the cell-count overflow never was.
+    ///
+    /// Validating up front, rather than checking as we go, is what makes a refusal *total*: the
+    /// scatter wrote cells until it hit the bad index, so a rejected frame half-overwrote the grid.
+    /// Same discipline as `resolve_frame`, which rasterises before it commits.
+    fn validate(&self, frame: &DamageFrame) -> Result<(), DamageError> {
+        let (cols, rows) = (self.cols as usize, self.rows as usize);
+
+        // A Full frame ignores `scroll` (it repaints everything), so only a Partial can shift.
+        // `top > bottom` is an empty region, not an error — `shift_region` simply does not iterate.
+        // Only a `bottom` past the last row can walk off the grid.
+        if let Some((top, bottom, _)) = frame.scroll
+            && frame.kind != 0
+            && top <= bottom
+            && bottom as usize >= rows
+        {
+            return Err(DamageError::ScrollOutsideGrid {
+                top: top as usize,
+                bottom: bottom as usize,
+                rows,
+            });
+        }
+
+        // The span-ordered columns are read at `cell_offset + i`; the shortest one bounds them all.
+        let cells = frame
+            .codepoints
+            .len()
+            .min(frame.fg.len())
+            .min(frame.bg.len())
+            .min(frame.flags.len());
+        let mut s = 0;
+        while s + SPAN_STRIDE <= frame.spans.len() {
+            let line = frame.spans[s] as usize;
+            let left = frame.spans[s + 1] as usize;
+            let cell_offset = frame.spans[s + 3] as usize;
+            let count = frame.spans[s + 4] as usize;
+
+            // `left + count` and `cell_offset + count` are `usize` sums of `u32`s: on wasm32 they
+            // can wrap, so ask the checked question rather than the natural one.
+            let past_right = left.checked_add(count).is_none_or(|r| r > cols);
+            if line >= rows || past_right {
+                return Err(DamageError::SpanOutsideGrid {
+                    line,
+                    left,
+                    count,
+                    cols,
+                    rows,
+                });
+            }
+            if cell_offset.checked_add(count).is_none_or(|e| e > cells) {
+                return Err(DamageError::SpanCellsMissing {
+                    cell_offset,
+                    count,
+                    cells,
+                });
+            }
+            s += SPAN_STRIDE;
+        }
+        Ok(())
+    }
+
+    /// Scatter a decoded frame's damage into the grid, or refuse it whole (#355).
+    pub fn apply(&mut self, frame: &DamageFrame) -> Result<(), DamageError> {
+        self.validate(frame)?;
         let cols = self.cols as usize;
 
         if frame.kind == 0 {
@@ -160,6 +264,7 @@ impl FrameGrid {
             }
             s += SPAN_STRIDE;
         }
+        Ok(())
     }
 
     /// Shift rows `[top, bottom]` by `count` (`> 0` up, exposing blanks at the bottom; `< 0`
@@ -208,10 +313,106 @@ impl FrameGrid {
 mod tests {
     use super::*;
 
+    /// A minimal Partial frame. `flags` must be as long as the other columns: the scatter reads
+    /// `frame.flags[src]` raw, exactly like `codepoints`.
+    fn damage<'a>(
+        spans: &'a [u32],
+        cps: &'a [u32],
+        flags: &'a [u16],
+        scroll: Option<(u16, u16, i16)>,
+    ) -> DamageFrame<'a> {
+        DamageFrame {
+            kind: 1,
+            scroll,
+            spans,
+            codepoints: cps,
+            fg: cps,
+            bg: cps,
+            flags,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_span_pointing_outside_the_grid_is_refused_and_changes_nothing() {
+        // #355 (found by the sibling lens, reproduced in Chromium): `dst = line * cols + left + i`
+        // indexed `self.codepoints` raw. `line = rows` walked off the end -> `RuntimeError:
+        // unreachable`, and the wasm instance stayed poisoned ("recursive use of an object") for
+        // every later call. `apply_frame`'s guards return a JsValue; this one killed the renderer.
+        //
+        // Refusal must also be TOTAL: the scatter used to write cells before reaching the bad
+        // index, so a rejected frame half-overwrote the grid.
+        let mut g = FrameGrid::try_new(4, 2).unwrap();
+        g.codepoints[0] = 0x41;
+
+        // span = [line, left, _, cell_offset, count]; line 2 is one past the last row.
+        let err = g.apply(&damage(&[2, 0, 0, 0, 1], &[0x42], &[0], None));
+        assert!(matches!(err, Err(DamageError::SpanOutsideGrid { .. })));
+        assert_eq!(
+            g.codepoints[0], 0x41,
+            "a refused frame must not have written anything"
+        );
+    }
+
+    #[test]
+    fn a_span_running_past_the_last_column_is_refused() {
+        let mut g = FrameGrid::try_new(4, 2).unwrap();
+        // left 3 + count 2 = 5 > cols 4: the second cell would spill onto the next row.
+        let err = g.apply(&damage(&[0, 3, 0, 0, 2], &[0x41, 0x42], &[0, 0], None));
+        assert!(matches!(err, Err(DamageError::SpanOutsideGrid { .. })));
+    }
+
+    #[test]
+    fn a_span_claiming_more_cells_than_the_columns_carry_is_refused() {
+        let mut g = FrameGrid::try_new(4, 2).unwrap();
+        // count 3 but only one codepoint was sent: `src = cell_offset + i` used to index raw.
+        let err = g.apply(&damage(&[0, 0, 0, 0, 3], &[0x41], &[0], None));
+        assert!(matches!(err, Err(DamageError::SpanCellsMissing { .. })));
+    }
+
+    #[test]
+    fn a_scroll_region_outside_the_grid_is_refused() {
+        let mut g = FrameGrid::try_new(4, 2).unwrap();
+        // bottom = 5 on a 2-row grid: `shift_row`'s `dst = y * cols + x` walked off the end.
+        let err = g.apply(&damage(&[], &[], &[], Some((0, 5, 1))));
+        assert!(matches!(err, Err(DamageError::ScrollOutsideGrid { .. })));
+        // top > bottom is an EMPTY region, not an error — the existing loop simply does not run.
+        assert!(g.apply(&damage(&[], &[], &[], Some((1, 0, 1)))).is_ok());
+    }
+
+    #[test]
+    fn an_in_bounds_partial_frame_still_applies() {
+        // The control. A guard that refused everything would satisfy the four tests above.
+        let mut g = FrameGrid::try_new(4, 2).unwrap();
+        assert!(
+            g.apply(&damage(&[1, 2, 0, 0, 2], &[0x41, 0x42], &[0, 0], None))
+                .is_ok()
+        );
+        let cell = |row: usize, col: usize| g.codepoints[row * 4 + col];
+        assert_eq!(cell(1, 2), 0x41);
+        assert_eq!(cell(1, 3), 0x42);
+    }
+
+    #[test]
+    fn a_grid_whose_cell_count_overflows_is_refused_before_it_allocates() {
+        // RED (#355). `cols * rows` is a u32 multiply, evaluated BEFORE `resolve_frame`'s guard on
+        // the `apply_damage` path — so this is the first thing to blow up, not the last. The wire
+        // caps both at u16, but `apply_damage` reads them out of a JS-supplied header.
+        // The arithmetic is tested through `cell_count`, not the constructor: the largest grid the
+        // wire can express is 65535^2 cells, and *allocating* it here would ask for ~100 GB (the
+        // per-cell `String` alone is 24 bytes). Test the property, not the allocator.
+        assert_eq!(cell_count(u32::MAX, 2), None);
+        assert_eq!(cell_count(65_535, 65_535), Some(4_294_836_225)); // fits u32, just
+        assert_eq!(cell_count(3, 2), Some(6));
+        // And the constructor refuses before it reserves anything.
+        assert!(FrameGrid::try_new(u32::MAX, 2).is_none());
+        assert!(FrameGrid::try_new(3, 2).is_some());
+    }
+
     #[test]
     fn partial_span_scatters_into_the_dense_grid() {
         // 3x2 grid. A Partial frame: one span at line 1, cols 1..=2 (2 cells 'A','B').
-        let mut g = FrameGrid::new(3, 2);
+        let mut g = FrameGrid::try_new(3, 2).unwrap();
         let f = DamageFrame {
             kind: 1,
             scroll: None,
@@ -222,7 +423,7 @@ mod tests {
             flags: &[0, 0],
             ..Default::default()
         };
-        g.apply(&f);
+        g.apply(&f).unwrap();
         // idx = row*cols + col. (1,1) = 4, (1,2) = 5.
         assert_eq!(g.codepoints()[4], 0x41);
         assert_eq!(g.codepoints()[5], 0x42);
@@ -237,7 +438,7 @@ mod tests {
     fn full_frame_wipes_stale_cells_before_scattering() {
         // cell-mirror.ts step 0: a Full frame is the whole viewport, so stale cells outside
         // the new spans must be wiped or they resurrect as ghosts.
-        let mut g = FrameGrid::new(3, 2);
+        let mut g = FrameGrid::try_new(3, 2).unwrap();
         // A Partial sets (0,0).
         g.apply(&DamageFrame {
             kind: 1,
@@ -248,7 +449,8 @@ mod tests {
             bg: &[2],
             flags: &[0],
             ..Default::default()
-        });
+        })
+        .unwrap();
         assert_eq!(g.codepoints()[0], 0x58);
         // A Full frame whose only span covers (1,1): (0,0) must be wiped, not resurrected.
         g.apply(&DamageFrame {
@@ -260,7 +462,8 @@ mod tests {
             bg: &[4],
             flags: &[0],
             ..Default::default()
-        });
+        })
+        .unwrap();
         assert_eq!(g.codepoints()[0], 0, "Full wipes the stale (0,0)");
         assert_eq!(g.fg()[0], 0, "wiped cell's colour ref reset too");
         assert_eq!(
@@ -273,7 +476,7 @@ mod tests {
     /// Fill a 1-column grid's rows with the given codepoints via a Full frame (one span/row).
     fn fill_col(codes: &[u32]) -> FrameGrid {
         let rows = codes.len() as u32;
-        let mut g = FrameGrid::new(1, rows);
+        let mut g = FrameGrid::try_new(1, rows).unwrap();
         let mut spans = Vec::new();
         for (row, _) in codes.iter().enumerate() {
             spans.extend_from_slice(&[row as u32, 0, 0, row as u32, 1]);
@@ -289,7 +492,8 @@ mod tests {
             bg: &zeros_u32,
             flags: &zeros_u16,
             ..Default::default()
-        });
+        })
+        .unwrap();
         g
     }
 
@@ -303,7 +507,8 @@ mod tests {
             spans: &[],
             codepoints: &[],
             ..Default::default()
-        });
+        })
+        .unwrap();
         assert_eq!(g.codepoints(), &[0x42, 0x43, 0x44, 0]);
     }
 
@@ -317,7 +522,8 @@ mod tests {
             spans: &[],
             codepoints: &[],
             ..Default::default()
-        });
+        })
+        .unwrap();
         assert_eq!(g.codepoints(), &[0, 0x41, 0x42, 0x43]);
     }
 
@@ -335,7 +541,8 @@ mod tests {
             bg: &[0],
             flags: &[0],
             ..Default::default()
-        });
+        })
+        .unwrap();
         assert_eq!(g.codepoints(), &[0x42, 0x43, 0x44, 0x5A]);
     }
 
@@ -343,7 +550,7 @@ mod tests {
     fn partial_frames_accumulate_across_calls() {
         // A Partial only carries its damage; prior cells persist (the whole reason the grid is
         // stateful — cell-mirror.ts / ADR-0011).
-        let mut g = FrameGrid::new(2, 1);
+        let mut g = FrameGrid::try_new(2, 1).unwrap();
         g.apply(&DamageFrame {
             kind: 1,
             scroll: None,
@@ -353,7 +560,8 @@ mod tests {
             bg: &[0],
             flags: &[0],
             ..Default::default()
-        });
+        })
+        .unwrap();
         g.apply(&DamageFrame {
             kind: 1,
             scroll: None,
@@ -363,7 +571,8 @@ mod tests {
             bg: &[0],
             flags: &[0],
             ..Default::default()
-        });
+        })
+        .unwrap();
         assert_eq!(
             g.codepoints(),
             &[0x41, 0x42],
@@ -381,7 +590,8 @@ mod tests {
             spans: &[],
             codepoints: &[],
             ..Default::default()
-        });
+        })
+        .unwrap();
         // row0 (A) untouched; [1,2] shift up → row1=C, row2=blank; row3 (D) untouched.
         assert_eq!(g.codepoints(), &[0x41, 0x43, 0, 0x44]);
     }
@@ -398,7 +608,8 @@ mod tests {
             spans: &[],
             codepoints: &[],
             ..Default::default()
-        });
+        })
+        .unwrap();
         assert_eq!(g.codepoints(), &[0, 0, 0, 0]);
     }
 
@@ -408,7 +619,7 @@ mod tests {
         // full-damage without clearing scroll). The Full's spans are authoritative — the stale
         // scroll must NOT shift the grid. Here the Full repaints both cells; a wrongly-applied
         // scroll would have shuffled them first.
-        let mut g = FrameGrid::new(1, 2);
+        let mut g = FrameGrid::try_new(1, 2).unwrap();
         g.apply(&DamageFrame {
             kind: 0,
             scroll: Some((0, 1, 1)), // stale scroll — must be ignored on a Full
@@ -418,7 +629,8 @@ mod tests {
             bg: &[0, 0],
             flags: &[0, 0],
             ..Default::default()
-        });
+        })
+        .unwrap();
         assert_eq!(
             g.codepoints(),
             &[0x41, 0x42],
@@ -432,7 +644,7 @@ mod tests {
         // only the trailing combining MARKS (justerm-core grid.rs). The base glyph is in
         // `codepoints`, so the grid stores base + marks. Resolve at scatter (while the frame is
         // current) so a later frame's different side_table can't invalidate a stored index.
-        let mut g = FrameGrid::new(2, 1);
+        let mut g = FrameGrid::try_new(2, 1).unwrap();
         g.apply(&DamageFrame {
             kind: 1,
             spans: &[0, 0, 1, 0, 2],   // both cells on row 0
@@ -443,7 +655,8 @@ mod tests {
             extra: &[1, 0], // cell0 → side_table[0]; cell1 no cluster
             side_table: &["\u{0301}".to_string()], // combining acute (marks only, as core emits)
             ..Default::default()
-        });
+        })
+        .unwrap();
         assert_eq!(g.clusters()[0], "e\u{0301}", "grid assembles base + marks");
         assert_eq!(g.clusters()[1], "", "cell1 has no cluster");
         // A later Partial (its own, cluster-free side_table) touching only cell1 must leave
@@ -456,7 +669,8 @@ mod tests {
             bg: &[0],
             flags: &[0],
             ..Default::default()
-        });
+        })
+        .unwrap();
         assert_eq!(
             g.clusters()[0],
             "e\u{0301}",
@@ -466,7 +680,7 @@ mod tests {
 
     #[test]
     fn full_wipes_and_scroll_moves_the_cluster_column() {
-        let mut g = FrameGrid::new(1, 2);
+        let mut g = FrameGrid::try_new(1, 2).unwrap();
         g.apply(&DamageFrame {
             kind: 1,
             spans: &[0, 0, 0, 0, 1],
@@ -477,14 +691,16 @@ mod tests {
             extra: &[1],
             side_table: &["\u{0308}".to_string()], // combining diaeresis → "a\u{0308}"
             ..Default::default()
-        });
+        })
+        .unwrap();
         assert_eq!(g.clusters()[0], "a\u{0308}");
         // Scroll down 1 over [0,1]: the cluster moves with its row; the exposed top clears.
         g.apply(&DamageFrame {
             kind: 1,
             scroll: Some((0, 1, -1)),
             ..Default::default()
-        });
+        })
+        .unwrap();
         assert_eq!(g.clusters()[1], "a\u{0308}", "cluster shifts with the row");
         assert_eq!(g.clusters()[0], "", "exposed row's cluster cleared");
         // A Full frame with no cluster wipes the column.
@@ -496,7 +712,8 @@ mod tests {
             bg: &[0, 0],
             flags: &[0, 0],
             ..Default::default()
-        });
+        })
+        .unwrap();
         assert_eq!(
             g.clusters(),
             &["".to_string(), "".to_string()],

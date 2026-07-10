@@ -23,7 +23,7 @@ use crate::context_loss::{ContextState, DEFAULT_RESTORE_TIMEOUT_MS, FrameAction}
 use crate::dpr::{cells_that_fit, css_px, dpr_changed, grid_px};
 use crate::emoji::is_emoji_text;
 use crate::frame::{Frame, INSTANCE_FLOATS, pack_instances};
-use crate::frame_grid::{DamageFrame, FrameGrid};
+use crate::frame_grid::{DamageFrame, FrameGrid, cell_count};
 use crate::glyph_cache::{
     FontStyle, GLYPHS_PER_LAYER, GlyphCache, WIDE_BASE, WIDE_CAPACITY, slot_texcoord,
 };
@@ -1077,7 +1077,16 @@ impl JustermRenderer {
         fg: &[u32],
         blink_on: bool,
     ) -> Result<(), JsValue> {
-        let count = (cells.cols * cells.rows) as usize;
+        // The same multiply `resolve_frame` guards, evaluated one frame earlier — so guarding only
+        // the pure layer left the panic exactly where it was (#355). This is the first arithmetic a
+        // JS-supplied `cols`/`rows` touches; `resolve_frame` re-checks it because it is a public,
+        // separately-tested surface, not because this line can be trusted to have run.
+        let count = cell_count(cells.cols, cells.rows).ok_or_else(|| {
+            JsValue::from_str(&format!(
+                "justerm-renderer: grid {}x{} has more cells than a u32 can count",
+                cells.cols, cells.rows
+            ))
+        })?;
         // Resolve the per-cell glyph slots via the pure host-tested resolver (#280): it
         // rasterises before committing (a failure strands nothing), pins this frame's
         // working set (an over-capacity frame is surfaced, not silently corrupted), and
@@ -1120,7 +1129,29 @@ impl JustermRenderer {
             ResolveError::FrameExceedsCapacity => JsValue::from_str(
                 "justerm-renderer: frame references more distinct glyphs than the atlas can hold",
             ),
+            ResolveError::GridOverflows { cols, rows } => JsValue::from_str(&format!(
+                "justerm-renderer: grid {cols}x{rows} has more cells than a u32 can count"
+            )),
+            ResolveError::FrameShorterThanGrid { cells, got } => JsValue::from_str(&format!(
+                "justerm-renderer: grid claims {cells} cells but the frame carries {got}"
+            )),
         })?;
+
+        // `resolve_frame` bounds `codepoints`/`flags`, the two columns it reads, and allocates only
+        // `count <= codepoints.len()` — so this can wait until after it. `bg`/`fg` are read by
+        // `pack_instances`, which `.get(idx).unwrap_or(0)`s them: no panic, but a short colour column
+        // renders silently in Default rather than being refused. Same rule for every column — a frame
+        // that does not carry its cells is not a frame (#355).
+        //
+        // It runs *after* so that a frame short in every column reports the cells it is missing, not
+        // just its colours; `FrameShorterThanGrid` is the more useful diagnosis.
+        if bg.len() < count || fg.len() < count {
+            return Err(JsValue::from_str(&format!(
+                "justerm-renderer: grid claims {count} cells but bg/fg carry {}/{}",
+                bg.len(),
+                fg.len()
+            )));
+        }
 
         let frame = Frame {
             cols: cells.cols,
@@ -1219,9 +1250,15 @@ impl JustermRenderer {
         // it when the dimensions change (a resize is followed by a Full frame).
         let mut grid = match self.grid.take() {
             Some(g) if g.cols() == cols && g.rows() == rows => g,
-            _ => FrameGrid::new(cols, rows),
+            _ => FrameGrid::try_new(cols, rows).ok_or_else(|| {
+                JsValue::from_str(&format!(
+                    "justerm-renderer: grid {cols}x{rows} has more cells than a u32 can count"
+                ))
+            })?,
         };
-        grid.apply(&DamageFrame {
+        // A malformed span directory refuses the whole frame; the grid is untouched and the
+        // renderer stays usable. Before #355 it trapped the module and poisoned every later call.
+        let scattered = grid.apply(&DamageFrame {
             kind,
             scroll,
             spans,
@@ -1232,6 +1269,14 @@ impl JustermRenderer {
             extra,
             side_table: &side_table,
         });
+        if let Err(e) = scattered {
+            // Put the grid back before returning: a refused frame must not also lose the renderer's
+            // persistent viewport (`self.grid` is `take`n above).
+            self.grid = Some(grid);
+            return Err(JsValue::from_str(&format!(
+                "justerm-renderer: apply_damage refused a malformed frame: {e:?}"
+            )));
+        }
         let cells = Cells {
             cols,
             rows,

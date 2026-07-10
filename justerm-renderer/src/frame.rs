@@ -42,10 +42,15 @@ pub fn pack_instances(frame: &Frame, palette: &Palette, blink_on: bool) -> Vec<f
         slots,
         flags,
     } = *frame;
-    let mut out = Vec::with_capacity(cols as usize * rows as usize * INSTANCE_FLOATS);
+    // `usize` is 32 bits on wasm32, so `cells * 9` overflows it for a grid `resolve_frame` would
+    // still accept (it only bounds `cells` by the slice length). A failed reservation is not worth
+    // an abort: fall back to growing on demand — the loop below is bounded by `rows * cols` either
+    // way, and `resolve_frame` has already refused a grid its slices cannot back (#355).
+    let cells = (cols as usize).saturating_mul(rows as usize);
+    let mut out = Vec::with_capacity(cells.checked_mul(INSTANCE_FLOATS).unwrap_or(0));
     for row in 0..rows {
         for col in 0..cols {
-            let idx = (row * cols + col) as usize;
+            let idx = row as usize * cols as usize + col as usize;
             let cell_flags = flags.get(idx).copied().unwrap_or(0);
 
             let bg_rgb = gl_rgb(resolve_rgb(
