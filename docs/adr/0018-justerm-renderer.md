@@ -94,6 +94,27 @@ grounds, in order of weight:
    `renderer.rs:164-168`), with the sub-cell remainder letterboxed (`terminal_grid.rs:240-241`). That
    route is closed to us: #331 made the grid the source of truth.
 
+**The cell and the glyph box are two rectangles** (#338). They used to be one: the rasteriser ink-scans
+`█` at `FONT_SIZE * dpr` and that box *was* the cell, so the shader could stretch one glyph quad across
+one cell and be right by construction. `letterSpacing` and `lineHeight` break the identity, and something
+must then say where inside the cell the glyph sits — which is why xterm carries `device.char.{top,left}`
+beside `device.cell` (`WebglRenderer.ts:668,675`) and alacritty carries `glyph_offset` beside `offset`
+(`config/font.rs:20-23`). We centre, as xterm does; alacritty baseline-anchors instead.
+
+`letterSpacing` is taken in **CSS px** and applied as `round(spacing * dpr)`. Both references take device
+px — xterm adds `Math.round(letterSpacing)` straight onto an already-DPR-scaled `char.width`
+(`WebglRenderer.ts:654` vs `:671`), alacritty adds an `i8` onto DPI-scaled font metrics
+(`display/mod.rs:411-416,1608`) — so the same setting is a different gap on a Retina display. Our
+`FONT_SIZE` is CSS px scaled by the DPR at rasterisation, and the two halves of one font description
+should speak one unit. (Whether xterm's choice is deliberate is unknown: its source says nothing and no
+issue discusses it. We do not claim it is a bug; we claim the unit does not suit us.)
+
+Two consequences worth naming. A **wide** glyph is stored as two half-slots, so each half must be placed
+against the seam rather than centred in its own cell, or the letter tears down its middle — the instance
+carries wide-lead / wide-spacer bits for exactly that. And **block and box-drawing glyphs stop tiling**
+under non-default spacing, because they are masked to their ink box like every other glyph; both
+references intercept `U+2500–259F` and draw them at cell size. That is tracked in #359, not fixed here.
+
 **The browser may refuse the buffer, and then the canvas attribute must follow it down** (#339). WebGL
 grants "a drawing buffer with smaller dimensions" whenever the request cannot be satisfied, with no error
 and no lost context; `canvas.width` keeps the request while `drawingBufferWidth` reports the grant. The
