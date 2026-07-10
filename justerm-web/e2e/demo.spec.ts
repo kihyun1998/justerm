@@ -637,3 +637,58 @@ test.describe("HiDPI fit sizes the backing buffer to dpr, not dpr² (#252)", () 
     expect(Math.abs(r.heightRatio - 2)).toBeLessThan(0.05);
   });
 });
+
+test.describe("regex validation runs in core's dialect, not JS RegExp (#316 D2, wired by #346)", () => {
+  // `SearchController` takes `isValidRegex` as an injected seam, and its own doc says the flag is
+  // "always false when no validator is injected". The unit tests inject a fake. So this is the ONLY
+  // place that can prove the demo actually got the REAL validator out of `justerm-wasm-decode` —
+  // which it did not, while the published package lagged the repo (#346).
+  //
+  // Three patterns, each ruling out a different wrong implementation. Measured against the real core
+  // (`regex` 1.12.4, pinned in Cargo.lock) and against node, rather than assumed:
+  //
+  //     pattern       core   JS      rules out
+  //     (?=x)         false  valid   a JS `RegExp` stand-in (it calls lookaround valid)
+  //     (?i)abc       true   throws  a JS stand-in from the other side (it calls inline flags invalid)
+  //     (?<name>x)    true   valid   a stub that answers "invalid" to everything
+  //
+  // `regex` rejects lookaround by design — it is a finite automaton and guarantees linear time
+  // (`regex-syntax` `parse_group` -> `UnsupportedLookAround`). It accepts inline flags, which JS has no
+  // syntax for. Only a validator that is actually core's dialect answers all three correctly.
+  // (`a(b` would prove nothing: both dialects reject it.)
+  //
+  // The `(?<name>x)` control needs `regex` >= 1.7.0, which first accepted the non-`?P` named-group
+  // form. `justerm-core`'s manifest says `regex = "1"` (a floor); the guarantee lives in `Cargo.lock`,
+  // which pins 1.12.4. A resolution below 1.7.0 would make that control demand `(?P<name>x)` instead.
+  const openSearch = async (page: import("@playwright/test").Page, query: string) => {
+    await page.locator("#term").click({ position: { x: 50, y: 50 } });
+    await page.keyboard.press("Control+f");
+    await page.locator("#search-regex").check();
+    await page.locator('input[placeholder="search"]').fill(query);
+  };
+
+  test("a lookahead is rejected — only core's dialect says so", async ({ page }) => {
+    await openSearch(page, "(?=x)");
+    await expect(page.locator("#search-count")).toHaveText("invalid");
+    // …and the box red-flags it, which is the user-visible half of the contract.
+    await expect(page.locator('input[placeholder="search"]')).toHaveCSS(
+      "border-color",
+      "rgb(243, 139, 168)", // #f38ba8
+    );
+  });
+
+  test("an inline flag group is accepted — only core's dialect says so", async ({ page }) => {
+    // The mirror image of the test above. `new RegExp("(?i)abc")` throws in JS ("Invalid group"), so a
+    // JS stand-in would red-flag this. core accepts it. Between the two tests, a JS validator fails
+    // whichever way it answers.
+    await openSearch(page, "(?i)abc");
+    await expect(page.locator("#search-count")).not.toHaveText("invalid");
+  });
+
+  test("a named group is accepted — the flag is not simply always on", async ({ page }) => {
+    // Valid in BOTH dialects, so this one discriminates nothing about the backend — it exists to reject
+    // a stub that answers "invalid" to everything, which the two tests above would otherwise accept.
+    await openSearch(page, "(?<name>x)");
+    await expect(page.locator("#search-count")).not.toHaveText("invalid");
+  });
+});
