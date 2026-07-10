@@ -1,0 +1,141 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>justerm-renderer proof — a frame must carry the cells its grid claims (#355)</title>
+<style>
+  body { margin: 0; background: #000; }
+  #c { display: block; }
+</style>
+<!--
+  #355 proof: `apply_frame(cols, rows, …)` is wasm-exported and takes its grid as bare u32s. The
+  wire caps cols/rows at u16 (`justerm-core`'s serialize.rs), so nothing from core can overflow
+  `cols * rows` — but nothing binds a caller that does not come through core.
+
+  Four failures were unguarded. Two were silent:
+    - `cols * rows` overflowing u32: a debug panic, and in release a wrapped cell count.
+    - a grid claiming more cells than the frame carries: `.get(idx).unwrap_or(0x20)` invented the
+      difference, AFTER reserving for all of them. A 1000x1000 grid backed by two codepoints
+      resolved a million cells.
+  Two were fatal — `apply_damage` indexed the grid with a JS-supplied span line / scroll bottom, so
+  an off-by-one trapped the module and poisoned it: every later call died with "recursive use of an
+  object detected". Reachable in a way the overflow never was.
+
+  All four now throw a MESSAGE (asserted below — a wasm trap would "throw" too, and that is the bug).
+  The control matters as much as the failures: after four rejections a DENSE frame must still render,
+  or a guard that rejects everything — or a renderer that quietly died — would pass this page.
+  Build: wasm-pack build --target web --dev --out-dir pkg
+-->
+<canvas id="c" width="64" height="64"></canvas>
+<script type="module">
+  import init, { JustermRenderer } from "../pkg/justerm_renderer.js";
+  import { deviceCell, readCells, countLit, gridFit } from "./proof.js";
+  const FG = 0xffffff, BG = 0x000000;
+  await init();
+
+  const palette = new Uint32Array(256);
+  const r = new JustermRenderer("#c", palette, FG, BG);
+  const canvas = document.querySelector("#c");
+  const gl = canvas.getContext("webgl2");
+
+  const COLS = 4, ROWS = 2;
+  r.resize(COLS, ROWS);
+  const n = COLS * ROWS;
+
+  /** Call `apply_frame` and report what came back: `null` on success, the message on a throw. */
+  const threw = (cols, rows, len) => {
+    try {
+      r.apply_frame(
+        cols, rows,
+        new Uint32Array(len), new Uint32Array(len), new Uint32Array(len), new Uint16Array(len),
+        true,
+      );
+      return null;
+    } catch (e) {
+      return String(e.message ?? e);
+    }
+  };
+
+  // 1. A grid whose cell count does not fit a u32.
+  const overflow = threw(0xffffffff, 2, n);
+
+  // 2. A grid that claims 1_000_000 cells while the frame carries 2.
+  const short = threw(1000, 1000, 2);
+
+  // 3. Full codepoints/flags, a SHORT colour column. Not a panic — `pack_instances` reads bg/fg
+  //    with `.get(idx).unwrap_or(0)` — but the missing cells were silently painted in Default.
+  //    `resolve_frame` only bounds the two columns it reads, so this needed its own guard.
+  const shortBg = (() => {
+    try {
+      r.apply_frame(COLS, ROWS,
+        new Uint32Array(2), new Uint32Array(n), new Uint32Array(n).fill(0x41), new Uint16Array(n), true);
+      return null;
+    } catch (e) { return String(e.message ?? e); }
+  })();
+
+  // 4. apply_damage: a span pointing past the last row. `dst = line * cols + left + i` indexed the
+  //    grid raw, so this trapped the module (`RuntimeError: unreachable`) and left it poisoned —
+  //    every later call died with "recursive use of an object". An off-by-one, not an exotic value.
+  const header = (cols, rows, kind, scroll) =>
+    new Uint32Array([cols, rows, kind, scroll ? 1 : 0, scroll?.[0] ?? 0, scroll?.[1] ?? 0, scroll?.[2] ?? 0, 1]);
+  const damage = (spans, scroll = null) => {
+    try {
+      const len = 1;
+      r.apply_damage(
+        header(COLS, ROWS, 1, scroll), new Uint32Array(spans),
+        new Uint32Array(len), new Uint32Array(len), new Uint32Array(len),
+        new Uint16Array(len), new Uint16Array(len), [],
+      );
+      return null;
+    } catch (e) {
+      return String(e.message ?? e);
+    }
+  };
+  // span = [line, left, right, cell_offset, count]; line = ROWS is one past the last row.
+  const oobSpan = damage([ROWS, 0, 0, 0, 1]);
+  // scroll bottom past the last row: `shift_row`'s `dst = y * cols + x` walked off the end.
+  const oobScroll = damage([], [0, ROWS + 3, 1]);
+
+  // 5. CONTROL — the same renderer, a dense frame, must resolve and draw. Without this a guard
+  //    that rejected every frame would satisfy 1-4.
+  const cps = new Uint32Array(n).fill(0x20);
+  cps[0] = 0x2588; // █ in cell 0
+  const dense = threw2();
+  function threw2() {
+    try {
+      r.apply_frame(COLS, ROWS, new Uint32Array(n), new Uint32Array(n), cps, new Uint16Array(n), true);
+      r.render();
+      return null;
+    } catch (e) {
+      return String(e.message ?? e);
+    }
+  }
+  // readPixels in the same task as render() — the buffer is cleared on composite.
+  const lit = countLit(readCells(gl, r, 0));
+
+  window.__proof = {
+    overflow, short, shortBg, oobSpan, oobScroll, dense, lit,
+    gridFit: gridFit(gl, r, r.cols(), r.rows()),
+    checks: {
+      // The message is asserted, not just the throw: a panic (`unreachable`/RuntimeError) would
+      // also "throw", and that is the bug, not the fix.
+      anOverflowingGridThrows: !!overflow && /more cells than a u32 can count/.test(overflow),
+      aShortFrameThrows: !!short && /claims 1000000 cells but the frame carries 2/.test(short),
+      aShortColourColumnThrows: !!shortBg && /bg\/fg carry 2\/8/.test(shortBg),
+      // apply_damage. The message is the point: a wasm trap surfaces as
+      // `RuntimeError: unreachable`, which /SpanOutsideGrid/ does not match.
+      anOutOfBoundsSpanThrowsRatherThanTrapping: !!oobSpan && /SpanOutsideGrid/.test(oobSpan),
+      anOutOfBoundsScrollThrowsRatherThanTrapping: !!oobScroll && /ScrollOutsideGrid/.test(oobScroll),
+      // CONTROL: the guard did not eat the ordinary path.
+      aDenseFrameStillRenders: dense === null && lit > 0,
+      // `contextSurvived` is weak on its own: the WebGL context is a separate JS object that
+      // outlives a wasm trap. `aDenseFrameStillRenders` is the load-bearing control — it needs a
+      // healthy resolve -> pack -> upload -> render round-trip through the same instance.
+      // And a rejected frame left the renderer usable — the control runs after FIVE rejections.
+      // Before #355 the first `apply_damage` rejection poisoned the instance for good, so this
+      // check is what separates "refused" from "died".
+      aRejectedFrameLeavesTheRendererUsable: dense === null,
+      contextSurvived: !gl.isContextLost(),
+    },
+  };
+  window.__proof.ok = Object.values(window.__proof.checks).every(Boolean);
+  window.__done = true;
+</script>

@@ -38,10 +38,37 @@ pub struct Cells<'a> {
 /// `FrameExceedsCapacity` fires when one frame references more distinct glyphs than a
 /// region can hold (so pinning the working set is impossible — surfaced, never silently
 /// corrupting an earlier cell, #280 P0).
+///
+/// The other two guard the frame's *shape* (#355). `apply_frame` is wasm-exported and takes its
+/// `cols`/`rows` as `u32` straight from a JS caller; the wire caps both at `u16`
+/// (`justerm-core`'s `serialize.rs`), so nothing core produces can trip either, and nothing binds
+/// a caller that does not go through core.
+///
+/// **Refusing a malformed frame is a divergence, not prior art.** beamterm tolerates: its
+/// `update_cells` `zip`s the cell buffer against the caller's iterator and silently truncates to
+/// the shorter (`terminal_grid.rs:547`), and `update_cells_by_index` drops out-of-range writes with
+/// a `filter` (`:613`). Chromium clamps an oversized drawing buffer rather than refusing it. We
+/// refuse because `apply_frame` is a *dense* contract consumed by a program: a frame missing cells
+/// is a caller defect, and rendering fabricated ones hides it. The sparse path (`apply_damage` ->
+/// `FrameGrid`) is persistent and therefore tolerant of partial input, exactly like beamterm's —
+/// but it validates its span directory first, because there the fabrication was a wasm trap.
 #[derive(Debug, PartialEq, Eq)]
 pub enum ResolveError<E> {
     Rasterize(E),
     FrameExceedsCapacity,
+    /// `cols * rows` does not fit a `u32` — a debug panic and, in release, a wrapped cell count
+    /// that would index the frame as if it were tiny.
+    GridOverflows {
+        cols: u32,
+        rows: u32,
+    },
+    /// The frame carries fewer cells than its grid claims. Resolving it would invent the
+    /// difference (`.get(idx).unwrap_or(0x20)`) *after* allocating for all of them: a 1000x1000
+    /// grid backed by two codepoints used to resolve a million cells.
+    FrameShorterThanGrid {
+        cells: usize,
+        got: usize,
+    },
 }
 
 /// Map a raw codepoint to the grapheme to rasterise. C0 (`0x00..=0x1F`), DEL + C1
@@ -72,7 +99,16 @@ pub fn resolve_frame<B, E>(
         flags,
         clusters,
     } = *cells;
-    let count = (cols * rows) as usize;
+    // Bound the frame by the data it carries, not by a limit picked out of the air: a grid that
+    // claims more cells than the caller sent is not a frame, and asking that question costs a
+    // comparison — where trusting `cols * rows` costs an allocation for cells that do not exist.
+    let count = cols
+        .checked_mul(rows)
+        .ok_or(ResolveError::GridOverflows { cols, rows })? as usize;
+    let got = codepoints.len().min(flags.len());
+    if got < count {
+        return Err(ResolveError::FrameShorterThanGrid { cells: count, got });
+    }
     let mut slots = Vec::with_capacity(count);
     // Glyphs already resolved in THIS frame — evicting one would corrupt an earlier cell.
     // Tracked per region (the normal and wide LRUs are independent, `glyph_cache`), so a key
@@ -200,6 +236,45 @@ mod tests {
             flags,
             clusters: &[],
         }
+    }
+
+    #[test]
+    fn a_grid_whose_cell_count_overflows_is_rejected_not_multiplied() {
+        // RED (#355). `cols * rows` is a u32 multiply. The wire caps both at u16
+        // (`serialize.rs`: `pub cols: u16`), so a frame that came from core can never overflow
+        // it — 65535^2 is 4_294_836_225, just under u32::MAX. But `apply_frame` is
+        // wasm-exported and takes u32s straight from a JS caller, who is bound by nothing.
+        let mut cache = GlyphCache::new();
+        let err = resolve_frame(
+            &cells(u32::MAX, 2, &[], &[]),
+            &mut cache,
+            no_raster,
+            no_upload,
+        );
+        assert!(matches!(err, Err(ResolveError::GridOverflows { .. })));
+    }
+
+    #[test]
+    fn a_frame_shorter_than_its_grid_is_rejected_rather_than_fabricated() {
+        // RED (#355). `count` came from `cols * rows` while the cells came from the slices, and
+        // nothing tied them together: a 1000x1000 grid backed by two codepoints resolved a
+        // million cells, inventing 999_998 spaces via `.get(idx).unwrap_or(0x20)` — and
+        // allocating for all of them first. The guard is derived from the data, not from a magic
+        // limit: a frame that does not carry its cells is not a frame.
+        let mut cache = GlyphCache::new();
+        let err = resolve_frame(
+            &cells(1000, 1000, &[0x41, 0x42], &[0, 0]),
+            &mut cache,
+            no_raster,
+            no_upload,
+        );
+        assert!(matches!(
+            err,
+            Err(ResolveError::FrameShorterThanGrid {
+                cells: 1_000_000,
+                got: 2
+            })
+        ));
     }
 
     #[test]
