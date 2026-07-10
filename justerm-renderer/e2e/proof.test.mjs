@@ -5,7 +5,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { alphaStats, cellRect, countLit, inkCoverage, litAt } from "../demo/proof.js";
+import { alphaStats, cellRect, countLit, gridFit, inkCoverage, litAt } from "../demo/proof.js";
 
 /**
  * Build an RGBA rect from a picture: `#` is a lit pixel (red 255), `.` is background (red 0).
@@ -111,4 +111,45 @@ test("what counts as ink is the caller's, not the helper's", () => {
   const differsFromGray = (r, g, b) =>
     Math.abs(r - 128) > 12 || Math.abs(g - 128) > 12 || Math.abs(b - 128) > 12;
   assert.equal(inkCoverage(blackOnGray, differsFromGray), 1); // the page's predicate sees it all
+});
+
+// A `gl` stand-in: `gridFit` reads only these four numbers plus `gl.canvas`.
+const fakeGl = (bufferW, bufferH, attrW = bufferW, attrH = bufferH) => ({
+  drawingBufferWidth: bufferW,
+  drawingBufferHeight: bufferH,
+  canvas: { width: attrW, height: attrH },
+});
+const fakeRenderer = (cw, ch) => ({ cell_width: () => cw, cell_height: () => ch });
+
+test("gridFit reports no clamp when WebGL granted the buffer that was asked for", () => {
+  // #339: the ordinary case. `canvas.width` and `drawingBufferWidth` agree, so the grid the renderer
+  // adopted is the grid it drew.
+  const fit = gridFit(fakeGl(360, 144), fakeRenderer(9, 18), 40, 8);
+  assert.deepEqual(fit.grid, [360, 144]);
+  assert.deepEqual(fit.buffer, [360, 144]);
+  assert.deepEqual(fit.attr, [360, 144]);
+  assert.equal(fit.fits, true);
+  assert.equal(fit.clamped, false);
+});
+
+test("gridFit sees the clamp that `grid === buffer` cannot", () => {
+  // Measured in Chromium: `canvas.width = 16385` leaves the ATTRIBUTE at 16385 while the drawing
+  // buffer comes back at MAX_TEXTURE_SIZE. Pre-#339 the renderer kept the oversized grid, so
+  // `grid === buffer` compared 16385*1 against... 16385, and reported a clean fit for a viewport
+  // that could not hold it. Only `attr` vs `buffer` can tell.
+  const fit = gridFit(fakeGl(16384, 144, 16385, 144), fakeRenderer(1, 18), 16384, 8);
+  assert.equal(fit.clamped, true, "a buffer smaller than the canvas attribute is a clamp");
+  assert.deepEqual(fit.buffer, [16384, 144]);
+  assert.deepEqual(fit.attr, [16385, 144]);
+});
+
+test("gridFit's `fits` is about the grid, `clamped` is about the browser — they are independent", () => {
+  // A grid that overhangs a buffer the browser granted in full: `fits` false, `clamped` false.
+  const overhang = gridFit(fakeGl(360, 144), fakeRenderer(9, 18), 41, 8);
+  assert.equal(overhang.fits, false);
+  assert.equal(overhang.clamped, false);
+  // And a grid that fits a buffer the browser shrank: `fits` true, `clamped` true.
+  const shrunk = gridFit(fakeGl(360, 144, 400, 144), fakeRenderer(9, 18), 40, 8);
+  assert.equal(shrunk.fits, true);
+  assert.equal(shrunk.clamped, true);
 });

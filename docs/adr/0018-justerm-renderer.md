@@ -94,6 +94,21 @@ grounds, in order of weight:
    `renderer.rs:164-168`), with the sub-cell remainder letterboxed (`terminal_grid.rs:240-241`). That
    route is closed to us: #331 made the grid the source of truth.
 
+**The browser may refuse the buffer, and then the canvas attribute must follow it down** (#339). WebGL
+grants "a drawing buffer with smaller dimensions" whenever the request cannot be satisfied, with no error
+and no lost context; `canvas.width` keeps the request while `drawingBufferWidth` reports the grant. The
+limit is not knowable in advance — Chromium clamps each axis to
+`min(max_texture_size, max_renderbuffer_size, max_viewport_dims[axis])` and then applies a hard-coded
+`5760×5760` area budget — so `resize()` reads the granted buffer back and adopts the grid that fits it,
+reporting it through `cols()`/`rows()`.
+
+This diverges from every reference. xterm.js (`WebglRenderer.ts:205-206,679-680`), beamterm
+(`renderer.rs:86-104`) and three.js (`WebGLRenderer.js:667-708`) all leave `canvas.width` at the request
+and merely viewport into the grant, so their grids overhang a clamped buffer silently. We re-set the canvas
+down because the CSS box above is derived from `canvas.width`: an attribute describing a buffer that does
+not exist would make `cssWidth()` a lie. The second allocation is the price of that coupling, not an
+oversight.
+
 **Nothing here is exact, and the old proof pretended otherwise.** `demo/dpr.html` asserted
 `Math.round(cssWidth() * dpr) === cols * cell`. Since `cssWidth()` *is* `cols*cell/dpr`, that reduces to
 `round(x/d*d) === x`; the browser never appears in it. Measured: it stays green at dpr 1, 1.1 and 1.5 with

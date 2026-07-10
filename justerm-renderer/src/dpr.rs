@@ -49,8 +49,25 @@ pub fn css_px(device: u32, dpr: f32) -> f32 {
 /// definition an exact multiple of the cell. Floored to 1 so a degenerate grid never yields a
 /// zero-dimension buffer/viewport. xterm.js sizes its canvas the same way
 /// (`device.canvas.width = cols * device.cell.width`).
+///
+/// Saturating, in `u64`, at `i32::MAX` (#339): `cols * cell` overflows a `u32` well below the grid
+/// sizes a caller can ask for, and `as i32` would then hand a *negative* width to `canvas.width`.
+/// Saturating is the honest answer because no buffer that large can be allocated anyway — the
+/// browser clamps, [`cells_that_fit`] reads back what it actually gave, and the caller learns the
+/// grid it really got.
 pub fn grid_px(count: u32, cell: u32) -> i32 {
-    (count * cell).max(1) as i32
+    (count as u64 * cell as u64).clamp(1, i32::MAX as u64) as i32
+}
+
+/// How many whole `cell`-wide cells fit in `buffer_px` device pixels — the inverse of [`grid_px`],
+/// used only when the browser did not give us the buffer we asked for (#339). Floored to 1: a
+/// renderer with a zero-column grid has no state a caller could describe.
+///
+/// This is the `grid <- buffer` direction beamterm takes by default (`cols = screen_size.0 /
+/// cell_size.width`, `terminal_grid.rs:240`). Here it is the *fallback*: the grid leads (#331), and
+/// this recovers when `drawingBufferWidth` comes back smaller than `canvas.width`.
+pub fn cells_that_fit(buffer_px: i32, cell: u32) -> u32 {
+    (buffer_px.max(0) as u32 / cell.max(1)).max(1)
 }
 
 /// Whether the DPR changed enough to re-bake the atlas at the new device size (#322). A tiny
@@ -141,6 +158,32 @@ mod tests {
                 err(exact.round(), dpr, device),
             );
         }
+    }
+
+    #[test]
+    fn a_grid_too_large_to_multiply_does_not_wrap_or_go_negative() {
+        // #339. `1_000_000 * 10_000` is 10^10: it overflows a u32 (panic in debug, wrap in release),
+        // and the wrapped value `as i32` is negative — a negative `canvas.width`. Saturate instead.
+        assert_eq!(grid_px(1_000_000, 10_000), i32::MAX);
+        // The last product that still fits, and the first that does not.
+        assert_eq!(grid_px(u32::MAX, 1), i32::MAX);
+        assert_eq!(grid_px(i32::MAX as u32, 1), i32::MAX);
+        assert_eq!(grid_px(i32::MAX as u32 - 1, 1), i32::MAX - 1);
+    }
+
+    #[test]
+    fn the_grid_that_fits_a_buffer_is_the_inverse_of_the_buffer_a_grid_needs() {
+        // #339: when the browser hands back a smaller drawing buffer than we asked for, the grid we
+        // actually drew is whatever fits it. Measured: Chromium clamps a 16385-px request to
+        // MAX_TEXTURE_SIZE (16384 on a real GPU, 8192 under SwiftShader) and leaves `canvas.width`
+        // at the request, so this is the only way to learn the truth.
+        assert_eq!(cells_that_fit(grid_px(40, 9), 9), 40);
+        assert_eq!(cells_that_fit(8192, 9), 910); // 910 * 9 = 8190 <= 8192
+        // A buffer narrower than one cell still leaves a describable grid.
+        assert_eq!(cells_that_fit(5, 9), 1);
+        assert_eq!(cells_that_fit(0, 9), 1);
+        // And a degenerate cell cannot divide by zero.
+        assert_eq!(cells_that_fit(100, 0), 100);
     }
 
     #[test]
