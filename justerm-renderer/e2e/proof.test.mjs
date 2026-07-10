@@ -5,7 +5,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { alphaStats, cellRect, countLit, gridFit, inkCoverage, litAt } from "../demo/proof.js";
+import { alphaStats, cellRect, countLit, gridFit, inkCoverage, isUniform, litAt, tonalSplit } from "../demo/proof.js";
 
 /**
  * Build an RGBA rect from a picture: `#` is a lit pixel (red 255), `.` is background (red 0).
@@ -152,4 +152,56 @@ test("gridFit's `fits` is about the grid, `clamped` is about the browser — the
   const shrunk = gridFit(fakeGl(360, 144, 400, 144), fakeRenderer(9, 18), 40, 8);
   assert.equal(shrunk.fits, true);
   assert.equal(shrunk.clamped, true);
+});
+
+// --- #352: a composited screenshot needs a guard `readPixels` never did ---
+
+/** RGBA bytes from a luminance picture: `#` = 255, `.` = 0, `~` = 128 (an edge/AA pixel). */
+const bytes = (rows) => {
+  const h = rows.length, w = rows[0].length;
+  const buf = new Uint8Array(w * h * 4);
+  rows.forEach((row, y) =>
+    [...row].forEach((ch, x) => {
+      const l = ch === "#" ? 255 : ch === "~" ? 128 : 0;
+      const i = (y * w + x) * 4;
+      buf[i] = buf[i + 1] = buf[i + 2] = l;
+      buf[i + 3] = 255;
+    }),
+  );
+  return buf;
+};
+
+test("tonalSplit reads the picture, not the code that drew it", () => {
+  // Counted by eye off the picture: 8 white, 6 black, 2 intermediate, of 16.
+  const split = tonalSplit(bytes(["####....", "####~~.."]));
+  assert.equal(split.white, 8 / 16);
+  assert.equal(split.black, 6 / 16);
+  assert.equal(split.mid, 2 / 16);
+});
+
+test("isUniform rejects the frame headless hands back before its first real paint", () => {
+  // #352: the FIRST document rendered in a headless Chromium process composites garbage — solid
+  // white at dpr != 1, solid black at dpr 1 — while `gl.readPixels` in that same page returns the
+  // correct frame. A blur/coverage metric reads solid white as "perfectly sharp", so a composited
+  // proof MUST refuse a uniform region before measuring anything about it.
+  assert.equal(isUniform(tonalSplit(bytes(["########", "########"]))), true, "all white");
+  assert.equal(isUniform(tonalSplit(bytes(["........", "........"]))), true, "all black");
+  // The real pattern: alternating block/space, ~50/50. Evidence, not garbage.
+  assert.equal(isUniform(tonalSplit(bytes(["####....", "####...."]))), false);
+  // A nearly-but-not-quite uniform region is still refused — the default threshold is 0.9.
+  assert.equal(isUniform(tonalSplit(bytes(["#########.", "##########"]))), true, "95% white");
+  assert.equal(isUniform(tonalSplit(bytes(["#####.....", "#########."]))), false, "70% white");
+});
+
+test("a region with no pixels is not evidence — the guard must not answer NaN", () => {
+  // #352, found by the sibling lens. `tonalSplit` divided by `total = 0`, so every fraction was NaN,
+  // and `NaN >= 0.9` is false — `isUniform` called the emptiest possible region "not uniform", i.e.
+  // valid evidence. A `display: none` canvas (rect.width === 0) landed exactly there, and only the
+  // tone-delta check caught it, by the accident of `|NaN - 0.5| < tol` also being false.
+  assert.throws(() => tonalSplit(new Uint8Array(0)), /no pixels/);
+  // And the wrong argument shape — `{buf, w, h}`, which every OTHER helper in this file takes —
+  // used to iterate `undefined.length` zero times and return the same NaN triple.
+  assert.throws(() => tonalSplit({ buf: new Uint8Array(16), w: 2, h: 2 }), /RGBA bytes/);
+  // Belt and braces: a split that somehow arrives degenerate is uniform, never evidence.
+  assert.equal(isUniform({ white: NaN, black: NaN, mid: NaN }), true);
 });

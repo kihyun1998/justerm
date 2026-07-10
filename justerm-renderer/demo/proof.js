@@ -133,3 +133,75 @@ export function gridFit(gl, r, cols, rows) {
     clamped: canvas.width !== gl.drawingBufferWidth || canvas.height !== gl.drawingBufferHeight,
   };
 }
+
+// --- Composited pixels (#352) ---------------------------------------------------------------
+//
+// `gl.readPixels` and a screenshot are DIFFERENT MEASUREMENTS. `readPixels` reads the drawing
+// buffer — what GL drew. A screenshot reads what the compositor put on the screen, which is the
+// buffer after CSS sizing, `image-rendering`, layer promotion and DPR resampling. Every proof in
+// this directory reads the buffer; none of them can say the image ever reached the screen.
+//
+// The trap: **the first document rendered in a headless Chromium process composites garbage** —
+// solid white at `devicePixelRatio != 1`, solid black at 1 — while `readPixels` in that same page
+// returns the correct frame. Measured: it is independent of canvas size, of the CSS box (integer,
+// fractional or unset), of the DPR and of WebGL; it is NOT cured by ten extra
+// `requestAnimationFrame`s, a 300 ms sleep, a throwaway screenshot, or
+// `--run-all-compositor-stages-before-draw`. It IS cured by ONE prior navigation to a real document,
+// anywhere in the process — `about:blank` does not count (observed; no source found that says why).
+// Headed Chromium never shows it.
+//
+// `page.screenshot()` is CDP `Page.captureScreenshot`, which copies from a surface the first real
+// navigation has not presented yet. Chromium names that failure in `page_handler.cc` ("capturing a
+// surface snapshot will stall because the surface is never presented"), crbug 377715191. Playwright
+// already passes `--enable-features=CDPScreenshotNewSurface`, Chromium's remedy for that class; it
+// does not cover this first-surface case. The white-vs-black split is consistent with reading a
+// default-cleared buffer, but that last step is a hypothesis, not a citation.
+//
+// So a composited-pixel proof must (a) not be the first document its browser process renders, and
+// (b) refuse a uniform region before measuring anything about it. A blur metric reads solid white
+// as "perfectly sharp"; a coverage metric reads solid black as "nothing drawn, as expected".
+//
+// And (c): a tone HISTOGRAM is blind to structure. Shrink the CSS box to 80 % and the surviving
+// pixels are still 50/50 white — `isUniform` is happy, and so is any `|composited - source|` tone
+// comparison. Whatever the proof claims about *where* the image landed, it must check per-cell, and
+// it must pin the composited region against the drawing buffer's own dimensions.
+
+/**
+ * Split an RGBA buffer into white / black / intermediate fractions by luminance.
+ *
+ * Takes **raw RGBA bytes**, unlike `countLit`/`litAt`/`inkCoverage`/`alphaStats`, which take the
+ * `{buf, w, h}` rect that `readCells` returns. Handing it that rect used to iterate
+ * `undefined.length` zero times and answer `{NaN, NaN, NaN}` — so it throws instead.
+ *
+ * Reads the **green** channel, where the other helpers read red. Both are luminance for the
+ * grayscale patterns these proofs draw (R=G=B); a coloured composited pattern must not use this.
+ * `lo`/`hi` deliberately leave a wide intermediate band for antialiasing, and are unrelated to
+ * `LIT_THRESHOLD`, which is a binary ink/no-ink cut.
+ */
+export function tonalSplit(data, { lo = 20, hi = 235 } = {}) {
+  if (!ArrayBuffer.isView(data)) {
+    throw new TypeError("tonalSplit takes raw RGBA bytes, not a {buf,w,h} rect");
+  }
+  if (data.length < 4) throw new RangeError("tonalSplit: no pixels — an empty region proves nothing");
+  let white = 0, black = 0, mid = 0;
+  for (let i = 0; i < data.length; i += 4) {
+    const l = data[i + 1];
+    if (l >= hi) white++;
+    else if (l <= lo) black++;
+    else mid++;
+  }
+  const total = data.length / 4;
+  return { white: white / total, black: black / total, mid: mid / total };
+}
+
+/**
+ * Is this region too uniform to be evidence of anything? A composited proof calls this FIRST,
+ * before any metric that would happily describe a blank rectangle (see the note above).
+ *
+ * A degenerate split is uniform. `NaN >= 0.9` is `false`, so a naive comparison called the emptiest
+ * possible region "not uniform" — the guard was most permissive exactly where it had to be strictest.
+ */
+export function isUniform(split, threshold = 0.9) {
+  if (!Number.isFinite(split.white) || !Number.isFinite(split.black)) return true;
+  return split.white >= threshold || split.black >= threshold;
+}

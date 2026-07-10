@@ -1,0 +1,124 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>justerm-renderer proof — what GL drew reaches the screen (#352)</title>
+<style>
+  html, body { margin: 0; background: #000; }
+  /* No `image-rendering` override: the point is to see what the compositor really does. */
+  #c { display: block; }
+</style>
+<!--
+  Every other proof here reads `gl.readPixels` — the drawing buffer, i.e. what GL drew. None of them
+  can say the image ever reached the screen: a canvas with `display: none` satisfies all ten.
+
+  This one screenshots the page and judges the composited pixels. It is driven by
+  `e2e/screen-composited.spec.mjs`, NOT by the generic runner: it needs the browser process to have
+  rendered a document already (#352, characterised in `demo/proof.js`), and it publishes
+  `__composited` instead of `__proof`. The `screen-` prefix is what the runner filters on.
+
+  A tone HISTOGRAM IS BLIND TO STRUCTURE. Shrink the CSS box to 80 % and the surviving pixels are
+  still 50/50 white: `isUniform` is happy and so is any `|composited - source|` comparison. That is
+  not hypothetical — the first version of this page passed with a fifth of the canvas clipped away.
+  So the checks pin the region's geometry against the drawing buffer, and the pattern cell by cell.
+  Build: wasm-pack build --target web --dev --out-dir pkg
+-->
+<canvas id="c" width="64" height="64"></canvas>
+<script type="module">
+  import init, { JustermRenderer } from "../pkg/justerm_renderer.js";
+  import { isUniform, tonalSplit } from "./proof.js";
+  await init();
+
+  const COLS = 16, ROWS = 4;
+  const r = new JustermRenderer("#c", new Uint32Array(256), 0xffffff, 0x000000);
+  const dpr = window.devicePixelRatio;
+  r.resize(COLS, ROWS);
+
+  // Alternating FULL BLOCK / space: ~50/50, with a hard vertical edge at every cell boundary. No
+  // tone can dominate, so a dropped canvas is unmistakable — and the per-column alternation survives
+  // only if the image landed where it should, at the scale it should.
+  const n = COLS * ROWS;
+  const cps = new Uint32Array(n);
+  for (let i = 0; i < n; i++) cps[i] = i % 2 === 0 ? 0x2588 : 0x20;
+  r.apply_frame(COLS, ROWS, new Uint32Array(n), new Uint32Array(n), cps, new Uint16Array(n), true);
+  r.render();
+
+  const canvas = document.querySelector("#c");
+  const gl = canvas.getContext("webgl2");
+  const [bw, bh] = [gl.drawingBufferWidth, gl.drawingBufferHeight];
+  const [cw, ch] = [r.cell_width(), r.cell_height()]; // DEVICE px (#331) — never re-derived (#328)
+
+  // The buffer, in the same task as render() (it is cleared on composite).
+  const px = new Uint8Array(bw * bh * 4);
+  gl.readPixels(0, 0, bw, bh, gl.RGBA, gl.UNSIGNED_BYTE, px);
+  const source = tonalSplit(px);
+
+  // The consumer's job (#337): the CSS box, unrounded.
+  canvas.style.width = `${r.cssWidth()}px`;
+  canvas.style.height = `${r.cssHeight()}px`;
+  await new Promise((res) => requestAnimationFrame(() => requestAnimationFrame(res)));
+
+  const rect = canvas.getBoundingClientRect();
+  window.__meta = {
+    dpr, buffer: [bw, bh], cell: [cw, ch], source,
+    rect: [rect.x, rect.y, rect.width, rect.height],
+  };
+  window.__done = true;
+
+  /** Decode the runner's PNG (the browser is the decoder) and judge the canvas's device-px region. */
+  window.__composited = async (b64) => {
+    const img = new Image();
+    img.src = "data:image/png;base64," + b64;
+    await img.decode();
+    const c = new OffscreenCanvas(img.width, img.height);
+    const g = c.getContext("2d", { willReadFrequently: true });
+    g.drawImage(img, 0, 0);
+
+    // Page device px are canvas device px only if the canvas sits at the origin with a real box.
+    // Asserted rather than assumed: a stylesheet change would otherwise sample the page background
+    // and blame the compositor for a layout bug — and a zero box would sample nothing at all.
+    const placed = rect.x === 0 && rect.y === 0 && rect.width > 0 && rect.height > 0;
+    if (!placed) {
+      return {
+        rect: [rect.x, rect.y, rect.width, rect.height],
+        checks: { theCanvasIsAtTheOriginWithANonZeroBox: false },
+      };
+    }
+
+    const [usedW, usedH] = [rect.width * dpr, rect.height * dpr];
+    const w = Math.min(img.width, Math.floor(usedW));
+    const h = Math.min(img.height, Math.floor(usedH));
+    const { data } = g.getImageData(0, 0, w, h);
+    const composited = tonalSplit(data);
+    const lum = (x, y) => data[(y * w + x) * 4 + 1];
+
+    // The centre of each cell in row 0, addressed in DEVICE px straight off the cell. Even columns
+    // hold `█`, odd ones a space. A shifted, scaled or half-drawn composite breaks the alternation
+    // while leaving the histogram untouched.
+    const y = Math.floor(ch / 2);
+    const columns = [];
+    for (let col = 0; col < COLS; col++) {
+      const x = Math.floor(col * cw + cw / 2);
+      columns.push(x < w ? lum(x, y) : -1);
+    }
+    const alternates = columns.every((l, i) => (i % 2 === 0 ? l >= 235 : l >= 0 && l <= 20));
+
+    const delta = Math.abs(composited.white - source.white);
+    return {
+      composited, delta, columns, region: [w, h],
+      checks: {
+        theCanvasIsAtTheOriginWithANonZeroBox: true,
+        // (a) Is this region evidence at all? Refused BEFORE anything is measured about it (#352).
+        theCompositedRegionIsNotUniform: !isUniform(composited),
+        // (b) The screen box IS the drawing buffer. The check a histogram cannot make: an 80 % CSS
+        //     box clips a fifth of the canvas and leaves the survivors 50/50 white. Tolerance is the
+        //     browser's 1/64-px layout grain times the DPR (#337), not slop.
+        theCompositedRegionIsTheBuffer: Math.abs(usedW - bw) < 0.05 && Math.abs(usedH - bh) < 0.05,
+        // (c) And the pattern landed cell by cell, not merely on average.
+        theCompositedColumnsAlternate: alternates,
+        // (d) The tones survive the trip. Measured drift: 0 at dpr 1 / 1.5 / 2, and 0.0175 at 1.1,
+        //     where resampling turns cell-edge pixels intermediate. 0.05 is ~3x that. The first
+        //     version of this page allowed 0.12 — which passed an 80 %-clipped composite.
+        theScreenShowsTheSameTonesGlDrew: delta < 0.05,
+      },
+    };
+  };
+</script>

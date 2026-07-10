@@ -12,8 +12,13 @@ import { fileURLToPath } from "node:url";
 import { test, expect } from "@playwright/test";
 
 const DEMO_DIR = fileURLToPath(new URL("../demo", import.meta.url));
+// `screen-*.html` proofs read the SCREEN rather than the drawing buffer, so they cannot use this
+// runner: they need the browser process to have rendered a document already (#352), and they publish
+// `__composited` instead of `__proof`. `screen-composited.spec.mjs` collects them by the same prefix
+// and launches its own browser, so a new one is never orphaned between the two runners. Everything
+// else here is picked up automatically.
 const DEMOS = readdirSync(DEMO_DIR)
-  .filter((f) => f.endsWith(".html"))
+  .filter((f) => f.endsWith(".html") && !f.startsWith("screen-"))
   .sort();
 
 // 1 is the baseline; 1.5 is a Windows box at 150 % display scaling; 2 is Retina. 1.1 earns its place:
