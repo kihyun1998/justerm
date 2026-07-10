@@ -1,3 +1,4 @@
+import { describe, expect, it } from "vitest";
 import { computeLinks, LinkController, osc8Links } from "../src/links";
 import type { LogicalLine } from "../src/links";
 import type { DecodedFrame } from "../src/types";

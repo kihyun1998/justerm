@@ -9,10 +9,16 @@
     "noEmit": true,
     "skipLibCheck": true,
     "verbatimModuleSyntax": true,
-    "types": ["vitest/globals"]
+    // No ambient types. `justerm-web` runs in a BROWSER: `process`, `Buffer` and friends must be
+    // compile errors here, not runtime crashes. `vitest/globals` used to sit in this list and dragged
+    // node's globals in behind it (vite pulls `@types/node` as a peer), so `src/` could reference
+    // `process.env` and typecheck clean. Every test imports `describe`/`it`/`expect` from `vitest`
+    // explicitly instead. The node-side config files have their own project (#343).
+    "types": []
   },
-  // `demo` and `e2e` are checked too. They were not, so `pnpm typecheck` reported clean while the code
-  // that PROVES the a11y contract (`e2e/demo.spec.ts`) was never type-checked at all — the same shape
-  // as `cargo fmt --all` silently skipping the workspace-excluded renderer (#333/#341).
-  "include": ["src", "test", "demo", "e2e"]
+  // Browser code only. `test`, `demo` and `e2e` are checked by `tsconfig.test.json`, and the node-side
+  // config files by `tsconfig.node.json`; `pnpm typecheck` runs all three. Nothing lost coverage in the
+  // split — losing it silently is exactly the failure this repo keeps finding (`cargo fmt --all` visits
+  // zero renderer files, #333; `pnpm typecheck` skipped `e2e/`, #341).
+  "include": ["src"]
 }

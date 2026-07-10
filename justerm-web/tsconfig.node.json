@@ -1,0 +1,13 @@
+{
+  // The build/test tooling configs run in NODE, not the browser, so they get node's globals — and
+  // nothing else does. `playwright.config.ts` branches on `process.env.CI`; a typo there silently
+  // changes how CI runs the suite, which is exactly the class of blind spot #341 set out to close
+  // one directory up. Kept a separate project rather than widening `tsconfig.json`'s `types`, which
+  // would hand `process` back to `src/` (#343).
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "lib": ["ES2022"],
+    "types": ["node"]
+  },
+  "include": ["*.config.ts"]
+}

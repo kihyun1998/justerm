@@ -1,0 +1,8 @@
+{
+  // Tests, demo and e2e specs. They import `vitest` / `@playwright/test`, whose type packages pull
+  // node's ambient globals in behind them — which is precisely why they cannot share a program with
+  // `src/`. Keeping them here lets `tsconfig.json` refuse `process` and `Buffer` in browser code.
+  "extends": "./tsconfig.json",
+  "compilerOptions": { "types": ["node"] },
+  "include": ["test", "demo", "e2e"]
+}

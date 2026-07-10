@@ -114,10 +114,20 @@ jobs:
         working-directory: .
       - name: Install deps
         run: pnpm install --frozen-lockfile
-      - name: Typecheck (src + test + demo + e2e)
+      # Three tsconfig projects (#343): `src` is browser-only and refuses node's ambient globals,
+      # `test`/`demo`/`e2e` get them, and the `*.config.ts` files get them without the DOM.
+      - name: Typecheck (browser + test + node projects)
         run: pnpm run typecheck
       - name: Test (vitest)
         run: pnpm run test
+      # What this step does NOT do: catch a type error the step above misses. Six probes were tried
+      # (an emit-only TS4023, a `.d.ts` rollup of an `external` package's types, a bare type re-export,
+      # an `export *` name collision, a missing entry) and `tsc --noEmit` reddened first in every case
+      # that failed at all. It guards the artifact path itself — that `tsup` still resolves the entry,
+      # bundles, and emits `dist/index.d.ts` — not a known gap. Kept because the package is meant to be
+      # publishable and 2s is cheap; do not read a green here as "the public types are sound" (#344).
+      - name: Build (tsup; artifact path only — see comment)
+        run: pnpm run build
 
   # The a11y e2e (#160/#161): drives the real widget + real wasm decoder in headless Chromium and
   # asserts the aria-live announce + signal paths a screen reader would consume. Split from `web` for
