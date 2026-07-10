@@ -60,11 +60,47 @@ The cell is *measured* in device pixels — the rasteriser ink-scans `█` at `F
 - `resize(cols, rows)` → the drawing buffer becomes `cols * cell_width()` × `rows * cell_height()`, an
   exact multiple of the cell. xterm.js sizes its canvas the same way
   (`device.canvas.width = cols * device.cell.width`).
-- `cssWidth()` / `cssHeight()` → the CSS display box for that buffer. The canvas's CSS box stays the
-  consumer's to set (as with beamterm's `auto_resize_canvas_css = false`).
+- `cssWidth()` / `cssHeight()` → the CSS display box for that buffer, **unrounded** (#337). The canvas's
+  CSS box stays the consumer's to set (as with beamterm's `auto_resize_canvas_css = false`).
 
 **Why the CSS view must be a float.** Rounding it to a whole CSS pixel destroys the cell: the ink-scan is
 16 device px tall at dpr 1 and 33 at dpr 2, i.e. 16.5 CSS px, and a rounded 17 does not scale back to 33.
+
+**And why the CSS canvas *box* is a float too** (#337, decided against xterm.js). xterm rounds it:
+`css.canvas.width = Math.round(device.canvas.width / dpr)` (`WebglRenderer.ts:687`). We do not, on three
+grounds, in order of weight:
+
+1. **Rounding's error is absolute, the alternative's is not.** A rounded box misses the buffer by up to
+   `dpr/2` device px whatever the canvas size; an unrounded one misses only by the browser's layout grain
+   — a CSS length snaps to 1/64 px before layout (Blink `layout_unit.h:473`, `FixedPoint<6, int32_t>`) —
+   i.e. `<= dpr/128`. Measured in headed Chromium at dpr 1.1 against a 36-device-px buffer: unrounded
+   `style=32.727px` used **35.9906** device px; rounded `style=33px` used **36.3000** — 0.3 px *larger than
+   the buffer feeding it*, so the image is stretched. That is the very failure xterm's comment blames for
+   blurriness ("the backing canvas image is 1 pixel too large for the canvas element size") — it blames
+   `ceil`, but `round` overshoots half the time. (Gecko's grain is said to be 1/60; not read from source.)
+2. **Every *derived* CSS length in both references is already fractional.** xterm's
+   `css.cell = device.cell / dpr` (`WebglRenderer.ts:694-695`) and beamterm's `css_cell_size()`
+   (`terminal_grid.rs:405-413`) both divide device px by the DPR and keep the float. `cssWidth()` is a
+   derived length of exactly that kind.
+3. **xterm's rounded `css.canvas` is a different animal, and its reason does not transfer.** That value
+   also sizes `screenElement` (`WebglRenderer.ts:211-212`) and is read by `MouseCoordsService:38`,
+   `SelectionService:419`, `DomRenderer:146-149`, `AccessibilityManager:405` and
+   `OverviewRulerRenderer:148` — so an integer costs xterm nothing there. But that is a co-benefit, **not
+   its stated reason**: the comment at `WebglRenderer.ts:682-686` argues only `round` over `ceil`. *xterm
+   never evaluates a fractional box at all* — which is a gap in its reasoning, not evidence against one.
+   We own no DOM, so the overshoot trade-off is all that is left, and it favours leaving the float alone.
+4. **beamterm does not round a CSS box either.** Its CSS box is an integer *input*
+   (`renderer.rs:87,96-101`) and the device buffer is the derived, rounded quantity (`physical_size()`,
+   `renderer.rs:164-168`), with the sub-cell remainder letterboxed (`terminal_grid.rs:240-241`). That
+   route is closed to us: #331 made the grid the source of truth.
+
+**Nothing here is exact, and the old proof pretended otherwise.** `demo/dpr.html` asserted
+`Math.round(cssWidth() * dpr) === cols * cell`. Since `cssWidth()` *is* `cols*cell/dpr`, that reduces to
+`round(x/d*d) === x`; the browser never appears in it. Measured: it stays green at dpr 1, 1.1 and 1.5 with
+the accessor rounding. It now asks `getBoundingClientRect()` instead, and reddens at dpr 1.1. In truth no
+CSS length maps a 360-device-px buffer onto whole device pixels at dpr 1.1 — only boxes that are multiples
+of 10 CSS px do, and `cols * cell` is not generally a multiple of 11. There is a nearest answer, not an
+exact one, and `cssWidth()` returns it.
 
 **What the bug actually was.** Not "rounding". The buffer came from `round(cssBox * dpr)` while the layout
 came from `cols * device_cell` — two quantities with no reason to agree. At `devicePixelRatio = 1.1`
