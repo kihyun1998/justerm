@@ -1,0 +1,289 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>justerm-renderer proof — cursor primitive (#270)</title>
+<style>
+  body { margin: 0; background: #000; }
+  #c { display: block; image-rendering: pixelated; }
+</style>
+<!--
+  The cursor has TWO mechanisms, and both references split them the same way:
+
+    - BLOCK is a colour override on the cell. xterm emits no vertices for it
+      (`RectangleRenderer.ts:251`), alacritty no rects (`display/cursor.rs:33`); each recolours the
+      cell instead. The shader must not ALSO stroke it.
+    - BAR / UNDERLINE / HOLLOW are sub-cell rectangles — here a per-pixel test in the fragment shader
+      (`stroke_coverage`), not a second draw pass.
+
+  Both live in `u_cursor`, not in the instance buffer, so `setCursor`/`clearCursor` + `render()` is a
+  complete cursor update with no re-feed. That is what `present()` below exercises, and it is not
+  cosmetic: a blink tick produces no terminal output, so a block cursor that could only change when a
+  frame was re-applied could never blink off. An earlier draft had exactly that bug, and every check
+  on this page still passed — because `draw()` re-packs the frame each time.
+
+  A shader mirroring a Rust function is a place for the two to drift, so this page does not check the
+  strokes against hand-typed pixel coordinates. It asks the wasm module for `cursorRects(...)` — the
+  same `cursor::cursor_rects` the host suite pins against alacritty's geometry — and demands the lit
+  pixels be EXACTLY that union. Two independent formulations of one spec, in two languages.
+
+  Read in device pixels: `cell_width()`/`cell_height()` ARE `u_cell_size` (#331). The runner sweeps
+  dpr 1 / 1.1 / 1.5 / 2, where the thickness `round(0.15 * cell_w)` changes with the density.
+
+  Build: wasm-pack build --target web --dev --out-dir pkg
+-->
+<canvas id="c" width="64" height="64"></canvas>
+<script type="module">
+  import init, { JustermRenderer, cursorRects } from "../pkg/justerm_renderer.js";
+  import { readRect } from "./proof.js";
+  await init();
+
+  const BLOCK = 0, UNDERLINE = 1, BAR = 2, HOLLOW = 3;
+  const CURSOR = 0xff0000;   // pure red — no glyph, no background, can only come from the cursor
+  const TEXT = 0x00ff00;     // the block's glyph colour: green, so a block is red bg + green ink
+  const COLS = 4, ROWS = 2;
+  const SPACE = 0x20, WIDE = 0x4e00; // 一 — core reports it wide, so its cursor spans two cells
+
+  const palette = new Uint32Array(256);
+  const r = new JustermRenderer("#c", palette, 0xffffff, 0x000000);
+  const gl = document.querySelector("#c").getContext("webgl2");
+  const [cw, ch] = [r.cell_width(), r.cell_height()];
+
+  /** Read the whole drawing buffer back. */
+  const grab = () => {
+    const [w, h] = [gl.drawingBufferWidth, gl.drawingBufferHeight];
+    return { ...readRect(gl, { x: 0, y: 0, w, h }), w, h };
+  };
+
+  /** Draw the grid with `codepoints`/`flags`, then read it back. */
+  const draw = (codepoints = new Uint32Array(COLS * ROWS).fill(SPACE), flags = new Uint16Array(COLS * ROWS)) => {
+    r.resize(COLS, ROWS);
+    r.apply_frame(COLS, ROWS, new Uint32Array(COLS * ROWS), new Uint32Array(COLS * ROWS), codepoints, flags, true);
+    r.render();
+    return grab();
+  };
+
+  /** Re-present the LAST frame — no `apply_frame`, so only the uniforms can have changed. This is
+      the path a blink tick takes: the terminal produced no new output. */
+  const present = () => { r.render(); return grab(); };
+
+  /** Is the buffer pixel at grid-space `(x, y)` (origin top-left) the cursor's red? */
+  const isCursor = ({ buf, w, h }, x, y) => {
+    const i = ((h - 1 - y) * w + x) * 4;          // readPixels counts rows from the bottom
+    return buf[i] > 150 && buf[i + 1] < 100 && buf[i + 2] < 100;
+  };
+
+  /** Every grid-space pixel of the cursor's box, as `"x,y"` keys. */
+  const litSet = (img, col, row, span) => {
+    const out = new Set();
+    for (let y = 0; y < ch; y++)
+      for (let x = 0; x < cw * span; x++)
+        if (isCursor(img, col * cw + x, row * ch + y)) out.add(`${x},${y}`);
+    return out;
+  };
+
+  /** The same box's pixels according to the PURE Rust geometry. */
+  const rectSet = (shape, span, thickness) => {
+    const flat = cursorRects(shape, cw, ch, span, thickness);
+    const out = new Set();
+    for (let i = 0; i < flat.length; i += 4) {
+      const [rx, ry, rw, rh] = [flat[i], flat[i + 1], flat[i + 2], flat[i + 3]];
+      for (let y = ry; y < ry + rh; y++) for (let x = rx; x < rx + rw; x++) out.add(`${x},${y}`);
+    }
+    return out;
+  };
+
+  const sameSet = (a, b) => a.size === b.size && [...a].every((k) => b.has(k));
+
+  /** Red pixels anywhere outside the cursor's own box — residue, or a stroke that escaped. */
+  const redOutside = (img, col, row, span) => {
+    let n = 0;
+    for (let y = 0; y < ROWS * ch; y++)
+      for (let x = 0; x < COLS * cw; x++) {
+        const inBox = row * ch <= y && y < (row + 1) * ch && col * cw <= x && x < (col + span) * cw;
+        if (!inBox && isCursor(img, x, y)) n++;
+      }
+    return n;
+  };
+
+  const thickness = Math.max(1, Math.round(0.15 * cw)); // alacritty `display/cursor.rs:25`
+  const checks = {};
+
+  // --- the strokes: the shader's per-pixel test must equal the pure rects, exactly ---
+  for (const [name, shape] of [["bar", BAR], ["underline", UNDERLINE], ["hollow", HOLLOW]]) {
+    r.setCursor(1, 0, shape, CURSOR, TEXT);
+    const img = draw();
+    checks[`${name}MatchesTheRustRects`] = sameSet(litSet(img, 1, 0, 1), rectSet(shape, 1, thickness));
+    checks[`${name}StaysInsideItsCell`] = redOutside(img, 1, 0, 1) === 0;
+  }
+
+  // A bar is thin and tall; an underline is wide and thin. If the shader mixed the two axes the
+  // set-equality above would still hold under a square cell, so pin the asymmetry directly.
+  r.setCursor(1, 0, BAR, CURSOR, TEXT);
+  const bar = litSet(draw(), 1, 0, 1);
+  r.setCursor(1, 0, UNDERLINE, CURSOR, TEXT);
+  const underline = litSet(draw(), 1, 0, 1);
+  checks.aBarIsTallAndAnUnderlineIsWide =
+    cw !== ch && bar.size === thickness * ch && underline.size === cw * thickness && !sameSet(bar, underline);
+
+  // --- block: a colour override, NOT a stroke ---
+  r.setCursor(1, 0, BLOCK, CURSOR, TEXT);
+  const blockImg = draw();
+  let blockLit = 0;
+  for (let y = 0; y < ch; y++) for (let x = 0; x < cw; x++) if (isCursor(blockImg, cw + x, y)) blockLit++;
+  // A space has no ink, so every pixel of the cell is the cursor's colour.
+  checks.aBlockFillsItsWholeCell = blockLit === cw * ch;
+  checks.aBlockLeavesTheOtherCellsAlone = redOutside(blockImg, 1, 0, 1) === 0;
+
+  // The shader must not ALSO stroke a block. On a blank cell that is unobservable — the stroke
+  // colour and the block's background are the same red, so a stray ring hides on itself. Put `█`
+  // under it: the glyph takes `text_color`, the cell turns entirely green, and any stroke the
+  // shader draws surfaces as red on green. This is what makes `shape_id(Block) == 0` falsifiable
+  // in a browser rather than only in the host suite.
+  const filled = new Uint32Array(COLS * ROWS).fill(SPACE);
+  filled[1] = 0x2588; // █ — a builtin, drawn edge to edge at cell size (#359)
+  r.setCursor(1, 0, BLOCK, CURSOR, TEXT);
+  const glyphImg = draw(filled);
+  let green = 0, redUnderGlyph = 0;
+  for (let y = 0; y < ch; y++)
+    for (let x = 0; x < cw; x++) {
+      const i = ((glyphImg.h - 1 - y) * glyphImg.w + cw + x) * 4;
+      if (glyphImg.buf[i + 1] > 150 && glyphImg.buf[i] < 100) green++;
+      if (isCursor(glyphImg, cw + x, y)) redUnderGlyph++;
+    }
+  checks.aBlockPaintsItsGlyphInTheTextColour = green === cw * ch;
+  checks.aBlockDrawsNoStrokeOverItsGlyph = redUnderGlyph === 0;
+
+  // --- wide char: the cursor covers both halves ---
+  const wideCps = new Uint32Array(COLS * ROWS).fill(SPACE);
+  wideCps[1] = WIDE;
+  const wideFlags = new Uint16Array(COLS * ROWS);
+  wideFlags[1] = 1 << 8;  // WIDE_CHAR
+  wideFlags[2] = 1 << 9;  // WIDE_CHAR_SPACER
+  r.setCursor(1, 0, HOLLOW, CURSOR, TEXT);
+  const wideImg = draw(wideCps, wideFlags);
+  checks.aWideCharGetsATwoCellOutline = sameSet(litSet(wideImg, 1, 0, 2), rectSet(HOLLOW, 2, thickness));
+  checks.theWideOutlineDoesNotSpillPastThePair = redOutside(wideImg, 1, 0, 2) === 0;
+
+  // --- moving the cursor leaves no residue (AC 3) ---
+  r.setCursor(1, 0, BAR, CURSOR, TEXT);
+  draw();
+  r.setCursor(2, 1, BAR, CURSOR, TEXT);
+  const moved = draw();
+  checks.aMovedCursorLeavesNoResidue = redOutside(moved, 2, 1, 1) === 0;
+  checks.aMovedCursorArrives = litSet(moved, 2, 1, 1).size > 0;
+
+  // --- blink and move must work with NO new frame (the path a blink tick actually takes) ---
+  //
+  // This is the check that a `draw()`-only proof cannot make. While the block cursor lived in the
+  // instance buffer, `clearCursor(); render();` left the cell painted — a block cursor that could
+  // never blink off — and every check above still passed, because `draw()` re-packs each time.
+  r.setCursor(1, 0, BLOCK, CURSOR, TEXT);
+  draw();
+  r.clearCursor();
+  const blinkedOff = present();
+  let stillLit = 0;
+  for (let y = 0; y < ROWS * ch; y++) for (let x = 0; x < COLS * cw; x++) if (isCursor(blinkedOff, x, y)) stillLit++;
+  checks.aBlockBlinksOffWithoutReapplyingTheFrame = stillLit === 0;
+
+  r.setCursor(1, 0, BLOCK, CURSOR, TEXT);
+  draw();
+  r.setCursor(2, 1, BLOCK, CURSOR, TEXT);
+  const blockMoved = present();
+  checks.aBlockMovesWithoutReapplyingTheFrame =
+    redOutside(blockMoved, 2, 1, 1) === 0 && litSet(blockMoved, 2, 1, 1).size === cw * ch;
+
+  r.setCursor(1, 0, BAR, CURSOR, TEXT);
+  draw();
+  r.setCursor(3, 1, BAR, CURSOR, TEXT);
+  const barMoved = present();
+  checks.aStrokeMovesWithoutReapplyingTheFrame =
+    redOutside(barMoved, 3, 1, 1) === 0 && litSet(barMoved, 3, 1, 1).size > 0;
+
+  // --- a block wins over inverse, and covers a wide char's two halves ---
+  const invFlags = new Uint16Array(COLS * ROWS);
+  invFlags[1] = 1 << 5; // INVERSE — swaps fg/bg in the packer, before the cursor lands
+  r.setCursor(1, 0, BLOCK, CURSOR, TEXT);
+  const inv = draw(new Uint32Array(COLS * ROWS).fill(SPACE), invFlags);
+  checks.aBlockOverridesAnInverseCell = litSet(inv, 1, 0, 1).size === cw * ch;
+
+  // `一` HAS ink, so its cells are not uniformly red: the glyph draws in `text_color`. What a block
+  // guarantees is that the DEFAULT BACKGROUND is gone from both halves — every pixel is either the
+  // cursor's red or the glyph's green. Counting red would have needed a wide flag over a blank
+  // glyph, i.e. an input the core never produces.
+  r.setCursor(1, 0, BLOCK, CURSOR, TEXT);
+  const wideBlock = draw(wideCps, wideFlags);
+  const isBackground = (img, x, y) => {
+    const i = ((img.h - 1 - y) * img.w + x) * 4;
+    return img.buf[i] < 60 && img.buf[i + 1] < 60 && img.buf[i + 2] < 60;
+  };
+  let unpainted = 0, redPerHalf = [0, 0];
+  for (let y = 0; y < ch; y++)
+    for (let half = 0; half < 2; half++)
+      for (let x = 0; x < cw; x++) {
+        const gx = (1 + half) * cw + x;
+        if (isBackground(wideBlock, gx, y)) unpainted++;
+        if (isCursor(wideBlock, gx, y)) redPerHalf[half]++;
+      }
+  checks.aBlockCoversBothHalvesOfAWideChar = unpainted === 0 && redPerHalf[0] > 0 && redPerHalf[1] > 0;
+  checks.aWideBlockDoesNotSpillPastThePair = redOutside(wideBlock, 1, 0, 2) === 0;
+
+  // --- the blink's off phase erases it entirely (AC 2: phase is the consumer's) ---
+  r.clearCursor();
+  const off = draw();
+  let anyRed = 0;
+  for (let y = 0; y < ROWS * ch; y++) for (let x = 0; x < COLS * cw; x++) if (isCursor(off, x, y)) anyRed++;
+  checks.clearCursorRemovesEveryCursorPixel = anyRed === 0;
+
+  // A block's off phase must clear the INSTANCE colours too, not just the uniforms.
+  r.setCursor(1, 0, BLOCK, CURSOR, TEXT);
+  draw();
+  r.clearCursor();
+  const blockOff = draw();
+  let blockRed = 0;
+  for (let y = 0; y < ROWS * ch; y++) for (let x = 0; x < COLS * cw; x++) if (isCursor(blockOff, x, y)) blockRed++;
+  checks.clearCursorAlsoUnpaintsABlock = blockRed === 0;
+
+  // An out-of-grid cursor is inert, and must not panic the instance (#355).
+  r.setCursor(999, 999, BLOCK, CURSOR, TEXT);
+  const off_grid = draw();
+  let strayRed = 0;
+  for (let y = 0; y < ROWS * ch; y++) for (let x = 0; x < COLS * cw; x++) if (isCursor(off_grid, x, y)) strayRed++;
+  checks.anOutOfGridCursorDrawsNothing = strayRed === 0;
+
+  // An unknown shape id is refused, not silently drawn as a block.
+  let refused = false;
+  try { r.setCursor(0, 0, 9, CURSOR, TEXT); } catch { refused = true; }
+  checks.anUnknownShapeIsRefused = refused;
+
+  // --- a cell far wider than it is tall: the only place the bar's clamp is observable ---
+  //
+  // `cursor_rects` clamps a bar's width by its own CELL; an earlier draft also clamped it by the
+  // cell's HEIGHT, which the shader never did. At the default spacing `thickness` is 1-2 px and no
+  // clamp binds, so the four-dpr sweep above cannot see the difference. Force `thickness > ch`.
+  r.setLetterSpacing(120);
+  const wideCellW = r.cell_width(), wideCellH = r.cell_height();
+  const wideT = Math.max(1, Math.round(0.15 * wideCellW));
+  r.setCursor(1, 0, BAR, CURSOR, TEXT);
+  r.resize(COLS, ROWS);
+  r.apply_frame(COLS, ROWS, new Uint32Array(COLS * ROWS), new Uint32Array(COLS * ROWS),
+                new Uint32Array(COLS * ROWS).fill(SPACE), new Uint16Array(COLS * ROWS), true);
+  r.render();
+  const wideCellImg = grab();
+  const wideLit = new Set();
+  for (let y = 0; y < wideCellH; y++)
+    for (let x = 0; x < wideCellW; x++)
+      if (isCursor(wideCellImg, wideCellW + x, y)) wideLit.add(`${x},${y}`);
+  const wideFlat = cursorRects(BAR, wideCellW, wideCellH, 1, wideT);
+  const wideRects = new Set();
+  for (let i = 0; i < wideFlat.length; i += 4)
+    for (let y = wideFlat[i + 1]; y < wideFlat[i + 1] + wideFlat[i + 3]; y++)
+      for (let x = wideFlat[i]; x < wideFlat[i] + wideFlat[i + 2]; x++) wideRects.add(`${x},${y}`);
+  checks.theThicknessClampIsObservableOnlyOnAVeryWideCell = wideT > wideCellH;
+  checks.aBarOnAVeryWideCellMatchesTheRustRects = sameSet(wideLit, wideRects);
+  r.setLetterSpacing(0);
+
+  window.__proof = {
+    ok: Object.values(checks).every(Boolean), checks,
+    dpr: devicePixelRatio, cw, ch, thickness, wideCellW, wideCellH, wideT,
+  };
+  window.__done = true;
+</script>

@@ -20,6 +20,9 @@ use web_sys::{HtmlCanvasElement, WebGl2RenderingContext};
 use crate::bitmap::{PADDING, is_color_bitmap, split_wide_bitmap};
 use crate::color::gl_rgb;
 use crate::context_loss::{ContextState, DEFAULT_RESTORE_TIMEOUT_MS, FrameAction};
+use crate::cursor::{
+    Cursor, THICKNESS, cursor_rects, cursor_span_at, cursor_thickness, shape_from_id, shape_id,
+};
 use crate::dpr::{cells_that_fit, css_px, dpr_changed, grid_px};
 use crate::emoji::is_emoji_text;
 use crate::frame::{Frame, INSTANCE_FLOATS, pack_instances};
@@ -56,6 +59,7 @@ uniform vec2 u_cell_size;   // the GRID cell in device px
 out vec3 v_bg;
 out vec3 v_fg;
 flat out uint v_glyph;
+flat out vec2 v_cell;
 out vec2 v_tex;
 void main() {
     vec2 origin = a_cell * u_cell_size;
@@ -64,6 +68,7 @@ void main() {
     v_bg = a_bg;
     v_fg = a_fg;
     v_glyph = uint(a_glyph);
+    v_cell = a_cell;
     // Cell-local. The atlas slot IS the padded cell (#359), so the bitmap already carries the glyph
     // at its offset inside it — the shader neither places nor masks it. Widening the cell spaces the
     // text because the BITMAP has wider margins, and a wide glyph's halves touch because it was
@@ -84,14 +89,53 @@ uniform vec3 u_default_bg;    // the default terminal background — only IT is 
 uniform highp vec2 u_cell_size;   // the grid cell in device px
 uniform highp vec2 u_char_size;   // the glyph box inside it (#338) — decorations only
 uniform highp vec2 u_char_offset; // where that box starts
+// The cursor (#270): (col, row, span, shape). Shape 0 = NO cursor; otherwise `shape_id + 1`, so
+// 1 = block, 2 = underline, 3 = bar, 4 = hollow block. Every shape lives here rather than in the
+// instance buffer, so moving or blinking the cursor costs one uniform and no upload — a block
+// that lived in the instances could not be un-painted without re-packing the frame.
+//
+// A BLOCK is still a colour override on the cell, not geometry: both references draw it that way
+// (xterm `RectangleRenderer.ts:251` emits no vertices, alacritty `display/cursor.rs:33` no rects;
+// each recolours the cell). Doing it per-fragment rather than per-instance keeps the order — the
+// instance colours arrive already inverse-swapped, the glyph already concealed.
+uniform highp vec4 u_cursor;
+uniform vec3 u_cursor_color;
+uniform vec3 u_cursor_text_color;       // the glyph colour under a block (xterm's cursorAccent)
+uniform highp float u_cursor_thickness; // stroke width in device px
 in vec3 v_bg;
 in vec3 v_fg;
 flat in uint v_glyph;
+flat in vec2 v_cell;
 in vec2 v_tex;
 out vec4 FragColor;
 // A horizontal line centred at `c` (cell-local y, 0..1) with soft edges (beamterm cell.frag).
 float hline(float y, float c, float thick) {
     return 1.0 - smoothstep(0.0, thick, abs(y - c));
+}
+// Which cell of the cursor's `span`-wide box is this, or -1 for a fragment outside it? Mirrors
+// `cursor::covers`.
+float cursor_dx() {
+    if (int(u_cursor.w) == 0) return -1.0;
+    if (abs(v_cell.y - u_cursor.y) > 0.5) return -1.0;
+    float dx = v_cell.x - u_cursor.x;
+    return (dx < -0.5 || dx > u_cursor.z - 0.5) ? -1.0 : dx;
+}
+// Does this fragment fall on a cursor STROKE? Mirrors `cursor::cursor_rects` in device pixels; a
+// hard edge, like the rects it mirrors — the strokes are pixel-aligned, so antialiasing them would
+// only blur a rectangle onto its own boundary. A block draws no stroke.
+float stroke_coverage(float dx) {
+    int shape = int(u_cursor.w);
+    if (dx < 0.0 || shape < 2) return 0.0;
+    vec2 p = v_tex * u_cell_size;                 // device px inside THIS cell
+    float bx = dx * u_cell_size.x + p.x;          // device px inside the cursor's box
+    float box_w = u_cursor.z * u_cell_size.x;
+    float h = u_cell_size.y;
+    // The same clamp `cursor_rects` applies: a stroke is never thicker than the box it outlines.
+    float t = min(u_cursor_thickness, min(box_w, h));
+    if (shape == 2) return p.y >= h - t ? 1.0 : 0.0;                          // underline
+    // A bar's width is clamped by its own cell, not by the cell's height.
+    if (shape == 3) return bx < min(u_cursor_thickness, u_cell_size.x) ? 1.0 : 0.0;
+    return (p.y < t || p.y >= h - t || bx < t || bx >= box_w - t) ? 1.0 : 0.0; // hollow
 }
 void main() {
     // The glyph field packs slot (bits 0..12), underline (bit 13), strikethrough (bit 14),
@@ -109,10 +153,18 @@ void main() {
     vec4 texel = texture(u_atlas, tc);
     float coverage = texel.a;
 
+    // A BLOCK cursor recolours the cell before anything composites over it. The instance colours
+    // arrive already inverse-swapped and the glyph already concealed, so the cursor lands last —
+    // the order alacritty gets by overwriting `cell.fg`/`cell.bg` in `display/content.rs:167`.
+    float dx = cursor_dx();
+    bool block = dx >= 0.0 && int(u_cursor.w) == 1;
+    vec3 base_bg = block ? u_cursor_color : v_bg;
+    vec3 base_fg = block ? u_cursor_text_color : v_fg;
+
     // A colour emoji (bit 15) samples the atlas RGB (the font's own colours); a text glyph uses
     // the packed foreground (beamterm cell.frag `mix(base_fg, glyph.rgb, emoji_factor)`).
     float emoji = float((v_glyph >> 15u) & 1u);
-    vec3 fg = mix(v_fg, texel.rgb, emoji);
+    vec3 fg = mix(base_fg, texel.rgb, emoji);
 
     float underline = float((v_glyph >> 13u) & 1u);
     float strike = float((v_glyph >> 14u) & 1u);
@@ -125,14 +177,20 @@ void main() {
     float gy = (v_tex.y * u_cell_size.y - u_char_offset.y) / u_char_size.y;
     float line = max(hline(gy, 0.88, 0.05) * underline, hline(gy, 0.5, 0.05) * strike);
     // Underline/strikethrough always draw in the base foreground, even over an emoji.
-    fg = mix(fg, v_fg, line);
+    fg = mix(fg, base_fg, line);
 
     // Only the DEFAULT terminal background is translucent (the see-through backdrop). An explicit
     // SGR background or an inverse/selection/cursor background is *content* and stays opaque — else
     // a highlight would vanish on a translucent terminal (#298). A glyph/line pixel is always opaque.
     float cov = max(coverage, line);
-    float bg_a = (v_bg == u_default_bg) ? mix(u_bg_alpha, 1.0, cov) : 1.0;
-    FragColor = vec4(mix(v_bg, fg, cov), bg_a);
+    // A block cursor is always opaque, even where its colour happens to equal the default
+    // background — alacritty forces `bg_alpha = 1.` for the cursor cell unconditionally
+    // (`display/content.rs:175`, "we must adjust alpha to make it visible").
+    float bg_a = (!block && base_bg == u_default_bg) ? mix(u_bg_alpha, 1.0, cov) : 1.0;
+    // The cursor's strokes draw last and opaque, over the glyph — both references append the
+    // cursor rects after the text pass.
+    float cur = stroke_coverage(dx);
+    FragColor = vec4(mix(mix(base_bg, fg, cov), u_cursor_color, cur), max(bg_a, cur));
 }
 "#;
 
@@ -281,6 +339,10 @@ struct Pipeline {
     u_padding_frac: glow::UniformLocation,
     u_bg_alpha: glow::UniformLocation,
     u_default_bg: glow::UniformLocation,
+    u_cursor: glow::UniformLocation,
+    u_cursor_color: glow::UniformLocation,
+    u_cursor_text_color: glow::UniformLocation,
+    u_cursor_thickness: glow::UniformLocation,
 }
 
 /// The justerm-family WebGL2 terminal renderer.
@@ -301,6 +363,20 @@ pub struct JustermRenderer {
     u_char_size: glow::UniformLocation,
     u_char_offset: glow::UniformLocation,
     u_bg_alpha: glow::UniformLocation,
+    u_cursor: glow::UniformLocation,
+    u_cursor_color: glow::UniformLocation,
+    u_cursor_text_color: glow::UniformLocation,
+    u_cursor_thickness: glow::UniformLocation,
+    /// The cursor this frame, or `None` for hidden / blinked off (#270). Blink timing is the
+    /// consumer's policy, as `blink_on` is (#282) — the renderer only draws what it is handed.
+    cursor: Option<Cursor>,
+    /// How many cells the cursor covers — 2 over a wide char.
+    cursor_span: u32,
+    /// The last frame's cell flags + width, kept so `setCursor` can resolve the span of a cursor
+    /// that moves onto a wide char with no new frame. Without it a caret moved onto a CJK glyph
+    /// would half-cover it until the next `applyFrame`.
+    last_flags: Vec<u16>,
+    last_cols: u32,
     /// Background cell opacity (0 = transparent, 1 = opaque), consumer-injected policy (#298).
     bg_alpha: f32,
     /// The glyph box in device px — the rasteriser's ink-scan of `█`. Equal to `cell_size` only
@@ -475,6 +551,10 @@ impl JustermRenderer {
             u_padding_frac,
             u_bg_alpha,
             u_default_bg,
+            u_cursor,
+            u_cursor_color,
+            u_cursor_text_color,
+            u_cursor_thickness,
         } = Self::build_pipeline(&gl)?;
         // The atlas stores padded cells; the glyph is drawn inset by PADDING.
         let atlas = Self::build_atlas(&gl, pad_w, pad_h)?;
@@ -506,6 +586,14 @@ impl JustermRenderer {
             u_char_size,
             u_char_offset,
             u_bg_alpha,
+            u_cursor,
+            u_cursor_color,
+            u_cursor_text_color,
+            u_cursor_thickness,
+            cursor: None,
+            cursor_span: 1,
+            last_flags: Vec::new(),
+            last_cols: 0,
             bg_alpha: 1.0, // opaque by default (#298)
             palette,
             rasterizer,
@@ -580,6 +668,10 @@ impl JustermRenderer {
             let u_padding_frac = uniform(gl, program, "u_padding_frac")?;
             let u_bg_alpha = uniform(gl, program, "u_bg_alpha")?;
             let u_default_bg = uniform(gl, program, "u_default_bg")?;
+            let u_cursor = uniform(gl, program, "u_cursor")?;
+            let u_cursor_color = uniform(gl, program, "u_cursor_color")?;
+            let u_cursor_text_color = uniform(gl, program, "u_cursor_text_color")?;
+            let u_cursor_thickness = uniform(gl, program, "u_cursor_thickness")?;
             // The atlas sampler stays on texture unit 0.
             gl.use_program(Some(program));
             let u_atlas = uniform(gl, program, "u_atlas")?;
@@ -596,6 +688,10 @@ impl JustermRenderer {
                 u_padding_frac,
                 u_bg_alpha,
                 u_default_bg,
+                u_cursor,
+                u_cursor_color,
+                u_cursor_text_color,
+                u_cursor_thickness,
             })
         }
     }
@@ -1050,6 +1146,10 @@ impl JustermRenderer {
         self.u_char_size = pipeline.u_char_size;
         self.u_char_offset = pipeline.u_char_offset;
         self.u_bg_alpha = pipeline.u_bg_alpha;
+        self.u_cursor = pipeline.u_cursor;
+        self.u_cursor_color = pipeline.u_cursor_color;
+        self.u_cursor_text_color = pipeline.u_cursor_text_color;
+        self.u_cursor_thickness = pipeline.u_cursor_thickness;
         self.rasterizer = rasterizer;
         self.char_size = (cell_w, cell_h);
         // The spacing policy outlives the lost context (#269 + #338).
@@ -1367,6 +1467,11 @@ impl JustermRenderer {
             )));
         }
 
+        // Keep the flags: a cursor may move onto a wide char before the next frame arrives.
+        self.last_flags.clear();
+        self.last_flags.extend_from_slice(cells.flags);
+        self.last_cols = cells.cols;
+        self.resolve_cursor_span();
         let frame = Frame {
             cols: cells.cols,
             rows: cells.rows,
@@ -1512,6 +1617,56 @@ impl JustermRenderer {
         self.bg_alpha = alpha.clamp(0.0, 1.0);
     }
 
+    /// Place the cursor (#270). `shape`: `0` block, `1` underline, `2` bar, `3` hollow block.
+    /// `color` is the cursor's own `0xRRGGBB`; `text_color` the glyph colour a block paints under
+    /// itself (xterm's `cursorAccent`, alacritty's `text_color`). Colours are resolved by the
+    /// consumer — the renderer stays theme-agnostic.
+    ///
+    /// A **block** repaints the cell, so it lands in the instance buffer and takes effect on the
+    /// next `applyFrame`/`applyDamage`. The **strokes** are shader uniforms and take effect on the
+    /// next [`render`](Self::render) alone: moving or blinking a bar costs no upload. Blink phase
+    /// is the consumer's policy, exactly as `blink_on` is (#282) — call `clearCursor` for the off
+    /// phase.
+    #[wasm_bindgen(js_name = setCursor)]
+    pub fn set_cursor(
+        &mut self,
+        col: u32,
+        row: u32,
+        shape: u8,
+        color: u32,
+        text_color: u32,
+    ) -> Result<(), JsValue> {
+        let Some(shape) = shape_from_id(shape) else {
+            return Err(JsValue::from_str(&format!(
+                "justerm-renderer: cursor shape {shape} is not one of 0..=3"
+            )));
+        };
+        self.cursor = Some(Cursor {
+            col,
+            row,
+            shape,
+            color,
+            text_color,
+        });
+        self.resolve_cursor_span();
+        Ok(())
+    }
+
+    /// Re-resolve [`Self::cursor_span`] against the last frame's flags. Called when a frame arrives
+    /// (its flags may have changed under a still cursor) *and* when the cursor moves (onto a wide
+    /// char, with no new frame).
+    fn resolve_cursor_span(&mut self) {
+        self.cursor_span = self.cursor.map_or(1, |c| {
+            cursor_span_at(&self.last_flags, self.last_cols, c.col, c.row)
+        });
+    }
+
+    /// Remove the cursor — hidden (`DECTCEM`), or the blink's off phase.
+    #[wasm_bindgen(js_name = clearCursor)]
+    pub fn clear_cursor(&mut self) {
+        self.cursor = None;
+    }
+
     /// Clear to the palette's default background, then draw every cell of the current frame
     /// (glyph composited over background) with one instanced draw call.
     ///
@@ -1579,11 +1734,49 @@ impl JustermRenderer {
                 self.char_offset.1 as f32,
             );
             self.gl.uniform_1_f32(Some(&self.u_bg_alpha), self.bg_alpha);
+            // `u_cursor.w == 0` means NO cursor; a shape is `shape_id + 1`. Every shape — block
+            // included — reaches the shader this way, so a move or a blink is a uniform, not an
+            // upload (#270).
+            let (cx, cy, span, shape) = match self.cursor {
+                Some(c) => (
+                    c.col as f32,
+                    c.row as f32,
+                    self.cursor_span as f32,
+                    shape_id(c.shape) as f32 + 1.0,
+                ),
+                None => (0.0, 0.0, 1.0, 0.0),
+            };
+            self.gl
+                .uniform_4_f32(Some(&self.u_cursor), cx, cy, span, shape);
+            let [cr, cg, cb] = gl_rgb(self.cursor.map_or(0, |c| c.color));
+            self.gl
+                .uniform_3_f32(Some(&self.u_cursor_color), cr, cg, cb);
+            let [tr, tg, tb] = gl_rgb(self.cursor.map_or(0, |c| c.text_color));
+            self.gl
+                .uniform_3_f32(Some(&self.u_cursor_text_color), tr, tg, tb);
+            self.gl.uniform_1_f32(
+                Some(&self.u_cursor_thickness),
+                cursor_thickness(THICKNESS, self.cell_size.0) as f32,
+            );
 
             self.gl
                 .draw_arrays_instanced(glow::TRIANGLE_STRIP, 0, 4, self.instance_count);
         }
     }
+}
+
+/// The pure cursor geometry (`cursor::cursor_rects`) as a flat `[x, y, w, h, ...]`, exposed so a
+/// proof page can hold the fragment shader's per-pixel test to the same rectangles. Two
+/// independent formulations of one spec: a drift between them is the bug this exists to catch.
+#[wasm_bindgen(js_name = cursorRects)]
+pub fn cursor_rects_js(shape: u8, cell_w: u32, cell_h: u32, span: u32, thickness: u32) -> Vec<u32> {
+    let Some(shape) = shape_from_id(shape) else {
+        return Vec::new();
+    };
+    cursor_rects(shape, (cell_w, cell_h), span, thickness)
+        .into_iter()
+        .flat_map(|r| [r.x, r.y, r.w, r.h])
+        .collect()
 }
 
 /// Fetch a required uniform location or error.
