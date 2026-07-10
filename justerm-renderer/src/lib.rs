@@ -27,6 +27,7 @@ pub mod frame_grid;
 pub mod glyph_cache;
 pub mod glyph_resolve;
 pub mod mat4;
+pub mod metrics;
 pub mod palette;
 pub mod upload;
 
