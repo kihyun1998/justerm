@@ -79,6 +79,26 @@
     return { w, lit: most, interiorGaps, leftGap: first };
   };
 
+  /** Two `🬂` (BLOCK SEXTANT-12, the upper third) side by side: the top rows must run unbroken. */
+  const SEXTANT_UPPER_THIRD = 0x1FB02;
+  const sextantRun = () => {
+    r.resize(2, 1);
+    r.apply_frame(2, 1, new Uint32Array(2), new Uint32Array(2),
+      new Uint32Array([SEXTANT_UPPER_THIRD, SEXTANT_UPPER_THIRD]), new Uint16Array(2), true);
+    r.render();
+    const [w, h] = [gl.drawingBufferWidth, gl.drawingBufferHeight];
+    const { buf } = readRect(gl, { x: 0, y: 0, w, h });
+    const rowLit = (y) => { let n = 0; for (let x = 0; x < w; x++) if (buf[(y * w + x) * 4 + 1] > 150) n++; return n; };
+    // readPixels is bottom-origin, so top-origin row `t` is device row `h - 1 - t`.
+    const litFromTop = (t) => rowLit(h - 1 - t);
+    let topRun = 0;
+    while (topRun < h && litFromTop(topRun) > 0) topRun++;
+    let litRows = 0;
+    for (let t = 0; t < h; t++) if (litFromTop(t) > 0) litRows++;
+    return { w, h, topRow: litFromTop(0), topRun, litRows };
+  };
+  const sextantBase = sextantRun();
+
   const blockBase = inkRun(BLOCK);
   const letterBase = inkRun(LETTER);
   const wideBase = wideRun();
@@ -87,6 +107,7 @@
   const SPACING = 2;
   r.setLetterSpacing(SPACING);
   const blockSpaced = inkRun(BLOCK);
+  const sextantSpaced = sextantRun();
   const letterSpaced = inkRun(LETTER);
   const wideSpaced = wideRun();
   const dx = Math.round(SPACING * dpr);
@@ -154,7 +175,7 @@
     dpr, charW, charH, dx, dy, cellH, charH2, afterDpr,
     blockBase, blockSpaced, blockTall, letterBase, letterSpaced, letterTall,
     wideBase, wideSpaced, afterRestore, gridBefore, gridWhileLost, gridAfter,
-    maxTex, huge, letterCoverage,
+    maxTex, huge, letterCoverage, sextantBase, sextantSpaced,
     checks: {
       // The adopted cell fits the atlas, and the consumer can read back what it got (#339's contract).
       anUnholdableCellIsShrunkToWhatTheAtlasCanHold:
@@ -171,6 +192,19 @@
       // #359: a BLOCK element fills the cell, whatever the spacing. Masked to its ink box it seamed:
       // `██` grew vertical lines, and `lineHeight` a horizontal one.
       aBlockFillsAWiderCell: blockSpaced.litCols === blockSpaced.w && blockSpaced.litRows === blockSpaced.h,
+      // #361: a sextant is a 2x3 mosaic drawn to the cell, so `🬂🬂` (BLOCK SEXTANT-12, the upper
+      // third) runs unbroken across the cell boundary at any spacing. Its ink is a contiguous run
+      // from the TOP — all of it, nothing below — and it is a THIRD, not the half `▀` would give.
+      // Stated structurally rather than as `round(h/3)`, which would just recompute the code.
+      aSextantTilesAcrossCells:
+        sextantBase.topRow === sextantBase.w &&
+        sextantBase.topRun === sextantBase.litRows &&
+        sextantBase.topRun >= 1 && sextantBase.topRun * 2 < sextantBase.h,
+      aSextantStillTilesWhenTheCellWidens:
+        sextantSpaced.topRow === sextantSpaced.w &&
+        sextantSpaced.topRun === sextantSpaced.litRows &&
+        sextantSpaced.topRun * 2 < sextantSpaced.h &&
+        sextantSpaced.w === sextantBase.w + 2 * dx,
       aBlockFillsATallerCell: blockTall.litCols === blockTall.w && blockTall.litRows === blockTall.h,
 
       spacingWidensTheCell: blockSpaced.w === charW + dx && dx >= 1,

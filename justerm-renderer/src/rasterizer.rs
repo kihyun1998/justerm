@@ -166,8 +166,9 @@ impl Rasterizer {
     /// [`crate::bitmap::split_wide_bitmap`]), its ink centred over the two-cell advance, so the
     /// halves the splitter cuts at the cell boundary are contiguous by construction.
     ///
-    /// A block element (`U+2580`-`U+259F`) never reaches the font: it is drawn to the cell, because
-    /// it is meant to tile with its neighbours and the font would only fill an ink box (#359).
+    /// A block element, sextant or extra eighth block never reaches the font: it is drawn to the cell,
+    /// because it is meant to tile with its neighbours and the font would only fill an ink box
+    /// (#359, #361).
     pub fn rasterize(&self, text: &str, style: FontStyle, wide: bool) -> Result<Vec<u8>, JsValue> {
         let (padded_w, padded_h) = self.padded_size();
         // A wide source keeps one PADDING band on each outer edge and 2*cell_w of content between
@@ -209,7 +210,7 @@ impl Rasterizer {
         Ok(img.data().to_vec())
     }
 
-    /// The built-in cell-sized bitmap for a lone block element, or `None` for anything the font owns.
+    /// The built-in cell-sized bitmap for a lone block/sextant glyph, or `None` for what the font owns.
     fn builtin(&self, text: &str) -> Option<Vec<u8>> {
         let mut chars = text.chars();
         let c = chars.next()?;
