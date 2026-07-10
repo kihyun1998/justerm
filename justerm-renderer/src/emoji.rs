@@ -124,10 +124,10 @@ fn is_emoji_presentation(c: char) -> bool {
             | 0x2B50          // ⭐
             | 0x2B55          // ⭕
         ),
-        // SMP emoji: nearly all of U+1F000–U+1FFFF are emoji. Exclude the CJK Enclosed
-        // Ideographic Supplement (EAW=W text symbols, not emoji).
+        // SMP emoji: nearly all of U+1F000–U+1FFFF are emoji. Two text-presentation islands are not.
         0x1F000..=0x1FFFF => !matches!(
             cp,
+            // CJK Enclosed Ideographic Supplement (EAW=W text symbols, not emoji).
             0x1F200
                 | 0x1F202..=0x1F219
                 | 0x1F21B..=0x1F22E
@@ -135,6 +135,12 @@ fn is_emoji_presentation(c: char) -> bool {
                 | 0x1F237
                 | 0x1F23B..=0x1F24F
                 | 0x1F260..=0x1F265
+                // Symbols for Legacy Computing: sextants, block/shade elements, teletext mosaics.
+                // Text presentation, and `builtin::block_glyph` draws several of them itself (#361).
+                // Nothing depended on this until now only because core reports them width-1, so the
+                // `wide &&` gate never asked — an invariant across three layers, now pinned by a test
+                // rather than by another crate's width table.
+                | 0x1FB00..=0x1FBFF
         ),
         _ => false,
     }
@@ -143,6 +149,27 @@ fn is_emoji_presentation(c: char) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn symbols_for_legacy_computing_are_text_not_emoji() {
+        // #361, found by the sibling lens. The SMP arm treats `0x1F000..=0x1FFFF` as emoji by
+        // default, and `U+1FB00`-`U+1FBFF` (sextants, extra blocks, shades) sits inside it. They are
+        // text-presentation mosaic glyphs — `builtin.rs` draws several of them itself.
+        //
+        // Nothing broke only because justerm-core reports `wide = false` for them, so the `wide &&`
+        // gate never asks. That is an undocumented invariant spanning three layers: core's width
+        // table, this range, and the rasteriser's `!wide` builtin gate. If core ever widened one, the
+        // glyph would skip the builtin AND be colour-sampled. Pin the intent here.
+        assert!(!is_emoji_text("\u{1FB00}", true), "BLOCK SEXTANT-1");
+        assert!(!is_emoji_text("\u{1FB82}", true), "UPPER ONE QUARTER BLOCK");
+        assert!(!is_emoji_text("\u{1FB9F}", true), "the last of the block");
+        // The neighbours on both sides are still emoji-by-default.
+        assert!(
+            is_emoji_text("\u{1FA00}", true),
+            "just below the legacy block"
+        );
+        assert!(is_emoji_text("\u{1FC00}", true), "just above it");
+    }
 
     // Core-provided width for a grapheme, mirroring how the resolver derives `wide` from the
     // frame's WIDE_CHAR flag. Emoji-presentation graphemes and CJK are wide; text-presentation
