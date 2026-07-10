@@ -11,14 +11,8 @@
     "verbatimModuleSyntax": true,
     "types": ["vitest/globals"]
   },
-  // `e2e` is checked too (#341). It was not, so `pnpm typecheck` reported clean while the code that
-  // PROVES the a11y contract (`e2e/demo.spec.ts`) was never type-checked at all — the same shape as
-  // `cargo fmt --all` silently skipping the workspace-excluded renderer (#333).
-  //
-  // `demo` is still missing, and NOT by preference. `demo/main.ts` calls `isValidRegex`, a binding that
-  // exists in this repo's Rust crate (#316) but not in the PUBLISHED `justerm-wasm-decode@0.6.0` that
-  // this package consumes. Adding `demo` here fails on a clean install and passes only on a machine
-  // whose `node_modules` was swapped for a locally built pkg. The fix is to publish the crate, not to
-  // cast the call to `any`.
-  "include": ["src", "test", "e2e"]
+  // `demo` and `e2e` are checked too. They were not, so `pnpm typecheck` reported clean while the code
+  // that PROVES the a11y contract (`e2e/demo.spec.ts`) was never type-checked at all — the same shape
+  // as `cargo fmt --all` silently skipping the workspace-excluded renderer (#333/#341).
+  "include": ["src", "test", "demo", "e2e"]
 }

@@ -736,6 +736,7 @@ function modeToggle(id: string, label: string): HTMLInputElement {
   return cb;
 }
 const countLabel = document.createElement("span");
+countLabel.id = "search-count"; // e2e reads it to prove the wasm validator ran (#346)
 countLabel.textContent = "0/0";
 const regexToggle = modeToggle("regex", ".*");
 const wordToggle = modeToggle("word", "W");

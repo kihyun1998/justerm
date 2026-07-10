@@ -12,8 +12,8 @@ importers:
         specifier: ^1.0.0
         version: 1.0.0
       justerm-wasm-decode:
-        specifier: ^0.6.0
-        version: 0.6.0
+        specifier: ^0.7.0
+        version: 0.7.0
     devDependencies:
       '@playwright/test':
         specifier: ^1.61.1
@@ -715,8 +715,8 @@ packages:
     resolution: {integrity: sha512-34wB/Y7MW7bzjKRjUKTa46I2Z7eV62Rkhva+KkopW7Qvv/OSWBqvkSY7vusOPrNuZcUG3tApvdVgNB8POj3SPw==}
     engines: {node: '>=10'}
 
-  justerm-wasm-decode@0.6.0:
-    resolution: {integrity: sha512-HhZ0IdHVnCcyZWvaXlc9506CekEGK3m0cTMXSgcyRI3j/gcpFwhlgUsvMKDZ/bx3c1jsMS7ta97a4xoLo+X0IA==}
+  justerm-wasm-decode@0.7.0:
+    resolution: {integrity: sha512-DcZ46tAzXJc9xOBU7eFqMLDc8OC9rsU16yts8YJcGlxXDZEJw3JMkayE5CZtuZ9WfGk4D+gycC5kDNLxenlyEA==}
 
   lilconfig@3.1.3:
     resolution: {integrity: sha512-/vlFKAoH5Cgt3Ie+JLhRbwOsCQePABiU3tJ1egGvyQ+33R/vcwM2Zl2QR/LzjsBeItPt3oSVXapn+m4nQDvpzw==}
@@ -1500,7 +1500,7 @@ snapshots:
 
   joycon@3.1.1: {}
 
-  justerm-wasm-decode@0.6.0: {}
+  justerm-wasm-decode@0.7.0: {}
 
   lilconfig@3.1.3: {}
 
