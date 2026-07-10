@@ -18,6 +18,8 @@
     (c) the CSS view is the device cell divided by the DPR, UNROUNDED. The ink-scanned cell is 16
         device px tall at dpr 1 and 33 at dpr 2, i.e. 16.5 CSS px — and 16.5 * 2 is 33 again, which
         a rounded 17 would not be. That round trip is what lets a consumer lay out in CSS.
+    (d) putting cssWidth()/cssHeight() on the element lands the box on the device grid — measured
+        with getBoundingClientRect(), so the browser's own layout answers, not our arithmetic (#337).
   Build: wasm-pack build --target web --dev --out-dir pkg
 -->
 <canvas id="c" width="64" height="64"></canvas>
@@ -46,8 +48,20 @@
   // Count lit pixels of "A" over its DEVICE cell (readPixels is on the device-px buffer).
   const canvas = document.querySelector("#c");
   const gl = canvas.getContext("webgl2");
+
+  // Read the buffer FIRST: the drawing buffer is cleared on composite (preserveDrawingBuffer is
+  // false), and the style/rect block below forces a synchronous reflow. Measured: a reflow does not
+  // composite, and neither does one `await requestAnimationFrame` (the callback runs before the
+  // frame is presented) — but TWO of them redden `glyphRenders` at every density. So this ordering
+  // buys the margin, and an `await` above this line is what would spend it.
   const [dcw, dch] = deviceCell(r);
   const litA = countLit(readCells(gl, r, 0));
+
+  // Do what a consumer does with cssWidth()/cssHeight(): put them on the element. Check (d) then
+  // asks the BROWSER where the box landed, instead of asking our own arithmetic (#337).
+  canvas.style.width = `${r.cssWidth()}px`;
+  canvas.style.height = `${r.cssHeight()}px`;
+  const rect = canvas.getBoundingClientRect();
 
   window.__proof = {
     dpr,
@@ -57,6 +71,7 @@
     bufferW: gl.drawingBufferWidth, bufferH: gl.drawingBufferHeight,
     canvasAttrs: [canvas.width, canvas.height],
     cellCssW, cellCssH, cssBox: [r.cssWidth(), r.cssHeight()],
+    rect: [rect.width, rect.height], usedDevice: [rect.width * dpr, rect.height * dpr],
     deviceCell: [dcw, dch], litA,
     gridFit: gridFit(gl, r, COLS, ROWS),
     checks: {
@@ -68,12 +83,31 @@
       glyphRenders: litA > 0,
       // (b) device is authoritative; the CSS view is its UNROUNDED quotient. `cellH / dpr` is 16.5 at
       //     dpr 2 — a rounded 17 would not scale back, which is exactly what #331 was.
+      //
+      //     This has the same shape as the tautology (d) replaced: the expected side re-divides by
+      //     `dpr`, exactly as `cssCellWidth()` does. It keeps its teeth only because the tolerance is
+      //     1e-6 and nothing rounds it away, so a rounding regression (16.5 -> 17) still reddens it.
+      //     But it cannot say WHICH dpr or WHICH cell fed the accessor. That independent proof is the
+      //     runner's cross-density test in e2e/proofs.spec.mjs — do not mistake this line for it.
       cssCellIsTheUnroundedQuotient:
         Math.abs(cellCssW - dcw / dpr) < 1e-6 && Math.abs(cellCssH - dch / dpr) < 1e-6,
-      // (c) and the consumer's CSS box, built from that float, scales back onto the device grid.
-      cssBoxScalesBackToTheGrid:
-        Math.round(r.cssWidth() * dpr) === COLS * cellW &&
-        Math.round(r.cssHeight() * dpr) === ROWS * cellH,
+      // (d) and the consumer's CSS box, built from that float, lands on the device grid — asked of
+      //     the BROWSER, not of our own arithmetic.
+      //
+      //     This replaces `cssBoxScalesBackToTheGrid`, which asserted
+      //     `Math.round(cssWidth() * dpr) === COLS * cellW`. Since `cssWidth()` IS `COLS*cellW/dpr`,
+      //     that reduced to `round(x/d*d) === x` — the browser never appeared in it. Measured: it
+      //     stayed GREEN at dpr 1, 1.1 and 1.5 with the accessor rounding (#337's proposal), because
+      //     `round(round(36/1.1) * 1.1) === 36`. Only dpr 2 caught it, and only via the cell's `.5`.
+      //
+      //     `rect.width * dpr` is what actually reaches the compositor. The tolerance is the layout
+      //     grid, not slop: CSS lengths snap to 1/64 px (Chromium/WebKit `LayoutUnit`), so the box
+      //     can miss by up to `dpr/128` device px — measured 0.0016..0.0156. A rounded box misses by
+      //     up to `dpr/2` (measured 0.3 at dpr 1.1), so 0.05 separates them by 3x on one side and 6x
+      //     on the other.
+      cssBoxLandsOnTheDeviceGrid:
+        Math.abs(rect.width * dpr - COLS * cellW) < 0.05 &&
+        Math.abs(rect.height * dpr - ROWS * cellH) < 0.05,
     },
   };
   window.__proof.ok = Object.values(window.__proof.checks).every(Boolean);

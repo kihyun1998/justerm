@@ -4,7 +4,15 @@
 //! `█` at `FONT_SIZE * dpr`), the shader lays the grid out in them (`u_cell_size`), and the drawing
 //! buffer is an exact multiple of them ([`grid_px`]). The CSS view ([`css_px`]) is *derived*, and is
 //! a float precisely so that the derivation can be undone — a consumer's `cols * cssCellWidth()`
-//! box scales back to `cols * cell` device px exactly.
+//! box scales back to `cols * cell` device px.
+//!
+//! "Scales back" is arithmetic, not physics (#337). A CSS length snaps to the browser's layout grid
+//! before it reaches the compositor — 1/64 px in Blink (`layout_unit.h`, `FixedPoint<6, int32_t>`);
+//! other engines differ and we have not read their source — so at a fractional DPR the used box
+//! misses the buffer by up to `dpr/128` device px, measured 0.0016 to 0.0156 in headed Chromium at
+//! dpr 1.1. **No CSS length can do better**: `L * 1.1` is a whole device pixel only when `10 | L`,
+//! and `cols * cell` is not generally a multiple of 11. (Worse: browsers report the ratio as
+//! 1.100000023841858, so nothing lands exactly.) There is no exact answer here, only a nearest one.
 //!
 //! The bug this closes (#331) was not "rounding". It was computing the grid and the buffer from
 //! *different quantities*: the buffer from `round(cssBox * dpr)`, the layout from `cols * cell`.
@@ -19,6 +27,20 @@
 /// The CSS-pixel view of a device-pixel length at `dpr`. **Not rounded**: the device length is the
 /// measured quantity, and a whole-CSS-pixel view of it cannot be converted back (#331). xterm.js
 /// keeps its `dimensions.css.cell` a float for the same reason, and never sizes anything from it.
+///
+/// #337 asked whether the *canvas box* (as opposed to the cell) should round, as xterm.js's
+/// `dimensions.css.canvas` does. It should not, and the tests below say why: rounding's error is
+/// absolute (`<= dpr/2` device px) where the layout grid's is not, so it dominates on a small canvas
+/// and can make the box *larger* than the buffer it displays.
+///
+/// Both references leave a *derived* CSS length fractional, and neither contradicts this:
+/// xterm's `css.cell` is `device.cell / dpr` (`WebglRenderer.ts:694`) and beamterm's
+/// `css_cell_size()` is `cell / pixel_ratio` (`terminal_grid.rs:405`). xterm's rounded `css.canvas`
+/// is not a derived-length exception so much as a value it *also* feeds to DOM layers
+/// (`screenElement`, mouse coords, selection, a11y, the overview ruler), where an integer costs it
+/// nothing — the reason its own comment gives is avoiding `ceil`'s overshoot, which we dodge by not
+/// rounding at all. beamterm's integer CSS box is an *input* (`resize(width, height)` in logical px)
+/// from which it derives the device buffer — a route #331 closed by making the grid the truth.
 pub fn css_px(device: u32, dpr: f32) -> f32 {
     device as f32 / dpr
 }
@@ -88,6 +110,35 @@ mod tests {
                 device_box,
                 grid_px(cols, cell),
                 "cols={cols} cell={cell} dpr={dpr}"
+            );
+        }
+    }
+
+    #[test]
+    fn rounding_the_css_box_moves_it_further_off_the_device_grid_than_leaving_it_alone() {
+        // #337: should `cssWidth()`/`cssHeight()` round, as xterm.js's `dimensions.css.canvas` does?
+        //
+        // Measured in headed Chromium at dpr 1.1 against a 36-device-px buffer (4 cols x 9 px):
+        //   unrounded  style=32.727px  ->  used 35.9906 device px   (err 0.009)
+        //   rounded    style=33px      ->  used 36.3000 device px   (err 0.300, and LARGER than the
+        //                                  buffer it holds — the image is stretched)
+        //
+        // The rounded box's error is absolute (<= dpr/2 device px), so it grows relative to a
+        // shrinking canvas. The unrounded box's error is whatever the browser's 1/64-px layout grid
+        // imposes, and nothing we choose here can beat that. Rounding is never better; on a small
+        // canvas it is much worse, in the exact way xterm's own comment blames for blurriness
+        // ("the backing canvas image is 1 pixel too large for the canvas element size" — it blames
+        // `ceil`, but `round` overshoots half the time too).
+        let err = |css: f32, dpr: f32, device: u32| (css * dpr - device as f32).abs();
+        // (device buffer, dpr): 36/72/360 @ 1.1 is browser zoom at 110 %; 33 @ 2 is the measured
+        // cell height on a retina display (#328), whose CSS view is 16.5.
+        for (device, dpr) in [(36u32, 1.1f32), (72, 1.1), (360, 1.1), (33, 2.0)] {
+            let exact = css_px(device, dpr);
+            assert!(
+                err(exact, dpr, device) < err(exact.round(), dpr, device),
+                "device={device} dpr={dpr}: exact box off by {}, rounded box off by {}",
+                err(exact, dpr, device),
+                err(exact.round(), dpr, device),
             );
         }
     }

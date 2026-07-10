@@ -927,8 +927,14 @@ impl JustermRenderer {
     }
 
     /// The drawing buffer's width in **CSS pixels** — what the consumer should set the canvas's CSS
-    /// display box to, so the device-px buffer is shown at exactly the right size. Unrounded, for
-    /// the same reason as [`css_cell_width`](Self::css_cell_width).
+    /// display box to, so the device-px buffer is shown at as close to the right size as a CSS
+    /// length can get. Unrounded, for the same reason as [`css_cell_width`](Self::css_cell_width),
+    /// and for one more (#337): a rounded box misses the buffer by up to `dpr/2` device px — an
+    /// absolute error, so it is ruinous on a small canvas — where this one misses by at most the
+    /// browser's layout grain (`dpr/128`; measured 0.0016..0.0156 at dpr 1.1). It can also round
+    /// *up*, stretching the image over a box wider than the buffer feeding it.
+    ///
+    /// Round it yourself if your layout needs a whole CSS pixel; the reverse is not available.
     #[wasm_bindgen(js_name = cssWidth)]
     pub fn css_width(&self) -> f32 {
         css_px(self.size.0 as u32, self.dpr)
