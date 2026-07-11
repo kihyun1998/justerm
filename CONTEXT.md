@@ -6,9 +6,12 @@ issues, or ADRs name a concept here, use this term and not a synonym.
 ## justerm (family)
 
 `justerm` names the `-term`-family umbrella, not a single crate: the **Engine** (crate `justerm-core`),
-its WASM binding(s) (`justerm-wasm-decode`), and the forthcoming web-renderer side (`justerm-web`). When
-the core engine crate specifically is meant, say `justerm-core`; "justerm" alone is the family. (The
-name was `justerm` for the bare engine until v0.6.0 renamed it for this disambiguation — ADR-0010.)
+its WASM decoder (`justerm-wasm-decode`), the browser **widget** (`justerm-web`), and the first-party
+**Renderer** (`justerm-renderer`). `justerm-facade` is a one-shot tombstone for the pre-rename crate
+name. When the core engine crate specifically is meant, say `justerm-core`; "justerm" alone is the
+family. The family pivoted from an engine-only library to a **first-party full-stack** terminal
+(ADR-0018). (The name was `justerm` for the bare engine until v0.6.0 renamed it for this
+disambiguation — ADR-0010.)
 
 ## Engine
 
@@ -19,8 +22,11 @@ damage, and scroll ops. It does no I/O, no IPC, no rendering, and is theme-agnos
 
 ## Renderer
 
-The component that turns the engine's output into pixels (the project `beamterm`, WebGL2). Lives
-outside justerm. The engine never draws; it hands state to the renderer.
+The component that turns the engine's output into pixels (WebGL2). The engine never draws; it hands
+state to the renderer. Renderer-side, distinct from the **Engine** — but now a **family member**, not
+an external dependency: originally the third-party `beamterm`, the family now builds its own first-party
+`justerm-renderer` (ADR-0018). beamterm stays the active renderer until the switch (#273); `justerm-core`
+still does not render either way.
 
 ## Consumer
 

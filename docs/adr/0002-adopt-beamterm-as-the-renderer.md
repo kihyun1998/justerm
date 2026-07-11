@@ -5,6 +5,12 @@ Status: accepted (2026-06-16)
 Note: the renderer runs in the *consumer's* webview, not in justerm. This ADR records the decision
 because it shapes justerm's output contract (what the engine must produce to feed beamterm).
 
+Note (superseding, in flight): **ADR-0018** replaces beamterm with the first-party `justerm-renderer`.
+That supersession is **not yet final** — beamterm stays the *active* renderer until the switch
+([#273](https://github.com/kihyun1998/justerm/issues/273)); this ADR is formally marked superseded, and
+ADR-0018 accepted, in the docs flip ([#274](https://github.com/kihyun1998/justerm/issues/274)). Until
+then this decision is still in force.
+
 ## Context
 
 The consumer needs to paint the engine's grid in a webview (WebGL2 — universal across Tauri webviews;

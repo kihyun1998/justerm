@@ -7,14 +7,17 @@ and emits a viewport snapshot, damage, scroll ops, and extractable text. It is *
 
 - **No I/O** — the caller feeds bytes (`feed(&[u8])`); justerm-core never touches a PTY/SSH/socket.
 - **No IPC** — it provides a binary *format*, not transport.
-- **No rendering** — a renderer draws (e.g. [`beamterm`](https://github.com/junkdog/beamterm), WebGL2).
+- **No rendering** — a renderer draws (the family's first-party [`justerm-renderer`](../justerm-renderer),
+  WebGL2, replacing the third-party [`beamterm`](https://github.com/junkdog/beamterm)).
 - **Theme-agnostic** — colors are *references* (Default / Indexed / RGB), never resolved hex; the
   consumer resolves them.
 
-Pairs as the engine half of a `-term` family with the renderer `beamterm`. First consumer: PenTerm.
+The engine half of the `-term` family. First consumer: PenTerm.
 
-> **Status:** early. The architecture is design-complete and prior-art-validated; implementation is in
-> progress per the build plan. Start at issue #2 (the only currently-unblocked slice).
+> **Status:** in active use. The core engine is implemented and consumed across the family
+> (`justerm-wasm-decode`, `justerm-web`, `justerm-renderer`). VT compliance is **cumulative** — the
+> common cases are covered and the long tail grows as dogfooding surfaces it. See the issue tracker for
+> the current frontier.
 
 ## Docs (start here)
 
@@ -23,9 +26,10 @@ Pairs as the engine half of a `-term` family with the renderer `beamterm`. First
 - [`docs/architecture.md`](../docs/architecture.md) — the contract: cell, damage, viewport/scroll,
   cadence, selection, serialization, engine API — plus a **Hidden VT state** checklist (with where to
   look in reference impls) for implementers.
-- [`docs/adr/`](../docs/adr/) — key decisions (build on `vte`, not `alacritty_terminal`; adopt
-  `beamterm`).
-- **Build plan**: GitHub issues — Epic #1 (the PRD-equivalent) + slices #2–#12.
+- [`docs/adr/`](../docs/adr/) — key decisions (build on `vte`, not `alacritty_terminal`; adopt then
+  replace `beamterm` with the first-party `justerm-renderer`, ADR-0002 → ADR-0018).
+- **Build plan**: GitHub issues — Epic #1 (the engine, closed); the family now builds under Epic #103
+  (`justerm-web`) and Epic #258 (`justerm-renderer`).
 
 ## Web consumers
 

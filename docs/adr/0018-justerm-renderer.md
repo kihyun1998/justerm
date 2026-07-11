@@ -2,6 +2,15 @@
 
 Status: proposed (2026-07-07) — supersedes ADR-0002
 
+Note (implementation in flight): "proposed" is the *record* status, but the renderer is **actively
+being built** under Epic [#258](https://github.com/kihyun1998/justerm/issues/258) — scaffold (#259),
+native cursor (#270), the atlas/glyph pipeline (#359, #361) all merged. Formal **acceptance** here, and
+marking ADR-0002 **superseded**, land together with the beamterm→renderer switch
+([#273](https://github.com/kihyun1998/justerm/issues/273)) in the docs flip
+([#274](https://github.com/kihyun1998/justerm/issues/274)). So a merged implementation under a
+still-"proposed" ADR is expected, not a stale record — the finalization is deliberately gated on the
+switch.
+
 ## Context
 
 ADR-0002 adopted the third-party `beamterm` renderer, weighing "adopt beamterm" against "write a fresh
