@@ -196,6 +196,117 @@ pub fn block_glyph(cp: u32, w: u32, h: u32) -> Option<Vec<u8>> {
     Some(buf)
 }
 
+/// Vertical sub-scanlines per output row for the polygon fill's coverage anti-aliasing. Horizontal
+/// coverage is computed analytically (exact span overlap per sub-row), so only the vertical axis is
+/// sampled; four sub-rows suffice at cell scale (16-33 device px) and the glyph rasterises once into
+/// the atlas, so the cost never reaches a hot path.
+// The primitive and its constant have no caller until box drawing (#365) and wedges (#366) draw
+// shapes with it; `block_glyph` still routes every codepoint it owns through `fill`'s rectangle fast
+// path. Remove the `allow` when the first consumer lands.
+#[allow(dead_code)]
+const POLY_SS: u32 = 4;
+
+/// Fill a simple polygon — a single closed ring of cell-local vertices, in device px with the cell's
+/// TOP-left as origin — with coverage-based anti-aliasing, clipped to the cell, `alpha` in the
+/// interior and scaled by coverage at the edges.
+///
+/// Neither reference hands us this as a primitive: alacritty anti-aliases its *diagonals* with
+/// Xiaolin Wu's *line* algorithm (`builtin_font.rs:818`) and fills only rectangles, and xterm.js
+/// fills polygons through Canvas2D `ctx.fill()` (`CustomGlyphRasterizer.ts:287`), which delegates the
+/// coverage rule to the browser. So the area-coverage rule is ours: a scanline fill, exact in x and
+/// supersampled in y (`POLY_SS` sub-rows). Vertices are `f32` so a slope need not land on a pixel
+/// boundary.
+///
+/// The interior/exterior test is **even-odd**. It is correct for every shape this backs not because
+/// those shapes avoid self-intersection — xterm draws `1FB9A`/`1FB9B` as single-ring *bowties* that
+/// touch at the cell centre — but because none has two *overlapping loops of equal winding* (a
+/// pentagram), the one topology where even-odd and non-zero diverge. Pass a seamless shape as ONE
+/// ring (concave or self-touching is fine, as the `1FB9A` bowties are); do not split it across calls.
+///
+/// Coverage is **max-combined** into the alpha channel, matching alacritty's brighter-wins
+/// `put_pixel` (`builtin_font.rs:807`). Max bounds overlap to 255 and is right for genuinely
+/// overlapping parts (two crossing strokes), but it does **not** merge two polygons that *abut* at a
+/// fractional edge in one buffer — each paints ~half of the boundary pixel and `max` keeps only one
+/// half, so a seam remains. Complementary halves reassemble only across *separate* cells, where their
+/// coverage sums optically over the cell boundary (the tiling #365/#366 rely on — proven by
+/// `complementary_triangles_partition_the_cell_with_no_gap_or_overlap`). [`fill`], the rectangle fast
+/// path, *overwrites* rather than max-combining, so mixing the two in one buffer is draw-order
+/// dependent; keep them to disjoint regions.
+///
+/// A degenerate ring (fewer than three vertices, zero area, or entirely outside the cell) lights
+/// nothing rather than panicking.
+#[allow(dead_code)] // consumed by box drawing (#365) and wedges (#366); see POLY_SS above.
+fn fill_polygon(buf: &mut [u8], size: (u32, u32), verts: &[(f32, f32)], alpha: u8) {
+    let (w, h) = size;
+    if w == 0 || h == 0 || verts.len() < 3 {
+        return; // no area to fill
+    }
+    let ss = POLY_SS as f32;
+    let weight = 1.0 / ss;
+    // Per-row horizontal coverage, reused across rows so the fill allocates once.
+    let mut cov = vec![0f32; w as usize];
+
+    for py in 0..h {
+        cov.iter_mut().for_each(|c| *c = 0.0);
+        for s in 0..POLY_SS {
+            // The sub-scanline's y, at the sub-row centre — a midpoint rule, which integrates a
+            // linear span length exactly, so a triangle's coverage is unbiased.
+            let yline = py as f32 + (s as f32 + 0.5) / ss;
+
+            // x where each edge crosses this scanline. The half-open `<=` test counts an edge iff the
+            // scanline separates its endpoints, so a vertex shared by two edges is crossed once, never
+            // twice; a horizontal edge (both endpoints on the same side) is skipped.
+            let mut xs: Vec<f32> = Vec::with_capacity(verts.len());
+            for (i, &(x0, y0)) in verts.iter().enumerate() {
+                let (x1, y1) = verts[(i + 1) % verts.len()];
+                if (y0 <= yline) != (y1 <= yline) {
+                    let t = (yline - y0) / (y1 - y0);
+                    xs.push(x0 + t * (x1 - x0));
+                }
+            }
+            if xs.len() < 2 {
+                continue;
+            }
+            xs.sort_by(f32::total_cmp);
+
+            // Even-odd: the interior is between consecutive crossing pairs. Each span adds analytic
+            // horizontal coverage — a boundary pixel gets the fraction of its width the span covers,
+            // clipped to the cell.
+            for pair in xs.chunks_exact(2) {
+                let xa = pair[0].max(0.0);
+                let xb = pair[1].min(w as f32);
+                if xb <= xa {
+                    continue;
+                }
+                let start = xa.floor() as u32;
+                let end = (xb.ceil() as u32).min(w);
+                for col in start..end {
+                    let l = xa.max(col as f32);
+                    let r = xb.min(col as f32 + 1.0);
+                    if r > l {
+                        cov[col as usize] += (r - l) * weight;
+                    }
+                }
+            }
+        }
+
+        for px in 0..w {
+            let c = cov[px as usize].min(1.0);
+            if c <= 0.0 {
+                continue;
+            }
+            let a = (c * alpha as f32).round() as u8;
+            let i = ((py * w + px) * 4) as usize;
+            if a > buf[i + 3] {
+                buf[i] = 255;
+                buf[i + 1] = 255;
+                buf[i + 2] = 255;
+                buf[i + 3] = a;
+            }
+        }
+    }
+}
+
 /// Paint an axis-aligned rectangle of coverage, clipped to the bitmap (alacritty's `draw_rect`
 /// clamps the far edge the same way, so a rounded-up extent never wraps onto the next row).
 fn fill(buf: &mut [u8], size: (u32, u32), rect: (u32, u32, u32, u32), alpha: u8) {
@@ -450,5 +561,373 @@ mod tests {
         // agree — which is the only thing that matters, since they must tile with each other.
         assert_eq!(picture(0x2580, 3, 3), ["###", "###", "..."]);
         assert_eq!(picture(0x259F, 3, 3), ["..#", "..#", "###"]);
+    }
+
+    // --- polygon scanline fill primitive (#364) ---
+
+    /// A fresh cell with one polygon painted into it, for reading alpha directly.
+    fn poly(w: u32, h: u32, verts: &[(f32, f32)], alpha: u8) -> Vec<u8> {
+        let mut buf = vec![0u8; (w * h * 4) as usize];
+        fill_polygon(&mut buf, (w, h), verts, alpha);
+        buf
+    }
+
+    fn alpha_at(buf: &[u8], w: u32, x: u32, y: u32) -> u8 {
+        buf[((y * w + x) * 4 + 3) as usize]
+    }
+
+    fn total_alpha(buf: &[u8]) -> u64 {
+        buf.chunks_exact(4).map(|p| p[3] as u64).sum()
+    }
+
+    #[test]
+    fn a_cell_sized_rectangle_polygon_fills_every_pixel_like_fill_does() {
+        // The primitive must subsume `fill()`'s rectangle: a ring on the four cell corners covers the
+        // whole cell at full alpha, white RGBA, so box drawing / wedges can be data over one path.
+        let g = poly(4, 5, &[(0., 0.), (4., 0.), (4., 5.), (0., 5.)], 255);
+        assert!(
+            g.chunks_exact(4).all(|p| p == [255, 255, 255, 255]),
+            "a cell-sized polygon is a solid white fill"
+        );
+    }
+
+    #[test]
+    fn a_right_triangle_covers_half_the_cell_within_tolerance() {
+        // #364's named acceptance: coverage read from GEOMETRY, not from how the code computes it. The
+        // upper-left right triangle has area w*h/2, so its total alpha is w*h/2*255 up to the
+        // per-pixel rounding of the diagonal boundary (well under 1% of a full cell).
+        let (w, h) = (16u32, 16u32);
+        let g = poly(w, h, &[(0., 0.), (w as f32, 0.), (0., h as f32)], 255);
+        let expect = (w * h) as i64 * 255 / 2;
+        let tol = (w * h) as i64 * 255 / 100; // 1 % of a fully-lit cell
+        let got = total_alpha(&g) as i64;
+        assert!(
+            (got - expect).abs() <= tol,
+            "half-cell triangle: total alpha {got}, expected ~{expect} (±{tol})"
+        );
+    }
+
+    #[test]
+    fn the_diagonal_edge_carries_partial_coverage_rather_than_a_hard_step() {
+        // The whole reason for the primitive over a rect table: a diagonal at cell scale must be
+        // anti-aliased. At least one pixel on the hypotenuse is partially covered (0 < a < 255).
+        let g = poly(16, 16, &[(0., 0.), (16., 0.), (0., 16.)], 255);
+        assert!(
+            g.chunks_exact(4).any(|p| p[3] > 0 && p[3] < 255),
+            "the diagonal must produce partial-coverage pixels, not only 0/255"
+        );
+    }
+
+    #[test]
+    fn a_triangular_half_lights_the_corner_its_name_gives() {
+        // "triangular upper-left half": the top-left corner pixel is inside, the bottom-right is out.
+        // Asserted from the character's MEANING, never recomputed the way `fill_polygon` computes it.
+        let (w, h) = (8u32, 8u32);
+        let g = poly(w, h, &[(0., 0.), (w as f32, 0.), (0., h as f32)], 255);
+        assert_eq!(
+            alpha_at(&g, w, 0, 0),
+            255,
+            "top-left corner is inside the half"
+        );
+        assert_eq!(
+            alpha_at(&g, w, w - 1, h - 1),
+            0,
+            "bottom-right corner is outside the half"
+        );
+    }
+
+    #[test]
+    fn a_concave_polygon_leaves_its_notch_empty() {
+        // A "U": a rectangular slot cut from the top centre. A scanline through the slot crosses the
+        // ring FOUR times, so even-odd pairing must leave the middle span dark. A convex-only fill (or
+        // "inside = an odd crossing count from the left" done wrong) floods the slot — the col-4 slot
+        // pixels are the ones that catch it, since they are fully inside the slot at every sub-row.
+        let (w, h) = (8u32, 8u32);
+        let u = &[
+            (0., 0.),
+            (3., 0.),
+            (3., 5.),
+            (5., 5.),
+            (5., 0.),
+            (8., 0.),
+            (8., 8.),
+            (0., 8.),
+        ];
+        let g = poly(w, h, u, 255);
+        assert_eq!(alpha_at(&g, w, 4, 2), 0, "the slot is empty");
+        assert_eq!(alpha_at(&g, w, 1, 2), 255, "the left arm is filled");
+        assert_eq!(alpha_at(&g, w, 6, 2), 255, "the right arm is filled");
+        assert_eq!(alpha_at(&g, w, 4, 6), 255, "below the slot is filled");
+    }
+
+    #[test]
+    fn coverage_scales_the_requested_alpha_not_just_solid() {
+        // The interior carries the requested alpha (so a shade wedge is possible), and the diagonal's
+        // partial pixels are strictly below it — coverage multiplies alpha, it does not clamp to 255.
+        let g = poly(16, 16, &[(0., 0.), (16., 0.), (0., 16.)], 128);
+        assert!(
+            g.chunks_exact(4).all(|p| p[3] <= 128),
+            "no pixel exceeds the requested alpha"
+        );
+        assert_eq!(
+            alpha_at(&g, 16, 0, 0),
+            128,
+            "the interior is the requested alpha"
+        );
+        assert!(
+            g.chunks_exact(4).any(|p| p[3] > 0 && p[3] < 128),
+            "the edge is a fraction of the requested alpha"
+        );
+    }
+
+    #[test]
+    fn overlapping_polygons_are_max_combined_not_summed() {
+        // Two solid polygons overlapping must not add: the shared region stays at the alpha, not
+        // double it (which would clamp to 255). Matches alacritty's brighter-wins `put_pixel`.
+        let (w, h) = (8u32, 8u32);
+        let mut buf = vec![0u8; (w * h * 4) as usize];
+        fill_polygon(
+            &mut buf,
+            (w, h),
+            &[(0., 0.), (8., 0.), (8., 8.), (0., 8.)],
+            200,
+        );
+        fill_polygon(
+            &mut buf,
+            (w, h),
+            &[(0., 0.), (4., 0.), (4., 8.), (0., 8.)],
+            200,
+        );
+        assert!(
+            buf.chunks_exact(4).all(|p| p[3] == 200),
+            "the overlap is max-combined, so it stays at 200"
+        );
+    }
+
+    #[test]
+    fn a_polygon_is_clipped_to_the_cell_and_never_wraps() {
+        // A ring poking past the right edge is clamped, not wrapped onto the next row. One that ends
+        // up entirely outside lights nothing; one that straddles fills only its in-cell part.
+        let (w, h) = (8u32, 8u32);
+        let outside = poly(w, h, &[(10., 0.), (20., 0.), (20., 8.), (10., 8.)], 255);
+        assert_eq!(
+            total_alpha(&outside),
+            0,
+            "a polygon outside the cell lights nothing"
+        );
+
+        let straddle = poly(w, h, &[(0., 0.), (20., 0.), (20., 8.), (0., 8.)], 255);
+        assert!(
+            straddle.chunks_exact(4).all(|p| p[3] == 255),
+            "the in-cell part of a straddling rectangle fills the whole cell, no wrap"
+        );
+    }
+
+    /// Independent coverage oracle: even-odd ray-cast point-in-polygon at a dense 16x16 grid per
+    /// pixel, clipped to the cell by sampling only in-cell points. A *different* algorithm from the
+    /// scanline span fill (a point test, not an edge integral), so agreement is real cross-validation,
+    /// not the same computation checking itself.
+    fn oracle_total_alpha(w: u32, h: u32, verts: &[(f32, f32)], alpha: u8) -> f64 {
+        const N: u32 = 16;
+        let inside = |x: f32, y: f32| -> bool {
+            let mut c = false;
+            for (i, &(x0, y0)) in verts.iter().enumerate() {
+                let (x1, y1) = verts[(i + 1) % verts.len()];
+                if (y0 > y) != (y1 > y) {
+                    let xint = x0 + (y - y0) / (y1 - y0) * (x1 - x0);
+                    if x < xint {
+                        c = !c;
+                    }
+                }
+            }
+            c
+        };
+        let mut total = 0f64;
+        for py in 0..h {
+            for px in 0..w {
+                let mut hits = 0u32;
+                for sy in 0..N {
+                    for sx in 0..N {
+                        let x = px as f32 + (sx as f32 + 0.5) / N as f32;
+                        let y = py as f32 + (sy as f32 + 0.5) / N as f32;
+                        if inside(x, y) {
+                            hits += 1;
+                        }
+                    }
+                }
+                total += hits as f64 / (N * N) as f64 * alpha as f64;
+            }
+        }
+        total
+    }
+
+    #[test]
+    fn the_fill_matches_an_independent_area_oracle() {
+        // Real round-trip for a consumer-less pure primitive: the actual `fill_polygon` output is
+        // cross-checked against a point-sampling oracle over several shapes — a rotated triangle, the
+        // concave slot, a convex pentagon, and one straddling the edge (so clipping is exercised too).
+        type PolyCase = (u32, u32, Vec<(f32, f32)>);
+        let cases: &[PolyCase] = &[
+            (24, 20, vec![(2., 1.), (22., 5.), (7., 19.)]),
+            (
+                16,
+                16,
+                vec![
+                    (0., 0.),
+                    (6., 0.),
+                    (6., 10.),
+                    (10., 10.),
+                    (10., 0.),
+                    (16., 0.),
+                    (16., 16.),
+                    (0., 16.),
+                ],
+            ),
+            (
+                18,
+                18,
+                vec![(9., 1.), (16., 7.), (13., 16.), (5., 16.), (2., 7.)],
+            ),
+            (12, 12, vec![(-4., -3.), (16., 2.), (6., 15.)]), // straddles top/left/right
+            // A self-intersecting single-ring bowtie — xterm's `1FB9A` topology, two triangles
+            // touching at the centre. Exercises the span logic on a ring the "simple polygon"
+            // assumption would exclude; the oracle's point test agrees only if even-odd is right.
+            (
+                16,
+                16,
+                vec![
+                    (0., 0.),
+                    (8., 8.),
+                    (0., 16.),
+                    (16., 16.),
+                    (8., 8.),
+                    (16., 0.),
+                ],
+            ),
+        ];
+        for (w, h, verts) in cases {
+            let mut buf = vec![0u8; (w * h * 4) as usize];
+            fill_polygon(&mut buf, (*w, *h), verts, 255);
+            let got = total_alpha(&buf) as f64;
+            let want = oracle_total_alpha(*w, *h, verts, 255);
+            // Two sampling schemes disagree only on boundary pixels; 2 % of a fully-lit cell bounds it.
+            let tol = (*w * *h) as f64 * 255.0 * 0.02;
+            assert!(
+                (got - want).abs() <= tol,
+                "{w}x{h}: fill total {got:.0}, oracle {want:.0} (±{tol:.0})"
+            );
+        }
+    }
+
+    #[test]
+    fn complementary_triangles_partition_the_cell_with_no_gap_or_overlap() {
+        // The diagonal analog of the quadrant/sextant reassembly invariant, and the one that proves
+        // the fill tiles: the upper-left and lower-right triangles share the cell's diagonal, so their
+        // per-pixel coverage must SUM to a full cell — no seam, no double-coverage — even where the
+        // diagonal cuts a pixel and each side is only partially covered. (A single triangle pinches at
+        // its vertices, so no column is solid; it is the SUM that reconstructs the block.) Checked on
+        // odd cells, where the diagonal lands off the pixel grid.
+        for (w, h) in [(8u32, 8u32), (9, 7), (16, 16), (5, 11)] {
+            let ul = poly(w, h, &[(0., 0.), (w as f32, 0.), (0., h as f32)], 255);
+            let lr = poly(
+                w,
+                h,
+                &[(w as f32, 0.), (w as f32, h as f32), (0., h as f32)],
+                255,
+            );
+            for y in 0..h {
+                for x in 0..w {
+                    let sum = alpha_at(&ul, w, x, y) as i32 + alpha_at(&lr, w, x, y) as i32;
+                    // Coverages sum to 1.0 analytically. The shared diagonal's intersection x is
+                    // computed from each triangle's own edge, so the two f32 results differ by up to a
+                    // ULP; that plus two independent roundings leaves the sum in 255±1. A real gap or
+                    // double-cover would throw a boundary pixel off by ~128, far outside this band.
+                    assert!(
+                        (254..=256).contains(&sum),
+                        "{w}x{h} at ({x},{y}): halves sum to {sum}, not a full cell"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn tiny_and_thin_cells_fill_without_panicking() {
+        // The sibling glyphs are tested down to 1x1 / 2x2 (quadrants) and 1xN / Nx1 (eighths); the
+        // polygon path must survive the same degenerate cell sizes a spacing policy can produce.
+        assert_eq!(
+            alpha_at(
+                &poly(1, 1, &[(0., 0.), (1., 0.), (1., 1.), (0., 1.)], 255),
+                1,
+                0,
+                0
+            ),
+            255
+        );
+        // A triangle on a 2x2 cell: its top-left corner is solid and it lights something, no panic.
+        let g = poly(2, 2, &[(0., 0.), (2., 0.), (0., 2.)], 255);
+        assert_eq!(alpha_at(&g, 2, 0, 0), 255);
+        assert!(total_alpha(&g) > 0);
+        // A one-pixel-tall / one-pixel-wide cell.
+        assert!(total_alpha(&poly(8, 1, &[(0., 0.), (8., 0.), (0., 1.)], 255)) > 0);
+        assert!(total_alpha(&poly(1, 8, &[(0., 0.), (1., 0.), (0., 8.)], 255)) > 0);
+    }
+
+    #[test]
+    fn collinear_and_duplicate_vertices_are_harmless() {
+        // Vertex lists transcribed from a reference may carry a duplicated point or a redundant
+        // collinear one. They must not change the filled area: a triangle with a midpoint spelled on
+        // one edge, and one with a repeated vertex, match the clean triangle byte for byte.
+        let clean = poly(16, 16, &[(0., 0.), (16., 0.), (0., 16.)], 255);
+        let collinear = poly(16, 16, &[(0., 0.), (8., 0.), (16., 0.), (0., 16.)], 255);
+        let duplicate = poly(16, 16, &[(0., 0.), (0., 0.), (16., 0.), (0., 16.)], 255);
+        assert_eq!(collinear, clean, "a collinear midpoint changes nothing");
+        assert_eq!(duplicate, clean, "a duplicated vertex changes nothing");
+    }
+
+    #[test]
+    fn abutting_polygons_in_one_buffer_seam_by_design() {
+        // Pinning the documented limitation so it is visible, not a latent surprise: two complementary
+        // triangles drawn into the SAME buffer do NOT reassemble — max-combine keeps only one ~half of
+        // each shared diagonal pixel, so the seam pixels land near half alpha, not 255. The seamless
+        // path is a single ring (or separate cells); this test exists to prove the seam is a known,
+        // deliberate consequence of max-combine, not an accident.
+        let (w, h) = (16u32, 16u32);
+        let mut buf = vec![0u8; (w * h * 4) as usize];
+        fill_polygon(
+            &mut buf,
+            (w, h),
+            &[(0., 0.), (w as f32, 0.), (0., h as f32)],
+            255,
+        );
+        fill_polygon(
+            &mut buf,
+            (w, h),
+            &[(w as f32, 0.), (w as f32, h as f32), (0., h as f32)],
+            255,
+        );
+        // A pixel the diagonal bisects (x + y == w) is left at partial alpha, well under solid.
+        let seam = alpha_at(&buf, w, (w / 2) - 1, h / 2);
+        assert!(
+            (64..200).contains(&seam),
+            "the shared diagonal seams to partial alpha ({seam}), not a full 255"
+        );
+        // Off the diagonal, both interiors are solid — the seam is confined to the shared edge.
+        assert_eq!(alpha_at(&buf, w, 0, 0), 255);
+        assert_eq!(alpha_at(&buf, w, w - 1, h - 1), 255);
+    }
+
+    #[test]
+    fn a_degenerate_polygon_lights_nothing_rather_than_panicking() {
+        // Fewer than three vertices, or a zero-size cell: no area to fill, and the caller must never
+        // be handed a panic or a stray pixel.
+        let mut empty = vec![0u8; 0];
+        fill_polygon(&mut empty, (0, 8), &[(0., 0.), (1., 1.), (2., 0.)], 255);
+
+        let two = poly(8, 8, &[(1., 1.), (6., 6.)], 255);
+        assert_eq!(total_alpha(&two), 0, "a two-vertex ring has no area");
+
+        let none = poly(8, 8, &[], 255);
+        assert_eq!(total_alpha(&none), 0, "an empty ring has no area");
     }
 }
