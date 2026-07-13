@@ -1,6 +1,6 @@
 <!doctype html>
 <meta charset="utf-8" />
-<title>justerm-renderer proof — cursor primitive + contrast guard + thickness (#270, #368, #369)</title>
+<title>justerm-renderer proof — cursor primitive + contrast + thickness + damage/line-height paths (#270, #368, #369, #370)</title>
 <style>
   body { margin: 0; background: #000; }
   #c { display: block; image-rendering: pixelated; }
@@ -379,9 +379,88 @@
   checks.resettingTheFractionRestoresTheDefaultStroke =
     sameSet(litSet(backToDefault, 1, 0, 1), rectSet(UNDERLINE, 1, thickness));
 
+  // --- #370: the cursor rides the apply_damage path too, not just apply_frame ---
+  //
+  // Everything above draws through `apply_frame`. `apply_damage` is the persistent FrameGrid scatter
+  // path and the PRIMARY consumer path once justerm-web switches (#273); it shared `resolve_and_pack`,
+  // so it was believed sound, but nothing exercised it. #270's own history warns against trusting a
+  // read: its proof passed while a block could not blink off. So drive the real damage wire.
+  //
+  // The order is the discriminating part. Set a block cursor while the grid is EMPTY — its span
+  // resolves to 1 against empty flags — THEN scatter a wide char (U+4E00) in via a Full damage span.
+  // If `apply_damage` re-resolves the span (it routes through `resolve_and_pack`, which refreshes
+  // `last_flags` and calls `resolve_cursor_span`), the block now covers BOTH halves. If it did not,
+  // the block would half-light the CJK glyph — exactly the bug this exercises.
+  r.setLetterSpacing(0);
+  r.setCursorContrast(1.5);
+  r.setCursorThickness(0.15);
+  const dmgHeader = new Uint32Array([COLS, ROWS, 0 /* Full */, 0, 0, 0, 0, 1 /* blink_on */]);
+  const drawDamage = (codepoints, dmgFlags, spans) => {
+    r.resize(COLS, ROWS);
+    const n = codepoints.length;
+    // one span: header=[cols,rows,kind,has_scroll,...], span dir = [row, col0, col1, cp_off, cp_len]
+    r.apply_damage(dmgHeader, new Uint32Array(spans), codepoints, new Uint32Array(n),
+                   new Uint32Array(n), dmgFlags, new Uint16Array(n), []);
+    r.render();
+    return grab();
+  };
+  r.setCursor(1, 0, BLOCK, CURSOR, TEXT); // set while grid is still empty → span 1
+  const dmgWide = drawDamage(
+    new Uint32Array([SPACE, WIDE, WIDE, SPACE]),
+    new Uint16Array([0, 1 << 8 /* WIDE_CHAR */, 1 << 9 /* WIDE_CHAR_SPACER */, 0]),
+    [0, 0, 3, 0, 4], // row 0, cols 0..=3, one 4-cell span carries the scattered wide char
+  );
+  // `一` has ink, so (as in the apply_frame wide-block check) the guarantee is that the default
+  // background is gone from BOTH halves and each half carries cursor red.
+  let dmgUnpainted = 0, dmgRedPerHalf = [0, 0];
+  for (let y = 0; y < ch; y++)
+    for (let half = 0; half < 2; half++)
+      for (let x = 0; x < cw; x++) {
+        const gx = (1 + half) * cw + x;
+        if (isBackground(dmgWide, gx, y)) dmgUnpainted++;
+        if (isCursor(dmgWide, gx, y)) dmgRedPerHalf[half]++;
+      }
+  checks.applyDamageBlockCoversBothHalvesOfAWideChar =
+    dmgUnpainted === 0 && dmgRedPerHalf[0] > 0 && dmgRedPerHalf[1] > 0;
+  checks.theDamageWideBlockDoesNotSpillPastThePair = redOutside(dmgWide, 1, 0, 2) === 0;
+
+  // --- #370: setLineHeight moves the cell's bottom edge; the underline must follow it ---
+  //
+  // `cursor_rects` puts an underline at `cell_height - thickness` — the CELL's bottom, not the glyph
+  // box's. At the default line height the two coincide, so the checks above cannot tell them apart.
+  // Grow the cell with `setLineHeight(2)`: the glyph box stays put and sits high in a now-taller cell,
+  // so a shader that used the glyph-box height would draw the underline in the cell's MIDDLE. Re-read
+  // the cell after the rebake and demand the lit stroke equal `cursorRects` at the taller cell, and
+  // that every lit pixel lie in the cell's bottom `thickness` rows.
+  r.setLineHeight(2.0);
+  r.resize(COLS, ROWS);
+  const tallCw = r.cell_width(), tallCh = r.cell_height();
+  const tallT = Math.max(1, Math.round(0.15 * tallCw));
+  r.setCursor(1, 0, UNDERLINE, CURSOR, TEXT);
+  r.apply_frame(COLS, ROWS, new Uint32Array(COLS * ROWS), new Uint32Array(COLS * ROWS),
+                new Uint32Array(COLS * ROWS).fill(SPACE), new Uint16Array(COLS * ROWS), true);
+  r.render();
+  const tallImg = grab();
+  const tallLit = new Set();
+  for (let y = 0; y < tallCh; y++)
+    for (let x = 0; x < tallCw; x++)
+      if (isCursor(tallImg, tallCw + x, y)) tallLit.add(`${x},${y}`);
+  const tallFlat = cursorRects(UNDERLINE, tallCw, tallCh, 1, tallT);
+  const tallRects = new Set();
+  for (let i = 0; i < tallFlat.length; i += 4)
+    for (let y = tallFlat[i + 1]; y < tallFlat[i + 1] + tallFlat[i + 3]; y++)
+      for (let x = tallFlat[i]; x < tallFlat[i] + tallFlat[i + 2]; x++) tallRects.add(`${x},${y}`);
+  let tallMinY = tallCh;
+  for (const k of tallLit) tallMinY = Math.min(tallMinY, +k.split(",")[1]);
+  checks.aTallCellIsTallerThanTheGlyphBox = tallCh > ch; // the premise the check rests on
+  checks.anUnderlineUnderLineHeightMatchesTheRustRects = sameSet(tallLit, tallRects);
+  checks.theUnderlineSitsOnTheCellBottomNotTheGlyphBox = tallLit.size > 0 && tallMinY >= tallCh - tallT;
+  r.setLineHeight(1.0);
+  r.resize(COLS, ROWS);
+
   window.__proof = {
     ok: Object.values(checks).every(Boolean), checks,
-    dpr: devicePixelRatio, cw, ch, thickness, bigT, wideCellW, wideCellH, wideT,
+    dpr: devicePixelRatio, cw, ch, thickness, bigT, wideCellW, wideCellH, wideT, tallCw, tallCh, tallT,
   };
   window.__done = true;
 </script>

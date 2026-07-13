@@ -13,6 +13,7 @@
     (b) the drawing buffer is re-derived as storedGrid * the newly measured cell (no resize() call,
         via the stored grid_size — no CSS length is rounded twice, #331);
     (c) the glyph re-rasterises at the higher device resolution (more ink pixels).
+  Also (#370): a bar cursor set before the change must survive it and re-derive against the new cell.
   Build: wasm-pack build --target web --dev --out-dir pkg
 -->
 <canvas id="c" width="64" height="64"></canvas>
@@ -38,6 +39,15 @@
   const cps = new Uint32Array([0x2500, 0x4e2d, 0x4e2d, 0x20]);
   const flags = new Uint16Array([0, WIDE_CHAR, WIDE_SPACER, 0]);
   r.apply_frame(COLS, ROWS, zeros, zeros, cps, flags, true);
+
+  // #370: a cursor must ride the DPR change. `cursor_thickness` is recomputed from the LIVE cell in
+  // `draw()`, so a bar set now should survive the re-bake and re-derive against the new cell — but
+  // nothing proved it. Put a bar on cell 3 (a space, so its only red can be the cursor's) BEFORE the
+  // existing assertions run, and turn the #368 contrast guard off so the red stays predictable (we
+  // are proving survival, not contrast). It must be lit before and after, and grow with the density.
+  const CURSOR_RED = 0xff0000, BAR = 2;
+  r.setCursorContrast(1.0);
+  r.setCursor(3, 0, BAR, CURSOR_RED, 0x000000);
   r.render();
 
   const canvas = document.querySelector("#c");
@@ -45,14 +55,22 @@
   // Lit pixels of cell `col` over the renderer's device cell — which is RE-MEASURED by the DPR
   // change, so this must be read fresh after it rather than scaled from the CSS cell (#328).
   const cellLit = (col) => countLit(readCells(gl, r, col));
+  // Cursor-red pixels of cell `col`: red high, green/blue low — distinguishes the bar from the
+  // white glyphs, whose red channel also clears the `countLit` threshold.
+  const cursorLit = (col) => {
+    const { buf } = readCells(gl, r, col);
+    let n = 0;
+    for (let i = 0; i < buf.length; i += 4) if (buf[i] > 150 && buf[i + 1] < 100 && buf[i + 2] < 100) n++;
+    return n;
+  };
 
-  const before = { box: cellLit(0), wide: cellLit(1), bufferW: canvas.width, bufferH: canvas.height };
+  const before = { box: cellLit(0), wide: cellLit(1), cursor: cursorLit(3), bufferW: canvas.width, bufferH: canvas.height };
 
   // Inject a mid-session DPR change (the consumer would do this from a matchMedia listener).
   r.setDevicePixelRatio(DPR1);
   r.render();
 
-  const after = { box: cellLit(0), wide: cellLit(1), bufferW: canvas.width, bufferH: canvas.height };
+  const after = { box: cellLit(0), wide: cellLit(1), cursor: cursorLit(3), bufferW: canvas.width, bufferH: canvas.height };
 
   const checks = {
     // baseline: both the normal box-drawing and the wide CJK glyph rendered at dpr 1.
@@ -68,6 +86,14 @@
     // (c) re-rasterised at higher device resolution → more ink pixels (device cell ~4x the area,
     //     since DPR1 = 2 * dpr0). 1.9 is a deliberately slack lower bound on that 4x.
     glyphSharpened: after.box > before.box * 1.9 && after.wide > before.wide * 1.9,
+    // #370: the bar cursor was lit before the DPR change and is still lit after it (CPU `self.cursor`
+    // survives; `draw()` re-sets the stroke uniforms every frame). If the cursor were dropped or its
+    // uniforms stranded by the re-bake, this would go dark.
+    cursorRendersBefore: before.cursor > 0,
+    cursorSurvivesDprChange: after.cursor > 0,
+    // and it scaled with the density: the bar's thickness is `round(0.15 * cellWidth)` and its height
+    // is the cell — both grew, so its area grew (same 1.9 slack lower bound on the ~4x).
+    cursorScaledWithDpr: after.cursor > before.cursor * 1.9,
   };
   window.__proof = {
     dpr: dpr0, newDpr: DPR1, gridFit: gridFit(gl, r, COLS, ROWS),

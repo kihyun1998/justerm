@@ -16,6 +16,9 @@
   baseline (#263's `uploaded` mirror still described the destroyed buffer, so a byte-identical
   frame would otherwise diff to zero ranges and leave the fresh VBO empty → permanent blank).
 
+  Also (#370): a bar cursor set before the loss must come back after the restore, since `restore()`
+  re-fetches the three cursor uniform locations bound to the relinked program.
+
   Build: wasm-pack build --target web --dev --out-dir pkg
 -->
 <canvas id="c" width="256" height="32"></canvas>
@@ -42,6 +45,14 @@
   // restore re-reads the live DPR and can re-measure the cell (#328).
   const cellLit = (col) => countLit(readCells(gl, r, col));
   const row = () => Array.from({ length: COLS }, (_, i) => cellLit(i));
+  // #370: cursor-red pixels of cell `col` — red high, green/blue low, to tell the bar from the white
+  // glyphs whose red channel also clears the `countLit` threshold.
+  const cursorLit = (col) => {
+    const { buf } = readCells(gl, r, col);
+    let n = 0;
+    for (let i = 0; i < buf.length; i += 4) if (buf[i] > 150 && buf[i + 1] < 100 && buf[i + 2] < 100) n++;
+    return n;
+  };
   const once = (event) => new Promise((res) => canvas.addEventListener(event, res, { once: true }));
 
   // The frame deliberately spans all three glyph paths, because `restore()` re-bakes each
@@ -59,9 +70,18 @@
   const flags = new Uint16Array([0, 0, 0, WIDE_CHAR, WIDE_SPACER, 0]);
   const zeros = new Uint32Array(COLS);
 
+  // #370: a bar cursor on col 5 ('Z') must survive the loss+restore. `self.cursor` is CPU state, and
+  // `restore()` re-fetches the THREE cursor uniform locations (bound to the relinked program) and
+  // re-sets them on the next `render()`. If it forgot any of them, the bar would not come back. The
+  // #368 guard is off so the red stays predictable — this proves recovery, not contrast.
+  const CURSOR_RED = 0xff0000, BAR = 2, CURSOR_COL = 5;
+  r.setCursorContrast(1.0);
+  r.setCursor(CURSOR_COL, 0, BAR, CURSOR_RED, 0x000000);
+
   r.apply_frame(COLS, 1, zeros, zeros, cps, flags, true);
   r.render();
   const baseline = row();
+  const cursorBaseline = cursorLit(CURSOR_COL);
 
   // --- kill it -------------------------------------------------------------------------------
   // Our `webglcontextlost` listener was registered in the constructor, i.e. before the one `once()`
@@ -92,6 +112,7 @@
   let threwOnRestore = false;
   try { r.render(); } catch (e) { threwOnRestore = true; console.error(e); }
   const recovered = row();
+  const cursorRecovered = cursorLit(CURSOR_COL);
 
   // A subsequent identical frame still costs zero GPU work (the #263 diff is live again, with a
   // baseline that now describes the REAL buffer contents rather than the destroyed one).
@@ -102,7 +123,7 @@
   window.__proof = {
     deviceCell: deviceCell(r), cssCell: [r.cssCellWidth(), r.cssCellHeight()], dpr: window.devicePixelRatio,
     gridFit: gridFit(gl, r, COLS, 1),
-    baseline, recovered, steady, lostFlag, restoredFlag,
+    baseline, recovered, steady, lostFlag, restoredFlag, cursorBaseline, cursorRecovered,
     checks: {
       // Sanity: every cell — ASCII, dynamic narrow, and both halves of the wide pair — has ink
       // before the loss. (col 4 is the wide spacer: it shows 中's right half.)
@@ -126,6 +147,11 @@
         recovered[3] > 0 && recovered[4] > 0,
       // The dirty-region diff is healthy again afterwards.
       steadyStateHolds: steady.join() === baseline.join(),
+      // #370: the bar cursor was lit before the loss and is lit again after restore+render() alone —
+      // `restore()` re-fetched and re-set the cursor uniforms. (recoveredMatchesBaseline also now
+      // guards this, since the bar's red is part of col 5's baseline; this names it directly.)
+      cursorLitBeforeLoss: cursorBaseline > 0,
+      cursorRecoveredAfterRestore: cursorRecovered > 0 && cursorRecovered === cursorBaseline,
     },
   };
   window.__proof.ok = Object.values(window.__proof.checks).every(Boolean);
