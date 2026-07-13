@@ -1,6 +1,6 @@
 <!doctype html>
 <meta charset="utf-8" />
-<title>justerm-renderer proof — letterSpacing / lineHeight / builtin blocks + box drawing + wedges (#338, #359, #365, #366)</title>
+<title>justerm-renderer proof — letterSpacing / lineHeight / builtin blocks + box drawing + wedges + shades (#338, #359, #365, #366, #367)</title>
 <style>
   body { margin: 0; background: #000; }
   #c { display: block; image-rendering: pixelated; }
@@ -248,6 +248,32 @@
   const triTotal = triA.w * triA.h;
   const wedgePair = { triTotal, darkInBoth, solidInBoth, litA, litB };
 
+  // #367: the shades-vs-pattern fork, settled by MEASUREMENT here (ADR-0018), across the dpr sweep.
+  //
+  // CHECKER BOARD FILL 1FB95 is coarse SOLID quarter-cell squares (NOT xterm's device-pixel dither),
+  // so through the NEAREST atlas it comes back a clean BIMODAL pattern — pixels are ~255 or ~0, with
+  // few at an intermediate green. A large intermediate fraction WOULD be the moiré/smear the issue
+  // feared; measuring it is what settles the fork. Its inverse 1FB96 must partition the cell with it.
+  const chkA = greenBuf(0x1fb95), chkB = greenBuf(0x1fb96);
+  let chkLit = 0, chkSmear = 0, chkGap = 0, chkOverlap = 0;
+  for (let i = 0; i < chkA.w * chkA.h; i++) {
+    const a = chkA.g[i], b = chkB.g[i];
+    if (a > 200) chkLit++;
+    if (a > 40 && a < 215) chkSmear++;    // intermediate green = filtering/moiré; ~0 for a solid checker
+    if (a < 40 && b < 40) chkGap++;       // a pixel neither phase lights
+    if (a > 200 && b > 200) chkOverlap++; // a pixel both phases light
+  }
+  const chkTotal = chkA.w * chkA.h;
+  const checker = { chkTotal, chkLit, chkSmear, chkGap, chkOverlap };
+
+  // INVERSE MEDIUM SHADE 1FB90 is rendered FLAT (alpha 128, the #359 rule the fork extends), NOT a
+  // dither — so the whole cell is ONE uniform mid-tone (narrow green range), the opposite of a bimodal
+  // 255/0 speckle. Uniformity is the decisive flat-vs-dither signal and is gamma-independent.
+  const shd = greenBuf(0x1fb90);
+  let sMin = 255, sMax = 0, sSum = 0;
+  for (let i = 0; i < shd.w * shd.h; i++) { const v = shd.g[i]; if (v < sMin) sMin = v; if (v > sMax) sMax = v; sSum += v; }
+  const shade = { min: sMin, max: sMax, mean: sSum / (shd.w * shd.h) };
+
   const blockBase = inkRun(BLOCK);
   const letterBase = inkRun(LETTER);
   const wideBase = wideRun();
@@ -325,7 +351,7 @@
     blockBase, blockSpaced, blockTall, letterBase, letterSpaced, letterTall,
     wideBase, wideSpaced, afterRestore, gridBefore, gridWhileLost, gridAfter,
     maxTex, huge, letterCoverage, sextantBase, sextantSpaced, frameBase, frameSpaced, diagBase, diagSpaced,
-    doubleBase, doubleSpaced, wedgePair,
+    doubleBase, doubleSpaced, wedgePair, checker, shade,
     checks: {
       // The adopted cell fits the atlas, and the consumer can read back what it got (#339's contract).
       anUnholdableCellIsShrunkToWhatTheAtlasCanHold:
@@ -431,6 +457,19 @@
       neitherWedgeHalfFillsTheCellAlone:
         wedgePair.litA > 0 && wedgePair.litA < wedgePair.triTotal &&
         wedgePair.litB > 0 && wedgePair.litB < wedgePair.triTotal,
+
+      // #367 checker board fill: a coarse SOLID checker survives the atlas as a BIMODAL pattern with
+      // few intermediate pixels — no moiré at this dpr (the measurement that settles the fork)...
+      theCheckerBoardFillHasNoMoireSmear: checker.chkSmear < checker.chkTotal * 0.15,
+      // ...it is a real pattern, roughly half lit, not a flat shade...
+      theCheckerBoardFillLightsAboutHalfTheCell:
+        checker.chkLit > checker.chkTotal * 0.25 && checker.chkLit < checker.chkTotal * 0.75,
+      // ...and it partitions the cell with its inverse, no gap and no overlap.
+      theCheckerAndItsInversePartitionTheCell: checker.chkGap === 0 && checker.chkOverlap === 0,
+      // #367 medium shade: FLAT, not dithered — one uniform mid-tone (narrow range), never a bimodal
+      // 255/0 speckle. This is the other half of the fork: shades flat, patterns coarse-solid.
+      theMediumShadeIsFlatNotDithered:
+        shade.max - shade.min < 40 && shade.mean > 30 && shade.mean < 245,
     },
   };
   window.__proof.ok = Object.values(window.__proof.checks).every(Boolean);

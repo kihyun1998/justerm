@@ -62,8 +62,9 @@ const SOLID: u8 = 255; // █
 
 /// A white RGBA bitmap of `w * h` device px with the coverage of a block element, sextant, extra
 /// eighth block, box-drawing glyph (delegated to [`box_glyph`]), Legacy-Computing wedge / triangular
-/// half ([`wedge_glyph`]), diagonal hatch or one-eighth block ([`octant_block`]) in alpha — or `None`
-/// for a codepoint this module does not own.
+/// half ([`wedge_glyph`]), diagonal hatch, one-eighth block / checker or heavy fill ([`octant_block`]),
+/// or medium / triangular shade ([`shade_glyph`]) in alpha — or `None` for a codepoint this module does
+/// not own.
 ///
 /// The origin is the cell's TOP-left, matching the rasteriser's canvas and the shader's texcoord.
 pub fn block_glyph(cp: u32, w: u32, h: u32) -> Option<Vec<u8>> {
@@ -79,9 +80,15 @@ pub fn block_glyph(cp: u32, w: u32, h: u32) -> Option<Vec<u8>> {
     if let Some(g) = wedge_glyph(cp, w, h) {
         return Some(g);
     }
-    // The vertical / horizontal one-eighth blocks (`1FB70`-`1FB81`): eighth-grid rectangles, no
-    // polygon needed. (#366)
+    // The eighth-grid solid fills: one-eighth blocks (`1FB70`-`1FB81`, #366) and the checker /
+    // heavy-horizontal pattern fills (`1FB95`-`1FB97`, #367) — coarse SOLID cell-fraction squares, not
+    // a device-pixel dither, so no moiré through the atlas (ADR-0018).
     if let Some(g) = octant_block(cp, w, h) {
+        return Some(g);
+    }
+    // The rectangular / triangular MEDIUM shades (`1FB8C`-`1FB92`, `1FB94`, `1FB9C`-`1FB9F`): the flat
+    // medium alpha of `▒` (#359 rule) clipped to a region, never xterm's dither. (#367)
+    if let Some(g) = shade_glyph(cp, w, h) {
         return Some(g);
     }
     let owned = (FIRST..=LAST).contains(&cp)
@@ -836,11 +843,17 @@ type EighthRect = (u8, u8, u8, u8);
 /// One one-eighth block: its codepoint and the rectangles it lights.
 type OctantBlock = (u32, &'static [EighthRect]);
 
-/// The vertical / horizontal one-eighth blocks (`1FB70`-`1FB81`), as rectangles on the eighth grid.
-/// Transcribed from xterm's `SOLID_OCTANT_BLOCK_VECTOR` entries; alacritty draws none of these.
+/// The eighth-grid SOLID fills: the one-eighth blocks (`1FB70`-`1FB81`) and the pattern fills
+/// (`1FB95`-`1FB97`), as rectangles on the eighth grid. Transcribed from xterm's
+/// `SOLID_OCTANT_BLOCK_VECTOR` entries; alacritty draws none of these.
+///
 /// Vertical blocks-2..7 are the interior columns `▏`/`█` skip; horizontal blocks-2..7 the interior
 /// rows; `1FB7C`-`1FB80` are edge L-pairs and `1FB81` (window title bar) is four horizontal rows at
-/// eighths 0, 2, 4, 7.
+/// eighths 0, 2, 4, 7. `1FB95`/`1FB96` (checker board fill / its inverse) are a 4×4 checkerboard of
+/// **quarter-cell** (2×2-eighth) squares — xterm draws them as coarse SOLID squares, NOT the
+/// device-pixel dither the `BLOCK_PATTERN` shades use, so they are eighth-grid rectangles like the
+/// rest and carry no moiré through the atlas (#367 decision, ADR-0018). `1FB97` (heavy horizontal
+/// fill) is two solid quarter-cell bands.
 const OCTANT_BLOCKS: &[OctantBlock] = &[
     (0x1FB70, &[(1, 0, 1, 8)]),
     (0x1FB71, &[(2, 0, 1, 8)]),
@@ -863,6 +876,36 @@ const OCTANT_BLOCKS: &[OctantBlock] = &[
         0x1FB81,
         &[(0, 0, 8, 1), (0, 2, 8, 1), (0, 4, 8, 1), (0, 7, 8, 1)],
     ),
+    // CHECKER BOARD FILL: a 4×4 checkerboard of 2×2-eighth squares (col+row even).
+    (
+        0x1FB95,
+        &[
+            (0, 0, 2, 2),
+            (4, 0, 2, 2),
+            (2, 2, 2, 2),
+            (6, 2, 2, 2),
+            (0, 4, 2, 2),
+            (4, 4, 2, 2),
+            (2, 6, 2, 2),
+            (6, 6, 2, 2),
+        ],
+    ),
+    // INVERSE CHECKER BOARD FILL: the complementary squares (col+row odd).
+    (
+        0x1FB96,
+        &[
+            (2, 0, 2, 2),
+            (6, 0, 2, 2),
+            (0, 2, 2, 2),
+            (4, 2, 2, 2),
+            (2, 4, 2, 2),
+            (6, 4, 2, 2),
+            (0, 6, 2, 2),
+            (4, 6, 2, 2),
+        ],
+    ),
+    // HEAVY HORIZONTAL FILL: two solid quarter-cell bands (the upper-middle and lower one-quarter).
+    (0x1FB97, &[(0, 2, 8, 2), (0, 6, 8, 2)]),
 ];
 
 /// A white RGBA bitmap for a wedge / triangular-half glyph (`1FB3C`-`1FB6F`, `1FB9A`-`1FB9B`) or a
@@ -908,6 +951,61 @@ fn octant_block(cp: u32, w: u32, h: u32) -> Option<Vec<u8>> {
         let y0 = (by as u32 * h) / 8;
         let y1 = ((by + bh) as u32 * h) / 8;
         fill(&mut buf, (w, h), (x0, y0, x1 - x0, y1 - y0), SOLID);
+    }
+    Some(buf)
+}
+
+/// A white RGBA bitmap for a rectangular or triangular MEDIUM-SHADE glyph (`1FB8C`-`1FB92`, `1FB94`,
+/// `1FB9C`-`1FB9F`), or `None` outside those. xterm draws every one of these as the `▒` MEDIUM SHADE
+/// `BLOCK_PATTERN` — a 2×2 device-pixel dither — clipped to a region. Per the #359 rule we render `▒`
+/// as **flat alpha** (`SHADE_MEDIUM`), not a dither (a device-pixel dither moirés through the atlas),
+/// so these are the flat medium shade restricted to that region: the halves and `1FB90` via [`fill`],
+/// the block+shade combos (`1FB91`/`1FB92`/`1FB94`) as a SOLID half plus a medium half, and the
+/// triangular shades (`1FB9C`-`1FB9F`) as the flat medium clipped to a corner triangle by #364's
+/// [`fill_polygon`]. `1FB90` INVERSE MEDIUM is the `▒` dither phase-flipped — still 50% coverage — so a
+/// flat medium over the whole cell, visually identical to `▒`. (#367 decision, ADR-0018.)
+fn shade_glyph(cp: u32, w: u32, h: u32) -> Option<Vec<u8>> {
+    if !matches!(cp, 0x1FB8C..=0x1FB92 | 0x1FB94 | 0x1FB9C..=0x1FB9F) || w == 0 || h == 0 {
+        return None;
+    }
+    let mut buf = vec![0u8; (w * h * 4) as usize];
+    // Halves snap to the rounded midline, as the quadrants do, so a medium half and a block half tile.
+    let xc = ((w as f32 / 2.0).round() as u32).clamp(1, w);
+    let yc = ((h as f32 / 2.0).round() as u32).clamp(1, h);
+    let (wf, hf) = (w as f32, h as f32);
+    match cp {
+        0x1FB8C => fill(&mut buf, (w, h), (0, 0, xc, h), SHADE_MEDIUM), // LEFT HALF MEDIUM SHADE
+        0x1FB8D => fill(&mut buf, (w, h), (xc, 0, w - xc, h), SHADE_MEDIUM), // RIGHT HALF MEDIUM
+        0x1FB8E => fill(&mut buf, (w, h), (0, 0, w, yc), SHADE_MEDIUM), // UPPER HALF MEDIUM
+        0x1FB8F => fill(&mut buf, (w, h), (0, yc, w, h - yc), SHADE_MEDIUM), // LOWER HALF MEDIUM
+        0x1FB90 => fill(&mut buf, (w, h), (0, 0, w, h), SHADE_MEDIUM), // INVERSE MEDIUM (= flat 50%)
+        0x1FB91 => {
+            // UPPER HALF BLOCK AND LOWER HALF INVERSE MEDIUM SHADE.
+            fill(&mut buf, (w, h), (0, 0, w, yc), SOLID);
+            fill(&mut buf, (w, h), (0, yc, w, h - yc), SHADE_MEDIUM);
+        }
+        0x1FB92 => {
+            // UPPER HALF INVERSE MEDIUM SHADE AND LOWER HALF BLOCK.
+            fill(&mut buf, (w, h), (0, 0, w, yc), SHADE_MEDIUM);
+            fill(&mut buf, (w, h), (0, yc, w, h - yc), SOLID);
+        }
+        0x1FB94 => {
+            // LEFT HALF INVERSE MEDIUM SHADE AND RIGHT HALF BLOCK.
+            fill(&mut buf, (w, h), (0, 0, xc, h), SHADE_MEDIUM);
+            fill(&mut buf, (w, h), (xc, 0, w - xc, h), SOLID);
+        }
+        0x1FB9C..=0x1FB9F => {
+            // Triangular medium shades: the flat medium clipped to the named corner triangle.
+            let verts: &[(f32, f32)] = match cp {
+                0x1FB9C => &[(0.0, 0.0), (1.0, 0.0), (0.0, 1.0)], // UPPER LEFT
+                0x1FB9D => &[(0.0, 0.0), (1.0, 0.0), (1.0, 1.0)], // UPPER RIGHT
+                0x1FB9E => &[(1.0, 0.0), (1.0, 1.0), (0.0, 1.0)], // LOWER RIGHT
+                _ => &[(0.0, 0.0), (1.0, 1.0), (0.0, 1.0)],       // 1FB9F LOWER LEFT
+            };
+            let scaled: Vec<(f32, f32)> = verts.iter().map(|&(x, y)| (x * wf, y * hf)).collect();
+            fill_polygon(&mut buf, (w, h), &scaled, SHADE_MEDIUM);
+        }
+        _ => unreachable!(),
     }
     Some(buf)
 }
@@ -1547,16 +1645,164 @@ mod tests {
     }
 
     #[test]
-    fn the_reserved_and_out_of_scope_legacy_codepoints_are_not_owned() {
-        // `1FB93` is <reserved> in Unicode — it must draw nothing.
-        assert!(block_glyph(0x1FB93, 16, 16).is_none(), "1FB93 is reserved");
-        // The rectangular shades / fill chars / triangular shades around this scope belong to later
-        // issues, not #366 — this module must not silently claim them.
-        for cp in [0x1FB8C, 0x1FB92, 0x1FB94, 0x1FB97, 0x1FB9C, 0x1FB9F] {
-            assert!(
-                block_glyph(cp, 16, 16).is_none(),
-                "{cp:x} is out of #366's scope"
-            );
+    fn the_whole_legacy_block_is_owned_except_the_reserved_hole() {
+        // With #367 the Symbols-for-Legacy-Computing range this module draws, `1FB00`-`1FB9F`, is
+        // complete: sextants, wedges, one-eighth blocks, extra eighths, shades, pattern fills, hatches,
+        // triangular halves and triangular shades. The ONLY gap is `1FB93`, which Unicode reserves.
+        for cp in 0x1FB00..=0x1FB9F {
+            let owned = block_glyph(cp, 16, 16).is_some();
+            if cp == 0x1FB93 {
+                assert!(!owned, "1FB93 is <reserved> and must draw nothing");
+            } else {
+                assert!(owned, "{cp:x} is in 1FB00-1FB9F and must be owned");
+            }
+        }
+        // Just past the implemented range: `1FBA0`+ (legacy box drawing / segmented digits) is not
+        // ours, so the module must not silently claim it.
+        for cp in [0x1FBA0u32, 0x1FBAE, 0x1FBF0, 0x1FBFF] {
+            assert!(block_glyph(cp, 16, 16).is_none(), "{cp:x} is out of scope");
+        }
+    }
+
+    #[test]
+    fn the_medium_shades_fill_their_named_region_at_medium_alpha_not_solid() {
+        // `1FB8C`-`1FB90`: the `▒` medium shade rendered FLAT (alpha 128, #359 rule) clipped to a
+        // region — the named region is `SHADE_MEDIUM`, and it is NOT solid (a `SOLID` here would be the
+        // block, a different glyph). The other region is empty.
+        let (w, h) = (8, 8);
+        assert_eq!(sample_frac(0x1FB8C, w, h, 0.25, 0.5), SHADE_MEDIUM); // LEFT HALF
+        assert_eq!(sample_frac(0x1FB8C, w, h, 0.75, 0.5), 0);
+        assert_eq!(sample_frac(0x1FB8D, w, h, 0.75, 0.5), SHADE_MEDIUM); // RIGHT HALF
+        assert_eq!(sample_frac(0x1FB8D, w, h, 0.25, 0.5), 0);
+        assert_eq!(sample_frac(0x1FB8E, w, h, 0.5, 0.25), SHADE_MEDIUM); // UPPER HALF
+        assert_eq!(sample_frac(0x1FB8E, w, h, 0.5, 0.75), 0);
+        assert_eq!(sample_frac(0x1FB8F, w, h, 0.5, 0.75), SHADE_MEDIUM); // LOWER HALF
+        assert_eq!(sample_frac(0x1FB8F, w, h, 0.5, 0.25), 0);
+        // INVERSE MEDIUM SHADE = a flat medium over the WHOLE cell (phase-flipped 50% is still 50%).
+        assert_eq!(sample_frac(0x1FB90, w, h, 0.25, 0.25), SHADE_MEDIUM);
+        assert_eq!(sample_frac(0x1FB90, w, h, 0.75, 0.75), SHADE_MEDIUM);
+    }
+
+    #[test]
+    fn the_block_and_shade_combos_pair_a_solid_half_with_a_medium_half() {
+        // `1FB91`/`1FB92`/`1FB94`: one half is the full block (255), the other the inverse medium
+        // shade (128). The two alphas together are what distinguishes these from a plain half block.
+        let (w, h) = (8, 8);
+        assert_eq!(sample_frac(0x1FB91, w, h, 0.5, 0.25), SOLID); // UPPER BLOCK
+        assert_eq!(sample_frac(0x1FB91, w, h, 0.5, 0.75), SHADE_MEDIUM); // LOWER MEDIUM
+        assert_eq!(sample_frac(0x1FB92, w, h, 0.5, 0.25), SHADE_MEDIUM); // UPPER MEDIUM
+        assert_eq!(sample_frac(0x1FB92, w, h, 0.5, 0.75), SOLID); // LOWER BLOCK
+        assert_eq!(sample_frac(0x1FB94, w, h, 0.25, 0.5), SHADE_MEDIUM); // LEFT MEDIUM
+        assert_eq!(sample_frac(0x1FB94, w, h, 0.75, 0.5), SOLID); // RIGHT BLOCK
+    }
+
+    #[test]
+    fn the_block_and_shade_combos_cover_the_whole_cell_with_no_seam() {
+        // The solid half and the medium half must PARTITION the cell: EVERY pixel is either 255 or 128,
+        // never 0 (a seam / gap) and never the wrong value — checked at the exact rounded midline on odd
+        // cells, the boundary a two-point interior sample cannot see (a future one-row shift would slip
+        // past it). The mirror of `the_four_quadrants_of_a_cell_reassemble_into_the_full_block`.
+        for (w, h) in [(8u32, 8u32), (9, 7), (5, 11), (3, 3), (16, 16)] {
+            let yc = ((h as f32 / 2.0).round() as u32).clamp(1, h);
+            let xc = ((w as f32 / 2.0).round() as u32).clamp(1, w);
+            for cp in [0x1FB91u32, 0x1FB92, 0x1FB94] {
+                let g = block_glyph(cp, w, h).unwrap();
+                for y in 0..h {
+                    for x in 0..w {
+                        let expect = match cp {
+                            0x1FB91 => {
+                                if y < yc {
+                                    SOLID
+                                } else {
+                                    SHADE_MEDIUM
+                                }
+                            } // upper block / lower medium
+                            0x1FB92 => {
+                                if y < yc {
+                                    SHADE_MEDIUM
+                                } else {
+                                    SOLID
+                                }
+                            } // upper medium / lower block
+                            _ => {
+                                if x < xc {
+                                    SHADE_MEDIUM
+                                } else {
+                                    SOLID
+                                }
+                            } // 1FB94 left medium / right block
+                        };
+                        assert_eq!(
+                            g[((y * w + x) * 4 + 3) as usize],
+                            expect,
+                            "{cp:x} at {w}x{h}: pixel ({x},{y})"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_triangular_shades_fill_the_named_corner_triangle_at_medium_alpha() {
+        // `1FB9C`-`1FB9F`: the flat medium clipped to a corner triangle (on #364's polygon fill). The
+        // named corner is `SHADE_MEDIUM`, the diagonally-opposite corner empty.
+        let (w, h) = (16, 16);
+        assert_eq!(sample_frac(0x1FB9C, w, h, 0.15, 0.15), SHADE_MEDIUM); // UPPER LEFT
+        assert_eq!(sample_frac(0x1FB9C, w, h, 0.85, 0.85), 0);
+        assert_eq!(sample_frac(0x1FB9D, w, h, 0.85, 0.15), SHADE_MEDIUM); // UPPER RIGHT
+        assert_eq!(sample_frac(0x1FB9D, w, h, 0.15, 0.85), 0);
+        assert_eq!(sample_frac(0x1FB9E, w, h, 0.85, 0.85), SHADE_MEDIUM); // LOWER RIGHT
+        assert_eq!(sample_frac(0x1FB9E, w, h, 0.15, 0.15), 0);
+        assert_eq!(sample_frac(0x1FB9F, w, h, 0.15, 0.85), SHADE_MEDIUM); // LOWER LEFT
+        assert_eq!(sample_frac(0x1FB9F, w, h, 0.85, 0.15), 0);
+    }
+
+    #[test]
+    fn the_checker_board_fill_is_a_coarse_solid_checker_not_a_dither() {
+        // `1FB95`/`1FB96`: a 4×4 checkerboard of SOLID quarter-cell squares (`#`, not partial). On an
+        // 8×8 bitmap each square is 2×2 px. This is the #367 decision — coarse cell-fraction squares,
+        // not a device-pixel dither — so the squares are 255, never a shade alpha.
+        assert_eq!(
+            picture(0x1FB95, 8, 8),
+            [
+                "##..##..", "##..##..", "..##..##", "..##..##", "##..##..", "##..##..", "..##..##",
+                "..##..##"
+            ]
+        );
+        // The inverse is the complementary phase.
+        assert_eq!(
+            picture(0x1FB96, 8, 8),
+            [
+                "..##..##", "..##..##", "##..##..", "##..##..", "..##..##", "..##..##", "##..##..",
+                "##..##.."
+            ]
+        );
+        // HEAVY HORIZONTAL FILL: two solid quarter-cell bands, at the upper-middle and lower quarter.
+        assert_eq!(
+            picture(0x1FB97, 8, 8),
+            [
+                "........", "........", "########", "########", "........", "........", "########",
+                "########"
+            ]
+        );
+    }
+
+    #[test]
+    fn the_checker_and_its_inverse_partition_the_cell_with_no_gap_or_overlap() {
+        // Independent of the hand-drawn picture: `1FB95` and `1FB96` are complementary, so between them
+        // every pixel is lit exactly once — no gap, no double-cover — at any cell size the eighth grid
+        // rounds unevenly. This is what a checker "fill" must do to tile with its inverse.
+        for (w, h) in [(8u32, 8u32), (10, 16), (33, 17), (9, 9)] {
+            let a = block_glyph(0x1FB95, w, h).unwrap();
+            let b = block_glyph(0x1FB96, w, h).unwrap();
+            for i in 0..(w * h) as usize {
+                let (la, lb) = (a[i * 4 + 3] == 255, b[i * 4 + 3] == 255);
+                assert!(
+                    la ^ lb,
+                    "{w}x{h} pixel {i}: checker + inverse must light it exactly once"
+                );
+            }
         }
     }
 

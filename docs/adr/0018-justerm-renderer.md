@@ -135,7 +135,22 @@ mirroring alacritty's geometry (`builtin_font.rs:394-499`) down to the eighth fr
 `round().max(1)` on every extent, and the four-quadrant decomposition. Shades are a flat alpha
 (`64/128/192`), as alacritty fills them; xterm dithers a 2×2 pattern instead — a real fork, and we follow
 the reference whose architecture matches, since a device-pixel dither baked into a texture-filtered atlas
-moirés. `U+1FB00`–`U+1FB9F` still tile-break (#361), as does box drawing `U+2500`–`U+257F`.
+moirés. `U+1FB00`–`U+1FB9F` are now drawn in full (sextants + extra eighths #361, wedges + one-eighth
+blocks + triangular halves + hatches #366, shades + pattern fills #367), leaving only the reserved
+`U+1FB93` blank; box drawing `U+2500`–`U+257F` lands in #365.
+
+**Shades and pattern fills (#367).** The regional medium shades (`U+1FB8C`–`U+1FB92`, `U+1FB94`,
+`U+1FB9C`–`U+1FB9F` — halves, block+shade combos, corner triangles) are just the flat-alpha rule above
+applied to a region: `▒` clipped to a half / triangle → flat `128` there, never xterm's dither. The fork
+#367 exists to settle is the *fill characters* `U+1FB95`–`U+1FB97`, which #367 framed as a dither-vs-flat
+moiré choice. Reading the **real xterm source** dissolves it: the checker board fills are not a
+`BLOCK_PATTERN` dither — xterm defines them as `SOLID_OCTANT_BLOCK_VECTOR` **2×2-eighth** (quarter-cell)
+**solid** squares, and `U+1FB97` as two solid bands. So they are drawn like the one-eighth blocks —
+coarse solid cell-fraction rectangles on the eighth grid — with no device-pixel dither and thus no moiré,
+and flattening them to a shade would have been *wrong* (a checker is a different glyph than a 50% shade).
+**Settled by measurement** (`demo/spacing.html`, the AC): at dpr 1 / 1.5 / 2 the checker comes back
+perfectly bimodal — intermediate-pixel (moiré) count **0**, exactly half lit, and an exact partition with
+its inverse — while the medium shade is a uniform `128` (min = max = mean), confirming flat, not dithered.
 
 The price is a re-bake on every spacing change: the slots change size. That is the same path a DPR change
 already takes (#322), and the setters roll back on failure rather than leaving a cell the atlas does not
