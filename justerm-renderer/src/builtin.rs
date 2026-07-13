@@ -18,8 +18,9 @@
 //! path does not care where a glyph came from. The shades are a flat alpha, as alacritty draws them
 //! (`COLOR_FILL_ALPHA_STEP_*`), not a dither pattern.
 
-/// The codepoint range this module owns. Box drawing (`U+2500`–`U+257F`) needs stroke widths, dashes,
-/// diagonals and rounded corners; it is a separate slice.
+/// The block-element codepoint range. Box drawing (`U+2500`–`U+257F`) is a sibling family with its
+/// own [`BOX_ARMS`] table and [`box_glyph`] path; its straight-line core is handled (#365), while its
+/// dashes, doubles, rounded corners and diagonals remain a later slice.
 pub const FIRST: u32 = 0x2580;
 pub const LAST: u32 = 0x259F;
 
@@ -59,11 +60,17 @@ const SHADE_MEDIUM: u8 = 128; // ▒
 const SHADE_DARK: u8 = 192; // ▓
 const SOLID: u8 = 255; // █
 
-/// A white RGBA bitmap of `w * h` device px with the coverage of a block element, sextant, or extra
-/// eighth block in alpha — or `None` for a codepoint this module does not own.
+/// A white RGBA bitmap of `w * h` device px with the coverage of a block element, sextant, extra
+/// eighth block, or box-drawing glyph (delegated to [`box_glyph`]) in alpha — or `None` for a
+/// codepoint this module does not own.
 ///
 /// The origin is the cell's TOP-left, matching the rasteriser's canvas and the shader's texcoord.
 pub fn block_glyph(cp: u32, w: u32, h: u32) -> Option<Vec<u8>> {
+    // Box drawing (its straight-line core, #365) is a sibling family drawn from strokes, not block
+    // fractions; it owns its own codepoints and returns early.
+    if let Some(g) = box_glyph(cp, w, h) {
+        return Some(g);
+    }
     let owned = (FIRST..=LAST).contains(&cp)
         || (SEXTANT_FIRST..=SEXTANT_LAST).contains(&cp)
         || (EIGHTH_FIRST..=EIGHTH_LAST).contains(&cp);
@@ -196,13 +203,133 @@ pub fn block_glyph(cp: u32, w: u32, h: u32) -> Option<Vec<u8>> {
     Some(buf)
 }
 
+/// The straight-line core of box drawing: horizontal / vertical lines, corners, T-junctions and the
+/// cross, in light and heavy weights, plus the mixed-weight terminals. Ranges `2500`-`2503`,
+/// `250C`-`254B`, `2574`-`257F`. Each is up to four strokes — left, right, up, down — meeting at the
+/// cell centre; a stroke is absent, light, or heavy. Dashes, doubles, diagonals and rounded corners
+/// are the tail (still tracked on #365) and are NOT owned here.
+///
+/// `[left, right, up, down]` weight per codepoint: `0` no arm, `1` light, `2` heavy. Generated
+/// mechanically from alacritty's four stroke-arm match arms (`builtin_font.rs:162-216`) rather than
+/// hand-transcribed — copying ~200 literals invites a plausible-forever typo (#363's lesson) — and
+/// re-checked against the character meaning by the tests. Ordered by codepoint for binary search.
+#[rustfmt::skip]
+const BOX_ARMS: [(u32, [u8; 4]); 80] = [
+    (0x2500, [1, 1, 0, 0]), (0x2501, [2, 2, 0, 0]), (0x2502, [0, 0, 1, 1]), (0x2503, [0, 0, 2, 2]),
+    (0x250C, [0, 1, 0, 1]), (0x250D, [0, 2, 0, 1]), (0x250E, [0, 1, 0, 2]), (0x250F, [0, 2, 0, 2]),
+    (0x2510, [1, 0, 0, 1]), (0x2511, [2, 0, 0, 1]), (0x2512, [1, 0, 0, 2]), (0x2513, [2, 0, 0, 2]),
+    (0x2514, [0, 1, 1, 0]), (0x2515, [0, 2, 1, 0]), (0x2516, [0, 1, 2, 0]), (0x2517, [0, 2, 2, 0]),
+    (0x2518, [1, 0, 1, 0]), (0x2519, [2, 0, 1, 0]), (0x251A, [1, 0, 2, 0]), (0x251B, [2, 0, 2, 0]),
+    (0x251C, [0, 1, 1, 1]), (0x251D, [0, 2, 1, 1]), (0x251E, [0, 1, 2, 1]), (0x251F, [0, 1, 1, 2]),
+    (0x2520, [0, 1, 2, 2]), (0x2521, [0, 2, 2, 1]), (0x2522, [0, 2, 1, 2]), (0x2523, [0, 2, 2, 2]),
+    (0x2524, [1, 0, 1, 1]), (0x2525, [2, 0, 1, 1]), (0x2526, [1, 0, 2, 1]), (0x2527, [1, 0, 1, 2]),
+    (0x2528, [1, 0, 2, 2]), (0x2529, [2, 0, 2, 1]), (0x252A, [2, 0, 1, 2]), (0x252B, [2, 0, 2, 2]),
+    (0x252C, [1, 1, 0, 1]), (0x252D, [2, 1, 0, 1]), (0x252E, [1, 2, 0, 1]), (0x252F, [2, 2, 0, 1]),
+    (0x2530, [1, 1, 0, 2]), (0x2531, [2, 1, 0, 2]), (0x2532, [1, 2, 0, 2]), (0x2533, [2, 2, 0, 2]),
+    (0x2534, [1, 1, 1, 0]), (0x2535, [2, 1, 1, 0]), (0x2536, [1, 2, 1, 0]), (0x2537, [2, 2, 1, 0]),
+    (0x2538, [1, 1, 2, 0]), (0x2539, [2, 1, 2, 0]), (0x253A, [1, 2, 2, 0]), (0x253B, [2, 2, 2, 0]),
+    (0x253C, [1, 1, 1, 1]), (0x253D, [2, 1, 1, 1]), (0x253E, [1, 2, 1, 1]), (0x253F, [2, 2, 1, 1]),
+    (0x2540, [1, 1, 2, 1]), (0x2541, [1, 1, 1, 2]), (0x2542, [1, 1, 2, 2]), (0x2543, [2, 1, 2, 1]),
+    (0x2544, [1, 2, 2, 1]), (0x2545, [2, 1, 1, 2]), (0x2546, [1, 2, 1, 2]), (0x2547, [2, 2, 2, 1]),
+    (0x2548, [2, 2, 1, 2]), (0x2549, [2, 1, 2, 2]), (0x254A, [1, 2, 2, 2]), (0x254B, [2, 2, 2, 2]),
+    (0x2574, [1, 0, 0, 0]), (0x2575, [0, 0, 1, 0]), (0x2576, [0, 1, 0, 0]), (0x2577, [0, 0, 0, 1]),
+    (0x2578, [2, 0, 0, 0]), (0x2579, [0, 0, 2, 0]), (0x257A, [0, 2, 0, 0]), (0x257B, [0, 0, 0, 2]),
+    (0x257C, [1, 2, 0, 0]), (0x257D, [0, 0, 1, 2]), (0x257E, [2, 1, 0, 0]), (0x257F, [0, 0, 2, 1]),
+];
+
+/// A white RGBA bitmap of the box-drawing glyph for `cp`, or `None` for a codepoint outside the
+/// straight-line core [`BOX_ARMS`] owns (or a degenerate cell).
+///
+/// The stroke width is alacritty's: `max(round(cell_w / 8), 1)` device px, heavy = twice that
+/// (`builtin_font.rs:53,977`). Each arm is drawn as a rectangle centred on the cell midline, its
+/// thickness snapped to whole pixels — a fractional-midline 1px line would blur under the atlas's
+/// texture filtering. A horizontal arm's length runs to the far edge of the vertical strokes (and
+/// vice-versa), so a corner's two arms meet and a run of `─` is unbroken across the cell seam.
+fn box_glyph(cp: u32, w: u32, h: u32) -> Option<Vec<u8>> {
+    let [left, right, up, down] = BOX_ARMS
+        .binary_search_by_key(&cp, |&(c, _)| c)
+        .ok()
+        .map(|i| BOX_ARMS[i].1)?;
+    if w == 0 || h == 0 {
+        return None;
+    }
+    let stroke = ((w as f32 / 8.0).round() as u32).max(1);
+    let size = |wt: u8| match wt {
+        1 => stroke,
+        2 => stroke * 2,
+        _ => 0,
+    };
+    let (sh_l, sh_r, sv_u, sv_d) = (size(left), size(right), size(up), size(down));
+
+    let x_center = w as f32 / 2.0;
+    let y_center = h as f32 / 2.0;
+    // The whole-pixel span of a horizontal stroke of thickness `s` centred on the vertical midline,
+    // and of a vertical stroke centred on the horizontal midline. Snapping to `u32` here is what keeps
+    // a 1px line off a fractional midline, where texture filtering would blur it.
+    let h_bounds = |s: u32| -> (u32, u32) {
+        let s = s as f32;
+        (
+            (y_center - s / 2.0).max(0.0) as u32,
+            ((y_center + s / 2.0) as u32).min(h),
+        )
+    };
+    let v_bounds = |s: u32| -> (u32, u32) {
+        let s = s as f32;
+        (
+            (x_center - s / 2.0).max(0.0) as u32,
+            ((x_center + s / 2.0) as u32).min(w),
+        )
+    };
+
+    let (vu0, vu1) = v_bounds(sv_u);
+    let (vd0, vd1) = v_bounds(sv_d);
+    let (hl0, hl1) = h_bounds(sh_l);
+    let (hr0, hr1) = h_bounds(sh_r);
+
+    let mut buf = vec![0u8; (w * h * 4) as usize];
+    // Each arm runs from the cell edge to the FAR side of the perpendicular strokes, so a corner's
+    // two arms overlap at the centre and adjacent cells join (alacritty `builtin_font.rs:226-242`).
+    //
+    // The left/up arm length is the far edge of the perpendicular strokes, which collapses to
+    // `floor(centre) = 0` on a 1px cell that has no perpendicular arm — leaving a left/up terminal
+    // (`╴ ╸ ╵ ╹`) invisible where its right/down mirror (`╶ ╷`, sized from `w - x` / `h - y`) shows.
+    // A present arm lights at least one pixel, matching the block glyphs' `.max(1)` and the sibling
+    // invariant that a glyph is never blank on a 1px cell. Only w/h = 1 is affected.
+    if sh_l > 0 {
+        fill(
+            &mut buf,
+            (w, h),
+            (0, hl0, vu1.max(vd1).max(1), hl1 - hl0),
+            SOLID,
+        );
+    }
+    if sh_r > 0 {
+        let x = vu0.min(vd0);
+        fill(&mut buf, (w, h), (x, hr0, w - x, hr1 - hr0), SOLID);
+    }
+    if sv_u > 0 {
+        fill(
+            &mut buf,
+            (w, h),
+            (vu0, 0, vu1 - vu0, hl1.max(hr1).max(1)),
+            SOLID,
+        );
+    }
+    if sv_d > 0 {
+        let y = hl0.min(hr0);
+        fill(&mut buf, (w, h), (vd0, y, vd1 - vd0, h - y), SOLID);
+    }
+    Some(buf)
+}
+
 /// Vertical sub-scanlines per output row for the polygon fill's coverage anti-aliasing. Horizontal
 /// coverage is computed analytically (exact span overlap per sub-row), so only the vertical axis is
 /// sampled; four sub-rows suffice at cell scale (16-33 device px) and the glyph rasterises once into
 /// the atlas, so the cost never reaches a hot path.
-// The primitive and its constant have no caller until box drawing (#365) and wedges (#366) draw
-// shapes with it; `block_glyph` still routes every codepoint it owns through `fill`'s rectangle fast
-// path. Remove the `allow` when the first consumer lands.
+// The primitive and its constant have no caller yet: the box-drawing core (#365) draws only
+// rectangles through `fill`, and the shapes that need a polygon — the box diagonals `2571`-`2573`
+// (the deferred tail of #365) and the wedges (#366) — are not built. Remove the `allow` when the
+// first of those lands.
 #[allow(dead_code)]
 const POLY_SS: u32 = 4;
 
@@ -235,7 +362,7 @@ const POLY_SS: u32 = 4;
 ///
 /// A degenerate ring (fewer than three vertices, zero area, or entirely outside the cell) lights
 /// nothing rather than panicking.
-#[allow(dead_code)] // consumed by box drawing (#365) and wedges (#366); see POLY_SS above.
+#[allow(dead_code)] // consumed by the box diagonals (#365 tail) and wedges (#366); see POLY_SS above.
 fn fill_polygon(buf: &mut [u8], size: (u32, u32), verts: &[(f32, f32)], alpha: u8) {
     let (w, h) = size;
     if w == 0 || h == 0 || verts.len() < 3 {
@@ -381,17 +508,38 @@ mod tests {
     }
 
     #[test]
-    fn the_range_this_module_owns_is_exactly_the_block_elements() {
-        assert!(
-            block_glyph(0x257F, 8, 8).is_none(),
-            "box drawing is a later slice"
-        );
+    fn the_range_this_module_owns_is_the_block_elements_plus_box_drawing_core() {
+        // Block elements.
         assert!(block_glyph(0x2580, 8, 8).is_some());
         assert!(block_glyph(0x259F, 8, 8).is_some());
         assert!(block_glyph(0x25A0, 8, 8).is_none());
+        // Box-drawing straight-line core is now owned (#365) — the terminals at the top of the range.
+        assert!(block_glyph(0x2500, 8, 8).is_some(), "─ light horizontal");
+        assert!(
+            block_glyph(0x257F, 8, 8).is_some(),
+            "╿ mixed-weight terminal"
+        );
+        // The box tail is deferred and stays unowned: dashes, doubles, rounded corners, diagonals.
+        assert!(block_glyph(0x2504, 8, 8).is_none(), "┄ dash — later slice");
+        assert!(
+            block_glyph(0x2550, 8, 8).is_none(),
+            "═ double — later slice"
+        );
+        assert!(
+            block_glyph(0x256D, 8, 8).is_none(),
+            "╭ rounded — later slice"
+        );
+        assert!(
+            block_glyph(0x2571, 8, 8).is_none(),
+            "╱ diagonal — later slice"
+        );
         assert!(block_glyph(0x41, 8, 8).is_none(), "'A' belongs to the font");
         // A degenerate cell has no pixels to fill; the caller must not be handed an empty bitmap.
         assert!(block_glyph(0x2588, 0, 8).is_none());
+        assert!(
+            block_glyph(0x2500, 0, 8).is_none(),
+            "box on a zero cell is None too"
+        );
     }
 
     #[test]
@@ -929,5 +1077,239 @@ mod tests {
 
         let none = poly(8, 8, &[], 255);
         assert_eq!(total_alpha(&none), 0, "an empty ring has no area");
+    }
+
+    // --- box drawing straight-line core (#365) ---
+
+    fn box_g(cp: u32, w: u32, h: u32) -> Vec<u8> {
+        block_glyph(cp, w, h).expect("owned box codepoint")
+    }
+    fn col_lit(g: &[u8], w: u32, h: u32, x: u32) -> bool {
+        (0..h).any(|y| g[((y * w + x) * 4 + 3) as usize] > 0)
+    }
+    fn row_lit(g: &[u8], w: u32, _h: u32, y: u32) -> bool {
+        // `_h` keeps the call sites symmetric with `col_lit`; a row scan only needs the width.
+        (0..w).any(|x| g[((y * w + x) * 4 + 3) as usize] > 0)
+    }
+
+    #[test]
+    fn every_box_arm_reaches_exactly_the_edge_its_name_gives() {
+        // The join guarantee, read from each character's MEANING (its `[left,right,up,down]` arms),
+        // not from how the code draws it: an arm exists IFF that cell edge has lit pixels. So a run of
+        // `─` is unbroken across the seam (both left and right edges lit), and a corner reaches only
+        // its two neighbours. Checked across all 80 owned codepoints on a comfortable cell.
+        let (w, h) = (16u32, 16u32);
+        for &(cp, [l, r, u, d]) in BOX_ARMS.iter() {
+            let g = box_g(cp, w, h);
+            assert_eq!(col_lit(&g, w, h, 0), l > 0, "{cp:#06X}: left edge vs L={l}");
+            assert_eq!(
+                col_lit(&g, w, h, w - 1),
+                r > 0,
+                "{cp:#06X}: right edge vs R={r}"
+            );
+            assert_eq!(row_lit(&g, w, h, 0), u > 0, "{cp:#06X}: top edge vs U={u}");
+            assert_eq!(
+                row_lit(&g, w, h, h - 1),
+                d > 0,
+                "{cp:#06X}: bottom edge vs D={d}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_light_horizontal_is_a_centred_bar_clear_of_top_and_bottom() {
+        // `─`: a horizontal bar at mid-height spanning the whole width, with the top and bottom of the
+        // cell empty (so it does not smear into the rows above/below).
+        let (w, h) = (16u32, 16u32);
+        let g = box_g(0x2500, w, h);
+        assert!(row_lit(&g, w, h, h / 2), "the mid row is lit");
+        assert!(
+            !row_lit(&g, w, h, 0) && !row_lit(&g, w, h, h - 1),
+            "top/bottom clear"
+        );
+        // The lit mid row runs edge to edge.
+        assert!(
+            (0..w).all(|x| g[(((h / 2) * w + x) * 4 + 3) as usize] > 0),
+            "full width"
+        );
+    }
+
+    #[test]
+    fn heavy_strokes_are_twice_the_light_stroke() {
+        // `┃` (heavy vertical) is twice as thick as `│` (light). Count lit columns across the mid row.
+        let (w, h) = (16u32, 16u32);
+        let light = box_g(0x2502, w, h);
+        let heavy = box_g(0x2503, w, h);
+        let thickness = |g: &[u8]| {
+            (0..w)
+                .filter(|&x| g[(((h / 2) * w + x) * 4 + 3) as usize] > 0)
+                .count()
+        };
+        assert_eq!(thickness(&heavy), 2 * thickness(&light), "heavy = 2x light");
+        assert!(thickness(&light) >= 1);
+    }
+
+    #[test]
+    fn a_mixed_weight_terminal_is_thicker_on_its_heavy_side() {
+        // `╼` = light left, heavy right (`257C` = L1 R2). The right arm's bar is thicker than the
+        // left's — proving the per-arm weight is honoured, not a single stroke for the whole glyph.
+        let (w, h) = (16u32, 16u32);
+        let g = box_g(0x257C, w, h);
+        let bar = |x: u32| {
+            (0..h)
+                .filter(|&y| g[((y * w + x) * 4 + 3) as usize] > 0)
+                .count()
+        };
+        assert!(bar(1) >= 1 && bar(w - 2) >= 1, "both arms present");
+        assert!(
+            bar(w - 2) > bar(1),
+            "the heavy right arm is thicker than the light left arm"
+        );
+    }
+
+    #[test]
+    fn box_drawing_stays_text_presentation_not_emoji() {
+        // #365 must not perturb emoji classification: box drawing is text presentation, so the emoji
+        // gate never fires for it (the range is nowhere near the 1F000+ plane it keys on).
+        for s in ["─", "│", "┼", "╋", "╿"] {
+            assert!(
+                !crate::emoji::is_emoji_text(s, false),
+                "{s} is not emoji (narrow)"
+            );
+            assert!(
+                !crate::emoji::is_emoji_text(s, true),
+                "{s} is not emoji (wide)"
+            );
+        }
+    }
+
+    /// Number of 4-connected lit components in a glyph bitmap.
+    fn lit_components(g: &[u8], w: u32, h: u32) -> u32 {
+        let lit = |x: u32, y: u32| g[((y * w + x) * 4 + 3) as usize] > 0;
+        let mut seen = vec![false; (w * h) as usize];
+        let mut count = 0u32;
+        for sy in 0..h {
+            for sx in 0..w {
+                if !lit(sx, sy) || seen[(sy * w + sx) as usize] {
+                    continue;
+                }
+                count += 1;
+                let mut stack = vec![(sx, sy)];
+                while let Some((x, y)) = stack.pop() {
+                    let i = (y * w + x) as usize;
+                    if seen[i] || !lit(x, y) {
+                        continue;
+                    }
+                    seen[i] = true;
+                    if x > 0 {
+                        stack.push((x - 1, y));
+                    }
+                    if x + 1 < w {
+                        stack.push((x + 1, y));
+                    }
+                    if y > 0 {
+                        stack.push((x, y - 1));
+                    }
+                    if y + 1 < h {
+                        stack.push((x, y + 1));
+                    }
+                }
+            }
+        }
+        count
+    }
+
+    #[test]
+    fn a_glyphs_arms_meet_in_one_connected_shape() {
+        // The meeting rule (each arm runs to the far side of the perpendicular strokes) exists so a
+        // corner or junction is a SINGLE connected shape — an arm that stopped at the midline would
+        // leave its stub as a second component. Every multi-arm glyph must be one piece.
+        let (w, h) = (16u32, 16u32);
+        // Corners, T-junctions, the cross, all-heavy, plus the mixed-weight junctions and terminals
+        // (2540-254A, 257D-257F) — the asymmetric ones where a swapped arm weight is most plausible.
+        for cp in [
+            0x250C, 0x2510, 0x2514, 0x2518, 0x251C, 0x2524, 0x252C, 0x2534, 0x253C, 0x254B, 0x257C,
+            0x2540, 0x2541, 0x2542, 0x2543, 0x2545, 0x254A, 0x257D, 0x257E, 0x257F,
+        ] {
+            assert_eq!(
+                lit_components(&box_g(cp, w, h), w, h),
+                1,
+                "{cp:#06X} is one connected shape"
+            );
+        }
+    }
+
+    #[test]
+    fn a_terminal_lights_at_least_one_pixel_even_on_a_one_pixel_cell() {
+        // `╴ ╸ ╵ ╹` (single-arm terminals) are sized from the far edge of the perpendicular strokes,
+        // which collapses to 0 on a 1px cross-axis cell where their `╶ ╷` mirrors — sized from
+        // `w - x` / `h - y` — stay lit. They must not vanish, matching the block glyphs' `.max(1)`.
+        assert!(
+            col_lit(&box_g(0x2574, 1, 8), 1, 8, 0),
+            "╴ left terminal on a 1px-wide cell"
+        );
+        assert!(
+            col_lit(&box_g(0x2578, 1, 8), 1, 8, 0),
+            "╸ heavy left terminal on a 1px-wide cell"
+        );
+        assert!(
+            row_lit(&box_g(0x2575, 8, 1), 8, 1, 0),
+            "╵ up terminal on a 1px-tall cell"
+        );
+        assert!(
+            row_lit(&box_g(0x2579, 8, 1), 8, 1, 0),
+            "╹ heavy up terminal on a 1px-tall cell"
+        );
+        // The mirrors were already fine, but pin them so the two stay symmetric.
+        assert!(col_lit(&box_g(0x2576, 1, 8), 1, 8, 0), "╶ right terminal");
+        assert!(row_lit(&box_g(0x2577, 8, 1), 8, 1, 0), "╷ down terminal");
+    }
+
+    #[test]
+    fn a_mixed_weight_junction_is_thicker_on_its_heavy_arm() {
+        // The join test only checks an edge is lit (any weight), so it cannot catch a light↔heavy
+        // swap on a junction. These assert the heavy arm is visibly thicker than its light opposite,
+        // so a swapped weight in BOX_ARMS reddens rather than shipping a plausible-forever wrong glyph.
+        let (w, h) = (16u32, 16u32);
+        let cols_at_row = |g: &[u8], y: u32| {
+            (0..w)
+                .filter(|&x| g[((y * w + x) * 4 + 3) as usize] > 0)
+                .count()
+        };
+        let rows_at_col = |g: &[u8], x: u32| {
+            (0..h)
+                .filter(|&y| g[((y * w + x) * 4 + 3) as usize] > 0)
+                .count()
+        };
+
+        // `╁` 2541 = down HEAVY, up light: the vertical bar is thicker below the centre than above.
+        let g = box_g(0x2541, w, h);
+        assert!(
+            cols_at_row(&g, h - 3) > cols_at_row(&g, 2),
+            "╁ heavier below"
+        );
+        // `╿` 257F = up HEAVY, down light: thicker above.
+        let g = box_g(0x257F, w, h);
+        assert!(
+            cols_at_row(&g, 2) > cols_at_row(&g, h - 3),
+            "╿ heavier above"
+        );
+        // `┭` 252D = left HEAVY, right light: the horizontal bar is thicker left of centre than right.
+        let g = box_g(0x252D, w, h);
+        assert!(
+            rows_at_col(&g, 2) > rows_at_col(&g, w - 3),
+            "┭ heavier on the left"
+        );
+    }
+
+    #[test]
+    fn tiny_cells_draw_box_glyphs_without_panicking() {
+        // Whatever a spacing policy produces, a box glyph must survive a 1x1 / 2x2 cell.
+        for (w, h) in [(1u32, 1u32), (2, 2), (1, 8), (8, 1)] {
+            for cp in [0x2500u32, 0x2502, 0x253C, 0x254B, 0x257F] {
+                let g = block_glyph(cp, w, h).expect("owned");
+                assert_eq!(g.len(), (w * h * 4) as usize);
+            }
+        }
     }
 }
