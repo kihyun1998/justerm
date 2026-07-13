@@ -21,7 +21,8 @@ use crate::bitmap::{PADDING, is_color_bitmap, split_wide_bitmap};
 use crate::color::gl_rgb;
 use crate::context_loss::{ContextState, DEFAULT_RESTORE_TIMEOUT_MS, FrameAction};
 use crate::cursor::{
-    Cursor, THICKNESS, cursor_rects, cursor_span_at, cursor_thickness, shape_from_id, shape_id,
+    Cursor, DEFAULT_CURSOR_CONTRAST, THICKNESS, cursor_rects, cursor_span_at, cursor_thickness,
+    guarded_cursor_colors, shape_from_id, shape_id,
 };
 use crate::dpr::{cells_that_fit, css_px, dpr_changed, grid_px};
 use crate::emoji::is_emoji_text;
@@ -379,6 +380,10 @@ pub struct JustermRenderer {
     last_cols: u32,
     /// Background cell opacity (0 = transparent, 1 = opaque), consumer-injected policy (#298).
     bg_alpha: f32,
+    /// The minimum WCAG contrast a cursor must have with the cell it sits on, or it inverts to the
+    /// default fg/bg to stay visible (#368). Consumer-injected policy (the mechanism is the
+    /// renderer's — only it has the resolved cell RGB); `1.0` disables the guard.
+    cursor_contrast: f32,
     /// The glyph box in device px — the rasteriser's ink-scan of `█`. Equal to `cell_size` only
     /// while both spacing options are at their defaults (#338).
     char_size: (u32, u32),
@@ -594,7 +599,8 @@ impl JustermRenderer {
             cursor_span: 1,
             last_flags: Vec::new(),
             last_cols: 0,
-            bg_alpha: 1.0, // opaque by default (#298)
+            bg_alpha: 1.0,                            // opaque by default (#298)
+            cursor_contrast: DEFAULT_CURSOR_CONTRAST, // guard on by default (#368)
             palette,
             rasterizer,
             cache: GlyphCache::new(),
@@ -1617,6 +1623,17 @@ impl JustermRenderer {
         self.bg_alpha = alpha.clamp(0.0, 1.0);
     }
 
+    /// Set the minimum WCAG contrast a cursor must have with the cell it sits on (#368). Below it,
+    /// the cursor inverts to the terminal's default fg/bg so it never vanishes into a same-coloured
+    /// cell. The mechanism is the renderer's — only it has the *resolved* per-cell RGB (ADR-0017) —
+    /// but the number is the consumer's policy. Default `1.5` (alacritty's `MIN_CURSOR_CONTRAST`);
+    /// pass `1.0`, the floor of the contrast range, to disable the guard (xterm's behaviour). Clamped
+    /// to `[1, 21]`; takes effect on the next [`render`](Self::render).
+    #[wasm_bindgen(js_name = setCursorContrast)]
+    pub fn set_cursor_contrast(&mut self, threshold: f32) {
+        self.cursor_contrast = threshold.clamp(1.0, 21.0);
+    }
+
     /// Place the cursor (#270). `shape`: `0` block, `1` underline, `2` bar, `3` hollow block.
     /// `color` is the cursor's own `0xRRGGBB`; `text_color` the glyph colour a block paints under
     /// itself (xterm's `cursorAccent`, alacritty's `text_color`). Colours are resolved by the
@@ -1748,10 +1765,43 @@ impl JustermRenderer {
             };
             self.gl
                 .uniform_4_f32(Some(&self.u_cursor), cx, cy, span, shape);
-            let [cr, cg, cb] = gl_rgb(self.cursor.map_or(0, |c| c.color));
+            // The visibility guard (#368): look up the cursor cell's RESOLVED bg in the packed
+            // instances (row-major, `bg` at float offset 2 of each `INSTANCE_FLOATS` cell) and invert
+            // the cursor to the default fg/bg if its contrast is below the injected threshold. Only the
+            // renderer has this resolved RGB, which is why the mechanism lives here (ADR-0017). If the
+            // cursor sits off the current grid (no packed cell), honour the consumer's colours as-is.
+            //
+            // The index is bounded only by `get()`, not by `col < last_cols`: a cursor with
+            // `col >= last_cols` but a small row would read a DIFFERENT row's cell here. That is
+            // harmless because the shader's `covers()` paints the cursor only where a real cell has
+            // `col ∈ [cursor.col, cursor.col + span)`, i.e. only when `col < cols` — so a mis-read
+            // guarded colour is never sampled by any fragment. Valid as long as `covers()` keeps that
+            // gate.
+            let (color, text_color) = match self.cursor {
+                Some(c) => {
+                    let cell_bg = (c.row as usize)
+                        .checked_mul(self.last_cols as usize)
+                        .and_then(|i| i.checked_add(c.col as usize))
+                        .and_then(|i| i.checked_mul(INSTANCE_FLOATS))
+                        .and_then(|base| self.instances.get(base + 2..base + 5));
+                    match cell_bg {
+                        Some(bg) => guarded_cursor_colors(
+                            c.color,
+                            c.text_color,
+                            [bg[0], bg[1], bg[2]],
+                            self.palette.default_fg,
+                            self.palette.default_bg,
+                            self.cursor_contrast,
+                        ),
+                        None => (c.color, c.text_color),
+                    }
+                }
+                None => (0, 0),
+            };
+            let [cr, cg, cb] = gl_rgb(color);
             self.gl
                 .uniform_3_f32(Some(&self.u_cursor_color), cr, cg, cb);
-            let [tr, tg, tb] = gl_rgb(self.cursor.map_or(0, |c| c.text_color));
+            let [tr, tg, tb] = gl_rgb(text_color);
             self.gl
                 .uniform_3_f32(Some(&self.u_cursor_text_color), tr, tg, tb);
             self.gl.uniform_1_f32(
