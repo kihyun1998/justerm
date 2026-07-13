@@ -1,6 +1,6 @@
 <!doctype html>
 <meta charset="utf-8" />
-<title>justerm-renderer proof — letterSpacing / lineHeight / builtin blocks (#338, #359)</title>
+<title>justerm-renderer proof — letterSpacing / lineHeight / builtin blocks + box drawing (#338, #359, #365)</title>
 <style>
   body { margin: 0; background: #000; }
   #c { display: block; image-rendering: pixelated; }
@@ -99,6 +99,48 @@
   };
   const sextantBase = sextantRun();
 
+  /** A 2x2 box frame `┌┐ / └┘`: four corners whose arms must meet across BOTH cell seams, so the
+   *  border is a single connected loop enclosing an empty interior — at any spacing (#365). */
+  const boxFrame = () => {
+    r.resize(2, 2);
+    r.apply_frame(2, 2, new Uint32Array(4), new Uint32Array(4),
+      new Uint32Array([0x250c, 0x2510, 0x2514, 0x2518]), new Uint16Array(4), true);
+    r.render();
+    const [w, h] = [gl.drawingBufferWidth, gl.drawingBufferHeight];
+    const { buf } = readRect(gl, { x: 0, y: 0, w, h });
+    const lit = (x, y) => buf[(y * w + x) * 4 + 1] > 150;
+    // Count 4-connected lit components: a gap at any seam splits the loop into more than one.
+    const seen = new Uint8Array(w * h);
+    let comps = 0, litCount = 0;
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) if (lit(x, y)) litCount++;
+    for (let sy = 0; sy < h; sy++) for (let sx = 0; sx < w; sx++) {
+      if (!lit(sx, sy) || seen[sy * w + sx]) continue;
+      comps++;
+      const stack = [[sx, sy]];
+      while (stack.length) {
+        const [x, y] = stack.pop();
+        const i = y * w + x;
+        if (seen[i] || !lit(x, y)) continue;
+        seen[i] = 1;
+        if (x > 0) stack.push([x - 1, y]);
+        if (x + 1 < w) stack.push([x + 1, y]);
+        if (y > 0) stack.push([x, y - 1]);
+        if (y + 1 < h) stack.push([x, y + 1]);
+      }
+    }
+    // The frame encloses an empty interior — its geometric centre is unlit, so it is a frame, not a
+    // solid fill that would pass the connectivity check trivially.
+    const hollow = !lit(Math.floor(w / 2), Math.floor(h / 2));
+    return { w, h, comps, litCount, hollow };
+  };
+  const frameBase = boxFrame();
+  // AC: the frame stays joined at letterSpacing = 4 CSS px AND lineHeight = 1.6 together.
+  r.setLetterSpacing(4);
+  r.setLineHeight(1.6);
+  const frameSpaced = boxFrame();
+  r.setLetterSpacing(0);
+  r.setLineHeight(1);
+
   const blockBase = inkRun(BLOCK);
   const letterBase = inkRun(LETTER);
   const wideBase = wideRun();
@@ -175,7 +217,7 @@
     dpr, charW, charH, dx, dy, cellH, charH2, afterDpr,
     blockBase, blockSpaced, blockTall, letterBase, letterSpaced, letterTall,
     wideBase, wideSpaced, afterRestore, gridBefore, gridWhileLost, gridAfter,
-    maxTex, huge, letterCoverage, sextantBase, sextantSpaced,
+    maxTex, huge, letterCoverage, sextantBase, sextantSpaced, frameBase, frameSpaced,
     checks: {
       // The adopted cell fits the atlas, and the consumer can read back what it got (#339's contract).
       anUnholdableCellIsShrunkToWhatTheAtlasCanHold:
@@ -247,6 +289,17 @@
         gridWhileLost[0] === gridBefore[0] && gridWhileLost[1] === gridBefore[1] &&
         gridAfter[0] === gridBefore[0] && gridAfter[1] === gridBefore[1],
       contextSurvived: !gl.isContextLost(),
+
+      // #365: box drawing is drawn to the CELL, like the blocks, so a frame's corners meet across the
+      // cell seams and the border is ONE connected loop around an empty interior...
+      aBoxFrameIsOneJoinedLoopAroundAnEmptyInterior:
+        frameBase.comps === 1 && frameBase.litCount > 0 && frameBase.hollow,
+      // ...and it STAYS one loop when letterSpacing and lineHeight widen and heighten every cell —
+      // the join the font path loses (a `─` stops reaching its neighbour) is the whole point of the
+      // builtin. The cell must actually have grown, or the check proves nothing.
+      aBoxFrameStaysJoinedWhenTheCellsGrow:
+        frameSpaced.comps === 1 && frameSpaced.hollow &&
+        frameSpaced.w > frameBase.w && frameSpaced.h > frameBase.h,
     },
   };
   window.__proof.ok = Object.values(window.__proof.checks).every(Boolean);
