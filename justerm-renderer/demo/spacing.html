@@ -141,10 +141,18 @@
   r.setLetterSpacing(0);
   r.setLineHeight(1);
 
-  /** Count 8-connected lit components of a rendered grid (green > 150). A diagonal line touches its
-   *  neighbour at a pixel CORNER, so it is 8- not 4-connected — the metric a `╱` staircase needs. */
+  /** Count 8-connected lit components of a rendered grid. A diagonal line touches its neighbour at a
+   *  pixel CORNER, so it is 8- not 4-connected — the metric a `╱` staircase needs.
+   *
+   *  Ink threshold is 40, NOT the 150 the solid-line checks use: a `╱` is a deliberately ANTI-ALIASED
+   *  band (`fill_polygon`, see `a_diagonal_is_anti_aliased`), so its continuity is the connectivity of
+   *  INKED pixels, not solid ones. At `stroke = 1` (a dpr-1 cell) the band has no 255 core, and the two
+   *  cells' seam pixels — ~206–221 in the raw atlas — come back dimmed through SwiftShader's texture
+   *  sample below 150, splitting the staircase on CI though the line is unbroken (#384). 150 was a
+   *  solid-line threshold borrowed by accident; it never described this AA line. 40 is well above black
+   *  noise and well below any inked pixel, so a GENUINE gap (no ink) still fails. */
   const litComponents = (buf, w, h) => {
-    const lit = (x, y) => buf[(y * w + x) * 4 + 1] > 150;
+    const lit = (x, y) => buf[(y * w + x) * 4 + 1] > 40;
     const seen = new Uint8Array(w * h);
     let comps = 0, litCount = 0;
     for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) if (lit(x, y)) litCount++;
