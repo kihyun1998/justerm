@@ -33,7 +33,7 @@
 <canvas id="c" width="64" height="64"></canvas>
 <script type="module">
   import init, { JustermRenderer, cursorRects } from "../pkg/justerm_renderer.js";
-  import { readRect } from "./proof.js";
+  import { readRect, spacingForThickBar } from "./proof.js";
   await init();
 
   const BLOCK = 0, UNDERLINE = 1, BAR = 2, HOLLOW = 3;
@@ -258,8 +258,16 @@
   //
   // `cursor_rects` clamps a bar's width by its own CELL; an earlier draft also clamped it by the
   // cell's HEIGHT, which the shader never did. At the default spacing `thickness` is 1-2 px and no
-  // clamp binds, so the four-dpr sweep above cannot see the difference. Force `thickness > ch`.
-  r.setLetterSpacing(120);
+  // clamp binds, so the four-dpr sweep above cannot see the difference. We need `thickness > ch`.
+  //
+  // The width to force that is measured, not hardcoded: a fixed `letterSpacing(120)` left the
+  // thickness only ~2 device px above the cell height, and a font that ink-scanned `█` tall at a
+  // fractional dpr flipped it — red at dpr 1.1/1.5 on CI, green at 1 and 2 and everywhere local
+  // (#374). `spacingForThickBar` sizes the cell from the one just measured so the thickness lands at
+  // ~2x the height on any font, restoring the coverage instead of gambling on the ink-scan.
+  r.setLetterSpacing(0);
+  r.resize(COLS, ROWS);
+  r.setLetterSpacing(spacingForThickBar(r.cell_width(), r.cell_height(), devicePixelRatio));
   const wideCellW = r.cell_width(), wideCellH = r.cell_height();
   const wideT = Math.max(1, Math.round(0.15 * wideCellW));
   r.setCursor(1, 0, BAR, CURSOR, TEXT);

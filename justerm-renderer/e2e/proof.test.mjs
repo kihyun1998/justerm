@@ -5,7 +5,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { alphaStats, cellRect, countLit, gridFit, inkCoverage, isUniform, litAt, tonalSplit } from "../demo/proof.js";
+import { alphaStats, cellRect, countLit, gridFit, inkCoverage, isUniform, litAt, spacingForThickBar, tonalSplit } from "../demo/proof.js";
 
 /**
  * Build an RGBA rect from a picture: `#` is a lit pixel (red 255), `.` is background (red 0).
@@ -111,6 +111,56 @@ test("what counts as ink is the caller's, not the helper's", () => {
   const differsFromGray = (r, g, b) =>
     Math.abs(r - 128) > 12 || Math.abs(g - 128) > 12 || Math.abs(b - 128) > 12;
   assert.equal(inkCoverage(blackOnGray, differsFromGray), 1); // the page's predicate sees it all
+});
+
+// --- #374: the bar-clamp guard's spacing must be sized from the cell, not hardcoded ---
+
+// Model the renderer exactly as `cursor.html` reads it back: the device cell width is
+// `baseCw + round(letterSpacing * dpr)` (`metrics.rs:75`), and a bar's thickness is
+// `round(0.15 * cellWidth)` (alacritty `display/cursor.rs:25`, `cursor.rs` THICKNESS).
+const barThickness = (baseCw, ls, dpr) => Math.round(0.15 * (baseCw + Math.round(ls * dpr)));
+
+test("spacingForThickBar clears the cell height where a hardcoded constant flips (#374)", () => {
+  // The guard `theThicknessClampIsObservableOnlyOnAVeryWideCell` needs `thickness > cellHeight` so
+  // the width-clamp-by-cell (`thickness.min(cell.0)`, `cursor.rs:133`) is observable — the height
+  // must NOT clamp the bar. `cursor.html` hardcoded `letterSpacing(120)`, whose thickness sits only
+  // ~2 device px above a ~16-device-px cell height; on CI a font whose `█` ink-scanned tall at
+  // fractional dpr pushed the height past it, and `renderer-proofs` went red at dpr 1.1/1.5.
+  //
+  // A tall-ink cell at browser zoom 1.1 — the shape CI produced: char box ~ (10, 22).
+  const [cw, ch, dpr] = [10, 22, 1.1];
+
+  // The OLD approach: the fixed 120 CSS-px constant does NOT clear this height. This is the flip.
+  assert.ok(barThickness(cw, 120, dpr) <= ch, "a fixed constant fails to clear a tall-ink cell");
+
+  // The FIX: spacing sized from the measured cell lands the thickness above the height, with margin.
+  const ls = spacingForThickBar(cw, ch, dpr);
+  assert.ok(barThickness(cw, ls, dpr) > ch, "derived spacing clears the height");
+  assert.ok(barThickness(cw, ls, dpr) >= 2 * ch, "…by about the 2x target, so no ink-scan wobble flips it");
+
+  // …and stays BELOW the cell width, or the width clamp would mask the very thing being proven.
+  const cellW = cw + Math.round(ls * dpr);
+  assert.ok(barThickness(cw, ls, dpr) < cellW, "thickness stays within the cell width");
+});
+
+test("spacingForThickBar holds across the whole dpr sweep, on any plausible ink box (#374)", () => {
+  // The four ratios `proofs.spec.mjs` sweeps, with device ink boxes measured in Chromium plus a
+  // deliberately tall variant per ratio — the fix must clear the height for ALL of them, which the
+  // hardcoded constant did not.
+  const cells = [
+    [8, 16, 1], [10, 20, 1],
+    [9, 18, 1.1], [10, 22, 1.1],
+    [12, 24, 1.5], [14, 30, 1.5],
+    [16, 33, 2], [20, 40, 2],
+  ];
+  for (const [cw, ch, dpr] of cells) {
+    const ls = spacingForThickBar(cw, ch, dpr);
+    const t = barThickness(cw, ls, dpr);
+    assert.ok(t > ch, `dpr ${dpr}, ch ${ch}: thickness ${t} must exceed height`);
+    const cellW = cw + Math.round(ls * dpr);
+    assert.ok(t < cellW, `dpr ${dpr}: thickness ${t} must stay under width ${cellW}`);
+    assert.ok(cellW <= 4096, `dpr ${dpr}: cell width ${cellW} must stay under MAX_CELL_PX`);
+  }
 });
 
 // A `gl` stand-in: `gridFit` reads only these four numbers plus `gl.canvas`.

@@ -134,6 +134,31 @@ export function gridFit(gl, r, cols, rows) {
   };
 }
 
+/**
+ * The CSS `letterSpacing` that makes a bar cursor's thickness clear the cell HEIGHT by `factor`x.
+ *
+ * A bar's thickness is `round(0.15 * cellWidth)` device px (alacritty `display/cursor.rs:25`,
+ * `cursor.rs` `THICKNESS`), and its width is clamped by the cell it sits in — `thickness.min(cell.0)`
+ * (`cursor.rs:133`) — never by the cell height. To PROVE that clamp, `cursor.html` needs a cell wide
+ * enough that the thickness exceeds the height (else a height-clamp bug is invisible) yet stays under
+ * the width (else the width clamp masks it).
+ *
+ * It used a hardcoded `letterSpacing(120)`, whose thickness sat only ~2 device px above a
+ * ~16-device-px cell height. `cellHeight` is an integer ink-scan of `█` at `FONT_SIZE * dpr`, so a
+ * font that scans it tall at a fractional dpr erased that margin — `renderer-proofs` went red at dpr
+ * 1.1/1.5 on CI while passing at 1 and 2 and everywhere locally (#374). So size the spacing from the
+ * MEASURED cell instead: land the thickness at `factor x baseCh`, margin ~= baseCh, not ~2 px.
+ *
+ * `baseCw`/`baseCh` are the device cell at `letterSpacing 0`; `dpr` maps CSS spacing to device px the
+ * way the renderer does (`round(css * dpr)`, `metrics.rs:75`). Returns CSS px for `setLetterSpacing`.
+ */
+export function spacingForThickBar(baseCw, baseCh, dpr, factor = 2, thicknessFrac = 0.15) {
+  // round(frac * cellW) >= factor * baseCh  is implied by  cellW >= (factor * baseCh) / frac.
+  const targetCellW = Math.ceil((factor * baseCh) / thicknessFrac);
+  // cellW = baseCw + round(css * dpr); ceil so the rounded device width never lands short.
+  return Math.ceil((targetCellW - baseCw) / dpr);
+}
+
 // --- Composited pixels (#352) ---------------------------------------------------------------
 //
 // `gl.readPixels` and a screenshot are DIFFERENT MEASUREMENTS. `readPixels` reads the drawing
