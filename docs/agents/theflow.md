@@ -270,7 +270,7 @@ release.md):
 - **Concept ≠ mechanism** — #150 (accessible-view: VSCode concept, xterm.js extraction mechanism).
 - **Two-lens, never collapse** — #113/#144/#207 (alt-screen cross-buffer via `abs_floor()`); #158 ("fix is small → one lens" caught).
 - **Real round-trip / visual side effects** — #166 (reveal-focus headless miss), #172 (live MCP path), #223 (browser verify skipped).
-- **Probe a runtime fact / readPixels≠screenshot** — #328/#331 (dpr≠1 coord bug green on dpr-1), #352, #337 (tautology).
+- **Probe a runtime fact / readPixels≠screenshot** — #328/#331 (dpr≠1 coord bug green on dpr-1), #352, #337 (tautology); #369 (a throwaway `rustc` probe pinned that an unclamped `+inf` fraction saturates `cursor_thickness`'s `u32` cast to `u32::MAX` — correcting a PR rationale that had credited `frac.max(0.0)`; the setter's `[0,1]` clamp is the load-bearing defence, `frac.max(0.0)` only neutralises `NaN`).
 - **Test-trust gate** — #355 (both RED = you broke the proof; re-run baseline GREEN, remove guards one at a time).
 - **Defer / negative results = the issue is the durable record** — #317 (deferral left in PR body only, caught); seed measured numbers + rejected alternatives + cleared-concern validity conditions up front.
 - **Out-of-workspace / formatter / typecheck blind spots** — #333 (renderer unformatted + proofs CI), #341 (web CI + e2e tsconfig), #343/#344 (typecheck vs build).
