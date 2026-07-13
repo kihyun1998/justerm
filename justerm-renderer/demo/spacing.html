@@ -185,6 +185,34 @@
   r.setLetterSpacing(0);
   r.setLineHeight(1);
 
+  /** `═` (double horizontal): the busiest device column must cross TWO lit rails, proving the double
+   *  line survives the atlas + shader round-trip as two runs, not one thick bar (#365 tail). */
+  const doubleRun = () => {
+    r.resize(1, 1);
+    r.apply_frame(1, 1, new Uint32Array(1), new Uint32Array(1),
+      new Uint32Array([0x2550]), new Uint16Array(1), true);
+    r.render();
+    const [w, h] = [gl.drawingBufferWidth, gl.drawingBufferHeight];
+    const { buf } = readRect(gl, { x: 0, y: 0, w, h });
+    let maxRuns = 0;
+    for (let x = 0; x < w; x++) {
+      let runs = 0, prev = false;
+      for (let y = 0; y < h; y++) {
+        const lit = buf[(y * w + x) * 4 + 1] > 150;
+        if (lit && !prev) runs++;
+        prev = lit;
+      }
+      maxRuns = Math.max(maxRuns, runs);
+    }
+    return { w, h, rails: maxRuns };
+  };
+  const doubleBase = doubleRun();
+  r.setLetterSpacing(4);
+  r.setLineHeight(1.6);
+  const doubleSpaced = doubleRun();
+  r.setLetterSpacing(0);
+  r.setLineHeight(1);
+
   const blockBase = inkRun(BLOCK);
   const letterBase = inkRun(LETTER);
   const wideBase = wideRun();
@@ -262,6 +290,7 @@
     blockBase, blockSpaced, blockTall, letterBase, letterSpaced, letterTall,
     wideBase, wideSpaced, afterRestore, gridBefore, gridWhileLost, gridAfter,
     maxTex, huge, letterCoverage, sextantBase, sextantSpaced, frameBase, frameSpaced, diagBase, diagSpaced,
+    doubleBase, doubleSpaced,
     checks: {
       // The adopted cell fits the atlas, and the consumer can read back what it got (#339's contract).
       anUnholdableCellIsShrunkToWhatTheAtlasCanHold:
@@ -352,6 +381,11 @@
       // ...and stays continuous when the cells grow — the corner join survives the wider seam.
       aDiagonalStaysJoinedWhenTheCellsGrow:
         diagSpaced.comps === 1 && diagSpaced.w > diagBase.w && diagSpaced.h > diagBase.h,
+
+      // #365 tail: a double line renders as TWO rails through the real atlas + shader, at the default
+      // and when lineHeight opens the cell (a single thick bar would read as one run).
+      aDoubleLineIsTwoRails: doubleBase.rails === 2,
+      aDoubleLineStaysTwoRailsWhenTheCellGrows: doubleSpaced.rails === 2 && doubleSpaced.h > doubleBase.h,
     },
   };
   window.__proof.ok = Object.values(window.__proof.checks).every(Boolean);
