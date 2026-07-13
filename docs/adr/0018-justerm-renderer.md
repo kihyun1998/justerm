@@ -246,6 +246,22 @@ policy under ADR-0017, exactly as `blink_on` already is for text blink (#282). T
 renderer *must* own is the one needing the cell's flags: a wide char's cursor spans both halves
 (alacritty `display/content.rs:139`, xterm `cell.getWidth()`).
 
+**A visible-cursor guard is the other renderer-only mechanism (#368).** alacritty inverts a cursor to
+`primary.foreground`/`background` when its WCAG contrast against the cell falls below
+`MIN_CURSOR_CONTRAST = 1.5` (`display/content.rs:22,124-135`); xterm does not guard the cursor at all
+(`minimumContrastRatio` default `1`). The *decision* needs the cell's **resolved** fg/bg (post-palette,
+post-inverse), which a frame-mode consumer does not have — so the contrast mechanism is the renderer's
+(it reads the packed instance's bg), and the *threshold* is injected (`setCursorContrast`, default `1.5`,
+`1.0` = off) — mechanism renderer, number consumer, the ADR-0017 split. This completes the "opacity is
+not contrast" tail of #270: the shader already forces the cursor cell opaque, but a block whose colour
+equals the cell it lands on is still invisible until the contrast guard inverts it. justerm diverges from
+alacritty in *scope*: alacritty only guards a cell-reference cursor and tests `cell.fg` vs `cell.bg`,
+whereas `setCursor` always takes an explicit RGB, so the guard tests the cursor colour itself against the
+resolved cell bg and applies to explicit colours too — broader by necessity, since justerm has no
+"use the cell's colours" cursor mode. The WCAG `contrast` is pinned against alacritty's own `vte` test
+table; `1.5` is recorded as alacritty's distinguishability bar, **not** the WCAG AA `4.5` for readable
+text.
+
 The GLSL `stroke_coverage()` mirrors the pure `cursor::cursor_rects`, so `demo/cursor.html` holds the
 two to set-equality via the exported `cursorRects()` — two formulations of one spec, in two languages.
 

@@ -91,6 +91,37 @@ pub struct Cursor {
     pub text_color: u32,
 }
 
+/// The default cursor-contrast threshold — alacritty's `MIN_CURSOR_CONTRAST` (`content.rs:22`). A
+/// cursor whose colour has WCAG contrast below this against the cell it sits on is inverted to the
+/// terminal's default fg/bg so it stays visible (#368). Injected via `set_cursor_contrast`; a
+/// consumer sets `1.0` — the floor of the contrast range — to turn the guard off (xterm's default).
+pub const DEFAULT_CURSOR_CONTRAST: f32 = 1.5;
+
+/// The colours a cursor is actually painted with, after the visibility guard (#368). If `color`
+/// contrasts with the cell's **resolved** background (`cell_bg`, normalised `0.0..=1.0`) below
+/// `threshold`, the cursor is invisible where it landed, so it inverts to the terminal's default
+/// fg/bg (`default_fg`/`default_bg`) — exactly alacritty's fallback to `primary.foreground/background`.
+/// Otherwise the consumer's `(color, text_color)` are honoured verbatim.
+///
+/// The decision needs the cell's *resolved* RGB, which only the renderer has (ADR-0017), so the
+/// mechanism is here and the number is injected. justerm always takes an explicit cursor colour (it
+/// has no cell-reference cursor), so unlike alacritty — which only guards a cell-reference cursor and
+/// tests `cell.fg` vs `cell.bg` — this checks the cursor colour itself against the cell background.
+pub fn guarded_cursor_colors(
+    color: u32,
+    text_color: u32,
+    cell_bg: [f32; 3],
+    default_fg: u32,
+    default_bg: u32,
+    threshold: f32,
+) -> (u32, u32) {
+    if crate::color::contrast(crate::color::gl_rgb(color), cell_bg) < threshold {
+        (default_fg, default_bg)
+    } else {
+        (color, text_color)
+    }
+}
+
 /// Does the cell `(col, row)` lie under the cursor's `span`-wide box?
 ///
 /// The fragment shader mirrors this test, so it is pinned here rather than only in GLSL. Beware
@@ -149,8 +180,79 @@ pub fn cursor_rects(shape: CursorShape, cell: (u32, u32), span: u32, thickness: 
 mod tests {
     use super::*;
     use crate::attrs::{BOLD, WIDE_CHAR, WIDE_CHAR_SPACER};
+    use crate::color::gl_rgb;
 
     const CELL: (u32, u32) = (10, 20);
+
+    const DEF_FG: u32 = 0xFF_FF_FF;
+    const DEF_BG: u32 = 0x1E_1E_2E;
+
+    #[test]
+    fn a_cursor_that_matches_its_cell_inverts_to_stay_visible() {
+        // A block whose colour equals the cell it sits on has contrast 1.0 (< 1.5) and would be
+        // invisible — the guard inverts it to the default fg/bg, alacritty's fallback.
+        let cell_bg = gl_rgb(0x1E_1E_2E);
+        let (color, text) = guarded_cursor_colors(
+            0x1E_1E_2E, // cursor colour == cell bg
+            0xAB_CD_EF,
+            cell_bg,
+            DEF_FG,
+            DEF_BG,
+            DEFAULT_CURSOR_CONTRAST,
+        );
+        assert_eq!(
+            (color, text),
+            (DEF_FG, DEF_BG),
+            "invisible cursor rescued to defaults"
+        );
+    }
+
+    #[test]
+    fn a_high_contrast_cursor_is_left_exactly_as_the_consumer_set_it() {
+        // White on a near-black cell is far above 1.5, so the consumer's colours pass through
+        // untouched — the guard must not override a perfectly visible cursor.
+        let cell_bg = gl_rgb(0x1E_1E_2E);
+        let (color, text) = guarded_cursor_colors(
+            0xFF_FF_FF,
+            0x00_00_00,
+            cell_bg,
+            DEF_FG,
+            DEF_BG,
+            DEFAULT_CURSOR_CONTRAST,
+        );
+        assert_eq!(
+            (color, text),
+            (0xFF_FF_FF, 0x00_00_00),
+            "visible cursor untouched"
+        );
+    }
+
+    #[test]
+    fn a_threshold_of_one_disables_the_guard_entirely() {
+        // Contrast is always >= 1.0, so `< 1.0` is never true: threshold 1.0 is the off switch
+        // (xterm's `minimumContrastRatio` default). Even a cursor equal to its cell passes through.
+        let cell_bg = gl_rgb(0x40_40_40);
+        let (color, text) =
+            guarded_cursor_colors(0x40_40_40, 0x80_80_80, cell_bg, DEF_FG, DEF_BG, 1.0);
+        assert_eq!(
+            (color, text),
+            (0x40_40_40, 0x80_80_80),
+            "guard off at threshold 1.0"
+        );
+    }
+
+    #[test]
+    fn the_guard_fires_exactly_at_the_threshold_boundary() {
+        // A pair whose contrast straddles 1.5 must invert below and pass at/above — pins that the
+        // comparison is `< threshold`, not `<=`, and uses the real contrast value.
+        let cell_bg = gl_rgb(0x00_00_00);
+        // grey 0x282828 on black: contrast ~1.43 (< 1.5) → inverts.
+        let below = guarded_cursor_colors(0x28_28_28, 0x11, cell_bg, DEF_FG, DEF_BG, 1.5);
+        assert_eq!(below.0, DEF_FG, "just below threshold inverts");
+        // grey 0x303030 on black: contrast ~1.59 (>= 1.5) → passes.
+        let above = guarded_cursor_colors(0x30_30_30, 0x11, cell_bg, DEF_FG, DEF_BG, 1.5);
+        assert_eq!(above.0, 0x30_30_30, "just above threshold passes");
+    }
 
     /// alacritty `display/cursor.rs:25` — `(thickness * width).round().max(1.)`, with
     /// `thickness` defaulting to `0.15` of the cell width (`config/cursor.rs:31`). The cell

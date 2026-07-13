@@ -1,6 +1,6 @@
 <!doctype html>
 <meta charset="utf-8" />
-<title>justerm-renderer proof — cursor primitive (#270)</title>
+<title>justerm-renderer proof — cursor primitive + contrast guard (#270, #368)</title>
 <style>
   body { margin: 0; background: #000; }
   #c { display: block; image-rendering: pixelated; }
@@ -288,6 +288,65 @@
   checks.theThicknessClampIsObservableOnlyOnAVeryWideCell = wideT > wideCellH;
   checks.aBarOnAVeryWideCellMatchesTheRustRects = sameSet(wideLit, wideRects);
   r.setLetterSpacing(0);
+
+  // --- #368: the contrast guard rescues an invisible cursor ---
+  //
+  // A cursor whose colour is too close to the cell it sits on is invisible — opacity is not contrast.
+  // The renderer computes WCAG contrast on the cell's RESOLVED bg and inverts the cursor to the
+  // default fg/bg below the injected threshold (default 1.5). Only the renderer has that resolved RGB,
+  // which the pure `guarded_cursor_colors` host suite cannot exercise end-to-end: this pins the WIRING
+  // (the packed-instance bg lookup) through the real GL round-trip.
+  r.setLetterSpacing(0);
+  const RGB = (c) => ((2 << 24) | c) >>> 0;                    // tagged Rgb colour reference (tag 2)
+  const GREY = 0x808080;
+  const greyBg = new Uint32Array(COLS * ROWS).fill(RGB(GREY));
+  const px = (img, x, y) => { const i = ((img.h - 1 - y) * img.w + x) * 4; return [img.buf[i], img.buf[i + 1], img.buf[i + 2]]; };
+  const near = (v, t) => Math.abs(v - t) < 45;
+  const cellAll = (img, col, row, pred) => {
+    for (let y = 0; y < ch; y++) for (let x = 0; x < cw; x++) if (!pred(px(img, col * cw + x, row * ch + y))) return false;
+    return true;
+  };
+  const drawGrey = (col, row, shape, color, text) => {
+    r.setCursor(col, row, shape, color, text);
+    r.resize(COLS, ROWS);
+    r.apply_frame(COLS, ROWS, greyBg, new Uint32Array(COLS * ROWS), new Uint32Array(COLS * ROWS).fill(SPACE), new Uint16Array(COLS * ROWS), true);
+    r.render();
+    return grab();
+  };
+
+  // Guard ON (default 1.5): a grey block on a grey cell (contrast 1.0) inverts to the default fg —
+  // white — so the whole cell reads white, not grey. Without the guard it would vanish.
+  r.setCursorContrast(1.5);
+  const rescued = drawGrey(1, 0, BLOCK, GREY, GREY);
+  checks.anInvisibleCursorIsInvertedToStayVisible =
+    cellAll(rescued, 1, 0, ([r_, g_, b_]) => near(r_, 255) && near(g_, 255) && near(b_, 255));
+
+  // Guard OFF (threshold 1.0, the floor of the range): the SAME grey cursor now stays grey —
+  // invisible, blended into the cell. This is xterm's injected opt-out, and it proves the guard is
+  // what produced the rescue above (turn it off, the rescue disappears).
+  r.setCursorContrast(1.0);
+  const unguarded = drawGrey(1, 0, BLOCK, GREY, GREY);
+  checks.theContrastGuardIsOffAtThresholdOne =
+    cellAll(unguarded, 1, 0, ([r_, g_, b_]) => near(r_, GREY >> 16) && near(g_, (GREY >> 8) & 0xff) && near(b_, GREY & 0xff));
+
+  // A genuinely high-contrast cursor is left EXACTLY as the consumer set it. Cyan on grey has contrast
+  // ~3.1 (> 1.5) and cyan is neither the default fg (white) nor bg (black), so a cyan cell proves the
+  // guard passed it through rather than inverting. (Red — the page's usual cursor — would be the wrong
+  // probe: red on grey is only ~1.0 and WOULD invert.)
+  r.setCursorContrast(1.5);
+  const CYAN = 0x00ffff;
+  const visible = drawGrey(1, 0, BLOCK, CYAN, TEXT);
+  checks.aVisibleCursorIsLeftExactlyAsSet =
+    cellAll(visible, 1, 0, ([r_, g_, b_]) => near(r_, 0) && near(g_, 255) && near(b_, 255));
+
+  // An off-grid cursor exercises the guard's `None` fallback — the cursor cell has no packed bg, so the
+  // instance lookup returns nothing. It must not panic the wasm instance (a panic aborts and leaves
+  // `__done` unset → the whole page fails) and must draw nothing. This is the one wiring branch the
+  // pure host suite structurally cannot reach; a future refactor of the index math would regress here.
+  const offGrid = drawGrey(999, 999, BLOCK, 0xff0000, TEXT); // red so a stray draw would be visible on grey
+  let offGridStray = 0;
+  for (let y = 0; y < ROWS * ch; y++) for (let x = 0; x < COLS * cw; x++) if (isCursor(offGrid, x, y)) offGridStray++;
+  checks.theGuardSurvivesAnOffGridCursor = offGridStray === 0;
 
   window.__proof = {
     ok: Object.values(checks).every(Boolean), checks,
