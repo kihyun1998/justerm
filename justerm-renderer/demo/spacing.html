@@ -141,6 +141,50 @@
   r.setLetterSpacing(0);
   r.setLineHeight(1);
 
+  /** Count 8-connected lit components of a rendered grid (green > 150). A diagonal line touches its
+   *  neighbour at a pixel CORNER, so it is 8- not 4-connected — the metric a `╱` staircase needs. */
+  const litComponents = (buf, w, h) => {
+    const lit = (x, y) => buf[(y * w + x) * 4 + 1] > 150;
+    const seen = new Uint8Array(w * h);
+    let comps = 0, litCount = 0;
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) if (lit(x, y)) litCount++;
+    for (let sy = 0; sy < h; sy++) for (let sx = 0; sx < w; sx++) {
+      if (!lit(sx, sy) || seen[sy * w + sx]) continue;
+      comps++;
+      const stack = [[sx, sy]];
+      while (stack.length) {
+        const [x, y] = stack.pop();
+        const i = y * w + x;
+        if (seen[i] || !lit(x, y)) continue;
+        seen[i] = 1;
+        for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+          const nx = x + dx, ny = y + dy;
+          if ((dx || dy) && nx >= 0 && nx < w && ny >= 0 && ny < h) stack.push([nx, ny]);
+        }
+      }
+    }
+    return { comps, litCount };
+  };
+
+  /** `╱` in the lower-left and upper-right cells of a 2x2 grid: one continuous anti-diagonal that
+   *  meets at the grid centre. This is `fill_polygon` (#364) going through the GL path for the first
+   *  time — the diagonals are the tail of #365 that consumes it. */
+  const diagRun = () => {
+    r.resize(2, 2);
+    r.apply_frame(2, 2, new Uint32Array(4), new Uint32Array(4),
+      new Uint32Array([0x20, 0x2571, 0x2571, 0x20]), new Uint16Array(4), true);
+    r.render();
+    const [w, h] = [gl.drawingBufferWidth, gl.drawingBufferHeight];
+    const { buf } = readRect(gl, { x: 0, y: 0, w, h });
+    return { w, h, ...litComponents(buf, w, h) };
+  };
+  const diagBase = diagRun();
+  r.setLetterSpacing(4);
+  r.setLineHeight(1.6);
+  const diagSpaced = diagRun();
+  r.setLetterSpacing(0);
+  r.setLineHeight(1);
+
   const blockBase = inkRun(BLOCK);
   const letterBase = inkRun(LETTER);
   const wideBase = wideRun();
@@ -217,7 +261,7 @@
     dpr, charW, charH, dx, dy, cellH, charH2, afterDpr,
     blockBase, blockSpaced, blockTall, letterBase, letterSpaced, letterTall,
     wideBase, wideSpaced, afterRestore, gridBefore, gridWhileLost, gridAfter,
-    maxTex, huge, letterCoverage, sextantBase, sextantSpaced, frameBase, frameSpaced,
+    maxTex, huge, letterCoverage, sextantBase, sextantSpaced, frameBase, frameSpaced, diagBase, diagSpaced,
     checks: {
       // The adopted cell fits the atlas, and the consumer can read back what it got (#339's contract).
       anUnholdableCellIsShrunkToWhatTheAtlasCanHold:
@@ -300,6 +344,14 @@
       aBoxFrameStaysJoinedWhenTheCellsGrow:
         frameSpaced.comps === 1 && frameSpaced.hollow &&
         frameSpaced.w > frameBase.w && frameSpaced.h > frameBase.h,
+
+      // #365 tail: the diagonals ride fill_polygon (#364), so this is the first coverage-filled
+      // polygon to reach the GL path. Two `╱` cells form ONE continuous anti-diagonal meeting at the
+      // grid centre...
+      aDiagonalStaircaseIsOneContinuousLine: diagBase.comps === 1 && diagBase.litCount > 0,
+      // ...and stays continuous when the cells grow — the corner join survives the wider seam.
+      aDiagonalStaysJoinedWhenTheCellsGrow:
+        diagSpaced.comps === 1 && diagSpaced.w > diagBase.w && diagSpaced.h > diagBase.h,
     },
   };
   window.__proof.ok = Object.values(window.__proof.checks).every(Boolean);
