@@ -384,6 +384,11 @@ pub struct JustermRenderer {
     /// default fg/bg to stay visible (#368). Consumer-injected policy (the mechanism is the
     /// renderer's — only it has the resolved cell RGB); `1.0` disables the guard.
     cursor_contrast: f32,
+    /// The stroke thickness as a fraction of the cell width (#369), turned into device pixels by
+    /// `cursor_thickness`. Consumer-injected policy (ADR-0017) — the pixel mechanism is the
+    /// renderer's, the fraction is the consumer's. Default `0.15` (alacritty's `cursor.thickness`),
+    /// clamped to `[0, 1]`; a **block** ignores it (it recolours its cell, drawing no stroke).
+    cursor_thickness_frac: f32,
     /// The glyph box in device px — the rasteriser's ink-scan of `█`. Equal to `cell_size` only
     /// while both spacing options are at their defaults (#338).
     char_size: (u32, u32),
@@ -601,6 +606,7 @@ impl JustermRenderer {
             last_cols: 0,
             bg_alpha: 1.0,                            // opaque by default (#298)
             cursor_contrast: DEFAULT_CURSOR_CONTRAST, // guard on by default (#368)
+            cursor_thickness_frac: THICKNESS,         // alacritty's 0.15 by default (#369)
             palette,
             rasterizer,
             cache: GlyphCache::new(),
@@ -1634,6 +1640,23 @@ impl JustermRenderer {
         self.cursor_contrast = threshold.clamp(1.0, 21.0);
     }
 
+    /// Set the cursor stroke thickness as a fraction of the cell width (#369) — the width of a
+    /// bar, an underline, or a hollow block's outline. [`cursor_thickness`] turns it into device
+    /// pixels as `(frac * cell_w).round().max(1)`, so it tracks both dpr and font size — alacritty's
+    /// rule (`display/cursor.rs:25`), which #270 chose over xterm's `dpr * cursorWidth` (that gives a
+    /// 32px font the same hairline as a 12px one). This adds only the configurability the mechanism
+    /// already had. A **block** ignores it — a block recolours its cell and draws no stroke.
+    ///
+    /// Default `0.15` (alacritty's `cursor.thickness`); clamped to `[0, 1]` (alacritty's
+    /// `Percentage`). The mechanism's `.max(1)` floor still applies, so even `0` leaves a
+    /// one-pixel stroke rather than an invisible cursor. Takes effect on the next
+    /// [`render`](Self::render) — like a stroke's shape, it is a shader uniform, so changing it
+    /// costs no upload.
+    #[wasm_bindgen(js_name = setCursorThickness)]
+    pub fn set_cursor_thickness(&mut self, frac: f32) {
+        self.cursor_thickness_frac = frac.clamp(0.0, 1.0);
+    }
+
     /// Place the cursor (#270). `shape`: `0` block, `1` underline, `2` bar, `3` hollow block.
     /// `color` is the cursor's own `0xRRGGBB`; `text_color` the glyph colour a block paints under
     /// itself (xterm's `cursorAccent`, alacritty's `text_color`). Colours are resolved by the
@@ -1806,7 +1829,7 @@ impl JustermRenderer {
                 .uniform_3_f32(Some(&self.u_cursor_text_color), tr, tg, tb);
             self.gl.uniform_1_f32(
                 Some(&self.u_cursor_thickness),
-                cursor_thickness(THICKNESS, self.cell_size.0) as f32,
+                cursor_thickness(self.cursor_thickness_frac, self.cell_size.0) as f32,
             );
 
             self.gl

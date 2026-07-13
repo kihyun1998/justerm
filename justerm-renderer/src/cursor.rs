@@ -2,7 +2,9 @@
 
 use crate::attrs::is_wide_lead;
 
-/// The default stroke fraction — alacritty's `cursor.thickness` (`config/cursor.rs:31`).
+/// The default stroke fraction — alacritty's `cursor.thickness` (`config/cursor.rs:31`). The
+/// consumer may override it per-renderer via `setCursorThickness` (#369); this is the value a
+/// renderer starts with and the floor a proof compares the default stroke against.
 pub const THICKNESS: f32 = 0.15;
 
 /// Stroke thickness in device pixels: `(frac * cell_w).round().max(1)`, alacritty's rule
@@ -271,6 +273,23 @@ mod tests {
         assert_eq!(cursor_thickness(0.15, 3), 1); // 0.45 -> 0 -> floored to 1
         assert_eq!(cursor_thickness(0.15, 1), 1);
         assert_eq!(cursor_thickness(0.0, 100), 1); // a zero fraction is still visible
+    }
+
+    /// A consumer-injected fraction other than the default scales the stroke proportionally (#369).
+    /// These are the numbers the browser proof (`demo/cursor.html`) holds `setCursorThickness`
+    /// against, pinned here host-side so the two cannot silently disagree. The setter clamps the
+    /// fraction to `[0, 1]` (alacritty's `Percentage`), so `1.0` is the widest a stroke can be — a
+    /// full-cell-width stroke, which `cursor_rects`/the shader then cap at the box they outline.
+    #[test]
+    fn a_non_default_fraction_scales_the_stroke() {
+        assert_eq!(cursor_thickness(0.5, 16), 8); // 8.0
+        assert_eq!(cursor_thickness(0.5, 10), 5); // 5.0
+        assert_eq!(cursor_thickness(1.0, 10), 10); // the clamp ceiling: a full-cell stroke
+        assert_ne!(
+            cursor_thickness(0.5, 16),
+            cursor_thickness(THICKNESS, 16),
+            "a non-default fraction must differ from 0.15, or the proof proves nothing"
+        );
     }
 
     /// A wide char occupies a lead cell plus a spacer; the cursor covers both, so a CJK glyph

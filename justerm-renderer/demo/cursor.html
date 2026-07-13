@@ -1,6 +1,6 @@
 <!doctype html>
 <meta charset="utf-8" />
-<title>justerm-renderer proof — cursor primitive + contrast guard (#270, #368)</title>
+<title>justerm-renderer proof — cursor primitive + contrast guard + thickness (#270, #368, #369)</title>
 <style>
   body { margin: 0; background: #000; }
   #c { display: block; image-rendering: pixelated; }
@@ -26,7 +26,9 @@
   pixels be EXACTLY that union. Two independent formulations of one spec, in two languages.
 
   Read in device pixels: `cell_width()`/`cell_height()` ARE `u_cell_size` (#331). The runner sweeps
-  dpr 1 / 1.1 / 1.5 / 2, where the thickness `round(0.15 * cell_w)` changes with the density.
+  dpr 1 / 1.1 / 1.5 / 2, where the thickness `round(frac * cell_w)` changes with the density. `frac`
+  defaults to alacritty's `0.15` but is consumer-injected via `setCursorThickness` (#369) — the final
+  checks below exercise a non-default fraction, then restore the default.
 
   Build: wasm-pack build --target web --dev --out-dir pkg
 -->
@@ -348,9 +350,38 @@
   for (let y = 0; y < ROWS * ch; y++) for (let x = 0; x < COLS * cw; x++) if (isCursor(offGrid, x, y)) offGridStray++;
   checks.theGuardSurvivesAnOffGridCursor = offGridStray === 0;
 
+  // --- #369: the stroke thickness is a consumer-injected fraction, not a hardcoded const ---
+  //
+  // `setCursorThickness(frac)` scales the bar/underline/hollow stroke: `cursor_thickness` turns the
+  // fraction into `round(frac * cell_w).max(1)` device px (alacritty's rule, so it tracks dpr and font
+  // size). The mechanism was always here; #270 hardcoded `0.15` and this adds only the injection point.
+  // A non-default fraction (0.5 — several times the 0.15 default) must render a stroke matching
+  // `cursorRects` at the WIDER thickness. The set-equality is discriminating precisely because the two
+  // thicknesses differ (asserted first): were the wiring dead, the shader would still draw the 0.15
+  // stroke and the comparison against the 0.5 rects would fail. Both `cursorRects` and the shader apply
+  // the same `min(t, w, h)` clamp, so equality holds iff the fraction actually reached the uniform.
+  r.setLetterSpacing(0);
+  r.setCursorContrast(1.5);
+  const BIG_FRAC = 0.5;
+  const bigT = Math.max(1, Math.round(BIG_FRAC * cw)); // alacritty `display/cursor.rs:25`, non-default
+  checks.aNonDefaultFractionDiffersFromTheDefault = bigT !== thickness;
+  r.setCursorThickness(BIG_FRAC);
+  r.setCursor(1, 0, UNDERLINE, CURSOR, TEXT);
+  const thickImg = draw();
+  checks.anInjectedThicknessScalesTheStroke = sameSet(litSet(thickImg, 1, 0, 1), rectSet(UNDERLINE, 1, bigT));
+  checks.anInjectedThicknessStaysInsideItsCell = redOutside(thickImg, 1, 0, 1) === 0;
+
+  // Setting it back to the default restores the default stroke — the seam is live in both directions,
+  // and it returns the page to its default state so nothing above is retroactively disturbed (AC 3).
+  r.setCursorThickness(0.15);
+  r.setCursor(1, 0, UNDERLINE, CURSOR, TEXT);
+  const backToDefault = draw();
+  checks.resettingTheFractionRestoresTheDefaultStroke =
+    sameSet(litSet(backToDefault, 1, 0, 1), rectSet(UNDERLINE, 1, thickness));
+
   window.__proof = {
     ok: Object.values(checks).every(Boolean), checks,
-    dpr: devicePixelRatio, cw, ch, thickness, wideCellW, wideCellH, wideT,
+    dpr: devicePixelRatio, cw, ch, thickness, bigT, wideCellW, wideCellH, wideT,
   };
   window.__done = true;
 </script>
