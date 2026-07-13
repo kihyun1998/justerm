@@ -246,6 +246,9 @@ const BOX_ARMS: [(u32, [u8; 4]); 80] = [
 /// texture filtering. A horizontal arm's length runs to the far edge of the vertical strokes (and
 /// vice-versa), so a corner's two arms meet and a run of `─` is unbroken across the cell seam.
 fn box_glyph(cp: u32, w: u32, h: u32) -> Option<Vec<u8>> {
+    if (0x2571..=0x2573).contains(&cp) {
+        return box_diagonal(cp, w, h);
+    }
     let [left, right, up, down] = BOX_ARMS
         .binary_search_by_key(&cp, |&(c, _)| c)
         .ok()
@@ -322,15 +325,59 @@ fn box_glyph(cp: u32, w: u32, h: u32) -> Option<Vec<u8>> {
     Some(buf)
 }
 
+/// The box-drawing diagonals `╱ ╲ ╳` (`2571`-`2573`), drawn as anti-aliased bands over
+/// [`fill_polygon`] — its first consumer. alacritty draws them as Xiaolin Wu *lines* on a canvas
+/// grown into the neighbouring cells for a seamless join (`builtin_font.rs:60-106`); an atlas glyph
+/// cannot spill past its cell, so each band instead OVERSHOOTS its corners by half a stroke and is
+/// clipped back — meeting the diagonally-adjacent cell's band at the shared corner. `╳` is the two
+/// bands max-combined into one buffer, so the crossing is not double-counted.
+///
+/// The band is a **true perpendicular** stroke of width `stroke` at any cell aspect — a deliberate
+/// divergence from alacritty, whose Wu-line loop offsets the line *vertically*, so its diagonals thin
+/// to `stroke·cosθ` and read lighter than the straight box lines on a tall cell. A constant
+/// perpendicular width keeps a `╱` the same visual weight as a `─` or `│`, which matters more for a
+/// line-drawing family than reproducing that reference artefact.
+fn box_diagonal(cp: u32, w: u32, h: u32) -> Option<Vec<u8>> {
+    if w == 0 || h == 0 {
+        return None;
+    }
+    let (wf, hf) = (w as f32, h as f32);
+    let half = (wf / 8.0).round().max(1.0) / 2.0; // half the box-line stroke width
+    let mut buf = vec![0u8; (w * h * 4) as usize];
+    // A band of half-width `half` around the segment A->B, its ends pushed out along the line by
+    // `half` so the corner pixel is covered and the neighbour cell's band meets it there.
+    let mut band = |ax: f32, ay: f32, bx: f32, by: f32| {
+        let (dx, dy) = (bx - ax, by - ay);
+        let len = (dx * dx + dy * dy).sqrt().max(1.0);
+        let (ux, uy) = (dx / len, dy / len); // unit along the line
+        let (nx, ny) = (-uy * half, ux * half); // perpendicular, half-thickness
+        let (ax, ay) = (ax - ux * half, ay - uy * half); // overshoot both ends
+        let (bx, by) = (bx + ux * half, by + uy * half);
+        fill_polygon(
+            &mut buf,
+            (w, h),
+            &[
+                (ax + nx, ay + ny),
+                (bx + nx, by + ny),
+                (bx - nx, by - ny),
+                (ax - nx, ay - ny),
+            ],
+            SOLID,
+        );
+    };
+    if cp == 0x2571 || cp == 0x2573 {
+        band(0.0, hf, wf, 0.0); // ╱ bottom-left to top-right
+    }
+    if cp == 0x2572 || cp == 0x2573 {
+        band(0.0, 0.0, wf, hf); // ╲ top-left to bottom-right
+    }
+    Some(buf)
+}
+
 /// Vertical sub-scanlines per output row for the polygon fill's coverage anti-aliasing. Horizontal
 /// coverage is computed analytically (exact span overlap per sub-row), so only the vertical axis is
 /// sampled; four sub-rows suffice at cell scale (16-33 device px) and the glyph rasterises once into
 /// the atlas, so the cost never reaches a hot path.
-// The primitive and its constant have no caller yet: the box-drawing core (#365) draws only
-// rectangles through `fill`, and the shapes that need a polygon — the box diagonals `2571`-`2573`
-// (the deferred tail of #365) and the wedges (#366) — are not built. Remove the `allow` when the
-// first of those lands.
-#[allow(dead_code)]
 const POLY_SS: u32 = 4;
 
 /// Fill a simple polygon — a single closed ring of cell-local vertices, in device px with the cell's
@@ -362,7 +409,6 @@ const POLY_SS: u32 = 4;
 ///
 /// A degenerate ring (fewer than three vertices, zero area, or entirely outside the cell) lights
 /// nothing rather than panicking.
-#[allow(dead_code)] // consumed by the box diagonals (#365 tail) and wedges (#366); see POLY_SS above.
 fn fill_polygon(buf: &mut [u8], size: (u32, u32), verts: &[(f32, f32)], alpha: u8) {
     let (w, h) = size;
     if w == 0 || h == 0 || verts.len() < 3 {
@@ -519,7 +565,10 @@ mod tests {
             block_glyph(0x257F, 8, 8).is_some(),
             "╿ mixed-weight terminal"
         );
-        // The box tail is deferred and stays unowned: dashes, doubles, rounded corners, diagonals.
+        // Diagonals are now owned (#365 tail, drawn over fill_polygon).
+        assert!(block_glyph(0x2571, 8, 8).is_some(), "╱ diagonal");
+        assert!(block_glyph(0x2573, 8, 8).is_some(), "╳ cross diagonal");
+        // The rest of the box tail stays unowned: dashes, doubles, rounded corners.
         assert!(block_glyph(0x2504, 8, 8).is_none(), "┄ dash — later slice");
         assert!(
             block_glyph(0x2550, 8, 8).is_none(),
@@ -528,10 +577,6 @@ mod tests {
         assert!(
             block_glyph(0x256D, 8, 8).is_none(),
             "╭ rounded — later slice"
-        );
-        assert!(
-            block_glyph(0x2571, 8, 8).is_none(),
-            "╱ diagonal — later slice"
         );
         assert!(block_glyph(0x41, 8, 8).is_none(), "'A' belongs to the font");
         // A degenerate cell has no pixels to fill; the caller must not be handed an empty bitmap.
@@ -1171,7 +1216,7 @@ mod tests {
     fn box_drawing_stays_text_presentation_not_emoji() {
         // #365 must not perturb emoji classification: box drawing is text presentation, so the emoji
         // gate never fires for it (the range is nowhere near the 1F000+ plane it keys on).
-        for s in ["─", "│", "┼", "╋", "╿"] {
+        for s in ["─", "│", "┼", "╋", "╿", "╱", "╲", "╳"] {
             assert!(
                 !crate::emoji::is_emoji_text(s, false),
                 "{s} is not emoji (narrow)"
@@ -1303,12 +1348,107 @@ mod tests {
     }
 
     #[test]
+    fn a_forward_slash_runs_from_bottom_left_to_top_right() {
+        // `╱` 2571 is the anti-diagonal: lit at the two corners it touches, dark at the two it misses.
+        let (w, h) = (16u32, 16u32);
+        let g = box_g(0x2571, w, h);
+        assert!(alpha_at(&g, w, 0, h - 1) > 0, "bottom-left corner lit");
+        assert!(alpha_at(&g, w, w - 1, 0) > 0, "top-right corner lit");
+        assert_eq!(alpha_at(&g, w, 0, 0), 0, "top-left corner dark");
+        assert_eq!(alpha_at(&g, w, w - 1, h - 1), 0, "bottom-right corner dark");
+    }
+
+    #[test]
+    fn a_backslash_runs_from_top_left_to_bottom_right() {
+        // `╲` 2572 is the main diagonal — the mirror of `╱`.
+        let (w, h) = (16u32, 16u32);
+        let g = box_g(0x2572, w, h);
+        assert!(alpha_at(&g, w, 0, 0) > 0, "top-left corner lit");
+        assert!(alpha_at(&g, w, w - 1, h - 1) > 0, "bottom-right corner lit");
+        assert_eq!(alpha_at(&g, w, 0, h - 1), 0, "bottom-left corner dark");
+        assert_eq!(alpha_at(&g, w, w - 1, 0), 0, "top-right corner dark");
+    }
+
+    #[test]
+    fn a_cross_lights_both_diagonals_and_their_meeting_point() {
+        // `╳` 2573 is both bands, max-combined: all four corners and the centre are lit.
+        let (w, h) = (16u32, 16u32);
+        let g = box_g(0x2573, w, h);
+        for (x, y) in [(0, 0), (w - 1, 0), (0, h - 1), (w - 1, h - 1)] {
+            assert!(alpha_at(&g, w, x, y) > 0, "corner ({x},{y}) lit");
+        }
+        assert!(alpha_at(&g, w, w / 2, h / 2) > 0, "the crossing is lit");
+        // The two bands are max-combined into one buffer (fill_polygon's rule, proven not to
+        // double-count by `overlapping_polygons_are_max_combined_not_summed`); here the crossing is
+        // simply lit, drawn by both.
+    }
+
+    #[test]
+    fn a_diagonal_is_anti_aliased() {
+        // The whole reason it rides fill_polygon rather than a stair-stepped rect run: its edges carry
+        // partial coverage.
+        let g = box_g(0x2571, 16, 16);
+        assert!(
+            g.chunks_exact(4).any(|p| p[3] > 0 && p[3] < 255),
+            "the diagonal band has partial-coverage edge pixels"
+        );
+    }
+
+    #[test]
+    fn a_diagonal_band_is_about_one_box_stroke_wide() {
+        // Pins the band thickness — the diagonals' analog of `heavy_strokes_are_twice_the_light_stroke`
+        // for the straight lines. A band of width `stroke` over length `~sqrt(w^2+h^2)` sums to about
+        // `len * stroke * 255` of coverage; halving or doubling the `/ 2.0` half-width in box_diagonal
+        // moves the total far outside this tolerance (the corner present/absent tests do not — their
+        // margins are too generous to feel a thickness change).
+        for (w, h) in [(32u32, 32u32), (24, 40)] {
+            let g = box_g(0x2571, w, h);
+            let stroke = (w as f32 / 8.0).round().max(1.0);
+            let len = ((w * w + h * h) as f32).sqrt();
+            let expect = len * stroke * 255.0;
+            let got = total_alpha(&g) as f32;
+            assert!(
+                (got - expect).abs() < expect * 0.30,
+                "{w}x{h}: diagonal ink {got:.0}, expected ~{expect:.0} for a {stroke}px band"
+            );
+        }
+    }
+
+    #[test]
+    fn diagonals_join_at_the_shared_corner_across_cells() {
+        // Two `╱` cells stacked lower-left→upper-right share a corner: the lower cell's top-right and
+        // the upper cell's bottom-left are the same physical pixel, so BOTH must be lit for the line
+        // to be unbroken. (Each cell rasterises independently; the overshoot is what reaches the
+        // corner.) Asserted on several cell sizes, since the band's slope changes with the aspect.
+        for (w, h) in [(16u32, 16u32), (10, 20), (20, 10), (7, 7)] {
+            let g = box_g(0x2571, w, h);
+            assert!(
+                alpha_at(&g, w, w - 1, 0) > 0,
+                "{w}x{h}: top-right corner reaches the seam"
+            );
+            assert!(
+                alpha_at(&g, w, 0, h - 1) > 0,
+                "{w}x{h}: bottom-left corner reaches the seam"
+            );
+        }
+    }
+
+    #[test]
     fn tiny_cells_draw_box_glyphs_without_panicking() {
-        // Whatever a spacing policy produces, a box glyph must survive a 1x1 / 2x2 cell.
+        // Whatever a spacing policy produces, a box glyph must survive a 1x1 / 2x2 cell — the
+        // diagonals over fill_polygon included (a sub-pixel band must not panic or overflow the buf) —
+        // AND never come out blank: every one of these crosses the cell, so it lights at least one
+        // pixel (the invariant the block glyphs and the 1px-terminal fix hold).
         for (w, h) in [(1u32, 1u32), (2, 2), (1, 8), (8, 1)] {
-            for cp in [0x2500u32, 0x2502, 0x253C, 0x254B, 0x257F] {
+            for cp in [
+                0x2500u32, 0x2502, 0x253C, 0x254B, 0x257F, 0x2571, 0x2572, 0x2573,
+            ] {
                 let g = block_glyph(cp, w, h).expect("owned");
                 assert_eq!(g.len(), (w * h * 4) as usize);
+                assert!(
+                    total_alpha(&g) > 0,
+                    "{cp:#06X} on {w}x{h} must not be blank"
+                );
             }
         }
     }
