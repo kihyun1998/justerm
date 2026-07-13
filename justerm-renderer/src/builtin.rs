@@ -61,14 +61,27 @@ const SHADE_DARK: u8 = 192; // ▓
 const SOLID: u8 = 255; // █
 
 /// A white RGBA bitmap of `w * h` device px with the coverage of a block element, sextant, extra
-/// eighth block, or box-drawing glyph (delegated to [`box_glyph`]) in alpha — or `None` for a
-/// codepoint this module does not own.
+/// eighth block, box-drawing glyph (delegated to [`box_glyph`]), Legacy-Computing wedge / triangular
+/// half ([`wedge_glyph`]), diagonal hatch or one-eighth block ([`octant_block`]) in alpha — or `None`
+/// for a codepoint this module does not own.
 ///
 /// The origin is the cell's TOP-left, matching the rasteriser's canvas and the shader's texcoord.
 pub fn block_glyph(cp: u32, w: u32, h: u32) -> Option<Vec<u8>> {
     // Box drawing (its straight-line core, #365) is a sibling family drawn from strokes, not block
     // fractions; it owns its own codepoints and returns early.
     if let Some(g) = box_glyph(cp, w, h) {
+        return Some(g);
+    }
+    // Symbols for Legacy Computing that are polygons rather than block fractions: the smooth-mosaic
+    // wedges and triangular quarter/three-quarter blocks (`1FB3C`-`1FB6F`), the diagonal hatch fills
+    // (`1FB98`-`1FB99`) and the triangular half blocks (`1FB9A`-`1FB9B`) — all on #364's polygon fill.
+    // Each owns its codepoints and returns early. (#366)
+    if let Some(g) = wedge_glyph(cp, w, h) {
+        return Some(g);
+    }
+    // The vertical / horizontal one-eighth blocks (`1FB70`-`1FB81`): eighth-grid rectangles, no
+    // polygon needed. (#366)
+    if let Some(g) = octant_block(cp, w, h) {
         return Some(g);
     }
     let owned = (FIRST..=LAST).contains(&cp)
@@ -685,6 +698,268 @@ fn box_double(cp: u32, w: u32, h: u32) -> Option<Vec<u8>> {
     Some(buf)
 }
 
+/// The smooth-mosaic wedges and triangular quarter / three-quarter blocks (`1FB3C`-`1FB6F`) and the
+/// triangular half blocks (`1FB9A`-`1FB9B`), as polygon rings in cell-fraction coordinates — origin
+/// TOP-left, y down, so a plain scale by `(w, h)` lands them in device px (confirmed against xterm's
+/// `CustomGlyphRasterizer.ts` vertex transform). Transcribed from xterm's `CustomGlyphDefinitions.ts`
+/// `PATH` / `VECTOR_SHAPE` entries — xterm is the ONLY reference that draws them; alacritty draws none.
+/// Read as vertex LISTS, not as a coverage spec: the fill rule is #364's, not xterm's Canvas2D. Unlike
+/// the sextant masks (#361) or box arms (#365) there is no bit-rule to derive these from — they are a
+/// genuine lookup table — so the guard is an independent, name-derived oracle test, not a derivation.
+///
+/// `A` / `B` are the smooth-mosaic thirds (`1/3`, `2/3`) and `M` the centre; corners are `0.0` / `1.0`.
+/// `1FB9A` / `1FB9B` are single-ring bowties (two triangles meeting at the centre) — passed as ONE
+/// ring, which #364's even-odd fill handles; do NOT split, or a fractional-edge seam remains (see
+/// [`fill_polygon`]). The three-quarter blocks `1FB68`-`1FB6B` are concave (a reflex vertex at the
+/// centre); even-odd covers that too.
+const WEDGES: &[(u32, &[(f32, f32)])] = {
+    const A: f32 = 1.0 / 3.0; // upper-middle grid line
+    const B: f32 = 2.0 / 3.0; // lower-middle grid line
+    const M: f32 = 0.5; // centre
+    &[
+        (0x1FB3C, &[(0.0, B), (0.0, 1.0), (M, 1.0)]),
+        (0x1FB3D, &[(0.0, B), (0.0, 1.0), (1.0, 1.0)]),
+        (0x1FB3E, &[(0.0, A), (0.0, 1.0), (M, 1.0)]),
+        (0x1FB3F, &[(0.0, A), (0.0, 1.0), (1.0, 1.0)]),
+        (0x1FB40, &[(0.0, 0.0), (0.0, 1.0), (M, 1.0)]),
+        (
+            0x1FB41,
+            &[(0.0, A), (M, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)],
+        ),
+        (0x1FB42, &[(0.0, A), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]),
+        (
+            0x1FB43,
+            &[(0.0, B), (M, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)],
+        ),
+        (0x1FB44, &[(0.0, B), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]),
+        (0x1FB45, &[(0.0, 1.0), (M, 0.0), (1.0, 0.0), (1.0, 1.0)]),
+        (0x1FB46, &[(0.0, B), (1.0, A), (1.0, 1.0), (0.0, 1.0)]),
+        (0x1FB47, &[(M, 1.0), (1.0, B), (1.0, 1.0)]),
+        (0x1FB48, &[(0.0, 1.0), (1.0, B), (1.0, 1.0)]),
+        (0x1FB49, &[(M, 1.0), (1.0, A), (1.0, 1.0)]),
+        (0x1FB4A, &[(0.0, 1.0), (1.0, A), (1.0, 1.0)]),
+        (0x1FB4B, &[(M, 1.0), (1.0, 0.0), (1.0, 1.0)]),
+        (
+            0x1FB4C,
+            &[(M, 0.0), (0.0, 0.0), (0.0, 1.0), (1.0, 1.0), (1.0, A)],
+        ),
+        (0x1FB4D, &[(0.0, 0.0), (0.0, 1.0), (1.0, 1.0), (1.0, A)]),
+        (
+            0x1FB4E,
+            &[(M, 0.0), (0.0, 0.0), (0.0, 1.0), (1.0, 1.0), (1.0, B)],
+        ),
+        (0x1FB4F, &[(0.0, 0.0), (0.0, 1.0), (1.0, 1.0), (1.0, B)]),
+        (0x1FB50, &[(M, 0.0), (0.0, 0.0), (0.0, 1.0), (1.0, 1.0)]),
+        (0x1FB51, &[(0.0, A), (0.0, 1.0), (1.0, 1.0), (1.0, B)]),
+        (
+            0x1FB52,
+            &[(0.0, B), (M, 1.0), (1.0, 1.0), (1.0, 0.0), (0.0, 0.0)],
+        ),
+        (0x1FB53, &[(0.0, B), (1.0, 1.0), (1.0, 0.0), (0.0, 0.0)]),
+        (
+            0x1FB54,
+            &[(0.0, A), (M, 1.0), (1.0, 1.0), (1.0, 0.0), (0.0, 0.0)],
+        ),
+        (0x1FB55, &[(0.0, A), (1.0, 1.0), (1.0, 0.0), (0.0, 0.0)]),
+        (0x1FB56, &[(0.0, 0.0), (M, 1.0), (1.0, 1.0), (1.0, 0.0)]),
+        (0x1FB57, &[(0.0, A), (0.0, 0.0), (M, 0.0)]),
+        (0x1FB58, &[(0.0, A), (0.0, 0.0), (1.0, 0.0)]),
+        (0x1FB59, &[(0.0, B), (0.0, 0.0), (M, 0.0)]),
+        (0x1FB5A, &[(0.0, B), (0.0, 0.0), (1.0, 0.0)]),
+        (0x1FB5B, &[(0.0, 1.0), (0.0, 0.0), (M, 0.0)]),
+        (0x1FB5C, &[(0.0, B), (0.0, 0.0), (1.0, 0.0), (1.0, A)]),
+        (
+            0x1FB5D,
+            &[(M, 1.0), (0.0, 1.0), (0.0, 0.0), (1.0, 0.0), (1.0, B)],
+        ),
+        (0x1FB5E, &[(0.0, 1.0), (0.0, 0.0), (1.0, 0.0), (1.0, B)]),
+        (
+            0x1FB5F,
+            &[(M, 1.0), (0.0, 1.0), (0.0, 0.0), (1.0, 0.0), (1.0, A)],
+        ),
+        (0x1FB60, &[(0.0, 1.0), (0.0, 0.0), (1.0, 0.0), (1.0, A)]),
+        (0x1FB61, &[(M, 1.0), (0.0, 1.0), (0.0, 0.0), (1.0, 0.0)]),
+        (0x1FB62, &[(M, 0.0), (1.0, 0.0), (1.0, A)]),
+        (0x1FB63, &[(0.0, 0.0), (1.0, 0.0), (1.0, A)]),
+        (0x1FB64, &[(M, 0.0), (1.0, 0.0), (1.0, B)]),
+        (0x1FB65, &[(0.0, 0.0), (1.0, 0.0), (1.0, B)]),
+        (0x1FB66, &[(M, 0.0), (1.0, 0.0), (1.0, 1.0)]),
+        (0x1FB67, &[(0.0, A), (1.0, B), (1.0, 0.0), (0.0, 0.0)]),
+        (
+            0x1FB68,
+            &[(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0), (M, M)],
+        ),
+        (
+            0x1FB69,
+            &[(0.0, 0.0), (M, M), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)],
+        ),
+        (
+            0x1FB6A,
+            &[(0.0, 0.0), (1.0, 0.0), (M, M), (1.0, 1.0), (0.0, 1.0)],
+        ),
+        (
+            0x1FB6B,
+            &[(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (M, M), (0.0, 1.0)],
+        ),
+        (0x1FB6C, &[(0.0, 0.0), (M, M), (0.0, 1.0)]), // LEFT triangular one quarter
+        (0x1FB6D, &[(0.0, 0.0), (1.0, 0.0), (M, M)]), // UPPER
+        (0x1FB6E, &[(1.0, 0.0), (1.0, 1.0), (M, M)]), // RIGHT
+        (0x1FB6F, &[(0.0, 1.0), (1.0, 1.0), (M, M)]), // LOWER
+        // Bowties (one self-touching ring, even-odd): UPPER+LOWER, then LEFT+RIGHT triangular halves.
+        (
+            0x1FB9A,
+            &[
+                (0.0, 0.0),
+                (M, M),
+                (0.0, 1.0),
+                (1.0, 1.0),
+                (M, M),
+                (1.0, 0.0),
+            ],
+        ),
+        (
+            0x1FB9B,
+            &[
+                (0.0, 0.0),
+                (M, M),
+                (1.0, 0.0),
+                (1.0, 1.0),
+                (M, M),
+                (0.0, 1.0),
+            ],
+        ),
+    ]
+};
+
+/// An eighth-grid rectangle `(x, y, w, h)`, each field in eighths of the cell (0..=8).
+type EighthRect = (u8, u8, u8, u8);
+/// One one-eighth block: its codepoint and the rectangles it lights.
+type OctantBlock = (u32, &'static [EighthRect]);
+
+/// The vertical / horizontal one-eighth blocks (`1FB70`-`1FB81`), as rectangles on the eighth grid.
+/// Transcribed from xterm's `SOLID_OCTANT_BLOCK_VECTOR` entries; alacritty draws none of these.
+/// Vertical blocks-2..7 are the interior columns `▏`/`█` skip; horizontal blocks-2..7 the interior
+/// rows; `1FB7C`-`1FB80` are edge L-pairs and `1FB81` (window title bar) is four horizontal rows at
+/// eighths 0, 2, 4, 7.
+const OCTANT_BLOCKS: &[OctantBlock] = &[
+    (0x1FB70, &[(1, 0, 1, 8)]),
+    (0x1FB71, &[(2, 0, 1, 8)]),
+    (0x1FB72, &[(3, 0, 1, 8)]),
+    (0x1FB73, &[(4, 0, 1, 8)]),
+    (0x1FB74, &[(5, 0, 1, 8)]),
+    (0x1FB75, &[(6, 0, 1, 8)]),
+    (0x1FB76, &[(0, 1, 8, 1)]),
+    (0x1FB77, &[(0, 2, 8, 1)]),
+    (0x1FB78, &[(0, 3, 8, 1)]),
+    (0x1FB79, &[(0, 4, 8, 1)]),
+    (0x1FB7A, &[(0, 5, 8, 1)]),
+    (0x1FB7B, &[(0, 6, 8, 1)]),
+    (0x1FB7C, &[(0, 0, 1, 8), (0, 7, 8, 1)]),
+    (0x1FB7D, &[(0, 0, 1, 8), (0, 0, 8, 1)]),
+    (0x1FB7E, &[(7, 0, 1, 8), (0, 0, 8, 1)]),
+    (0x1FB7F, &[(7, 0, 1, 8), (0, 7, 8, 1)]),
+    (0x1FB80, &[(0, 0, 8, 1), (0, 7, 8, 1)]),
+    (
+        0x1FB81,
+        &[(0, 0, 8, 1), (0, 2, 8, 1), (0, 4, 8, 1), (0, 7, 8, 1)],
+    ),
+];
+
+/// A white RGBA bitmap for a wedge / triangular-half glyph (`1FB3C`-`1FB6F`, `1FB9A`-`1FB9B`) or a
+/// diagonal hatch (`1FB98`-`1FB99`), or `None` for a codepoint outside those. The wedge vertices
+/// ([`WEDGES`]) are scaled to device px and filled once with [`fill_polygon`].
+fn wedge_glyph(cp: u32, w: u32, h: u32) -> Option<Vec<u8>> {
+    if let Some(g) = diagonal_hatch(cp, w, h) {
+        return Some(g);
+    }
+    let verts = WEDGES
+        .binary_search_by_key(&cp, |&(c, _)| c)
+        .ok()
+        .map(|i| WEDGES[i].1)?;
+    if w == 0 || h == 0 {
+        return None;
+    }
+    let scaled: Vec<(f32, f32)> = verts
+        .iter()
+        .map(|&(x, y)| (x * w as f32, y * h as f32))
+        .collect();
+    let mut buf = vec![0u8; (w * h * 4) as usize];
+    fill_polygon(&mut buf, (w, h), &scaled, SOLID);
+    Some(buf)
+}
+
+/// A white RGBA bitmap for a one-eighth block (`1FB70`-`1FB81`), or `None` outside that range. Each
+/// rectangle's edges are placed on the eighth grid from the two BOUNDARIES (`edge * w / 8`), not from a
+/// width, so adjacent eighths tile with no cumulative rounding gap — the reason the sextant rows are
+/// sized from boundaries too. On a cell narrower than 8 px an interior eighth can round to zero width
+/// and vanish; real cells are 16-33 px.
+fn octant_block(cp: u32, w: u32, h: u32) -> Option<Vec<u8>> {
+    let rects = OCTANT_BLOCKS
+        .binary_search_by_key(&cp, |&(c, _)| c)
+        .ok()
+        .map(|i| OCTANT_BLOCKS[i].1)?;
+    if w == 0 || h == 0 {
+        return None;
+    }
+    let mut buf = vec![0u8; (w * h * 4) as usize];
+    for &(bx, by, bw, bh) in rects {
+        let x0 = (bx as u32 * w) / 8;
+        let x1 = ((bx + bw) as u32 * w) / 8;
+        let y0 = (by as u32 * h) / 8;
+        let y1 = ((by + bh) as u32 * h) / 8;
+        fill(&mut buf, (w, h), (x0, y0, x1 - x0, y1 - y0), SOLID);
+    }
+    Some(buf)
+}
+
+/// The diagonal hatch fills `1FB98` (upper-left to lower-right) and `1FB99` (upper-right to lower-left)
+/// — a cell filled with parallel diagonal lines — or `None` outside that pair. xterm draws them as
+/// `strokeWidth: 1` `PATH_FUNCTION`s (nine parallel segments overshooting the cell); a width-1 stroke
+/// is a thin parallelogram, so each line is a perpendicular band over #364's [`fill_polygon`] rather
+/// than a new stroke primitive — the choice recorded on #366 (a Wu stroke would only sharpen endpoint
+/// AA, invisible at cell scale). Lines step a quarter cell in intercept (xterm's hatch density) and
+/// [`fill_polygon`] clips each band. `1FB99` is `1FB98` mirrored in x, and this generates it as exactly
+/// that.
+fn diagonal_hatch(cp: u32, w: u32, h: u32) -> Option<Vec<u8>> {
+    if !(0x1FB98..=0x1FB99).contains(&cp) || w == 0 || h == 0 {
+        return None;
+    }
+    let (wf, hf) = (w as f32, h as f32);
+    // A one-device-pixel hairline (xterm's `strokeWidth: 1`), NOT the box-line stroke the solid
+    // diagonals `╱ ╲` use: this is a fill TEXTURE, and a heavier line at the quarter-cell spacing below
+    // would merge into a solid block instead of a hatch.
+    let half = 0.5;
+    let mut buf = vec![0u8; (w * h * 4) as usize];
+    let mut band = |ax: f32, ay: f32, bx: f32, by: f32| {
+        let (dx, dy) = (bx - ax, by - ay);
+        let len = (dx * dx + dy * dy).sqrt().max(1.0);
+        let (ux, uy) = (dx / len, dy / len);
+        let (nx, ny) = (-uy * half, ux * half); // perpendicular, half-thickness
+        fill_polygon(
+            &mut buf,
+            (w, h),
+            &[
+                (ax + nx, ay + ny),
+                (bx + nx, by + ny),
+                (bx - nx, by - ny),
+                (ax - nx, ay - ny),
+            ],
+            SOLID,
+        );
+    };
+    // Nine parallel lines, intercept stepping a quarter cell. For `╲` (1FB98) the unit line is
+    // `y = x + c`, `c` from -1 to 1; mirroring x gives `╱` (1FB99), `y = -x + c`, `c` from 0 to 2.
+    let down = cp == 0x1FB98;
+    let (mut i, end): (i32, i32) = if down { (-4, 4) } else { (0, 8) };
+    while i <= end {
+        let c = i as f32 * 0.25;
+        let (y0, y1) = if down { (c, 1.0 + c) } else { (c, c - 1.0) };
+        band(0.0, y0 * hf, wf, y1 * hf);
+        i += 1;
+    }
+    Some(buf)
+}
+
 /// Vertical sub-scanlines per output row for the polygon fill's coverage anti-aliasing. Horizontal
 /// coverage is computed analytically (exact span overlap per sub-row), so only the vertical axis is
 /// sampled; four sub-rows suffice at cell scale (16-33 device px) and the glyph rasterises once into
@@ -1038,6 +1313,250 @@ mod tests {
             let a = upper[row * 4 + 3] == 255;
             let b = lower[row * 4 + 3] == 255;
             assert!(a ^ b, "row {row}: exactly one of `1FB82` / `▆` lights it");
+        }
+    }
+
+    /// The alpha at the pixel containing cell-fraction `(fx, fy)`. Sampling a polygon glyph at a point
+    /// the CHARACTER NAME implies is an oracle independent of how `fill_polygon` computes it.
+    fn sample_frac(cp: u32, w: u32, h: u32, fx: f32, fy: f32) -> u8 {
+        let buf = block_glyph(cp, w, h).expect("owned codepoint");
+        let x = ((fx * w as f32) as u32).min(w - 1);
+        let y = ((fy * h as f32) as u32).min(h - 1);
+        buf[((y * w + x) * 4 + 3) as usize]
+    }
+
+    #[test]
+    fn the_one_eighth_blocks_land_on_the_column_or_row_their_name_gives() {
+        // `1FB70`-`1FB75` VERTICAL ONE EIGHTH BLOCK-2..7: one interior column each, the eighths that
+        // `▏` (leftmost) and `█` (full) bracket. At 8x8 an eighth is one pixel, so the block-N lights
+        // column N-1.
+        assert_eq!(picture(0x1FB70, 8, 8)[0], ".#......"); // block-2 -> column 1
+        assert_eq!(picture(0x1FB75, 8, 8)[0], "......#."); // block-7 -> column 6
+        // `1FB76`-`1FB7B` HORIZONTAL ONE EIGHTH BLOCK-2..7: one interior row each.
+        assert_eq!(picture(0x1FB76, 8, 8)[1], "########"); // block-2 -> row 1
+        assert_eq!(picture(0x1FB76, 8, 8)[0], "........");
+        assert_eq!(picture(0x1FB7B, 8, 8)[6], "########"); // block-7 -> row 6
+        // `1FB7D` LEFT AND UPPER: the left column and the top row (an `L`/`⌐` corner).
+        assert_eq!(picture(0x1FB7D, 8, 8)[0], "########");
+        assert_eq!(picture(0x1FB7D, 8, 8)[1], "#.......");
+        // `1FB7F` RIGHT AND LOWER: the right column and the bottom row.
+        assert_eq!(picture(0x1FB7F, 8, 8)[7], "########");
+        assert_eq!(picture(0x1FB7F, 8, 8)[0], ".......#");
+        // `1FB81` HORIZONTAL ONE EIGHTH BLOCK-1358 (window title bar): rows at eighths 0, 2, 4, 7.
+        let bar = picture(0x1FB81, 8, 8);
+        for (row, s) in bar.iter().enumerate() {
+            let want = matches!(row, 0 | 2 | 4 | 7);
+            assert_eq!(s == "########", want, "1FB81 row {row}");
+        }
+    }
+
+    #[test]
+    fn the_one_eighth_columns_reassemble_into_the_full_block() {
+        // The verticals `▏ 1FB70 1FB71 … 1FB75` plus `▕`'s mirror must partition the eight columns with
+        // no seam — the same reassembly invariant the quadrants keep, and what catches a tiling gap in
+        // the eighth-boundary arithmetic. `▏`=col0, `1FB70`-`1FB75`=cols1-6, and col7 is `█`'s last.
+        let (w, h) = (8u32, 8u32);
+        let mut union = vec![0u8; (w * h) as usize];
+        for cp in [0x258F, 0x1FB70, 0x1FB71, 0x1FB72, 0x1FB73, 0x1FB74, 0x1FB75] {
+            let g = block_glyph(cp, w, h).unwrap();
+            for (i, u) in union.iter_mut().enumerate() {
+                *u += u8::from(g[i * 4 + 3] == 255);
+            }
+        }
+        // Columns 0-6 are each lit exactly once; column 7 (no glyph here) stays dark.
+        for y in 0..h as usize {
+            for x in 0..w as usize {
+                let want = if x < 7 { 1 } else { 0 };
+                assert_eq!(union[y * w as usize + x], want, "pixel ({x},{y})");
+            }
+        }
+    }
+
+    #[test]
+    fn the_triangular_quarter_blocks_point_from_the_named_edge_to_the_centre() {
+        // `1FB6C`-`1FB6F`: a triangle whose base is one full edge and whose apex is the cell centre.
+        // Sample the named edge's midpoint (filled) and the opposite edge (empty) — read off the name,
+        // not the vertex table.
+        let (w, h) = (16, 16);
+        // LEFT TRIANGULAR ONE QUARTER.
+        assert!(sample_frac(0x1FB6C, w, h, 0.1, 0.5) > 127);
+        assert_eq!(sample_frac(0x1FB6C, w, h, 0.9, 0.5), 0);
+        // UPPER.
+        assert!(sample_frac(0x1FB6D, w, h, 0.5, 0.1) > 127);
+        assert_eq!(sample_frac(0x1FB6D, w, h, 0.5, 0.9), 0);
+        // RIGHT.
+        assert!(sample_frac(0x1FB6E, w, h, 0.9, 0.5) > 127);
+        assert_eq!(sample_frac(0x1FB6E, w, h, 0.1, 0.5), 0);
+        // LOWER.
+        assert!(sample_frac(0x1FB6F, w, h, 0.5, 0.9) > 127);
+        assert_eq!(sample_frac(0x1FB6F, w, h, 0.5, 0.1), 0);
+    }
+
+    #[test]
+    fn the_triangular_three_quarter_blocks_omit_the_named_side() {
+        // `1FB68`-`1FB6B`: the full cell minus one triangular quarter — the mirror of the quarters
+        // above. The named-missing edge's midpoint is empty; the other three are filled.
+        let (w, h) = (16, 16);
+        // UPPER AND RIGHT AND LOWER (missing LEFT).
+        assert_eq!(sample_frac(0x1FB68, w, h, 0.1, 0.5), 0);
+        assert!(sample_frac(0x1FB68, w, h, 0.9, 0.5) > 127);
+        assert!(sample_frac(0x1FB68, w, h, 0.5, 0.1) > 127);
+        // LEFT AND LOWER AND RIGHT (missing UPPER).
+        assert_eq!(sample_frac(0x1FB69, w, h, 0.5, 0.1), 0);
+        assert!(sample_frac(0x1FB69, w, h, 0.5, 0.9) > 127);
+        // UPPER AND LEFT AND LOWER (missing RIGHT).
+        assert_eq!(sample_frac(0x1FB6A, w, h, 0.9, 0.5), 0);
+        assert!(sample_frac(0x1FB6A, w, h, 0.1, 0.5) > 127);
+        // LEFT AND UPPER AND RIGHT (missing LOWER).
+        assert_eq!(sample_frac(0x1FB6B, w, h, 0.5, 0.9), 0);
+        assert!(sample_frac(0x1FB6B, w, h, 0.5, 0.1) > 127);
+    }
+
+    #[test]
+    fn the_triangular_half_blocks_split_the_cell_by_their_name() {
+        // `1FB9A` UPPER AND LOWER: the top and bottom triangles (apex at centre), so the vertical
+        // midline is filled top and bottom and the horizontal midline's ends are empty. `1FB9B` LEFT
+        // AND RIGHT is the same, rotated.
+        let (w, h) = (16, 16);
+        assert!(sample_frac(0x1FB9A, w, h, 0.5, 0.15) > 127); // top
+        assert!(sample_frac(0x1FB9A, w, h, 0.5, 0.85) > 127); // bottom
+        assert_eq!(sample_frac(0x1FB9A, w, h, 0.15, 0.5), 0); // left mid
+        assert_eq!(sample_frac(0x1FB9A, w, h, 0.85, 0.5), 0); // right mid
+        assert!(sample_frac(0x1FB9B, w, h, 0.15, 0.5) > 127); // left
+        assert!(sample_frac(0x1FB9B, w, h, 0.85, 0.5) > 127); // right
+        assert_eq!(sample_frac(0x1FB9B, w, h, 0.5, 0.15), 0); // top mid
+        assert_eq!(sample_frac(0x1FB9B, w, h, 0.5, 0.85), 0); // bottom mid
+    }
+
+    #[test]
+    fn a_sample_of_smooth_mosaic_wedges_fill_the_region_their_name_gives() {
+        // The 52 smooth-mosaic wedges are an arbitrary vertex table, so spot-check representatives
+        // against their names rather than recomputing them.
+        let (w, h) = (18, 18);
+        // `1FB3C` LOWER LEFT BLOCK DIAGONAL LOWER MIDDLE LEFT TO LOWER CENTRE: a small lower-left wedge.
+        assert!(sample_frac(0x1FB3C, w, h, 0.05, 0.95) > 127); // lower-left corner filled
+        assert_eq!(sample_frac(0x1FB3C, w, h, 0.5, 0.2), 0); // upper half empty
+        assert_eq!(sample_frac(0x1FB3C, w, h, 0.9, 0.9), 0); // lower-RIGHT empty
+        // `1FB45` LOWER RIGHT BLOCK DIAGONAL LOWER LEFT TO UPPER CENTRE: most of the cell, cut by the
+        // diagonal from the lower-left to the top centre — the upper-left corner is removed.
+        assert!(sample_frac(0x1FB45, w, h, 0.9, 0.9) > 127); // lower-right filled
+        assert_eq!(sample_frac(0x1FB45, w, h, 0.1, 0.1), 0); // upper-left removed
+    }
+
+    #[test]
+    fn every_smooth_mosaic_wedge_fills_its_named_corner_and_clears_the_opposite() {
+        // The 44 smooth mosaics `1FB3C`-`1FB67` are each named "<CORNER> BLOCK DIAGONAL …" — the corner
+        // its filled region is anchored to. That corner (read off the xterm NAME, and grouped here by
+        // the contiguous name-runs, independent of the vertex table) must be inked and the DIAGONALLY
+        // OPPOSITE corner clear. This is the name-derived oracle the `WEDGES` doc promises, applied to
+        // the whole family: it catches a wrong-corner or mirrored transcription in ANY of the 44
+        // entries — the liveness sweep alone would pass such a bug. (An A/B grid-line swap that keeps
+        // the same corner is pinned by `smooth_mosaic_wedges_pin_the_third_grid_line_their_name_gives`
+        // below and, exhaustively across all 44, by the review-time ring diff against xterm's source.)
+        let (w, h) = (20, 20);
+        let (ll, lr, ul, ur) = ((0.1, 0.9), (0.9, 0.9), (0.1, 0.1), (0.9, 0.1));
+        for cp in 0x1FB3Cu32..=0x1FB67 {
+            let (named, opposite) = match cp {
+                0x1FB3C..=0x1FB40 | 0x1FB4C..=0x1FB51 => (ll, ur), // LOWER LEFT
+                0x1FB41..=0x1FB4B => (lr, ul),                     // LOWER RIGHT
+                0x1FB52..=0x1FB56 | 0x1FB62..=0x1FB67 => (ur, ll), // UPPER RIGHT
+                0x1FB57..=0x1FB61 => (ul, lr),                     // UPPER LEFT
+                _ => unreachable!(),
+            };
+            assert!(
+                sample_frac(cp, w, h, named.0, named.1) > 127,
+                "{cp:x}: named corner is dark"
+            );
+            assert_eq!(
+                sample_frac(cp, w, h, opposite.0, opposite.1),
+                0,
+                "{cp:x}: the diagonally-opposite corner is inked"
+            );
+        }
+    }
+
+    #[test]
+    fn smooth_mosaic_wedges_pin_the_third_grid_line_their_name_gives() {
+        // The corner oracle above cannot tell a `1/3` (UPPER MIDDLE) from a `2/3` (LOWER MIDDLE) grid
+        // line — the A/B swap the sibling review flagged — because both keep the same corner. Sampling
+        // the left edge at mid-height distinguishes them: a wedge whose diagonal starts at LOWER MIDDLE
+        // LEFT (`2/3`) leaves the edge clear at `y = 0.5`, one starting at UPPER MIDDLE LEFT (`1/3`)
+        // inks it. One contrasting pair per side is enough to guard the axis at the family level.
+        let (w, h) = (20, 20);
+        // `1FB3C` … LOWER MIDDLE LEFT (2/3) vs `1FB3E` … UPPER MIDDLE LEFT (1/3), both to LOWER CENTRE.
+        assert_eq!(sample_frac(0x1FB3C, w, h, 0.02, 0.5), 0);
+        assert!(sample_frac(0x1FB3E, w, h, 0.02, 0.5) > 127);
+        // `1FB53` … LOWER MIDDLE LEFT (2/3) vs `1FB55` … UPPER MIDDLE LEFT (1/3): the UPPER RIGHT band's
+        // left edge, inked ABOVE its start. At `y = 0.5` only the `2/3`-anchored `1FB53` reaches down.
+        assert!(sample_frac(0x1FB53, w, h, 0.02, 0.5) > 127);
+        assert_eq!(sample_frac(0x1FB55, w, h, 0.02, 0.5), 0);
+    }
+
+    #[test]
+    fn the_diagonal_hatches_are_partial_and_mirror_one_another() {
+        // `1FB98` / `1FB99` fill the cell with parallel diagonal lines: partial coverage (not blank,
+        // not solid), and `1FB99` (`╱`) is `1FB98` (`╲`) reflected in x.
+        let (w, h) = (16, 16);
+        for cp in [0x1FB98, 0x1FB99] {
+            let buf = block_glyph(cp, w, h).unwrap();
+            let lit = (0..(w * h))
+                .filter(|&i| buf[(i * 4 + 3) as usize] > 0)
+                .count();
+            assert!(
+                lit > 0 && lit < (w * h) as usize,
+                "{cp:x}: partial, got {lit}"
+            );
+        }
+        let down = block_glyph(0x1FB98, w, h).unwrap();
+        let up = block_glyph(0x1FB99, w, h).unwrap();
+        for y in 0..h {
+            for x in 0..w {
+                let a = down[((y * w + x) * 4 + 3) as usize];
+                let b = up[((y * w + (w - 1 - x)) * 4 + 3) as usize];
+                assert_eq!(a, b, "hatch mirror at ({x},{y})");
+            }
+        }
+    }
+
+    #[test]
+    fn every_wedge_one_eighth_and_hatch_lights_partial_ink_without_panicking() {
+        // A liveness sweep over the whole new scope: each owned codepoint returns `Some`, lights at
+        // least one pixel and never the whole cell (all are partial glyphs — a full fill would mean a
+        // malformed table entry), at realistic sizes and the odd cell. Degenerate cells return `None`.
+        let cps = (0x1FB3C..=0x1FB6F)
+            .chain(0x1FB70..=0x1FB81)
+            .chain(0x1FB98..=0x1FB9B);
+        for cp in cps {
+            // Realistic cell sizes: at a sub-8px cell a hatch legitimately becomes near-solid (it can
+            // no longer resolve its lines), so the partial-fill upper bound is only meaningful here.
+            for (w, h) in [(16u32, 16u32), (33, 17)] {
+                let buf = block_glyph(cp, w, h)
+                    .unwrap_or_else(|| panic!("{cp:x} at {w}x{h} must be owned"));
+                let lit = (0..(w * h))
+                    .filter(|&i| buf[(i * 4 + 3) as usize] > 0)
+                    .count();
+                assert!(lit > 0, "{cp:x} at {w}x{h}: blank");
+                assert!(
+                    lit < (w * h) as usize,
+                    "{cp:x} at {w}x{h}: fills the whole cell"
+                );
+            }
+            assert!(block_glyph(cp, 0, 16).is_none(), "{cp:x}: zero width");
+            assert!(block_glyph(cp, 16, 0).is_none(), "{cp:x}: zero height");
+        }
+    }
+
+    #[test]
+    fn the_reserved_and_out_of_scope_legacy_codepoints_are_not_owned() {
+        // `1FB93` is <reserved> in Unicode — it must draw nothing.
+        assert!(block_glyph(0x1FB93, 16, 16).is_none(), "1FB93 is reserved");
+        // The rectangular shades / fill chars / triangular shades around this scope belong to later
+        // issues, not #366 — this module must not silently claim them.
+        for cp in [0x1FB8C, 0x1FB92, 0x1FB94, 0x1FB97, 0x1FB9C, 0x1FB9F] {
+            assert!(
+                block_glyph(cp, 16, 16).is_none(),
+                "{cp:x} is out of #366's scope"
+            );
         }
     }
 
