@@ -1,0 +1,288 @@
+# theflow bindings (justerm)
+
+Project-specific data for the `theflow` skill (the working discipline for a
+substantive change to core/wasm/web/renderer). The skill holds the portable
+*method* (seven steps + reasoning habits); this file holds justerm's *bindings* —
+which reference to read, where the boundary falls, how to prove behavior, which
+surfaces describe it, which gates to run, and how the downstream loop closes. The
+method defers every concrete value here. (Authored/updated via `/grill-the-flow`.)
+
+This is **not** web-only. Any substantive change to `justerm-core`,
+`justerm-wasm-decode`, `justerm-web`, or `justerm-renderer` runs the seven steps.
+Skipping a step is allowed only with an explicit "N/A because…" — a silent skip
+is an untracked gap. The web form of the flow was established in slice S8 (#109).
+
+Prior art cross-checked throughout: **Mosh · Alacritty · Warp · VS Code ·
+beamterm** (convergence = non-arbitrariness).
+
+## Crate / module map
+
+| Member | In `--workspace`? | Gate note |
+|---|---|---|
+| `justerm-core` | yes | engine — parsing + grid + scrollback + selection; published to crates.io, API docs on **docs.rs** |
+| `justerm-wasm-decode` | yes | wasm decoder binding; published to npm; a public-API change can silently break it (happened in 0.4.0) |
+| `justerm-web` | no (pnpm) | web widget; consumes the *published* `justerm-wasm-decode` (the version pin lives in its manifest, not here) |
+| `justerm-renderer` | no (excluded) | own renderer (glow/web-sys, wasm32-only); has its own CI jobs |
+| `fuzz` | no (own `[workspace]`) | out-of-workspace blind spot |
+| `justerm-facade` | no (excluded) | one-shot `justerm` 0.5.1 tombstone, off the version lockstep |
+
+`--workspace` is required at the root (virtual manifest, no `[package]`), and it
+**does not even build** the excluded members — so renames / public-path changes
+need the separate checks in the gate matrix below.
+
+**Consumers (derive, never guess — check the *right* manifest):**
+- *In-repo* — `justerm-web` (consumes published wasm), `justerm-renderer`.
+- *Cross-repo* — **penterm** at `../penterm/src-tauri/Cargo.toml` (`justerm-core =
+  "0.6.0"`, from crates.io) + its webview consumes npm `justerm-wasm-decode`.
+  penterm's Rust dep lives under `src-tauri/`, **not** the repo-root manifest —
+  a top-level `grep` misses it and falsely reports "no consumer".
+
+## Step 1 — reference routing table
+
+Read real source with `gh api …/contents/<path> --jq .content | base64 -d`, then
+`grep -n` / `sed -n` the actual lines. **WebFetch is banned** — it summarizes and
+drops method bodies (e.g. xterm.js `InputHandler.ts`, 3.7K lines: the registry
+shows, handler bodies like `setOrReportIndexedColor` get cut).
+
+| Change type | Real source to read |
+|---|---|
+| **Web feature (concept/UX)** | its real source — usually **xterm.js** (`repos/xtermjs/xterm.js`; e.g. drag-scroll 50px/15, highlightLimit 1000, `_charsToConsume`); for features xterm lacks, the consumer that built it (e.g. **VSCode** `microsoft/vscode` terminal a11y) |
+| **Text / coords / VT-semantics (mechanism)** | **xterm.js buffer layer + alacritty real source** + *this repo's siblings* (`docs/architecture.md` §"Hidden VT state" + `search` / `selection` / `logical-lines` cell-walk). Enumerate the hidden state the reference tracks *first* |
+| **Wire / format / coord / API shape** | *this repo's sibling fields & precedent* — #129 `mouse_events`, #112 scroll, #108 overlay: how they touch struct→encode→decode→Flat→getter→`types.ts` — plus **ADR-0013/0014** (viewport state in the header) and **ADR-0008** (decode boundary). Mirror the most recent sibling verbatim |
+
+**Concept ≠ mechanism (the trap).** A feature has a concept layer *and* a
+mechanism layer. It can be novel at the concept layer (absent from xterm.js) yet
+its mechanism (text extraction, wrap, wide-char) still lives in xterm/alacritty's
+buffer/parser layer — read **both**. (#150 accessible-view: concept = VSCode
+`terminalAccessibleBufferProvider`, but extraction semantics = xterm.js
+`translateToString` / `isWrapped`; skipping xterm as "no such feature" would miss
+the extraction layer.)
+
+**Hidden VT state** lives in `docs/architecture.md` §"Hidden VT state". Add to it
+*before* implementing semantics work. Classic examples the naive model omits:
+pending-wrap, wide-char spacer, soft-wrap join, BCE. **Removing a field/flag is
+the mirror image** — a value read *incidentally* (feeding a boolean, gating a
+branch, computed into something else) is unpinned the moment you delete it; grep
+every read site first.
+
+**External / registry facts are verification targets too.** Version state, a
+published API's shape, a wire VERSION — check the *real* source (the registry, the
+raw file), not a sentence about it. justerm's live trap: `justerm-web` consumes
+the **published** `justerm-wasm-decode`, so a new binding is `undefined` at
+runtime until republished; a local pkg-swap pollutes the pnpm store (`--frozen-
+lockfile` won't fix it). **Judge published-package questions in a clean-room
+worktree only** (detect drift with `npm pack`; recover with store prune +
+`--force`).
+
+**To pin a runtime fact, instrument a throwaway probe.** For a real coordinate /
+call-order / emitted-event value, write a disposable probe (renderer: through
+`demo/proof.js`, `cell_width()` in device px), read the number, delete the probe,
+record it in the issue. Reading code ≠ observing it — the dpr≠1 coordinate bugs
+were all *green* on a dpr-1 machine (#328/#331).
+
+**"Unconfirmed ≠ absent."** A summary/search *not showing* a fact does not make it
+absent — that is a **gap** (surface as an issue or ask), never a silent
+load-bearing assumption. Its inverse: **a cleared concern is recorded with its
+validity condition** ("this path is fine *as long as X holds*") in the issue, so
+the next person does not re-run the investigation and it does not silently break
+the day X changes.
+
+## Step 2 — boundary rule (ADR-0017)
+
+A mechanism is **core** iff it is ① VT-parsing, or ② only correct with the
+*whole buffer* (all cells, scrollback, coordinates, wrap, wide-char) — a
+frame-mode consumer holds only the viewport and physically cannot. But *policy*
+(query · regex · palette · announce policy) is injected by the consumer so the
+core stays policy-/theme-agnostic. **Mechanism core, policy consumer.** (web's
+write seam = `FrameSource` siblings `SelectionPort` / `SearchPort`…; queries are
+`Promise` IPC; web draws frame overlays but never runs the engine.)
+
+The core invariant (justerm's identity — see `CLAUDE.md`): no I/O, no IPC, no
+rendering, theme-agnostic (colors stored as `Default` / `Indexed(u8)` / `Rgb`
+references only). Owned **by the consumer by definition** (not a workaround):
+color interpretation, hover, pixel→cell, debounce, scrollbar, clipboard,
+transport.
+
+**Contract ≠ defect (diagnose before fixing "at the root").** When a consumer
+reports a "bug", ask *whose invariant broke*. theme-agnostic color and **per-char
+`UnicodeWidthChar` width** are contracts justerm *deliberately* holds — a consumer
+unhappy with them is standing on nothing valid, and "fixing at the root" means
+fixing the consumer, not deleting the contract.
+
+**The boundary is a membrane — it leaks both ways.** A core floor (edition 2024,
+a future `rust-version`/MSRV, a new required capability) rides a caret/compatible
+range straight *down* to penterm and web. And a contract change makes a
+consumer's *rationale* go stale — obliging the Step 6 sweep downstream.
+
+**Two consumers reaching the same workaround = a bug report against the core
+default**, not a coincidence. Weigh "add an option but keep the trap as default"
+accordingly.
+
+**No consumer workaround for a core defect.** justerm precedent: #297/#300 — a
+core VS16 (FE0F) width gap was worked around in the renderer via FE0F detection;
+that was blocked, root fix tracked as #301 (later subsumed by mode 2027
+#295/#305, tail #303/#304). **When you feel the urge to make a consumer test pass
+by compensating: stop, explain to the user, ask whether to root-fix** — don't
+work around alone, don't silently file-and-move-on. Then fix at the root or leave
+the gap visible + tracked (and assert the *real* behavior honestly).
+
+## Step 3 — the test-trust gate
+
+Beyond `/tdd` RED→GREEN, a passing test earns trust only after two bars: **(1)
+discriminating power** — turn the fix off, confirm it goes red (a green from a
+test you never saw fail is not evidence), and **(2) right reason** — assert the
+side conditions (the callback that must *not* fire, the exact count). justerm
+precedent: **#355** — a mutation test needs a *fresh baseline* re-run in the same
+pass (both RED = you broke the proof); remove guards one at a time and check a new
+guard fires before the old one.
+
+## Step 4 — proof method per layer (real round-trip, not a fake)
+
+| Layer | Real proof |
+|---|---|
+| **core / wasm** | `encode→decode` round-trip (ADR-0005) · `vttest` · **real PTY capture** (the user's RHEL 9 VM, `capture-dogfood.sh` — vim/top/htop; TUI needs a foreground timeout, alt-screen apps snapshot just before `?1049l`) |
+| **web** | `pnpm demo` real browser (DPR / coords / render bugs; canvas buffer = CSS×DPR, geometry from `rect.h/ROWS`) + `pnpm test:e2e` (Playwright headless, `webServer` auto-starts `pnpm demo` → real wasm+controller round-trip). a11y proven via **SR-consumed proxies**: announce = aria-live `textContent`, signal = console log; **suppression proof = with SR off, neither appears** |
+| **renderer** | `pnpm run build:wasm && pnpm exec playwright test` over `demo/*.html` × dpr **1 / 1.1 / 1.5 / 2**, reading `window.__proof.ok`; coordinates via `demo/proof.js`, `cell_width()` in device px |
+| **strongest — real consumer** | **penterm.** Link the local build in: `[patch.crates-io] justerm-core = { path = "../justerm/justerm-core" }` in `../penterm/src-tauri/Cargo.toml`, run penterm's **full** suite. Strongest evidence = a penterm test that *pinned the old bug as expected* now **breaks** while the rest stays green. For a wasm/web change, link via a **clean-room worktree** (a local pkg-swap pollutes the pnpm store) |
+
+Traps this layer must respect:
+
+- **A green headless E2E proves only SR-consumed proxies** (announce · signal) —
+  not *visual/DOM* side effects (focus · scroll · reveal). Assert the DOM state
+  directly (`document.activeElement` line index, `scrollTop`) **or** drive live
+  via Playwright MCP (`browser_evaluate`), then lock the regression into E2E.
+  (#166 reveal-focus; #172 live-drive path.)
+- **`readPixels` ≠ a screenshot.** Headless SwiftShader composites a
+  fractional-CSS canvas to white (#352); a blur metric then reads that as
+  "sharpest". Beware tautological proofs (#337) — a check that can only confirm
+  its own premise. Don't eyeball at dpr 1 and move on (#328).
+- Visual/color changes still need a browser verify even when Step 5 is skipped
+  for a closed surface — a synthetic-input unit is not a substitute (#223).
+
+## Step 5 — adversarial two-lens
+
+Lens ① this repo — `architecture.md` §"Hidden VT state" + sibling cell-walk
+(search / selection / logical-lines). Lens ② reference — xterm.js / alacritty
+real source via `gh api`. Never collapse to one lens even for a small fix (#158).
+Precedent: #113 logical-lines (single-buffer view missed the alt-screen
+cross-buffer defect; also surfaced the same bug in `search()` → #144; the
+`abs_floor()` centralization covers logical_lines/#113 · search/#144 ·
+word-sel/#207). Gate on *enumeration risk*, not diff size; a reactive spike that
+keeps catching new gaps is the trigger. Record an explicit skip for a closed
+surface.
+
+## Step 6 — behavior-describing surfaces (sweep by hand)
+
+No change ends at the code; nothing compiles the drift away. Sweep every surface
+that *describes* the behavior:
+
+- **Public doc-comments → docs.rs.** `justerm-core`/`justerm-wasm-decode` ship
+  their `///` / `//!` comments verbatim as the crate's **docs.rs** API reference
+  (core has ~20 in `lib.rs` alone) — the surface most likely to still describe the
+  old behavior. Update them in the same change.
+- **Release notes = GitHub Releases** (tag-driven, `docs/agents/release.md`).
+  **There is no `CHANGELOG.md`.** crates.io/npm snapshot the **README** at publish
+  time — never rewrite a published entry; if the repo and the registry would
+  disagree for a version, open a new note, don't edit the shipped one.
+- **Glossary + decision trail** — `CONTEXT.md` (glossary) and `docs/adr/`. If a
+  domain term's *meaning* changed, update the glossary in the same change.
+- **The wire contract mirror** — a wire/format change touches
+  `struct → encode → decode → Flat → getter → types.ts`; `justerm-web/types.ts`
+  hand-mirrors the wasm getters, so grep it (#129/#135: `mouseWantedEvents`
+  reached `types.ts` only at S16). Also the renderer `demo/*.html` headers and
+  spike comments — each promises only what it can demonstrate (don't tell the
+  reader to "watch it change" a constant).
+- **Reclaim now-false rationale.** Walk recent PR/issue/release reasoning and
+  retract what the new behavior falsified (surviving reasons are usually the
+  transitive ones).
+
+## Step 7 — gate matrix + downstream loop
+
+**core / wasm:**
+```
+cargo test --workspace
+cargo fmt --all --check
+cargo clippy --workspace --all-targets
+cargo check --manifest-path fuzz/Cargo.toml
+cargo build -p justerm-wasm-decode --tests --target wasm32-unknown-unknown
+```
+(`--workspace` blind spots: `cargo fmt --all --check` is pinned 1.96.0;
+`justerm-wasm-decode/tests/web.rs` is wasm32-only and 0-compiles on host — its
+runtime assertions run only in the browser CI job. Keep version-pinned tests in
+sync on host *and* wasm.)
+
+**web:**
+```
+pnpm typecheck        # 3 tsconfigs: tsconfig.json (src, browser, types:[] → process/Buffer are errors),
+                      #   tsconfig.test.json (test+demo+e2e, node types), tsconfig.node.json (*.config.ts).
+                      #   Running one silently leaks coverage — verify with `tsc -p <each> --listFiles`.
+pnpm test             # full vitest
+pnpm build            # tsup — does NOT catch type errors typecheck missed; guards output paths only
+pnpm demo             # + pnpm test:e2e if the change is a11y/UI-observable
+```
+For **visual/DOM side effects**, E2E must assert the DOM state
+(`document.activeElement` · `scrollTop`) — announce/signal alone is an unverified
+gap (Step 4). CI wired since #341 (`web`, `web-e2e`). Local E2E needs
+`pnpm exec playwright install chromium` once.
+
+**renderer** (out of every cargo umbrella — `cargo fmt --all` and `--workspace`
+visit **zero** renderer files, #333):
+```
+cargo fmt   --manifest-path justerm-renderer/Cargo.toml --check
+cargo test  --manifest-path justerm-renderer/Cargo.toml                                        # pure layer
+cargo clippy --manifest-path justerm-renderer/Cargo.toml --target wasm32-unknown-unknown --all-targets
+cargo build  --manifest-path justerm-renderer/Cargo.toml --target wasm32-unknown-unknown       # GL/wasm layer 0-compiles on host
+cd justerm-renderer && pnpm run test:unit                                                      # demo/proof.js pixel helpers
+cd justerm-renderer && pnpm run test:proofs                                                    # ONLY if the GL layer changed (#328/#331)
+```
+CI wired since #333 (`renderer`, `renderer-proofs`).
+
+**Gate hygiene:** run each gate **bare, never piped** (`test … | tail -1 &&
+commit` always commits — a pipeline's status is `tail`'s). **Never move a
+threshold** (coverage floor / lint budget) to turn a build green.
+
+**Branch / PR / CI:** branch → `feat(<scope>): … (#issue)` (**no `Co-Authored-By`
+trailer**) → squash PR (`Closes #issue`) → confirm CI jobs green:
+`test` / `wasm` / `renderer` / `renderer-proofs` / `web` / `web-e2e`. Don't watch
+CI *during* implementation (local gates mirror it) — except wasm browser
+`wasm_bindgen_test`, which runs only in the CI wasm job, so check it once per
+wasm-decode-changing PR.
+
+**Downstream loop (after release — full cross-repo).** A root fix that ships but
+leaves consumers on their old workarounds has only *relocated* the divergence.
+Once a fixed `justerm-core`/`justerm-wasm-decode` is published (tag-driven, see
+release.md):
+- *In-repo* — bump / de-workaround `justerm-web` and `justerm-renderer` (e.g. the
+  #297 VS16 renderer workaround must go once the core fix ships).
+- *Cross-repo (penterm)* — raise `../penterm/src-tauri/Cargo.toml`
+  (`justerm-core = "…"`) and the webview's npm `justerm-wasm-decode` to the fixed
+  version, **remove the now-unnecessary workarounds**, and **flip the penterm
+  tests that pinned the old bug** (the same ones that broke under the Step 4
+  patch-link). penterm's manifest already tracks this contract history (wire
+  VERSION bumps: justerm#38/#41/#81; the #100 rename was API/wire-invariant, a
+  drop-in). Leave any workaround that was *never* bug-avoidance, with a comment
+  saying why. A purely additive release (new option/constructor) obliges penterm
+  to do nothing — say so explicitly.
+
+## War-story index (rules with teeth)
+
+- **No consumer workaround / contract≠defect** — #297/#300 (VS16 FE0F renderer workaround blocked, root → #301); the core per-char width & theme-agnostic color are contracts.
+- **Concept ≠ mechanism** — #150 (accessible-view: VSCode concept, xterm.js extraction mechanism).
+- **Two-lens, never collapse** — #113/#144/#207 (alt-screen cross-buffer via `abs_floor()`); #158 ("fix is small → one lens" caught).
+- **Real round-trip / visual side effects** — #166 (reveal-focus headless miss), #172 (live MCP path), #223 (browser verify skipped).
+- **Probe a runtime fact / readPixels≠screenshot** — #328/#331 (dpr≠1 coord bug green on dpr-1), #352, #337 (tautology).
+- **Test-trust gate** — #355 (both RED = you broke the proof; re-run baseline GREEN, remove guards one at a time).
+- **Defer / negative results = the issue is the durable record** — #317 (deferral left in PR body only, caught); seed measured numbers + rejected alternatives + cleared-concern validity conditions up front.
+- **Out-of-workspace / formatter / typecheck blind spots** — #333 (renderer unformatted + proofs CI), #341 (web CI + e2e tsconfig), #343/#344 (typecheck vs build).
+- **Behavior-surface drift** — #129/#135 (`mouseWantedEvents` reached `types.ts` only at S16 — grep the wire mirror).
+- **External/registry facts** — web consumes *published* wasm (new binding `undefined` until republish); clean-room worktree only, regex discriminators `=x` / `(?i)abc` / `(?<name>x)`.
+- **Downstream contract history** — penterm wire VERSION bumps justerm#38/#41/#81; #100 rename API/wire-invariant drop-in.
+
+(A repo-wide evidence log could live in `docs/agents/lessons.md`; for now these
+precedents index inline.)
+
+## Refs
+
+- Contract spec: `docs/architecture.md` (cells · damage · viewport/scroll · cadence · selection · serialization · engine API; §"Hidden VT state").
+- Decisions: `docs/adr/` — 0005 (encode/decode round-trip), 0008 (decode boundary), 0013/0014 (viewport state in header), 0017 (mechanism core / policy consumer), 0018 (justerm-renderer pivot).
+- Identity & invariants: `CLAUDE.md`. Glossary: `CONTEXT.md`. Release: `docs/agents/release.md`.
