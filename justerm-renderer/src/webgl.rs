@@ -1648,10 +1648,13 @@ impl JustermRenderer {
     /// already had. A **block** ignores it — a block recolours its cell and draws no stroke.
     ///
     /// Default `0.15` (alacritty's `cursor.thickness`); clamped to `[0, 1]` (alacritty's
-    /// `Percentage`). The mechanism's `.max(1)` floor still applies, so even `0` leaves a
-    /// one-pixel stroke rather than an invisible cursor. Takes effect on the next
-    /// [`render`](Self::render) — like a stroke's shape, it is a shader uniform, so changing it
-    /// costs no upload.
+    /// `Percentage`). The clamp is load-bearing, not hygiene: `cursor_thickness` computes
+    /// `(frac * cell_w).round() as u32`, and an unclamped `f32::INFINITY` saturates that cast to
+    /// `u32::MAX` device pixels. `NaN` is caught a layer deeper — `frac.max(0.0)` returns `0.0` for
+    /// it (`f32::max` yields the non-NaN operand) — so the floor below still gives it a 1px stroke.
+    /// The mechanism's `.max(1)` floor also means even `0` leaves a one-pixel stroke rather than an
+    /// invisible cursor. Takes effect on the next [`render`](Self::render) — like a stroke's shape,
+    /// it is a shader uniform, so changing it costs no upload.
     #[wasm_bindgen(js_name = setCursorThickness)]
     pub fn set_cursor_thickness(&mut self, frac: f32) {
         self.cursor_thickness_frac = frac.clamp(0.0, 1.0);

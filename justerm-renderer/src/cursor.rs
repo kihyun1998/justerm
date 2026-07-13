@@ -273,6 +273,12 @@ mod tests {
         assert_eq!(cursor_thickness(0.15, 3), 1); // 0.45 -> 0 -> floored to 1
         assert_eq!(cursor_thickness(0.15, 1), 1);
         assert_eq!(cursor_thickness(0.0, 100), 1); // a zero fraction is still visible
+        // A NaN fraction is neutralised here, not at the setter: `f32::max` returns the non-NaN
+        // operand, so `NaN.max(0.0) == 0.0`, and the floor makes it a 1px stroke rather than a
+        // `NaN as u32 == 0` disappearance. (The setter's `[0,1]` clamp is what stops `+inf` from
+        // reaching this and saturating the `u32` cast to `u32::MAX`.)
+        assert_eq!(cursor_thickness(f32::NAN, 16), 1);
+        assert_eq!(cursor_thickness(-1.0, 16), 1); // a negative fraction floors, never wraps
     }
 
     /// A consumer-injected fraction other than the default scales the stroke proportionally (#369).
