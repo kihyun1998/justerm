@@ -137,7 +137,8 @@ fn is_emoji_presentation(c: char) -> bool {
                 | 0x1F260..=0x1F265
                 // Symbols for Legacy Computing: sextants, block/shade elements, teletext mosaics.
                 // Text presentation, and `builtin::block_glyph` draws many of them itself — sextants
-                // and eighth blocks (#361), then wedges, one-eighth blocks and diagonal fills (#366).
+                // and eighth blocks (#361), wedges, one-eighth blocks and diagonal fills (#366), then
+                // the shades and pattern fills (#367) — all of 1FB00-1FB9F bar the reserved 1FB93.
                 // Nothing depended on this until now only because core reports them width-1, so the
                 // `wide &&` gate never asked — an invariant across three layers, now pinned by a test
                 // rather than by another crate's width table.
