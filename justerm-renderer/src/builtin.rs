@@ -18,9 +18,9 @@
 //! path does not care where a glyph came from. The shades are a flat alpha, as alacritty draws them
 //! (`COLOR_FILL_ALPHA_STEP_*`), not a dither pattern.
 
-/// The block-element codepoint range. Box drawing (`U+2500`–`U+257F`) is a sibling family with its
-/// own [`box_glyph`] path (the [`BOX_ARMS`] table for straight lines, plus dashes, doubles and
-/// diagonals); only its rounded corners (`256D`-`2570`) remain a later slice (#365).
+/// The block-element codepoint range. Box drawing (`U+2500`–`U+257F`) is a sibling family, fully
+/// owned by [`box_glyph`]: the [`BOX_ARMS`] table for straight lines and junctions, plus dashes,
+/// doubles, diagonals and rounded corners (#365 complete).
 pub const FIRST: u32 = 0x2580;
 pub const LAST: u32 = 0x259F;
 
@@ -255,6 +255,9 @@ fn box_glyph(cp: u32, w: u32, h: u32) -> Option<Vec<u8>> {
     if (0x2550..=0x256C).contains(&cp) {
         return box_double(cp, w, h);
     }
+    if (0x256D..=0x2570).contains(&cp) {
+        return box_rounded(cp, w, h);
+    }
     let [left, right, up, down] = BOX_ARMS
         .binary_search_by_key(&cp, |&(c, _)| c)
         .ok()
@@ -431,6 +434,132 @@ fn box_dash(cp: u32, w: u32, h: u32) -> Option<Vec<u8>> {
         for gap in 0..=num_gaps {
             let y = (gap * (dash_len + dash_gap)).min(h);
             fill(&mut buf, (w, h), (x0, y, x1 - x0, dash_len), SOLID);
+        }
+    }
+    Some(buf)
+}
+
+/// The rounded box corners `╭ ╮ ╯ ╰` (`256D`-`2570`), or `None` outside that range. A faithful port
+/// of alacritty's arc path (`builtin_font.rs:350-393` + `draw_rounded_corner` `:890-954`): a quarter
+/// circle rasterised by analytic distance-to-centre coverage (an inner and outer anti-aliased border
+/// around a `stroke`-wide band) plus a rectangle extending the arc to the cell's long edge. The base
+/// shape is `╯` (up+left); `╮` mirrors it in Y, `╰` in X, `╭` in both.
+fn box_rounded(cp: u32, w: u32, h: u32) -> Option<Vec<u8>> {
+    if !(0x256D..=0x2570).contains(&cp) || w == 0 || h == 0 {
+        return None;
+    }
+    let stroke = ((w as f32 / 8.0).round() as u32).max(1);
+    let mut buf = vec![0u8; (w * h * 4) as usize];
+
+    // --- draw the base `╯`: a quarter circle centred on the canvas origin, offset along the long
+    // side, exactly as alacritty's `draw_rounded_corner`.
+    let radius = (w.min(h) + stroke) as f32 / 2.0;
+    let stroke_f = stroke as f32;
+    let (long_side, short_side) = if h > w { (h, w) } else { (w, h) };
+    let distance_bias = if short_side % 2 == stroke % 2 {
+        0.0
+    } else {
+        0.5
+    };
+    let mut off = long_side as f32 / 2.0 - radius + stroke_f / 2.0;
+    if (w % 2 != h % 2) && (long_side % 2 == stroke % 2) {
+        off += 1.0;
+    }
+    let (x_offset, y_offset) = if h > w { (0.0, off) } else { (off, 0.0) };
+
+    // put_pixel: brighter-wins, matching alacritty's `put_pixel` (`builtin_font.rs:807`).
+    let wf = w as f32;
+    let hf = h as f32;
+    let put = |buf: &mut [u8], x: f32, y: f32, a: u8| {
+        if x < 0.0 || y < 0.0 || x > wf - 1.0 || y > hf - 1.0 {
+            return;
+        }
+        let i = ((y as u32 * w + x as u32) * 4) as usize;
+        if a > buf[i + 3] {
+            buf[i] = 255;
+            buf[i + 1] = 255;
+            buf[i + 2] = 255;
+            buf[i + 3] = a;
+        }
+    };
+    let radius_i = (short_side + stroke).div_ceil(2);
+    for yy in 0..radius_i {
+        for xx in 0..radius_i {
+            let (xf, yf) = (xx as f32, yy as f32);
+            let distance = xf.hypot(yf) + distance_bias;
+            let value = if distance < radius - stroke_f - 1.0 {
+                0.0 // inside the circle
+            } else if distance < radius - stroke_f {
+                1.0 + distance - (radius - stroke_f) // inner anti-aliased border
+            } else if distance < radius - 1.0 {
+                1.0 // solid stroke
+            } else if distance < radius {
+                radius - distance // outer anti-aliased border
+            } else {
+                0.0 // outside
+            };
+            put(
+                &mut buf,
+                xf + x_offset,
+                yf + y_offset,
+                (value * 255.0) as u8,
+            );
+        }
+    }
+    // The rectangle extending the arc to the far (long-side) edge.
+    if h > w {
+        let x = ((wf / 2.0 - stroke_f / 2.0).max(0.0)) as u32;
+        fill(&mut buf, (w, h), (x, 0, stroke, y_offset as u32), SOLID);
+    } else {
+        let y = ((hf / 2.0 - stroke_f / 2.0).max(0.0)) as u32;
+        fill(&mut buf, (w, h), (0, y, x_offset as u32, stroke), SOLID);
+    }
+
+    // --- mirror into the requested orientation (RGBA 4-byte pixels), matching alacritty's buffer
+    // flips, including the `extra_offset` that keeps the arc aligned on an odd cell.
+    let swap_px = |buf: &mut [u8], a: usize, b: usize| {
+        for k in 0..4 {
+            buf.swap(a * 4 + k, b * 4 + k);
+        }
+    };
+    let copy_px = |buf: &mut [u8], src: usize, dst: usize| {
+        for k in 0..4 {
+            buf[dst * 4 + k] = buf[src * 4 + k];
+        }
+    };
+    if cp == 0x256D || cp == 0x2570 {
+        let center = (w / 2) as usize;
+        let extra = usize::from(stroke % 2 != w % 2);
+        // `1..=h` (not alacritty's `1..h`): a horizontal flip must reach the LAST row too, or a `╰`/`╭`
+        // on a wide-short cell keeps the base `╯`'s left-pointing ink on its bottom row. alacritty's
+        // cells are always tall enough that the last row is blank, so its off-by-one never shows; a
+        // widened (letterSpacing) cell here can reach it. The Y-mirror below already covers all rows.
+        for y in 1..=h as usize {
+            let left = (y - 1) * w as usize;
+            let right = y * w as usize - 1;
+            if extra != 0 {
+                copy_px(&mut buf, left, right);
+            }
+            for offset in 0..center {
+                swap_px(&mut buf, left + offset, right - offset - extra);
+            }
+        }
+    }
+    if cp == 0x256D || cp == 0x256E {
+        let center = (h / 2) as usize;
+        let extra = usize::from(stroke % 2 != h % 2);
+        if extra != 0 {
+            let bottom = (h as usize - 1) * w as usize;
+            for i in 0..w as usize {
+                copy_px(&mut buf, i, bottom + i);
+            }
+        }
+        for offset in 1..=center {
+            let top_row = (offset - 1) * w as usize;
+            let bottom_row = (h as usize - offset - extra) * w as usize;
+            for i in 0..w as usize {
+                swap_px(&mut buf, top_row + i, bottom_row + i);
+            }
         }
     }
     Some(buf)
@@ -757,10 +886,12 @@ mod tests {
         );
         assert!(block_glyph(0x2550, 8, 8).is_some(), "═ double horizontal");
         assert!(block_glyph(0x256C, 8, 8).is_some(), "╬ double cross");
-        // The rest of the box tail stays unowned: rounded corners.
+        // Rounded corners complete the box range: all of 2500-257F is now owned.
+        assert!(block_glyph(0x256D, 8, 8).is_some(), "╭ rounded corner");
+        assert!(block_glyph(0x2570, 8, 8).is_some(), "╰ rounded corner");
         assert!(
-            block_glyph(0x256D, 8, 8).is_none(),
-            "╭ rounded — later slice"
+            (0x2500..=0x257F).all(|cp| block_glyph(cp, 8, 8).is_some()),
+            "every box-drawing codepoint 2500-257F is owned"
         );
         assert!(block_glyph(0x41, 8, 8).is_none(), "'A' belongs to the font");
         // A degenerate cell has no pixels to fill; the caller must not be handed an empty bitmap.
@@ -1400,8 +1531,9 @@ mod tests {
     fn box_drawing_stays_text_presentation_not_emoji() {
         // #365 must not perturb emoji classification: box drawing is text presentation, so the emoji
         // gate never fires for it (the range is nowhere near the 1F000+ plane it keys on).
-        for s in ["─", "│", "┼", "╋", "╿", "╱", "╲", "╳", "┄", "╍", "═", "╬"]
-        {
+        for s in [
+            "─", "│", "┼", "╋", "╿", "╱", "╲", "╳", "┄", "╍", "═", "╬", "╭", "╰",
+        ] {
             assert!(
                 !crate::emoji::is_emoji_text(s, false),
                 "{s} is not emoji (narrow)"
@@ -1812,6 +1944,68 @@ mod tests {
     }
 
     #[test]
+    fn a_rounded_corner_reaches_the_edges_its_name_gives() {
+        // `╭╮╯╰` connect the same two arms as the sharp `┌┐┘└`, so the same two edges are lit and the
+        // other two clear — pinning the mirror orientation (a wrong X/Y flip lights the wrong pair).
+        // `[left,right,up,down]`.
+        let cases: &[(u32, [bool; 4])] = &[
+            (0x256D, [false, true, false, true]), // ╭ down + right
+            (0x256E, [true, false, false, true]), // ╮ down + left
+            (0x256F, [true, false, true, false]), // ╯ up + left
+            (0x2570, [false, true, true, false]), // ╰ up + right
+        ];
+        let (w, h) = (16u32, 16u32);
+        for &(cp, [l, r, u, d]) in cases {
+            let g = box_g(cp, w, h);
+            assert_eq!(col_lit(&g, w, h, 0), l, "{cp:#06X} left edge");
+            assert_eq!(col_lit(&g, w, h, w - 1), r, "{cp:#06X} right edge");
+            assert_eq!(row_lit(&g, w, h, 0), u, "{cp:#06X} top edge");
+            assert_eq!(row_lit(&g, w, h, h - 1), d, "{cp:#06X} bottom edge");
+        }
+        // The X-mirror must flip the LAST row too: on a wide-short cell (where the glyph fills its
+        // whole height) the base `╯` leans LEFT, so `╭`/`╰` — which flip X — must not light the left
+        // edge, and `╮`/`╯` must not light the right. Only the horizontal orientation is asserted here;
+        // top/bottom is degenerate at this height. (Catches an X-mirror that stops before row h-1.)
+        for &(w, h) in &[(16u32, 2u32), (16, 3)] {
+            for &(cp, [l, r, ..]) in cases {
+                let g = box_g(cp, w, h);
+                assert_eq!(
+                    col_lit(&g, w, h, 0),
+                    l,
+                    "{cp:#06X} {w}x{h} left edge (X-mirror)"
+                );
+                assert_eq!(
+                    col_lit(&g, w, h, w - 1),
+                    r,
+                    "{cp:#06X} {w}x{h} right edge (X-mirror)"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn every_rounded_corner_is_curved_and_connected() {
+        // The point of `╭╮╯╰` over the sharp `┌┐┘└`: each corner is an anti-aliased arc, so it has
+        // partial-coverage pixels a sharp rectangle corner never produces — and it is one connected
+        // shape (arc + arms). Checked for ALL FOUR, so a mutation that draws a sharp corner (skipping
+        // the arc) or a wrong mirror reddens. (`256F` is the un-mirrored base; the other three each
+        // exercise a different mirror.)
+        let (w, h) = (16u32, 16u32);
+        for cp in [0x256D, 0x256E, 0x256F, 0x2570] {
+            let g = box_g(cp, w, h);
+            assert!(
+                g.chunks_exact(4).any(|p| p[3] > 0 && p[3] < 255),
+                "{cp:#06X} carries anti-aliased arc pixels (not a sharp corner)"
+            );
+            assert_eq!(
+                lit_components(&g, w, h),
+                1,
+                "{cp:#06X} is one connected shape"
+            );
+        }
+    }
+
+    #[test]
     fn tiny_cells_draw_box_glyphs_without_panicking() {
         // Whatever a spacing policy produces, a box glyph must survive a 1x1 / 2x2 cell — the
         // diagonals over fill_polygon included (a sub-pixel band must not panic or overflow the buf) —
@@ -1820,7 +2014,7 @@ mod tests {
         for (w, h) in [(1u32, 1u32), (2, 2), (1, 8), (8, 1)] {
             for cp in [
                 0x2500u32, 0x2502, 0x253C, 0x254B, 0x257F, 0x2571, 0x2572, 0x2573, 0x2504, 0x2506,
-                0x254F, 0x2550, 0x2551, 0x2554, 0x256C,
+                0x254F, 0x2550, 0x2551, 0x2554, 0x256C, 0x256D, 0x256E, 0x256F, 0x2570,
             ] {
                 let g = block_glyph(cp, w, h).expect("owned");
                 assert_eq!(g.len(), (w * h * 4) as usize);
