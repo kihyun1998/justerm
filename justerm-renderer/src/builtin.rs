@@ -19,8 +19,8 @@
 //! (`COLOR_FILL_ALPHA_STEP_*`), not a dither pattern.
 
 /// The block-element codepoint range. Box drawing (`U+2500`–`U+257F`) is a sibling family with its
-/// own [`BOX_ARMS`] table and [`box_glyph`] path; its straight-line core is handled (#365), while its
-/// dashes, doubles, rounded corners and diagonals remain a later slice.
+/// own [`box_glyph`] path (the [`BOX_ARMS`] table for straight lines, plus dashes, doubles and
+/// diagonals); only its rounded corners (`256D`-`2570`) remain a later slice (#365).
 pub const FIRST: u32 = 0x2580;
 pub const LAST: u32 = 0x259F;
 
@@ -249,6 +249,12 @@ fn box_glyph(cp: u32, w: u32, h: u32) -> Option<Vec<u8>> {
     if (0x2571..=0x2573).contains(&cp) {
         return box_diagonal(cp, w, h);
     }
+    if let Some(g) = box_dash(cp, w, h) {
+        return Some(g);
+    }
+    if (0x2550..=0x256C).contains(&cp) {
+        return box_double(cp, w, h);
+    }
     let [left, right, up, down] = BOX_ARMS
         .binary_search_by_key(&cp, |&(c, _)| c)
         .ok()
@@ -371,6 +377,182 @@ fn box_diagonal(cp: u32, w: u32, h: u32) -> Option<Vec<u8>> {
     if cp == 0x2572 || cp == 0x2573 {
         band(0.0, 0.0, wf, hf); // ╲ top-left to bottom-right
     }
+    Some(buf)
+}
+
+/// The dashed box lines — double/triple/quadruple dash, horizontal and vertical, light and heavy
+/// (`2504`-`250B`, `254C`-`254F`), or `None` for a codepoint outside that set. A line of `num_gaps+1`
+/// dashes with `span/8`-px gaps, centred on the midline and clipped to the cell — alacritty's
+/// `builtin_font.rs:111-152`. The dash *count* is the character's, read straight off its name
+/// (DOUBLE/TRIPLE/QUADRUPLE dash), and the weight is light or heavy (2x stroke).
+fn box_dash(cp: u32, w: u32, h: u32) -> Option<Vec<u8>> {
+    // (horizontal?, num_gaps, heavy?). num_gaps+1 dashes: 1 gap = double, 2 = triple, 3 = quadruple.
+    let (horizontal, num_gaps, heavy) = match cp {
+        0x2504 => (true, 2, false),  // ┄ triple dash light
+        0x2505 => (true, 2, true),   // ┅ triple dash heavy
+        0x2508 => (true, 3, false),  // ┈ quadruple dash light
+        0x2509 => (true, 3, true),   // ┉ quadruple dash heavy
+        0x254C => (true, 1, false),  // ╌ double dash light
+        0x254D => (true, 1, true),   // ╍ double dash heavy
+        0x2506 => (false, 2, false), // ┆ triple dash vertical light
+        0x2507 => (false, 2, true),  // ┇
+        0x250A => (false, 3, false), // ┊ quadruple dash vertical light
+        0x250B => (false, 3, true),  // ┋
+        0x254E => (false, 1, false), // ╎ double dash vertical light
+        0x254F => (false, 1, true),  // ╏
+        _ => return None,
+    };
+    if w == 0 || h == 0 {
+        return None;
+    }
+    let stroke = ((w as f32 / 8.0).round() as u32).max(1) * if heavy { 2 } else { 1 };
+    let span = if horizontal { w } else { h };
+    // The gap is `span/8`; the dashes share the remainder. `max(1)` keeps a dash visible on a tiny
+    // cell, as alacritty's `cmp::max(…, 1)` does.
+    let dash_gap = (span / 8).max(1);
+    let dash_len = (span.saturating_sub(dash_gap * num_gaps) / (num_gaps + 1)).max(1);
+    let mut buf = vec![0u8; (w * h * 4) as usize];
+    if horizontal {
+        let yc = h as f32 / 2.0;
+        let (y0, y1) = (
+            (yc - stroke as f32 / 2.0).max(0.0) as u32,
+            ((yc + stroke as f32 / 2.0) as u32).min(h),
+        );
+        for gap in 0..=num_gaps {
+            let x = (gap * (dash_len + dash_gap)).min(w);
+            fill(&mut buf, (w, h), (x, y0, dash_len, y1 - y0), SOLID);
+        }
+    } else {
+        let xc = w as f32 / 2.0;
+        let (x0, x1) = (
+            (xc - stroke as f32 / 2.0).max(0.0) as u32,
+            ((xc + stroke as f32 / 2.0) as u32).min(w),
+        );
+        for gap in 0..=num_gaps {
+            let y = (gap * (dash_len + dash_gap)).min(h);
+            fill(&mut buf, (w, h), (x0, y, x1 - x0, dash_len), SOLID);
+        }
+    }
+    Some(buf)
+}
+
+/// The double-line box components — `═ ║` and the double/single-mixed corners and junctions
+/// (`2550`-`256C`), or `None` outside that range. A faithful port of alacritty's double arm
+/// (`builtin_font.rs:247-348`): up to two horizontal rails (at `h_lines.0`/`.1`) and two vertical
+/// rails (at `v_lines.0`/`.1`), each split into halves whose lengths are chosen per codepoint so a
+/// double meets a single (`╞ ╤ …`) or a double (`╬`) without a gap. Every rail is a single stroke.
+fn box_double(cp: u32, w: u32, h: u32) -> Option<Vec<u8>> {
+    if !(0x2550..=0x256C).contains(&cp) || w == 0 || h == 0 {
+        return None;
+    }
+    let stroke = ((w as f32 / 8.0).round() as u32).max(1);
+    let (wf, hf) = (w as f32, h as f32);
+    let (xc, yc) = (wf / 2.0, hf / 2.0);
+    let s2 = stroke as f32 / 2.0;
+    // alacritty's `v_line_bounds` / `h_line_bounds`: integer-truncated stroke extents, cell-clamped.
+    let vb = |x: f32| -> (f32, f32) { ((x - s2).max(0.0).floor(), (x + s2).floor().min(wf)) };
+    let hb = |y: f32| -> (f32, f32) { ((y - s2).max(0.0).floor(), (y + s2).floor().min(hf)) };
+
+    // Where the two vertical rails (left, right) and two horizontal rails (top, bottom) sit. A
+    // "single" arm on that axis collapses both rails onto the centre; a double offsets them by ±1.
+    let v_lines = match cp {
+        0x2552 | 0x2555 | 0x2558 | 0x255B | 0x255E | 0x2561 | 0x2564 | 0x2567 | 0x256A => (xc, xc),
+        _ => {
+            let b = vb(xc);
+            ((b.0 - 1.0).max(0.0), (b.1 + 1.0).min(wf))
+        }
+    };
+    let h_lines = match cp {
+        0x2553 | 0x2556 | 0x2559 | 0x255C | 0x255F | 0x2562 | 0x2565 | 0x2568 | 0x256B => (yc, yc),
+        _ => {
+            let b = hb(yc);
+            ((b.0 - 1.0).max(0.0), (b.1 + 1.0).min(hf))
+        }
+    };
+
+    let vl = vb(v_lines.0); // left vertical rail extent
+    let vr = vb(v_lines.1); // right vertical rail extent
+    let ht = hb(h_lines.0); // top horizontal rail extent
+    let hbo = hb(h_lines.1); // bottom horizontal rail extent
+
+    // Left halves of the two horizontal rails (they start at x = 0).
+    let (top_left_size, bot_left_size) = match cp {
+        0x2550 | 0x256B => (xc, xc),
+        0x2555..=0x2557 => (vr.1, vl.1),
+        0x255B..=0x255D => (vl.1, vr.1),
+        0x2561..=0x2563 | 0x256A | 0x256C => (vl.1, vl.1),
+        0x2564..=0x2568 => (xc, vl.1),
+        0x2569 => (vl.1, xc),
+        _ => (0.0, 0.0),
+    };
+    // Right halves of the two horizontal rails (they start at these x and run to the width).
+    let (top_right_x, bot_right_x, right_size) = match cp {
+        0x2550 | 0x2565 | 0x256B => (xc, xc, wf),
+        0x2552..=0x2554 | 0x2568 => (vl.0, vr.0, wf),
+        0x2558..=0x255A => (vr.0, vl.0, wf),
+        0x255E..=0x2560 | 0x256A | 0x256C => (vr.0, vr.0, wf),
+        0x2564 | 0x2566 => (xc, vr.0, wf),
+        0x2567 | 0x2569 => (vr.0, xc, wf),
+        _ => (0.0, 0.0, 0.0),
+    };
+    // Top halves of the two vertical rails (they start at y = 0).
+    let (left_top_size, right_top_size) = match cp {
+        0x2551 | 0x256A => (yc, yc),
+        0x2558..=0x255C | 0x2568 => (hbo.1, ht.1),
+        0x255D => (ht.1, hbo.1),
+        0x255E..=0x2560 => (yc, ht.1),
+        0x2561..=0x2563 => (ht.1, yc),
+        0x2567 | 0x2569 | 0x256B | 0x256C => (ht.1, ht.1),
+        _ => (0.0, 0.0),
+    };
+    // Bottom halves of the two vertical rails (they start at these y and run to the height).
+    let (left_bot_y, right_bot_y, bottom_size) = match cp {
+        0x2551 | 0x256A => (yc, yc, hf),
+        0x2552..=0x2554 => (ht.0, hbo.0, hf),
+        0x2555..=0x2557 => (hbo.0, ht.0, hf),
+        0x255E..=0x2560 => (yc, hbo.0, hf),
+        0x2561..=0x2563 => (hbo.0, yc, hf),
+        0x2564..=0x2566 | 0x256B | 0x256C => (hbo.0, hbo.0, hf),
+        _ => (0.0, 0.0, 0.0),
+    };
+
+    let mut buf = vec![0u8; (w * h * 4) as usize];
+    // A horizontal rail segment from (x, rail y) of length `size`; and a vertical one. Both mirror
+    // alacritty's `draw_h_line`/`draw_v_line`: the perpendicular extent is the stroke bounds, the far
+    // end is truncated then clamped to the cell.
+    let draw_h = |buf: &mut [u8], x: f32, y: f32, size: f32| {
+        let (y0, y1) = hb(y);
+        let (x0, x1) = (x as u32, ((x + size) as u32).min(w));
+        if x1 > x0 && y1 > y0 {
+            fill(
+                buf,
+                (w, h),
+                (x0, y0 as u32, x1 - x0, y1 as u32 - y0 as u32),
+                SOLID,
+            );
+        }
+    };
+    let draw_v = |buf: &mut [u8], x: f32, y: f32, size: f32| {
+        let (x0, x1) = vb(x);
+        let (y0, y1) = (y as u32, ((y + size) as u32).min(h));
+        if x1 > x0 && y1 > y0 {
+            fill(
+                buf,
+                (w, h),
+                (x0 as u32, y0, x1 as u32 - x0 as u32, y1 - y0),
+                SOLID,
+            );
+        }
+    };
+
+    draw_h(&mut buf, 0.0, h_lines.0, top_left_size);
+    draw_h(&mut buf, 0.0, h_lines.1, bot_left_size);
+    draw_h(&mut buf, top_right_x, h_lines.0, right_size);
+    draw_h(&mut buf, bot_right_x, h_lines.1, right_size);
+    draw_v(&mut buf, v_lines.0, 0.0, left_top_size);
+    draw_v(&mut buf, v_lines.1, 0.0, right_top_size);
+    draw_v(&mut buf, v_lines.0, left_bot_y, bottom_size);
+    draw_v(&mut buf, v_lines.1, right_bot_y, bottom_size);
     Some(buf)
 }
 
@@ -565,15 +747,17 @@ mod tests {
             block_glyph(0x257F, 8, 8).is_some(),
             "╿ mixed-weight terminal"
         );
-        // Diagonals are now owned (#365 tail, drawn over fill_polygon).
+        // Diagonals, dashes and doubles are now owned (#365 tail).
         assert!(block_glyph(0x2571, 8, 8).is_some(), "╱ diagonal");
         assert!(block_glyph(0x2573, 8, 8).is_some(), "╳ cross diagonal");
-        // The rest of the box tail stays unowned: dashes, doubles, rounded corners.
-        assert!(block_glyph(0x2504, 8, 8).is_none(), "┄ dash — later slice");
+        assert!(block_glyph(0x2504, 8, 8).is_some(), "┄ triple dash");
         assert!(
-            block_glyph(0x2550, 8, 8).is_none(),
-            "═ double — later slice"
+            block_glyph(0x254F, 8, 8).is_some(),
+            "╏ heavy double-dash vertical"
         );
+        assert!(block_glyph(0x2550, 8, 8).is_some(), "═ double horizontal");
+        assert!(block_glyph(0x256C, 8, 8).is_some(), "╬ double cross");
+        // The rest of the box tail stays unowned: rounded corners.
         assert!(
             block_glyph(0x256D, 8, 8).is_none(),
             "╭ rounded — later slice"
@@ -1216,7 +1400,8 @@ mod tests {
     fn box_drawing_stays_text_presentation_not_emoji() {
         // #365 must not perturb emoji classification: box drawing is text presentation, so the emoji
         // gate never fires for it (the range is nowhere near the 1F000+ plane it keys on).
-        for s in ["─", "│", "┼", "╋", "╿", "╱", "╲", "╳"] {
+        for s in ["─", "│", "┼", "╋", "╿", "╱", "╲", "╳", "┄", "╍", "═", "╬"]
+        {
             assert!(
                 !crate::emoji::is_emoji_text(s, false),
                 "{s} is not emoji (narrow)"
@@ -1433,6 +1618,199 @@ mod tests {
         }
     }
 
+    /// The number of contiguous lit runs along a row (for a horizontal dash) or column (vertical).
+    fn lit_runs_h(g: &[u8], w: u32, y: u32) -> u32 {
+        let mut runs = 0;
+        let mut prev = false;
+        for x in 0..w {
+            let lit = g[((y * w + x) * 4 + 3) as usize] > 0;
+            if lit && !prev {
+                runs += 1;
+            }
+            prev = lit;
+        }
+        runs
+    }
+    fn lit_runs_v(g: &[u8], w: u32, h: u32, x: u32) -> u32 {
+        let mut runs = 0;
+        let mut prev = false;
+        for y in 0..h {
+            let lit = g[((y * w + x) * 4 + 3) as usize] > 0;
+            if lit && !prev {
+                runs += 1;
+            }
+            prev = lit;
+        }
+        runs
+    }
+
+    /// The dash count = the run count on the busiest row/column (the one the dash line sits on;
+    /// which exact row/column depends on the stroke's pixel-snapping, so scan rather than assume).
+    fn dash_count_h(g: &[u8], w: u32, h: u32) -> u32 {
+        (0..h).map(|y| lit_runs_h(g, w, y)).max().unwrap_or(0)
+    }
+    fn dash_count_v(g: &[u8], w: u32, h: u32) -> u32 {
+        (0..w).map(|x| lit_runs_v(g, w, h, x)).max().unwrap_or(0)
+    }
+
+    #[test]
+    fn a_dash_has_the_number_of_segments_its_name_gives() {
+        // Double/triple/quadruple counted as contiguous runs — for ALL twelve dashes, light AND
+        // heavy, both axes, so a swapped `num_gaps` (e.g. the heavy triple `┅` drawn as a quadruple)
+        // reddens. Read from the character's meaning, on a long cell where the gaps are unambiguous.
+        let (w, h) = (32u32, 8u32);
+        for (cp, n) in [
+            (0x254Cu32, 2u32),
+            (0x254D, 2),
+            (0x2504, 3),
+            (0x2505, 3),
+            (0x2508, 4),
+            (0x2509, 4),
+        ] {
+            assert_eq!(
+                dash_count_h(&box_g(cp, w, h), w, h),
+                n,
+                "{cp:#06X} horizontal dash count"
+            );
+        }
+        let (w, h) = (8u32, 32u32);
+        for (cp, n) in [
+            (0x254Eu32, 2u32),
+            (0x254F, 2),
+            (0x2506, 3),
+            (0x2507, 3),
+            (0x250A, 4),
+            (0x250B, 4),
+        ] {
+            assert_eq!(
+                dash_count_v(&box_g(cp, w, h), w, h),
+                n,
+                "{cp:#06X} vertical dash count"
+            );
+        }
+    }
+
+    #[test]
+    fn a_dash_is_centred_on_the_midline_and_clear_of_the_edges() {
+        // A horizontal dash sits at mid-height with the top and bottom rows empty (it is a broken
+        // line, not a fill).
+        let (w, h) = (32u32, 8u32);
+        let g = box_g(0x2504, w, h);
+        assert!(row_lit(&g, w, h, h / 2), "mid row has dashes");
+        assert!(
+            !row_lit(&g, w, h, 0) && !row_lit(&g, w, h, h - 1),
+            "top/bottom clear"
+        );
+    }
+
+    #[test]
+    fn heavy_dashes_are_thicker_than_light_dashes() {
+        // Every heavy dash is twice the stroke of its light sibling — all six pairs, both axes — so a
+        // flipped `heavy` flag on any one reddens. Thickness measured across the first dash.
+        let (wf, hf) = (32u32, 8u32); // horizontal: thickness is the lit rows at x=1
+        let h_thick = |cp| {
+            (0..hf)
+                .filter(|&y| box_g(cp, wf, hf)[((y * wf + 1) * 4 + 3) as usize] > 0)
+                .count()
+        };
+        for (light, heavy) in [(0x2504, 0x2505), (0x2508, 0x2509), (0x254C, 0x254D)] {
+            assert_eq!(
+                h_thick(heavy),
+                2 * h_thick(light),
+                "{heavy:#06X} = 2x {light:#06X}"
+            );
+        }
+        let (wv, hv) = (8u32, 32u32); // vertical: thickness is the lit cols at y=1
+        let v_thick = |cp| {
+            (0..wv)
+                .filter(|&x| box_g(cp, wv, hv)[((wv + x) * 4 + 3) as usize] > 0)
+                .count()
+        };
+        for (light, heavy) in [(0x2506, 0x2507), (0x250A, 0x250B), (0x254E, 0x254F)] {
+            assert_eq!(
+                v_thick(heavy),
+                2 * v_thick(light),
+                "{heavy:#06X} = 2x {light:#06X}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_double_line_is_two_parallel_rails_spanning_the_cell() {
+        // `═` is two horizontal rails with a gap: a vertical cut crosses two runs, and each rail spans
+        // the full width. `║` is the transpose.
+        let (w, h) = (16u32, 16u32);
+        let g = box_g(0x2550, w, h);
+        assert_eq!(dash_count_v(&g, w, h), 2, "═ is two horizontal rails");
+        assert!(
+            (0..h).any(|y| (0..w).all(|x| g[((y * w + x) * 4 + 3) as usize] > 0)),
+            "═ has a full-width rail"
+        );
+        let g = box_g(0x2551, w, h);
+        assert_eq!(dash_count_h(&g, w, h), 2, "║ is two vertical rails");
+        assert!(
+            (0..w).any(|x| (0..h).all(|y| g[((y * w + x) * 4 + 3) as usize] > 0)),
+            "║ has a full-height rail"
+        );
+    }
+
+    #[test]
+    fn every_double_arm_has_the_single_or_double_rail_count_its_name_gives() {
+        // The strong double invariant, read from each character's name: the number of rails crossing
+        // each edge — 0 absent, 1 SINGLE arm, 2 DOUBLE arm. This pins the single-vs-double distinction
+        // (the thing that makes a double a double) for every arm of every codepoint; presence alone
+        // could not tell `╒`'s single down from `╓`'s double down. `[left, right, up, down]`.
+        // Rail count at an edge = the run count on that edge line: a horizontal double crosses the
+        // left/right edge as two vertical runs, a single as one.
+        #[rustfmt::skip]
+        let cases: &[(u32, [u32; 4])] = &[
+            (0x2550, [2, 2, 0, 0]), (0x2551, [0, 0, 2, 2]),          // ═ ║
+            (0x2552, [0, 2, 0, 1]), (0x2553, [0, 1, 0, 2]), (0x2554, [0, 2, 0, 2]), // ╒ ╓ ╔
+            (0x2555, [2, 0, 0, 1]), (0x2556, [1, 0, 0, 2]), (0x2557, [2, 0, 0, 2]), // ╕ ╖ ╗
+            (0x2558, [0, 2, 1, 0]), (0x2559, [0, 1, 2, 0]), (0x255A, [0, 2, 2, 0]), // ╘ ╙ ╚
+            (0x255B, [2, 0, 1, 0]), (0x255C, [1, 0, 2, 0]), (0x255D, [2, 0, 2, 0]), // ╛ ╜ ╝
+            (0x255E, [0, 2, 1, 1]), (0x255F, [0, 1, 2, 2]), (0x2560, [0, 2, 2, 2]), // ╞ ╟ ╠
+            (0x2561, [2, 0, 1, 1]), (0x2562, [1, 0, 2, 2]), (0x2563, [2, 0, 2, 2]), // ╡ ╢ ╣
+            (0x2564, [2, 2, 0, 1]), (0x2565, [1, 1, 0, 2]), (0x2566, [2, 2, 0, 2]), // ╤ ╥ ╦
+            (0x2567, [2, 2, 1, 0]), (0x2568, [1, 1, 2, 0]), (0x2569, [2, 2, 2, 0]), // ╧ ╨ ╩
+            (0x256A, [2, 2, 1, 1]), (0x256B, [1, 1, 2, 2]), (0x256C, [2, 2, 2, 2]), // ╪ ╫ ╬
+        ];
+        let (w, h) = (16u32, 16u32);
+        for &(cp, [l, r, u, d]) in cases {
+            let g = box_g(cp, w, h);
+            assert_eq!(lit_runs_v(&g, w, h, 0), l, "{cp:#06X} left rails");
+            assert_eq!(lit_runs_v(&g, w, h, w - 1), r, "{cp:#06X} right rails");
+            assert_eq!(lit_runs_h(&g, w, 0), u, "{cp:#06X} top rails");
+            assert_eq!(lit_runs_h(&g, w, h - 1), d, "{cp:#06X} bottom rails");
+        }
+    }
+
+    #[test]
+    fn a_double_arm_shows_two_rails_at_its_edge_a_single_arm_one() {
+        // What makes a double a double: `═` crosses its left/right edge as TWO rails, where a single
+        // `─` crosses as one. `╞`'s right (double) edge shows two, its vertical (single) rail one.
+        let (w, h) = (20u32, 16u32);
+        assert_eq!(
+            lit_runs_v(&box_g(0x2550, w, h), w, h, 0),
+            2,
+            "═ left edge = two rails"
+        );
+        assert_eq!(
+            lit_runs_v(&box_g(0x2500, w, h), w, h, 0),
+            1,
+            "─ left edge = one rail"
+        );
+        // `╞` 255E: right edge is a double (two rails), and it has a single vertical (one rail on a
+        // horizontal cut clear of the branch).
+        let g = box_g(0x255E, w, h);
+        assert_eq!(lit_runs_v(&g, w, h, w - 1), 2, "╞ right edge = two rails");
+        assert_eq!(
+            lit_runs_h(&g, w, 0),
+            1,
+            "╞ top: the single vertical crosses as one rail"
+        );
+    }
+
     #[test]
     fn tiny_cells_draw_box_glyphs_without_panicking() {
         // Whatever a spacing policy produces, a box glyph must survive a 1x1 / 2x2 cell — the
@@ -1441,7 +1819,8 @@ mod tests {
         // pixel (the invariant the block glyphs and the 1px-terminal fix hold).
         for (w, h) in [(1u32, 1u32), (2, 2), (1, 8), (8, 1)] {
             for cp in [
-                0x2500u32, 0x2502, 0x253C, 0x254B, 0x257F, 0x2571, 0x2572, 0x2573,
+                0x2500u32, 0x2502, 0x253C, 0x254B, 0x257F, 0x2571, 0x2572, 0x2573, 0x2504, 0x2506,
+                0x254F, 0x2550, 0x2551, 0x2554, 0x256C,
             ] {
                 let g = block_glyph(cp, w, h).expect("owned");
                 assert_eq!(g.len(), (w * h * 4) as usize);
