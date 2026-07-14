@@ -13,7 +13,7 @@
 use crate::attrs::{BLANK_SLOT, glyph_field, is_concealed, is_dim};
 use crate::color::gl_rgb;
 use crate::contrast::ensure_contrast_ratio;
-use crate::overlay::{Overlay, composite_bg, should_blend};
+use crate::overlay::{HighlightKind, Overlay, composite_bg, should_blend};
 use crate::palette::Palette;
 use crate::render_policy::{ColorPolicy, dim_foreground, resolve_cell};
 
@@ -34,9 +34,11 @@ pub struct Frame<'a> {
 }
 
 /// Pack a [`Frame`] (row-major) into per-cell instance data
-/// `[col, row, bg_r, bg_g, bg_b, fg_r, fg_g, fg_b, glyph_field]`. Colours resolve through the
-/// injected `policy` ([`resolve_cell`]): inverse swaps the fg/bg, a bold ANSI 0–7 fg brightens to
-/// 8–15 (#223), and a DIM cell's fg fades toward its bg (#232, [`dim_foreground`]).
+/// `[col, row, bg_r, bg_g, bg_b, fg_r, fg_g, fg_b, glyph_field]`. Colours resolve through the injected
+/// `policy`: inverse swaps the fg/bg and a bold ANSI 0–7 fg brightens to 8–15 ([`resolve_cell`], #223);
+/// a DIM cell's fg fades toward its bg (#232, [`dim_foreground`]); `minimumContrastRatio` nudges an
+/// illegible fg (#225); and a *selected* cell takes `selectionForeground` (#227) and has its DIM
+/// cleared (#224) — the selection-side rules key off the [`overlay`](crate::overlay).
 /// Underline/strikethrough fold into the glyph field's high bits. A *concealed* cell —
 /// hidden (`ESC[8m`), or blink with `blink_on == false` — collapses to the blank slot
 /// ([`BLANK_SLOT`]) so only its (inverse-aware) background shows; `blink_on` is the render
@@ -82,6 +84,16 @@ pub fn pack_instances(
             let fg_ref = fg.get(idx).copied().unwrap_or(0);
             let (resolved_fg, cell_bg) =
                 resolve_cell(fg_ref, bg_ref, cell_flags, palette, policy.bold_to_bright);
+            // The highlight covering this cell (if any) and whether it is a *selection* (vs a search
+            // match) — the selection-only fg rules (#224/#227) key off this.
+            let kind = overlay.highlight_at(row, col);
+            let is_selection = kind == Some(HighlightKind::Selection);
+            // #227 selectionForeground: force a selected cell's fg to the injected colour (never a
+            // match), overriding the cell's own resolved fg. Flows through the contrast pass below.
+            let resolved_fg = match (is_selection, policy.selection_fg) {
+                (true, Some(sfg)) => sfg,
+                _ => resolved_fg,
+            };
             // #271: composite the selection / search highlight onto the (post-swap) background FIRST,
             // so the fg policy sees the EFFECTIVE bg the glyph is drawn over. `should_blend` reads the
             // PRE-inverse ref + flags: an inverse or non-default cell blends so its own colour shows
@@ -89,7 +101,7 @@ pub fn pack_instances(
             let eff_bg = composite_bg(
                 cell_bg,
                 should_blend(bg_ref, cell_flags),
-                overlay.color_at(row, col),
+                kind.map(|k| overlay.colors.of(k)),
             );
             // The fg colour policy, applied ONCE against the effective bg on the UNDIMMED fg — xterm's
             // model (`TextureAtlas._getMinimumContrastColor`), which the renderer can follow because the
@@ -97,9 +109,11 @@ pub fn pack_instances(
             // — a compromise the renderer sheds; the #272 2-lens pinned this). minimumContrastRatio
             // (#225) is checked FIRST: if it fires, the corrected fg wins and DIM is skipped (mutually
             // exclusive, xterm `TextureAtlas.ts:329`); a dim cell that already clears the halved ratio is
-            // dimmed instead (#232). A selection undims the fg (#224) — a later #272 slice; until then a
-            // selected dim cell stays dimmed.
-            let dim = is_dim(cell_flags);
+            // dimmed instead (#232).
+            // #224 selection un-dim: a *selected* cell's DIM is cleared (xterm `& ~BgFlags.DIM`), so its
+            // text stays legible over the highlight and the contrast ratio is NOT halved. `dim` folding
+            // in `!is_selection` handles both.
+            let dim = is_dim(cell_flags) && !is_selection;
             let mcr = policy.min_contrast as f64;
             let fg_packed = if mcr > 1.0 {
                 let ratio = if dim { mcr / 2.0 } else { mcr };
@@ -703,6 +717,119 @@ mod tests {
             &got[5..8],
             &gl_rgb(dimmed),
             "the dimmed fg is kept, not re-corrected"
+        );
+    }
+
+    // --- #272 slice 3: selection un-dim (#224) + selectionForeground (#227) ---
+
+    /// A single-cell overlay of the given kind, both blend colours `bg`.
+    fn overlay_kind(
+        selection: &'static [u32],
+        matches: &'static [u32],
+        bg: u32,
+    ) -> Overlay<'static> {
+        Overlay {
+            selection,
+            matches,
+            colors: HighlightColors {
+                selection_bg: bg,
+                match_bg: bg,
+            },
+        }
+    }
+
+    #[test]
+    fn selection_foreground_overrides_a_selected_cells_fg_but_not_a_match() {
+        let p = bright_palette(); // fg default = white
+        let sfg = 0x00_FF_00; // green selectionForeground
+        let policy = ColorPolicy {
+            selection_fg: Some(sfg),
+            ..ColorPolicy::default()
+        };
+        let cell =
+            |ov: &Overlay| pack_instances(&frame(&[0], &[0], &[0], &[0]), &p, true, ov, &policy);
+        // A selected cell: fg forced to green.
+        let sel = cell(&overlay_kind(&[0, 0, 0], &[], 0x3A_3A_3A));
+        assert_eq!(
+            &sel[5..8],
+            &gl_rgb(sfg),
+            "selectionForeground overrides a selected cell"
+        );
+        // A search match is NOT a selection → the cell keeps its own fg (white).
+        let mat = cell(&overlay_kind(&[], &[0, 0, 0], 0x3A_3A_3A));
+        assert_eq!(&mat[5..8], &gl_rgb(0xFF_FF_FF), "a match keeps the cell fg");
+        // No highlight → not overridden.
+        let none = cell(&Overlay::default());
+        assert_eq!(
+            &none[5..8],
+            &gl_rgb(0xFF_FF_FF),
+            "an unselected cell keeps its fg"
+        );
+    }
+
+    #[test]
+    fn a_selection_undims_the_foreground_but_a_match_keeps_it_dim() {
+        let p = bright_palette(); // fg white, bg black
+        // Both highlights paint SOLID black (= the default bg), so `eff_bg` is black either way and
+        // only the un-dim differs.
+        let dim_cell = |ov: &Overlay| {
+            pack_instances(
+                &frame(&[0], &[0], &[0], &[DIM]),
+                &p,
+                true,
+                ov,
+                &ColorPolicy::default(),
+            )
+        };
+        let sel = dim_cell(&overlay_kind(&[0, 0, 0], &[], 0x00_00_00));
+        assert_eq!(
+            &sel[5..8],
+            &gl_rgb(0xFF_FF_FF),
+            "a selection clears DIM (full-brightness fg)"
+        );
+        let mat = dim_cell(&overlay_kind(&[], &[0, 0, 0], 0x00_00_00));
+        let dimmed = dim_foreground(0xFF_FF_FF, 0x00_00_00);
+        assert_eq!(
+            &mat[5..8],
+            &gl_rgb(dimmed),
+            "a search match keeps the cell dimmed"
+        );
+        assert_ne!(
+            &sel[5..8],
+            &mat[5..8],
+            "selection and match must differ on a dim cell"
+        );
+    }
+
+    #[test]
+    fn a_selection_foreground_still_flows_through_the_contrast_pass() {
+        // selectionForeground is applied BEFORE minimumContrastRatio (xterm resolves it pre-atlas),
+        // so an illegible selectionForeground on the selection bg is still corrected. Pins the
+        // composition (#227 override → #225 correct), not either alone.
+        let p = bright_palette();
+        let sel_bg = 0xCC_CC_CC; // light selection → white selectionForeground is illegible on it
+        let policy = ColorPolicy {
+            selection_fg: Some(0xFF_FF_FF),
+            min_contrast: 4.5,
+            ..ColorPolicy::default()
+        };
+        let got = pack_instances(
+            &frame(&[0], &[0], &[0], &[0]),
+            &p,
+            true,
+            &overlay_kind(&[0, 0, 0], &[], sel_bg),
+            &policy,
+        );
+        let expect = gl_rgb(ensure_contrast_ratio(sel_bg, 0xFF_FF_FF, 4.5).unwrap());
+        assert_eq!(
+            &got[5..8],
+            &expect,
+            "selectionForeground is contrast-corrected"
+        );
+        assert_ne!(
+            &got[5..8],
+            &gl_rgb(0xFF_FF_FF),
+            "the raw selectionForeground was illegible"
         );
     }
 }

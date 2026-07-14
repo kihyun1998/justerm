@@ -6,11 +6,11 @@
 //! fades toward the bg). These are the ref-space + RGB-space transforms `resolve_rgb` deliberately
 //! omits; the selection/search highlight ([`overlay`]) composites on top.
 //!
-//! The **fg long-tail** grows slice by slice (#272 is cumulative). Shipped: bold→bright + dim (here)
-//! and `minimumContrastRatio` (#225, the WCAG step-adjust lives in [`contrast`](crate::contrast); the
-//! `min_contrast` policy + orchestration are in [`ColorPolicy`] / `pack_instances`). Still to come:
-//! the selection-side fg overrides (undim #224, `selectionForeground` #227) and the tile glyph rules
-//! (#226/#239/#241).
+//! The **fg long-tail** grows slice by slice (#272 is cumulative). Shipped: bold→bright + dim (here),
+//! `minimumContrastRatio` (#225, the WCAG step-adjust lives in [`contrast`](crate::contrast)), and the
+//! selection-side fg overrides — un-dim (#224) and `selectionForeground` (#227) — which key off
+//! [`Overlay::highlight_at`](crate::overlay::Overlay::highlight_at) and are orchestrated in
+//! `pack_instances`. Still to come: the tile glyph rules (#226/#239/#241, excludeFromContrast).
 //!
 //! [`palette`]: crate::palette
 //! [`overlay`]: crate::overlay
@@ -32,14 +32,19 @@ pub struct ColorPolicy {
     ///
     /// [`contrast::ensure_contrast_ratio`]: crate::contrast::ensure_contrast_ratio
     pub min_contrast: f32,
+    /// Force the foreground of a **selected** cell to this packed `0xRRGGBB` (#227, xterm's
+    /// `selectionForeground`). `None` (the default) keeps each cell's own fg. Applies to a live
+    /// selection only — never a search match — and is focus-independent.
+    pub selection_fg: Option<u32>,
 }
 
 impl Default for ColorPolicy {
-    /// xterm's defaults: bold→bright ON, minimum contrast OFF (`1.0`).
+    /// xterm's defaults: bold→bright ON, minimum contrast OFF (`1.0`), no selection-fg override.
     fn default() -> Self {
         Self {
             bold_to_bright: true,
             min_contrast: 1.0,
+            selection_fg: None,
         }
     }
 }

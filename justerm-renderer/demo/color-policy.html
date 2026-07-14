@@ -119,6 +119,42 @@
   const mcrBack = drawMcr(1.0);
   checks.turningMcrOffRestoresTheLowContrastForeground = cellIs(mcrBack, 0, LOW);
 
+  // --- selectionForeground (#227) + selection un-dim (#224) ---
+  // A full block occludes the selection bg, so a selected block cell reads its FOREGROUND — which
+  // selectionForeground overrides. A search match is NOT a selection, so it must NOT be overridden or
+  // un-dimmed. col0 is selected; col1 is a search match (both dim in the un-dim scene).
+  const GREEN = 0x00ff00;
+  const drawSel = (flags, selBg, matchBg) => {
+    // Order: policy + overlay first, then apply_frame packs with them (apply_frame path keeps no grid).
+    r.setOverlay(new Uint32Array([0, 0, 0]), new Uint32Array([0, 1, 1]), selBg, matchBg);
+    r.resize(COLS, ROWS);
+    r.apply_frame(COLS, ROWS, new Uint32Array(N), new Uint32Array(N), codepoints, flags, true);
+    r.render();
+    return grab();
+  };
+
+  // selectionForeground forces the SELECTED cell's fg to green; the match (col1) keeps white. A full
+  // block occludes the highlight bg (here a realistic slate / amber), so the cell reads its fg.
+  r.setSelectionForeground(GREEN);
+  const sfgOn = drawSel(plainFlags, 0x264f78, 0x6e5c00);
+  checks.selectionForegroundOverridesTheSelectedCell = cellIs(sfgOn, 0, GREEN);
+  checks.selectionForegroundDoesNotTouchASearchMatch = cellIs(sfgOn, 1, WHITE);
+  // Clearing it restores the cell's own white fg (the discriminating half).
+  r.setSelectionForeground(undefined);
+  const sfgOff = drawSel(plainFlags, 0x264f78, 0x6e5c00);
+  checks.clearingSelectionForegroundRestoresTheCellFg = cellIs(sfgOff, 0, WHITE);
+
+  // Un-dim: a DIM selected cell (col0) renders full-brightness; a DIM match (col1) stays dimmed. Both
+  // highlights paint SOLID BLACK (= default bg), so the dim fades toward black (DIM_WHITE) and only the
+  // un-dim differs between selection and match — not the bg the fg dims over.
+  const dimFlags = new Uint16Array([DIM, DIM, 0, 0]);
+  const undim = drawSel(dimFlags, 0x000000, 0x000000);
+  checks.aSelectionUndimsItsForeground = cellIs(undim, 0, WHITE);
+  checks.aSearchMatchKeepsItsForegroundDim = cellIs(undim, 1, DIM_WHITE) && !cellIs(undim, 1, WHITE);
+
+  // Restore default overlay state so nothing leaks.
+  r.setOverlay(new Uint32Array([]), new Uint32Array([]), 0, 0);
+
   window.__proof = {
     ok: Object.values(checks).every(Boolean), checks,
     dpr: devicePixelRatio, cw, ch, dimWhite: DIM_WHITE.toString(16),
