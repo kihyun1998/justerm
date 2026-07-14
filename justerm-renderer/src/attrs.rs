@@ -1,13 +1,17 @@
 //! SGR cell attributes — pure, host-testable. Bit positions mirror `justerm_core::CellFlags`
 //! (the `flags` column the wasm decoder emits). #267 handles bold/italic (font style),
-//! underline/strikethrough (glyph-field bits, shader-drawn) and inverse (fg/bg swap); dim
-//! is #272. #282 adds hidden + blink as one *conceal* mechanism: a concealed cell renders
-//! background only (glyph coverage + decorations suppressed) by pointing at the blank slot.
+//! underline/strikethrough (glyph-field bits, shader-drawn) and inverse (fg/bg swap); #272 adds
+//! dim (the fg fades toward the bg — see [`render_policy`](crate::render_policy)). #282 folds hidden
+//! and blink into one *conceal* mechanism: a concealed cell renders background only (glyph coverage
+//! and decorations suppressed) by pointing at the blank slot.
 
 use crate::glyph_cache::FontStyle;
 
 // justerm_core::CellFlags bit values (frozen by the wire format).
 pub const BOLD: u16 = 1 << 0;
+/// Faint/dim intensity (`ESC[2m`) — the fg is faded toward the bg at render time (#272,
+/// `justerm_core::CellFlags::DIM`). A selection clears it so the text stays legible (#224).
+pub const DIM: u16 = 1 << 1;
 pub const ITALIC: u16 = 1 << 2;
 pub const UNDERLINE: u16 = 1 << 3;
 /// The cell blinks — its glyph is concealed on the render loop's "off" phase (#282). Timing
@@ -73,6 +77,11 @@ pub fn is_inverse(flags: u16) -> bool {
     flags & INVERSE != 0
 }
 
+/// Whether the cell is faint/dim (`ESC[2m`) — its foreground is faded toward the background (#272).
+pub fn is_dim(flags: u16) -> bool {
+    flags & DIM != 0
+}
+
 /// The glyph slot for a concealed cell: slot `0`, the pre-baked transparent ASCII space
 /// (the fast path maps `' '` = 0x20 to slot `codepoint - 0x20` = 0). Pointing a cell here
 /// gives zero coverage — background only — and, being a bare slot, carries no underline/
@@ -128,6 +137,17 @@ mod tests {
         assert!(!is_inverse(0));
         assert!(is_inverse(INVERSE));
         assert!(is_inverse(INVERSE | BOLD));
+    }
+
+    #[test]
+    fn is_dim_reads_the_dim_bit_at_the_core_frozen_position() {
+        assert!(!is_dim(0));
+        assert!(is_dim(DIM));
+        assert!(is_dim(DIM | BOLD));
+        assert!(!is_dim(BOLD), "bold is not dim");
+        // Frozen wire position — justerm_core::CellFlags::DIM = 1 << 1 (cell.rs), the value the
+        // wasm decoder's flags().dim reports. A drift here silently mis-reads every dim cell.
+        assert_eq!(DIM, 1 << 1);
     }
 
     #[test]

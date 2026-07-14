@@ -1,0 +1,101 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>justerm-renderer proof — colour policy: bold→bright + dim (#272 slice 1, #223/#232)</title>
+<style>
+  body { margin: 0; background: #000; }
+  #c { display: block; image-rendering: pixelated; }
+</style>
+<!--
+  The fg colour long-tail (#272) resolves in wasm at pack time (render_policy.rs), baked into the
+  packed instance fg — so this reads the drawing buffer back and checks the ACTUAL colour drawn:
+
+    - bold→bright (#223): a bold ANSI 0-7 foreground resolves to its 8-15 bright variant. Consumer
+      policy (setBoldToBright, default on). The toggle check below turns it off and demands the SAME
+      cell revert to the base index — the discriminating proof that the policy is live, not baked in.
+    - DIM (#232): a dim cell's fg fades toward its bg (xterm multiplyOpacity, alpha 0x80).
+
+  Read via a FULL BLOCK (U+2588): a builtin drawn edge-to-edge (#359), coloured with the cell fg, so
+  the whole cell IS the foreground colour and a centre pixel reads it directly. Numbers pinned host-
+  side in render_policy.rs (byte-exact vs xterm); this proves the WIRING through the real GL round-trip.
+  Swept dpr 1 / 1.1 / 1.5 / 2.
+
+  Build: wasm-pack build --target web --dev --out-dir pkg
+-->
+<canvas id="c" width="64" height="16"></canvas>
+<script type="module">
+  import init, { JustermRenderer } from "../pkg/justerm_renderer.js";
+  import { readRect } from "./proof.js";
+  await init();
+
+  const COLS = 4, ROWS = 1, N = COLS * ROWS;
+  const BLOCK = 0x2588;          // █ — a builtin, edge-to-edge, coloured with the cell fg
+  const BOLD = 1 << 0, DIM = 1 << 1;
+  const IDX = (i) => ((1 << 24) | i) >>> 0; // Indexed colour reference
+
+  const BASE = 0xcc0000, BRIGHT = 0xff5555;  // ANSI 1 (red) and its bright variant ANSI 9
+  const WHITE = 0xffffff, BLACK = 0x000000;
+  const DIM_WHITE = 0x808080;                // dim_foreground(white, black): 128 per channel
+
+  const palette = new Uint32Array(256);
+  palette[1] = BASE;
+  palette[9] = BRIGHT;
+  const r = new JustermRenderer("#c", palette, WHITE, BLACK);
+  const gl = document.querySelector("#c").getContext("webgl2");
+  const [cw, ch] = [r.cell_width(), r.cell_height()];
+
+  const grab = () => {
+    const [w, h] = [gl.drawingBufferWidth, gl.drawingBufferHeight];
+    return { ...readRect(gl, { x: 0, y: 0, w, h }), w, h };
+  };
+  // Centre pixel of cell `col` (row 0), origin top-left; readPixels counts rows from the bottom.
+  const centre = (img, col) => {
+    const x = col * cw + (cw >> 1), y = ch >> 1;
+    const i = ((img.h - 1 - y) * img.w + x) * 4;
+    return [img.buf[i], img.buf[i + 1], img.buf[i + 2]];
+  };
+  const chans = (c) => [(c >> 16) & 0xff, (c >> 8) & 0xff, c & 0xff];
+  const near = (v, t, tol = 12) => Math.abs(v - t) <= tol;
+  const cellIs = (img, col, packed) => {
+    const [pr, pg, pb] = centre(img, col), [er, eg, eb] = chans(packed);
+    return near(pr, er) && near(pg, eg) && near(pb, eb);
+  };
+
+  const codepoints = new Uint32Array(N).fill(BLOCK);
+  //  col0: bold ANSI 1 → bright   col1: ANSI 1 → base   col2: dim white → faded   col3: white
+  const fg = new Uint32Array([IDX(1), IDX(1), 0, 0]);
+  const flags = new Uint16Array([BOLD, 0, DIM, 0]);
+  const draw = () => {
+    r.resize(COLS, ROWS);
+    r.apply_frame(COLS, ROWS, new Uint32Array(N), fg, codepoints, flags, true);
+    r.render();
+    return grab();
+  };
+
+  const checks = {};
+
+  // Default policy: bold→bright ON.
+  const on = draw();
+  checks.boldBrightensAnsi1 = cellIs(on, 0, BRIGHT) && !cellIs(on, 0, BASE);
+  checks.aNonBoldCellKeepsTheBaseColour = cellIs(on, 1, BASE);
+  checks.dimFadesTheForeground = cellIs(on, 2, DIM_WHITE) && !cellIs(on, 2, WHITE);
+  checks.aPlainCellIsFullBrightness = cellIs(on, 3, WHITE);
+
+  // Toggle the policy OFF — the SAME bold cell must revert to the base index (the discriminating
+  // proof the resolve is policy-driven, not a baked-in remap). Dim is not a policy, so col2 is
+  // unchanged; the toggle isolates bold→bright.
+  r.setBoldToBright(false);
+  const off = draw();
+  checks.boldToBrightOffRevertsTheCellToBase = cellIs(off, 0, BASE) && !cellIs(off, 0, BRIGHT);
+  checks.turningBoldToBrightOffLeavesDimUntouched = cellIs(off, 2, DIM_WHITE);
+
+  // Restore the default so nothing above is retroactively disturbed.
+  r.setBoldToBright(true);
+  const back = draw();
+  checks.restoringBoldToBrightBrightensAgain = cellIs(back, 0, BRIGHT);
+
+  window.__proof = {
+    ok: Object.values(checks).every(Boolean), checks,
+    dpr: devicePixelRatio, cw, ch, dimWhite: DIM_WHITE.toString(16),
+  };
+  window.__done = true;
+</script>
