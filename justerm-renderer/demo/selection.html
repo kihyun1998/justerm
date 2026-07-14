@@ -1,0 +1,162 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>justerm-renderer proof — selection / search overlay: blend vs solid (#271)</title>
+<style>
+  body { margin: 0; background: #000; }
+  #c { display: block; image-rendering: pixelated; }
+</style>
+<!--
+  The selection / search highlight is a per-cell BACKGROUND composite (#271), not a draw pass —
+  exactly like the cursor's cell-invert and beamterm's overlay: the engine owns the selection
+  *model* and projects it to stride-3 (row, left, right) viewport spans (justerm-wasm-decode
+  selectionSpans / matchSpans, #108), and the renderer folds the injected blend colour into each
+  covered cell's packed bg at pack time.
+
+  Two composite modes, both xterm-faithful (render-core.ts:156 / decoration-render.ts):
+    - SOLID over the DEFAULT terminal background — a crisp fill (bg replaced outright).
+    - BLEND over a non-default / inverse cell — the injected colour at alpha 0x80 over the cell's
+      own colour, so its colour still reads (blendOver, render-policy.ts). An inverse cell is a
+      blend cell: its shown bg is the swapped-in fg, so the highlight blends over that.
+
+  The numbers (blendOver byte math) are pinned host-side against xterm in `overlay.rs`; this page
+  proves the WIRING delivers a blended — not solid, not original — pixel through the real GL
+  round-trip, and that setOverlay re-packs the retained damage grid with no new frame (the one
+  branch the host suite cannot reach).
+
+  Read in device pixels (`cell_width()`/`cell_height()` ARE `u_cell_size`, #331); the runner sweeps
+  dpr 1 / 1.1 / 1.5 / 2. A space has no ink, so a cell is a solid block of its (composited) bg.
+
+  Build: wasm-pack build --target web --dev --out-dir pkg
+-->
+<canvas id="c" width="96" height="16"></canvas>
+<script type="module">
+  import init, { JustermRenderer } from "../pkg/justerm_renderer.js";
+  import { readRect } from "./proof.js";
+  await init();
+
+  const COLS = 6, ROWS = 1, N = COLS * ROWS;
+  const SPACE = 0x20;
+  const INVERSE = 1 << 5;
+
+  // Injected blend colours (consumer policy #115) + a coloured cell bg, chosen so every channel
+  // differs — a blend is then unambiguously distinct from both the solid colour and the cell's own.
+  const SEL_BG = 0x3060c0;   // selection blue
+  const MATCH_BG = 0xc08030; // search-match orange
+  const CELL = 0x804020;     // a non-default (Rgb) cell background
+  const DEF_FG = 0xffffff, DEF_BG = 0x000000;
+
+  // xterm's integer blend (render-policy.ts blendOver), mirrored so the page can name its
+  // expectations. NOT the oracle for correctness — overlay.rs pins that against xterm byte-for-byte;
+  // here it is only the target the wiring must hit, guarded by the not-solid / not-original checks.
+  const blendOver = (base, over, alpha = 0x80) => {
+    const a = alpha / 255;
+    const ch = (sh) => {
+      const b = (base >> sh) & 0xff, o = (over >> sh) & 0xff;
+      return b + Math.round((o - b) * a);
+    };
+    return ((ch(16) << 16) | (ch(8) << 8) | ch(0)) >>> 0;
+  };
+  const chans = (c) => [(c >> 16) & 0xff, (c >> 8) & 0xff, c & 0xff];
+  const RGB = (c) => ((2 << 24) | c) >>> 0; // tagged Rgb colour reference (tag 2)
+
+  const palette = new Uint32Array(256);
+  const r = new JustermRenderer("#c", palette, DEF_FG, DEF_BG);
+  const gl = document.querySelector("#c").getContext("webgl2");
+  const [cw, ch] = [r.cell_width(), r.cell_height()];
+
+  const grab = () => {
+    const [w, h] = [gl.drawingBufferWidth, gl.drawingBufferHeight];
+    return { ...readRect(gl, { x: 0, y: 0, w, h }), w, h };
+  };
+  // readPixels counts rows from the bottom; flip to grid-space (origin top-left).
+  const px = (img, x, y) => { const i = ((img.h - 1 - y) * img.w + x) * 4; return [img.buf[i], img.buf[i + 1], img.buf[i + 2]]; };
+  const near = (v, t, tol = 4) => Math.abs(v - t) <= tol;
+  // Every pixel of cell `col` matches the expected packed colour (a space is pure background).
+  const cellIs = (img, col, packed) => {
+    const [er, eg, eb] = chans(packed);
+    for (let y = 0; y < ch; y++)
+      for (let x = 0; x < cw; x++) {
+        const [pr, pg, pb] = px(img, col * cw + x, y);
+        if (!near(pr, er) || !near(pg, eg) || !near(pb, eb)) return false;
+      }
+    return true;
+  };
+
+  // The scene: bg refs + flags for the six columns.
+  const bg = new Uint32Array([0, RGB(CELL), 0, 0, 0, 0]); // col1 coloured; rest default
+  const flags = new Uint16Array([0, 0, 0, 0, INVERSE, 0]); // col4 inverse
+  const spaces = new Uint32Array(N).fill(SPACE);
+  const zeroFg = new Uint32Array(N);
+
+  // setOverlay stores the spans; on the apply_frame path (no retained grid) the NEXT apply_frame
+  // packs them in — so set the overlay first, then feed the frame.
+  const drawFrame = (selSpans, matchSpans) => {
+    r.setOverlay(new Uint32Array(selSpans), new Uint32Array(matchSpans), SEL_BG, MATCH_BG);
+    r.resize(COLS, ROWS);
+    r.apply_frame(COLS, ROWS, bg, zeroFg, spaces, flags, true);
+    r.render();
+    return grab();
+  };
+
+  const checks = {};
+
+  // selection covers col0-1 and col3-4; a search match covers col2-3 (col3 is in BOTH).
+  const img = drawFrame([0, 0, 1, 0, 3, 4], [0, 2, 3]);
+
+  // col0: selection over the DEFAULT bg → SOLID (the colour replaces the bg outright).
+  checks.solidSelectionOverTheDefaultBackground = cellIs(img, 0, SEL_BG);
+
+  // col1: selection over a COLOURED cell → BLEND. Must equal the blend, and be NEITHER the solid
+  // selection colour NOR the cell's own — that pair is what makes "blend" falsifiable.
+  const blendSelOnCell = blendOver(CELL, SEL_BG);
+  checks.selectionBlendsOverAColouredCell = cellIs(img, 1, blendSelOnCell);
+  checks.aBlendIsNotTheSolidSelectionColour = !cellIs(img, 1, SEL_BG);
+  checks.aBlendIsNotTheCellsOwnColour = !cellIs(img, 1, CELL);
+
+  // col2: a search match paints its OWN colour, over the default bg → solid match orange.
+  checks.aSearchMatchUsesTheMatchColour = cellIs(img, 2, MATCH_BG) && !cellIs(img, 2, SEL_BG);
+
+  // col3: covered by BOTH — the selection wins (solid, over default bg).
+  checks.aSelectionWinsOverAMatchOnTheSameCell = cellIs(img, 3, SEL_BG) && !cellIs(img, 3, MATCH_BG);
+
+  // col4: an INVERSE cell's shown bg is the swapped-in fg (white); a selection there BLENDS over
+  // that white, never solid.
+  const blendSelOnInverse = blendOver(DEF_FG, SEL_BG);
+  checks.anInverseCellBlendsOverItsSwappedInBackground = cellIs(img, 4, blendSelOnInverse) && !cellIs(img, 4, SEL_BG);
+
+  // col5: covered by nothing → its background is untouched (the control: the checks above are the
+  // highlight, not a blanket repaint).
+  checks.anUncoveredCellKeepsItsBackground = cellIs(img, 5, DEF_BG);
+
+  // Clearing the overlay (empty spans) restores every cell to its own background.
+  const cleared = drawFrame([], []);
+  checks.clearingTheOverlayRemovesEveryHighlight =
+    cellIs(cleared, 0, DEF_BG) && cellIs(cleared, 3, DEF_BG) && cellIs(cleared, 1, CELL);
+
+  // --- setOverlay re-packs the retained damage grid with NO new frame (#271) ---
+  //
+  // The apply_damage path keeps a dense grid, so a selection dragged with no terminal output must
+  // still show. Host tests cannot reach this branch — only a real re-pack + upload does. Scatter a
+  // Full frame (all default, spaces), confirm col0 is the plain background, THEN setOverlay and
+  // render() alone — no apply_frame/apply_damage — and col0 must become the selection colour.
+  r.setOverlay(new Uint32Array([]), new Uint32Array([]), SEL_BG, MATCH_BG); // clear first
+  const header = new Uint32Array([COLS, ROWS, 0 /* Full */, 0, 0, 0, 0, 1 /* blink_on */]);
+  const spans = new Uint32Array([0, 0, COLS - 1, 0, N]); // one span, whole row
+  r.resize(COLS, ROWS);
+  r.apply_damage(header, spans, spaces, zeroFg, new Uint32Array(N), new Uint16Array(N), new Uint16Array(N), []);
+  r.render();
+  const beforeOverlay = grab();
+  checks.theDamageGridStartsWithoutAHighlight = cellIs(beforeOverlay, 0, DEF_BG);
+
+  r.setOverlay(new Uint32Array([0, 0, 0]), new Uint32Array([]), SEL_BG, MATCH_BG); // re-packs from the grid
+  r.render(); // NO new frame
+  const afterOverlay = grab();
+  checks.setOverlayRepacksTheDamageGridWithNoNewFrame = cellIs(afterOverlay, 0, SEL_BG);
+
+  window.__proof = {
+    ok: Object.values(checks).every(Boolean), checks,
+    dpr: devicePixelRatio, cw, ch,
+    blendSelOnCell: blendSelOnCell.toString(16), blendSelOnInverse: blendSelOnInverse.toString(16),
+  };
+  window.__done = true;
+</script>
