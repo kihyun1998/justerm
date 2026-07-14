@@ -9,6 +9,16 @@
 //! of `fontBoundingBox`. Every glyph is rasterised into a **padded** cell — the physical cell
 //! grown by [`PADDING`] on each side — with the glyph drawn inset, so the atlas carries a
 //! transparent guard band that stops band bleed and gives tall/fallback glyphs room.
+//!
+//! This ink scan is a deliberate divergence from both references, recorded here (from #361) so it
+//! is not later rediscovered as a defect: alacritty sizes its cell from font metrics
+//! (`average_advance` + `line_height`, `builtin_font.rs:51`) and xterm from `CharSizeService`. So
+//! if a font's `█` under- or over-fills its advance, justerm's grid ends up sized differently from
+//! theirs. It is safe only as long as the **builtin** `█` never re-enters measurement: the scan
+//! reads the *font's* `█` via `fill_text` + ink bounds, while `block_glyph` (the renderer's own
+//! drawn `█`) is called from `Rasterizer::builtin` alone, never from `Rasterizer::new`. Were it
+//! ever called during measurement, the cell would feed the glyph that defines it — a feedback loop.
+//! Today there is none.
 
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
