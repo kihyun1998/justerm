@@ -7,6 +7,10 @@
 //! (#267: bold/italic font variants, underline/strikethrough lines, inverse fg/bg swap) and
 //! double-width glyphs (#268: a wide glyph splits across two atlas slots / two grid cells).
 //! ASCII (`0x20..=0x7E`) is pre-rasterised. Colour emoji (#284) + clusters (#285) follow.
+//!
+//! The selection / search overlay (#271, `setOverlay`) folds its highlight colour into each covered
+//! cell's packed background at pack time (blend vs solid), so it rides the same instanced draw — no
+//! overlay pass. The cursor (#270, `setCursor`) is a shader uniform composited last, over any highlight.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -34,6 +38,7 @@ use crate::glyph_cache::{
 use crate::glyph_resolve::{Cells, ResolveError, resolve_frame};
 use crate::mat4::Mat4;
 use crate::metrics::{device_cell, fit_cell_to_atlas, glyph_offset};
+use crate::overlay::{HighlightColors, Overlay};
 use crate::palette::Palette;
 use crate::rasterizer::Rasterizer;
 use crate::upload::{UploadPlan, invalidate_baseline, plan_upload};
@@ -436,6 +441,17 @@ pub struct JustermRenderer {
     /// span-ordered damage scatters into this before packing. `None` until the first
     /// `apply_damage`; re-created when the grid dimensions change.
     grid: Option<FrameGrid>,
+    /// The selection / search overlay spans this frame (#271), owned so a re-pack can borrow them.
+    /// Stride-3 `(row, left, right)` viewport triples, as the decoder ships them. Empty = no
+    /// highlight. Updated by [`set_overlay`](Self::set_overlay); composited into each cell's packed
+    /// background at pack time.
+    selection_spans: Vec<u32>,
+    match_spans: Vec<u32>,
+    /// The consumer-injected blend colours for the two overlay kinds (policy #115).
+    highlight_colors: HighlightColors,
+    /// The last blink phase packed, so a [`set_overlay`](Self::set_overlay) re-pack (no new frame)
+    /// keeps the cursor/blink cells in the phase the render loop last drove.
+    last_blink_on: bool,
     /// Canvas context-loss listeners + the shared lost/pending-rebuild state (#269). `render`
     /// consults it every frame: skip while lost, rebuild once restored, otherwise draw.
     ctx_loss: ContextLossHandler,
@@ -629,6 +645,10 @@ impl JustermRenderer {
             instance_count: 0,
             uploaded: Vec::new(),
             grid: None,
+            selection_spans: Vec::new(),
+            match_spans: Vec::new(),
+            highlight_colors: HighlightColors::default(),
+            last_blink_on: true,
             ctx_loss,
         };
         renderer.prebake_ascii()?;
@@ -1483,6 +1503,7 @@ impl JustermRenderer {
         self.last_flags.clear();
         self.last_flags.extend_from_slice(cells.flags);
         self.last_cols = cells.cols;
+        self.last_blink_on = blink_on;
         self.resolve_cursor_span();
         let frame = Frame {
             cols: cells.cols,
@@ -1492,7 +1513,14 @@ impl JustermRenderer {
             slots: &slots,
             flags: cells.flags,
         };
-        self.instances = pack_instances(&frame, &self.palette, blink_on);
+        // #271: composite the current selection / search overlay into each cell's packed bg. The
+        // spans are owned by the renderer so they outlive the borrow; empty ⇒ no highlight.
+        let overlay = Overlay {
+            selection: &self.selection_spans,
+            matches: &self.match_spans,
+            colors: self.highlight_colors,
+        };
+        self.instances = pack_instances(&frame, &self.palette, blink_on, &overlay);
         self.instance_count = count as i32;
         self.upload_instances();
         Ok(())
@@ -1627,6 +1655,64 @@ impl JustermRenderer {
     #[wasm_bindgen(js_name = setBgAlpha)]
     pub fn set_bg_alpha(&mut self, alpha: f32) {
         self.bg_alpha = alpha.clamp(0.0, 1.0);
+    }
+
+    /// Set the selection / search highlight overlay (#271): the two span directories (stride-3
+    /// `(row, left, right)` viewport triples, exactly as `justerm-wasm-decode` `selectionSpans` /
+    /// `matchSpans` ship them) plus their blend colours (packed `0xRRGGBB`, consumer policy #115 —
+    /// the renderer is theme-agnostic). A covered cell blends the colour over a non-default / inverse
+    /// background so its own colour shows through, or paints it solid over the default background; a
+    /// selection wins over a match on a cell both cover.
+    ///
+    /// Re-packs immediately so a selection dragged with no new frame is visible — possible only on the
+    /// damage path, which retains the dense grid; the direct `apply_frame` path reflects the new
+    /// overlay on its next call. Pass empty span lists to clear the highlight. Takes effect on the
+    /// next [`render`](Self::render).
+    ///
+    /// **Contract — the spans are consumer-pushed, not frame-carried (same as [`set_cursor`]).** They
+    /// are viewport-relative and the decoder RE-PROJECTS them every frame, so a scroll or resize moves
+    /// them: the consumer must re-issue `set_overlay` with the current frame's spans whenever the
+    /// viewport changes *or* the selection changes — exactly as it re-issues `set_cursor`. Stale spans
+    /// do not panic (an out-of-range span simply highlights nothing), but an in-range stale span
+    /// highlights the wrong cells until the next call. Unlike beamterm, whose spans ride each decoded
+    /// frame, this renderer cannot self-refresh — the split mirrors the cursor's, and #273 wires both.
+    ///
+    /// [`set_cursor`]: Self::set_cursor
+    #[wasm_bindgen(js_name = setOverlay)]
+    pub fn set_overlay(
+        &mut self,
+        selection_spans: Vec<u32>,
+        match_spans: Vec<u32>,
+        selection_bg: u32,
+        match_bg: u32,
+    ) -> Result<(), JsValue> {
+        self.selection_spans = selection_spans;
+        self.match_spans = match_spans;
+        self.highlight_colors = HighlightColors {
+            selection_bg,
+            match_bg,
+        };
+        self.repack_from_grid()
+    }
+
+    /// Re-pack the instance buffer from the retained dense grid after the overlay changed but no new
+    /// frame arrived (#271). A no-op until the first `apply_damage` (the direct `apply_frame` path
+    /// keeps no columns to re-pack from). Mirrors `apply_damage`'s tail: take the grid out so the
+    /// `&mut self` pack does not borrow-conflict, then put it back.
+    fn repack_from_grid(&mut self) -> Result<(), JsValue> {
+        let Some(grid) = self.grid.take() else {
+            return Ok(());
+        };
+        let cells = Cells {
+            cols: grid.cols(),
+            rows: grid.rows(),
+            codepoints: grid.codepoints(),
+            flags: grid.flags(),
+            clusters: grid.clusters(),
+        };
+        let result = self.resolve_and_pack(&cells, grid.bg(), grid.fg(), self.last_blink_on);
+        self.grid = Some(grid);
+        result
     }
 
     /// Set the minimum WCAG contrast a cursor must have with the cell it sits on (#368). Below it,

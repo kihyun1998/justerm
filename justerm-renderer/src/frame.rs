@@ -8,6 +8,7 @@
 
 use crate::attrs::{BLANK_SLOT, glyph_field, is_concealed, is_inverse};
 use crate::color::gl_rgb;
+use crate::overlay::{Overlay, composite_bg, should_blend};
 use crate::palette::{Palette, Role, resolve_rgb};
 
 /// Floats per cell instance: `col, row, bg(3), fg(3), glyph_field`.
@@ -33,7 +34,19 @@ pub struct Frame<'a> {
 /// ([`BLANK_SLOT`]) so only its (inverse-aware) background shows; `blink_on` is the render
 /// loop's phase, driven by the consumer (timing is policy, #282). **Every cell is emitted** —
 /// no cell is left un-drawn (#255).
-pub fn pack_instances(frame: &Frame, palette: &Palette, blink_on: bool) -> Vec<f32> {
+///
+/// A cell covered by the selection / search `overlay` (#271) has its resolved background composited
+/// with the injected highlight colour — blended over a non-default / inverse cell, painted solid over
+/// the default background ([`composite_bg`]). Compositing happens in packed colour space, before the
+/// `gl_rgb` unpack, so the blend matches the web reference to the byte; and because the whole viewport
+/// re-packs each frame and the #263 upload diff re-sends only changed cells, a cell that gains or loses
+/// a highlight re-uploads with no extra bookkeeping (unlike beamterm's overlay delta).
+pub fn pack_instances(
+    frame: &Frame,
+    palette: &Palette,
+    blink_on: bool,
+    overlay: &Overlay,
+) -> Vec<f32> {
     let Frame {
         cols,
         rows,
@@ -53,22 +66,28 @@ pub fn pack_instances(frame: &Frame, palette: &Palette, blink_on: bool) -> Vec<f
             let idx = row as usize * cols as usize + col as usize;
             let cell_flags = flags.get(idx).copied().unwrap_or(0);
 
-            let bg_rgb = gl_rgb(resolve_rgb(
-                bg.get(idx).copied().unwrap_or(0),
-                palette,
-                Role::Bg,
-            ));
-            let fg_rgb = gl_rgb(resolve_rgb(
-                fg.get(idx).copied().unwrap_or(0),
-                palette,
-                Role::Fg,
-            ));
+            // Resolve in packed 0xRRGGBB space and keep the values packed through the inverse swap
+            // and the #271 highlight composite, unpacking to gl floats only at the end — the blend is
+            // integer math (matches the web reference to the byte).
+            let bg_ref = bg.get(idx).copied().unwrap_or(0);
+            let bg_packed = resolve_rgb(bg_ref, palette, Role::Bg);
+            let fg_packed = resolve_rgb(fg.get(idx).copied().unwrap_or(0), palette, Role::Fg);
             // Inverse swaps foreground and background.
-            let (bg_rgb, fg_rgb) = if is_inverse(cell_flags) {
-                (fg_rgb, bg_rgb)
+            let (bg_packed, fg_packed) = if is_inverse(cell_flags) {
+                (fg_packed, bg_packed)
             } else {
-                (bg_rgb, fg_rgb)
+                (bg_packed, fg_packed)
             };
+            // #271: composite the selection / search highlight onto the (post-swap) background.
+            // `should_blend` reads the PRE-inverse ref + flags: an inverse or non-default cell blends
+            // so its own colour shows through, a plain default-bg cell paints solid.
+            let bg_packed = composite_bg(
+                bg_packed,
+                should_blend(bg_ref, cell_flags),
+                overlay.color_at(row, col),
+            );
+            let bg_rgb = gl_rgb(bg_packed);
+            let fg_rgb = gl_rgb(fg_packed);
 
             // A concealed cell points at the blank slot: zero coverage, no decoration bits,
             // so only the (already inverse-swapped) background shows.
@@ -100,6 +119,7 @@ mod tests {
     use crate::attrs::{
         BLANK_SLOT, BLINK, GLYPH_UNDERLINE, HIDDEN, INVERSE, STRIKETHROUGH, UNDERLINE,
     };
+    use crate::overlay::{HIGHLIGHT_BLEND_ALPHA, HighlightColors, blend_over};
 
     fn palette() -> Palette {
         let mut colors = [0u32; 256];
@@ -131,6 +151,7 @@ mod tests {
             &frame(&[(2 << 24) | 0xE0_6C_75], &[0], &[33], &[0]),
             &p,
             true,
+            &Overlay::default(),
         );
         let expect = [
             0.0,
@@ -153,7 +174,12 @@ mod tests {
     fn inverse_swaps_the_resolved_fg_and_bg() {
         // bg default (1E1E2E), fg white; INVERSE → bg becomes white, fg becomes 1E1E2E.
         let p = palette();
-        let got = pack_instances(&frame(&[0], &[0], &[0], &[INVERSE]), &p, true);
+        let got = pack_instances(
+            &frame(&[0], &[0], &[0], &[INVERSE]),
+            &p,
+            true,
+            &Overlay::default(),
+        );
         assert_eq!(&got[2..5], &[1.0, 1.0, 1.0], "bg is the (swapped-in) fg"); // white
         assert_eq!(got[5], 30.0 / 255.0, "fg is the (swapped-in) default bg"); // 0x1E
     }
@@ -161,7 +187,12 @@ mod tests {
     #[test]
     fn underline_flag_folds_into_the_glyph_field() {
         let p = palette();
-        let got = pack_instances(&frame(&[0], &[0], &[33], &[UNDERLINE]), &p, true);
+        let got = pack_instances(
+            &frame(&[0], &[0], &[33], &[UNDERLINE]),
+            &p,
+            true,
+            &Overlay::default(),
+        );
         assert_eq!(got[8], (33 | GLYPH_UNDERLINE) as f32);
     }
 
@@ -179,6 +210,7 @@ mod tests {
             ),
             &p,
             true,
+            &Overlay::default(),
         );
         assert_eq!(got[8], BLANK_SLOT as f32, "glyph field is the blank slot");
         // Background is untouched (only the glyph is concealed).
@@ -190,7 +222,12 @@ mod tests {
         // INVERSE swaps fg/bg first, then HIDDEN conceals the glyph — the cell is a solid
         // block of the (swapped-in) foreground, matching alacritty's fg==bg conceal model.
         let p = palette();
-        let got = pack_instances(&frame(&[0], &[0], &[33], &[HIDDEN | INVERSE]), &p, true);
+        let got = pack_instances(
+            &frame(&[0], &[0], &[33], &[HIDDEN | INVERSE]),
+            &p,
+            true,
+            &Overlay::default(),
+        );
         assert_eq!(got[8], BLANK_SLOT as f32);
         assert_eq!(
             &got[2..5],
@@ -203,10 +240,20 @@ mod tests {
     fn blink_cell_is_concealed_only_on_the_off_phase() {
         let p = palette();
         // Blink phase ON: the glyph draws normally.
-        let on = pack_instances(&frame(&[0], &[0], &[33], &[BLINK]), &p, true);
+        let on = pack_instances(
+            &frame(&[0], &[0], &[33], &[BLINK]),
+            &p,
+            true,
+            &Overlay::default(),
+        );
         assert_eq!(on[8], 33.0, "blink-on draws the real glyph");
         // Blink phase OFF: the glyph is concealed to the blank slot.
-        let off = pack_instances(&frame(&[0], &[0], &[33], &[BLINK]), &p, false);
+        let off = pack_instances(
+            &frame(&[0], &[0], &[33], &[BLINK]),
+            &p,
+            false,
+            &Overlay::default(),
+        );
         assert_eq!(off[8], BLANK_SLOT as f32, "blink-off conceals the glyph");
     }
 
@@ -227,7 +274,7 @@ mod tests {
             slots: &[2048, 2049], // wide lead + its right-half slot
             flags: &[HIDDEN | WIDE_CHAR, HIDDEN | WIDE_CHAR_SPACER],
         };
-        let got = pack_instances(&f, &p, true);
+        let got = pack_instances(&f, &p, true, &Overlay::default());
         assert_eq!(got[8], BLANK_SLOT as f32, "lead half concealed");
         assert_eq!(
             got[8 + INSTANCE_FLOATS],
@@ -240,9 +287,130 @@ mod tests {
     fn non_blink_cell_is_unaffected_by_the_blink_phase() {
         // A plain cell renders identically regardless of the blink phase.
         let p = palette();
-        let on = pack_instances(&frame(&[0], &[0], &[33], &[0]), &p, true);
-        let off = pack_instances(&frame(&[0], &[0], &[33], &[0]), &p, false);
+        let on = pack_instances(
+            &frame(&[0], &[0], &[33], &[0]),
+            &p,
+            true,
+            &Overlay::default(),
+        );
+        let off = pack_instances(
+            &frame(&[0], &[0], &[33], &[0]),
+            &p,
+            false,
+            &Overlay::default(),
+        );
         assert_eq!(on, off);
         assert_eq!(on[8], 33.0);
+    }
+
+    // --- #271: selection / search overlay compositing into the packed background ---
+
+    const SEL_BG: u32 = 0x3A_3D_5C;
+    const MATCH_BG: u32 = 0x5C_3A_3A;
+
+    /// One-cell overlay covering (row 0, col 0) as the given group.
+    fn selected<'a>(selection: &'a [u32], matches: &'a [u32]) -> Overlay<'a> {
+        Overlay {
+            selection,
+            matches,
+            colors: HighlightColors {
+                selection_bg: SEL_BG,
+                match_bg: MATCH_BG,
+            },
+        }
+    }
+
+    #[test]
+    fn a_selected_default_bg_cell_is_painted_the_solid_selection_colour() {
+        // bg Default (ref 0), no inverse → solid: the highlight replaces the bg outright.
+        let p = palette();
+        let got = pack_instances(
+            &frame(&[0], &[0], &[0], &[0]),
+            &p,
+            true,
+            &selected(&[0, 0, 0], &[]),
+        );
+        assert_eq!(
+            &got[2..5],
+            &gl_rgb(SEL_BG),
+            "solid selection over the default bg"
+        );
+    }
+
+    #[test]
+    fn a_selected_coloured_cell_blends_so_its_own_colour_shows_through() {
+        // bg Rgb(0xE06C75): a non-default cell blends the selection over its own colour (#115).
+        let p = palette();
+        let cell_bg = 0xE0_6C_75;
+        let got = pack_instances(
+            &frame(&[(2 << 24) | cell_bg], &[0], &[0], &[0]),
+            &p,
+            true,
+            &selected(&[0, 0, 0], &[]),
+        );
+        let expect = gl_rgb(blend_over(cell_bg, SEL_BG, HIGHLIGHT_BLEND_ALPHA));
+        assert_eq!(
+            &got[2..5],
+            &expect,
+            "selection blended over the cell colour"
+        );
+        // ...and it is NOT the solid colour — proves the blend branch really ran.
+        assert_ne!(
+            &got[2..5],
+            &gl_rgb(SEL_BG),
+            "a coloured cell must not paint solid"
+        );
+    }
+
+    #[test]
+    fn an_inverse_default_cell_blends_over_its_swapped_in_background() {
+        // Inverse makes the shown bg the swapped-in fg (white here). should_blend is true for an
+        // inverse cell even with a Default bg ref, so the selection blends over that white — not solid.
+        let p = palette();
+        let got = pack_instances(
+            &frame(&[0], &[0], &[0], &[INVERSE]),
+            &p,
+            true,
+            &selected(&[0, 0, 0], &[]),
+        );
+        // Post-swap bg is the default fg (white, 0xFFFFFF); the selection blends over it.
+        let expect = gl_rgb(blend_over(0xFF_FF_FF, SEL_BG, HIGHLIGHT_BLEND_ALPHA));
+        assert_eq!(&got[2..5], &expect, "inverse cell blends over its shown bg");
+        assert_ne!(&got[2..5], &gl_rgb(SEL_BG), "inverse never paints solid");
+    }
+
+    #[test]
+    fn a_search_match_uses_the_match_colour_not_the_selection_colour() {
+        let p = palette();
+        let got = pack_instances(
+            &frame(&[0], &[0], &[0], &[0]),
+            &p,
+            true,
+            &selected(&[], &[0, 0, 0]),
+        );
+        assert_eq!(
+            &got[2..5],
+            &gl_rgb(MATCH_BG),
+            "a match paints its own colour"
+        );
+    }
+
+    #[test]
+    fn a_cell_the_overlay_does_not_cover_keeps_its_background() {
+        // The control: with the span one column to the right, the cell is untouched — so the tests
+        // above are asserting the highlight, not just any repaint.
+        let p = palette();
+        let cell_bg = 0xE0_6C_75;
+        let got = pack_instances(
+            &frame(&[(2 << 24) | cell_bg], &[0], &[0], &[0]),
+            &p,
+            true,
+            &selected(&[0, 1, 1], &[]), // covers (0,1), not (0,0)
+        );
+        assert_eq!(
+            &got[2..5],
+            &gl_rgb(cell_bg),
+            "an uncovered cell is unchanged"
+        );
     }
 }
