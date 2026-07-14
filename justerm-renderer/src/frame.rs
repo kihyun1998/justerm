@@ -12,6 +12,7 @@
 
 use crate::attrs::{BLANK_SLOT, glyph_field, is_concealed, is_dim};
 use crate::color::gl_rgb;
+use crate::contrast::ensure_contrast_ratio;
 use crate::overlay::{Overlay, composite_bg, should_blend};
 use crate::palette::Palette;
 use crate::render_policy::{ColorPolicy, dim_foreground, resolve_cell};
@@ -74,29 +75,45 @@ pub fn pack_instances(
             let idx = row as usize * cols as usize + col as usize;
             let cell_flags = flags.get(idx).copied().unwrap_or(0);
 
-            // Resolve refs → packed 0xRRGGBB, applying inverse + bold→bright (#223), and keep the
-            // values packed through dim and the #271 highlight composite, unpacking to gl floats only
-            // at the end — the blends are integer math (match the web reference to the byte).
+            // Resolve refs → packed 0xRRGGBB, applying inverse + bold→bright (#223); keep the values
+            // packed through the highlight composite + the fg policy, unpacking to gl floats only at the
+            // end — the blends are integer math (match the reference to the byte).
             let bg_ref = bg.get(idx).copied().unwrap_or(0);
             let fg_ref = fg.get(idx).copied().unwrap_or(0);
-            let (fg_packed, bg_packed) =
+            let (resolved_fg, cell_bg) =
                 resolve_cell(fg_ref, bg_ref, cell_flags, palette, policy.bold_to_bright);
-            // #232 DIM: fade the fg toward its (pre-highlight) bg. A selection undims the fg (#224) —
-            // a later #272 slice; until then a selected dim cell stays dimmed (cumulative tail).
-            let fg_packed = if is_dim(cell_flags) {
-                dim_foreground(fg_packed, bg_packed)
-            } else {
-                fg_packed
-            };
-            // #271: composite the selection / search highlight onto the (post-swap) background.
-            // `should_blend` reads the PRE-inverse ref + flags: an inverse or non-default cell blends
-            // so its own colour shows through, a plain default-bg cell paints solid.
-            let bg_packed = composite_bg(
-                bg_packed,
+            // #271: composite the selection / search highlight onto the (post-swap) background FIRST,
+            // so the fg policy sees the EFFECTIVE bg the glyph is drawn over. `should_blend` reads the
+            // PRE-inverse ref + flags: an inverse or non-default cell blends so its own colour shows
+            // through, a plain default-bg cell paints solid.
+            let eff_bg = composite_bg(
+                cell_bg,
                 should_blend(bg_ref, cell_flags),
                 overlay.color_at(row, col),
             );
-            let bg_rgb = gl_rgb(bg_packed);
+            // The fg colour policy, applied ONCE against the effective bg on the UNDIMMED fg — xterm's
+            // model (`TextureAtlas._getMinimumContrastColor`), which the renderer can follow because the
+            // highlight is already folded into `eff_bg` (beamterm couldn't, so justerm-web double-passes
+            // — a compromise the renderer sheds; the #272 2-lens pinned this). minimumContrastRatio
+            // (#225) is checked FIRST: if it fires, the corrected fg wins and DIM is skipped (mutually
+            // exclusive, xterm `TextureAtlas.ts:329`); a dim cell that already clears the halved ratio is
+            // dimmed instead (#232). A selection undims the fg (#224) — a later #272 slice; until then a
+            // selected dim cell stays dimmed.
+            let dim = is_dim(cell_flags);
+            let mcr = policy.min_contrast as f64;
+            let fg_packed = if mcr > 1.0 {
+                let ratio = if dim { mcr / 2.0 } else { mcr };
+                match ensure_contrast_ratio(eff_bg, resolved_fg, ratio) {
+                    Some(adjusted) => adjusted,
+                    None if dim => dim_foreground(resolved_fg, eff_bg),
+                    None => resolved_fg,
+                }
+            } else if dim {
+                dim_foreground(resolved_fg, eff_bg)
+            } else {
+                resolved_fg
+            };
+            let bg_rgb = gl_rgb(eff_bg);
             let fg_rgb = gl_rgb(fg_packed);
 
             // A concealed cell points at the blank slot: zero coverage, no decoration bits,
@@ -487,6 +504,7 @@ mod tests {
             &Overlay::default(),
             &ColorPolicy {
                 bold_to_bright: false,
+                ..ColorPolicy::default()
             },
         );
         assert_eq!(&got[5..8], &gl_rgb(0xCC_00_00), "policy off keeps ANSI 1");
@@ -535,6 +553,156 @@ mod tests {
             &got[5..8],
             &gl_rgb(0xFF_55_55),
             "the bright colour is dimmed, not drawn raw"
+        );
+    }
+
+    // --- #272 slice 2: minimumContrastRatio (#225) wired through pack_instances ---
+
+    const RGB: u32 = 2 << 24;
+
+    #[test]
+    fn minimum_contrast_corrects_a_low_contrast_foreground() {
+        let p = palette(); // default_bg 0x1E1E2E
+        // fg Rgb 0x2A2A3A — barely above the bg, well under any real ratio. mcr 7 nudges it legible.
+        let policy = ColorPolicy {
+            min_contrast: 7.0,
+            ..ColorPolicy::default()
+        };
+        let got = pack_instances(
+            &frame(&[0], &[RGB | 0x2A_2A_3A], &[0], &[0]),
+            &p,
+            true,
+            &Overlay::default(),
+            &policy,
+        );
+        let expect = gl_rgb(ensure_contrast_ratio(0x1E_1E_2E, 0x2A_2A_3A, 7.0).unwrap());
+        assert_eq!(
+            &got[5..8],
+            &expect,
+            "the fg is corrected against the cell bg"
+        );
+        assert_ne!(
+            &got[5..8],
+            &gl_rgb(0x2A_2A_3A),
+            "a low-contrast fg does not pass through"
+        );
+    }
+
+    #[test]
+    fn minimum_contrast_off_leaves_even_an_illegible_foreground() {
+        let p = palette();
+        // The control: default policy (mcr = 1.0, off) draws the low-contrast fg verbatim.
+        let got = pack_instances(
+            &frame(&[0], &[RGB | 0x2A_2A_3A], &[0], &[0]),
+            &p,
+            true,
+            &Overlay::default(),
+            &ColorPolicy::default(),
+        );
+        assert_eq!(
+            &got[5..8],
+            &gl_rgb(0x2A_2A_3A),
+            "mcr off passes the fg through"
+        );
+    }
+
+    #[test]
+    fn the_contrast_pass_runs_against_the_effective_highlight_bg() {
+        // A white fg is fine on the dark cell bg (stage-2 no-op), but a light SELECTION highlight
+        // makes it illegible — the overlay contrast pass must re-correct against the *effective* bg.
+        let p = bright_palette(); // default_bg black, default_fg white
+        let policy = ColorPolicy {
+            min_contrast: 4.5,
+            ..ColorPolicy::default()
+        };
+        let sel_bg = 0xCC_CC_CC; // light grey selection → white-on-grey is low contrast
+        let overlay = Overlay {
+            selection: &[0, 0, 0],
+            matches: &[],
+            colors: crate::overlay::HighlightColors {
+                selection_bg: sel_bg,
+                match_bg: 0,
+            },
+        };
+        // fg Default (white); bg Default → the highlight paints SOLID grey (default-bg cell).
+        let got = pack_instances(&frame(&[0], &[0], &[0], &[0]), &p, true, &overlay, &policy);
+        let expect = gl_rgb(ensure_contrast_ratio(sel_bg, 0xFF_FF_FF, 4.5).unwrap());
+        assert_eq!(
+            &got[5..8],
+            &expect,
+            "fg corrected against the selection bg, not the cell bg"
+        );
+        assert_ne!(
+            &got[5..8],
+            &gl_rgb(0xFF_FF_FF),
+            "white is darkened on the light highlight"
+        );
+    }
+
+    #[test]
+    fn a_dim_cell_that_fails_contrast_is_corrected_not_dimmed_mutual_exclusion() {
+        // The stage-2 rule (render-policy.ts makeRenderPolicy): if minimumContrastRatio fires, its
+        // corrected fg wins and DIM is SKIPPED. Only this case makes stage-2 distinct from the overlay
+        // pass — without it a dim cell would be dimmed FIRST and then corrected from the dimmer colour,
+        // a different result. A dim low-contrast fg (0x2A2A3A on 0x1E1E2E) fails mcr/2, so it must be
+        // corrected from its UNDIMMED value.
+        let p = palette();
+        let policy = ColorPolicy {
+            min_contrast: 7.0, // dim halves it to 3.5
+            ..ColorPolicy::default()
+        };
+        let got = pack_instances(
+            &frame(&[0], &[RGB | 0x2A_2A_3A], &[0], &[DIM]),
+            &p,
+            true,
+            &Overlay::default(),
+            &policy,
+        );
+        let corrected_undimmed = ensure_contrast_ratio(0x1E_1E_2E, 0x2A_2A_3A, 3.5).unwrap();
+        assert_eq!(
+            &got[5..8],
+            &gl_rgb(corrected_undimmed),
+            "corrected from the undimmed fg (dim skipped)"
+        );
+        // The dim-first path (what dropping stage-2 would produce) is a different colour.
+        let dim_first = ensure_contrast_ratio(
+            0x1E_1E_2E,
+            crate::render_policy::dim_foreground(0x2A_2A_3A, 0x1E_1E_2E),
+            3.5,
+        )
+        .unwrap();
+        assert_ne!(
+            corrected_undimmed, dim_first,
+            "the two paths must differ, or this test proves nothing"
+        );
+    }
+
+    #[test]
+    fn a_dim_cell_that_meets_contrast_undimmed_stays_dimmed_not_re_corrected() {
+        // xterm applies minimumContrastRatio ONCE, against the effective bg, on the UNDIMMED fg
+        // (TextureAtlas._getMinimumContrastColor). A dim fg whose UNDIMMED value already clears mcr/2
+        // is dimmed and left alone — it is NOT re-corrected after dimming. (justerm-web keeps it
+        // dimmed too, via overlayTint's early return.) A double-pass that re-runs contrast on the
+        // dimmed fg would wrongly brighten it back — the 2-lens (#272) caught exactly this.
+        let p = bright_palette(); // default_bg black
+        let policy = ColorPolicy {
+            min_contrast: 4.5, // mcr/2 = 2.25
+            ..ColorPolicy::default()
+        };
+        // 0x555555 on black = contrast 2.81 >= 2.25 → mcr does NOT fire → dims to 0x2B2B2B, and
+        // 0x2B2B2B (contrast 1.48 < 2.25) must NOT be lightened back.
+        let got = pack_instances(
+            &frame(&[0], &[RGB | 0x55_55_55], &[0], &[DIM]),
+            &p,
+            true,
+            &Overlay::default(),
+            &policy,
+        );
+        let dimmed = crate::render_policy::dim_foreground(0x55_55_55, 0x00_00_00);
+        assert_eq!(
+            &got[5..8],
+            &gl_rgb(dimmed),
+            "the dimmed fg is kept, not re-corrected"
         );
     }
 }

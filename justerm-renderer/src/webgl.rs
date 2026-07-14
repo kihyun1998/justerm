@@ -5,7 +5,7 @@
 //! and uploading new glyphs on demand), packs one instance per cell, and `render`
 //! composites each glyph's coverage from the atlas over its background, plus SGR attrs
 //! (#267: bold/italic font variants, underline/strikethrough lines, inverse fg/bg swap; #272:
-//! bold→bright + dim colours) and double-width glyphs (#268: a wide glyph splits across two atlas
+//! bold→bright + dim + minimum-contrast colours) and double-width glyphs (#268: a wide glyph splits across two atlas
 //! slots / two grid cells).
 //! ASCII (`0x20..=0x7E`) is pre-rasterised. Colour emoji (#284) + clusters (#285) follow.
 //!
@@ -454,6 +454,9 @@ pub struct JustermRenderer {
     /// Draw bold text in the bright (8–15) ANSI colour (#223/#272), consumer policy (xterm's
     /// `drawBoldTextInBrightColors`). Default on, as xterm; toggled via `set_bold_to_bright`.
     bold_to_bright: bool,
+    /// Minimum WCAG fg/bg contrast ratio (#225/#272), consumer policy (xterm's `minimumContrastRatio`).
+    /// `1.0` = off (default). Set via `set_minimum_contrast_ratio`; clamped to `[1, 21]`.
+    min_contrast: f32,
     /// The last blink phase packed, so a [`set_overlay`](Self::set_overlay) re-pack (no new frame)
     /// keeps the cursor/blink cells in the phase the render loop last drove.
     last_blink_on: bool,
@@ -654,6 +657,7 @@ impl JustermRenderer {
             match_spans: Vec::new(),
             highlight_colors: HighlightColors::default(),
             bold_to_bright: true, // xterm's drawBoldTextInBrightColors default (#223)
+            min_contrast: 1.0,    // xterm's minimumContrastRatio default: off (#225)
             last_blink_on: true,
             ctx_loss,
         };
@@ -1526,9 +1530,11 @@ impl JustermRenderer {
             matches: &self.match_spans,
             colors: self.highlight_colors,
         };
-        // #272: the RGB-space colour policy (bold→bright, dim, …), assembled from the renderer's fields.
+        // #272: the RGB-space colour policy (bold→bright, dim, minimum-contrast, …), assembled from
+        // the renderer's fields.
         let policy = ColorPolicy {
             bold_to_bright: self.bold_to_bright,
+            min_contrast: self.min_contrast,
         };
         self.instances = pack_instances(&frame, &self.palette, blink_on, &overlay, &policy);
         self.instance_count = count as i32;
@@ -1676,6 +1682,24 @@ impl JustermRenderer {
     #[wasm_bindgen(js_name = setBoldToBright)]
     pub fn set_bold_to_bright(&mut self, enabled: bool) -> Result<(), JsValue> {
         self.bold_to_bright = enabled;
+        self.repack_from_grid()
+    }
+
+    /// Set the minimum WCAG fg/bg contrast ratio (#225/#272) — xterm's `minimumContrastRatio`. Below
+    /// it, a cell's foreground is nudged lighter or darker (in 10% luminance steps, away from the bg)
+    /// until it meets the ratio, against the colour it is actually drawn over (post-highlight). A DIM
+    /// cell uses half the ratio, so it stays visibly dim rather than being corrected to full contrast.
+    /// Consumer policy (ADR-0017): the mechanism (the WCAG adjustment on the resolved RGB) is the
+    /// renderer's, the number is the consumer's. Default `1.0` = off (xterm's default). Clamped to
+    /// `[1, 21]`; re-packs the retained grid so a live change shows; takes effect on the next
+    /// [`render`](Self::render).
+    #[wasm_bindgen(js_name = setMinimumContrastRatio)]
+    pub fn set_minimum_contrast_ratio(&mut self, ratio: f32) -> Result<(), JsValue> {
+        self.min_contrast = if ratio.is_finite() {
+            ratio.clamp(1.0, 21.0)
+        } else {
+            1.0
+        };
         self.repack_from_grid()
     }
 

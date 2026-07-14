@@ -21,6 +21,7 @@ pub mod bitmap;
 pub mod builtin;
 pub mod color;
 pub mod context_loss;
+pub mod contrast;
 pub mod cursor;
 pub mod dpr;
 pub mod emoji;

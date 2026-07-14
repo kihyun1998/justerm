@@ -93,6 +93,32 @@
   const back = draw();
   checks.restoringBoldToBrightBrightensAgain = cellIs(back, 0, BRIGHT);
 
+  // --- minimumContrastRatio (#225): a dark-grey block on black is illegible; a high ratio lightens it ---
+  const RGB = (c) => ((2 << 24) | c) >>> 0;
+  const LOW = 0x303030; // dark grey fg — very low contrast on the black default bg
+  const lowFg = new Uint32Array([RGB(LOW), 0, 0, 0]);
+  const plainFlags = new Uint16Array(N);
+  const drawMcr = (ratio) => {
+    r.setMinimumContrastRatio(ratio);
+    r.resize(COLS, ROWS);
+    r.apply_frame(COLS, ROWS, new Uint32Array(N), lowFg, codepoints, plainFlags, true);
+    r.render();
+    return grab();
+  };
+  // Off (default): the illegible grey passes through unchanged.
+  const mcrOff = drawMcr(1.0);
+  checks.lowContrastPassesThroughWhenMcrOff = cellIs(mcrOff, 0, LOW);
+  // On: the fg is nudged lighter until legible — brighter than the original, and no longer LOW.
+  // Directional (luminance up) rather than a pinned byte: the exact step value is pinned host-side
+  // in contrast.rs; here the toggle proves the policy is live and moving the fg the right way.
+  const mcrOn = drawMcr(7.0);
+  const lowR = (LOW >> 16) & 0xff;
+  checks.minimumContrastLightensAnIllegibleForeground =
+    !cellIs(mcrOn, 0, LOW) && centre(mcrOn, 0)[0] > lowR + 40;
+  // Back off → the grey returns (the discriminating half: the lightening was the policy, not baked).
+  const mcrBack = drawMcr(1.0);
+  checks.turningMcrOffRestoresTheLowContrastForeground = cellIs(mcrBack, 0, LOW);
+
   window.__proof = {
     ok: Object.values(checks).every(Boolean), checks,
     dpr: devicePixelRatio, cw, ch, dimWhite: DIM_WHITE.toString(16),

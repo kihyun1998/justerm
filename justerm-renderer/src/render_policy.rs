@@ -6,9 +6,11 @@
 //! fades toward the bg). These are the ref-space + RGB-space transforms `resolve_rgb` deliberately
 //! omits; the selection/search highlight ([`overlay`]) composites on top.
 //!
-//! The **fg long-tail** grows here slice by slice (#272 is cumulative): `minimumContrastRatio`
-//! (#225), the selection-side fg overrides (undim #224, `selectionForeground` #227), and the tile
-//! glyph rules (#226/#239/#241) land in later slices. This slice ships bold→bright + dim.
+//! The **fg long-tail** grows slice by slice (#272 is cumulative). Shipped: bold→bright + dim (here)
+//! and `minimumContrastRatio` (#225, the WCAG step-adjust lives in [`contrast`](crate::contrast); the
+//! `min_contrast` policy + orchestration are in [`ColorPolicy`] / `pack_instances`). Still to come:
+//! the selection-side fg overrides (undim #224, `selectionForeground` #227) and the tile glyph rules
+//! (#226/#239/#241).
 //!
 //! [`palette`]: crate::palette
 //! [`overlay`]: crate::overlay
@@ -24,13 +26,20 @@ use crate::palette::{Palette, Role, resolve_rgb};
 pub struct ColorPolicy {
     /// Draw bold text in the bright (8–15) ANSI colour (#223, xterm's `drawBoldTextInBrightColors`).
     pub bold_to_bright: bool,
+    /// Minimum WCAG fg/bg contrast ratio in `[1, 21]` (#225, xterm's `minimumContrastRatio`). Below
+    /// it the fg is nudged lighter/darker to stay legible ([`contrast::ensure_contrast_ratio`]).
+    /// `1.0` = off (the default, xterm's).
+    ///
+    /// [`contrast::ensure_contrast_ratio`]: crate::contrast::ensure_contrast_ratio
+    pub min_contrast: f32,
 }
 
 impl Default for ColorPolicy {
-    /// xterm's defaults: bold→bright ON.
+    /// xterm's defaults: bold→bright ON, minimum contrast OFF (`1.0`).
     fn default() -> Self {
         Self {
             bold_to_bright: true,
+            min_contrast: 1.0,
         }
     }
 }
