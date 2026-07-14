@@ -32,6 +32,7 @@ pub mod mat4;
 pub mod metrics;
 pub mod overlay;
 pub mod palette;
+pub mod render_policy;
 pub mod upload;
 
 // The browser/GL glue is wasm32-only (web-sys/glow-web). Host builds skip it so the

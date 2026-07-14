@@ -4,8 +4,9 @@
 //! cell's bg/fg references (injected palette) and its glyph slot (glyph cache, rasterising
 //! and uploading new glyphs on demand), packs one instance per cell, and `render`
 //! composites each glyph's coverage from the atlas over its background, plus SGR attrs
-//! (#267: bold/italic font variants, underline/strikethrough lines, inverse fg/bg swap) and
-//! double-width glyphs (#268: a wide glyph splits across two atlas slots / two grid cells).
+//! (#267: bold/italic font variants, underline/strikethrough lines, inverse fg/bg swap; #272:
+//! bold→bright + dim colours) and double-width glyphs (#268: a wide glyph splits across two atlas
+//! slots / two grid cells).
 //! ASCII (`0x20..=0x7E`) is pre-rasterised. Colour emoji (#284) + clusters (#285) follow.
 //!
 //! The selection / search overlay (#271, `setOverlay`) folds its highlight colour into each covered
@@ -41,6 +42,7 @@ use crate::metrics::{device_cell, fit_cell_to_atlas, glyph_offset};
 use crate::overlay::{HighlightColors, Overlay};
 use crate::palette::Palette;
 use crate::rasterizer::Rasterizer;
+use crate::render_policy::ColorPolicy;
 use crate::upload::{UploadPlan, invalidate_baseline, plan_upload};
 
 /// Texture-array layers covering the whole slot space (normal + wide = 6144 / 32 = 192),
@@ -449,6 +451,9 @@ pub struct JustermRenderer {
     match_spans: Vec<u32>,
     /// The consumer-injected blend colours for the two overlay kinds (policy #115).
     highlight_colors: HighlightColors,
+    /// Draw bold text in the bright (8–15) ANSI colour (#223/#272), consumer policy (xterm's
+    /// `drawBoldTextInBrightColors`). Default on, as xterm; toggled via `set_bold_to_bright`.
+    bold_to_bright: bool,
     /// The last blink phase packed, so a [`set_overlay`](Self::set_overlay) re-pack (no new frame)
     /// keeps the cursor/blink cells in the phase the render loop last drove.
     last_blink_on: bool,
@@ -648,6 +653,7 @@ impl JustermRenderer {
             selection_spans: Vec::new(),
             match_spans: Vec::new(),
             highlight_colors: HighlightColors::default(),
+            bold_to_bright: true, // xterm's drawBoldTextInBrightColors default (#223)
             last_blink_on: true,
             ctx_loss,
         };
@@ -1520,7 +1526,11 @@ impl JustermRenderer {
             matches: &self.match_spans,
             colors: self.highlight_colors,
         };
-        self.instances = pack_instances(&frame, &self.palette, blink_on, &overlay);
+        // #272: the RGB-space colour policy (bold→bright, dim, …), assembled from the renderer's fields.
+        let policy = ColorPolicy {
+            bold_to_bright: self.bold_to_bright,
+        };
+        self.instances = pack_instances(&frame, &self.palette, blink_on, &overlay, &policy);
         self.instance_count = count as i32;
         self.upload_instances();
         Ok(())
@@ -1655,6 +1665,18 @@ impl JustermRenderer {
     #[wasm_bindgen(js_name = setBgAlpha)]
     pub fn set_bg_alpha(&mut self, alpha: f32) {
         self.bg_alpha = alpha.clamp(0.0, 1.0);
+    }
+
+    /// Draw bold text in the bright (8–15) ANSI colour (#223/#272) — xterm's
+    /// `drawBoldTextInBrightColors`. A bold `Indexed(0..=7)` foreground resolves to its `8..=15`
+    /// bright variant; `Rgb`/`Indexed(8..=255)` foregrounds and non-bold cells are unaffected. On by
+    /// default (xterm's default). Consumer policy (ADR-0017): the mechanism (index remap at resolve)
+    /// is the renderer's, the on/off is the consumer's. Re-packs from the retained grid so a live
+    /// toggle shows without a new frame; takes effect on the next [`render`](Self::render).
+    #[wasm_bindgen(js_name = setBoldToBright)]
+    pub fn set_bold_to_bright(&mut self, enabled: bool) -> Result<(), JsValue> {
+        self.bold_to_bright = enabled;
+        self.repack_from_grid()
     }
 
     /// Set the selection / search highlight overlay (#271): the two span directories (stride-3
