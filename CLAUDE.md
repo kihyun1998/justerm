@@ -67,6 +67,11 @@ cargo bench              # throughput 마이크로벤치(추세 기록)
 
 ## Agent skills
 
+### teach 코스 (개인 학습)
+
+사용자가 `/teach` 로 이 코드베이스를 배우는 다세션 코스가 있다. `/teach` 를 쓸 땐 **먼저 `teach/README.md`
+를 읽어라** — 워크스페이스 위치·규칙(그 폴더에서 실행·쓰면 커밋)·진행상황이 거기 있다.
+
 ### Issue tracker
 
 Issues are tracked as GitHub issues via the `gh` CLI. See `docs/agents/issue-tracker.md`.
