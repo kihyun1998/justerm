@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>기초 ① · 터미널이란 무엇인가 — justerm</title>
+<link rel="stylesheet" href="../assets/course.css">
+<style>
+  /* 터미널 격자 미니 데모 */
+  .term-grid {
+    font-family: "SF Mono", ui-monospace, Menlo, monospace; font-size: 1rem; line-height: 1.5;
+    background: #11131a; color: #cfd3dc; padding: .9rem 1rem; border-radius: 8px; margin: 1.2rem 0;
+    display: inline-block; border: 1px solid var(--rule); overflow-x: auto;
+  }
+  .term-grid .row { white-space: pre; }
+  .term-grid .cell { display: inline-block; width: 1ch; }
+  .term-grid .hl { background: #7a2e2e; color: #fff; }         /* 빨강 배경 셀 */
+  .term-grid .cur { background: #cfd3dc; color: #11131a; }     /* 커서 */
+  .term-grid .dim { color: #555b68; }
+  .cellmap { display: grid; grid-template-columns: auto 1fr; gap: .3rem 1rem; margin: 1rem 0; font-size: .95rem; }
+  .cellmap dt { font-family: ui-sans-serif, sans-serif; font-weight: 700; color: var(--accent); }
+  .cellmap dd { margin: 0; }
+</style>
+</head>
+<body>
+
+<p class="eyebrow">justerm 코스 · 기초 ① · 어휘 세우기</p>
+<h1>터미널이란 무엇인가</h1>
+<p class="subtitle">그리드·셀·커서·스크롤백·VT 스트림 — damage·wire 를 배우기 전에 깔 5개 단어</p>
+
+<div class="callout key">
+  <span class="label">이 레슨의 win</span>
+  "터미널 = <strong>글자 격자</strong>. 셸이 <strong>바이트</strong>로 그 격자를 조종한다" 를 그림으로 이해한다.
+  이 다섯 단어(그리드·셀·커서·스크롤백·VT스트림)가 앞으로 모든 레슨의 바닥이 된다.
+</div>
+
+<h2>1. 터미널은 그림판이 아니라 <em>글자 격자</em>다</h2>
+<p>
+검은 창에 글자가 뜨니까 "그림"처럼 느껴지지만, 터미널의 본질은 <strong>줄(row) × 칸(column)의 격자</strong>다.
+아래는 4줄 × 20칸짜리 아주 작은 터미널이라고 보면 된다:
+</p>
+<div class="term-grid">
+<div class="row">$ ls<span class="cur"> </span></div>
+<div class="row">file.txt  <span class="hl">error.log</span></div>
+<div class="row">notes.md</div>
+<div class="row"><span class="dim">~</span></div>
+</div>
+<p>
+각 칸을 <strong>셀(cell)</strong> 이라 부른다. 격자 크기는 보통 <span class="mono">80×24</span> 같은 식
+(80칸, 24줄). 창을 키우면 격자가 커진다(resize).
+</p>
+
+<h2>2. 셀(cell) 한 칸엔 뭐가 들어있나</h2>
+<p>셀은 그냥 "글자 하나"가 아니다. 이런 정보 묶음이다:</p>
+<dl class="cellmap">
+  <dt>글자</dt><dd>그 칸에 찍힌 문자 1개 (정확히는 <strong>grapheme</strong> — 이모지·결합문자 포함)</dd>
+  <dt>앞색 / 뒷색</dt><dd>글자색과 배경색. 위 <span class="hl">error.log</span> 는 뒷색이 빨강인 셀들</dd>
+  <dt>스타일</dt><dd>굵게 / 기울임 / 밑줄 / 반전 …</dd>
+  <dt>폭</dt><dd>1(보통) 또는 2(한글·한자 같은 <strong>전각</strong>은 두 칸 차지)</dd>
+</dl>
+<div class="callout note">
+  <span class="label">리뷰에 걸리는 포인트</span>
+  "색"은 셀에 <strong>실제 색(hex)</strong>으로 저장되지 않는다 — "몇 번 색"이라는 <em>참조</em>로만 저장된다.
+  (왜 그런지는 <a href="0001-boundary-is-identity.html">검수 ① 레슨</a>의 "theme 무지"에서 다룬다.)
+</div>
+
+<h2>3. 커서(cursor) — 다음 글자가 찍힐 자리</h2>
+<p>
+위 그림의 <span class="term-grid" style="padding:.1rem .3rem;margin:0"><span class="cur"> </span></span>
+가 커서다. "지금 여기에 다음 글자를 찍겠다"는 위치 표시. 글자를 하나 찍으면 커서가 오른쪽으로 한 칸 간다.
+줄 끝에 닿으면 다음 줄로 내려간다. 커서의 <em>위치·모양·깜빡임</em>은 터미널 상태의 일부다.
+</p>
+
+<h2>4. 셸은 <em>바이트</em>를 뱉는다 — VT 스트림</h2>
+<p>
+네가 <code>ls</code> 를 치면, 셸(bash/zsh)이 결과를 <strong>바이트 흐름</strong>으로 뱉는다. 그런데 그 안엔
+<strong>두 종류</strong>가 섞여 있다:
+</p>
+<div class="split">
+  <div class="card does"><h4>① 글자</h4><ul><li><code>f i l e . t x t</code> — 격자에 찍을 실제 문자</li></ul></div>
+  <div class="card"><h4>② 명령 (이스케이프 시퀀스)</h4><ul><li><code>\x1b[31m</code> = "이제부터 빨강"<br><code>\x1b[2J</code> = "화면 지워"</li></ul></div>
+</div>
+<p>
+이 <strong>글자 + 명령이 섞인 바이트 흐름</strong>을 <strong>VT 스트림</strong>이라 부른다("VT" = 옛 DEC
+VT100 터미널에서 유래). 예를 들어:
+</p>
+<pre><code>h e l l o <span style="color:#e0918c">\x1b[31m</span> w o r l d
+└── 글자 ──┘└ 명령: 빨강 ┘└── 글자 ──┘</code></pre>
+<p>
+→ 화면엔 <code>hello</code> 는 보통색, <code>world</code> 는 빨강으로 찍힌다. <code>\x1b</code>(ESC)는
+"이건 글자가 아니라 명령이야"의 신호탄. <strong>이 흐름을 격자 상태로 푸는 게 터미널 엔진의 존재 이유다.</strong>
+</p>
+<div class="callout note">
+  <span class="label">연결</span>
+  이 "VT 스트림 → 격자 상태" 변환을 하는 게 바로 <code>justerm-core</code>. 어려운 파싱은 <code>vte</code>
+  라는 검증된 라이브러리에 맡기고, 그 위에 격자·커서를 얹는다. (검수 ① §2 참고)
+</div>
+
+<h2>5. 스크롤백(scrollback) — 위로 밀려난 과거</h2>
+<p>
+격자는 24줄뿐인데 <code>ls</code> 결과가 100줄이면? 위쪽 줄들이 <strong>화면 밖으로 밀려난다.</strong> 그
+밀려난 과거 줄들을 버리지 않고 보관하는 곳이 <strong>스크롤백</strong>이다. 마우스 휠로 "위로 스크롤"하면
+보이는 게 스크롤백. 지금 보이는 24줄 창을 <strong>뷰포트(viewport)</strong>라 하고, 뷰포트는 스크롤백 위를
+미끄러지는 창문이다.
+</p>
+<div class="callout key">
+  <span class="label">한 줄 요약</span>
+  터미널 = <strong>셀들의 격자</strong> + <strong>커서</strong> + <strong>스크롤백</strong>.
+  셸이 <strong>VT 스트림</strong>(글자 + 명령)을 뱉으면, 엔진이 그걸 읽어 이 상태를 유지한다.
+  아직 "그리기"·"나르기"는 안 나왔다 — 그건 기초 ②(damage·wire)에서.
+</div>
+
+<h2>6. 확인 — 하나 골라 즉시 피드백</h2>
+<div class="quiz" id="q1">
+  <p class="q">Q1. 터미널의 본질에 가장 가까운 것은?</p>
+  <div class="opts">
+    <button data-correct="1">글자들의 격자</button>
+    <button data-correct="0">픽셀 그림판</button>
+  </div>
+  <p class="feedback"></p>
+</div>
+<div class="quiz" id="q2">
+  <p class="q">Q2. "VT 스트림"에 섞여 있는 두 종류는?</p>
+  <div class="opts">
+    <button data-correct="1">글자 + 명령</button>
+    <button data-correct="0">색 + 픽셀</button>
+  </div>
+  <p class="feedback"></p>
+</div>
+<div class="quiz" id="q3">
+  <p class="q">Q3. 화면 위로 밀려나 사라진 과거 줄들을 보관하는 곳은?</p>
+  <div class="opts">
+    <button data-correct="1">스크롤백</button>
+    <button data-correct="0">뷰포트</button>
+  </div>
+  <p class="feedback"></p>
+</div>
+<div class="quiz" id="q4">
+  <p class="q">Q4. 셀 하나가 담는 게 <strong>아닌</strong> 것은?</p>
+  <div class="opts">
+    <button data-correct="0">글자·색·스타일·폭</button>
+    <button data-correct="1">화면상 픽셀 좌표</button>
+  </div>
+  <p class="feedback"></p>
+</div>
+
+<div class="primary-source">
+  <span class="label">1차 출처 — 가볍게 훑어라</span>
+  <code>CONTEXT.md</code>(repo 루트)의 <em>Cell · Grid · Scrollback · Viewport</em> 항목 — 한 줄씩 정의라
+  딱 이 레슨 어휘와 일치한다. 더 궁금하면 <a href="../reference/glossary.html">코스 용어집</a>.
+</div>
+
+<div class="ask-reminder">
+  💬 <strong>막히면 튜터한테 물어봐.</strong> "전각이 왜 두 칸이야?" "커서가 줄 끝에서 어떻게 돼?"
+  "이스케이프 시퀀스 종류가 몇 개야?" — 뭐든. 이해 안 된 채 넘어가지 말기.
+</div>
+
+<div class="lesson-nav">
+  <span>← (코스 시작)</span>
+  <span><a href="../reference/glossary.html">용어집 ↗</a></span>
+  <span>다음: <a href="0003-byte-language.html">기초 ② — 바이트의 언어 →</a></span>
+</div>
+
+<script>
+document.querySelectorAll('.quiz').forEach(function (quiz) {
+  var fb = quiz.querySelector('.feedback');
+  var msgs = {
+    q1: ['정답. 터미널은 <strong>줄×칸의 글자 격자</strong>다. "그림"처럼 보여도 본질은 셀들의 표.',
+         '픽셀 그림판이 아니다 — 본질은 <strong>글자 격자</strong>. 픽셀로 그리는 건 렌더러의 일(엔진 밖).'],
+    q2: ['정답. <strong>글자 + 명령(이스케이프 시퀀스)</strong>이 섞인 바이트 흐름이 VT 스트림.',
+         'VT 스트림은 <strong>글자 + 명령</strong>이 섞인 것. 색은 명령의 일부고, 픽셀은 아예 없다(엔진은 픽셀 안 다룸).'],
+    q3: ['정답. <strong>스크롤백</strong>이 과거 줄 보관함. 지금 보이는 창은 뷰포트.',
+         '뷰포트는 <em>지금 보이는 창</em>이다. 밀려난 과거를 보관하는 건 <strong>스크롤백</strong>.'],
+    q4: ['정답. 셀은 <strong>픽셀 좌표를 모른다</strong> — 격자 상 논리 위치(몇 행 몇 열)만. 픽셀은 렌더러가 계산.',
+         '셀은 글자·색·스타일·폭을 담는다. <strong>픽셀 좌표는 안 담는다</strong> — 그건 렌더러의 몫.']
+  };
+  quiz.querySelectorAll('button').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var right = btn.dataset.correct === '1';
+      quiz.querySelectorAll('button').forEach(function (b) { b.disabled = true; });
+      btn.classList.add(right ? 'picked-right' : 'picked-wrong');
+      fb.className = 'feedback show ' + (right ? 'right' : 'wrong');
+      fb.innerHTML = (right ? '✓ ' : '✕ ') + '<span class="why">' + msgs[quiz.id][right ? 0 : 1] + '</span>';
+    });
+  });
+});
+</script>
+
+</body>
+</html>

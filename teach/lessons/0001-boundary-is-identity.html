@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>레슨 1 · justerm 은 하나가 아니다 — 패밀리와 크레이트별 경계</title>
+<link rel="stylesheet" href="../assets/course.css">
+</head>
+<body>
+
+<p class="eyebrow">justerm 코스 · 검수 ① · (기초 ①·② 다음)</p>
+<h1>justerm 은 하나가 아니다</h1>
+<p class="subtitle">패밀리, 그리고 <em>크레이트마다 다른</em> 경계 — 리뷰의 첫 질문은 "어느 크레이트냐"</p>
+
+<div class="callout note">
+  <span class="label">먼저 이것부터</span>
+  이 레슨은 <strong>damage · wire · 셀 · DecodedFrame</strong> 같은 말을 쓴다. 낯설면
+  <a href="0002-terminal-foundations.html">기초 ① 터미널이란</a>(그리드·셀·커서·스크롤백·VT스트림)과
+  기초 ②(damage·wire)를 먼저 보고 오면 훨씬 편하다.
+</div>
+
+<div class="callout key">
+  <span class="label">이 레슨의 win</span>
+  에이전트가 짠 변경을 보면 <strong>①"어느 크레이트냐" → ②"그 크레이트의 경계를 넘었나"</strong>
+  두 질문으로 리뷰할 수 있게 된다. 터미널 프로젝트에서 가장 흔한 실수 한 종류를 통째로 잡는 체크리스트.
+</div>
+
+<h2>1. 흔한 한 줄부터 버리자</h2>
+<p>
+많은 사람이(그리고 이 repo 의 옛 문서들도) 이렇게 말했다:
+</p>
+<div class="callout warn">
+  <span class="label">절반만 맞는 말</span>
+  "justerm 은 <strong>순수 터미널 엔진</strong>이다. 그림은 안 그린다."
+</div>
+<p>
+이건 <strong>절반만 맞다</strong>. 그리고 그 절반을 전부로 착각하면 리뷰가 통째로 틀어진다. 진실은:
+</p>
+<div class="callout key">
+  <strong><code>justerm</code> 은 크레이트 하나가 아니라 <em>패밀리(우산 이름)</em>다.</strong>
+  그 안의 <strong><code>justerm-core</code></strong> 가 "순수 엔진"이고 — 패밀리 <em>전체</em>는
+  xterm 처럼 <strong>엔진 + 렌더러 + 웹 위젯을 다 갖춘 풀스택 터미널</strong>이다.
+</div>
+<p>
+그래서 "justerm 은 안 그린다"는 문장은 <strong><code>justerm-core</code> 는 안 그린다</strong>로
+읽어야 맞다. 렌더러(<code>justerm-renderer</code>)는 <em>그리는 게 임무</em>다. 이 구분을 놓치면
+멀쩡한 렌더러 코드를 "경계 위반"이라고 반려하게 된다(§5 에서 실제로 겪어본다).
+</p>
+
+<h2>2. 패밀리 지도 — 5개 크레이트</h2>
+<p>각자 역할이 다르고, <strong>경계도 다르다</strong>. 리뷰 전에 이 지도를 머리에 넣어둔다.</p>
+<div class="split">
+  <div class="card">
+    <h4><code>justerm-core</code> — 엔진</h4>
+    <ul>
+      <li>바이트 → 상태(그리드·스크롤백·커서·selection)</li>
+      <li>damage 프레임을 <strong>wire 포맷으로 encode</strong></li>
+      <li><strong>안 그림 · 안 읽음 · 안 보냄 · 색은 참조만</strong></li>
+    </ul>
+  </div>
+  <div class="card">
+    <h4><code>justerm-wasm-decode</code> — 디코더</h4>
+    <ul>
+      <li>core 의 <code>decode</code> 를 WASM 으로 컴파일</li>
+      <li>네이티브·웹이 <strong>디코더 하나를 공유</strong>(TS 재작성 X)</li>
+      <li>wire 바이트 → <code>DecodedFrame</code>(열 배열)</li>
+    </ul>
+  </div>
+  <div class="card does">
+    <h4><code>justerm-renderer</code> — 렌더러</h4>
+    <ul>
+      <li>DecodedFrame + 주입된 팔레트 → <strong>WebGL2 로 그림</strong></li>
+      <li>그리는 게 임무! (단 팔레트 주입 = theme-agnostic 유지)</li>
+      <li>beamterm(외부) 대체하는 <strong>자체(first-party)</strong> 렌더러</li>
+    </ul>
+  </div>
+  <div class="card">
+    <h4><code>justerm-web</code> — 위젯</h4>
+    <ul>
+      <li>브라우저 터미널 위젯(웹 개발자가 갖다 씀)</li>
+      <li>DecodedFrame 받아 렌더러에 넘겨 조율</li>
+      <li>프레임 모드(지금) / in-wasm(나중), <code>FrameSource</code> seam 뒤</li>
+    </ul>
+  </div>
+</div>
+<p>
+다섯째 <code>justerm-facade</code> 는 옛 이름(<code>justerm</code> 0.5.1) <strong>묘비</strong> —
+개명 전 이름 쓰던 사람 안 깨지게 재수출만 하는 죽은 크레이트다. 리뷰에서 볼 일 거의 없다.
+</p>
+
+<h2>3. 어떻게 맞물리나 — 데이터 흐름</h2>
+<div class="pipeline">
+  <div class="pipe-box">셸 바이트<span class="sub">VT 스트림</span></div>
+  <div class="pipe-arrow">→</div>
+  <div class="pipe-box engine">justerm-core<span class="sub">상태 + encode</span></div>
+  <div class="pipe-arrow">→</div>
+  <div class="pipe-box">IPC<span class="sub">소비처가 전송<br>(core 아님!)</span></div>
+  <div class="pipe-arrow">→</div>
+  <div class="pipe-box">wasm-decode<span class="sub">→ DecodedFrame</span></div>
+  <div class="pipe-arrow">→</div>
+  <div class="pipe-box">justerm-web<span class="sub">위젯 조율</span></div>
+  <div class="pipe-arrow">→</div>
+  <div class="pipe-box engine">renderer<span class="sub">그림 (WebGL2)</span></div>
+  <div class="pipe-arrow">→</div>
+  <div class="pipe-box">화면<span class="sub">픽셀</span></div>
+</div>
+<p>
+빨간 두 상자가 justerm 이 <em>직접 소유</em>하는 Rust 층(엔진 + 렌더러). <strong>IPC(전송)는 크레이트가
+아니라 소비처</strong>(PenTerm 등)의 일이다 — core 는 바이트를 <em>만들 뿐</em> 보내지 않는다.
+</p>
+
+<h2>4. 경계는 크레이트마다 다르다 — core 의 리트머스</h2>
+<p>
+<code>justerm-core</code> 를 리뷰할 땐 이 4개를 던진다. <strong>렌더러엔 이 규칙이 안 걸린다</strong>(§5).
+</p>
+<pre><code>① I/O 를 새로 열었나?     (파일·소켓·PTY 읽기/쓰기)   → 위반
+② 뭔가를 전송하나?        (채널·IPC·네트워크로 send)  → 위반
+③ 픽셀/캔버스를 그리나?    (GPU·draw·color buffer)     → 위반
+④ hex/실제 색을 아는가?    (#rrggbb, 팔레트 해석)      → 위반</code></pre>
+<p>넷 다 "아니오"면 core 경계는 지켜진 것. 하나라도 "예"면 멈추고 되묻는다.</p>
+<div class="callout note">
+  <span class="label">"theme 무지"가 왜 중요한가</span>
+  core 는 색을 <strong>참조</strong>로만 저장한다: <code>Default</code> / <code>Indexed(0..255)</code> /
+  <code>Rgb(r,g,b)</code>. "빨강"이 화면에서 <em>정확히 어떤 hex</em> 인지는 절대 모른다 — 팔레트→실제색은
+  소비처/렌더러가 <em>주입</em>받아 처리. 그래서 core 에 <code>#ff0000</code> 이 들어오면 <strong>즉시 위반</strong>.
+</div>
+
+<h2>5. 실전 함정 둘</h2>
+<h3>(1) "저스텀은 안 그린다"를 렌더러에 적용하는 실수</h3>
+<p>
+<code>justerm-renderer</code> PR 을 보고 "어? 픽셀을 그리네? 경계 위반!" — <strong>틀렸다.</strong>
+렌더러는 그리라고 만든 크레이트다. 진짜 불변식은 <strong>스코프가 있다</strong>:
+</p>
+<div class="split">
+  <div class="card doesnt"><h4>core</h4><ul><li>안 그린다 (§4 의 4질문)</li></ul></div>
+  <div class="card does"><h4>renderer</h4><ul><li>그린다 — 단 팔레트 주입(theme-agnostic) + core 침범 X</li></ul></div>
+</div>
+<p><strong>그래서 리뷰 첫 질문이 "어느 크레이트냐" 다.</strong> 크레이트를 정해야 경계가 정해진다.</p>
+
+<h3>(2) 우회(compensate) — 딴 층에서 몰래 메꾸기</h3>
+<p>가장 교묘한 위반. CLAUDE.md 가 <strong>"우회 금지 — 근본 층에서 고쳐라"</strong>로 못 박는다. 실사례(#297/#300):</p>
+<div class="callout warn">
+  <span class="label">일어난 일</span>
+  core 의 이모지 <strong>폭(width)</strong> 계산에 갭이 있었다(폭은 <em>core 책임</em>). 그런데
+  <strong>렌더러</strong>가 <code>FE0F</code> 를 감지해 폭을 <strong>덮어버렸다</strong>. 화면은 맞게 나왔다 —
+  하지만 이건 우회다.
+</div>
+<ul>
+  <li>① upstream(core) 버그를 <strong>가려서</strong> 고칠 압력을 없앤다.</li>
+  <li>② "width 는 core 책임"이라는 <strong>경계를 침범</strong>한다.</li>
+  <li>③ 같은 지식이 두 층에 <strong>중복</strong>돼 나중에 어긋난다.</li>
+</ul>
+<p>
+올바른 처리: 렌더러 우회를 <strong>제지</strong>, 근본 수정을 core 이슈(#301)로 <strong>추적</strong>.
+신호는 <em>"테스트 통과시키려 소비처 코드로 돌아가고 있다"</em> — 그럼 멈추고 "근본은 어느 층이냐" 물어라.
+</p>
+
+<h2>6. 왜 패밀리가 됐나 — 피벗</h2>
+<p>
+원래 justerm 은 <strong>"엔진만 만드는 라이브러리"</strong>였다. 그리는 건 <em>외부</em> 렌더러
+<code>beamterm</code> 이 했고. 그런데 <strong>자체 렌더러 <code>justerm-renderer</code> 를 직접 만들며</strong>
+xterm 처럼 "엔진 + 렌더링까지 다 하는 풀스택"으로 <strong>변신(pivot)</strong>했다(ADR-0018:
+<em>"first-party full-stack terminal"</em>).
+</p>
+<div class="callout key">
+  <span class="label">바뀐 것 / 안 바뀐 것</span>
+  <strong>패밀리 스코프</strong>는 바뀌었다(엔진 라이브러리 → 풀스택, 렌더러가 외부→자체).
+  하지만 <strong><code>justerm-core</code> 의 경계는 안 바뀌었다</strong> — core 는 여전히 안 그린다.
+  바뀐 건 렌더러의 <em>출신</em>이지 core 의 경계가 아니다.
+</div>
+<div class="callout note">
+  <span class="label">문서 읽는 법 — 방금 우리가 겪은 것</span>
+  <code>CLAUDE.md</code>·<code>architecture.md</code> 는 지금도 "beamterm 이 그린다"고 쓴다. 이건
+  <strong>버그가 아니라 의도</strong>다 — beamterm→renderer 전환(#273)이 끝날 때까지 유지하고, 문서 플립은
+  <strong>#274</strong>로 tracked. <strong>교훈: 이 repo 에서 "지금 뭘 하는가/왜 바뀌었나"의 최신 진실은
+  CLAUDE.md 본문이 아니라 최신 ADR(0012·0018)에 있다.</strong> 리뷰 때 "왜 이렇게 했지?"는 항상 ADR 부터.
+</div>
+
+<div class="callout key">
+  <span class="label">한 줄 요약</span>
+  <code>justerm</code> = <strong>풀스택 패밀리</strong>(엔진+렌더러+위젯). 경계는 <strong>크레이트마다 다르다</strong>:
+  core 는 안 그림, renderer 는 그리되 theme-agnostic. 리뷰 = <strong>"어느 크레이트냐 → 그 경계를 넘었나 →
+  딴 층에서 몰래 메꾸진 않나(우회)".</strong>
+</div>
+
+<h2>7. 확인 — 하나 골라 즉시 피드백</h2>
+<p>기억에서 꺼내는 게 학습이다(retrieval 연습).</p>
+
+<div class="quiz" id="q1">
+  <p class="q">Q1. "justerm 이 이제 렌더링까지 하니까 <code>justerm-core</code> 도 그림을 그린다." — 맞나?</p>
+  <div class="opts">
+    <button data-correct="1">틀림</button>
+    <button data-correct="0">맞음</button>
+  </div>
+  <p class="feedback"></p>
+</div>
+
+<div class="quiz" id="q2">
+  <p class="q">Q2. 에이전트가 <code>justerm-core</code> 에 <code>cell.rendered_hex = "#ff5555"</code> 를 추가했다.</p>
+  <div class="opts">
+    <button data-correct="1">경계 위반</button>
+    <button data-correct="0">정상</button>
+  </div>
+  <p class="feedback"></p>
+</div>
+
+<div class="quiz" id="q3">
+  <p class="q">Q3. 에이전트가 <code>justerm-<strong>renderer</strong></code> 에 WebGL 셰이더로 커서 사각형을 <strong>픽셀로 그리는</strong> 코드를 넣었다(팔레트는 주입받음).</p>
+  <div class="opts">
+    <button data-correct="0">경계 위반</button>
+    <button data-correct="1">정상</button>
+  </div>
+  <p class="feedback"></p>
+</div>
+
+<div class="quiz" id="q4">
+  <p class="q">Q4. core 의 커서 폭이 틀렸다. 에이전트가 <strong>렌더러</strong>에서 특정 문자를 감지해 폭을 덮어 화면을 맞췄다.</p>
+  <div class="opts">
+    <button data-correct="1">경계 위반 (우회)</button>
+    <button data-correct="0">정상</button>
+  </div>
+  <p class="feedback"></p>
+</div>
+
+<div class="quiz" id="q5">
+  <p class="q">Q5. 에이전트가 <code>justerm-core</code> 안에서 <strong>직접 PTY 를 열어 바이트를 읽는</strong> 루프를 넣었다.</p>
+  <div class="opts">
+    <button data-correct="1">경계 위반</button>
+    <button data-correct="0">정상</button>
+  </div>
+  <p class="feedback"></p>
+</div>
+
+<div class="primary-source">
+  <span class="label">1차 출처 — 읽어라</span>
+  <strong>CLAUDE.md</strong> 첫 절(패밀리 구성 + "경계 invariant")과 <strong>ADR-0018</strong>(피벗의 '왜').
+  보강: <code>CONTEXT.md</code>(family·Engine·Renderer 용어), <code>ADR-0017</code>(어느 크레이트냐 라우팅).
+  이 레슨은 그것들을 리뷰어 관점으로 풀어쓴 것.
+</div>
+
+<div class="ask-reminder">
+  💬 <strong>막히면 튜터(=나)한테 물어봐.</strong> "우회랑 정당한 소비처 책임 구분?" "DecodedFrame 이 정확히 뭐야?"
+  "in-wasm 모드는 언제 써?" 뭐든 — 그게 다음 레슨의 씨앗이 된다.
+</div>
+
+<div class="lesson-nav">
+  <span>← (코스 시작)</span>
+  <span><a href="../reference/glossary.html">용어집 ↗</a></span>
+  <span>레슨 2: 어느 크레이트냐 — core vs 소비처 라우팅(ADR-0017) <span class="tag">예정</span></span>
+</div>
+
+<script>
+document.querySelectorAll('.quiz').forEach(function (quiz) {
+  var fb = quiz.querySelector('.feedback');
+  var msgs = {
+    q1: ['정답. 그리는 건 <strong>justerm-renderer</strong> 다. 패밀리가 풀스택이 됐어도 <code>justerm-core</code> 경계는 불변 — core 는 여전히 안 그린다. "어느 크레이트냐"를 먼저 봐라.',
+         '틀렸다. 패밀리 스코프가 풀스택이 된 거지 core 가 그리는 게 아니다. 그리는 건 <code>justerm-renderer</code>; core 경계는 안 바뀐다(§6).'],
+    q2: ['정답. hex(#ff5555)를 core 가 아는 순간 <strong>theme 무지</strong> 위반. 색은 참조(Indexed/Rgb)로만, 해석은 렌더러 몫.',
+         'core 가 hex 를 저장했다 = "theme 무지" 위반. 색 해석은 주입받은 렌더러가 한다.'],
+    q3: ['정답. 함정을 피했다 — <code>renderer</code> 는 <strong>그리는 게 임무</strong>다. "안 그린다"는 <em>core</em> 규칙이지 렌더러엔 안 걸린다. 팔레트 주입 = theme-agnostic 도 OK.',
+         '이건 정상이다. "안 그린다"는 <code>justerm-core</code> 규칙 — 렌더러는 그리라고 만든 크레이트다(§5). 어느 크레이트냐를 먼저.'],
+    q4: ['정답. 화면이 맞아도 <strong>우회</strong>(#297)다 — width 는 core 책임인데 렌더러가 덮었다. 근본은 core 에서 고치고 이슈로 추적.',
+         '우회다. 화면 맞는 게 함정 — width 는 core 책임이고, 렌더러가 덮으면 upstream 버그가 가려진다(#297).'],
+    q5: ['정답. <strong>I/O 없음</strong> 위반. 바이트는 <em>호출자</em>가 읽어 <code>feed()</code> 로 넣는다 — core 는 PTY 를 모른다.',
+         'PTY 를 여는 순간 "I/O 없음" 위반. core 는 <code>feed(bytes)</code> 로 <em>받기만</em> 한다.']
+  };
+  quiz.querySelectorAll('button').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var right = btn.dataset.correct === '1';
+      quiz.querySelectorAll('button').forEach(function (b) { b.disabled = true; });
+      btn.classList.add(right ? 'picked-right' : 'picked-wrong');
+      fb.className = 'feedback show ' + (right ? 'right' : 'wrong');
+      fb.innerHTML = (right ? '✓ ' : '✕ ') + '<span class="why">' + msgs[quiz.id][right ? 0 : 1] + '</span>';
+    });
+  });
+});
+</script>
+
+</body>
+</html>

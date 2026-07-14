@@ -1,0 +1,188 @@
+/* justerm 코스 — 공유 스타일시트. 모든 레슨/레퍼런스가 이걸 링크한다. Tufte-ish, 인쇄 친화. */
+
+:root {
+  --ink:      #1a1a1a;
+  --paper:    #fdfcf9;
+  --muted:    #6b6b63;
+  --rule:     #ddd8cc;
+  --accent:   #7a2e2e;   /* justerm 벽돌색 */
+  --accent-2: #2e5a7a;   /* 대비용 청색 */
+  --good:     #2e6b3e;
+  --bad:      #a13a2a;
+  --code-bg:  #f3f0e8;
+  --maxw:     46rem;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --ink: #e8e4da; --paper: #17171a; --muted: #9a958a; --rule: #33323a;
+    --accent: #e0918c; --accent-2: #8fbce0; --good: #86c98f; --bad: #e79a8c;
+    --code-bg: #22222a;
+  }
+}
+
+* { box-sizing: border-box; }
+
+html { font-size: 18px; }
+
+body {
+  margin: 0 auto;
+  max-width: var(--maxw);
+  padding: 3rem 1.4rem 6rem;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, "Times New Roman", serif;
+  line-height: 1.62;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ── 코스 헤더 (breadcrumb) ── */
+.eyebrow {
+  font-family: ui-sans-serif, -apple-system, "Helvetica Neue", sans-serif;
+  font-size: .72rem;
+  letter-spacing: .14em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin: 0 0 .4rem;
+}
+
+h1 {
+  font-size: 2.05rem;
+  line-height: 1.15;
+  margin: 0 0 .3rem;
+  letter-spacing: -.01em;
+}
+.subtitle {
+  font-size: 1.1rem;
+  color: var(--muted);
+  font-style: italic;
+  margin: 0 0 2.2rem;
+}
+
+h2 {
+  font-size: 1.35rem;
+  margin: 2.6rem 0 .8rem;
+  padding-bottom: .3rem;
+  border-bottom: 1px solid var(--rule);
+}
+h3 { font-size: 1.08rem; margin: 1.8rem 0 .5rem; }
+
+p { margin: .8rem 0; }
+
+a { color: var(--accent-2); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+
+code, kbd, .mono {
+  font-family: "SF Mono", "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace;
+  font-size: .86em;
+}
+code { background: var(--code-bg); padding: .1em .35em; border-radius: 3px; }
+pre {
+  background: var(--code-bg);
+  padding: 1rem 1.1rem;
+  border-radius: 6px;
+  overflow-x: auto;
+  border-left: 3px solid var(--rule);
+  line-height: 1.5;
+}
+pre code { background: none; padding: 0; }
+
+/* ── 콜아웃 ── */
+.callout {
+  margin: 1.4rem 0;
+  padding: .9rem 1.1rem;
+  border-radius: 6px;
+  border-left: 4px solid var(--accent);
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+}
+.callout.key   { border-color: var(--accent);   background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.callout.warn  { border-color: var(--bad);      background: color-mix(in srgb, var(--bad) 8%, transparent); }
+.callout.note  { border-color: var(--accent-2); background: color-mix(in srgb, var(--accent-2) 7%, transparent); }
+.callout .label {
+  font-family: ui-sans-serif, sans-serif; font-size: .7rem; font-weight: 700;
+  letter-spacing: .1em; text-transform: uppercase; color: var(--muted);
+  display: block; margin-bottom: .3rem;
+}
+
+/* ── 하는것/안하는것 2단 ── */
+.split { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin: 1.4rem 0; }
+@media (max-width: 34rem) { .split { grid-template-columns: 1fr; } }
+.card { border: 1px solid var(--rule); border-radius: 8px; padding: 1rem 1.1rem; }
+.card h4 { margin: 0 0 .6rem; font-size: 1rem; font-family: ui-sans-serif, sans-serif; }
+.card.does   h4 { color: var(--good); }
+.card.doesnt h4 { color: var(--bad); }
+.card ul { margin: 0; padding-left: 1.1rem; }
+.card li { margin: .4rem 0; }
+
+/* ── 파이프라인 다이어그램 ── */
+.pipeline {
+  display: flex; align-items: stretch; gap: 0; margin: 1.6rem 0;
+  font-family: ui-sans-serif, sans-serif; text-align: center; flex-wrap: wrap;
+}
+.pipe-box {
+  flex: 1 1 0; min-width: 6rem; padding: .8rem .5rem; border: 1px solid var(--rule);
+  border-radius: 8px; font-size: .82rem;
+}
+.pipe-box.engine {
+  border: 2px solid var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent);
+  font-weight: 700;
+}
+.pipe-box .sub { display: block; font-size: .68rem; color: var(--muted); margin-top: .25rem; font-weight: 400; }
+.pipe-arrow { flex: 0 0 auto; align-self: center; padding: 0 .5rem; color: var(--muted); font-size: 1.1rem; }
+
+/* ── 퀴즈 ── */
+.quiz { border: 1px solid var(--rule); border-radius: 8px; padding: 1.2rem 1.3rem; margin: 1.4rem 0; }
+.quiz .q { font-weight: 600; margin: 0 0 .8rem; }
+.quiz .scenario {
+  font-family: "SF Mono", ui-monospace, monospace; font-size: .84rem;
+  background: var(--code-bg); padding: .6rem .8rem; border-radius: 5px; margin: .5rem 0 .9rem;
+}
+.quiz .opts { display: flex; gap: .6rem; flex-wrap: wrap; }
+.quiz button {
+  font: inherit; font-size: .92rem; padding: .5rem 1.1rem; border: 1px solid var(--rule);
+  background: var(--paper); color: var(--ink); border-radius: 6px; cursor: pointer;
+  transition: all .12s;
+}
+.quiz button:hover { border-color: var(--accent-2); }
+.quiz button.picked-right { border-color: var(--good); background: color-mix(in srgb, var(--good) 15%, transparent); }
+.quiz button.picked-wrong { border-color: var(--bad);  background: color-mix(in srgb, var(--bad) 15%, transparent); }
+.quiz .feedback { margin-top: .9rem; font-size: .92rem; display: none; }
+.quiz .feedback.show { display: block; }
+.quiz .feedback.right { color: var(--good); }
+.quiz .feedback.wrong { color: var(--bad); }
+.quiz .feedback .why { color: var(--ink); margin-top: .3rem; display: block; }
+
+/* ── 푸터 / 네비 ── */
+.lesson-nav {
+  margin-top: 3.5rem; padding-top: 1.2rem; border-top: 2px solid var(--rule);
+  font-family: ui-sans-serif, sans-serif; font-size: .9rem;
+  display: flex; justify-content: space-between; gap: 1rem; flex-wrap: wrap;
+}
+.ask-reminder {
+  margin-top: 2rem; padding: 1rem 1.2rem; border-radius: 8px;
+  background: color-mix(in srgb, var(--accent-2) 8%, transparent);
+  border: 1px dashed var(--accent-2); font-size: .92rem;
+}
+.primary-source {
+  margin: 1.6rem 0; padding: 1rem 1.2rem; border-radius: 8px;
+  border: 1px solid var(--accent); font-size: .95rem;
+}
+.primary-source .label {
+  font-family: ui-sans-serif, sans-serif; font-size: .7rem; font-weight: 700;
+  letter-spacing: .1em; text-transform: uppercase; color: var(--accent); display: block; margin-bottom: .3rem;
+}
+
+.tag {
+  font-family: ui-sans-serif, sans-serif; font-size: .68rem; letter-spacing: .05em;
+  padding: .12em .5em; border-radius: 4px; background: var(--code-bg); color: var(--muted);
+  vertical-align: middle;
+}
+
+hr { border: none; border-top: 1px solid var(--rule); margin: 2.5rem 0; }
+
+/* ── 인쇄 ── */
+@media print {
+  body { max-width: none; padding: 0; background: #fff; color: #000; font-size: 12pt; }
+  .quiz button, .ask-reminder { display: none; }
+  a { color: #000; text-decoration: underline; }
+  .pipe-box.engine { background: #eee; }
+}

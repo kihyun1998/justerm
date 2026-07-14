@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>기초 ② · 바이트의 언어 — justerm</title>
+<link rel="stylesheet" href="../assets/course.css">
+<style>
+  .seq { font-family: "SF Mono", ui-monospace, Menlo, monospace; font-size: .95rem;
+         background: #11131a; color: #cfd3dc; padding: .7rem .9rem; border-radius: 8px; margin: 1rem 0;
+         display: inline-block; overflow-x: auto; }
+  .seq .esc { color: #e0b06a; }   /* ESC */
+  .seq .par { color: #8fbce0; }   /* 파라미터 */
+  .seq .fin { color: #e0918c; font-weight: 700; }  /* 최종문자 */
+  .seq .red { color: #e06c6c; } .seq .b { font-weight: 700; }
+  .fam { display: grid; grid-template-columns: auto 1fr; gap: .35rem 1rem; margin: 1rem 0; font-size: .95rem; }
+  .fam dt { font-family: "SF Mono", monospace; font-weight: 700; color: var(--accent); white-space: nowrap; }
+  .fam dd { margin: 0; }
+  .sm { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem; margin: 1.2rem 0; font-family: ui-sans-serif, sans-serif; }
+  .sm .s { border: 1px solid var(--rule); border-radius: 20px; padding: .35rem .8rem; font-size: .82rem; }
+  .sm .s.on { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); font-weight: 700; }
+  .sm .a { color: var(--muted); font-size: .8rem; }
+</style>
+</head>
+<body>
+
+<p class="eyebrow">justerm 코스 · 기초 ② · 어휘 세우기</p>
+<h1>바이트의 언어</h1>
+<p class="subtitle">이스케이프 시퀀스 · CSI · SGR · OSC — 그리고 파서가 <em>왜 상태머신인가</em></p>
+
+<div class="callout key">
+  <span class="label">이 레슨의 win</span>
+  <code>ESC[31m</code> 같은 명령을 보면 <strong>"아, 이건 색 바꾸는 CSI/SGR 명령이구나"</strong>를 읽을 수 있게 된다.
+  그리고 파서(justerm 이 <code>vte</code> 에 맡기는 그 부분)가 <em>왜</em> 상태머신인지 이해한다.
+</div>
+
+<div class="callout note">
+  <span class="label">이어서</span>
+  기초 ①에서 "바이트 = <strong>글자 + 명령</strong>"이라 했다. 글자 절반은 이미 이해했다.
+  이번엔 그 <strong>명령 절반</strong>을 뜯어본다.
+</div>
+
+<h2>1. ESC 가 신호탄이다</h2>
+<p>
+바이트 하나 <strong><code>0x1b</code> (ESC)</strong> 가 "지금부터 오는 건 글자가 아니라 <em>명령</em>이야"의
+신호다. 글로 쓸 땐 <code>\x1b</code> 또는 <code>ESC</code> 로 표기한다(눈에 안 보이는 바이트라서). ESC 뒤에
+따라오는 몇 바이트가 "어떤 명령인지"를 정한다.
+</p>
+<div class="callout note">
+  <span class="label">참고 — 명령이 다 ESC 로 시작하진 않는다</span>
+  아주 기본적인 것들은 ESC 없이 바이트 하나로 동작한다(<strong>C0 컨트롤</strong>): <code>0x0a</code>=줄바꿈(LF),
+  <code>0x0d</code>=맨 앞으로(CR), <code>0x09</code>=탭(HT), <code>0x08</code>=백스페이스(BS), <code>0x07</code>=삑소리(BEL).
+  나머지 풍부한 명령이 ESC 로 시작한다.
+</div>
+
+<h2>2. 명령의 세 가문</h2>
+<p>ESC 로 시작하는 명령은 <strong>다음 글자</strong>로 가문이 갈린다:</p>
+<dl class="fam">
+  <dt>ESC [ …</dt><dd><strong>CSI</strong> (Control Sequence Introducer) — 제일 큰 가문. 커서 이동·화면 지우기·스크롤·색. 거의 다 여기.</dd>
+  <dt>ESC ] …</dt><dd><strong>OSC</strong> (Operating System Command) — 문자열을 나르는 명령. 창 제목·클립보드·현재 폴더 등.</dd>
+  <dt>ESC (그 외)</dt><dd>짧은 단발 명령 (예: <code>ESC c</code> = 터미널 리셋).</dd>
+</dl>
+<p>
+그러니까 <code>ESC[</code> 를 보면 → "CSI 명령이구나", <code>ESC]</code> 를 보면 → "OSC(문자열)구나" 로 읽으면 된다.
+</p>
+
+<h2>3. CSI 한 개는 어떻게 생겼나</h2>
+<p>CSI 명령의 뼈대는 항상 이렇다:</p>
+<div class="seq"><span class="esc">ESC [</span> <span class="par">파라미터 ; 파라미터</span> <span class="fin">최종문자</span></div>
+<ul>
+  <li><strong>파라미터</strong> = 숫자들, <code>;</code> 로 구분 (예: <code>1;31</code>)</li>
+  <li><strong>최종문자</strong> = 이 명령이 <em>무엇</em>인지 정하는 알파벳 한 글자 (예: <code>m</code>=색/스타일, <code>H</code>=커서이동, <code>J</code>=화면지우기)</li>
+</ul>
+<p>예를 들어:</p>
+<div class="seq"><span class="esc">ESC [</span> <span class="par">2</span> <span class="fin">J</span>  <span class="a" style="color:#6b6b63">→ 화면 전체 지워라(J), 방식 2(전체)</span></div>
+<div class="seq"><span class="esc">ESC [</span> <span class="par">10 ; 5</span> <span class="fin">H</span>  <span class="a" style="color:#6b6b63">→ 커서를 10행 5열로(H)</span></div>
+
+<h2>4. SGR — 색과 스타일 (CSI 중 최종문자 <code>m</code>)</h2>
+<p>
+네가 제일 자주 보게 될 CSI 는 <strong>최종문자가 <code>m</code></strong> 인 것 — 이걸 <strong>SGR</strong>
+(Select Graphic Rendition)이라 부른다. 파라미터가 "무슨 스타일"인지 정한다:
+</p>
+<div class="seq"><span class="esc">ESC[</span><span class="par">31</span><span class="fin">m</span><span class="red">world</span><span class="esc">ESC[</span><span class="par">0</span><span class="fin">m</span>  <span class="a" style="color:#6b6b63">→ 빨강 켜고 "world" 찍고, 리셋</span></div>
+<dl class="fam">
+  <dt>0</dt><dd>리셋 (스타일 다 끔)</dd>
+  <dt>1</dt><dd>굵게(bold)</dd>
+  <dt>3 / 4</dt><dd>기울임 / 밑줄</dd>
+  <dt>30–37</dt><dd>글자색 (31=빨강, 32=초록 …)</dd>
+  <dt>40–47</dt><dd>배경색</dd>
+</dl>
+<p>
+<code>ESC[1;31m</code> 처럼 <strong>여러 개를 <code>;</code> 로 한꺼번에</strong> 준다(굵게 + 빨강). 여기서 색이
+<em>31 같은 번호</em>로 온다는 데 주목 — 실제 hex 가 아니다. <strong>이게 나중에 "color reference"(유닛 4)로
+이어진다</strong>: 엔진은 "31번 색"만 기억하고, 그게 어떤 빨강인지는 렌더러가 정한다.
+</p>
+
+<h2>5. OSC — 문자열 명령 (곁가지)</h2>
+<p>
+<code>ESC ]</code> 로 시작하는 OSC 는 숫자 하나 + <code>;</code> + <strong>문자열</strong> + 끝표시(BEL)로 온다:
+</p>
+<div class="seq"><span class="esc">ESC ]</span> <span class="par">0 ; My Terminal</span> <span class="fin">BEL</span>  <span class="a" style="color:#6b6b63">→ 창 제목을 "My Terminal"로</span></div>
+<p>0/2=창 제목, 7=현재 폴더, 8=하이퍼링크. 지금은 "이런 가문이 있다"만 알면 충분.</p>
+
+<div class="callout note">
+  <span class="label">CSI 와 OSC 는 "이름 위치"가 정반대다</span>
+  <div class="seq" style="display:block"><span class="esc">CSI:</span>  ESC [ 3 1 <span class="fin">m</span>          <span class="a" style="color:#6b6b63">← 최종문자 m = "무슨 명령" + 여기서 끝</span></div>
+  <div class="seq" style="display:block"><span class="esc">OSC:</span>  ESC ] <span class="par">0</span> ; My Terminal <span class="fin">BEL</span>  <span class="a" style="color:#6b6b63">← 앞 숫자 0 = "무슨 명령" / BEL = 그냥 "문자열 끝"</span></div>
+  <ul style="margin:.5rem 0 0">
+    <li><strong>CSI</strong>: "무슨 명령"이 <strong>끝(최종문자)</strong>에 있다 — 끝문자가 이름 <em>겸</em> 종료.</li>
+    <li><strong>OSC</strong>: "무슨 명령"이 <strong>앞(숫자)</strong>에 있고, 끝의 BEL 은 이름이 아니라 <strong>"문자열 여기까지"라는 마침표</strong>일 뿐.</li>
+  </ul>
+  <strong>왜 다르냐</strong>: OSC 는 창제목·URL 같은 <em>길이도 내용도 제멋대로인 자유 문자열</em>을 나른다 →
+  명령 종류를 <em>앞에</em> 둬야 하고(길이를 모르니 먼저 읽어야), <em>끝을 명시</em>해야 한다. CSI 는 짧은 숫자만
+  나르니 끝 알파벳 하나로 "끝 + 이름"을 동시에 해결. (끝표시는 <strong>BEL</strong> <code>0x07</code> 또는
+  <strong>ST</strong> = <code>ESC \</code>, 둘 다 "문자열 끝" 뜻.)
+</div>
+
+<h2>6. 파서는 <em>왜</em> 상태머신인가</h2>
+<p>
+이 모든 걸 바이트 흐름에서 알아내는 게 <strong>파서</strong>다. 그냥 "ESC[ 가 보이면…" 식으로 문자열 매칭하면
+안 되는 이유가 둘 있다:
+</p>
+<ul>
+  <li><strong>바이트가 아무렇게나 쪼개져 온다.</strong> <code>ESC[31m</code> 이 <code>ESC[3</code> 까지 오고 나머지는 다음 번에 올 수 있다(네트워크·버퍼).</li>
+  <li><strong>이상한 입력도 온다.</strong> 깨진 시퀀스가 와도 파서가 꼬이거나 멈추면 안 된다.</li>
+</ul>
+<p>
+그래서 파서는 <strong>"지금 어느 상태냐"</strong>를 들고 바이트를 하나씩 먹으며 상태를 옮긴다. 아주 단순화하면:
+</p>
+<div class="sm">
+  <span class="s on">ground<br><span class="a">글자 찍는 중</span></span>
+  <span class="a">— ESC 봄 →</span>
+  <span class="s">escape<br><span class="a">가문 기다림</span></span>
+  <span class="a">— [ 봄 →</span>
+  <span class="s">csi<br><span class="a">파라미터 모음</span></span>
+  <span class="a">— 최종문자 →</span>
+  <span class="s on">실행<br><span class="a">→ ground 복귀</span></span>
+</div>
+<p>
+<code>ESC[31m</code> 이 오면: <code>ESC</code>(→escape) → <code>[</code>(→csi) → <code>3</code>,<code>1</code>(파라미터 쌓기) →
+<code>m</code>(최종문자 = "SGR 실행!" 하고 ground 복귀). 쪼개져 와도 상태가 남아있으니 안 꼬인다.
+</p>
+<div class="callout note">
+  <span class="label">justerm 연결</span>
+  이 상태머신은 <strong>Paul Williams 의 표준 설계</strong>(vt100.net)이고, justerm 은 이 <em>진짜 어려운 파싱</em>만
+  검증된 크레이트 <code>vte</code> 에 맡긴다. 그 위에 격자·스크롤백을 얹는 게 <code>justerm-core</code>.
+  → 리뷰에서 "이 시퀀스가 뭐 하는 거지?"는 파서 코드가 아니라 <strong>xterm ctlseqs 사전</strong>에서 찾는다.
+</div>
+
+<div class="callout key">
+  <span class="label">한 줄 요약</span>
+  <strong>ESC</strong> = 명령 신호탄. <strong>ESC[</strong>=CSI(대부분), <strong>ESC]</strong>=OSC(문자열).
+  CSI 는 <em>파라미터 + 최종문자</em> 구조고, 최종문자 <code>m</code>이면 색/스타일(SGR). 색은 <em>번호</em>로 온다.
+  파서는 쪼개진·깨진 입력에도 안 꼬이려고 <strong>상태머신</strong> — 그 부분을 justerm 은 <code>vte</code> 에 위임.
+</div>
+
+<h2>7. 확인 — 하나 골라 즉시 피드백</h2>
+<div class="quiz" id="q1">
+  <p class="q">Q1. 바이트 흐름에서 <code>0x1b</code>(ESC)의 역할은?</p>
+  <div class="opts"><button data-correct="1">"이제부터 명령"이라는 신호</button><button data-correct="0">화면을 지우는 명령</button></div>
+  <p class="feedback"></p>
+</div>
+<div class="quiz" id="q2">
+  <p class="q">Q2. <code>ESC[31m</code> 은 어느 가문이고 무슨 일?</p>
+  <div class="opts"><button data-correct="1">CSI/SGR — 색·스타일</button><button data-correct="0">OSC — 창 제목</button></div>
+  <p class="feedback"></p>
+</div>
+<div class="quiz" id="q3">
+  <p class="q">Q3. CSI 명령에서 "무슨 명령인지"를 최종적으로 정하는 것은?</p>
+  <div class="opts"><button data-correct="0">맨 앞 파라미터 숫자</button><button data-correct="1">맨 끝 최종문자(알파벳)</button></div>
+  <p class="feedback"></p>
+</div>
+<div class="quiz" id="q4">
+  <p class="q">Q4. 파서가 <strong>상태머신</strong>인 핵심 이유는?</p>
+  <div class="opts"><button data-correct="1">쪼개져·깨져 오는 바이트에도 안 꼬이려고</button><button data-correct="0">색을 hex 로 바꾸려고</button></div>
+  <p class="feedback"></p>
+</div>
+<div class="quiz" id="q5">
+  <p class="q">Q5. <code>ESC[31m</code> 의 "31"은 실제로 무엇인가?</p>
+  <div class="opts"><button data-correct="1">색 번호(참조) — hex 아님</button><button data-correct="0">화면상 픽셀 RGB 값</button></div>
+  <p class="feedback"></p>
+</div>
+
+<div class="primary-source">
+  <span class="label">1차 출처 — 원하면 훑어라 (지금은 선택)</span>
+  <strong>vt100.net</strong> "A parser for ANSI-compatible terminals"(Paul Williams 상태머신 — justerm 의 vte 가 구현한 그것),
+  <strong>invisible-island.net</strong> XTerm Control Sequences(모든 시퀀스 사전), Wikipedia "ANSI escape code"(가장 부드러운 입문 + SGR 표).
+</div>
+
+<div class="ask-reminder">
+  💬 <strong>막히면 튜터한테.</strong> "256색은 어떻게 표현해?" "ST 랑 BEL 차이?" "DEC private mode(ESC[?...) 는 뭐야?"
+  — 뭐든. 이해 안 된 채 넘어가지 말기.
+</div>
+
+<div class="lesson-nav">
+  <span><a href="0002-terminal-foundations.html">← 기초 ①</a></span>
+  <span><a href="../reference/curriculum-map.html">지도 ↗</a> · <a href="../reference/glossary.html">용어집</a></span>
+  <span>다음: <a href="0004-text-and-width.html">기초 ③ — 텍스트와 폭 →</a></span>
+</div>
+
+<script>
+document.querySelectorAll('.quiz').forEach(function (quiz) {
+  var fb = quiz.querySelector('.feedback');
+  var msgs = {
+    q1: ['정답. ESC 는 "이제부터 글자가 아니라 <strong>명령</strong>"이라는 신호탄. 화면 지우기는 <code>ESC[2J</code> 같은 별도 CSI.',
+         'ESC 자체는 지우지 않는다 — "명령 시작" 신호일 뿐. 화면 지우기는 <code>ESC[2J</code>(CSI, 최종문자 J).'],
+    q2: ['정답. <code>ESC[</code> = CSI, 최종문자 <code>m</code> = SGR(색·스타일). 31 = 빨강 글자.',
+         'OSC 는 <code>ESC]</code> 로 시작한다. <code>ESC[…m</code> 은 CSI 의 SGR(색·스타일).'],
+    q3: ['정답. <strong>최종문자</strong>(맨 끝 알파벳)가 명령 종류를 정한다: m=색, H=커서, J=지우기. 파라미터는 "어떻게"만.',
+         '파라미터는 "어떻게"(예: 몇 번 색)일 뿐. "무슨 명령"은 맨 끝 <strong>최종문자</strong>가 정한다.'],
+    q4: ['정답. 바이트가 쪼개져·깨져 와도 "지금 어느 상태냐"를 들고 있으면 안 꼬인다. 그래서 문자열매칭이 아니라 상태머신.',
+         '색→hex 변환은 파서가 아니라 렌더러 일. 상태머신인 이유는 <strong>쪼개진·깨진 입력에도 안 꼬이려고</strong>.'],
+    q5: ['정답. "31"은 <strong>색 번호(참조)</strong>다 — 엔진은 이것만 기억하고, 어떤 빨강인지는 렌더러가 정한다(유닛 4 color reference).',
+         '픽셀 RGB 가 아니다. "31"은 <strong>색 번호(참조)</strong> — 실제 색 해석은 렌더러 몫(theme-agnostic).']
+  };
+  quiz.querySelectorAll('button').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var right = btn.dataset.correct === '1';
+      quiz.querySelectorAll('button').forEach(function (b) { b.disabled = true; });
+      btn.classList.add(right ? 'picked-right' : 'picked-wrong');
+      fb.className = 'feedback show ' + (right ? 'right' : 'wrong');
+      fb.innerHTML = (right ? '✓ ' : '✕ ') + '<span class="why">' + msgs[quiz.id][right ? 0 : 1] + '</span>';
+    });
+  });
+});
+</script>
+
+</body>
+</html>

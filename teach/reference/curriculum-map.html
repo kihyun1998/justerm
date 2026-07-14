@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>커리큘럼 지도 — justerm 코스</title>
+<link rel="stylesheet" href="../assets/course.css">
+<style>
+  .track { border-left: 4px solid var(--rule); padding: .2rem 0 .2rem 1.1rem; margin: 1.6rem 0; }
+  .track.t-found  { border-color: #2e6b3e; }
+  .track.t-state  { border-color: #2e5a7a; }
+  .track.t-wire   { border-color: #7a5a2e; }
+  .track.t-review { border-color: var(--accent); }
+  .track h3 { margin: .2rem 0 .8rem; font-family: ui-sans-serif, sans-serif; }
+  .unit {
+    display: grid; grid-template-columns: 2.2rem 1fr; gap: .2rem .7rem; align-items: start;
+    padding: .55rem 0; border-top: 1px solid var(--rule);
+  }
+  .unit:first-of-type { border-top: none; }
+  .unit .st { font-size: 1.05rem; text-align: center; line-height: 1.5; }
+  .unit .body h4 { margin: 0 0 .2rem; font-size: 1rem; font-family: ui-sans-serif, sans-serif; }
+  .unit .body .concepts { font-size: .82rem; color: var(--muted); }
+  .unit .body .concepts code { font-size: .82em; background: var(--code-bg); padding: 0 .3em; border-radius: 3px; }
+  .badge { font-family: ui-sans-serif, sans-serif; font-size: .62rem; letter-spacing: .04em; padding: .1em .45em;
+           border-radius: 4px; vertical-align: middle; margin-left: .3rem; }
+  .b-core { background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent); }
+  .b-dip  { background: var(--code-bg); color: var(--muted); }
+  .b-here { background: #2e6b3e; color: #fff; }
+  .b-done { background: color-mix(in srgb, #2e6b3e 20%, transparent); color: #2e6b3e; }
+  .legend { font-size: .8rem; color: var(--muted); font-family: ui-sans-serif, sans-serif; margin: .6rem 0 0; }
+  @media (prefers-color-scheme: dark){ .b-here{background:#3a8f4e;} }
+</style>
+</head>
+<body>
+
+<p class="eyebrow">justerm 코스 · 지도 (계속 갱신)</p>
+<h1>커리큘럼 지도</h1>
+<p class="subtitle">리뷰어가 되기까지 — 무엇을, 어떤 순서로. 다 배우는 게 아니라 <em>척추(spine)</em>를 밟는다.</p>
+
+<div class="callout key">
+  <span class="label">너의 현재 위치 (2026-07-11 배치고사)</span>
+  터미널 기초 <strong>어렴풋</strong> · 이스케이프/파서 <strong>이름만</strong> · 텍스트/폭 <strong>어렴풋</strong> ·
+  justerm 고유(damage/wire/색참조) <strong>이름만</strong>. → 프런티어가 <strong>맨 아래(기초)</strong>에 있다.
+  그래서 아래 <span class="badge b-here">여기</span> 부터 시작한다. 네가 먼저 읽은 <strong>검수 ①</strong> 은
+  사실 지도의 <em>끝</em>이라 붕 떠 보인 것 — 정상이다.
+</div>
+
+<div class="callout note">
+  <span class="label">읽는 법</span>
+  <span class="badge b-here">여기</span> 지금 할 것 ·
+  <span class="badge b-done">봄</span> 이미 만든/본 레슨 ·
+  <span class="badge b-core">척추</span> 리뷰에 꼭 필요(순서대로) ·
+  <span class="badge b-dip">참조</span> 지금 안 외워도 됨, 코드에서 걸리면 그때 들춤.
+  ○ = 아직 안 만든 레슨(내가 차례로 만든다).
+</div>
+
+<div class="track t-found">
+  <h3>🟢 트랙 1 · 기초 — "터미널이 뭔지"</h3>
+
+  <div class="unit">
+    <div class="st">▶</div>
+    <div class="body">
+      <h4>1. 터미널이란 <span class="badge b-here">여기</span> <span class="badge b-done">만듦: 기초①</span></h4>
+      <div class="concepts">그리드 · 셀 · 커서 · 스크롤백 · 뷰포트 · <code>PTY</code>(셸↔터미널 바이트 파이프) · VT 스트림</div>
+    </div>
+  </div>
+
+  <div class="unit">
+    <div class="st">○</div>
+    <div class="body">
+      <h4>2. 바이트의 언어 <span class="badge b-core">척추</span></h4>
+      <div class="concepts">이스케이프 시퀀스 · <code>C0</code> 컨트롤 · <code>CSI</code>(ESC[) · <code>SGR</code>(색·스타일) · <code>OSC</code> · <code>DEC 모드</code> · 파서 상태머신(ground→escape→csi→osc)</div>
+    </div>
+  </div>
+
+  <div class="unit">
+    <div class="st">○</div>
+    <div class="body">
+      <h4>3. 텍스트와 폭 <span class="badge b-core">척추</span></h4>
+      <div class="concepts">UTF-8 · code point vs <code>grapheme</code> · East Asian Width(왜 CJK/이모지 2칸) · combining mark(0칸)</div>
+    </div>
+  </div>
+</div>
+
+<div class="track t-state">
+  <h3>🔵 트랙 2 · 상태 모델 — "엔진이 뭘 들고 있나"</h3>
+
+  <div class="unit">
+    <div class="st">○</div>
+    <div class="body">
+      <h4>4. 셀과 색 <span class="badge b-core">척추</span></h4>
+      <div class="concepts">cell 구조(글자·색·스타일·폭) · <code>color reference</code>(Default/Indexed/Rgb) · theme-agnostic · palette(소비처가 주입)</div>
+    </div>
+  </div>
+
+  <div class="unit">
+    <div class="st">○</div>
+    <div class="body">
+      <h4>5. damage 와 cadence <span class="badge b-core">척추</span></h4>
+      <div class="concepts"><code>damage</code>(바뀐 줄·열) · <code>scroll op</code> · ack-paced diff(마지막 받은 상태→현재) · follow-bottom · frame 종류(Full/Partial/Empty)</div>
+    </div>
+  </div>
+
+  <div class="unit">
+    <div class="st">○</div>
+    <div class="body">
+      <h4>6. selection <span class="badge b-dip">참조</span></h4>
+      <div class="concepts">선택 타입(char/word/line/block) · anchor + side · <code>selection_text</code>(스크롤백까지 복사) vs range(하이라이트)</div>
+    </div>
+  </div>
+
+  <div class="unit">
+    <div class="st">◇</div>
+    <div class="body">
+      <h4>7. 숨은 VT 상태 <span class="badge b-dip">참조 · 걸릴 때</span></h4>
+      <div class="concepts">pending-wrap · wide-char spacer · BCE · 스크롤 리전(DECSTBM) · alt-screen · soft-wrap/reflow · DECSC/RC · 입력 인코딩(마우스·bracketed paste) … <strong>30여 개</strong>. 지금 다 몰라도 됨 — 리뷰에서 특정 게 나오면 그때 이 목록에서 찾는다.</div>
+    </div>
+  </div>
+</div>
+
+<div class="track t-wire">
+  <h3>🟠 트랙 3 · 나르기 — "상태가 브라우저로 어떻게 가나"</h3>
+
+  <div class="unit">
+    <div class="st">○</div>
+    <div class="body">
+      <h4>8. wire 와 DecodedFrame <span class="badge b-core">척추</span></h4>
+      <div class="concepts"><code>wire 포맷</code>(이진·고정폭) · encode/decode 왕복(=테스트) · <code>frame</code>(header+spans+side-table) · <code>DecodedFrame</code>(열 배열)</div>
+    </div>
+  </div>
+
+  <div class="unit">
+    <div class="st">◑</div>
+    <div class="body">
+      <h4>9. 패밀리 와 데이터 흐름 <span class="badge b-done">검수①에 있음</span></h4>
+      <div class="concepts">5 크레이트 · 셸→core→wasm-decode→web→renderer→화면 · 프레임 모드 vs in-wasm</div>
+    </div>
+  </div>
+</div>
+
+<div class="track t-review">
+  <h3>🔴 트랙 4 · 검수 — "리뷰할 때 뭘 보나" (여기가 목적지)</h3>
+
+  <div class="unit">
+    <div class="st">◑</div>
+    <div class="body">
+      <h4>10. 경계 와 크레이트별 경계 <span class="badge b-done">만듦: 검수①</span></h4>
+      <div class="concepts">경계 invariant(안 그림·안 읽음·안 보냄·색 참조만) · 크레이트마다 다른 경계 · "어느 크레이트냐" 먼저</div>
+    </div>
+  </div>
+
+  <div class="unit">
+    <div class="st">○</div>
+    <div class="body">
+      <h4>11. core냐 소비처냐 라우팅 <span class="badge b-core">척추</span></h4>
+      <div class="concepts">ADR-0017 · mechanism(core) vs policy(소비처) · "버퍼 전체 필요하면 core"</div>
+    </div>
+  </div>
+
+  <div class="unit">
+    <div class="st">○</div>
+    <div class="body">
+      <h4>12. 검증 규율 <span class="badge b-core">척추</span></h4>
+      <div class="concepts">우회 금지(딴 층에서 메꾸지 마라) · "확인 못했다 ≠ 없다" · 가짜 아닌 real 왕복 증명 · adversarial completeness</div>
+    </div>
+  </div>
+
+  <div class="unit">
+    <div class="st">◇</div>
+    <div class="body">
+      <h4>13. ADR 지도 <span class="badge b-dip">참조</span></h4>
+      <div class="concepts">0001~0018 = 모든 "왜"의 출처. 리뷰에서 "이거 왜 이렇게 했지?"는 항상 ADR 부터.</div>
+    </div>
+  </div>
+</div>
+
+<h2>척추(spine)만 따라가면 되는 순서</h2>
+<p>
+<strong>1 → 2 → 3 → 4 → 5 → 8 → (9·10 이미 봄) → 11 → 12.</strong> 이게 리뷰어가 되는 최단 경로다.
+6·7·13(<span class="badge b-dip">참조</span>)은 외우는 게 아니라 <em>걸릴 때 찾는 사전</em>. 전부 <a href="glossary.html">용어집</a>과
+repo(<code>CONTEXT.md</code>·<code>architecture.md</code>·<code>docs/adr/</code>)에 있다.
+</p>
+
+<div class="callout key">
+  <span class="label">다음 한 걸음</span>
+  <a href="../lessons/0002-terminal-foundations.html">기초 ① · 터미널이란</a> 을 열고 퀴즈까지 풀어라. 그게 "어렴풋"을
+  "편함"으로 바꾼다. 그다음 내가 <strong>2. 바이트의 언어</strong> 레슨을 만든다.
+</div>
+
+<div class="lesson-nav">
+  <span><a href="../lessons/0002-terminal-foundations.html">기초 ① 시작 →</a></span>
+  <span><a href="glossary.html">용어집 ↗</a></span>
+</div>
+
+</body>
+</html>

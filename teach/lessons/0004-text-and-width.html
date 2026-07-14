@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>기초 ③ · 텍스트와 폭 — justerm</title>
+<link rel="stylesheet" href="../assets/course.css">
+<style>
+  .grid2 { font-family: "SF Mono", ui-monospace, Menlo, monospace; font-size: 1.15rem; line-height: 1.4;
+           background: #11131a; color: #cfd3dc; padding: .8rem 1rem; border-radius: 8px; margin: 1.1rem 0;
+           display: inline-block; }
+  .grid2 .c { display: inline-block; width: 1ch; border: 1px dashed #333a48; text-align: center; }
+  .grid2 .w2 { width: 2ch; background: color-mix(in srgb, #2e5a7a 35%, transparent); }
+  .grid2 .sp { background: color-mix(in srgb, #7a2e2e 30%, transparent); color: #7a2e2e; }
+  .grid2 .one { background: color-mix(in srgb, #2e6b3e 30%, transparent); }
+  .stack { font-family: "SF Mono", monospace; font-size: .9rem; background: var(--code-bg);
+           padding: .6rem .9rem; border-radius: 6px; margin: .8rem 0; }
+  .stack .cp { color: var(--accent-2); }
+</style>
+</head>
+<body>
+
+<p class="eyebrow">justerm 코스 · 기초 ③ · 어휘 세우기</p>
+<h1>텍스트와 폭</h1>
+<p class="subtitle">"한 글자"는 생각보다 안 단순하다 — code point · grapheme · 왜 한글/이모지는 두 칸일까</p>
+
+<div class="callout key">
+  <span class="label">이 레슨의 win</span>
+  격자 한 칸(셀)에 들어가는 "글자"가 <strong>바이트도 code point 도 아닌 grapheme</strong>이라는 것,
+  그리고 <strong>한글·한자·이모지가 왜 두 칸(폭 2)을 먹는지</strong>를 이해한다. 이게 리뷰에서 커서·선택·폭 버그의 뿌리다.
+</div>
+
+<div class="callout note">
+  <span class="label">이어서</span>
+  기초 ②에서 "글자 바이트를 격자에 찍는다"고 했다. 그런데 <strong>"글자 하나"가 정확히 뭐냐</strong>가
+  이번 주제다 — 여기서 셀의 <code>width</code> 필드와 나중에 배울 "wide-char spacer"가 나온다.
+</div>
+
+<h2>1. 바이트 → code point (UTF-8)</h2>
+<p>
+화면에 찍을 글자는 <strong>UTF-8 바이트</strong>로 온다. 문제는 <strong>한 글자가 여러 바이트</strong>일 수
+있다는 것 — 영어 <code>a</code>는 1바이트지만 한글 <code>가</code>는 3바이트다:
+</p>
+<div class="stack">
+a  →  <span class="cp">0x61</span>                     (1 byte  → code point U+0061)<br>
+가 →  <span class="cp">0xEA 0xB0 0x80</span>           (3 bytes → code point U+AC00)
+</div>
+<p>
+그래서 엔진은 바이트를 <strong>모아서 code point 로 디코드</strong>한 뒤에야 "무슨 글자"인지 안다.
+(code point = 유니코드가 글자마다 매긴 번호, <code>U+AC00</code> 같은 것.)
+</p>
+
+<h2>2. code point ≠ 사람이 보는 글자 (grapheme)</h2>
+<p>
+여기가 함정. <strong>사람이 "한 글자"로 보는 게 code point 여러 개</strong>일 수 있다:
+</p>
+<dl class="fam" style="display:grid;grid-template-columns:auto 1fr;gap:.4rem 1rem;margin:1rem 0">
+  <dt style="font-family:monospace;color:var(--accent)">é</dt><dd><code>e</code>(U+0065) + <code>́</code>(U+0301, 악센트) = <strong>2 code point, 1 글자</strong></dd>
+  <dt style="font-family:monospace;color:var(--accent)">👍🏽</dt><dd>손 이모지 + 피부색 조절자 = <strong>2 code point, 1 글자</strong></dd>
+  <dt style="font-family:monospace;color:var(--accent)">👨‍👩‍👧</dt><dd>사람 셋 + 결합기호(ZWJ) = <strong>여러 code point, 1 글자</strong></dd>
+</dl>
+<p>
+이렇게 <strong>사람이 한 글자로 인식하는 code point 묶음</strong>을 <strong>grapheme cluster</strong>(줄여서
+grapheme)라 부른다(유니코드 규칙 UAX&nbsp;#29). <strong>셀 한 칸엔 grapheme 이 들어간다</strong> — code point 가
+아니라. 그래서 <code>é</code> 는 두 code point 여도 <strong>한 칸</strong>에 들어간다.
+</p>
+<div class="callout note">
+  <span class="label">justerm 연결</span>
+  그래서 justerm 의 셀은 content 를 <strong>grapheme</strong> 으로 담는다(흔한 건 인라인, 드문 다중
+  code point 는 side-table 참조 — 셀 크기 고정 유지). 용어집의 "Cell", "Grapheme" 항목이 이거.
+</div>
+
+<h2>3. 폭 — 한 칸이냐 두 칸이냐 (East Asian Width)</h2>
+<p>
+격자는 <strong>등폭(monospace)</strong>이라 칸이 다 같은 너비다. 그런데 한글·한자·많은 이모지는
+<strong>두 칸</strong>을 차지한다. 유니코드가 글자마다 "이건 <em>Wide</em>(넓음)"라고 표시해둔 규칙이
+<strong>East Asian Width</strong>(UAX&nbsp;#11)다.
+</p>
+<p>예: <code>a가b</code> 를 격자에 놓으면 —</p>
+<div class="grid2">
+<span class="c one">a</span><span class="c w2">가</span><span class="c one">b</span>
+</div>
+<p>
+<code>가</code> 가 <strong>두 칸</strong>(파란 칸)을 먹어서 총 4칸이 아니라 <strong>1+2+1 = 4칸</strong>… 이 아니라
+<code>a</code>(1) + <code>가</code>(2) + <code>b</code>(1) = <strong>4칸</strong>을 쓴다. 그래서 셀에는
+<strong><code>width</code> 필드(1 또는 2)</strong>가 있다.
+</p>
+<div class="callout warn">
+  <span class="label">숨은 함정 — wide-char spacer</span>
+  두 칸짜리 글자를 격자에 넣으면, <strong>실제 글자는 왼쪽 칸</strong>에 있고 <strong>오른쪽 칸은 "비었지만
+  빈 게 아닌" 자리표시(spacer)</strong>가 된다:
+  <div class="grid2" style="margin:.6rem 0 0"><span class="c one">a</span><span class="c w2">가</span><span class="c sp">·</span><span class="c one">b</span></div>
+  이 뒷칸(spacer)을 그냥 빈칸으로 취급하면 커서·선택·덮어쓰기가 다 어긋난다. justerm 이 추적하는
+  <strong>"wide-char spacer"</strong> 숨은 상태가 이거 — 지금은 "이런 게 있다"만 알면 충분(트랙 2에서 다룸).
+</div>
+
+<h2>4. combining mark = 0칸</h2>
+<p>
+반대로 §2 의 악센트 <code>́</code> 같은 <strong>결합문자</strong>는 <strong>0칸</strong>이다 — 새 칸을 만들지
+않고 <em>앞 글자에 얹힌다</em>. 커서도 안 움직인다. 그래서 <code>é</code>(e + 악센트)는 두 code point 여도
+격자에선 한 칸, 커서는 한 번만 전진.
+</p>
+
+<h2>5. 왜 리뷰에서 중요한가</h2>
+<p>
+폭 하나를 틀리면 <strong>도미노</strong>다 — 커서 위치, 선택 범위, 덮어쓰기, 줄바꿈이 전부 어긋난다.
+그래서 "이 글자가 몇 칸이냐"(width)는 <strong>core 의 책임</strong>이고, 렌더러가 아니라 엔진이 정확히 알아야 한다.
+</p>
+<div class="callout note">
+  <span class="label">우리가 이미 본 실사례</span>
+  <a href="0001-boundary-is-identity.html">검수 ①</a>의 #297 사례 — 이모지 폭 계산 갭을 렌더러가 몰래
+  덮은(우회) 그거 — 가 바로 <strong>이 영역(East Asian Width / 폭)</strong>이다. 폭은 core 책임인데
+  렌더러가 손대서 문제였던 것. 이제 그 사례가 왜 폭 얘기였는지 이해될 거다.
+</div>
+
+<div class="callout key">
+  <span class="label">한 줄 요약</span>
+  바이트 → (UTF-8) → <strong>code point</strong> → (묶으면) 사람이 보는 <strong>grapheme</strong> = 셀 한 칸의 내용.
+  한글·한자·이모지는 <strong>폭 2</strong>(East Asian Width)라 두 칸 + 뒷칸은 spacer. 결합문자는 폭 0.
+  폭을 틀리면 커서·선택이 다 무너지니 <strong>폭은 core 책임</strong>.
+</div>
+
+<h2>6. 확인 — 하나 골라 즉시 피드백</h2>
+<div class="quiz" id="q1">
+  <p class="q">Q1. 셀 한 칸에 들어가는 "글자"의 단위는?</p>
+  <div class="opts"><button data-correct="0">바이트 하나</button><button data-correct="1">grapheme (사람이 보는 한 글자)</button></div>
+  <p class="feedback"></p>
+</div>
+<div class="quiz" id="q2">
+  <p class="q">Q2. <code>é</code> = <code>e</code>(U+0065) + 악센트(U+0301). 격자에서 몇 칸, 커서 몇 번 전진?</p>
+  <div class="opts"><button data-correct="1">1칸, 커서 1번</button><button data-correct="0">2칸, 커서 2번</button></div>
+  <p class="feedback"></p>
+</div>
+<div class="quiz" id="q3">
+  <p class="q">Q3. 한글 <code>가</code>가 격자에서 두 칸을 먹는 이유는?</p>
+  <div class="opts"><button data-correct="1">East Asian Width 가 "Wide"라서</button><button data-correct="0">UTF-8 로 3바이트라서</button></div>
+  <p class="feedback"></p>
+</div>
+<div class="quiz" id="q4">
+  <p class="q">Q4. 두 칸짜리 글자의 <strong>오른쪽 칸</strong>은?</p>
+  <div class="opts"><button data-correct="1">spacer(자리표시) — 빈칸 아님</button><button data-correct="0">그냥 빈칸(공백)</button></div>
+  <p class="feedback"></p>
+</div>
+<div class="quiz" id="q5">
+  <p class="q">Q5. "이 글자가 몇 칸이냐(width)"를 정확히 아는 건 누구 책임?</p>
+  <div class="opts"><button data-correct="1">core (엔진)</button><button data-correct="0">renderer</button></div>
+  <p class="feedback"></p>
+</div>
+
+<div class="primary-source">
+  <span class="label">1차 출처 — 원하면 (지금은 선택)</span>
+  <strong>UAX #11</strong> East Asian Width(왜 CJK 가 2칸), <strong>UAX #29</strong> Text Segmentation(grapheme cluster 규칙),
+  UTF-8(RFC 3629). justerm 쪽은 <code>CONTEXT.md</code> 의 Cell·Grapheme 항목.
+</div>
+
+<div class="ask-reminder">
+  💬 <strong>막히면 튜터한테.</strong> "ambiguous width 는 뭐야?" "이모지 폭이 왜 애매해?" "wcwidth 가 뭐야?"
+  — 뭐든. 특히 폭은 함정이 많으니 궁금하면 바로 물어봐.
+</div>
+
+<div class="lesson-nav">
+  <span><a href="0003-byte-language.html">← 기초 ②</a></span>
+  <span><a href="../reference/curriculum-map.html">지도 ↗</a> · <a href="../reference/glossary.html">용어집</a></span>
+  <span>다음: 트랙 2 → 유닛 4 · 셀과 색 <span class="tag">예정</span></span>
+</div>
+
+<script>
+document.querySelectorAll('.quiz').forEach(function (quiz) {
+  var fb = quiz.querySelector('.feedback');
+  var msgs = {
+    q1: ['정답. 셀엔 <strong>grapheme</strong>(사람이 보는 한 글자)이 들어간다 — code point 여러 개여도 한 칸.',
+         '바이트 하나가 아니다 — 한 글자가 여러 바이트/여러 code point 일 수 있다. 셀 단위는 <strong>grapheme</strong>.'],
+    q2: ['정답. 악센트는 <strong>결합문자(폭 0)</strong>라 앞 글자에 얹힌다 → 1칸, 커서 1번. 두 code point 여도 한 글자.',
+         '2칸이 아니다. 악센트는 폭 0 결합문자 → <code>é</code>는 <strong>1칸, 커서 1번</strong>.'],
+    q3: ['정답. <strong>East Asian Width</strong>가 "Wide"로 표시한 글자라 2칸. (바이트 수랑은 무관 — 폭과 인코딩은 별개.)',
+         '바이트 수(3)와 폭(2)은 <strong>무관</strong>하다. 2칸인 건 East Asian Width 가 "Wide"라서.'],
+    q4: ['정답. 오른쪽 칸은 <strong>spacer(자리표시)</strong> — 빈칸으로 취급하면 커서·선택이 어긋난다(wide-char spacer 숨은상태).',
+         '그냥 빈칸이 아니다. 두 칸 글자의 뒷칸은 <strong>spacer</strong> — 빈칸 취급하면 버그.'],
+    q5: ['정답. 폭은 <strong>core(엔진)</strong> 책임 — 틀리면 커서·선택·덮어쓰기가 다 무너진다. 렌더러가 손대면 우회(#297).',
+         '렌더러가 아니다. 폭은 <strong>core</strong> 책임 — 렌더러가 덮으면 #297 같은 우회가 된다.']
+  };
+  quiz.querySelectorAll('button').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var right = btn.dataset.correct === '1';
+      quiz.querySelectorAll('button').forEach(function (b) { b.disabled = true; });
+      btn.classList.add(right ? 'picked-right' : 'picked-wrong');
+      fb.className = 'feedback show ' + (right ? 'right' : 'wrong');
+      fb.innerHTML = (right ? '✓ ' : '✕ ') + '<span class="why">' + msgs[quiz.id][right ? 0 : 1] + '</span>';
+    });
+  });
+});
+</script>
+
+</body>
+</html>

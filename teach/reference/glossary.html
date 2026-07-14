@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>용어집 — justerm 코스</title>
+<link rel="stylesheet" href="../assets/course.css">
+<style>
+  dl.gloss { margin: 1.5rem 0; }
+  dl.gloss dt {
+    font-weight: 700; margin-top: 1.3rem; font-size: 1.05rem;
+    font-family: ui-sans-serif, sans-serif; color: var(--accent);
+  }
+  dl.gloss dt .en { color: var(--muted); font-weight: 400; font-size: .85rem; font-style: italic; }
+  dl.gloss dd { margin: .3rem 0 0; }
+  dl.gloss dd .src { font-size: .8rem; color: var(--muted); }
+</style>
+</head>
+<body>
+
+<p class="eyebrow">justerm 코스 · 레퍼런스</p>
+<h1>용어집</h1>
+<p class="subtitle">한 번 만들면 모든 레슨이 이 정의를 따른다. 계속 자란다.</p>
+
+<div class="callout note">
+  <span class="label">출처</span>
+  정의의 authoritative 원천은 repo 의 <code>CONTEXT.md</code> · <code>docs/architecture.md</code> · <code>CLAUDE.md</code>.
+  여기 있는 건 그걸 초보 리뷰어용으로 압축한 것.
+</div>
+
+<dl class="gloss">
+
+  <dt>순수 터미널 엔진 <span class="en">pure terminal engine</span></dt>
+  <dd>바이트 → 화면 상태만 하는 층. 그리지도(렌더러 아님) 파싱만 하지도(순수 파서 아님) 않는다 —
+      상태 <em>보유</em>가 핵심. justerm 의 정체성. <span class="src">→ 레슨 1</span></dd>
+
+  <dt>VT 스트림 <span class="en">VT byte stream</span></dt>
+  <dd>글자 + 이스케이프 시퀀스(명령)가 섞인 바이트 흐름. 셸/앱이 터미널에 뱉는 것.
+      "VT" 는 DEC VT100 계열 터미널에서 유래.</dd>
+
+  <dt>이스케이프 시퀀스 <span class="en">escape sequence</span></dt>
+  <dd><code>\x1b</code>(ESC)로 시작하는 <em>명령</em>. 색 바꾸기·커서 이동·화면 지우기 등.
+      예: <code>\x1b[31m</code>=빨강, <code>\x1b[2J</code>=화면 클리어. CSI/OSC/DEC 모드로 분류.</dd>
+
+  <dt>vte <span class="en">the crate</span></dt>
+  <dd>justerm 이 <em>진짜 어려운 파싱</em>만 위임하는 안정 크레이트. Paul Williams 의 ANSI 파서
+      상태머신 구현. 그 위의 그리드/스크롤백/selection 은 자작. <span class="src">→ ADR-0001</span></dd>
+
+  <dt>셀 <span class="en">Cell</span></dt>
+  <dd>그리드 한 칸. 고정폭 레코드: <code>content</code>(grapheme), <code>fg</code>/<code>bg</code>(색 <em>참조</em>),
+      <code>attrs</code>(bold/italic…), <code>width</code>(1 또는 2=CJK 전각). 빠른 디코드 위해 16바이트 고정.
+      <span class="src">→ architecture.md §Cell</span></dd>
+
+  <dt>색 참조 <span class="en">color reference</span></dt>
+  <dd><code>Default</code> / <code>Indexed(u8)</code> / <code>Rgb(u8,u8,u8)</code>. justerm 은 hex 를 <em>영영 모른다</em>.
+      팔레트→실제색은 렌더러가. = "theme 무지". <span class="src">→ 레슨 1</span></dd>
+
+  <dt>grapheme cluster <span class="en">셀 content</span></dt>
+  <dd>사람이 "한 글자"로 보는 단위 (결합 문자·이모지 포함). 코드포인트 ≠ 글자일 수 있어서
+      이 단위로 저장. 흔한 건 인라인, 드문 다중 코드포인트는 side-table 참조(셀 고정폭 유지).</dd>
+
+  <dt>damage <span class="en">변경분</span></dt>
+  <dd>지난 프레임 이후 <em>바뀐 줄 범위 + 각 줄의 바뀐 열 범위</em>(<code>{line, left, right}</code>).
+      전체 화면 다시 그리기(낭비)도, 셀 단위(과함)도 아닌 <strong>올바른 grain</strong>.
+      효율 축이지 품질 축 아님 — 같은 픽셀. <span class="src">→ ADR-0003, 레슨 2</span></dd>
+
+  <dt>scroll op <span class="en">스크롤 연산</span></dt>
+  <dd>damage 와 별개의 <em>1급 연산</em>: "줄을 N칸 밀고 새 줄 추가". 스크롤을 다시-그리기가 아니라
+      내용 <em>이동</em>으로 처리해 효율↑. 폭주/리사이즈 땐 전체-dirty 로 degrade.</dd>
+
+  <dt>스크롤백 <span class="en">scrollback</span></dt>
+  <dd>화면 위로 밀려 사라진 과거 줄들의 링 버퍼. core 가 보유 → 복사·검색이 과거까지 닿음.
+      O(1) 스크롤은 링 구조로. <span class="src">→ ADR-0009</span></dd>
+
+  <dt>뷰포트 <span class="en">viewport</span></dt>
+  <dd>지금 <em>보이는</em> 창(rows 만큼). 스크롤백 위를 미끄러지는 창문. core 가
+      scroll offset + follow-bottom("새 출력 오면 따라갈까 멈출까")까지 보유.</dd>
+
+  <dt>alt-screen <span class="en">대체 화면</span></dt>
+  <dd>vim/less 같은 전체화면 앱이 쓰는 별도 화면(DEC 모드). 나갔다 오면 원래 화면 복귀.
+      엔진이 현재 화면을 투명하게 노출.</dd>
+
+  <dt>cadence <span class="en">ack-paced state-diff</span></dt>
+  <dd>소비처가 마지막으로 "받았다(ack)"고 한 상태 → 현재 의 diff 를 준다. 소비처가 프레임 적용 후
+      ack 하면 다음 diff. 느린 소비처는 중간 상태가 하나로 합쳐짐(pile-up 없음). 타이밍(<em>언제</em> 당길지)은
+      소비처 몫 — core 는 diff 만. <span class="src">→ #13, ADR-0003</span></dd>
+
+  <dt>selection <span class="en">선택</span></dt>
+  <dd>엔진 소유. char/word/line/block 타입. <code>selection_text()</code> 는 wide char·wrap 이음·
+      스크롤백까지 존중해 복사 텍스트 반환. 커서 blink 는 소비처 몫(애니메이션).</dd>
+
+  <dt>직렬화 / frame <span class="en">wire format</span></dt>
+  <dd>damage 한 사이클을 이진(고정 16바이트 셀 레코드 + grapheme side-table)으로 encode.
+      <em>포맷</em>은 core 가 주되 <em>전송</em>은 소비처. round-trip(encode→decode)이 테스트.
+      <span class="src">→ ADR-0005</span></dd>
+
+  <dt>core / 소비처 경계 <span class="en">mechanism vs policy</span></dt>
+  <dd>메커니즘이 ①VT 파싱이거나 ②버퍼 전체가 필요하면 <strong>core</strong>. 정책(query·regex·palette)은
+      소비처가 주입 → core 는 policy/theme-agnostic. "메커니즘 core, 정책 소비처". <span class="src">→ ADR-0017</span></dd>
+
+  <dt>우회 <span class="en">compensate / bypass</span></dt>
+  <dd>딴 층(주로 소비처/렌더러)에서 core 결함을 몰래 메꾸는 것. <strong>금지</strong> — upstream 버그를 가리고
+      경계를 침범하고 지식을 중복시킨다. 근본 층에서 고치거나 이슈로 추적. <span class="src">→ 레슨 1, #297/#301</span></dd>
+
+  <dt>소비처 <span class="en">consumer</span></dt>
+  <dd>justerm 을 쓰는 쪽. 첫 소비처 = <strong>PenTerm</strong>(Tauri 터미널 앱).
+      I/O·IPC·전송·색해석은 소비처 책임.</dd>
+
+  <dt>beamterm <span class="en">외부 렌더러 (전환 중)</span></dt>
+  <dd>원래 justerm 이 쓰던 <em>외부</em> WebGL2 렌더러(© Adrian Papari, MIT). 단일 저자가 v1.0.0 후
+      정체 → 자체 렌더러로 대체 중. 지금도 <code>CLAUDE.md</code>·<code>architecture.md</code>는 "beamterm 이
+      그린다"고 쓰지만 그건 전환(#273) 완료까지의 <em>의도된 옛말</em>(#274 로 tracked). <span class="src">→ ADR-0002, 0018</span></dd>
+
+  <dt>justerm-renderer <span class="en">자체 렌더러</span></dt>
+  <dd>beamterm 을 대체하는 <strong>first-party</strong> WebGL2 렌더러(Rust→wasm, GL via <code>glow</code>).
+      <em>그리는 게 임무</em> — 하지만 팔레트를 소비처가 주입받아 여전히 theme-agnostic. 서브셀 제어(커서 모양·
+      undercurl·이미지)를 위해 자체 GL 층을 소유. 워크스페이스 <em>밖</em>(web-sys/glow=wasm 전용).
+      <span class="src">→ ADR-0012, 0018</span></dd>
+
+  <dt>피벗 / 풀스택 <span class="en">the pivot</span></dt>
+  <dd>justerm 이 <strong>"엔진 라이브러리" → "first-party 풀스택 터미널"</strong> 로 변신한 것(vision choice).
+      렌더러가 외부→자체가 되며 xterm.js/VS Code 사분면으로 이동. <strong>단 core 경계는 불변</strong> —
+      <code>justerm-core</code> 는 여전히 안 그린다. 바뀐 건 렌더러의 <em>출신</em>이지 core 의 경계가 아니다.
+      리뷰 시 "어느 크레이트냐"를 먼저 물어야 하는 이유. <span class="src">→ ADR-0018, 레슨 1 §7</span></dd>
+
+  <dt>패밀리 <span class="en">-term family</span></dt>
+  <dd>umbrella 이름 <code>justerm</code> 아래 크레이트들: <code>justerm-core</code>(엔진)·
+      <code>justerm-renderer</code>(렌더러)·<code>justerm-web</code>(웹 통합)·<code>justerm-wasm-decode</code>·
+      <code>justerm-facade</code>(0.5.1 묘비). <span class="src">→ ADR-0010</span></dd>
+
+</dl>
+
+<div class="lesson-nav">
+  <span><a href="../lessons/0001-boundary-is-identity.html">← 레슨 1</a></span>
+  <span>계속 자라는 문서</span>
+</div>
+
+</body>
+</html>
