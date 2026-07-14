@@ -93,64 +93,88 @@
   const back = draw();
   checks.restoringBoldToBrightBrightensAgain = cellIs(back, 0, BRIGHT);
 
-  // --- minimumContrastRatio (#225): a dark-grey block on black is illegible; a high ratio lightens it ---
+  // The mcr / selection-fg checks below use a NON-TILE glyph ('A'), because a █ is a *tile* glyph
+  // (#226) with its own contrast-exclusion + selection re-tint — tested separately at the end. A
+  // letter fills only its strokes, so read its fg from the brightest ink pixel, not the cell centre.
   const RGB = (c) => ((2 << 24) | c) >>> 0;
-  const LOW = 0x303030; // dark grey fg — very low contrast on the black default bg
-  const lowFg = new Uint32Array([RGB(LOW), 0, 0, 0]);
+  const LETTER = 0x41; // 'A' — not a tile glyph
+  const letters = new Uint32Array(N).fill(LETTER);
   const plainFlags = new Uint16Array(N);
-  const drawMcr = (ratio) => {
+  const inkColour = (img, col) => {
+    let best = [0, 0, 0], bestSum = -1;
+    for (let y = 0; y < ch; y++)
+      for (let x = 0; x < cw; x++) {
+        const i = ((img.h - 1 - y) * img.w + (col * cw + x)) * 4;
+        const s = img.buf[i] + img.buf[i + 1] + img.buf[i + 2];
+        if (s > bestSum) { bestSum = s; best = [img.buf[i], img.buf[i + 1], img.buf[i + 2]]; }
+      }
+    return best;
+  };
+  const inkIs = (img, col, packed) => {
+    const [pr, pg, pb] = inkColour(img, col), [er, eg, eb] = chans(packed);
+    return near(pr, er) && near(pg, eg) && near(pb, eb);
+  };
+  // xterm's integer blend (mirrored) — the expected tile re-tint colour (#239).
+  const blendOver = (base, over, a = 0x80 / 0xff) => {
+    const ch2 = (sh) => { const b = (base >> sh) & 0xff, o = (over >> sh) & 0xff; return b + Math.round((o - b) * a); };
+    return ((ch2(16) << 16) | (ch2(8) << 8) | ch2(0)) >>> 0;
+  };
+
+  // --- minimumContrastRatio (#225): a dark-grey 'A' on black is illegible; a high ratio lightens it ---
+  const LOW = 0x303030;
+  const lowFg = new Uint32Array(N).fill(RGB(LOW));
+  const lowR = (LOW >> 16) & 0xff;
+  const drawMcr = (cps, ratio) => {
     r.setMinimumContrastRatio(ratio);
     r.resize(COLS, ROWS);
-    r.apply_frame(COLS, ROWS, new Uint32Array(N), lowFg, codepoints, plainFlags, true);
+    r.apply_frame(COLS, ROWS, new Uint32Array(N), lowFg, cps, plainFlags, true);
     r.render();
     return grab();
   };
-  // Off (default): the illegible grey passes through unchanged.
-  const mcrOff = drawMcr(1.0);
-  checks.lowContrastPassesThroughWhenMcrOff = cellIs(mcrOff, 0, LOW);
-  // On: the fg is nudged lighter until legible — brighter than the original, and no longer LOW.
-  // Directional (luminance up) rather than a pinned byte: the exact step value is pinned host-side
-  // in contrast.rs; here the toggle proves the policy is live and moving the fg the right way.
-  const mcrOn = drawMcr(7.0);
-  const lowR = (LOW >> 16) & 0xff;
-  checks.minimumContrastLightensAnIllegibleForeground =
-    !cellIs(mcrOn, 0, LOW) && centre(mcrOn, 0)[0] > lowR + 40;
-  // Back off → the grey returns (the discriminating half: the lightening was the policy, not baked).
-  const mcrBack = drawMcr(1.0);
-  checks.turningMcrOffRestoresTheLowContrastForeground = cellIs(mcrBack, 0, LOW);
+  const aOff = drawMcr(letters, 1.0);
+  checks.lowContrastPassesThroughWhenMcrOff = inkIs(aOff, 0, LOW);
+  const aOn = drawMcr(letters, 7.0); // directional: pinned byte-exact host-side, live toggle here
+  checks.minimumContrastLightensANonTileGlyph = !inkIs(aOn, 0, LOW) && inkColour(aOn, 0)[0] > lowR + 40;
+  // #226: the SAME low-contrast fg on a █ (tile) is EXCLUDED — the whole cell stays LOW even with mcr on.
+  const tileMcr = drawMcr(codepoints, 7.0);
+  checks.aTileGlyphIsExcludedFromContrast = cellIs(tileMcr, 0, LOW);
+  r.setMinimumContrastRatio(1.0);
 
-  // --- selectionForeground (#227) + selection un-dim (#224) ---
-  // A full block occludes the selection bg, so a selected block cell reads its FOREGROUND — which
-  // selectionForeground overrides. A search match is NOT a selection, so it must NOT be overridden or
-  // un-dimmed. col0 is selected; col1 is a search match (both dim in the un-dim scene).
+  // --- selectionForeground (#227) + selection un-dim (#224), on a NON-TILE glyph ---
   const GREEN = 0x00ff00;
-  const drawSel = (flags, selBg, matchBg) => {
-    // Order: policy + overlay first, then apply_frame packs with them (apply_frame path keeps no grid).
+  const drawSel = (cps, flags, selBg, matchBg) => {
     r.setOverlay(new Uint32Array([0, 0, 0]), new Uint32Array([0, 1, 1]), selBg, matchBg);
     r.resize(COLS, ROWS);
-    r.apply_frame(COLS, ROWS, new Uint32Array(N), new Uint32Array(N), codepoints, flags, true);
+    r.apply_frame(COLS, ROWS, new Uint32Array(N), new Uint32Array(N), cps, flags, true);
     r.render();
     return grab();
   };
-
-  // selectionForeground forces the SELECTED cell's fg to green; the match (col1) keeps white. A full
-  // block occludes the highlight bg (here a realistic slate / amber), so the cell reads its fg.
+  // Dark highlight bgs so the fg ink is clearly the brightest pixel. col0 selected, col1 a match.
   r.setSelectionForeground(GREEN);
-  const sfgOn = drawSel(plainFlags, 0x264f78, 0x6e5c00);
-  checks.selectionForegroundOverridesTheSelectedCell = cellIs(sfgOn, 0, GREEN);
-  checks.selectionForegroundDoesNotTouchASearchMatch = cellIs(sfgOn, 1, WHITE);
-  // Clearing it restores the cell's own white fg (the discriminating half).
+  const sfgOn = drawSel(letters, plainFlags, 0x1a1a2e, 0x2a2a1a);
+  checks.selectionForegroundOverridesTheSelectedCell = inkIs(sfgOn, 0, GREEN);
+  checks.selectionForegroundDoesNotTouchASearchMatch = inkIs(sfgOn, 1, WHITE);
   r.setSelectionForeground(undefined);
-  const sfgOff = drawSel(plainFlags, 0x264f78, 0x6e5c00);
-  checks.clearingSelectionForegroundRestoresTheCellFg = cellIs(sfgOff, 0, WHITE);
+  const sfgOff = drawSel(letters, plainFlags, 0x1a1a2e, 0x2a2a1a);
+  checks.clearingSelectionForegroundRestoresTheCellFg = inkIs(sfgOff, 0, WHITE);
 
-  // Un-dim: a DIM selected cell (col0) renders full-brightness; a DIM match (col1) stays dimmed. Both
-  // highlights paint SOLID BLACK (= default bg), so the dim fades toward black (DIM_WHITE) and only the
-  // un-dim differs between selection and match — not the bg the fg dims over.
+  // Un-dim: both highlights paint SOLID BLACK, so the dim fades toward black either way and only the
+  // un-dim differs — a DIM selection is full-brightness, a DIM match stays dimmed.
   const dimFlags = new Uint16Array([DIM, DIM, 0, 0]);
-  const undim = drawSel(dimFlags, 0x000000, 0x000000);
-  checks.aSelectionUndimsItsForeground = cellIs(undim, 0, WHITE);
-  checks.aSearchMatchKeepsItsForegroundDim = cellIs(undim, 1, DIM_WHITE) && !cellIs(undim, 1, WHITE);
+  const undim = drawSel(letters, dimFlags, 0x000000, 0x000000);
+  checks.aSelectionUndimsItsForeground = inkIs(undim, 0, WHITE);
+  checks.aSearchMatchKeepsItsForegroundDim = inkIs(undim, 1, DIM_WHITE) && !inkIs(undim, 1, WHITE);
+
+  // --- tile glyph under selection (#239 re-tint / #227-discard): a █ fuses toward the RAW selection ---
+  const SEL = 0x800000;
+  const tileSel = drawSel(codepoints, plainFlags, SEL, 0x000000);
+  const retint = blendOver(WHITE, SEL);
+  checks.aTileGlyphUnderSelectionIsRetinted = cellIs(tileSel, 0, retint) && !cellIs(tileSel, 0, WHITE);
+  // A tile discards selectionForeground (re-tints from the cell fg, not the override).
+  r.setSelectionForeground(GREEN);
+  const tileSfg = drawSel(codepoints, plainFlags, SEL, 0x000000);
+  checks.aTileGlyphDiscardsSelectionForeground = cellIs(tileSfg, 0, retint) && !cellIs(tileSfg, 0, GREEN);
+  r.setSelectionForeground(undefined);
 
   // Restore default overlay state so nothing leaks.
   r.setOverlay(new Uint32Array([]), new Uint32Array([]), 0, 0);

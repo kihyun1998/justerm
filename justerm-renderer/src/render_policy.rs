@@ -6,11 +6,12 @@
 //! fades toward the bg). These are the ref-space + RGB-space transforms `resolve_rgb` deliberately
 //! omits; the selection/search highlight ([`overlay`]) composites on top.
 //!
-//! The **fg long-tail** grows slice by slice (#272 is cumulative). Shipped: bold→bright + dim (here),
-//! `minimumContrastRatio` (#225, the WCAG step-adjust lives in [`contrast`](crate::contrast)), and the
-//! selection-side fg overrides — un-dim (#224) and `selectionForeground` (#227) — which key off
-//! [`Overlay::highlight_at`](crate::overlay::Overlay::highlight_at) and are orchestrated in
-//! `pack_instances`. Still to come: the tile glyph rules (#226/#239/#241, excludeFromContrast).
+//! The xterm-parity **fg long-tail** (#272) lands cumulatively: bold→bright + dim (here),
+//! `minimumContrastRatio` (#225, the WCAG step-adjust in [`contrast`](crate::contrast)), the
+//! selection-side overrides — un-dim (#224) and `selectionForeground` (#227) — and the tile-glyph
+//! rules (#226/#239/#241, classifier in [`glyph_class`](crate::glyph_class)). All of them beyond the
+//! ref-space transforms here are orchestrated per cell in `pack_instances`, keyed off
+//! [`Overlay::highlight_at`](crate::overlay::Overlay::highlight_at).
 //!
 //! [`palette`]: crate::palette
 //! [`overlay`]: crate::overlay

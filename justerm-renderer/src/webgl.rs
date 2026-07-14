@@ -5,7 +5,7 @@
 //! and uploading new glyphs on demand), packs one instance per cell, and `render`
 //! composites each glyph's coverage from the atlas over its background, plus SGR attrs
 //! (#267: bold/italic font variants, underline/strikethrough lines, inverse fg/bg swap; #272:
-//! bold→bright + dim + minimum-contrast + selection fg colours) and double-width glyphs (#268: a wide glyph splits across two atlas
+//! bold→bright + dim + minimum-contrast + selection fg + tile-glyph colours) and double-width glyphs (#268: a wide glyph splits across two atlas
 //! slots / two grid cells).
 //! ASCII (`0x20..=0x7E`) is pre-rasterised. Colour emoji (#284) + clusters (#285) follow.
 //!
@@ -1526,6 +1526,7 @@ impl JustermRenderer {
             fg,
             slots: &slots,
             flags: cells.flags,
+            codepoints: cells.codepoints,
         };
         // #271: composite the current selection / search overlay into each cell's packed bg. The
         // spans are owned by the renderer so they outlive the borrow; empty ⇒ no highlight.

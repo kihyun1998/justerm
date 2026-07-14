@@ -10,10 +10,13 @@
 //! [`render_policy`]: crate::render_policy
 //! [`overlay`]: crate::overlay
 
-use crate::attrs::{BLANK_SLOT, glyph_field, is_concealed, is_dim};
+use crate::attrs::{BLANK_SLOT, glyph_field, is_concealed, is_dim, is_inverse};
 use crate::color::gl_rgb;
 use crate::contrast::ensure_contrast_ratio;
-use crate::overlay::{HighlightKind, Overlay, composite_bg, should_blend};
+use crate::glyph_class::treat_glyph_as_background_color;
+use crate::overlay::{
+    HIGHLIGHT_BLEND_ALPHA, HighlightKind, Overlay, blend_over, composite_bg, should_blend,
+};
 use crate::palette::Palette;
 use crate::render_policy::{ColorPolicy, dim_foreground, resolve_cell};
 
@@ -31,6 +34,11 @@ pub struct Frame<'a> {
     pub fg: &'a [u32],
     pub slots: &'a [u16],
     pub flags: &'a [u16],
+    /// Per-cell **base** codepoint — the first scalar of the resolved glyph. Only the tile-glyph
+    /// classifier ([`treat_glyph_as_background_color`], #226/#239) reads it; a short/missing entry
+    /// resolves as `0` (not a tile). The atlas *slot* is already resolved in `slots`; this is kept
+    /// solely to classify the glyph's contrast/selection behaviour.
+    pub codepoints: &'a [u32],
 }
 
 /// Pack a [`Frame`] (row-major) into per-cell instance data
@@ -65,6 +73,7 @@ pub fn pack_instances(
         fg,
         slots,
         flags,
+        codepoints,
     } = *frame;
     // `usize` is 32 bits on wasm32, so `cells * 9` overflows it for a grid `resolve_frame` would
     // still accept (it only bounds `cells` by the slice length). A failed reservation is not worth
@@ -82,17 +91,23 @@ pub fn pack_instances(
             // end — the blends are integer math (match the reference to the byte).
             let bg_ref = bg.get(idx).copied().unwrap_or(0);
             let fg_ref = fg.get(idx).copied().unwrap_or(0);
-            let (resolved_fg, cell_bg) =
+            // The cell's OWN resolved fg (inverse + bold→bright) — kept undimmed for the tile-glyph
+            // re-tint below, which starts from it (discarding any selectionForeground).
+            let (cell_fg, cell_bg) =
                 resolve_cell(fg_ref, bg_ref, cell_flags, palette, policy.bold_to_bright);
             // The highlight covering this cell (if any) and whether it is a *selection* (vs a search
-            // match) — the selection-only fg rules (#224/#227) key off this.
+            // match) — the selection-only fg rules (#224/#227/#239) key off this.
             let kind = overlay.highlight_at(row, col);
             let is_selection = kind == Some(HighlightKind::Selection);
+            // #226: a Powerline / box-drawing / block glyph tiles with the bg — excluded from the
+            // contrast demand and re-tinted under selection (classify the base codepoint).
+            let exclude =
+                treat_glyph_as_background_color(codepoints.get(idx).copied().unwrap_or(0));
             // #227 selectionForeground: force a selected cell's fg to the injected colour (never a
-            // match), overriding the cell's own resolved fg. Flows through the contrast pass below.
-            let resolved_fg = match (is_selection, policy.selection_fg) {
+            // match), overriding the cell's own fg. A tile glyph discards it (#239 below).
+            let mut fg = match (is_selection, policy.selection_fg) {
                 (true, Some(sfg)) => sfg,
-                _ => resolved_fg,
+                _ => cell_fg,
             };
             // #271: composite the selection / search highlight onto the (post-swap) background FIRST,
             // so the fg policy sees the EFFECTIVE bg the glyph is drawn over. `should_blend` reads the
@@ -103,29 +118,49 @@ pub fn pack_instances(
                 should_blend(bg_ref, cell_flags),
                 kind.map(|k| overlay.colors.of(k)),
             );
+            // #239/#241: a tile glyph under a SELECTION fuses into the band — xterm re-tints it toward
+            // the RAW selection colour (not the effective post-blend bg), starting from the cell's own
+            // undimmed fg and discarding selectionForeground. #241: an inverse cell with a DEFAULT bg
+            // is "treated as transparent" — its fg becomes the raw selection colour with NO blend.
+            //
+            // The re-tint starts from `cell_fg`, which has bold→bright (#223) applied — byte-identical
+            // to justerm-web (its `fgUndimmed` is likewise brightened), so the #273 switch stays
+            // neutral. This diverges from xterm ONLY for a BOLD + ANSI-0..7 + tile + selection cell,
+            // where xterm re-tints from the *base* ANSI colour (its `CellColorResolver` bypasses the
+            // `+8`): a corner-of-corner, sub-perceptible under the 0x80 blend. 100 % xterm parity here
+            // is a *family* change (web + renderer together) — tracked, not smuggled into this slice.
+            if is_selection && exclude {
+                let raw_sel = overlay.colors.of(HighlightKind::Selection);
+                let inverse_default_bg = is_inverse(cell_flags) && (bg_ref >> 24) == 0;
+                fg = if inverse_default_bg {
+                    raw_sel
+                } else {
+                    blend_over(cell_fg, raw_sel, HIGHLIGHT_BLEND_ALPHA)
+                };
+            }
             // The fg colour policy, applied ONCE against the effective bg on the UNDIMMED fg — xterm's
             // model (`TextureAtlas._getMinimumContrastColor`), which the renderer can follow because the
             // highlight is already folded into `eff_bg` (beamterm couldn't, so justerm-web double-passes
             // — a compromise the renderer sheds; the #272 2-lens pinned this). minimumContrastRatio
             // (#225) is checked FIRST: if it fires, the corrected fg wins and DIM is skipped (mutually
             // exclusive, xterm `TextureAtlas.ts:329`); a dim cell that already clears the halved ratio is
-            // dimmed instead (#232).
+            // dimmed instead (#232). #226: a tile glyph is EXCLUDED from the contrast demand.
             // #224 selection un-dim: a *selected* cell's DIM is cleared (xterm `& ~BgFlags.DIM`), so its
             // text stays legible over the highlight and the contrast ratio is NOT halved. `dim` folding
             // in `!is_selection` handles both.
             let dim = is_dim(cell_flags) && !is_selection;
             let mcr = policy.min_contrast as f64;
-            let fg_packed = if mcr > 1.0 {
+            let fg_packed = if mcr > 1.0 && !exclude {
                 let ratio = if dim { mcr / 2.0 } else { mcr };
-                match ensure_contrast_ratio(eff_bg, resolved_fg, ratio) {
+                match ensure_contrast_ratio(eff_bg, fg, ratio) {
                     Some(adjusted) => adjusted,
-                    None if dim => dim_foreground(resolved_fg, eff_bg),
-                    None => resolved_fg,
+                    None if dim => dim_foreground(fg, eff_bg),
+                    None => fg,
                 }
             } else if dim {
-                dim_foreground(resolved_fg, eff_bg)
+                dim_foreground(fg, eff_bg)
             } else {
-                resolved_fg
+                fg
             };
             let bg_rgb = gl_rgb(eff_bg);
             let fg_rgb = gl_rgb(fg_packed);
@@ -173,7 +208,8 @@ mod tests {
         }
     }
 
-    /// A single-cell frame for the packer tests.
+    /// A single-cell frame for the packer tests. Codepoints default to empty (→ classified as
+    /// non-tile); the tile tests build a [`Frame`] with an explicit `codepoints` column instead.
     fn frame<'a>(bg: &'a [u32], fg: &'a [u32], slots: &'a [u16], flags: &'a [u16]) -> Frame<'a> {
         Frame {
             cols: 1,
@@ -182,6 +218,7 @@ mod tests {
             fg,
             slots,
             flags,
+            codepoints: &[],
         }
     }
 
@@ -322,6 +359,7 @@ mod tests {
             fg: &[0, 0],
             slots: &[2048, 2049], // wide lead + its right-half slot
             flags: &[HIDDEN | WIDE_CHAR, HIDDEN | WIDE_CHAR_SPACER],
+            codepoints: &[0x4E2D, 0],
         };
         let got = pack_instances(&f, &p, true, &Overlay::default(), &ColorPolicy::default());
         assert_eq!(got[8], BLANK_SLOT as f32, "lead half concealed");
@@ -830,6 +868,149 @@ mod tests {
             &got[5..8],
             &gl_rgb(0xFF_FF_FF),
             "the raw selectionForeground was illegible"
+        );
+    }
+
+    // --- #272 slice 4: tile glyphs (#226 excludeFromContrast, #239 recolor, #241 transparent) ---
+
+    const BLOCK: u32 = 0x2588; // █ — a tile glyph (block element)
+
+    /// A single-cell frame carrying a base `codepoint` so the tile classifier can see it.
+    fn frame_cp<'a>(
+        bg: &'a [u32],
+        fg: &'a [u32],
+        flags: &'a [u16],
+        codepoints: &'a [u32],
+    ) -> Frame<'a> {
+        Frame {
+            cols: 1,
+            rows: 1,
+            bg,
+            fg,
+            slots: &[0],
+            flags,
+            codepoints,
+        }
+    }
+
+    #[test]
+    fn a_tile_glyph_is_excluded_from_the_contrast_correction() {
+        let p = palette(); // default_bg 0x1E1E2E
+        let policy = ColorPolicy {
+            min_contrast: 7.0,
+            ..ColorPolicy::default()
+        };
+        // A █ (tile) with a low-contrast fg is NOT corrected — a nudge would seam it (#226).
+        let tile = pack_instances(
+            &frame_cp(&[0], &[RGB | 0x2A_2A_3A], &[0], &[BLOCK]),
+            &p,
+            true,
+            &Overlay::default(),
+            &policy,
+        );
+        assert_eq!(
+            &tile[5..8],
+            &gl_rgb(0x2A_2A_3A),
+            "a tile glyph keeps its illegible fg"
+        );
+        // The SAME low-contrast fg on a non-tile glyph ('A') IS corrected — proves exclusion is real.
+        let text = pack_instances(
+            &frame_cp(&[0], &[RGB | 0x2A_2A_3A], &[0], &[0x41]),
+            &p,
+            true,
+            &Overlay::default(),
+            &policy,
+        );
+        assert_ne!(
+            &text[5..8],
+            &gl_rgb(0x2A_2A_3A),
+            "a non-tile low-contrast fg is corrected"
+        );
+    }
+
+    #[test]
+    fn a_tile_glyph_under_selection_is_retinted_toward_the_raw_selection_colour() {
+        let p = bright_palette(); // default_fg white
+        let raw_sel = 0x80_00_00;
+        let ov = overlay_kind(&[0, 0, 0], &[], raw_sel);
+        // A selected █: fg re-tinted = blend(cell fg, raw selection colour) — NOT the cell fg, NOT the
+        // effective (solid) bg.
+        let got = pack_instances(
+            &frame_cp(&[0], &[0], &[0], &[BLOCK]),
+            &p,
+            true,
+            &ov,
+            &ColorPolicy::default(),
+        );
+        let expect = blend_over(0xFF_FF_FF, raw_sel, HIGHLIGHT_BLEND_ALPHA);
+        assert_eq!(
+            &got[5..8],
+            &gl_rgb(expect),
+            "tile re-tinted toward the raw selection colour"
+        );
+        assert_ne!(&got[5..8], &gl_rgb(0xFF_FF_FF), "not the cell fg");
+        // A non-tile selected cell is NOT re-tinted (keeps its own white fg).
+        let text = pack_instances(
+            &frame_cp(&[0], &[0], &[0], &[0x41]),
+            &p,
+            true,
+            &ov,
+            &ColorPolicy::default(),
+        );
+        assert_eq!(
+            &text[5..8],
+            &gl_rgb(0xFF_FF_FF),
+            "a non-tile glyph keeps its fg"
+        );
+    }
+
+    #[test]
+    fn an_inverse_default_bg_tile_under_selection_is_transparent() {
+        // #241: an inverse cell with a DEFAULT bg renders its tile glyph transparent — fg becomes the
+        // RAW selection colour with NO blend, so the glyph dissolves into the band.
+        let p = bright_palette();
+        let raw_sel = 0x80_00_00;
+        let got = pack_instances(
+            &frame_cp(&[0], &[0], &[INVERSE], &[BLOCK]),
+            &p,
+            true,
+            &overlay_kind(&[0, 0, 0], &[], raw_sel),
+            &ColorPolicy::default(),
+        );
+        assert_eq!(
+            &got[5..8],
+            &gl_rgb(raw_sel),
+            "inverse+default tile fg = raw selection colour"
+        );
+    }
+
+    #[test]
+    fn a_tile_glyph_under_selection_discards_selection_foreground() {
+        // The re-tint starts from the cell's OWN fg and ignores selectionForeground (xterm re-resolves
+        // the model fg for these glyphs).
+        let p = bright_palette();
+        let raw_sel = 0x80_00_00;
+        let policy = ColorPolicy {
+            selection_fg: Some(0x00_FF_00), // green — must be discarded for a tile glyph
+            ..ColorPolicy::default()
+        };
+        let got = pack_instances(
+            &frame_cp(&[0], &[0], &[0], &[BLOCK]),
+            &p,
+            true,
+            &overlay_kind(&[0, 0, 0], &[], raw_sel),
+            &policy,
+        );
+        let expect = blend_over(0xFF_FF_FF, raw_sel, HIGHLIGHT_BLEND_ALPHA);
+        assert_eq!(
+            &got[5..8],
+            &gl_rgb(expect),
+            "re-tint from the cell fg, not selectionForeground"
+        );
+        assert_ne!(
+            &got[5..8],
+            &gl_rgb(0x00_FF_00),
+            "selectionForeground is discarded for a tile"
         );
     }
 }
