@@ -5,7 +5,7 @@
 //! and uploading new glyphs on demand), packs one instance per cell, and `render`
 //! composites each glyph's coverage from the atlas over its background, plus SGR attrs
 //! (#267: bold/italic font variants, underline/strikethrough lines, inverse fg/bg swap; #272:
-//! bold→bright + dim + minimum-contrast colours) and double-width glyphs (#268: a wide glyph splits across two atlas
+//! bold→bright + dim + minimum-contrast + selection fg colours) and double-width glyphs (#268: a wide glyph splits across two atlas
 //! slots / two grid cells).
 //! ASCII (`0x20..=0x7E`) is pre-rasterised. Colour emoji (#284) + clusters (#285) follow.
 //!
@@ -457,6 +457,9 @@ pub struct JustermRenderer {
     /// Minimum WCAG fg/bg contrast ratio (#225/#272), consumer policy (xterm's `minimumContrastRatio`).
     /// `1.0` = off (default). Set via `set_minimum_contrast_ratio`; clamped to `[1, 21]`.
     min_contrast: f32,
+    /// Force a SELECTED cell's fg to this packed `0xRRGGBB` (#227/#272, xterm's `selectionForeground`).
+    /// `None` = keep each cell's own fg (default). Selection only, never a search match.
+    selection_fg: Option<u32>,
     /// The last blink phase packed, so a [`set_overlay`](Self::set_overlay) re-pack (no new frame)
     /// keeps the cursor/blink cells in the phase the render loop last drove.
     last_blink_on: bool,
@@ -658,6 +661,7 @@ impl JustermRenderer {
             highlight_colors: HighlightColors::default(),
             bold_to_bright: true, // xterm's drawBoldTextInBrightColors default (#223)
             min_contrast: 1.0,    // xterm's minimumContrastRatio default: off (#225)
+            selection_fg: None,   // no selectionForeground override by default (#227)
             last_blink_on: true,
             ctx_loss,
         };
@@ -1535,6 +1539,7 @@ impl JustermRenderer {
         let policy = ColorPolicy {
             bold_to_bright: self.bold_to_bright,
             min_contrast: self.min_contrast,
+            selection_fg: self.selection_fg,
         };
         self.instances = pack_instances(&frame, &self.palette, blink_on, &overlay, &policy);
         self.instance_count = count as i32;
@@ -1682,6 +1687,17 @@ impl JustermRenderer {
     #[wasm_bindgen(js_name = setBoldToBright)]
     pub fn set_bold_to_bright(&mut self, enabled: bool) -> Result<(), JsValue> {
         self.bold_to_bright = enabled;
+        self.repack_from_grid()
+    }
+
+    /// Set (or clear) the selection foreground override (#227/#272) — xterm's `selectionForeground`.
+    /// A packed `0xRRGGBB` forces the fg of every **selected** cell (never a search match) to that
+    /// colour; it still flows through the minimum-contrast pass. Pass `undefined` to clear it and keep
+    /// each cell's own fg (the default). Consumer policy (#115), focus-independent. Re-packs the
+    /// retained grid; takes effect on the next [`render`](Self::render).
+    #[wasm_bindgen(js_name = setSelectionForeground)]
+    pub fn set_selection_foreground(&mut self, color: Option<u32>) -> Result<(), JsValue> {
+        self.selection_fg = color.map(|c| c & 0xFF_FFFF);
         self.repack_from_grid()
     }
 
