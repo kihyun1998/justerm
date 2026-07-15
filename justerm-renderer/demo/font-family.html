@@ -1,0 +1,66 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>justerm-renderer proof — setFontFamily: a new family re-bakes the atlas (#413)</title>
+<style>
+  body { margin: 0; background: #000; }
+  #c { display: block; image-rendering: pixelated; }
+</style>
+<!--
+  setFontFamily (#413) re-bakes the atlas for a new CSS font-family — the same seam a size change
+  uses (#406). The measurable, env-robust signal: the grid cell is an ink-scan of the font's block
+  glyph, and a MONOSPACE font's block is narrower than a PROPORTIONAL font's, so switching monospace
+  → serif changes the device cell width. This is a font-CLASS property (fixed vs proportional advance),
+  not an exact metric, so the proof asserts the RELATIONSHIP (differs / reverts), never a pixel count —
+  and two proportional families are tried so one env's coincidence can't pass it. dpr 1/1.1/1.5/2.
+
+  Build: wasm-pack build --target web --dev --out-dir pkg
+-->
+<canvas id="c" width="64" height="32"></canvas>
+<script type="module">
+  import init, { JustermRenderer } from "../pkg/justerm_renderer.js";
+  import { readRect } from "./proof.js";
+  await init();
+
+  const COLS = 2, ROWS = 1, N = COLS * ROWS;
+  const LETTER = 0x41;                         // 'A'
+  const RGB = (c) => ((2 << 24) | c) >>> 0;    // absolute Rgb colour ref (tag 2)
+  const WHITE = 0xffffff;
+
+  const r = new JustermRenderer("#c", new Uint32Array(256), WHITE, 0x000000);
+  const gl = document.querySelector("#c").getContext("webgl2");
+  const grab = () => { const [w, h] = [gl.drawingBufferWidth, gl.drawingBufferHeight]; return { ...readRect(gl, { x: 0, y: 0, w, h }), w, h }; };
+  // The brightest pixel anywhere — proves the atlas baked and a glyph drew (not a blank frame).
+  const maxInk = (img) => { let m = 0; for (let i = 0; i < img.buf.length; i += 4) m = Math.max(m, img.buf[i] + img.buf[i + 1] + img.buf[i + 2]); return m; };
+
+  const checks = {};
+  const monoCw = r.cell_width(), monoCh = r.cell_height();
+
+  // serif re-bakes the atlas → the block-derived cell width changes (serif's block is wider than
+  // monospace's fixed advance). Assert the change, not a value (the exact px is env-dependent). serif
+  // vs monospace is a font-CLASS distinction present in every real browser font config, unlike the
+  // other generics whose headless fallback can coincide with monospace (observed: sans-serif did).
+  r.setFontFamily("serif");
+  const serifCw = r.cell_width();
+  checks.familyChangeRebakesTheCell = serifCw !== monoCw;
+
+  // The renderer draws a glyph at the new family (the atlas baked, the frame is not blank).
+  r.resize(COLS, ROWS);
+  r.apply_frame(COLS, ROWS, new Uint32Array(N), new Uint32Array([RGB(WHITE), RGB(WHITE)]), new Uint32Array(N).fill(LETTER), new Uint16Array(N), true);
+  r.render();
+  checks.drawsAGlyphAtTheNewFamily = maxInk(grab()) > 300; // a white 'A' on black => bright ink present
+
+  // Reverting to monospace restores the cell (the re-bake is reversible, keyed on the family string).
+  r.setFontFamily("monospace");
+  checks.revertingRestoresTheCell = r.cell_width() === monoCw && r.cell_height() === monoCh;
+
+  // The same family is a no-op (the guard), leaving the cell put.
+  const cwNow = r.cell_width();
+  r.setFontFamily("monospace");
+  checks.sameFamilyIsANoOp = r.cell_width() === cwNow;
+
+  window.__proof = {
+    ok: Object.values(checks).every(Boolean), checks,
+    dpr: devicePixelRatio, monoCw, monoCh, serifCw,
+  };
+  window.__done = true;
+</script>
