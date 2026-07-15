@@ -45,6 +45,32 @@ That tag push is the publish trigger. Verify it:
 Both secrets are one-time maintainer setup (repo secrets). `justerm-wasm-decode` is `publish = false` for cargo,
 so it never goes to crates.io; the core crate never goes to npm.
 
+## The renderer publishes on its OWN track (`renderer-v*`, #394)
+
+`justerm-renderer` is **deliberately outside** the `[workspace.package]` version-lockstep (its
+web-sys/glow deps are wasm32-only and it ships on its own cadence, root `Cargo.toml`). So it carries
+its own version (in `justerm-renderer/Cargo.toml`, a `0.1.0`-series, **not** the workspace `0.7.x`) and
+its own tag prefix — a `v*` tag does **not** publish it, and a `renderer-v*` tag publishes **only** it.
+
+Cut a renderer release:
+
+1. Bump `version` in `justerm-renderer/Cargo.toml`.
+2. Gate the renderer (out of every cargo umbrella — see `docs/agents/theflow.md` §gate matrix):
+   `cargo fmt/test/clippy/build --manifest-path justerm-renderer/Cargo.toml` + `pnpm test:proofs`.
+3. Commit, then tag: `git tag -a renderer-vX.Y.Z -m "renderer-vX.Y.Z — …"`.
+4. Push the tag: `git push origin renderer-vX.Y.Z`.
+
+| Workflow | Trigger | Publishes | Gate | Secret |
+| --- | --- | --- | --- | --- |
+| `.github/workflows/publish-renderer.yml` | `renderer-v*` | `wasm-pack build --target bundler` + `npm publish` → npm (`justerm-renderer`) | tag (minus `renderer-v`) must equal the wasm-pack package version, else fail | `NPM_TOKEN` |
+
+Uses the same `NPM_TOKEN`, which must have publish rights for the **`justerm-renderer`** package too (a
+distinct npm package from `justerm-wasm-decode`; the first publish may need the token widened or a
+one-time manual `npm publish ./justerm-renderer/pkg --access public`). The bundler build is the
+published artifact (justerm-web's Vite consumes it); the renderer's GL proofs use `--target web`
+separately, so the job builds its own bundler output. No `finish-pkg` step — the renderer ships pure
+wasm-bindgen output, no hand-written JS helpers.
+
 ## GitHub Releases — manual, and the track starts at v0.3.1
 
 CI does **not** create GitHub Releases (only registry publishes). Create them by hand:
