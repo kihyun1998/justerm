@@ -721,3 +721,31 @@ test("the font-size button re-bakes the atlas and re-fits to fewer columns (#417
   // The discriminating assertion: the re-bake actually enlarged the cell, so 20px fits fewer columns.
   expect(at20!.cols).toBeLessThan(at16!.cols);
 });
+
+// #420: the runtime theme button drives the wired setTheme (renderer setPalette #405) through the
+// real published justerm-renderer wasm. Two schemes with opposite defaults, so the palette swap
+// recolours the canvas — the demo samples the drawing buffer's centre after each swap (readPixels
+// there is reliable, unlike a composited screenshot) and logs the colour; the two must differ.
+test("the theme button swaps the palette and recolours the canvas (#420)", async ({ page }) => {
+  const samples: { theme: string; r: number; g: number; b: number }[] = [];
+  page.on("console", (m) => {
+    const s = m.text().match(/theme=(\w+) centre=rgb\((\d+),(\d+),(\d+)\)/);
+    if (s) samples.push({ theme: s[1]!, r: Number(s[2]), g: Number(s[3]), b: Number(s[4]) });
+  });
+  await page.goto("/");
+  await expect(page.getByRole("button", { name: "Theme: dark" })).toBeVisible();
+
+  await page.getByRole("button", { name: "Theme: dark" }).click(); // → light
+  await expect(page.getByRole("button", { name: "Theme: light" })).toBeVisible();
+  await page.getByRole("button", { name: "Theme: light" }).click(); // → dark
+  await expect(page.getByRole("button", { name: "Theme: dark" })).toBeVisible();
+
+  const light = samples.find((s) => s.theme === "light");
+  const dark = samples.find((s) => s.theme === "dark");
+  expect(light, "a light-theme sample was logged").toBeTruthy();
+  expect(dark, "a dark-theme sample was logged").toBeTruthy();
+  // Discriminating: the centre pixel differs between the opposite-default schemes — the palette
+  // actually swapped in the renderer (an unwired setTheme would leave the canvas unchanged).
+  const differs = light!.r !== dark!.r || light!.g !== dark!.g || light!.b !== dark!.b;
+  expect(differs, `light ${JSON.stringify(light)} vs dark ${JSON.stringify(dark)}`).toBe(true);
+});
