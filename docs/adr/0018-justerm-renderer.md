@@ -1,15 +1,13 @@
 # ADR-0018: Build `justerm-renderer` (first-party WebGL2 renderer), supersede ADR-0002
 
-Status: proposed (2026-07-07) — supersedes ADR-0002
+Status: accepted (2026-07-15) — supersedes ADR-0002; proposed 2026-07-07
 
-Note (implementation in flight): "proposed" is the *record* status, but the renderer is **actively
-being built** under Epic [#258](https://github.com/kihyun1998/justerm/issues/258) — scaffold (#259),
-native cursor (#270), the atlas/glyph pipeline (#359, #361) all merged. Formal **acceptance** here, and
-marking ADR-0002 **superseded**, land together with the beamterm→renderer switch
-([#273](https://github.com/kihyun1998/justerm/issues/273)) in the docs flip
-([#274](https://github.com/kihyun1998/justerm/issues/274)). So a merged implementation under a
-still-"proposed" ADR is expected, not a stale record — the finalization is deliberately gated on the
-switch.
+Note (accepted): the renderer was built out under Epic [#258](https://github.com/kihyun1998/justerm/issues/258)
+— scaffold (#259), native cursor (#270), the atlas/glyph pipeline (#359, #361), the colour long-tail
+(#272), decorations (#393), npm distribution (#394) — and `justerm-web` switched off beamterm onto it
+([#273](https://github.com/kihyun1998/justerm/issues/273)). This ADR is now **accepted** and ADR-0002
+**superseded**, finalized in the docs flip ([#274](https://github.com/kihyun1998/justerm/issues/274)).
+Remaining polish is tracked (renderer live-palette #405, font #406, dead-code prune #407).
 
 ## Context
 
@@ -277,8 +275,9 @@ genuinely out-of-grid cursor on the last cell instead. An out-of-grid cursor dra
   parsing engine. Sliced incrementally under Epic #258 (#259 scaffold → GPU core → glyph pipeline →
   browser integration → cursor/selection → the `justerm-web` switch → docs flip), each slice tracer-bullet
   demoable, mirroring how #103 sliced justerm-web ("compliance is cumulative").
-- beamterm and justerm-renderer run in parallel until parity; the switch (#273) is its own slice — no
-  big-bang. `docs/architecture.md` + `CLAUDE.md` keep saying "beamterm renders" until then (#274).
+- beamterm and justerm-renderer ran in parallel until parity; the switch (#273) was its own slice — no
+  big-bang. `docs/architecture.md` + `CLAUDE.md` (and `README.md` + `CONTEXT.md`) were flipped off
+  "beamterm renders" in #274.
 - xterm-parity colour policy (contrast/dim/tile-glyph/inverse, #223–#241) currently lives tested in
   `justerm-web` TS; it ports to Rust cumulatively (#272), TS-fed hybrid allowed in the interim.
 - beamterm is MIT (© 2025 Adrian Papari); studied as prior-art only. If any substantial portion is

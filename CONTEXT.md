@@ -25,7 +25,7 @@ damage, and scroll ops. It does no I/O, no IPC, no rendering, and is theme-agnos
 The component that turns the engine's output into pixels (WebGL2). The engine never draws; it hands
 state to the renderer. Renderer-side, distinct from the **Engine** — but now a **family member**, not
 an external dependency: originally the third-party `beamterm`, the family now builds its own first-party
-`justerm-renderer` (ADR-0018). beamterm stays the active renderer until the switch (#273); `justerm-core`
+`justerm-renderer` (ADR-0018), the active renderer since the #273 switch; `justerm-core`
 still does not render either way.
 
 ## Consumer
