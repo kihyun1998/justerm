@@ -1,0 +1,87 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>justerm-renderer proof — setFontSize: the cell scales with the font (#406)</title>
+<style>
+  body { margin: 0; background: #000; }
+  #c { display: block; image-rendering: pixelated; }
+</style>
+<!--
+  setFontSize (#406) re-bakes the atlas at css_px * dpr — the same seam a DPR change uses (#322) —
+  so the grid cell re-derives from the new size. The cell is an ink-scan of the font's glyph box, so
+  the DEVICE cell size (cell_width()/cell_height()) is the measurable signal: doubling the font size
+  roughly doubles the cell. The ratio is dpr-independent (both cells scale by dpr), so it holds across
+  the runner's dpr 1 / 1.1 / 1.5 / 2 sweep.
+
+  Checks: the cell grows and scales ~proportionally with the font; the renderer still draws at the new
+  size (a BLOCK is its fg); setting the size back restores the cell; an unchanged or non-finite size
+  is a no-op. Distinguishing negatives: a font that did NOT re-bake would report the same cell size.
+
+  Build: wasm-pack build --target web --dev --out-dir pkg
+-->
+<canvas id="c" width="64" height="32"></canvas>
+<script type="module">
+  import init, { JustermRenderer } from "../pkg/justerm_renderer.js";
+  import { readRect } from "./proof.js";
+  await init();
+
+  const COLS = 2, ROWS = 1, N = COLS * ROWS;
+  const BLOCK = 0x2588;
+  const IDX = (i) => ((1 << 24) | i) >>> 0; // Indexed colour ref (tag 1)
+  const RED = 0xcc0000;
+
+  const palette = new Uint32Array(256); palette[1] = RED;
+  const r = new JustermRenderer("#c", palette, 0xffffff, 0x000000);
+  const gl = document.querySelector("#c").getContext("webgl2");
+
+  const grab = () => {
+    const [w, h] = [gl.drawingBufferWidth, gl.drawingBufferHeight];
+    return { ...readRect(gl, { x: 0, y: 0, w, h }), w, h };
+  };
+  const px = (img, x, y) => { const i = ((img.h - 1 - y) * img.w + x) * 4; return [img.buf[i], img.buf[i + 1], img.buf[i + 2]]; };
+  const chans = (c) => [(c >> 16) & 0xff, (c >> 8) & 0xff, c & 0xff];
+  const near = (v, t, tol = 4) => Math.abs(v - t) <= tol;
+  // A BLOCK cell IS its fg, read at the centre of a (cw x ch) cell.
+  const centreIs = (img, col, cw, ch, packed) => {
+    const [pr, pg, pb] = px(img, col * cw + (cw >> 1), ch >> 1), [er, eg, eb] = chans(packed);
+    return near(pr, er) && near(pg, eg) && near(pb, eb);
+  };
+
+  const checks = {};
+
+  // Metrics at the default size (FONT_SIZE = 16 CSS px).
+  const cw16 = r.cell_width(), ch16 = r.cell_height();
+
+  // Grow to 32 CSS px — double the default.
+  r.setFontSize(32);
+  const cw32 = r.cell_width(), ch32 = r.cell_height();
+
+  checks.fontSizeGrowsTheCell = cw32 > cw16 + 2 && ch32 > ch16 + 2;
+  const ratioW = cw32 / cw16, ratioH = ch32 / ch16;
+  // ~2x, generous band for the ink-scan not being an exact multiple.
+  checks.cellScalesRoughlyWithFontSize = ratioW > 1.6 && ratioW < 2.4 && ratioH > 1.6 && ratioH < 2.4;
+
+  // The renderer still draws at the new size — a BLOCK fills its (bigger) cell with the fg. css_cell
+  // moved, so the consumer re-fits: resize to the grid, then a frame.
+  r.resize(COLS, ROWS);
+  r.apply_frame(COLS, ROWS, new Uint32Array(N), new Uint32Array([IDX(1), IDX(1)]), new Uint32Array(N).fill(BLOCK), new Uint16Array(N), true);
+  r.render();
+  checks.rendersAtTheNewSize = centreIs(grab(), 0, cw32, ch32, RED);
+
+  // Setting the size back restores the cell (the re-bake is reversible, not a one-way growth).
+  r.setFontSize(16);
+  checks.settingBackRestoresTheCell = Math.abs(r.cell_width() - cw16) <= 1 && Math.abs(r.cell_height() - ch16) <= 1;
+
+  // An unchanged size and a non-finite size are both no-ops (the guards), leaving the cell put.
+  const cwNow = r.cell_width();
+  r.setFontSize(16);
+  checks.sameSizeIsANoOp = r.cell_width() === cwNow;
+  r.setFontSize(Number.NaN);
+  checks.nonFiniteIsIgnored = r.cell_width() === cwNow;
+
+  window.__proof = {
+    ok: Object.values(checks).every(Boolean), checks,
+    dpr: devicePixelRatio, cw16, ch16, cw32, ch32,
+    ratioW: ratioW.toFixed(3), ratioH: ratioH.toFixed(3),
+  };
+  window.__done = true;
+</script>
