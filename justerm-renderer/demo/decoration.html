@@ -1,0 +1,90 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>justerm-renderer proof — marker decorations: 2-layer bg/fg override (#393/#120)</title>
+<style>
+  body { margin: 0; background: #000; }
+  #c { display: block; image-rendering: pixelated; }
+</style>
+<!--
+  A marker decoration is a per-cell background / foreground OVERRIDE on a two-layer stack: a BOTTOM
+  decoration paints under the selection/search highlight (the glyph stays legible over it), a TOP
+  decoration paints over it. The consumer projects the rects each frame (DecorationRegistry joined
+  with core's markers); the renderer composites them — z-ordered around the highlight in pack time.
+
+  Read: a SPACE cell is a solid block of its (composited) background, read at the centre; a decoration
+  FG override is read from a letter's brightest ink pixel (a fg-only test). Wire = setDecorations with
+  a flat [row, left, right, layer(0=bottom/1=top), bg, fg], each an absolute 0xRRGGBB (the consumer
+  resolves its theme), NO_REF = "no override". Swept dpr 1 / 1.1 / 1.5 / 2.
+
+  Build: wasm-pack build --target web --dev --out-dir pkg
+-->
+<canvas id="c" width="64" height="16"></canvas>
+<script type="module">
+  import init, { JustermRenderer } from "../pkg/justerm_renderer.js";
+  import { readRect } from "./proof.js";
+  await init();
+
+  const COLS = 4, ROWS = 1, N = COLS * ROWS;
+  const SPACE = 0x20, LETTER = 0x41; // space (reads its bg) / 'A' (reads its fg ink)
+  const NO_REF = 0xffffffff >>> 0;
+  const DECO_BG = 0x804000, TOP_BG = 0x006080, DECO_FG = 0x00ff88, SEL_BG = 0x3060c0;
+  const WHITE = 0xffffff;
+
+  const palette = new Uint32Array(256);
+  const r = new JustermRenderer("#c", palette, WHITE, 0x000000);
+  const gl = document.querySelector("#c").getContext("webgl2");
+  const [cw, ch] = [r.cell_width(), r.cell_height()];
+
+  const grab = () => {
+    const [w, h] = [gl.drawingBufferWidth, gl.drawingBufferHeight];
+    return { ...readRect(gl, { x: 0, y: 0, w, h }), w, h };
+  };
+  const centre = (img, col) => { const x = col * cw + (cw >> 1), y = ch >> 1, i = ((img.h - 1 - y) * img.w + x) * 4; return [img.buf[i], img.buf[i + 1], img.buf[i + 2]]; };
+  const chans = (c) => [(c >> 16) & 0xff, (c >> 8) & 0xff, c & 0xff];
+  const near = (v, t, tol = 12) => Math.abs(v - t) <= tol;
+  const cellIs = (img, col, packed) => { const [pr, pg, pb] = centre(img, col), [er, eg, eb] = chans(packed); return near(pr, er) && near(pg, eg) && near(pb, eb); };
+  const inkColour = (img, col) => {
+    let best = [0, 0, 0], bestSum = -1;
+    for (let y = 0; y < ch; y++) for (let x = 0; x < cw; x++) {
+      const i = ((img.h - 1 - y) * img.w + (col * cw + x)) * 4, s = img.buf[i] + img.buf[i + 1] + img.buf[i + 2];
+      if (s > bestSum) { bestSum = s; best = [img.buf[i], img.buf[i + 1], img.buf[i + 2]]; }
+    }
+    return best;
+  };
+  const inkIs = (img, col, packed) => { const [pr, pg, pb] = inkColour(img, col), [er, eg, eb] = chans(packed); return near(pr, er) && near(pg, eg) && near(pb, eb); };
+
+  // Order: policy/overlay/decorations first, then apply_frame packs with them (apply_frame keeps no grid).
+  const draw = (glyph, selectionSpans, decoWire) => {
+    r.setOverlay(new Uint32Array(selectionSpans), new Uint32Array([]), SEL_BG, 0);
+    r.setDecorations(new Uint32Array(decoWire));
+    r.resize(COLS, ROWS);
+    r.apply_frame(COLS, ROWS, new Uint32Array(N), new Uint32Array(N), new Uint32Array(N).fill(glyph), new Uint16Array(N), true);
+    r.render();
+    return grab();
+  };
+
+  const checks = {};
+
+  // A BOTTOM decoration paints the background of a plain (space) cell.
+  const bottomBg = draw(SPACE, [], [0, 0, 0, 0, DECO_BG, NO_REF]);
+  checks.aBottomDecorationPaintsTheBackground = cellIs(bottomBg, 0, DECO_BG);
+
+  // BOTTOM under a SOLID selection → the highlight paints over it (selection wins).
+  const bottomUnderSel = draw(SPACE, [0, 0, 0], [0, 0, 0, 0, DECO_BG, NO_REF]);
+  checks.aBottomDecorationIsUnderTheHighlight = cellIs(bottomUnderSel, 0, SEL_BG) && !cellIs(bottomUnderSel, 0, DECO_BG);
+
+  // TOP over a selection → the decoration paints over the highlight (top wins).
+  const topOverSel = draw(SPACE, [0, 0, 0], [0, 0, 0, 1, TOP_BG, NO_REF]);
+  checks.aTopDecorationPaintsOverTheHighlight = cellIs(topOverSel, 0, TOP_BG) && !cellIs(topOverSel, 0, SEL_BG);
+
+  // A decoration FG override recolours the glyph (read from a letter's ink).
+  const fgOverride = draw(LETTER, [], [0, 0, 0, 0, NO_REF, DECO_FG]);
+  checks.aDecorationOverridesTheForeground = inkIs(fgOverride, 0, DECO_FG) && !inkIs(fgOverride, 0, WHITE);
+
+  // Clearing decorations restores the plain cell (the discriminating half).
+  const cleared = draw(SPACE, [], []);
+  checks.clearingDecorationsRestoresThePlainCell = cellIs(cleared, 0, 0x000000);
+
+  window.__proof = { ok: Object.values(checks).every(Boolean), checks, dpr: devicePixelRatio, cw, ch };
+  window.__done = true;
+</script>

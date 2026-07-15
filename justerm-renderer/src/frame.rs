@@ -2,17 +2,20 @@
 //!
 //! The renderer's hot path (ADR-0018 "A-ii"): resolve each cell's colour references with
 //! the injected palette + colour policy (inverse, bold→bright, dim — [`render_policy`]), composite
-//! the selection/search highlight ([`overlay`]), fold the underline/strikethrough decoration into
-//! the glyph field, and pack per-cell instance data in Rust — one flat buffer for a single
-//! instanced draw call. Glyph-slot resolution (the stateful atlas cache) and rasterisation
-//! happen in the browser layer; this packer takes the already-resolved slots + cell flags.
+//! the marker [`decoration`] overrides and the selection/search highlight ([`overlay`]) back-to-front
+//! (base < bottom-decoration < highlight < top-decoration), fold the underline/strikethrough into the
+//! glyph field, and pack per-cell instance data in Rust — one flat buffer for a single instanced draw
+//! call. Glyph-slot resolution (the stateful atlas cache) and rasterisation happen in the browser
+//! layer; this packer takes the already-resolved slots + cell flags.
 //!
 //! [`render_policy`]: crate::render_policy
 //! [`overlay`]: crate::overlay
+//! [`decoration`]: crate::decoration
 
 use crate::attrs::{BLANK_SLOT, glyph_field, is_concealed, is_dim, is_inverse};
 use crate::color::gl_rgb;
 use crate::contrast::ensure_contrast_ratio;
+use crate::decoration::{DecorationLayer, DecorationRect, decoration_at};
 use crate::glyph_class::treat_glyph_as_background_color;
 use crate::overlay::{
     HIGHLIGHT_BLEND_ALPHA, HighlightKind, Overlay, blend_over, composite_bg, should_blend,
@@ -65,6 +68,7 @@ pub fn pack_instances(
     blink_on: bool,
     overlay: &Overlay,
     policy: &ColorPolicy,
+    decorations: &[DecorationRect],
 ) -> Vec<f32> {
     let Frame {
         cols,
@@ -103,18 +107,36 @@ pub fn pack_instances(
             // contrast demand and re-tinted under selection (classify the base codepoint).
             let exclude =
                 treat_glyph_as_background_color(codepoints.get(idx).copied().unwrap_or(0));
+            // #120/#393 decorations compose back-to-front around the highlight (justerm-web
+            // `composeCellColors`): base < BOTTOM decoration < highlight < TOP decoration. A decoration
+            // overrides the bg and/or fg with an **absolute** `0xRRGGBB` (the consumer owns its theme
+            // and resolves it before pushing — a decoration is NOT a core colour ref, so it is used
+            // verbatim, no palette/inverse/bold→bright). A fg override sets `fg_overridden`, which the
+            // #230 re-dim below keys off. `fg` starts from the cell's own fg (undimmed).
+            let mut fg = cell_fg;
+            let mut fg_overridden = false;
+            let mut bg_running = cell_bg;
+            if let Some(b) = decoration_at(decorations, row, col, DecorationLayer::Bottom) {
+                if let Some(c) = b.bg {
+                    bg_running = c;
+                }
+                if let Some(c) = b.fg {
+                    fg = c;
+                    fg_overridden = true;
+                }
+            }
             // #227 selectionForeground: force a selected cell's fg to the injected colour (never a
-            // match), overriding the cell's own fg. A tile glyph discards it (#239 below).
-            let mut fg = match (is_selection, policy.selection_fg) {
-                (true, Some(sfg)) => sfg,
-                _ => cell_fg,
-            };
-            // #271: composite the selection / search highlight onto the (post-swap) background FIRST,
-            // so the fg policy sees the EFFECTIVE bg the glyph is drawn over. `should_blend` reads the
-            // PRE-inverse ref + flags: an inverse or non-default cell blends so its own colour shows
-            // through, a plain default-bg cell paints solid.
-            let eff_bg = composite_bg(
-                cell_bg,
+            // match), overriding the cell's own / bottom-decoration fg. A tile glyph discards it (#239
+            // below). It is selection-only, so it never triggers the #230 re-dim (`!is_selection`).
+            if is_selection && let Some(sfg) = policy.selection_fg {
+                fg = sfg;
+            }
+            // #271: composite the selection / search highlight onto the (bottom-decorated) background —
+            // the fg policy then sees the EFFECTIVE bg the glyph is drawn over. `should_blend` reads the
+            // PRE-inverse *cell* ref + flags (not the decoration): an inverse or non-default cell blends
+            // so its own colour shows through, a plain default-bg cell paints solid.
+            let mut eff_bg = composite_bg(
+                bg_running,
                 should_blend(bg_ref, cell_flags),
                 kind.map(|k| overlay.colors.of(k)),
             );
@@ -138,6 +160,17 @@ pub fn pack_instances(
                     blend_over(cell_fg, raw_sel, HIGHLIGHT_BLEND_ALPHA)
                 };
             }
+            // #120/#393 TOP decoration: paints OVER the highlight (foreground-most), overriding the
+            // effective bg and/or the fg (`composeCellColors` applies `top` last, after selection).
+            if let Some(t) = decoration_at(decorations, row, col, DecorationLayer::Top) {
+                if let Some(c) = t.bg {
+                    eff_bg = c;
+                }
+                if let Some(c) = t.fg {
+                    fg = c;
+                    fg_overridden = true;
+                }
+            }
             // The fg colour policy, applied ONCE against the effective bg on the UNDIMMED fg — xterm's
             // model (`TextureAtlas._getMinimumContrastColor`), which the renderer can follow because the
             // highlight is already folded into `eff_bg` (beamterm couldn't, so justerm-web double-passes
@@ -150,14 +183,21 @@ pub fn pack_instances(
             // in `!is_selection` handles both.
             let dim = is_dim(cell_flags) && !is_selection;
             let mcr = policy.min_contrast as f64;
+            // #230: a decoration fg override on a dim non-selected cell KEEPS the cell's DIM — xterm
+            // leaves `BgFlags.DIM` set, so the resolved override is dimmed too. It is re-dimmed here
+            // (before contrast); the base fg's own dim is the `!fg_overridden` arm of the policy below,
+            // so exactly one path dims the fg. (composeCellColors #230 → then the contrast pass.)
+            if dim && fg_overridden {
+                fg = dim_foreground(fg, eff_bg);
+            }
             let fg_packed = if mcr > 1.0 && !exclude {
                 let ratio = if dim { mcr / 2.0 } else { mcr };
                 match ensure_contrast_ratio(eff_bg, fg, ratio) {
                     Some(adjusted) => adjusted,
-                    None if dim => dim_foreground(fg, eff_bg),
+                    None if dim && !fg_overridden => dim_foreground(fg, eff_bg),
                     None => fg,
                 }
-            } else if dim {
+            } else if dim && !fg_overridden {
                 dim_foreground(fg, eff_bg)
             } else {
                 fg
@@ -195,8 +235,21 @@ mod tests {
     use crate::attrs::{
         BLANK_SLOT, BLINK, GLYPH_UNDERLINE, HIDDEN, INVERSE, STRIKETHROUGH, UNDERLINE,
     };
+    use crate::decoration::{DecorationLayer, DecorationRect};
     use crate::overlay::{HIGHLIGHT_BLEND_ALPHA, HighlightColors, blend_over};
     use crate::render_policy::ColorPolicy;
+
+    /// A single Bottom/Top decoration rect covering (row 0, col 0).
+    fn deco(layer: DecorationLayer, bg: Option<u32>, fg: Option<u32>) -> DecorationRect {
+        DecorationRect {
+            row: 0,
+            left: 0,
+            right: 0,
+            layer,
+            bg,
+            fg,
+        }
+    }
 
     fn palette() -> Palette {
         let mut colors = [0u32; 256];
@@ -232,6 +285,7 @@ mod tests {
             true,
             &Overlay::default(),
             &ColorPolicy::default(),
+            &[],
         );
         let expect = [
             0.0,
@@ -260,6 +314,7 @@ mod tests {
             true,
             &Overlay::default(),
             &ColorPolicy::default(),
+            &[],
         );
         assert_eq!(&got[2..5], &[1.0, 1.0, 1.0], "bg is the (swapped-in) fg"); // white
         assert_eq!(got[5], 30.0 / 255.0, "fg is the (swapped-in) default bg"); // 0x1E
@@ -274,6 +329,7 @@ mod tests {
             true,
             &Overlay::default(),
             &ColorPolicy::default(),
+            &[],
         );
         assert_eq!(got[8], (33 | GLYPH_UNDERLINE) as f32);
     }
@@ -294,6 +350,7 @@ mod tests {
             true,
             &Overlay::default(),
             &ColorPolicy::default(),
+            &[],
         );
         assert_eq!(got[8], BLANK_SLOT as f32, "glyph field is the blank slot");
         // Background is untouched (only the glyph is concealed).
@@ -311,6 +368,7 @@ mod tests {
             true,
             &Overlay::default(),
             &ColorPolicy::default(),
+            &[],
         );
         assert_eq!(got[8], BLANK_SLOT as f32);
         assert_eq!(
@@ -330,6 +388,7 @@ mod tests {
             true,
             &Overlay::default(),
             &ColorPolicy::default(),
+            &[],
         );
         assert_eq!(on[8], 33.0, "blink-on draws the real glyph");
         // Blink phase OFF: the glyph is concealed to the blank slot.
@@ -339,6 +398,7 @@ mod tests {
             false,
             &Overlay::default(),
             &ColorPolicy::default(),
+            &[],
         );
         assert_eq!(off[8], BLANK_SLOT as f32, "blink-off conceals the glyph");
     }
@@ -361,7 +421,14 @@ mod tests {
             flags: &[HIDDEN | WIDE_CHAR, HIDDEN | WIDE_CHAR_SPACER],
             codepoints: &[0x4E2D, 0],
         };
-        let got = pack_instances(&f, &p, true, &Overlay::default(), &ColorPolicy::default());
+        let got = pack_instances(
+            &f,
+            &p,
+            true,
+            &Overlay::default(),
+            &ColorPolicy::default(),
+            &[],
+        );
         assert_eq!(got[8], BLANK_SLOT as f32, "lead half concealed");
         assert_eq!(
             got[8 + INSTANCE_FLOATS],
@@ -380,6 +447,7 @@ mod tests {
             true,
             &Overlay::default(),
             &ColorPolicy::default(),
+            &[],
         );
         let off = pack_instances(
             &frame(&[0], &[0], &[33], &[0]),
@@ -387,6 +455,7 @@ mod tests {
             false,
             &Overlay::default(),
             &ColorPolicy::default(),
+            &[],
         );
         assert_eq!(on, off);
         assert_eq!(on[8], 33.0);
@@ -419,6 +488,7 @@ mod tests {
             true,
             &selected(&[0, 0, 0], &[]),
             &ColorPolicy::default(),
+            &[],
         );
         assert_eq!(
             &got[2..5],
@@ -438,6 +508,7 @@ mod tests {
             true,
             &selected(&[0, 0, 0], &[]),
             &ColorPolicy::default(),
+            &[],
         );
         let expect = gl_rgb(blend_over(cell_bg, SEL_BG, HIGHLIGHT_BLEND_ALPHA));
         assert_eq!(
@@ -464,6 +535,7 @@ mod tests {
             true,
             &selected(&[0, 0, 0], &[]),
             &ColorPolicy::default(),
+            &[],
         );
         // Post-swap bg is the default fg (white, 0xFFFFFF); the selection blends over it.
         let expect = gl_rgb(blend_over(0xFF_FF_FF, SEL_BG, HIGHLIGHT_BLEND_ALPHA));
@@ -480,6 +552,7 @@ mod tests {
             true,
             &selected(&[], &[0, 0, 0]),
             &ColorPolicy::default(),
+            &[],
         );
         assert_eq!(
             &got[2..5],
@@ -500,6 +573,7 @@ mod tests {
             true,
             &selected(&[0, 1, 1], &[]), // covers (0,1), not (0,0)
             &ColorPolicy::default(),
+            &[],
         );
         assert_eq!(
             &got[2..5],
@@ -536,6 +610,7 @@ mod tests {
             true,
             &Overlay::default(),
             &ColorPolicy::default(),
+            &[],
         );
         assert_eq!(
             &got[5..8],
@@ -558,6 +633,7 @@ mod tests {
                 bold_to_bright: false,
                 ..ColorPolicy::default()
             },
+            &[],
         );
         assert_eq!(&got[5..8], &gl_rgb(0xCC_00_00), "policy off keeps ANSI 1");
     }
@@ -572,6 +648,7 @@ mod tests {
             true,
             &Overlay::default(),
             &ColorPolicy::default(),
+            &[],
         );
         let expect = gl_rgb(crate::render_policy::dim_foreground(0xFF_FF_FF, 0x00_00_00));
         assert_eq!(&got[5..8], &expect, "dim fades the fg toward the bg");
@@ -594,6 +671,7 @@ mod tests {
             true,
             &Overlay::default(),
             &ColorPolicy::default(),
+            &[],
         );
         let expect = gl_rgb(crate::render_policy::dim_foreground(0xFF_55_55, 0x00_00_00));
         assert_eq!(
@@ -626,6 +704,7 @@ mod tests {
             true,
             &Overlay::default(),
             &policy,
+            &[],
         );
         let expect = gl_rgb(ensure_contrast_ratio(0x1E_1E_2E, 0x2A_2A_3A, 7.0).unwrap());
         assert_eq!(
@@ -650,6 +729,7 @@ mod tests {
             true,
             &Overlay::default(),
             &ColorPolicy::default(),
+            &[],
         );
         assert_eq!(
             &got[5..8],
@@ -677,7 +757,14 @@ mod tests {
             },
         };
         // fg Default (white); bg Default → the highlight paints SOLID grey (default-bg cell).
-        let got = pack_instances(&frame(&[0], &[0], &[0], &[0]), &p, true, &overlay, &policy);
+        let got = pack_instances(
+            &frame(&[0], &[0], &[0], &[0]),
+            &p,
+            true,
+            &overlay,
+            &policy,
+            &[],
+        );
         let expect = gl_rgb(ensure_contrast_ratio(sel_bg, 0xFF_FF_FF, 4.5).unwrap());
         assert_eq!(
             &got[5..8],
@@ -709,6 +796,7 @@ mod tests {
             true,
             &Overlay::default(),
             &policy,
+            &[],
         );
         let corrected_undimmed = ensure_contrast_ratio(0x1E_1E_2E, 0x2A_2A_3A, 3.5).unwrap();
         assert_eq!(
@@ -749,6 +837,7 @@ mod tests {
             true,
             &Overlay::default(),
             &policy,
+            &[],
         );
         let dimmed = crate::render_policy::dim_foreground(0x55_55_55, 0x00_00_00);
         assert_eq!(
@@ -784,8 +873,9 @@ mod tests {
             selection_fg: Some(sfg),
             ..ColorPolicy::default()
         };
-        let cell =
-            |ov: &Overlay| pack_instances(&frame(&[0], &[0], &[0], &[0]), &p, true, ov, &policy);
+        let cell = |ov: &Overlay| {
+            pack_instances(&frame(&[0], &[0], &[0], &[0]), &p, true, ov, &policy, &[])
+        };
         // A selected cell: fg forced to green.
         let sel = cell(&overlay_kind(&[0, 0, 0], &[], 0x3A_3A_3A));
         assert_eq!(
@@ -817,6 +907,7 @@ mod tests {
                 true,
                 ov,
                 &ColorPolicy::default(),
+                &[],
             )
         };
         let sel = dim_cell(&overlay_kind(&[0, 0, 0], &[], 0x00_00_00));
@@ -857,6 +948,7 @@ mod tests {
             true,
             &overlay_kind(&[0, 0, 0], &[], sel_bg),
             &policy,
+            &[],
         );
         let expect = gl_rgb(ensure_contrast_ratio(sel_bg, 0xFF_FF_FF, 4.5).unwrap());
         assert_eq!(
@@ -907,6 +999,7 @@ mod tests {
             true,
             &Overlay::default(),
             &policy,
+            &[],
         );
         assert_eq!(
             &tile[5..8],
@@ -920,6 +1013,7 @@ mod tests {
             true,
             &Overlay::default(),
             &policy,
+            &[],
         );
         assert_ne!(
             &text[5..8],
@@ -941,6 +1035,7 @@ mod tests {
             true,
             &ov,
             &ColorPolicy::default(),
+            &[],
         );
         let expect = blend_over(0xFF_FF_FF, raw_sel, HIGHLIGHT_BLEND_ALPHA);
         assert_eq!(
@@ -956,6 +1051,7 @@ mod tests {
             true,
             &ov,
             &ColorPolicy::default(),
+            &[],
         );
         assert_eq!(
             &text[5..8],
@@ -976,6 +1072,7 @@ mod tests {
             true,
             &overlay_kind(&[0, 0, 0], &[], raw_sel),
             &ColorPolicy::default(),
+            &[],
         );
         assert_eq!(
             &got[5..8],
@@ -1000,6 +1097,7 @@ mod tests {
             true,
             &overlay_kind(&[0, 0, 0], &[], raw_sel),
             &policy,
+            &[],
         );
         let expect = blend_over(0xFF_FF_FF, raw_sel, HIGHLIGHT_BLEND_ALPHA);
         assert_eq!(
@@ -1011,6 +1109,211 @@ mod tests {
             &got[5..8],
             &gl_rgb(0x00_FF_00),
             "selectionForeground is discarded for a tile"
+        );
+    }
+
+    // --- #393 marker decorations: 2-layer bg/fg override, z-ordered around the highlight ---
+
+    const DECO_BG: u32 = 0x80_00_00; // absolute decoration background (consumer-resolved theme colour)
+    const DECO_FG: u32 = 0x00_FF_00; // absolute decoration foreground
+
+    #[test]
+    fn a_bottom_decoration_overrides_the_cell_background() {
+        let p = palette(); // default_bg 0x1E1E2E
+        let decos = [deco(DecorationLayer::Bottom, Some(DECO_BG), None)];
+        let got = pack_instances(
+            &frame(&[0], &[0], &[0], &[0]),
+            &p,
+            true,
+            &Overlay::default(),
+            &ColorPolicy::default(),
+            &decos,
+        );
+        assert_eq!(
+            &got[2..5],
+            &gl_rgb(0x80_00_00),
+            "bottom decoration paints the bg"
+        );
+    }
+
+    #[test]
+    fn a_decoration_colour_is_absolute_not_a_resolved_ref() {
+        // #393 D2 (2-lens): a decoration colour is an ABSOLUTE 0xRRGGBB used verbatim, matching
+        // justerm-web. A black decoration (0x000000) must render BLACK — if it were (wrongly) resolved
+        // as a tagged ref, its top byte 0 would read as `Default` and it would become `default_bg`.
+        let p = palette(); // default_bg 0x1E1E2E (distinct from black)
+        let got = pack_instances(
+            &frame(&[0], &[0], &[0], &[0]),
+            &p,
+            true,
+            &Overlay::default(),
+            &ColorPolicy::default(),
+            &[deco(DecorationLayer::Bottom, Some(0x00_00_00), None)],
+        );
+        assert_eq!(
+            &got[2..5],
+            &gl_rgb(0x00_00_00),
+            "a black decoration is black, not default_bg"
+        );
+        assert_ne!(
+            &got[2..5],
+            &gl_rgb(0x1E_1E_2E),
+            "not resolved as a Default ref"
+        );
+    }
+
+    #[test]
+    fn a_top_decoration_paints_over_the_highlight_but_a_bottom_paints_under_it() {
+        let p = palette();
+        let sel_bg = 0x30_60_C0;
+        let ov = overlay_kind(&[0, 0, 0], &[], sel_bg); // solid selection over a default cell
+        // BOTTOM under the highlight: the solid selection replaces it → selection wins.
+        let bottom = pack_instances(
+            &frame(&[0], &[0], &[0], &[0]),
+            &p,
+            true,
+            &ov,
+            &ColorPolicy::default(),
+            &[deco(DecorationLayer::Bottom, Some(DECO_BG), None)],
+        );
+        assert_eq!(
+            &bottom[2..5],
+            &gl_rgb(sel_bg),
+            "the highlight paints over a bottom decoration"
+        );
+        // TOP over the highlight: it wins over the selection.
+        let top = pack_instances(
+            &frame(&[0], &[0], &[0], &[0]),
+            &p,
+            true,
+            &ov,
+            &ColorPolicy::default(),
+            &[deco(DecorationLayer::Top, Some(DECO_BG), None)],
+        );
+        assert_eq!(
+            &top[2..5],
+            &gl_rgb(0x80_00_00),
+            "a top decoration paints over the highlight"
+        );
+    }
+
+    #[test]
+    fn a_decoration_overrides_the_foreground() {
+        let p = palette();
+        let got = pack_instances(
+            &frame(&[0], &[0], &[33], &[0]),
+            &p,
+            true,
+            &Overlay::default(),
+            &ColorPolicy::default(),
+            &[deco(DecorationLayer::Bottom, None, Some(DECO_FG))],
+        );
+        assert_eq!(&got[5..8], &gl_rgb(0x00_FF_00), "decoration fg override");
+    }
+
+    #[test]
+    fn a_dim_cell_re_dims_a_decoration_foreground_override() {
+        // #230: a decoration fg override on a DIM non-selected cell keeps the cell's DIM — the
+        // resolved override colour is faded toward the (effective) bg, not drawn full-brightness.
+        let p = palette(); // default_bg 0x1E1E2E
+        let got = pack_instances(
+            &frame(&[0], &[0], &[33], &[DIM]),
+            &p,
+            true,
+            &Overlay::default(),
+            &ColorPolicy::default(),
+            &[deco(DecorationLayer::Bottom, None, Some(DECO_FG))],
+        );
+        let expect = gl_rgb(dim_foreground(0x00_FF_00, 0x1E_1E_2E));
+        assert_eq!(&got[5..8], &expect, "the override fg is re-dimmed (#230)");
+        assert_ne!(&got[5..8], &gl_rgb(0x00_FF_00), "not drawn full-brightness");
+    }
+
+    #[test]
+    fn a_dim_base_fg_dims_against_the_effective_bg_including_a_bottom_decoration() {
+        // #393 D1 (2-lens, decided to keep): a DIM non-selected cell whose fg is NOT overridden dims
+        // toward the EFFECTIVE bg — here the bottom-decoration bg the glyph is actually drawn over —
+        // NOT the cell's own bg. This is the slice-2 single-pass model (xterm dims against the drawn
+        // bg, `TextureAtlas`); it diverges from justerm-web (which pre-dims against the cell bg), a
+        // known/tracked #273 deviation extended to decorations, pinned here so it is intentional.
+        let p = palette(); // default_bg 0x1E1E2E; default_fg white
+        let got = pack_instances(
+            &frame(&[0], &[0], &[33], &[DIM]),
+            &p,
+            true,
+            &Overlay::default(),
+            &ColorPolicy::default(),
+            &[deco(DecorationLayer::Bottom, Some(DECO_BG), None)], // bg-only bottom decoration
+        );
+        // eff_bg = the decoration bg (0x800000, no highlight); the base fg dims toward it.
+        let expect = gl_rgb(dim_foreground(0xFF_FF_FF, 0x80_00_00));
+        assert_eq!(
+            &got[5..8],
+            &expect,
+            "dims toward the decoration bg (the drawn bg)"
+        );
+        assert_ne!(
+            &got[5..8],
+            &gl_rgb(dim_foreground(0xFF_FF_FF, 0x1E_1E_2E)),
+            "NOT the web's cell-bg dim (the tracked #273 deviation)"
+        );
+    }
+
+    #[test]
+    fn a_cell_outside_a_decoration_span_is_unchanged() {
+        let p = palette();
+        // The decoration covers (0,1); the packed cell (0,0) keeps its own colours.
+        let deco_right = DecorationRect {
+            row: 0,
+            left: 1,
+            right: 1,
+            layer: DecorationLayer::Bottom,
+            bg: Some(DECO_BG),
+            fg: Some(DECO_FG),
+        };
+        let got = pack_instances(
+            &frame(&[0], &[0], &[0], &[0]),
+            &p,
+            true,
+            &Overlay::default(),
+            &ColorPolicy::default(),
+            &[deco_right],
+        );
+        assert_eq!(&got[2..5], &gl_rgb(0x1E_1E_2E), "bg unchanged");
+        assert_eq!(&got[5..8], &gl_rgb(0xFF_FF_FF), "fg unchanged");
+    }
+
+    #[test]
+    fn a_selection_blends_over_a_bottom_decoration_bg_matching_web_not_xterm() {
+        // #393 Row 5 (2-lens, family divergence tracked on #400): on a SELECTED, non-default-bg cell,
+        // the highlight blends over the BOTTOM-decoration bg (renderer == justerm-web `composeCellColors`
+        // layered model). xterm instead re-derives from the cell's OWN bg and discards the decoration
+        // (`CellColorResolver`). Pinned so the family (== web, #273-neutral) behaviour is intentional,
+        // not accidental; the xterm-parity fix is deferred as a coordinated web+renderer change (#400).
+        let p = palette();
+        let cell_bg = 0x20_40_60; // Rgb (non-default) → the highlight BLENDS (should_blend = true)
+        let sel_bg = 0x30_60_C0;
+        let got = pack_instances(
+            &frame(&[(2 << 24) | cell_bg], &[0], &[0], &[0]),
+            &p,
+            true,
+            &overlay_kind(&[0, 0, 0], &[], sel_bg),
+            &ColorPolicy::default(),
+            &[deco(DecorationLayer::Bottom, Some(DECO_BG), None)],
+        );
+        // Renderer/web: blend the selection over the DECORATION bg (0x800000).
+        let over_deco = gl_rgb(blend_over(0x80_00_00, sel_bg, HIGHLIGHT_BLEND_ALPHA));
+        assert_eq!(
+            &got[2..5],
+            &over_deco,
+            "selection blends over the bottom-decoration bg (== web)"
+        );
+        // xterm would blend over the CELL bg (0x204060) — the divergence, deferred to #400.
+        let over_cell = gl_rgb(blend_over(cell_bg, sel_bg, HIGHLIGHT_BLEND_ALPHA));
+        assert_ne!(
+            &got[2..5],
+            &over_cell,
+            "not the cell-bg blend xterm would use"
         );
     }
 }
