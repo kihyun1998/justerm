@@ -1709,12 +1709,14 @@ impl JustermRenderer {
     }
 
     /// Set the marker-anchored decorations for this frame (#393/#120). `spans` is the flat
-    /// `DECORATION_STRIDE` (`row, left, right, layer, bg_ref, fg_ref`) directory the consumer projects
+    /// `DECORATION_STRIDE` (`row, left, right, layer, bg, fg`) directory the consumer projects
     /// from its `DecorationRegistry` + core's markers — `layer` `0` = bottom (under the highlight) /
-    /// `1` = top (over it), `bg_ref`/`fg_ref` tagged colour refs the renderer resolves, or the wire's
-    /// `NO_REF` sentinel for "no override". Pass an empty array to clear. Consumer-projected (the model
-    /// is the consumer's; the renderer only composites, ADR-0017). Re-packs the retained grid; takes
-    /// effect on the next [`render`](Self::render).
+    /// `1` = top (over it), `bg`/`fg` **absolute** packed `0xRRGGBB` used **verbatim** (the consumer
+    /// resolved its theme before pushing — unlike a *cell* colour, which arrives as a theme-agnostic
+    /// ref for the renderer to resolve), or the wire's `NO_REF` sentinel for "no override". Pass an
+    /// empty array to clear. Consumer-projected (the model is the consumer's; the renderer only
+    /// composites, ADR-0017). Re-packs the retained grid; takes effect on the next
+    /// [`render`](Self::render).
     #[wasm_bindgen(js_name = setDecorations)]
     pub fn set_decorations(&mut self, spans: Vec<u32>) -> Result<(), JsValue> {
         self.decoration_spans = spans;
