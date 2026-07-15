@@ -17,6 +17,8 @@
     - BLEND over a non-default / inverse cell — the injected colour at alpha 0x80 over the cell's
       own colour, so its colour still reads (blendOver, render-policy.ts). An inverse cell is a
       blend cell: its shown bg is the swapped-in fg, so the highlight blends over that.
+  The blend mode is a SELECTION rule only: a search MATCH always paints SOLID, whatever the cell
+  (xterm/alacritty parity — a match must read crisp, not a muddy tint, #400). col6 pins that.
 
   The numbers (blendOver byte math) are pinned host-side against xterm in `overlay.rs`; this page
   proves the WIRING delivers a blended — not solid, not original — pixel through the real GL
@@ -28,13 +30,13 @@
 
   Build: wasm-pack build --target web --dev --out-dir pkg
 -->
-<canvas id="c" width="96" height="16"></canvas>
+<canvas id="c" width="112" height="16"></canvas>
 <script type="module">
   import init, { JustermRenderer } from "../pkg/justerm_renderer.js";
   import { readRect } from "./proof.js";
   await init();
 
-  const COLS = 6, ROWS = 1, N = COLS * ROWS;
+  const COLS = 7, ROWS = 1, N = COLS * ROWS;
   const SPACE = 0x20;
   const INVERSE = 1 << 5;
 
@@ -82,9 +84,9 @@
     return true;
   };
 
-  // The scene: bg refs + flags for the six columns.
-  const bg = new Uint32Array([0, RGB(CELL), 0, 0, 0, 0]); // col1 coloured; rest default
-  const flags = new Uint16Array([0, 0, 0, 0, INVERSE, 0]); // col4 inverse
+  // The scene: bg refs + flags for the seven columns.
+  const bg = new Uint32Array([0, RGB(CELL), 0, 0, 0, 0, RGB(CELL)]); // col1 + col6 coloured; rest default
+  const flags = new Uint16Array([0, 0, 0, 0, INVERSE, 0, 0]); // col4 inverse
   const spaces = new Uint32Array(N).fill(SPACE);
   const zeroFg = new Uint32Array(N);
 
@@ -100,8 +102,8 @@
 
   const checks = {};
 
-  // selection covers col0-1 and col3-4; a search match covers col2-3 (col3 is in BOTH).
-  const img = drawFrame([0, 0, 1, 0, 3, 4], [0, 2, 3]);
+  // selection covers col0-1 and col3-4; a search match covers col2-3 (col3 is in BOTH) and col6.
+  const img = drawFrame([0, 0, 1, 0, 3, 4], [0, 2, 3, 0, 6, 6]);
 
   // col0: selection over the DEFAULT bg → SOLID (the colour replaces the bg outright).
   checks.solidSelectionOverTheDefaultBackground = cellIs(img, 0, SEL_BG);
@@ -127,6 +129,15 @@
   // col5: covered by nothing → its background is untouched (the control: the checks above are the
   // highlight, not a blanket repaint).
   checks.anUncoveredCellKeepsItsBackground = cellIs(img, 5, DEF_BG);
+
+  // col6: a search MATCH over a COLOURED cell → SOLID match colour (#400), NEVER the blend a
+  // selection would use here (col1 proves a selection DOES blend the same coloured cell). The
+  // not-blend / not-cell pair is what makes "solid" falsifiable — before #400 this cell rendered
+  // `blendMatchOnCell`. This is the one corner the GL round-trip must confirm for this slice.
+  const blendMatchOnCell = blendOver(CELL, MATCH_BG);
+  checks.aSearchMatchOverAColouredCellPaintsSolid = cellIs(img, 6, MATCH_BG);
+  checks.aMatchOnAColouredCellIsNotABlend = !cellIs(img, 6, blendMatchOnCell);
+  checks.aMatchOnAColouredCellIsNotTheCellsOwnColour = !cellIs(img, 6, CELL);
 
   // Clearing the overlay (empty spans) restores every cell to its own background.
   const cleared = drawFrame([], []);
