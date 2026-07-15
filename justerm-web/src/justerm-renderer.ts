@@ -354,12 +354,7 @@ export class JustermRenderer implements Renderer {
     // walk (the beamterm adapter's composeOverlayDraws) survives the pivot.
     this.lastSelectionSpans = asU32(frame.selectionSpans ?? new Uint32Array(0));
     this.lastMatchSpans = asU32(frame.matchSpans ?? new Uint32Array(0));
-    this.backend.setOverlay(
-      this.lastSelectionSpans,
-      this.lastMatchSpans,
-      this.activeSelectionBg(),
-      this.matchBg,
-    );
+    this.issueOverlay();
     this.backend.setDecorations(decorationWire(this.decorationSource?.(frame) ?? []));
     this.updateCursor(frame);
     this.backend.apply_damage(
@@ -381,6 +376,18 @@ export class JustermRenderer implements Renderer {
   /** The active selection tint for the current focus state (#115). */
   private activeSelectionBg(): number {
     return this.focused ? this.selectionBg : this.selectionInactiveBg;
+  }
+
+  /** Re-issue the retained overlay spans with the focus-gated tint — the single site for the
+   * "retained spans + active selection tint" contract, shared by the per-frame push and a focus
+   * flip (which has no new frame) so the two can never drift. */
+  private issueOverlay(): void {
+    this.backend.setOverlay(
+      this.lastSelectionSpans,
+      this.lastMatchSpans,
+      this.activeSelectionBg(),
+      this.matchBg,
+    );
   }
 
   /** Push the frame's cursor to the renderer (native cursor — #270), or clear it when hidden.
@@ -445,12 +452,7 @@ export class JustermRenderer implements Renderer {
     this.blink.setFocused(focused);
     if (this.focused !== focused) {
       this.focused = focused;
-      this.backend.setOverlay(
-        this.lastSelectionSpans,
-        this.lastMatchSpans,
-        this.activeSelectionBg(),
-        this.matchBg,
-      );
+      this.issueOverlay();
     }
     this.redrawCursor();
   }
