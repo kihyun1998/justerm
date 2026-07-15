@@ -92,6 +92,9 @@ export interface RendererBackend {
    * consumer must re-fit. A no-op if unchanged; a non-finite / `<1` size is guarded by the renderer. */
   setFontSize(cssPx: number): void;
   setFontFamily(family: string): void;
+  /** Swap the palette + default fg/bg for a live theme change (#405): re-resolve every retained
+   * cell against the new scheme. `paletteColors` is the 256 pre-built indexed colours. */
+  setPalette(paletteColors: Uint32Array, defaultFg: number, defaultBg: number): void;
   /** Size the drawing buffer to a `cols`×`rows` grid (device px = grid × cell). */
   resize(cols: number, rows: number): void;
   /** The columns/rows the last [`resize`] actually adopted — may be fewer than requested if the
@@ -239,13 +242,16 @@ export class JustermRenderer implements Renderer {
   private constructor(
     private readonly backend: RendererBackend,
     private readonly canvas: HTMLCanvasElement,
-    private readonly palette: Palette,
+    // Retained so `setTheme` (#420) can rebuild the 256-colour table from a new ANSI scheme.
+    private readonly buildPalette: (ansi: Uint32Array) => Uint32Array,
+    // Theme-derived state is mutable: `setTheme` swaps the whole scheme at runtime (#420).
+    private palette: Palette,
     private readonly flagBits: FlagBits,
-    private readonly cursorColor: number,
-    private readonly cursorTextColor: number,
-    private readonly selectionBg: number,
-    private readonly matchBg: number,
-    private readonly selectionInactiveBg: number,
+    private cursorColor: number,
+    private cursorTextColor: number,
+    private selectionBg: number,
+    private matchBg: number,
+    private selectionInactiveBg: number,
   ) {
     // Honour prefers-reduced-motion (#119): suppress the cursor blink, tracking changes live.
     const mq = window.matchMedia("(prefers-reduced-motion: reduce)");
@@ -300,6 +306,7 @@ export class JustermRenderer implements Renderer {
     return new JustermRenderer(
       backend,
       canvas,
+      (ansi) => decoder.buildPalette(ansi),
       palette,
       flagBits,
       t.cursorColor ?? t.defaultFg,
@@ -344,6 +351,27 @@ export class JustermRenderer implements Renderer {
    * a webfont before an unfamiliar family (the browser silently falls back otherwise). */
   setFontFamily(family: string): void {
     this.backend.setFontFamily(family);
+  }
+
+  /** Swap the colour scheme at runtime (#420) — rebuild the 256-colour palette from the new ANSI
+   * colours and push it (+ the theme's policy colours) to the renderer, which re-resolves every
+   * retained cell in wasm. No re-fit needed (the cell geometry is unchanged); it presents on the
+   * render below. The a11y cell mirror reads only text, so it needs no re-notification. */
+  setTheme(theme: Theme): void {
+    const colors = this.buildPalette(Uint32Array.from(theme.ansi));
+    this.palette = { colors, defaultFg: theme.defaultFg, defaultBg: theme.defaultBg };
+    this.cursorColor = theme.cursorColor ?? theme.defaultFg;
+    this.cursorTextColor = theme.defaultBg;
+    this.selectionBg = theme.selectionBg ?? 0x45475a;
+    this.matchBg = theme.matchBg ?? 0x6e5c00;
+    this.selectionInactiveBg = theme.selectionInactiveBg ?? 0x30313d;
+    // Push the palette + the policy colours a theme can carry; each marks the buffer dirty (#421).
+    this.backend.setPalette(colors, theme.defaultFg, theme.defaultBg);
+    this.backend.setBoldToBright(theme.boldToBright ?? true);
+    this.backend.setMinimumContrastRatio(theme.minimumContrastRatio ?? 1);
+    this.backend.setSelectionForeground(theme.selectionForeground);
+    this.issueOverlay(); // the selection/match blend colours moved
+    this.redrawCursor(); // re-push the cursor with its new colour, then present (one pack, #421)
   }
 
   /** Fit a `cols`×`rows` grid to a CSS-pixel box and size the renderer + canvas display box to

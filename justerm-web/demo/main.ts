@@ -330,6 +330,29 @@ function toggleFontSize(): void {
   fontBtn.textContent = `Font: ${demoFontSize}px`;
   console.log(`[demo] font size ${demoFontSize}px → grid ${COLS}x${ROWS}`);
 }
+// #420: a runtime theme swap exercises the wired setTheme (renderer setPalette #405). Two schemes
+// with opposite defaults (dark ↔ light) so any sampled pixel changes; the demo samples the drawing
+// buffer (device px — readPixels there is reliable, unlike a composited screenshot #352) and logs it.
+const themeDark = {
+  ansi: [0x000000, 0xcd0000, 0x00cd00, 0xcdcd00, 0x0000ee, 0xcd00cd, 0x00cdcd, 0xe5e5e5, 0x7f7f7f, 0xff0000, 0x00ff00, 0xffff00, 0x5c5cff, 0xff00ff, 0x00ffff, 0xffffff],
+  defaultFg: 0xcdd6f4, defaultBg: 0x1e1e2e, selectionBg: 0x45475a,
+};
+const themeLight = {
+  ansi: [0xffffff, 0xdd5555, 0x55aa55, 0xaaaa00, 0x5555dd, 0xaa55aa, 0x00aaaa, 0x202020, 0x808080, 0xff0000, 0x00aa00, 0xaaaa00, 0x0000ff, 0xaa00aa, 0x008888, 0x000000],
+  defaultFg: 0x101010, defaultBg: 0xf0f0f0, selectionBg: 0xb0c4de,
+};
+let themeIsLight = false;
+function toggleTheme(): void {
+  themeIsLight = !themeIsLight;
+  renderer.setTheme(themeIsLight ? themeLight : themeDark); // rebuilds palette → setPalette → renders
+  // Sample the drawing buffer's centre after setTheme has re-resolved + presented.
+  const gl = canvas.getContext("webgl2")!;
+  const [w, h] = [gl.drawingBufferWidth, gl.drawingBufferHeight];
+  const px = new Uint8Array(4);
+  gl.readPixels(w >> 1, h >> 1, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+  themeBtn.textContent = `Theme: ${themeIsLight ? "light" : "dark"}`;
+  console.log(`[demo] theme=${themeIsLight ? "light" : "dark"} centre=rgb(${px[0]},${px[1]},${px[2]})`);
+}
 function toggleDecorateLine(): void {
   // #120 S2: toggle a full-row bottom decoration anchored to a marker at a visible
   // content row. It projects each frame (marker row × registry) and the renderer
@@ -456,6 +479,7 @@ const cwdBtn = demoButton("Set cwd", emitCwd); // #117
 const prevBtn = demoButton("Prev command", navPrevCommand, false);
 const nextBtn = demoButton("Next command", navNextCommand, false);
 const fontBtn = demoButton("Font: 16px", toggleFontSize); // #417: runtime setFontSize
+const themeBtn = demoButton("Theme: dark", toggleTheme); // #420: runtime setTheme
 controls.append(
   viewBtn,
   altBtn,
@@ -470,6 +494,7 @@ controls.append(
   prevBtn,
   nextBtn,
   fontBtn,
+  themeBtn,
 );
 document.body.appendChild(controls);
 
