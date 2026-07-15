@@ -23,7 +23,7 @@ export interface FitInput {
   parentHeight: number;
   /** The terminal element's padding, CSS px. */
   padding: FitPadding;
-  /** The renderer's CSS cell size, px (beamterm cell). */
+  /** The renderer's CSS cell size, px. */
   cellWidth: number;
   cellHeight: number;
   /** Px a *layout* scrollbar occupies (subtracted from width). Pass `0` for an overlay

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { CellMirror } from "../src/cell-mirror";
-import { makeRenderPolicy } from "../src/render-policy";
+import { identityPolicy } from "../src/render-core";
 import type { FlagBits } from "../src/render-core";
 import type { DecodedFrame } from "../src/types";
 import type { Palette } from "justerm-wasm-decode/colors.js";
@@ -92,37 +92,15 @@ describe("CellMirror.applyFrame", () => {
   });
 
   // #115 stage-2: the dim policy the renderer injects must flow through the live
-  // mirror path (cellToDrawOp). A dim white-on-black cell renders its fg halved
-  // toward the bg (0x808080); the bg is untouched.
-  it("applies the stage-2 dim policy through the mirror path", () => {
-    const mirror = new CellMirror(1, 1, palette(), F, makeRenderPolicy(F));
-    const dimFrame = {
-      cols: 1,
-      rows: 1,
-      kind: 0,
-      codepoints: [cp("a")],
-      fg: [0x02ffffff], // Rgb white
-      bg: [0x02000000], // Rgb black
-      flags: [F.dim],
-      extra: [0],
-      spans: [0, 0, 0, 0, 1],
-      sideTable: [],
-    } as DecodedFrame;
-
-    const [op] = mirror.applyFrame(dimFrame);
-
-    expect({ fg: op!.fg, bg: op!.bg }).toEqual({ fg: 0x808080, bg: 0x000000 });
-    // #224: the op carries the undimmed fg (white) for un-dim under selection.
-    expect(op!.fgUndimmed).toBe(0xffffff);
-  });
-
   // #223 bold→bright: the mirror path passes boldToBright to cellToDrawOp, so a
   // bold ANSI 0-7 indexed fg draws with its bright variant when the theme enables it.
+  // (bold→bright is stage-1 resolveCell, so identityPolicy — the accessible view's
+  // real policy — suffices; the removed stage-2 dim/contrast path was consumer-only.)
   it("applies bold→bright through the mirror path when enabled", () => {
     const pal: Palette = { colors: new Uint32Array(256), defaultFg: 0xc0c0c0, defaultBg: 0x101010 };
     pal.colors[3] = 0x808000; // ANSI 3 (dim)
     pal.colors[11] = 0xffff00; // ANSI 11 (bright)
-    const mirror = new CellMirror(1, 1, pal, F, makeRenderPolicy(F), true);
+    const mirror = new CellMirror(1, 1, pal, F, identityPolicy, true);
     const boldFrame = {
       cols: 1,
       rows: 1,
@@ -163,7 +141,7 @@ describe("CellMirror.applyFrame", () => {
 
     const paletteB: Palette = { colors: new Uint32Array(256), defaultFg: 0xc0c0c0, defaultBg: 0x101010 };
     paletteB.colors[1] = 0x00ff00; // ANSI 1 = green under theme B
-    const ops = mirror.recolor(paletteB, makeRenderPolicy(F));
+    const ops = mirror.recolor(paletteB, identityPolicy);
 
     expect(ops[0]!.fg).toBe(0x00ff00);
   });

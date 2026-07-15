@@ -4,9 +4,10 @@
  * (markers originate in core and ride the wire as `markerPositions` per frame —
  * justerm has no local `registerMarker`), and each frame the registry joins its
  * decorations with the frame's markers to project on-viewport {@link
- * DecorationRect}s: positions + opaque colour refs only. Colour *resolution* and
- * the actual paint are the renderer's/consumer's (ADR-0017, #115) — this is the
- * model + lifecycle, no DOM, no beamterm.
+ * DecorationRect}s: positions + **absolute** `0xRRGGBB` colours (the consumer resolves
+ * its theme before pushing; the renderer uses them verbatim, #393/#408 — unlike a *cell*
+ * colour, which ships as a ref). The paint is the renderer's (ADR-0017, #115) — this is
+ * the model + lifecycle, no DOM.
  *
  * Rendering the rects (2-layer cell override, overview-ruler) is S2 (#198) / S3
  * (#199); this slice ships the registry, the per-frame projection, and marker
@@ -26,7 +27,7 @@ export type RulerPosition = "left" | "center" | "right" | "full";
 
 /** Overview-ruler options for a decoration (#120 S3): a mark on the scrollbar at
  * the marker's buffer-relative position, so off-viewport anchors are visible.
- * `color` is an opaque ref (consumer theme, theme-agnostic like `bg`/`fg`). */
+ * `color` is an absolute packed `0xRRGGBB` (consumer-resolved, like `bg`/`fg`). */
 export interface OverviewRulerOptions {
   /** Mark colour (opaque ref; the consumer/renderer resolves it). */
   readonly color: number;
@@ -44,8 +45,8 @@ export interface RulerMark {
 }
 
 /** Options for {@link DecorationRegistry.register}, the subset of xterm's
- * `IDecorationOptions` this slice models. `bg`/`fg` are opaque colour refs (the
- * renderer/#115 resolves them).
+ * `IDecorationOptions` this slice models. `bg`/`fg` are **absolute** packed `0xRRGGBB`
+ * (the consumer resolves its theme; the renderer uses them verbatim, not re-resolved — #393/#408).
  *
  * Deferred (tracked, not silent — the 2-lens pass surfaced these): xterm's
  * `overviewRulerOptions` → S3 (#199); `height` (multi-row span) and `anchor`
@@ -91,7 +92,7 @@ export interface Decoration {
 /** A decoration projected onto the viewport for one frame: the marker's current
  * `row`, the inclusive column span `left..=right` (matching `overlay.ts`
  * `HighlightSpan`, so a renderer's per-cell test is `col >= left && col <=
- * right`), the layer, and the opaque colour refs. */
+ * right`), the layer, and the absolute `0xRRGGBB` colours (used verbatim). */
 export interface DecorationRect {
   readonly row: number;
   readonly left: number;

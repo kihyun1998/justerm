@@ -18,11 +18,11 @@ const SPAN_STRIDE = 5;
 
 /**
  * A viewport-sized local copy of the rendered cells (ADR-0011). Frame mode keeps
- * it so scroll-op damage can be applied — beamterm can neither shift retained
+ * it so scroll-op damage can be applied — a GPU renderer can neither shift retained
  * cells nor return their styling, so the shifted region is repainted from here.
  *
  * `applyFrame` updates the mirror from a {@link DecodedFrame} and returns the
- * draw ops for the cells that changed; the adapter feeds them to beamterm.
+ * draw ops for the cells that changed; the accessible view consumes them.
  */
 export class CellMirror {
   private readonly cells: MirrorCell[];
@@ -42,7 +42,7 @@ export class CellMirror {
    * Swap the palette/policy (a theme or minimumContrastRatio change) and return a
    * full repaint of every stored cell under the new colours. Cells are kept as
    * refs (see {@link MirrorCell}), so this re-resolves without a new frame — the
-   * adapter clears beamterm and feeds the ops, exactly like a Full frame.
+   * accessible view re-reads the ops, exactly like a Full frame.
    */
   recolor(palette: Palette, policy: RenderPolicy, boldToBright = this.boldToBright): DrawOp[] {
     this.palette = palette;
@@ -71,7 +71,7 @@ export class CellMirror {
 
     // 0. A Full frame is the whole viewport — wipe stale cells before the spans
     // fill it, or content outside the new spans (and any later scroll of it)
-    // would resurrect ghosts. The adapter clears beamterm to match.
+    // would resurrect ghosts. The mirror wipes to match.
     if (frame.kind === 0) {
       for (let i = 0; i < this.cells.length; i++) this.cells[i] = blank();
     }

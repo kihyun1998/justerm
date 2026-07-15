@@ -56,7 +56,7 @@ export interface ScrollbarOptions {
 }
 
 /**
- * A custom DOM scrollbar over the canvas — beamterm has no native overflow bar,
+ * A custom DOM scrollbar over the canvas — the GPU renderer has no native overflow bar,
  * so (like xterm's VS Code `SmoothScrollableElement`) the bar is a DOM overlay.
  * `update(pos)` sizes/positions the thumb from {@link scrollbarMetrics}; dragging
  * maps to a display offset via {@link dragToDisplayOffset} and calls `onScroll`.
