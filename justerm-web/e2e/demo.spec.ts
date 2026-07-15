@@ -692,3 +692,32 @@ test.describe("regex validation runs in core's dialect, not JS RegExp (#316 D2, 
     await expect(page.locator("#search-count")).not.toHaveText("invalid");
   });
 });
+
+// #417: the runtime font-size button drives the wired renderer setFontSize (#406) through the real
+// published justerm-renderer wasm. A bigger font makes a bigger cell, so the SAME viewport fits
+// strictly fewer columns — that grid shrink is the observable proof the size reached the atlas and
+// re-baked (a no-op / unwired setter would leave the grid unchanged). The demo logs the new grid.
+test("the font-size button re-bakes the atlas and re-fits to fewer columns (#417)", async ({
+  page,
+}) => {
+  const grids: { size: number; cols: number; rows: number }[] = [];
+  page.on("console", (m) => {
+    const g = m.text().match(/font size (\d+)px → grid (\d+)x(\d+)/);
+    if (g) grids.push({ size: Number(g[1]), cols: Number(g[2]), rows: Number(g[3]) });
+  });
+  await page.goto("/");
+  await expect(page.getByRole("button", { name: "Font: 16px" })).toBeVisible();
+
+  // 16 → 20 (bigger cell, fewer columns), then 20 → 16 (back).
+  await page.getByRole("button", { name: "Font: 16px" }).click();
+  await expect(page.getByRole("button", { name: "Font: 20px" })).toBeVisible();
+  await page.getByRole("button", { name: "Font: 20px" }).click();
+  await expect(page.getByRole("button", { name: "Font: 16px" })).toBeVisible();
+
+  const at20 = grids.find((g) => g.size === 20);
+  const at16 = grids.find((g) => g.size === 16);
+  expect(at20, "a 20px grid was logged").toBeTruthy();
+  expect(at16, "a 16px grid was logged").toBeTruthy();
+  // The discriminating assertion: the re-bake actually enlarged the cell, so 20px fits fewer columns.
+  expect(at20!.cols).toBeLessThan(at16!.cols);
+});

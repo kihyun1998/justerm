@@ -318,6 +318,18 @@ function finishCommand(): void {
   render({ scrollCount: 0 }); // a Partial frame carries the mark → cmdCtrl announces
   cmdBtn.textContent = `Finish command (next exit ${cmdFailToggle ? 1 : 0})`;
 }
+// #417: a runtime font-size change exercises the wired setFontSize (#406). A bigger font makes a
+// bigger cell, so the SAME viewport fits fewer columns — re-fit + repaint, and log the new grid so
+// the effect is observable (a consumer would drive fit off this exactly like a container resize).
+let demoFontSize = 16;
+function toggleFontSize(): void {
+  demoFontSize = demoFontSize === 16 ? 20 : 16;
+  renderer.setFontSize(demoFontSize);
+  fit(); // COLS/ROWS re-derive from the viewport ÷ the new (larger/smaller) cell
+  render();
+  fontBtn.textContent = `Font: ${demoFontSize}px`;
+  console.log(`[demo] font size ${demoFontSize}px → grid ${COLS}x${ROWS}`);
+}
 function toggleDecorateLine(): void {
   // #120 S2: toggle a full-row bottom decoration anchored to a marker at a visible
   // content row. It projects each frame (marker row × registry) and the renderer
@@ -443,6 +455,7 @@ const bellBtn = demoButton("Bell", emitBell); // #117
 const cwdBtn = demoButton("Set cwd", emitCwd); // #117
 const prevBtn = demoButton("Prev command", navPrevCommand, false);
 const nextBtn = demoButton("Next command", navNextCommand, false);
+const fontBtn = demoButton("Font: 16px", toggleFontSize); // #417: runtime setFontSize
 controls.append(
   viewBtn,
   altBtn,
@@ -456,6 +469,7 @@ controls.append(
   cwdBtn,
   prevBtn,
   nextBtn,
+  fontBtn,
 );
 document.body.appendChild(controls);
 

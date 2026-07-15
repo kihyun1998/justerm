@@ -24,7 +24,7 @@
     "vitest": "^2.1.0"
   },
   "dependencies": {
-    "justerm-renderer": "^0.1.0",
+    "justerm-renderer": "^0.2.0",
     "justerm-wasm-decode": "^0.7.0"
   },
   "main": "./dist/index.js",

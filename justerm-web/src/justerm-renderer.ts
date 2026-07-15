@@ -35,9 +35,10 @@ export interface Theme {
 export interface JustermRendererOptions {
   /** CSS selector of the canvas to attach to, e.g. `"#term"`. */
   canvasSelector: string;
-  /** Kept for API compatibility with the beamterm adapter; the renderer currently
-   * rasterises `monospace` at 16px and ignores these (tracked: #406). The demo passes
-   * exactly those values, so there is no regression. */
+  /** Initial font family + size — a CSS `font-family` string and a size in CSS px, applied to the
+   * renderer at `create` (#406/#413, wired #417). Change them at runtime with
+   * {@link JustermRenderer.setFontSize}/{@link JustermRenderer.setFontFamily}. Loading a webfont
+   * (`@font-face`/`FontFace`) before an unfamiliar `fontFamily` is the consumer's job. */
   fontFamily: string;
   fontSize: number;
   theme: Theme;
@@ -87,6 +88,10 @@ export interface RendererBackend {
   setBoldToBright(enabled: boolean): void;
   setMinimumContrastRatio(ratio: number): void;
   setSelectionForeground(color: number | undefined): void;
+  /** Re-bake the atlas at a new font size (CSS px) / family (#406/#413). The cell size moves, so the
+   * consumer must re-fit. A no-op if unchanged; a non-finite / `<1` size is guarded by the renderer. */
+  setFontSize(cssPx: number): void;
+  setFontFamily(family: string): void;
   /** Size the drawing buffer to a `cols`×`rows` grid (device px = grid × cell). */
   resize(cols: number, rows: number): void;
   /** The columns/rows the last [`resize`] actually adopted — may be fewer than requested if the
@@ -269,6 +274,10 @@ export class JustermRenderer implements Renderer {
     backend.setBoldToBright(t.boldToBright ?? true);
     backend.setMinimumContrastRatio(t.minimumContrastRatio ?? 1);
     backend.setSelectionForeground(t.selectionForeground);
+    // Font family + size (#406/#413, wired #417). Applied before the first fit, so the initial grid
+    // is computed at the consumer's cell. Each is a no-op at the renderer's default (monospace/16).
+    backend.setFontFamily(opts.fontFamily);
+    backend.setFontSize(opts.fontSize);
 
     const palette: Palette = {
       colors: paletteColors,
@@ -321,6 +330,20 @@ export class JustermRenderer implements Renderer {
    * to map pointer coordinates to cells (matches the beamterm adapter's `cellSize`). */
   cellSize(): { width: number; height: number } {
     return { width: this.backend.cell_width(), height: this.backend.cell_height() };
+  }
+
+  /** Change the font size (CSS px) at runtime (#406/#417) — re-bakes the atlas. The cell size moves,
+   * so **the consumer must re-fit** (recompute its grid + `resize`) after calling. A no-op at the
+   * current size. */
+  setFontSize(cssPx: number): void {
+    this.backend.setFontSize(cssPx);
+  }
+
+  /** Change the font family at runtime (#413/#417) — a CSS `font-family` string, re-bakes the atlas.
+   * As with {@link setFontSize}, the cell size can move, so **the consumer must re-fit** after. Load
+   * a webfont before an unfamiliar family (the browser silently falls back otherwise). */
+  setFontFamily(family: string): void {
+    this.backend.setFontFamily(family);
   }
 
   /** Fit a `cols`×`rows` grid to a CSS-pixel box and size the renderer + canvas display box to
