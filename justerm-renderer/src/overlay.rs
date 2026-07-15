@@ -23,10 +23,12 @@
 //! alacritty (`compute_cell_rgb` forces `bg_alpha = 1.0`): a match's job is to be *found*, so on a
 //! coloured cell it must read crisp, not as a muddy 0x80 tint (#400 item ①, [`should_blend_kind`]). A
 //! **selection** still blends over a non-default / inverse cell (its own colour shows through) and
-//! paints solid only over the default background. Two xterm-parity items remain deferred (#400): the
-//! *focused/active* match layered above the selection (needs an active-match wire signal — and the
-//! two references even disagree on it), and a selection blending over a bottom-decoration bg vs the
-//! cell's own bg.
+//! paints solid only over the default background. The **active** (focused/current) search match — the
+//! result the search box is on — is a third kind that ranks **above the selection** ([`highlight_at`]:
+//! ActiveMatch > Selection > Match) and paints solid in its own colour, xterm's `layer:'top'`
+//! `activeMatchBackground` (`DecorationManager.ts`); the renderer side is wired here (#427), the
+//! consumer pushes the active span via `set_active_match` (#424 slice 1). One xterm-parity item stays
+//! deferred (#400): a selection blending over a bottom-decoration bg vs the cell's own bg.
 
 use crate::attrs::is_inverse;
 
@@ -45,27 +47,35 @@ pub const OVERLAY_STRIDE: usize = 3;
 /// `0x80`; a different alpha would reopen the tie question.
 pub const HIGHLIGHT_BLEND_ALPHA: u8 = 0x80;
 
-/// Which overlay covers a cell — the live selection or a search match. They are separate wire
-/// groups with separate blend colours; on a cell both cover, the selection wins (`overlay.ts`
-/// `highlightAt`: a selection blend is visually primary over a match).
+/// Which overlay covers a cell — the *active* (focused/current) search match, the live selection,
+/// or a non-active search match. Separate wire groups with separate blend colours; where more than
+/// one covers a cell the priority is **ActiveMatch > Selection > Match** (`highlight_at`): the active
+/// match is xterm's `layer:'top'` decoration (`DecorationManager.ts`), painted above the selection,
+/// while a plain match sits below it (#424 slice 1). A selection still outranks a non-active match.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum HighlightKind {
+    /// The focused/current search result — ranks above everything (#427).
+    ActiveMatch,
     Selection,
     Match,
 }
 
-/// The two injected blend colours (consumer policy #115), packed `0xRRGGBB`. The renderer is
+/// The injected blend colours (consumer policy #115), packed `0xRRGGBB`. The renderer is
 /// theme-agnostic: the consumer resolves its palette to these before handing them over.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct HighlightColors {
     pub selection_bg: u32,
     pub match_bg: u32,
+    /// The focused/current search match's background (#427) — xterm's `activeMatchBackground`,
+    /// distinct from `match_bg` so the current result stands out from the rest.
+    pub active_match_bg: u32,
 }
 
 impl HighlightColors {
     /// The blend colour for a kind.
     pub fn of(&self, kind: HighlightKind) -> u32 {
         match kind {
+            HighlightKind::ActiveMatch => self.active_match_bg,
             HighlightKind::Selection => self.selection_bg,
             HighlightKind::Match => self.match_bg,
         }
@@ -76,6 +86,10 @@ impl HighlightColors {
 /// span buffers (the decoder's views). Empty directories mean "no highlight".
 #[derive(Clone, Copy, Default)]
 pub struct Overlay<'a> {
+    /// Active (focused/current) search-match spans, [`OVERLAY_STRIDE`] `u32`s each (#427). The active
+    /// match is *also* present in `matches`; the [`highlight_at`](Self::highlight_at) ranking, not
+    /// exclusion, is what makes the active colour win where they overlap.
+    pub active: &'a [u32],
     /// Live-selection spans, [`OVERLAY_STRIDE`] `u32`s each.
     pub selection: &'a [u32],
     /// Search-match spans, same stride.
@@ -85,10 +99,13 @@ pub struct Overlay<'a> {
 
 impl Overlay<'_> {
     /// The highlight kind covering viewport cell `(row, col)`, or `None`. Columns are inclusive
-    /// (`left..=right`). A selection covering the cell wins over a match on the same cell, whatever
-    /// order the spans sit in the directories (`overlay.ts` `highlightAt`).
+    /// (`left..=right`). Priority is **ActiveMatch > Selection > Match** (#427): the active/focused
+    /// match is xterm's `layer:'top'` decoration painted above the selection, while a plain match
+    /// stays below it; the winner is by kind, not directory order (`overlay.ts` `highlightAt`).
     pub fn highlight_at(&self, row: u32, col: u32) -> Option<HighlightKind> {
-        if covers(self.selection, row, col) {
+        if covers(self.active, row, col) {
+            Some(HighlightKind::ActiveMatch)
+        } else if covers(self.selection, row, col) {
             Some(HighlightKind::Selection)
         } else if covers(self.matches, row, col) {
             Some(HighlightKind::Match)
@@ -208,6 +225,31 @@ mod tests {
     }
 
     #[test]
+    fn an_active_match_wins_over_selection_and_match_on_the_same_cell() {
+        // #427: the active (focused/current) match ranks ABOVE the selection and a plain match —
+        // xterm's `layer:'top'` decoration. A cell in all three groups resolves to ActiveMatch.
+        let ov = Overlay {
+            active: &[0, 0, 2],
+            selection: &[0, 0, 2],
+            matches: &[0, 0, 2],
+            ..Default::default()
+        };
+        assert_eq!(ov.highlight_at(0, 1), Some(HighlightKind::ActiveMatch));
+    }
+
+    #[test]
+    fn a_selection_still_wins_over_a_non_active_match() {
+        // The active channel does not disturb the existing Selection > Match order for cells the
+        // active group does NOT cover (a plain match under a selection still shows the selection).
+        let ov = Overlay {
+            selection: &[0, 0, 2],
+            matches: &[0, 0, 2],
+            ..Default::default()
+        };
+        assert_eq!(ov.highlight_at(0, 1), Some(HighlightKind::Selection));
+    }
+
+    #[test]
     fn a_selection_wins_over_a_match_on_the_same_cell_regardless_of_order() {
         // Both cover (0,0..=2). Selection must win even though `matches` would be walked second —
         // the precedence is by kind, not directory order (overlay.ts highlightAt).
@@ -305,6 +347,24 @@ mod tests {
         );
         assert!(
             !should_blend_kind(HighlightKind::Match, 0x00_00_00_00, INVERSE),
+            "inverse → still solid"
+        );
+    }
+
+    #[test]
+    fn an_active_match_is_solid_like_a_search_match() {
+        // #427: the active/focused match is a search highlight too — solid over any cell (xterm drops
+        // the decoration alpha), never blended. Guards against a future edit making it blend.
+        assert!(
+            !should_blend_kind(HighlightKind::ActiveMatch, 0x00_00_00_00, 0),
+            "default bg → solid"
+        );
+        assert!(
+            !should_blend_kind(HighlightKind::ActiveMatch, 0x02_E0_6C_75, 0),
+            "Rgb bg → still solid"
+        );
+        assert!(
+            !should_blend_kind(HighlightKind::ActiveMatch, 0x00_00_00_00, INVERSE),
             "inverse → still solid"
         );
     }

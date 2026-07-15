@@ -468,15 +468,18 @@ mod tests {
 
     const SEL_BG: u32 = 0x3A_3D_5C;
     const MATCH_BG: u32 = 0x5C_3A_3A;
+    const ACTIVE_BG: u32 = 0x2E_5C_3A; // #427: the active/focused match colour, distinct from both
 
     /// One-cell overlay covering (row 0, col 0) as the given group.
     fn selected<'a>(selection: &'a [u32], matches: &'a [u32]) -> Overlay<'a> {
         Overlay {
+            active: &[],
             selection,
             matches,
             colors: HighlightColors {
                 selection_bg: SEL_BG,
                 match_bg: MATCH_BG,
+                active_match_bg: ACTIVE_BG,
             },
         }
     }
@@ -591,6 +594,88 @@ mod tests {
             &got[2..5],
             &gl_rgb(blend_over(cell_bg, MATCH_BG, HIGHLIGHT_BLEND_ALPHA)),
             "a match must not blend over the cell colour"
+        );
+    }
+
+    /// One-cell overlay where the active/focused match, the selection, and the match groups are set
+    /// independently — for the #427 ranking tests.
+    fn with_active<'a>(active: &'a [u32], selection: &'a [u32], matches: &'a [u32]) -> Overlay<'a> {
+        Overlay {
+            active,
+            selection,
+            matches,
+            colors: HighlightColors {
+                selection_bg: SEL_BG,
+                match_bg: MATCH_BG,
+                active_match_bg: ACTIVE_BG,
+            },
+        }
+    }
+
+    #[test]
+    fn an_active_match_paints_its_own_colour_over_a_selected_cell() {
+        // #427: the active (focused/current) match ranks ABOVE the selection — a cell covered by BOTH
+        // the active group and the selection shows the ACTIVE colour, solid. Pins the
+        // ActiveMatch > Selection ranking end-to-end through pack_instances.
+        let p = palette();
+        let got = pack_instances(
+            &frame(&[0], &[0], &[0], &[0]),
+            &p,
+            true,
+            &with_active(&[0, 0, 0], &[0, 0, 0], &[0, 0, 0]), // active + selection + match all cover (0,0)
+            &ColorPolicy::default(),
+            &[],
+        );
+        assert_eq!(
+            &got[2..5],
+            &gl_rgb(ACTIVE_BG),
+            "the active match colour wins over the selection"
+        );
+        // ...and it is NOT the selection colour that cell would otherwise show — proves the ranking ran.
+        assert_ne!(&got[2..5], &gl_rgb(SEL_BG), "not the selection colour");
+    }
+
+    #[test]
+    fn an_active_matched_selected_cell_keeps_match_fg_semantics_not_selection() {
+        // #427 (2-lens): a cell that is BOTH the active match AND selected resolves to ActiveMatch
+        // (active > selection), so it takes MATCH foreground semantics, NOT selection's —
+        // selectionForeground is NOT applied and DIM is KEPT, identical to a plain match. The bg is
+        // the solid active colour. This diverges from xterm (where the active match is a bg-only top
+        // decoration, so selectionForeground survives) ONLY when selectionForeground is set; it is
+        // deliberate and pinned here — the fg-channel parity is tracked as #430, best decided when
+        // #429 makes the overlap reachable. This is the FIRST cell that is "selected" yet
+        // `is_selection == false`, so the pin guards the intent explicitly.
+        let p = bright_palette(); // fg white, bg black
+        let sfg = 0x00_FF_00; // green selectionForeground — must NOT appear on an active-matched cell
+        let policy = ColorPolicy {
+            selection_fg: Some(sfg),
+            ..ColorPolicy::default()
+        };
+        let got = pack_instances(
+            &frame(&[0], &[0], &[0], &[DIM]),
+            &p,
+            true,
+            &with_active(&[0, 0, 0], &[0, 0, 0], &[]), // active + selection both cover (0,0)
+            &policy,
+            &[],
+        );
+        // bg = the solid active colour (active > selection).
+        assert_eq!(
+            &got[2..5],
+            &gl_rgb(ACTIVE_BG),
+            "bg is the solid active colour"
+        );
+        // fg = the cell's OWN fg, dimmed toward the active bg (match semantics) — NOT selectionForeground.
+        let dimmed = dim_foreground(0xFF_FF_FF, ACTIVE_BG);
+        assert_eq!(
+            &got[5..8],
+            &gl_rgb(dimmed),
+            "fg keeps DIM and the cell's own colour (match semantics)"
+        );
+        assert_ne!(
+            &got[5..8],
+            &gl_rgb(sfg),
+            "selectionForeground is NOT applied to an active-matched cell"
         );
     }
 
@@ -787,7 +872,9 @@ mod tests {
             colors: crate::overlay::HighlightColors {
                 selection_bg: sel_bg,
                 match_bg: 0,
+                ..Default::default()
             },
+            ..Default::default()
         };
         // fg Default (white); bg Default → the highlight paints SOLID grey (default-bg cell).
         let got = pack_instances(
@@ -889,11 +976,13 @@ mod tests {
         bg: u32,
     ) -> Overlay<'static> {
         Overlay {
+            active: &[],
             selection,
             matches,
             colors: HighlightColors {
                 selection_bg: bg,
                 match_bg: bg,
+                active_match_bg: bg,
             },
         }
     }

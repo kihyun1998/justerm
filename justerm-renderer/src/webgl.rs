@@ -461,7 +461,12 @@ pub struct JustermRenderer {
     /// background at pack time.
     selection_spans: Vec<u32>,
     match_spans: Vec<u32>,
-    /// The consumer-injected blend colours for the two overlay kinds (policy #115).
+    /// The *active* (focused/current) search-match spans (#427), same stride. Set via
+    /// [`set_active_match`](Self::set_active_match); the active match is also present in
+    /// `match_spans`, and the `highlight_at` ranking (ActiveMatch > Selection > Match) is what makes
+    /// its colour win where they overlap. Empty = no active match.
+    active_match_spans: Vec<u32>,
+    /// The consumer-injected blend colours for the overlay kinds (policy #115).
     highlight_colors: HighlightColors,
     /// Draw bold text in the bright (8–15) ANSI colour (#223/#272), consumer policy (xterm's
     /// `drawBoldTextInBrightColors`). Default on, as xterm; toggled via `set_bold_to_bright`.
@@ -686,6 +691,7 @@ impl JustermRenderer {
             grid: None,
             selection_spans: Vec::new(),
             match_spans: Vec::new(),
+            active_match_spans: Vec::new(), // no active/focused match by default (#427)
             highlight_colors: HighlightColors::default(),
             bold_to_bright: true, // xterm's drawBoldTextInBrightColors default (#223)
             min_contrast: 1.0,    // xterm's minimumContrastRatio default: off (#225)
@@ -1640,6 +1646,7 @@ impl JustermRenderer {
         // #271: composite the current selection / search overlay into each cell's packed bg. The
         // spans are owned by the renderer so they outlive the borrow; empty ⇒ no highlight.
         let overlay = Overlay {
+            active: &self.active_match_spans,
             selection: &self.selection_spans,
             matches: &self.match_spans,
             colors: self.highlight_colors,
@@ -1928,12 +1935,26 @@ impl JustermRenderer {
     ) -> Result<(), JsValue> {
         self.selection_spans = selection_spans;
         self.match_spans = match_spans;
-        self.highlight_colors = HighlightColors {
-            selection_bg,
-            match_bg,
-        };
+        // Update the two colours this setter owns WITHOUT clobbering `active_match_bg` (#427), which
+        // `set_active_match` owns — the active channel is set independently.
+        self.highlight_colors.selection_bg = selection_bg;
+        self.highlight_colors.match_bg = match_bg;
         self.needs_repack = true; // defer the pack to render (#421)
         Ok(())
+    }
+
+    /// Set the *active* (focused/current) search-match spans + their background (#427) — the xterm
+    /// `activeMatchBackground` decoration, ranked **above the selection** (`highlight_at`). Additive
+    /// beside [`set_overlay`](Self::set_overlay): the consumer pushes the current search result here
+    /// as the search box navigates (`next`/`prev`), independent of the selection, so a user text
+    /// selection and the current match coexist. The active match is *also* pushed in `set_overlay`'s
+    /// `match_spans`; the ranking, not exclusion, makes the active colour win. Same viewport-relative,
+    /// re-issue-every-frame contract as [`set_overlay`]. Empty spans clear the active match.
+    #[wasm_bindgen(js_name = setActiveMatch)]
+    pub fn set_active_match(&mut self, active_spans: Vec<u32>, active_match_bg: u32) {
+        self.active_match_spans = active_spans;
+        self.highlight_colors.active_match_bg = active_match_bg;
+        self.needs_repack = true; // defer the pack to render (#421), same as set_overlay
     }
 
     /// Re-pack the instance buffer from the retained dense grid — the single pack [`render`] runs when

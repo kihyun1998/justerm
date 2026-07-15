@@ -19,6 +19,8 @@
       blend cell: its shown bg is the swapped-in fg, so the highlight blends over that.
   The blend mode is a SELECTION rule only: a search MATCH always paints SOLID, whatever the cell
   (xterm/alacritty parity — a match must read crisp, not a muddy tint, #400). col6 pins that.
+  The ACTIVE (focused/current) match is a third kind, pushed via setActiveMatch: solid, in its own
+  colour, ranked ABOVE the selection (xterm's layer:'top', #427). col7 pins active-over-selection.
 
   The numbers (blendOver byte math) are pinned host-side against xterm in `overlay.rs`; this page
   proves the WIRING delivers a blended — not solid, not original — pixel through the real GL
@@ -30,21 +32,22 @@
 
   Build: wasm-pack build --target web --dev --out-dir pkg
 -->
-<canvas id="c" width="112" height="16"></canvas>
+<canvas id="c" width="128" height="16"></canvas>
 <script type="module">
   import init, { JustermRenderer } from "../pkg/justerm_renderer.js";
   import { readRect } from "./proof.js";
   await init();
 
-  const COLS = 7, ROWS = 1, N = COLS * ROWS;
+  const COLS = 8, ROWS = 1, N = COLS * ROWS;
   const SPACE = 0x20;
   const INVERSE = 1 << 5;
 
   // Injected blend colours (consumer policy #115) + a coloured cell bg, chosen so every channel
   // differs — a blend is then unambiguously distinct from both the solid colour and the cell's own.
-  const SEL_BG = 0x3060c0;   // selection blue
-  const MATCH_BG = 0xc08030; // search-match orange
-  const CELL = 0x804020;     // a non-default (Rgb) cell background
+  const SEL_BG = 0x3060c0;    // selection blue
+  const MATCH_BG = 0xc08030;  // search-match orange
+  const ACTIVE_BG = 0x30c060; // active/focused-match green (#427) — distinct from selection + match
+  const CELL = 0x804020;      // a non-default (Rgb) cell background
   const DEF_FG = 0xffffff, DEF_BG = 0x000000;
 
   // xterm's integer blend (render-policy.ts blendOver), mirrored so the page can name its
@@ -84,16 +87,17 @@
     return true;
   };
 
-  // The scene: bg refs + flags for the seven columns.
-  const bg = new Uint32Array([0, RGB(CELL), 0, 0, 0, 0, RGB(CELL)]); // col1 + col6 coloured; rest default
-  const flags = new Uint16Array([0, 0, 0, 0, INVERSE, 0, 0]); // col4 inverse
+  // The scene: bg refs + flags for the eight columns.
+  const bg = new Uint32Array([0, RGB(CELL), 0, 0, 0, 0, RGB(CELL), 0]); // col1 + col6 coloured; rest default
+  const flags = new Uint16Array([0, 0, 0, 0, INVERSE, 0, 0, 0]); // col4 inverse
   const spaces = new Uint32Array(N).fill(SPACE);
   const zeroFg = new Uint32Array(N);
 
-  // setOverlay stores the spans; on the apply_frame path (no retained grid) the NEXT apply_frame
-  // packs them in — so set the overlay first, then feed the frame.
-  const drawFrame = (selSpans, matchSpans) => {
+  // setOverlay + setActiveMatch store the spans; on the apply_frame path (no retained grid) the NEXT
+  // apply_frame packs them in — so set them first, then feed the frame.
+  const drawFrame = (selSpans, matchSpans, activeSpans = []) => {
     r.setOverlay(new Uint32Array(selSpans), new Uint32Array(matchSpans), SEL_BG, MATCH_BG);
+    r.setActiveMatch(new Uint32Array(activeSpans), ACTIVE_BG);
     r.resize(COLS, ROWS);
     r.apply_frame(COLS, ROWS, bg, zeroFg, spaces, flags, true);
     r.render();
@@ -102,8 +106,9 @@
 
   const checks = {};
 
-  // selection covers col0-1 and col3-4; a search match covers col2-3 (col3 is in BOTH) and col6.
-  const img = drawFrame([0, 0, 1, 0, 3, 4], [0, 2, 3, 0, 6, 6]);
+  // selection covers col0-1, col3-4, col7; a search match covers col2-3 (col3 is in BOTH) and col6;
+  // the ACTIVE match covers col7 (also selected → ranking proof).
+  const img = drawFrame([0, 0, 1, 0, 3, 4, 0, 7, 7], [0, 2, 3, 0, 6, 6], [0, 7, 7]);
 
   // col0: selection over the DEFAULT bg → SOLID (the colour replaces the bg outright).
   checks.solidSelectionOverTheDefaultBackground = cellIs(img, 0, SEL_BG);
@@ -139,10 +144,18 @@
   checks.aMatchOnAColouredCellIsNotABlend = !cellIs(img, 6, blendMatchOnCell);
   checks.aMatchOnAColouredCellIsNotTheCellsOwnColour = !cellIs(img, 6, CELL);
 
+  // col7: the ACTIVE (focused/current) match — also covered by the selection — paints the ACTIVE
+  // colour SOLID, ranking ABOVE the selection (#427, xterm's `layer:'top'`). NOT the selection colour
+  // that cell would otherwise show (col0 proves a selected default cell is SEL_BG): that pair makes
+  // the ActiveMatch > Selection ranking falsifiable through the GL round-trip.
+  checks.anActiveMatchPaintsItsOwnColourOverASelectedCell = cellIs(img, 7, ACTIVE_BG);
+  checks.anActiveMatchOutranksTheSelection = !cellIs(img, 7, SEL_BG);
+
   // Clearing the overlay (empty spans) restores every cell to its own background.
   const cleared = drawFrame([], []);
   checks.clearingTheOverlayRemovesEveryHighlight =
-    cellIs(cleared, 0, DEF_BG) && cellIs(cleared, 3, DEF_BG) && cellIs(cleared, 1, CELL);
+    cellIs(cleared, 0, DEF_BG) && cellIs(cleared, 3, DEF_BG) && cellIs(cleared, 1, CELL) &&
+    cellIs(cleared, 7, DEF_BG);
 
   // --- setOverlay re-packs the retained damage grid with NO new frame (#271) ---
   //
