@@ -18,7 +18,7 @@ use crate::contrast::ensure_contrast_ratio;
 use crate::decoration::{DecorationLayer, DecorationRect, decoration_at};
 use crate::glyph_class::treat_glyph_as_background_color;
 use crate::overlay::{
-    HIGHLIGHT_BLEND_ALPHA, HighlightKind, Overlay, blend_over, composite_bg, should_blend,
+    HIGHLIGHT_BLEND_ALPHA, HighlightKind, Overlay, blend_over, composite_bg, should_blend_kind,
 };
 use crate::palette::Palette;
 use crate::render_policy::{ColorPolicy, dim_foreground, resolve_cell};
@@ -56,9 +56,10 @@ pub struct Frame<'a> {
 /// loop's phase, driven by the consumer (timing is policy, #282). **Every cell is emitted** —
 /// no cell is left un-drawn (#255).
 ///
-/// A cell covered by the selection / search `overlay` (#271) has its resolved background composited
-/// with the injected highlight colour — blended over a non-default / inverse cell, painted solid over
-/// the default background ([`composite_bg`]). Compositing happens in packed colour space, before the
+/// A cell covered by the selection / search `overlay` (#271/#400) has its resolved background
+/// composited with the injected highlight colour: a *selection* blends over a non-default / inverse
+/// cell (painting solid over the default background), while a search *match* always paints solid
+/// ([`should_blend_kind`], [`composite_bg`]). Compositing happens in packed colour space, before the
 /// `gl_rgb` unpack, so the blend matches the web reference to the byte; and because the whole viewport
 /// re-packs each frame and the #263 upload diff re-sends only changed cells, a cell that gains or loses
 /// a highlight re-uploads with no extra bookkeeping (unlike beamterm's overlay delta).
@@ -131,13 +132,15 @@ pub fn pack_instances(
             if is_selection && let Some(sfg) = policy.selection_fg {
                 fg = sfg;
             }
-            // #271: composite the selection / search highlight onto the (bottom-decorated) background —
-            // the fg policy then sees the EFFECTIVE bg the glyph is drawn over. `should_blend` reads the
-            // PRE-inverse *cell* ref + flags (not the decoration): an inverse or non-default cell blends
-            // so its own colour shows through, a plain default-bg cell paints solid.
+            // #271/#400: composite the selection / search highlight onto the (bottom-decorated)
+            // background — the fg policy then sees the EFFECTIVE bg the glyph is drawn over.
+            // `should_blend_kind` reads the highlight kind + the PRE-inverse *cell* ref/flags (not the
+            // decoration): a SELECTION over an inverse or non-default cell blends so the cell's own
+            // colour shows through, and paints solid over the default bg; a search MATCH always paints
+            // solid, whatever the cell (xterm/alacritty parity — a match must read crisp, not a tint).
             let mut eff_bg = composite_bg(
                 bg_running,
-                should_blend(bg_ref, cell_flags),
+                kind.is_some_and(|k| should_blend_kind(k, bg_ref, cell_flags)),
                 kind.map(|k| overlay.colors.of(k)),
             );
             // #239/#241: a tile glyph under a SELECTION fuses into the band — xterm re-tints it toward
@@ -558,6 +561,36 @@ mod tests {
             &got[2..5],
             &gl_rgb(MATCH_BG),
             "a match paints its own colour"
+        );
+    }
+
+    #[test]
+    fn a_search_match_on_a_coloured_cell_paints_solid_not_a_blend() {
+        // #400: xterm (`CellColorResolver` drops the decoration alpha) and alacritty
+        // (`compute_cell_rgb` forces `bg_alpha = 1.0`) both paint a search match's bg SOLID, whatever
+        // the cell colour — so a match on a coloured cell reads crisp, not a muddy 50% tint. A SELECTION
+        // on the same cell still blends (see `a_selected_coloured_cell_blends...`), so this pins the
+        // match/selection divergence, not just "match paints something".
+        let p = palette();
+        let cell_bg = 0xE0_6C_75; // Rgb (non-default) → a selection would blend here (should_blend=true)
+        let got = pack_instances(
+            &frame(&[(2 << 24) | cell_bg], &[0], &[0], &[0]),
+            &p,
+            true,
+            &selected(&[], &[0, 0, 0]), // a MATCH covers (0,0)
+            &ColorPolicy::default(),
+            &[],
+        );
+        assert_eq!(
+            &got[2..5],
+            &gl_rgb(MATCH_BG),
+            "a match paints its own colour SOLID over a coloured cell"
+        );
+        // ...and it is NOT the blend a selection would produce — proves the solid branch really ran.
+        assert_ne!(
+            &got[2..5],
+            &gl_rgb(blend_over(cell_bg, MATCH_BG, HIGHLIGHT_BLEND_ALPHA)),
+            "a match must not blend over the cell colour"
         );
     }
 

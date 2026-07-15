@@ -18,13 +18,15 @@
 //! upload diff re-sends only the cells whose packed bytes changed, so a cell that gains or loses a
 //! highlight re-uploads for free — as long as compositing happens at pack time (which it does).
 //!
-//! A **search match** composites exactly like a selection here (the same 0x80 blend over a
-//! non-default / inverse cell), differing only in colour — faithful to the justerm-web / beamterm
-//! lineage this ports. This *diverges from xterm.js and alacritty*, where a search match is a **solid**
-//! background override, never blended (xterm `CellColorResolver` decoration path drops the alpha;
-//! alacritty forces `bg_alpha = 1.0`). Keeping the family behaviour keeps the #273 switch
-//! behaviour-neutral; the xterm-parity "match = solid" (and xterm's focused-match-over-selection
-//! layering) is tracked for #272, not decided here.
+//! A **search match** paints a **solid** background — the match colour opaque over any cell, matching
+//! xterm.js (`CellColorResolver` overwrites the bg from the match decoration, alpha dropped) and
+//! alacritty (`compute_cell_rgb` forces `bg_alpha = 1.0`): a match's job is to be *found*, so on a
+//! coloured cell it must read crisp, not as a muddy 0x80 tint (#400 item ①, [`should_blend_kind`]). A
+//! **selection** still blends over a non-default / inverse cell (its own colour shows through) and
+//! paints solid only over the default background. Two xterm-parity items remain deferred (#400): the
+//! *focused/active* match layered above the selection (needs an active-match wire signal — and the
+//! two references even disagree on it), and a selection blending over a bottom-decoration bg vs the
+//! cell's own bg.
 
 use crate::attrs::is_inverse;
 
@@ -142,6 +144,18 @@ pub fn should_blend(bg_ref: u32, flags: u16) -> bool {
     is_inverse(flags) || (bg_ref >> 24) != 0
 }
 
+/// Whether a highlight of `kind` must **blend** over the cell (vs paint solid). A **selection**
+/// defers to [`should_blend`] — it blends over an inverse / non-default-bg cell so the cell's own
+/// colour shows through, and paints solid only over the default terminal background. A **search
+/// match** is **always solid**, whatever the cell: xterm.js (`CellColorResolver` overwrites the bg
+/// from the match decoration, `$bg = rgba >> 8 & RGB_MASK`, alpha dropped) and alacritty
+/// (`compute_cell_rgb` forces `bg_alpha = 1.0` for the search colour) both override a match's
+/// background opaquely — a match's job is to be *found*, so on a coloured cell it must read as a
+/// crisp colour, not a muddy 50% tint of the cell it landed on (#400).
+pub fn should_blend_kind(kind: HighlightKind, bg_ref: u32, flags: u16) -> bool {
+    matches!(kind, HighlightKind::Selection) && should_blend(bg_ref, flags)
+}
+
 /// A cell's background after compositing its highlight, all in packed `0xRRGGBB`. `bg` is the cell's
 /// already-resolved, already-inverse-swapped background (what it shows on screen). With no highlight
 /// the background is returned unchanged; a `blend` cell alpha-blends the highlight over it, the rest
@@ -251,6 +265,48 @@ mod tests {
     fn an_inverse_cell_blends_even_with_a_default_bg() {
         // An inverse cell's shown bg is the swapped-in fg — a real colour, so it must blend.
         assert!(should_blend(0x00_00_00_00, INVERSE));
+    }
+
+    // --- should_blend_kind: a selection defers to should_blend, a match is ALWAYS solid (#400) ---
+
+    #[test]
+    fn a_selection_blends_exactly_when_should_blend_says_so() {
+        // A selection defers to should_blend: solid on a default-bg cell, blend on a coloured/inverse one.
+        assert!(
+            !should_blend_kind(HighlightKind::Selection, 0x00_00_00_00, 0),
+            "default bg → solid"
+        );
+        assert!(
+            should_blend_kind(HighlightKind::Selection, 0x02_E0_6C_75, 0),
+            "Rgb bg → blend"
+        );
+        assert!(
+            should_blend_kind(HighlightKind::Selection, 0x00_00_00_00, INVERSE),
+            "inverse → blend"
+        );
+    }
+
+    #[test]
+    fn a_search_match_never_blends_even_on_a_coloured_or_inverse_cell() {
+        // xterm/alacritty override a match's bg SOLID regardless of the cell (#400) — the very cell
+        // properties that make a SELECTION blend must NOT make a match blend, or a match on coloured
+        // TUI output reads as a muddy tint instead of a crisp, findable colour.
+        assert!(
+            !should_blend_kind(HighlightKind::Match, 0x00_00_00_00, 0),
+            "default bg → solid"
+        );
+        assert!(
+            !should_blend_kind(HighlightKind::Match, 0x02_E0_6C_75, 0),
+            "Rgb bg → still solid"
+        );
+        assert!(
+            !should_blend_kind(HighlightKind::Match, 0x01_00_00_05, 0),
+            "Indexed bg → still solid"
+        );
+        assert!(
+            !should_blend_kind(HighlightKind::Match, 0x00_00_00_00, INVERSE),
+            "inverse → still solid"
+        );
     }
 
     // --- composite_bg: the whole rule wired together ---
