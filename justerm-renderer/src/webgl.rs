@@ -363,7 +363,7 @@ pub struct JustermRenderer {
     canvas: HtmlCanvasElement,
     /// devicePixelRatio the atlas + drawing buffer are currently sized for (#265). The atlas is
     /// rasterised at `font_size * dpr` (device px) so HiDPI stays sharp; a DPR change — or a
-    /// `set_font_size` (#406) — re-bakes it.
+    /// `set_font_size` (#406) / `set_font_family` (#413) — re-bakes it.
     dpr: f32,
     program: glow::Program,
     vao: glow::VertexArray,
@@ -416,6 +416,11 @@ pub struct JustermRenderer {
     /// Default [`FONT_SIZE`]. Changed by `set_font_size`, which re-bakes the atlas (same seam as a
     /// DPR change), so a restored context bakes at the consumer's size, not the hardcoded default.
     font_size: f32,
+    /// Consumer-injected CSS `font-family` (#413); default `"monospace"`. Changed by `set_font_family`,
+    /// which re-bakes the atlas — same seam as a size change — so a restored context bakes the
+    /// consumer's family. The browser's text engine resolves it (with fallback); the renderer stays
+    /// font-agnostic.
+    font_family: String,
     palette: Palette,
     rasterizer: Rasterizer,
     cache: GlyphCache,
@@ -655,6 +660,7 @@ impl JustermRenderer {
             letter_spacing,
             line_height,
             font_size: FONT_SIZE,
+            font_family: "monospace".to_string(),
             atlas_cell: (pad_w, pad_h),
             max_texture_size,
             raw_gl,
@@ -919,23 +925,29 @@ impl JustermRenderer {
         if self.ctx_loss.state.borrow().is_lost() {
             return Ok(());
         }
-        self.rebake_atlas(self.font_size, dpr)
+        self.rebake_atlas(self.font_family.clone(), self.font_size, dpr)
     }
 
-    /// Re-bake the atlas at `font_size` (CSS px) × `dpr` and re-derive the buffer from the stored
-    /// grid. The shared body of a DPR change (#322) and a font-size change (#406) — they differ only
-    /// in which input to `font_size * dpr` moved, so both must re-rasterise the glyphs at the new
-    /// device size, re-derive the cell, and re-fit the buffer. Atomic: builds the replacement atlas +
-    /// rasteriser first and commits (swapping them in + advancing `self.font_size`/`self.dpr`) only on
-    /// success, so a failure leaves the old atlas / metrics / size untouched and the caller retries
-    /// (self-healing). Assumes a **live** context — both callers skip when it is lost.
-    fn rebake_atlas(&mut self, font_size: f32, dpr: f32) -> Result<(), JsValue> {
+    /// Re-bake the atlas for `font_family` at `font_size` (CSS px) × `dpr` and re-derive the buffer
+    /// from the stored grid. The shared body of a DPR change (#322), a font-size change (#406), and a
+    /// font-family change (#413) — they differ only in which of the three inputs moved, so all three
+    /// must re-rasterise the glyphs into a fresh atlas, re-derive the cell, and re-fit the buffer.
+    /// Atomic: builds the replacement atlas + rasteriser first and commits (swapping them in +
+    /// advancing `self.font_family`/`self.font_size`/`self.dpr`) only on success, so a failure leaves
+    /// the old atlas / metrics untouched and the caller retries (self-healing). Assumes a **live**
+    /// context — the callers skip when it is lost.
+    fn rebake_atlas(
+        &mut self,
+        font_family: String,
+        font_size: f32,
+        dpr: f32,
+    ) -> Result<(), JsValue> {
         // 1. Build a new atlas at the new device size and re-rasterise the CURRENT glyphs into it —
         //    ASCII fast path + every resident dynamic glyph, each into its SAME slot — all before
         //    committing. A failure leaves the old atlas / rasteriser / size / dpr untouched, and the
         //    glyph *slots* are preserved, so the existing instances stay valid (no re-pack / re-upload).
-        //    The ~tens-of-µs cost (#321) is fine for a rare DPR or font-size change.
-        let mut rasterizer = Rasterizer::new("monospace", font_size * dpr)?;
+        //    The ~tens-of-µs cost (#321) is fine for a rare DPR / font-size / font-family change.
+        let mut rasterizer = Rasterizer::new(&font_family, font_size * dpr)?;
         // The glyph box is re-measured at the new device size; the spacing policy survives, so the
         // cell must be re-derived from both BEFORE the atlas is sized (#322 + #338 + #359).
         let char_size = rasterizer.glyph_box();
@@ -968,6 +980,7 @@ impl JustermRenderer {
         self.atlas = atlas;
         self.char_size = char_size;
         self.atlas_cell = (pad_w, pad_h);
+        self.font_family = font_family;
         self.font_size = font_size;
         self.dpr = dpr;
         // The spacing policy survives; the cell it produces does not (#322 + #338 + #406).
@@ -1005,13 +1018,38 @@ impl JustermRenderer {
             self.font_size = css_px;
             return Ok(());
         }
-        self.rebake_atlas(css_px, self.dpr)
+        self.rebake_atlas(self.font_family.clone(), css_px, self.dpr)
+    }
+
+    /// Set the font family (#413) — a CSS `font-family` string (`"monospace"`, `"'Fira Code', monospace"`,
+    /// …) the browser's text engine resolves, with its own fallback. Re-bakes the atlas for the new
+    /// family, exactly as a size change does (shared [`rebake_atlas`](Self::rebake_atlas)): the glyph
+    /// box is re-measured, so the grid cell re-derives. Consumer policy (ADR-0017) — the renderer stays
+    /// font-agnostic; loading a webfont (`@font-face` / `FontFace`) before calling is the consumer's
+    /// job (an unloaded family silently falls back). A no-op if unchanged.
+    ///
+    /// The cell size may change, so [`css_cell_width`](Self::css_cell_width)/`css_cell_height` can move
+    /// and **the consumer must re-fit** its column/row count and re-`resize`. Takes effect on the next
+    /// [`render`](Self::render).
+    #[wasm_bindgen(js_name = setFontFamily)]
+    pub fn set_font_family(&mut self, family: String) -> Result<(), JsValue> {
+        if family == self.font_family {
+            return Ok(());
+        }
+        // Like the font size (#406) and unlike the DPR, the family lives only in this field — it is not
+        // re-read on a context restore. So on a lost context, advance the field (so `restore` bakes the
+        // new family) but skip the immediate re-bake (a dead atlas would burn the work, #269).
+        if self.ctx_loss.state.borrow().is_lost() {
+            self.font_family = family;
+            return Ok(());
+        }
+        self.rebake_atlas(family, self.font_size, self.dpr)
     }
 
     /// Re-derive the grid cell and the glyph's place inside it from the current glyph box, DPR and
     /// spacing policy (#338). Every path that can change any of those four — construction, a DPR
-    /// change (#322), a context restore (#269), and the two setters — goes through here, so they
-    /// cannot drift apart. It does NOT resize the buffer; the caller does, because `resize` also
+    /// change (#322), a context restore (#269), and the font-size/family (#406/#413) + letter-spacing/
+    /// line-height setters — goes through here, so they cannot drift apart. It does NOT resize the buffer; the caller does, because `resize` also
     /// re-reads what WebGL granted (#339).
     fn recompute_cell(&mut self) {
         let asked = device_cell(
@@ -1193,9 +1231,9 @@ impl JustermRenderer {
     /// next frame retries (self-healing, mirroring [`set_device_pixel_ratio`](Self::set_device_pixel_ratio)).
     fn restore(&mut self) -> Result<(), JsValue> {
         let dpr = web_sys::window().map_or(self.dpr, |w| w.device_pixel_ratio() as f32);
-        // Bake at the consumer's font size (#406), not the hardcoded default — a `set_font_size`
-        // that arrived while the context was lost advanced the field but skipped the re-bake.
-        let mut rasterizer = Rasterizer::new("monospace", self.font_size * dpr)?;
+        // Bake at the consumer's font family + size (#406/#413), not the hardcoded defaults — a
+        // set_font_size/set_font_family that arrived while lost advanced the field but skipped the bake.
+        let mut rasterizer = Rasterizer::new(&self.font_family, self.font_size * dpr)?;
         let (cell_w, cell_h) = rasterizer.glyph_box();
         // Same as the DPR path: the policy outlives the lost context, and the atlas slot is the cell.
         let cell = fit_cell_to_atlas(
