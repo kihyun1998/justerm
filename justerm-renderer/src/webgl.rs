@@ -610,8 +610,9 @@ impl JustermRenderer {
                 PADDING as f32 / pad_w as f32,
                 PADDING as f32 / pad_h as f32,
             );
-            // The default background is fixed for the life of the renderer (the palette is set at
-            // construction), so the shader can compare each cell's bg against it once (#298).
+            // The shader compares each cell's bg against the default bg to decide #298 translucency,
+            // so it is a uniform set once here rather than per-cell. It is no longer fixed for the
+            // renderer's life — `set_palette` (#405) re-pushes it on a live theme change.
             let [dbr, dbg, dbb] = gl_rgb(palette.default_bg);
             gl.uniform_3_f32(Some(&u_default_bg), dbr, dbg, dbb);
         }
@@ -1746,6 +1747,47 @@ impl JustermRenderer {
         } else {
             1.0
         };
+        self.repack_from_grid()
+    }
+
+    /// Swap the palette + default fg/bg for a **live theme change** (#405) — the renderer-side of a
+    /// theme picker or a runtime scheme swap, so a consumer need not tear down and rebuild the
+    /// renderer to recolour. `palette_colors` is the 256 pre-built indexed colours (as the
+    /// constructor takes); `default_fg`/`default_bg` the theme's defaults. Consumer policy
+    /// (ADR-0017): the palette *values* are the consumer's (theme-agnostic core), the *mechanism*
+    /// (re-resolve every retained cell against the new palette) is the renderer's.
+    ///
+    /// Re-packs the retained grid so the change shows with no new frame — mirrors [`set_overlay`]'s
+    /// `repack_from_grid` (a no-op until the first `apply_damage`; the direct `apply_frame` path
+    /// reflects the new palette on its next call). Takes effect on the next [`render`](Self::render):
+    /// its clear colour reads `default_bg` fresh each frame, so only the `u_default_bg` uniform — set
+    /// once at construction for the #298 translucency test — needs an explicit re-push here.
+    ///
+    /// [`set_overlay`]: Self::set_overlay
+    #[wasm_bindgen(js_name = setPalette)]
+    pub fn set_palette(
+        &mut self,
+        palette_colors: Vec<u32>,
+        default_fg: u32,
+        default_bg: u32,
+    ) -> Result<(), JsValue> {
+        self.palette =
+            Palette::from_colors(&palette_colors, default_fg, default_bg).map_err(|e| {
+                JsValue::from_str(&format!(
+                    "justerm-renderer: palette must be 256 colours, got {}",
+                    e.got
+                ))
+            })?;
+        // The shader compares each cell's bg against the default bg to decide #298 translucency, and
+        // that comparison colour is a uniform set once at construction — not retained on `self`, so
+        // re-query it from the program and re-push it (as `set_letter_spacing` re-queries
+        // `u_padding_frac`). render()'s clear reads `self.palette.default_bg` fresh, so it self-updates.
+        let [dbr, dbg, dbb] = gl_rgb(self.palette.default_bg);
+        let u_default_bg = uniform(&self.gl, self.program, "u_default_bg")?;
+        unsafe {
+            self.gl.use_program(Some(self.program));
+            self.gl.uniform_3_f32(Some(&u_default_bg), dbr, dbg, dbb);
+        }
         self.repack_from_grid()
     }
 

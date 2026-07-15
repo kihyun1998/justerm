@@ -1,0 +1,99 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>justerm-renderer proof — setPalette: live theme swap recolours the retained grid (#405)</title>
+<style>
+  body { margin: 0; background: #000; }
+  #c { display: block; image-rendering: pixelated; }
+</style>
+<!--
+  A live theme change (#405): setPalette swaps the 256-colour palette + default fg/bg and re-packs the
+  RETAINED damage grid, so every cell resolved against the palette recolours WITH NO NEW FRAME — the
+  branch a host test cannot reach (only a real re-pack + upload + the u_default_bg re-push does it).
+
+  Scene: an apply_damage Full frame (retains the dense grid), THEN setPalette + render() alone.
+    col0 — a full BLOCK (U+2588) with an INDEXED(1) fg: the whole cell IS palette[1]. RED → GREEN.
+    col1 — a SPACE with a DEFAULT bg: the cell IS the default background. scheme A bg → scheme B bg.
+    col2 — a SPACE with an absolute RGB bg: the CONTROL — an absolute colour is not palette-resolved,
+           so setPalette must leave it untouched (proves the swap recolours refs, not every pixel).
+
+  Read in device px (cell_width()/cell_height() ARE u_cell_size, #331); the block is read at its centre
+  (its edges may antialias), the spaces edge-to-edge. The runner sweeps dpr 1 / 1.1 / 1.5 / 2.
+
+  Build: wasm-pack build --target web --dev --out-dir pkg
+-->
+<canvas id="c" width="48" height="16"></canvas>
+<script type="module">
+  import init, { JustermRenderer } from "../pkg/justerm_renderer.js";
+  import { readRect } from "./proof.js";
+  await init();
+
+  const COLS = 3, ROWS = 1, N = COLS * ROWS;
+  const SPACE = 0x20, BLOCK = 0x2588;
+  const IDX = (i) => ((1 << 24) | i) >>> 0;   // Indexed colour ref (tag 1)
+  const RGB = (c) => ((2 << 24) | c) >>> 0;   // absolute Rgb colour ref (tag 2); Default = 0 (tag 0)
+
+  const RED = 0xcc0000, GREEN = 0x00cc00;     // palette[1] in scheme A / scheme B
+  const BG_A = 0x1e1e2e, BG_B = 0x402080;     // default bg in scheme A / scheme B
+  const FIXED = 0x808040;                     // an absolute Rgb bg — the control (never recolours)
+  const DEF_FG = 0xffffff;
+
+  const paletteA = new Uint32Array(256); paletteA[1] = RED;
+  const r = new JustermRenderer("#c", paletteA, DEF_FG, BG_A);
+  const gl = document.querySelector("#c").getContext("webgl2");
+  const [cw, ch] = [r.cell_width(), r.cell_height()];
+
+  const grab = () => {
+    const [w, h] = [gl.drawingBufferWidth, gl.drawingBufferHeight];
+    return { ...readRect(gl, { x: 0, y: 0, w, h }), w, h };
+  };
+  // readPixels counts rows from the bottom; flip to grid-space (origin top-left).
+  const px = (img, x, y) => { const i = ((img.h - 1 - y) * img.w + x) * 4; return [img.buf[i], img.buf[i + 1], img.buf[i + 2]]; };
+  const chans = (c) => [(c >> 16) & 0xff, (c >> 8) & 0xff, c & 0xff];
+  const near = (v, t, tol = 4) => Math.abs(v - t) <= tol;
+  // A SPACE cell is a uniform block of its bg — every pixel must match.
+  const cellIs = (img, col, packed) => {
+    const [er, eg, eb] = chans(packed);
+    for (let y = 0; y < ch; y++)
+      for (let x = 0; x < cw; x++) {
+        const [pr, pg, pb] = px(img, col * cw + x, y);
+        if (!near(pr, er) || !near(pg, eg) || !near(pb, eb)) return false;
+      }
+    return true;
+  };
+  // A BLOCK cell IS its fg, read at the centre (its edges may antialias against the bg).
+  const centreIs = (img, col, packed) => {
+    const [pr, pg, pb] = px(img, col * cw + (cw >> 1), ch >> 1), [er, eg, eb] = chans(packed);
+    return near(pr, er) && near(pg, eg) && near(pb, eb);
+  };
+
+  // Scatter a Full frame via apply_damage so the renderer retains the dense grid — the only path
+  // setPalette can re-pack from (the direct apply_frame path keeps no columns).
+  const codepoints = new Uint32Array([BLOCK, SPACE, SPACE]);
+  const fg = new Uint32Array([IDX(1), 0, 0]);
+  const bg = new Uint32Array([0 /* Default */, 0 /* Default */, RGB(FIXED)]);
+  const header = new Uint32Array([COLS, ROWS, 0 /* Full */, 0, 0, 0, 0, 1 /* blink_on */]);
+  const spans = new Uint32Array([0, 0, COLS - 1, 0, N]); // one span, whole row
+  r.resize(COLS, ROWS);
+  r.apply_damage(header, spans, codepoints, fg, bg, new Uint16Array(N), new Uint16Array(N), []);
+  r.render();
+  const before = grab();
+
+  const checks = {};
+  checks.indexedFgIsSchemeA = centreIs(before, 0, RED);
+  checks.defaultBgIsSchemeA = cellIs(before, 1, BG_A);
+  checks.absoluteRgbIsFixed = cellIs(before, 2, FIXED);
+
+  // Live theme swap — NO new frame, only setPalette + render(). scheme B: palette[1] green, a new
+  // default bg, same default fg.
+  const paletteB = new Uint32Array(256); paletteB[1] = GREEN;
+  r.setPalette(paletteB, DEF_FG, BG_B);
+  r.render();
+  const after = grab();
+
+  checks.setPaletteRecoloursIndexedFgWithNoNewFrame = centreIs(after, 0, GREEN) && !centreIs(after, 0, RED);
+  checks.setPaletteRecoloursTheDefaultBackground = cellIs(after, 1, BG_B) && !cellIs(after, 1, BG_A);
+  checks.setPaletteLeavesAbsoluteRgbUntouched = cellIs(after, 2, FIXED);
+
+  window.__proof = { ok: Object.values(checks).every(Boolean), checks, dpr: devicePixelRatio, cw, ch };
+  window.__done = true;
+</script>
