@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { makeRenderPolicy, resolveCell } from "../src/render-policy";
+import { resolveCell } from "../src/render-policy";
 import type { FlagBits } from "../src/render-core";
 import type { Palette } from "justerm-wasm-decode/colors.js";
 
@@ -110,65 +110,5 @@ describe("resolveCell — stage-1 ref resolution", () => {
     const { fg } = resolveCell(INDEXED_11, DEFAULT, F.bold, pal, F, true);
 
     expect(fg).toBe(0xffff00); // colors[11], no +8 into 19
-  });
-});
-
-describe("makeRenderPolicy — stage-2 RGB policy", () => {
-  // DIM (xterm BgFlags.DIM) halves the foreground toward the background — xterm
-  // draws the glyph at DIM_OPACITY 0.5 over the cell bg, so on beamterm (no
-  // per-glyph alpha) the dim is baked in as the midpoint of fg and bg. Independent
-  // check: white halfway to black is mid-grey; bg is untouched.
-  it("dims the foreground to the fg/bg midpoint when the dim flag is set", () => {
-    const policy = makeRenderPolicy(F);
-
-    expect(policy(0xffffff, 0x000000, F.dim)).toEqual({ fg: 0x808080, bg: 0x000000 });
-  });
-
-  it("leaves colours unchanged when the dim flag is clear", () => {
-    const policy = makeRenderPolicy(F);
-
-    expect(policy(0xffffff, 0x000000, 0)).toEqual({ fg: 0xffffff, bg: 0x000000 });
-  });
-
-  // minimumContrastRatio (default 1 = off): when configured, an unreadable fg is
-  // adjusted to meet the ratio. Black-on-black at ratio 21 forces the fg to white.
-  it("raises fg to meet the configured minimumContrastRatio", () => {
-    const policy = makeRenderPolicy(F, 21);
-
-    expect(policy(0x000000, 0x000000, 0)).toEqual({ fg: 0xffffff, bg: 0x000000 });
-  });
-
-  it("does not adjust contrast when minimumContrastRatio is 1 (default)", () => {
-    const policy = makeRenderPolicy(F, 1);
-
-    expect(policy(0x000000, 0x000000, 0)).toEqual({ fg: 0x000000, bg: 0x000000 });
-  });
-
-  // Contrast wins over dim and skips it (xterm early-returns the contrast colour):
-  // a dim black-on-black cell would stay black under dim alone, but contrast
-  // lightens the fg instead. (dim also halves the required ratio, ratio/2.)
-  it("applies contrast instead of dim when both would fire", () => {
-    const policy = makeRenderPolicy(F, 21);
-
-    const { fg } = policy(0x000000, 0x000000, F.dim);
-    expect(fg).toBeGreaterThan(0); // lightened by contrast, not left black by dim
-  });
-
-  // #226: a Powerline/box glyph tiles with the background, so its fg is excluded
-  // from the contrast correction (excludeFromContrast=true) — nudging it would open a
-  // seam against the neighbour. Black-on-black, which the test above raises to white,
-  // is left BLACK when excluded.
-  it("skips the contrast correction for an excluded (powerline/box) glyph", () => {
-    const policy = makeRenderPolicy(F, 21);
-
-    expect(policy(0x000000, 0x000000, 0, true)).toEqual({ fg: 0x000000, bg: 0x000000 });
-  });
-
-  // Exclude gates ONLY contrast, not dim: a dim excluded cell that would otherwise be
-  // contrast-lightened is instead just dimmed (dimForeground(black, black) = black).
-  it("still dims (does not contrast) an excluded dim glyph", () => {
-    const policy = makeRenderPolicy(F, 21);
-
-    expect(policy(0x000000, 0x000000, F.dim, true)).toEqual({ fg: 0x000000, bg: 0x000000 });
   });
 });

@@ -2,7 +2,7 @@
  * Screen-reader accessibility for the frame-mode widget (#119). Pure logic —
  * no DOM, no GPU, no IPC: the consumer injects DOM sinks ({@link A11yTreeSink},
  * {@link LiveRegionSink}) and the controller decides *what* the assistive
- * technology should see. beamterm's canvas is opaque to AT, so this drives a
+ * technology should see. the renderer's canvas is opaque to AT, so this drives a
  * hidden DOM mirror beside it.
  *
  * Two structures, both reading the *viewport* (xterm.js `AccessibilityManager`):

@@ -56,8 +56,8 @@ export interface FlagBits {
  * plus its raw `flags` to final colours. Runs after {@link resolveCell} (stage-1:
  * inverse). This is the seam #115 fills with the RGB-space parts of xterm's
  * colour pipeline — `dim` and `minimumContrastRatio`. (Inverse is stage-1; the
- * selection/match blend is the overlay layer, `composeCellColors`.) S2 ships
- * {@link identityPolicy}.
+ * selection/match blend is now the renderer's, composited in wasm.) The accessible
+ * view ships {@link identityPolicy} — it needs the text, not the colours.
  */
 export type RenderPolicy = (
   fg: number,
@@ -69,50 +69,11 @@ export type RenderPolicy = (
 /** No-op policy — colours pass through unchanged. The S2 default. */
 export const identityPolicy: RenderPolicy = (fg, bg) => ({ fg, bg });
 
-/** `[line, left, right, cell_offset, count]`. */
-const SPAN_STRIDE = 5;
-
-/**
- * Walk a {@link DecodedFrame}'s span directory into draw ops — one per painted
- * cell. Pure: no beamterm, no wasm. The adapter feeds the ops to a batch and
- * decides clear-on-full; this just maps cells.
- */
-export function frameToDrawOps(
-  frame: DecodedFrame,
-  palette: Palette,
-  F: FlagBits,
-  policy: RenderPolicy = identityPolicy,
-  boldToBright = false,
-): DrawOp[] {
-  const ops: DrawOp[] = [];
-  const { spans } = frame;
-  for (let s = 0; s < spans.length; s += SPAN_STRIDE) {
-    const line = spans[s]!;
-    const left = spans[s + 1]!;
-    const cellOffset = spans[s + 3]!;
-    const count = spans[s + 4]!;
-    for (let i = 0; i < count; i++) {
-      const idx = cellOffset + i;
-      const flags = frame.flags[idx]!;
-      // Trailing half of a wide glyph — the body cell already covers this column.
-      if ((flags & F.wide_char_spacer) !== 0) continue;
-      // A nonzero `extra` is a 1-based index into the frame's grapheme clusters;
-      // it holds the full combining sequence the single base codepoint can't.
-      const extra = frame.extra[idx]!;
-      const code = frame.codepoints[idx]!;
-      const symbol =
-        extra !== 0 ? frame.sideTable[extra - 1]! : code === 0 ? " " : String.fromCodePoint(code);
-      ops.push(cellToDrawOp(left + i, line, symbol, frame.fg[idx]!, frame.bg[idx]!, flags, palette, F, policy, boldToBright));
-    }
-  }
-  return ops;
-}
-
 /**
  * Map a single resolved cell to a {@link DrawOp}: resolve its colour refs, run
- * the {@link RenderPolicy}, and unpack the style flags. Shared by
- * {@link frameToDrawOps} (frame spans) and the cell mirror (scroll-shifted
- * cells). The caller skips `wide_char_spacer` cells before calling.
+ * the {@link RenderPolicy}, and unpack the style flags. Used by the cell mirror
+ * (ADR-0011) to decode scroll-shifted cells for the accessible view. The caller
+ * skips `wide_char_spacer` cells before calling.
  */
 export function cellToDrawOp(
   x: number,

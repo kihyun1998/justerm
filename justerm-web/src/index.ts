@@ -15,9 +15,9 @@ export { rendererNotifyingSink, routeWheel, Terminal, wheelGoesToApp, wheelScrol
 export type { TerminalOptions, WheelAction } from "./terminal";
 export { JustermRenderer } from "./justerm-renderer";
 export type { JustermRendererOptions, Theme } from "./justerm-renderer";
-// Render core — the pure DecodedFrame → draw-op mapping (testable, no GL/wasm).
-// Exposed so alternate renderers (or #115's render policy) can reuse it.
-export { frameToDrawOps, identityPolicy } from "./render-core";
+// Render core — the pure per-cell decode the accessible-view cell mirror uses
+// (ADR-0011). Colour resolve + compositing now live in the renderer's wasm.
+export { identityPolicy } from "./render-core";
 export type { DrawOp, FlagBits, RenderPolicy } from "./render-core";
 // Scroll intent — wheel events → scrollback line delta (xterm consumeWheelEvent).
 export { WheelScroller } from "./scroll-control";
@@ -25,8 +25,8 @@ export type { ScrollOptions, WheelContext, WheelLike } from "./scroll-control";
 // Viewport cell mirror — applies scroll-op damage for frame mode (ADR-0011).
 export { CellMirror } from "./cell-mirror";
 export { cellToDrawOp } from "./render-core";
-// Cursor — blink state (web policy) + cell-invert/underline overlay.
-export { BLINK_INTERVAL, CursorBlink, CursorShape, cursorOp } from "./cursor";
+// Cursor — blink state (web policy). The renderer draws the cursor natively (#270).
+export { BLINK_INTERVAL, CursorBlink } from "./cursor";
 // Scrollbar — custom DOM slider over the canvas (thumb math + drag → offset).
 export { dragToDisplayOffset, Scrollbar, scrollbarMetrics } from "./scrollbar";
 export type { ScrollbarMetrics, ScrollbarOptions, ScrollPosition } from "./scrollbar";
@@ -106,11 +106,6 @@ export type {
   RulerMark,
   RulerPosition,
 } from "./decorations";
-// Decoration rendering (#120 S2) — per-cell query + layered colour composition
-// (base < bottom decoration < selection/match highlight < top decoration). Pure;
-// a custom renderer may compose decorations this way (justerm-renderer does it in wasm).
-export { composeCellColors, decorationAt } from "./decoration-render";
-export type { ComposeCellColorsArgs } from "./decoration-render";
 // Screen-reader-active gate (#161) — the host injects SR presence (a browser
 // can't detect it); while inactive, the a11y announce/signal sinks no-op. Share
 // one instance across #119 + #160 so a single toggle governs both.

@@ -7,7 +7,7 @@ const DEL = "\x7f";
 /**
  * IME composition → committed text, ported from xterm's `CompositionHelper`.
  *
- * beamterm's canvas can't receive composition events, so a hidden `<textarea>`
+ * the renderer's canvas can't receive composition events, so a hidden `<textarea>`
  * over the cursor is the real input target; this controller is driven by that
  * textarea's composition events and reads its VALUE (never the event `data`) to
  * recover the committed text. `data` is unreliable on Chromium, and for Korean an

@@ -1,28 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { CursorBlink, cursorOp } from "../src/cursor";
-import type { DrawOp } from "../src/render-core";
-
-// Cursor shapes (decoder cursorShape): 0 = Block, 1 = Underline, 2 = Bar.
-const BLOCK = 0;
-const UNDERLINE = 1;
-
-const baseOp = (over: Partial<DrawOp> = {}): DrawOp => ({
-  x: 3,
-  y: 2,
-  symbol: "a",
-  fg: 0xffffff,
-  bg: 0x000000,
-  bold: false,
-  italic: false,
-  underline: false,
-  strikethrough: false,
-  blendHighlight: false,
-  fgUndimmed: 0,
-  dim: false,
-  excludeFromContrast: false,
-  inverseDefaultBg: false,
-  ...over,
-});
+import { CursorBlink } from "../src/cursor";
 
 describe("CursorBlink", () => {
   // xterm BLINK_INTERVAL = 600ms: the cursor shows for the first interval, hides
@@ -71,33 +48,5 @@ describe("CursorBlink", () => {
 
     blink.setFocused(true);
     expect(blink.isVisible(600)).toBe(false); // focused again → blinks
-  });
-});
-
-describe("cursorOp", () => {
-  // beamterm has no cursor primitive, so a block cursor is a cell-invert: the
-  // cell is filled with the theme cursor colour and the glyph is drawn in the
-  // cell's original background so it stays legible (penterm applyCursor).
-  it("inverts the cell for a block cursor", () => {
-    const op = cursorOp(baseOp({ fg: 0xffffff, bg: 0x222222 }), BLOCK, 0xff8800);
-
-    expect({ symbol: op.symbol, fg: op.fg, bg: op.bg }).toEqual({
-      symbol: "a",
-      fg: 0x222222, // original bg → glyph
-      bg: 0xff8800, // cursor colour → cell
-    });
-  });
-
-  // An underline cursor keeps the cell background but draws in the cursor colour
-  // with an underline. beamterm is cell-level (no sub-cell bar), so the glyph
-  // takes the cursor colour too — the underline is the cursor signal.
-  it("underlines in the cursor colour for an underline cursor", () => {
-    const op = cursorOp(baseOp({ fg: 0xffffff, bg: 0x222222 }), UNDERLINE, 0xff8800);
-
-    expect({ fg: op.fg, bg: op.bg, underline: op.underline }).toEqual({
-      fg: 0xff8800, // cursor colour
-      bg: 0x222222, // original bg kept
-      underline: true,
-    });
   });
 });
