@@ -134,8 +134,8 @@ export interface TerminalOptions {
  * and, given {@link TerminalOptions}, to the DOM (input capture + wheel + cursor
  * blink + focus). It owns no transport and no GL — both are injected. Each frame
  * from the source is handed to the renderer and presented. This keeps the widget
- * source-agnostic (frame mode / in-wasm) and renderer-agnostic (real beamterm /
- * fake), which is what makes it testable without a backend or a canvas.
+ * source-agnostic (frame mode / in-wasm) and renderer-agnostic (the real
+ * justerm-renderer / a fake), which is what makes it testable without a backend or a canvas.
  *
  * The DOM attachment in {@link mount} is browser-only glue (not unit-tested, like
  * {@link captureInput}); the decisions it makes — wheel routing ({@link routeWheel})

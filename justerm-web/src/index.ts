@@ -13,8 +13,8 @@ export type { EventHandlers, TermEvent } from "./events";
 // are pure + exported for reuse.
 export { rendererNotifyingSink, routeWheel, Terminal, wheelGoesToApp, wheelScrollTarget } from "./terminal";
 export type { TerminalOptions, WheelAction } from "./terminal";
-export { BeamtermRenderer } from "./beamterm-renderer";
-export type { BeamtermOptions, Theme } from "./beamterm-renderer";
+export { JustermRenderer } from "./justerm-renderer";
+export type { JustermRendererOptions, Theme } from "./justerm-renderer";
 // Render core — the pure DecodedFrame → draw-op mapping (testable, no GL/wasm).
 // Exposed so alternate renderers (or #115's render policy) can reuse it.
 export { frameToDrawOps, identityPolicy } from "./render-core";
@@ -108,7 +108,7 @@ export type {
 } from "./decorations";
 // Decoration rendering (#120 S2) — per-cell query + layered colour composition
 // (base < bottom decoration < selection/match highlight < top decoration). Pure;
-// a custom renderer composes decorations the same way BeamtermRenderer does.
+// a custom renderer may compose decorations this way (justerm-renderer does it in wasm).
 export { composeCellColors, decorationAt } from "./decoration-render";
 export type { ComposeCellColorsArgs } from "./decoration-render";
 // Screen-reader-active gate (#161) — the host injects SR presence (a browser

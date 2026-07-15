@@ -8,9 +8,9 @@ importers:
 
   .:
     dependencies:
-      '@beamterm/renderer':
-        specifier: ^1.0.0
-        version: 1.0.0
+      justerm-renderer:
+        specifier: ^0.1.0
+        version: 0.1.0
       justerm-wasm-decode:
         specifier: ^0.7.0
         version: 0.7.0
@@ -41,10 +41,6 @@ importers:
         version: 2.1.9(@types/node@26.1.1)
 
 packages:
-
-  '@beamterm/renderer@1.0.0':
-    resolution: {integrity: sha512-Uct8zOjj8aR/63D+fl3Hv9D01HFCMzIvAqtkZk+lgAendUMid5loccrhtQkEjqUWDUMgu54SDLhnROnUj8sCFw==}
-    engines: {node: '>=16.0.0'}
 
   '@esbuild/aix-ppc64@0.21.5':
     resolution: {integrity: sha512-1SDgH6ZSPTlggy1yI6+Dbkiz8xzpHJEVAlF/AM1tHPLsf5STom9rwtjE4hKAF20FfXXNTFqEYXyJNWh1GiZedQ==}
@@ -721,6 +717,9 @@ packages:
     resolution: {integrity: sha512-34wB/Y7MW7bzjKRjUKTa46I2Z7eV62Rkhva+KkopW7Qvv/OSWBqvkSY7vusOPrNuZcUG3tApvdVgNB8POj3SPw==}
     engines: {node: '>=10'}
 
+  justerm-renderer@0.1.0:
+    resolution: {integrity: sha512-yxyQ56o/30M6hai+eKBNltfSlr/dyxS98YktuZncZ2951pOjZVF0bJgNkA5Jc8dETcryBti2TjNR7bhUt+lVUg==}
+
   justerm-wasm-decode@0.7.0:
     resolution: {integrity: sha512-DcZ46tAzXJc9xOBU7eFqMLDc8OC9rsU16yts8YJcGlxXDZEJw3JMkayE5CZtuZ9WfGk4D+gycC5kDNLxenlyEA==}
 
@@ -1038,8 +1037,6 @@ packages:
     hasBin: true
 
 snapshots:
-
-  '@beamterm/renderer@1.0.0': {}
 
   '@esbuild/aix-ppc64@0.21.5':
     optional: true
@@ -1512,6 +1509,8 @@ snapshots:
     optional: true
 
   joycon@3.1.1: {}
+
+  justerm-renderer@0.1.0: {}
 
   justerm-wasm-decode@0.7.0: {}
 
