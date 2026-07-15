@@ -23,6 +23,7 @@ pub mod color;
 pub mod context_loss;
 pub mod contrast;
 pub mod cursor;
+pub mod decoration;
 pub mod dpr;
 pub mod emoji;
 pub mod frame;

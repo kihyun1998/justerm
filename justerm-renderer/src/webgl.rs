@@ -5,7 +5,8 @@
 //! and uploading new glyphs on demand), packs one instance per cell, and `render`
 //! composites each glyph's coverage from the atlas over its background, plus SGR attrs
 //! (#267: bold/italic font variants, underline/strikethrough lines, inverse fg/bg swap; #272:
-//! bold→bright + dim + minimum-contrast + selection fg + tile-glyph colours) and double-width glyphs (#268: a wide glyph splits across two atlas
+//! bold→bright + dim + minimum-contrast + selection fg + tile-glyph colours; #393: marker decoration
+//! bg/fg overrides) and double-width glyphs (#268: a wide glyph splits across two atlas
 //! slots / two grid cells).
 //! ASCII (`0x20..=0x7E`) is pre-rasterised. Colour emoji (#284) + clusters (#285) follow.
 //!
@@ -29,6 +30,7 @@ use crate::cursor::{
     Cursor, DEFAULT_CURSOR_CONTRAST, THICKNESS, cursor_rects, cursor_span_at, cursor_thickness,
     guarded_cursor_colors, shape_from_id, shape_id,
 };
+use crate::decoration::parse_decorations;
 use crate::dpr::{cells_that_fit, css_px, dpr_changed, grid_px};
 use crate::emoji::is_emoji_text;
 use crate::frame::{Frame, INSTANCE_FLOATS, pack_instances};
@@ -460,6 +462,10 @@ pub struct JustermRenderer {
     /// Force a SELECTED cell's fg to this packed `0xRRGGBB` (#227/#272, xterm's `selectionForeground`).
     /// `None` = keep each cell's own fg (default). Selection only, never a search match.
     selection_fg: Option<u32>,
+    /// Marker-anchored decoration rects this frame (#393), the flat `DECORATION_STRIDE` wire the
+    /// consumer projects each frame. Parsed at pack time; empty = no decorations. Owned so a re-pack
+    /// can borrow it. Updated by [`set_decorations`](Self::set_decorations).
+    decoration_spans: Vec<u32>,
     /// The last blink phase packed, so a [`set_overlay`](Self::set_overlay) re-pack (no new frame)
     /// keeps the cursor/blink cells in the phase the render loop last drove.
     last_blink_on: bool,
@@ -662,6 +668,7 @@ impl JustermRenderer {
             bold_to_bright: true, // xterm's drawBoldTextInBrightColors default (#223)
             min_contrast: 1.0,    // xterm's minimumContrastRatio default: off (#225)
             selection_fg: None,   // no selectionForeground override by default (#227)
+            decoration_spans: Vec::new(), // no marker decorations by default (#393)
             last_blink_on: true,
             ctx_loss,
         };
@@ -1542,7 +1549,16 @@ impl JustermRenderer {
             min_contrast: self.min_contrast,
             selection_fg: self.selection_fg,
         };
-        self.instances = pack_instances(&frame, &self.palette, blink_on, &overlay, &policy);
+        // #393: the consumer-projected marker decorations for this frame (parsed from the flat wire).
+        let decorations = parse_decorations(&self.decoration_spans);
+        self.instances = pack_instances(
+            &frame,
+            &self.palette,
+            blink_on,
+            &overlay,
+            &policy,
+            &decorations,
+        );
         self.instance_count = count as i32;
         self.upload_instances();
         Ok(())
@@ -1688,6 +1704,19 @@ impl JustermRenderer {
     #[wasm_bindgen(js_name = setBoldToBright)]
     pub fn set_bold_to_bright(&mut self, enabled: bool) -> Result<(), JsValue> {
         self.bold_to_bright = enabled;
+        self.repack_from_grid()
+    }
+
+    /// Set the marker-anchored decorations for this frame (#393/#120). `spans` is the flat
+    /// `DECORATION_STRIDE` (`row, left, right, layer, bg_ref, fg_ref`) directory the consumer projects
+    /// from its `DecorationRegistry` + core's markers — `layer` `0` = bottom (under the highlight) /
+    /// `1` = top (over it), `bg_ref`/`fg_ref` tagged colour refs the renderer resolves, or the wire's
+    /// `NO_REF` sentinel for "no override". Pass an empty array to clear. Consumer-projected (the model
+    /// is the consumer's; the renderer only composites, ADR-0017). Re-packs the retained grid; takes
+    /// effect on the next [`render`](Self::render).
+    #[wasm_bindgen(js_name = setDecorations)]
+    pub fn set_decorations(&mut self, spans: Vec<u32>) -> Result<(), JsValue> {
+        self.decoration_spans = spans;
         self.repack_from_grid()
     }
 
