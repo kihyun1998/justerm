@@ -479,6 +479,15 @@ pub struct JustermRenderer {
     /// The last blink phase packed, so a [`set_overlay`](Self::set_overlay) re-pack (no new frame)
     /// keeps the cursor/blink cells in the phase the render loop last drove.
     last_blink_on: bool,
+    /// Set by every state mutation that changes the packed instance buffer (overlay, decorations,
+    /// colour policy, palette, `apply_damage`); cleared by the re-pack in [`render`](Self::render).
+    /// Lets a frame that sets overlay + decorations + damage re-pack **once** at render instead of
+    /// three times, one per setter (#421). The direct `apply_frame` path packs immediately (no grid
+    /// to defer to) and clears it.
+    needs_repack: bool,
+    /// Count of `resolve_and_pack` runs — a diagnostic the proofs read to assert render packs once
+    /// per frame, not once per setter (#421). Wraps harmlessly; only deltas are meaningful.
+    pack_count: u32,
     /// Canvas context-loss listeners + the shared lost/pending-rebuild state (#269). `render`
     /// consults it every frame: skip while lost, rebuild once restored, otherwise draw.
     ctx_loss: ContextLossHandler,
@@ -683,6 +692,8 @@ impl JustermRenderer {
             selection_fg: None,   // no selectionForeground override by default (#227)
             decoration_spans: Vec::new(), // no marker decorations by default (#393)
             last_blink_on: true,
+            needs_repack: false,
+            pack_count: 0,
             ctx_loss,
         };
         renderer.prebake_ascii()?;
@@ -1515,7 +1526,11 @@ impl JustermRenderer {
             flags,
             clusters: &[],
         };
-        self.resolve_and_pack(&cells, bg, fg, blink_on)
+        // The direct path packs immediately — it retains no grid for `render` to re-pack from, so
+        // it cannot defer (#421). Clear the dirty flag: this pack IS the current state.
+        let result = self.resolve_and_pack(&cells, bg, fg, blink_on);
+        self.needs_repack = false;
+        result
     }
 
     /// Resolve each cell's glyph slot then pack the instance buffer. Shared by [`apply_frame`]
@@ -1530,6 +1545,7 @@ impl JustermRenderer {
         fg: &[u32],
         blink_on: bool,
     ) -> Result<(), JsValue> {
+        self.pack_count = self.pack_count.wrapping_add(1); // #421 diagnostic — see `packs()`
         // The same multiply `resolve_frame` guards, evaluated one frame earlier — so guarding only
         // the pure layer left the panic exactly where it was (#355). This is the first arithmetic a
         // JS-supplied `cols`/`rows` touches; `resolve_frame` re-checks it because it is a public,
@@ -1760,16 +1776,14 @@ impl JustermRenderer {
                 "justerm-renderer: apply_damage refused a malformed frame: {e:?}"
             )));
         }
-        let cells = Cells {
-            cols,
-            rows,
-            codepoints: grid.codepoints(),
-            flags: grid.flags(),
-            clusters: grid.clusters(),
-        };
-        let result = self.resolve_and_pack(&cells, grid.bg(), grid.fg(), blink_on);
+        // Defer the pack to `render` (#421): the frame's overlay/decoration setters, which the
+        // consumer calls around this, would otherwise each re-pack the same grid. The scatter above
+        // is done, so store the blink phase the deferred `repack_from_grid` reads (`last_blink_on`),
+        // put the grid back, and mark dirty. A pack error now surfaces at `render`, not here.
+        self.last_blink_on = blink_on;
         self.grid = Some(grid);
-        result
+        self.needs_repack = true;
+        Ok(())
     }
 
     /// Set the background cell opacity: `0` = fully transparent, `1` = opaque (default). The
@@ -1785,12 +1799,13 @@ impl JustermRenderer {
     /// `drawBoldTextInBrightColors`. A bold `Indexed(0..=7)` foreground resolves to its `8..=15`
     /// bright variant; `Rgb`/`Indexed(8..=255)` foregrounds and non-bold cells are unaffected. On by
     /// default (xterm's default). Consumer policy (ADR-0017): the mechanism (index remap at resolve)
-    /// is the renderer's, the on/off is the consumer's. Re-packs from the retained grid so a live
-    /// toggle shows without a new frame; takes effect on the next [`render`](Self::render).
+    /// is the renderer's, the on/off is the consumer's. Marks the buffer dirty; the next
+    /// [`render`](Self::render) re-packs (#421), so a live toggle shows without a new frame.
     #[wasm_bindgen(js_name = setBoldToBright)]
     pub fn set_bold_to_bright(&mut self, enabled: bool) -> Result<(), JsValue> {
         self.bold_to_bright = enabled;
-        self.repack_from_grid()
+        self.needs_repack = true; // defer the pack to render (#421)
+        Ok(())
     }
 
     /// Set the marker-anchored decorations for this frame (#393/#120). `spans` is the flat
@@ -1800,23 +1815,25 @@ impl JustermRenderer {
     /// resolved its theme before pushing — unlike a *cell* colour, which arrives as a theme-agnostic
     /// ref for the renderer to resolve), or the wire's `NO_REF` sentinel for "no override". Pass an
     /// empty array to clear. Consumer-projected (the model is the consumer's; the renderer only
-    /// composites, ADR-0017). Re-packs the retained grid; takes effect on the next
-    /// [`render`](Self::render).
+    /// composites, ADR-0017). Marks the buffer dirty; the next [`render`](Self::render)
+    /// re-packs (#421).
     #[wasm_bindgen(js_name = setDecorations)]
     pub fn set_decorations(&mut self, spans: Vec<u32>) -> Result<(), JsValue> {
         self.decoration_spans = spans;
-        self.repack_from_grid()
+        self.needs_repack = true; // defer the pack to render (#421)
+        Ok(())
     }
 
     /// Set (or clear) the selection foreground override (#227/#272) — xterm's `selectionForeground`.
     /// A packed `0xRRGGBB` forces the fg of every **selected** cell (never a search match) to that
     /// colour; it still flows through the minimum-contrast pass. Pass `undefined` to clear it and keep
-    /// each cell's own fg (the default). Consumer policy (#115), focus-independent. Re-packs the
-    /// retained grid; takes effect on the next [`render`](Self::render).
+    /// each cell's own fg (the default). Consumer policy (#115), focus-independent. Marks the buffer
+    /// dirty; the next [`render`](Self::render) re-packs (#421).
     #[wasm_bindgen(js_name = setSelectionForeground)]
     pub fn set_selection_foreground(&mut self, color: Option<u32>) -> Result<(), JsValue> {
         self.selection_fg = color.map(|c| c & 0xFF_FFFF);
-        self.repack_from_grid()
+        self.needs_repack = true; // defer the pack to render (#421)
+        Ok(())
     }
 
     /// Set the minimum WCAG fg/bg contrast ratio (#225/#272) — xterm's `minimumContrastRatio`. Below
@@ -1825,8 +1842,8 @@ impl JustermRenderer {
     /// cell uses half the ratio, so it stays visibly dim rather than being corrected to full contrast.
     /// Consumer policy (ADR-0017): the mechanism (the WCAG adjustment on the resolved RGB) is the
     /// renderer's, the number is the consumer's. Default `1.0` = off (xterm's default). Clamped to
-    /// `[1, 21]`; re-packs the retained grid so a live change shows; takes effect on the next
-    /// [`render`](Self::render).
+    /// `[1, 21]`; marks the buffer dirty so the next [`render`](Self::render) re-packs (#421) and a
+    /// live change shows.
     #[wasm_bindgen(js_name = setMinimumContrastRatio)]
     pub fn set_minimum_contrast_ratio(&mut self, ratio: f32) -> Result<(), JsValue> {
         self.min_contrast = if ratio.is_finite() {
@@ -1834,7 +1851,8 @@ impl JustermRenderer {
         } else {
             1.0
         };
-        self.repack_from_grid()
+        self.needs_repack = true; // defer the pack to render (#421)
+        Ok(())
     }
 
     /// Swap the palette + default fg/bg for a **live theme change** (#405) — the renderer-side of a
@@ -1844,9 +1862,9 @@ impl JustermRenderer {
     /// (ADR-0017): the palette *values* are the consumer's (theme-agnostic core), the *mechanism*
     /// (re-resolve every retained cell against the new palette) is the renderer's.
     ///
-    /// Re-packs the retained grid so the change shows with no new frame — mirrors [`set_overlay`]'s
-    /// `repack_from_grid` (a no-op until the first `apply_damage`; the direct `apply_frame` path
-    /// reflects the new palette on its next call). Takes effect on the next [`render`](Self::render):
+    /// Marks the buffer dirty so the next [`render`](Self::render) re-packs (#421) and the change
+    /// shows with no new frame — like [`set_overlay`] (a no-op until the first `apply_damage`; the
+    /// direct `apply_frame` path reflects the new palette on its next call). At the next render:
     /// its clear colour reads `default_bg` fresh each frame, so only the `u_default_bg` uniform — set
     /// once at construction for the #298 translucency test — needs an explicit re-push here.
     ///
@@ -1875,7 +1893,8 @@ impl JustermRenderer {
             self.gl.use_program(Some(self.program));
             self.gl.uniform_3_f32(Some(&u_default_bg), dbr, dbg, dbb);
         }
-        self.repack_from_grid()
+        self.needs_repack = true; // defer the pack to render (#421)
+        Ok(())
     }
 
     /// Set the selection / search highlight overlay (#271): the two span directories (stride-3
@@ -1885,10 +1904,10 @@ impl JustermRenderer {
     /// background so its own colour shows through, or paints it solid over the default background; a
     /// selection wins over a match on a cell both cover.
     ///
-    /// Re-packs immediately so a selection dragged with no new frame is visible — possible only on the
+    /// Marks the buffer dirty so the next [`render`](Self::render) re-packs (#421) — a selection
+    /// dragged with no new frame shows because the consumer renders after. Possible only on the
     /// damage path, which retains the dense grid; the direct `apply_frame` path reflects the new
-    /// overlay on its next call. Pass empty span lists to clear the highlight. Takes effect on the
-    /// next [`render`](Self::render).
+    /// overlay on its next call. Pass empty span lists to clear the highlight.
     ///
     /// **Contract — the spans are consumer-pushed, not frame-carried (same as [`set_cursor`]).** They
     /// are viewport-relative and the decoder RE-PROJECTS them every frame, so a scroll or resize moves
@@ -1913,13 +1932,16 @@ impl JustermRenderer {
             selection_bg,
             match_bg,
         };
-        self.repack_from_grid()
+        self.needs_repack = true; // defer the pack to render (#421)
+        Ok(())
     }
 
-    /// Re-pack the instance buffer from the retained dense grid after the overlay changed but no new
-    /// frame arrived (#271). A no-op until the first `apply_damage` (the direct `apply_frame` path
-    /// keeps no columns to re-pack from). Mirrors `apply_damage`'s tail: take the grid out so the
-    /// `&mut self` pack does not borrow-conflict, then put it back.
+    /// Re-pack the instance buffer from the retained dense grid — the single pack [`render`] runs when
+    /// a mutation dirtied the buffer (#421; #271 was the original overlay-only re-pack). A no-op until
+    /// the first `apply_damage` (the direct `apply_frame` path keeps no columns to re-pack from). Takes
+    /// the grid out so the `&mut self` pack does not borrow-conflict, then puts it back.
+    ///
+    /// [`render`]: Self::render
     fn repack_from_grid(&mut self) -> Result<(), JsValue> {
         let Some(grid) = self.grid.take() else {
             return Ok(());
@@ -2037,8 +2059,24 @@ impl JustermRenderer {
             }
             FrameAction::Draw => {}
         }
+        // Pack once, here, if a mutation since the last render dirtied the buffer (#421) — the
+        // context is live past the match above (Skip returned, Rebuild restored). A frame that set
+        // overlay + decorations + `apply_damage` marked dirty three times but re-packs once. On a
+        // pack error the flag stays set, so the next render retries (self-healing).
+        if self.needs_repack {
+            self.repack_from_grid()?;
+            self.needs_repack = false;
+        }
         self.draw();
         Ok(())
+    }
+
+    /// Number of instance-buffer packs run so far (#421 diagnostic). The consumer/proofs read the
+    /// **delta** across an operation to assert `render` packs once per frame, not once per setter.
+    /// Not a stable API surface — a counter for verification, not a rendering control.
+    #[wasm_bindgen(js_name = packs)]
+    pub fn packs(&self) -> u32 {
+        self.pack_count
     }
 
     /// Issue the frame's GL commands. The caller has established that the context is live and its

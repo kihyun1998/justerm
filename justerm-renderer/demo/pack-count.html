@@ -1,0 +1,62 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>justerm-renderer proof — one pack per render, not one per setter (#421)</title>
+<style>
+  body { margin: 0; background: #000; }
+  #c { display: block; image-rendering: pixelated; }
+</style>
+<!--
+  #421: setOverlay / setDecorations / apply_damage each USED to re-pack the retained grid, so a
+  frame that set all three ran resolve_and_pack three times where one would do. They now just store
+  state + mark dirty, and render() packs once. This reads the packs() diagnostic counter to prove
+  the batching directly — pixel correctness is covered by the other proofs (selection/decoration/…).
+
+  No readPixels: the observable is the pack COUNT, not the image. Swept dpr 1/1.1/1.5/2 (the count
+  is dpr-independent, but the runner drives every page at each ratio).
+
+  Build: wasm-pack build --target web --dev --out-dir pkg
+-->
+<canvas id="c" width="48" height="16"></canvas>
+<script type="module">
+  import init, { JustermRenderer } from "../pkg/justerm_renderer.js";
+  await init();
+
+  const COLS = 3, ROWS = 1, N = COLS * ROWS;
+  const SPACE = 0x20, NO_REF = 0xffffffff >>> 0;
+  const r = new JustermRenderer("#c", new Uint32Array(256), 0xffffff, 0x000000);
+
+  const header = new Uint32Array([COLS, ROWS, 0 /* Full */, 0, 0, 0, 0, 1 /* blink_on */]);
+  const spans = new Uint32Array([0, 0, COLS - 1, 0, N]);
+  const spaces = new Uint32Array(N).fill(SPACE);
+  const zeros = new Uint32Array(N);
+  const applyDamage = () => r.apply_damage(header, spans, spaces, zeros, new Uint32Array(N), new Uint16Array(N), new Uint16Array(N), []);
+
+  // Baseline: one frame through the retained-grid path, presented.
+  r.resize(COLS, ROWS);
+  applyDamage();
+  r.render();
+  const p0 = r.packs();
+
+  // A single frame that touches all three re-pack triggers, then ONE render.
+  r.setOverlay(new Uint32Array([0, 0, 0]), new Uint32Array([]), 0x3060c0, 0x6e5c00);
+  r.setDecorations(new Uint32Array([0, 0, 0, 0, 0x804000, NO_REF]));
+  applyDamage();
+  const pAfterMutations = r.packs();
+  r.render();
+  const pAfterRender = r.packs();
+
+  const checks = {};
+  // The three mutations pack NOTHING on their own — the work is deferred.
+  checks.mutationsDeferTheirPack = pAfterMutations === p0;
+  // render() packs EXACTLY once for the whole frame (the #421 fix — was three).
+  checks.renderPacksExactlyOnce = pAfterRender === p0 + 1;
+  // A render with no intervening mutation packs nothing (the dirty flag was cleared).
+  r.render();
+  checks.aCleanRenderPacksNothing = r.packs() === pAfterRender;
+
+  window.__proof = {
+    ok: Object.values(checks).every(Boolean), checks,
+    dpr: devicePixelRatio, p0, pAfterMutations, pAfterRender, finalPacks: r.packs(),
+  };
+  window.__done = true;
+</script>
