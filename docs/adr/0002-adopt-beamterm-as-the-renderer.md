@@ -1,15 +1,16 @@
 # ADR-0002: Adopt `beamterm` as the renderer (not a hand-written one)
 
-Status: accepted (2026-06-16)
+Status: superseded by ADR-0018 (2026-07-15) — accepted 2026-06-16
 
 Note: the renderer runs in the *consumer's* webview, not in justerm. This ADR records the decision
-because it shapes justerm's output contract (what the engine must produce to feed beamterm).
+because it shaped justerm's output contract (what the engine must produce to feed the renderer) — that
+contract survives the supersession; only the renderer's *provenance* changed.
 
-Note (superseding, in flight): **ADR-0018** replaces beamterm with the first-party `justerm-renderer`.
-That supersession is **not yet final** — beamterm stays the *active* renderer until the switch
-([#273](https://github.com/kihyun1998/justerm/issues/273)); this ADR is formally marked superseded, and
-ADR-0018 accepted, in the docs flip ([#274](https://github.com/kihyun1998/justerm/issues/274)). Until
-then this decision is still in force.
+Note (superseded — final): **ADR-0018** replaced beamterm with the first-party `justerm-renderer`. The
+supersession is now **final**: the `justerm-web` switch landed ([#273](https://github.com/kihyun1998/justerm/issues/273))
+and this docs flip ([#274](https://github.com/kihyun1998/justerm/issues/274)) marks it superseded.
+beamterm is no longer the active renderer — the record below is retained for the rationale that shaped
+the output contract, not as a live decision.
 
 ## Context
 

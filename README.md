@@ -9,8 +9,8 @@ The **`justerm` family** — a pure terminal **engine**, its bindings, a browser
 first-party renderer. Feed a VT byte stream in; get terminal *state* and *damage* out. The **engine**
 (`justerm-core`) does no I/O, no IPC, no rendering, and is theme-agnostic. The family has grown from an
 engine-only library into a **first-party full-stack** terminal (ADR-0018): the renderer — once the
-third-party [`beamterm`](https://github.com/junkdog/beamterm) (WebGL2) — is being reimplemented
-in-family as [`justerm-renderer`](./justerm-renderer). beamterm still renders until the switch lands
+third-party [`beamterm`](https://github.com/junkdog/beamterm) (WebGL2) — is now the first-party
+[`justerm-renderer`](./justerm-renderer), which `justerm-web` switched onto
 ([#273](https://github.com/kihyun1998/justerm/issues/273)). First consumer: PenTerm.
 
 > `justerm` is the family umbrella, not a single crate. The core engine is **`justerm-core`**. (Before
@@ -24,7 +24,7 @@ in-family as [`justerm-renderer`](./justerm-renderer). beamterm still renders un
 | [`justerm-core`](./justerm-core) | [crates.io](https://crates.io/crates/justerm-core) · [docs.rs](https://docs.rs/justerm-core) | The engine: VT stream → grid + scrollback + cursor + selection → viewport snapshot, damage, scroll ops, text. |
 | [`justerm-wasm-decode`](./justerm-wasm-decode) | [npm](https://www.npmjs.com/package/justerm-wasm-decode) | The canonical web decoder — `justerm-core`'s wire-format `decode` compiled to WASM, so a web consumer shares one decoder with the native backend (no TS mirror). Version-locked to the core. |
 | [`justerm-web`](./justerm-web) | npm (separate) | Browser terminal **widget**: consumes a decoded frame and drives the renderer. Frame mode now (decode wire frames in the consumer), in-wasm later — both behind a `FrameSource` seam. Ships to npm on its own version track. |
-| [`justerm-renderer`](./justerm-renderer) | wasm (`wasm-pack`) | First-party **WebGL2 renderer** (Rust → wasm, `glow`): consumes a decoded frame + an injected palette and paints one instanced draw call. Reimplements `beamterm` in-family (ADR-0018, Epic #258). Under construction; outside the cargo workspace. |
+| [`justerm-renderer`](./justerm-renderer) | wasm (`wasm-pack`) | First-party **WebGL2 renderer** (Rust → wasm, `glow`): consumes a decoded frame + an injected palette and paints one instanced draw call. Reimplements `beamterm` in-family (ADR-0018, Epic #258); the active renderer since the #273 switch. Outside the cargo workspace. |
 | [`justerm-facade`](https://crates.io/crates/justerm) | [crates.io](https://crates.io/crates/justerm) | One-shot `justerm` 0.5.1 tombstone re-exporting `justerm-core` for the old crate name (ADR-0010). Not updated. |
 
 Reserved for future work: `justerm-wasm-engine` (the in-wasm `feed` binding, ADR-0008) — the browser

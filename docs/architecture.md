@@ -101,7 +101,7 @@ Designed for a consumer to ship over its own transport (e.g. a Tauri Channel) an
 typed arrays (a fixed stride → one contiguous view, no per-field parse). The engine provides the
 *format* **and both directions** (`encode` a damage frame / `decode` it — the round-trip is the test);
 *transport* is the consumer's job. Rationale — binary fixed-width vs Mosh's protobuf baseline-diff vs
-xterm.js's escape-sequence re-emit (which a non-parsing GPU renderer like beamterm cannot consume):
+xterm.js's escape-sequence re-emit (which a non-parsing GPU renderer like justerm-renderer cannot consume):
 **ADR-0005**.
 
 A **frame** serializes one damage cycle (`damage()` + `scroll_delta()`):
@@ -151,14 +151,15 @@ deferred behavior) it tracks — then add what you find here.** Seeds (caught in
 - **Background Color Erase (BCE).** Erase (ED/EL) fills cleared cells with the *current SGR
   background*, not default. [#8; note in #2 if deferred]
 - **Cursor-move damage (the previous cursor cell is hidden damage).** Moving the cursor changes *no
-  cell content*, so a content-only damage model records nothing — yet the rendered output changed: the
-  consumer draws the cursor by **cell-invert** (beamterm has no cursor primitive — it consumes flat
-  `CellData`, so the caller swaps fg/bg on the cursor cell; see "How a consumer integrates"). With
-  incremental (`Partial`) damage, a pure cursor move then leaves the old cell still inverted (a ghost)
-  and the new cell never inverted. The engine must damage **both the old and new cursor cells** on a
-  move — Alacritty tracks this as `TermDamageState::last_cursor` (damages the cell the cursor left +
-  the cell it lands on). This is damage-layer hidden state a "cursor is just (row, col)" model omits;
-  it is the engine's job (it owns damage), *not* "drawing" (which stays the consumer's). [#38]
+  cell content*, so a content-only damage model records nothing — yet the rendered output changed. How
+  the cursor is *drawn* is the renderer's choice: justerm-renderer draws it as a **native overlay**
+  (#270), while a renderer with no cursor primitive would **cell-invert** (swap fg/bg on the cursor
+  cell). The engine can't assume either, so it treats a cursor move as damage to **both the old and new
+  cursor cells**: with incremental (`Partial`) damage a cell-invert renderer would otherwise leave the
+  old cell inverted (a ghost) and the new cell un-inverted. Alacritty tracks this as
+  `TermDamageState::last_cursor` (damages the cell the cursor left + the cell it lands on). This is
+  damage-layer hidden state a "cursor is just (row, col)" model omits; it is the engine's job (it owns
+  damage), *not* "drawing" (which stays the renderer's). [#38]
 - **Tab stops are explicit per-column state, not a fixed modulo.** A bool-per-column set: HTS
   (ESC H) sets a stop at the cursor, TBC (CSI g) clears one (param 0) or all (param 3), and HT
   advances to the next *set* stop — or the last column if none remain (no wrap). Default = every
@@ -354,10 +355,10 @@ deferred behavior) it tracks — then add what you find here.** Seeds (caught in
   *reference*, never the resolved hex. [#6]
 - **`flags` mixes SGR attrs with layout markers, and `c` is a codepoint — the consumer must split
   both.** The record ships the raw `CellFlags` u16: bits 0–7 (bold…strikethrough) map to the renderer's
-  style/effect, bits 8–10 (`WIDE_CHAR`/`SPACER`/`WRAPLINE`) are *layout*, not font style (beamterm
-  packs bold/italic/underline into its 16-bit glyph id — feeding `WIDE_CHAR` there would corrupt it).
-  Likewise `c` is the Unicode scalar; mapping codepoint → atlas glyph id is the consumer's job, so the
-  engine stays font/atlas-agnostic and reusable beyond beamterm. [#6]
+  style/effect, bits 8–10 (`WIDE_CHAR`/`SPACER`/`WRAPLINE`) are *layout*, not font style (a renderer
+  that packs bold/italic/underline into a glyph id would corrupt it if fed `WIDE_CHAR`).
+  Likewise `c` is the Unicode scalar; mapping codepoint → atlas glyph id is the renderer's job, so the
+  engine stays font/atlas-agnostic and reusable beyond any one renderer. [#6]
 - **Empty, Partial, and Full are three distinct frames the ack cadence needs.** "Nothing changed since
   the ack" is a valid frame (0 spans, no scroll) so the consumer can ack without redraw — *not* the
   absence of a frame, and *not* `Full`. `Full` (resize / alt-screen clear) ships every row. Conflating
@@ -505,25 +506,27 @@ trusting a path.
 
 ## How a consumer integrates (context, not justerm's work)
 
-PenTerm (first consumer) wraps justerm: feeds PTY/SSH bytes, ships the binary diff over a Tauri
-Channel, and in the webview a **thin adapter** resolves color references → RGB (via the session's
-frozen scheme) and maps attrs (inverse/dim/hidden → colour manipulation) before handing cells to the
-**`beamterm`** WebGL2 renderer; the adapter draws the cursor. beamterm has **no cursor primitive** —
-no overlay quad, no cursor uniform, no per-cell reverse bit; it consumes only flat `CellData
-{ symbol, style_bits, fg, bg }`. So the adapter renders the cursor by **cell-invert**: swap fg/bg on
-the cell at the engine-reported cursor row/col (beamterm's own terminal example does exactly this).
-Because of that, the engine must include the old+new cursor cells in `Partial` damage on a cursor move
-(see "Cursor-move damage" under Hidden VT state) — otherwise the inverted cell ghosts. Selection
-highlight is rendered by beamterm but the selection *model + text* stay in justerm (so copy reaches
-scrollback). This
-integration is tracked in PenTerm, not here — but it defines what the engine's output must serve.
+PenTerm (first consumer) wraps justerm: it feeds PTY/SSH bytes, ships the binary diff over a Tauri
+Channel, and in the webview hands each decoded frame's cells + overlay spans + cursor to the
+first-party **`justerm-renderer`** WebGL2 renderer (ADR-0018, superseding beamterm/ADR-0002). Unlike
+the parser-agnostic third-party renderer it replaced, justerm-renderer does the compositing **in
+wasm**: it resolves colour *references* → RGB (against the consumer's frozen scheme), maps attrs
+(inverse/dim/hidden), blends the selection/search highlight, and draws the cursor as a **native
+overlay** (#270 — block/underline/bar/hollow, no cell-invert). The consumer's remaining job is
+*policy projection* — the frozen palette, the blink phase, the focus tint — pushed to the renderer
+each frame (ADR-0017: mechanism in the renderer, policy in the consumer). The selection *model + text*
+stay in justerm (so copy reaches scrollback), and the engine's frame still ships colour references +
+the old+new cursor cells on a move (renderer-agnostic damage; see "Cursor-move damage" under Hidden VT
+state). This integration is tracked in the consumer (`justerm-web` / PenTerm), not here — but it
+defines what the engine's output must serve.
 
 In the webview, the adapter does not hand-write the `decode` side of the wire format: justerm ships
 the **canonical web decoder** as a separate `justerm-wasm-decode` crate (the native `decode` compiled to
 WASM, version-locked to the crate), so encode (native backend) and decode (WASM webview) share one
 implementation and cannot drift. The decoder stops at *references* (a zero-copy flat cell-buffer view
-+ span directory); ref → RGB, codepoint → atlas, and the per-cell adapter loop above stay the
-consumer's. Decision + shape: **ADR-0008** (#34).
++ span directory); ref → RGB and codepoint → atlas are the **renderer's** job (justerm-renderer does
+them in wasm), while the frozen palette + policy that drive them stay the consumer's. Decision +
+shape: **ADR-0008** (#34).
 
 ## Prior-art basis (one line each)
 
@@ -535,4 +538,5 @@ consumer's. Decision + shape: **ADR-0008** (#34).
   the full-native option we do not take.
 - **VS Code:** raw-bytes-over-IPC + watermark flow control — the counter-example; our parse-in-engine +
   diff gives flow control for free.
-- **beamterm:** the adopted renderer (see ADR-0002).
+- **beamterm:** the parser-agnostic WebGL2 grid renderer the first-party `justerm-renderer`
+  reimplements — the original adopted renderer (ADR-0002), superseded by ADR-0018 (switch #273).

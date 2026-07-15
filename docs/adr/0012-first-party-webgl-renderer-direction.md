@@ -1,7 +1,9 @@
 # ADR-0012: Replace beamterm with a first-party WebGL renderer (direction; implementation deferred)
 
-Status: accepted as **direction** (2026-06-29, #107) — implementation deferred until sub-cell needs
-justify it. Supersedes nothing yet; ADR-0002 (adopt beamterm) stays in force until this is built.
+Status: accepted as **direction** (2026-06-29, #107) — **realized by ADR-0018** (2026-07-15), which
+built the renderer out under Epic #258 and switched `justerm-web` onto it (#273). ADR-0002 (adopt
+beamterm) is now superseded by ADR-0018. This ADR records the *direction* decision; ADR-0018 is the
+concrete design + implementation.
 
 ## Context
 
