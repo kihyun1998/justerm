@@ -1,6 +1,6 @@
 import { defineConfig } from "vite";
-// beamterm ships the wasm-bindgen "bundler" target, which does
-// `import * as wasm from "*.wasm"` (ESM integration). Vite needs these two
+// justerm-renderer + justerm-wasm-decode ship the wasm-bindgen "bundler" target,
+// which does `import * as wasm from "*.wasm"` (ESM integration). Vite needs these two
 // plugins to instantiate that: wasm() turns the .wasm import into a real
 // module, topLevelAwait() lowers the top-level `await` it (and our demo) use.
 // Mirrors penterm's vite.config (rust-terminal-engine issue 11).
@@ -17,7 +17,7 @@ export default defineConfig({
   // Excluding the bare package name also covers its subpaths (e.g. the
   // `justerm-wasm-decode/colors.js` import in render-core.ts).
   optimizeDeps: {
-    exclude: ["@beamterm/renderer", "justerm-wasm-decode"],
+    exclude: ["justerm-renderer", "justerm-wasm-decode"],
   },
   // demo/ imports from ../src; allow Vite to read the package root.
   server: { fs: { allow: [".."] } },

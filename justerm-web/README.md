@@ -2,14 +2,14 @@
 
 Browser terminal widget for the [justerm](../) engine: it consumes a
 `DecodedFrame` (structure-of-arrays cells + span directory, as produced by
-`justerm-wasm-decode`) and renders it with [beamterm](https://github.com/junkdog/beamterm)
-(WASM + WebGL2). Frame mode now (decode wire frames in the consumer), in-wasm
-later (engine compiled to WASM in the browser) — both behind the `FrameSource`
-seam.
+`justerm-wasm-decode`) and renders it with the first-party
+[`justerm-renderer`](../justerm-renderer) (WASM + WebGL2). Frame mode now (decode wire
+frames in the consumer), in-wasm later (engine compiled to WASM in the browser) — both
+behind the `FrameSource` seam. (The renderer was `beamterm` until the #273 switch;
+ADR-0018 pivoted it to the first-party renderer.)
 
 This is a folder in the justerm repo, **not** a Cargo workspace member — it has
-its own `package.json` version and ships to npm separately (mirrors beamterm's
-`js/`).
+its own `package.json` version and ships to npm separately.
 
 ## Develop
 
@@ -43,8 +43,8 @@ top-left of the grid.
   mode wires it to the consumer's IPC channel; in-wasm mode to an in-browser
   engine. `StubFrameSource` drives it by hand for tests/demos.
 - **`Renderer`** port (`src/renderer.ts`) — the small interface the widget
-  drives. `BeamtermRenderer` is the real adapter (WASM + WebGL); a fake covers
-  the widget's wiring without a GL context.
+  drives. `JustermRenderer` is the real adapter (wraps `justerm-renderer`, WASM +
+  WebGL2); a fake covers the widget's wiring without a GL context.
 - **`frameToDrawOps`** (`src/render-core.ts`) — the pure `DecodedFrame` → draw-op
   mapping (span walk, colour resolve, flags, wide-char, grapheme). No GL, no
   wasm, so the vitest suite covers it with golden frames. A `RenderPolicy` seam

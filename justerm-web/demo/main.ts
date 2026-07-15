@@ -12,13 +12,13 @@
 import {
   Accessibility,
   AccessibleViewController,
-  BeamtermRenderer,
   CommandAnnounceController,
   CommandNavController,
   computeLinks,
   copySelection,
   DecorationRegistry,
   DomAccessibleView,
+  JustermRenderer,
   LinkController,
   MarkerKind,
   MouseEvents,
@@ -48,7 +48,7 @@ import type { DecodedFrame } from "../src/types";
 import { FakeSelectionEngine } from "./fake-select";
 import { FakeSearchEngine } from "./fake-search";
 
-const renderer = await BeamtermRenderer.create({
+const renderer = await JustermRenderer.create({
   canvasSelector: "#term",
   fontFamily: "monospace",
   fontSize: 16,
@@ -72,18 +72,17 @@ canvas.style.cursor = "text";
 let term: Terminal | undefined;
 const focusTerminal = (): void => term?.focus();
 
-// Size the renderer to the canvas CSS box, then let beamterm tell us the grid it
-// fits. beamterm's resize() takes CSS px and applies devicePixelRatio ITSELF (its
-// backing buffer = css × dpr; auto_resize_canvas_css=false lets external CSS own the
-// display size). So pass the CSS box — do NOT pre-multiply by dpr or set canvas.width
-// (that made the backing buffer css × dpr², #252). Deriving COLS/ROWS from the backend
-// avoids a hardcoded grid; pointer→cell mapping works in CSS px (rect ÷ COLS), so it's
-// dpr-independent regardless.
+// Size the renderer to the available CSS box, then read back the grid it fits. The
+// JustermRenderer adapter takes a CSS box, divides by the cell to a grid, sizes the
+// renderer's device buffer to a grid-exact multiple (#331) AND sets the canvas's CSS
+// display box to `cssWidth/cssHeight` so the buffer is crisp, not scaled. Because the
+// adapter shrinks the canvas to the grid, measure the VIEWPORT (the #term box is
+// 100vw/vh), not the canvas — measuring the canvas would feed back its own shrunk size
+// and never re-grow. Pointer→cell mapping stays CSS px (rect ÷ COLS), dpr-independent.
 let COLS = 80;
 let ROWS = 24;
 function fit(): void {
-  const box = canvas.getBoundingClientRect();
-  renderer.resize(Math.max(1, Math.round(box.width)), Math.max(1, Math.round(box.height)));
+  renderer.resize(Math.max(1, window.innerWidth), Math.max(1, window.innerHeight));
   const ts = renderer.terminalSize();
   COLS = ts.cols;
   ROWS = ts.rows;
@@ -873,12 +872,14 @@ render();
 // apply Engine::resize + PTY SIGWINCH (here the demo just logs the intent so the fit path
 // is observable). The demo scrollbar is an overlay (no layout width), so scrollbarWidth 0.
 const readFitInput = (): FitInput => {
-  const boxPx = canvas.getBoundingClientRect();
+  // Measure the VIEWPORT, not the canvas: the JustermRenderer adapter pins the canvas's CSS box to
+  // a grid-exact size, so measuring the canvas would feed back its own pinned size and never see the
+  // container shrink/grow (the #term box is 100vw/vh, so the viewport IS the available space).
   const dpr = window.devicePixelRatio || 1;
-  const cell = renderer.cellSize(); // buffer px → CSS px per cell (DPR-independent)
+  const cell = renderer.cellSize(); // device px → CSS px per cell (÷ dpr)
   return {
-    parentWidth: boxPx.width,
-    parentHeight: boxPx.height,
+    parentWidth: window.innerWidth,
+    parentHeight: window.innerHeight,
     padding: { top: 0, bottom: 0, left: 0, right: 0 },
     cellWidth: cell.width / dpr,
     cellHeight: cell.height / dpr,
@@ -895,5 +896,7 @@ const fitController = new FitController({ port: fitPort });
 // never calls these, but capturing them models the convention — and Terminal-level fit
 // ownership (who calls disposeFit + fitController.dispose) lands with the widget integration
 // in S16 (#133), which this demo wiring stands in for.
-const disposeFit = observeResize(canvas, readFitInput, fitController);
+// Observe the document element (tracks the viewport), not the canvas — the adapter pins the
+// canvas size, so a canvas ResizeObserver would never fire on a viewport change.
+const disposeFit = observeResize(document.documentElement, readFitInput, fitController);
 void disposeFit;

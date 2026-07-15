@@ -1,7 +1,7 @@
 {
   "name": "justerm-web",
   "version": "0.6.0",
-  "description": "Browser terminal widget for the justerm engine: consumes DecodedFrame, renders via beamterm. Frame-mode now, in-wasm later.",
+  "description": "Browser terminal widget for the justerm engine: consumes DecodedFrame, renders via justerm-renderer (WebGL2). Frame-mode now, in-wasm later.",
   "type": "module",
   "license": "MIT OR Apache-2.0",
   "repository": "https://github.com/kihyun1998/justerm",
@@ -24,7 +24,7 @@
     "vitest": "^2.1.0"
   },
   "dependencies": {
-    "@beamterm/renderer": "^1.0.0",
+    "justerm-renderer": "^0.1.0",
     "justerm-wasm-decode": "^0.7.0"
   },
   "main": "./dist/index.js",
