@@ -53,11 +53,19 @@ jobs:
           echo "tag=$tag package=$pkg"
           test "$tag" = "$pkg" || { echo "::error::tag renderer-v$tag != package version $pkg"; exit 1; }
 
-      - name: Publish to npm
+      - name: Publish to npm (idempotent — skip if the version is already on the registry)
         env:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" > ~/.npmrc
-          # `./` prefix: without it npm parses `justerm-renderer/pkg` as a GitHub owner/repo shorthand,
-          # not a local folder, and fails on git ls-remote.
-          npm publish ./justerm-renderer/pkg --access public
+          pkg="$(node -p "require('./justerm-renderer/pkg/package.json').version")"
+          # A version already on npm cannot be re-published (npm 403). Skip gracefully so a tag for a
+          # version first published by hand (the initial renderer-v0.1.0, #394) is a GREEN no-op rather
+          # than a red duplicate-publish — and re-tagging is always safe. `npm view pkg@ver version`
+          # prints the version when it exists and empty when it does not (verified).
+          if [ -n "$(npm view "justerm-renderer@$pkg" version 2>/dev/null || true)" ]; then
+            echo "justerm-renderer@$pkg is already on npm — skipping publish."
+          else
+            # `./` prefix: without it npm parses `justerm-renderer/pkg` as a GitHub owner/repo shorthand.
+            npm publish ./justerm-renderer/pkg --access public
+          fi
