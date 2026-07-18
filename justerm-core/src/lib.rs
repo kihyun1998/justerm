@@ -359,12 +359,24 @@ impl Engine {
         self.term.match_spans(m)
     }
 
-    /// Set the active search highlights the frame should carry (#108). The
+    /// Set the search highlights the frame should carry (#108). The
     /// consumer owns match navigation, so it hands the set to highlight back
     /// here; [`Engine::frame`] then projects them onto the viewport overlay
     /// alongside the selection. An empty vec clears the highlights.
     pub fn set_search_highlights(&mut self, matches: Vec<Match>) {
         self.term.set_search_highlights(matches);
+    }
+
+    /// Designate which member of the held highlight set is the *active* match
+    /// (#428) — the one next/prev navigation currently points at (that choice is
+    /// the consumer's policy). [`Engine::frame`] projects it into the overlay's
+    /// `active_match` group; it also stays in `matches`, and the renderer's
+    /// highlight ranking resolves the overlap (#424). `None` or an out-of-range
+    /// index projects nothing. Passing a new set to
+    /// [`set_search_highlights`](Self::set_search_highlights) resets the
+    /// designation, so re-designate after every hand-over.
+    pub fn set_active_search_highlight(&mut self, index: Option<usize>) {
+        self.term.set_active_search_highlight(index);
     }
 
     /// Register a decoration marker at viewport `row`, returning its stable id

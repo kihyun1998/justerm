@@ -17,7 +17,7 @@ use std::collections::BTreeMap;
 
 /// Wire magic ("juSTerm") + format version. A new feature bumps `VERSION`.
 const MAGIC: [u8; 2] = *b"JT";
-const VERSION: u8 = 11; // v11 adds a fourth overlay group: every live marker's absolute buffer line for the overview ruler (#120 S3); v10 adds a marker kind discriminant + optional i32 exit to the overlay marker group (#159); v9 adds the alt-screen flag in the header (#149); v8 adds the mouse wanted-events mask in the header (#129/ADR-0016); v7 overlay marker group (#118/ADR-0015); v6 overlay selection + search-match spans (#108/ADR-0014); v5 scroll position (#112/ADR-0013); v4 cursor shape+blink (#81); v3 cursor row/col/visibility (#38)
+const VERSION: u8 = 12; // v12 adds a fifth overlay group: the consumer-designated active search match's spans (#428); v11 adds a fourth overlay group: every live marker's absolute buffer line for the overview ruler (#120 S3); v10 adds a marker kind discriminant + optional i32 exit to the overlay marker group (#159); v9 adds the alt-screen flag in the header (#149); v8 adds the mouse wanted-events mask in the header (#129/ADR-0016); v7 overlay marker group (#118/ADR-0015); v6 overlay selection + search-match spans (#108/ADR-0014); v5 scroll position (#112/ADR-0013); v4 cursor shape+blink (#81); v3 cursor row/col/visibility (#38)
 
 /// The wire-format version (the gating `VERSION` byte), exposed so a binding can
 /// assert at load that its decoder matches the backend encoder (#34/ADR-0008).
@@ -116,9 +116,9 @@ pub struct MarkerLine {
 pub struct Overlay {
     /// The live selection projected onto visible rows (`selection_range`).
     pub selection: Vec<SelectionSpan>,
-    /// The active search highlights projected onto visible rows. Search matches
+    /// The search highlights projected onto visible rows. Search matches
     /// are consumer-owned (next/prev navigation holds the `Vec<Match>`), so the
-    /// consumer hands the active set back via `set_search_highlights` and the
+    /// consumer hands the highlight set back via `set_search_highlights` and the
     /// engine projects it here — mirroring how the engine-owned selection rides.
     pub matches: Vec<SelectionSpan>,
     /// Engine-owned markers visible in this viewport (#118): persistent line
@@ -132,6 +132,13 @@ pub struct Overlay {
     /// only) can't supply. A superset of `markers` by id; different frame of
     /// reference (absolute line, not viewport row).
     pub marker_lines: Vec<MarkerLine>,
+    /// The *active* (current) search match's spans (#428, v12): the member of
+    /// `matches` the consumer designated via `set_active_search_highlight`
+    /// (which match is active is consumer policy — next/prev navigation).
+    /// Projected by the same mechanism as `matches`, and *also* present there —
+    /// the renderer's highlight ranking resolves the overlap (#424), not
+    /// exclusion here. Empty when nothing is designated.
+    pub active_match: Vec<SelectionSpan>,
 }
 
 /// One serialized damage cycle: the decoded logical form that `encode`/`decode`
@@ -290,6 +297,10 @@ pub fn encode(frame: &Frame) -> Vec<u8> {
         out.extend_from_slice(&m.id.0.to_le_bytes());
         out.extend_from_slice(&m.line.to_le_bytes());
     }
+    // Fifth overlay group (#428, v12): the active search match's spans, same
+    // count + `(row, left, right)` shape as the selection/match groups. Appended
+    // at the tail so the section stays append-only.
+    encode_overlay_spans(&mut out, &frame.overlay.active_match);
     out
 }
 
@@ -477,11 +488,15 @@ pub fn decode(bytes: &[u8]) -> Result<Frame, DecodeError> {
         let line = r.u32()?;
         marker_lines.push(MarkerLine { id, line });
     }
+    // Fifth group (#428, v12): the active search match's spans (inverse of the
+    // tail `encode_overlay_spans` call).
+    let active_match = decode_overlay_spans(&mut r)?;
     let overlay = Overlay {
         selection,
         matches,
         markers,
         marker_lines,
+        active_match,
     };
     Ok(Frame {
         cols,

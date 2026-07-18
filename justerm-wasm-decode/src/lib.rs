@@ -78,10 +78,15 @@ struct Flat {
     link_table: Vec<String>,
     /// Overlay highlight spans (#108), `OVERLAY_STRIDE` u32s per span
     /// (`row`, `left`, `right`) in viewport coords — `selection` is the live
-    /// selection, `matches` the active search highlights. Positions only; the
+    /// selection, `matches` the search highlights. Positions only; the
     /// consumer picks the highlight colour (theme-agnostic).
     selection_spans: Vec<u32>,
     match_spans: Vec<u32>,
+    /// The consumer-designated ACTIVE search match's spans (#428, v12), same
+    /// `OVERLAY_STRIDE` layout as `match_spans` — a separate directory so the
+    /// renderer's active channel reads it directly. The active member is also
+    /// present in `match_spans` (ranking, not exclusion, resolves the overlap).
+    active_match_spans: Vec<u32>,
     /// Marker positions (#118/#159), `MARKER_STRIDE` u32s per marker
     /// (`id`, `row`, `kind`, `exitPresent`, `exitBits`).
     marker_positions: Vec<u32>,
@@ -179,6 +184,7 @@ fn flatten(frame: &Frame) -> Flat {
         link_table: frame.link_table.clone(),
         selection_spans: flatten_overlay_spans(&frame.overlay.selection),
         match_spans: flatten_overlay_spans(&frame.overlay.matches),
+        active_match_spans: flatten_overlay_spans(&frame.overlay.active_match),
         marker_positions: frame
             .overlay
             .markers
@@ -417,12 +423,24 @@ impl DecodedFrame {
         unsafe { js_sys::Uint32Array::view(&self.flat.selection_spans) }
     }
 
-    /// The active search highlights projected onto the viewport (#108), same
+    /// The search highlights projected onto the viewport (#108), same
     /// `(row, left, right)` triple layout as [`DecodedFrame::selection_spans`].
     /// Set on the backend via `Engine::set_search_highlights`.
     #[wasm_bindgen(getter, js_name = matchSpans)]
     pub fn match_spans(&self) -> js_sys::Uint32Array {
         unsafe { js_sys::Uint32Array::view(&self.flat.match_spans) }
+    }
+
+    /// The *active* (current) search match's spans (#428, v12), same
+    /// `(row, left, right)` triple layout as [`DecodedFrame::match_spans`].
+    /// Designated on the backend via `Engine::set_active_search_highlight`
+    /// (which match is active is the consumer's next/prev policy); also present
+    /// in [`DecodedFrame::match_spans`] — the renderer's highlight ranking
+    /// resolves the overlap (#424), not exclusion here. Empty when nothing is
+    /// designated.
+    #[wasm_bindgen(getter, js_name = activeMatchSpans)]
+    pub fn active_match_spans(&self) -> js_sys::Uint32Array {
+        unsafe { js_sys::Uint32Array::view(&self.flat.active_match_spans) }
     }
 
     /// Decoration markers visible in this viewport (#118/#159), `MARKER_STRIDE`
@@ -832,6 +850,7 @@ mod tests {
             ],
             markers: vec![],
             marker_lines: vec![],
+            active_match: vec![],
         };
         // Through the real wire (encode→decode), then flattened — proves the
         // overlay survives the byte boundary the WASM decoder reads.
@@ -839,6 +858,35 @@ mod tests {
         let flat = flatten(&native);
         assert_eq!(flat.selection_spans, vec![0, 2, 7]); // one (row,left,right)
         assert_eq!(flat.match_spans, vec![1, 0, 3, 4, 9, 9]); // two triples
+    }
+
+    // --- #428 (v12): the active-match group carried through ---
+
+    #[test]
+    fn flatten_carries_active_match_spans_through_the_wire() {
+        use justerm_core::SelectionSpan;
+        let mut frame = partial(80, 24, vec![ascii_span(0, 0, "x")]);
+        // A wrapped active match (two rows); it also stays in the match group —
+        // ranking, not exclusion, resolves the overlap downstream (#424).
+        let active = vec![
+            SelectionSpan {
+                row: 1,
+                left: 6,
+                right: 9,
+            },
+            SelectionSpan {
+                row: 2,
+                left: 0,
+                right: 2,
+            },
+        ];
+        frame.overlay.matches = active.clone();
+        frame.overlay.active_match = active;
+        let native = justerm_core::decode(&justerm_core::encode(&frame)).expect("decode");
+        let flat = flatten(&native);
+        // Same (row, left, right) stride as matchSpans, a separate directory.
+        assert_eq!(flat.active_match_spans, vec![1, 6, 9, 2, 0, 2]);
+        assert_eq!(flat.match_spans, vec![1, 6, 9, 2, 0, 2]); // not excluded
     }
 
     #[test]
