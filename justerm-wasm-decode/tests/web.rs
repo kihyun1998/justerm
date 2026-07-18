@@ -77,8 +77,8 @@ fn sample_frame() -> Frame {
 }
 
 #[wasm_bindgen_test]
-fn wire_version_is_eleven() {
-    assert_eq!(wire_version(), 11); // #120 S3 bumped 10 -> 11 for the marker-lines group
+fn wire_version_is_twelve() {
+    assert_eq!(wire_version(), 12); // #428 bumped 11 -> 12 for the active-match group
 }
 
 // #316 D2: the regex validator crosses the boundary with core's dialect, so the web
@@ -243,6 +243,7 @@ fn overlay_span_views_cross_the_boundary() {
         ],
         markers: vec![],
         marker_lines: vec![],
+        active_match: vec![],
     };
     let df = decode_frame(&justerm_core::encode(&frame)).expect("decode");
 
@@ -260,6 +261,41 @@ fn overlay_span_views_cross_the_boundary() {
     assert_eq!(m.get_index(2), 3);
     assert_eq!(m.get_index(3), 4);
     assert_eq!(m.get_index(5), 9);
+}
+
+// #428 (v12): the fifth overlay group — the consumer-designated active search
+// match — crosses the boundary as its own `(row, left, right)` directory, the
+// same stride as matchSpans. The active member also stays in matchSpans
+// (ranking, not exclusion, resolves the overlap downstream, #424).
+#[wasm_bindgen_test]
+fn active_match_span_view_crosses_the_boundary() {
+    use justerm_core::SelectionSpan;
+    let mut frame = sample_frame();
+    let active = vec![
+        SelectionSpan {
+            row: 1,
+            left: 6,
+            right: 9,
+        },
+        SelectionSpan {
+            row: 2,
+            left: 0,
+            right: 2,
+        },
+    ];
+    frame.overlay.matches = active.clone();
+    frame.overlay.active_match = active;
+    let df = decode_frame(&justerm_core::encode(&frame)).expect("decode");
+
+    let a = df.active_match_spans();
+    assert_eq!(a.length(), 6); // two triples (a wrapped match), flat
+    assert_eq!(a.get_index(0), 1); // row
+    assert_eq!(a.get_index(1), 6); // left
+    assert_eq!(a.get_index(2), 9); // right
+    assert_eq!(a.get_index(3), 2);
+    assert_eq!(a.get_index(4), 0);
+    assert_eq!(a.get_index(5), 2);
+    assert_eq!(df.match_spans().length(), 6); // not excluded from the match group
 }
 
 #[wasm_bindgen_test]

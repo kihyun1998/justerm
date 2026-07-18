@@ -101,6 +101,15 @@ A highlighted region the user has chosen, owned by the engine: a type (character
 block) and its anchors. The engine computes the highlighted range and extracts its text (across
 scrollback). The renderer only draws the highlight.
 
+## Search highlights / Active match
+
+The search matches the consumer asked the engine to project as viewport highlight spans. The
+consumer owns the search *policy* (the query, next/prev navigation) and hands the result set back;
+the engine owns the projection. The **active match** is the single member of that set the consumer
+has designated as current (where its navigation points) — projected as its own overlay group while
+*also* remaining in the match group; the renderer's highlight ranking (active > selection > match)
+resolves the overlap, not exclusion.
+
 ## Cursor
 
 The current input position and its style/visibility. Part of the emitted state. Its blink is a

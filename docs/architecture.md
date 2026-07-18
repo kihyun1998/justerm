@@ -116,13 +116,19 @@ A **frame** serializes one damage cycle (`damage()` + `scroll_delta()`):
 - **spans** — for `Partial`, each `{line, left, right}` then `(right−left+1)` cell records; `Full` = all rows.
 - **side-table** — only the clusters referenced *this frame*, renumbered frame-local; each cell's
   `extra` rewritten to the local index.
-- **overlay** (v6, #108/ADR-0014; v7, #118/ADR-0015) — interaction state as *viewport* coordinates, three
+- **overlay** (v6, #108/ADR-0014; v7, #118/ADR-0015) — interaction state as *viewport* coordinates, five
   groups: a selection-span group then a search-match-span group (each a `u16` count + `(row, left, right)`
-  `u16` triples), then a marker group (`u16` count + `(marker_id u32, row u16)` pairs). Positions only
-  (colour is the consumer's); `frame()` re-projects them against the scroll offset, the single anchoring
-  authority. Append-only. Highlights are projected from the engine-owned selection + the consumer-supplied
-  search set; markers are persistent line anchors re-anchored like the selection — their *disposal* rides
-  the event queue (`TermEvent::MarkerDisposed`), not the frame, so absence here means off-screen, not gone.
+  `u16` triples), then a marker group (`u16` count + `(marker_id u32, row u16)` pairs; v10, #159, appends a
+  kind discriminant `u8` and — for `CommandFinished` — a presence byte + `i32` exit), then a marker-lines
+  group (`u16` count + `(marker_id u32, line u32)` pairs — v11, #120 S3, every live marker's *absolute*
+  buffer line for the overview ruler), then an active-match-span group (same count + triple shape — v12,
+  #428, the consumer-designated *current* search match; it also stays in the match group, the renderer's
+  highlight ranking resolves the overlap #424). Positions only (colour is the consumer's); `frame()`
+  re-projects them against the scroll offset, the single anchoring authority. Append-only. Highlights are
+  projected from the engine-owned selection + the consumer-supplied search set (the active one designated
+  by index, `set_active_search_highlight`); markers are persistent line anchors re-anchored like the
+  selection — their *disposal* rides the event queue (`TermEvent::MarkerDisposed`), not the frame, so
+  absence here means off-screen, not gone.
 
 The **cell record** (little-endian): `c` (u32 Unicode scalar — *not* the renderer's atlas glyph
 id), `fg`/`bg` (u32 each = tag byte `Default|Indexed|Rgb` + 24-bit payload; the tag is mandatory so

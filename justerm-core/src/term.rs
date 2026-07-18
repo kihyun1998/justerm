@@ -159,11 +159,17 @@ pub struct Term {
     /// The live selection, in absolute buffer coordinates. `None` when nothing
     /// is selected. See `selection.rs`.
     selection: Option<Selection>,
-    /// The active search highlights the consumer asked to paint (#108). Search
+    /// The search highlights the consumer asked to paint (#108). Search
     /// matches are consumer-owned (it drives next/prev), so the engine holds only
     /// the set handed back via `set_search_highlights`, and `frame()` projects it
     /// onto the viewport — the same anchoring path as the selection.
     search_highlights: Vec<Match>,
+    /// Which member of `search_highlights` is the *active* (current) match
+    /// (#428) — an index designated by the consumer (next/prev is its policy).
+    /// An index keeps "active ⊆ highlights" structural: invalidating the set
+    /// leaves nothing to project, and `set_search_highlights` resets this to
+    /// `None` so a stale index can never light wrong content in a new set.
+    active_search_highlight: Option<usize>,
     /// Engine-owned decoration markers (#118), split per buffer like xterm's
     /// `BufferSet` (#177 S0): each a stable id bound to an absolute buffer line
     /// that re-anchors through eviction/scroll/reflow like a selection anchor. The
@@ -391,6 +397,7 @@ impl Term {
             prev_cursor: (0, 0), // matches the default cursor's home position
             selection: None,
             search_highlights: Vec::new(),
+            active_search_highlight: None,
             normal_markers: Vec::new(),
             alt_markers: Vec::new(),
             next_marker_id: 0,
@@ -592,6 +599,14 @@ impl Term {
                     .iter()
                     .flat_map(|m| self.match_spans(m))
                     .collect(),
+                // The consumer-designated active match (#428), projected through
+                // the same `match_spans` math — also present in `matches` above;
+                // the renderer's ranking resolves the overlap (#424 slice 1).
+                active_match: self
+                    .active_search_highlight
+                    .and_then(|i| self.search_highlights.get(i))
+                    .map(|m| self.match_spans(m))
+                    .unwrap_or_default(),
                 markers: self.marker_positions(),
                 marker_lines: self.all_marker_lines(),
             },
@@ -1105,11 +1120,24 @@ impl Term {
         spans
     }
 
-    /// Set the active search highlights to paint (#108). The consumer owns the
+    /// Set the search highlights to paint (#108). The consumer owns the
     /// `Vec<Match>` (it drives next/prev); handing it back here lets `frame()`
     /// project the highlights onto the viewport. An empty vec clears them.
     pub fn set_search_highlights(&mut self, matches: Vec<Match>) {
         self.search_highlights = matches;
+        // A new set voids the designation: a stale index could be accidentally
+        // in range and light wrong content (#428). The consumer re-designates.
+        self.active_search_highlight = None;
+    }
+
+    /// Designate which member of the held highlight set is the *active* match
+    /// (#428) — the one the consumer's next/prev navigation currently points at.
+    /// `frame()` projects it into `overlay.active_match` (it also stays in
+    /// `overlay.matches`; the renderer's ranking resolves the overlap, #424).
+    /// `None` or an out-of-range index projects nothing; the designation resets
+    /// whenever a new set is passed to [`set_search_highlights`](Self::set_search_highlights).
+    pub fn set_active_search_highlight(&mut self, index: Option<usize>) {
+        self.active_search_highlight = index;
     }
 
     /// Invalidate the held search highlights (#108). Called wherever a buffer

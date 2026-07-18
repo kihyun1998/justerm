@@ -80,10 +80,61 @@ fn round_trip_overlay_selection_and_match_spans() {
             }],
             markers: vec![],
             marker_lines: vec![],
+            active_match: vec![],
         },
     };
     let bytes = encode(&frame);
     assert_eq!(decode(&bytes).expect("decode"), frame);
+}
+
+/// #428 (wire v12): the fifth overlay group — the consumer-designated ACTIVE
+/// search match's spans — round-trips as `(row, left, right)` triples appended
+/// after the marker-lines group. The active member also stays in `matches`
+/// (ranking, not exclusion, resolves the overlap downstream), so both groups
+/// carry it here.
+#[test]
+fn round_trip_overlay_active_match_spans() {
+    let mut frame = Frame {
+        cols: 80,
+        rows: 24,
+        kind: FrameKind::Partial,
+        cursor_row: 0,
+        cursor_col: 0,
+        cursor_visible: true,
+        cursor_shape: justerm_core::CursorShape::Block,
+        cursor_blink: false,
+        display_offset: 0,
+        scrollback_len: 0,
+        mouse_events: Default::default(),
+        alt_screen: false,
+        scroll: None,
+        spans: vec![],
+        side_table: vec![],
+        link_table: vec![],
+        overlay: Overlay::default(),
+    };
+    // A wrapped active match: two spans, both also present in the match group.
+    let active = vec![
+        SelectionSpan {
+            row: 2,
+            left: 5,
+            right: 9,
+        },
+        SelectionSpan {
+            row: 3,
+            left: 0,
+            right: 1,
+        },
+    ];
+    frame.overlay.matches = active.clone();
+    frame.overlay.active_match = active;
+    let bytes = encode(&frame);
+    let decoded = decode(&bytes).expect("decode");
+    assert_eq!(decoded, frame);
+    // Explicit side condition: the two groups decode independently (an encoder
+    // that dropped the fifth group would still satisfy a matches-only check).
+    assert_eq!(decoded.overlay.active_match, decoded.overlay.matches);
+    assert_eq!(decoded.overlay.active_match.len(), 2);
 }
 
 /// Every non-default header/overlay field at once round-trips — scroll op +
@@ -356,10 +407,10 @@ fn decode_rejects_bad_marker_kind_and_truncated_exit() {
     let bytes = encode(&frame);
     // With every prior section empty, the tail is the marker group `marker_count(2)`
     // + record `id(4) row(2) kind(1) present(1) exit(4)`, then the v11 marker_lines
-    // group `count(2)` (0 here). So the kind byte is 8 from the end and the exit
-    // occupies bytes [len-6, len-2).
+    // group `count(2)` (0 here), then the v12 active-match group `count(2)` (0 here).
+    // So the kind byte is 10 from the end and the exit occupies bytes [len-8, len-4).
     let mut bad_kind = bytes.clone();
-    let k = bad_kind.len() - 8;
+    let k = bad_kind.len() - 10;
     bad_kind[k] = 5; // unknown discriminant (valid kinds are 0..=4)
     assert!(
         decode(&bad_kind).is_err(),
@@ -367,7 +418,7 @@ fn decode_rejects_bad_marker_kind_and_truncated_exit() {
     );
 
     let mut truncated = bytes.clone();
-    truncated.truncate(truncated.len() - 4); // drop the marker_lines count + into the i32 exit
+    truncated.truncate(truncated.len() - 6); // drop the two tail group counts + into the i32 exit
     assert!(
         decode(&truncated).is_err(),
         "a truncated exit must error, not panic"
@@ -608,11 +659,11 @@ fn decode_rejects_superseded_version() {
 /// The wire is gated at version 11 (the #120 S3 marker-lines group, atop the #159
 /// marker kind + exit, #149 alt-screen flag, #129 mouse mask and #118 marker
 /// group). Both the exported `WIRE_VERSION` constant and the byte the encoder emits
-/// must read 11 — the value the WASM decoder's `wire_version()` mirrors in lockstep
+/// must read 12 — the value the WASM decoder's `wire_version()` mirrors in lockstep
 /// (ADR-0008), so a drift here trips before it can desync a binding.
 #[test]
-fn wire_version_is_eleven() {
-    assert_eq!(justerm_core::WIRE_VERSION, 11);
+fn wire_version_is_twelve() {
+    assert_eq!(justerm_core::WIRE_VERSION, 12);
     let mut term = Engine::new(1, 1);
     term.feed(b"x");
     let bytes = encode(&term.frame());

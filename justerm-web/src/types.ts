@@ -44,6 +44,16 @@ export interface DecodedFrame {
    */
   readonly matchSpans?: ArrayLike<number>;
   /**
+   * The *active* (current) search match's spans (#428, wire v12): same viewport
+   * `(row, left, right)` stride-3 layout as {@link matchSpans}, a separate wire
+   * group — `justerm-wasm-decode`'s `activeMatchSpans` getter. Designated on the
+   * backend via `Engine::set_active_search_highlight` (which match is active is
+   * consumer policy — next/prev navigation); the member is *also* present in
+   * {@link matchSpans}, and the renderer's highlight ranking resolves the
+   * overlap (#424). Optional — omitted when nothing is designated.
+   */
+  readonly activeMatchSpans?: ArrayLike<number>;
+  /**
    * Decoration/command markers visible in this viewport (#118/#159, wire v10):
    * stride-5 `(id, row, kind, exitPresent, exitBits)` — `justerm-wasm-decode`'s
    * `markerPositions` getter. `kind`: 0 = Plain (#118 decoration), 1 = PromptStart,

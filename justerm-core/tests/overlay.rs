@@ -40,7 +40,7 @@ fn frame_overlay_carries_selection_spans() {
 
 /// Search matches are not engine-owned (the consumer holds the `Vec<Match>` for
 /// next/prev navigation), so the engine cannot project them on its own. The
-/// consumer hands the active highlight set back with `set_search_highlights`;
+/// consumer hands the highlight set back with `set_search_highlights`;
 /// `frame()` then projects each to viewport spans. Searching "ell" in "hello"
 /// and highlighting it → one match span on row 0, cols 1..=3.
 #[test]
@@ -203,6 +203,176 @@ fn frame_overlay_highlights_invalidate_on_alt_screen_switch() {
 
     term.feed(b"\x1b[?1049h"); // enter alt screen
     assert_eq!(term.frame().overlay.matches, vec![]);
+}
+
+// ===========================================================================
+// Active search match — the fifth overlay group (#428, #424 slice 2)
+// ===========================================================================
+//
+// *Which* match is active is consumer policy (next/prev navigation), so the
+// consumer designates an index into the set it last passed to
+// `set_search_highlights`; the engine projects that member through the same
+// `match_spans` mechanism into `overlay.active_match`. The active match also
+// stays in `matches` — overlap is resolved downstream by the renderer's
+// ranking (#424 slice 1), not by exclusion here.
+
+/// Designating an index projects that member's spans into the active group,
+/// while the full set still rides `matches` unchanged — ranking, not exclusion,
+/// resolves the overlap downstream.
+#[test]
+fn frame_overlay_carries_active_match_spans() {
+    let mut term = Engine::new(80, 24);
+    term.feed(b"hello hello");
+
+    let matches = term.search("ell"); // two hits: cols 1..=3 and 7..=9
+    assert_eq!(matches.len(), 2);
+    term.set_search_highlights(matches);
+    term.set_active_search_highlight(Some(1));
+
+    let overlay = term.frame().overlay;
+    assert_eq!(
+        overlay.active_match,
+        vec![SelectionSpan {
+            row: 0,
+            left: 7,
+            right: 9
+        }]
+    );
+    // The active member is NOT removed from the match group.
+    assert_eq!(
+        overlay.matches,
+        vec![
+            SelectionSpan {
+                row: 0,
+                left: 1,
+                right: 3
+            },
+            SelectionSpan {
+                row: 0,
+                left: 7,
+                right: 9
+            }
+        ]
+    );
+}
+
+/// Highlights without a designation project no active spans — the consumer has
+/// not (yet) chosen a current match; `None` also clears a prior designation.
+#[test]
+fn frame_overlay_active_empty_without_designation() {
+    let mut term = Engine::new(80, 24);
+    term.feed(b"hello");
+
+    let matches = term.search("ell");
+    term.set_search_highlights(matches);
+    assert_eq!(term.frame().overlay.active_match, vec![]); // never designated
+
+    term.set_active_search_highlight(Some(0));
+    assert!(!term.frame().overlay.active_match.is_empty());
+    term.set_active_search_highlight(None);
+    assert_eq!(term.frame().overlay.active_match, vec![]); // cleared
+}
+
+/// Handing over a new highlight set resets the designation: a stale index into
+/// a *different* set could be accidentally in range and light wrong content.
+/// The consumer re-designates after every hand-over.
+#[test]
+fn set_search_highlights_resets_active_designation() {
+    let mut term = Engine::new(80, 24);
+    term.feed(b"hello hello");
+
+    let matches = term.search("ell");
+    term.set_search_highlights(matches);
+    term.set_active_search_highlight(Some(0));
+    assert!(!term.frame().overlay.active_match.is_empty());
+
+    let matches = term.search("hello"); // new set (index 0 exists — would be wrong content)
+    term.set_search_highlights(matches);
+    assert_eq!(term.frame().overlay.active_match, vec![]);
+}
+
+/// An out-of-range index projects nothing rather than erroring — lenient like
+/// an invalid regex yielding no matches (#314).
+#[test]
+fn frame_overlay_active_out_of_range_projects_nothing() {
+    let mut term = Engine::new(80, 24);
+    term.feed(b"hello");
+
+    let matches = term.search("ell"); // one hit
+    term.set_search_highlights(matches);
+    term.set_active_search_highlight(Some(5));
+
+    assert_eq!(term.frame().overlay.active_match, vec![]);
+    assert!(!term.frame().overlay.matches.is_empty()); // the set itself still rides
+}
+
+/// The active group re-projects against the scroll offset exactly like the
+/// match group — same anchoring authority, same `match_spans` math.
+#[test]
+fn frame_overlay_active_reprojects_on_scroll() {
+    let mut term = Engine::new(4, 3);
+    term.feed(b"L0\r\nL1\r\nL2\r\nL3\r\nXX"); // sb=[L0,L1], screen=[L2,L3,XX]
+
+    let matches = term.search("XX"); // abs line 4, cols 0..=1
+    term.set_search_highlights(matches);
+    term.set_active_search_highlight(Some(0));
+    assert_eq!(
+        term.frame().overlay.active_match,
+        vec![SelectionSpan {
+            row: 2,
+            left: 0,
+            right: 1
+        }]
+    );
+
+    term.scroll_up(2); // viewport now abs 0..=2; "XX" (abs 4) is below it
+    assert_eq!(term.frame().overlay.active_match, vec![]);
+}
+
+/// A match spanning soft-wrapped rows projects *all* its spans into the active
+/// group — one per visible row, like the match group (AC: wrapped rows).
+#[test]
+fn frame_overlay_active_spans_wrapped_match() {
+    let mut term = Engine::new(4, 3);
+    term.feed(b"abcdef"); // wraps: "abcd" / "ef"
+
+    let matches = term.search("cde"); // spans the soft wrap
+    term.set_search_highlights(matches);
+    term.set_active_search_highlight(Some(0));
+
+    assert_eq!(
+        term.frame().overlay.active_match,
+        vec![
+            SelectionSpan {
+                row: 0,
+                left: 2,
+                right: 3
+            },
+            SelectionSpan {
+                row: 1,
+                left: 0,
+                right: 0
+            }
+        ]
+    );
+}
+
+/// Invalidation kills the active projection with the set: once eviction drops
+/// the highlights, a held designation has nothing valid to point at.
+#[test]
+fn frame_overlay_active_dies_with_invalidated_highlights() {
+    let mut term = Engine::with_scrollback(10, 2, 2);
+    term.feed(b"AAA\r\nBBB\r\nTARGET\r\nCCC");
+
+    let matches = term.search("TARGET");
+    term.set_search_highlights(matches);
+    term.set_active_search_highlight(Some(0));
+    assert!(!term.frame().overlay.active_match.is_empty());
+
+    term.feed(b"\r\nDDD\r\nEEE\r\nFFF"); // eviction shifts absolute indices
+    let overlay = term.frame().overlay;
+    assert_eq!(overlay.matches, vec![]); // the set is invalidated…
+    assert_eq!(overlay.active_match, vec![]); // …and the active dies with it
 }
 
 // ===========================================================================
