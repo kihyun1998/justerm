@@ -183,7 +183,8 @@ pub struct Frame {
     pub spans: Vec<Span>,
     pub side_table: Vec<Vec<char>>,
     pub link_table: Vec<String>,
-    /// Interaction overlays (selection/search highlights) for this viewport (#108).
+    /// Interaction overlays for this viewport (#108): selection, search
+    /// highlights, the active match, and markers — see [`Overlay`].
     pub overlay: Overlay,
 }
 
