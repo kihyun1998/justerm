@@ -164,12 +164,18 @@ pub struct Term {
     /// the set handed back via `set_search_highlights`, and `frame()` projects it
     /// onto the viewport — the same anchoring path as the selection.
     search_highlights: Vec<Match>,
-    /// Which member of `search_highlights` is the *active* (current) match
-    /// (#428) — an index designated by the consumer (next/prev is its policy).
-    /// An index keeps "active ⊆ highlights" structural: invalidating the set
-    /// leaves nothing to project, and `set_search_highlights` resets this to
-    /// `None` so a stale index can never light wrong content in a new set.
-    active_search_highlight: Option<usize>,
+    /// The *active* (current) search match (#428), stored as its absolute span
+    /// (#436) — designated by the consumer (next/prev is its policy) either as
+    /// an index into `search_highlights` (resolved to the span at call time) or
+    /// directly by span, which a capping backend uses for a past-cap match
+    /// (xterm creates its active decoration from the found result, OUTSIDE the
+    /// capped highlight list). A span is NOT structurally tied to the set, so
+    /// every path that voids the set must void this too: `set_search_highlights`
+    /// (hand-over reset, #428) and `invalidate_search_highlights` (the single
+    /// funnel for eviction / region scroll / reflow / both alt swaps; known
+    /// exception: the accrual sub-region branch, #449) — a stale span would
+    /// otherwise keep painting coordinates that now hold other text.
+    active_search_highlight: Option<Match>,
     /// Engine-owned decoration markers (#118), split per buffer like xterm's
     /// `BufferSet` (#177 S0): each a stable id bound to an absolute buffer line
     /// that re-anchors through eviction/scroll/reflow like a selection anchor. The
@@ -600,11 +606,12 @@ impl Term {
                     .flat_map(|m| self.match_spans(m))
                     .collect(),
                 // The consumer-designated active match (#428), projected through
-                // the same `match_spans` math — also present in `matches` above;
-                // the renderer's ranking resolves the overlap (#424 slice 1).
+                // the same `match_spans` math — usually also present in `matches`
+                // above (the renderer's ranking resolves the overlap, #424), but
+                // a span designation may sit OUTSIDE a capped hand-over (#436).
                 active_match: self
                     .active_search_highlight
-                    .and_then(|i| self.search_highlights.get(i))
+                    .as_ref()
                     .map(|m| self.match_spans(m))
                     .unwrap_or_default(),
                 markers: self.marker_positions(),
@@ -1136,20 +1143,48 @@ impl Term {
     /// `overlay.matches`; the renderer's ranking resolves the overlap, #424).
     /// `None` or an out-of-range index projects nothing; the designation resets
     /// whenever a new set is passed to [`set_search_highlights`](Self::set_search_highlights).
+    /// The index resolves to its span at call time (#436) — both designation
+    /// APIs converge on one stored representation.
     pub fn set_active_search_highlight(&mut self, index: Option<usize>) {
-        self.active_search_highlight = index;
+        self.active_search_highlight = index.and_then(|i| self.search_highlights.get(i)).copied();
+    }
+
+    /// Designate the *active* match by its absolute span (#436), independent of
+    /// the held highlight set — the past-cap path: a backend that caps its
+    /// hand-over (the documented 1000, xterm's `highlightLimit`) can still give
+    /// the current match its active emphasis, exactly as xterm creates the
+    /// active decoration from the found result outside the capped list. The
+    /// span projects through the same viewport math as any match (wrap-aware);
+    /// it need not be a member of the held set, so past the cap the match
+    /// paints the ACTIVE colour only (no plain highlight underneath). `None`
+    /// clears. Same lifecycle as the index form: reset on every
+    /// [`set_search_highlights`](Self::set_search_highlights) hand-over and on
+    /// any coordinate-shifting invalidation.
+    pub fn set_active_search_match(&mut self, m: Option<Match>) {
+        self.active_search_highlight = m;
     }
 
     /// Invalidate the held search highlights (#108). Called wherever a buffer
-    /// mutation shifts the absolute coordinates the matches were found at — cap
-    /// eviction, in-screen region/RI scroll, reflow. Search matches are
-    /// query-derived (the engine holds matches, not the query, and the *set*
-    /// itself may have changed), so unlike the user-authored selection they are
-    /// dropped rather than re-anchored; the consumer re-searches on output
-    /// (mirroring xterm/alacritty). Clearing avoids painting wrong content for
-    /// the frame between the mutation and the consumer's refresh.
+    /// mutation shifts the *line* coordinates the matches were found at — cap
+    /// eviction, in-screen region/RI/SU/SD/IL/DL scroll, reflow, both alt
+    /// swaps. (Known exception: a top-anchored sub-region scroll accrues to
+    /// scrollback WITHOUT funneling, desyncing anchors below the bottom margin
+    /// — tracked as #449, a pre-#436 gap shared with selection and markers.)
+    /// In-line *column* shifts (ICH/DCH, insert-mode print) and
+    /// in-place erases (ED/EL/ECH, overwrite) deliberately do NOT funnel — the
+    /// set stales in place there exactly like the selection sibling and
+    /// xterm's decorations, healed by the consumer's debounced re-search on
+    /// output (which those mutations are). Search matches are query-derived
+    /// (the engine holds matches, not the query, and the *set* itself may have
+    /// changed), so unlike the user-authored selection they are dropped rather
+    /// than re-anchored. Clearing avoids painting wrong content for the frame
+    /// between the mutation and the consumer's refresh.
     fn invalidate_search_highlights(&mut self) {
         self.search_highlights.clear();
+        // #436: the active designation is a stored SPAN, no longer structurally
+        // tied to the set — clear it in the same funnel or it would keep
+        // painting coordinates that now hold arbitrary other text.
+        self.active_search_highlight = None;
     }
 
     /// Register a decoration marker at viewport `row`, returning its stable id
