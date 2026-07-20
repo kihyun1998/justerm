@@ -129,7 +129,14 @@ pub fn guarded_cursor_colors(
 /// The fragment shader mirrors this test, so it is pinned here rather than only in GLSL. Beware
 /// `col >= c.col && col < c.col + span`: the sum overflows `u32` at the far edge and only `&&`'s
 /// short-circuit kept that unreachable. Subtraction cannot wrap.
-pub fn covers(cursor: &Cursor, span: u32, col: u32, row: u32) -> bool {
+///
+/// **Test-only by design** (#465): nothing in the Rust path calls it — the real test runs in GLSL.
+/// It exists as an *executable* statement of what the shader must do, so the edge cases above are
+/// asserted in Rust instead of being eyeballed in a shader string. `#[cfg(test)]` states that
+/// honestly; before #465 narrowed the modules, `pub` hid it from dead-code analysis and the intent
+/// was documented only in this comment.
+#[cfg(test)]
+pub(crate) fn covers(cursor: &Cursor, span: u32, col: u32, row: u32) -> bool {
     row == cursor.row && col.checked_sub(cursor.col).is_some_and(|d| d < span)
 }
 
