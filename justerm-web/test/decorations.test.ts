@@ -25,6 +25,30 @@ function frameGeom(cols: number, rows: number, ...records: number[][]) {
   return { cols, rows, markerPositions: records.flat() };
 }
 
+/** One stride-2 `markerLines` record `(id, absoluteLine)` — the v11 group, which
+ * unlike `markerPositions` includes markers scrolled OFF the viewport. */
+function ml(id: number, line: number): number[] {
+  return [id, line];
+}
+/** A frame carrying absolute marker lines + the viewport's scroll position, i.e. what
+ * production always sends. Viewport row 0 is absolute line `scrollbackLen - displayOffset`.
+ * `markerPositions` is passed too (the real wire sends both) but omits off-viewport markers,
+ * which is the whole point of #461. */
+function frameAbs(
+  opts: { rows: number; scrollbackLen: number; displayOffset?: number; cols?: number },
+  lines: number[][],
+  positions: number[][] = [],
+) {
+  return {
+    cols: opts.cols ?? 80,
+    rows: opts.rows,
+    scrollbackLen: opts.scrollbackLen,
+    displayOffset: opts.displayOffset ?? 0,
+    markerLines: lines.flat(),
+    markerPositions: positions.flat(),
+  };
+}
+
 describe("DecorationRegistry (#120 S1)", () => {
   // The core join: a decoration registered against a marker id projects onto that
   // marker's CURRENT viewport row each frame, with its x-range/layer/colour refs.
@@ -81,10 +105,15 @@ describe("DecorationRegistry (#120 S1)", () => {
     ]);
   });
 
-  // The projection is frame-driven: a marker scrolled off the viewport is absent
-  // from `markerPositions`, so its decoration yields no rect — and reappears when
-  // the marker scrolls back into view (mirrors `overlay.ts` highlight projection).
-  it("yields no rect for a marker absent from the frame; it reappears on scroll-back", () => {
+  // The projection is frame-driven: a marker the frame does not mention at all yields no
+  // rect, and reappears once it does (mirrors `overlay.ts` highlight projection).
+  //
+  // NOTE this frame carries `markerPositions` only, so it exercises the viewport-relative
+  // half of the join. Do NOT read it as "a marker scrolled off the viewport yields nothing"
+  // — that WAS its rationale and #461 made it false: a real frame also carries the absolute
+  // `markerLines`, which includes markers scrolled above the top, and those now project their
+  // visible rows. See the `frameAbs` tests below for that path.
+  it("yields no rect for a marker absent from the frame; it reappears when present", () => {
     const reg = new DecorationRegistry();
     reg.register({ markerId: 9, x: 1 });
 
@@ -169,6 +198,69 @@ describe("DecorationRegistry (#120 S1)", () => {
     expect(reg.decorationsForFrame(frameGeom(20, 10, mk(1, 0)))).toEqual([
       { row: 0, left: 16, right: 18, layer: "bottom", bg: undefined, fg: undefined },
     ]);
+  });
+
+  // #461: a multi-row decoration whose marker scrolled ABOVE the viewport top must still
+  // paint the rows of it that are visible — the vertical mirror of #457's horizontal clip.
+  // Core drops an above-top marker from `markerPositions` (`m.line.checked_sub(top)?`), so
+  // joining on that alone makes the whole decoration vanish; the absolute `markerLines`
+  // group carries it. xterm has no such gap: it keys colour lookup to the absolute buffer
+  // line (`WebglRenderer` `row = y + buffer.ydisp`) and buckets every line the height
+  // covers (`DecorationService._addToLineBuckets`).
+  it("paints the visible rows of a decoration whose marker is above the viewport top", () => {
+    const reg = new DecorationRegistry();
+    reg.register({ markerId: 1, x: 0, width: 2, height: 5, bg: 0x00ff00 });
+
+    // Viewport row 0 == absolute line 13. The marker sits at 10, so the decoration spans
+    // absolute 10..14 — rows -3..1 in viewport terms, of which 0 and 1 are on screen.
+    const rects = reg.decorationsForFrame(
+      frameAbs({ rows: 10, scrollbackLen: 13 }, [ml(1, 10)], []),
+    );
+
+    expect(rects.map((r) => r.row)).toEqual([0, 1]);
+    expect(rects.every((r) => r.left === 0 && r.right === 1 && r.bg === 0x00ff00)).toBe(true);
+  });
+
+  // #461 (2-lens): the two marker groups are merged PER MARKER, not switched between. A
+  // consumer whose `markerLines` omits a marker that `markerPositions` carries (the demo does
+  // exactly this — its markerLines holds only the decoration marker, while markerPositions also
+  // holds command marks) must not see that decoration silently vanish.
+  it("resolves a marker carried only by markerPositions, alongside absolute ones", () => {
+    const reg = new DecorationRegistry();
+    reg.register({ markerId: 1, x: 0, width: 1, bg: 0x111111 }); // absolute-only
+    reg.register({ markerId: 2, x: 1, width: 1, bg: 0x222222 }); // markerPositions-only
+
+    const rects = reg.decorationsForFrame(
+      frameAbs({ rows: 10, scrollbackLen: 13 }, [ml(1, 15)], [mk(2, 4)]),
+    );
+
+    expect(rects).toEqual([
+      { row: 2, left: 0, right: 0, layer: "bottom", bg: 0x111111, fg: undefined },
+      { row: 4, left: 1, right: 1, layer: "bottom", bg: 0x222222, fg: undefined },
+    ]);
+  });
+
+  // #461: the absolute line WINS for a marker in both groups — it is the only one that can
+  // express an anchor above the viewport top, so a stale/derived viewport row must not mask it.
+  it("prefers the absolute line when a marker is in both groups", () => {
+    const reg = new DecorationRegistry();
+    reg.register({ markerId: 1, x: 0, width: 1 });
+
+    const rects = reg.decorationsForFrame(
+      frameAbs({ rows: 10, scrollbackLen: 13 }, [ml(1, 16)], [mk(1, 9)]),
+    );
+
+    expect(rects.map((r) => r.row)).toEqual([3]); // 16 - 13, not the markerPositions row 9
+  });
+
+  // #461: entirely above the viewport -> nothing, and no negative row reaches the u32 wire.
+  it("emits no rect for a decoration whose span ends above the viewport top", () => {
+    const reg = new DecorationRegistry();
+    reg.register({ markerId: 1, x: 0, width: 2, height: 2 }); // absolute 10..11
+
+    expect(
+      reg.decorationsForFrame(frameAbs({ rows: 10, scrollbackLen: 13 }, [ml(1, 10)], [])),
+    ).toEqual([]);
   });
 
   // #457: a right-anchored span wider than the screen overflows the LEFT edge. It is
@@ -378,6 +470,43 @@ describe("DecorationRegistry.rulerMarksForFrame (#120 S3)", () => {
 // existing correct behavior against a future alt-gate regression, mirroring core's
 // `alt_markers.rs` on the web side.
 describe("DecorationRegistry — alt-screen decorations (#189)", () => {
+  // #461 (2-lens GAP): every test below sends `markerPositions` only, so they exercise the
+  // viewport-relative half of the join — but PRODUCTION alt frames also carry `markerLines`
+  // and take the absolute half. This locks #189 on the path that actually runs.
+  //
+  // No bleed is possible there either, and for a stronger reason than a gate: core's
+  // `markers()` returns `alt_markers` when `on_alt`, so a primary decoration's marker is not
+  // in an alt frame's `markerLines` AT ALL (term.rs). On alt, `set_display_offset` early-returns
+  // so `displayOffset === 0`, while `scrollbackLen` still reports the primary's length — so an
+  // alt marker's absolute line is `scrollbackLen + row` and `line - top` is exactly `row`.
+  // VALIDITY: this holds while `markers()` stays per-buffer; a change there reopens it.
+  it("projects an alt-scoped decoration through the ABSOLUTE path, with no primary bleed", () => {
+    const reg = new DecorationRegistry();
+    reg.register({ markerId: 77, x: 2, width: 1, bg: 0x00ff00 }); // alt-scoped marker
+    reg.register({ markerId: 1, x: 0, width: 1 }); // a PRIMARY marker, absent from an alt frame
+
+    // scrollbackLen is the primary's length; displayOffset is 0 on alt; the alt marker at
+    // viewport row 3 therefore has absolute line 13 + 3.
+    // Built as a variable, not an inline literal: `altScreen` is deliberately NOT part of
+    // `DecorationFrame` — decorations are not suppressed on alt (that is #189's point, unlike
+    // `rulerMarksForFrame`) — so an inline literal would trip the excess-property check. It is
+    // set here only so the scenario reads as the alt buffer.
+    const altAbsFrame = {
+      cols: 80,
+      rows: 10,
+      scrollbackLen: 13,
+      displayOffset: 0,
+      markerLines: [77, 16],
+      markerPositions: [],
+      altScreen: true,
+    };
+    const rects = reg.decorationsForFrame(altAbsFrame);
+
+    expect(rects).toEqual([
+      { row: 3, left: 2, right: 2, layer: "bottom", bg: 0x00ff00, fg: undefined },
+    ]);
+  });
+
   /** An alt frame: alt-scoped marker records plus `altScreen: true`. The registry
    * does NOT read `altScreen` (that's the point — decorations are not suppressed on
    * alt); it's set so the scenario reads as the alt buffer. */

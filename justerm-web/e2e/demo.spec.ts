@@ -902,3 +902,27 @@ test("a right-anchored decoration overflowing the left edge still paints (#457)"
   // rather than a partial paint that happens to differ at one end.
   expect(p.overflowLeft).toBe(p.overflowRight);
 });
+
+// #461: a multi-row decoration whose marker scrolled ABOVE the viewport top must paint the
+// rows of it that are still visible. Core drops an above-top marker from `markerPositions`,
+// so before the fix the whole decoration vanished — a projection test cannot see that, since
+// it cannot tell "emitted no rect" from "emitted a rect nothing drew". This drives the real
+// wasm renderer: the marker sits 2 rows above the top with height 5, so viewport rows 0-2 are
+// its visible tail and row 3 is past it.
+test("a decoration anchored above the viewport top still paints its visible rows (#461)", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await expect(page.getByRole("button", { name: "Decorate line: OFF" })).toBeVisible();
+
+  const p = await page.evaluate(() => window.__aboveTopProbe!());
+
+  expect(p.rows[0], `row 0: baseline ${p.baseline}`).not.toBe(p.baseline);
+  expect(p.rows[1]).not.toBe(p.baseline);
+  expect(p.rows[2]).not.toBe(p.baseline);
+  // All three carry the same decoration colour — a contiguous visible tail, not a stray row.
+  expect(p.rows[0]).toBe(p.rows[1]);
+  expect(p.rows[1]).toBe(p.rows[2]);
+  // …and the span really ends: row 3 is past `height`, so it is undecorated.
+  expect(p.rows[3], "row 3 is past the 5-row span").toBe(p.baseline);
+});
