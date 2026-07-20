@@ -10,8 +10,11 @@
 //! `minimumContrastRatio` (#225, the WCAG step-adjust in [`contrast`](crate::contrast)), the
 //! selection-side overrides — un-dim (#224) and `selectionForeground` (#227) — and the tile-glyph
 //! rules (#226/#239/#241, classifier in [`glyph_class`](crate::glyph_class)). All of them beyond the
-//! ref-space transforms here are orchestrated per cell in `pack_instances`, keyed off
-//! [`Overlay::highlight_at`](crate::overlay::Overlay::highlight_at).
+//! ref-space transforms here are orchestrated per cell in `pack_instances`, on two INDEPENDENT
+//! channels (#430, xterm's model): the **bg** composite keys off the winning
+//! [`Overlay::highlight_at`](crate::overlay::Overlay::highlight_at) kind, while the selection-side
+//! **fg** rules key off [`Overlay::is_selected`](crate::overlay::Overlay::is_selected) — selection
+//! coverage regardless of which bg won — so they survive on a cell the ACTIVE match's bg outranks.
 //!
 //! [`palette`]: crate::palette
 //! [`overlay`]: crate::overlay
@@ -35,7 +38,10 @@ pub struct ColorPolicy {
     pub min_contrast: f32,
     /// Force the foreground of a **selected** cell to this packed `0xRRGGBB` (#227, xterm's
     /// `selectionForeground`). `None` (the default) keeps each cell's own fg. Applies to a live
-    /// selection only — never a search match — and is focus-independent.
+    /// selection only — never a search match — and is focus-independent. Selection is a property of
+    /// the CELL, not of the bg winner (#430): on a selected cell whose bg the ACTIVE match outranks,
+    /// this fg paints over the *active* background — pick the two colours to read on each other, or
+    /// set [`min_contrast`](Self::min_contrast), which corrects against the final composited bg.
     pub selection_fg: Option<u32>,
 }
 

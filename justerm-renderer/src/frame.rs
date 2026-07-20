@@ -100,10 +100,13 @@ pub fn pack_instances(
             // re-tint below, which starts from it (discarding any selectionForeground).
             let (cell_fg, cell_bg) =
                 resolve_cell(fg_ref, bg_ref, cell_flags, palette, policy.bold_to_bright);
-            // The highlight covering this cell (if any) and whether it is a *selection* (vs a search
-            // match) — the selection-only fg rules (#224/#227/#239) key off this.
+            // The highlight covering this cell (if any) — the *bg* channel's winner. The fg channel
+            // is INDEPENDENT (#430, xterm's model): the selection-only fg rules (#224/#227/#239) key
+            // on selection *coverage*, not on the winning kind, so they survive on a cell whose bg
+            // the ACTIVE match outranks (CellColorResolver keys its selection stage on `$isSelected`
+            // while the active match is a bg-only top decoration).
             let kind = overlay.highlight_at(row, col);
-            let is_selection = kind == Some(HighlightKind::Selection);
+            let is_selection = overlay.is_selected(row, col);
             // #226: a Powerline / box-drawing / block glyph tiles with the bg — excluded from the
             // contrast demand and re-tinted under selection (classify the base codepoint).
             let exclude =
@@ -153,7 +156,7 @@ pub fn pack_instances(
             // neutral. This diverges from xterm ONLY for a BOLD + ANSI-0..7 + tile + selection cell,
             // where xterm re-tints from the *base* ANSI colour (its `CellColorResolver` bypasses the
             // `+8`): a corner-of-corner, sub-perceptible under the 0x80 blend. 100 % xterm parity here
-            // is a *family* change (web + renderer together) — tracked, not smuggled into this slice.
+            // is a *family* change (web + renderer together) — tracked as #398, not smuggled in.
             if is_selection && exclude {
                 let raw_sel = overlay.colors.of(HighlightKind::Selection);
                 let inverse_default_bg = is_inverse(cell_flags) && (bg_ref >> 24) == 0;
@@ -636,17 +639,15 @@ mod tests {
     }
 
     #[test]
-    fn an_active_matched_selected_cell_keeps_match_fg_semantics_not_selection() {
-        // #427 (2-lens): a cell that is BOTH the active match AND selected resolves to ActiveMatch
-        // (active > selection), so it takes MATCH foreground semantics, NOT selection's —
-        // selectionForeground is NOT applied and DIM is KEPT, identical to a plain match. The bg is
-        // the solid active colour. This diverges from xterm (where the active match is a bg-only top
-        // decoration, so selectionForeground survives) ONLY when selectionForeground is set; it is
-        // deliberate and pinned here — the fg-channel parity is tracked as #430, best decided when
-        // #429 makes the overlap reachable. This is the FIRST cell that is "selected" yet
-        // `is_selection == false`, so the pin guards the intent explicitly.
+    fn an_active_matched_selected_cell_keeps_selection_fg_semantics() {
+        // #430: fg and bg resolve on INDEPENDENT channels — xterm's model, adopted deliberately
+        // (this FLIPS the former #427 pin `…keeps_match_fg_semantics_not_selection`). In
+        // `CellColorResolver` the selection fg stage keys on `$isSelected` (L84/127) while the
+        // active match is a bg-only `top` decoration (`DecorationManager.ts:139`) overriding only
+        // `$bg` (L177–187) — so on a cell that is BOTH the active match AND selected, the solid
+        // active bg wins the bg channel and the selection fg treatments survive on the fg channel.
         let p = bright_palette(); // fg white, bg black
-        let sfg = 0x00_FF_00; // green selectionForeground — must NOT appear on an active-matched cell
+        let sfg = 0x00_FF_00; // green selectionForeground — survives under the active bg
         let policy = ColorPolicy {
             selection_fg: Some(sfg),
             ..ColorPolicy::default()
@@ -659,24 +660,232 @@ mod tests {
             &policy,
             &[],
         );
-        // bg = the solid active colour (active > selection).
+        // bg channel: the solid active colour still wins (#427 ranking, unchanged).
         assert_eq!(
             &got[2..5],
             &gl_rgb(ACTIVE_BG),
-            "bg is the solid active colour"
+            "bg stays the solid active colour"
         );
-        // fg = the cell's OWN fg, dimmed toward the active bg (match semantics) — NOT selectionForeground.
-        let dimmed = dim_foreground(0xFF_FF_FF, ACTIVE_BG);
+        // fg channel: selectionForeground VERBATIM — selected ⇒ un-dim, so it is not dimmed either.
         assert_eq!(
             &got[5..8],
-            &gl_rgb(dimmed),
-            "fg keeps DIM and the cell's own colour (match semantics)"
+            &gl_rgb(sfg),
+            "selectionForeground survives under the active bg"
+        );
+        assert_ne!(
+            &got[5..8],
+            &gl_rgb(dim_foreground(0xFF_FF_FF, ACTIVE_BG)),
+            "not the dimmed own fg (the retired match semantics)"
+        );
+    }
+
+    #[test]
+    fn an_active_matched_selected_dim_cell_is_undimmed_without_selection_fg() {
+        // #430: the un-dim half (#224) is channel-independent too — with NO selectionForeground
+        // injected, the overlap cell keeps its OWN fg but selected ⇒ DIM cleared (xterm strips
+        // `BgFlags.DIM` for any selected cell with a bg override, keyed on `$isSelected` regardless
+        // of which bg won, CellColorResolver L191–198). Without this, the selected current match
+        // would be the least legible cell on screen: dim text under a bright solid bg.
+        let p = bright_palette();
+        let got = pack_instances(
+            &frame(&[0], &[0], &[0], &[DIM]),
+            &p,
+            true,
+            &with_active(&[0, 0, 0], &[0, 0, 0], &[]),
+            &ColorPolicy::default(),
+            &[],
+        );
+        assert_eq!(
+            &got[5..8],
+            &gl_rgb(0xFF_FF_FF),
+            "own fg, UNdimmed (selection un-dim survives the active bg)"
+        );
+        assert_ne!(
+            &got[5..8],
+            &gl_rgb(dim_foreground(0xFF_FF_FF, ACTIVE_BG)),
+            "not dimmed toward the active bg"
+        );
+    }
+
+    #[test]
+    fn an_active_match_outside_the_selection_keeps_match_fg_semantics() {
+        // #430 overshoot guard: channel independence keys on selection COVERAGE, not on the active
+        // kind — an active match the user has NOT selected keeps plain match fg semantics (own fg,
+        // DIM kept, selectionForeground ignored), exactly as before #430.
+        let p = bright_palette();
+        let policy = ColorPolicy {
+            selection_fg: Some(0x00_FF_00),
+            ..ColorPolicy::default()
+        };
+        let got = pack_instances(
+            &frame(&[0], &[0], &[0], &[DIM]),
+            &p,
+            true,
+            &with_active(&[0, 0, 0], &[], &[]), // active only — no selection anywhere
+            &policy,
+            &[],
+        );
+        assert_eq!(&got[2..5], &gl_rgb(ACTIVE_BG), "bg is the active colour");
+        assert_eq!(
+            &got[5..8],
+            &gl_rgb(dim_foreground(0xFF_FF_FF, ACTIVE_BG)),
+            "own fg, dimmed — match semantics unchanged off-selection"
+        );
+    }
+
+    #[test]
+    fn minimum_contrast_corrects_selection_fg_against_the_active_bg() {
+        // #430 mitigation pin: when a theme's selectionForeground clashes with the active bg, the
+        // contrast pass corrects against the FINAL composited bg — the ACTIVE colour, not the cell's
+        // own bg — so `minimumContrastRatio` genuinely backstops the overlap cell. (The generic
+        // effective-bg principle is pinned by
+        // `the_contrast_pass_runs_against_the_effective_highlight_bg`; this pins the active∩selected
+        // cell specifically, the case the #430 decision leans on.)
+        let p = bright_palette();
+        let sfg = 0x2A_5A_38; // nearly the ACTIVE_BG green — illegible on it
+        let policy = ColorPolicy {
+            selection_fg: Some(sfg),
+            min_contrast: 4.5,
+            ..ColorPolicy::default()
+        };
+        let got = pack_instances(
+            &frame(&[0], &[0], &[0], &[0]),
+            &p,
+            true,
+            &with_active(&[0, 0, 0], &[0, 0, 0], &[]),
+            &policy,
+            &[],
+        );
+        let expect =
+            ensure_contrast_ratio(ACTIVE_BG, sfg, 4.5).expect("sfg fails 4.5:1 on ACTIVE_BG");
+        assert_eq!(
+            &got[5..8],
+            &gl_rgb(expect),
+            "sfg corrected against the ACTIVE bg"
         );
         assert_ne!(
             &got[5..8],
             &gl_rgb(sfg),
-            "selectionForeground is NOT applied to an active-matched cell"
+            "the clashing sfg does not pass through"
         );
+    }
+
+    #[test]
+    fn an_active_matched_selected_dim_cell_does_not_re_dim_a_decoration_fg_override() {
+        // #430 × #230: the selected-cell DIM strip applies to a decoration fg override too — on the
+        // overlap cell the override draws FULL-brightness (xterm strips `BgFlags.DIM` keyed on
+        // `$isSelected`, so the resolved override is no longer dimmed), where a NON-selected dim
+        // cell re-dims it (`a_dim_cell_re_dims_a_decoration_foreground_override`).
+        let p = bright_palette();
+        let got = pack_instances(
+            &frame(&[0], &[0], &[33], &[DIM]),
+            &p,
+            true,
+            &with_active(&[0, 0, 0], &[0, 0, 0], &[]),
+            &ColorPolicy::default(),
+            &[deco(DecorationLayer::Bottom, None, Some(DECO_FG))],
+        );
+        assert_eq!(
+            &got[5..8],
+            &gl_rgb(DECO_FG),
+            "the override draws full-brightness on the overlap cell"
+        );
+        assert_ne!(
+            &got[5..8],
+            &gl_rgb(dim_foreground(DECO_FG, ACTIVE_BG)),
+            "not re-dimmed (#230 is a non-selected rule)"
+        );
+    }
+
+    #[test]
+    fn an_active_matched_selected_dim_cell_demands_the_full_contrast_ratio() {
+        // #430: the un-dim removes the DIM half-ratio concession too — the overlap cell demands the
+        // FULL minimumContrastRatio (pre-#430, the halved `mcr/2` let a mid-contrast fg through
+        // untouched and then dimmed it). The chosen fg sits BETWEEN `mcr/2` and `mcr`, so only the
+        // full demand corrects it — the preconditions assert that split, keeping the pin
+        // self-diagnosing if the contrast math ever moves.
+        let p = bright_palette();
+        let fg = 0xC0_C0_C0;
+        let policy = ColorPolicy {
+            min_contrast: 7.0,
+            ..ColorPolicy::default()
+        };
+        assert!(
+            ensure_contrast_ratio(ACTIVE_BG, fg, 7.0).is_some(),
+            "precondition: the fg fails the full ratio"
+        );
+        assert!(
+            ensure_contrast_ratio(ACTIVE_BG, fg, 3.5).is_none(),
+            "precondition: the fg clears the halved ratio"
+        );
+        let got = pack_instances(
+            &frame(&[0], &[RGB | fg], &[0], &[DIM]),
+            &p,
+            true,
+            &with_active(&[0, 0, 0], &[0, 0, 0], &[]),
+            &policy,
+            &[],
+        );
+        let expect = ensure_contrast_ratio(ACTIVE_BG, fg, 7.0).unwrap();
+        assert_eq!(&got[5..8], &gl_rgb(expect), "corrected at the FULL ratio");
+        assert_ne!(
+            &got[5..8],
+            &gl_rgb(fg),
+            "not passed through (the old halved demand would)"
+        );
+    }
+
+    #[test]
+    fn an_inverse_default_bg_tile_on_an_active_matched_selected_cell_uses_the_raw_selection_colour()
+    {
+        // #430 × #241: the inverse-default-bg tile arm (fg = the RAW selection colour, unblended)
+        // is a selection fg treatment too, so it survives under the active bg. Here the glyph does
+        // NOT dissolve — the band under it is the ACTIVE colour, not the selection's — and that is
+        // xterm's literal output as well: its selected-tile stage sets the fg from the selection
+        // colour while the active match overrides only the bg.
+        let p = bright_palette();
+        let got = pack_instances(
+            &frame_cp(&[0], &[0], &[INVERSE], &[BLOCK]),
+            &p,
+            true,
+            &with_active(&[0, 0, 0], &[0, 0, 0], &[]),
+            &ColorPolicy::default(),
+            &[],
+        );
+        assert_eq!(
+            &got[5..8],
+            &gl_rgb(SEL_BG),
+            "fg = the raw selection colour, unblended (#241)"
+        );
+        assert_eq!(
+            &got[2..5],
+            &gl_rgb(ACTIVE_BG),
+            "bg = the solid active colour (a match never blends)"
+        );
+    }
+
+    #[test]
+    fn a_tile_glyph_on_an_active_matched_selected_cell_retints_toward_the_selection() {
+        // #430 AC-③, xterm verbatim: the selection-stage tile re-tint (#239 — toward the RAW
+        // selection colour, inside `if ($isSelected)` in CellColorResolver L133–174) survives under
+        // the active bg: fg = blend(own fg, selection colour), bg = the solid active colour.
+        let p = bright_palette();
+        let got = pack_instances(
+            &frame_cp(&[0], &[0], &[0], &[BLOCK]),
+            &p,
+            true,
+            &with_active(&[0, 0, 0], &[0, 0, 0], &[]),
+            &ColorPolicy::default(),
+            &[],
+        );
+        assert_eq!(&got[2..5], &gl_rgb(ACTIVE_BG), "bg is the active colour");
+        let expect = blend_over(0xFF_FF_FF, SEL_BG, HIGHLIGHT_BLEND_ALPHA);
+        assert_eq!(
+            &got[5..8],
+            &gl_rgb(expect),
+            "tile re-tinted toward the selection colour"
+        );
+        assert_ne!(&got[5..8], &gl_rgb(0xFF_FF_FF), "not the raw cell fg");
     }
 
     #[test]
