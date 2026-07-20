@@ -92,7 +92,16 @@ export class StubSearchPort implements SearchPort {
 const DEBOUNCE_MS = 200;
 
 /** The current/total the search box shows: `current` is 1-based, `0` when there
- * are no matches. */
+ * are no matches.
+ *
+ * This is also the consumer's ANNOUNCE seam (#439) — the parity twin of xterm's
+ * `onDidChangeResults`, which exists precisely so hosts (VS Code) speak find
+ * results. Announce policy is the consumer's (ADR-0017): mirror VS Code's
+ * SimpleFindWidget — a dedicated `aria-live=polite` region speaking
+ * `"{current} of {total} found for '{query}'"` / `"No results found for
+ * '{query}'"` on user-driven updates (typing, next/prev), gated by an SR-active
+ * check (#161) and silent when the search UI is closed. The demo wires the
+ * reference implementation. */
 export interface SearchResult {
   current: number;
   total: number;
