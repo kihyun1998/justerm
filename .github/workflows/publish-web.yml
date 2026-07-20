@@ -1,0 +1,88 @@
+# Publish the justerm-web browser widget to the public npm registry (#466).
+#
+# Trigger: a `web-vX.Y.Z` tag. justerm-web is NOT on the workspace version-lockstep (`v*`, which
+# publishes justerm-core + justerm-wasm-decode): it consumes justerm-wasm-decode and justerm-renderer
+# through **caret ranges**, not the lockstep, and moves on its own cadence — so it carries its own tag
+# prefix, exactly as justerm-renderer does (`renderer-v*`, #394). A `v*` tag does not publish it and a
+# `web-v*` tag publishes only it. The verify step fails the publish when the tag and package.json
+# disagree, making that a hard gate rather than a convention (mirrors publish-wasm/publish-renderer).
+#
+# This workflow is INERT until someone pushes a `web-v*` tag — adding it is not the same decision as
+# starting to publish. It exists so the first publish is a tag push rather than a scramble, and so the
+# npm name stops being unclaimed (#466 records the open questions: whether to publish before or after
+# penterm's migration, and the interaction with #465's versioning-basis decision).
+#
+# Supply-chain posture (ADR-0006): the only action used is GitHub-owned `actions/checkout`, SHA-pinned.
+# pnpm is installed with `npm install -g pnpm@10` rather than `pnpm/action-setup` DELIBERATELY — the
+# same reason publish-renderer.yml drops rust-cache: just-shield R6 flags a third-party action sharing
+# a job that holds the publish token, and `NPM_TOKEN` lives in this job.
+#
+# Requires the `NPM_TOKEN` repository secret to have publish rights for the `justerm-web` package —
+# a *different* package from justerm-wasm-decode / justerm-renderer, so a token scoped per-package
+# needs widening (the renderer hit this on its first publish; see docs/agents/release.md).
+name: publish-web
+
+on:
+  push:
+    tags:
+      - "web-v*"
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      # The `@10` pin matters — see the `web` job in test.yml.
+      - name: Install pnpm
+        run: npm install -g pnpm@10
+
+      - name: Install deps
+        run: pnpm install --frozen-lockfile
+        working-directory: justerm-web
+
+      # `files: ["dist"]` in package.json, so the tarball is the tsup output and nothing else — the
+      # demo, e2e and tests are not shipped. This step does NOT re-run typecheck/test: the tag points
+      # at a commit master already gated (test.yml), and re-running them here would only duplicate it.
+      # Note tsup does not catch type errors on its own (#344) — a green build is an artifact-path
+      # check, not a soundness claim.
+      - name: Build (tsup)
+        run: pnpm run build
+        working-directory: justerm-web
+
+      # Guard the artifact itself, not just the exit code: `files: ["dist"]` plus a build that emitted
+      # nothing would publish an empty package that installs fine and imports to undefined. Assert the
+      # entry and its types are actually inside the tarball npm is about to upload.
+      - name: Verify the tarball carries the entry and its types
+        run: |
+          files="$(npm pack --dry-run --json ./justerm-web | node -p "JSON.parse(require('fs').readFileSync(0,'utf8'))[0].files.map(f=>f.path).join('\n')")"
+          echo "$files"
+          echo "$files" | grep -qx 'dist/index.js'   || { echo "::error::dist/index.js missing from the tarball"; exit 1; }
+          echo "$files" | grep -qx 'dist/index.d.ts' || { echo "::error::dist/index.d.ts missing from the tarball"; exit 1; }
+
+      # Version gate: the tag (minus the `web-v` prefix) must equal package.json's version. A mismatch
+      # would publish an artifact under a version that is not the one tagged — fail instead.
+      - name: Verify tag matches package version
+        run: |
+          tag="${GITHUB_REF_NAME#web-v}"
+          pkg="$(node -p "require('./justerm-web/package.json').version")"
+          echo "tag=$tag package=$pkg"
+          test "$tag" = "$pkg" || { echo "::error::tag web-v$tag != package version $pkg"; exit 1; }
+
+      - name: Publish to npm (idempotent — skip if the version is already on the registry)
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" > ~/.npmrc
+          pkg="$(node -p "require('./justerm-web/package.json').version")"
+          # A version already on npm cannot be re-published (npm 403). Skip gracefully so re-tagging is
+          # always safe. `npm view pkg@ver version` prints the version when it exists, empty when not.
+          if [ -n "$(npm view "justerm-web@$pkg" version 2>/dev/null || true)" ]; then
+            echo "justerm-web@$pkg is already on npm — skipping publish."
+          else
+            # `./` prefix: without it npm parses `justerm-web` as a GitHub owner/repo shorthand.
+            npm publish ./justerm-web --access public
+          fi
