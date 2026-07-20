@@ -71,6 +71,39 @@ published artifact (justerm-web's Vite consumes it); the renderer's GL proofs us
 separately, so the job builds its own bundler output. No `finish-pkg` step — the renderer ships pure
 wasm-bindgen output, no hand-written JS helpers.
 
+## `justerm-web` publishes on its OWN track too (`web-v*`, #466)
+
+Same reasoning as the renderer: `justerm-web` consumes `justerm-wasm-decode` and `justerm-renderer`
+through **caret ranges**, not the `[workspace.package]` lockstep, and moves on its own cadence. So it
+carries its own version (in `justerm-web/package.json`) and its own tag prefix — a `v*` tag does
+**not** publish it, and a `web-v*` tag publishes **only** it.
+
+The workflow exists and is **inert until a `web-v*` tag is pushed** — having it is not the same
+decision as starting to publish. As of this writing nothing has been published: `justerm-web` is not
+on npm. Whether the first publish waits for penterm's migration is open on #466.
+
+Cut a web release:
+
+1. Bump `version` in `justerm-web/package.json`.
+2. Gate it: `pnpm typecheck && pnpm test && pnpm build` (+ `pnpm test:e2e` for UI-observable changes).
+3. Commit, then tag: `git tag -a web-vX.Y.Z -m "web-vX.Y.Z — …"`.
+4. Push the tag: `git push origin web-vX.Y.Z`.
+
+| Workflow | Trigger | Publishes | Gate | Secret |
+| --- | --- | --- | --- | --- |
+| `.github/workflows/publish-web.yml` | `web-v*` | `pnpm build` (tsup) + `npm publish ./justerm-web` → npm (`justerm-web`) | tag (minus `web-v`) must equal `package.json` version, **and** the tarball must contain `dist/index.js` + `dist/index.d.ts`, else fail | `NPM_TOKEN` |
+
+`files: ["dist"]` keeps the tarball to the tsup output (+ `README.md`/`package.json`, which npm always
+includes) — the demo, e2e and tests are not shipped. `NPM_TOKEN` must have publish rights for the
+**`justerm-web`** package, a distinct npm package from `justerm-wasm-decode` and `justerm-renderer`;
+a per-package-scoped token needs widening, and the first publish may need a one-time manual
+`npm publish ./justerm-web --access public` (the renderer hit exactly this).
+
+**Which version bump?** `justerm-web`'s public surface is `src/index.ts` (what `dist` re-exports) —
+*not* its dependencies' Rust symbols. Note the renderer's own versioning basis is still open (#465):
+two `renderer-v*` minors were cut for Rust symbols no consumer imports, and each forced a caret bump
+here. Don't inherit that pattern on this track.
+
 ## GitHub Releases — manual, and the track starts at v0.3.1
 
 CI does **not** create GitHub Releases (only registry publishes). Create them by hand:

@@ -243,10 +243,20 @@ threshold** (coverage floor / lint budget) to turn a build green.
 
 **Branch / PR / CI:** branch → `feat(<scope>): … (#issue)` (**no `Co-Authored-By`
 trailer**) → squash PR (`Closes #issue`) → confirm CI jobs green:
-`test` / `wasm` / `renderer` / `renderer-proofs` / `web` / `web-e2e`. Don't watch
-CI *during* implementation (local gates mirror it) — except wasm browser
-`wasm_bindgen_test`, which runs only in the CI wasm job, so check it once per
-wasm-decode-changing PR.
+`test` / `wasm` / `renderer` / `renderer-proofs` / `web` / `web-e2e`. A PR touching
+`.github/workflows/**` also gets **`supply-chain`** (path-filtered, so it is absent
+otherwise) — reproduce it locally with
+`cargo run -- scan --strict <justerm repo root>` in `../just-shield`. **Point it at the
+repo root, not `.github/workflows`**: given the wrong path it reports "0 workflows
+scanned" *and* a green "no violations", a vacuous pass. Don't watch CI *during*
+implementation (local gates mirror it) — except wasm browser `wasm_bindgen_test`,
+which runs only in the CI wasm job, so check it once per wasm-decode-changing PR.
+
+**Release tracks (tag-driven, all inert until a tag is pushed):** `v*` → `justerm-core`
+(crates.io) + `justerm-wasm-decode` (npm), lockstep; `renderer-v*` → `justerm-renderer`
+(npm); `web-v*` → `justerm-web` (npm, #466 — workflow exists, nothing published yet).
+Each publish workflow gates on tag-version == package-version. Details in
+`docs/agents/release.md`.
 
 **Downstream loop (after release — full cross-repo).** A root fix that ships but
 leaves consumers on their old workarounds has only *relocated* the divergence.
