@@ -235,6 +235,10 @@ let terseAnnounce = false;
 const DECO_MARKER_ID = 9000;
 const DECO_ROW = 2;
 let decorationMarks: number[] = [];
+// #461 probe: shifts the decoration marker's ABSOLUTE line by this many rows, so a test can
+// drive the "anchor scrolled above the viewport top" case the seeded demo cannot otherwise
+// reach (it has no scrollback). 0 in normal use.
+let decoLineShift = 0;
 let lineDecoration: { dispose(): void } | undefined;
 // #189: the live decoration is scoped to the buffer it was created on (mirroring
 // core's per-buffer markers, #187) — its marker only rides that buffer's frames,
@@ -561,12 +565,24 @@ function viewportFrame(out?: { scrollCount: number }): DecodedFrame {
     // #189: the decoration marker rides a frame only when its buffer is active, so a
     // primary decoration is omitted from alt frames (and vice versa) — no bleed.
     markerPositions: [...commandMarks, ...(decorationOnScreen() ? decorationMarks : [])],
-    // #120 S3: every live marker's absolute buffer line. The demo pins the ruler
-    // marker near the TOP of the buffer (line 3) so its ruler mark shows there
-    // regardless of scroll — an off-viewport anchor the viewport marker group can't.
+    // #120 S3: every live marker's absolute buffer line. This used to pin a FAKE line (3) so
+    // the ruler mark sat near the buffer top regardless of scroll. #461 retires that, because
+    // `markerLines` now also places the decoration's ROWS (it is the only group carrying a
+    // marker scrolled above the viewport) — a fake line paints the decoration in the wrong
+    // place, as it did until the #457 pixel probe caught it. So this is now derived from the
+    // same position `markerPositions` reports: viewport row 0 is `scrollbackLen -
+    // displayOffset`, plus DECO_ROW.
+    //
+    // Honest caveat: the demo's marker is pinned to a VIEWPORT row (`DECO_ROW`), not to a
+    // buffer line, so its derived absolute line moves as you scroll and the ruler mark slides
+    // with it — no real marker behaves that way. The two groups now at least agree with each
+    // other; making the demo marker buffer-anchored (register once, derive the row) is #480.
     // Only for a primary decoration on the primary screen: the ruler is a scrollback
     // navigator, suppressed on alt (rulerMarksForFrame), and alt has no scrollback.
-    markerLines: decorationOnScreen() && !altScreen ? [DECO_MARKER_ID, 3] : [],
+    markerLines:
+      decorationOnScreen() && !altScreen
+        ? [DECO_MARKER_ID, maxOffset() - displayOffset + DECO_ROW + decoLineShift]
+        : [],
     ...(out && out.scrollCount > 0
       ? { hasScroll: true, scrollTop: 0, scrollBottom: ROWS - 1, scrollCount: out.scrollCount }
       : {}),
@@ -884,6 +900,15 @@ window.addEventListener("keydown", (e) => {
 /** #457: real pixels for a right-anchored decoration that overflows the LEFT edge.
  * Before the viewport clip, the negative `left` wrapped in the u32 wire and the
  * decoration painted nothing — so both `overflow*` samples equalled the baseline. */
+/** #461: rows 0..3 with a 5-row decoration anchored 2 rows ABOVE the viewport top. Rows 0-2
+ * are the visible tail of its span and must be decorated; row 3 is past it and must not be. */
+interface AboveTopProbe {
+  /** Row 0 with no decoration — the undecorated colour. */
+  baseline: string;
+  /** Viewport rows 0, 1, 2, 3 with the above-top decoration registered. */
+  rows: string[];
+}
+
 interface DecorationProbe {
   /** Row centre-left / centre-right with NO decoration — the undecorated colour. */
   baselineLeft: string;
@@ -911,8 +936,54 @@ declare global {
   interface Window {
     __searchProbe?: () => SearchProbe;
     __decorationProbe?: () => DecorationProbe;
+    __aboveTopProbe?: () => AboveTopProbe;
   }
 }
+window.__aboveTopProbe = (): AboveTopProbe => {
+  // #461: a multi-row decoration whose marker sits ABOVE the viewport top must paint the rows
+  // of it that are still visible, not vanish. Drive it for real: shift the marker's absolute
+  // line up by 2 with height 5, so it spans viewport rows -2..2 and rows 0..2 are on screen.
+  const gl = canvas.getContext("webgl2")!;
+  const { width: cw, height: ch } = renderer.cellSize();
+  const sample = (row: number, col: number): string => {
+    const x = Math.round(col * cw) + 2;
+    const y = gl.drawingBufferHeight - 1 - (Math.round(row * ch) + 2);
+    const px = new Uint8Array(4);
+    gl.readPixels(x, y, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    return `rgb(${px[0]},${px[1]},${px[2]})`;
+  };
+  if (lineDecoration) {
+    lineDecoration.dispose();
+    lineDecoration = undefined;
+    decorationBuffer = undefined;
+    decoBtn.textContent = "Decorate line: OFF";
+  }
+  decorationMarks = [];
+  decoLineShift = 0;
+  render();
+  const baseline = sample(0, 0);
+
+  decorationMarks = [DECO_MARKER_ID, DECO_ROW, MarkerKind.Plain, 0, 0];
+  decorationBuffer = altScreen ? "alt" : "primary";
+  decoLineShift = -(DECO_ROW + 2); // absolute line = viewport row -2
+  lineDecoration = decorations.register({
+    markerId: DECO_MARKER_ID,
+    x: 0,
+    width: COLS,
+    height: 5,
+    layer: "bottom",
+    bg: 0x008f00,
+  });
+  render();
+  const rows = [sample(0, 0), sample(1, 0), sample(2, 0), sample(3, 0)];
+  lineDecoration.dispose();
+  lineDecoration = undefined;
+  decorationBuffer = undefined;
+  decorationMarks = [];
+  decoLineShift = 0;
+  render();
+  return { baseline, rows };
+};
 window.__decorationProbe = (): DecorationProbe => {
   // #457: a right-anchored decoration WIDER than the viewport overflows the left edge.
   // Its raw `left` is negative; the wire carries u32 columns, so an unclipped value

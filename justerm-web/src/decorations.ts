@@ -106,6 +106,13 @@ export interface DecorationRect {
  * `cols` sizes right-anchored spans; `rows` clips a multi-row `height` (#202). */
 interface DecorationFrame {
   readonly markerPositions?: ArrayLike<number>;
+  /** Every live marker's ABSOLUTE buffer line (the v11 group), including markers scrolled off
+   * the viewport — which `markerPositions` omits. Needed to place a multi-row decoration whose
+   * anchor is above the top (#461). With `scrollbackLen`/`displayOffset` it wins per marker;
+   * a marker carried only by `markerPositions` still resolves from its viewport row. */
+  readonly markerLines?: ArrayLike<number>;
+  readonly displayOffset?: number;
+  readonly scrollbackLen?: number;
   readonly cols?: number;
   readonly rows?: number;
 }
@@ -177,20 +184,53 @@ export class DecorationRegistry {
   }
 
   /**
-   * Project the registry onto one frame: for each marker visible in the frame
-   * (`markerPositions` carries only on-viewport markers), emit a {@link
-   * DecorationRect} per decoration anchored to it, at the marker's current row.
-   * A marker scrolled off the viewport is absent here, so its decorations yield
-   * nothing and reappear when it scrolls back.
+   * Project the registry onto one frame: emit a {@link DecorationRect} per decoration per
+   * covered viewport row, joining each decoration's marker id against the frame.
+   *
+   * The join merges the two marker groups **per marker**: the absolute `markerLines` line (plus
+   * the frame's scroll position) wins where a marker has one, and a marker carried only by the
+   * viewport-relative `markerPositions` still resolves from its row.
+   * That distinction matters: `markerPositions` omits a marker scrolled ABOVE the viewport top
+   * (core drops it, `m.line.checked_sub(top)?`), so joining on it alone made a multi-row
+   * decoration whose anchor had scrolled off vanish **entirely** instead of showing the rows
+   * of it that are still on screen (#461). xterm has no such gap — it keys colour lookup to
+   * the absolute buffer line and buckets every line the height covers.
+   *
+   * Iterating `markerLines` rather than the registry also keeps the *ordering* source
+   * unchanged: both marker groups come from core's `self.markers()`, so cross-marker
+   * precedence is exactly what it was (its own open question, #458).
    */
   decorationsForFrame(frame: DecorationFrame): DecorationRect[] {
     const rects: DecorationRect[] = [];
+    // Nothing registered → nothing to join against, and no reason to walk the frame's markers
+    // (both reads below are O(markers) and run per frame).
+    if (this.byMarker.size === 0) return rects;
     const cols = frame.cols ?? 0;
-    // Clip a multi-row `height` to the viewport bottom (the marker's row is already
-    // on-viewport, so its span may run past it). No `rows` → don't clip.
+    // Clip a multi-row `height` to the viewport bottom. No `rows` → don't clip.
     const maxRow = frame.rows !== undefined ? frame.rows - 1 : Number.POSITIVE_INFINITY;
+    // Absolute line of viewport row 0. Both halves are needed, so a frame missing either keeps
+    // to `markerPositions` rather than silently assuming 0.
+    const hasScroll = frame.scrollbackLen !== undefined && frame.displayOffset !== undefined;
+    const top = (frame.scrollbackLen ?? 0) - (frame.displayOffset ?? 0);
+    // markerId → the decoration's FIRST row, viewport-relative and possibly NEGATIVE (that is
+    // the point; it is clamped per-row below and never sent).
+    //
+    // The two groups are merged PER MARKER, not switched between: the absolute line wins where
+    // a marker has one (only it can express an anchor above the top), and a marker carried only
+    // by `markerPositions` still resolves. Core makes `markerLines` a superset — both are
+    // `self.markers()`, one filtered — but this code cannot enforce that, and a consumer that
+    // sends the groups from different sources would otherwise see decorations silently vanish.
+    // Seeding from `markerLines` first also keeps core's marker order as the precedence order
+    // (#458), with any `markerPositions`-only marker appended.
+    const anchors = new Map<number, number>();
+    if (hasScroll) {
+      for (const [id, line] of readMarkerLines(frame.markerLines)) anchors.set(id, line - top);
+    }
     for (const m of readMarkers(frame.markerPositions)) {
-      const set = this.byMarker.get(m.id);
+      if (!anchors.has(m.id)) anchors.set(m.id, m.row);
+    }
+    for (const [markerId, startRow] of anchors) {
+      const set = this.byMarker.get(markerId);
       if (!set) continue;
       for (const d of set) {
         const [rawLeft, rawRight] = columns(d, cols);
@@ -218,8 +258,18 @@ export class DecorationRegistry {
         // (zero-width), or non-finite. Emitting nothing is correct AND is what keeps an
         // unrepresentable column from reaching the u32 lane at all.
         if (!Number.isFinite(left) || !Number.isFinite(right) || right < left) continue;
-        const lastRow = Math.min(m.row + d.height - 1, maxRow);
-        for (let row = m.row; row <= lastRow; row++) {
+        // #461: clamp the START row to the viewport top — the vertical mirror of the column
+        // clip above, and for the same reason: rows cross as u32 too, so a negative row would
+        // wrap rather than arrive as "above the screen". An anchor above the top yields the
+        // visible tail of its span; one whose span ends above the top yields nothing.
+        const firstRow = Math.max(0, startRow);
+        const lastRow = Math.min(startRow + d.height - 1, maxRow);
+        // No `lastRow < firstRow` guard here, deliberately: the loop bound already yields
+        // nothing for an empty span, and for NaN / ±Infinity too (every comparison is false).
+        // A first draft had one; a mutation test showed removing it changed no result, which
+        // makes it dead code rather than an uncovered guard. The columns above DO need their
+        // explicit check, because they are emitted rather than iterated.
+        for (let row = firstRow; row <= lastRow; row++) {
           rects.push({ row, left, right, layer: d.layer, bg: d.bg, fg: d.fg });
         }
       }
