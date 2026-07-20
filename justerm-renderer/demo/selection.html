@@ -21,6 +21,9 @@
   (xterm/alacritty parity — a match must read crisp, not a muddy tint, #400). col6 pins that.
   The ACTIVE (focused/current) match is a third kind, pushed via setActiveMatch: solid, in its own
   colour, ranked ABOVE the selection (xterm's layer:'top', #427). col7 pins active-over-selection.
+  The FG channel is independent of the bg winner (#430, xterm CellColorResolver): a selected cell
+  keeps its selection fg treatments even where the active match's bg outranks the selection. col8
+  pins that through a tile glyph (█ ink = fg): its selection re-tint survives under the active bg.
 
   The numbers (blendOver byte math) are pinned host-side against xterm in `overlay.rs`; this page
   proves the WIRING delivers a blended — not solid, not original — pixel through the real GL
@@ -38,8 +41,9 @@
   import { readRect } from "./proof.js";
   await init();
 
-  const COLS = 8, ROWS = 1, N = COLS * ROWS;
+  const COLS = 9, ROWS = 1, N = COLS * ROWS;
   const SPACE = 0x20;
+  const BLOCK = 0x2588; // █ — a tile glyph: its ink IS the fg colour, so fg is assertable (#430)
   const INVERSE = 1 << 5;
 
   // Injected blend colours (consumer policy #115) + a coloured cell bg, chosen so every channel
@@ -87,10 +91,11 @@
     return true;
   };
 
-  // The scene: bg refs + flags for the eight columns.
-  const bg = new Uint32Array([0, RGB(CELL), 0, 0, 0, 0, RGB(CELL), 0]); // col1 + col6 coloured; rest default
-  const flags = new Uint16Array([0, 0, 0, 0, INVERSE, 0, 0, 0]); // col4 inverse
+  // The scene: bg refs + flags for the nine columns.
+  const bg = new Uint32Array([0, RGB(CELL), 0, 0, 0, 0, RGB(CELL), 0, 0]); // col1 + col6 coloured; rest default
+  const flags = new Uint16Array([0, 0, 0, 0, INVERSE, 0, 0, 0, 0]); // col4 inverse
   const spaces = new Uint32Array(N).fill(SPACE);
+  spaces[8] = BLOCK; // col8: a tile glyph, for the #430 fg-channel proof
   const zeroFg = new Uint32Array(N);
 
   // setOverlay + setActiveMatch store the spans; on the apply_frame path (no retained grid) the NEXT
@@ -106,9 +111,9 @@
 
   const checks = {};
 
-  // selection covers col0-1, col3-4, col7; a search match covers col2-3 (col3 is in BOTH) and col6;
-  // the ACTIVE match covers col7 (also selected → ranking proof).
-  const img = drawFrame([0, 0, 1, 0, 3, 4, 0, 7, 7], [0, 2, 3, 0, 6, 6], [0, 7, 7]);
+  // selection covers col0-1, col3-4, col7-8; a search match covers col2-3 (col3 is in BOTH) and
+  // col6; the ACTIVE match covers col7 (also selected → ranking proof) and col8 (tile, #430).
+  const img = drawFrame([0, 0, 1, 0, 3, 4, 0, 7, 8], [0, 2, 3, 0, 6, 6], [0, 7, 8]);
 
   // col0: selection over the DEFAULT bg → SOLID (the colour replaces the bg outright).
   checks.solidSelectionOverTheDefaultBackground = cellIs(img, 0, SEL_BG);
@@ -150,6 +155,22 @@
   // the ActiveMatch > Selection ranking falsifiable through the GL round-trip.
   checks.anActiveMatchPaintsItsOwnColourOverASelectedCell = cellIs(img, 7, ACTIVE_BG);
   checks.anActiveMatchOutranksTheSelection = !cellIs(img, 7, SEL_BG);
+
+  // col8 (#430): the FG channel is independent of the bg winner. A selected █ re-tints its fg toward
+  // the RAW selection colour (#239) — and that survives on a cell whose BG the active match outranks.
+  // The █'s ink is the fg, and its CENTRE pixel is ink in any font (full-pixel scans are
+  // font-dependent, #374) — so sample the centre: it must be the re-tint, NOT the raw fg (the
+  // pre-#430 miss: fg kept match semantics), and NOT the active bg (which it would be had the █
+  // not rendered — that also keeps this check from passing vacuously).
+  const centreIs = (img2, col, packed) => {
+    const [er, eg, eb] = chans(packed);
+    const [pr, pg, pb] = px(img2, col * cw + (cw >> 1), ch >> 1);
+    return near(pr, er) && near(pg, eg) && near(pb, eb);
+  };
+  const retint = blendOver(DEF_FG, SEL_BG);
+  checks.aSelectedTilesRetintSurvivesUnderTheActiveBg = centreIs(img, 8, retint);
+  checks.theRetintIsNotTheRawFg = !centreIs(img, 8, DEF_FG);
+  checks.theRetintIsNotTheActiveBg = !centreIs(img, 8, ACTIVE_BG);
 
   // Clearing the overlay (empty spans) restores every cell to its own background.
   const cleared = drawFrame([], []);

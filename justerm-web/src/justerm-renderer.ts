@@ -23,13 +23,20 @@ export interface Theme {
    * `activeMatchBackground`, painted above selection and the other matches (#429).
    * Defaults to a dark orange, distinct from both {@link selectionBg} and
    * {@link matchBg} (the Chrome find-in-page yellow-others/orange-active model;
-   * alacritty's `focused_match` gold agrees on "brighter, warmer than the rest"). */
+   * alacritty's `focused_match` gold agrees on "brighter, warmer than the rest").
+   * On a cell that is both selected and the active match, {@link
+   * selectionForeground} paints over THIS background (#430, xterm's channel
+   * independence) — pick the two to read on each other, or set {@link
+   * minimumContrastRatio} (it corrects against the final composited bg). */
   activeMatchBg?: number;
   /** Selection background when the terminal is UNFOCUSED (`0xRRGGBB`). xterm's
    * selectionInactiveBackgroundOpaque; a dimmer tint. Defaults to a muted slate. */
   selectionInactiveBg?: number;
   /** Optional fg for SELECTED cells (`0xRRGGBB`), xterm's `selectionForeground`. Unset
-   * keeps each cell's own fg. Selection-only (never a search match), focus-independent (#227). */
+   * keeps each cell's own fg. Selection-only (never a search match), focus-independent (#227).
+   * Selection is a property of the cell, not of the bg winner (#430): where the ACTIVE search
+   * match covers a selected cell, this fg paints over {@link activeMatchBg} — pick the two to
+   * read on each other, or set {@link minimumContrastRatio}. */
   selectionForeground?: number;
   /** Minimum fg/bg contrast ratio (WCAG, 1..21). Defaults to 1 (off, like xterm) (#225). */
   minimumContrastRatio?: number;

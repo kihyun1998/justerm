@@ -119,6 +119,16 @@ impl Overlay<'_> {
     pub fn color_at(&self, row: u32, col: u32) -> Option<u32> {
         self.highlight_at(row, col).map(|k| self.colors.of(k))
     }
+
+    /// Whether the live selection covers `(row, col)` — INDEPENDENT of the winning
+    /// [`highlight_at`](Self::highlight_at) kind (#430). Foreground and background resolve on
+    /// separate channels, xterm's model: `CellColorResolver` keys its selection fg stage on
+    /// `isCellSelected` (not on which decoration won the bg), so the selection-only fg treatments
+    /// (selectionForeground #227, un-dim #224, tile re-tint #239) apply to a selected cell even
+    /// when the ACTIVE match's bg outranks the selection's.
+    pub fn is_selected(&self, row: u32, col: u32) -> bool {
+        covers(self.selection, row, col)
+    }
 }
 
 /// Does any `(row, left, right)` span in `flat` cover cell `(row, col)`? A malformed tail shorter
@@ -235,6 +245,24 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(ov.highlight_at(0, 1), Some(HighlightKind::ActiveMatch));
+    }
+
+    #[test]
+    fn is_selected_reports_selection_coverage_even_under_an_active_match() {
+        // #430: the fg channel asks "is this cell selected?" independent of the bg winner — a cell
+        // whose bg the ACTIVE match outranks is still selected for the fg treatments.
+        let ov = Overlay {
+            active: &[0, 0, 2],
+            selection: &[0, 0, 2],
+            ..Default::default()
+        };
+        assert_eq!(
+            ov.highlight_at(0, 1),
+            Some(HighlightKind::ActiveMatch),
+            "the bg winner is the active match"
+        );
+        assert!(ov.is_selected(0, 1), "…yet the cell is still selected");
+        assert!(!ov.is_selected(1, 0), "no selection elsewhere");
     }
 
     #[test]

@@ -1834,8 +1834,12 @@ impl JustermRenderer {
     /// Set (or clear) the selection foreground override (#227/#272) — xterm's `selectionForeground`.
     /// A packed `0xRRGGBB` forces the fg of every **selected** cell (never a search match) to that
     /// colour; it still flows through the minimum-contrast pass. Pass `undefined` to clear it and keep
-    /// each cell's own fg (the default). Consumer policy (#115), focus-independent. Marks the buffer
-    /// dirty; the next [`render`](Self::render) re-packs (#421).
+    /// each cell's own fg (the default). Consumer policy (#115), focus-independent. Selection is a
+    /// property of the cell, not of the bg winner (#430): on a selected cell inside the ACTIVE search
+    /// match this fg paints over the *active-match* background — pick the two colours to read on each
+    /// other, or set [`set_minimum_contrast_ratio`](Self::set_minimum_contrast_ratio) (it corrects
+    /// against the final composited bg). Marks the buffer dirty; the next [`render`](Self::render)
+    /// re-packs (#421).
     #[wasm_bindgen(js_name = setSelectionForeground)]
     pub fn set_selection_foreground(&mut self, color: Option<u32>) -> Result<(), JsValue> {
         self.selection_fg = color.map(|c| c & 0xFF_FFFF);
