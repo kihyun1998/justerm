@@ -234,6 +234,110 @@ describe("SearchController — incremental re-search on output", () => {
   });
 });
 
+// #429 lens: an in-flight backend round-trip must not RESURRECT state that a
+// clear()/newer search already replaced — the continuation would restore a
+// non-zero total for an empty query (result() lies, next() navigates a cleared
+// backend) and designate AFTER port.clear() ran.
+describe("SearchController — a superseded search never resurrects state", () => {
+  // A port whose search() resolution the test controls, so clear() can run
+  // while the round-trip is still in flight.
+  function deferredPort() {
+    const resolvers: ((n: number) => void)[] = [];
+    const designated: number[] = [];
+    const shown: number[] = [];
+    let cleared = 0;
+    return {
+      port: {
+        search: () => new Promise<number>((r) => resolvers.push(r)),
+        showMatch: (i: number) => {
+          shown.push(i);
+          return Promise.resolve();
+        },
+        designateMatch: (i: number) => {
+          designated.push(i);
+          return Promise.resolve();
+        },
+        clear: () => {
+          cleared++;
+        },
+      },
+      resolve: (n: number) => resolvers.shift()?.(n),
+      designated,
+      shown,
+      clearedCount: () => cleared,
+    };
+  }
+  const settle = () => new Promise((r) => setTimeout(r, 0));
+
+  it("discards a re-search that resolves after clear()", async () => {
+    const d = deferredPort();
+    const sched = new ManualScheduler();
+    const ctrl = new SearchController(d.port, {
+      setTimer: sched.setTimer,
+      clearTimer: sched.clearTimer,
+    });
+    const first = ctrl.search("foo");
+    d.resolve(3);
+    await first; // live search: 3 matches, shown [0]
+
+    ctrl.onFrame();
+    await sched.flush(); // reSearch now awaiting the port
+    ctrl.clear(); // …and the user closes the search meanwhile
+    d.resolve(7); // the stale round-trip lands late
+    await settle();
+
+    expect(ctrl.result()).toEqual({ current: 0, total: 0 }); // not resurrected
+    expect(d.designated).toEqual([]); // no designation after clear
+    await ctrl.next(); // inert — nothing to navigate
+    expect(d.shown).toEqual([0]);
+  });
+
+  it("discards an initial search that resolves after clear()", async () => {
+    const d = deferredPort();
+    const ctrl = new SearchController(d.port);
+    const inFlight = ctrl.search("foo");
+    ctrl.clear();
+    d.resolve(5);
+    await inFlight;
+
+    expect(ctrl.result()).toEqual({ current: 0, total: 0 });
+    expect(d.shown).toEqual([]); // no showMatch(0) after clear
+  });
+
+  it("lets a newer query win over a slower older round-trip", async () => {
+    const d = deferredPort();
+    const ctrl = new SearchController(d.port);
+    const oldQuery = ctrl.search("foo");
+    const newQuery = ctrl.search("bar");
+    d.resolve(9); // resolves the FIRST (stale) search
+    d.resolve(2); // resolves the second (live) one
+    await oldQuery;
+    await newQuery;
+
+    expect(ctrl.result()).toEqual({ current: 1, total: 2 }); // "bar" won
+  });
+});
+
+// #429 lens: turning the query INVALID must drop the previous query's painted
+// highlights + active designation — otherwise the box says "invalid" while the
+// screen keeps emphasizing matches of a query that no longer exists.
+describe("SearchController — invalid regex clears the stale paint", () => {
+  const validatorRejecting = (bad: string) => (p: string) => p !== bad;
+
+  it("calls port.clear() when the live query turns invalid", async () => {
+    const port = new StubSearchPort();
+    port.count = 3;
+    const ctrl = new SearchController(port, { isValidRegex: validatorRejecting("foo(") });
+    await ctrl.search("foo", { regex: true }); // live highlights + designation
+
+    await ctrl.search("foo(", { regex: true }); // now invalid
+
+    expect(ctrl.isInvalidRegex()).toBe(true);
+    expect(port.cleared).toBe(1); // stale highlights + designation dropped
+    expect(port.searched).toEqual(["foo"]); // the invalid query never searched
+  });
+});
+
 describe("SearchController — debounce contracts", () => {
   function debounced(port: StubSearchPort, sched: ManualScheduler) {
     return new SearchController(port, { setTimer: sched.setTimer, clearTimer: sched.clearTimer });
@@ -266,6 +370,88 @@ describe("SearchController — debounce contracts", () => {
     await sched.flush();
 
     expect(port.searched).toEqual([]);
+  });
+
+  // The engine RESETS the active designation on every `set_search_highlights`
+  // hand-over (#428 — stale indices are structurally precluded), so a re-search
+  // must re-designate the current match through the scroll-free channel or the
+  // active emphasis vanishes on every burst of output. xterm keeps the emphasis
+  // across its incremental re-find the same way (`noScroll: true`).
+  it("re-designates the active match after a re-search, without scrolling", async () => {
+    const port = new StubSearchPort();
+    port.count = 5;
+    const sched = new ManualScheduler();
+    const ctrl = debounced(port, sched);
+    await ctrl.search("foo"); // shown [0]
+    await ctrl.next(); // index 1, shown [0, 1]
+
+    ctrl.onFrame();
+    await sched.flush();
+
+    expect(port.designated).toEqual([1]); // active restored at the same index
+    expect(port.shown).toEqual([0, 1]); // …but never via showMatch (no scroll)
+  });
+
+  // The re-designated index is the CLAMPED one — when output shrank the match
+  // set, the emphasis lands on the last match, in step with the count label.
+  it("re-designates at the clamped index when matches shrink", async () => {
+    const port = new StubSearchPort();
+    port.count = 5;
+    const sched = new ManualScheduler();
+    const ctrl = debounced(port, sched);
+    await ctrl.search("foo");
+    await ctrl.next();
+    await ctrl.next();
+    await ctrl.next(); // index 3
+
+    port.count = 2; // matches shrank under the active index
+    ctrl.onFrame();
+    await sched.flush();
+
+    expect(port.designated).toEqual([1]); // min(3, 2-1) — matches the 2/2 label
+  });
+
+  // No matches → nothing to designate. The empty hand-over already cleared the
+  // active designation engine-side; a designate call would be a stale index.
+  it("designates nothing when the re-search finds no matches", async () => {
+    const port = new StubSearchPort();
+    port.count = 3;
+    const sched = new ManualScheduler();
+    const ctrl = debounced(port, sched);
+    await ctrl.search("foo");
+
+    port.count = 0;
+    ctrl.onFrame();
+    await sched.flush();
+
+    expect(port.designated).toEqual([]);
+    expect(ctrl.result()).toEqual({ current: 0, total: 0 });
+  });
+
+  // `designateMatch` is OPTIONAL (additive) — a backend that predates #429 still
+  // works; it just loses the active emphasis across output (never crashes).
+  it("tolerates a port without designateMatch", async () => {
+    const searched: string[] = [];
+    const port = {
+      search: (q: string) => {
+        searched.push(q);
+        return Promise.resolve(2);
+      },
+      showMatch: () => Promise.resolve(),
+      clear: () => {},
+    };
+    const sched = new ManualScheduler();
+    const ctrl = new SearchController(port, {
+      setTimer: sched.setTimer,
+      clearTimer: sched.clearTimer,
+    });
+    await ctrl.search("foo");
+
+    ctrl.onFrame();
+    await sched.flush(); // must not throw
+
+    expect(searched).toEqual(["foo", "foo"]);
+    expect(ctrl.result().total).toBe(2);
   });
 
   // If output removes matches so the buffer now has fewer than the active index,

@@ -40,7 +40,8 @@ export { highlightAt, highlightRects, matchHighlights, selectionHighlights } fro
 export type { HighlightKind, HighlightRect, HighlightSpan } from "./overlay";
 // Search — query-box state machine (count/index/wrap/debounce) → SearchPort.
 // Matches stay backend-side (only their matchSpans cross the wire); navigation
-// is by index. Active match = selection (reuses the selection highlight).
+// is by index. The active match rides its own overlay channel, ranked above the
+// selection (#429) — it is never selected, so a user selection coexists.
 export { SearchController, StubSearchPort } from "./search";
 export type { SearchOptions, SearchPort, SearchResult } from "./search";
 // Fit (#114) — container px → cols/rows (xterm FitAddon parity: padding + scrollbar

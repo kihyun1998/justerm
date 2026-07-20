@@ -19,6 +19,12 @@ export interface Theme {
   selectionBg?: number;
   /** Search-match highlight background (`0xRRGGBB`). Defaults to a muted amber. */
   matchBg?: number;
+  /** The *active* (current) search match's background (`0xRRGGBB`) — xterm's
+   * `activeMatchBackground`, painted above selection and the other matches (#429).
+   * Defaults to a dark orange, distinct from both {@link selectionBg} and
+   * {@link matchBg} (the Chrome find-in-page yellow-others/orange-active model;
+   * alacritty's `focused_match` gold agrees on "brighter, warmer than the rest"). */
+  activeMatchBg?: number;
   /** Selection background when the terminal is UNFOCUSED (`0xRRGGBB`). xterm's
    * selectionInactiveBackgroundOpaque; a dimmer tint. Defaults to a muted slate. */
   selectionInactiveBg?: number;
@@ -79,6 +85,9 @@ export interface RendererBackend {
     selectionBg: number,
     matchBg: number,
   ): void;
+  /** Retain the ACTIVE search match's spans + colour (#427) — additive beside
+   * `setOverlay`, ranked above selection; empty spans clear it. */
+  setActiveMatch(activeSpans: Uint32Array, activeMatchBg: number): void;
   /** Retain the flat decoration directory `[row, left, right, layer, bg, fg]…` (#393). */
   setDecorations(spans: Uint32Array): void;
   /** Place the cursor: shape `0` block / `1` underline / `2` bar / `3` hollow (#270). */
@@ -236,6 +245,7 @@ export class JustermRenderer implements Renderer {
   // without the TS5.7 TypedArray-generic friction a `new Uint32Array(0)` initializer would infer.
   private lastSelectionSpans: Uint32Array = new Uint32Array(0);
   private lastMatchSpans: Uint32Array = new Uint32Array(0);
+  private lastActiveMatchSpans: Uint32Array = new Uint32Array(0);
   /** Per-frame decoration rects (#120): consumer-side, injected via {@link setDecorationSource}. */
   private decorationSource: ((frame: DecodedFrame) => DecorationRect[]) | undefined;
 
@@ -251,6 +261,7 @@ export class JustermRenderer implements Renderer {
     private cursorTextColor: number,
     private selectionBg: number,
     private matchBg: number,
+    private activeMatchBg: number,
     private selectionInactiveBg: number,
   ) {
     // Honour prefers-reduced-motion (#119): suppress the cursor blink, tracking changes live.
@@ -313,6 +324,7 @@ export class JustermRenderer implements Renderer {
       t.defaultBg,
       t.selectionBg ?? 0x45475a,
       t.matchBg ?? 0x6e5c00,
+      t.activeMatchBg ?? 0x995200,
       t.selectionInactiveBg ?? 0x30313d,
     );
   }
@@ -364,6 +376,7 @@ export class JustermRenderer implements Renderer {
     this.cursorTextColor = theme.defaultBg;
     this.selectionBg = theme.selectionBg ?? 0x45475a;
     this.matchBg = theme.matchBg ?? 0x6e5c00;
+    this.activeMatchBg = theme.activeMatchBg ?? 0x995200;
     this.selectionInactiveBg = theme.selectionInactiveBg ?? 0x30313d;
     // Push the palette + the policy colours a theme can carry; each marks the buffer dirty (#421).
     this.backend.setPalette(colors, theme.defaultFg, theme.defaultBg);
@@ -405,6 +418,7 @@ export class JustermRenderer implements Renderer {
     // walk (the beamterm adapter's composeOverlayDraws) survives the pivot.
     this.lastSelectionSpans = asU32(frame.selectionSpans ?? new Uint32Array(0));
     this.lastMatchSpans = asU32(frame.matchSpans ?? new Uint32Array(0));
+    this.lastActiveMatchSpans = asU32(frame.activeMatchSpans ?? new Uint32Array(0));
     this.issueOverlay();
     this.backend.setDecorations(decorationWire(this.decorationSource?.(frame) ?? []));
     this.updateCursor(frame);
@@ -431,7 +445,10 @@ export class JustermRenderer implements Renderer {
 
   /** Re-issue the retained overlay spans with the focus-gated tint — the single site for the
    * "retained spans + active selection tint" contract, shared by the per-frame push and a focus
-   * flip (which has no new frame) so the two can never drift. */
+   * flip (which has no new frame) so the two can never drift. The active-match channel (#429)
+   * rides along: additive renderer state (`setActiveMatch`), pushed with the same cadence so a
+   * theme swap re-colours it too. Its tint is NOT focus-gated — xterm has no inactive variant
+   * for match colours (only the selection dims on blur). */
   private issueOverlay(): void {
     this.backend.setOverlay(
       this.lastSelectionSpans,
@@ -439,6 +456,7 @@ export class JustermRenderer implements Renderer {
       this.activeSelectionBg(),
       this.matchBg,
     );
+    this.backend.setActiveMatch(this.lastActiveMatchSpans, this.activeMatchBg);
   }
 
   /** Push the frame's cursor to the renderer (native cursor — #270), or clear it when hidden.

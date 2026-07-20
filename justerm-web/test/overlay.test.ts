@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { highlightAt, highlightRects, matchHighlights, selectionHighlights } from "../src/overlay";
+import {
+  activeMatchHighlights,
+  highlightAt,
+  highlightRects,
+  matchHighlights,
+  selectionHighlights,
+} from "../src/overlay";
 import type { DecodedFrame } from "../src/types";
 
 // A frame stripped to just the fields the overlay walk reads. The cell arrays
@@ -89,5 +95,48 @@ describe("highlightRects — kinded overlay rects for the renderer", () => {
 
     expect(highlightAt(rects, 2, 0)).toBe("selection"); // both cover col 2 → selection
     expect(highlightAt(rects, 0, 0)).toBe("match"); // only the match covers col 0
+  });
+});
+
+// #429: the ACTIVE (current) search match is a third overlay group in the public
+// projection, mirroring the wire (#428) and the renderer's ranking (#427) so a
+// consumer building its own renderer off these utilities gets the same model.
+describe("active-match channel in the public projection (#429)", () => {
+  it("reads activeMatchSpans (stride 3) into highlights; absent → empty", () => {
+    expect(activeMatchHighlights(overlayFrame({ activeMatchSpans: [2, 5, 8] }))).toEqual([
+      { row: 2, left: 5, right: 8 },
+    ]);
+    expect(activeMatchHighlights(overlayFrame({}))).toEqual([]);
+  });
+
+  it("tags active rects in highlightRects after selection and match", () => {
+    const frame = overlayFrame({
+      selectionSpans: [0, 2, 7],
+      matchSpans: [3, 1, 4],
+      activeMatchSpans: [3, 1, 4],
+    });
+
+    expect(highlightRects(frame)).toEqual([
+      { row: 0, left: 2, right: 7, kind: "selection" },
+      { row: 3, left: 1, right: 4, kind: "match" },
+      { row: 3, left: 1, right: 4, kind: "active" },
+    ]);
+  });
+
+  // The renderer's ranking: active > selection > match (#427). The active match
+  // is ALSO present in the match group (the wire keeps it there; ranking, not
+  // exclusion, resolves the overlap) — so a cell under all three reads "active",
+  // regardless of listing order.
+  it("ranks active above selection above match on the same cell", () => {
+    const rects: ReturnType<typeof highlightRects> = [
+      { row: 0, left: 0, right: 9, kind: "match" },
+      { row: 0, left: 2, right: 6, kind: "active" },
+      { row: 0, left: 4, right: 9, kind: "selection" },
+    ];
+
+    expect(highlightAt(rects, 5, 0)).toBe("active"); // all three cover col 5
+    expect(highlightAt(rects, 3, 0)).toBe("active"); // active + match
+    expect(highlightAt(rects, 8, 0)).toBe("selection"); // selection + match
+    expect(highlightAt(rects, 0, 0)).toBe("match"); // match alone
   });
 });

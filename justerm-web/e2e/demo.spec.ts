@@ -722,6 +722,86 @@ test("the font-size button re-bakes the atlas and re-fits to fewer columns (#417
   expect(at20!.cols).toBeLessThan(at16!.cols);
 });
 
+// #429: search navigation drives the ACTIVE-match channel, decoupled from the selection. The
+// renderer ranking (#427) and the wire group (#428) are proven in their own layers; this locks the
+// WEB wiring end-to-end through the real published wasm. The canvas paint has no DOM proxy, so the
+// demo's `__searchProbe` samples the drawing buffer (the #420 readPixels pattern; a composited
+// screenshot is unreliable, #352) at the active match's first cell and at a plain match cell.
+// Colours are the adapter DEFAULTS (nothing theme-injected), so this also proves the default flow:
+// active 0x995200 → rgb(153,82,0), match 0x6e5c00 → rgb(110,92,0).
+test.describe("active search match rides its own channel, not the selection (#429)", () => {
+  const ACTIVE = "rgb(153,82,0)";
+  const MATCH = "rgb(110,92,0)";
+  const probe = (page: import("@playwright/test").Page) =>
+    page.evaluate(() => window.__searchProbe!());
+
+  test("navigation paints the active match distinctly; a user selection coexists and survives clear", async ({
+    page,
+  }) => {
+    // Every demo row contains "select" ('s' has no ascender — the corner-inset
+    // pixel the probe samples is guaranteed bg), so matches are plentiful.
+    await page.locator("#term").click({ position: { x: 50, y: 50 } });
+    await page.keyboard.press("Control+f");
+    await page.locator('input[placeholder="search"]').fill("select");
+    await expect(page.locator("#search-count")).toHaveText(/^1\/\d+/);
+
+    // Landing on match 0 designated it active: its cell paints the ACTIVE
+    // colour, a different match paints the plain match colour, and — the
+    // decoupling itself — NO selection was created (a11y: the current match is
+    // no longer surfaced to AT as a text selection).
+    let p = await probe(page);
+    expect(p.active).toBe(ACTIVE);
+    expect(p.other).toBe(MATCH);
+    expect(p.selectionSpans).toEqual([]);
+    // The active span is the FIRST on-screen match triple (both from one
+    // snapshot, so the demo's row drift can't fake this).
+    expect(p.activeSpan).toEqual(p.matchSpans.slice(0, 3));
+
+    // Enter → next match: the channel tracked navigation (now the SECOND triple).
+    await page.keyboard.press("Enter");
+    await expect(page.locator("#search-count")).toHaveText(/^2\/\d+/);
+    p = await probe(page);
+    expect(p.active).toBe(ACTIVE);
+    expect(p.activeSpan).toEqual(p.matchSpans.slice(3, 6));
+
+    // A manual drag-selection COEXISTS with the search overlays — pre-#429
+    // showMatch owned the selection channel, so this was impossible — and the
+    // active match keeps its own colour (ranked above the selection).
+    const box = (await page.locator("#term").boundingBox())!;
+    await page.mouse.move(box.x + 30, box.y + 40);
+    await page.mouse.down();
+    await page.mouse.move(box.x + 200, box.y + 40, { steps: 4 });
+    await page.mouse.up();
+    p = await probe(page);
+    expect(p.selectionSpans.length).toBeGreaterThan(0);
+    expect(p.active).toBe(ACTIVE);
+
+    // Terminal blur (focus moves into the search box) flips the selection to
+    // its inactive tint — the ACTIVE channel must survive the flip, not drop.
+    await page.locator('input[placeholder="search"]').click();
+    p = await probe(page);
+    expect(p.active).toBe(ACTIVE);
+
+    // A live theme swap (#420) re-pushes the active colour with the rest of the
+    // overlay; the demo themes carry no activeMatchBg, so the default survives
+    // the round-trip.
+    await page.getByRole("button", { name: "Theme: dark" }).click();
+    p = await probe(page);
+    expect(p.active).toBe(ACTIVE);
+    await page.getByRole("button", { name: "Theme: light" }).click();
+
+    // Escape clears the SEARCH state only — the user's selection survives
+    // (pre-#429 the search owned the selection and clear dropped it).
+    await page.locator('input[placeholder="search"]').click();
+    await page.keyboard.press("Escape");
+    await expect(page.locator("#search-count")).toHaveText("0/0");
+    p = await probe(page);
+    expect(p.activeSpan).toEqual([]);
+    expect(p.active).toBeNull();
+    expect(p.selectionSpans.length).toBeGreaterThan(0);
+  });
+});
+
 // #420: the runtime theme button drives the wired setTheme (renderer setPalette #405) through the
 // real published justerm-renderer wasm. Two schemes with opposite defaults, so the palette swap
 // recolours the canvas — the demo samples the drawing buffer's centre after each swap (readPixels
