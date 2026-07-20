@@ -6,8 +6,20 @@
 //! consumer owns the scheme and injects it (ADR-0002); the renderer only resolves.
 
 /// Which default a `Default` reference resolves to.
+///
+/// `Bg` is currently constructed **only by this module's tests** (#465 surfaced it once the module
+/// stopped being `pub` and dead-code analysis switched back on). That is not an oversight to delete:
+/// production never reaches [`resolve_rgb`]'s `Default` arm, because [`render_policy::resolve_slot`]
+/// intercepts every `Default` reference first — it has to, since inverse flips which default a
+/// `Default` reference means. So the same knowledge lives in two places and this parameter is dead on
+/// the production path. Untangling that is a design decision tracked as **#470**; kept as-is until
+/// then, deliberately, rather than silently reshaping an API a sibling mirrors (`colors.js`
+/// `resolveRgb`).
+///
+/// [`render_policy::resolve_slot`]: crate::render_policy
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Role {
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) enum Role {
     Fg,
     Bg,
 }

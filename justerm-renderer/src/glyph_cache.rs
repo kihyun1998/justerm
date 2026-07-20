@@ -282,19 +282,24 @@ impl GlyphCache {
         }
     }
 
-    /// Total number of cached (non-fast-path) glyphs.
-    pub fn len(&self) -> usize {
+    /// Introspection used only by this module's tests (#465). The render path never asks the cache
+    /// its size and never resets it, so these are `#[cfg(test)]` — which is what the wasm32 build
+    /// (the one that compiles the whole crate) reported once the module stopped being `pub` and
+    /// dead-code analysis switched back on.
+    ///
+    /// `clear`'s doc used to claim it was "needed when the atlas is rebuilt on a font-size / DPR
+    /// change (#265)". That was **false**: all three rebuild paths — `set_device_pixel_ratio`,
+    /// `set_font_size` and the context-loss `restore` — deliberately KEEP the cache and re-bake from
+    /// it (`bake_all_glyphs` iterates `entries()`), so clearing first would leave nothing to bake.
+    /// If a reset is ever genuinely wanted on a rebuild path, drop the `cfg` and re-read those three
+    /// first.
+    #[cfg(test)]
+    pub(crate) fn len(&self) -> usize {
         self.normal.len() + self.wide.len()
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-
-    /// Reset the allocator: drop every cached glyph and free all slots (both regions
-    /// restart from their reserved boundaries). Needed when the atlas is rebuilt on a
-    /// font-size / DPR change (#265). The ASCII fast-path slots are unaffected.
-    pub fn clear(&mut self) {
+    #[cfg(test)]
+    pub(crate) fn clear(&mut self) {
         self.normal.clear();
         self.wide.clear();
         self.normal_next = ASCII_SLOTS;
