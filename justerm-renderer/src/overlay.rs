@@ -114,12 +114,6 @@ impl Overlay<'_> {
         }
     }
 
-    /// The blend colour covering `(row, col)`, or `None` — [`highlight_at`](Self::highlight_at)
-    /// resolved through [`HighlightColors`].
-    pub fn color_at(&self, row: u32, col: u32) -> Option<u32> {
-        self.highlight_at(row, col).map(|k| self.colors.of(k))
-    }
-
     /// Whether the live selection covers `(row, col)` — INDEPENDENT of the winning
     /// [`highlight_at`](Self::highlight_at) kind (#430). Foreground and background resolve on
     /// separate channels, xterm's model: `CellColorResolver` keys its selection fg stage on
