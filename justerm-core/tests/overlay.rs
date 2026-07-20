@@ -459,6 +459,122 @@ fn a_span_designation_dies_with_invalidated_highlights() {
 }
 
 // ===========================================================================
+// Top-anchored SUB-REGION scroll — anchors below the bottom margin (#449)
+// ===========================================================================
+//
+// A top-anchored sub-region scroll (`scroll_top == 0`, `scroll_bottom <
+// rows-1`, primary — e.g. DECSTBM with a bottom status line) ACCRUES the
+// evicted top row to scrollback (ADR-0009; alacritty's `Grid::scroll_up` does
+// the same for `region.start == 0`, swapping the fixed bottom lines back).
+// Rows below the margin stay fixed on screen, but scrollback grew — so their
+// concatenated ABSOLUTE index shifts +1 while their content does not move.
+// Anchors must follow the content: selection/markers re-anchor +1 (what
+// alacritty gets free from screen-relative coordinates), query-derived search
+// highlights invalidate (the drop-not-reanchor policy, #108).
+//
+// Scene: rows=4, DECSTBM [1..3] → scroll_top=0, scroll_bottom=2; "TARGET"
+// lives on the fixed bottom row (grid row 3); an LF at the region's bottom
+// row triggers one accrual sub-region scroll.
+
+/// Search highlights (and the active designation) below the margin invalidate
+/// on a sub-region scroll — before #449 they stale-painted one row off.
+#[test]
+fn sub_region_scroll_invalidates_highlights_below_the_margin() {
+    let mut term = Engine::new(20, 4);
+    term.feed(b"\x1b[1;3r\x1b[4;1HTARGET");
+
+    let matches = term.search("TARGET");
+    let m = matches[0];
+    term.set_search_highlights(matches);
+    term.set_active_search_match(Some(m));
+    assert_eq!(
+        term.frame().overlay.matches,
+        vec![SelectionSpan {
+            row: 3,
+            left: 0,
+            right: 5
+        }]
+    );
+
+    term.feed(b"\x1b[3;1H\n"); // LF at the region bottom → accrual sub-region scroll
+    let overlay = term.frame().overlay;
+    assert_eq!(overlay.matches, vec![], "invalidated, not stale-shifted");
+    assert_eq!(overlay.active_match, vec![], "the designation dies with it");
+}
+
+/// A selection on the fixed bottom row keeps tracking its CONTENT — the
+/// viewport row must not move (the content did not move on screen).
+#[test]
+fn sub_region_scroll_keeps_a_selection_below_the_margin_anchored() {
+    let mut term = Engine::new(20, 4);
+    term.feed(b"\x1b[1;3r\x1b[4;1HTARGET");
+
+    term.selection_begin(3, 0, Side::Left, SelectionType::Char);
+    term.selection_extend(3, 5, Side::Right);
+    assert_eq!(term.selection_text().as_deref(), Some("TARGET"));
+
+    term.feed(b"\x1b[3;1H\n");
+    assert_eq!(
+        term.selection_range(),
+        vec![SelectionSpan {
+            row: 3,
+            left: 0,
+            right: 5
+        }],
+        "the selection stays on the fixed row"
+    );
+    assert_eq!(
+        term.selection_text().as_deref(),
+        Some("TARGET"),
+        "…and still extracts the same content"
+    );
+}
+
+/// A marker on the fixed bottom row keeps tracking its content the same way.
+#[test]
+fn sub_region_scroll_keeps_a_marker_below_the_margin_anchored() {
+    let mut term = Engine::new(20, 4);
+    term.feed(b"\x1b[1;3r\x1b[4;1HTARGET");
+
+    let id = term.add_marker(3);
+    term.feed(b"\x1b[3;1H\n");
+
+    let positions = term.frame().overlay.markers;
+    assert_eq!(positions.len(), 1);
+    assert_eq!(positions[0].id, id);
+    assert_eq!(positions[0].row, 3, "the marker stays on the fixed row");
+}
+
+/// At the scrollback cap the accrual (+1 below the margin) and the eviction
+/// (−1 everywhere) compose to net zero for the fixed rows — pins the ordering.
+#[test]
+fn sub_region_scroll_at_the_cap_composes_the_shifts() {
+    let mut term = Engine::with_scrollback(20, 4, 1); // cap = 1 line
+    term.feed(b"\x1b[1;3r\x1b[4;1HTARGET");
+    term.feed(b"\x1b[3;1H\n"); // fills scrollback to its cap
+    let id = term.add_marker(3);
+    term.selection_begin(3, 0, Side::Left, SelectionType::Char);
+    term.selection_extend(3, 5, Side::Right);
+
+    term.feed(b"\x1b[3;1H\n"); // at cap: accrue (+1) then evict (−1)
+
+    assert_eq!(
+        term.selection_range(),
+        vec![SelectionSpan {
+            row: 3,
+            left: 0,
+            right: 5
+        }]
+    );
+    assert_eq!(term.selection_text().as_deref(), Some("TARGET"));
+    let positions = term.frame().overlay.markers;
+    assert_eq!(
+        (positions.len(), positions[0].id, positions[0].row),
+        (1, id, 3)
+    );
+}
+
+// ===========================================================================
 // Markers — stable line anchors for decorations (#118)
 // ===========================================================================
 

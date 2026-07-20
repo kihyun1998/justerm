@@ -172,9 +172,9 @@ pub struct Term {
     /// capped highlight list). A span is NOT structurally tied to the set, so
     /// every path that voids the set must void this too: `set_search_highlights`
     /// (hand-over reset, #428) and `invalidate_search_highlights` (the single
-    /// funnel for eviction / region scroll / reflow / both alt swaps; known
-    /// exception: the accrual sub-region branch, #449) — a stale span would
-    /// otherwise keep painting coordinates that now hold other text.
+    /// funnel for eviction / every region scroll incl. the accrual sub-region
+    /// branch (#449) / reflow / both alt swaps) — a stale span would otherwise
+    /// keep painting coordinates that now hold other text.
     active_search_highlight: Option<Match>,
     /// Engine-owned decoration markers (#118), split per buffer like xterm's
     /// `BufferSet` (#177 S0): each a stable id bound to an absolute buffer line
@@ -1166,10 +1166,9 @@ impl Term {
 
     /// Invalidate the held search highlights (#108). Called wherever a buffer
     /// mutation shifts the *line* coordinates the matches were found at — cap
-    /// eviction, in-screen region/RI/SU/SD/IL/DL scroll, reflow, both alt
-    /// swaps. (Known exception: a top-anchored sub-region scroll accrues to
-    /// scrollback WITHOUT funneling, desyncing anchors below the bottom margin
-    /// — tracked as #449, a pre-#436 gap shared with selection and markers.)
+    /// eviction, in-screen region/RI/SU/SD/IL/DL scroll, the accrual
+    /// sub-region scroll (#449 — which also re-anchors selection/markers below
+    /// the margin, `selection_shift_below_margin`), reflow, both alt swaps.
     /// In-line *column* shifts (ICH/DCH, insert-mode print) and
     /// in-place erases (ED/EL/ECH, overwrite) deliberately do NOT funnel — the
     /// set stales in place there exactly like the selection sibling and
@@ -1351,6 +1350,16 @@ impl Term {
     /// evicted; a marker *on* that line (abs 0) has left the buffer, so it is
     /// disposed and announced (#118) — the marker analogue of
     /// `selection_evict_oldest`, but a list with per-marker disposal.
+    /// The marker analogue of `selection_shift_below_margin` (#449) — primary
+    /// only, because the accrual branch that needs it is primary-only.
+    fn markers_shift_below_margin(&mut self, from: usize) {
+        for m in &mut self.normal_markers {
+            if m.line >= from {
+                m.line += 1;
+            }
+        }
+    }
+
     fn markers_evict_oldest(&mut self) {
         // Scrollback eviction is primary-only (the alt screen has none).
         let mut disposed = Vec::new();
@@ -1459,6 +1468,24 @@ impl Term {
     /// Shift the selection up by one absolute line after the oldest history line
     /// is evicted by the scrollback cap. An endpoint clamps to the new top; if
     /// the whole selection was on the evicted line, it is cleared.
+    /// Shift selection endpoints anchored at absolute line `>= from` down by
+    /// one (#449): a top-anchored sub-region scroll grew scrollback while the
+    /// rows below the margin stayed fixed on screen, so their content's
+    /// absolute index rose +1 and the anchors must follow it. Endpoints above
+    /// `from` (in-region / scrollback content, whose indices are stable) are
+    /// untouched — per endpoint, so a selection straddling the margin keeps
+    /// both ends on their content.
+    fn selection_shift_below_margin(&mut self, from: usize) {
+        if let Some(sel) = &mut self.selection {
+            if sel.anchor.point.line >= from {
+                sel.anchor.point.line += 1;
+            }
+            if sel.focus.point.line >= from {
+                sel.focus.point.line += 1;
+            }
+        }
+    }
+
     fn selection_evict_oldest(&mut self) {
         let Some((a, f)) = self
             .selection
@@ -2217,6 +2244,19 @@ impl Term {
                 } else {
                     // Top-anchored sub-region: copy row 0, then region-scroll
                     // `[0..=scroll_bottom]` (rows below stay fixed).
+                    //
+                    // #449: the fixed rows keep their GRID position while
+                    // scrollback grows, so their content's concatenated absolute
+                    // index shifts +1 — re-anchor the content-tracking anchors
+                    // (selection, markers; alacritty's swap-back of the fixed
+                    // bottom lines is the screen-relative equivalent of this)
+                    // and invalidate the query-derived highlights
+                    // (drop-not-re-anchor policy, #108). In-region and
+                    // scrollback content keeps stable indices — untouched.
+                    let below = self.scrollback.len() + self.scroll_bottom + 1;
+                    self.selection_shift_below_margin(below);
+                    self.markers_shift_below_margin(below);
+                    self.invalidate_search_highlights();
                     let evicted = self.grid.row_owned(0);
                     self.grid
                         .scroll_up_region(self.scroll_top, self.scroll_bottom);
