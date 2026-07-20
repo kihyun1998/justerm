@@ -5,7 +5,13 @@ crates.io **and** the npm artifact, version-locked. Do **not** run `cargo publis
 by hand — the tag push does it, and a manual publish would collide (a crates.io version cannot be
 re-published).
 
-## The version is one number
+## The version is one number — for the `v*` track
+
+**Each track measures semver against its own published surface**, and they differ. This section is the
+`v*` track (`justerm-core` on crates.io + `justerm-wasm-decode` on npm), where "public Rust API" is
+literally the shipped surface. `renderer-v*` measures against the **wasm/JS class** and `web-v*`
+against **`src/index.ts`** — see those sections. Carrying this section's wording to another track is
+what produced the needless minors #465 records.
 
 `[workspace.package] version` in the root `Cargo.toml` is the single source — it moves both the core
 crate (`justerm-core`) and the binding (`justerm-wasm-decode`) together (the lockstep ADR-0005/0008 require). The
@@ -49,8 +55,28 @@ so it never goes to crates.io; the core crate never goes to npm.
 
 `justerm-renderer` is **deliberately outside** the `[workspace.package]` version-lockstep (its
 web-sys/glow deps are wasm32-only and it ships on its own cadence, root `Cargo.toml`). So it carries
-its own version (in `justerm-renderer/Cargo.toml`, a `0.1.0`-series, **not** the workspace `0.7.x`) and
+its own version (in `justerm-renderer/Cargo.toml`, its own series — **not** the workspace `0.9.x`) and
 its own tag prefix — a `v*` tag does **not** publish it, and a `renderer-v*` tag publishes **only** it.
+
+**Which surface semver is measured against: the wasm/JS one** (`JustermRenderer` and its methods) —
+**not** the crate's Rust symbols (#465). The renderer is published to **npm only**; `publish-crate.yml`
+uploads `-p justerm-core` and nothing else, so no Rust consumer can exist and `src/lib.rs`'s `pub mod`s
+are an implementation detail, not an API. A change is therefore:
+
+- **patch** — the wasm class's methods, arguments and observable rendering are unchanged. Internal
+  refactors, renames and signature changes to Rust items belong here **even when they would not
+  compile for a hypothetical Rust dependent**.
+- **minor** — a wasm-class API change (a new/renamed/re-signatured method) **or an observable
+  rendering-behaviour change**, since a consumer's pixels move. `renderer-v0.5.0` (#444, selection
+  blends over a bottom-decoration bg) and `renderer-v0.6.0` (#452, per-property decoration merge) are
+  minors on the *behaviour* half of this rule — their Rust-signature changes alone would have been
+  patches.
+
+This rule exists because the alternative was measurably worse: both releases above were classified
+minor on Rust symbols no consumer imports, and in 0.x a minor breaks a caret range — so each forced a
+`justerm-web` dependency bump, and now that `justerm-web` is published (`web-v*`), it would force a
+web release too. The `v*` track's "public Rust API" wording above is correct **for that track**, where
+`justerm-core` really is on crates.io; do not carry it over here.
 
 Cut a renderer release:
 
