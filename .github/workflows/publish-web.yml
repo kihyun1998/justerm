@@ -56,12 +56,17 @@ jobs:
       # Guard the artifact itself, not just the exit code: `files: ["dist"]` plus a build that emitted
       # nothing would publish an empty package that installs fine and imports to undefined. Assert the
       # entry and its types are actually inside the tarball npm is about to upload.
-      - name: Verify the tarball carries the entry and its types
+      # …and the licence texts (#472): `files` is an allowlist and npm's automatic inclusion covers
+      # `LICENSE`/`LICENSE.md` but NOT the hyphenated `LICENSE-MIT` form, so a dual-licence package can
+      # very easily ship a declaration with no text — 0.7.0 did. Asserting it here means the next
+      # regression fails the publish instead of reaching the registry, where it cannot be undone.
+      - name: Verify the tarball carries the entry, its types and the licences
         run: |
           files="$(npm pack --dry-run --json ./justerm-web | node -p "JSON.parse(require('fs').readFileSync(0,'utf8'))[0].files.map(f=>f.path).join('\n')")"
           echo "$files"
-          echo "$files" | grep -qx 'dist/index.js'   || { echo "::error::dist/index.js missing from the tarball"; exit 1; }
-          echo "$files" | grep -qx 'dist/index.d.ts' || { echo "::error::dist/index.d.ts missing from the tarball"; exit 1; }
+          for want in dist/index.js dist/index.d.ts LICENSE-MIT LICENSE-APACHE; do
+            echo "$files" | grep -qx "$want" || { echo "::error::$want missing from the tarball"; exit 1; }
+          done
 
       # Version gate: the tag (minus the `web-v` prefix) must equal package.json's version. A mismatch
       # would publish an artifact under a version that is not the one tagged — fail instead.
