@@ -28,7 +28,7 @@
 //! ActiveMatch > Selection > Match) and paints solid in its own colour, xterm's `layer:'top'`
 //! `activeMatchBackground` (`DecorationManager.ts`); the renderer side is wired here (#427), the
 //! consumer pushes the active span via `set_active_match` (#424 slice 1). One xterm-parity item stays
-//! deferred (#400): a selection blending over a bottom-decoration bg vs the cell's own bg.
+//! deferred (#444, ex-#400 item ③): a selection blending over a bottom-decoration bg vs the cell's own bg.
 
 use crate::attrs::is_inverse;
 
