@@ -53,6 +53,10 @@ const version = meta.packages.find((p) => p.name === "justerm-wasm-decode").vers
 const pkgPath = join(outDir, "package.json");
 const pkg = JSON.parse(readFileSync(pkgPath, "utf8"));
 pkg.version = version;
+// wasm-pack propagates Cargo's `keywords`/`homepage` but NOT `author`: Cargo's `authors`
+// is deprecated and is not mapped to npm's `author` field (#478). Set it here so the
+// published package carries authorship like the rest of the family (justerm-web).
+pkg.author = "Ki Hyun Park";
 // Copying is not enough: `files` is an allowlist, so anything not listed here is dropped from the
 // tarball even though it sits in the directory.
 for (const f of ["colors.js", "colors.d.ts", ...LICENSES]) {

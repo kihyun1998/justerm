@@ -153,9 +153,17 @@ not copy them). **Verify by inspecting the tarball, never the source tree** —
 
 ## A published README is rendered standalone (#473)
 
-crates.io and npm snapshot the README at publish time and render it **off GitHub**, so a
-repo-relative link (`[x](../y)`) resolves against the registry page and breaks. Every link in a
-published README must be absolute. `justerm-web@0.7.0` shipped with two broken ones.
+Both registries snapshot the README at publish time and render it **off GitHub**, but they treat
+relative links differently:
+
+- **npm does NOT rewrite** — a repo-relative link (`[x](../y)`) resolves against the registry page
+  and breaks. `justerm-web@0.7.0` shipped with two broken ones (#473).
+- **crates.io DOES rewrite** — it rewrites relative links to absolute GitHub URLs against the crate's
+  README *subdirectory*: `justerm-core/README.md`'s `[x](../CLAUDE.md)` becomes
+  `…/blob/HEAD/justerm-core/../CLAUDE.md`, which GitHub serves as repo-root `CLAUDE.md`. So
+  `justerm-core`'s 10 relative links render correctly — verified against the live crate page, #477.
+
+Absolute links are still the safer, registry-agnostic form; prefer them in any README that ships.
 
 The same README is a package's front page, so it should open with *install + minimal usage*, not
 with repo-internal framing ("this is a folder in the repo…"). **A usage snippet in a published
