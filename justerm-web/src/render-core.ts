@@ -14,29 +14,6 @@ export interface DrawOp {
   italic: boolean;
   underline: boolean;
   strikethrough: boolean;
-  /** Whether a selection/match highlight should ALPHA-BLEND over this cell's bg
-   * (true) or paint the highlight colour SOLID (false). xterm blends only when the
-   * cell has a non-default bg or is inverse — so a coloured cell shows through the
-   * selection, but plain text on the default bg gets a crisp solid highlight. */
-  blendHighlight: boolean;
-  /** The fg this cell would have WITHOUT dim (#224). Equals `fg` unless the cell is
-   * dim; the overlay swaps it in under a selection, since xterm force-clears DIM
-   * on selected cells so the text stays legible over the highlight. */
-  fgUndimmed: number;
-  /** Whether the cell carries SGR DIM (#232). The overlay contrast pass halves the
-   * minimumContrastRatio for a dim NON-selection cell (a search match keeps DIM,
-   * xterm `mcr / (dim ? 2 : 1)`); a selection clears DIM, so its full ratio applies. */
-  dim: boolean;
-  /** Whether this cell's glyph tiles with the background — a Powerline separator or
-   * box-drawing/block element (#226, xterm `treatGlyphAsBackgroundColor`). Its fg is
-   * excluded from the minimumContrastRatio correction (stage-2 AND overlay) so a
-   * contrast nudge can't seam it against the neighbouring cell. */
-  excludeFromContrast: boolean;
-  /** Whether the cell is INVERSE with a DEFAULT background (#241). xterm treats a
-   * tile glyph (`excludeFromContrast`) in such a cell under selection as *transparent*
-   * — its fg becomes the raw selection bg (no blend), so the glyph dissolves cleanly
-   * into the highlight. Derived from the raw refs/flags (lost after stage-1 resolve). */
-  inverseDefaultBg: boolean;
 }
 
 /** Flag bit positions, from the decoder's `flags()`. Structural for testability. */
@@ -93,12 +70,10 @@ export function cellToDrawOp(
   // #226: a Powerline/box glyph tiles with the bg, so its fg is excluded from the
   // minimumContrastRatio correction (computed from the real glyph, not the HIDDEN
   // substitution below). Both ranges are BMP → the first code point suffices.
+  // The tile-glyph classification (#226) feeds the POLICY seam, not a field: a
+  // stage-2 policy may exclude a tiling glyph from its contrast correction.
   const excludeFromContrast = symbol.length > 0 && treatGlyphAsBackgroundColor(symbol.codePointAt(0)!);
   const { fg, bg } = policy(resolved.fg, resolved.bg, flags, excludeFromContrast);
-  // #224: the undimmed fg = the same policy with DIM cleared (so contrast reverts
-  // to its full ratio too, as xterm does under selection). Equals fg when not dim.
-  const fgUndimmed =
-    (flags & F.dim) !== 0 ? policy(resolved.fg, resolved.bg, flags & ~F.dim, excludeFromContrast).fg : fg;
   return {
     x,
     y,
@@ -112,14 +87,5 @@ export function cellToDrawOp(
     italic: (flags & F.italic) !== 0,
     underline: (flags & F.underline) !== 0,
     strikethrough: (flags & F.strikethrough) !== 0,
-    // Blend the highlight only for a non-default (Indexed/Rgb) bg or an inverse
-    // cell — matches xterm's CellColorResolver branch (else = solid selection).
-    blendHighlight: (flags & F.inverse) !== 0 || bgRef >>> 24 !== 0,
-    fgUndimmed,
-    dim: (flags & F.dim) !== 0,
-    excludeFromContrast,
-    // #241: inverse + a DEFAULT bg ref — the raw signal a tile glyph needs to render
-    // transparent under selection (stage-1 has already resolved the colour away).
-    inverseDefaultBg: (flags & F.inverse) !== 0 && bgRef >>> 24 === 0,
   };
 }
