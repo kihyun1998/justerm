@@ -1,18 +1,9 @@
-//! justerm-core — the pure terminal engine of the `justerm` family.
-//!
-//! Feed VT bytes in; read terminal state out. The engine does no I/O, no IPC,
-//! no rendering, and is theme-agnostic (it stores colour *references*, never
-//! hex). See `CLAUDE.md` for the boundary invariants and `docs/architecture.md`
-//! for the full contract.
-//!
-//! ```
-//! use justerm_core::{Color, Engine};
-//!
-//! let mut term = Engine::new(80, 24);
-//! term.feed(b"\x1b[31mhi\x1b[0m");
-//! assert_eq!(term.grid().cell(0, 0).c(), 'h');
-//! assert_eq!(term.grid().cell(0, 0).fg(), Color::Indexed(1));
-//! ```
+// The crate-level docs and the compiled usage example both live in README.md,
+// pulled in here so the published crates.io front page and this doctest are one
+// source: the `cargo test` doc pass compiles the README's `rust` block, so the
+// published usage snippet cannot drift from the real API (#483, and the #473
+// rule that a shipped usage snippet must compile against the real types).
+#![doc = include_str!("../README.md")]
 
 mod cell;
 mod color;
