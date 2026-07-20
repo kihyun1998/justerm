@@ -169,10 +169,36 @@ Discovery metadata (`homepage`, `bugs`, `keywords`, `author`) lives in `package.
 and `homepage` into the generated `pkg/package.json`** (verified by building, not assumed; Cargo
 caps `keywords` at 5).
 
-## GitHub Releases — manual, and the track starts at v0.3.1
+## GitHub Releases — manual on `v*`, automatic on the other two tracks (#474)
 
-CI does **not** create GitHub Releases (only registry publishes). Create them by hand:
-`gh release create vX.Y.Z --verify-tag --latest --title "…" --notes-file …`.
+| Track | Release page |
+|---|---|
+| `v*` | **manual**: `gh release create vX.Y.Z --verify-tag --latest --title "…" --notes-file …` |
+| `renderer-v*` | **automatic** — a `release` job in `publish-renderer.yml` |
+| `web-v*` | **automatic** — a `release` job in `publish-web.yml` |
+
+The two automated ones take the body from the **tag's own annotation** (what the `git tag -a -m`
+step in each track's flow above already writes), so there is one source for the note. `%(contents)`
+returns the annotation for an annotated tag; for a *lightweight* tag it falls through to the tagged
+commit's message rather than being empty, so the `--generate-notes` fallback is a last resort, not
+the lightweight-tag path.
+
+Two deliberate details:
+
+- **A separate job**, not a step in the publish job. It needs `contents: write`, which must not sit
+  in the job holding `NPM_TOKEN` — the same reasoning (ADR-0006) that keeps third-party actions out
+  of that job.
+- **`--latest=false`.** The `Latest` badge belongs to the `v*` engine track; without the flag,
+  whichever track tagged most recently steals it and `gh` does not warn. Check with
+  `gh release list --json tagName,isLatest`.
+
+Creating them at tag time means `publishedAt` is correct by construction — which is why automation
+was preferred over "remember to do it by hand", given the backfill objection below.
+
+**Why this was added:** `renderer-v0.5.0` (#444) and `renderer-v0.6.0` (#452) both changed rendering
+*behaviour* — a consumer's pixels moved — and shipped with no note on any surface a consumer reads.
+The renderer's semver basis is explicitly "the wasm class **and observable rendering behaviour**"
+(#465), so the behaviour half needs somewhere to be described.
 
 The GitHub Release track **starts at v0.3.1**. Tags `v0.1.0`–`v0.3.0` exist as git tags only and are
 **intentionally not backfilled** as Releases: GitHub stamps a Release's publish date at creation time

@@ -91,3 +91,32 @@ jobs:
             # `./` prefix: without it npm parses `justerm-web` as a GitHub owner/repo shorthand.
             npm publish ./justerm-web --access public
           fi
+
+  # #474: a GitHub Release for this track — see the same job in publish-renderer.yml for the full
+  # reasoning (separate job so `contents: write` never shares a job with NPM_TOKEN; created at tag
+  # time so `publishedAt` is correct by construction; `--latest=false` keeps the badge on `v*`).
+  release:
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0 # the body is the tag's annotation, absent from a shallow clone
+      - name: Create the GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # `%(contents)` is the ANNOTATION for an annotated tag (what `git tag -a -m` wrote, which is
+          # what release.md's flow always creates). For a lightweight tag it falls through to the
+          # tagged COMMIT's message instead of being empty — verified — so the `--generate-notes`
+          # branch below is a true last resort (an empty commit message), not the lightweight-tag path.
+          notes="$(git tag -l --format='%(contents)' "$GITHUB_REF_NAME")"
+          if [ -n "$notes" ]; then
+            gh release create "$GITHUB_REF_NAME" --verify-tag --latest=false \
+              --title "$GITHUB_REF_NAME" --notes "$notes"
+          else
+            gh release create "$GITHUB_REF_NAME" --verify-tag --latest=false \
+              --title "$GITHUB_REF_NAME" --generate-notes
+          fi

@@ -93,3 +93,42 @@ jobs:
             # `./` prefix: without it npm parses `justerm-renderer/pkg` as a GitHub owner/repo shorthand.
             npm publish ./justerm-renderer/pkg --access public
           fi
+
+  # #474: a GitHub Release for this track. Behaviour changes ship here (the renderer's semver basis is
+  # the wasm class AND observable rendering, #465), and a registry publish carries no notes — so
+  # without this a consumer bumping a caret has only the commit log.
+  #
+  # A SEPARATE job on purpose: it needs `contents: write`, which must not sit in the job holding
+  # NPM_TOKEN (ADR-0006 — same reasoning that keeps third-party actions out of that job).
+  #
+  # Created at tag time, so `publishedAt` is correct by construction — that removes the objection
+  # release.md raises against backfilling, for everything from here on.
+  release:
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      # fetch-depth 0: the body is the tag's own annotation (what `git tag -a -m` wrote), which a
+      # shallow clone does not carry.
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+      - name: Create the GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # `%(contents)` is the ANNOTATION for an annotated tag (what `git tag -a -m` wrote, which is
+          # what release.md's flow always creates). For a lightweight tag it falls through to the
+          # tagged COMMIT's message instead of being empty — verified — so the `--generate-notes`
+          # branch below is a true last resort (an empty commit message), not the lightweight-tag path.
+          notes="$(git tag -l --format='%(contents)' "$GITHUB_REF_NAME")"
+          # `--latest=false`: the Latest badge belongs to the `v*` engine track. Without it, whichever
+          # track tagged most recently steals it, and `gh release create` does not warn.
+          if [ -n "$notes" ]; then
+            gh release create "$GITHUB_REF_NAME" --verify-tag --latest=false \
+              --title "$GITHUB_REF_NAME" --notes "$notes"
+          else
+            gh release create "$GITHUB_REF_NAME" --verify-tag --latest=false \
+              --title "$GITHUB_REF_NAME" --generate-notes
+          fi
