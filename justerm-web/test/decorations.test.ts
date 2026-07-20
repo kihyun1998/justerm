@@ -171,19 +171,59 @@ describe("DecorationRegistry (#120 S1)", () => {
     ]);
   });
 
-  // A right-anchored span wider than the screen overflows the LEFT edge: columns
-  // pass through un-clamped (like the negative-x case), so `left` goes negative.
-  // The renderer's `decorationAt` intersects with the visible cells, painting only
-  // [0, right] — matching xterm, which clips an on-screen-anchored overflow (and
-  // hides only when the anchor x itself is off-screen, where right < 0 here → no
-  // cell matches). Locks in the completeness-pass edge.
-  it("passes a right-anchored overflow through un-clamped (renderer clips)", () => {
+  // #457: a right-anchored span wider than the screen overflows the LEFT edge. It is
+  // CLIPPED here, not passed through: the wire carries u32 columns, so a negative
+  // `left` would wrap to ~4.29e9 and the renderer's `col >= left` would match NOTHING —
+  // the decoration would vanish instead of being clipped. xterm has no stored span to
+  // wrap (`forEachDecorationAtCell` tests `x >= xmin && x < xmax` per cell), so an
+  // out-of-range span simply never matches there. NOTE the reference only covers the
+  // LEFT-anchored form: xterm's colour path ignores `anchor` entirely (only its DOM
+  // element honours it), so a right-anchored span is justerm's own design (#459) —
+  // clipping it is consistent with that design, not a reproduction of xterm.
+  it("clips a right-anchored overflow to the viewport", () => {
     const reg = new DecorationRegistry();
     reg.register({ markerId: 1, anchor: "right", x: 0, width: 25 }); // wider than 20 cols
 
     expect(reg.decorationsForFrame(frameGeom(20, 10, mk(1, 0)))).toEqual([
-      { row: 0, left: -5, right: 19, layer: "bottom", bg: undefined, fg: undefined },
+      { row: 0, left: 0, right: 19, layer: "bottom", bg: undefined, fg: undefined },
     ]);
+  });
+
+  // #457 (2-lens): the clip must reject NON-FINITE columns too, or the invariant it
+  // states is false. `Math.max(0, NaN)` is NaN and `right < NaN` is false, so a NaN
+  // span slipped through the visibility check — and `Uint32Array[NaN]` is 0, so it
+  // landed as a spurious paint on column 0. Verified numerically before fixing.
+  it("emits no rect for a non-finite x or width", () => {
+    const reg = new DecorationRegistry();
+    reg.register({ markerId: 1, x: Number.NaN, width: 3 });
+    expect(reg.decorationsForFrame(frameGeom(20, 10, mk(1, 0)))).toEqual([]);
+
+    const inf = new DecorationRegistry();
+    inf.register({ markerId: 1, x: Number.POSITIVE_INFINITY, width: 3 });
+    expect(inf.decorationsForFrame(frameGeom(20, 10, mk(1, 0)))).toEqual([]);
+  });
+
+  // #457 (2-lens) the HIGH end, the mirror of the fixed low-end bug: a column at or
+  // past 2**32 also wraps in the u32 wire (2**32 -> 0), so an absurd x would paint
+  // column 0. Clipping `right` to the last visible column makes such a span empty.
+  it("emits no rect for a span that starts past the last column", () => {
+    const reg = new DecorationRegistry();
+    reg.register({ markerId: 1, x: 2 ** 32, width: 3 });
+    expect(reg.decorationsForFrame(frameGeom(20, 10, mk(1, 0)))).toEqual([]);
+
+    const offRight = new DecorationRegistry();
+    offRight.register({ markerId: 1, x: 25, width: 3 }); // starts right of a 20-col view
+    expect(offRight.decorationsForFrame(frameGeom(20, 10, mk(1, 0)))).toEqual([]);
+  });
+
+  // #457 the dangerous inverse: if the span is entirely off-screen its `right` is also
+  // negative, and a wrapped `right` makes `col <= right` true for EVERY column — the
+  // decoration would paint the whole row. Emit nothing instead.
+  it("emits no rect for a span that is entirely off-screen to the left", () => {
+    const reg = new DecorationRegistry();
+    reg.register({ markerId: 1, x: -10, width: 5 }); // covers -10..-6, no visible cell
+
+    expect(reg.decorationsForFrame(frameGeom(20, 10, mk(1, 0)))).toEqual([]);
   });
 
   // Defaults are unchanged (height 1, anchor left) — a plain decoration still
@@ -284,27 +324,30 @@ describe("DecorationRegistry.rulerMarksForFrame (#120 S3)", () => {
     ).toEqual([]);
   });
 
-  // Completeness pass (lens 1): the registry is a pass-through positions model — it
-  // does NOT validate x/width (mirroring xterm, which only defaults them). A width
-  // of 0 yields a degenerate span (right < left) that a renderer's `col >= left &&
-  // col <= right` test never matches — harmlessly invisible, not a crash.
-  it("passes degenerate width through as an empty (invisible) span", () => {
+  // Completeness pass (lens 1): the registry does NOT validate x/width (mirroring
+  // xterm, which only defaults them) — a width of 0 is invisible, not a crash. Since
+  // #457 that invisibility is realised by emitting NO rect rather than a degenerate
+  // one (right < left): the same visible result, but the wire now carries only spans
+  // with at least one visible cell, which is what keeps a negative column from ever
+  // reaching a u32 lane. xterm agrees — its per-cell test `x >= xmin && x < xmax` is
+  // false everywhere when width is 0.
+  it("emits no rect for a degenerate (zero-width) span", () => {
     const reg = new DecorationRegistry();
     reg.register({ markerId: 1, x: 3, width: 0 });
 
-    expect(reg.decorationsForFrame(frame(mk(1, 2)))).toEqual([
-      { row: 2, left: 3, right: 2, layer: "bottom", bg: undefined, fg: undefined },
-    ]);
+    expect(reg.decorationsForFrame(frame(mk(1, 2)))).toEqual([]);
   });
 
-  // A negative x is likewise passed through (no clamping here — viewport clipping
-  // is the renderer's job): left..=right can start left of column 0.
-  it("passes a negative x through without clamping", () => {
+  // #457: a negative x is clipped for the same reason as the right-anchored overflow —
+  // the u32 wire cannot carry a negative column, so the partly-visible span must be
+  // clipped to its visible part here rather than "left to the renderer" (which would
+  // receive a wrapped value and paint nothing).
+  it("clips a negative x to the first visible column", () => {
     const reg = new DecorationRegistry();
     reg.register({ markerId: 1, x: -2, width: 3 });
 
     expect(reg.decorationsForFrame(frame(mk(1, 0)))).toEqual([
-      { row: 0, left: -2, right: 0, layer: "bottom", bg: undefined, fg: undefined },
+      { row: 0, left: 0, right: 0, layer: "bottom", bg: undefined, fg: undefined },
     ]);
   });
 

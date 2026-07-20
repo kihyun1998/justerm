@@ -193,7 +193,31 @@ export class DecorationRegistry {
       const set = this.byMarker.get(m.id);
       if (!set) continue;
       for (const d of set) {
-        const [left, right] = columns(d, cols);
+        const [rawLeft, rawRight] = columns(d, cols);
+        // #457: clip to the viewport HERE, because the wire cannot carry the alternative.
+        // Columns cross as u32 (`decorationWire`), so an out-of-range column does not
+        // arrive as "out of range" — it arrives as a plausible one. A negative `left`
+        // wraps to ~4.29e9 and the renderer's `col >= left` matches nothing (the
+        // decoration vanishes); a negative `right` makes `col <= right` true for EVERY
+        // column (it paints the whole row); NaN, ±Infinity and anything >= 2**32 all
+        // land as 0 (a spurious paint on column 0).
+        //
+        // xterm needs no equivalent: it stores no span, testing `x >= xmin && x < xmax`
+        // per visible cell (`DecorationService.forEachDecorationAtCell`), so an
+        // out-of-range span simply never matches. Clipping reproduces that result for a
+        // LEFT-anchored decoration exactly. For a RIGHT-anchored one there is nothing to
+        // reproduce — xterm's colour path ignores `anchor` entirely (only its DOM element
+        // honours it), so justerm's right-anchored span is first-party design (#459).
+        const left = Math.max(0, rawLeft);
+        // Clip the high end to the last visible column when the frame carries geometry.
+        // Absent geometry we cannot, so the guarantee below is: every emitted column is a
+        // finite, non-negative integer — and additionally <= cols-1 whenever `cols` is
+        // known, which the real frame path always is (`DecodedFrame.cols` is required).
+        const right = frame.cols !== undefined ? Math.min(frame.cols - 1, rawRight) : rawRight;
+        // Drop anything with no visible cell: off-screen either side, degenerate
+        // (zero-width), or non-finite. Emitting nothing is correct AND is what keeps an
+        // unrepresentable column from reaching the u32 lane at all.
+        if (!Number.isFinite(left) || !Number.isFinite(right) || right < left) continue;
         const lastRow = Math.min(m.row + d.height - 1, maxRow);
         for (let row = m.row; row <= lastRow; row++) {
           rects.push({ row, left, right, layer: d.layer, bg: d.bg, fg: d.fg });

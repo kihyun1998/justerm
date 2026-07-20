@@ -76,6 +76,28 @@ describe("decorationWire", () => {
     ]);
   });
 
+  // #457 (2-lens GAP 4): pin WHY `decorationsForFrame` clips, at the seam that forces
+  // it. This lane is a `Uint32Array`, so it cannot represent an out-of-range column —
+  // it silently reinterprets one. Documenting that here means a future rect source
+  // (a second decoration source, or the row lane) cannot reintroduce the wrap while
+  // believing the wire would catch it.
+  it("silently reinterprets an out-of-range column — the reason spans are clipped upstream", () => {
+    const bad = decorationWire([
+      { row: 0, left: -5, right: 19, layer: "bottom", bg: 0x008f00 },
+    ]);
+    expect(bad[1], "a negative column wraps, so `col >= left` matches nothing").toBe(0xfffffffb);
+
+    const nan = decorationWire([
+      { row: 0, left: Number.NaN, right: Number.NaN, layer: "bottom", bg: 0x008f00 },
+    ]);
+    expect(nan[1], "NaN lands as a plausible column 0, not as an error").toBe(0);
+
+    const wrapRight = decorationWire([
+      { row: 0, left: 0, right: -1, layer: "bottom", bg: 0x008f00 },
+    ]);
+    expect(wrapRight[2], "a negative right matches EVERY column").toBe(0xffffffff);
+  });
+
   it("encodes an absent bg/fg override as NO_REF (not 0, which is a valid black)", () => {
     const bgOnly = decorationWire([{ row: 0, left: 0, right: 0, layer: "bottom", bg: 0x000000 }]);
     expect(bgOnly[4]).toBe(0x000000); // black bg is a real colour, kept

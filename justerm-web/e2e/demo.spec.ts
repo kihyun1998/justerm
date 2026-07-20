@@ -37,7 +37,9 @@ test("alt screen button toggles its label", async ({ page }) => {
 // #189: an alt-scoped decoration (created on the alt screen) is DISPOSED on
 // alt-leave — core fires MarkerDisposed on ?1049l (per-buffer clearAllMarkers), which
 // the demo forwards to `decorations.onMarkerDisposed`. The green highlight is a
-// beamterm canvas paint (not DOM, so headless can't see the pixel), but the disposal
+// renderer canvas paint (not DOM; this test asserts the handle's lifecycle rather than
+// the pixel — headless CAN read the drawing buffer via the readPixels probes, as the
+// #420 theme and #457 decoration tests do), but the disposal
 // is observable via the Decorate toggle returning to OFF (the handle is gone, not
 // merely off-screen) plus the demo's dispose log. A primary decoration, by contrast,
 // survives an alt round-trip (only alt-scoped markers dispose) — locking "no
@@ -875,4 +877,28 @@ test("the theme button swaps the palette and recolours the canvas (#420)", async
   // actually swapped in the renderer (an unwired setTheme would leave the canvas unchanged).
   const differs = light!.r !== dark!.r || light!.g !== dark!.g || light!.b !== dark!.b;
   expect(differs, `light ${JSON.stringify(light)} vs dark ${JSON.stringify(dark)}`).toBe(true);
+});
+
+// #457: a right-anchored decoration wider than the viewport overflows the LEFT edge.
+// The projection unit test can only see the emitted span — it cannot see whether
+// anything reached the screen. This drives the REAL wasm renderer and reads the real
+// drawing buffer: before the viewport clip the negative `left` wrapped in the u32 wire
+// and the renderer matched no column, so the decoration was invisible everywhere.
+test("a right-anchored decoration overflowing the left edge still paints (#457)", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await expect(page.getByRole("button", { name: "Decorate line: OFF" })).toBeVisible();
+
+  const p = await page.evaluate(() => window.__decorationProbe!());
+
+  // Discriminating: the decorated samples must DIFFER from the undecorated baseline.
+  // With the pre-#457 wrap both pairs were identical (nothing painted at all).
+  expect(p.overflowLeft, `left: baseline ${p.baselineLeft} vs decorated`).not.toBe(p.baselineLeft);
+  expect(p.overflowRight, `right: baseline ${p.baselineRight} vs decorated`).not.toBe(
+    p.baselineRight,
+  );
+  // …and both ends carry the SAME decoration colour: the span really spans the row,
+  // rather than a partial paint that happens to differ at one end.
+  expect(p.overflowLeft).toBe(p.overflowRight);
 });

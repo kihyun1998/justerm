@@ -881,6 +881,18 @@ window.addEventListener("keydown", (e) => {
 // is not, #352). Samples 2px inside a cell's top-left corner: under a SOLID
 // highlight (#426) that corner is pure highlight bg — glyph ink sits mid-cell
 // (probe with a query whose first glyph has no ascender, e.g. "select").
+/** #457: real pixels for a right-anchored decoration that overflows the LEFT edge.
+ * Before the viewport clip, the negative `left` wrapped in the u32 wire and the
+ * decoration painted nothing — so both `overflow*` samples equalled the baseline. */
+interface DecorationProbe {
+  /** Row centre-left / centre-right with NO decoration — the undecorated colour. */
+  baselineLeft: string;
+  baselineRight: string;
+  /** The same two cells with the overflowing right-anchored decoration registered. */
+  overflowLeft: string;
+  overflowRight: string;
+}
+
 interface SearchProbe {
   /** rgb of the active match's first cell; null when nothing is active/visible. */
   active: string | null;
@@ -898,8 +910,63 @@ interface SearchProbe {
 declare global {
   interface Window {
     __searchProbe?: () => SearchProbe;
+    __decorationProbe?: () => DecorationProbe;
   }
 }
+window.__decorationProbe = (): DecorationProbe => {
+  // #457: a right-anchored decoration WIDER than the viewport overflows the left edge.
+  // Its raw `left` is negative; the wire carries u32 columns, so an unclipped value
+  // wraps and the decoration paints nothing (or, for a negative `right`, the whole
+  // row). Register the real thing and read real pixels — the projection unit test
+  // cannot see whether anything reached the screen.
+  const gl = canvas.getContext("webgl2")!;
+  const { width: cw, height: ch } = renderer.cellSize(); // device px
+  const sample = (row: number, col: number): string => {
+    const x = Math.round(col * cw) + 2;
+    // readPixels counts rows from the BOTTOM of the buffer.
+    const y = gl.drawingBufferHeight - 1 - (Math.round(row * ch) + 2);
+    const px = new Uint8Array(4);
+    gl.readPixels(x, y, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    return `rgb(${px[0]},${px[1]},${px[2]})`;
+  };
+  // Draw and read in the SAME synchronous turn (no preserveDrawingBuffer).
+  // Clear any live demo decoration first so the baseline is genuinely undecorated —
+  // and leave the UI truthful about it rather than pretending to restore it.
+  if (lineDecoration) {
+    lineDecoration.dispose();
+    lineDecoration = undefined;
+    decorationBuffer = undefined;
+    decoBtn.textContent = "Decorate line: OFF";
+  }
+  decorationMarks = [];
+  render();
+  const baselineLeft = sample(DECO_ROW, 0);
+  const baselineRight = sample(DECO_ROW, COLS - 1);
+
+  decorationMarks = [DECO_MARKER_ID, DECO_ROW, MarkerKind.Plain, 0, 0];
+  // Assign to `lineDecoration` (not a local): `decorationOnScreen()` gates the marker
+  // onto the frame by it, so a locally-held handle would leave `markerPositions` empty
+  // and the registry would project nothing — a false negative that looks exactly like
+  // the #457 bug.
+  decorationBuffer = altScreen ? "alt" : "primary";
+  lineDecoration = decorations.register({
+    markerId: DECO_MARKER_ID,
+    anchor: "right",
+    x: 0,
+    width: COLS + 5, // wider than the screen → overflows the LEFT edge
+    layer: "bottom",
+    bg: 0x008f00,
+  });
+  render();
+  const overflowLeft = sample(DECO_ROW, 0);
+  const overflowRight = sample(DECO_ROW, COLS - 1);
+  lineDecoration.dispose();
+  lineDecoration = undefined;
+  decorationBuffer = undefined;
+  decorationMarks = [];
+  render();
+  return { baselineLeft, baselineRight, overflowLeft, overflowRight };
+};
 window.__searchProbe = (): SearchProbe => {
   // Draw and read in the SAME synchronous turn: without preserveDrawingBuffer
   // the buffer may be cleared after present, so a readPixels in a later task
