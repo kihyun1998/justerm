@@ -42,9 +42,10 @@ export interface SearchPort {
    * selection and matches, #429) and scroll it into view (off-screen →
    * centered; on-screen → left alone), backend-side. It does NOT select the
    * match: the selection channel stays the user's (#424), so a manual text
-   * selection coexists with search navigation. The designation only paints
-   * within the backend's *held* (capped) highlight set — past the cap the
-   * scroll still happens but no emphasis shows (#436). */
+   * selection coexists with search navigation. Past the backend's highlight
+   * cap, an INDEX designation paints nothing — a capping backend designates by
+   * absolute span instead (core `set_active_search_match`, #436), which paints
+   * the active emphasis alone (honestly no plain highlight underneath). */
   showMatch(index: number): Promise<void>;
   /** Designate match `index` as active WITHOUT scrolling — the incremental
    * re-search path (#429): a new hand-over reset the engine's designation, and

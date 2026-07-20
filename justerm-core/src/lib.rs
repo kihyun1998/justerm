@@ -379,6 +379,22 @@ impl Engine {
         self.term.set_active_search_highlight(index);
     }
 
+    /// Designate the *active* match by its absolute span (#436), independent of
+    /// the held highlight set — the past-cap path. A backend that caps its
+    /// hand-over (the documented 1000, xterm's `highlightLimit`) can still give
+    /// the current match its active emphasis: xterm builds its active
+    /// decoration from the found result *outside* the capped list, and this is
+    /// that model. The span projects through the same wrap-aware viewport math
+    /// as any match; past the cap it paints the ACTIVE colour only (no plain
+    /// highlight underneath — honest about the cap). `None` clears. Same
+    /// lifecycle as the index form: reset on every
+    /// [`set_search_highlights`](Self::set_search_highlights) hand-over and on
+    /// any coordinate-shifting invalidation (eviction, region scroll, reflow,
+    /// alt-screen swaps), so re-designate after each hand-over.
+    pub fn set_active_search_match(&mut self, m: Option<Match>) {
+        self.term.set_active_search_match(m);
+    }
+
     /// Register a decoration marker at viewport `row`, returning its stable id
     /// (#118). The marker anchors the content currently on that row and tracks
     /// it through scroll/eviction/reflow; [`Engine::frame`] reports its viewport

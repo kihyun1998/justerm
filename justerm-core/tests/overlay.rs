@@ -376,6 +376,89 @@ fn frame_overlay_active_dies_with_invalidated_highlights() {
 }
 
 // ===========================================================================
+// Active match by SPAN — decoupled from the held set (#436)
+// ===========================================================================
+//
+// A capping backend hands over a truncated highlight set; past the cap the
+// index designation has nothing to point at, so navigation painted nothing —
+// a regression vs pre-#429 (selection painted regardless). xterm's model: the
+// active decoration is created FROM THE FOUND RESULT, outside the capped
+// highlight list (`DecorationManager.createActiveDecoration`) — so the engine
+// now accepts the designation by absolute span too, independent of the set.
+
+/// #436: a span designation projects even when the designated match is NOT in
+/// the held (capped) set — the past-cap current match gets its active emphasis
+/// while the match group honestly lacks it.
+#[test]
+fn active_match_designated_by_span_projects_outside_the_held_set() {
+    let mut term = Engine::new(80, 24);
+    term.feed(b"hello hello hello");
+
+    let matches = term.search("ell"); // three hits: cols 1..=3, 7..=9, 13..=15
+    assert_eq!(matches.len(), 3);
+    let past_cap = matches[2]; // the backend's cap drops this one from the set…
+    term.set_search_highlights(matches[..2].to_vec());
+    term.set_active_search_match(Some(past_cap)); // …but designates it by span
+
+    let overlay = term.frame().overlay;
+    assert_eq!(
+        overlay.active_match,
+        vec![SelectionSpan {
+            row: 0,
+            left: 13,
+            right: 15
+        }]
+    );
+    // Honest side condition: the past-cap member has NO plain highlight — only
+    // the active emphasis; the capped set still projects exactly its two.
+    assert_eq!(overlay.matches.len(), 2);
+    assert!(!overlay.matches.contains(&SelectionSpan {
+        row: 0,
+        left: 13,
+        right: 15
+    }));
+}
+
+/// A new hand-over resets a SPAN designation exactly like an index one — the
+/// #428 contract is representation-independent (a stale span after the set
+/// changed could paint content the new query never matched).
+#[test]
+fn set_search_highlights_resets_a_span_designation_too() {
+    let mut term = Engine::new(80, 24);
+    term.feed(b"hello hello");
+
+    let matches = term.search("ell");
+    let m = matches[0];
+    term.set_search_highlights(matches);
+    term.set_active_search_match(Some(m));
+    assert!(!term.frame().overlay.active_match.is_empty());
+
+    let matches = term.search("hello");
+    term.set_search_highlights(matches); // hand-over → designation void
+    assert_eq!(term.frame().overlay.active_match, vec![]);
+}
+
+/// Invalidation (eviction shifting absolute coordinates) kills a SPAN
+/// designation too — a stored span would otherwise keep projecting at
+/// coordinates that now hold arbitrary other text. Same funnel as the set
+/// itself (`invalidate_search_highlights` covers eviction, region scroll,
+/// reflow, and both alt-swap directions).
+#[test]
+fn a_span_designation_dies_with_invalidated_highlights() {
+    let mut term = Engine::with_scrollback(10, 2, 2);
+    term.feed(b"AAA\r\nBBB\r\nTARGET\r\nCCC");
+
+    let matches = term.search("TARGET");
+    let m = matches[0];
+    term.set_search_highlights(matches);
+    term.set_active_search_match(Some(m));
+    assert!(!term.frame().overlay.active_match.is_empty());
+
+    term.feed(b"\r\nDDD\r\nEEE\r\nFFF"); // eviction shifts absolute indices
+    assert_eq!(term.frame().overlay.active_match, vec![]);
+}
+
+// ===========================================================================
 // Markers — stable line anchors for decorations (#118)
 // ===========================================================================
 

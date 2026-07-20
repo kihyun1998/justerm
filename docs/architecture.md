@@ -122,11 +122,13 @@ A **frame** serializes one damage cycle (`damage()` + `scroll_delta()`):
   kind discriminant `u8` and — for `CommandFinished` — a presence byte + `i32` exit), then a marker-lines
   group (`u16` count + `(marker_id u32, line u32)` pairs — v11, #120 S3, every live marker's *absolute*
   buffer line for the overview ruler), then an active-match-span group (same count + triple shape — v12,
-  #428, the consumer-designated *current* search match; it also stays in the match group, the renderer's
-  highlight ranking resolves the overlap #424). Positions only (colour is the consumer's); `frame()`
+  #428, the consumer-designated *current* search match; usually it also stays in the match group and the
+  renderer's highlight ranking resolves the overlap #424 — a span-designated past-cap match rides this
+  group alone, #436). Positions only (colour is the consumer's); `frame()`
   re-projects them against the scroll offset, the single anchoring authority. Append-only. Highlights are
   projected from the engine-owned selection + the consumer-supplied search set (the active one designated
-  by index, `set_active_search_highlight`); markers are persistent line anchors re-anchored like the
+  by index, `set_active_search_highlight`, or by absolute span, `set_active_search_match` #436 — the
+  past-cap path); markers are persistent line anchors re-anchored like the
   selection — their *disposal* rides the event queue (`TermEvent::MarkerDisposed`), not the frame, so
   absence here means off-screen, not gone.
 

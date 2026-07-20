@@ -105,10 +105,14 @@ scrollback). The renderer only draws the highlight.
 
 The search matches the consumer asked the engine to project as viewport highlight spans. The
 consumer owns the search *policy* (the query, next/prev navigation) and hands the result set back;
-the engine owns the projection. The **active match** is the single member of that set the consumer
-has designated as current (where its navigation points) — projected as its own overlay group while
-*also* remaining in the match group; the renderer's highlight ranking (active > selection > match)
-resolves the overlap, not exclusion.
+the engine owns the projection. The **active match** is the single match the consumer has
+designated as current (where its navigation points) — by index into the held set, or directly by
+absolute span so a backend that caps its hand-over can still designate a past-cap match (xterm
+builds its active decoration outside the capped list). It is projected as its own overlay group;
+usually it *also* sits in the match group and the renderer's highlight ranking
+(active > selection > match) resolves the overlap — past a cap it carries the active emphasis
+alone. The designation dies with the set: every hand-over and every coordinate-shifting
+invalidation (eviction, region scroll, reflow, alt swap) clears it; the consumer re-designates.
 
 ## Cursor
 
