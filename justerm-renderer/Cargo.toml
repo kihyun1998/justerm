@@ -4,7 +4,7 @@ name = "justerm-renderer"
 # (see the root Cargo.toml comment + ADR-0018). web-sys/glow make it wasm32-only,
 # so it must stay out of the host `cargo test --workspace` gate; its own gate is
 # `cargo build -p justerm-renderer --target wasm32-unknown-unknown`.
-version = "0.4.0"
+version = "0.5.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/kihyun1998/justerm"
