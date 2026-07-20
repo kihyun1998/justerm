@@ -36,12 +36,19 @@ const isWordBounded = (text: string, start: number, end: number): boolean =>
 
 export class FakeSearchEngine {
   private matches: Match[] = [];
+  /** Index of the ACTIVE (current) match (#429) — the engine-side designation
+   * `set_active_search_highlight` mirrors. `undefined` = nothing designated. */
+  private activeIndex: number | undefined;
 
   /** Find every occurrence of `query` in `lines`, honouring `options` (regex,
    * whole-word, case). Smart-case unless `caseSensitive` is set: a query with no
-   * uppercase matches case-insensitively. Returns the match count. */
+   * uppercase matches case-insensitively. Returns the match count.
+   *
+   * Every hand-over RESETS the active designation, mirroring the real engine's
+   * `set_search_highlights` contract (#428) — the consumer re-designates. */
   search(query: string, lines: string[], options?: FakeSearchOptions): number {
     this.matches = [];
+    this.activeIndex = undefined;
     if (!query) return 0;
     const ci = options?.caseSensitive === undefined ? !/[A-Z]/.test(query) : !options.caseSensitive;
     const wholeWord = options?.wholeWord ?? false;
@@ -99,11 +106,30 @@ export class FakeSearchEngine {
     return out;
   }
 
+  /** Designate match `index` as the active one (#429) — the fake's
+   * `set_active_search_highlight`. Out of range → nothing designated (the real
+   * engine takes an index into the highlight set it holds). */
+  setActive(index: number): void {
+    this.activeIndex = this.matches[index] ? index : undefined;
+  }
+
+  /** The ACTIVE match projected onto the viewport as flat `(row, left, right)` —
+   * the `activeMatchSpans` wire group (#428). Empty when nothing is designated
+   * or the active match is off-screen. The active match is *also* present in
+   * {@link matchSpans}; the renderer's ranking resolves the overlap. */
+  activeMatchSpans(viewTop: number, rows: number): number[] {
+    const m = this.activeIndex === undefined ? undefined : this.matches[this.activeIndex];
+    if (!m) return [];
+    const row = m.startLine - viewTop;
+    return row >= 0 && row < rows ? [row, m.startCol, m.endCol] : [];
+  }
+
   match(index: number): Match | undefined {
     return this.matches[index];
   }
 
   clear(): void {
     this.matches = [];
+    this.activeIndex = undefined;
   }
 }

@@ -553,6 +553,9 @@ function viewportFrame(out?: { scrollCount: number }): DecodedFrame {
     mouseWantedEvents: appMouse ? MouseEvents.Down | MouseEvents.Up | MouseEvents.Wheel : 0,
     selectionSpans: engine.range(), // S8: the live selection projected onto the view
     matchSpans: searchEngine.matchSpans(top, ROWS), // S9: search matches on the view
+    // #429: the ACTIVE match rides its own wire group (also present in matchSpans;
+    // the renderer's ranking paints it in the active colour, above the selection).
+    activeMatchSpans: searchEngine.activeMatchSpans(top, ROWS),
     // #160 command marks (Finish command) + #120 S2 decoration marker (Decorate line).
     // #189: the decoration marker rides a frame only when its buffer is active, so a
     // primary decoration is omitted from alt frames (and vice versa) — no bleed.
@@ -724,21 +727,27 @@ const searchPort: SearchPort = {
     const m = searchEngine.match(i);
     if (!m) return;
     // Off-screen match → scroll it to the viewport centre (xterm); on-screen →
-    // leave the scroll. Then select it so the active match shows in the
-    // *selection* colour over the muted match colour (the 2-tier emphasis).
+    // leave the scroll. Then designate it on the ACTIVE channel (#429) so it
+    // paints in its own colour above selection + matches — it is NOT selected:
+    // the selection stays the user's, coexisting with search navigation.
     const row = m.startLine - viewTop();
     if (row < 0 || row >= ROWS) {
       const centred = log.length - ROWS - (m.startLine - Math.floor(ROWS / 2));
       displayOffset = Math.min(Math.max(centred, 0), maxOffset());
     }
-    const vrow = m.startLine - viewTop();
-    engine.begin(vrow, m.startCol, "left", "char");
-    engine.extend(vrow, m.endCol, "right");
+    searchEngine.setActive(i);
+    render();
+  },
+  // The scroll-free re-designation channel (#429): after an output re-search the
+  // engine's active designation reset, so restore it without moving the viewport.
+  designateMatch: async (i) => {
+    searchEngine.setActive(i);
     render();
   },
   clear: () => {
+    // Search state only — a live selection is the USER's (#429; pre-#429 the
+    // selection was the active-match emphasis, which is why this used to clear it).
     searchEngine.clear();
-    engine.clear();
     render();
   },
 };
@@ -826,6 +835,68 @@ window.addEventListener("keydown", (e) => {
     input.select();
   }
 });
+
+// --- #429 e2e probe: the active-match paint has no DOM proxy --------------
+// Like the #420 theme sample, the proof reads the DRAWING BUFFER directly
+// (readPixels on the device buffer is reliable where a composited screenshot
+// is not, #352). Samples 2px inside a cell's top-left corner: under a SOLID
+// highlight (#426) that corner is pure highlight bg — glyph ink sits mid-cell
+// (probe with a query whose first glyph has no ascender, e.g. "select").
+interface SearchProbe {
+  /** rgb of the active match's first cell; null when nothing is active/visible. */
+  active: string | null;
+  /** rgb of the first NON-active match cell on screen; null when none. */
+  other: string | null;
+  /** The active span `(row, left, right)` — navigation moves it. */
+  activeSpan: number[];
+  /** ALL on-screen match triples from the same snapshot — locating the active
+   * span inside this list proves navigation drift-free (rows shift as the demo
+   * appends, but both come from one probe). */
+  matchSpans: number[];
+  /** The live selection spans — coexistence with the search overlays (#429). */
+  selectionSpans: number[];
+}
+declare global {
+  interface Window {
+    __searchProbe?: () => SearchProbe;
+  }
+}
+window.__searchProbe = (): SearchProbe => {
+  // Draw and read in the SAME synchronous turn: without preserveDrawingBuffer
+  // the buffer may be cleared after present, so a readPixels in a later task
+  // races (transparent black). The #420 theme sample reads right after its own
+  // render for the same reason.
+  renderer.render();
+  const gl = canvas.getContext("webgl2")!;
+  const { width: cw, height: ch } = renderer.cellSize(); // device px
+  const sample = (row: number, col: number): string => {
+    const x = Math.round(col * cw) + 2;
+    // readPixels counts rows from the BOTTOM of the buffer.
+    const y = gl.drawingBufferHeight - 1 - (Math.round(row * ch) + 2);
+    const px = new Uint8Array(4);
+    gl.readPixels(x, y, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    return `rgb(${px[0]},${px[1]},${px[2]})`;
+  };
+  const top = viewTop();
+  const active = searchEngine.activeMatchSpans(top, ROWS);
+  const all = searchEngine.matchSpans(top, ROWS);
+  // The active match is also present in matchSpans (the ranking, not exclusion,
+  // resolves the overlap) — skip it to find a plain-match cell to compare.
+  let other: number[] | undefined;
+  for (let i = 0; i + 2 < all.length; i += 3) {
+    if (all[i] !== active[0] || all[i + 1] !== active[1]) {
+      other = [all[i]!, all[i + 1]!, all[i + 2]!];
+      break;
+    }
+  }
+  return {
+    active: active.length >= 3 ? sample(active[0]!, active[1]!) : null,
+    other: other ? sample(other[0]!, other[1]!) : null,
+    activeSpan: active,
+    matchSpans: all,
+    selectionSpans: engine.range(),
+  };
+};
 
 // --- S10 wiring: link hover/click. The demo only exercises plain-URL detection
 // (regex) over the visible rows; OSC8 (osc8Links) is unit-tested. In frame mode
@@ -927,7 +998,15 @@ const readFitInput = (): FitInput => {
   };
 };
 const fitPort: ResizePort = {
-  resize: (cols, rows) => console.log(`[fit] resize ${cols}x${rows}`),
+  resize: (cols, rows) => {
+    console.log(`[fit] resize ${cols}x${rows}`);
+    // A resize mutates the buffer too (reflow drops engine highlights), so the
+    // search re-runs — the same debounced path as output (#429; xterm hooks
+    // onResize into its re-find identically). The demo's fake buffer never
+    // reflows, so this is convention-modelling here, load-bearing in a real
+    // consumer.
+    search.onFrame();
+  },
 };
 const fitController = new FitController({ port: fitPort });
 // Keep the disposer + controller so a real consumer tears them down on unmount (the

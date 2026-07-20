@@ -2,11 +2,13 @@
  * The control seam from the web search box to the engine. In frame mode the
  * consumer wires this to the backend, which runs core's `search` (literal,
  * smart-case, across scrollback), caps the highlight set, and drives
- * `set_search_highlights` / `scroll_to_match`. Sibling to {@link SelectionPort}.
+ * `set_search_highlights` / `set_active_search_highlight` / `scroll_to_match`.
+ * Sibling to {@link SelectionPort}.
  *
  * The backend owns the `Vec<Match>` (matches never cross the wire — only their
- * viewport `matchSpans` do), so navigation is by **index**: the controller asks
- * for match `i`, the backend selects + scrolls to it.
+ * viewport `matchSpans` / `activeMatchSpans` do), so navigation is by **index**:
+ * the controller asks for match `i`, the backend designates it active + scrolls
+ * to it (it does NOT select it — the selection channel stays the user's, #429).
  */
 /**
  * Search modes on top of the literal + smart-case default — the TS mirror of core's
@@ -32,12 +34,25 @@ export interface SearchOptions {
 export interface SearchPort {
   /** Run the query (with optional {@link SearchOptions}); highlight up to the
    * backend's cap and return the *full* match count (the cap limits highlights,
-   * not the count). */
+   * not the count). Every hand-over RESETS the engine's active designation
+   * (#428), so the controller re-designates after an incremental re-search. */
   search(query: string, options?: SearchOptions): Promise<number>;
-  /** Make match `index` the active one — select it and scroll it into view
-   * (off-screen → centered; on-screen → just selected), backend-side. */
+  /** Make match `index` the active one — designate it on the engine's *active*
+   * channel (`set_active_search_highlight`, its own overlay colour above
+   * selection and matches, #429) and scroll it into view (off-screen →
+   * centered; on-screen → left alone), backend-side. It does NOT select the
+   * match: the selection channel stays the user's (#424), so a manual text
+   * selection coexists with search navigation. The designation only paints
+   * within the backend's *held* (capped) highlight set — past the cap the
+   * scroll still happens but no emphasis shows (#436). */
   showMatch(index: number): Promise<void>;
-  /** Drop the search: clear highlights and the active selection. */
+  /** Designate match `index` as active WITHOUT scrolling — the incremental
+   * re-search path (#429): a new hand-over reset the engine's designation, and
+   * re-navigating on every burst of output would yank the viewport (xterm's
+   * `noScroll` re-find). Optional (additive): a backend without it merely loses
+   * the active emphasis across output. */
+  designateMatch?(index: number): Promise<void>;
+  /** Drop the search: clear highlights and the active designation. */
   clear(): void;
 }
 
@@ -50,6 +65,10 @@ export class StubSearchPort implements SearchPort {
    * {@link searched}); `undefined` for a plain literal search. */
   readonly searchedOptions: (SearchOptions | undefined)[] = [];
   readonly shown: number[] = [];
+  /** The indices passed to {@link designateMatch} (the scroll-free re-designation
+   * channel, #429) — separate from {@link shown} so a test can tell navigation
+   * from re-designation. */
+  readonly designated: number[] = [];
   cleared = 0;
   search(query: string, options?: SearchOptions): Promise<number> {
     this.searched.push(query);
@@ -58,6 +77,10 @@ export class StubSearchPort implements SearchPort {
   }
   showMatch(index: number): Promise<void> {
     this.shown.push(index);
+    return Promise.resolve();
+  }
+  designateMatch(index: number): Promise<void> {
+    this.designated.push(index);
     return Promise.resolve();
   }
   clear(): void {
@@ -91,6 +114,12 @@ export class SearchController {
   /** The active regex-mode query failed validation — the box shows "invalid" and
    * no search ran (#316 D2). Only ever true in regex mode with a validator. */
   private invalid = false;
+  /** Bumped by every {@link search}/{@link clear} — an in-flight backend
+   * round-trip captures it and discards its own result if superseded, so a slow
+   * response can never resurrect a cleared/replaced search (#429 lens: the
+   * stale continuation would restore a non-zero total for an empty query and
+   * designate AFTER `port.clear()` ran). */
+  private epoch = 0;
   private pending: number | undefined;
   private readonly setTimer: (fn: () => void, ms: number) => number;
   private readonly clearTimer: (handle: number) => void;
@@ -123,25 +152,37 @@ export class SearchController {
    * count, landing on the first match. The options stick to the query so an
    * incremental re-search on output reuses them (#316). */
   async search(query: string, options?: SearchOptions): Promise<void> {
+    const epoch = ++this.epoch;
     this.query = query;
     this.options = options;
     // Regex mode: reject an invalid pattern up front (core's dialect) so a bad
-    // pattern shows as "invalid", not a silent 0 matches (#316 D2).
+    // pattern shows as "invalid", not a silent 0 matches (#316 D2). Drop the
+    // previous query's engine paint too — otherwise the box says "invalid"
+    // while the screen keeps highlighting matches of a query that no longer
+    // exists (with its active emphasis, post-#429).
     if (options?.regex && this.validateRegex && !this.validateRegex(query)) {
       this.invalid = true;
       this.total = 0;
       this.index = 0;
+      this.port.clear();
       return;
     }
     this.invalid = false;
-    this.total = await this.port.search(query, options);
+    const total = await this.port.search(query, options);
+    if (epoch !== this.epoch) return; // superseded by clear()/a newer query
+    this.total = total;
     this.index = 0;
     if (this.total > 0) await this.port.showMatch(0);
   }
 
-  /** A new frame arrived (terminal output). Re-run the active query after a
-   * debounce so highlights track the changed buffer — count refreshes, but the
-   * active match is *not* re-navigated (no scroll). Inert with no active query. */
+  /** The buffer changed under the query — feed this EVERY frame that mutates it:
+   * terminal output *and* resize/reflow (xterm hooks `onResize` into the same
+   * debounced re-find; core invalidates highlights on reflow, so a consumer that
+   * only wires output frames shows a stale count + no highlights after a resize
+   * until the next output burst). Re-runs the active query after a debounce so
+   * highlights track the buffer — count refreshes, the active match is
+   * re-designated at its (clamped) index, but *not* re-navigated (no scroll).
+   * Inert with no active query. */
   onFrame(): void {
     if (!this.query) return;
     if (this.pending !== undefined) this.clearTimer(this.pending);
@@ -151,13 +192,24 @@ export class SearchController {
   private async reSearch(): Promise<void> {
     this.pending = undefined;
     if (this.invalid) return; // an invalid regex never became a live search
-    this.total = await this.port.search(this.query, this.options);
+    const epoch = this.epoch;
+    const total = await this.port.search(this.query, this.options);
+    if (epoch !== this.epoch) return; // superseded by clear()/a newer query
+    this.total = total;
     // Keep the active match where it was, clamped to the new result set.
     this.index = this.total === 0 ? 0 : Math.min(this.index, this.total - 1);
+    // The hand-over reset the engine's active designation (#428), so restore it
+    // at the clamped index — scroll-free, or every burst of output would yank
+    // the viewport (xterm's `noScroll` re-find keeps the emphasis the same way).
+    // With no matches there is nothing to designate (the empty hand-over already
+    // cleared it); without the optional port method the emphasis is just lost.
+    if (this.total > 0) await this.port.designateMatch?.(this.index);
   }
 
-  /** Drop the search: clear engine highlights/selection and reset all state. */
+  /** Drop the search: clear engine highlights + the active designation and
+   * reset all state (a user selection is not the search's to clear, #429). */
   clear(): void {
+    this.epoch++; // invalidate any in-flight round-trip (see `epoch`)
     if (this.pending !== undefined) {
       this.clearTimer(this.pending);
       this.pending = undefined;
