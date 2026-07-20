@@ -9,6 +9,10 @@ edition = "2024"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/kihyun1998/justerm"
 description = "First-party WebGL2 terminal grid renderer for the justerm family. Reimplements the third-party beamterm renderer in justerm's own architecture (ADR-0018, supersedes ADR-0002)."
+homepage = "https://github.com/kihyun1998/justerm/tree/master/justerm-renderer#readme"
+# wasm-pack copies these into the generated pkg/package.json, so they are the npm package's
+# discovery metadata too — not just crates.io's (#473). Cargo caps `keywords` at 5.
+keywords = ["terminal", "webgl", "renderer", "wasm", "ansi"]
 # Published as an npm artifact via wasm-pack, not to crates.io (like justerm-wasm-decode).
 publish = false
 

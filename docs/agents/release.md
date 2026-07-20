@@ -151,6 +151,24 @@ Each publish workflow now asserts it: `publish-web.yml` fails if the tarball lac
 not copy them). **Verify by inspecting the tarball, never the source tree** —
 `npm pack --dry-run --json <dir>` lists exactly what would upload.
 
+## A published README is rendered standalone (#473)
+
+crates.io and npm snapshot the README at publish time and render it **off GitHub**, so a
+repo-relative link (`[x](../y)`) resolves against the registry page and breaks. Every link in a
+published README must be absolute. `justerm-web@0.7.0` shipped with two broken ones.
+
+The same README is a package's front page, so it should open with *install + minimal usage*, not
+with repo-internal framing ("this is a folder in the repo…"). **A usage snippet in a published
+README must be typechecked against the real types** before it ships — the `justerm-web` example was
+wrong on two of its three options (`input` is an `InputSink`, not a byte callback; `getGeometry`
+returns a 6-field `CellGeometry`) and only a `tsc --strict` pass over the snippet caught it. A wrong
+snippet is worse than a broken link: it gets pasted.
+
+Discovery metadata (`homepage`, `bugs`, `keywords`, `author`) lives in `package.json` for
+`justerm-web`; for `justerm-renderer` it comes from `Cargo.toml` — **wasm-pack propagates `keywords`
+and `homepage` into the generated `pkg/package.json`** (verified by building, not assumed; Cargo
+caps `keywords` at 5).
+
 ## GitHub Releases — manual, and the track starts at v0.3.1
 
 CI does **not** create GitHub Releases (only registry publishes). Create them by hand:

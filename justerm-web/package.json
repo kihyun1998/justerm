@@ -4,7 +4,26 @@
   "description": "Browser terminal widget for the justerm engine: consumes DecodedFrame, renders via justerm-renderer (WebGL2). Frame-mode now, in-wasm later.",
   "type": "module",
   "license": "MIT OR Apache-2.0",
-  "repository": "https://github.com/kihyun1998/justerm",
+  "author": "Ki Hyun Park",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kihyun1998/justerm.git",
+    "directory": "justerm-web"
+  },
+  "homepage": "https://github.com/kihyun1998/justerm/tree/master/justerm-web#readme",
+  "bugs": "https://github.com/kihyun1998/justerm/issues",
+  "keywords": [
+    "terminal",
+    "terminal-emulator",
+    "xterm",
+    "vt100",
+    "ansi",
+    "webgl",
+    "webgl2",
+    "wasm",
+    "canvas",
+    "justerm"
+  ],
   "scripts": {
     "test": "vitest run",
     "test:watch": "vitest",
