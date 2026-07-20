@@ -51,8 +51,13 @@ jobs:
           echo "tag=$tag package=$pkg"
           test "$tag" = "$pkg" || { echo "::error::tag v$tag != package version $pkg"; exit 1; }
 
-      # The crate is dual-licensed; copy the texts into the package (npm auto-includes LICENSE*) so
-      # the npm artifact ships them, without duplicating the files in the source tree.
+      # The dual-licence texts are handled by `finish-pkg.mjs` in the build step above: it copies them
+      # from the repo root into `pkg/` AND pushes them into `package.json`'s `files`. Both halves are
+      # required — `files` is an allowlist, and npm's automatic inclusion covers `LICENSE`/`LICENSE.md`
+      # but NOT the hyphenated `LICENSE-MIT` form. (This comment previously claimed "npm auto-includes
+      # LICENSE*" and sat above no step at all; that claim is false, and believing it is how
+      # justerm-renderer and justerm-web came to publish a licence declaration with no licence text —
+      # #472.)
 
       - name: Publish to npm
         env:

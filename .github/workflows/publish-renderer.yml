@@ -43,6 +43,30 @@ jobs:
       - name: Build (bundler)
         run: wasm-pack build --target bundler --out-dir pkg justerm-renderer
 
+      # #472: the crate is dual-licensed and the texts must actually ship. `justerm-renderer/` carries
+      # LICENSE-MIT + LICENSE-APACHE, which wasm-pack copies into `pkg/` — but copying is NOT enough:
+      # `files` in the generated package.json is an **allowlist**, and npm's automatic inclusion covers
+      # `LICENSE`/`LICENSE.md`, NOT the hyphenated `LICENSE-MIT` form. Without this step the tarball
+      # ships a licence *declaration* with no licence *text* (which is what 0.5.0 and 0.6.0 did).
+      # Same rule `justerm-wasm-decode/scripts/finish-pkg.mjs` applies; the renderer needs no other
+      # post-processing, so it is inline rather than a script.
+      - name: Add the licence texts to the package allowlist
+        run: |
+          node -e '
+            const fs = require("fs");
+            const p = "./justerm-renderer/pkg/package.json";
+            const pkg = JSON.parse(fs.readFileSync(p, "utf8"));
+            for (const f of ["LICENSE-MIT", "LICENSE-APACHE"]) {
+              if (!fs.existsSync("./justerm-renderer/pkg/" + f)) {
+                console.error("::error::" + f + " missing from pkg/ — wasm-pack did not copy it");
+                process.exit(1);
+              }
+              if (!pkg.files.includes(f)) pkg.files.push(f);
+            }
+            fs.writeFileSync(p, JSON.stringify(pkg, null, 2) + "\n");
+            console.log("files =", pkg.files.join(", "));
+          '
+
       # Version-lockstep gate: the tag (minus the `renderer-v` prefix) must equal the package version
       # wasm-pack wrote from the crate version. A mismatch means an artifact would publish under a
       # version that is not the one tagged — fail instead.

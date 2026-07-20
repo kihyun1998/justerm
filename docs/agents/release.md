@@ -130,6 +130,27 @@ a per-package-scoped token needs widening, and the first publish may need a one-
 two `renderer-v*` minors were cut for Rust symbols no consumer imports, and each forced a caret bump
 here. Don't inherit that pattern on this track.
 
+## Licence texts must be *listed*, not just present (#472)
+
+Every published package declares `MIT OR Apache-2.0`, so every published tarball must carry both
+texts. Two things are needed and **only having the first is the trap**:
+
+1. `LICENSE-MIT` + `LICENSE-APACHE` exist where the packer can see them — in `justerm-core/`,
+   `justerm-renderer/` and `justerm-web/` as in-tree copies, and copied from the repo root at build
+   time for `justerm-wasm-decode` (`scripts/finish-pkg.mjs`).
+2. They are in `package.json`'s **`files`** allowlist. npm auto-includes `README`, `package.json` and
+   `LICENSE`/`LICENSE.md` — but **not** the hyphenated `LICENSE-MIT` form. Anything not listed is
+   dropped.
+
+`justerm-renderer@0.5.0`/`0.6.0` and `justerm-web@0.7.0` shipped a licence declaration with **no
+text** because step 2 was missing (and `publish-wasm.yml` carried a comment asserting the opposite).
+Those versions cannot be fixed — a published version is immutable.
+
+Each publish workflow now asserts it: `publish-web.yml` fails if the tarball lacks either file, and
+`publish-renderer.yml` pushes them into the wasm-pack-generated `files` (and fails if wasm-pack did
+not copy them). **Verify by inspecting the tarball, never the source tree** —
+`npm pack --dry-run --json <dir>` lists exactly what would upload.
+
 ## GitHub Releases — manual, and the track starts at v0.3.1
 
 CI does **not** create GitHub Releases (only registry publishes). Create them by hand:
