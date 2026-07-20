@@ -7,9 +7,14 @@
 </style>
 <!--
   A marker decoration is a per-cell background / foreground OVERRIDE on a two-layer stack: a BOTTOM
-  decoration paints under the selection/search highlight (the glyph stays legible over it), a TOP
-  decoration paints over it. The consumer projects the rects each frame (DecorationRegistry joined
-  with core's markers); the renderer composites them — z-ordered around the highlight in pack time.
+  decoration paints under the selection/search highlight, a TOP decoration paints over it. The
+  consumer projects the rects each frame (DecorationRegistry joined with core's markers); the renderer
+  composites them — z-ordered around the highlight in pack time.
+
+  #444: "under the selection" is literal — a translucent SELECTION blends over a bottom decoration's
+  bg, so the decoration stays visible through it (xterm instead discards it; see
+  overlay::should_blend_kind). A search MATCH still paints SOLID over it (#400 item ①) — a match must
+  read crisp to be findable, so the two kinds are proven separately below.
 
   Read: a SPACE cell is a solid block of its (composited) background, read at the centre; a decoration
   FG override is read from a letter's brightest ink pixel (a fg-only test). Wire = setDecorations with
@@ -28,7 +33,19 @@
   const SPACE = 0x20, LETTER = 0x41; // space (reads its bg) / 'A' (reads its fg ink)
   const NO_REF = 0xffffffff >>> 0;
   const DECO_BG = 0x804000, TOP_BG = 0x006080, DECO_FG = 0x00ff88, SEL_BG = 0x3060c0;
+  const MATCH_BG = 0xc08030;
   const WHITE = 0xffffff;
+
+  // The highlight blend oracle — xterm's integer channel math at alpha 0x80, mirroring
+  // overlay::blend_over. Written out here so the expected pixel is derived, not copied from the code.
+  const blend = (base, over, alpha = 0x80) => {
+    const a = alpha / 255;
+    const ch = (s) => {
+      const b = (base >> s) & 0xff, o = (over >> s) & 0xff;
+      return b + Math.round((o - b) * a);
+    };
+    return ((ch(16) << 16) | (ch(8) << 8) | ch(0)) >>> 0;
+  };
 
   const palette = new Uint32Array(256);
   const r = new JustermRenderer("#c", palette, WHITE, 0x000000);
@@ -54,14 +71,16 @@
   const inkIs = (img, col, packed) => { const [pr, pg, pb] = inkColour(img, col), [er, eg, eb] = chans(packed); return near(pr, er) && near(pg, eg) && near(pb, eb); };
 
   // Order: policy/overlay/decorations first, then apply_frame packs with them (apply_frame keeps no grid).
-  const draw = (glyph, selectionSpans, decoWire) => {
-    r.setOverlay(new Uint32Array(selectionSpans), new Uint32Array([]), SEL_BG, 0);
+  const drawWith = (glyph, selectionSpans, matchSpans, decoWire) => {
+    r.setOverlay(new Uint32Array(selectionSpans), new Uint32Array(matchSpans), SEL_BG, MATCH_BG);
     r.setDecorations(new Uint32Array(decoWire));
     r.resize(COLS, ROWS);
     r.apply_frame(COLS, ROWS, new Uint32Array(N), new Uint32Array(N), new Uint32Array(N).fill(glyph), new Uint16Array(N), true);
     r.render();
     return grab();
   };
+  const draw = (glyph, selectionSpans, decoWire) => drawWith(glyph, selectionSpans, [], decoWire);
+  const drawMatch = (glyph, matchSpans, decoWire) => drawWith(glyph, [], matchSpans, decoWire);
 
   const checks = {};
 
@@ -69,9 +88,21 @@
   const bottomBg = draw(SPACE, [], [0, 0, 0, 0, DECO_BG, NO_REF]);
   checks.aBottomDecorationPaintsTheBackground = cellIs(bottomBg, 0, DECO_BG);
 
-  // BOTTOM under a SOLID selection → the highlight paints over it (selection wins).
+  // BOTTOM under a SELECTION → the selection BLENDS over it, so the decoration shows through (#444).
+  // Discriminating both ways: the pixel is neither the raw decoration (no selection applied) nor a
+  // solid selection (the pre-#444 behaviour, which erased the decoration on this Default-bg cell).
   const bottomUnderSel = draw(SPACE, [0, 0, 0], [0, 0, 0, 0, DECO_BG, NO_REF]);
-  checks.aBottomDecorationIsUnderTheHighlight = cellIs(bottomUnderSel, 0, SEL_BG) && !cellIs(bottomUnderSel, 0, DECO_BG);
+  checks.aSelectionBlendsOverABottomDecoration =
+    cellIs(bottomUnderSel, 0, blend(DECO_BG, SEL_BG)) &&
+    !cellIs(bottomUnderSel, 0, SEL_BG) &&
+    !cellIs(bottomUnderSel, 0, DECO_BG);
+
+  // BOTTOM under a search MATCH → still SOLID (#400 item ①): the #444 blend must not leak to matches.
+  const bottomUnderMatch = drawMatch(SPACE, [0, 0, 0], [0, 0, 0, 0, DECO_BG, NO_REF]);
+  checks.aSearchMatchStaysSolidOverABottomDecoration =
+    cellIs(bottomUnderMatch, 0, MATCH_BG) &&
+    !cellIs(bottomUnderMatch, 0, blend(DECO_BG, MATCH_BG)) &&
+    !cellIs(bottomUnderMatch, 0, DECO_BG);
 
   // TOP over a selection → the decoration paints over the highlight (top wins).
   const topOverSel = draw(SPACE, [0, 0, 0], [0, 0, 0, 1, TOP_BG, NO_REF]);
