@@ -27,8 +27,12 @@
 //! result the search box is on — is a third kind that ranks **above the selection** ([`highlight_at`]:
 //! ActiveMatch > Selection > Match) and paints solid in its own colour, xterm's `layer:'top'`
 //! `activeMatchBackground` (`DecorationManager.ts`); the renderer side is wired here (#427), the
-//! consumer pushes the active span via `set_active_match` (#424 slice 1). One xterm-parity item stays
-//! deferred (#444, ex-#400 item ③): a selection blending over a bottom-decoration bg vs the cell's own bg.
+//! consumer pushes the active span via `set_active_match` (#424 slice 1).
+//!
+//! A selection blends over **whatever is actually beneath it** — the cell's own background *or* a
+//! bottom decoration's ([`should_blend_kind`], #444). This is a deliberate divergence from xterm,
+//! which discards a bottom decoration's bg under a selection; see [`should_blend_kind`] for the full
+//! rationale and why the references do not converge here (unlike the solid-match rule, #400 item ①).
 
 use crate::attrs::is_inverse;
 
@@ -165,16 +169,55 @@ pub fn should_blend(bg_ref: u32, flags: u16) -> bool {
     is_inverse(flags) || (bg_ref >> 24) != 0
 }
 
-/// Whether a highlight of `kind` must **blend** over the cell (vs paint solid). A **selection**
-/// defers to [`should_blend`] — it blends over an inverse / non-default-bg cell so the cell's own
-/// colour shows through, and paints solid only over the default terminal background. A **search
-/// match** is **always solid**, whatever the cell: xterm.js (`CellColorResolver` overwrites the bg
-/// from the match decoration, `$bg = rgba >> 8 & RGB_MASK`, alpha dropped) and alacritty
-/// (`compute_cell_rgb` forces `bg_alpha = 1.0` for the search colour) both override a match's
-/// background opaquely — a match's job is to be *found*, so on a coloured cell it must read as a
-/// crisp colour, not a muddy 50% tint of the cell it landed on (#400).
-pub fn should_blend_kind(kind: HighlightKind, bg_ref: u32, flags: u16) -> bool {
-    matches!(kind, HighlightKind::Selection) && should_blend(bg_ref, flags)
+/// Whether a highlight of `kind` must **blend** over the cell (vs paint solid).
+///
+/// A **selection** blends whenever a real colour sits beneath it — either the cell's own
+/// ([`should_blend`]) *or* a bottom decoration's background (`deco_bg`, #444) — and paints solid only
+/// over a bare default terminal background. Both terms are needed because the two are independent: a
+/// decoration paints an absolute colour over a Default-bg cell, so a blend that ignored it would
+/// discard the decoration (exactly: it would paint the selection solid, which *hides* the decoration
+/// for every decoration colour except one that already equals the theme background).
+///
+/// A **search match** (active or not) is **always solid**, whatever is beneath: xterm.js
+/// (`CellColorResolver` overwrites the bg from the match decoration, `$bg = rgba >> 8 & RGB_MASK`,
+/// alpha dropped) and alacritty (`compute_cell_rgb` forces `bg_alpha = 1.0` for the search colour)
+/// both override a match's background opaquely — a match's job is to be *found*, so it must read as a
+/// crisp colour, not a muddy 50% tint of whatever it landed on (#400). Hence the `deco_bg` term lives
+/// strictly inside the `Selection` arm.
+///
+/// # #444 — justerm keeps a bottom decoration under a selection; xterm discards it
+///
+/// xterm's selected branch re-derives its blend base from the **cell's own** attributes
+/// (`this.result.bg` / `.fg`), so a bottom decoration's bg never survives a selection — in *either*
+/// arm. justerm deliberately diverges and composites over what is actually beneath, because:
+/// (i) alpha compositing means "what is underneath shows through", and blending the cell bg instead
+/// would produce a pixel no real layer stack explains; (ii) xterm's own public API documents
+/// `layer: 'bottom'` as rendering *under the selection* (`typings/xterm.d.ts`), which a full discard
+/// makes vacuous given its selection is translucent (`0x80`) over a coloured cell; (iii) unlike the
+/// solid-match decision (#400 item ①), the references do **not** converge here — alacritty has no
+/// layering model at all (its hint / selection / search are mutually exclusive arms in `content.rs`),
+/// so xterm stands alone; and (iv) xterm is not even self-consistent: its **DOM** renderer resolves
+/// this on a different path (`DomRendererRowFactory`) — one decoration pass over *all* layers, the
+/// selection **skipped entirely** when a top decoration is present (`if (!isTop && isInSelection)`),
+/// and the bg override applied only to drive the contrast pass, since the DOM selection is painted in
+/// a separate container. So the webgl discard is a renderer-local artifact, not a cross-renderer
+/// contract. What xterm's source *intended* is unconfirmed — searching its issues, PRs and the file's
+/// commit history surfaced no rationale (only refactor/move commits) — so (i)/(ii) carry the
+/// decision; "no rationale found" is not a claim that none exists.
+///
+/// **Adjacent gaps this does NOT close** (tracked, deliberately left visible): a sibling fg-only
+/// decoration still discards an earlier bg-only one, which post-#444 also flips solid↔blend (#452);
+/// an inverse + Default-bg **tile** glyph still erases a bottom decoration through the *fg* channel
+/// (#453, pre-existing — probe-verified unchanged by #444); a span covering one half of a wide glyph
+/// now bisects it visibly (#454, consumer span policy).
+///
+/// **Known consequence** (accepted, not a defect): the fg policy runs against the *effective* bg, so
+/// inside one selection band a decorated run and an undecorated run can resolve different
+/// minimumContrastRatio (#225) corrections — the band's text colour can change where the decoration
+/// starts. That is the correct reading of "contrast against what is actually painted"; xterm cannot
+/// exhibit it only because it discards the decoration first.
+pub fn should_blend_kind(kind: HighlightKind, bg_ref: u32, flags: u16, deco_bg: bool) -> bool {
+    matches!(kind, HighlightKind::Selection) && (deco_bg || should_blend(bg_ref, flags))
 }
 
 /// A cell's background after compositing its highlight, all in packed `0xRRGGBB`. `bg` is the cell's
@@ -331,22 +374,39 @@ mod tests {
         assert!(should_blend(0x00_00_00_00, INVERSE));
     }
 
-    // --- should_blend_kind: a selection defers to should_blend, a match is ALWAYS solid (#400) ---
+    // --- should_blend_kind: a selection blends over ANY colour beneath it (cell #271 or bottom
+    // decoration #444); a match is ALWAYS solid (#400) ---
 
     #[test]
     fn a_selection_blends_exactly_when_should_blend_says_so() {
-        // A selection defers to should_blend: solid on a default-bg cell, blend on a coloured/inverse one.
+        // With no decoration beneath, a selection defers to should_blend: solid on a default-bg cell,
+        // blend on a coloured/inverse one.
         assert!(
-            !should_blend_kind(HighlightKind::Selection, 0x00_00_00_00, 0),
+            !should_blend_kind(HighlightKind::Selection, 0x00_00_00_00, 0, false),
             "default bg → solid"
         );
         assert!(
-            should_blend_kind(HighlightKind::Selection, 0x02_E0_6C_75, 0),
+            should_blend_kind(HighlightKind::Selection, 0x02_E0_6C_75, 0, false),
             "Rgb bg → blend"
         );
         assert!(
-            should_blend_kind(HighlightKind::Selection, 0x00_00_00_00, INVERSE),
+            should_blend_kind(HighlightKind::Selection, 0x00_00_00_00, INVERSE, false),
             "inverse → blend"
+        );
+    }
+
+    #[test]
+    fn a_bottom_decoration_bg_makes_a_selection_blend_over_a_default_bg_cell() {
+        // #444: the decoration term is INDEPENDENT of the cell term — on a Default-bg, non-inverse
+        // cell (where should_blend alone says "solid") a bottom decoration's bg is still a real colour
+        // beneath the selection, so it must show through instead of being erased.
+        assert!(
+            !should_blend(0x00_00_00_00, 0),
+            "the cell term alone says solid…",
+        );
+        assert!(
+            should_blend_kind(HighlightKind::Selection, 0x00_00_00_00, 0, true),
+            "…but a decoration bg beneath makes the selection blend",
         );
     }
 
@@ -356,20 +416,38 @@ mod tests {
         // properties that make a SELECTION blend must NOT make a match blend, or a match on coloured
         // TUI output reads as a muddy tint instead of a crisp, findable colour.
         assert!(
-            !should_blend_kind(HighlightKind::Match, 0x00_00_00_00, 0),
+            !should_blend_kind(HighlightKind::Match, 0x00_00_00_00, 0, false),
             "default bg → solid"
         );
         assert!(
-            !should_blend_kind(HighlightKind::Match, 0x02_E0_6C_75, 0),
+            !should_blend_kind(HighlightKind::Match, 0x02_E0_6C_75, 0, false),
             "Rgb bg → still solid"
         );
         assert!(
-            !should_blend_kind(HighlightKind::Match, 0x01_00_00_05, 0),
+            !should_blend_kind(HighlightKind::Match, 0x01_00_00_05, 0, false),
             "Indexed bg → still solid"
         );
         assert!(
-            !should_blend_kind(HighlightKind::Match, 0x00_00_00_00, INVERSE),
+            !should_blend_kind(HighlightKind::Match, 0x00_00_00_00, INVERSE, false),
             "inverse → still solid"
+        );
+    }
+
+    #[test]
+    fn a_bottom_decoration_bg_does_not_make_a_match_blend() {
+        // #444 stays inside the Selection arm: the #400 solid-match rule outranks anything beneath, so
+        // a decoration bg must not reintroduce the muddy tint. Both match kinds guarded.
+        assert!(
+            !should_blend_kind(HighlightKind::Match, 0x00_00_00_00, 0, true),
+            "match over a decoration → still solid"
+        );
+        assert!(
+            !should_blend_kind(HighlightKind::Match, 0x02_E0_6C_75, 0, true),
+            "match over a decoration on a coloured cell → still solid"
+        );
+        assert!(
+            !should_blend_kind(HighlightKind::ActiveMatch, 0x00_00_00_00, 0, true),
+            "active match over a decoration → still solid"
         );
     }
 
@@ -378,15 +456,15 @@ mod tests {
         // #427: the active/focused match is a search highlight too — solid over any cell (xterm drops
         // the decoration alpha), never blended. Guards against a future edit making it blend.
         assert!(
-            !should_blend_kind(HighlightKind::ActiveMatch, 0x00_00_00_00, 0),
+            !should_blend_kind(HighlightKind::ActiveMatch, 0x00_00_00_00, 0, false),
             "default bg → solid"
         );
         assert!(
-            !should_blend_kind(HighlightKind::ActiveMatch, 0x02_E0_6C_75, 0),
+            !should_blend_kind(HighlightKind::ActiveMatch, 0x02_E0_6C_75, 0, false),
             "Rgb bg → still solid"
         );
         assert!(
-            !should_blend_kind(HighlightKind::ActiveMatch, 0x00_00_00_00, INVERSE),
+            !should_blend_kind(HighlightKind::ActiveMatch, 0x00_00_00_00, INVERSE, false),
             "inverse → still solid"
         );
     }

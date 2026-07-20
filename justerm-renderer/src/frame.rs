@@ -120,9 +120,13 @@ pub fn pack_instances(
             let mut fg = cell_fg;
             let mut fg_overridden = false;
             let mut bg_running = cell_bg;
+            // #444: whether a real colour from a bottom decoration now sits beneath the highlight —
+            // the selection blend decision reads this too, so the decoration is not erased.
+            let mut deco_bg = false;
             if let Some(b) = decoration_at(decorations, row, col, DecorationLayer::Bottom) {
                 if let Some(c) = b.bg {
                     bg_running = c;
+                    deco_bg = true;
                 }
                 if let Some(c) = b.fg {
                     fg = c;
@@ -135,15 +139,16 @@ pub fn pack_instances(
             if is_selection && let Some(sfg) = policy.selection_fg {
                 fg = sfg;
             }
-            // #271/#400: composite the selection / search highlight onto the (bottom-decorated)
+            // #271/#400/#444: composite the selection / search highlight onto the (bottom-decorated)
             // background — the fg policy then sees the EFFECTIVE bg the glyph is drawn over.
-            // `should_blend_kind` reads the highlight kind + the PRE-inverse *cell* ref/flags (not the
-            // decoration): a SELECTION over an inverse or non-default cell blends so the cell's own
-            // colour shows through, and paints solid over the default bg; a search MATCH always paints
-            // solid, whatever the cell (xterm/alacritty parity — a match must read crisp, not a tint).
+            // `should_blend_kind` reads the highlight kind + everything with a real colour beneath it:
+            // the PRE-inverse *cell* ref/flags and (#444) whether a bottom decoration painted a bg. A
+            // SELECTION blends so what is underneath shows through, and paints solid only over a bare
+            // default bg; a search MATCH always paints solid, whatever is beneath (xterm/alacritty
+            // parity — a match must read crisp, not a tint).
             let mut eff_bg = composite_bg(
                 bg_running,
-                kind.is_some_and(|k| should_blend_kind(k, bg_ref, cell_flags)),
+                kind.is_some_and(|k| should_blend_kind(k, bg_ref, cell_flags, deco_bg)),
                 kind.map(|k| overlay.colors.of(k)),
             );
             // #239/#241: a tile glyph under a SELECTION fuses into the band — xterm re-tints it toward
@@ -1497,8 +1502,11 @@ mod tests {
     fn a_top_decoration_paints_over_the_highlight_but_a_bottom_paints_under_it() {
         let p = palette();
         let sel_bg = 0x30_60_C0;
-        let ov = overlay_kind(&[0, 0, 0], &[], sel_bg); // solid selection over a default cell
-        // BOTTOM under the highlight: the solid selection replaces it → selection wins.
+        let ov = overlay_kind(&[0, 0, 0], &[], sel_bg);
+        // BOTTOM under the highlight: the selection paints over it but does NOT erase it — #444 makes
+        // the blend decision decoration-aware, so the decoration shows through the translucent
+        // selection even though the cell's own bg is Default. (Before #444 this arm painted the
+        // selection solid, discarding the decoration.)
         let bottom = pack_instances(
             &frame(&[0], &[0], &[0], &[0]),
             &p,
@@ -1509,8 +1517,8 @@ mod tests {
         );
         assert_eq!(
             &bottom[2..5],
-            &gl_rgb(sel_bg),
-            "the highlight paints over a bottom decoration"
+            &gl_rgb(blend_over(DECO_BG, sel_bg, HIGHLIGHT_BLEND_ALPHA)),
+            "the highlight blends over a bottom decoration, which stays visible"
         );
         // TOP over the highlight: it wins over the selection.
         let top = pack_instances(
@@ -1615,12 +1623,13 @@ mod tests {
     }
 
     #[test]
-    fn a_selection_blends_over_a_bottom_decoration_bg_matching_web_not_xterm() {
-        // #393 Row 5 (2-lens, family divergence tracked on #400): on a SELECTED, non-default-bg cell,
-        // the highlight blends over the BOTTOM-decoration bg (renderer == justerm-web `composeCellColors`
-        // layered model). xterm instead re-derives from the cell's OWN bg and discards the decoration
-        // (`CellColorResolver`). Pinned so the family (== web, #273-neutral) behaviour is intentional,
-        // not accidental; the xterm-parity fix is deferred as a coordinated web+renderer change (#400).
+    fn a_selection_blends_over_a_bottom_decoration_bg_not_the_cell_bg() {
+        // #393 Row 5, resolved by #444: on a SELECTED, non-default-bg cell the highlight blends over
+        // the BOTTOM-decoration bg — what is actually beneath it — NOT the cell's own bg. xterm
+        // re-derives its blend base from the cell (`CellColorResolver`), discarding the decoration;
+        // justerm deliberately keeps it (see `overlay::should_blend_kind` for the full rationale:
+        // alpha compositing shows what is underneath, and xterm's own API doc calls `'bottom'` a layer
+        // rendered *under* the selection). No longer a deferred divergence — a decided contract.
         let p = palette();
         let cell_bg = 0x20_40_60; // Rgb (non-default) → the highlight BLENDS (should_blend = true)
         let sel_bg = 0x30_60_C0;
@@ -1645,6 +1654,57 @@ mod tests {
             &got[2..5],
             &over_cell,
             "not the cell-bg blend xterm would use"
+        );
+    }
+
+    #[test]
+    fn a_selection_blends_over_a_bottom_decoration_bg_on_a_default_bg_cell_too() {
+        // #444: the blend DECISION is decoration-aware, not just the blend base. A bottom-decoration
+        // bg is a real colour beneath the selection, so it must show through even when the CELL's own
+        // bg is Default. Before #444 the decision read the cell alone, so this cell painted the
+        // selection SOLID and erased the decoration outright — while a coloured cell blended over it.
+        let p = palette();
+        let sel_bg = 0x30_60_C0;
+        let got = pack_instances(
+            &frame(&[0], &[0], &[0], &[0]), // Default bg ref, non-inverse
+            &p,
+            true,
+            &overlay_kind(&[0, 0, 0], &[], sel_bg),
+            &ColorPolicy::default(),
+            &[deco(DecorationLayer::Bottom, Some(DECO_BG), None)],
+        );
+        assert_eq!(
+            &got[2..5],
+            &gl_rgb(blend_over(DECO_BG, sel_bg, HIGHLIGHT_BLEND_ALPHA)),
+            "the selection blends over the decoration bg"
+        );
+        assert_ne!(
+            &got[2..5],
+            &gl_rgb(sel_bg),
+            "not the solid selection that used to erase the decoration"
+        );
+    }
+
+    #[test]
+    fn a_search_match_still_paints_solid_over_a_bottom_decoration_bg() {
+        // #444 must not leak into the MATCH kind. A match is solid over ANY cell (#400 item ①, where
+        // xterm and alacritty converge), so a decoration bg beneath must NOT make it blend — that
+        // would reintroduce exactly the muddy tint #400 removed. Guards the decoration term staying
+        // INSIDE `should_blend_kind`'s `Selection` arm.
+        let p = palette();
+        let m_bg = 0x30_60_C0;
+        let got = pack_instances(
+            &frame(&[0], &[0], &[0], &[0]),
+            &p,
+            true,
+            &overlay_kind(&[], &[0, 0, 0], m_bg),
+            &ColorPolicy::default(),
+            &[deco(DecorationLayer::Bottom, Some(DECO_BG), None)],
+        );
+        assert_eq!(
+            &got[2..5],
+            &gl_rgb(m_bg),
+            "a match stays solid over a decoration bg"
         );
     }
 }
