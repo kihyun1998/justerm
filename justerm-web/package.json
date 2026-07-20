@@ -25,7 +25,7 @@
   },
   "dependencies": {
     "justerm-renderer": "^0.4.0",
-    "justerm-wasm-decode": "^0.8.0"
+    "justerm-wasm-decode": "^0.9.1"
   },
   "main": "./dist/index.js",
   "module": "./dist/index.js",
