@@ -802,6 +802,53 @@ test.describe("active search match rides its own channel, not the selection (#42
   });
 });
 
+// #439: search navigation announces "x of y" — VS Code's SimpleFindWidget wording verbatim
+// (`status()` polite channel: "{x} of {y} found for '{query}'", "No results found for
+// '{query}'"), on a DEDICATED polite region (sharing #119's output or #160's command region
+// would let a flush clobber it — the #160 precedent), gated by the SR-active state (#161):
+// with SR off the count label still updates visually but nothing is announced. Post-#429 the
+// current match is no longer a selection, so this region is the ONLY AT-perceivable side
+// effect of search navigation.
+test.describe("search navigation announces x of y (#439)", () => {
+  const searchLive = "[data-testid='search-live']";
+  const openSearch = async (page: import("@playwright/test").Page, query: string) => {
+    await page.locator("#term").click({ position: { x: 50, y: 50 } });
+    await page.keyboard.press("Control+f");
+    await page.locator('input[placeholder="search"]').fill(query);
+  };
+
+  test("typing and navigating announce the count; no matches announces 'No results'", async ({
+    page,
+  }) => {
+    await openSearch(page, "select");
+    await expect(page.locator(searchLive)).toHaveText(/^1 of \d+ found for 'select'$/);
+
+    await page.keyboard.press("Enter"); // next match — the announce tracks navigation
+    await expect(page.locator(searchLive)).toHaveText(/^2 of \d+ found for 'select'$/);
+
+    await page.locator('input[placeholder="search"]').fill("zzzqq");
+    await expect(page.locator(searchLive)).toHaveText("No results found for 'zzzqq'");
+
+    // Escape closes the box: the count resets with the query text still in the
+    // input — the announce must NOT fire ("No results found for 'select'" here
+    // would be the bug), so the region keeps its last spoken text.
+    await page.locator('input[placeholder="search"]').fill("select");
+    await expect(page.locator(searchLive)).toHaveText(/^1 of \d+ found for 'select'$/);
+    await page.keyboard.press("Escape");
+    await expect(page.locator("#search-count")).toHaveText("0/0"); // the reset happened…
+    await expect(page.locator(searchLive)).toHaveText(/^1 of \d+ found for 'select'$/); // …silently
+  });
+
+  test("with the screen reader off, search stays silent while the label still updates (#161)", async ({
+    page,
+  }) => {
+    await page.getByRole("button", { name: "Screen reader: ON" }).click(); // SR off
+    await openSearch(page, "select");
+    await expect(page.locator("#search-count")).toHaveText(/^1\//); // visual count unaffected
+    expect(await page.locator(searchLive).textContent()).toBe(""); // …but no announce
+  });
+});
+
 // #420: the runtime theme button drives the wired setTheme (renderer setPalette #405) through the
 // real published justerm-renderer wasm. Two schemes with opposite defaults, so the palette swap
 // recolours the canvas — the demo samples the drawing buffer's centre after each swap (readPixels

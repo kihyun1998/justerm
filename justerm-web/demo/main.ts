@@ -42,6 +42,7 @@ import type {
   ResizePort,
   SearchOptions,
   SearchPort,
+  SearchResult,
   SelectionPort,
 } from "../src/index";
 import type { DecodedFrame } from "../src/types";
@@ -785,6 +786,43 @@ function modeToggle(id: string, label: string): HTMLInputElement {
 const countLabel = document.createElement("span");
 countLabel.id = "search-count"; // e2e reads it to prove the wasm validator ran (#346)
 countLabel.textContent = "0/0";
+
+// #439: SR announce for the search count — a DEDICATED polite region (the #160
+// precedent: sharing #119's output or #160's command region would let a flush
+// clobber it), visually hidden like cmdLive. Post-#429 the current match is no
+// longer a selection, so this is the only AT-perceivable side effect of search
+// navigation.
+const searchLive = document.createElement("div");
+searchLive.setAttribute("aria-live", "polite");
+searchLive.setAttribute("aria-atomic", "true");
+searchLive.setAttribute("data-testid", "search-live"); // e2e hook (#439)
+Object.assign(searchLive.style, {
+  position: "absolute",
+  width: "1px",
+  height: "1px",
+  overflow: "hidden",
+  clipPath: "inset(50%)",
+  whiteSpace: "nowrap",
+});
+document.body.append(searchLive);
+
+// #439: VS Code's SimpleFindWidget wording VERBATIM ("{x} of {y} found for
+// '{q}'" / "No results found for '{q}'", spoken on its polite `status()`
+// channel). Spoken on user-driven count updates only (typing, Enter/Shift-
+// Enter): a debounced background re-search updates neither the label nor the
+// announce, so a streaming terminal cannot spam the SR. Gated by the SR-active
+// state (#161); the invalid-regex state stays visual-only (updateCount returns
+// before this — no reference wording exists to mirror, red-flag only).
+function announceSearchCount(r: SearchResult): void {
+  // Closing the box (Escape) resets the count with the query text still in the
+  // input — without the visibility guard that would falsely announce "No
+  // results" for a query that merely closed (VS Code announces nothing on hide).
+  if (!srState.isActive() || box.style.display === "none" || input.value === "") return;
+  searchLive.textContent =
+    r.total === 0
+      ? `No results found for '${input.value}'`
+      : `${r.current} of ${r.total} found for '${input.value}'`;
+}
 const regexToggle = modeToggle("regex", ".*");
 const wordToggle = modeToggle("word", "W");
 const caseToggle = modeToggle("case", "Aa");
@@ -810,6 +848,7 @@ function updateCount(): void {
   input.style.borderColor = "#45475a";
   const r = search.result();
   countLabel.textContent = `${r.current}/${r.total}`;
+  announceSearchCount(r); // #439: same user-driven cadence as the visible label
 }
 function runSearch(): void {
   void search.search(input.value, currentOptions()).then(updateCount);
