@@ -15,7 +15,7 @@
 use crate::attrs::{BLANK_SLOT, glyph_field, is_concealed, is_dim, is_inverse};
 use crate::color::gl_rgb;
 use crate::contrast::ensure_contrast_ratio;
-use crate::decoration::{DecorationLayer, DecorationRect, decoration_at};
+use crate::decoration::{DecorationLayer, DecorationRect, decoration_override_at};
 use crate::glyph_class::treat_glyph_as_background_color;
 use crate::overlay::{
     HIGHLIGHT_BLEND_ALPHA, HighlightKind, Overlay, blend_over, composite_bg, should_blend_kind,
@@ -123,15 +123,16 @@ pub fn pack_instances(
             // #444: whether a real colour from a bottom decoration now sits beneath the highlight —
             // the selection blend decision reads this too, so the decoration is not erased.
             let mut deco_bg = false;
-            if let Some(b) = decoration_at(decorations, row, col, DecorationLayer::Bottom) {
-                if let Some(c) = b.bg {
-                    bg_running = c;
-                    deco_bg = true;
-                }
-                if let Some(c) = b.fg {
-                    fg = c;
-                    fg_overridden = true;
-                }
+            // #452: bg and fg merge INDEPENDENTLY across every decoration covering the cell, so a
+            // bg-only and an fg-only decoration both apply (xterm's per-property last-wins).
+            let bottom = decoration_override_at(decorations, row, col, DecorationLayer::Bottom);
+            if let Some(c) = bottom.bg {
+                bg_running = c;
+                deco_bg = true;
+            }
+            if let Some(c) = bottom.fg {
+                fg = c;
+                fg_overridden = true;
             }
             // #227 selectionForeground: force a selected cell's fg to the injected colour (never a
             // match), overriding the cell's own / bottom-decoration fg. A tile glyph discards it (#239
@@ -173,14 +174,15 @@ pub fn pack_instances(
             }
             // #120/#393 TOP decoration: paints OVER the highlight (foreground-most), overriding the
             // effective bg and/or the fg (`composeCellColors` applies `top` last, after selection).
-            if let Some(t) = decoration_at(decorations, row, col, DecorationLayer::Top) {
-                if let Some(c) = t.bg {
-                    eff_bg = c;
-                }
-                if let Some(c) = t.fg {
-                    fg = c;
-                    fg_overridden = true;
-                }
+            // Its bg/fg also merge per-property across the top layer (#452), independently of the
+            // bottom layer's merge — xterm runs one accumulating pass per layer.
+            let top = decoration_override_at(decorations, row, col, DecorationLayer::Top);
+            if let Some(c) = top.bg {
+                eff_bg = c;
+            }
+            if let Some(c) = top.fg {
+                fg = c;
+                fg_overridden = true;
             }
             // The fg colour policy, applied ONCE against the effective bg on the UNDIMMED fg — xterm's
             // model (`TextureAtlas._getMinimumContrastColor`), which the renderer can follow because the
@@ -1683,6 +1685,100 @@ mod tests {
             &gl_rgb(sel_bg),
             "not the solid selection that used to erase the decoration"
         );
+    }
+
+    #[test]
+    fn a_bottom_decoration_bg_survives_a_sibling_fg_only_decoration() {
+        // #452: xterm resolves bg and fg INDEPENDENTLY across every decoration on a layer —
+        // `DecorationService.forEachDecorationAtCell` calls back for *all* matches and
+        // `CellColorResolver` accumulates `$bg` / `$fg` in two separate `if`s. So a later fg-only
+        // decoration must not discard an earlier decoration's bg. Post-#444 that bg also decides
+        // blend-vs-solid, so losing it flips the compositing mode, not just a colour.
+        let p = palette();
+        let sel_bg = 0x30_60_C0;
+        let got = pack_instances(
+            &frame(&[0], &[0], &[0], &[0]), // Default bg cell
+            &p,
+            true,
+            &overlay_kind(&[0, 0, 0], &[], sel_bg),
+            &ColorPolicy::default(),
+            &[
+                deco(DecorationLayer::Bottom, Some(DECO_BG), None),
+                deco(DecorationLayer::Bottom, None, Some(DECO_FG)),
+            ],
+        );
+        assert_eq!(
+            &got[2..5],
+            &gl_rgb(blend_over(DECO_BG, sel_bg, HIGHLIGHT_BLEND_ALPHA)),
+            "the earlier bg survives and still drives the #444 blend"
+        );
+        assert_ne!(
+            &got[2..5],
+            &gl_rgb(sel_bg),
+            "not the solid selection a lost bg would produce"
+        );
+        assert_eq!(
+            &got[5..8],
+            &gl_rgb(DECO_FG),
+            "the later fg-only decoration still applies"
+        );
+    }
+
+    #[test]
+    fn a_bottom_decoration_fg_survives_a_later_bg_only_decoration() {
+        // #452 mirror direction: registration order must not matter to the *other* property. An
+        // fg-only decoration registered first (e.g. an error-token tint) keeps its fg when a bg-only
+        // decoration (e.g. a modified-line band) is registered over it afterwards. Guards the fg half
+        // of the per-property merge at the pack call site, which the bg-direction test cannot reach.
+        let p = palette();
+        let got = pack_instances(
+            &frame(&[0], &[0], &[0], &[0]),
+            &p,
+            true,
+            &Overlay::default(),
+            &ColorPolicy::default(),
+            &[
+                deco(DecorationLayer::Bottom, None, Some(DECO_FG)),
+                deco(DecorationLayer::Bottom, Some(DECO_BG), None),
+            ],
+        );
+        assert_eq!(
+            &got[2..5],
+            &gl_rgb(DECO_BG),
+            "the later bg-only decoration paints the background"
+        );
+        assert_eq!(
+            &got[5..8],
+            &gl_rgb(DECO_FG),
+            "…and the earlier fg-only decoration keeps the foreground"
+        );
+    }
+
+    #[test]
+    fn a_top_fg_only_decoration_overrides_selection_foreground() {
+        // The Top layer's fg branch had NO pack-site coverage (a 2-lens mutation left it a no-op with
+        // every test still green), yet #452 rewrote it. Pin the ordering it encodes: `top` is applied
+        // LAST, so a Top fg override beats #227 selectionForeground on a selected cell — xterm's
+        // `CellColorResolver` runs its top decoration pass after the selection stage.
+        let p = palette();
+        let sfg = 0x00_00_FF;
+        let got = pack_instances(
+            &frame(&[0], &[0], &[0], &[0]),
+            &p,
+            true,
+            &overlay_kind(&[0, 0, 0], &[], 0x30_60_C0),
+            &ColorPolicy {
+                selection_fg: Some(sfg),
+                ..Default::default()
+            },
+            &[deco(DecorationLayer::Top, None, Some(DECO_FG))],
+        );
+        assert_eq!(
+            &got[5..8],
+            &gl_rgb(DECO_FG),
+            "the top decoration's fg wins over selectionForeground"
+        );
+        assert_ne!(&got[5..8], &gl_rgb(sfg), "not the selection foreground");
     }
 
     #[test]

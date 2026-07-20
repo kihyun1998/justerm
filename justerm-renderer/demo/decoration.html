@@ -104,6 +104,25 @@
     !cellIs(bottomUnderMatch, 0, blend(DECO_BG, MATCH_BG)) &&
     !cellIs(bottomUnderMatch, 0, DECO_BG);
 
+  // #452: bg and fg merge PER PROPERTY across sibling decorations on a layer. A bg-only decoration
+  // plus a later fg-only one must yield BOTH — and because #444 made the bg a blend-vs-solid input,
+  // losing it would also drop the cell back to a solid selection. Read on a LETTER so the same frame
+  // proves the bg (cell centre is off-ink for 'A'... so read bg from a SPACE run) and the fg (ink).
+  const siblingWire = [0, 0, 0, 0, DECO_BG, NO_REF, 0, 0, 0, 0, NO_REF, DECO_FG];
+  const siblingsBg = draw(SPACE, [0, 0, 0], siblingWire);
+  checks.aBgOnlyAndFgOnlySiblingDecorationBothApply_bg =
+    cellIs(siblingsBg, 0, blend(DECO_BG, SEL_BG)) &&
+    !cellIs(siblingsBg, 0, SEL_BG); // the solid fallback the discarded bg used to cause
+  const siblingsFg = draw(LETTER, [], siblingWire);
+  checks.aBgOnlyAndFgOnlySiblingDecorationBothApply_fg =
+    inkIs(siblingsFg, 0, DECO_FG) && !inkIs(siblingsFg, 0, WHITE);
+
+  // …and the mirror order: an fg-only decoration registered FIRST keeps its fg under a later bg-only.
+  const mirrorWire = [0, 0, 0, 0, NO_REF, DECO_FG, 0, 0, 0, 0, DECO_BG, NO_REF];
+  const mirror = draw(LETTER, [], mirrorWire);
+  checks.anEarlierFgOnlyDecorationSurvivesALaterBgOnlyOne =
+    inkIs(mirror, 0, DECO_FG) && !inkIs(mirror, 0, WHITE);
+
   // TOP over a selection → the decoration paints over the highlight (top wins).
   const topOverSel = draw(SPACE, [0, 0, 0], [0, 0, 0, 1, TOP_BG, NO_REF]);
   checks.aTopDecorationPaintsOverTheHighlight = cellIs(topOverSel, 0, TOP_BG) && !cellIs(topOverSel, 0, SEL_BG);
