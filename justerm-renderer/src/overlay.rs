@@ -205,8 +205,11 @@ pub fn should_blend(bg_ref: u32, flags: u16) -> bool {
 /// commit history surfaced no rationale (only refactor/move commits) — so (i)/(ii) carry the
 /// decision; "no rationale found" is not a claim that none exists.
 ///
-/// **Adjacent gaps this does NOT close** (tracked, deliberately left visible): a sibling fg-only
-/// decoration still discards an earlier bg-only one, which post-#444 also flips solid↔blend (#452);
+/// The `deco_bg` term reads the **merged** bottom-layer background (`decoration_override_at`), so a
+/// bg-only decoration keeps driving this decision even when a sibling fg-only decoration covers the
+/// same cell — #452, which closed the case where losing that bg silently flipped blend back to solid.
+///
+/// **Adjacent gaps this does NOT close** (tracked, deliberately left visible):
 /// an inverse + Default-bg **tile** glyph still erases a bottom decoration through the *fg* channel
 /// (#453, pre-existing — probe-verified unchanged by #444); a span covering one half of a wide glyph
 /// now bisects it visibly (#454, consumer span policy).
