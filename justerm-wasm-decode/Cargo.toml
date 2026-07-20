@@ -6,6 +6,10 @@ license.workspace = true
 repository.workspace = true
 description = "WASM decoder for justerm's wire format: structure-of-arrays cell columns + format-owned colour/flag helpers. See ADR-0008."
 readme = "README.md" # wasm-pack copies this into the npm package as its page
+# wasm-pack propagates these into the generated package.json (#478). Crate-level, not
+# `[workspace.package]`: the decoder's terms differ from justerm-core's (`tui`/`emulator`
+# do not describe a wire decoder; `wasm`/`decoder` do not describe the engine crate).
+keywords = ["terminal", "wasm", "ansi", "vt100", "decoder"]
 publish = false # published as an npm artifact via wasm-pack, not to crates.io
 
 # `cdylib` is the wasm artifact wasm-pack ships; `rlib` lets this crate's own
