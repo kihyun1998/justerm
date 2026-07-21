@@ -155,7 +155,9 @@ pub fn pack_instances(
             // #239/#241: a tile glyph under a SELECTION fuses into the band — xterm re-tints it toward
             // the RAW selection colour (not the effective post-blend bg), starting from the cell's own
             // undimmed fg and discarding selectionForeground. #241: an inverse cell with a DEFAULT bg
-            // is "treated as transparent" — its fg becomes the raw selection colour with NO blend.
+            // is "treated as transparent" — it contributes no colour of its own, so its fg becomes the
+            // band over whatever IS beneath: the raw selection colour with no blend, or (#453) the
+            // selection over a bottom decoration's bg when one painted there.
             //
             // The re-tint starts from `cell_fg`, which has bold→bright (#223) applied — byte-identical
             // to justerm-web (its `fgUndimmed` is likewise brightened), so the #273 switch stays
@@ -167,7 +169,24 @@ pub fn pack_instances(
                 let raw_sel = overlay.colors.of(HighlightKind::Selection);
                 let inverse_default_bg = is_inverse(cell_flags) && (bg_ref >> 24) == 0;
                 fg = if inverse_default_bg {
-                    raw_sel
+                    // #453: the cell contributes nothing, so the tile shows the band as it falls on
+                    // whatever IS beneath — since #444 that includes a bottom decoration's bg. Recompute
+                    // the band with the cell taken out of the stack: `bg_running` here is the
+                    // decoration's colour when one painted (`deco_bg`), and `composite_bg` then blends;
+                    // with no decoration it returns the RAW selection colour, byte-identical to before
+                    // and to xterm (`CellColorResolver.ts:139` sets the selection colour flat). NOT
+                    // `eff_bg` — that is the band over THIS cell, and for an inverse cell it carries the
+                    // cell's own colour (probe: 0x97AFDF vs raw 0x3060C0), which is exactly the colour
+                    // "transparent" says to drop.
+                    //
+                    // The decoration folds in only when the SELECTION is the layer painted over it: a
+                    // match paints solid (#400) and erases the decoration from the bg channel, so
+                    // blending over it would compose a stack no pixel shows. The fg is selection-keyed
+                    // either way (#430) — under an active match it stays the raw selection colour, as
+                    // the undecorated sibling already pinned.
+                    let beneath_the_band =
+                        deco_bg && matches!(kind, Some(HighlightKind::Selection));
+                    composite_bg(bg_running, beneath_the_band, Some(raw_sel))
                 } else {
                     blend_over(cell_fg, raw_sel, HIGHLIGHT_BLEND_ALPHA)
                 };
@@ -845,8 +864,10 @@ mod tests {
     #[test]
     fn an_inverse_default_bg_tile_on_an_active_matched_selected_cell_uses_the_raw_selection_colour()
     {
-        // #430 × #241: the inverse-default-bg tile arm (fg = the RAW selection colour, unblended)
-        // is a selection fg treatment too, so it survives under the active bg. Here the glyph does
+        // #430 × #241: the inverse-default-bg tile arm (here fg = the RAW selection colour, unblended
+        // — nothing is beneath the transparent cell; with a bottom decoration under a *selection* it
+        // is the band over that, #453) is a selection fg treatment too, so it survives under the
+        // active bg. Here the glyph does
         // NOT dissolve — the band under it is the ACTIVE colour, not the selection's — and that is
         // xterm's literal output as well: its selected-tile stage sets the fg from the selection
         // colour while the active match overrides only the bg.
@@ -868,6 +889,52 @@ mod tests {
             &got[2..5],
             &gl_rgb(ACTIVE_BG),
             "bg = the solid active colour (a match never blends)"
+        );
+    }
+
+    #[test]
+    fn an_active_match_over_a_decorated_transparent_tile_still_uses_the_raw_selection_colour() {
+        // #453 × #430: the transparent-tile fg folds in a bottom decoration only when the SELECTION is
+        // what is painted over it. An active match paints SOLID (#400), which erases the decoration
+        // from the bg channel — so blending the selection over that decoration would compose a stack
+        // no pixel shows. The fg stays the raw selection colour, exactly as the undecorated sibling
+        // above pins it, which is xterm's literal output (its active match is a bg-only top
+        // decoration applied after the selection stage).
+        let p = bright_palette();
+        let got = pack_instances(
+            &frame_cp(&[0], &[0], &[INVERSE], &[BLOCK]),
+            &p,
+            true,
+            &with_active(&[0, 0, 0], &[0, 0, 0], &[]),
+            &ColorPolicy::default(),
+            &[deco(DecorationLayer::Bottom, Some(0x80_40_00), None)],
+        );
+        assert_eq!(
+            &got[5..8],
+            &gl_rgb(SEL_BG),
+            "fg = the raw selection colour — the decoration is not beneath a SOLID layer"
+        );
+        assert_eq!(
+            &got[2..5],
+            &gl_rgb(ACTIVE_BG),
+            "bg = the solid active colour, decoration erased (#400)"
+        );
+        // Control: the expected value above equals the NO-decoration value, so on its own it would
+        // also pass with a dead fixture (wrong layer, wrong row, a broken `decoration_override_at`).
+        // Drop only the active match — same decoration, same cell — and the fg must move, proving the
+        // decoration is live and the highlight KIND is the single variable under test.
+        let selection_only = pack_instances(
+            &frame_cp(&[0], &[0], &[INVERSE], &[BLOCK]),
+            &p,
+            true,
+            &with_active(&[], &[0, 0, 0], &[]),
+            &ColorPolicy::default(),
+            &[deco(DecorationLayer::Bottom, Some(0x80_40_00), None)],
+        );
+        assert_eq!(
+            &selection_only[5..8],
+            &gl_rgb(blend_over(0x80_40_00, SEL_BG, HIGHLIGHT_BLEND_ALPHA)),
+            "same decoration, selection only: it DOES fold in — the fixture is live"
         );
     }
 
@@ -1400,8 +1467,9 @@ mod tests {
 
     #[test]
     fn an_inverse_default_bg_tile_under_selection_is_transparent() {
-        // #241: an inverse cell with a DEFAULT bg renders its tile glyph transparent — fg becomes the
-        // RAW selection colour with NO blend, so the glyph dissolves into the band.
+        // #241: an inverse cell with a DEFAULT bg renders its tile glyph transparent — with nothing
+        // beneath it, fg becomes the RAW selection colour with NO blend, so the glyph dissolves into
+        // the band. (What "beneath" adds when a bottom decoration paints there is #453, below.)
         let p = bright_palette();
         let raw_sel = 0x80_00_00;
         let got = pack_instances(
@@ -1416,6 +1484,126 @@ mod tests {
             &got[5..8],
             &gl_rgb(raw_sel),
             "inverse+default tile fg = raw selection colour"
+        );
+        // The bg channel does NOT go transparent with it: `should_blend`'s `is_inverse` term keeps the
+        // cell's swapped-in colour in the composite, so bg = blend(default_fg, sel) — the two channels
+        // disagree. Pinned because it is xterm's behaviour verbatim (its `$bg` blends the cell colour
+        // at CellColorResolver.ts:100-120 while `$fg` is the flat selection colour at :139), not an
+        // accident of this port; on a 100 %-coverage █ it is invisible, on a partial tile (─, ▀) it is
+        // a visible seam. Tracked as a decision in #496.
+        assert_eq!(
+            &got[2..5],
+            &gl_rgb(blend_over(0xFF_FF_FF, raw_sel, HIGHLIGHT_BLEND_ALPHA)),
+            "bg keeps the cell's swapped-in colour (xterm parity, #496)"
+        );
+    }
+
+    #[test]
+    fn an_inverse_default_bg_tile_under_selection_keeps_a_bottom_decoration_beneath_it() {
+        // #453: "transparent" (#241) means *show what is actually beneath* — and since #444 a bottom
+        // decoration's bg IS beneath. The tile fg must therefore be the band as it falls on the
+        // decoration, not the bare selection colour, or a 100 %-coverage glyph repaints the whole cell
+        // in solid selection and erases the decoration through the fg channel (the bg channel already
+        // keeps it, making #444's guarantee half-true).
+        //
+        // Measured before the fix (throwaway probe, this exact cell): bg = 0x585060 (decoration
+        // survives) but fg = 0x3060C0 = the raw selection — the erasure.
+        let p = bright_palette();
+        let raw_sel = 0x30_60_C0;
+        let deco_bg = 0x80_40_00;
+        let got = pack_instances(
+            &frame_cp(&[0], &[0], &[INVERSE], &[BLOCK]),
+            &p,
+            true,
+            &overlay_kind(&[0, 0, 0], &[], raw_sel),
+            &ColorPolicy::default(),
+            &[deco(DecorationLayer::Bottom, Some(deco_bg), None)],
+        );
+        let band_over_deco = blend_over(deco_bg, raw_sel, HIGHLIGHT_BLEND_ALPHA);
+        assert_eq!(
+            &got[5..8],
+            &gl_rgb(band_over_deco),
+            "the tile fg is the selection over the DECORATION, not the bare selection"
+        );
+        // Right reason, not just the right value: the fg must agree with the bg channel, which is
+        // what makes the cell read as one uniform band colour rather than two layers disagreeing.
+        assert_eq!(&got[2..5], &got[5..8], "fg and bg channels agree");
+        // And it must NOT be `eff_bg` computed for this cell — the expression the issue named. Here
+        // they coincide (both 0x585060) BECAUSE the cell is transparent; the no-decoration sibling
+        // test above is what separates them (there eff_bg = 0x97AFDF but the fg must stay raw_sel).
+    }
+
+    #[test]
+    fn an_fg_only_bottom_decoration_leaves_a_transparent_tile_on_the_raw_selection_colour() {
+        // The #453 fold-in keys on the decoration's BACKGROUND (`deco_bg`), the only half that is
+        // "beneath" anything. An fg-only bottom decoration paints no colour under the band — and its
+        // fg is discarded by the re-tint regardless (xterm parity) — so the transparent tile stays on
+        // the raw selection colour. Without this, `bottom.fg.is_some()` would look like an equally
+        // plausible trigger.
+        let p = bright_palette();
+        let raw_sel = 0x30_60_C0;
+        let got = pack_instances(
+            &frame_cp(&[0], &[0], &[INVERSE], &[BLOCK]),
+            &p,
+            true,
+            &overlay_kind(&[0, 0, 0], &[], raw_sel),
+            &ColorPolicy::default(),
+            &[deco(DecorationLayer::Bottom, None, Some(0x00_FF_00))],
+        );
+        assert_eq!(
+            &got[5..8],
+            &gl_rgb(raw_sel),
+            "an fg-only decoration is not 'beneath' the band"
+        );
+        // Control, same reason as the active-match test: give the SAME decoration a bg as well and the
+        // fg must move, so this cannot pass on a fixture that never covered the cell.
+        let with_bg = pack_instances(
+            &frame_cp(&[0], &[0], &[INVERSE], &[BLOCK]),
+            &p,
+            true,
+            &overlay_kind(&[0, 0, 0], &[], raw_sel),
+            &ColorPolicy::default(),
+            &[deco(
+                DecorationLayer::Bottom,
+                Some(0x80_40_00),
+                Some(0x00_FF_00),
+            )],
+        );
+        assert_eq!(
+            &with_bg[5..8],
+            &gl_rgb(blend_over(0x80_40_00, raw_sel, HIGHLIGHT_BLEND_ALPHA)),
+            "the same decoration WITH a bg does fold in — the fixture is live"
+        );
+    }
+
+    #[test]
+    fn a_selected_dim_tile_glyph_is_re_tinted_undimmed() {
+        // Pins the #224 dependency the re-tint leans on (#453 acceptance ③): a SELECTED cell's DIM is
+        // cleared, so the re-tinted tile fg is never faded afterwards. The re-tint does not set
+        // `fg_overridden` (xterm sets `$hasFg`), and this test is what would catch that mattering.
+        //
+        // Measured on THIS cell, not assumed: re-running it with #224 narrowed (`dim` no longer forced
+        // off under selection) gives fg = 0x8B70A0 with `fg_overridden = true` added to the re-tint and
+        // 0x8B70A0 without it — byte-identical. The flag cannot change a tile's output, because
+        // `exclude` is true
+        // here, which skips the contrast branch and leaves the two arms as the same
+        // `dim_foreground(fg, eff_bg)`. So the issue's "if #224 is narrowed this becomes a live bug"
+        // is false; valid as long as tile cells stay contrast-excluded (#226).
+        let p = bright_palette();
+        let raw_sel = 0x30_60_C0;
+        let got = pack_instances(
+            &frame_cp(&[IDX | 1], &[0], &[DIM], &[BLOCK]),
+            &p,
+            true,
+            &overlay_kind(&[0, 0, 0], &[], raw_sel),
+            &ColorPolicy::default(),
+            &[],
+        );
+        // The undimmed re-tint: the cell's own fg (white) blended halfway to the selection.
+        assert_eq!(
+            &got[5..8],
+            &gl_rgb(blend_over(0xFF_FF_FF, raw_sel, HIGHLIGHT_BLEND_ALPHA)),
+            "a selected tile is re-tinted from its UNDIMMED fg (#224)"
         );
     }
 

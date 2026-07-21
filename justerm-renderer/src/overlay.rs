@@ -209,10 +209,25 @@ pub fn should_blend(bg_ref: u32, flags: u16) -> bool {
 /// bg-only decoration keeps driving this decision even when a sibling fg-only decoration covers the
 /// same cell — #452, which closed the case where losing that bg silently flipped blend back to solid.
 ///
-/// **Adjacent gaps this does NOT close** (tracked, deliberately left visible):
-/// an inverse + Default-bg **tile** glyph still erases a bottom decoration through the *fg* channel
-/// (#453, pre-existing — probe-verified unchanged by #444); a span covering one half of a wide glyph
-/// now bisects it visibly (#454, consumer span policy).
+/// The **fg** channel was closed separately: an inverse + Default-bg *tile* glyph used to erase the
+/// decoration by re-tinting to the bare selection colour, so #444's guarantee held only on the bg
+/// channel (#453 — pre-existing, probe-verified unchanged by #444; fixed by recomputing the band with
+/// the transparent cell taken out of the stack, `frame.rs`).
+///
+/// Scope note: in xterm a *plain* search match **is** itself a `layer:'bottom'` decoration
+/// (`addon-search/src/DecorationManager.ts:138`, bg-only — the search options carry no foreground at
+/// all), while justerm models it as an overlay kind and lets a selection discard it. Output-identical
+/// today (xterm's selection stage clobbers the whole bottom bg anyway), and justerm is the closer of
+/// the two here — but a plain match is the one xterm bottom-decoration this rationale does *not*
+/// extend "what is beneath shows through" to, should that ever be revisited.
+///
+/// The guarantee is deliberately **bg-only**: a bottom decoration's *foreground* is still discarded on
+/// any selected tile cell, because the re-tint overwrites `fg` after the decoration set it. That is
+/// xterm's behaviour verbatim (its tile branch overwrites `$fg` the same way), so the divergence
+/// justerm accepts is only the one stated above — "what is beneath" means the decoration's **bg**.
+///
+/// **Adjacent gap this does NOT close** (tracked, deliberately left visible): a span covering one
+/// half of a wide glyph now bisects it visibly (#454, consumer span policy).
 ///
 /// **Known consequence** (accepted, not a defect): the fg policy runs against the *effective* bg, so
 /// inside one selection band a decorated run and an undecorated run can resolve different
