@@ -3,9 +3,10 @@
 //! Powerline separators and box-drawing / block elements butt cleanly against the neighbouring cell.
 //! A `minimumContrastRatio` nudge on one would shift its colour and open a visible seam, so xterm
 //! excludes them from the contrast demand (`excludeFromContrastRatioDemands`), and re-tints them
-//! toward the selection colour rather than standing them out as a hard stroke (#239). Ported faithfully
-//! from xterm's `RendererUtils`. (justerm-web carried a `glyph-class.ts` twin until #504 deleted
-//! it with the widget's compositing half — this is now the family's only copy.)
+//! toward the selection colour rather than standing them out as a hard stroke (#239). Ported from
+//! xterm's `RendererUtils`, and since #507 **unioned with what this crate draws itself** — see
+//! [`treat_glyph_as_background_color`]. (justerm-web carried a `glyph-class.ts` twin until #504
+//! deleted it with the widget's compositing half — this is now the family's only copy.)
 
 /// Powerline symbols, `U+E0A4..=U+E0D6` — the full range xterm treats as a background colour (not the
 /// narrower restricted set it uses for glyph rescaling).
@@ -55,6 +56,28 @@ fn is_box_or_block_glyph(codepoint: u32) -> bool {
 /// emoji, not a base with attachments), so the whole cluster decides. Tiling asks **how much of the
 /// cell the ink covers**, and coverage is set by the base — a mark can only add to it.
 ///
+/// # The range is xterm's list UNIONED with what this crate draws (#507)
+///
+/// xterm's two ranges alone left a contradiction: [`builtin`](crate::builtin) draws all of
+/// `U+1FB00..=U+1FB9F` (bar the reserved `U+1FB93`) **to the cell** — 159 codepoints across sextants,
+/// wedges, one-eighth blocks, extra eighths, shades, checkers, hatches and triangular halves — while
+/// this classifier called them text. Measured, such a cell was byte-identical to `'A'` on all three
+/// behaviours above, yet painted as a solid part-cell tile.
+///
+/// The union is asked of the *drawer* ([`builtin::owns`](crate::builtin::owns)) rather than copied
+/// into a second list here, so a codepoint added to `builtin` is classified correctly the day it is
+/// added; `builtin`'s own test pins the predicate against what it actually draws. A curated subset
+/// was considered and rejected: every codepoint `builtin` draws abuts a cell edge, and xterm's
+/// already-classified range spans a 3 %-lit single-edge stub (`U+2574 ╴`) to a flat 25 %-alpha wash
+/// (`U+2591 ░`), so neither coverage nor opacity offers a defensible cut line.
+///
+/// **This diverges from xterm's list**, deliberately. xterm draws `U+1FB00..=U+1FBFA`, Braille and
+/// Nerd Font ranges in its webgl addon while `RendererUtils.treatGlyphAsBackgroundColor` stays at
+/// `U+2500..=U+259F` + Powerline — with no comment, test or doc acknowledging the gap, and its
+/// classifier is not "what xterm draws" either (it classifies `U+E0A4..=U+E0AF`, which it does not
+/// draw). There is no xterm *principle* to violate here, only an ad-hoc list; xterm cannot union the
+/// two anyway, because its classifier is shared with a DOM renderer that draws no custom glyphs.
+///
 /// The alternative (match `CellColorResolver`, classifying the cluster's last scalar) is *available*
 /// — clusters already reach the renderer via the `extra` + `side_table` columns — but it would need
 /// a clusters column threaded into [`frame::Frame`](crate::frame::Frame) for the packer, and would
@@ -64,7 +87,9 @@ fn is_box_or_block_glyph(codepoint: u32) -> bool {
 /// argument is withdrawn** — the twin was reachable only from the widget's dead compositing path and
 /// was deleted with it in #504. The rule above never depended on it.)
 pub fn treat_glyph_as_background_color(codepoint: u32) -> bool {
-    is_powerline_glyph(codepoint) || is_box_or_block_glyph(codepoint)
+    is_powerline_glyph(codepoint)
+        || is_box_or_block_glyph(codepoint)
+        || crate::builtin::owns(codepoint)
 }
 
 #[cfg(test)]
@@ -85,6 +110,29 @@ mod tests {
         assert!(treat_glyph_as_background_color(0xE0A4)); // powerline start
         assert!(treat_glyph_as_background_color(0xE0B0)); //  a common separator
         assert!(treat_glyph_as_background_color(0xE0D6)); // powerline end
+    }
+
+    /// #507: Symbols for Legacy Computing tile because **this crate draws them to the cell**
+    /// ([`crate::builtin`]) — the same premise that makes `U+2588` tile. One per sub-family, since
+    /// `builtin` reaches them through four different drawing paths.
+    #[test]
+    fn legacy_computing_tiles_because_the_crate_draws_it_to_the_cell() {
+        assert!(treat_glyph_as_background_color(0x1FB00)); // sextant
+        assert!(treat_glyph_as_background_color(0x1FB3C)); // wedge
+        assert!(treat_glyph_as_background_color(0x1FB70)); // one-eighth block
+        assert!(treat_glyph_as_background_color(0x1FB8B)); // extra eighth block
+        assert!(treat_glyph_as_background_color(0x1FB8C)); // medium shade
+        assert!(treat_glyph_as_background_color(0x1FB98)); // diagonal hatch
+        assert!(treat_glyph_as_background_color(0x1FB9F)); // triangular shade, last of the block
+    }
+
+    /// The two negatives that keep the union honest: the reserved hole inside the block, and the
+    /// tail beyond it (legacy box drawing / segmented digits) which the FONT draws, not this crate.
+    #[test]
+    fn the_reserved_hole_and_the_font_drawn_tail_do_not_tile() {
+        assert!(!treat_glyph_as_background_color(0x1FB93)); // reserved — builtin draws nothing
+        assert!(!treat_glyph_as_background_color(0x1FBA0)); // font-drawn legacy box drawing
+        assert!(!treat_glyph_as_background_color(0x1FBF0)); // font-drawn segmented digit
     }
 
     #[test]

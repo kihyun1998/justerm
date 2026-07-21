@@ -142,6 +142,11 @@ fn is_emoji_presentation(c: char) -> bool {
                 // Nothing depended on this until now only because core reports them width-1, so the
                 // `wide &&` gate never asked — an invariant across three layers, now pinned by a test
                 // rather than by another crate's width table.
+                //
+                // This range is deliberately WIDER than `builtin::owns` (#507): the whole Legacy
+                // Computing block is text presentation, whoever draws it, and `1FBA0`-`1FBFF` (legacy
+                // box drawing, segmented digits) come from the font. Do not narrow it to `owns` to
+                // "align the two" — they answer different questions.
                 | 0x1FB00..=0x1FBFF
         ),
         _ => false,
