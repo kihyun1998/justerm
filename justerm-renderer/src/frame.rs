@@ -165,12 +165,19 @@ pub fn pack_instances(
             // band over whatever IS beneath: the raw selection colour with no blend, or (#453) the
             // selection over a bottom decoration's bg when one painted there.
             //
-            // The re-tint starts from `cell_fg`, which has bold→bright (#223) applied — byte-identical
-            // to justerm-web (its `fgUndimmed` is likewise brightened), so the #273 switch stays
-            // neutral. This diverges from xterm ONLY for a BOLD + ANSI-0..7 + tile + selection cell,
-            // where xterm re-tints from the *base* ANSI colour (its `CellColorResolver` bypasses the
-            // `+8`): a corner-of-corner, sub-perceptible under the 0x80 blend. 100 % xterm parity here
-            // is a *family* change (web + renderer together) — tracked as #398, not smuggled in.
+            // The re-tint starts from `cell_fg`, which has bold→bright (#223) applied. That is the
+            // model's answer, not an accident: ADR-0019 rule 1 puts `L0` at "the cell after inverse
+            // and bold→bright", and rule 4 sends a background-class glyph's ink through the bg fold
+            // from there — so `cell_fg` IS the ink source for this cell class.
+            //
+            // xterm differs for a BOLD + ANSI-0..7 + tile + selection cell, re-tinting from the *base*
+            // ANSI colour (its `CellColorResolver` bypasses the `+8`): a corner-of-corner, and
+            // sub-perceptible under the 0x80 blend. That difference is **documentation for a consumer
+            // porting from xterm, not a defect** — ADR-0019 makes xterm a design input for cell
+            // composition rather than a validator. #398 asked for the xterm value and was closed
+            // won't-fix on exactly this rule; do not "restore parity" here without amending the ADR.
+            // (Its older framing — a *family* change to keep justerm-web byte-neutral — is doubly
+            // dead: the widget'"'"'s compositing half went with #504.)
             if is_selection && exclude {
                 let raw_sel = overlay.colors.of(HighlightKind::Selection);
                 let inverse_default_bg = is_inverse(cell_flags) && (bg_ref >> 24) == 0;
