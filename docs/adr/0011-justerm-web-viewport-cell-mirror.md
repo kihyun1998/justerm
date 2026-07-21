@@ -1,6 +1,13 @@
 # ADR-0011: justerm-web keeps a viewport cell mirror (frame mode) to apply scroll-op damage
 
-Status: accepted (2026-06-29, #106 / S3)
+Status: accepted (2026-06-29, #106 / S3) — **amended 2026-07-21 (#504)**: the decision holds, its
+*reason* moved. The mirror was kept so the consumer could re-**paint** a scrolled region beamterm
+could not relocate; since #273 the first-party renderer composites in wasm and no consumer paints
+from the mirror at all. What survives is the mirror's other reader — the screen-reader row tree
+(#119/#152), which needs viewport **text** that stays correct across a scroll op. So the mirror is
+now **text-only**: `frameToDrawOps` / `cellToDrawOp` / `RenderPolicy` and the whole `render-core.ts`
+module are gone, and `applyFrame` returns nothing. Everything below is the record of the original
+decision; read "draw ops" in it as history, not as current behaviour.
 
 ## Context
 

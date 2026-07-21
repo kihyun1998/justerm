@@ -1,9 +1,9 @@
 import type { Palette } from "justerm-wasm-decode/colors.js";
 import { CursorBlink } from "./cursor";
 import type { DecorationRect } from "./decorations";
-import type { FlagBits } from "./render-core";
+
 import type { Renderer } from "./renderer";
-import type { DecodedFrame } from "./types";
+import type { DecodedFrame, FlagBits } from "./types";
 
 /** Theme colours (packed `0xRRGGBB`). The engine stays ignorant of these — the
  * consumer owns them and the renderer resolves cell refs against them. Carried over

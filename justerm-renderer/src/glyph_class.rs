@@ -4,7 +4,8 @@
 //! A `minimumContrastRatio` nudge on one would shift its colour and open a visible seam, so xterm
 //! excludes them from the contrast demand (`excludeFromContrastRatioDemands`), and re-tints them
 //! toward the selection colour rather than standing them out as a hard stroke (#239). Ported faithfully
-//! from justerm-web `glyph-class.ts` / xterm's `RendererUtils`.
+//! from xterm's `RendererUtils`. (justerm-web carried a `glyph-class.ts` twin until #504 deleted
+//! it with the widget's compositing half — this is now the family's only copy.)
 
 /// Powerline symbols, `U+E0A4..=U+E0D6` — the full range xterm treats as a background colour (not the
 /// narrower restricted set it uses for glyph rescaling).
@@ -20,7 +21,7 @@ fn is_box_or_block_glyph(codepoint: u32) -> bool {
 /// Whether a glyph is meant to tile with the background — xterm's `treatGlyphAsBackgroundColor`.
 /// Such a cell's fg is excluded from the `minimumContrastRatio` correction (so the glyph keeps butting
 /// cleanly against its neighbour) and re-tinted under a selection (#239). Classify a cell's **base**
-/// codepoint (the first scalar of the resolved symbol, matching the web's `symbol.codePointAt(0)`).
+/// codepoint (the first scalar of the resolved symbol).
 ///
 /// # A combined cell classifies from its base — declared divergence from xterm (#495)
 ///
@@ -55,10 +56,12 @@ fn is_box_or_block_glyph(codepoint: u32) -> bool {
 ///
 /// The alternative (match `CellColorResolver`, classifying the cluster's last scalar) is *available*
 /// — clusters already reach the renderer via the `extra` + `side_table` columns — but it would need
-/// a clusters column threaded into [`frame::Frame`](crate::frame::Frame) for the packer, would break
-/// parity with justerm-web's public `treatGlyphAsBackgroundColor` call site
-/// (`render-core.ts` `symbol.codePointAt(0)`), and would un-tile a cell that visibly still tiles.
-/// Rejected on coherence, not on cost.
+/// a clusters column threaded into [`frame::Frame`](crate::frame::Frame) for the packer, and would
+/// un-tile a cell that visibly still tiles. Rejected on coherence, not on cost.
+///
+/// (#495 originally listed a third cost: parity with a justerm-web twin of this classifier. **That
+/// argument is withdrawn** — the twin was reachable only from the widget's dead compositing path and
+/// was deleted with it in #504. The rule above never depended on it.)
 pub fn treat_glyph_as_background_color(codepoint: u32) -> bool {
     is_powerline_glyph(codepoint) || is_box_or_block_glyph(codepoint)
 }

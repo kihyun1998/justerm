@@ -63,7 +63,8 @@ impl Palette {
 /// The published JS sibling `colors.js` `resolveRgb` keeps its `role` parameter and its `Default`
 /// arm — correctly: it is a package **API** any npm consumer may call with an arbitrary reference,
 /// whereas this is a crate-private helper (`pub(crate)` since #465, npm-only crate) with one caller.
-/// justerm-web's `render-policy.ts` `resolveSlot` splits the same way, for the same reason.
+/// justerm-web's `render-policy.ts` `resolveSlot` split the same way, for the same reason (that
+/// module was deleted in #504 — this crate is now the only implementation).
 ///
 /// # Panics (debug only)
 /// Debug-asserts the reference is not `Default`. In release a tag-0 reference would fall through to

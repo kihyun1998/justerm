@@ -1,5 +1,12 @@
 //! Selection / search overlay compositing — pure, host-testable (#271).
 //!
+//! **Provenance note (#504):** the justerm-web modules cited below as the ported-from sibling
+//! (`render-policy.ts`, `render-core.ts`, `decoration-render.ts`, `glyph-class.ts`) **no longer
+//! exist** — the widget's compositing half was removed once the renderer took it over (#273), so
+//! this crate is now the family's only implementation. The references are kept because they name
+//! where the logic came from and what it was checked against; read them as history (git) rather
+//! than as a file to open.
+//!
 //! The engine owns the selection *model* (scrollback-aware, ADR-0002) and projects it onto the
 //! viewport as stride-3 `(row, left, right)` spans; the wasm decoder already exposes them
 //! (`justerm-wasm-decode` `selectionSpans` / `matchSpans`, `OVERLAY_STRIDE`, #108). This module is

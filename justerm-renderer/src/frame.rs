@@ -1194,7 +1194,7 @@ mod tests {
 
     #[test]
     fn a_dim_cell_that_fails_contrast_is_corrected_not_dimmed_mutual_exclusion() {
-        // The stage-2 rule (render-policy.ts makeRenderPolicy): if minimumContrastRatio fires, its
+        // The stage-2 rule (justerm-web `render-policy.ts`, deleted in #504): if minimumContrastRatio fires, its
         // corrected fg wins and DIM is SKIPPED. Only this case makes stage-2 distinct from the overlay
         // pass — without it a dim cell would be dimmed FIRST and then corrected from the dimmer colour,
         // a different result. A dim low-contrast fg (0x2A2A3A on 0x1E1E2E) fails mcr/2, so it must be
