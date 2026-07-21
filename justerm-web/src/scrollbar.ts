@@ -127,6 +127,13 @@ export class Scrollbar {
    * off-viewport anchors are visible on the full-buffer scrollbar. Marks live on
    * the track (they show with it) and don't intercept drags (`pointer-events:
    * none`). Drive it with `registry.rulerMarksForFrame(frame)` each frame.
+   *
+   * **Array order IS paint order.** Marks are appended in the order given and carry no `z-index`,
+   * so a later mark paints over an earlier one — which is how `rulerMarksForFrame` expresses both
+   * its ordering rules (registration order within a position class, #458; `full` above the gutter
+   * classes, #498). Do NOT sort, reverse, or stack them here: either would silently void those
+   * rules, and no unit test can catch it (vitest runs in a `node` environment) — only the
+   * `__rulerLayerProbe` e2e does.
    */
   setMarks(marks: RulerMark[]): void {
     for (const el of this.markEls) el.remove();
@@ -141,6 +148,7 @@ export class Scrollbar {
         pointerEvents: "none",
         ...rulerMarkX(m.position),
       } satisfies Partial<CSSStyleDeclaration>);
+      el.dataset.rulerMark = ""; // stable hook for the #498 e2e probe (not a style)
       this.track.appendChild(el);
       this.markEls.push(el);
     }
