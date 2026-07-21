@@ -81,6 +81,7 @@ shows, handler bodies like `setOrReportIndexedColor` get cut).
 | **Web feature (concept/UX)** | its real source — usually **xterm.js** (`repos/xtermjs/xterm.js`; e.g. drag-scroll 50px/15, highlightLimit 1000, `_charsToConsume`); for features xterm lacks, the consumer that built it (e.g. **VSCode** `microsoft/vscode` terminal a11y) |
 | **Text / coords / VT-semantics (mechanism)** | **xterm.js buffer layer + alacritty real source** + *this repo's siblings* (`docs/architecture.md` §"Hidden VT state" + `search` / `selection` / `logical-lines` cell-walk). Enumerate the hidden state the reference tracks *first* |
 | **Wire / format / coord / API shape** | *this repo's sibling fields & precedent* — #129 `mouse_events`, #112 scroll, #108 overlay: how they touch struct→encode→decode→Flat→getter→`types.ts` — plus **ADR-0013/0014** (viewport state in the header) and **ADR-0008** (decode boundary). Mirror the most recent sibling verbatim |
+| **Renderer cell composition** (what colour a cell's bg / fg / ink ends up) | **ADR-0019 first** — its layer stack, per-channel declaration, paint modes and ink sources answer the combination *by construction*, so start by asking what the model says. Then this repo's siblings (`overlay.rs`, `frame.rs`, `decoration.rs`, `glyph_class.rs`) for the rules in force. **xterm.js is a design input here, not a validator**: read it for *what problem exists* and how it solved it, never as the tie-breaker — a difference from it is not by itself a defect, and in the four decisions before ADR-0019 it was silent, self-contradictory, the outlier, or demoted. A combination the model cannot answer is an ADR-0019 amendment, not a new decision |
 
 **Concept ≠ mechanism (the trap).** A feature has a concept layer *and* a
 mechanism layer. It can be novel at the concept layer (absent from xterm.js) yet
@@ -217,7 +218,13 @@ that *describes* the behavior:
   time — never rewrite a published entry; if the repo and the registry would
   disagree for a version, open a new note, don't edit the shipped one.
 - **Glossary + decision trail** — `CONTEXT.md` (glossary) and `docs/adr/`. If a
-  domain term's *meaning* changed, update the glossary in the same change.
+  domain term's *meaning* changed, update the glossary in the same change. **The
+  ADRs are a *write* surface, not only the one you read at Step 0**: a change that
+  falsifies an ADR's premise amends *that ADR* in the same change (0011 and 0012
+  carry exactly such amendments). Since ADR-0019 the renderer's cell-composition
+  rules live there rather than only in the `frame.rs` / `overlay.rs` doc-comments —
+  a change to those rules updates the ADR, and a combination the ADR cannot answer
+  is an amendment to it, not a fresh pairwise decision.
 - **The wire contract mirror** — a wire/format change touches
   `struct → encode → decode → Flat → getter → types.ts`; `justerm-web/types.ts`
   hand-mirrors the wasm getters, so grep it (#129/#135: `mouseWantedEvents`
@@ -351,6 +358,7 @@ release.md):
 - **Out-of-workspace / formatter / typecheck blind spots** — #333 (renderer unformatted + proofs CI), #341 (web CI + e2e tsconfig), #343/#344 (typecheck vs build).
 - **Behavior-surface drift** — #129/#135 (`mouseWantedEvents` reached `types.ts` only at S16 — grep the wire mirror).
 - **The backlog is a surface too (pivot sweep + file-time conflict check)** — 2026-07-21 sweep of all 22 open issues: one pivot (#273) had falsified premises in 4 of them (#398 names a file deleted in #407 and an acceptance box whose comparand is gone; #249/#317 §2 defer to a beamterm/"shared shader" layer that no longer exists; #325 still says "blocked by #273"), and 3 more pairs/clusters were live conflicts nobody had cross-linked (#440↔#490 wire channel; #494/#495/#496 = one branch's entry condition/fg/bg decided separately; #437↔#441 one port capability). Nothing fails when an issue's *premise* dies — it survives as a reason not to act, or points at a deleted file. Sweep the open backlog after a pivot; grep it by touched artifact before filing a follow-up; correct by comment, never by rewriting the body.
+- **A cluster that keeps re-deciding itself = a missing model (Step 5 promotion)** — the 2026-07 cell-composition cluster. Of its 20 issues **17 were surfaced by another issue in the same set** (`#453 → {#494, #495, #496}`, `#494 → {#506, #507, #508}`); one pair — *a tile glyph's ink vs a background-ish layer* — was decided **8 separate times** (#241, #398, #430③, #453, #494, #496, #507, #508); **11** decisions contradicted or narrowed an earlier one (#453 measured *both* of its own body's premises false before starting); and xterm could not arbitrate the last four (silent #494, self-contradictory across its own call sites #495, judged the outlier #459, demoted to ADR-0017 grounds #458). Every one was filed and doc-commented exactly as this flow prescribes — **the sink was wrong, not the discipline**: an issue holds one decision with its rejected alternatives and a doc-comment pins a rule to one branch, so neither can hold a rule that *spans* decisions (#494's rationale reached 80 lines of comment on a single `if`). Promoted to **ADR-0019**, which *derives* #430 and #494 instead of restating them, and reclassifies #496/#508 as conformance defects, #507 as an implementation choice, #398 as won't-fix-with-a-reason. Three pins contradict the model, all three resting on xterm parity alone — tracked for adjudication, not flipped. The trigger to notice next time is the shape, not the subject: re-deciding a known pair, a consequence *chain* rather than an edge, an earlier premise measured false, a reference that cannot arbitrate, two artifacts in this repo requiring opposite things.
 - **External/registry facts** — web consumes *published* wasm (new binding `undefined` until republish); clean-room worktree only, regex discriminators `=x` / `(?i)abc` / `(?<name>x)`.
 - **Downstream contract history** — penterm wire VERSION bumps justerm#38/#41/#81; #100 rename API/wire-invariant drop-in.
 
@@ -360,5 +368,5 @@ precedents index inline.)
 ## Refs
 
 - Contract spec: `docs/architecture.md` (cells · damage · viewport/scroll · cadence · selection · serialization · engine API; §"Hidden VT state").
-- Decisions: `docs/adr/` — 0005 (encode/decode round-trip), 0008 (decode boundary), 0013/0014 (viewport state in header), 0017 (mechanism core / policy consumer), 0018 (justerm-renderer pivot).
+- Decisions: `docs/adr/` — 0005 (encode/decode round-trip), 0008 (decode boundary), 0013/0014 (viewport state in header), 0017 (mechanism core / policy consumer), 0018 (justerm-renderer pivot), 0019 (renderer cell composition — layered, per-channel, total; xterm is a design input, not a validator).
 - Identity & invariants: `CLAUDE.md`. Glossary: `CONTEXT.md`. Release: `docs/agents/release.md`.
