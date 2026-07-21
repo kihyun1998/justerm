@@ -153,3 +153,23 @@ export interface FrameSource {
    */
   subscribeEvents?(listener: (event: TermEvent) => void): Unsubscribe;
 }
+
+/**
+ * Flag bit positions, from the decoder's `flags()`. Structural for testability —
+ * a caller passes the wasm module's own constants, and tests pass literals.
+ *
+ * Lived in `render-core.ts` until #504 removed that module: the widget composites
+ * nothing (the renderer does it in wasm since #273), so the only survivor of the
+ * old per-cell decode is this bit map, which the a11y mirror and the renderer
+ * adapter both read.
+ */
+export interface FlagBits {
+  bold: number;
+  italic: number;
+  underline: number;
+  strikethrough: number;
+  wide_char_spacer: number;
+  inverse: number;
+  dim: number;
+  hidden: number;
+}

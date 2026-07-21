@@ -111,9 +111,10 @@ pnpm test:e2e     # playwright, drives the real wasm in headless Chromium
 - **`Renderer`** port (`src/renderer.ts`) — the small interface the widget drives.
   `JustermRenderer` is the real adapter (wraps `justerm-renderer`, WASM + WebGL2); a fake
   covers the widget's wiring without a GL context.
-- **`frameToDrawOps`** (`src/render-core.ts`) — the pure `DecodedFrame` → draw-op mapping
-  (span walk, colour resolve, flags, wide-char, grapheme). No GL, no wasm, so the vitest
-  suite covers it with golden frames.
+- **`CellMirror`** (`src/cell-mirror.ts`) — a viewport-sized **text** mirror (ADR-0011): it
+  applies a frame's scroll op so the screen-reader row tree stays correct across scroll, and
+  serves row text + the column map (#152). Text-only since #504 — colour resolve and
+  compositing live in the renderer's wasm (#273), so the widget maps no cells to draw ops.
 - **`Terminal`** (`src/terminal.ts`) — wires a `FrameSource` to a `Renderer`.
 
 ## Licence

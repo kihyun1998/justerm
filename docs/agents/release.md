@@ -104,9 +104,15 @@ through **caret ranges**, not the `[workspace.package]` lockstep, and moves on i
 carries its own version (in `justerm-web/package.json`) and its own tag prefix — a `v*` tag does
 **not** publish it, and a `web-v*` tag publishes **only** it.
 
-The workflow exists and is **inert until a `web-v*` tag is pushed** — having it is not the same
-decision as starting to publish. As of this writing nothing has been published: `justerm-web` is not
-on npm. Whether the first publish waits for penterm's migration is open on #466.
+The workflow is **inert until a `web-v*` tag is pushed** — having it is not the same decision as
+starting to publish. **It has since been published** (verified against the registry, 2026-07-21):
+`web-v0.7.0` and `web-v0.7.1` are tagged and `justerm-web` 0.7.0 / 0.7.1 are on npm, so the earlier
+"nothing has been published / not on npm" wording here was stale and contradicted the `justerm-web
+dependency bump` paragraph above. It did **not** wait for penterm's migration — penterm's webview is
+still xterm.js and carries no justerm npm dependency at all (`../penterm/package.json`), so the
+package currently has **no known consumer**; the npm downloads API reports no download history for
+it. Treat that as the live semver context: the published surface is real, but nothing observable
+depends on it yet.
 
 Cut a web release:
 

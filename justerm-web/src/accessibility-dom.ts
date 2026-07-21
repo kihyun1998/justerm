@@ -14,9 +14,9 @@ import { a11ySelectionToPort } from "./a11y-selection";
 import type { TreeEndpoint, TreeSelection } from "./a11y-selection";
 import { CellMirror } from "./cell-mirror";
 import { ScreenReaderState } from "./screen-reader";
-import type { FlagBits } from "./render-core";
+
 import type { SelectionPort } from "./selection";
-import type { DecodedFrame } from "./types";
+import type { DecodedFrame, FlagBits } from "./types";
 import type { Palette } from "justerm-wasm-decode/colors.js";
 
 /** Off-screen-but-readable styling (the SR-only pattern): present to assistive
@@ -274,7 +274,7 @@ export class Accessibility {
    * frame header + each viewport row's text. */
   onFrame(frame: DecodedFrame): void {
     if (!this.mirror || this.cols !== frame.cols || this.rows !== frame.rows) {
-      this.mirror = new CellMirror(frame.cols, frame.rows, this.palette, this.flagBits);
+      this.mirror = new CellMirror(frame.cols, frame.rows, this.flagBits);
       this.cols = frame.cols;
       this.rows = frame.rows;
     }

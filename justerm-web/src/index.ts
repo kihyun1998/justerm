@@ -1,5 +1,5 @@
 // Public API of justerm-web.
-export type { DecodedFrame, FrameSource, Unsubscribe } from "./types";
+export type { DecodedFrame, FlagBits, FrameSource, Unsubscribe } from "./types";
 export type { Renderer } from "./renderer";
 export { StubFrameSource } from "./frame-source";
 // Consumer events (#117) — fire-and-forget title/bell/cwd notifications from core's
@@ -15,16 +15,13 @@ export { rendererNotifyingSink, routeWheel, Terminal, wheelGoesToApp, wheelScrol
 export type { TerminalOptions, WheelAction } from "./terminal";
 export { JustermRenderer } from "./justerm-renderer";
 export type { JustermRendererOptions, Theme } from "./justerm-renderer";
-// Render core — the pure per-cell decode the accessible-view cell mirror uses
-// (ADR-0011). Colour resolve + compositing now live in the renderer's wasm.
-export { identityPolicy } from "./render-core";
-export type { DrawOp, FlagBits, RenderPolicy } from "./render-core";
 // Scroll intent — wheel events → scrollback line delta (xterm consumeWheelEvent).
 export { WheelScroller } from "./scroll-control";
 export type { ScrollOptions, WheelContext, WheelLike } from "./scroll-control";
-// Viewport cell mirror — applies scroll-op damage for frame mode (ADR-0011).
+// Viewport cell mirror — the a11y text mirror; applies scroll-op damage so the
+// screen-reader row tree stays correct across scroll (ADR-0011). Text-only since
+// #504 (the renderer composites colour in wasm, #273).
 export { CellMirror } from "./cell-mirror";
-export { cellToDrawOp } from "./render-core";
 // Cursor — blink state (web policy). The renderer draws the cursor natively (#270).
 export { BLINK_INTERVAL, CursorBlink } from "./cursor";
 // Scrollbar — custom DOM slider over the canvas (thumb math + drag → offset).
