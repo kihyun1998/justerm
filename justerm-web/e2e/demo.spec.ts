@@ -947,3 +947,28 @@ test("a decoration's ruler mark stays anchored to its buffer line across scroll 
   // highlight follows its content (a real buffer anchor, not a fixed viewport row).
   expect(p.rowScrolled - p.row0, "the viewport row tracks scroll").toBe(p.scrolledBy);
 });
+
+// #458: two decorations on DIFFERENT markers covering the same cell — the LAST REGISTERED wins,
+// not the one whose marker core emits later. The projection unit test can only see the emitted
+// rect order; this drives the real wasm renderer and reads the real drawing buffer, so it proves
+// the whole chain — registration order → wire order → the renderer's per-property last-wins (#452).
+test("cross-marker decoration precedence follows registration order at the pixel (#458)", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await expect(page.getByRole("button", { name: "Decorate line: OFF" })).toBeVisible();
+
+  const p = await page.evaluate(() => window.__precedenceProbe!());
+
+  // Both single-decoration scenarios must paint, and paint DIFFERENTLY from each other — without
+  // that, the two-decoration assertions below could pass on a cell nothing ever decorated.
+  expect(p.firstMarkerOnly, `baseline ${p.baseline}`).not.toBe(p.baseline);
+  expect(p.secondMarkerOnly).not.toBe(p.baseline);
+  expect(p.firstMarkerOnly).not.toBe(p.secondMarkerOnly);
+
+  // The discriminating pair: the SAME two decorations, swapped only in registration order, must
+  // swap which colour reaches the pixel. Core's marker order is identical in both runs, so it
+  // cannot be what decides. Pre-#458 both runs returned `secondMarkerOnly`.
+  expect(p.bothFirstMarkerRegisteredLast).toBe(p.firstMarkerOnly);
+  expect(p.bothSecondMarkerRegisteredLast).toBe(p.secondMarkerOnly);
+});

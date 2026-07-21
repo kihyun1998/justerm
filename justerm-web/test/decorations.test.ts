@@ -136,8 +136,9 @@ describe("DecorationRegistry (#120 S1)", () => {
   });
 
   // Multiple decorations per marker (different layers/columns) and across markers
-  // each project, following their marker's row — registration order within a
-  // marker, frame order across markers.
+  // each project, following their marker's row — in registration order, whichever
+  // marker each anchors to (#458). Here the two rules happen to agree, so this
+  // fixture pins multiplicity, not ordering; the ordering tests are below.
   it("projects multiple decorations per marker and across markers", () => {
     const reg = new DecorationRegistry();
     reg.register({ markerId: 1, x: 0, layer: "bottom" });
@@ -255,11 +256,16 @@ describe("DecorationRegistry (#120 S1)", () => {
 
   // #482: the wire carries EVERY live marker (M, unbounded with scrollback), but only markers with
   // a registered decoration project. Filtering to those keeps per-frame allocation/iteration
-  // O(decorations), not O(markers). Two invariants this pins: (1) a decorated marker buried among
-  // many non-decorated ones is NOT dropped; (2) cross-marker precedence still follows CORE's marker
-  // order (the markerLines order), NOT registration order — so a fix that iterates `byMarker`
-  // instead (registration order) reds this: 50 is registered first but must project AFTER 20.
-  it("projects only decorated markers from a large marker set, in core marker order (#482)", () => {
+  // O(decorations), not O(markers). The invariant this pins is that a decorated marker buried among
+  // many non-decorated ones is NOT dropped, and that the 6 undecorated markers contribute nothing.
+  //
+  // This test used to also pin cross-marker precedence as CORE's marker order — #458 decided the
+  // opposite (registration order; see the precedence test above), so the expected order below is
+  // reversed from what #482 wrote. That was never #482's own finding: it recorded the order it
+  // happened to observe while leaving the choice open as "#458". Only the order changed here; the
+  // O(D) property #482 exists to guard is untouched, since the projection loop is still sized by
+  // decorations, not by the 8 markers on the wire.
+  it("projects only decorated markers from a large marker set (#482)", () => {
     const reg = new DecorationRegistry();
     reg.register({ markerId: 50, x: 0, width: 1, bg: 0xaa0000 }); // registered FIRST
     reg.register({ markerId: 20, x: 1, width: 1, bg: 0x00aa00 }); // registered SECOND
@@ -269,11 +275,81 @@ describe("DecorationRegistry (#120 S1)", () => {
     const lines = [10, 20, 30, 40, 50, 60, 70, 80].map((id) => ml(id, id));
     const rects = reg.decorationsForFrame(frameAbs({ rows: 100, scrollbackLen: 0 }, lines, []));
 
-    // Core order (20 before 50), non-decorated markers contribute nothing.
+    // Registration order (50 before 20 — the reverse of core's marker order, which is the point),
+    // and the 6 undecorated markers contribute nothing.
     expect(rects).toEqual([
-      { row: 20, left: 1, right: 1, layer: "bottom", bg: 0x00aa00, fg: undefined },
       { row: 50, left: 0, right: 0, layer: "bottom", bg: 0xaa0000, fg: undefined },
+      { row: 20, left: 1, right: 1, layer: "bottom", bg: 0x00aa00, fg: undefined },
     ]);
+  });
+
+  // #458: where two decorations on DIFFERENT markers cover the same cell, the winner is the one
+  // registered LAST — xterm's documented contract (`typings/xterm.d.ts`: "When 2 decorations both
+  // set the ... color the last registered decoration will be used"). Precedence is the consumer's
+  // policy (ADR-0017), so it must follow the consumer's own input, not core's marker emission order
+  // — which is decided by where the anchors happen to sit in the buffer and is unchangeable from
+  // here. The renderer resolves per-property last-in-wire-order (#452), so "wins" == "emitted
+  // later".
+  it("resolves cross-marker precedence by registration order, not marker order (#458)", () => {
+    const reg = new DecorationRegistry();
+    // Marker 10 is ABOVE marker 20 in the buffer, so core emits 10 first. Register them the other
+    // way round; the two decorations overlap on row 3, column 0.
+    reg.register({ markerId: 20, x: 0, width: 1, bg: 0x0000aa }); // registered FIRST
+    reg.register({ markerId: 10, x: 0, width: 1, height: 3, bg: 0xaa0000 }); // registered SECOND
+    const rects = reg.decorationsForFrame(
+      frameAbs({ rows: 10, scrollbackLen: 0 }, [ml(10, 1), ml(20, 3)], []),
+    );
+
+    const onTheSharedCell = rects.filter((r) => r.row === 3 && r.left <= 0 && r.right >= 0);
+    expect(onTheSharedCell).toHaveLength(2);
+    expect(onTheSharedCell.at(-1)!.bg).toBe(0xaa0000); // the LAST registered wins the cell
+    // Whole-array order, so this cannot pass on a coincidence of the filter: every rect of the
+    // first-registered decoration precedes every rect of the second.
+    expect(rects.map((r) => [r.row, r.bg])).toEqual([
+      [3, 0x0000aa],
+      [1, 0xaa0000],
+      [2, 0xaa0000],
+      [3, 0xaa0000],
+    ]);
+  });
+
+  // #458, the claim that outlives a single frame: the winner must not change when the BUFFER moves.
+  // Upstream this is not guaranteed — xterm re-appends a decoration that spans an insert/delete
+  // point, promoting it to "last" — so it is worth pinning that justerm's order is immune. Same two
+  // decorations, two frames whose anchors have swapped relative position; the same one wins both.
+  it("keeps the same winner when the anchors swap relative position between frames (#458)", () => {
+    const reg = new DecorationRegistry();
+    reg.register({ markerId: 1, x: 0, width: 1, bg: 0x0000aa }); // registered FIRST
+    reg.register({ markerId: 2, x: 0, width: 1, bg: 0xaa0000 }); // registered SECOND — must win
+
+    // Frame A: marker 1 above marker 2. Frame B: the buffer moved and marker 2 is now above.
+    const a = reg.decorationsForFrame(frameAbs({ rows: 10, scrollbackLen: 0 }, [ml(1, 2), ml(2, 5)]));
+    const b = reg.decorationsForFrame(frameAbs({ rows: 10, scrollbackLen: 0 }, [ml(2, 1), ml(1, 6)]));
+
+    // In both frames the last-emitted (= winning) rect is marker 2's, whichever anchor sits higher.
+    expect(a.at(-1)!.bg).toBe(0xaa0000);
+    expect(b.at(-1)!.bg).toBe(0xaa0000);
+    // And the rows really did swap, so the frames genuinely differ (not two identical inputs).
+    expect(a.map((r) => r.row)).toEqual([2, 5]);
+    expect(b.map((r) => r.row)).toEqual([6, 1]);
+  });
+
+  // #458: `register` always mints a NEW decoration — it never updates one in place. That is what
+  // makes "register again to take precedence" work at all, since `Set.add` of a member already
+  // present is a no-op that does NOT move it to the end. The consequence the docs must not hide:
+  // the earlier handle stays LIVE, so registering again leaves two decorations, and disposing the
+  // new one hands the cell back to the old one rather than clearing it.
+  it("registering the same options again adds a second live decoration, it does not replace (#458)", () => {
+    const reg = new DecorationRegistry();
+    const first = reg.register({ markerId: 1, x: 0, width: 1, bg: 0x0000aa });
+    const second = reg.register({ markerId: 1, x: 0, width: 1, bg: 0xaa0000 });
+
+    const both = reg.decorationsForFrame(frame(mk(1, 0)));
+    expect(both.map((r) => r.bg)).toEqual([0x0000aa, 0xaa0000]); // both live; the newer wins
+    expect(first.disposed).toBe(false); // …and the first was NOT replaced
+
+    second.dispose();
+    expect(reg.decorationsForFrame(frame(mk(1, 0))).map((r) => r.bg)).toEqual([0x0000aa]);
   });
 
   // #461: entirely above the viewport -> nothing, and no negative row reaches the u32 wire.
@@ -434,6 +510,29 @@ describe("DecorationRegistry.rulerMarksForFrame (#120 S3)", () => {
 
     expect(reg.rulerMarksForFrame(rulerFrame([7, 25], 90, 10))).toEqual([
       { topRatio: 0.25, color: 0xff0000, position: "full" },
+    ]);
+  });
+
+  // #458: ruler marks are emitted in REGISTRATION order too — one rule for the file. The scrollbar
+  // paints them in array order (`setMarks` appends one div per mark, no z-index), so two marks close
+  // enough to overlap on the track resolve the same way a shared cell does: last registered on top.
+  //
+  // The fixture INTERLEAVES registration across two markers, and it has to. The old loop iterated
+  // `byMarker`, whose Map key order is when each MARKER was first registered — so with one
+  // decoration per marker the old and new orders coincide and a two-decoration fixture pins
+  // nothing. With A→7, B→25, A'→7 the two rules genuinely differ: grouping by marker yields
+  // A, A', B; registration order yields A, B, A'.
+  it("emits ruler marks in registration order, not grouped by marker (#458)", () => {
+    const reg = new DecorationRegistry();
+    reg.register({ markerId: 7, overviewRulerOptions: { color: 0xaa0000 } }); // A
+    reg.register({ markerId: 25, overviewRulerOptions: { color: 0x00aa00 } }); // B — other marker
+    reg.register({ markerId: 7, overviewRulerOptions: { color: 0x0000aa } }); // A' — back to 7
+
+    // total = 90 + 10 = 100 → line 10 is 0.1, line 50 is 0.5.
+    expect(reg.rulerMarksForFrame(rulerFrame([7, 10, 25, 50], 90, 10))).toEqual([
+      { topRatio: 0.1, color: 0xaa0000, position: "full" },
+      { topRatio: 0.5, color: 0x00aa00, position: "full" },
+      { topRatio: 0.1, color: 0x0000aa, position: "full" },
     ]);
   });
 
