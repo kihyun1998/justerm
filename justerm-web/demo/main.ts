@@ -243,6 +243,12 @@ const DECO_ROW = 2;
 // seeded demo cannot otherwise reach) by setting it directly.
 let decoAbsLine = 0;
 let lineDecoration: { dispose(): void } | undefined;
+// #458: two extra marker ids the precedence probe switches on, so a frame can carry TWO anchors
+// covering the same cell — the only shape that can distinguish registration-order precedence from
+// core's marker-emission order. Emitted (in this array's order, i.e. "core order") only while the
+// probe sets `precedenceLine`; the seeded demo never has two decoration anchors otherwise.
+const PRECEDENCE_MARKER_IDS = [9001, 9002] as const;
+let precedenceLine: number | undefined;
 // #189: the live decoration is scoped to the buffer it was created on (mirroring
 // core's per-buffer markers, #187) — its marker only rides that buffer's frames,
 // and an alt-scoped decoration is disposed on alt-leave (core's clearAllMarkers on
@@ -576,12 +582,28 @@ function viewportFrame(out?: { scrollCount: number }): DecodedFrame {
       ...(decorationOnScreen() && decoAbsLine - top >= 0 && decoAbsLine - top < ROWS
         ? [DECO_MARKER_ID, decoAbsLine - top, MarkerKind.Plain, 0, 0]
         : []),
+      // #458 probe: both anchors on the SAME line, emitted in id order — "core order".
+      ...(precedenceLine !== undefined && precedenceLine - top >= 0 && precedenceLine - top < ROWS
+        ? PRECEDENCE_MARKER_IDS.flatMap((id) => [
+            id,
+            precedenceLine! - top,
+            MarkerKind.Plain,
+            0,
+            0,
+          ])
+        : []),
     ],
     // #120 S3: every live marker's absolute buffer line — the FIXED `decoAbsLine`, so the ruler
     // mark stays at the buffer position as you scroll (the #480 slide is gone) and an above-top
     // anchor still resolves. Only a primary decoration on the primary screen: the ruler is a
     // scrollback navigator, suppressed on alt (rulerMarksForFrame), and alt has no scrollback.
-    markerLines: decorationOnScreen() && !altScreen ? [DECO_MARKER_ID, decoAbsLine] : [],
+    markerLines: [
+      ...(decorationOnScreen() && !altScreen ? [DECO_MARKER_ID, decoAbsLine] : []),
+      // #458 probe: same two anchors in the absolute group, same id order.
+      ...(precedenceLine !== undefined
+        ? PRECEDENCE_MARKER_IDS.flatMap((id) => [id, precedenceLine!])
+        : []),
+    ],
     ...(out && out.scrollCount > 0
       ? { hasScroll: true, scrollTop: 0, scrollBottom: ROWS - 1, scrollCount: out.scrollCount }
       : {}),
@@ -946,10 +968,29 @@ interface RulerAnchorProbe {
   scrolledBy: number;
 }
 
+/** #458: two decorations on DIFFERENT markers covering the SAME cell — the last registered must
+ * win at the pixel. Each field is the rgb of that cell under one registration scenario, all read
+ * from the real drawing buffer, so the whole chain (projection order → wire → renderer per-property
+ * last-wins) is proven rather than just the emitted rects. */
+interface PrecedenceProbe {
+  /** The cell with no decoration at all. */
+  baseline: string;
+  /** Only the marker core emits FIRST is decorated. */
+  firstMarkerOnly: string;
+  /** Only the marker core emits SECOND is decorated. */
+  secondMarkerOnly: string;
+  /** Both, with the SECOND-emitted marker's decoration registered first — so registration order
+   * and core's marker order disagree, and the first-emitted marker's colour must win. */
+  bothFirstMarkerRegisteredLast: string;
+  /** The same pair registered the other way round — the other colour must win. */
+  bothSecondMarkerRegisteredLast: string;
+}
+
 declare global {
   interface Window {
     __searchProbe?: () => SearchProbe;
     __decorationProbe?: () => DecorationProbe;
+    __precedenceProbe?: () => PrecedenceProbe;
     __aboveTopProbe?: () => AboveTopProbe;
     __rulerAnchorProbe?: () => RulerAnchorProbe;
   }
@@ -1040,6 +1081,70 @@ window.__rulerAnchorProbe = (): RulerAnchorProbe => {
   displayOffset = savedOffset;
   render();
   return { line0: a.line, lineScrolled: b.line, row0: a.row, rowScrolled: b.row, scrolledBy };
+};
+window.__precedenceProbe = (): PrecedenceProbe => {
+  // #458: precedence between decorations on DIFFERENT markers is REGISTRATION order — the last
+  // registered wins. A projection unit test only sees the emitted rect order; this drives the real
+  // wasm renderer and reads the pixel, so it also proves the renderer resolves per-property
+  // last-in-wire-order (#452) the way the projection assumes.
+  const gl = canvas.getContext("webgl2")!;
+  const { width: cw, height: ch } = renderer.cellSize(); // device px
+  const sample = (): string => {
+    // Read the cell's own corner, away from glyph ink, in the SAME synchronous turn as the draw
+    // (no preserveDrawingBuffer — a later read races the present and returns black).
+    const x = Math.round(1 * cw) + 2;
+    const y = gl.drawingBufferHeight - 1 - (Math.round(DECO_ROW * ch) + 2);
+    const px = new Uint8Array(4);
+    gl.readPixels(x, y, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    return `rgb(${px[0]},${px[1]},${px[2]})`;
+  };
+  // Clear any live demo decoration so the baseline is genuinely undecorated.
+  if (lineDecoration) {
+    lineDecoration.dispose();
+    lineDecoration = undefined;
+    decorationBuffer = undefined;
+    decoBtn.textContent = "Decorate line: OFF";
+  }
+  render();
+  const baseline = sample();
+
+  const [first, second] = PRECEDENCE_MARKER_IDS; // the order the frame emits them ("core order")
+  const RED = 0x99_00_00;
+  const BLUE = 0x00_00_99;
+  precedenceLine = viewTop() + DECO_ROW; // both anchors on one line → both cover the same cell
+  // Each scenario registers from scratch, so registration order is exactly what it says.
+  const run = (regs: { markerId: number; bg: number }[]): string => {
+    const live = regs.map((r) =>
+      decorations.register({ markerId: r.markerId, x: 0, width: COLS, layer: "bottom", bg: r.bg }),
+    );
+    render();
+    const rgb = sample();
+    for (const d of live) d.dispose();
+    return rgb;
+  };
+  const firstMarkerOnly = run([{ markerId: first, bg: RED }]);
+  const secondMarkerOnly = run([{ markerId: second, bg: BLUE }]);
+  // Register the SECOND-emitted marker's decoration first: core order says blue wins, registration
+  // order says red. (Pre-#458 this returned blue.)
+  const bothFirstMarkerRegisteredLast = run([
+    { markerId: second, bg: BLUE },
+    { markerId: first, bg: RED },
+  ]);
+  // The mirror: same two markers, opposite registration order → blue must win.
+  const bothSecondMarkerRegisteredLast = run([
+    { markerId: first, bg: RED },
+    { markerId: second, bg: BLUE },
+  ]);
+
+  precedenceLine = undefined;
+  render();
+  return {
+    baseline,
+    firstMarkerOnly,
+    secondMarkerOnly,
+    bothFirstMarkerRegisteredLast,
+    bothSecondMarkerRegisteredLast,
+  };
 };
 window.__decorationProbe = (): DecorationProbe => {
   // #457: a right-anchored decoration WIDER than the viewport overflows the left edge.

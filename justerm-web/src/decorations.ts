@@ -133,10 +133,17 @@ interface StoredDecoration extends Decoration {
 }
 
 export class DecorationRegistry {
-  /** Decorations grouped by anchor marker id, so a per-frame join and an
-   * `onMarkerDisposed` are both O(decorations-on-that-marker). Insertion order
-   * within a marker is preserved (a `Set`), so projection is deterministic. */
+  /** Decorations grouped by anchor marker id, so `onMarkerDisposed` and the per-frame
+   * marker-id filter (#482) are both O(decorations-on-that-marker). This is the *index*;
+   * it does not decide precedence. */
   private readonly byMarker = new Map<number, Set<StoredDecoration>>();
+  /** Every live decoration in **registration order** (a `Set` preserves insertion order) —
+   * the projection order, and therefore the precedence order (#458): the renderer resolves
+   * per-property last-in-wire-order (#452), so the last registered decoration wins a cell.
+   * Kept alongside `byMarker` rather than derived from it, because a per-marker grouping can
+   * only ever express order *within* a marker; across markers it would leak core's marker
+   * emission order into consumer policy. */
+  private readonly inRegistrationOrder = new Set<StoredDecoration>();
 
   /**
    * Register a decoration anchored to `options.markerId`. Returns a handle whose
@@ -145,6 +152,12 @@ export class DecorationRegistry {
    * there is no marker object to guard on `isDisposed`, and marker ids are reused
    * by a full reset, so there is no permanent reject-set — disposal is purely
    * event-driven via {@link onMarkerDisposed}.)
+   *
+   * Registration order is **precedence** order (#458): where two decorations set the same
+   * property on the same cell, the one registered later wins, whichever markers they anchor to.
+   * To raise an existing decoration above its peers, `dispose()` its handle and register again —
+   * calling `register` alone mints a *second* decoration, leaving the first live (still projecting,
+   * still ruler-marking, and it takes over again if the new one is disposed).
    */
   register(options: DecorationOptions): Decoration {
     const d: StoredDecoration = {
@@ -166,6 +179,10 @@ export class DecorationRegistry {
       this.byMarker.set(d.markerId, set);
     }
     set.add(d);
+    // Load-bearing: `d` is always a FRESH record, so this appends. `Set.add` of a member already
+    // present is a no-op that does NOT move it to the end — an "update these options in place"
+    // convenience would therefore silently stop a re-registration from taking precedence (#458).
+    this.inRegistrationOrder.add(d);
     return d;
   }
 
@@ -196,9 +213,19 @@ export class DecorationRegistry {
    * of it that are still on screen (#461). xterm has no such gap — it keys colour lookup to
    * the absolute buffer line and buckets every line the height covers.
    *
-   * Iterating `markerLines` rather than the registry also keeps the *ordering* source
-   * unchanged: both marker groups come from core's `self.markers()`, so cross-marker
-   * precedence is exactly what it was (its own open question, #458).
+   * Emission order is **registration order** (#458), so where two decorations cover the same
+   * cell the LAST registered one wins — the renderer resolves per-property last-in-wire-order
+   * (#452). Precedence is consumer policy (ADR-0017) and therefore follows the consumer's own
+   * input, never core's marker emission order, which is decided by where the anchors sit in the
+   * buffer and cannot be influenced from here. It matches xterm's documented contract
+   * (`typings/xterm.d.ts`: "the last registered decoration will be used") — and is in fact
+   * *stronger*: xterm's ordering is per buffer LINE (a cell only ever consults that line's bucket,
+   * `DecorationService.getDecorationsAtCell`), and buffer motion re-appends a decoration that spans
+   * an insert/delete point (`_reindexDecoration`, and the insert path's `spanCrossers`), promoting
+   * it to "last" — so upstream a `height > 1` decoration's precedence can change when the buffer
+   * moves. Here the order is the consumer's registration sequence and nothing on the wire can
+   * perturb it. (Not, as an earlier draft of this comment claimed, `_mergeLineBucket`'s concat
+   * branch: every line-key remap upstream is injective, so that branch cannot fire.)
    */
   decorationsForFrame(frame: DecorationFrame): DecorationRect[] {
     const rects: DecorationRect[] = [];
@@ -218,8 +245,9 @@ export class DecorationRegistry {
     // by `markerPositions` still resolves. Core makes `markerLines` a superset — both are
     // `self.markers()`, one filtered — but this code cannot enforce that, and a consumer that
     // sends the groups from different sources would otherwise see decorations silently vanish.
-    // Seeding from `markerLines` first also keeps core's marker order as the precedence order
-    // (#458), with any `markerPositions`-only marker appended.
+    // This map's ITERATION order no longer matters (#458): it is a lookup table, and the
+    // projection walks the decorations in registration order, resolving each anchor from here.
+    // Precedence therefore does not depend on which marker group carried a given anchor.
     //
     // #482: BOTH reads keep only ids with a registered decoration (`this.byMarker`), so `anchors`
     // and the projection loop below are sized by decorations (D), not by the wire's live-marker
@@ -235,60 +263,62 @@ export class DecorationRegistry {
     for (const m of readMarkers(frame.markerPositions)) {
       if (this.byMarker.has(m.id) && !anchors.has(m.id)) anchors.set(m.id, m.row);
     }
-    for (const [markerId, startRow] of anchors) {
-      // Post-#482 `anchors` is seeded only from `byMarker` ids, so `set` is always present here —
-      // this guard is now the type narrow (`Map.get` is `Set | undefined`), not a reachable skip.
-      const set = this.byMarker.get(markerId);
-      if (!set) continue;
-      for (const d of set) {
-        const [rawLeft, rawRight] = columns(d, cols);
-        // #457: clip to the viewport HERE, because the wire cannot carry the alternative.
-        // Columns cross as u32 (`decorationWire`), so an out-of-range column does not
-        // arrive as "out of range" — it arrives as a plausible one. A negative `left`
-        // wraps to ~4.29e9 and the renderer's `col >= left` matches nothing (the
-        // decoration vanishes); a negative `right` makes `col <= right` true for EVERY
-        // column (it paints the whole row); NaN, ±Infinity and anything >= 2**32 all
-        // land as 0 (a spurious paint on column 0).
-        //
-        // xterm needs no equivalent: it stores no span, testing `x >= xmin && x < xmax`
-        // per visible cell (`DecorationService.forEachDecorationAtCell`), so an
-        // out-of-range span simply never matches. Clipping reproduces that result for a
-        // LEFT-anchored decoration exactly. For a RIGHT-anchored one there is nothing to
-        // reproduce — xterm's colour path ignores `anchor` entirely (only its DOM element
-        // honours it), so justerm's right-anchored span is first-party design (#459).
-        const left = Math.max(0, rawLeft);
-        // Clip the high end to the last visible column when the frame carries geometry.
-        // Absent geometry we cannot, so the guarantee below is: every emitted column is a
-        // finite, non-negative integer — and additionally <= cols-1 whenever `cols` is
-        // known, which the real frame path always is (`DecodedFrame.cols` is required).
-        const right = frame.cols !== undefined ? Math.min(frame.cols - 1, rawRight) : rawRight;
-        // Drop anything with no visible cell: off-screen either side, degenerate
-        // (zero-width), or non-finite. Emitting nothing is correct AND is what keeps an
-        // unrepresentable column from reaching the u32 lane at all.
-        if (!Number.isFinite(left) || !Number.isFinite(right) || right < left) continue;
-        // #461/#462: clamp the START row to the viewport top and DROP a non-finite anchor.
-        // Rows cross the wire as u32 (`decorationWire`) exactly like columns, so an out-of-range
-        // row must not reach it. A NEGATIVE anchor is clamped to the top (its span's visible tail
-        // shows; a span ending above the top shows nothing). A NON-FINITE anchor is the residue
-        // the clamp does NOT cover: `Math.max(0, +Infinity)` is `+Infinity`, and `+Infinity <=
-        // +Infinity` is TRUE while `+Infinity + 1` stays `+Infinity`, so without this guard the
-        // row loop below never terminates (#462 — it OOMs rather than emitting a wrapped row).
-        const firstRow = Math.max(0, startRow);
-        if (!Number.isFinite(firstRow)) continue;
-        // Bottom clip: to the last viewport row when the frame carries geometry — which the real
-        // path always does (`DecodedFrame.rows` is required). WITHOUT `rows` there is no viewport
-        // to clip to and no row below the anchor can be shown, so the span caps to the anchor row.
-        // That also BOUNDS the loop: the old `+Infinity` fallback let a large `height` walk up to
-        // ~1e9 rows (hang / OOM) and write rows that wrap the u32 wire (#462). `firstRow` is finite
-        // (guarded above) and `bottom` is finite, so `lastRow` is finite — a degenerate or
-        // above-top span simply does not iterate (no explicit `lastRow < firstRow` guard: a first
-        // draft's was shown dead by a mutation test; the columns above still need theirs, being
-        // emitted rather than iterated).
-        const bottom = frame.rows !== undefined ? frame.rows - 1 : firstRow;
-        const lastRow = Math.min(startRow + d.height - 1, bottom);
-        for (let row = firstRow; row <= lastRow; row++) {
-          rects.push({ row, left, right, layer: d.layer, bg: d.bg, fg: d.fg });
-        }
+    // Walk the decorations in REGISTRATION order (#458), resolving each one's anchor row, rather
+    // than walking the markers and emitting whatever hangs off each. Same work — the anchor lookup
+    // is O(1) and the loop is O(D), so #482's "sized by decorations, not by the wire's marker
+    // count" holds — but the emission order is now the consumer's own, so precedence cannot be
+    // decided by where core happens to place the anchors. A decoration whose marker is not in this
+    // frame simply has no anchor and is skipped, exactly as before.
+    for (const d of this.inRegistrationOrder) {
+      const startRow = anchors.get(d.markerId);
+      if (startRow === undefined) continue;
+      const [rawLeft, rawRight] = columns(d, cols);
+      // #457: clip to the viewport HERE, because the wire cannot carry the alternative.
+      // Columns cross as u32 (`decorationWire`), so an out-of-range column does not
+      // arrive as "out of range" — it arrives as a plausible one. A negative `left`
+      // wraps to ~4.29e9 and the renderer's `col >= left` matches nothing (the
+      // decoration vanishes); a negative `right` makes `col <= right` true for EVERY
+      // column (it paints the whole row); NaN, ±Infinity and anything >= 2**32 all
+      // land as 0 (a spurious paint on column 0).
+      //
+      // xterm needs no equivalent: it stores no span, testing `x >= xmin && x < xmax`
+      // per visible cell (`DecorationService.forEachDecorationAtCell`), so an
+      // out-of-range span simply never matches. Clipping reproduces that result for a
+      // LEFT-anchored decoration exactly. For a RIGHT-anchored one there is nothing to
+      // reproduce — xterm's colour path ignores `anchor` entirely (only its DOM element
+      // honours it), so justerm's right-anchored span is first-party design (#459).
+      const left = Math.max(0, rawLeft);
+      // Clip the high end to the last visible column when the frame carries geometry.
+      // Absent geometry we cannot, so the guarantee below is: every emitted column is a
+      // finite, non-negative integer — and additionally <= cols-1 whenever `cols` is
+      // known, which the real frame path always is (`DecodedFrame.cols` is required).
+      const right = frame.cols !== undefined ? Math.min(frame.cols - 1, rawRight) : rawRight;
+      // Drop anything with no visible cell: off-screen either side, degenerate
+      // (zero-width), or non-finite. Emitting nothing is correct AND is what keeps an
+      // unrepresentable column from reaching the u32 lane at all.
+      if (!Number.isFinite(left) || !Number.isFinite(right) || right < left) continue;
+      // #461/#462: clamp the START row to the viewport top and DROP a non-finite anchor.
+      // Rows cross the wire as u32 (`decorationWire`) exactly like columns, so an out-of-range
+      // row must not reach it. A NEGATIVE anchor is clamped to the top (its span's visible tail
+      // shows; a span ending above the top shows nothing). A NON-FINITE anchor is the residue
+      // the clamp does NOT cover: `Math.max(0, +Infinity)` is `+Infinity`, and `+Infinity <=
+      // +Infinity` is TRUE while `+Infinity + 1` stays `+Infinity`, so without this guard the
+      // row loop below never terminates (#462 — it OOMs rather than emitting a wrapped row).
+      const firstRow = Math.max(0, startRow);
+      if (!Number.isFinite(firstRow)) continue;
+      // Bottom clip: to the last viewport row when the frame carries geometry — which the real
+      // path always does (`DecodedFrame.rows` is required). WITHOUT `rows` there is no viewport
+      // to clip to and no row below the anchor can be shown, so the span caps to the anchor row.
+      // That also BOUNDS the loop: the old `+Infinity` fallback let a large `height` walk up to
+      // ~1e9 rows (hang / OOM) and write rows that wrap the u32 wire (#462). `firstRow` is finite
+      // (guarded above) and `bottom` is finite, so `lastRow` is finite — a degenerate or
+      // above-top span simply does not iterate (no explicit `lastRow < firstRow` guard: a first
+      // draft's was shown dead by a mutation test; the columns above still need theirs, being
+      // emitted rather than iterated).
+      const bottom = frame.rows !== undefined ? frame.rows - 1 : firstRow;
+      const lastRow = Math.min(startRow + d.height - 1, bottom);
+      for (let row = firstRow; row <= lastRow; row++) {
+        rects.push({ row, left, right, layer: d.layer, bg: d.bg, fg: d.fg });
       }
     }
     return rects;
@@ -333,8 +363,17 @@ export class DecorationRegistry {
     if (!Number.isFinite(total) || total <= 0) return [];
     const lineOf = readMarkerLines(frame.markerLines, this.byMarker); // #482: sized D, not M
     const marks: RulerMark[] = [];
-    for (const [markerId, set] of this.byMarker) {
-      const line = lineOf.get(markerId);
+    // Registration order here too (#458), to keep ONE rule for the file: marks overlap on the track
+    // when their lines are close, and `scrollbar.ts` appends one div per mark with no z-index, so
+    // emission order is paint order. This is NOT xterm parity — there is no upstream contract to
+    // match. xterm's ruler walks a `marker.line`-sorted list, and its same-line tie order depends on
+    // insertion batching (`SortedList` places a new equal-key entry BEFORE existing ones), so the
+    // reference is arbitrary here rather than authoritative. What xterm does have and this does not
+    // is a `position: 'full'`-painted-last pass — a separate, deliberate layering rule, tracked as
+    // its own decision in #498.
+    for (const d of this.inRegistrationOrder) {
+      if (!d.overviewRulerOptions) continue;
+      const line = lineOf.get(d.markerId);
       if (line === undefined) continue;
       const rawRatio = line / total;
       // #463: a non-finite marker line (NaN/±Infinity from a consumer-built markerLines) has no
@@ -346,14 +385,11 @@ export class DecorationRegistry {
       // lag/mismatch between the absolute markerLines and the scroll geometry — gives ratio > 1
       // (mark below the track, invisible); a negative line gives < 0. Pin to [0, 1].
       const topRatio = Math.min(1, Math.max(0, rawRatio));
-      for (const d of set) {
-        if (!d.overviewRulerOptions) continue;
-        marks.push({
-          topRatio,
-          color: d.overviewRulerOptions.color,
-          position: d.overviewRulerOptions.position ?? "full",
-        });
-      }
+      marks.push({
+        topRatio,
+        color: d.overviewRulerOptions.color,
+        position: d.overviewRulerOptions.position ?? "full",
+      });
     }
     return marks;
   }
@@ -362,6 +398,7 @@ export class DecorationRegistry {
   private remove(d: StoredDecoration): void {
     if (d.disposed) return;
     d.disposed = true;
+    this.inRegistrationOrder.delete(d);
     const set = this.byMarker.get(d.markerId);
     if (!set) return;
     set.delete(d);
