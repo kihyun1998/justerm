@@ -184,6 +184,12 @@ pub fn pack_instances(
                     // blending over it would compose a stack no pixel shows. The fg is selection-keyed
                     // either way (#430) — under an active match it stays the raw selection colour, as
                     // the undecorated sibling already pinned.
+                    // The kind literal is the collapsed form of "did the bg channel blend?"
+                    // (`deco_bg && kind.is_some_and(|k| should_blend_kind(k, bg_ref, cell_flags,
+                    // deco_bg))`): this arm requires `is_inverse`, which makes `should_blend`
+                    // unconditionally true, so the two are provably equal here. Valid as long as no
+                    // future `HighlightKind` both outranks `Selection` AND blends — such a kind would
+                    // blend on the bg channel while this literal kept the fg flat.
                     let beneath_the_band =
                         deco_bg && matches!(kind, Some(HighlightKind::Selection));
                     composite_bg(bg_running, beneath_the_band, Some(raw_sel))
