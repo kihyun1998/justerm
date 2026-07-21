@@ -40,7 +40,8 @@ pub struct Frame<'a> {
     /// Per-cell **base** codepoint — the first scalar of the resolved glyph. Only the tile-glyph
     /// classifier ([`treat_glyph_as_background_color`], #226/#239) reads it; a short/missing entry
     /// resolves as `0` (not a tile). The atlas *slot* is already resolved in `slots`; this is kept
-    /// solely to classify the glyph's contrast/selection behaviour.
+    /// solely to classify the glyph — which decides its contrast exclusion (#226), its selection
+    /// re-tint (#239/#241), and whether a bg-only TOP decoration paints over it (#494).
     ///
     /// The packer sees **only** the base — a cell's grapheme cluster (`extra` + `side_table`) stops
     /// at [`glyph_resolve`](crate::glyph_resolve), which rasterises it. That is the declared rule,
@@ -209,10 +210,98 @@ pub fn pack_instances(
             let top = decoration_override_at(decorations, row, col, DecorationLayer::Top);
             if let Some(c) = top.bg {
                 eff_bg = c;
+                // #494, a DELIBERATE divergence (the #444 family): a tile glyph FOLLOWS a bg-only top
+                // decoration, so the cell paints solid in the decoration's colour instead of the glyph
+                // occluding the layer that sits above it.
+                //
+                // It follows from the rule #495 states for this very classifier: a tile glyph is
+                // background-shaped ink, not text. Without it the measured cell is self-contradictory:
+                // `bg` is the decoration's while `fg` stays the selection's, i.e. the layer ABOVE the
+                // selection loses the glyph area to it.
+                //
+                // **This diverges from xterm, which is unanimous the other way** (the #494 two-lens
+                // corrected an earlier, wrong reading of this — do not restore it). Both of xterm's
+                // cell renderers let the glyph paint over a bg-only decoration: the webgl addon
+                // (`CellColorResolver.ts:178-187`, applied after the selection stage, `$hasBg` and
+                // `$hasFg` independent) and the DOM renderer (`DomRendererRowFactory.ts:357-408`). Its
+                // decoration *elements* (`css/xterm.css:194-201`, z-index 6 / 7 over the screen) can
+                // cover a glyph, but xterm never styles them — a consumer does, in `onRender`, and they
+                // are registered for every renderer (`CoreBrowserTerminal.ts:617`), so they are a
+                // separate feature justerm has no equivalent of (#502), not a second xterm answer to
+                // this question. What xterm genuinely leaves undefined is only the *interaction*:
+                // `layer` is documented purely against the selection (`typings/xterm.d.ts:688-692`,
+                // whose `*` footnote has no text), never against glyphs.
+                //
+                // The precedent this rule generalises is **weaker than it looks**, and that is stated
+                // rather than glossed: xterm's tile re-tint under selection BLENDS 50 % from the cell's
+                // own fg (`CellColorResolver.ts:168-171`), leaving the tile distinguishable; it flattens
+                // to the band only for an inverse + Default-bg cell it calls *transparent* (`:139`).
+                // So "the tile participates in what is painted over it" is xterm's; "the tile is
+                // replaced by it" is justerm's own step — taken because a decoration bg REPLACES the
+                // background (`eff_bg = c` above) where a selection washes over it, so the tile, being
+                // background, gets replaced too.
+                //
+                // xterm's DOM renderer resolves the same contradiction a THIRD way, and it is rejected
+                // knowingly: `DomRendererRowFactory.ts:399-408` applies decorations before selection and
+                // then paints the selection only `if (!isTop && isInSelection)`, so a top decoration
+                // suppresses the selection colouring outright and the contradictory state never arises.
+                // That drops a highlight the user explicitly made, and justerm's fg channel already
+                // follows the webgl model deliberately (#430) — mixing in the DOM renderer's ordering
+                // here would split that model across two features.
+                //
+                // Known consequence, tracked as #508: once `fg == bg`, anything the shader draws in the
+                // foreground colour that is NOT the glyph disappears with it — an UNDERLINE or
+                // STRIKETHROUGH line (`webgl.rs:188-190`) and the visible half of a BLINK phase. The
+                // rationale above is about the glyph, so it does not reach those; the selection re-tint
+                // keeps them because it blends instead of replacing. Left visible rather than papered
+                // over. Range gap in the classifier itself: #507.
+                //
+                // Only a **bg-only** decoration means "this whole cell is background now": one that
+                // sets `fg` too keeps the art in the consumer's colour (the escape hatch), and BOTTOM
+                // is untouched — "bottom" means *under* the glyph, so an opaque tile occluding it is
+                // correct (a transparent one lets it through: #453).
+                //
+                // Two consequences a consumer mirroring xterm's search addon should know (surfaced by
+                // the two-lens, tracked as #506): that addon marks the ACTIVE match `layer: 'top'` with
+                // a background and every other match `'bottom'` (`addon-search/DecorationManager.ts:
+                // 134-144`), so under this rule a box-drawing / Powerline cell loses its glyph on the
+                // active hit while keeping it on the others — the glyph blinks as the user cycles. And
+                // the escape hatch above is out of reach there: `ISearchDecorationOptions`
+                // (`addon-search.d.ts:46-76`) has no foreground field at all. justerm's own active
+                // match is an overlay *kind* (#427/#430), not a decoration, so this bites only a
+                // consumer that ports xterm's decoration-based model verbatim.
+                //
+                // Flat, not blended: the selection blends (#239) because it is a translucent wash, but
+                // a decoration bg REPLACES (`eff_bg = c` above). The tile takes whatever treatment the
+                // bg channel took, so it is replaced too.
+                //
+                // A DIM cell survives this either way, and the reason is arithmetic, not a flag: both
+                // dim paths resolve `dim_foreground(c, c)` — `blend_over(c, c, DIM_BLEND_ALPHA)` adds
+                // `round(0)` per channel, so it is exactly identity. (`fg_overridden` is deliberately
+                // left alone here, but it is NOT what protects this: a bottom fg-only decoration on the
+                // same cell already set it, so the `dim && fg_overridden` arm can run regardless. The
+                // two-lens caught that mis-stated reason.) Pinned by
+                // `a_dim_tile_following_a_top_decoration_is_not_dimmed_away_from_the_bg`.
+                //
+                // Route difference to state (#494's AC): justerm's own ACTIVE search match is an
+                // overlay kind, and a tile under it keeps the raw selection colour (pinned by
+                // `an_inverse_default_bg_tile_on_an_active_matched_selected_cell_uses_the_raw_selection
+                // _colour`). The same visual concept expressed as a consumer-pushed bg-only top
+                // decoration goes solid instead. Both are intended; a consumer choosing between the two
+                // routes is choosing between those two looks (#506).
             }
             if let Some(c) = top.fg {
                 fg = c;
                 fg_overridden = true;
+            } else if exclude && let Some(c) = top.bg {
+                // #494's assignment lives in the `else` on purpose. Written as its own guarded `if`
+                // (`exclude && top.fg.is_some()`) it was **behaviourally dead** — the branch above
+                // re-applies `top.fg` immediately after, so the escape hatch held either way and no
+                // mutation of the guard could turn a test red (the two-lens caught this: dropping the
+                // guard left the whole suite green). As an `else` it is the only thing that keeps a
+                // both-channel decoration's art, so `a_top_decoration_setting_both_channels_keeps_the
+                // _tile_glyph` now discriminates it.
+                fg = c;
             }
             // The fg colour policy, applied ONCE against the effective bg on the UNDIMMED fg — xterm's
             // model (`TextureAtlas._getMinimumContrastColor`), which the renderer can follow because the
@@ -1520,6 +1609,131 @@ mod tests {
             &gl_rgb(0xFF_FF_FF),
             "the combining mark alone is not a tile glyph — so the two rules differ here"
         );
+    }
+
+    // --- #494: a bg-only TOP decoration paints over a tile glyph ---
+
+    /// A tile glyph is background-shaped ink (#495), so a background painted OVER it takes the
+    /// whole cell — otherwise the glyph occludes the very layer that sits above it. Control: the
+    /// same decoration on a text cell leaves the glyph alone (occluding text would be unreadable).
+    #[test]
+    fn a_bg_only_top_decoration_paints_over_a_tile_glyph() {
+        let p = bright_palette(); // default_fg white
+        const T: u32 = 0x80_40_00;
+        let tile = pack_instances(
+            &frame_cp(&[0], &[0], &[0], &[BLOCK]),
+            &p,
+            true,
+            &Overlay::default(),
+            &ColorPolicy::default(),
+            &[deco(DecorationLayer::Top, Some(T), None)],
+        );
+        assert_eq!(&tile[2..5], &gl_rgb(T), "the decoration owns the bg");
+        assert_eq!(
+            &tile[5..8],
+            &gl_rgb(T),
+            "and the tile follows it — the cell paints solid"
+        );
+        // A text cell keeps its glyph over the decoration's bg.
+        let text = pack_instances(
+            &frame_cp(&[0], &[0], &[0], &[0x41]),
+            &p,
+            true,
+            &Overlay::default(),
+            &ColorPolicy::default(),
+            &[deco(DecorationLayer::Top, Some(T), None)],
+        );
+        assert_eq!(&text[2..5], &gl_rgb(T));
+        assert_eq!(&text[5..8], &gl_rgb(0xFF_FF_FF), "text stays readable");
+    }
+
+    /// The escape hatch: a decoration that sets BOTH channels keeps the art, in its own colour.
+    /// Only a *bg-only* decoration means "this whole cell is background now".
+    #[test]
+    fn a_top_decoration_setting_both_channels_keeps_the_tile_glyph() {
+        let p = bright_palette();
+        const T: u32 = 0x80_40_00;
+        const F: u32 = 0x00_A0_FF;
+        let got = pack_instances(
+            &frame_cp(&[0], &[0], &[0], &[BLOCK]),
+            &p,
+            true,
+            &Overlay::default(),
+            &ColorPolicy::default(),
+            &[deco(DecorationLayer::Top, Some(T), Some(F))],
+        );
+        assert_eq!(&got[2..5], &gl_rgb(T));
+        assert_eq!(
+            &got[5..8],
+            &gl_rgb(F),
+            "the art survives in the decoration's fg"
+        );
+    }
+
+    /// #494's measured row 1: the layer ABOVE the selection used to lose the glyph area to it —
+    /// `bg` was the decoration's while `fg` stayed the raw selection colour. Now both are the
+    /// decoration's, because TOP composites last.
+    #[test]
+    fn a_bg_only_top_decoration_beats_the_selection_on_a_transparent_tile() {
+        let p = bright_palette();
+        let raw_sel = 0x30_60_C0;
+        let ov = overlay_kind(&[0, 0, 0], &[], raw_sel);
+        const T: u32 = 0x80_40_00;
+        let got = pack_instances(
+            &frame_cp(&[0], &[0], &[INVERSE], &[BLOCK]), // inverse + Default bg = the #241 cell
+            &p,
+            true,
+            &ov,
+            &ColorPolicy::default(),
+            &[deco(DecorationLayer::Top, Some(T), None)],
+        );
+        assert_eq!(&got[2..5], &gl_rgb(T));
+        assert_eq!(&got[5..8], &gl_rgb(T), "not the raw selection colour");
+        assert_ne!(&got[5..8], &gl_rgb(raw_sel));
+    }
+
+    /// A BOTTOM decoration is unaffected: "bottom" means *under* the glyph, so an opaque tile
+    /// occluding it is correct (a transparent one lets it through — that is #453, not this).
+    #[test]
+    fn a_bg_only_bottom_decoration_does_not_repaint_a_tile_glyph() {
+        let p = bright_palette();
+        const T: u32 = 0x80_40_00;
+        let got = pack_instances(
+            &frame_cp(&[0], &[0], &[0], &[BLOCK]),
+            &p,
+            true,
+            &Overlay::default(),
+            &ColorPolicy::default(),
+            &[deco(DecorationLayer::Bottom, Some(T), None)],
+        );
+        assert_eq!(&got[2..5], &gl_rgb(T));
+        assert_eq!(
+            &got[5..8],
+            &gl_rgb(0xFF_FF_FF),
+            "the tile keeps its own fg over it"
+        );
+    }
+
+    /// Side condition: the followed colour must land on the bg EXACTLY, or the seam this removes
+    /// comes back. A DIM tile still resolves `dim_foreground(T, T)`, which must be identity.
+    #[test]
+    fn a_dim_tile_following_a_top_decoration_is_not_dimmed_away_from_the_bg() {
+        let p = bright_palette();
+        const T: u32 = 0x80_40_00;
+        let got = pack_instances(
+            &frame_cp(&[0], &[0], &[DIM], &[BLOCK]),
+            &p,
+            true,
+            &Overlay::default(),
+            &ColorPolicy::default(),
+            &[deco(DecorationLayer::Top, Some(T), None)],
+        );
+        assert_eq!(
+            &got[5..8],
+            &got[2..5],
+            "fg and bg must be the same colour — no seam"
+        );
+        assert_eq!(&got[5..8], &gl_rgb(T));
     }
 
     #[test]

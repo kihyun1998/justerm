@@ -127,6 +127,24 @@
   const topOverSel = draw(SPACE, [0, 0, 0], [0, 0, 0, 1, TOP_BG, NO_REF]);
   checks.aTopDecorationPaintsOverTheHighlight = cellIs(topOverSel, 0, TOP_BG) && !cellIs(topOverSel, 0, SEL_BG);
 
+  // #494: a bg-only TOP decoration paints over a TILE glyph too — the block is background-shaped
+  // ink, so the whole cell goes solid in the decoration's colour. `inkIs` reads the BRIGHTEST pixel
+  // in the cell, so a surviving white block would fail this (the discriminating half), and the
+  // second clause states it directly.
+  // █ — 100% coverage, so a hole would be the whole cell. The decoration spans EVERY column
+  // (right = COLS-1): `apply_frame` fills the whole row with the glyph, so a 1-column decoration
+  // would leave cell 0's `inkColour` max-scan bordered by undecorated white blocks, and a single
+  // bled pixel would fail `!inkIs(..., WHITE)` — a false red of exactly the #352/#337 kind.
+  const BLOCK = 0x2588;
+  const topOverTile = draw(BLOCK, [], [0, 0, COLS - 1, 1, TOP_BG, NO_REF]);
+  checks.aBgOnlyTopDecorationPaintsOverATileGlyph =
+    cellIs(topOverTile, 0, TOP_BG) && inkIs(topOverTile, 0, TOP_BG) && !inkIs(topOverTile, 0, WHITE);
+
+  // The escape hatch: setting BOTH channels keeps the block art in the decoration's own fg.
+  const topTileBothChannels = draw(BLOCK, [], [0, 0, COLS - 1, 1, TOP_BG, DECO_FG]);
+  checks.aTopDecorationWithAnFgKeepsTheTileArt =
+    inkIs(topTileBothChannels, 0, DECO_FG) && !inkIs(topTileBothChannels, 0, TOP_BG);
+
   // A decoration FG override recolours the glyph (read from a letter's ink).
   const fgOverride = draw(LETTER, [], [0, 0, 0, 0, NO_REF, DECO_FG]);
   checks.aDecorationOverridesTheForeground = inkIs(fgOverride, 0, DECO_FG) && !inkIs(fgOverride, 0, WHITE);

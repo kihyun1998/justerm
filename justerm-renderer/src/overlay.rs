@@ -233,6 +233,13 @@ pub fn should_blend(bg_ref: u32, flags: u16) -> bool {
 /// xterm's behaviour verbatim (its tile branch overwrites `$fg` the same way), so the divergence
 /// justerm accepts is only the one stated above — "what is beneath" means the decoration's **bg**.
 ///
+/// **This is a BOTTOM-layer statement only — do not read it as the crate's rule for tiles.** A **top**
+/// decoration goes the other way since #494: a bg-only one takes the tile's *foreground* so the cell
+/// paints solid. The two are consistent once "bottom means under the glyph, top means over it" is
+/// applied to a glyph that is itself background-shaped ink — under it, the tile hides it; over it, the
+/// tile follows it. Reasoning and the declined xterm alternatives are at the `frame::pack_instances`
+/// call site.
+///
 /// **Adjacent gap this does NOT close** (tracked, deliberately left visible): a span covering one
 /// half of a wide glyph now bisects it visibly (#454, consumer span policy).
 ///

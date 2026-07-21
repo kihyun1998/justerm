@@ -17,7 +17,15 @@
 import { readMarkers } from "./markers";
 
 /** Which layer a decoration paints on, mirroring xterm's `IDecorationOptions.layer`:
- * `bottom` overrides the cell background *under* the glyph, `top` paints *over* it. */
+ * `bottom` overrides the cell background *under* the glyph, `top` paints *over* it.
+ *
+ * One consequence to know when picking `top` (#494): on a cell whose glyph *tiles*
+ * with the background — Powerline separators, box-drawing, block elements — a `top`
+ * decoration that sets ONLY `bg` paints the whole cell, glyph included, because such
+ * a glyph is background-shaped ink rather than text. That is what makes a line
+ * highlight over TUI output solid instead of holed at every box-drawing cell. Set
+ * `fg` as well to keep the art, in your own colour. A `bottom` decoration is
+ * unaffected: it sits *under* the glyph, so an opaque tile hides it by design. */
 export type DecorationLayer = "bottom" | "top";
 
 /** Where on the overview-ruler track a mark sits across its width (#120 S3),

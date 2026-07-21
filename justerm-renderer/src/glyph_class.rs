@@ -20,7 +20,8 @@ fn is_box_or_block_glyph(codepoint: u32) -> bool {
 
 /// Whether a glyph is meant to tile with the background — xterm's `treatGlyphAsBackgroundColor`.
 /// Such a cell's fg is excluded from the `minimumContrastRatio` correction (so the glyph keeps butting
-/// cleanly against its neighbour) and re-tinted under a selection (#239). Classify a cell's **base**
+/// cleanly against its neighbour), re-tinted under a selection (#239), and taken over by a bg-only TOP
+/// decoration (#494) — three consequences of one premise: the glyph is background, not text. Classify a cell's **base**
 /// codepoint (the first scalar of the resolved symbol).
 ///
 /// # A combined cell classifies from its base — declared divergence from xterm (#495)
