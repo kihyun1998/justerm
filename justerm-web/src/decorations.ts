@@ -296,6 +296,12 @@ export class DecorationRegistry {
    * The mark is one point per marker line, independent of the decoration's
    * `height` — matching xterm, whose `ColorZoneStore` builds a single-line zone
    * (`startBufferLine === endBufferLine`) for a decoration regardless of height.
+   *
+   * The ratio is clamped to the track `[0, 1]` — a marker line past `scrollbackLen + rows`
+   * (a frame lag between the absolute lines and the scroll geometry) would otherwise fall off
+   * the bottom — and a non-finite `scrollbackLen` or marker line yields no mark rather than the
+   * `top: NaN%` invalid CSS it used to (#463). xterm needs no clamp: its zones come from
+   * in-buffer lines that are always in range.
    */
   rulerMarksForFrame(frame: {
     markerLines?: ArrayLike<number>;
@@ -309,16 +315,31 @@ export class DecorationRegistry {
     // canvas (`display:none`) on buffer-activate to the alt buffer.
     if (frame.altScreen) return [];
     const total = (frame.scrollbackLen ?? 0) + (frame.rows ?? 0);
-    if (total <= 0) return [];
+    // #463: reject a non-finite total, not just `<= 0`. `total <= 0` is a size comparison and
+    // `NaN <= 0` is FALSE, so a NaN `scrollbackLen` (consumer-built frame) used to slip through
+    // to `topRatio = line / NaN = NaN`, which `scrollbar.ts` writes as `top: NaN%` — invalid CSS
+    // the browser drops, stacking the mark at the track default. `Number.isFinite` is the check
+    // the `NaN <= 0` slip needs; it also rejects ±Infinity.
+    if (!Number.isFinite(total) || total <= 0) return [];
     const lineOf = readMarkerLines(frame.markerLines);
     const marks: RulerMark[] = [];
     for (const [markerId, set] of this.byMarker) {
       const line = lineOf.get(markerId);
       if (line === undefined) continue;
+      const rawRatio = line / total;
+      // #463: a non-finite marker line (NaN/±Infinity from a consumer-built markerLines) has no
+      // placeable position — skip it rather than emit `top: NaN%` / `top: Infinity%`. A clamp
+      // cannot rescue this: `Math.max(0, NaN)` is `NaN`. (`total` is finite > 0 above, so a
+      // non-finite ratio can only come from a non-finite line.)
+      if (!Number.isFinite(rawRatio)) continue;
+      // Clamp to the track: a line past the content end (`scrollbackLen + rows`) — a frame
+      // lag/mismatch between the absolute markerLines and the scroll geometry — gives ratio > 1
+      // (mark below the track, invisible); a negative line gives < 0. Pin to [0, 1].
+      const topRatio = Math.min(1, Math.max(0, rawRatio));
       for (const d of set) {
         if (!d.overviewRulerOptions) continue;
         marks.push({
-          topRatio: line / total,
+          topRatio,
           color: d.overviewRulerOptions.color,
           position: d.overviewRulerOptions.position ?? "full",
         });

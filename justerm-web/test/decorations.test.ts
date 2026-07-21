@@ -464,6 +464,60 @@ describe("DecorationRegistry.rulerMarksForFrame (#120 S3)", () => {
     expect(reg.rulerMarksForFrame(rulerFrame([1, 0], 0, 0))).toEqual([]);
   });
 
+  // #463: a non-finite `scrollbackLen` must yield NO mark, not invalid CSS. The `total <= 0`
+  // guard is a size comparison, and `NaN <= 0` is FALSE, so a NaN total slipped straight
+  // through to `topRatio = line / NaN = NaN`, which `scrollbar.ts` writes as `top: NaN%` — an
+  // invalid rule the browser drops, silently stacking the mark at the track default. Rejecting
+  // non-finite `total` (not a comparison) is the fix; `Number.isFinite` is exactly the check the
+  // `NaN <= 0` slip needs.
+  it("yields no marks when scrollbackLen is non-finite", () => {
+    const reg = new DecorationRegistry();
+    reg.register({ markerId: 7, overviewRulerOptions: { color: 0xff0000 } });
+
+    // NaN slips the old `total <= 0` size guard (NaN <= 0 is false). +Infinity is the case ONLY
+    // the total guard catches: `line / Infinity` is `0` — finite — so the per-line finite guard
+    // and the clamp both pass it through as a mark at the track top; only rejecting a non-finite
+    // `total` drops it. Both must yield no mark.
+    expect(reg.rulerMarksForFrame(rulerFrame([7, 25], Number.NaN, 10))).toEqual([]);
+    expect(reg.rulerMarksForFrame(rulerFrame([7, 25], Number.POSITIVE_INFINITY, 10))).toEqual([]);
+  });
+
+  // #463: a non-finite marker LINE (a consumer-built markerLines carrying Infinity/NaN) makes
+  // `topRatio` non-finite even when `total` is fine — `Infinity / 100` is `Infinity`, written as
+  // `top: Infinity%`. The mark has no placeable position, so it is skipped (clamping cannot
+  // rescue it: `Math.max(0, NaN)` is `NaN`, so a clamp alone still emits invalid CSS).
+  it("yields no mark for a non-finite marker line", () => {
+    const reg = new DecorationRegistry();
+    reg.register({ markerId: 7, overviewRulerOptions: { color: 0xff0000 } });
+
+    expect(reg.rulerMarksForFrame(rulerFrame([7, Number.POSITIVE_INFINITY], 90, 10))).toEqual([]);
+  });
+
+  // #463: a marker line PAST the content end (`scrollbackLen + rows`) — a frame lag/mismatch
+  // between the absolute markerLines and the scroll geometry — gives `topRatio > 1`, placing the
+  // mark below the track where it is invisible. Clamp it to the track bottom (1) so it stays
+  // visible at the nearest valid edge.
+  it("clamps a mark past the content end to the track bottom", () => {
+    const reg = new DecorationRegistry();
+    reg.register({ markerId: 7, overviewRulerOptions: { color: 0xff0000 } });
+
+    // total = 100, line = 150 → raw ratio 1.5, clamped to 1.
+    expect(reg.rulerMarksForFrame(rulerFrame([7, 150], 90, 10))).toEqual([
+      { topRatio: 1, color: 0xff0000, position: "full" },
+    ]);
+  });
+
+  // #463: the mirror — a negative absolute line gives `topRatio < 0` (above the track); clamp to
+  // the top (0). Both directions of the clamp are pinned so a one-sided fix cannot pass.
+  it("clamps a negative marker line to the track top", () => {
+    const reg = new DecorationRegistry();
+    reg.register({ markerId: 7, overviewRulerOptions: { color: 0xff0000 } });
+
+    expect(reg.rulerMarksForFrame(rulerFrame([7, -20], 90, 10))).toEqual([
+      { topRatio: 0, color: 0xff0000, position: "full" },
+    ]);
+  });
+
   // The ruler is a scrollback navigator, so it's suppressed on the alt screen
   // (xterm hides its ruler canvas on the alt buffer) — even when markerLines and
   // content are present.
