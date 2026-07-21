@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { DecorationRect } from "../src/decorations";
 import {
+  asU16,
   asU32,
   cursorCommand,
   damageHeader,
@@ -81,6 +82,16 @@ describe("asU32 span coercion (#467)", () => {
     expect(asU32([Number.NaN])[0], "NaN lands as a plausible 0, not an error").toBe(0);
     expect(asU32([Number.POSITIVE_INFINITY])[0], "Infinity lands as 0, not an error").toBe(0);
     expect(asU32([2 ** 32 + 3])[0], "a value >= 2**32 wraps mod 2**32").toBe(3);
+  });
+
+  // The u16 sibling (`flags` / `extra`) has the identical seam — same contract, mod 2**16.
+  it("applies the same reinterpretation to the u16 sibling (flags / extra)", () => {
+    const real = new Uint16Array([1, 2]);
+    expect(asU16(real)).toBe(real); // identity fast path, no copy
+
+    expect(asU16([-1])[0], "a negative u16 wraps mod 2**16").toBe(0xffff);
+    expect(asU16([2 ** 16 + 7])[0], "a value >= 2**16 wraps mod 2**16").toBe(7);
+    expect(asU16([Number.NaN])[0], "NaN lands as 0").toBe(0);
   });
 });
 

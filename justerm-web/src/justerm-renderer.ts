@@ -222,7 +222,11 @@ export function cursorCommand(frame: DecodedFrame): CursorCommand {
  * Exported for the seam test only; not re-exported from the package `index.ts`. */
 export const asU32 = (a: ArrayLike<number>): Uint32Array =>
   a instanceof Uint32Array ? a : Uint32Array.from(a);
-const asU16 = (a: ArrayLike<number>): Uint16Array =>
+/** The u16 sibling of {@link asU32} (feeds `flags` / `extra`), with the same contract: the
+ * fallback `Uint16Array.from` REINTERPRETS an out-of-range value (a negative or `>= 2**16` wraps
+ * mod 2**16, `NaN`/±`Infinity` → `0`), it does not reject — the producer must clip, this cannot
+ * validate (#467). Exported for the seam test only; not re-exported from `index.ts`. */
+export const asU16 = (a: ArrayLike<number>): Uint16Array =>
   a instanceof Uint16Array ? a : Uint16Array.from(a);
 
 /** Monotonic clock for the blink phase (ms). */
