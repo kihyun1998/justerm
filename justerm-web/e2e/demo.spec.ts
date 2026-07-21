@@ -972,3 +972,31 @@ test("cross-marker decoration precedence follows registration order at the pixel
   expect(p.bothFirstMarkerRegisteredLast).toBe(p.firstMarkerOnly);
   expect(p.bothSecondMarkerRegisteredLast).toBe(p.secondMarkerOnly);
 });
+
+// #498: a `full`-width overview-ruler mark paints ABOVE the gutter ones, whatever the registration
+// order (xterm's rule — it renders every non-`full` zone, then every `full` one). The unit test can
+// only see the emitted array; this reads the DOM the scrollbar actually built, which is the link
+// between "emitted last" and "painted last" — and vitest's `node` environment cannot host it.
+test("a full-width ruler mark is layered above a gutter mark in the DOM (#498)", async ({ page }) => {
+  await page.goto("/");
+  await expect(page.getByRole("button", { name: "Decorate line: OFF" })).toBeVisible();
+
+  const p = await page.evaluate(() => window.__rulerLayerProbe!());
+
+  // Both marks reached the scrollbar…
+  expect(p.marks).toHaveLength(2);
+  const [first, second] = p.marks;
+  // …and the gutter one is first in DOM order, so the full-width one (registered FIRST) paints over
+  // it. Registration order alone would have produced the opposite.
+  expect(first!.background).toBe("rgb(0, 170, 0)"); // gutter, position: "left"
+  expect(second!.background).toBe("rgb(170, 0, 0)"); // full — last = on top
+
+  // Order only means "paints above" if the two actually overlap. Assert it geometrically rather
+  // than trusting `rulerMarkX`: the full-width mark's box must contain the gutter mark's band, so a
+  // regression to a zero-width or offset box cannot leave this test vacuously green.
+  expect(second!.left).toBeLessThanOrEqual(first!.left);
+  expect(second!.right).toBeGreaterThanOrEqual(first!.right);
+  expect(second!.right - second!.left).toBeGreaterThan(first!.right - first!.left);
+  expect(second!.top).toBe(first!.top); // same line → same track position
+  expect(second!.bottom).toBe(first!.bottom);
+});

@@ -515,7 +515,9 @@ describe("DecorationRegistry.rulerMarksForFrame (#120 S3)", () => {
 
   // #458: ruler marks are emitted in REGISTRATION order too — one rule for the file. The scrollbar
   // paints them in array order (`setMarks` appends one div per mark, no z-index), so two marks close
-  // enough to overlap on the track resolve the same way a shared cell does: last registered on top.
+  // enough to overlap on the track resolve the same way a shared cell does: last registered on top —
+  // WITHIN a position class. Across classes a `full` mark outranks a gutter one whatever the
+  // registration order (#498, tested below); every mark here is the default `full`.
   //
   // The fixture INTERLEAVES registration across two markers, and it has to. The old loop iterated
   // `byMarker`, whose Map key order is when each MARKER was first registered — so with one
@@ -576,6 +578,34 @@ describe("DecorationRegistry.rulerMarksForFrame (#120 S3)", () => {
     expect(reg.rulerMarksForFrame(rulerFrame([2, 50], 90, 10))).toEqual([
       { topRatio: 0.5, color: 0x0000ff, position: "right" },
     ]);
+  });
+
+  // #498: a `full`-width mark is painted ABOVE the gutter marks, whatever the registration order —
+  // xterm's rule (`OverviewRulerRenderer.ts:173-181` renders every non-`full` zone, then every
+  // `full` one). The scrollbar appends marks in array order with no z-index, so "painted above"
+  // means "emitted last". `full` is also the default position, so this is the common overlap.
+  it("emits full-width ruler marks after the gutter ones (#498)", () => {
+    const reg = new DecorationRegistry();
+    reg.register({ markerId: 1, overviewRulerOptions: { color: 0xaa0000 } }); // full (default), FIRST
+    reg.register({ markerId: 2, overviewRulerOptions: { color: 0x00aa00, position: "left" } });
+
+    expect(reg.rulerMarksForFrame(rulerFrame([1, 10, 2, 50], 90, 10))).toEqual([
+      { topRatio: 0.5, color: 0x00aa00, position: "left" }, // gutter first…
+      { topRatio: 0.1, color: 0xaa0000, position: "full" }, // …full on top, though registered first
+    ]);
+  });
+
+  // #498 × #458: the partition is STABLE — registration order still decides within each class, so
+  // the two rules compose instead of one replacing the other.
+  it("keeps registration order within each ruler position class (#498)", () => {
+    const reg = new DecorationRegistry();
+    reg.register({ markerId: 1, overviewRulerOptions: { color: 0x111111, position: "left" } });
+    reg.register({ markerId: 2, overviewRulerOptions: { color: 0x222222 } }); // full
+    reg.register({ markerId: 3, overviewRulerOptions: { color: 0x333333, position: "center" } });
+    reg.register({ markerId: 4, overviewRulerOptions: { color: 0x444444 } }); // full
+
+    const marks = reg.rulerMarksForFrame(rulerFrame([1, 10, 2, 20, 3, 30, 4, 40], 90, 10));
+    expect(marks.map((m) => m.color)).toEqual([0x111111, 0x333333, 0x222222, 0x444444]);
   });
 
   // No content (total 0) → no marks, no divide-by-zero.

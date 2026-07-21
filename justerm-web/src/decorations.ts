@@ -67,7 +67,25 @@ export interface DecorationOptions {
    * {@link DecorationRect} per covered row, clipped to the viewport bottom. */
   readonly height?: number;
   /** Which edge `x` is measured from (#202, default `left`). `right` counts `x`
-   * cells in from the right edge, the span extending leftward by `width`. */
+   * cells in from the right edge, the span extending leftward by `width`.
+   *
+   * **Deliberate divergence from xterm (#459).** xterm's *colour* hit test ignores `anchor`
+   * entirely (`DecorationService.forEachDecorationAtCell` computes `xmin = x`, `xmax = xmin +
+   * width`, with no anchor term), so there a right-anchored decoration's background still paints
+   * from the LEFT edge; `anchor` moves only its DOM element (`BufferDecorationRenderer` sets
+   * `style.left`/`style.right` from it — the one place xterm reads the option). justerm has no
+   * decoration element **in the grid**: a decoration here is its cell colours plus an optional
+   * scrollbar ruler mark, and that mark's across-track placement comes from
+   * {@link OverviewRulerOptions.position}, never from `anchor`. So ignoring `anchor` in the colour
+   * span would leave the option with nothing at all to affect — a dead field. Honouring it is the
+   * only reading under which it means anything, and it is pixel-proven end to end by the #457 e2e,
+   * which drives a right-anchored decoration wider than the viewport and reads both edges.
+   *
+   * xterm's own typings also read our way: `anchor` is "Where the decoration will be anchored —
+   * defaults to the left edge", and `x` is documented as "The x position offset **relative to the
+   * anchor**" — which its colour path then contradicts by measuring `x` from the left regardless.
+   * So this is the doc-conformant behaviour and upstream's colour path is the outlier, not a
+   * contract justerm is departing from. */
   readonly anchor?: "left" | "right";
   /** Paint layer (default `bottom`). */
   readonly layer?: DecorationLayer;
@@ -138,11 +156,12 @@ export class DecorationRegistry {
    * it does not decide precedence. */
   private readonly byMarker = new Map<number, Set<StoredDecoration>>();
   /** Every live decoration in **registration order** (a `Set` preserves insertion order) —
-   * the projection order, and therefore the precedence order (#458): the renderer resolves
+   * the *cell* projection order, and therefore the cell precedence order (#458): the renderer resolves
    * per-property last-in-wire-order (#452), so the last registered decoration wins a cell.
    * Kept alongside `byMarker` rather than derived from it, because a per-marker grouping can
    * only ever express order *within* a marker; across markers it would leak core's marker
-   * emission order into consumer policy. */
+   * emission order into consumer policy. The RULER projection partitions this order by position
+   * class (#498) and is stable within each class, so it is not simply this order. */
   private readonly inRegistrationOrder = new Set<StoredDecoration>();
 
   /**
@@ -155,7 +174,9 @@ export class DecorationRegistry {
    *
    * Registration order is **precedence** order (#458): where two decorations set the same
    * property on the same cell, the one registered later wins, whichever markers they anchor to.
-   * To raise an existing decoration above its peers, `dispose()` its handle and register again —
+   * To raise an existing decoration above its peers **on a cell**, `dispose()` its handle and
+   * register again — note this does not apply to ruler marks, where a gutter mark can never rise
+   * above a `full` one whatever the registration order (#498) —
    * calling `register` alone mints a *second* decoration, leaving the first live (still projecting,
    * still ruler-marking, and it takes over again if the new one is disposed).
    */
@@ -363,14 +384,32 @@ export class DecorationRegistry {
     if (!Number.isFinite(total) || total <= 0) return [];
     const lineOf = readMarkerLines(frame.markerLines, this.byMarker); // #482: sized D, not M
     const marks: RulerMark[] = [];
-    // Registration order here too (#458), to keep ONE rule for the file: marks overlap on the track
-    // when their lines are close, and `scrollbar.ts` appends one div per mark with no z-index, so
-    // emission order is paint order. This is NOT xterm parity — there is no upstream contract to
-    // match. xterm's ruler walks a `marker.line`-sorted list, and its same-line tie order depends on
-    // insertion batching (`SortedList` places a new equal-key entry BEFORE existing ones), so the
-    // reference is arbitrary here rather than authoritative. What xterm does have and this does not
-    // is a `position: 'full'`-painted-last pass — a separate, deliberate layering rule, tracked as
-    // its own decision in #498.
+    // Two rules compose here, and they answer different questions.
+    //
+    // WITHIN a position class, registration order (#458), same as the cell projection: marks overlap
+    // on the track when their lines are close, and `scrollbar.ts` appends one div per mark with no
+    // z-index, so emission order is paint order. That part is a deliberate divergence: xterm's
+    // intra-class order is BUFFER-LINE order (its ruler walks a `marker.line`-keyed `SortedList`),
+    // with only the same-line ties left to insertion batching. Registration order is chosen instead
+    // because it is the consumer's own input, exactly as for the cell projection — one rule for the
+    // file rather than two.
+    //
+    // ACROSS classes, a `full`-width mark paints above the gutter ones (#498) — this IS xterm's
+    // rule (`OverviewRulerRenderer.ts:173-181` renders every non-`full` zone, then every `full`
+    // one), and it is deliberate rather than an artifact: xterm's own search marks are `position:
+    // 'center'` (`addon-search/DecorationManager.ts:142`), so a full-width mark is the whole-line
+    // statement that outranks the narrow ones. `full` is also the default position, so this is the
+    // common overlap rather than an exotic one.
+    //
+    // The partition below is STABLE (one pass collecting each class in order, then concatenated), so
+    // the two rules compose instead of one overriding the other.
+    //
+    // Validity condition worth knowing: upstream the payoff is bigger than here, because xterm sizes
+    // a `full` mark at ~2 device px and a gutter mark 3-6x taller, so full-on-top is what keeps the
+    // thin one visible at all. `scrollbar.ts` draws every mark at a flat 2px, so today this rule only
+    // decides which COLOUR shows on an overlap. It becomes load-bearing the moment mark heights
+    // become position-dependent.
+    const gutter: RulerMark[] = [];
     for (const d of this.inRegistrationOrder) {
       if (!d.overviewRulerOptions) continue;
       const line = lineOf.get(d.markerId);
@@ -385,13 +424,18 @@ export class DecorationRegistry {
       // lag/mismatch between the absolute markerLines and the scroll geometry — gives ratio > 1
       // (mark below the track, invisible); a negative line gives < 0. Pin to [0, 1].
       const topRatio = Math.min(1, Math.max(0, rawRatio));
-      marks.push({
-        topRatio,
-        color: d.overviewRulerOptions.color,
-        position: d.overviewRulerOptions.position ?? "full",
-      });
+      const position = d.overviewRulerOptions.position ?? "full";
+      const mark = { topRatio, color: d.overviewRulerOptions.color, position };
+      // The gutter classes accumulate in `gutter`, everything else in `marks`; the concat below puts
+      // the gutter marks first, so the full-width ones paint over them (#498). The test is written as
+      // "is it one of the gutter positions?" rather than `=== "full"` so it agrees with
+      // `scrollbar.ts` `rulerMarkX`, whose `switch` also renders anything unrecognised full-width —
+      // unreachable from typed code (the union is closed), but the two must not disagree about which
+      // marks are geometrically full-width.
+      const isGutter = position === "left" || position === "center" || position === "right";
+      (isGutter ? gutter : marks).push(mark);
     }
-    return marks;
+    return gutter.concat(marks);
   }
 
 
@@ -408,7 +452,11 @@ export class DecorationRegistry {
 
 /** A decoration's inclusive `[left, right]` viewport columns for a frame of `cols`
  * width (#202). `left` anchor: `x`-based from the left; `right` anchor: `x` cells
- * in from the right edge, extending leftward by `width` (xterm's `style.right`). */
+ * in from the right edge, extending leftward by `width` (xterm's `style.right`).
+ *
+ * The right-anchored branch is first-party (#459): xterm's colour path has no anchor term, because
+ * there `anchor` positions the decoration's DOM element instead. See {@link
+ * DecorationOptions.anchor} for why frame mode cannot inherit that split. */
 function columns(d: StoredDecoration, cols: number): [number, number] {
   if (d.anchor === "right") return [cols - d.x - d.width, cols - 1 - d.x];
   return [d.x, d.x + d.width - 1];

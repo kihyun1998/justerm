@@ -986,9 +986,17 @@ interface PrecedenceProbe {
   bothSecondMarkerRegisteredLast: string;
 }
 
+/** #498: the ordered backgrounds of the overview-ruler mark elements the scrollbar actually built,
+ * in DOM order — which is paint order for same-z-index positioned siblings. A full-width mark must
+ * come after (i.e. above) a gutter one even when registered first. */
+interface RulerLayerProbe {
+  marks: { background: string; left: number; right: number; top: number; bottom: number }[];
+}
+
 declare global {
   interface Window {
     __searchProbe?: () => SearchProbe;
+    __rulerLayerProbe?: () => RulerLayerProbe;
     __decorationProbe?: () => DecorationProbe;
     __precedenceProbe?: () => PrecedenceProbe;
     __aboveTopProbe?: () => AboveTopProbe;
@@ -1081,6 +1089,52 @@ window.__rulerAnchorProbe = (): RulerAnchorProbe => {
   displayOffset = savedOffset;
   render();
   return { line0: a.line, lineScrolled: b.line, row0: a.row, rowScrolled: b.row, scrolledBy };
+};
+window.__rulerLayerProbe = (): RulerLayerProbe => {
+  // #498: a `full`-width ruler mark must paint ABOVE the gutter ones. The registry orders the array;
+  // `scrollbar.setMarks` turns that into DOM order; CSS then paints later same-z-index siblings on
+  // top. A unit test can only see the array, so read the real DOM the demo built (vitest runs in a
+  // `node` environment, so this link has no unit-level home at all).
+  if (lineDecoration) {
+    lineDecoration.dispose();
+    lineDecoration = undefined;
+    decorationBuffer = undefined;
+    decoBtn.textContent = "Decorate line: OFF";
+  }
+  // The scrollbar hides itself with no scrollback (`scrollbarMetrics.visible`), and a hidden track
+  // lays its marks out at zero size — which would make any geometric claim about them vacuous.
+  // Force some scrollback first, exactly as the #480 ruler-anchor probe does, and restore after.
+  const savedLen = log.length;
+  const savedOffset = displayOffset;
+  while (maxOffset() < 3) log.push(`ruler-layer pad ${log.length}`);
+  const [a, b] = PRECEDENCE_MARKER_IDS;
+  precedenceLine = viewTop() + DECO_ROW;
+  // Registered full-FIRST, gutter-SECOND: registration order alone would put the gutter mark last.
+  const full = decorations.register({
+    markerId: a,
+    overviewRulerOptions: { color: 0xaa0000 },
+  });
+  const gutter = decorations.register({
+    markerId: b,
+    overviewRulerOptions: { color: 0x00aa00, position: "left" },
+  });
+  render();
+  // `track` is private to Scrollbar; the demo reaches it to observe what it built (TS `private` is
+  // compile-time only). The mark elements are the ones the scrollbar paints through.
+  const track = (bar as unknown as { track: HTMLDivElement }).track;
+  // Select by the marker attribute `setMarks` stamps, not by an incidental style: any future
+  // non-interactive child of the track would join a `pointer-events` filter.
+  const marks = [...track.querySelectorAll<HTMLElement>("[data-ruler-mark]")].map((el) => {
+    const r = el.getBoundingClientRect();
+    return { background: el.style.background, left: r.left, right: r.right, top: r.top, bottom: r.bottom };
+  });
+  full.dispose();
+  gutter.dispose();
+  precedenceLine = undefined;
+  log.length = savedLen;
+  displayOffset = savedOffset;
+  render();
+  return { marks };
 };
 window.__precedenceProbe = (): PrecedenceProbe => {
   // #458: precedence between decorations on DIFFERENT markers is REGISTRATION order — the last
