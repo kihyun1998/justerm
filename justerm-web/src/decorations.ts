@@ -236,6 +236,8 @@ export class DecorationRegistry {
       if (this.byMarker.has(m.id) && !anchors.has(m.id)) anchors.set(m.id, m.row);
     }
     for (const [markerId, startRow] of anchors) {
+      // Post-#482 `anchors` is seeded only from `byMarker` ids, so `set` is always present here —
+      // this guard is now the type narrow (`Map.get` is `Set | undefined`), not a reachable skip.
       const set = this.byMarker.get(markerId);
       if (!set) continue;
       for (const d of set) {
