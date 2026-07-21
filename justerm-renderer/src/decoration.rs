@@ -22,6 +22,13 @@
 
 /// Which layer a decoration paints on (justerm-web `DecorationLayer`): `Bottom` overrides the cell
 /// background *beneath* the glyph and under the highlight; `Top` paints *over* the highlight.
+///
+/// The asymmetry is load-bearing for a **tile** glyph (Powerline / box / block, [`glyph_class`]): a
+/// `Bottom` bg sits under the glyph, so an opaque tile correctly hides it (a transparent one lets it
+/// through, #453), while a bg-only `Top` bg is painted over the cell and therefore takes the tile too
+/// (#494) — the tile is background-shaped ink, not text.
+///
+/// [`glyph_class`]: crate::glyph_class
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum DecorationLayer {
     Bottom,
@@ -106,9 +113,15 @@ pub struct DecorationOverride {
 /// xterm-internal, not a choice justerm is making.
 ///
 /// Note this is the *merge* rule only. What the merged `bg` is then **used for** deliberately departs
-/// from xterm: #444 feeds it into the selection's blend-vs-solid decision, whereas xterm decides that
-/// from the cell's own bg alone and discards the decoration. Do not "restore parity" here by reading
-/// this paragraph as an endorsement — see `overlay::should_blend_kind`.
+/// from xterm in two places. #444 feeds it into the selection's blend-vs-solid decision, whereas xterm
+/// decides that from the cell's own bg alone and discards the decoration. And #494 lets a **bg-only
+/// TOP** override take the *foreground* of a tile-glyph cell, so the cell paints solid instead of the
+/// glyph occluding the layer above it. That one is a divergence from xterm proper — both its cell
+/// renderers let the glyph win (`CellColorResolver.ts:178-187` webgl, `DomRendererRowFactory.ts:
+/// 357-408` DOM); what xterm leaves undefined is only how `layer` relates to glyphs rather than to
+/// the selection. The reasoning, and the two xterm behaviours it knowingly declines, are at the call
+/// site in `frame::pack_instances`. Do not "restore parity" here by reading this paragraph as an
+/// endorsement — see `overlay::should_blend_kind` and that call site.
 ///
 /// **Precedence is wire order.** "Last wins" means last in the `rects` slice, so the consumer must
 /// push in the order it wants resolved. (xterm's own ordering is its line-cache bucket, which starts
