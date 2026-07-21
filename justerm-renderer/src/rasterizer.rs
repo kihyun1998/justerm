@@ -10,15 +10,25 @@
 //! grown by [`PADDING`] on each side — with the glyph drawn inset, so the atlas carries a
 //! transparent guard band that stops band bleed and gives tall/fallback glyphs room.
 //!
-//! This ink scan is a deliberate divergence from both references, recorded here (from #361) so it
-//! is not later rediscovered as a defect: alacritty sizes its cell from font metrics
-//! (`average_advance` + `line_height`, `builtin_font.rs:51`) and xterm from `CharSizeService`. So
+//! This ink scan is a divergence from both references, recorded here (from #361) so it is not later
+//! rediscovered as a defect — and adjudicated in **ADR-0022**, which grades the evidence behind it:
+//! alacritty sizes its cell from font metrics (`compute_cell_size`, `alacritty/src/display/mod.rs:1608-1615`
+//! — `average_advance` + `line_height` from the font tables, where `average_advance` is the advance of
+//! `'0'`; `builtin_font.rs:51` only *consumes* those metrics) and xterm from `CharSizeService`
+//! (`measureText('W').width` + `fontBoundingBox*`, becoming the device cell in
+//! `addons/addon-webgl/src/WebglRenderer.ts:646-671`). The method here is inherited from beamterm
+//! (`canvas_rasterizer::measure_cell_metrics`) and justified only by beamterm's own unmeasured comment
+//! that text metrics "have rounding issues" — so it is 1 of 3, not the consensus. So
 //! if a font's `█` under- or over-fills its advance, justerm's grid ends up sized differently from
 //! theirs. It is safe only as long as the **builtin** `█` never re-enters measurement: the scan
 //! reads the *font's* `█` via `fill_text` + ink bounds, while `block_glyph` (the renderer's own
 //! drawn `█`) is called from `Rasterizer::builtin` alone, never from `Rasterizer::new`. Were it
 //! ever called during measurement, the cell would feed the glyph that defines it — a feedback loop.
-//! Today there is none.
+//! Today there is none, and **nothing enforces that** (ADR-0022 records it as an invariant kept by
+//! call-site discipline). The hazard is ours, not inherited from the references: both pass an
+//! already-fixed cell *into* their custom-glyph drawing (alacritty `glyph_cache.rs:214-216`, xterm
+//! `CustomGlyphRasterizer.ts:15-29`), so the loop is structurally impossible for them — they are silent
+//! about it because their architecture forecloses it, not because they weighed it.
 
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
