@@ -567,8 +567,10 @@ function viewportFrame(out?: { scrollCount: number }): DecodedFrame {
     // primary decoration is omitted from alt frames (and vice versa) — no bleed.
     // #120 S2/#480: the decoration is anchored to a FIXED absolute buffer line (`decoAbsLine`),
     // so its viewport row is DERIVED here (`decoAbsLine - top`). markerPositions carries that row
-    // only while it is on the viewport — like core, which drops an off-viewport marker from this
-    // group (`m.line.checked_sub(top)`), leaving markerLines to place an above-top anchor (#461).
+    // only while it is on the viewport (`0 <= row < ROWS`), mirroring core's `marker_positions`
+    // filter EXACTLY (term.rs: `m.line.checked_sub(top)?` drops an ABOVE-top marker, `row < rows`
+    // drops a BELOW-viewport one). markerLines below carries the absolute line unconditionally, so
+    // an off-viewport anchor (above-top, #461) still resolves from it — like core's ruler group.
     markerPositions: [
       ...commandMarks,
       ...(decorationOnScreen() && decoAbsLine - top >= 0 && decoAbsLine - top < ROWS
