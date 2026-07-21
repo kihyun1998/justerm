@@ -3,8 +3,10 @@
 //! The renderer resolves a cell's colour *references* against the injected palette ([`palette`]),
 //! then applies the policies that turn them into the colours actually drawn: **inverse** (fg/bg
 //! swap), **bold→bright** (#223, a bold ANSI 0–7 fg brightens to 8–15), and **DIM** (#232, the fg
-//! fades toward the bg). These are the ref-space + RGB-space transforms `resolve_rgb` deliberately
-//! omits; the selection/search highlight ([`overlay`]) composites on top.
+//! fades toward the bg). These are the ref-space + RGB-space transforms the palette's pure lookup
+//! deliberately omits; the selection/search highlight ([`overlay`]) composites on top. This module
+//! also owns `Default`-reference resolution outright (#470) — it is the only transform that needs
+//! the inverse flag to know which default a `Default` even means.
 //!
 //! The xterm-parity **fg long-tail** (#272) lands cumulatively: bold→bright + dim (here),
 //! `minimumContrastRatio` (#225, the WCAG step-adjust in [`contrast`](crate::contrast)), the
@@ -21,7 +23,7 @@
 
 use crate::attrs::{BOLD, is_inverse};
 use crate::overlay::blend_over;
-use crate::palette::{Palette, Role, resolve_rgb};
+use crate::palette::{Palette, resolve_indexed_or_rgb};
 
 /// The consumer-injected RGB-space colour policy (ADR-0017), assembled per pack from the renderer's
 /// fields — the wasm-side analog of justerm-web's `Theme` render options. Grows with #272's cumulative
@@ -66,6 +68,10 @@ pub const DIM_BLEND_ALPHA: u8 = 0x80;
 /// (xterm: an inverse `Default` fg draws as the theme bg and vice versa). Mirrors justerm-web
 /// `render-policy.ts` `resolveSlot`: a `Default` resolves against `default_fg` iff the slot is a
 /// foreground XOR inverse; `Indexed`/`Rgb` are role- and inverse-independent.
+///
+/// This is the **single home** of "which default does a `Default` reference mean" (#470) —
+/// [`palette::resolve_indexed_or_rgb`](crate::palette::resolve_indexed_or_rgb) deliberately does not
+/// answer it, since the answer needs the inverse flag it has no business knowing.
 fn resolve_slot(reference: u32, palette: &Palette, is_foreground: bool, inverse: bool) -> u32 {
     if reference >> 24 == 0 {
         if is_foreground != inverse {
@@ -74,8 +80,7 @@ fn resolve_slot(reference: u32, palette: &Palette, is_foreground: bool, inverse:
             palette.default_bg
         }
     } else {
-        // Role is ignored for Indexed/Rgb; pass Fg arbitrarily.
-        resolve_rgb(reference, palette, Role::Fg)
+        resolve_indexed_or_rgb(reference, palette)
     }
 }
 
@@ -146,6 +151,17 @@ mod tests {
         let (fg, bg) = resolve_cell(IDX | 1, 0, 0, &p, true);
         assert_eq!(fg, 0xCC_00_00);
         assert_eq!(bg, 0x1E_1E_2E);
+    }
+
+    #[test]
+    fn a_non_inverse_default_ref_resolves_to_its_own_role_default() {
+        let p = palette();
+        // Both slots Default, no inverse: each resolves to the default of its OWN role. This is the
+        // only production path a `Default` ref takes (#470) — `resolve_slot` owns the decision, so
+        // the assertion belongs here, not on a palette helper production never reaches with tag 0.
+        let (fg, bg) = resolve_cell(0, 0, 0, &p, true);
+        assert_eq!(fg, 0xFF_FF_FF, "a Default fg draws as the theme fg");
+        assert_eq!(bg, 0x1E_1E_2E, "a Default bg draws as the theme bg");
     }
 
     #[test]

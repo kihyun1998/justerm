@@ -1,28 +1,13 @@
 //! Colour palette + reference resolution — pure, host-testable.
 //!
-//! Mirrors justerm-wasm-decode `js/colors.js` `resolveRgb`, kept in lockstep with
-//! Rust `justerm_core::encode_color`: a colour reference is a tagged u32 — high byte
-//! is the tag (`0` Default, `1` Indexed, `2` Rgb), low 24 bits the payload. The
-//! consumer owns the scheme and injects it (ADR-0002); the renderer only resolves.
-
-/// Which default a `Default` reference resolves to.
-///
-/// `Bg` is currently constructed **only by this module's tests** (#465 surfaced it once the module
-/// stopped being `pub` and dead-code analysis switched back on). That is not an oversight to delete:
-/// production never reaches [`resolve_rgb`]'s `Default` arm, because [`render_policy::resolve_slot`]
-/// intercepts every `Default` reference first — it has to, since inverse flips which default a
-/// `Default` reference means. So the same knowledge lives in two places and this parameter is dead on
-/// the production path. Untangling that is a design decision tracked as **#470**; kept as-is until
-/// then, deliberately, rather than silently reshaping an API a sibling mirrors (`colors.js`
-/// `resolveRgb`).
-///
-/// [`render_policy::resolve_slot`]: crate::render_policy
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(not(test), allow(dead_code))]
-pub(crate) enum Role {
-    Fg,
-    Bg,
-}
+//! Kept in lockstep with Rust `justerm_core::encode_color` (and justerm-wasm-decode
+//! `js/colors.js`): a colour reference is a tagged u32 — high byte is the tag (`0` Default,
+//! `1` Indexed, `2` Rgb), low 24 bits the payload. The consumer owns the scheme and injects
+//! it (ADR-0002); the renderer only resolves.
+//!
+//! This module is the *pure lookup* half: reference → RGB for `Indexed`/`Rgb`. The `Default`
+//! tag is NOT resolved here — it needs the inverse flag, so it belongs to render policy
+//! ([`render_policy::resolve_slot`](crate::render_policy)), which owns it alone (#470).
 
 /// The consumer's frozen colour scheme: 256 indexed colours plus the two defaults,
 /// each packed `0xRRGGBB`. Build `colors` once per scheme (the 16 ANSI + 6×6×6 cube +
@@ -65,18 +50,32 @@ impl Palette {
     }
 }
 
-/// Resolve a tagged-u32 colour reference to a packed `0xRRGGBB`. Alloc-free — call it
-/// per cell. Mirror of `colors.js` `resolveRgb`; does NOT apply inverse/dim/bold→bright
-/// (those are render policy applied later).
-pub fn resolve_rgb(reference: u32, palette: &Palette, role: Role) -> u32 {
+/// Resolve an `Indexed`/`Rgb` reference to a packed `0xRRGGBB`. Alloc-free — call it per cell.
+/// Role- and inverse-independent, and deliberately **not** total over the tag space: a `Default`
+/// reference does not belong here (#470).
+///
+/// Which default a `Default` resolves to depends on inverse — an inverse `Default` fg draws as the
+/// theme *bg* — so that decision needs render policy, and its single home is
+/// [`render_policy::resolve_slot`](crate::render_policy), which intercepts tag 0 before calling
+/// this. Answering it here too would put the same knowledge in two places with the compiler
+/// enforcing neither; the `role` parameter that used to do so was dead on every production path.
+///
+/// The published JS sibling `colors.js` `resolveRgb` keeps its `role` parameter and its `Default`
+/// arm — correctly: it is a package **API** any npm consumer may call with an arbitrary reference,
+/// whereas this is a crate-private helper (`pub(crate)` since #465, npm-only crate) with one caller.
+/// justerm-web's `render-policy.ts` `resolveSlot` splits the same way, for the same reason.
+///
+/// # Panics (debug only)
+/// Debug-asserts the reference is not `Default`. In release a tag-0 reference would fall through to
+/// the `Rgb` arm and read as `0x000000`, so the assert is what keeps that silent-black case a test
+/// failure rather than a rendering mystery.
+pub fn resolve_indexed_or_rgb(reference: u32, palette: &Palette) -> u32 {
+    debug_assert_ne!(
+        reference >> 24,
+        0,
+        "a Default reference must be resolved by render_policy::resolve_slot (#470)"
+    );
     match reference >> 24 {
-        0 => {
-            if role == Role::Fg {
-                palette.default_fg
-            } else {
-                palette.default_bg
-            }
-        }
         1 => palette.colors[(reference & 0xFF) as usize],
         _ => reference & 0xFF_FFFF,
     }
@@ -97,20 +96,16 @@ mod tests {
         }
     }
 
-    #[test]
-    fn default_resolves_by_role() {
-        let p = palette();
-        // tag 0 (encode_color(Default) == 0)
-        assert_eq!(resolve_rgb(0, &p, Role::Bg), 0x1E_1E_2E);
-        assert_eq!(resolve_rgb(0, &p, Role::Fg), 0xFF_FF_FF);
-    }
+    // The `Default` tag has no test here on purpose: this function does not answer it (#470).
+    // Its behaviour is asserted where it is decided — `render_policy::resolve_slot`, which is the
+    // only path production takes a tag-0 reference through.
 
     #[test]
     fn indexed_reads_the_palette_slot() {
         let p = palette();
         // tag 1 (encode_color(Indexed(i)) == (1<<24)|i)
-        assert_eq!(resolve_rgb((1 << 24) | 1, &p, Role::Bg), 0x00_FF_00);
-        assert_eq!(resolve_rgb((1 << 24) | 200, &p, Role::Fg), 0x0A_0B_0C);
+        assert_eq!(resolve_indexed_or_rgb((1 << 24) | 1, &p), 0x00_FF_00);
+        assert_eq!(resolve_indexed_or_rgb((1 << 24) | 200, &p), 0x0A_0B_0C);
     }
 
     #[test]
@@ -118,9 +113,18 @@ mod tests {
         let p = palette();
         // tag 2 (encode_color(Rgb) == (2<<24)|rgb)
         assert_eq!(
-            resolve_rgb((2 << 24) | 0xE0_6C_75, &p, Role::Bg),
+            resolve_indexed_or_rgb((2 << 24) | 0xE0_6C_75, &p),
             0xE0_6C_75
         );
+    }
+
+    #[test]
+    #[should_panic(expected = "resolved by render_policy::resolve_slot")]
+    fn a_default_reference_is_rejected_rather_than_silently_black() {
+        // Guards the release-mode fall-through: without the debug assert, tag 0 would take the Rgb
+        // arm and resolve to 0x000000 — a plausible-looking colour, so the bug would surface as a
+        // rendering mystery instead of a test failure.
+        let _ = resolve_indexed_or_rgb(0, &palette());
     }
 
     #[test]
@@ -137,6 +141,6 @@ mod tests {
         full[200] = 0x8A_8A_8A;
         let p = Palette::from_colors(&full, 0xFFFFFF, 0x1E1E2E).expect("256 is valid");
         assert_eq!(p.colors[200], 0x8A_8A_8A);
-        assert_eq!(resolve_rgb((1 << 24) | 200, &p, Role::Bg), 0x8A_8A_8A);
+        assert_eq!(resolve_indexed_or_rgb((1 << 24) | 200, &p), 0x8A_8A_8A);
     }
 }
