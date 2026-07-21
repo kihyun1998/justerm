@@ -926,3 +926,24 @@ test("a decoration anchored above the viewport top still paints its visible rows
   // …and the span really ends: row 3 is past `height`, so it is undecorated.
   expect(p.rows[3], "row 3 is past the 5-row span").toBe(p.baseline);
 });
+
+// #480: a decoration anchors to a BUFFER line, not a viewport row. So scrolling moves its viewport
+// row (and the cell highlight with it) but must NOT move its overview-ruler mark, which stays at the
+// buffer position. Before the fix the demo derived the absolute line FROM the viewport row, so the
+// derived line — and the ruler mark — slid as you scrolled. Driven for real: the probe forces
+// scrollback, decorates, and reads the frame the demo emits at two scroll offsets.
+test("a decoration's ruler mark stays anchored to its buffer line across scroll (#480)", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await expect(page.getByRole("button", { name: "Decorate line: OFF" })).toBeVisible();
+
+  const p = await page.evaluate(() => window.__rulerAnchorProbe!());
+
+  // The absolute buffer line (→ the ruler mark) is invariant under scroll — the #480 fix. Before
+  // it, `markerLines` was `viewTop + DECO_ROW`, so this differed by `scrolledBy`.
+  expect(p.lineScrolled, `absolute line must not move with scroll (was ${p.line0})`).toBe(p.line0);
+  // …while the DERIVED viewport row tracks the scroll by exactly the scrolled distance, so the cell
+  // highlight follows its content (a real buffer anchor, not a fixed viewport row).
+  expect(p.rowScrolled - p.row0, "the viewport row tracks scroll").toBe(p.scrolledBy);
+});
