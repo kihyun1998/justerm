@@ -22,6 +22,14 @@ function isBoxOrBlockGlyph(codepoint: number): boolean {
  * `minimumContrastRatio` correction so the glyph keeps butting cleanly against the
  * neighbouring cell instead of seaming. Both ranges are BMP, so a UTF-16 code unit
  * (`charCodeAt`) and a full code point agree here.
+ *
+ * Callers classify a cell's **base** scalar (`symbol.codePointAt(0)`, see
+ * `render-core.ts`), so a tile glyph carrying a combining mark (`█` + U+0301) still
+ * tiles. That is a declared divergence from xterm's `CellColorResolver`, which
+ * classifies `cell.getCode()` — the *last* UTF-16 unit of a combined cell — while
+ * xterm's own `TextureAtlas` classifies the first; the rule and the reasoning are
+ * recorded once, in justerm-renderer `glyph_class.rs` (#495). Keep the two sides in
+ * step: this function and the renderer's must classify the same scalar.
  */
 export function treatGlyphAsBackgroundColor(codepoint: number): boolean {
   return isPowerlineGlyph(codepoint) || isBoxOrBlockGlyph(codepoint);

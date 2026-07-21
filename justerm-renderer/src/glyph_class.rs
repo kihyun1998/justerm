@@ -20,8 +20,45 @@ fn is_box_or_block_glyph(codepoint: u32) -> bool {
 /// Whether a glyph is meant to tile with the background — xterm's `treatGlyphAsBackgroundColor`.
 /// Such a cell's fg is excluded from the `minimumContrastRatio` correction (so the glyph keeps butting
 /// cleanly against its neighbour) and re-tinted under a selection (#239). Classify a cell's **base**
-/// codepoint (the first scalar of the resolved symbol, matching the web's `symbol.codePointAt(0)`) —
-/// tile glyphs are all single-codepoint BMP, never grapheme clusters, so the base is authoritative.
+/// codepoint (the first scalar of the resolved symbol, matching the web's `symbol.codePointAt(0)`).
+///
+/// # A combined cell classifies from its base — declared divergence from xterm (#495)
+///
+/// A tile glyph carrying a combining mark (`█` + `U+0301`, `U+E0B0` + `U+0301`) is still a tile here.
+/// The rule is **classify what is painted**: [`glyph_resolve`](crate::glyph_resolve) rasterises the
+/// whole grapheme when the cell carries a cluster (`Cells::clusters`, #285 — pinned by
+/// `a_cluster_override_rasterises_the_whole_grapheme_not_the_base_codepoint`), and a combining mark
+/// only *adds* ink to that bitmap. Coverage never drops, so a cell whose base tiles still butts
+/// against its neighbour, and a contrast nudge on it would still open the seam #226 exists to avoid.
+///
+/// xterm offers no single rule to match — **its two call sites disagree for exactly this input**:
+/// - `addons/addon-webgl/src/CellColorResolver.ts:133` classifies `cell.getCode()`, which for a
+///   combined cell is `combinedData.charCodeAt(combinedData.length - 1)` — the **last** UTF-16 unit
+///   (`src/common/buffer/CellData.ts:52-56`). A block + combining acute therefore does *not* tile.
+/// - `addons/addon-webgl/src/TextureAtlas.ts:538` classifies `chars.charCodeAt(0)` — the **first**
+///   unit — and so does tile. The same file guards its two sibling classifiers (`isPowerlineGlyph`,
+///   `isRestrictedPowerlineGlyph`, `:536-537`) with `chars.length === 1`, leaving `:538` unguarded:
+///   the inconsistency is inside one file, not just across two.
+///
+/// Both read a UTF-16 **code unit**, so on an astral base (or an astral trailing scalar) they
+/// classify a lone surrogate, which lands in neither range by construction. This function takes a
+/// `u32` **scalar** instead.
+///
+/// # Why the sibling classifier answers the opposite way
+///
+/// [`emoji`](crate::emoji) deliberately does *not* classify a cluster from its base — it uses a
+/// structural signal (ZWJ joiner / emoji-presentation lead) and rejects `width() >= 2` because that
+/// falsely matches a wide text base plus a combining mark. That is not a contradiction: the two
+/// classifiers answer different questions. Emoji asks **what the cluster is** (a ZWJ family is one
+/// emoji, not a base with attachments), so the whole cluster decides. Tiling asks **how much of the
+/// cell the ink covers**, and coverage is set by the base — a mark can only add to it.
+///
+/// The alternative (match `CellColorResolver`, classifying the cluster's last scalar) is *available*
+/// — clusters already reach the renderer via the `extra` + `side_table` columns — but it would need
+/// a clusters column threaded into [`frame::Frame`](crate::frame::Frame) for the packer, would break
+/// parity with justerm-web's public `treatGlyphAsBackgroundColor` call site
+/// (`render-core.ts` `symbol.codePointAt(0)`), and would un-tile a cell that visibly still tiles.
+/// Rejected on coherence, not on cost.
 pub fn treat_glyph_as_background_color(codepoint: u32) -> bool {
     is_powerline_glyph(codepoint) || is_box_or_block_glyph(codepoint)
 }
@@ -54,5 +91,7 @@ mod tests {
         assert!(!treat_glyph_as_background_color(0xE0A3)); // just below powerline
         assert!(!treat_glyph_as_background_color(0xE0D7)); // just above powerline
         assert!(!treat_glyph_as_background_color(0x1F680)); // 🚀 emoji
+        assert!(!treat_glyph_as_background_color(0x0301)); // #495: a combining mark is not a tile —
+        // it is what xterm's CellColorResolver would classify a `█ + U+0301` cell by
     }
 }
