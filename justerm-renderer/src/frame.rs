@@ -41,6 +41,11 @@ pub struct Frame<'a> {
     /// classifier ([`treat_glyph_as_background_color`], #226/#239) reads it; a short/missing entry
     /// resolves as `0` (not a tile). The atlas *slot* is already resolved in `slots`; this is kept
     /// solely to classify the glyph's contrast/selection behaviour.
+    ///
+    /// The packer sees **only** the base — a cell's grapheme cluster (`extra` + `side_table`) stops
+    /// at [`glyph_resolve`](crate::glyph_resolve), which rasterises it. That is the declared rule,
+    /// not an omission: coverage is set by the base and a combining mark can only add ink to it
+    /// (#495, reasoned in [`glyph_class`](crate::glyph_class)).
     pub codepoints: &'a [u32],
 }
 
@@ -1468,6 +1473,52 @@ mod tests {
             &text[5..8],
             &gl_rgb(0xFF_FF_FF),
             "a non-tile glyph keeps its fg"
+        );
+    }
+
+    /// #495: a cell whose painted grapheme is `█` + `U+0301` (combining acute) still takes the tile
+    /// branch, because the packer classifies the cell's BASE scalar — the declared rule
+    /// (`glyph_class`): coverage is set by the base, and a mark can only add ink to it.
+    ///
+    /// The second half is what makes this discriminating. `0x0301` is precisely the scalar xterm's
+    /// `CellColorResolver` would classify by (`cell.getCode()` = the cluster's last UTF-16 unit), and
+    /// on its own it does NOT tile — so implementing that rule flips the first assertion. The axes
+    /// otherwise never cross: every other tile test passes a bare codepoint with no cluster, and the
+    /// cluster tests (`glyph_resolve`) never look at the tile branch.
+    #[test]
+    fn a_combined_tile_cell_classifies_from_its_base_not_its_combining_mark() {
+        let p = bright_palette(); // default_fg white
+        let raw_sel = 0x80_00_00;
+        let ov = overlay_kind(&[0, 0, 0], &[], raw_sel);
+        const COMBINING_ACUTE: u32 = 0x0301;
+        // The cell's cluster is "█\u{0301}"; `glyph_resolve` rasterises the whole grapheme, and the
+        // packer sees only the base column — which is the rule, not an omission.
+        let combined = pack_instances(
+            &frame_cp(&[0], &[0], &[0], &[BLOCK]),
+            &p,
+            true,
+            &ov,
+            &ColorPolicy::default(),
+            &[],
+        );
+        assert_eq!(
+            &combined[5..8],
+            &gl_rgb(blend_over(0xFF_FF_FF, raw_sel, HIGHLIGHT_BLEND_ALPHA)),
+            "a combining mark on a block does not un-tile the cell"
+        );
+        // Classifying the cluster's LAST scalar (xterm's resolver rule) would land here instead.
+        let by_last_scalar = pack_instances(
+            &frame_cp(&[0], &[0], &[0], &[COMBINING_ACUTE]),
+            &p,
+            true,
+            &ov,
+            &ColorPolicy::default(),
+            &[],
+        );
+        assert_eq!(
+            &by_last_scalar[5..8],
+            &gl_rgb(0xFF_FF_FF),
+            "the combining mark alone is not a tile glyph — so the two rules differ here"
         );
     }
 
