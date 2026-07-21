@@ -113,7 +113,9 @@ pub struct DecorationOverride {
 /// **Precedence is wire order.** "Last wins" means last in the `rects` slice, so the consumer must
 /// push in the order it wants resolved. (xterm's own ordering is its line-cache bucket, which starts
 /// as registration order but is perturbed by buffer trims/inserts re-appending decorations — so
-/// "last registered" is an approximation upstream too.)
+/// "last registered" is an approximation upstream too.) justerm-web satisfies this contract by
+/// pushing in **registration** order (#458), so a consumer of the web widget gets "last registered
+/// wins" and nothing about where the anchors sit in the buffer can change it.
 ///
 /// Returning the merged pair rather than a borrowed [`DecorationRect`] is the point: a *rect* is the
 /// wrong unit of resolution. Picking one whole rect made an fg-only decoration discard an earlier

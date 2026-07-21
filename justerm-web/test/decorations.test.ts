@@ -334,6 +334,24 @@ describe("DecorationRegistry (#120 S1)", () => {
     expect(b.map((r) => r.row)).toEqual([6, 1]);
   });
 
+  // #458: `register` always mints a NEW decoration — it never updates one in place. That is what
+  // makes "register again to take precedence" work at all, since `Set.add` of a member already
+  // present is a no-op that does NOT move it to the end. The consequence the docs must not hide:
+  // the earlier handle stays LIVE, so registering again leaves two decorations, and disposing the
+  // new one hands the cell back to the old one rather than clearing it.
+  it("registering the same options again adds a second live decoration, it does not replace (#458)", () => {
+    const reg = new DecorationRegistry();
+    const first = reg.register({ markerId: 1, x: 0, width: 1, bg: 0x0000aa });
+    const second = reg.register({ markerId: 1, x: 0, width: 1, bg: 0xaa0000 });
+
+    const both = reg.decorationsForFrame(frame(mk(1, 0)));
+    expect(both.map((r) => r.bg)).toEqual([0x0000aa, 0xaa0000]); // both live; the newer wins
+    expect(first.disposed).toBe(false); // …and the first was NOT replaced
+
+    second.dispose();
+    expect(reg.decorationsForFrame(frame(mk(1, 0))).map((r) => r.bg)).toEqual([0x0000aa]);
+  });
+
   // #461: entirely above the viewport -> nothing, and no negative row reaches the u32 wire.
   it("emits no rect for a decoration whose span ends above the viewport top", () => {
     const reg = new DecorationRegistry();
