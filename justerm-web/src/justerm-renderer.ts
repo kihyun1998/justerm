@@ -207,9 +207,20 @@ export function cursorCommand(frame: DecodedFrame): CursorCommand {
 }
 
 /** Coerce a decoder array to the exact typed array wasm-bindgen's `&[u32]`/`&[u16]` expect.
- * The decoder's getters already return the right typed array (fast path: identity); the guard
- * covers a plain-array frame (test fixtures). */
-const asU32 = (a: ArrayLike<number>): Uint32Array =>
+ * The decoder's getters already return the right typed array (fast path: identity — a real
+ * `Uint32Array` passes through by reference, not copied); the fallback covers a plain-array
+ * frame (test/demo fixtures, e.g. `demo/fake-search.ts`).
+ *
+ * The fallback `Uint32Array.from` REINTERPRETS an out-of-range value, it does not reject it:
+ * a negative wraps to its two's-complement, `NaN`/±`Infinity` land as `0`, and `>= 2**32` wraps
+ * mod 2**32 (#467, pinned in the renderer test — the same class as the #457 decoration wire). A
+ * span source feeding this (`selectionSpans` / `matchSpans` / `activeMatchSpans`) MUST clip to
+ * valid u32 range itself, as `decorationsForFrame` and the demo's span producers do; this
+ * coercion knows nothing of a value's meaning or geometry and so cannot validate — the producer
+ * owns validity. Deliberately not rejected here (#467): a per-frame coercion is the wrong layer.
+ *
+ * Exported for the seam test only; not re-exported from the package `index.ts`. */
+export const asU32 = (a: ArrayLike<number>): Uint32Array =>
   a instanceof Uint32Array ? a : Uint32Array.from(a);
 const asU16 = (a: ArrayLike<number>): Uint16Array =>
   a instanceof Uint16Array ? a : Uint16Array.from(a);

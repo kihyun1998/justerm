@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { DecorationRect } from "../src/decorations";
 import {
+  asU32,
   cursorCommand,
   damageHeader,
   decorationWire,
@@ -57,6 +58,29 @@ describe("damageHeader", () => {
 
   it("passes blinkOn=false through as 0", () => {
     expect(damageHeader(frame(), false)[7]).toBe(0);
+  });
+});
+
+// #467 (the #457 class, one seam over): `asU32`'s plain-array fallback (`Uint32Array.from`)
+// silently REINTERPRETS an out-of-range value rather than rejecting it — the same invisibility
+// #457 pinned for the decoration wire. Documenting it here means a future span source (a second
+// search backend, a host hand-building frames) cannot reintroduce the wrap while believing this
+// coercion would catch it. Production is unaffected: selection/match/activeMatch spans arrive from
+// the decoder as a real `Uint32Array` and take the identity fast path (asserted below). The
+// deliberate choice NOT to reject here (a per-frame coercion knows nothing of a value's meaning or
+// geometry — the producer owns validity) is recorded on #467; this test would break the day someone
+// changes the fallback to reject/clip, forcing that decision to be conscious.
+describe("asU32 span coercion (#467)", () => {
+  it("passes a real Uint32Array through by reference — the decoder fast path, no copy", () => {
+    const real = new Uint32Array([1, 2, 3]);
+    expect(asU32(real)).toBe(real); // same reference; a copy would defeat the per-frame fast path
+  });
+
+  it("silently reinterprets an out-of-range value in the plain-array fallback", () => {
+    expect(asU32([-5])[0], "a negative span value wraps to two's-complement").toBe(0xfffffffb);
+    expect(asU32([Number.NaN])[0], "NaN lands as a plausible 0, not an error").toBe(0);
+    expect(asU32([Number.POSITIVE_INFINITY])[0], "Infinity lands as 0, not an error").toBe(0);
+    expect(asU32([2 ** 32 + 3])[0], "a value >= 2**32 wraps mod 2**32").toBe(3);
   });
 });
 
