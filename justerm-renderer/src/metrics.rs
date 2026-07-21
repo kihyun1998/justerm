@@ -18,7 +18,11 @@
 //! (`display/mod.rs:1608-1615`, `config/font.rs:20-23`).
 //!
 //! **We take `letter_spacing` in CSS pixels; both references take device pixels.** That is a
-//! deliberate divergence. xterm adds `Math.round(letterSpacing)` straight onto a device-px char
+//! deliberate divergence, adjudicated in **ADR-0023** — the rule being that a setting expressed in the
+//! same space as an existing logical setting must use that space, and `font_size` is CSS px. Note
+//! alacritty is not consistent with itself here: it scales `window.padding` by the scale factor
+//! (`config/window.rs:123-127`) while adding `font.offset` to device-px metrics raw
+//! (`display/mod.rs:1608-1615`), so its own two pixel settings speak different units. xterm adds `Math.round(letterSpacing)` straight onto a device-px char
 //! width (`WebglRenderer.ts:671`, and `DomRenderer.ts:140` agrees), so the same setting is a
 //! 2-CSS-px gap on a dpr-1 display and a 1-CSS-px gap on a Retina one — the text looks different
 //! when you move the window. Our own `FONT_SIZE` is CSS px scaled by the DPR at rasterisation time;

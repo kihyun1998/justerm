@@ -448,4 +448,7 @@ precedents index inline.)
   **0022** — the grid cell is the ink box of the font's `█`, and the atlas cell, glyph quad, cursor box,
   CSS cell and (via `builtin`) the tile class all derive from it. Carries an invariant nothing enforces:
   no glyph this crate draws may enter measurement.
+  **0023** — a consumer-facing spacing setting is CSS px, because `font_size` is: a setting in the same
+  space as an existing logical one uses that space. Both references take device px and so split the
+  units of one font description; read it before adding any metric setter.
 - Identity & invariants: `CLAUDE.md`. Glossary: `CONTEXT.md`. Release: `docs/agents/release.md`.
