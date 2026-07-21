@@ -223,6 +223,38 @@ that *describes* the behavior:
 - **Reclaim now-false rationale.** Walk recent PR/issue/release reasoning and
   retract what the new behavior falsified (surviving reasons are usually the
   transitive ones).
+- **After an architecture pivot, sweep the whole OPEN backlog — not just recent
+  reasoning.** A pivot (ADR-0002→0018 beamterm→`justerm-renderer`, #273) falsifies
+  *premises* in issues filed long before it, and nothing fails: code that names a
+  deleted dependency stops compiling, but a sentence like "that's a third-party
+  renderer concern, out of our hands" is never checked by anything. A stale premise
+  is worse than a stale issue — it survives as a **justification for not acting**,
+  or sends the next implementer to a file that no longer exists. Sweep found 4/22
+  open issues broken by one pivot: #398 (prescribed editing `decoration-render.ts`,
+  deleted in #407; its `renderer == web byte-identical` acceptance box lost its
+  comparand when web stopped compositing), #249 + #317 §2 (both deferred on "that
+  belongs to beamterm / the shared shader" — no such layer exists now, so the
+  routing argument, not the severity, was void), #325 ("blocked by S13 #273" long
+  after #273 merged, plus a mechanism sentence that was simply wrong). Correct them
+  as **comments**, leaving the body as the record of what was believed when.
+- **Cross-check the backlog against itself, not only against the code.** Issues are
+  the durable record (DoD ③), so two of them can hold opposite directions for the
+  same data with nothing to notice: #440 (search-match ruler lines as a *new
+  per-frame wire group*) vs #490, filed a day later (marker lines must leave the
+  per-frame snapshot — that payload is frame mode's O(M) ceiling). Same-week issues
+  collide too; it is not an age problem, it is two lenses (feature vs performance)
+  that never read each other.
+  **Filing-time obligation:** before opening a follow-up issue, read the open
+  backlog for anything its proposal would *break* — grep by the **artifact it
+  touches** (the wire group, the file, the shader stanza, the predicate), not by the
+  feature name, since a conflicting issue almost never shares your vocabulary. If
+  one is found, cross-link **both** ways in the same act of filing (a one-way link
+  is only found by whoever reads the newer issue) and say which decision must come
+  first. Three of the eleven corrections in this sweep were pure missing
+  cross-links between issues that had already spotted the same seam separately:
+  #440↔#490 (wire channel), #494/#495/#496 (one branch's entry condition / fg / bg,
+  each filed as its own independent "(a) or (b)" decision), #437↔#441 (one port
+  capability, two symptoms).
 
 ## Step 7 — gate matrix + downstream loop
 
@@ -314,6 +346,7 @@ release.md):
 - **Defer / negative results = the issue is the durable record** — #317 (deferral left in PR body only, caught); seed measured numbers + rejected alternatives + cleared-concern validity conditions up front.
 - **Out-of-workspace / formatter / typecheck blind spots** — #333 (renderer unformatted + proofs CI), #341 (web CI + e2e tsconfig), #343/#344 (typecheck vs build).
 - **Behavior-surface drift** — #129/#135 (`mouseWantedEvents` reached `types.ts` only at S16 — grep the wire mirror).
+- **The backlog is a surface too (pivot sweep + file-time conflict check)** — 2026-07-21 sweep of all 22 open issues: one pivot (#273) had falsified premises in 4 of them (#398 names a file deleted in #407 and an acceptance box whose comparand is gone; #249/#317 §2 defer to a beamterm/"shared shader" layer that no longer exists; #325 still says "blocked by #273"), and 3 more pairs/clusters were live conflicts nobody had cross-linked (#440↔#490 wire channel; #494/#495/#496 = one branch's entry condition/fg/bg decided separately; #437↔#441 one port capability). Nothing fails when an issue's *premise* dies — it survives as a reason not to act, or points at a deleted file. Sweep the open backlog after a pivot; grep it by touched artifact before filing a follow-up; correct by comment, never by rewriting the body.
 - **External/registry facts** — web consumes *published* wasm (new binding `undefined` until republish); clean-room worktree only, regex discriminators `=x` / `(?i)abc` / `(?<name>x)`.
 - **Downstream contract history** — penterm wire VERSION bumps justerm#38/#41/#81; #100 rename API/wire-invariant drop-in.
 
