@@ -192,6 +192,17 @@ describe("DecorationRegistry (#120 S1)", () => {
 
   // Right anchor with an x offset and width: x cells in from the right, extending
   // leftward. cols=20, x=1, width=3 → right = 20-1-1 = 18, left = 20-1-3 = 16.
+  //
+  // These two tests are the pin for the **#459 decision**: justerm's `anchor` moves the COLOUR
+  // span, deliberately unlike xterm, whose cell hit test measures `x` from the left whatever the
+  // anchor (`DecorationService.forEachDecorationAtCell`) and reads the option only to place a DOM
+  // element justerm does not have. Do not "restore parity" by making these expect left-measured
+  // columns — see `DecorationOptions.anchor` for the full rationale.
+  //
+  // #459 also asked to re-check the #457 interaction ("a right-anchored overflow currently renders
+  // nothing"). It is closed: the viewport clip in `decorationsForFrame` bounds the span before it
+  // reaches the u32 wire, and `e2e/demo.spec.ts` drives a right-anchored decoration WIDER than the
+  // viewport and reads both edges from the real drawing buffer — it paints.
   it("offsets a right-anchored span inward by x", () => {
     const reg = new DecorationRegistry();
     reg.register({ markerId: 1, anchor: "right", x: 1, width: 3 });
