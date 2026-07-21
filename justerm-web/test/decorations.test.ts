@@ -253,6 +253,29 @@ describe("DecorationRegistry (#120 S1)", () => {
     expect(rects.map((r) => r.row)).toEqual([3]); // 16 - 13, not the markerPositions row 9
   });
 
+  // #482: the wire carries EVERY live marker (M, unbounded with scrollback), but only markers with
+  // a registered decoration project. Filtering to those keeps per-frame allocation/iteration
+  // O(decorations), not O(markers). Two invariants this pins: (1) a decorated marker buried among
+  // many non-decorated ones is NOT dropped; (2) cross-marker precedence still follows CORE's marker
+  // order (the markerLines order), NOT registration order — so a fix that iterates `byMarker`
+  // instead (registration order) reds this: 50 is registered first but must project AFTER 20.
+  it("projects only decorated markers from a large marker set, in core marker order (#482)", () => {
+    const reg = new DecorationRegistry();
+    reg.register({ markerId: 50, x: 0, width: 1, bg: 0xaa0000 }); // registered FIRST
+    reg.register({ markerId: 20, x: 1, width: 1, bg: 0x00aa00 }); // registered SECOND
+
+    // 8 live markers on the wire in core marker order (id == absolute line); only 20 and 50 are
+    // decorated. top == 0, so row == line == id.
+    const lines = [10, 20, 30, 40, 50, 60, 70, 80].map((id) => ml(id, id));
+    const rects = reg.decorationsForFrame(frameAbs({ rows: 100, scrollbackLen: 0 }, lines, []));
+
+    // Core order (20 before 50), non-decorated markers contribute nothing.
+    expect(rects).toEqual([
+      { row: 20, left: 1, right: 1, layer: "bottom", bg: 0x00aa00, fg: undefined },
+      { row: 50, left: 0, right: 0, layer: "bottom", bg: 0xaa0000, fg: undefined },
+    ]);
+  });
+
   // #461: entirely above the viewport -> nothing, and no negative row reaches the u32 wire.
   it("emits no rect for a decoration whose span ends above the viewport top", () => {
     const reg = new DecorationRegistry();

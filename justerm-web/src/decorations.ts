@@ -220,14 +220,24 @@ export class DecorationRegistry {
     // sends the groups from different sources would otherwise see decorations silently vanish.
     // Seeding from `markerLines` first also keeps core's marker order as the precedence order
     // (#458), with any `markerPositions`-only marker appended.
+    //
+    // #482: BOTH reads keep only ids with a registered decoration (`this.byMarker`), so `anchors`
+    // and the projection loop below are sized by decorations (D), not by the wire's live-marker
+    // count (M, unbounded with scrollback — core caps nothing). The markerLines stride scan is
+    // still O(M): correlating a flat per-frame snapshot to decorations cannot go below that in
+    // frame-mode without a persistent out-of-band marker index (see #482 and
+    // docs/research/terminal-engine-renderer-architectures.md). But no per-marker Map entry lands
+    // for a marker nothing is registered against, which is the allocation the regression added.
     const anchors = new Map<number, number>();
     if (hasScroll) {
-      for (const [id, line] of readMarkerLines(frame.markerLines)) anchors.set(id, line - top);
+      for (const [id, line] of readMarkerLines(frame.markerLines, this.byMarker)) anchors.set(id, line - top);
     }
     for (const m of readMarkers(frame.markerPositions)) {
-      if (!anchors.has(m.id)) anchors.set(m.id, m.row);
+      if (this.byMarker.has(m.id) && !anchors.has(m.id)) anchors.set(m.id, m.row);
     }
     for (const [markerId, startRow] of anchors) {
+      // Post-#482 `anchors` is seeded only from `byMarker` ids, so `set` is always present here —
+      // this guard is now the type narrow (`Map.get` is `Set | undefined`), not a reachable skip.
       const set = this.byMarker.get(markerId);
       if (!set) continue;
       for (const d of set) {
@@ -321,7 +331,7 @@ export class DecorationRegistry {
     // the browser drops, stacking the mark at the track default. `Number.isFinite` is the check
     // the `NaN <= 0` slip needs; it also rejects ±Infinity.
     if (!Number.isFinite(total) || total <= 0) return [];
-    const lineOf = readMarkerLines(frame.markerLines);
+    const lineOf = readMarkerLines(frame.markerLines, this.byMarker); // #482: sized D, not M
     const marks: RulerMark[] = [];
     for (const [markerId, set] of this.byMarker) {
       const line = lineOf.get(markerId);
@@ -371,12 +381,21 @@ function columns(d: StoredDecoration, cols: number): [number, number] {
  * absolute `line`. See the wasm `MARKER_LINE_STRIDE`. */
 const MARKER_LINE_STRIDE = 2;
 
-/** Decode `markerLines` (flat stride-2) into a `markerId → absolute line` map. */
-function readMarkerLines(flat?: ArrayLike<number>): Map<number, number> {
+/** Decode `markerLines` (flat stride-2) into a `markerId → absolute line` map, keeping ONLY ids
+ * present in `keep` (#482). The wire carries every live marker (M, unbounded with scrollback), but
+ * only markers with a registered decoration can project or place a ruler mark, so the returned map
+ * is sized by decorations (D), not the wire (M). The stride scan stays O(M) — a flat per-frame
+ * snapshot cannot be correlated to decorations below that (docs/research/…-architectures.md) — but
+ * no per-marker entry is allocated for a marker nothing is registered against. */
+function readMarkerLines(
+  flat: ArrayLike<number> | undefined,
+  keep: ReadonlyMap<number, unknown>,
+): Map<number, number> {
   const out = new Map<number, number>();
   if (!flat) return out;
   for (let i = 0; i + MARKER_LINE_STRIDE <= flat.length; i += MARKER_LINE_STRIDE) {
-    out.set(flat[i]!, flat[i + 1]!);
+    const id = flat[i]!;
+    if (keep.has(id)) out.set(id, flat[i + 1]!);
   }
   return out;
 }
