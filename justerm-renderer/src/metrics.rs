@@ -1,5 +1,11 @@
 //! Cell metrics: how the grid cell relates to the glyph box (#338).
 //!
+//! One link in the chain ADR-0022 records: the cell comes from an ink scan of the font's `█`
+//! ([`rasterizer`](crate::rasterizer)), this module nests the glyph box inside it, and that nesting is
+//! why tiling glyphs must be drawn to the *cell* ([`builtin`](crate::builtin)) instead of to their ink
+//! box. Unlike the measurement itself, this split IS the prior-art consensus — both references carry a
+//! char box beside a cell box, as the paragraphs below quote.
+//!
 //! Until now they were the same rectangle. The rasteriser ink-scans `█` at `FONT_SIZE * dpr` and
 //! that box *was* the cell, so the shader could stretch one glyph quad across one cell and be right
 //! by construction. `letterSpacing` and `lineHeight` break the identity: the cell grows, the glyph

@@ -437,4 +437,15 @@ precedents index inline.)
 
 - Contract spec: `docs/architecture.md` (cells · damage · viewport/scroll · cadence · selection · serialization · engine API; §"Hidden VT state").
 - Decisions: `docs/adr/` — 0005 (encode/decode round-trip), 0008 (decode boundary), 0013/0014 (viewport state in header), 0017 (mechanism core / policy consumer), 0018 (justerm-renderer pivot), 0019 (renderer cell composition — layered, per-channel, total; xterm is a design input, not a validator).
+  Three more are **proposed** (authored, not adjudicated) and govern axes this flow keeps landing on:
+  **0020** — what qualifies for the per-frame snapshot (state not occurrence · not derivable by the
+  consumer · viewport-bounded). Read it *before* proposing a wire group: 0013–0016 each admitted one
+  group on its own merits and four more versions followed with no ADR at all, which is the gap 0020
+  closes. It also names `markerLines` as its one stated violation (#482/#490).
+  **0021** — one WebGL2 context, N grids as viewports (`TerminalSurface`), with the tier rule that
+  assigns every renderer setter: share byte-for-byte ⇒ per-config, must differ visibly per terminal ⇒
+  per-grid, consumer-settable ⇒ per-grid by definition.
+  **0022** — the grid cell is the ink box of the font's `█`, and the atlas cell, glyph quad, cursor box,
+  CSS cell and (via `builtin`) the tile class all derive from it. Carries an invariant nothing enforces:
+  no glyph this crate draws may enter measurement.
 - Identity & invariants: `CLAUDE.md`. Glossary: `CONTEXT.md`. Release: `docs/agents/release.md`.

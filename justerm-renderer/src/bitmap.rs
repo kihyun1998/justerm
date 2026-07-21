@@ -32,9 +32,15 @@ pub fn cell_metrics(bounds: InkBounds, draw_offset: f32) -> CellMetrics {
 
 /// Scan an RGBA bitmap (`w`×`h`, row-major) for the tight bounding box of pixels whose alpha
 /// is `>= alpha_threshold`. Returns `None` when nothing meets the threshold (a blank glyph).
-/// This is the basis of ink-scan cell metrics (#288): measuring the cell from the `█` glyph's
-/// real pixel bounds is more accurate than `fontBoundingBox`, which has rounding/box-gap
-/// issues (mirrors beamterm `canvas_rasterizer::measure_cell_metrics`).
+/// This is the basis of ink-scan cell metrics (#288): the cell is measured from the `█` glyph's real
+/// pixel bounds rather than from `fontBoundingBox` (mirrors beamterm
+/// `canvas_rasterizer::measure_cell_metrics`, verbatim down to the 128 threshold).
+///
+/// **ADR-0022 grades that choice.** The "more accurate — `fontBoundingBox` has rounding/box-gap issues"
+/// rationale is beamterm's own comment, asserted without measurement and inherited here; both named
+/// references size the cell from font metrics instead (alacritty `display/mod.rs:1608-1615`, xterm
+/// `CharSizeService` → `WebglRenderer.ts:646-671`). Treat it as the current decision with an open
+/// validity question, not as established practice.
 pub fn ink_bounds(pixels: &[u8], w: u32, h: u32, alpha_threshold: u8) -> Option<InkBounds> {
     let (mut min_x, mut max_x, mut min_y, mut max_y) = (w, 0u32, h, 0u32);
     let mut found = false;
