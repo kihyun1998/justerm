@@ -262,14 +262,15 @@ pub fn pack_instances(
                 // correct (a transparent one lets it through: #453).
                 //
                 // Two consequences a consumer mirroring xterm's search addon should know (surfaced by
-                // the two-lens, tracked as #506): that addon marks the ACTIVE match `layer: 'top'` with
+                // the two-lens, tracked on #508): that addon marks the ACTIVE match `layer: 'top'` with
                 // a background and every other match `'bottom'` (`addon-search/DecorationManager.ts:
                 // 134-144`), so under this rule a box-drawing / Powerline cell loses its glyph on the
                 // active hit while keeping it on the others — the glyph blinks as the user cycles. And
                 // the escape hatch above is out of reach there: `ISearchDecorationOptions`
                 // (`addon-search.d.ts:46-76`) has no foreground field at all. justerm's own active
                 // match is an overlay *kind* (#427/#430), not a decoration, so this bites only a
-                // consumer that ports xterm's decoration-based model verbatim.
+                // consumer that ports xterm's decoration-based model verbatim — which is why this is
+                // a note here rather than an issue of its own.
                 //
                 // Flat, not blended: the selection blends (#239) because it is a translucent wash, but
                 // a decoration bg REPLACES (`eff_bg = c` above). The tile takes whatever treatment the
