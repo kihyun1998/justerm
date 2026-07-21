@@ -15,6 +15,34 @@ is an untracked gap. The web form of the flow was established in slice S8 (#109)
 Prior art cross-checked throughout: **Mosh · Alacritty · Warp · VS Code ·
 beamterm** (convergence = non-arbitrariness).
 
+**Architecture prior art (routes "engine vs renderer / state-sync" questions).**
+justerm's frame-mode identity composes two independent lineages: ① a *render-free,
+reusable terminal-state engine* — **alacritty_terminal** (Rust, CLAUDE.md's named
+model: grid + `Term` + damage, no rendering), **libvterm** (C, bytes→screen-state +
+damage callbacks, embedded by neovim), **wezterm-term** (Rust), **libghostty** (Zig,
+explicit reusable core; also the #287 multi-viewport `SharedGrid` reference); and ②
+*serialized terminal STATE synced over a wire* — **Mosh** SSP (diffs screen state, not
+bytes — the canonical remote/thin-client prior art) and **tmux** (server holds the
+grid, clients repaint). Most projects do only ONE half: alacritty_terminal/libvterm
+split the engine but render in-process (never serialize); Mosh syncs state but exposes
+no reusable engine crate. Composing both is justerm's bet (ADR-0012→0018). **The
+consequence bites #482:** xterm's O(D) decoration walk (`decoration.marker.line`, read
+live) needs whole-buffer live objects, which frame-mode gives up — the consumer holds a
+flat marker *snapshot* and pays an O(M) index to correlate; that cost and the
+remote/portable/renderer-swappable wins are the *same* choice, not a bug. The
+marker/decoration-over-wire combination is a **prior-art gap** (split engines lack
+OSC-133 marks; Mosh diffs cells, not semantic marks), so route its *mechanism* pieces
+separately — marker→line mapping = xterm (whole-buffer), state diffing = Mosh SSP.
+Verified sharpenings (real-source dig, `docs/research/terminal-engine-renderer-architectures.md`):
+the true novelty is the **stateless consumer** — every render-free engine hands off
+*in-process* (alacritty by borrow, libvterm by C callbacks, ghostty by lock-shared state),
+and even Mosh's receiver keeps a full `Complete` state, while justerm's holds only the
+current frame. **#482 fix ceiling:** within frame-mode the tractable step is O(D)
+*allocation/iteration* — the per-frame snapshot scan stays O(M); going below O(M)/frame
+needs marker positions on an out-of-band event channel (#160-style) so the consumer keeps
+a persistent, incrementally-updated index (the xterm `_lineCache` / ghostty tracked-ref
+model), which per-frame snapshotting structurally cannot have.
+
 ## Crate / module map
 
 | Member | In `--workspace`? | Gate note |
