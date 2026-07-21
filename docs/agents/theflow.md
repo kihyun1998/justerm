@@ -15,6 +15,21 @@ is an untracked gap. The web form of the flow was established in slice S8 (#109)
 Prior art cross-checked throughout: **Mosh · Alacritty · Warp · VS Code ·
 beamterm** (convergence = non-arbitrariness).
 
+**Tie-breaker — what wins when prior art and justerm's own evidence disagree.**
+Not one value: the authority differs by layer, and flattening it would break one
+of them. Prior art is always a *cross-check* that shaves detail a first-principles
+model under-reaches; what it is checked *against* is:
+
+| Layer | Authority | Grounds |
+|---|---|---|
+| **VT parsing / semantics** | the **spec** — above any implementation, including ours | ADR-0004: spec-faithful *where alacritty omits*. A reference's omission is not a licence to omit; this is what backs justerm's conformance claim |
+| **Renderer cell composition** | **justerm's own model** (ADR-0019) | xterm is a design input, not a validator. In the four decisions before 0019 it was silent (#494), self-contradictory across its own call sites (#495), the outlier (#459), or demoted (#458) |
+| **Wire / frame / API shape** | **this repo's own precedent** | No external authority exists — no reference serializes a terminal state this way (see the architecture prior-art note below: composing a render-free engine with a state wire is justerm's own bet) |
+| **Performance claims** | **our measurement, on a release build** | A claim about our own throughput was wrong because it was measured on a debug build; a number from a consumer's journey is a hypothesis until re-measured here |
+
+A layer not in this table has no recorded tie-breaker — say so and ask, rather
+than borrowing a neighbouring row.
+
 **Architecture prior art (routes "engine vs renderer / state-sync" questions).**
 justerm's frame-mode identity composes two independent lineages: ① a *render-free,
 reusable terminal-state engine* — **alacritty_terminal** (Rust, CLAUDE.md's named
@@ -204,6 +219,30 @@ word-sel/#207). Gate on *enumeration risk*, not diff size; a reactive spike that
 keeps catching new gaps is the trigger. Record an explicit skip for a closed
 surface.
 
+**Unconditional triggers — three paths where both lenses run regardless of the
+judgement above.** justerm has no money path, no production mutation and nothing
+destructive, so the schema's usual examples do not apply; here a path is sacred
+when it is **irreversible** (already published) or **silent** (wrong answer, no
+crash, user-visible state quietly corrupted). You do not get to skip these because
+the diff is small:
+
+1. **`justerm-core/src/serialize.rs` — the wire, and any `WIRE_VERSION` bump.**
+   crates.io and npm are immutable; a consumer decoding a wrong layout gets
+   garbage cells, not an error. Touching `struct → encode → decode → Flat →
+   getter → types.ts` in one crate and not the others is exactly the failure a
+   single lens misses.
+2. **The release path — `.github/workflows/*` publish jobs + `docs/agents/release.md`.**
+   Publishing is tag-driven and automatic: pushing `vX.Y.Z` ships to both
+   registries with no confirmation step, and nothing but a yank comes back.
+3. **Absolute-index walks over the concatenated `[scrollback ++ grid]` buffer —
+   `abs_floor()` (`term.rs:1842`, 4 call sites) and every reader that indexes
+   absolutely.** On the alt screen an unfloored index reads the wrong region and
+   returns *plausible* text: selection, search and markers silently disagree with
+   the screen. This is on the list because the two-lens pass has found a fresh
+   sibling three times — #113 (logical lines) → #144 (`search`) → #207
+   (word-selection `prev_pos`) — so "I checked the obvious callers" has a measured
+   failure rate here.
+
 ## Step 6 — behavior-describing surfaces (sweep by hand)
 
 No change ends at the code; nothing compiles the drift away. Sweep every surface
@@ -266,6 +305,35 @@ that *describes* the behavior:
   #440↔#490 (wire channel), #494/#495/#496 (one branch's entry condition / fg / bg,
   each filed as its own independent "(a) or (b)" decision), #437↔#441 (one port
   capability, two symptoms).
+
+### Where a promoted decision record goes, and what earns one
+
+**Destination + format.** `docs/adr/NNNN-<kebab-slug>.md`, **English**, numbered
+sequentially, opening with `Status: accepted (YYYY-MM-DD[, #issue])` and following
+the house sections: `Context` (with the forcing case) → `Decision` → `Named prior
+art` → `Consequences` → `Alternatives considered`. Amend in place rather than
+rewriting history: a status-line note when a later change moves the *reason*
+(ADR-0011, #504) or realises a direction (ADR-0012→0018), a `supersedes` /
+`superseded by` pair when it is replaced (ADR-0002↔0018). An ADR may carry no
+issue number — 0018 and 0019 do not.
+
+**What earns one.** The portable bar governs: **two or more Step 5 promotion
+triggers**, not one. Below that it is a decision and belongs in the issue as usual.
+
+Areas already known to have hit the bar — check these first, since a new question
+in one of them is probably a conformance item under an existing record rather than
+a fresh decision:
+
+| Area | Record | State |
+|---|---|---|
+| Renderer **cell composition** (a cell's bg / fg / ink) | **ADR-0019** | Recorded. Open questions here resolve *against the model*; a combination it cannot answer is an amendment |
+| **core ↔ consumer routing** (mechanism vs policy) | **ADR-0017** | Recorded. Its own rejected `(D) keep deciding case by case` is the pattern to watch for |
+| **Wire / frame shape** | 0005, 0008, 0013–0016 | Recorded across several, each at a version bump |
+| **Span projection / decoration geometry** (viewport clamp, anchor, precedence) | *none yet* | **At the bar, not promoted.** Three triggers stand: "which decoration wins" was decided at three granularities (#452 per-property within a marker, #458 across markers, #498 ruler marks); #452→#457→#461 is a consequence chain, with #461 recorded as *"the vertical mirror of 457"*; and #457 found a repo test comment asserting the opposite of the behaviour. It was clustered with cell composition by proximity and is a **separate** concern (ADR-0017 consumer policy, viewport-only) — so it needs its own record, not a section in ADR-0019 |
+
+Naming the areas is the point: a maintainer can see a cluster has been re-decided
+long before the person inside it can, so Step 5 starts by asking whether the work
+sits in one of these rather than re-deriving that from scratch each pass.
 
 ## Step 7 — gate matrix + downstream loop
 
