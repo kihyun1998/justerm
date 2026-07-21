@@ -12,10 +12,10 @@
   selectionSpans / matchSpans, #108), and the renderer folds the injected blend colour into each
   covered cell's packed bg at pack time.
 
-  Two composite modes, both xterm-faithful (render-core.ts:156 / decoration-render.ts):
+  Two composite modes, both xterm-faithful (ported from justerm-web's render-core.ts / decoration-render.ts, both since deleted — #504):
     - SOLID over the DEFAULT terminal background — a crisp fill (bg replaced outright).
     - BLEND over a non-default / inverse cell — the injected colour at alpha 0x80 over the cell's
-      own colour, so its colour still reads (blendOver, render-policy.ts). An inverse cell is a
+      own colour, so its colour still reads (blendOver — was render-policy.ts, now overlay.rs). An inverse cell is a
       blend cell: its shown bg is the swapped-in fg, so the highlight blends over that.
   The blend mode is a SELECTION rule only: a search MATCH always paints SOLID, whatever the cell
   (xterm/alacritty parity — a match must read crisp, not a muddy tint, #400). col6 pins that.
@@ -54,7 +54,7 @@
   const CELL = 0x804020;      // a non-default (Rgb) cell background
   const DEF_FG = 0xffffff, DEF_BG = 0x000000;
 
-  // xterm's integer blend (render-policy.ts blendOver), mirrored so the page can name its
+  // xterm's integer blend (blendOver, now overlay.rs), mirrored so the page can name its
   // expectations. NOT the oracle for correctness — overlay.rs pins that against xterm byte-for-byte;
   // here it is only the target the wiring must hit, guarded by the not-solid / not-original checks.
   const blendOver = (base, over, alpha = 0x80) => {

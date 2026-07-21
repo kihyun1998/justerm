@@ -1,5 +1,12 @@
 //! RGB-space colour policy — pure, host-testable (#272). Mirrors justerm-web `render-policy.ts`.
 //!
+//! **Provenance note (#504):** the justerm-web modules cited below as the ported-from sibling
+//! (`render-policy.ts`, `render-core.ts`, `decoration-render.ts`, `glyph-class.ts`) **no longer
+//! exist** — the widget's compositing half was removed once the renderer took it over (#273), so
+//! this crate is now the family's only implementation. The references are kept because they name
+//! where the logic came from and what it was checked against; read them as history (git) rather
+//! than as a file to open.
+//!
 //! The renderer resolves a cell's colour *references* against the injected palette ([`palette`]),
 //! then applies the policies that turn them into the colours actually drawn: **inverse** (fg/bg
 //! swap), **bold→bright** (#223, a bold ANSI 0–7 fg brightens to 8–15), and **DIM** (#232, the fg
