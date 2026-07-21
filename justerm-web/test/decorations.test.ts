@@ -263,6 +263,66 @@ describe("DecorationRegistry (#120 S1)", () => {
     ).toEqual([]);
   });
 
+  // #462: WITHOUT viewport geometry (`rows`) the bottom clip has no viewport to clip to.
+  // It used to fall back to +Infinity, so a multi-row `height` walked UNBOUNDED — a large
+  // height looped up to ~1e9 times (hang / OOM) and wrote rows far past any viewport, which
+  // the u32 wire (`decorationWire`) then wraps. With no `rows` we cannot show a row BELOW the
+  // anchor, so the span caps to the anchor row: the loop is bounded (structurally 1 row, for
+  // ANY height) and every emitted row is a finite, top-clamped integer. Production never takes
+  // this path — `DecodedFrame.rows` is required — but the type seam (`DecorationFrame.rows?`)
+  // and consumer/demo-built frames make it reachable, the same class #457 hardened for columns.
+  it("bounds a multi-row height to the anchor row when the frame has no rows", () => {
+    const reg = new DecorationRegistry();
+    reg.register({ markerId: 1, height: 100_000 }); // huge height, no geometry to clip it
+
+    // frame() carries no `rows` — the old +Infinity path. The loop must terminate at 1 row.
+    const rects = reg.decorationsForFrame(frame(mk(1, 4)));
+    expect(rects).toHaveLength(1);
+    expect(rects[0]).toEqual({ row: 4, left: 0, right: 0, layer: "bottom", bg: undefined, fg: undefined });
+  });
+
+  // #462: a non-finite anchor row (a consumer-supplied +Infinity marker) must emit nothing
+  // rather than spin. `Math.max(0, Infinity)` is `Infinity`, and `Infinity <= Infinity` is
+  // TRUE while `Infinity + 1` stays `Infinity`, so the row loop would never terminate. #461's
+  // `Math.max(0, startRow)` clamp covers a NEGATIVE anchor; a non-finite one is the residue it
+  // does not — a separate guard, not the same one.
+  it("emits no rect for a non-finite anchor row (no unbounded loop)", () => {
+    const reg = new DecorationRegistry();
+    reg.register({ markerId: 1, height: 3 });
+
+    expect(reg.decorationsForFrame(frame(mk(1, Number.POSITIVE_INFINITY)))).toEqual([]);
+  });
+
+  // #462 (2-lens): the anchor row has TWO entry points (#461) — the viewport-relative
+  // `markerPositions` (above) and the ABSOLUTE `markerLines` (`startRow = line - top`). A
+  // non-finite absolute line reaches the SAME `firstRow` guard, so it too emits nothing rather
+  // than spinning. Pins the second entry point, not just the first.
+  it("emits no rect for a non-finite ABSOLUTE marker line", () => {
+    const reg = new DecorationRegistry();
+    reg.register({ markerId: 1, height: 3 });
+
+    expect(
+      reg.decorationsForFrame(
+        frameAbs({ rows: 10, scrollbackLen: 13 }, [ml(1, Number.POSITIVE_INFINITY)], []),
+      ),
+    ).toEqual([]);
+  });
+
+  // #462 (2-lens): the PRODUCTION path is safe from the u32 wrap by construction. An absolute
+  // line at/above 2**32 makes `startRow` (= line - top) enormous, but with `rows` present (which
+  // production always sends — `DecodedFrame.rows` is required) the bottom clip drops every row
+  // past the viewport, so `firstRow > rows-1` yields NOTHING and no wrapped row ever reaches the
+  // wire. The single-wrapped-row residual exists ONLY on the geometry-less seam (frame() with no
+  // rows), the same "absent geometry we cannot clip" residual #457 accepted for columns.
+  it("drops an absurd absolute line entirely when the frame carries rows", () => {
+    const reg = new DecorationRegistry();
+    reg.register({ markerId: 1, x: 0, width: 1 });
+
+    expect(
+      reg.decorationsForFrame(frameAbs({ rows: 10, scrollbackLen: 0 }, [ml(1, 2 ** 32 + 5)], [])),
+    ).toEqual([]);
+  });
+
   // #457: a right-anchored span wider than the screen overflows the LEFT edge. It is
   // CLIPPED here, not passed through: the wire carries u32 columns, so a negative
   // `left` would wrap to ~4.29e9 and the renderer's `col >= left` would match NOTHING —
