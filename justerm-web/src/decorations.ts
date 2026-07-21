@@ -206,8 +206,6 @@ export class DecorationRegistry {
     // (both reads below are O(markers) and run per frame).
     if (this.byMarker.size === 0) return rects;
     const cols = frame.cols ?? 0;
-    // Clip a multi-row `height` to the viewport bottom. No `rows` → don't clip.
-    const maxRow = frame.rows !== undefined ? frame.rows - 1 : Number.POSITIVE_INFINITY;
     // Absolute line of viewport row 0. Both halves are needed, so a frame missing either keeps
     // to `markerPositions` rather than silently assuming 0.
     const hasScroll = frame.scrollbackLen !== undefined && frame.displayOffset !== undefined;
@@ -258,17 +256,26 @@ export class DecorationRegistry {
         // (zero-width), or non-finite. Emitting nothing is correct AND is what keeps an
         // unrepresentable column from reaching the u32 lane at all.
         if (!Number.isFinite(left) || !Number.isFinite(right) || right < left) continue;
-        // #461: clamp the START row to the viewport top — the vertical mirror of the column
-        // clip above, and for the same reason: rows cross as u32 too, so a negative row would
-        // wrap rather than arrive as "above the screen". An anchor above the top yields the
-        // visible tail of its span; one whose span ends above the top yields nothing.
+        // #461/#462: clamp the START row to the viewport top and DROP a non-finite anchor.
+        // Rows cross the wire as u32 (`decorationWire`) exactly like columns, so an out-of-range
+        // row must not reach it. A NEGATIVE anchor is clamped to the top (its span's visible tail
+        // shows; a span ending above the top shows nothing). A NON-FINITE anchor is the residue
+        // the clamp does NOT cover: `Math.max(0, +Infinity)` is `+Infinity`, and `+Infinity <=
+        // +Infinity` is TRUE while `+Infinity + 1` stays `+Infinity`, so without this guard the
+        // row loop below never terminates (#462 — it OOMs rather than emitting a wrapped row).
         const firstRow = Math.max(0, startRow);
-        const lastRow = Math.min(startRow + d.height - 1, maxRow);
-        // No `lastRow < firstRow` guard here, deliberately: the loop bound already yields
-        // nothing for an empty span, and for NaN / ±Infinity too (every comparison is false).
-        // A first draft had one; a mutation test showed removing it changed no result, which
-        // makes it dead code rather than an uncovered guard. The columns above DO need their
-        // explicit check, because they are emitted rather than iterated.
+        if (!Number.isFinite(firstRow)) continue;
+        // Bottom clip: to the last viewport row when the frame carries geometry — which the real
+        // path always does (`DecodedFrame.rows` is required). WITHOUT `rows` there is no viewport
+        // to clip to and no row below the anchor can be shown, so the span caps to the anchor row.
+        // That also BOUNDS the loop: the old `+Infinity` fallback let a large `height` walk up to
+        // ~1e9 rows (hang / OOM) and write rows that wrap the u32 wire (#462). `firstRow` is finite
+        // (guarded above) and `bottom` is finite, so `lastRow` is finite — a degenerate or
+        // above-top span simply does not iterate (no explicit `lastRow < firstRow` guard: a first
+        // draft's was shown dead by a mutation test; the columns above still need theirs, being
+        // emitted rather than iterated).
+        const bottom = frame.rows !== undefined ? frame.rows - 1 : firstRow;
+        const lastRow = Math.min(startRow + d.height - 1, bottom);
         for (let row = firstRow; row <= lastRow; row++) {
           rects.push({ row, left, right, layer: d.layer, bg: d.bg, fg: d.fg });
         }
