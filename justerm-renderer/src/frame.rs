@@ -1737,6 +1737,79 @@ mod tests {
         assert_eq!(&got[5..8], &gl_rgb(T));
     }
 
+    /// #507: a Legacy-Computing block this crate draws to the cell (`builtin::owns`) reaches all
+    /// THREE behaviours the tile class gates, exactly like `U+2588`. Before the union it was
+    /// byte-identical to `'A'` on every one of them, while being drawn as a solid part-cell tile.
+    #[test]
+    fn a_legacy_computing_block_reaches_all_three_tile_behaviours() {
+        const LEGACY: u32 = 0x1FB8B; // right seven-eighths block — drawn by `builtin`, not the font
+        let p = bright_palette(); // default_fg white
+        // (1) #226 contrast exclusion: an illegible fg is left alone, where 'A' would be corrected.
+        let policy = ColorPolicy {
+            min_contrast: 7.0,
+            ..ColorPolicy::default()
+        };
+        let low = &[RGB | 0x2A_2A_3A];
+        let tile = pack_instances(
+            &frame_cp(&[0], low, &[0], &[LEGACY]),
+            &p,
+            true,
+            &Overlay::default(),
+            &policy,
+            &[],
+        );
+        let text = pack_instances(
+            &frame_cp(&[0], low, &[0], &[0x41]),
+            &p,
+            true,
+            &Overlay::default(),
+            &policy,
+            &[],
+        );
+        assert_eq!(
+            &tile[5..8],
+            &gl_rgb(0x2A_2A_3A),
+            "excluded from the contrast demand"
+        );
+        assert_ne!(
+            &text[5..8],
+            &gl_rgb(0x2A_2A_3A),
+            "…while 'A' is corrected — the control"
+        );
+        // (2) #239 selection re-tint: blends toward the raw selection colour instead of keeping fg.
+        let raw_sel = 0x80_00_00;
+        let ov = overlay_kind(&[0, 0, 0], &[], raw_sel);
+        let sel = pack_instances(
+            &frame_cp(&[0], &[0], &[0], &[LEGACY]),
+            &p,
+            true,
+            &ov,
+            &ColorPolicy::default(),
+            &[],
+        );
+        assert_eq!(
+            &sel[5..8],
+            &gl_rgb(blend_over(0xFF_FF_FF, raw_sel, HIGHLIGHT_BLEND_ALPHA)),
+            "re-tinted toward the selection, not left white"
+        );
+        // (3) #494: a bg-only TOP decoration takes the cell.
+        const T: u32 = 0x80_40_00;
+        let deco_cell = pack_instances(
+            &frame_cp(&[0], &[0], &[0], &[LEGACY]),
+            &p,
+            true,
+            &Overlay::default(),
+            &ColorPolicy::default(),
+            &[deco(DecorationLayer::Top, Some(T), None)],
+        );
+        assert_eq!(&deco_cell[2..5], &gl_rgb(T));
+        assert_eq!(
+            &deco_cell[5..8],
+            &gl_rgb(T),
+            "the cell paints solid, no white ghost"
+        );
+    }
+
     #[test]
     fn an_inverse_default_bg_tile_under_selection_is_transparent() {
         // #241: an inverse cell with a DEFAULT bg renders its tile glyph transparent — with nothing

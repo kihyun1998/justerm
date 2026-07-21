@@ -60,6 +60,27 @@ const SHADE_MEDIUM: u8 = 128; // ▒
 const SHADE_DARK: u8 = 192; // ▓
 const SOLID: u8 = 255; // █
 
+/// Whether this module draws `cp` itself, to the cell, instead of leaving it to the font — a **pure
+/// range test**, safe to call per cell per frame.
+///
+/// This is the module's own answer to "is this glyph background-shaped ink?", and
+/// [`glyph_class`](crate::glyph_class) unions it into `treat_glyph_as_background_color` (#507). The
+/// dependency runs this way round on purpose: the drawer is the thing that *knows*, so a codepoint
+/// added here is classified correctly the day it is added, with no second list to remember. Copying
+/// ranges by hand is not hypothetical — `emoji.rs` already carries `1FB00..=1FBFF` against this
+/// module's `1FB00..=1FB9F`, a 96-codepoint drift inside one crate.
+///
+/// Deliberately **not** `block_glyph(cp, 1, 1).is_some()`: that allocates and rasterises a bitmap
+/// (~190 ns measured), and the call site runs once per cell per frame — ~1.9 ms/frame at 10 000
+/// cells. The equivalence with `block_glyph` is instead pinned by a test over the whole plane
+/// (`owns_is_exactly_what_block_glyph_draws`), which is where that cost belongs.
+pub fn owns(cp: u32) -> bool {
+    // `2500`-`259F` is contiguous: box drawing (`box_glyph`) then block elements. `1FB00`-`1FB9F`
+    // is contiguous except the reserved `1FB93`, reached through four drawing paths (sextant,
+    // wedge, octant, shade) that the test below proves this range covers exactly.
+    (0x2500..=0x259F).contains(&cp) || ((0x1FB00..=0x1FB9F).contains(&cp) && cp != 0x1FB93)
+}
+
 /// A white RGBA bitmap of `w * h` device px with the coverage of a block element, sextant, extra
 /// eighth block, box-drawing glyph (delegated to [`box_glyph`]), Legacy-Computing wedge / triangular
 /// half ([`wedge_glyph`]), diagonal hatch, one-eighth block / checker or heavy fill ([`octant_block`]),
@@ -1183,6 +1204,23 @@ fn fill(buf: &mut [u8], size: (u32, u32), rect: (u32, u32, u32, u32), alpha: u8)
 
 #[cfg(test)]
 mod tests {
+
+    /// The pin that makes [`owns`] correct **by construction** rather than by memory (#507): the
+    /// cheap range predicate must agree with what `block_glyph` actually draws, everywhere. Walk the
+    /// whole plane the drawer could possibly reach — a codepoint added to any sub-family without
+    /// widening `owns` fails here, which is the failure mode a hand-copied range list cannot detect.
+    ///
+    /// Ownership is size-independent, so a small cell is enough; this runs in well under a second.
+    #[test]
+    fn owns_is_exactly_what_block_glyph_draws() {
+        for cp in 0..0x20000u32 {
+            assert_eq!(
+                owns(cp),
+                block_glyph(cp, 8, 16).is_some(),
+                "owns() and block_glyph() disagree at U+{cp:04X}"
+            );
+        }
+    }
     use super::*;
 
     /// Render into a picture: `#` = full coverage, `+` = partial, `.` = none. Read by eye against

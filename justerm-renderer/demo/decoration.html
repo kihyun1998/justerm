@@ -145,6 +145,18 @@
   checks.aTopDecorationWithAnFgKeepsTheTileArt =
     inkIs(topTileBothChannels, 0, DECO_FG) && !inkIs(topTileBothChannels, 0, TOP_BG);
 
+  // #507: a Legacy-Computing block is drawn by the renderer's OWN builtin rasteriser (not the
+  // font), and since it is drawn to the cell it is classified as background-shaped ink — so the
+  // #494 rule reaches it too. U+1FB8B fills seven eighths of the cell, and the untouched eighth is
+  // the decoration's bg either way, so `inkIs` (brightest pixel) is what discriminates: before the
+  // union it was the cell's white fg.
+  const LEGACY = 0x1fb8b;
+  const topOverLegacy = draw(LEGACY, [], [0, 0, COLS - 1, 1, TOP_BG, NO_REF]);
+  checks.aBgOnlyTopDecorationPaintsOverALegacyComputingBlock =
+    cellIs(topOverLegacy, 0, TOP_BG) &&
+    inkIs(topOverLegacy, 0, TOP_BG) &&
+    !inkIs(topOverLegacy, 0, WHITE);
+
   // A decoration FG override recolours the glyph (read from a letter's ink).
   const fgOverride = draw(LETTER, [], [0, 0, 0, 0, NO_REF, DECO_FG]);
   checks.aDecorationOverridesTheForeground = inkIs(fgOverride, 0, DECO_FG) && !inkIs(fgOverride, 0, WHITE);
