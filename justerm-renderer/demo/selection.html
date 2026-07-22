@@ -198,6 +198,55 @@
   const afterOverlay = grab();
   checks.setOverlayRepacksTheDamageGridWithNoNewFrame = cellIs(afterOverlay, 0, SEL_BG);
 
+  // #513 — LAST, because it needs a larger cell than the rest of the page and leaves the renderer
+  // reconfigured. The line has its own ink, so the #239 re-tint reaches the glyph and stops there.
+  //
+  // Why the cell is enlarged rather than measured at the page's default size — and the reason is NOT
+  // the one this comment first gave. The double-coverage composite it blamed (`mix(bg, mix(fg, line,
+  // L), L)`, leaving L(1-L) of the glyph's ink in the line) was a real shader defect and is fixed;
+  // the shader now composites glyph-over-bg and then line-over-that, so the line is its own ink at
+  // any coverage. Removing the enlargement afterwards still failed at dpr 1 alone, which is what
+  // separated the two causes.
+  //
+  // What remains is geometry. `hline(gy, 0.88, 0.05)` is a half-width of 5 % of the glyph box, so at
+  // dpr 1 the band is roughly 1.6 device px with smoothstep edges and the nearest pixel centre sits
+  // about a third of the way in — peak coverage ≈ 0.32, measured. Over the selection band the line
+  // must reach ≈ 0.5 before it can out-brighten the re-tint, so no colour claim about it is strong at
+  // that size. Enlarging gives the band a saturated core; it does not paper over a composite error.
+  //
+  // (That thinness is itself worth knowing: alacritty clamps with `thickness.max(1.)`, commented
+  // "Make sure lines are always visible". justerm has no such floor. Pre-existing, out of #513.)
+  //
+  // The claim is a bound: a line drawn in the re-tint could not exceed the re-tint at any coverage,
+  // so "brighter than the re-tint in every channel" is false the moment the channel stops existing.
+  r.setFontSize(48);
+  const [bcw, bch] = [r.cell_width(), r.cell_height()];
+  const HALF_BLOCK = 0x2580; // ▀ — upper half, so the lower half is background plus the line
+  const bigCps = new Uint32Array(N).fill(SPACE);
+  bigCps[0] = HALF_BLOCK;
+  r.setOverlay(new Uint32Array([0, 0, 0]), new Uint32Array([]), SEL_BG, MATCH_BG);
+  r.setActiveMatch(new Uint32Array([]), ACTIVE_BG);
+  r.resize(COLS, ROWS);
+  r.apply_frame(COLS, ROWS, new Uint32Array(N), zeroFg, bigCps,
+    new Uint16Array(N).fill(1 << 3 /* UNDERLINE */), true);
+  r.render();
+  const bigImg = grab();
+  let linePeak = [0, 0, 0], peakSum = -1;
+  for (let y = bch >> 1; y < bch; y++)
+    for (let x = 0; x < bcw; x++) {
+      const i = ((bigImg.h - 1 - y) * bigImg.w + x) * 4;
+      const p3 = [bigImg.buf[i], bigImg.buf[i + 1], bigImg.buf[i + 2]];
+      const sum = p3[0] + p3[1] + p3[2];
+      if (sum > peakSum) { peakSum = sum; linePeak = p3; }
+    }
+  const [rr, rg, rb] = chans(retint);
+  checks.aSelectedTilesUnderlineIsBrighterThanTheGlyphsRetint =
+    linePeak[0] > rr && linePeak[1] > rg && linePeak[2] > rb;
+  // …and the sampled pixel is the LINE, not the selection band the rest of the lower half shows.
+  const [sr, sg, sb] = chans(SEL_BG);
+  checks.thatSampleIsTheLineNotTheSelectionBand =
+    !(near(linePeak[0], sr) && near(linePeak[1], sg) && near(linePeak[2], sb));
+
   window.__proof = {
     ok: Object.values(checks).every(Boolean), checks,
     dpr: devicePixelRatio, cw, ch,

@@ -458,6 +458,61 @@
   r.setLineHeight(1.0);
   r.resize(COLS, ROWS);
 
+
+  // #513: under a BLOCK cursor the whole cell flips to the cursor's colour scheme — bg becomes the
+  // cursor colour, glyph becomes the cursor's text colour — and the underline flips WITH it, or the
+  // cell would show a green glyph and a white underline, disagreeing about whether the cursor covers
+  // it. (Bar/Underline/HollowBlock don't recolour the cell, so they leave the line alone; only Block
+  // reaches the line, which is the single `block ?` term in the shader.) Both references do this for
+  // an inherited line colour, which — with no SGR 58 — is the only colour justerm has.
+  //
+  // The cell is a SPACE with the UNDERLINE flag, so the ONLY ink is the line: any green pixel is the
+  // underline taking the cursor's text colour, and any white pixel would be the line refusing to.
+  const UL = 1 << 3;
+  const ulFlags = new Uint16Array(COLS * ROWS);
+  ulFlags[0] = UL; // cell (0,0)
+  // Enlarge so the antialiased underline has a saturated core at dpr 1 too — at the page's default
+  // cell the band is ~1.6 device px and its peak green never separates cleanly from the red fill.
+  // (The other checks on this page run at the default size; this one restores it afterwards.)
+  const savedFont = 16;
+  r.setFontSize(48);
+  const bigCh = r.cell_height(), bigCw = r.cell_width();
+  r.clearCursor();
+  const noCursor = draw(new Uint32Array(COLS * ROWS).fill(SPACE), ulFlags);
+  r.setCursor(0, 0, BLOCK, CURSOR, TEXT);
+  const withCursor = present();
+
+  // The line is a thin antialiased band, so no pixel is pure white or pure green — the peak of a
+  // 1.6-device-px band at dpr 1 lands around 194. So the assertion is comparative, on the SAME cell
+  // with and without the cursor: the underline's brightest pixel is achromatic without the cursor
+  // (white ink → R≈G≈B) and green-dominant with it (cursor text colour → G ≫ R,B). Reading the shift
+  // rather than an absolute colour is what survives the AA and every dpr.
+  // Score each lower-half pixel by how far it leans toward the ink we expect and away from the cell's
+  // fill, then take the winner. Without the cursor the fill is black and the ink is white, so score by
+  // brightness. With the cursor the fill is the cursor's RED bg and the underline is its GREEN text,
+  // so score by (green − red): that ignores the red fill entirely and finds the line even though red
+  // and the white-ish line have similar total brightness.
+  const pick = (img, score) => {
+    let best = [0, 0, 0], bestScore = -1e9;
+    for (let y = bigCh >> 1; y < bigCh; y++)
+      for (let x = 0; x < bigCw; x++) {
+        const i = ((img.h - 1 - y) * img.w + x) * 4;
+        const px = [img.buf[i], img.buf[i + 1], img.buf[i + 2]];
+        const sc = score(px[0], px[1], px[2]);
+        if (sc > bestScore) { bestScore = sc; best = px; }
+      }
+    return best;
+  };
+  const [wr, wg, wb] = pick(noCursor, (r0, g0, b0) => r0 + g0 + b0);
+  const [cr, cg, cb] = pick(withCursor, (r0, g0, b0) => g0 - r0);
+  // Without the cursor the underline is white ink: bright and near-achromatic.
+  checks.theUnderlineIsAchromaticWithoutACursor = Math.abs(wr - wg) < 24 && Math.abs(wg - wb) < 24 && wg > 120;
+  // Under the block cursor the underline is the cursor's TEXT colour (green), not the white it was —
+  // green clearly dominant, and not the red cursor fill either.
+  checks.aBlockCursorFlipsTheUnderlineToItsTextColour = cg > 120 && cg > cr + 80 && cg > cb + 80;
+  r.clearCursor();
+  r.setFontSize(savedFont);
+
   window.__proof = {
     ok: Object.values(checks).every(Boolean), checks,
     dpr: devicePixelRatio, cw, ch, thickness, bigT, wideCellW, wideCellH, wideT, tallCw, tallCh, tallT,

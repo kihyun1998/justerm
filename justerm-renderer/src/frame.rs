@@ -12,7 +12,9 @@
 //! [`overlay`]: crate::overlay
 //! [`decoration`]: crate::decoration
 
-use crate::attrs::{BLANK_SLOT, glyph_field, is_concealed, is_dim, is_inverse};
+use crate::attrs::{
+    BLANK_SLOT, STRIKETHROUGH, UNDERLINE, glyph_field, is_concealed, is_dim, is_inverse,
+};
 use crate::color::gl_rgb;
 use crate::contrast::ensure_contrast_ratio;
 use crate::decoration::{DecorationLayer, DecorationRect, decoration_override_at};
@@ -23,8 +25,16 @@ use crate::overlay::{
 use crate::palette::Palette;
 use crate::render_policy::{ColorPolicy, dim_foreground, resolve_cell};
 
-/// Floats per cell instance: `col, row, bg(3), fg(3), glyph_field`.
-pub const INSTANCE_FLOATS: usize = 9;
+/// Floats per cell instance: `col, row, bg(3), fg(3), glyph_field, line_fg`.
+///
+/// `line_fg` is the ink an underline / strikethrough draws in (#513), carried **packed** as a single
+/// `0xRRGGBB` rather than unpacked into three floats like `bg` and `fg`. A colour maxes at `2²⁴ − 1`
+/// and an `f32` represents every integer below `2²⁴` exactly, so the value survives the attribute and
+/// `uint()` in the shader — measured, not assumed: a standalone WebGL2 probe round-tripped ten values
+/// including `0x000000`, `0xFFFFFF`, `0x010101` and both sides of the sign-bit boundary, all exact.
+/// Packed because a line is *rare* — every cell would otherwise pay three floats for a channel almost
+/// none of them use, and ADR-0021 keeps one instance buffer resident per grid.
+pub const INSTANCE_FLOATS: usize = 10;
 
 /// A decoded frame's per-cell grid: dimensions + the four parallel column arrays the packer
 /// reads (all row-major, ideally length `cols*rows`). `bg`/`fg` are tagged-u32 colour refs,
@@ -51,7 +61,7 @@ pub struct Frame<'a> {
 }
 
 /// Pack a [`Frame`] (row-major) into per-cell instance data
-/// `[col, row, bg_r, bg_g, bg_b, fg_r, fg_g, fg_b, glyph_field]`. Colours resolve through the injected
+/// `[col, row, bg_r, bg_g, bg_b, fg_r, fg_g, fg_b, glyph_field, line_fg]`. Colours resolve through the injected
 /// `policy`: inverse swaps the fg/bg and a bold ANSI 0–7 fg brightens to 8–15 ([`resolve_cell`], #223);
 /// a DIM cell's fg fades toward its bg (#232, [`dim_foreground`]); `minimumContrastRatio` nudges an
 /// illegible fg (#225); and a *selected* cell takes `selectionForeground` (#227) and has its DIM
@@ -86,7 +96,7 @@ pub fn pack_instances(
         flags,
         codepoints,
     } = *frame;
-    // `usize` is 32 bits on wasm32, so `cells * 9` overflows it for a grid `resolve_frame` would
+    // `usize` is 32 bits on wasm32, so `cells * INSTANCE_FLOATS` overflows it for a grid `resolve_frame` would
     // still accept (it only bounds `cells` by the slice length). A failed reservation is not worth
     // an abort: fall back to growing on demand — the loop below is bounded by `rows * cols` either
     // way, and `resolve_frame` has already refused a grid its slices cannot back (#355).
@@ -187,6 +197,13 @@ pub fn pack_instances(
             // won't-fix on exactly this rule; do not "restore parity" here without amending the ADR.
             // (Its older framing — a *family* change to keep justerm-web byte-neutral — is doubly
             // dead: the widget'"'"'s compositing half went with #504.)
+            // #513: the line's ink forks from the glyph's HERE, and only here. Rules 1-3 (the cell's
+            // own ink, a bottom decoration's fg, `selectionForeground`) are "what colour is this
+            // cell's ink" and reach both; the re-tint below is the one rule about *the glyph* —
+            // ADR-0019 R1 — so the line keeps the value as it stands at this point. Rules 5-7 (top
+            // decoration, dim, contrast) then run over both, which is why this is a fork rather than
+            // a second pipeline.
+            let mut line_fg = fg;
             if is_selection && exclude && !glyph_taken_by_decoration {
                 let raw_sel = overlay.colors.of(HighlightKind::Selection);
                 let inverse_default_bg = is_inverse(cell_flags) && (bg_ref >> 24) == 0;
@@ -324,6 +341,9 @@ pub fn pack_instances(
             }
             if let Some(c) = top.fg {
                 fg = c;
+                // #513 rule 5: a decoration declares the cell's INK, not the glyph's specifically,
+                // so it reaches the line too.
+                line_fg = c;
                 fg_overridden = true;
             } else if exclude && top.bg.is_some() {
                 // #494's assignment lives in the `else` on purpose. Written as its own guarded `if`
@@ -338,7 +358,7 @@ pub fn pack_instances(
                 // recolouring the ink to match the background. The visible cell is identical either
                 // way, but the ink channel is not: ADR-0019 rule 4 puts `I_line` (underline,
                 // strikethrough) and `I_cursor` on the TEXT side unconditionally, and the shader
-                // draws the line in `base_fg` (`webgl.rs`, "always draw in the base foreground"), so
+                // drew the line in `base_fg` until #513 gave it a channel of its own, so
                 // an `fg` made equal to `bg` erases the line along with the glyph it was never about.
                 // Blanking the slot instead leaves `fg` holding the cell's own ink for the line to
                 // use, and states the rule structurally rather than achieving it by a colour
@@ -364,6 +384,9 @@ pub fn pack_instances(
             // so exactly one path dims the fg. (composeCellColors #230 → then the contrast pass.)
             if dim && fg_overridden {
                 fg = dim_foreground(fg, eff_bg);
+                // #513 rule 6: DIM is a property of the CELL, so a dim cell's underline is dim.
+                // `fg_overridden` is shared here because a decoration that set the fg set both.
+                line_fg = dim_foreground(line_fg, eff_bg);
             }
             // #226's exclusion is about a tiling glyph SEAMING against its neighbour if its colour is
             // nudged. Once a decoration has taken the glyph there is no such glyph, and the ink left
@@ -382,6 +405,37 @@ pub fn pack_instances(
                 dim_foreground(fg, eff_bg)
             } else {
                 fg
+            };
+            // #513 rules 6 and 7 over the line's ink. Same two policies, same `eff_bg`, run again
+            // rather than shared: the two inks can start from different colours (that is the point of
+            // the channel), so they can need different corrections.
+            //
+            // The contrast gate is the glyph's, verbatim, and that is a correction of this change's
+            // first shape. #226 excludes a tiling glyph because `ensure_contrast_ratio` is a function
+            // of `eff_bg`, so two cells of one run over different backgrounds get nudged differently
+            // and the run SEAMS. An underline is exactly as continuous across cells as a tile is —
+            // dropping the term let a `────` run with `minimumContrastRatio` on change colour at a
+            // background boundary, which is the symptom #513 exists to remove, re-entered through
+            // contrast. `glyph_taken_by_decoration` keeps #508: there the glyph is gone, the line is
+            // the only ink, and a decoration paints one colour across its whole span anyway.
+            // Only cells that actually draw a line need this. `line_packed` is a pure function of
+            // the same inputs whether or not the attribute bits are set, so skipping it is a cost
+            // win with no behaviour change — and it skips a second `ensure_contrast_ratio` luminance
+            // loop on every cell in the viewport, which is the bulk of them.
+            let draws_a_line = cell_flags & (UNDERLINE | STRIKETHROUGH) != 0;
+            let line_packed = if !draws_a_line {
+                line_fg
+            } else if mcr > 1.0 && (!exclude || glyph_taken_by_decoration) {
+                let ratio = if dim { mcr / 2.0 } else { mcr };
+                match ensure_contrast_ratio(eff_bg, line_fg, ratio) {
+                    Some(adjusted) => adjusted,
+                    None if dim && !fg_overridden => dim_foreground(line_fg, eff_bg),
+                    None => line_fg,
+                }
+            } else if dim && !fg_overridden {
+                dim_foreground(line_fg, eff_bg)
+            } else {
+                line_fg
             };
             let bg_rgb = gl_rgb(eff_bg);
             let fg_rgb = gl_rgb(fg_packed);
@@ -412,6 +466,7 @@ pub fn pack_instances(
                 fg_rgb[1],
                 fg_rgb[2],
                 field as f32,
+                line_packed as f32,
             ]);
         }
     }
@@ -486,7 +541,14 @@ mod tests {
             1.0,
             1.0,
             33.0,
+            // #513 `line_fg`, packed: with no rule diverting it, the line's ink is the cell's own.
+            0xFF_FF_FF as f32,
         ];
+        assert_eq!(
+            got.len(),
+            INSTANCE_FLOATS,
+            "one instance, and the record is the declared width"
+        );
         assert_eq!(got.len(), expect.len());
         for (i, (a, b)) in got.iter().zip(expect.iter()).enumerate() {
             assert!((a - b).abs() < 1e-6, "float {i}: got {a}, want {b}");
@@ -1587,6 +1649,159 @@ mod tests {
         );
     }
 
+    /// #513 rule 2 — a BOTTOM decoration declares the cell's ink, so the line takes it too. The fork
+    /// sits below this assignment, so what pins it is that `line_fg` starts from `fg` rather than
+    /// from `cell_fg`: forking earlier would leave the line white here.
+    #[test]
+    fn a_bottom_decorations_fg_reaches_the_line() {
+        let p = bright_palette();
+        const F: u32 = 0x00_A0_FF;
+        let got = pack_instances(
+            &frame_cp(&[0], &[0], &[UNDERLINE], &[0x41]),
+            &p,
+            true,
+            &Overlay::default(),
+            &ColorPolicy::default(),
+            &[deco(DecorationLayer::Bottom, None, Some(F))],
+        );
+        assert_eq!(&got[5..8], &gl_rgb(F), "the glyph takes it");
+        assert_eq!(got[9], F as f32, "and so does the line");
+        assert_ne!(got[9], 0xFF_FF_FF as f32, "not the cell's own ink");
+    }
+
+    /// #513 rule 3 — `selectionForeground` is a TEXT-class rule, so it reaches the line. Asserted on
+    /// a TILE, which is the cell where the two channels visibly part: the glyph discards the
+    /// injected colour for the #239 re-tint (rule 4) while the line keeps it.
+    #[test]
+    fn selection_foreground_reaches_the_line_even_where_the_glyph_discards_it() {
+        let p = bright_palette();
+        const SFG: u32 = 0x00_00_FF;
+        let raw_sel = 0x80_00_00;
+        let got = pack_instances(
+            &frame_cp(&[0], &[0], &[UNDERLINE], &[BLOCK]),
+            &p,
+            true,
+            &overlay_kind(&[0, 0, 0], &[], raw_sel),
+            &ColorPolicy {
+                selection_fg: Some(SFG),
+                ..ColorPolicy::default()
+            },
+            &[],
+        );
+        assert_eq!(
+            &got[5..8],
+            &gl_rgb(blend_over(0xFF_FF_FF, raw_sel, HIGHLIGHT_BLEND_ALPHA)),
+            "the glyph discards selectionForeground for the re-tint (#239)"
+        );
+        assert_eq!(got[9], SFG as f32, "the line keeps it — it is TEXT class");
+    }
+
+    /// #513 rule 5 — a TOP decoration's fg reaches the line, by assignment this time (it is applied
+    /// after the fork).
+    #[test]
+    fn a_top_decorations_fg_reaches_the_line() {
+        let p = bright_palette();
+        const F: u32 = 0x00_A0_FF;
+        let got = pack_instances(
+            &frame_cp(&[0], &[0], &[UNDERLINE], &[0x41]),
+            &p,
+            true,
+            &Overlay::default(),
+            &ColorPolicy::default(),
+            &[deco(DecorationLayer::Top, None, Some(F))],
+        );
+        assert_eq!(&got[5..8], &gl_rgb(F));
+        assert_eq!(got[9], F as f32, "the line takes the decoration's ink");
+        assert_ne!(got[9], 0xFF_FF_FF as f32);
+    }
+
+    /// #513 rule 6 — DIM is a property of the CELL, so a dim cell's line is dim. Uses a decoration
+    /// fg so the `dim && fg_overridden` arm runs (#230); the `!fg_overridden` arm is the fallback
+    /// inside the contrast block, pinned by the next test.
+    #[test]
+    fn dim_reaches_the_line() {
+        let p = bright_palette();
+        const F: u32 = 0x00_A0_FF;
+        let got = pack_instances(
+            &frame_cp(&[0], &[0], &[DIM | UNDERLINE], &[0x41]),
+            &p,
+            true,
+            &Overlay::default(),
+            &ColorPolicy::default(),
+            &[deco(DecorationLayer::Bottom, None, Some(F))],
+        );
+        let dimmed = dim_foreground(F, 0x00_00_00);
+        assert_eq!(&got[5..8], &gl_rgb(dimmed), "the glyph is dimmed");
+        assert_eq!(got[9], dimmed as f32, "and so is the line");
+        assert_ne!(got[9], F as f32, "not the undimmed decoration colour");
+    }
+
+    /// #513 rule 7 — the contrast correction reaches the line. On a TEXT cell both channels start
+    /// from the same illegible ink, so the assertion is that the line was corrected at all; the tile
+    /// case, where the two gates deliberately differ, is
+    /// `minimum_contrast_reaches_the_line_on_a_taken_tile` and its control.
+    #[test]
+    fn minimum_contrast_reaches_the_line() {
+        let p = bright_palette();
+        const LOW: u32 = 0x1A_1A_1A; // nearly the default bg
+        let policy = ColorPolicy {
+            min_contrast: 7.0,
+            ..ColorPolicy::default()
+        };
+        let got = pack_instances(
+            &frame_cp(&[0], &[RGB | LOW], &[UNDERLINE], &[0x41]),
+            &p,
+            true,
+            &Overlay::default(),
+            &policy,
+            &[],
+        );
+        assert_ne!(&got[5..8], &gl_rgb(LOW), "the glyph was corrected");
+        assert_ne!(got[9], LOW as f32, "and the line was too");
+        // Both channels started from the same ink and took the same correction, so they land
+        // together — the claim is that the line was carried through the pass, not that it can differ.
+        let glyph_packed = ((got[5] * 255.0).round() as u32) << 16
+            | ((got[6] * 255.0).round() as u32) << 8
+            | (got[7] * 255.0).round() as u32;
+        assert_eq!(got[9], glyph_packed as f32);
+    }
+
+    /// #513: the line has its own ink channel, so the #239 re-tint reaches the GLYPH and stops
+    /// there. Rule 4 is unconditional — `I_line` is TEXT class — and until this channel existed the
+    /// cell carried one colour, so an underline on a selected tile was dragged toward the selection
+    /// with the glyph. That is what makes an underline crossing text and box-drawing change colour
+    /// halfway: the `cpu` cells drew the line in their ink, the `────` cells in the re-tint.
+    ///
+    /// Both channels are asserted together on purpose: the glyph MUST still re-tint (#239 is not
+    /// repealed) and the line MUST not, which is the whole claim in one cell.
+    #[test]
+    fn a_selected_tiles_underline_keeps_the_cells_ink_while_the_glyph_re_tints() {
+        let p = bright_palette(); // default_fg white
+        let raw_sel = 0x80_00_00;
+        let got = pack_instances(
+            &frame_cp(&[0], &[0], &[UNDERLINE], &[BLOCK]),
+            &p,
+            true,
+            &overlay_kind(&[0, 0, 0], &[], raw_sel),
+            &ColorPolicy::default(),
+            &[],
+        );
+        let retint = blend_over(0xFF_FF_FF, raw_sel, HIGHLIGHT_BLEND_ALPHA);
+        assert_eq!(
+            &got[5..8],
+            &gl_rgb(retint),
+            "the glyph still re-tints toward the selection (#239 stands)"
+        );
+        assert_eq!(
+            got[9], 0xFF_FF_FF as f32,
+            "the line keeps the cell's own ink — packed, unpacked in the shader"
+        );
+        assert_ne!(
+            got[9], retint as f32,
+            "…and specifically not the glyph's re-tint, which is what shared the channel before"
+        );
+    }
+
     #[test]
     fn a_tile_glyph_under_selection_is_retinted_toward_the_raw_selection_colour() {
         let p = bright_palette(); // default_fg white
@@ -1696,9 +1911,11 @@ mod tests {
             &[deco(DecorationLayer::Top, Some(T), None)],
         );
         assert_eq!(&got[2..5], &gl_rgb(T), "the decoration still owns the bg");
+        // Asserted on `[9]`, the line's own channel since #513. Before that the line WAS `fg`, and
+        // this test read `[5..8]`; on a taken tile that slot now drives nothing (the slot is blank),
+        // so leaving it there would have pinned dead state under a name claiming otherwise.
         assert_ne!(
-            &got[5..8],
-            &gl_rgb(raw_sel),
+            got[9], raw_sel as f32,
             "the line must not take the selection colour — that is the glyph's treatment"
         );
         // It takes the cell's OWN ink, like any TEXT-class ink would. This cell is `INVERSE`, so
@@ -1707,7 +1924,7 @@ mod tests {
         // and none of the selection's TEXT-class treatments apply here (no `selectionForeground`, no
         // DIM). A black line on the orange decoration bar, which is legible; the point of the fix is
         // that the colour comes from the cell rather than from a rule about a glyph that is gone.
-        assert_eq!(&got[5..8], &gl_rgb(0x00_00_00));
+        assert_eq!(got[9], 0x00_00_00 as f32);
     }
 
     /// #226's contrast exclusion exists to stop a nudge SEAMING a tiling glyph against its
@@ -1732,9 +1949,9 @@ mod tests {
         );
         assert_eq!(&got[2..5], &gl_rgb(T));
         assert_ne!(
-            &got[5..8],
-            &gl_rgb(0x81_41_01),
-            "the near-invisible ink must have been corrected"
+            got[9], 0x81_41_01 as f32,
+            "the near-invisible LINE must have been corrected — `[9]` since #513, and on this cell
+             `[5..8]` drives nothing at all because the decoration took the glyph"
         );
         // The control: the SAME cell without the decoration keeps the exclusion, because there the
         // glyph is still drawn and nudging it would open the seam #226 is about.
@@ -1751,6 +1968,13 @@ mod tests {
             &gl_rgb(0x81_41_01),
             "an undrawn-over tile is still excluded — the exclusion is not repealed, only scoped"
         );
+        // …and the LINE is excluded with it. The two channels share the gate deliberately: an
+        // underline is as continuous across cells as a tile, so correcting it per-cell against a
+        // varying `eff_bg` would break a run exactly the way #226 says a nudged tile breaks one.
+        assert_eq!(
+            undecorated[9], 0x81_41_01 as f32,
+            "the line follows the glyph's exclusion on a live tile"
+        );
     }
 
     #[test]
@@ -1766,15 +1990,17 @@ mod tests {
             &[deco(DecorationLayer::Top, Some(T), None)],
         );
         assert_eq!(&got[2..5], &gl_rgb(T), "the decoration owns the bg");
+        // The line's ink, on its own channel since #513. Until then the shader drew the line in
+        // `base_fg`, so this test asserted `[5..8]` and its whole point was `fg != bg`; the channel
+        // makes that reasoning obsolete — the line cannot be erased by the glyph's colour any more,
+        // because it no longer reads it.
         assert_eq!(
-            &got[5..8],
-            &gl_rgb(0xFF_FF_FF),
-            "fg stays the cell's own ink, so the line has something to draw in"
+            got[9], 0xFF_FF_FF as f32,
+            "the line keeps the cell's own ink, which is what it draws in"
         );
         assert_ne!(
-            &got[5..8],
-            &got[2..5],
-            "fg != bg — the shader draws the line in `base_fg`, so equality erases it"
+            got[9], T as f32,
+            "and not the decoration's colour, which would make it invisible"
         );
         assert_eq!(
             got[8],
@@ -1916,14 +2142,13 @@ mod tests {
             "no glyph to seam, and the underline bit survives"
         );
         assert_ne!(
-            &got[5..8],
-            &got[2..5],
+            got[9], T as f32,
             "the line's ink is distinct from the bg, or it would be invisible"
         );
         assert_eq!(
-            &got[5..8],
-            &gl_rgb(dim_foreground(0xFF_FF_FF, T)),
-            "and it is the DIM ink — a dim cell's underline is dim"
+            got[9],
+            dim_foreground(0xFF_FF_FF, T) as f32,
+            "and it is the DIM ink — a dim cell's underline is dim (#513 rule 6, on `[9]`)"
         );
     }
 
