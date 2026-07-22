@@ -115,8 +115,9 @@ pub struct DecorationOverride {
 /// Note this is the *merge* rule only. What the merged `bg` is then **used for** deliberately departs
 /// from xterm in two places. #444 feeds it into the selection's blend-vs-solid decision, whereas xterm
 /// decides that from the cell's own bg alone and discards the decoration. And #494 lets a **bg-only
-/// TOP** override take the *foreground* of a tile-glyph cell, so the cell paints solid instead of the
-/// glyph occluding the layer above it. That one is a divergence from xterm proper — both its cell
+/// TOP** override take the *glyph* of a tile-glyph cell, so the cell paints solid instead of the
+/// glyph occluding the layer above it — by dropping the glyph, not by recolouring its ink, since the
+/// ink channel is what the cell's underline and strikethrough draw in (#508). That one is a divergence from xterm proper — both its cell
 /// renderers let the glyph win (`CellColorResolver.ts:178-187` webgl, `DomRendererRowFactory.ts:
 /// 357-408` DOM); what xterm leaves undefined is only how `layer` relates to glyphs rather than to
 /// the selection. The reasoning, and the two xterm behaviours it knowingly declines, are at the call

@@ -191,7 +191,8 @@ guard fires before the old one.
 |---|---|
 | **core / wasm** | `encode→decode` round-trip (ADR-0005) · `vttest` · **real PTY capture** (the user's RHEL 9 VM, `capture-dogfood.sh` — vim/top/htop; TUI needs a foreground timeout, alt-screen apps snapshot just before `?1049l`) |
 | **web** | `pnpm demo` real browser (DPR / coords / render bugs; canvas buffer = CSS×DPR, geometry from `rect.h/ROWS`) + `pnpm test:e2e` (Playwright headless, `webServer` auto-starts `pnpm demo` → real wasm+controller round-trip). a11y proven via **SR-consumed proxies**: announce = aria-live `textContent`, signal = console log; **suppression proof = with SR off, neither appears** |
-| **renderer** | `pnpm run build:wasm && pnpm exec playwright test` over `demo/*.html` × dpr **1 / 1.1 / 1.5 / 2**, reading `window.__proof.ok`; coordinates via `demo/proof.js`, `cell_width()` in device px |
+| **renderer — gate** | `pnpm run build:wasm && pnpm exec playwright test` over `demo/*.html` × dpr **1 / 1.1 / 1.5 / 2**, reading `window.__proof.ok`; coordinates via `demo/proof.js`, `cell_width()` in device px |
+| **renderer — eyeball** | **Playwright MCP against a real browser**, never a headless screenshot: `pnpm build:wasm` → serve (`node scripts/serve.mjs`, :8269) → `browser_navigate` a scratch `demo/*.html` → `browser_evaluate` to redraw/scale → `browser_take_screenshot`. The gate and the eyeball are different tools for different questions and neither substitutes: the gate asserts pixels the compositor never touched, the eyeball is the only way to see what a user sees. Delete the scratch page afterwards — both spec runners auto-collect `demo/*.html` |
 | **strongest — real consumer** | **penterm.** Link the local build in: `[patch.crates-io] justerm-core = { path = "../justerm/justerm-core" }` in `../penterm/src-tauri/Cargo.toml`, run penterm's **full** suite. Strongest evidence = a penterm test that *pinned the old bug as expected* now **breaks** while the rest stays green. For a wasm/web change, link via a **clean-room worktree** (a local pkg-swap pollutes the pnpm store) |
 
 Traps this layer must respect:
@@ -204,7 +205,15 @@ Traps this layer must respect:
 - **`readPixels` ≠ a screenshot.** Headless SwiftShader composites a
   fractional-CSS canvas to white (#352); a blur metric then reads that as
   "sharpest". Beware tautological proofs (#337) — a check that can only confirm
-  its own premise. Don't eyeball at dpr 1 and move on (#328).
+  its own premise. Don't eyeball at dpr 1 and move on (#328). The corollary is
+  the eyeball row above: wanting to *look* at renderer output is not a reason to
+  screenshot the headless run — it is the reason to open a real browser.
+- **Rebuild the wasm before you look, every time.** `test:proofs` bundles
+  `build:wasm`; driving a page yourself does not, so a Rust change you have not
+  rebuilt shows you the *previous* binary. The failure is silent and reads
+  exactly like "my fix did not work" — costing a hunt for a bug that is already
+  fixed. Also set the canvas CSS box from `cssWidth()`/`cssHeight()` on any
+  scratch page, or #352 turns it white before you can read anything.
 - Visual/color changes still need a browser verify even when Step 5 is skipped
   for a closed surface — a synthetic-input unit is not a substitute (#223).
 

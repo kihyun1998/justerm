@@ -140,6 +140,15 @@ pub fn pack_instances(
                 fg = c;
                 fg_overridden = true;
             }
+            // The TOP layer is read here rather than at its composite site below, because whether it
+            // takes the glyph decides what the *ink* rules downstream are even for. It is a pure
+            // lookup over the rect slice, so reading it early costs nothing and moves nothing.
+            let top = decoration_override_at(decorations, row, col, DecorationLayer::Top);
+            // #508: a bg-only TOP decoration over a background-class glyph drops the glyph (see the
+            // composite site). Once it has, the cell's ink channel carries `I_line` and nothing else,
+            // and ADR-0019 rule 4 puts that on the TEXT side unconditionally — so every R1 rule below
+            // must stand down, and the TEXT-class ones must not.
+            let glyph_taken_by_decoration = exclude && top.bg.is_some() && top.fg.is_none();
             // #227 selectionForeground: force a selected cell's fg to the injected colour (never a
             // match), overriding the cell's own / bottom-decoration fg. A tile glyph discards it (#239
             // below). It is selection-only, so it never triggers the #230 re-dim (`!is_selection`).
@@ -178,7 +187,7 @@ pub fn pack_instances(
             // won't-fix on exactly this rule; do not "restore parity" here without amending the ADR.
             // (Its older framing — a *family* change to keep justerm-web byte-neutral — is doubly
             // dead: the widget'"'"'s compositing half went with #504.)
-            if is_selection && exclude {
+            if is_selection && exclude && !glyph_taken_by_decoration {
                 let raw_sel = overlay.colors.of(HighlightKind::Selection);
                 let inverse_default_bg = is_inverse(cell_flags) && (bg_ref >> 24) == 0;
                 fg = if inverse_default_bg {
@@ -213,8 +222,8 @@ pub fn pack_instances(
             // #120/#393 TOP decoration: paints OVER the highlight (foreground-most), overriding the
             // effective bg and/or the fg (`composeCellColors` applies `top` last, after selection).
             // Its bg/fg also merge per-property across the top layer (#452), independently of the
-            // bottom layer's merge — xterm runs one accumulating pass per layer.
-            let top = decoration_override_at(decorations, row, col, DecorationLayer::Top);
+            // bottom layer's merge — xterm runs one accumulating pass per layer. (`top` itself was
+            // read above, before the ink rules that need to know whether it takes the glyph.)
             if let Some(c) = top.bg {
                 eff_bg = c;
                 // #494, a DELIBERATE divergence (the #444 family): a tile glyph FOLLOWS a bg-only top
@@ -256,12 +265,13 @@ pub fn pack_instances(
                 // follows the webgl model deliberately (#430) — mixing in the DOM renderer's ordering
                 // here would split that model across two features.
                 //
-                // Known consequence, tracked as #508: once `fg == bg`, anything the shader draws in the
-                // foreground colour that is NOT the glyph disappears with it — an UNDERLINE or
-                // STRIKETHROUGH line (`webgl.rs:188-190`) and the visible half of a BLINK phase. The
-                // rationale above is about the glyph, so it does not reach those; the selection re-tint
-                // keeps them because it blends instead of replacing. Left visible rather than papered
-                // over. Range gap in the classifier itself: #507.
+                // #508, FIXED: the decoration used to take the glyph by setting `fg = bg`, which
+                // erased everything else the shader draws in the foreground — the UNDERLINE and
+                // STRIKETHROUGH lines (`webgl.rs`) and the visible half of a BLINK phase — none of
+                // which is the glyph. Rule 4 puts those on the TEXT side unconditionally, so the
+                // glyph is now dropped by SLOT instead and the ink channel is left for them. The
+                // BLINK half is deliberately *not* restored: a dropped glyph has nothing to blink,
+                // which is rule 5 working rather than a residue of this one.
                 //
                 // Only a **bg-only** decoration means "this whole cell is background now": one that
                 // sets `fg` too keeps the art in the consumer's colour (the escape hatch), and BOTTOM
@@ -315,7 +325,7 @@ pub fn pack_instances(
             if let Some(c) = top.fg {
                 fg = c;
                 fg_overridden = true;
-            } else if exclude && let Some(c) = top.bg {
+            } else if exclude && top.bg.is_some() {
                 // #494's assignment lives in the `else` on purpose. Written as its own guarded `if`
                 // (`exclude && top.fg.is_some()`) it was **behaviourally dead** — the branch above
                 // re-applies `top.fg` immediately after, so the escape hatch held either way and no
@@ -323,7 +333,18 @@ pub fn pack_instances(
                 // guard left the whole suite green). As an `else` it is the only thing that keeps a
                 // both-channel decoration's art, so `a_top_decoration_setting_both_channels_keeps_the
                 // _tile_glyph` now discriminates it.
-                fg = c;
+                //
+                // #508: the decoration takes the GLYPH, and it takes it by DROPPING it — not by
+                // recolouring the ink to match the background. The visible cell is identical either
+                // way, but the ink channel is not: ADR-0019 rule 4 puts `I_line` (underline,
+                // strikethrough) and `I_cursor` on the TEXT side unconditionally, and the shader
+                // draws the line in `base_fg` (`webgl.rs`, "always draw in the base foreground"), so
+                // an `fg` made equal to `bg` erases the line along with the glyph it was never about.
+                // Blanking the slot instead leaves `fg` holding the cell's own ink for the line to
+                // use, and states the rule structurally rather than achieving it by a colour
+                // coincidence. `glyph_taken_by_decoration` (computed with `top`, above) is what
+                // carries it to the glyph field and stands the R1 ink rules down; this arm is now
+                // only the statement that a bg-only top decoration does NOT write the ink channel.
             }
             // The fg colour policy, applied ONCE against the effective bg on the UNDIMMED fg — xterm's
             // model (`TextureAtlas._getMinimumContrastColor`), which the renderer can follow because the
@@ -344,7 +365,13 @@ pub fn pack_instances(
             if dim && fg_overridden {
                 fg = dim_foreground(fg, eff_bg);
             }
-            let fg_packed = if mcr > 1.0 && !exclude {
+            // #226's exclusion is about a tiling glyph SEAMING against its neighbour if its colour is
+            // nudged. Once a decoration has taken the glyph there is no such glyph, and the ink left
+            // in this channel is `I_line` — TEXT class by rule 4 — so the exclusion has no referent
+            // and must not reach it. The exclusion is scoped here, not repealed: an undecorated tile
+            // still keeps it, which is what the control in
+            // `minimum_contrast_reaches_the_line_on_a_taken_tile` pins.
+            let fg_packed = if mcr > 1.0 && (!exclude || glyph_taken_by_decoration) {
                 let ratio = if dim { mcr / 2.0 } else { mcr };
                 match ensure_contrast_ratio(eff_bg, fg, ratio) {
                     Some(adjusted) => adjusted,
@@ -364,7 +391,15 @@ pub fn pack_instances(
             let field = if is_concealed(cell_flags, blink_on) {
                 BLANK_SLOT
             } else {
-                glyph_field(slots.get(idx).copied().unwrap_or(0), cell_flags)
+                // #508: a decoration that took the glyph blanks the SLOT and keeps the attribute
+                // bits — `ESC[8m` above drops both because the application asked for the whole cell
+                // to be hidden; here only the glyph was taken, and an underline is not the glyph.
+                let slot = if glyph_taken_by_decoration {
+                    BLANK_SLOT
+                } else {
+                    slots.get(idx).copied().unwrap_or(0)
+                };
+                glyph_field(slot, cell_flags)
             };
 
             out.extend_from_slice(&[
@@ -1506,7 +1541,10 @@ mod tests {
             rows: 1,
             bg,
             fg,
-            slots: &[0],
+            // A NON-ZERO slot on purpose: `BLANK_SLOT` is `0`, so a helper that handed out slot 0
+            // made every "the glyph is dropped" assertion vacuous — it would hold with the drop
+            // removed. Any distinct value works; the point is that blanking is observable.
+            slots: &[9],
             flags,
             codepoints,
         }
@@ -1635,6 +1673,116 @@ mod tests {
 
     // --- #494: a bg-only TOP decoration paints over a tile glyph ---
 
+    /// #508: the decoration takes the GLYPH, not the cell's ink channel. ADR-0019 rule 4 is
+    /// unconditional — "R1 reaches `I_glyph` only; `I_line` and `I_cursor` are `TEXT` class always" —
+    /// so an underline on a taken tile must still draw, which it can only do if `fg` still holds a
+    /// colour distinct from the background. Pins the mechanism, not just the pixel: the glyph is
+    /// gone because its SLOT is blank, not because its colour was made to match the bg.
+    #[test]
+    fn the_line_on_a_taken_tile_is_not_painted_by_the_glyphs_selection_re_tint() {
+        // Rule 4 is unconditional: `I_line` is TEXT class always. The #239 re-tint is an R1 rule —
+        // it exists only because `exclude` is true — so once the decoration has taken the glyph
+        // there is nothing for it to re-tint, and letting its output stay in `fg` hands the line the
+        // selection's colour. Measured before this fix: a blue underline on an orange decoration bar.
+        let p = bright_palette();
+        const T: u32 = 0x80_40_00;
+        let raw_sel = 0x30_60_C0;
+        let got = pack_instances(
+            &frame_cp(&[0], &[0], &[INVERSE | UNDERLINE], &[BLOCK]),
+            &p,
+            true,
+            &overlay_kind(&[0, 0, 0], &[], raw_sel),
+            &ColorPolicy::default(),
+            &[deco(DecorationLayer::Top, Some(T), None)],
+        );
+        assert_eq!(&got[2..5], &gl_rgb(T), "the decoration still owns the bg");
+        assert_ne!(
+            &got[5..8],
+            &gl_rgb(raw_sel),
+            "the line must not take the selection colour — that is the glyph's treatment"
+        );
+        // It takes the cell's OWN ink, like any TEXT-class ink would. This cell is `INVERSE`, so
+        // `resolve_cell` has already swapped its ink to the default *background* — black — and that
+        // is the right answer, not white: rule 4 hands the line whatever the cell's ink resolved to,
+        // and none of the selection's TEXT-class treatments apply here (no `selectionForeground`, no
+        // DIM). A black line on the orange decoration bar, which is legible; the point of the fix is
+        // that the colour comes from the cell rather than from a rule about a glyph that is gone.
+        assert_eq!(&got[5..8], &gl_rgb(0x00_00_00));
+    }
+
+    /// #226's contrast exclusion exists to stop a nudge SEAMING a tiling glyph against its
+    /// neighbour. Once the decoration has taken the glyph there is no seam to protect and the only
+    /// ink left is the line, which rule 4 puts on the TEXT side — so the exclusion must not reach
+    /// it. Measured before this fix: `fg #814101` on `bg #804000`, a contrast ratio of about 1.
+    #[test]
+    fn minimum_contrast_reaches_the_line_on_a_taken_tile() {
+        let p = bright_palette();
+        const T: u32 = 0x80_40_00;
+        let policy = ColorPolicy {
+            min_contrast: 7.0,
+            ..ColorPolicy::default()
+        };
+        let got = pack_instances(
+            &frame_cp(&[0], &[RGB | 0x81_41_01], &[UNDERLINE], &[BLOCK]),
+            &p,
+            true,
+            &Overlay::default(),
+            &policy,
+            &[deco(DecorationLayer::Top, Some(T), None)],
+        );
+        assert_eq!(&got[2..5], &gl_rgb(T));
+        assert_ne!(
+            &got[5..8],
+            &gl_rgb(0x81_41_01),
+            "the near-invisible ink must have been corrected"
+        );
+        // The control: the SAME cell without the decoration keeps the exclusion, because there the
+        // glyph is still drawn and nudging it would open the seam #226 is about.
+        let undecorated = pack_instances(
+            &frame_cp(&[0], &[RGB | 0x81_41_01], &[UNDERLINE], &[BLOCK]),
+            &p,
+            true,
+            &Overlay::default(),
+            &policy,
+            &[],
+        );
+        assert_eq!(
+            &undecorated[5..8],
+            &gl_rgb(0x81_41_01),
+            "an undrawn-over tile is still excluded — the exclusion is not repealed, only scoped"
+        );
+    }
+
+    #[test]
+    fn an_underline_survives_a_tile_glyph_taken_by_a_top_decoration() {
+        let p = bright_palette(); // default_fg white
+        const T: u32 = 0x80_40_00;
+        let got = pack_instances(
+            &frame_cp(&[0], &[0], &[UNDERLINE], &[BLOCK]),
+            &p,
+            true,
+            &Overlay::default(),
+            &ColorPolicy::default(),
+            &[deco(DecorationLayer::Top, Some(T), None)],
+        );
+        assert_eq!(&got[2..5], &gl_rgb(T), "the decoration owns the bg");
+        assert_eq!(
+            &got[5..8],
+            &gl_rgb(0xFF_FF_FF),
+            "fg stays the cell's own ink, so the line has something to draw in"
+        );
+        assert_ne!(
+            &got[5..8],
+            &got[2..5],
+            "fg != bg — the shader draws the line in `base_fg`, so equality erases it"
+        );
+        assert_eq!(
+            got[8],
+            (BLANK_SLOT | GLYPH_UNDERLINE) as f32,
+            "the glyph is dropped by slot, and the underline bit survives it"
+        );
+    }
+
     /// A tile glyph is background-shaped ink (#495), so a background painted OVER it takes the
     /// whole cell — otherwise the glyph occludes the very layer that sits above it. Control: the
     /// same decoration on a text cell leaves the glyph alone (occluding text would be unreadable).
@@ -1651,10 +1799,12 @@ mod tests {
             &[deco(DecorationLayer::Top, Some(T), None)],
         );
         assert_eq!(&tile[2..5], &gl_rgb(T), "the decoration owns the bg");
+        // The tile follows it by being DROPPED (#508): the cell paints solid because nothing is
+        // drawn over the decoration's bg, not because the ink was recoloured to match it. Asserting
+        // the slot rather than the colour is what keeps the ink channel free for `I_line`.
         assert_eq!(
-            &tile[5..8],
-            &gl_rgb(T),
-            "and the tile follows it — the cell paints solid"
+            tile[8], BLANK_SLOT as f32,
+            "the glyph is gone — blank slot, so the cell is solid decoration bg"
         );
         // A text cell keeps its glyph over the decoration's bg.
         let text = pack_instances(
@@ -1667,6 +1817,7 @@ mod tests {
         );
         assert_eq!(&text[2..5], &gl_rgb(T));
         assert_eq!(&text[5..8], &gl_rgb(0xFF_FF_FF), "text stays readable");
+        assert_ne!(text[8], BLANK_SLOT as f32, "and its glyph is still drawn");
     }
 
     /// The escape hatch: a decoration that sets BOTH channels keeps the art, in its own colour.
@@ -1693,8 +1844,10 @@ mod tests {
     }
 
     /// #494's measured row 1: the layer ABOVE the selection used to lose the glyph area to it —
-    /// `bg` was the decoration's while `fg` stayed the raw selection colour. Now both are the
-    /// decoration's, because TOP composites last.
+    /// `bg` was the decoration's while `fg` stayed the raw selection colour, so the selection's
+    /// re-tint painted over the layer sitting above it. TOP composites last, so the decoration wins
+    /// the cell; since #508 it wins by taking the glyph away rather than by overwriting its colour,
+    /// which is why the assertion is on the slot and `fg` is free to keep the selection's value.
     #[test]
     fn a_bg_only_top_decoration_beats_the_selection_on_a_transparent_tile() {
         let p = bright_palette();
@@ -1709,9 +1862,11 @@ mod tests {
             &ColorPolicy::default(),
             &[deco(DecorationLayer::Top, Some(T), None)],
         );
-        assert_eq!(&got[2..5], &gl_rgb(T));
-        assert_eq!(&got[5..8], &gl_rgb(T), "not the raw selection colour");
-        assert_ne!(&got[5..8], &gl_rgb(raw_sel));
+        assert_eq!(&got[2..5], &gl_rgb(T), "the decoration owns the bg");
+        assert_eq!(
+            got[8], BLANK_SLOT as f32,
+            "and the glyph is gone, so the selection's re-tint has no surface to paint"
+        );
     }
 
     /// A BOTTOM decoration is unaffected: "bottom" means *under* the glyph, so an opaque tile
@@ -1736,26 +1891,40 @@ mod tests {
         );
     }
 
-    /// Side condition: the followed colour must land on the bg EXACTLY, or the seam this removes
-    /// comes back. A DIM tile still resolves `dim_foreground(T, T)`, which must be identity.
+    /// The seam this used to guard is now impossible by construction. While the decoration was
+    /// followed by *recolouring* the ink, the followed colour had to land on the bg to the byte or a
+    /// DIM cell would fade the tile away from it — the old assertion was that `dim_foreground(T, T)`
+    /// is identity. Since #508 the glyph is dropped instead, so nothing is drawn that could seam,
+    /// and `fg` is free to carry the dimmed ink. That is not spare state: it is the colour an
+    /// underline on this cell draws in, which is the whole point of leaving the channel alone.
     #[test]
-    fn a_dim_tile_following_a_top_decoration_is_not_dimmed_away_from_the_bg() {
+    fn a_dim_tile_taken_by_a_top_decoration_leaves_its_dimmed_ink_for_the_line() {
         let p = bright_palette();
         const T: u32 = 0x80_40_00;
         let got = pack_instances(
-            &frame_cp(&[0], &[0], &[DIM], &[BLOCK]),
+            &frame_cp(&[0], &[0], &[DIM | UNDERLINE], &[BLOCK]),
             &p,
             true,
             &Overlay::default(),
             &ColorPolicy::default(),
             &[deco(DecorationLayer::Top, Some(T), None)],
         );
+        assert_eq!(&got[2..5], &gl_rgb(T), "the decoration owns the bg");
         assert_eq!(
+            got[8],
+            (BLANK_SLOT | GLYPH_UNDERLINE) as f32,
+            "no glyph to seam, and the underline bit survives"
+        );
+        assert_ne!(
             &got[5..8],
             &got[2..5],
-            "fg and bg must be the same colour — no seam"
+            "the line's ink is distinct from the bg, or it would be invisible"
         );
-        assert_eq!(&got[5..8], &gl_rgb(T));
+        assert_eq!(
+            &got[5..8],
+            &gl_rgb(dim_foreground(0xFF_FF_FF, T)),
+            "and it is the DIM ink — a dim cell's underline is dim"
+        );
     }
 
     /// #507: a Legacy-Computing block this crate draws to the cell (`builtin::owns`) reaches all
@@ -1825,9 +1994,8 @@ mod tests {
         );
         assert_eq!(&deco_cell[2..5], &gl_rgb(T));
         assert_eq!(
-            &deco_cell[5..8],
-            &gl_rgb(T),
-            "the cell paints solid, no white ghost"
+            deco_cell[8], BLANK_SLOT as f32,
+            "the glyph is taken, so the cell paints solid — no white ghost (#508)"
         );
     }
 
