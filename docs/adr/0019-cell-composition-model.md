@@ -76,7 +76,8 @@ anything with a real colour beneath it, and replaces only over a bare default ba
 
 **4 — Ink sources are distinct, and one of them is background.** A cell's ink is `I_glyph` (the
 character), `I_line` (underline / strikethrough) and `I_cursor`. **R1:** when the glyph's class is
-`BACKGROUND` (`treat_glyph_as_background_color` — Powerline / box / block), `I_glyph` belongs to the
+`BACKGROUND` (`treat_glyph_as_background_color` — Powerline, box / block, and since #507 whatever
+`builtin::owns` draws to the cell, asked of the drawer rather than restated), `I_glyph` belongs to the
 **background channel** and takes whatever treatment the bg fold applied. R1 reaches `I_glyph` **only**;
 `I_line` and `I_cursor` are `TEXT` class always.
 
@@ -128,11 +129,14 @@ decoration); it is rejected here because it drops a highlight the user explicitl
 
 - **The open questions stop being decisions.** #496 (transparent is fg-only) and #508 (underline /
   strikethrough / blink vanish on a tile that follows a top decoration) are **model-conformance defects**
-  — rule 4 and the coherence clause answer both. #507 (two disagreeing notions of tiling ink) reduces to
-  an implementation choice between extending the classifier and inverting the dependency, since the model
-  requires the class predicate to agree with what `builtin.rs` actually draws as tiling ink. #398 is a
-  **won't-fix with a stated reason**: a background-class glyph's ink colour is `L0`'s resolved ink, which
-  includes bold→bright.
+  — rule 4 and the coherence clause answer both. #507 (two disagreeing notions of tiling ink) reduced to
+  an implementation choice, since the model requires the class predicate to agree with what this crate
+  actually draws as tiling ink; **it shipped as the dependency inversion** (`651a503`) —
+  `treat_glyph_as_background_color` now asks `builtin::owns` rather than restating its ranges, so the two
+  can no longer disagree by construction. The *geometric* premise underneath R1 — a tiling glyph is drawn
+  to the **cell**, not to its ink box, so a run of them meets — is ADR-0022, which records the same chain
+  from the other end. #398 is a **won't-fix with a stated reason**: a
+  background-class glyph's ink colour is `L0`'s resolved ink, which includes bold→bright.
 - **Existing behaviour is validated, not reversed.** All 100 pins in `frame.rs` / `overlay.rs` /
   `decoration.rs` / `glyph_class.rs` were checked against the model. It reproduces them, and it *derives*
   two decisions that were taken as standalone judgements: #430 (an `ActiveMatch` declares no ink, so the
@@ -150,8 +154,9 @@ decoration); it is rejected here because it drops a highlight the user explicitl
   premise is that a transparent tile *dissolves into the band painted over it*, and under an `ActiveMatch`
   that band is the active colour; and #400 requires a match to read **crisp rather than as a muddy tint** —
   which the current behaviour satisfies on the bg channel while reproducing exactly that muddiness on the
-  ink channel. All three are **conformance defects**, fixed as one batch (same cell class; fixing them
-  separately would be the pairwise pattern this ADR exists to end).
+  ink channel. All three are **conformance defects**, fixed as one batch — #511 (the route unification),
+  #496 and #508 — same cell class; fixing them separately would be the pairwise pattern this ADR exists
+  to end.
 - **The route difference recorded at `frame.rs` as intended is retracted.** That comment states a tile
   under justerm's own `ActiveMatch` keeps the raw selection colour while the same visual concept pushed as
   a bg-only top decoration goes solid, and calls both intended — "a consumer choosing between the two
