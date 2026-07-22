@@ -172,10 +172,18 @@ decoration); it is rejected here because it drops a highlight the user explicitl
   #511 are closed as won't-do**, and #508 keeps its original scope — the decoration route only, where it
   is now fixed: the glyph is dropped by slot so the underline keeps the cell's ink, and rule 4's two
   glyph-only treatments (the #239 re-tint, #226's contrast exclusion) stand down on that cell because
-  the glyph they are about is gone. **Rule 4 has a limit worth stating**: a cell carries one ink colour,
-  so where the glyph is *kept* the line necessarily shares it and rule 4 cannot be honoured there. Both
-  references keep a separate channel for this (`RenderableCell.underline`, `textDecorationColor`) — the
-  natural home for a future `SGR 58`.
+  the glyph they are about is gone. **Rule 4's former limit is lifted (#513).** It read: a cell carries
+  one ink colour, so where the glyph is *kept* the line necessarily shares it and rule 4 cannot be
+  honoured there. The instance record now carries a second ink, so rule 4 holds on every route — the
+  glyph-only rules (the #239 re-tint) stop at the glyph, and the cell-wide ones (a decoration's fg,
+  `selectionForeground`, DIM, minimum contrast) reach both. Both references arrived at a separate
+  channel for the same reason (`RenderableCell.underline`, `textDecorationColor`), which is also where
+  a future `SGR 58` lands.
+  One rule is deliberately shared rather than duplicated: **#226's contrast exclusion gates both inks
+  together.** It exists because `ensure_contrast_ratio` reads `eff_bg`, so per-cell correction over a
+  varying background breaks a run — and an underline is exactly as continuous across cells as a tile
+  is. Splitting that gate re-created #513's own symptom through the contrast path; it was measured and
+  reverted before merge.
 - **This was decided on the visual, twice, and the second one governs.** A record of the *event*, because
   the reasoning alone reads as re-derivable and was in fact re-derived to the wrong answer for most of a
   day. First pass: the maintainer was shown one cell, resolved two ways, and chose the dissolving look —
