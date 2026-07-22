@@ -1,7 +1,9 @@
 # ADR-0023: A spacing setting is CSS pixels, because the font description it belongs to is
 
-Status: **proposed** (2026-07-21). Records an implemented decision (#338) that diverges from both
-references on a public setter's **unit**. Scoped to consumer-facing metric settings on
+Status: **accepted** (2026-07-22; proposed 2026-07-21). Records an implemented decision (#338) that
+diverges from both references on a public setter's **unit**. The authority it establishes — our own API's
+internal coherence for a consumer-facing setting's unit — is carried in the bindings' tie-breaker table,
+so a future metric setter routes by it without reopening this. Scoped to consumer-facing metric settings on
 `justerm-renderer`; the cell they modify is ADR-0022, the tier they live in is ADR-0021.
 
 ## Context

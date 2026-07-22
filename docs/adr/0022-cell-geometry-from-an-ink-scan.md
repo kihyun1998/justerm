@@ -1,8 +1,12 @@
 # ADR-0022: The grid cell is the ink box of the font's `█`, and everything geometric follows from it
 
-Status: **proposed** (2026-07-21). Records an implemented decision (#288/#361) whose grounds turned out
-to be inherited rather than established, and states the invariant it creates. Scoped to **cell geometry
-and what derives from it**; cell *composition* is ADR-0019, resource *ownership* is ADR-0021.
+Status: **accepted** (2026-07-22; proposed 2026-07-21). Records an implemented decision (#288/#361) whose
+grounds turned out to be inherited rather than established, and states the invariant it creates.
+*Accepted* describes the **decision**, which shipped; the weakness is in its **grounds**, and that is
+recorded on its own axis below (§"Grade of evidence" plus "What would settle it") rather than by holding
+the status open — the two are different questions and conflating them would leave the status meaning
+neither. Scoped to **cell geometry and what derives from it**; cell *composition* is ADR-0019, resource
+*ownership* is ADR-0021.
 
 ## Context
 

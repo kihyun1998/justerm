@@ -1,7 +1,9 @@
 # ADR-0020: What qualifies for the per-frame snapshot
 
-Status: **proposed** (2026-07-21) — R2 sharpened 2026-07-22 (derivability, not provenance; an answer and
-its viewport projection are different groups). Scoped to *what a frame carries*; the encoding is ADR-0005,
+Status: **accepted** (2026-07-22; proposed 2026-07-21) — R2 sharpened on acceptance (derivability, not
+provenance; an answer and its viewport projection are different groups). Accepted because the rule was
+already deciding: #440's routing to the search port and #490's promotion from deferred optimisation to
+*the fix for this ADR's one violation* both rest on it. Scoped to *what a frame carries*; the encoding is ADR-0005,
 the decode boundary ADR-0008, and where a mechanism lives at all is ADR-0017.
 
 ## Context

@@ -1,9 +1,11 @@
 # ADR-0021: One WebGL2 context draws N terminal grids as viewports (`TerminalSurface`)
 
-Status: **proposed** (2026-07-21; the direction was decided 2026-07-07 in #287 and is recorded here with
-its citations verified). Scoped to **renderer resource ownership** and the widget/canvas relationship;
-it does not change the core boundary (ADR-0017) or cell composition (ADR-0019). Not started — #287 is
-gated on the single-grid renderer (#258) being complete.
+Status: **accepted as direction** (2026-07-22; the direction was decided 2026-07-07 in #287, recorded here
+2026-07-21 with its citations verified). The ADR-0012 pattern: the decision stands, the implementation is
+future work, and the tier rule below governs setters added before it lands. Scoped to **renderer resource
+ownership** and the widget/canvas relationship; it does not change the core boundary (ADR-0017) or cell
+composition (ADR-0019). **Not started** — but no longer gated: #287's blocker was the single-grid renderer
+(#258), which shipped.
 
 ## Context
 
