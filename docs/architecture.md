@@ -7,40 +7,48 @@ rejected alternatives are in `docs/adr/`. This contract was grilled and cross-va
 art (Mosh / Alacritty / Warp / VS Code / beamterm); the origin/rationale record is PenTerm's
 `.scratch/rust-terminal-engine/PRD.md` (history only — this file is justerm's authoritative spec).
 
-## Engine API (shape)
+**What this file owns — and what it must not restate.** Only what the code cannot state for itself:
+the consumer-facing *contract* (cadence, the wire format, damage/viewport semantics) and the terminal
+behaviour that is not visible from the source because it is not implemented yet (§Hidden VT state).
+The API *shape* belongs to `justerm-core/src/lib.rs` and its docs.rs page; the *rationale* for a
+decision belongs to `docs/adr/`. Copying either into here produces a second, ungated version of
+something another artifact already owns, and it drifts — which is exactly what happened to the API
+list this file used to carry (theflow Step 6).
 
-- `feed(&mut self, bytes)` — push a VT byte slice (caller does the PTY/SSH I/O).
-- `viewport_snapshot(rows) -> Grid` — current visible cells + cursor.
-- `damage() -> Iterator<{line, left, right}>` — changed line ranges, each with a changed column span.
-- `scroll_delta() -> Option<{count, region}>` — a first-class scroll op since last frame.
-- `resize(cols, rows)` — re-layout / reflow.
-- selection: `begin/extend/clear(point, side, mode)`, `selection_range()`, `selection_text() -> String`.
-- `search(query) -> Matches` (grid + scrollback).
-- `encode_key(event) / encode_mouse(event) / encode_paste(text) / encode_focus(focused) -> bytes` —
-  mode-dependent input encoding (the engine owns the modes that decide encoding: DECCKM, mouse
-  tracking/encoding, bracketed paste, focus reporting). `encode_mouse`/`encode_focus` return `Option`
-  (nothing when the mode is off). See the "Input encoding" Hidden VT state entry.
-- `drain_events() -> Vec<TermEvent>` — point-in-time consumer events (OSC 0/2 title, BEL bell, OSC 7
-  cwd) accumulated during `feed`, drained pull-style (no callback across the boundary). OSC 8 hyperlink
-  is *not* here — it is per-cell state (#26), not an event.
-- `hyperlink(link) -> Option<&str>` — resolve a cell's `link` index (OSC 8) to its URI, so the renderer
-  reads `Cell.link` then this to make a cell clickable (#26).
-- `drain_replies() -> Vec<u8>` — bytes the engine produced answering app queries (DA1, DSR, DECRQM)
-  during `feed`, for the consumer to write back to the PTY. Pull, and separate from `drain_events`
-  (raw bytes → PTY vs typed notifications → UI). The first outbound "engine → app" path (#27).
+## Engine API
+
+**Deliberately not listed here — read `justerm-core/src/lib.rs` or its
+[docs.rs](https://docs.rs/justerm-core) page.** The compiler owns that shape and keeps it honest; a
+prose copy has no gate. The copy that stood here is the cautionary case: it advertised
+`viewport_snapshot(rows) -> Grid`, which has never existed in this repo, described `damage()` as an
+iterator when it returns a `TermDamage` enum whose `Full` variant the shape could not express, and had
+`hyperlink()` resolving a `Cell.link` field that moved to a per-row map in #45/#46 — all while omitting
+`frame()`, the entry point this file's entire §Serialization is about, and ~25 other public methods.
+
+The parts of the surface that are genuinely *contract* rather than signature are below and stay here:
+the frame/damage cadence (§Cadence), the wire format (§Serialization), and the mode-gating that decides
+what `encode_key` / `encode_mouse` / `encode_paste` / `encode_focus` emit (§Hidden VT state, "Input
+encoding is mode-gated").
 
 ## Cell
 
-Fixed-width record for fast typed-array decode:
+Fixed-width record for fast typed-array decode. Two layers wear this name and they store the overflow
+differently — say which you mean: the **in-memory** cell (`justerm-core`'s `Cell`, a packed
+fixed-width value) and the **wire** cell record (§Serialization, 18 bytes). The fields below are the
+model both share.
 
-- `content`: a **grapheme cluster** (combining marks/emoji-correct; primary code point inline, rare
-  multi-code-point clusters reference a side-table — keeps cells fixed-width).
+- `content`: a **grapheme cluster** (combining marks/emoji-correct). The primary code point is inline
+  and the cluster overflow is kept out of the cell so it stays fixed-width — in memory via a presence
+  bit (`COMBINED_PRESENT`) with the cluster in the row's column-keyed map (#45/#46), on the wire via a
+  frame-local index into the grapheme side-table.
 - `fg` / `bg`: **color references** — `Default | Indexed(u8 0..255) | Rgb(u8,u8,u8)`. **Never resolved
   hex** — the consumer/renderer maps indices→hex via its (frozen) scheme. Engine is theme-agnostic.
 - `attrs`: standard 8 (bold/dim/italic/underline/blink/inverse/hidden/strikethrough). The record
   **reserves room** for underline style+color and an OSC 8 hyperlink id so adding them later is not a
   format change.
-- `width`: 1 (normal) or 2 (wide / CJK fullwidth).
+- `width`: 1 (normal) or 2 (wide / CJK fullwidth) — **derived, not stored**: it reads out of
+  `flags & WIDE_CHAR` (the trailing column of a wide char carries its own spacer marker). Neither the
+  in-memory cell nor the wire record spends a field on it.
 
 ## Damage = line + column span (+ scroll op)
 
@@ -96,7 +104,8 @@ position/style/visibility.
 ## Serialization (the wire format the engine offers)
 
 Binary, **reference-based** (matches the Cell above — references, not RGB), little-endian,
-**fixed-width 16-byte cell records** + a grapheme side-table for rare multi-code-point clusters.
+**fixed-width 18-byte cell records** (`CELL_RECORD_LEN`; the field-by-field arithmetic is below) + a
+grapheme side-table for rare multi-code-point clusters.
 Designed for a consumer to ship over its own transport (e.g. a Tauri Channel) and decode straight into
 typed arrays (a fixed stride → one contiguous view, no per-field parse). The engine provides the
 *format* **and both directions** (`encode` a damage frame / `decode` it — the round-trip is the test);

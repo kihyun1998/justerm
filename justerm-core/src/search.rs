@@ -1,4 +1,5 @@
-//! Search results (see `docs/architecture.md` "Engine API": `search`).
+//! Search results. The engine-side entry points are [`crate::Engine::search`] /
+//! [`crate::Engine::search_with`]; the consumer owns the query *policy* (ADR-0017).
 //!
 //! A `Match` is an inclusive range in **absolute buffer coordinates** (a line
 //! index into `[scrollback ++ screen]`, the same coordinate the selection model
