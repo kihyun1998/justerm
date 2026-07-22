@@ -145,6 +145,104 @@
   checks.aTopDecorationWithAnFgKeepsTheTileArt =
     inkIs(topTileBothChannels, 0, DECO_FG) && !inkIs(topTileBothChannels, 0, TOP_BG);
 
+  // #508: the decoration takes the GLYPH, not the ink channel. ADR-0019 rule 4 puts `I_line`
+  // (underline / strikethrough) on the TEXT side unconditionally, so an underline on a taken tile
+  // must still draw — and it draws in `base_fg`, which is why the renderer drops the glyph by SLOT
+  // instead of recolouring `fg` to match the bg. Recolouring made the line invisible along with the
+  // glyph it was never about; this is the one thing the host suite cannot see, since "invisible"
+  // only happens in the shader.
+  //
+  // Discriminating pair: the brightest pixel must be the cell's own WHITE ink (the line), while the
+  // cell CENTRE stays the decoration's bg — the underline sits below the glyph-box middle (0.88), so
+  // a surviving block would have taken the centre too. The no-underline sibling above asserts the
+  // exact opposite brightest pixel on the same glyph, which is what makes this falsifiable rather
+  // than a claim that some pixel is bright.
+  const UNDERLINE = 1 << 3;
+  const drawUnderlinedTile = (decoWire) => {
+    r.setOverlay(new Uint32Array([]), new Uint32Array([]), SEL_BG, MATCH_BG);
+    r.setDecorations(new Uint32Array(decoWire));
+    r.resize(COLS, ROWS);
+    r.apply_frame(
+      COLS, ROWS,
+      new Uint32Array(N), new Uint32Array(N),
+      new Uint32Array(N).fill(BLOCK),
+      new Uint16Array(N).fill(UNDERLINE),
+      true,
+    );
+    r.render();
+    return grab();
+  };
+  // The control that makes the decorated case mean something: an underline renders at all, on a
+  // plain undecorated cell. Nothing in this repo proved that in a browser before — which is why the
+  // first version of the check below asserted pure WHITE and failed everywhere, including here: the
+  // line is an antialiased band, so its peak sits between bg and ink.
+  const probeUnderlineOnly = (() => {
+    r.setOverlay(new Uint32Array([]), new Uint32Array([]), SEL_BG, MATCH_BG);
+    r.setDecorations(new Uint32Array([]));
+    r.resize(COLS, ROWS);
+    r.apply_frame(COLS, ROWS, new Uint32Array(N), new Uint32Array(N),
+      new Uint32Array(N).fill(SPACE), new Uint16Array(N).fill(1 << 3), true);
+    r.render();
+    return grab();
+  })();
+  checks.anUnderlineRendersOnAnUndecoratedCell = !inkIs(probeUnderlineOnly, 0, 0x000000);
+
+  const underlinedTaken = drawUnderlinedTile([0, 0, COLS - 1, 1, TOP_BG, NO_REF]);
+  // The line is an antialiased band (`hline`), so its peak is somewhere between the bg and the ink
+  // rather than exactly the ink — assert that the cell is no longer UNIFORM in the decoration's
+  // colour, which is what "the line is visible" means and what recolouring `fg` to the bg destroyed.
+  checks.anUnderlineSurvivesATileTakenByATopDecoration =
+    !inkIs(underlinedTaken, 0, TOP_BG) && cellIs(underlinedTaken, 0, TOP_BG);
+  // Rule 4 is unconditional, so the line must not inherit the GLYPH's rules either. Two of them
+  // reach `fg` on this cell and both had to be stood down; each is checked here because neither is
+  // reachable from the host packer's output alone — "invisible" and "wrong colour" only exist once
+  // the shader has drawn the line.
+  //
+  // (a) The #239 selection re-tint is an R1 rule. With the glyph taken there is nothing to re-tint,
+  // so the line keeps the cell's own ink. Before the fix it drew in the re-tint — measured on the
+  // real renderer as a blue line across an orange decoration bar.
+  //
+  // Compared against the SAME cell without the selection rather than against a named colour: the
+  // line is an antialiased band, so its peak sits between bg and ink and no literal (`WHITE`, or the
+  // re-tint) matches it. Both renders antialias identically, so the comparison is exact where an
+  // absolute one is not — and it states the claim directly: the selection must make no difference to
+  // this line, because the rule it would apply is about a glyph that is no longer there.
+  const takenUnderlined = (selected) => {
+    r.setOverlay(new Uint32Array(selected ? [0, 0, COLS - 1] : []), new Uint32Array([]), SEL_BG, MATCH_BG);
+    r.setDecorations(new Uint32Array([0, 0, COLS - 1, 1, TOP_BG, NO_REF]));
+    r.resize(COLS, ROWS);
+    r.apply_frame(COLS, ROWS, new Uint32Array(N), new Uint32Array(N),
+      new Uint32Array(N).fill(BLOCK), new Uint16Array(N).fill(UNDERLINE), true);
+    r.render();
+    return inkColour(grab(), 0);
+  };
+  const lineSelected = takenUnderlined(true);
+  const lineUnselected = takenUnderlined(false);
+  checks.theLineOnATakenTileKeepsTheCellsInkNotTheSelectionRetint =
+    lineSelected.every((v, i) => near(v, lineUnselected[i]));
+  // …and it is a line at all, not the two renders agreeing because both are a blank decoration bar.
+  const [tr, tg, tb] = chans(TOP_BG);
+  checks.thatComparisonIsNotTwoEmptyBars =
+    !(near(lineSelected[0], tr) && near(lineSelected[1], tg) && near(lineSelected[2], tb));
+
+  // (b) #226's contrast exclusion is about seaming a tiling glyph against its neighbour. With the
+  // glyph taken there is no seam and the ink is a line, so the correction must reach it. `NEAR` is
+  // chosen a hair off the decoration's bg: uncorrected the cell reads uniform, corrected it does not.
+  const NEAR = 0x016181; // ~TOP_BG (0x006080) — contrast ratio about 1
+  const nearInkTaken = (() => {
+    r.setOverlay(new Uint32Array([]), new Uint32Array([]), SEL_BG, MATCH_BG);
+    r.setMinimumContrastRatio(7);
+    r.setDecorations(new Uint32Array([0, 0, COLS - 1, 1, TOP_BG, NO_REF]));
+    r.resize(COLS, ROWS);
+    r.apply_frame(COLS, ROWS, new Uint32Array(N), new Uint32Array(N).fill((2 << 24 | NEAR) >>> 0),
+      new Uint32Array(N).fill(BLOCK), new Uint16Array(N).fill(UNDERLINE), true);
+    r.render();
+    const img = grab();
+    r.setMinimumContrastRatio(1); // leave the renderer as the other checks expect it
+    return img;
+  })();
+  checks.minimumContrastReachesTheLineOnATakenTile = !inkIs(nearInkTaken, 0, TOP_BG);
+
   // #507: a Legacy-Computing block is drawn by the renderer's OWN builtin rasteriser (not the
   // font), and since it is drawn to the cell it is classified as background-shaped ink — so the
   // #494 rule reaches it too. U+1FB8B fills seven eighths of the cell, and the untouched eighth is

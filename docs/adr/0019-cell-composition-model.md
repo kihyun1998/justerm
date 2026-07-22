@@ -145,9 +145,12 @@ decoration); it is rejected here because it drops a highlight the user explicitl
 
 ## Consequences
 
-- **The open questions stop being decisions.** #496 (transparent is fg-only) and #508 (underline /
-  strikethrough / blink vanish on a tile that follows a top decoration) are **model-conformance defects**
-  — rule 4 and the coherence clause answer both. #507 (two disagreeing notions of tiling ink) reduced to
+- **The open questions stop being decisions.** #508 (underline / strikethrough vanish on a tile a top
+  decoration took) is a **model-conformance defect** — rule 4 answers it: `I_line` is TEXT class, so the
+  decoration takes the *glyph* and must leave the ink channel alone. Fixed by dropping the glyph's slot
+  instead of recolouring its ink. (#496 was listed here too before rule 5; under it that behaviour is
+  correct and the issue is closed won't-do — see the pins bullet below.) #507 (two disagreeing notions
+  of tiling ink) reduced to
   an implementation choice, since the model requires the class predicate to agree with what this crate
   actually draws as tiling ink; **it shipped as the dependency inversion** (`651a503`) —
   `treat_glyph_as_background_color` now asks `builtin::owns` rather than restating its ranges, so the two
@@ -166,7 +169,13 @@ decoration); it is rejected here because it drops a highlight the user explicitl
   channel while the ink goes flat (`an_inverse_default_bg_tile_under_selection_is_transparent`, the bg
   assertion — #496). All three are rule 5: an interaction highlight leaves the content. What reads as an
   intra-cell "seam" in #496's title is the glyph being legible, which is what a glyph is for. **#496 and
-  #511 are closed as won't-do**, and #508 keeps its original scope — the decoration route only.
+  #511 are closed as won't-do**, and #508 keeps its original scope — the decoration route only, where it
+  is now fixed: the glyph is dropped by slot so the underline keeps the cell's ink, and rule 4's two
+  glyph-only treatments (the #239 re-tint, #226's contrast exclusion) stand down on that cell because
+  the glyph they are about is gone. **Rule 4 has a limit worth stating**: a cell carries one ink colour,
+  so where the glyph is *kept* the line necessarily shares it and rule 4 cannot be honoured there. Both
+  references keep a separate channel for this (`RenderableCell.underline`, `textDecorationColor`) — the
+  natural home for a future `SGR 58`.
 - **This was decided on the visual, twice, and the second one governs.** A record of the *event*, because
   the reasoning alone reads as re-derivable and was in fact re-derived to the wrong answer for most of a
   day. First pass: the maintainer was shown one cell, resolved two ways, and chose the dissolving look —
