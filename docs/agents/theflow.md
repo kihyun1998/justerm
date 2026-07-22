@@ -25,6 +25,7 @@ model under-reaches; what it is checked *against* is:
 | **VT parsing / semantics** | the **spec** — above any implementation, including ours | ADR-0004: spec-faithful *where alacritty omits*. A reference's omission is not a licence to omit; this is what backs justerm's conformance claim |
 | **Renderer cell composition** | **justerm's own model** (ADR-0019) | xterm is a design input, not a validator. In the four decisions before 0019 it was silent (#494), self-contradictory across its own call sites (#495), the outlier (#459), or demoted (#458) |
 | **Wire / frame / API shape** | **this repo's own precedent** | No external authority exists — no reference serializes a terminal state this way (see the architecture prior-art note below: composing a render-free engine with a state wire is justerm's own bet) |
+| **Consumer-facing API shape / units** | **our own API's internal coherence** | ADR-0023: `letter_spacing` is CSS px because `font_size` is, though *both* references use device px. A setting expressed in the same space as an existing one must use that space — an API the consumer has to remember two spaces for is incoherent, not merely different. Same posture as the composition row, one layer down |
 | **Performance claims** | **our measurement, on a release build** | A claim about our own throughput was wrong because it was measured on a debug build; a number from a consumer's journey is a hypothesis until re-measured here |
 
 A layer not in this table has no recorded tie-breaker — say so and ask, rather
@@ -451,4 +452,8 @@ precedents index inline.)
   **0023** — a consumer-facing spacing setting is CSS px, because `font_size` is: a setting in the same
   space as an existing logical one uses that space. Both references take device px and so split the
   units of one font description; read it before adding any metric setter.
+  **0024** — a decoration is colours plus a mark, not an object; cell precedence is registration order,
+  ruler order partitions by position class first, `anchor` moves the colour span. Note its grading habit:
+  most of xterm's behaviour here is only inferable from source, so it is cited as "the implementation
+  does X (file:line)", never as "xterm specifies X".
 - Identity & invariants: `CLAUDE.md`. Glossary: `CONTEXT.md`. Release: `docs/agents/release.md`.
