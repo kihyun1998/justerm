@@ -79,15 +79,40 @@ engine (not the consumer), so history survives view remounts and can be searched
 The slice of the grid currently shown — normally the bottom of the active screen, or a window into
 scrollback when scrolled up. What the engine emits to be displayed.
 
+## Frame
+
+One emission from the engine: everything a **Consumer** needs to bring its display up to date at a
+single point in time. A frame carries the **Viewport**'s cells, the **Damage** saying which of them
+changed, any **Scroll op**, the **Cursor**, and the **Overlay groups** — as one binary payload the
+**WASM decoder** reads. *Frame mode* names the arrangement this enables: the consumer holds only the
+current frame and never the buffer, so anything it cannot compute from a frame has to arrive *in* one.
+What earns a place in a frame is a settled question, not an open one (ADR-0020).
+
+## Overlay group
+
+One section inside a **Frame** carrying viewport-projected spans or positions that are *not* cell
+content: the **Selection**, the search highlights, the **Active match**, and **Marker** positions and
+lines. The list is append-only — a new group goes on the end and the **Wire version** rises, so an
+older decoder refuses the payload rather than misreading it. Counting them is how format changes are
+described ("the fifth group").
+
+## Wire version
+
+The single number gating the binary **Frame** format. The engine's encoder and the **WASM decoder**
+must agree exactly; a payload from any other version is rejected rather than parsed. It rises whenever
+the format grows, which is what makes growing it safe.
+
 ## Band
 
 A transient over-scan window (the viewport plus a margin of rows above and below) that a renderer may
 cache so small scrolls are instant without asking the engine each time. A cache, not ownership — the
-engine remains authoritative over scrollback.
+engine remains authoritative over scrollback. **Aspirational — nothing in the family implements one
+today**; the term is reserved for the idea, so do not read it as describing shipped behaviour. (Not to
+be confused with the *guard band* in the renderer's glyph atlas, an unrelated texture-packing term.)
 
 ## Damage
 
-What changed since the last emitted frame, expressed as line ranges each carrying a changed column
+What changed since the last emitted **Frame**, expressed as line ranges each carrying a changed column
 span. The minimal description the engine sends downstream so the whole screen need not be re-sent.
 
 ## Scroll op
@@ -113,6 +138,38 @@ usually it *also* sits in the match group and the renderer's highlight ranking
 (active > selection > match) resolves the overlap — past a cap it carries the active emphasis
 alone. The designation dies with the set: every hand-over and every coordinate-shifting
 invalidation (eviction, region scroll, reflow, alt swap) clears it; the consumer re-designates.
+
+## Marker
+
+A stable anchor on a line of the buffer, owned by the engine. Unlike a coordinate, a marker follows
+its content: it shifts as lines scroll, evict or reflow, and when its line finally leaves the buffer
+the marker is **disposed** — announced as an event, so a consumer can tell "scrolled out of sight"
+from "gone". A marker carries a *kind*: a plain anchor the consumer placed, or a shell command
+boundary the terminal reported (prompt start, command start, output start, finished — with the exit
+code when the shell gives one). Markers are what **Decorations** and command-to-command navigation
+hang from.
+
+## Decoration
+
+Consumer-side: **colours plus a mark**, attached to a **Marker** — not an object that owns pixels. The
+engine knows nothing of it; the **Renderer** receives the resulting colour spans like any other
+overlay. The *colours* tint the cell (in a layer below or above the **Selection**); the *mark* is the
+tick on the **Overview ruler**. Because a decoration hangs off a marker, it moves and dies with one.
+
+## Overview ruler
+
+The strip along the scrollbar track where a **Decoration**'s mark is drawn, giving a whole-buffer map
+of where matches, errors or command boundaries sit — including the **Scrollback** currently
+off-screen. Consumer-side, and the reason a **Marker**'s absolute buffer line, not merely its viewport
+row, has to reach the consumer.
+
+## Tile glyph
+
+A glyph meant to *tile* seamlessly with the cell beside it — block elements, box drawing, powerline
+separators, the legacy computing blocks. The **Renderer** treats such a glyph's ink as background
+rather than as text, so neighbouring cells butt together with no seam. A renderer-side classification
+with no engine involvement; which glyphs qualify, and how one composes with the layers above it, is
+decided by the cell composition model (ADR-0019).
 
 ## Cursor
 
