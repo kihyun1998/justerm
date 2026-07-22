@@ -36,6 +36,11 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
+      # Reject a README claim that expires before the build spends any time — see publish-crate.yml
+      # for why this runs at publish rather than on every PR.
+      - name: Verify the README makes no expiring claim
+        run: node .github/scripts/check-published-readme.mjs justerm-web/README.md
+
       # The `@10` pin matters — see the `web` job in test.yml.
       - name: Install pnpm
         run: npm install -g pnpm@10

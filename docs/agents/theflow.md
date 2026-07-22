@@ -271,10 +271,29 @@ that *describes* the behavior:
   cursor primitive" (`:105`) after the family renderer grew a native cursor overlay
   (`webgl.rs` `set_cursor`, #270), and version-locked to "the `justerm` crate"
   (`:15, :131`) — a name frozen at the 0.5.1 tombstone since ADR-0010. **Two cheap
-  checks cover most of it:** a constant quoted in a README (a wire version, a
-  stride, a version number) must be greppable against its definition, and a README
-  that describes the crate's *maturity* ("under construction", "lands in #N")
-  expires at the next publish — re-read it whenever you push a publish tag.
+  checks cover most of it, and both are now mechanized** — extend them rather than
+  re-deriving the rule:
+  - *A constant a README quotes must be greppable against its definition.* Pinned
+    by a **host unit test next to the crate that owns it**, so it fails on every PR:
+    `justerm-wasm-decode/tests/readme_pins.rs` ties the usage snippet's
+    `wireVersion() === N` to `justerm_core::WIRE_VERSION` (and rejects the
+    tombstone crate name). `include_str!` is deliberate — a moved README fails to
+    *compile* instead of skipping the check, and the pin asserts it matched
+    something so a reworded snippet cannot make it pass vacuously. A README that
+    starts quoting a new constant gets a new pin here.
+  - *A README describing the crate's* maturity *expires at the next publish.*
+    Enforced at **publish time**, not on PRs — an in-progress crate may honestly
+    call itself a scaffold in the repo; snapshotting that sentence onto a registry
+    is what makes it a lie. `.github/scripts/check-published-readme.mjs` runs in all
+    four publish workflows and rejects "under construction" / "this is the scaffold"
+    / "lands in #N" / "not yet implemented" / "coming soon" / "work in progress".
+    Keep that list tight: this gate fires after the tag is already pushed, so a
+    false positive costs a re-tag.
+
+  Note which surface is *already* gated and why: `justerm-core/README.md` drifted
+  least of the four because its usage snippet is a **doctest** (`cargo test` runs
+  it). Prose is not checkable, but a code block is — prefer putting a README's
+  claims in a form something already executes.
 - **Glossary + decision trail** — `CONTEXT.md` (glossary) and `docs/adr/`. If a
   domain term's *meaning* changed, update the glossary in the same change. **The
   ADRs are a *write* surface, not only the one you read at Step 0**: a change that
@@ -439,9 +458,12 @@ which runs only in the CI wasm job, so check it once per wasm-decode-changing PR
 
 **Release tracks (tag-driven, all inert until a tag is pushed):** `v*` → `justerm-core`
 (crates.io) + `justerm-wasm-decode` (npm), lockstep; `renderer-v*` → `justerm-renderer`
-(npm); `web-v*` → `justerm-web` (npm, #466 — workflow exists, nothing published yet).
-Each publish workflow gates on tag-version == package-version. Details in
-`docs/agents/release.md`.
+(npm); `web-v*` → `justerm-web` (npm, #466 — **published since `web-v0.7.0`**, now at
+0.7.1). Each publish workflow gates on tag-version == package-version, **and on the
+README carrying no expiring maturity claim**
+(`.github/scripts/check-published-readme.mjs` — see Step 6; it runs before the build
+so it fails fast, but it still fails *after* the tag is pushed, which is a re-tag).
+Details in `docs/agents/release.md`.
 
 **Downstream loop (after release — full cross-repo).** A root fix that ships but
 leaves consumers on their old workarounds has only *relocated* the divergence.

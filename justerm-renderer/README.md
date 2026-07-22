@@ -12,18 +12,33 @@ family. Reimplements the third-party `beamterm` renderer in justerm's own archit
 
 ## Status
 
-Under construction, sliced under Epic #258. This is the scaffold (#259): crate + public skeleton
-(`JustermRenderer::new` / `resize` / `apply_frame` / `render`) + a stub that clears the canvas to the
-injected default background. The GPU pipeline (instanced grid, glyph atlas, shaders, cursor, selection)
-lands in #260+.
+Shipping — Epic #258 is closed and this is the family's active renderer. The GPU pipeline is in:
+glyph atlas + rasterizer, a single instanced grid draw call, cursor, selection / search / active-match
+overlays, decorations, and live palette / font / metric setters. `justerm-web` renders through it
+(#273), and it composites every layer itself — the widget no longer resolves per-cell colour.
+
+Published to npm as **`justerm-renderer`** on its own **`renderer-v*`** tag track. That track is
+deliberately separate from the workspace `v*` tags (which publish `justerm-core` +
+`justerm-wasm-decode`): this crate's `web-sys`/`glow` deps are wasm32-only, so it carries its own
+version line and ships on its own cadence.
 
 ## Build & test
 
-This crate is **excluded from the root cargo workspace** (its `web-sys`/`glow` deps are wasm32-only).
+This crate is **excluded from the root cargo workspace** (its `web-sys`/`glow` deps are wasm32-only),
+so `cargo test --workspace` at the repo root does **not** reach it — always gate it by manifest path.
 
 ```bash
-# pure logic (host)
+# pure logic (host) — the GL/wasm layer is 0-compile here
 cargo test --manifest-path justerm-renderer/Cargo.toml
+cargo fmt --manifest-path justerm-renderer/Cargo.toml --check
 # full crate incl. the WebGL glue (wasm32 gate)
 cargo build --manifest-path justerm-renderer/Cargo.toml --target wasm32-unknown-unknown
+```
+
+The GL layer is proved in a real browser rather than by unit test — `demo/*.html` pages that draw and
+then read pixels back, swept across device pixel ratios:
+
+```bash
+pnpm run test:unit    # the pixel helpers the proofs read their evidence through (browserless)
+pnpm run test:proofs  # builds the wasm, then drives the demo pages in headless Chromium
 ```

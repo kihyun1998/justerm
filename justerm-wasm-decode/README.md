@@ -12,9 +12,10 @@ flag bit positions, the xterm 16–255 colour formula). *Theme values* (your 16 
 fg/bg) and *render policy* (inverse/dim/bold→bright, the font atlas, the cursor) stay yours. See
 [ADR-0008](https://github.com/kihyun1998/justerm/blob/master/docs/adr/0008-wasm-decode-binding-separate-crate.md).
 
-> Version-locked to the `justerm` crate: this package's version equals the engine version, so pinning
-> one `justerm` version gives you a matching encoder (native) + decoder (this). `wireVersion()` lets
-> you assert agreement at load.
+> Version-locked to the `justerm-core` crate: this package's version equals the engine version, so
+> pinning one `justerm-core` version gives you a matching encoder (native) + decoder (this).
+> `wireVersion()` lets you assert agreement at load. (The engine crate was renamed from `justerm` to
+> `justerm-core` in v0.6.0 — ADR-0010; the bare `justerm` name on crates.io is a frozen tombstone.)
 
 ## Install
 
@@ -31,7 +32,7 @@ import { resolveRgb, decodeColorRef, FG, BG } from "justerm-wasm-decode/colors.j
 // Bundler target (Vite/webpack): the above imports work directly.
 // Web target (no bundler): `import init, { ... } from "justerm-wasm-decode"; await init();` first.
 
-console.assert(wireVersion() === 2); // optional: assert the backend encoder agrees
+console.assert(wireVersion() === 12); // optional: assert the backend encoder agrees
 
 // --- once at startup / on theme change ---
 // buildPalette fills 0..15 from your scheme's ANSI colours and 16..255 from the
@@ -102,10 +103,15 @@ The frame also carries the engine's cursor as scalar getters (screen coordinates
 | `cursorRow` / `cursorCol` | `number` | cursor cell position |
 | `cursorVisible` | `boolean` | `false` when the engine hides the cursor (DECTCEM `?25l`) |
 
-justerm **reports** the cursor; *drawing* it is your adapter's job. beamterm has no cursor primitive,
-so draw the caret by inverting `fg`/`bg` on the cell at `(cursorRow, cursorCol)` (or an overlay quad).
-A pure cursor move is included in the frame's damage spans (the old **and** new cells), so an
-incremental cell-invert renderer clears the previous caret and inks the new one without ghosting.
+justerm **reports** the cursor; *drawing* it is your renderer's job. The family renderer
+(`justerm-renderer`) draws it natively — hand it the position with `setCursor` and it paints the
+caret as its own overlay. If your renderer has no cursor primitive, invert `fg`/`bg` on the cell at
+`(cursorRow, cursorCol)` instead: a pure cursor move is included in the frame's damage spans (the old
+**and** new cells), so an incremental cell-invert renderer clears the previous caret and inks the new
+one without ghosting.
+
+The frame carries two more cursor scalars the table above omits — `cursorShape` and `cursorBlink`.
+Blink is a renderer-local animation, not an engine tick.
 
 ## Colour helpers
 
@@ -128,4 +134,4 @@ usually ignored by a renderer.
 
 Dual-licensed under [MIT](https://github.com/kihyun1998/justerm/blob/master/LICENSE-MIT) or
 [Apache-2.0](https://github.com/kihyun1998/justerm/blob/master/LICENSE-APACHE), at your option —
-same as the `justerm` crate.
+same as the `justerm-core` crate.

@@ -31,6 +31,15 @@ jobs:
       # just-shield R6 flags a third-party action sharing a job that holds the publish token. Dropping
       # rust-cache keeps `CARGO_REGISTRY_TOKEN` away from any third-party action (ADR-0006 blast-radius).
 
+      # This publish snapshots the README onto the registry front page, and nothing on the way there
+      # gates it (theflow Step 6 — the published README is a behavior surface). The check rejects one
+      # narrow class: claims that expire ("under construction", "lands in #N"). That is the class
+      # that let justerm-renderer ship a "the GPU pipeline lands in #260+" scaffold banner through
+      # six published versions. Constants a README *quotes* are pinned separately, by unit tests next
+      # to the crate that owns them, so those fail on every PR instead of here.
+      - name: Verify the README makes no expiring claim
+        run: node .github/scripts/check-published-readme.mjs justerm-core/README.md
+
       # Version-lockstep gate: the tag (minus `v`) must equal the crate version, mirroring
       # publish-wasm.yml's check so a mismatched tag fails before publishing.
       - name: Verify tag matches crate version

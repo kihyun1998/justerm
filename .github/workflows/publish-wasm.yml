@@ -29,6 +29,12 @@ jobs:
       # just-shield R6 flags a third-party action sharing a job that holds the publish token. Dropping
       # rust-cache keeps `NPM_TOKEN` away from any third-party action (ADR-0006 blast-radius).
 
+      # Reject a README claim that expires before the build spends any time — see publish-crate.yml
+      # for why this runs at publish rather than on every PR. wasm-pack copies this README into the
+      # npm tarball verbatim (`readme = "README.md"` in Cargo.toml).
+      - name: Verify the README makes no expiring claim
+        run: node .github/scripts/check-published-readme.mjs justerm-wasm-decode/README.md
+
       - name: Add wasm32 target
         run: rustup target add wasm32-unknown-unknown
       - name: Install wasm-pack
