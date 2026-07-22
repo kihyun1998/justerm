@@ -164,6 +164,9 @@ export class DecorationRegistry {
    * it does not decide precedence. */
   private readonly byMarker = new Map<number, Set<StoredDecoration>>();
   /** Every live decoration in **registration order** (a `Set` preserves insertion order) —
+   * ADR-0024 R2, where the reasoning below is generalised: the model is "a decoration is colours plus a
+   * mark, not an object", and the projection rules (precedence, ruler layering, `anchor`, above-viewport
+   * anchors, guards) are its consequences. Read it before changing any of them. —
    * the *cell* projection order, and therefore the cell precedence order (#458): the renderer resolves
    * per-property last-in-wire-order (#452), so the last registered decoration wins a cell.
    * Kept alongside `byMarker` rather than derived from it, because a per-marker grouping can
