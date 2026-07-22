@@ -13,9 +13,9 @@
 //! consistency, *not* speed — see ADR-0008's "Non-goal" note.
 //!
 //! ## Structure
-//! [`flatten`] is the pure core (`Frame` -> renderer-friendly flat buffers),
+//! `flatten` is the pure core (`Frame` -> renderer-friendly flat buffers),
 //! testable with plain `cargo test` — no wasm runtime. [`DecodedFrame`] is the
-//! thin `#[wasm_bindgen]` layer that exposes [`Flat`]'s buffers to JS as
+//! thin `#[wasm_bindgen]` layer that exposes `Flat`'s buffers to JS as
 //! zero-copy typed-array views.
 
 use justerm_core::{Frame, FrameKind, MarkerKind, decode};

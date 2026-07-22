@@ -253,7 +253,15 @@ that *describes* the behavior:
 - **Public doc-comments → docs.rs.** `justerm-core`/`justerm-wasm-decode` ship
   their `///` / `//!` comments verbatim as the crate's **docs.rs** API reference
   (core has ~20 in `lib.rs` alone) — the surface most likely to still describe the
-  old behavior. Update them in the same change.
+  old behavior. Update them in the same change, and **build them** —
+  `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps` is a CI gate (Step 7), because
+  updating a doc-comment and never rendering it is how 12 public docs ended up
+  linking *private* items. That is the failure mode peculiar to this surface: you
+  write the comment with the source open, where `store_flags` / `Flat` /
+  `rebake_atlas` are all in scope, and it publishes to a page built from public
+  items only, where every one of those links is dead. `cargo test` does **not**
+  cover this — it runs doctests (the code examples), not link resolution — and
+  clippy is a different tool that does not carry rustdoc's lints.
 - **Release notes = GitHub Releases** (tag-driven, `docs/agents/release.md`).
   **There is no `CHANGELOG.md`.** Never rewrite a published entry; if the repo and
   the registry would disagree for a version, open a new note, don't edit the
@@ -410,6 +418,7 @@ cargo fmt --all --check
 cargo clippy --workspace --all-targets
 cargo check --manifest-path fuzz/Cargo.toml
 cargo build -p justerm-wasm-decode --tests --target wasm32-unknown-unknown
+RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps   # rustdoc lints ≠ clippy, ≠ doctests
 ```
 (`--workspace` blind spots: `cargo fmt --all --check` is pinned 1.96.0;
 `justerm-wasm-decode/tests/web.rs` is wasm32-only and 0-compiles on host — its
@@ -437,6 +446,7 @@ cargo fmt   --manifest-path justerm-renderer/Cargo.toml --check
 cargo test  --manifest-path justerm-renderer/Cargo.toml                                        # pure layer
 cargo clippy --manifest-path justerm-renderer/Cargo.toml --target wasm32-unknown-unknown --all-targets
 cargo build  --manifest-path justerm-renderer/Cargo.toml --target wasm32-unknown-unknown       # GL/wasm layer 0-compiles on host
+RUSTDOCFLAGS="-D warnings" cargo doc --manifest-path justerm-renderer/Cargo.toml --no-deps --target wasm32-unknown-unknown
 cd justerm-renderer && pnpm run test:unit                                                      # demo/proof.js pixel helpers
 cd justerm-renderer && pnpm run test:proofs                                                    # ONLY if the GL layer changed (#328/#331)
 ```
@@ -504,16 +514,19 @@ precedents index inline.)
 
 ## Refs
 
-- Contract spec: `docs/architecture.md` (cells · damage · viewport/scroll · cadence · selection · serialization · engine API; §"Hidden VT state").
+- Contract spec: `docs/architecture.md` (cells · damage · viewport/scroll · cadence · selection · serialization; §"Hidden VT state"). It deliberately does **not** carry the engine API list any more — that shape belongs to `justerm-core/src/lib.rs` / docs.rs, and the prose copy had drifted to advertising a method that never existed.
 - Decisions: `docs/adr/` — 0005 (encode/decode round-trip), 0008 (decode boundary), 0013/0014 (viewport state in header), 0017 (mechanism core / policy consumer), 0018 (justerm-renderer pivot), 0019 (renderer cell composition — layered, per-channel, total; xterm is a design input, not a validator), 0020 (what qualifies for the per-frame snapshot — state / not derivable / viewport-bounded), 0021 (one GL context draws N grids as viewports; the resource tier rule), 0022 (the cell is the ink box of the font's `█`, and what derives from it), 0023 (a spacing setting is CSS px because `font_size` is), 0024 (a decoration is colours + a mark; span projection and precedence).
-  Three more are **proposed** (authored, not adjudicated) and govern axes this flow keeps landing on:
+  The five most recent govern axes this flow keeps landing on. **0020–0023 were promoted to accepted
+  on 2026-07-22** (`039c1cb`); **0024 alone is still proposed** (authored, not adjudicated):
   **0020** — what qualifies for the per-frame snapshot (state not occurrence · not derivable by the
   consumer · viewport-bounded). Read it *before* proposing a wire group: 0013–0016 each admitted one
   group on its own merits and four more versions followed with no ADR at all, which is the gap 0020
   closes. It also names `markerLines` as its one stated violation (#482/#490).
   **0021** — one WebGL2 context, N grids as viewports (`TerminalSurface`), with the tier rule that
   assigns every renderer setter: share byte-for-byte ⇒ per-config, must differ visibly per terminal ⇒
-  per-grid, consumer-settable ⇒ per-grid by definition.
+  per-grid. Its third clause — *consumer-settable ⇒ per-grid by definition* — is recorded in the ADR as
+  **unresolved**: it contradicts that ADR's own per-config assignment of the font/metric setters. Don't
+  route a new setter by that clause; #287's first migration settles it.
   **0022** — the grid cell is the ink box of the font's `█`, and the atlas cell, glyph quad, cursor box,
   CSS cell and (via `builtin`) the tile class all derive from it. Carries an invariant nothing enforces:
   no glyph this crate draws may enter measurement.

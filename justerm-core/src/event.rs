@@ -32,7 +32,7 @@ pub enum TermEvent {
     ColorSchemeQuery,
     /// The app set ANSI palette entry `index` to `spec` (OSC 4). One event per
     /// `index ; spec` pair in the sequence. The cell still references
-    /// `Indexed(index)` — only the consumer's palette[index] changes, so the
+    /// `Indexed(index)` — only the consumer's `palette[index]` changes, so the
     /// engine stays theme-agnostic (#122).
     SetPaletteColor { index: u8, spec: String },
     /// The app set the default foreground colour (OSC 10). Raw spec, forwarded

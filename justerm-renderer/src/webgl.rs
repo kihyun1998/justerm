@@ -538,7 +538,7 @@ fn upload_glyph(
 #[wasm_bindgen]
 impl JustermRenderer {
     /// Bind a renderer to the canvas matched by `canvas_selector`. `palette_colors` must be
-    /// the 256 pre-built indexed colours (see [`Palette::from_colors`]).
+    /// the 256 pre-built indexed colours (see `Palette::from_colors`).
     #[wasm_bindgen(constructor)]
     pub fn new(
         canvas_selector: &str,
@@ -1011,7 +1011,7 @@ impl JustermRenderer {
     }
 
     /// Set the font size in **CSS px** (#406) — re-bakes the atlas at `css_px * dpr`, exactly as a DPR
-    /// change does (shared [`rebake_atlas`](Self::rebake_atlas)), so glyphs stay sharp and the grid
+    /// change does (shared `rebake_atlas`), so glyphs stay sharp and the grid
     /// cell re-derives from the new size. Consumer policy (ADR-0017): the size is the consumer's, the
     /// atlas mechanism the renderer's. A non-finite size is ignored; a smaller-than-`1.0` one is
     /// clamped (a zero/negative size would rasterise a degenerate atlas). A no-op if unchanged.
@@ -1040,7 +1040,7 @@ impl JustermRenderer {
 
     /// Set the font family (#413) — a CSS `font-family` string (`"monospace"`, `"'Fira Code', monospace"`,
     /// …) the browser's text engine resolves, with its own fallback. Re-bakes the atlas for the new
-    /// family, exactly as a size change does (shared [`rebake_atlas`](Self::rebake_atlas)): the glyph
+    /// family, exactly as a size change does (shared `rebake_atlas`): the glyph
     /// box is re-measured, so the grid cell re-derives. Consumer policy (ADR-0017) — the renderer stays
     /// font-agnostic; loading a webfont (`@font-face` / `FontFace`) before calling is the consumer's
     /// job (an unloaded family silently falls back). A no-op if unchanged.
@@ -1214,7 +1214,7 @@ impl JustermRenderer {
 
     /// Override how long a lost context is given to come back before
     /// [`setOnContextLoss`](Self::set_on_context_loss) fires. Defaults to
-    /// [`DEFAULT_RESTORE_TIMEOUT_MS`] (3000 ms, xterm.js parity). Applies to the *next* loss; a
+    /// `DEFAULT_RESTORE_TIMEOUT_MS` (3000 ms, xterm.js parity). Applies to the *next* loss; a
     /// deadline already armed keeps the duration it was armed with. Negative values clamp to 0.
     #[wasm_bindgen(js_name = setContextRestoreTimeoutMs)]
     pub fn set_context_restore_timeout_ms(&mut self, ms: i32) {
@@ -1720,7 +1720,7 @@ impl JustermRenderer {
     /// `header` carries the frame's scalars, `[cols, rows, kind, has_scroll, scroll_top,
     /// scroll_bottom, scroll_count, blink_on]` (kind `0` = Full / `1` = Partial; `scroll_count`
     /// reinterpreted as `i16`; `blink_on` `0`/`1`). `spans` is the span directory
-    /// ([`SPAN_STRIDE`](crate::frame_grid::SPAN_STRIDE) `u32`s each);
+    /// (`SPAN_STRIDE` `u32`s each);
     /// `codepoints`/`fg`/`bg`/`flags`/`extra` are the span-ordered cell columns.
     // 8 typed-array / vec columns at the wasm-bindgen boundary; each is a distinct JS view that
     // can't be structurally grouped without an AoS rewrite that would break the zero-copy SoA.
@@ -1953,7 +1953,7 @@ impl JustermRenderer {
     /// as the search box navigates (`next`/`prev`), independent of the selection, so a user text
     /// selection and the current match coexist. The active match is *also* pushed in `set_overlay`'s
     /// `match_spans`; the ranking, not exclusion, makes the active colour win. Same viewport-relative,
-    /// re-issue-every-frame contract as [`set_overlay`]. Empty spans clear the active match.
+    /// re-issue-every-frame contract as [`set_overlay`](Self::set_overlay). Empty spans clear the active match.
     #[wasm_bindgen(js_name = setActiveMatch)]
     pub fn set_active_match(&mut self, active_spans: Vec<u32>, active_match_bg: u32) {
         self.active_match_spans = active_spans;
@@ -1995,7 +1995,7 @@ impl JustermRenderer {
     }
 
     /// Set the cursor stroke thickness as a fraction of the cell width (#369) — the width of a
-    /// bar, an underline, or a hollow block's outline. [`cursor_thickness`] turns it into device
+    /// bar, an underline, or a hollow block's outline. `cursor_thickness` turns it into device
     /// pixels as `(frac * cell_w).round().max(1)`, so it tracks both dpr and font size — alacritty's
     /// rule (`display/cursor.rs:25`), which #270 chose over xterm's `dpr * cursorWidth` (that gives a
     /// 32px font the same hairline as a 12px one). This adds only the configurability the mechanism

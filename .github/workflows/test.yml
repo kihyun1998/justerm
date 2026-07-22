@@ -27,6 +27,18 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Test
         run: cargo test --workspace
+      # rustdoc has its own lint layer, and nothing here ran it: `cargo test` runs DOCTESTS (the code
+      # examples) but never checks that a doc-comment's links resolve, and clippy is a different tool
+      # that does not cover rustdoc lints either. So the surface theflow Step 6 calls out FIRST — the
+      # `///` comments that ship verbatim as the crate's docs.rs page — had no mechanical check at all.
+      # What that let through: 15 warnings across the family, 12 of them public docs linking PRIVATE
+      # items. That is the shape of the gap — doc-comments are written with the source open (where
+      # `store_flags` and `Flat` are right there) and published to a page built from public items only,
+      # so every such link silently dies and the author never sees it.
+      - name: Docs (rustdoc lints — links must resolve on the PUBLIC page)
+        run: cargo doc --workspace --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings
 
   # justerm-renderer is EXCLUDED from the root workspace (its web-sys/glow deps are wasm32-only), so
   # `cargo test --workspace` above never touches it — for slices #259..#340 nothing gated it at all
@@ -46,6 +58,13 @@ jobs:
         run: cargo clippy --manifest-path justerm-renderer/Cargo.toml --target wasm32-unknown-unknown --all-targets -- -D warnings
       - name: Build (wasm32)
         run: cargo build --manifest-path justerm-renderer/Cargo.toml --target wasm32-unknown-unknown
+      # Same rustdoc gate as the `test` job — repeated here because this crate is workspace-excluded,
+      # so `cargo doc --workspace` never reaches it. That blind spot is exactly how #333 happened with
+      # `cargo fmt --all`; every gate this crate needs has to be named by manifest path.
+      - name: Docs (rustdoc lints)
+        run: cargo doc --manifest-path justerm-renderer/Cargo.toml --no-deps --target wasm32-unknown-unknown
+        env:
+          RUSTDOCFLAGS: -D warnings
 
   # The `demo/*.html` readPixels proofs (#328), swept across device pixel ratios (#331). Separate from
   # `renderer` on purpose: this job depends on a browser download, SwiftShader, and the runner's fonts,

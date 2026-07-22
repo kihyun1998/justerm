@@ -1767,7 +1767,7 @@ impl Term {
     /// into logical lines (soft-wrap joined, wide-spacers skipped, trailing blanks
     /// trimmed at the logical end) — the accessible-view a screen reader reads as
     /// a document, distinct from the viewport row tree (#119). Reuses the
-    /// selection extraction ([`extract_lines`](Self::extract_lines)) over the full
+    /// selection extraction (`extract_lines`) over the full
     /// range. On the alt screen only the alt buffer is shown — its "scrollback" is
     /// the *primary* buffer's, not this app's — mirroring `viewport_logical_lines`'
     /// alt floor.

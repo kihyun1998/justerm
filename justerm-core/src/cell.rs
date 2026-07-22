@@ -215,7 +215,7 @@ impl Cell {
     }
 
     /// The cell's flags (SGR attributes + layout markers), reassembled from the
-    /// three words — the branchless inverse of [`Cell::store_flags`].
+    /// three words — the branchless inverse of `Cell::store_flags`.
     pub fn flags(&self) -> CellFlags {
         let bits = ((self.content & CONTENT_MARKER_MASK) >> 14)         // 22,23,24 -> 8,9,10
             | ((self.fg & FG_BOLD) >> 27)                              // 27 -> 0

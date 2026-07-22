@@ -10,11 +10,12 @@
 //! and paints via WebGL2. The hot path stays in wasm (ADR-0018 "A-ii").
 //!
 //! ## Structure (family idiom, mirrors `justerm-wasm-decode`)
-//! Pure, host-testable logic ([`color`]) is kept separate from the thin
-//! `#[wasm_bindgen]` + WebGL glue ([`webgl`], browser-only, verified in the demo).
-//! This scaffold slice (#259) establishes the crate, the `JustermRenderer` public
-//! skeleton, and a stub that clears the canvas to the injected default background;
-//! the GPU pipeline (instanced grid, glyph atlas, shaders) lands in #260+.
+//! Pure, host-testable logic (`color`, `render_policy`, `metrics`, …) is kept
+//! separate from the thin `#[wasm_bindgen]` + WebGL glue (`webgl`, browser-only,
+//! verified by the `demo/*.html` pixel proofs). The GPU pipeline is in: glyph
+//! atlas + rasterizer, a single instanced draw call, cursor, selection / search /
+//! active-match overlays and decorations. `JustermRenderer` is the public surface;
+//! the modules behind it are internal (#465).
 
 // Dead-code analysis is only trustworthy on **wasm32**, so it is silenced elsewhere (#465).
 //
