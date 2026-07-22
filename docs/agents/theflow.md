@@ -330,7 +330,7 @@ a fresh decision:
 | Renderer **cell composition** (a cell's bg / fg / ink) | **ADR-0019** | Recorded. Open questions here resolve *against the model*; a combination it cannot answer is an amendment |
 | **core ↔ consumer routing** (mechanism vs policy) | **ADR-0017** | Recorded. Its own rejected `(D) keep deciding case by case` is the pattern to watch for |
 | **Wire / frame shape** | 0005, 0008, 0013–0016 | Recorded across several, each at a version bump |
-| **Span projection / decoration geometry** (viewport clamp, anchor, precedence) | *none yet* | **At the bar, not promoted.** Three triggers stand: "which decoration wins" was decided at three granularities (#452 per-property within a marker, #458 across markers, #498 ruler marks); #452→#457→#461 is a consequence chain, with #461 recorded as *"the vertical mirror of 457"*; and #457 found a repo test comment asserting the opposite of the behaviour. It was clustered with cell composition by proximity and is a **separate** concern (ADR-0017 consumer policy, viewport-only) — so it needs its own record, not a section in ADR-0019 |
+| **Span projection / decoration geometry** (viewport clamp, anchor, precedence) | **ADR-0024** (proposed) | **Promoted 2026-07-21**, over #120/#198/#202/#457/#458/#459/#461/#463/#480/#498. The triggers that carried it, kept because they are what the bar looks like in practice: "which decoration wins" was decided at three granularities (#452 per-property within a marker, #458 across markers, #498 ruler marks); #452→#457→#461 is a consequence chain, with #461 recorded as *"the vertical mirror of 457"*; and #457 found a repo test comment asserting the opposite of the behaviour. Kept out of ADR-0019 deliberately — consumer policy under ADR-0017, viewport-only; 0024 opens by placing itself on *"the axis ADR-0019 explicitly put out of its own scope"* |
 
 Naming the areas is the point: a maintainer can see a cluster has been re-decided
 long before the person inside it can, so Step 5 starts by asking whether the work
@@ -437,7 +437,7 @@ precedents index inline.)
 ## Refs
 
 - Contract spec: `docs/architecture.md` (cells · damage · viewport/scroll · cadence · selection · serialization · engine API; §"Hidden VT state").
-- Decisions: `docs/adr/` — 0005 (encode/decode round-trip), 0008 (decode boundary), 0013/0014 (viewport state in header), 0017 (mechanism core / policy consumer), 0018 (justerm-renderer pivot), 0019 (renderer cell composition — layered, per-channel, total; xterm is a design input, not a validator).
+- Decisions: `docs/adr/` — 0005 (encode/decode round-trip), 0008 (decode boundary), 0013/0014 (viewport state in header), 0017 (mechanism core / policy consumer), 0018 (justerm-renderer pivot), 0019 (renderer cell composition — layered, per-channel, total; xterm is a design input, not a validator), 0020 (what qualifies for the per-frame snapshot — state / not derivable / viewport-bounded), 0021 (one GL context draws N grids as viewports; the resource tier rule), 0022 (the cell is the ink box of the font's `█`, and what derives from it), 0023 (a spacing setting is CSS px because `font_size` is), 0024 (a decoration is colours + a mark; span projection and precedence).
   Three more are **proposed** (authored, not adjudicated) and govern axes this flow keeps landing on:
   **0020** — what qualifies for the per-frame snapshot (state not occurrence · not derivable by the
   consumer · viewport-bounded). Read it *before* proposing a wire group: 0013–0016 each admitted one
