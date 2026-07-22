@@ -295,8 +295,22 @@ pub fn pack_instances(
                 // overlay kind, and a tile under it keeps the raw selection colour (pinned by
                 // `an_inverse_default_bg_tile_on_an_active_matched_selected_cell_uses_the_raw_selection
                 // _colour`). The same visual concept expressed as a consumer-pushed bg-only top
-                // decoration goes solid instead. Both are intended; a consumer choosing between the two
-                // routes is choosing between those two looks (#506).
+                // decoration goes solid instead.
+                //
+                // Both are intended, and the reason is **ADR-0019 rule 5**: an interaction highlight
+                // does not remove content; a declared decoration may. The two layers are the same
+                // shape here — above the selection, declaring a bg and no fg — so paint mode cannot
+                // tell them apart. **Authorship** can: a decoration is the application saying "this
+                // cell is now this colour", knowing what it covered; the active match is the *user*
+                // stepping through results. Erasing box-drawing and shading as someone cycles matches
+                // is content loss, and the tile is often the only thing drawing a table border or a
+                // progress bar. So the asymmetry is the rule, not drift — do not "unify" the routes
+                // (that was #511, closed won't-do; the seam it named is real and accepted).
+                //
+                // The cost lands on a consumer that ports xterm's decoration-based search model, which
+                // marks the active match `layer: 'top'` with a background and no foreground: there the
+                // tile does go solid, so a box-drawing cell loses its glyph on the active hit while
+                // keeping it on the others (#506, closed as not currently real for justerm itself).
             }
             if let Some(c) = top.fg {
                 fg = c;
