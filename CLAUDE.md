@@ -108,7 +108,8 @@ CI 의 `supply-chain` 게이트는 **just-shield**(같은 소유자=first-party,
 외부/레지스트리 사실 실측 대조(추측 금지) → ② 경계(메커니즘 core / 정책 소비처; 계약≠결함, 막은 양방향
 누수) → ③ 순수 로직 `/tdd`(RED→GREEN) + test-trust 게이트(fix off→red, right reason) → ④ real 왕복
 증명(가짜 백엔드 아님; 최강 증명=실 소비처 penterm 링크, DoD ④) → ⑤ adversarial 2렌즈(subagent) → ⑥
-behavior 서술 표면 sweep(docs.rs doc-comment·릴리스 노트·glossary·types.ts, stale rationale 회수) → ⑦
+behavior 서술 표면 sweep(docs.rs doc-comment·릴리스 노트·**발행 README**·glossary·ADR *근거*·types.ts·
+**Epic 본문+라벨**, stale rationale 회수) → ⑦
 게이트 전부 → PR/머지, 릴리스 후 downstream loop(소비처 workaround 제거·bug-pin 테스트 flip). 스킬은
 방법론까지 소유한다: 1원리+명명된 prior-art 교차검증, "확인 못 함 ≠ 없음"(미확인=갭, cleared=validity 조건),
 결정 유형 라우팅(grill 은 제품·정체성 판단만), DoD 4조건, 이슈=durable 기록(defer·거부한 대안·negative

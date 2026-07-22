@@ -254,14 +254,43 @@ that *describes* the behavior:
   (core has ~20 in `lib.rs` alone) — the surface most likely to still describe the
   old behavior. Update them in the same change.
 - **Release notes = GitHub Releases** (tag-driven, `docs/agents/release.md`).
-  **There is no `CHANGELOG.md`.** crates.io/npm snapshot the **README** at publish
-  time — never rewrite a published entry; if the repo and the registry would
-  disagree for a version, open a new note, don't edit the shipped one.
+  **There is no `CHANGELOG.md`.** Never rewrite a published entry; if the repo and
+  the registry would disagree for a version, open a new note, don't edit the
+  shipped one.
+- **The published README is a *behavior* surface, not just a release artifact.**
+  crates.io/npm snapshot each crate's README at publish time, so it is the front
+  page every new consumer reads first — and nothing gates it: no test imports it,
+  no compiler sees it, no constant in it is checked against the constant it names.
+  Both published READMEs drifted the full width of the pivot before anyone looked.
+  `justerm-renderer/README.md:15-19` still announced "**Under construction** … the
+  scaffold (#259) … a stub that clears the canvas … the GPU pipeline lands in
+  #260+" at version **0.6.1** — six published `renderer-v*` tags, 24 modules and
+  ~30 wasm methods later. `justerm-wasm-decode/README.md:34` asserted
+  `wireVersion() === 2` against `VERSION = 12` (paste the canonical snippet, get a
+  failing assert), still told the reader to cell-invert "because beamterm has no
+  cursor primitive" (`:105`) after the family renderer grew a native cursor overlay
+  (`webgl.rs` `set_cursor`, #270), and version-locked to "the `justerm` crate"
+  (`:15, :131`) — a name frozen at the 0.5.1 tombstone since ADR-0010. **Two cheap
+  checks cover most of it:** a constant quoted in a README (a wire version, a
+  stride, a version number) must be greppable against its definition, and a README
+  that describes the crate's *maturity* ("under construction", "lands in #N")
+  expires at the next publish — re-read it whenever you push a publish tag.
 - **Glossary + decision trail** — `CONTEXT.md` (glossary) and `docs/adr/`. If a
   domain term's *meaning* changed, update the glossary in the same change. **The
   ADRs are a *write* surface, not only the one you read at Step 0**: a change that
   falsifies an ADR's premise amends *that ADR* in the same change (0011 and 0012
-  carry exactly such amendments). Since ADR-0019 the renderer's cell-composition
+  carry exactly such amendments). **The decision surviving is not a reason to skip
+  the amendment** — what rots first is the *grounds*, and grounds are what the next
+  implementer reasons from. ADR-0017:66 still states that "core gains **no regex
+  dependency**" and rejects its alternative (i) on exactly that cost, while
+  `justerm-core/Cargo.toml` has carried `regex = "1"` since #314 (`search.rs:25`,
+  re-exported to JS as `isValidRegex`): the routing decision holds, its price tag is
+  fiction, and the rejected alternative effectively shipped for search. An ADR that
+  *quotes* a layout or a constant is also a wire mirror and belongs in the sweep
+  below — ADR-0015:34-36 still documents `MARKER_STRIDE = 2` from v7 against the
+  shipped `5` (v10/#159 widened the record with `MarkerKind` + exit code), a gap
+  ADR-0020's own table already records as an ADR-less admission. Since ADR-0019 the
+  renderer's cell-composition
   rules live there rather than only in the `frame.rs` / `overlay.rs` doc-comments —
   a change to those rules updates the ADR, and a combination the ADR cannot answer
   is an amendment to it, not a fresh pairwise decision.
@@ -288,6 +317,22 @@ that *describes* the behavior:
   routing argument, not the severity, was void), #325 ("blocked by S13 #273" long
   after #273 merged, plus a mechanism sentence that was simply wrong). Correct them
   as **comments**, leaving the body as the record of what was believed when.
+- **An epic body is a live checklist, not a belief record — edit that one.** The
+  rule just above (correct in comments, leave the body) is right for a *defect*
+  issue, whose body is the record of what was believed when it was filed. An
+  **epic** is the opposite: its checkboxes and Status block are read as the current
+  state of the build plan, so leaving them unedited is not preservation, it is a
+  false status report. #103 (justerm-web) has **all 16 slices and both core gaps
+  closed** and carries **two** `[x]`; its body still routes the reader through
+  "#108 … blocks #109, #110" (all three closed), still has S2 rendering
+  `DecodedFrame`→**beamterm**, and still declares the slices "grain 검토 후
+  AFK-ready". A finished epic that reads as ~10% done is worse than a stale defect
+  body — it invites someone to re-open settled work. Tick the box in the slice's
+  own PR, the same way the wire mirror is updated in the change that moves it. And
+  **sweep the epic's labels with its body**: #287 kept `blocked` for a week after
+  its blocker #258 closed — its own newest comment says the block is resolved while
+  the label still says otherwise, and `blocked` is the one label that decides
+  whether the next agent may pick the work up at all.
 - **Cross-check the backlog against itself, not only against the code.** Issues are
   the durable record (DoD ③), so two of them can hold opposite directions for the
   same data with nothing to notice: #440 (search-match ruler lines as a *new
