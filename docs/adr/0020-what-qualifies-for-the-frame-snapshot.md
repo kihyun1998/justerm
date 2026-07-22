@@ -1,7 +1,8 @@
 # ADR-0020: What qualifies for the per-frame snapshot
 
-Status: **proposed** (2026-07-21). Scoped to *what a frame carries*; the encoding is ADR-0005, the decode
-boundary ADR-0008, and where a mechanism lives at all is ADR-0017.
+Status: **proposed** (2026-07-21) — R2 sharpened 2026-07-22 (derivability, not provenance; an answer and
+its viewport projection are different groups). Scoped to *what a frame carries*; the encoding is ADR-0005,
+the decode boundary ADR-0008, and where a mechanism lives at all is ADR-0017.
 
 ## Context
 
@@ -71,9 +72,17 @@ a bell, a title change, a disposal — is an occurrence and rides the out-of-ban
 if delivering it twice is wrong, or if missing one frame loses it, it is not state.
 
 **R2 — Not derivable by the consumer.** A frame carries only what the consumer cannot compute from what
-it already holds or supplied. State the consumer pushed (decorations) or obtained by asking (search
-matches, query answers) does not ride the snapshot, however frame-shaped it looks. The test: *who knows
-this, and did they learn it from us?*
+it already holds or supplied. The test is **derivability, not provenance**: *can the consumer compute
+this from what it holds?* — not *who asked first*. State the consumer pushed (decorations) or obtained by
+asking (a query's answer, the set of matching lines) does not ride the snapshot, however frame-shaped it
+looks.
+
+**An answer and its viewport projection are different groups.** The consumer that ran a search holds the
+match set, so the *set* fails R2. Folding a buffer coordinate onto a viewport row needs scrollback,
+soft-wrap and wide-char state the consumer does not hold — ADR-0017's whole argument — so the
+*projection* passes. `matchSpans` (v6, ADR-0014) and `activeMatchSpans` (v12, #428) are therefore
+admitted, and stay admitted: both are `O(viewport)` projections of state only the engine can compute,
+regardless of who first asked for the match. Read "search matches" here as the set, never as the spans.
 
 **R3 — Viewport-bounded.** A group must be `O(1)` or `O(viewport)`. Buffer-wide, unbounded groups do not
 qualify: a stateless consumer pays the full payload every frame, so an unbounded group makes per-frame
@@ -97,8 +106,10 @@ rule with a documented exception is still a rule; a rule bent to fit its excepti
   `Vec<Match>` and the consumer learned it by asking — so they ride the existing `SearchPort` hand-over.
   That decision (2026-07-21) was reached by the argument this ADR now states; it stops being one issue's
   reasoning and becomes the rule's first application.
-- **v12 passes.** The active-match overlay group is viewport spans of engine-projected state the consumer
-  cannot compute — `O(viewport)`, state, not derivable. Admitting it was right.
+- **v6 and v12 pass.** Both overlay match groups are viewport spans of engine-projected state the consumer
+  cannot compute — `O(viewport)`, state, not derivable. Admitting them was right. They are named in R2
+  itself because the rule's first draft cited "search matches" without separating the *set* from its
+  *projection*, which read as condemning two shipped groups; the tests always cleared them.
 - **#490 acquires a home.** It stops being a deferred optimisation with no stated principle behind it and
   becomes *the fix for this ADR's one violation*. Its "not warranted until measured" trigger is unchanged
   — the rule says what is wrong, not when to pay to fix it.
