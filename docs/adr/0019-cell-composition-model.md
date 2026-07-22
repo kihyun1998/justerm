@@ -1,9 +1,11 @@
 # ADR-0019: The cell composition model — a layered, per-channel, total resolution
 
 Status: accepted (2026-07-21) — **amended 2026-07-22**: the three pins this ADR left for adjudication
-were adjudicated *against* the pins. R1 now states its precedence over rule 2, and the Consequences
-record the outcome. Scoped to `justerm-renderer`'s **cell composition**; it does not change the core
-boundary (ADR-0017) and does not govern span projection (see *Out of scope*).
+were adjudicated *for* the pins. R1 is scoped by who declared the layer (rule 5 below), the pins stand,
+and nothing in the renderer changes. An earlier amendment the same day said the opposite and is retracted
+in place — see rule 5 and the Consequences for what was tried and why it failed. Scoped to
+`justerm-renderer`'s **cell composition**; it does not change the core boundary (ADR-0017) and does not
+govern span projection (see *Out of scope*).
 
 ## Context
 
@@ -81,14 +83,30 @@ character), `I_line` (underline / strikethrough) and `I_cursor`. **R1:** when th
 **background channel** and takes whatever treatment the bg fold applied. R1 reaches `I_glyph` **only**;
 `I_line` and `I_cursor` are `TEXT` class always.
 
-**R1 outranks rule 2** (amended 2026-07-22). Rule 2 says an absent `ink` declaration passes the layer
-beneath through — that is how a selection's ink treatments survive under a bg-only `ActiveMatch` (#430).
-But `BACKGROUND`-class ink is *not on the ink channel at all*, so a layer that declares only `bg` still
-owns it: a bg-only layer above the selection **replaces** the tile, and rule 2's pass-through governs
-only `TEXT`-class ink. Without this ordering the model gave two answers for one cell — the state that
-sent the three pins below to adjudication. It applies to **every** bg-only layer above the selection,
-whichever route it arrives by: a consumer-pushed top decoration (#494) and justerm's own `ActiveMatch`
-overlay kind resolve identically. A layer declaring `fg` as well as `bg` is the escape hatch, unchanged.
+**5 — An interaction highlight does not remove content; a declared decoration may** (amended
+2026-07-22). Rules 2 and 4 collide on one cell: a bg-only layer above a `BACKGROUND`-class glyph. Rule 2
+passes the layer beneath through on the ink channel, so the tile keeps its own colour; R1 says that ink
+belongs to the background channel, so the layer owns it and the tile vanishes. Both are available; the
+model must say which, and it says: **by who declared the layer.**
+
+- **A consumer-pushed `decoration` replaces.** The application said "this cell is now this colour". It
+  knows what it covered and chose to. A `BACKGROUND`-class glyph goes with the background (#494).
+- **An interaction highlight does not.** Selection, search matches and the active match are the *user*
+  passing over content, not the application replacing it. They wash across a cell and leave what is in
+  it — including background-class ink, which is still the only thing drawing a table border or a
+  progress bar. Rule 2's pass-through governs here, and the three pins below are its statement.
+- **`HIDDEN` (`ESC[8m`) is not an exception to this, it is the other side of it** — the application
+  asked for invisibility explicitly, so it gets it. The rule is about who asked.
+
+The line is *authorship*, not paint mode: a decoration and an active match can both `REPLACE` on the bg
+channel (rule 3) and still differ here, because rule 3 says how a layer paints its own background and
+rule 5 says whether it may take the cell's ink with it.
+
+**What this costs, stated plainly.** The renderer is no longer uniform across routes: the same visual
+concept expressed as a decoration erases a tile and expressed as an active match does not. That is a
+real seam in the API and it is accepted deliberately — the alternative erases box-drawing and shading
+from the screen whenever a user drags across it or steps through search results, which is content loss
+in exchange for an internal symmetry no user can observe.
 
 **Coherence.** Where a channel's resolution and R1 describe the *same surface*, they must agree. A cell
 whose bg says one colour and whose background-class ink says another is not a trade-off; it is an
@@ -142,38 +160,41 @@ decoration); it is rejected here because it drops a highlight the user explicitl
   two decisions that were taken as standalone judgements: #430 (an `ActiveMatch` declares no ink, so the
   selection's ink treatments pass through — rule 2) and #494 (a top decoration replaces, so it replaces
   background-class ink too — rules 3 and 4).
-- **Three pins contradicted the model; adjudicated 2026-07-22 against the pins.** Two hold the
-  *selection* colour on a tile whose bg an `ActiveMatch` owns
-  (`an_inverse_default_bg_tile_on_an_active_matched_selected_cell_...`,
-  `an_active_match_over_a_decorated_transparent_tile_...`); the third keeps the cell's swapped-in colour
-  on the bg channel while the ink goes flat (`an_inverse_default_bg_tile_under_selection_is_transparent`,
-  the bg assertion — #496). Each was justified in its own comment solely as xterm parity, the footing this
-  ADR demotes, and each leaves a cell whose two channels disagree about one surface. Three separate rules
-  converge on flipping them: the `BACKGROUND` classification is already load-bearing in three other places
-  (#226 contrast exclusion, #239 re-tint, #494 occlusion) and these are its only exception; #241's own
-  premise is that a transparent tile *dissolves into the band painted over it*, and under an `ActiveMatch`
-  that band is the active colour; and #400 requires a match to read **crisp rather than as a muddy tint** —
-  which the current behaviour satisfies on the bg channel while reproducing exactly that muddiness on the
-  ink channel. All three are **conformance defects**, fixed as one batch — #511 (the route unification),
-  #496 and #508 — same cell class; fixing them separately would be the pairwise pattern this ADR exists
-  to end.
-- **The route difference recorded at `frame.rs` as intended is retracted.** That comment states a tile
-  under justerm's own `ActiveMatch` keeps the raw selection colour while the same visual concept pushed as
-  a bg-only top decoration goes solid, and calls both intended — "a consumer choosing between the two
-  routes is choosing between those two looks". Under the R1 ordering above they are one layer shape with
-  one answer, so the choice was never a feature: a consumer asking for the same highlight got a different
-  cell depending on which API it reached for.
-- **#506 was closed on a premise this amendment falsifies.** It described a bg-only top decoration making
-  a tile glyph blink out as the user cycles search results, and was closed as *not currently real* because
-  it needed a consumer porting xterm's decoration-based search model. justerm's own active match now
-  behaves the same way, so the scenario is native. It is the accepted cost of a solid match (#400), not a
-  reason to revisit — but the closure's stated reason no longer holds and must not be read as evidence
-  that the behaviour cannot occur here.
-- **#496's cost estimate is falsified.** Its body priced option (a) as touching *"the bg of every inverse
-  Default-bg cell"*. Under rule 4 transparency is a property of the **background-class ink resolution**,
-  not of `L0`, so it reaches only inverse + Default-bg cells carrying a tile glyph;
-  `an_inverse_default_cell_blends_over_its_swapped_in_background` (a text cell) is untouched. This is the
-  model's one novel, falsifiable prediction — if that pin breaks when #496 is fixed, rule 4 is wrong.
+- **The three pins stand; the renderer does not change.** They hold the *selection* colour on a tile
+  whose bg an `ActiveMatch` owns (`an_inverse_default_bg_tile_on_an_active_matched_selected_cell_...`,
+  `an_active_match_over_a_decorated_transparent_tile_...`) and keep the cell's swapped-in colour on the bg
+  channel while the ink goes flat (`an_inverse_default_bg_tile_under_selection_is_transparent`, the bg
+  assertion — #496). All three are rule 5: an interaction highlight leaves the content. What reads as an
+  intra-cell "seam" in #496's title is the glyph being legible, which is what a glyph is for. **#496 and
+  #511 are closed as won't-do**, and #508 keeps its original scope — the decoration route only.
+- **This was decided on the visual, twice, and the second one governs.** A record of the *event*, because
+  the reasoning alone reads as re-derivable and was in fact re-derived to the wrong answer for most of a
+  day. First pass: the maintainer was shown one cell, resolved two ways, and chose the dissolving look —
+  which was recorded as three converging rules and generalised into "a bg-only layer replaces the tile
+  whichever route it arrives by". Second pass: shown the same rule applied across all four highlight
+  states *with neighbouring cells in frame* — a reverse-video status line of box-drawing and shading — the
+  same maintainer chose the opposite. Nothing was contradicted; the first artifact could not show what the
+  rule cost, because a single cell has no neighbours and no structure to lose. **A prototype scoped to the
+  argument rather than to the decision produces a decision about the prototype.**
+- **Two named references agree, and that is recorded rather than dismissed.** xterm keeps the tile visible
+  by setting `$fg` flat over a blended `$bg` (`CellColorResolver.ts:133-139`); alacritty guards the state
+  outright — `content.rs:254-264`, *"Reveal inversed text when fg/bg is the same"*, gated on `!HIDDEN`.
+  They disagree with each other about almost everything else in this area, so convergence here is signal.
+  The tie-breaker still holds — our model governs cell composition, and a reference is not authority — but
+  a model that produces content loss where two independent implementations deliberately prevent it was
+  reporting a defect in itself, not a divergence.
+- **`frame.rs`'s "Both are intended" comment stands, and its reasoning is now rule 5.** A tile under
+  justerm's own `ActiveMatch` keeps the raw selection colour while the same visual pushed as a bg-only top
+  decoration goes solid. That is not a consumer choosing between two looks by accident of API; it is
+  authorship — the application declaring a cell's colour versus the user passing over it. The comment
+  should cite this rule so the difference reads as designed rather than as drift.
+- **#506's closure holds.** It described a bg-only top decoration making a tile blink out as the user
+  cycles search results, closed as *not currently real* because it needs a consumer porting xterm's
+  decoration-based search model. justerm's own active match does **not** behave that way under rule 5, so
+  the scenario stays non-native and the stated reason is intact.
+- **#496's cost estimate was never tested and is void.** Its body priced option (a) as touching *"the bg of
+  every inverse Default-bg cell"*, and an earlier version of these Consequences argued the true reach was
+  narrower. Neither matters now: the option is not being taken.
 - **A new combination is a lookup, not an issue.** Two-lens output in this area is phrased as "does the
   model answer this?" — a combination it answers needs no issue even when the answer is surprising, and
   one it cannot answer is an ADR amendment. This is the cost the case-by-case default was charging.
