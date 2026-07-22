@@ -5,7 +5,10 @@ Status: **accepted as direction** (2026-07-22; the direction was decided 2026-07
 future work, and the tier rule below governs setters added before it lands. Scoped to **renderer resource
 ownership** and the widget/canvas relationship; it does not change the core boundary (ADR-0017) or cell
 composition (ADR-0019). **Not started** — but no longer gated: #287's blocker was the single-grid renderer
-(#258), which shipped.
+(#258), which shipped. **Amended 2026-07-22**: the tier rule's "anything settable per terminal is
+per-grid by definition" clause contradicts this ADR's own per-config assignments for the font/metric
+setters; recorded as unresolved at the rule, to be settled by the first migration rather than in
+advance.
 
 ## Context
 
@@ -85,6 +88,21 @@ visible grid, sets `gl.viewport` + `gl.scissor` and draws.
 share the resource **byte-for-byte**, and *per-grid* when a difference between two terminals must be
 visible on screen. Anything a consumer can set differently per terminal is per-grid **by definition** —
 if it could not differ per terminal, it would not be a setting.
+
+> **Unresolved (recorded 2026-07-22, not adjudicated).** That last sentence contradicts this ADR's own
+> assignments. `setFontSize` / `setFontFamily` / `setLetterSpacing` / `setLineHeight` are public
+> consumer setters — a consumer *can* set them per terminal — so the "by definition" clause routes them
+> **per-grid**, while the table above and the Consequences below (and ADR-0023's *Out of scope*) put
+> them **per-config**. As written the rule gives two answers for every font/metric setter, which
+> defeats its stated purpose ("a setter added after this ADR gets its tier at birth").
+>
+> The likely fault is the sentence, not the table: the per-config tier is *keyed by* config, so a
+> setting that differs between two terminals simply lands them in different buckets rather than forcing
+> the resource per-grid. But the first clause does not discriminate cleanly either — two grids with
+> identical palettes could also share a palette byte-for-byte, yet `palette` is assigned per-grid — so
+> the real discriminator may be "derived and expensive to rebuild (atlas, rasterizer, metrics)" versus
+> "cheap state belonging to one terminal's frame". **That is a decision, and #287 has not started**;
+> resolve it with the first migration rather than here, and amend this rule to whichever form survives.
 
 **The consumer gains one new concept.** `TerminalSurface` owns the canvas, the context, the atlas
 registry keyed by config, the single `requestAnimationFrame` loop, the grid registry and context-loss

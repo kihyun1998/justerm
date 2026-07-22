@@ -11,11 +11,8 @@ Issues and PRDs for this repo live as GitHub issues. Use the `gh` CLI for all op
 - **Apply / remove labels**: `gh issue edit <number> --add-label "..."` / `--remove-label "..."`
 - **Close**: `gh issue close <number> --comment "..."`
 
-Infer the repo from `git remote -v` — `gh` does this automatically when run inside a clone.
-
-> Note: this repo does not yet have a GitHub remote. Before the `gh`-based skills can operate, create the
-> remote (e.g. `gh repo create justerm --source=. --private`) and create the triage labels from
-> `triage-labels.md`.
+Infer the repo from `git remote -v` — `gh` does this automatically when run inside a clone. The remote
+is `kihyun1998/justerm`, and the labels in `triage-labels.md` all exist; nothing needs setting up.
 
 ## When a skill says "publish to the issue tracker"
 

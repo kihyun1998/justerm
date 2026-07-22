@@ -236,8 +236,9 @@ the diff is small:
    Publishing is tag-driven and automatic: pushing `vX.Y.Z` ships to both
    registries with no confirmation step, and nothing but a yank comes back.
 3. **Absolute-index walks over the concatenated `[scrollback ++ grid]` buffer —
-   `abs_floor()` (`term.rs:1842`, 4 call sites) and every reader that indexes
-   absolutely.** On the alt screen an unfloored index reads the wrong region and
+   `abs_floor()` (`term.rs`, the word-selection walkers `prev_pos` / `next_pos`) and
+   every reader that indexes absolutely — grep `abs_floor` and the raw
+   `scrollback.len()` walks rather than trusting a count written here.** On the alt screen an unfloored index reads the wrong region and
    returns *plausible* text: selection, search and markers silently disagree with
    the screen. This is on the list because the two-lens pass has found a fresh
    sibling three times — #113 (logical lines) → #144 (`search`) → #207

@@ -1,6 +1,11 @@
 # ADR-0015: Decoration marker primitive + overlay marker group (wire v7)
 
-Status: accepted (2026-06-29, #118) — bumps WIRE_VERSION 6 → 7.
+Status: accepted (2026-06-29, #118) — bumps WIRE_VERSION 6 → 7. **Amended 2026-07-22**: the group's
+record has been widened since, so the layout quoted below is the v7 shape and no longer what ships.
+#159 (wire v10) added the OSC 133 mark **kind** + exit code to each marker, taking `MARKER_STRIDE`
+from 2 to **5**. The decision — a marker primitive with its own append-only overlay group, positions
+projected per viewport, death by event rather than absence — is unchanged; only the record grew.
+Marked inline at the Wire bullet.
 
 ## Context
 
@@ -35,6 +40,11 @@ Add a core **marker primitive** and carry visible markers in the overlay's third
   visible in the current viewport (off-screen markers omitted). The decoder exposes a `markerPositions`
   getter (flat `Uint32Array`, `MARKER_STRIDE = 2`); `wireVersion()` tracks the bump in lockstep
   (ADR-0008). This realizes the third-group slot ADR-0014 reserved.
+  **[v7 shape — superseded by #159 at wire v10.** Each marker now also carries its `MarkerKind`
+  (`Plain` / OSC 133 `PromptStart` / `CommandStart` / `OutputStart` / `CommandFinished(Option<i32>)`)
+  plus the exit code's presence and value, so `MARKER_STRIDE` is **5**. Read
+  `justerm-core/src/serialize.rs` (`MarkerPosition`, `MarkerKind`) for the shipped record — the
+  append-only growth this ADR designed for is exactly what happened.**]
 - **Disposal is an event, not frame absence**: `TermEvent::MarkerDisposed(id)` rides the existing
   `drain_events` queue (xterm's `onDispose` equivalent). A marker missing from a frame may merely be
   scrolled off-screen; only the event means *gone*. Explicit `remove_marker` fires it too, so the

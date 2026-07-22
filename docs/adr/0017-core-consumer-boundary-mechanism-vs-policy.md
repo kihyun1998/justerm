@@ -1,6 +1,11 @@
 # ADR-0017: The core/consumer boundary — buffer-derived mechanism in core, policy injected
 
-Status: accepted (2026-06-30, #113).
+Status: accepted (2026-06-30, #113) — **amended 2026-07-22**: the routing decision stands, but one of
+the grounds it was argued on has been falsified. Core *does* carry a `regex` dependency now
+(`justerm-core/Cargo.toml`, since #314 gave `search()` regex/whole-word modes), so every sentence below
+that prices an option by "core gains no regex dependency" is quoting a cost that no longer exists. The
+mechanism/policy argument — the *pattern* is policy and stays with the consumer — survives untouched;
+the dependency-weight argument does not. Marked inline at both places it appears.
 
 ## Context
 
@@ -62,9 +67,10 @@ cannot do it right regardless.
 (b) plain-URL detection is core mechanism. Concretely, the **(ii)** split: core exposes the viewport's
 **logical lines as assembled text plus a string-index → `(row, col)` coordinate map** (joining
 soft-wrapped rows including off-screen wrapped context, skipping wide-char spacers); the consumer runs the
-URL regex **and** `new URL()` validation over that text and maps matches back to cells. The regex and the
-URL validation never enter core, and core gains **no regex dependency**. (a) OSC 8 is unchanged — it
-already ships on the frame.
+URL regex **and** `new URL()` validation over that text and maps matches back to cells. The *URL* regex
+and the URL validation never enter core. [~~and core gains **no regex dependency**~~ — false since #314;
+see the status note. The link decision is unaffected: the URL pattern is still the consumer's.]
+(a) OSC 8 is unchanged — it already ships on the frame.
 
 **Why (ii), not "core runs a consumer-supplied regex → `Vec<Match>`" (i).** (ii) keeps the mechanism/policy
 split clean — the regex never leaves the consumer — and keeps core dependency-free, preserving the
@@ -108,6 +114,13 @@ presentation in the frontend) is the non-arbitrary boundary.
   (ii): it adds a `regex` crate to core (wasm weight, against the lean-engine stance) and pushes the policy
   (the regex) into core's execution. (ii) keeps core dependency-free and the policy entirely in the
   consumer. Revisitable if dogfood shows the text+map export is too costly or web-side matching too slow.
+  **Amended 2026-07-22 — half of this rejection has expired.** #314 gave `search()` exactly this shape
+  for the *search* feature: the consumer supplies the pattern, core compiles and runs it
+  (`SearchOptions.regex`, `is_valid_regex`), and the `regex` crate is in core's manifest. So the
+  dependency cost quoted here is already paid and is no longer an argument against (i) for links. What
+  did *not* expire is the other half: the pattern is still policy, and core executing one it was handed
+  is different from core *owning* which pattern is a URL. If links are revisited, argue (i) vs (ii) on
+  that axis and on where the coordinate mapping is cheapest — not on the dependency.
 - **(B) Per-consumer implementation of buffer-wide features (xterm's addon model).** Rejected — xterm's
   addon has full in-process buffer access; a frame-mode consumer does not, so the *same* code is correct in
   xterm and incorrect here. It also duplicates buffer logic across consumers (divergence risk).
