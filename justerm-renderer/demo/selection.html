@@ -201,26 +201,12 @@
   // #513 — LAST, because it needs a larger cell than the rest of the page and leaves the renderer
   // reconfigured. The line has its own ink, so the #239 re-tint reaches the glyph and stops there.
   //
-  // Why the cell is enlarged rather than measured at the page's default size — and the reason is NOT
-  // the one this comment first gave. The double-coverage composite it blamed (`mix(bg, mix(fg, line,
-  // L), L)`, leaving L(1-L) of the glyph's ink in the line) was a real shader defect and is fixed;
-  // the shader now composites glyph-over-bg and then line-over-that, so the line is its own ink at
-  // any coverage. Removing the enlargement afterwards still failed at dpr 1 alone, which is what
-  // separated the two causes.
-  //
-  // What remains is geometry. `hline(gy, 0.88, 0.05)` is a half-width of 5 % of the glyph box, so at
-  // dpr 1 the band is roughly 1.6 device px with smoothstep edges and the nearest pixel centre sits
-  // about a third of the way in — peak coverage ≈ 0.32, measured. Over the selection band the line
-  // must reach ≈ 0.5 before it can out-brighten the re-tint, so no colour claim about it is strong at
-  // that size. Enlarging gives the band a saturated core; it does not paper over a composite error.
-  //
-  // (That thinness is itself worth knowing: alacritty clamps with `thickness.max(1.)`, commented
-  // "Make sure lines are always visible". justerm has no such floor. Pre-existing, out of #513.)
-  //
   // The claim is a bound: a line drawn in the re-tint could not exceed the re-tint at any coverage,
   // so "brighter than the re-tint in every channel" is false the moment the channel stops existing.
-  r.setFontSize(48);
-  const [bcw, bch] = [r.cell_width(), r.cell_height()];
+  // (This used to need `setFontSize(48)` to give the thin underline a saturated core at dpr 1; #515
+  // made the line a device-pixel-snapped solid box, so it is crisp at the default size and the
+  // enlargement is gone — the downstream flip of that bug-avoidance.)
+  const [bcw, bch] = [cw, ch];
   const HALF_BLOCK = 0x2580; // ▀ — upper half, so the lower half is background plus the line
   const bigCps = new Uint32Array(N).fill(SPACE);
   bigCps[0] = HALF_BLOCK;

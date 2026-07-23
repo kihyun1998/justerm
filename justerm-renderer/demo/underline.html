@@ -1,0 +1,93 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>justerm-renderer proof — text underline / strikethrough crispness (#515)</title>
+<style>
+  body { margin: 0; background: #000; }
+  #c { display: block; image-rendering: pixelated; }
+</style>
+<!--
+  A text underline (SGR 4) and strikethrough (SGR 9) must read as their INK colour, not a dim grey,
+  at every DPR. The line came from beamterm as a `1 - smoothstep` tent (#267), whose peak is 1 only at
+  the exact centre — a sub-pixel band integrates below 1 and the line goes grey at small cells
+  (measured 118/255 at dpr 1). #515 replaces the tent with a device-pixel-snapped SOLID box, the way
+  every GPU terminal (kitty/ghostty/wezterm) draws a straight line: coverage 1 at any DPR.
+
+  This page draws a white underline over a black cell and demands the underline's brightest pixel be
+  essentially full ink (>= 230). It also demands the strikethrough — same `hline`, so same fix — and
+  that both stay INSIDE the cell (the centre-clamp #515 adds, mirroring alacritty's `max_y`).
+
+  Read in device px (`cell_width()`/`cell_height()` ARE `u_cell_size`, #331); runner sweeps dpr
+  1 / 1.1 / 1.5 / 2, where a sub-pixel band is exactly the failure.
+
+  Build: wasm-pack build --target web --dev --out-dir pkg
+-->
+<canvas id="c" width="64" height="32"></canvas>
+<script type="module">
+  import init, { JustermRenderer } from "../pkg/justerm_renderer.js";
+  import { readRect } from "./proof.js";
+  await init();
+
+  const UNDERLINE = 1 << 3, STRIKE = 1 << 7;
+  const COLS = 4, ROWS = 1, N = COLS * ROWS;
+  const SPACE = 0x20;
+
+  const r = new JustermRenderer("#c", new Uint32Array(256), 0xffffff, 0x000000);
+  const gl = document.querySelector("#c").getContext("webgl2");
+  const [cw, ch] = [r.cell_width(), r.cell_height()];
+
+  const grab = () => {
+    const [w, h] = [gl.drawingBufferWidth, gl.drawingBufferHeight];
+    return { ...readRect(gl, { x: 0, y: 0, w, h }), w, h };
+  };
+  const px = (img, x, y) => { const i = ((img.h - 1 - y) * img.w + x) * 4; return [img.buf[i], img.buf[i + 1], img.buf[i + 2]]; };
+
+  // A SPACE cell with only a line flag: the only non-black pixels are the line. Return, over cell 0,
+  // the brightest pixel and the set of rows that carry any line ink.
+  const lineOf = (flag) => {
+    // Read the cell size PER CALL: setLineHeight changes it, and a stale outer `ch` would scan only
+    // part of a tall cell and miss the line.
+    const [cellW, cellH] = [r.cell_width(), r.cell_height()];
+    const flags = new Uint16Array(N); flags[0] = flag;
+    r.resize(COLS, ROWS);
+    r.apply_frame(COLS, ROWS, new Uint32Array(N), new Uint32Array(N), new Uint32Array(N).fill(SPACE), flags, true);
+    r.render();
+    const img = grab();
+    let peak = 0, litRows = [];
+    for (let y = 0; y < cellH; y++) {
+      let rowMax = 0;
+      for (let x = 0; x < cellW; x++) rowMax = Math.max(rowMax, px(img, x, y)[0]);
+      if (rowMax > 40) litRows.push(y);
+      peak = Math.max(peak, rowMax);
+    }
+    return { peak, litRows };
+  };
+
+  const checks = {};
+  const u = lineOf(UNDERLINE);
+  const s = lineOf(STRIKE);
+
+  // The line reads as its ink, not a dim ramp. This is the #515 claim; it FAILS on the tent shader.
+  checks.anUnderlineReadsAsItsInkNotADimRamp = u.peak >= 230;
+  checks.aStrikethroughReadsAsItsInkNotADimRamp = s.peak >= 230;
+  // …and it is actually drawn (not vacuously bright from nothing).
+  checks.theUnderlineIsDrawn = u.litRows.length > 0;
+  checks.theStrikethroughIsDrawn = s.litRows.length > 0;
+  // Both stay inside the cell — no row at the very bottom edge spilling toward the next cell.
+  checks.theUnderlineStaysInsideTheCell = u.litRows.every((y) => y < ch);
+  checks.theStrikethroughSitsAboveTheUnderline = Math.min(...s.litRows) < Math.min(...u.litRows);
+
+  // #515 centre-clamp: with a tall lineHeight the underline must stay INSIDE the cell (alacritty's
+  // `max_y`) AND stay under the glyph, not sink to the enlarged cell's floor — because `gy` is the
+  // glyph box, not the cell. Measured: at lineHeight 2 the line sits ~71% down a 2x cell, not 91%.
+  r.setLineHeight(2.0);
+  const tallCh = r.cell_height();
+  const tallU = lineOf(UNDERLINE);
+  r.setLineHeight(1.0);
+  checks.aTallCellsUnderlineStaysInsideTheCell = tallU.litRows.every((y) => y < tallCh);
+  checks.aTallCellsUnderlineStaysUnderTheGlyphNotAtTheCellFloor =
+    Math.max(...tallU.litRows) < tallCh * 0.85; // clamped near the glyph, well above the floor
+  checks.itIsStillCrispInATallCell = tallU.peak >= 230;
+
+  window.__proof = { ok: Object.values(checks).every(Boolean), checks, dpr: devicePixelRatio, cw, ch, uPeak: u.peak, sPeak: s.peak };
+  window.__done = true;
+</script>
