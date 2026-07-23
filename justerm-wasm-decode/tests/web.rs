@@ -162,6 +162,50 @@ fn soa_columns_carry_values_across_the_boundary() {
     assert_eq!(df.flags().length(), 5);
     assert_eq!(df.extra().length(), 5);
     assert_eq!(df.link().length(), 5);
+    assert_eq!(df.underline_color().length(), 5);
+}
+
+#[wasm_bindgen_test]
+fn underline_colour_column_carries_the_tagged_reference() {
+    // #520 slice 3: a coloured underline reaches JS as a tagged-u32 in the
+    // `underlineColor` column (as fg/bg); a cell with none reads 0.
+    let underlined = Cell::from_parts('A', Color::Default, Color::Default, CellFlags::UNDERLINE);
+    let plain = Cell::from_parts('B', Color::Default, Color::Default, CellFlags::empty());
+    let frame = Frame {
+        cols: 80,
+        rows: 24,
+        kind: FrameKind::Partial,
+        cursor_row: 0,
+        cursor_col: 0,
+        cursor_visible: true,
+        cursor_shape: justerm_core::CursorShape::Block,
+        cursor_blink: false,
+        display_offset: 0,
+        scrollback_len: 0,
+        mouse_events: Default::default(),
+        alt_screen: false,
+        scroll: None,
+        spans: vec![Span {
+            line: 0,
+            left: 0,
+            right: 1,
+            cells: vec![underlined, plain],
+            combining: Default::default(),
+            links: Default::default(),
+            ucolors: [(0usize, Color::Rgb(255, 0, 0))].into_iter().collect(),
+        }],
+        side_table: vec![],
+        link_table: vec![],
+        overlay: Default::default(),
+    };
+    let df = decode_frame(&justerm_core::encode(&frame)).expect("decode");
+    let uc = df.underline_color();
+    assert_eq!(
+        uc.get_index(0),
+        (2 << 24) | (255 << 16),
+        "col 0 = Rgb(255,0,0)"
+    );
+    assert_eq!(uc.get_index(1), 0, "col 1 = Default");
 }
 
 #[wasm_bindgen_test]
