@@ -8,7 +8,8 @@
 <!--
   A live theme change (#405): setPalette swaps the 256-colour palette + default fg/bg and re-packs the
   RETAINED damage grid, so every cell resolved against the palette recolours WITH NO NEW FRAME — the
-  branch a host test cannot reach (only a real re-pack + upload + the u_default_bg re-push does it).
+  branch a host test cannot reach (only a real re-pack + upload does it; the render's clear reads the
+  new default_bg fresh, and since #455 translucency is a per-cell packed flag, not a uniform re-push).
 
   Scene: an apply_damage Full frame (retains the dense grid), THEN setPalette + render() alone.
     col0 — a full BLOCK (U+2588) with an INDEXED(1) fg: the whole cell IS palette[1]. RED → GREEN.

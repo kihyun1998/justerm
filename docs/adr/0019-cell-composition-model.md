@@ -184,6 +184,17 @@ decoration); it is rejected here because it drops a highlight the user explicitl
   varying background breaks a run — and an underline is exactly as continuous across cells as a tile
   is. Splitting that gate re-created #513's own symptom through the contrast path; it was measured and
   reverted before merge.
+- **Totality reaches the alpha property too (#455).** The model names three channels — bg, fg, glyph — but
+  a cell also resolves to an *alpha*: whether its background is the see-through default backdrop (#298).
+  The shader decided this by arithmetic — `base_bg == u_default_bg` — so a content cell whose composite
+  *coincidentally* landed on the default RGB (an `SGR 48` set to the theme bg, an `Indexed` slot resolving
+  to it, a decoration painting it) went translucent inside opaque content. That is the exact failure
+  Totality forbids: resolution determined by an accident of the fold rather than by the cell's state. The
+  fix keys translucency on **provenance** — did any layer in the stack (`L0` inverse, a decoration bg, a
+  highlight) write the background? — the same stack rules 2/3 already resolve, so the packer emits the
+  answer as a per-cell flag and the shader stops inferring it. A conformance fix, not a new rule: the bg
+  channel's provenance was always in the model; only the alpha derived from it was being recomputed by
+  colour equality. (The `u_default_bg` uniform the old test needed is gone with it.)
 - **This was decided on the visual, twice, and the second one governs.** A record of the *event*, because
   the reasoning alone reads as re-derivable and was in fact re-derived to the wrong answer for most of a
   day. First pass: the maintainer was shown one cell, resolved two ways, and chose the dissolving look —

@@ -21,22 +21,28 @@
   import init, { JustermRenderer } from "../pkg/justerm_renderer.js";
   import { readCells, alphaStats, gridFit } from "./proof.js";
   const FG = 0xffffff, BG = 0x3060a0; // white text on a blue-ish background
+  const RGB = (c) => ((2 << 24) | c) >>> 0; // absolute Rgb colour ref (tag 2); Default = 0 (tag 0)
   await init();
 
   const palette = new Uint32Array(256);
   const r = new JustermRenderer("#c", palette, FG, BG);
   const CW = r.cell_width(), CH = r.cell_height();
-  const COLS = 4;
+  const COLS = 5;
   r.resize(COLS, 1); // cols x rows — the buffer is COLS*CW x CH device px, exactly (#331)
 
-  // Row: ['A'][default-bg space][INVERSE space][space]. Cell 0 has a glyph; cell 1 is pure default
-  // background; cell 2 is an INVERSE space — its background is the swapped-in foreground (a
-  // highlight), which must stay OPAQUE even on a translucent terminal (#298).
+  // Row: ['A'][default-bg space][INVERSE space][space][explicit-Rgb-EQUAL-to-default space].
+  // Cell 0 has a glyph; cell 1 is the pure default background; cell 2 is an INVERSE space — its
+  // background is the swapped-in foreground (a highlight), which must stay OPAQUE even on a
+  // translucent terminal (#298). Cell 4 is the #455 pinhole guard: an EXPLICIT Rgb bg set to the
+  // very default colour. The retired `base_bg == u_default_bg` shader test made it translucent by
+  // coincidence (a see-through hole inside opaque content); the packer's provenance flag keeps it
+  // opaque because its bg ref is content, not the Default backdrop.
   const INVERSE = 1 << 5;
-  const cps = new Uint32Array([0x41, 0x20, 0x20, 0x20]);
-  const flags = new Uint16Array([0, 0, INVERSE, 0]);
-  const zeros = new Uint32Array(COLS);
-  const apply = () => r.apply_frame(COLS, 1, zeros, zeros, cps, flags, true);
+  const cps = new Uint32Array([0x41, 0x20, 0x20, 0x20, 0x20]);
+  const flags = new Uint16Array([0, 0, INVERSE, 0, 0]);
+  const zeros = new Uint32Array(COLS); // fg refs (all Default)
+  const bg = new Uint32Array([0, 0, 0, 0, RGB(BG)]); // cell 4: explicit Rgb == the default colour
+  const apply = () => r.apply_frame(COLS, 1, bg, zeros, cps, flags, true);
 
   const gl = document.querySelector("#c").getContext("webgl2");
   // Alpha stats for cell `col`: min/max of the alpha channel over the cell's DEVICE-px pixels.
@@ -54,10 +60,11 @@
   const transBg = cellAlpha(1);      // default-bg cell now ~half alpha
   const transGlyph = cellAlpha(0);   // the 'A' cell: strokes stay opaque
   const transInverse = cellAlpha(2); // the INVERSE space: its highlight bg must stay opaque
+  const transExplicit = cellAlpha(4);// #455: explicit Rgb == default colour must stay opaque
 
   window.__proof = {
     dpr: window.devicePixelRatio, deviceCell: [CW, CH], gridFit: gridFit(gl, r, COLS, 1),
-    opaqueBg, transBg, transGlyph, transInverse,
+    opaqueBg, transBg, transGlyph, transInverse, transExplicit,
     checks: {
       // Default: an uncovered cell is fully opaque.
       defaultOpaque: opaqueBg.min === 255 && opaqueBg.max === 255,
@@ -68,6 +75,10 @@
       // #298 fix: an INVERSE cell's (non-default) background stays fully opaque — the highlight
       // does not go see-through on a translucent terminal.
       inverseStaysOpaque: transInverse.min === 255 && transInverse.max === 255,
+      // #455 fix: an EXPLICIT bg that coincidentally equals the default colour is CONTENT, not the
+      // backdrop — it stays fully opaque. Under the old colour-equality test this cell was the
+      // pinhole (translucent like cell 1), so this check is red on the pre-#455 shader.
+      explicitDefaultColourStaysOpaque: transExplicit.min === 255 && transExplicit.max === 255,
     },
   };
   window.__proof.ok = Object.values(window.__proof.checks).every(Boolean);

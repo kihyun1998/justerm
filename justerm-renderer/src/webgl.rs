@@ -58,7 +58,7 @@ const QUAD: [f32; 8] = [0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 1.0, 1.0];
 /// Byte stride of one packed instance. **Derived** from [`INSTANCE_FLOATS`] rather than written out:
 /// the two drifting apart silently mis-addresses every attribute, and nothing in the pipeline would
 /// say so — the geometry would simply be wrong. It was a literal `9 * 4` until #513 widened the
-/// record.
+/// record, and #455 again (the `bg_default` provenance flag).
 const INSTANCE_STRIDE: i32 = (INSTANCE_FLOATS * 4) as i32;
 
 const VERT_SRC: &str = r#"#version 300 es
@@ -70,11 +70,15 @@ layout(location = 4) in float a_glyph; // instance: atlas slot index
 // instance: the ink an underline / strikethrough draws in, packed 0xRRGGBB in one float (#513).
 // A colour is below 2^24 so an f32 carries it exactly; measured with a standalone WebGL2 probe.
 layout(location = 5) in float a_line_fg;
+// instance: 1.0 iff this cell's bg is the pristine DEFAULT backdrop — the only surface #298 makes
+// translucent (#455). Provenance, packed by the Rust side, not re-inferred from the resolved colour.
+layout(location = 6) in float a_bg_default;
 uniform mat4 u_projection;
 uniform vec2 u_cell_size;   // the GRID cell in device px
 out vec3 v_bg;
 out vec3 v_fg;
 flat out vec3 v_line_fg;
+flat out float v_bg_default;
 flat out uint v_glyph;
 flat out vec2 v_cell;
 out vec2 v_tex;
@@ -87,6 +91,7 @@ void main() {
     // Unpack once per instance rather than per fragment.
     uint line = uint(a_line_fg);
     v_line_fg = vec3(float((line >> 16u) & 255u), float((line >> 8u) & 255u), float(line & 255u)) / 255.0;
+    v_bg_default = a_bg_default;
     v_glyph = uint(a_glyph);
     v_cell = a_cell;
     // Cell-local. The atlas slot IS the padded cell (#359), so the bitmap already carries the glyph
@@ -102,7 +107,6 @@ precision mediump float;
 uniform mediump sampler2DArray u_atlas;
 uniform vec2 u_padding_frac; // guard band as a fraction of the padded atlas cell (#288)
 uniform float u_bg_alpha;    // background cell opacity: 0 = transparent, 1 = opaque (#298)
-uniform vec3 u_default_bg;    // the default terminal background — only IT is made translucent (#298)
 // The same uniforms the vertex stage declares — one per program, so the PRECISION must match too.
 // This stage is `mediump float`, the vertex stage defaults to `highp`; an unqualified `vec2` here
 // would fail to link ("Precisions of uniform 'u_cell_size' differ").
@@ -126,6 +130,7 @@ uniform highp float u_cursor_thickness; // stroke width in device px
 in vec3 v_bg;
 in vec3 v_fg;
 flat in vec3 v_line_fg;
+flat in float v_bg_default; // 1.0 = the default backdrop (#455/#298)
 flat in uint v_glyph;
 flat in vec2 v_cell;
 in vec2 v_tex;
@@ -252,10 +257,14 @@ void main() {
     // Still the union of both inks: the alpha question is "is anything drawn here", which the split
     // colour composite above does not change.
     float cov = max(coverage, line);
-    // A block cursor is always opaque, even where its colour happens to equal the default
+    // #455: translucency keys on PROVENANCE (`v_bg_default`, packed by the Rust side that knows which
+    // layers touched the bg), not on `base_bg == u_default_bg`. The colour test went translucent on any
+    // content cell whose composite coincidentally landed on the default RGB (an SGR 48 set to the theme
+    // bg, an Indexed slot resolving to it, a decoration painting it) — a pinhole in opaque content.
+    // A block cursor is still forced opaque here, even where its colour happens to equal the default
     // background — alacritty forces `bg_alpha = 1.` for the cursor cell unconditionally
     // (`display/content.rs:175`, "we must adjust alpha to make it visible").
-    float bg_a = (!block && base_bg == u_default_bg) ? mix(u_bg_alpha, 1.0, cov) : 1.0;
+    float bg_a = (!block && v_bg_default > 0.5) ? mix(u_bg_alpha, 1.0, cov) : 1.0;
     // The cursor's strokes draw last and opaque, over the glyph — both references append the
     // cursor rects after the text pass.
     float cur = stroke_coverage(dx);
@@ -408,7 +417,6 @@ struct Pipeline {
     u_line_thickness: glow::UniformLocation,
     u_padding_frac: glow::UniformLocation,
     u_bg_alpha: glow::UniformLocation,
-    u_default_bg: glow::UniformLocation,
     u_cursor: glow::UniformLocation,
     u_cursor_color: glow::UniformLocation,
     u_cursor_text_color: glow::UniformLocation,
@@ -679,7 +687,6 @@ impl JustermRenderer {
             u_line_thickness,
             u_padding_frac,
             u_bg_alpha,
-            u_default_bg,
             u_cursor,
             u_cursor_color,
             u_cursor_text_color,
@@ -696,11 +703,6 @@ impl JustermRenderer {
                 PADDING as f32 / pad_w as f32,
                 PADDING as f32 / pad_h as f32,
             );
-            // The shader compares each cell's bg against the default bg to decide #298 translucency,
-            // so it is a uniform set once here rather than per-cell. It is no longer fixed for the
-            // renderer's life — `set_palette` (#405) re-pushes it on a live theme change.
-            let [dbr, dbg, dbb] = gl_rgb(palette.default_bg);
-            gl.uniform_3_f32(Some(&u_default_bg), dbr, dbg, dbb);
         }
 
         let mut renderer = JustermRenderer {
@@ -789,7 +791,7 @@ impl JustermRenderer {
             gl.vertex_attrib_pointer_f32(0, 2, glow::FLOAT, false, 8, 0);
             gl.enable_vertex_attrib_array(0);
 
-            // Per-instance [col, row, bg(3), fg(3), glyph, line_fg] → locations 1..5.
+            // Per-instance [col, row, bg(3), fg(3), glyph, line_fg, bg_default] → locations 1..6.
             let instance_vbo = gl.create_buffer().map_err(js_err)?;
             gl.bind_buffer(glow::ARRAY_BUFFER, Some(instance_vbo));
             for (loc, size, offset) in [
@@ -798,6 +800,7 @@ impl JustermRenderer {
                 (3, 3, 20),
                 (4, 1, 32),
                 (5, 1, 36),
+                (6, 1, 40),
             ] {
                 gl.vertex_attrib_pointer_f32(
                     loc,
@@ -820,7 +823,6 @@ impl JustermRenderer {
             let u_line_thickness = uniform(gl, program, "u_line_thickness")?;
             let u_padding_frac = uniform(gl, program, "u_padding_frac")?;
             let u_bg_alpha = uniform(gl, program, "u_bg_alpha")?;
-            let u_default_bg = uniform(gl, program, "u_default_bg")?;
             let u_cursor = uniform(gl, program, "u_cursor")?;
             let u_cursor_color = uniform(gl, program, "u_cursor_color")?;
             let u_cursor_text_color = uniform(gl, program, "u_cursor_text_color")?;
@@ -841,7 +843,6 @@ impl JustermRenderer {
                 u_line_thickness,
                 u_padding_frac,
                 u_bg_alpha,
-                u_default_bg,
                 u_cursor,
                 u_cursor_color,
                 u_cursor_text_color,
@@ -1338,15 +1339,10 @@ impl JustermRenderer {
         let atlas = Self::build_atlas(&self.gl, pad_w, pad_h)?;
         let rebake = (|| -> Result<(), JsValue> {
             self.bake_all_glyphs(&rasterizer, atlas, (pad_w, pad_h))?;
-            // Both uniforms are set once per program at construction, so the relinked program needs
-            // them again: the guard-band fraction and the default background the shader compares
-            // each cell's bg against to decide translucency (#298).
+            // The guard-band fraction is set once per program at construction, so the relinked program
+            // needs it again. (#298 translucency no longer needs a default-bg uniform — since #455 the
+            // packer emits a per-cell `bg_default` provenance flag instead of the shader inferring it.)
             self.set_padding_frac(pipeline.program, &pipeline.u_padding_frac, pad_w, pad_h);
-            let [dbr, dbg, dbb] = gl_rgb(self.palette.default_bg);
-            unsafe {
-                self.gl
-                    .uniform_3_f32(Some(&pipeline.u_default_bg), dbr, dbg, dbb);
-            }
             Ok(())
         })();
         if let Err(e) = rebake {
@@ -1947,9 +1943,10 @@ impl JustermRenderer {
     ///
     /// Marks the buffer dirty so the next [`render`](Self::render) re-packs (#421) and the change
     /// shows with no new frame — like [`set_overlay`] (a no-op until the first `apply_damage`; the
-    /// direct `apply_frame` path reflects the new palette on its next call). At the next render:
-    /// its clear colour reads `default_bg` fresh each frame, so only the `u_default_bg` uniform — set
-    /// once at construction for the #298 translucency test — needs an explicit re-push here.
+    /// direct `apply_frame` path reflects the new palette on its next call). The re-pack is all that
+    /// is needed: it re-resolves every cell's colour against the new palette, and the render's clear
+    /// reads `default_bg` fresh. #298 translucency no longer needs a uniform re-push here — since #455
+    /// its trigger is the packer's per-cell `bg_default` provenance flag, which is palette-independent.
     ///
     /// [`set_overlay`]: Self::set_overlay
     #[wasm_bindgen(js_name = setPalette)]
@@ -1966,16 +1963,10 @@ impl JustermRenderer {
                     e.got
                 ))
             })?;
-        // The shader compares each cell's bg against the default bg to decide #298 translucency, and
-        // that comparison colour is a uniform set once at construction — not retained on `self`, so
-        // re-query it from the program and re-push it (as `set_letter_spacing` re-queries
-        // `u_padding_frac`). render()'s clear reads `self.palette.default_bg` fresh, so it self-updates.
-        let [dbr, dbg, dbb] = gl_rgb(self.palette.default_bg);
-        let u_default_bg = uniform(&self.gl, self.program, "u_default_bg")?;
-        unsafe {
-            self.gl.use_program(Some(self.program));
-            self.gl.uniform_3_f32(Some(&u_default_bg), dbr, dbg, dbb);
-        }
+        // A re-pack is all a live theme swap needs: it re-resolves every cell's colour against the new
+        // palette (the render's clear reads `self.palette.default_bg` fresh). #298 translucency used to
+        // also re-push a `u_default_bg` uniform here; since #455 its trigger is the packer's per-cell
+        // `bg_default` provenance flag — palette-independent — so the re-pack alone carries it.
         self.needs_repack = true; // defer the pack to render (#421)
         Ok(())
     }
