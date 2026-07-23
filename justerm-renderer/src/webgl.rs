@@ -1591,6 +1591,11 @@ impl JustermRenderer {
         codepoints: &[u32],
         flags: &[u16],
         blink_on: bool,
+        // #520: the underline colour (SGR 58) column, tagged-u32 like `fg`/`bg`. Optional and
+        // TRAILING so a caller (or demo) that predates it keeps working — omitted / `undefined`
+        // ⇒ every underline follows the fg (Default). Not grouped with the colour columns because
+        // that would shift every existing call; the packer reads it tolerantly regardless.
+        underline_colors: Option<Vec<u32>>,
     ) -> Result<(), JsValue> {
         // The direct (dense, cluster-free) path: one base codepoint per cell.
         let cells = Cells {
@@ -1602,7 +1607,8 @@ impl JustermRenderer {
         };
         // The direct path packs immediately — it retains no grid for `render` to re-pack from, so
         // it cannot defer (#421). Clear the dirty flag: this pack IS the current state.
-        let result = self.resolve_and_pack(&cells, bg, fg, blink_on);
+        let underline_colors = underline_colors.unwrap_or_default();
+        let result = self.resolve_and_pack(&cells, bg, fg, &underline_colors, blink_on);
         self.needs_repack = false;
         result
     }
@@ -1617,6 +1623,7 @@ impl JustermRenderer {
         cells: &Cells,
         bg: &[u32],
         fg: &[u32],
+        underline_colors: &[u32],
         blink_on: bool,
     ) -> Result<(), JsValue> {
         self.pack_count = self.pack_count.wrapping_add(1); // #421 diagnostic — see `packs()`
@@ -1710,6 +1717,7 @@ impl JustermRenderer {
             slots: &slots,
             flags: cells.flags,
             codepoints: cells.codepoints,
+            underline_colors,
         };
         // #271: composite the current selection / search overlay into each cell's packed bg. The
         // spans are owned by the renderer so they outlive the borrow; empty ⇒ no highlight.
@@ -1803,6 +1811,10 @@ impl JustermRenderer {
         flags: &[u16],
         extra: &[u16],
         side_table: Vec<String>,
+        // #520: the span-ordered underline colour column (SGR 58), tagged-u32 like `fg`/`bg`.
+        // Optional + TRAILING for the same reason as `apply_frame` — a caller that predates it
+        // keeps working, and the scatter reads it tolerantly (omitted ⇒ all Default).
+        underline_colors: Option<Vec<u32>>,
     ) -> Result<(), JsValue> {
         if header.len() < 8 {
             return Err(JsValue::from_str(
@@ -1832,6 +1844,7 @@ impl JustermRenderer {
         };
         // A malformed span directory refuses the whole frame; the grid is untouched and the
         // renderer stays usable. Before #355 it trapped the module and poisoned every later call.
+        let underline_colors = underline_colors.unwrap_or_default();
         let scattered = grid.apply(&DamageFrame {
             kind,
             scroll,
@@ -1839,6 +1852,7 @@ impl JustermRenderer {
             codepoints,
             fg,
             bg,
+            underline_colors: &underline_colors,
             flags,
             extra,
             side_table: &side_table,
@@ -2041,7 +2055,13 @@ impl JustermRenderer {
             flags: grid.flags(),
             clusters: grid.clusters(),
         };
-        let result = self.resolve_and_pack(&cells, grid.bg(), grid.fg(), self.last_blink_on);
+        let result = self.resolve_and_pack(
+            &cells,
+            grid.bg(),
+            grid.fg(),
+            grid.underline_colors(),
+            self.last_blink_on,
+        );
         self.grid = Some(grid);
         result
     }

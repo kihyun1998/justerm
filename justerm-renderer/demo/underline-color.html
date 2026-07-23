@@ -1,0 +1,75 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>justerm-renderer proof — SGR 58 coloured underline (#520)</title>
+<style>
+  body { margin: 0; background: #000; }
+  #c { display: block; image-rendering: pixelated; }
+</style>
+<!--
+  #520 slice 5: an underline draws in its OWN colour (SGR 58) — decoupled from the glyph fg. The
+  renderer takes a per-cell underline-colour column (`apply_frame`'s trailing arg) and packs it as
+  the base ink of the #513 `line_fg` channel: a red underline colour makes the line red, while a
+  Default (0) colour makes the line follow the fg (white), the pre-#520 behaviour.
+
+  A SPACE cell with only UNDERLINE has no glyph, so the only non-black pixels ARE the underline — read
+  its colour directly. Runner sweeps dpr 1 / 1.1 / 1.5 / 2.
+
+  Build: wasm-pack build --target web --dev --out-dir pkg
+-->
+<canvas id="c" width="64" height="32"></canvas>
+<script type="module">
+  import init, { JustermRenderer } from "../pkg/justerm_renderer.js";
+  import { readRect } from "./proof.js";
+  await init();
+
+  const UNDERLINE = 1 << 3;
+  const COLS = 4, ROWS = 1, N = COLS * ROWS;
+  const SPACE = 0x20;
+  const RGB = (c) => ((2 << 24) | c) >>> 0;   // tagged Rgb ref (as encode_color)
+  const IDX = (i) => ((1 << 24) | i) >>> 0;   // tagged Indexed ref
+
+  // default fg WHITE, bg BLACK; palette[2] = green so an indexed underline is checkable.
+  const palette = new Uint32Array(256); palette[2] = 0x00ff00;
+  const r = new JustermRenderer("#c", palette, 0xffffff, 0x000000);
+  const gl = document.querySelector("#c").getContext("webgl2");
+
+  const grab = () => { const [w, h] = [gl.drawingBufferWidth, gl.drawingBufferHeight]; return { ...readRect(gl, { x: 0, y: 0, w, h }), w, h }; };
+  const px = (img, x, y) => { const i = ((img.h - 1 - y) * img.w + x) * 4; return [img.buf[i], img.buf[i + 1], img.buf[i + 2]]; };
+
+  // Render a SPACE + UNDERLINE with the given SGR 58 colour ref (0 = Default → follow fg), and return
+  // the underline's colour: the RGB of the brightest (most-ink) pixel over cell 0.
+  const underlineRGB = (ucolorRef) => {
+    const [cw, ch] = [r.cell_width(), r.cell_height()];
+    const flags = new Uint16Array(N); flags[0] = UNDERLINE;
+    const uc = new Uint32Array(N); uc[0] = ucolorRef;
+    r.resize(COLS, ROWS);
+    // apply_frame(cols, rows, bg, fg, codepoints, flags, blink_on, underlineColors)
+    r.apply_frame(COLS, ROWS, new Uint32Array(N), new Uint32Array(N), new Uint32Array(N).fill(SPACE), flags, true, uc);
+    r.render();
+    const img = grab();
+    let best = [0, 0, 0], bestSum = -1;
+    for (let y = 0; y < ch; y++) for (let x = 0; x < cw; x++) {
+      const p = px(img, x, y), sum = p[0] + p[1] + p[2];
+      if (sum > bestSum) { bestSum = sum; best = p; }
+    }
+    return best;
+  };
+
+  const red = underlineRGB(RGB(0xff0000));  // SGR 58 Rgb(255,0,0)
+  const green = underlineRGB(IDX(2));       // SGR 58 Indexed(2) → palette green
+  const dflt = underlineRGB(0);             // Default → follow the fg (white)
+
+  const checks = {
+    // The Rgb underline draws RED: strong red channel, weak green/blue.
+    sgr58RgbUnderlineIsRed: red[0] >= 200 && red[1] <= 70 && red[2] <= 70,
+    // An Indexed underline is palette-resolved → green.
+    sgr58IndexedUnderlineIsPaletteGreen: green[1] >= 200 && green[0] <= 70 && green[2] <= 70,
+    // Default (no SGR 58) follows the fg = white: every channel high (the #513 behaviour).
+    defaultUnderlineFollowsTheFgWhite: dflt[0] >= 200 && dflt[1] >= 200 && dflt[2] >= 200,
+    // ...and the colour genuinely changed the line — red is not white.
+    theColourActuallyChangedTheUnderline: red[1] < dflt[1] - 120,
+  };
+
+  window.__proof = { ok: Object.values(checks).every(Boolean), checks, dpr: devicePixelRatio, red, green, dflt };
+  window.__done = true;
+</script>

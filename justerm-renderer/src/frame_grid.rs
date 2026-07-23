@@ -31,6 +31,11 @@ pub struct DamageFrame<'a> {
     pub codepoints: &'a [u32],
     pub fg: &'a [u32],
     pub bg: &'a [u32],
+    /// Per-cell underline colour reference (SGR 58, #520), tagged-u32 like `fg`/`bg`
+    /// (`0` = Default → follow the fg). Read tolerantly (a short/empty column scatters
+    /// as Default), so a consumer that does not carry it degrades to no coloured
+    /// underline rather than erroring.
+    pub underline_colors: &'a [u32],
     pub flags: &'a [u16],
     /// Span-ordered combining-cluster index per cell (#285): `0` = none (use the base
     /// codepoint), else a 1-based index into `side_table` for this cell's trailing combining
@@ -52,6 +57,9 @@ pub struct FrameGrid {
     codepoints: Vec<u32>,
     fg: Vec<u32>,
     bg: Vec<u32>,
+    /// Per-cell underline colour ref (SGR 58, #520), tagged-u32 (`0` = Default). Scattered
+    /// and shifted with `fg`/`bg`; the renderer packs it as the line's base ink.
+    underline_colors: Vec<u32>,
     flags: Vec<u16>,
     /// Per-cell resolved grapheme-cluster text (#285): a non-empty string overrides the base
     /// codepoint at render time. Resolved from the frame's `extra`/`side_table` at scatter (the
@@ -107,6 +115,7 @@ impl FrameGrid {
             codepoints: vec![0; n],
             fg: vec![0; n],
             bg: vec![0; n],
+            underline_colors: vec![0; n],
             flags: vec![0; n],
             clusters: vec![String::new(); n],
         })
@@ -126,6 +135,9 @@ impl FrameGrid {
     }
     pub fn bg(&self) -> &[u32] {
         &self.bg
+    }
+    pub fn underline_colors(&self) -> &[u32] {
+        &self.underline_colors
     }
     pub fn flags(&self) -> &[u16] {
         &self.flags
@@ -216,6 +228,7 @@ impl FrameGrid {
             self.codepoints.fill(0);
             self.fg.fill(0);
             self.bg.fill(0);
+            self.underline_colors.fill(0);
             self.flags.fill(0);
             for c in &mut self.clusters {
                 c.clear();
@@ -244,6 +257,8 @@ impl FrameGrid {
                 self.codepoints[dst] = frame.codepoints[src];
                 self.fg[dst] = frame.fg[src];
                 self.bg[dst] = frame.bg[src];
+                // Tolerant like `extra` below: a consumer that omits the column scatters Default.
+                self.underline_colors[dst] = frame.underline_colors.get(src).copied().unwrap_or(0);
                 self.flags[dst] = frame.flags[src];
                 // Resolve the frame-local grapheme index to its cluster text NOW (while this
                 // frame's side_table is current) and store the text — a `0` index (or an empty
@@ -296,12 +311,14 @@ impl FrameGrid {
                 self.codepoints[dst] = self.codepoints[s];
                 self.fg[dst] = self.fg[s];
                 self.bg[dst] = self.bg[s];
+                self.underline_colors[dst] = self.underline_colors[s];
                 self.flags[dst] = self.flags[s];
                 self.clusters[dst] = self.clusters[s].clone();
             } else {
                 self.codepoints[dst] = 0;
                 self.fg[dst] = 0;
                 self.bg[dst] = 0;
+                self.underline_colors[dst] = 0;
                 self.flags[dst] = 0;
                 self.clusters[dst].clear();
             }
@@ -432,6 +449,71 @@ mod tests {
         // Untouched cells stay blank.
         assert_eq!(g.codepoints()[0], 0);
         assert_eq!(g.codepoints()[3], 0);
+    }
+
+    #[test]
+    fn the_underline_colour_column_scatters_shifts_and_wipes_like_fg() {
+        // #520: the underline colour rides the retained grid exactly like fg/bg —
+        // scattered by a Partial span, shifted with a scroll op, wiped by a Full frame.
+        let mut g = FrameGrid::try_new(2, 3).unwrap();
+        let red = (2 << 24) | 0xFF_0000;
+        // Partial: cell (1,0) = idx 2 gets a red underline colour.
+        g.apply(&DamageFrame {
+            kind: 1,
+            spans: &[1, 0, 0, 0, 1], // line=1, left=0, right=0, offset=0, count=1
+            codepoints: &[0x41],
+            fg: &[0],
+            bg: &[0],
+            underline_colors: &[red],
+            flags: &[1 << 3],
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(g.underline_colors()[2], red, "scattered to (1,0)");
+        assert_eq!(
+            g.underline_colors()[0],
+            0,
+            "an untouched cell has no colour"
+        );
+
+        // Scroll the whole grid up by 1: (1,0)'s colour moves to (0,0).
+        g.apply(&DamageFrame {
+            kind: 1,
+            scroll: Some((0, 2, 1)),
+            spans: &[],
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(g.underline_colors()[0], red, "shifted up with the row");
+
+        // A Full frame wipes it, like every other column.
+        g.apply(&DamageFrame {
+            kind: 0,
+            spans: &[],
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(g.underline_colors()[0], 0, "Full frame wiped the colour");
+    }
+
+    #[test]
+    fn a_missing_underline_colour_column_scatters_as_default() {
+        // The scatter reads the column tolerantly (`.get().unwrap_or(0)`), so a caller
+        // that omits it — the trailing-optional `apply_frame`/`apply_damage` arg left
+        // off — degrades to no coloured underline rather than panicking.
+        let mut g = FrameGrid::try_new(2, 1).unwrap();
+        g.apply(&DamageFrame {
+            kind: 1,
+            spans: &[0, 0, 1, 0, 2],
+            codepoints: &[0x41, 0x42],
+            fg: &[0, 0],
+            bg: &[0, 0],
+            underline_colors: &[], // omitted
+            flags: &[0, 0],
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(g.underline_colors(), &[0, 0], "no colour, no panic");
     }
 
     #[test]

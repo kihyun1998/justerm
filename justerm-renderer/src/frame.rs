@@ -22,7 +22,7 @@ use crate::glyph_class::treat_glyph_as_background_color;
 use crate::overlay::{
     HIGHLIGHT_BLEND_ALPHA, HighlightKind, Overlay, blend_over, composite_bg, should_blend_kind,
 };
-use crate::palette::Palette;
+use crate::palette::{Palette, resolve_indexed_or_rgb};
 use crate::render_policy::{ColorPolicy, dim_foreground, resolve_cell};
 
 /// Floats per cell instance: `col, row, bg(3), fg(3), glyph_field, line_fg, bg_default`.
@@ -68,6 +68,20 @@ pub struct Frame<'a> {
     /// not an omission: coverage is set by the base and a combining mark can only add ink to it
     /// (#495, reasoned in [`glyph_class`](crate::glyph_class)).
     pub codepoints: &'a [u32],
+    /// Per-cell **underline colour** reference (SGR 58, #520), tagged-u32 like `fg`/`bg`
+    /// (`0` = `Default`). A cell that draws a coloured underline resolves this — via the
+    /// palette, exactly as `fg`/`bg` — as the base ink for `I_line` (the underline /
+    /// strikethrough), replacing the glyph's ink that #513 forked the line from. A short
+    /// or missing entry resolves as `Default`, i.e. the line follows the glyph ink (the
+    /// #513 behaviour). It never touches the glyph — only the line's colour channel.
+    ///
+    /// One shared-channel consequence (#513): `I_line` is one ink for BOTH the underline and the
+    /// strikethrough, so on a cell with underline **and** strikethrough this colour paints both.
+    /// SGR 58 is properly the *underline* colour only — but justerm-core stores it only when
+    /// `UNDERLINE` is set, so the strikethrough-**only** case never carries it (it strikes in the fg);
+    /// the sole divergence is the rare underline+strikethrough+SGR-58 cell, where the strike takes
+    /// the underline colour. Splitting the two would cost a second ink channel; deferred.
+    pub underline_colors: &'a [u32],
 }
 
 /// Pack a [`Frame`] (row-major) into per-cell instance data
@@ -105,6 +119,7 @@ pub fn pack_instances(
         slots,
         flags,
         codepoints,
+        underline_colors,
     } = *frame;
     // `usize` is 32 bits on wasm32, so `cells * INSTANCE_FLOATS` overflows it for a grid `resolve_frame` would
     // still accept (it only bounds `cells` by the slice length). A failed reservation is not worth
@@ -213,6 +228,22 @@ pub fn pack_instances(
             // ADR-0019 R1 — so the line keeps the value as it stands at this point. Rules 5-7 (top
             // decoration, dim, contrast) then run over both, which is why this is a fork rather than
             // a second pipeline.
+            //
+            // #520: SGR 58 declares the underline's OWN colour, resolved through the palette exactly
+            // like fg/bg (a Default/Indexed/Rgb *reference*, not an absolute decoration colour). An
+            // explicit colour is **authoritative**: it is drawn RAW and immune to the glyph's ink
+            // treatments — top/bottom decoration fg, DIM, and minimum-contrast all leave it alone
+            // (the `line_packed` short-circuit below). This is xterm's rule (`TextureAtlas` sets the
+            // underline `strokeStyle` from the raw `getUnderlineColor()` and disables its threshold
+            // clear) and, more importantly, the only *coherent* one: the two-lens found that adjusting
+            // an "explicit" colour by some rules but not others is an invented asymmetry with no basis
+            // in the layer model. `Default` (0) keeps #513's behaviour — the line follows the cell ink
+            // (rules 1-3) and rides rules 5-7 with the glyph. `line_fg` holds the follow-fg value; for
+            // an explicit colour it is unused (the short-circuit wins), kept only so rules 5-7 need no
+            // guard.
+            let ucolor_ref = underline_colors.get(idx).copied().unwrap_or(0);
+            let explicit_line =
+                (ucolor_ref != 0).then(|| resolve_indexed_or_rgb(ucolor_ref, palette));
             let mut line_fg = fg;
             if is_selection && exclude && !glyph_taken_by_decoration {
                 let raw_sel = overlay.colors.of(HighlightKind::Selection);
@@ -351,8 +382,12 @@ pub fn pack_instances(
             }
             if let Some(c) = top.fg {
                 fg = c;
-                // #513 rule 5: a decoration declares the cell's INK, not the glyph's specifically,
-                // so it reaches the line too.
+                // #513 rule 5: a decoration declares the cell's INK, not the glyph's specifically, so
+                // it reaches the line too — but only a FOLLOW-FG line. #520 makes an explicit SGR 58
+                // colour authoritative, so when `explicit_line` is set the `line_packed` short-circuit
+                // discards this assignment (the underline keeps its own colour). This write is the
+                // follow-fg case's rule 5; it is dead for an explicit line, which is why the fork left
+                // it unguarded.
                 line_fg = c;
                 fg_overridden = true;
             } else if exclude && top.bg.is_some() {
@@ -433,7 +468,13 @@ pub fn pack_instances(
             // win with no behaviour change — and it skips a second `ensure_contrast_ratio` luminance
             // loop on every cell in the viewport, which is the bulk of them.
             let draws_a_line = cell_flags & (UNDERLINE | STRIKETHROUGH) != 0;
-            let line_packed = if !draws_a_line {
+            let line_packed = if let Some(c) = explicit_line {
+                // #520: an explicit SGR 58 colour is authoritative — drawn raw, past dim/contrast and
+                // any decoration override (rules 5-7). The whole `if` below is the follow-fg pipeline;
+                // this arm takes the line out of it entirely, which is what makes the treatment of an
+                // explicit colour uniform (the two-lens verdict) instead of adjusted-by-some-rules.
+                c
+            } else if !draws_a_line {
                 line_fg
             } else if mcr > 1.0 && (!exclude || glyph_taken_by_decoration) {
                 let ratio = if dim { mcr / 2.0 } else { mcr };
@@ -553,6 +594,7 @@ mod tests {
             slots,
             flags,
             codepoints: &[],
+            underline_colors: &[],
         }
     }
 
@@ -620,6 +662,7 @@ mod tests {
             slots: &[0, 0],
             flags: &[0, 0],
             codepoints: &[],
+            underline_colors: &[],
         };
         let got = pack_instances(
             &f,
@@ -661,6 +704,7 @@ mod tests {
                 slots: &slots,
                 flags: &flgs,
                 codepoints: &[],
+                underline_colors: &[],
             };
             let got = pack_instances(&f, &p, true, &ov, &ColorPolicy::default(), decos);
             got[BACKDROP]
@@ -762,6 +806,132 @@ mod tests {
     }
 
     #[test]
+    fn sgr58_underline_colour_is_the_lines_ink_not_the_glyphs() {
+        // #520: SGR 58 draws the underline in its OWN colour while the glyph keeps its
+        // fg. The line's ink is `line_packed` (float 9); the glyph fg is floats 5..8.
+        let p = palette(); // default_fg = 0xFFFFFF (white); colors[1] = 0x00FF00
+        const LINE: usize = 9; // [col,row, bg(3), fg(3), glyph, LINE, bg_default]
+        let run = |uref: u32| {
+            let f = Frame {
+                cols: 1,
+                rows: 1,
+                bg: &[0],
+                fg: &[0], // Default → the glyph is white
+                slots: &[33],
+                flags: &[UNDERLINE],
+                codepoints: &[],
+                underline_colors: &[uref],
+            };
+            pack_instances(
+                &f,
+                &p,
+                true,
+                &Overlay::default(),
+                &ColorPolicy::default(),
+                &[],
+            )
+        };
+        // Rgb(255,0,0) underline: the glyph stays white, the line draws red.
+        let red = run((2 << 24) | 0xFF_0000);
+        assert_eq!(
+            &red[5..8],
+            &[1.0, 1.0, 1.0],
+            "glyph keeps its own fg (white)"
+        );
+        assert_eq!(
+            red[LINE], 0xFF_0000 as f32,
+            "the underline draws in the SGR 58 colour, not the glyph fg"
+        );
+        // Indexed(1) resolves through the palette (0x00FF00) — a ref, like fg/bg.
+        let green = run((1 << 24) | 1);
+        assert_eq!(
+            green[LINE], 0x00_FF00 as f32,
+            "an indexed underline colour is palette-resolved"
+        );
+        // Default (0): the line follows the glyph fg (white) — the #513 behaviour.
+        let follow = run(0);
+        assert_eq!(
+            follow[LINE], 0xFF_FFFF as f32,
+            "a Default underline colour follows the fg"
+        );
+    }
+
+    #[test]
+    fn an_explicit_sgr58_underline_colour_is_immune_to_dim_contrast_selection_and_decoration() {
+        // #520 (two-lens): an explicit underline colour is AUTHORITATIVE — drawn raw, past the glyph's
+        // dim / minimum-contrast / decoration-fg / selectionForeground treatments (xterm parity, and
+        // the only self-consistent rule — the pass found "immune to some rules but not others" was an
+        // invented asymmetry). Each arm would move `line_packed` off the raw colour if a treatment
+        // leaked into it.
+        const LINE: usize = 9;
+        let p = palette(); // default_fg white, default_bg 0x1E1E2E
+        let red: u32 = (2 << 24) | 0xFF_0000;
+        let cell = |flags: u16,
+                    uc: &[u32],
+                    ov: Overlay,
+                    policy: &ColorPolicy,
+                    decos: &[DecorationRect]| {
+            let f = Frame {
+                cols: 1,
+                rows: 1,
+                bg: &[0],
+                fg: &[0],
+                slots: &[33],
+                flags: &[flags],
+                codepoints: &[],
+                underline_colors: uc,
+            };
+            pack_instances(&f, &p, true, &ov, policy, decos)[LINE]
+        };
+        // 1) DIM must not fade it.
+        assert_eq!(
+            cell(
+                UNDERLINE | DIM,
+                &[red],
+                Overlay::default(),
+                &ColorPolicy::default(),
+                &[]
+            ),
+            0xFF_0000 as f32,
+            "DIM must not fade an explicit underline colour"
+        );
+        // 2) minimumContrastRatio must not nudge it (dark colour near the bg would otherwise correct).
+        let dark = (2 << 24) | 0x20_1010;
+        let mcr = ColorPolicy {
+            min_contrast: 7.0,
+            ..ColorPolicy::default()
+        };
+        assert_eq!(
+            cell(UNDERLINE, &[dark], Overlay::default(), &mcr, &[]),
+            0x20_1010 as f32,
+            "min-contrast must not nudge an explicit underline colour"
+        );
+        // 3) selectionForeground must not recolour it.
+        let sel_fg = ColorPolicy {
+            selection_fg: Some(0x00_FF00),
+            ..ColorPolicy::default()
+        };
+        assert_eq!(
+            cell(UNDERLINE, &[red], selected(&[0, 0, 0], &[]), &sel_fg, &[]),
+            0xFF_0000 as f32,
+            "selectionForeground must not recolour an explicit underline"
+        );
+        // 4) a top-decoration fg must not override it (this is the asymmetry the two-lens caught —
+        //    xterm and the model both leave the underline untouched by top OR bottom decoration).
+        assert_eq!(
+            cell(
+                UNDERLINE,
+                &[red],
+                Overlay::default(),
+                &ColorPolicy::default(),
+                &[deco(DecorationLayer::Top, None, Some(0x00_00FF))],
+            ),
+            0xFF_0000 as f32,
+            "a top-decoration fg must not override an explicit underline colour"
+        );
+    }
+
+    #[test]
     fn hidden_cell_renders_background_only() {
         // A hidden cell with a real slot + underline: the glyph field collapses to the blank
         // slot (0) — no coverage, no decoration — so only the background shows.
@@ -847,6 +1017,7 @@ mod tests {
             slots: &[2048, 2049], // wide lead + its right-half slot
             flags: &[HIDDEN | WIDE_CHAR, HIDDEN | WIDE_CHAR_SPACER],
             codepoints: &[0x4E2D, 0],
+            underline_colors: &[],
         };
         let got = pack_instances(
             &f,
@@ -1785,6 +1956,7 @@ mod tests {
             slots: &[9],
             flags,
             codepoints,
+            underline_colors: &[],
         }
     }
 
