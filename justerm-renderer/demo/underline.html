@@ -76,6 +76,20 @@
   checks.theUnderlineStaysInsideTheCell = u.litRows.every((y) => y < ch);
   checks.theStrikethroughSitsAboveTheUnderline = Math.min(...s.litRows) < Math.min(...u.litRows);
 
+  // #517: thickness tracks FONT SIZE like a real underline (xterm.js `fontSize*dpr/15`), not a fat
+  // fraction of the cell box. At font 48 the xterm core is ~4-6 device px depending on dpr (~6.2% of
+  // the cell); the lit-row count adds the fwidth AA edge on top, so the bound is 0.10 — comfortably
+  // below beamterm's 0.113 (the RED value) and above the ~0.062 core plus a pixel of AA. RED on the
+  // old `0.05*box` shader, which measured 0.113 here.
+  r.setFontSize(48);
+  const big = lineOf(UNDERLINE);
+  const bigCellH = r.cell_height();
+  r.setFontSize(16);
+  const thicknessFraction = big.litRows.length / bigCellH;
+  checks.theUnderlineThicknessTracksFontMetricNotTheBox = thicknessFraction <= 0.10;
+  // …and is still a real line, not thinned to nothing.
+  checks.theThickUnderlineIsStillDrawn = big.litRows.length >= 1;
+
   // #515 centre-clamp: with a tall lineHeight the underline must stay INSIDE the cell (alacritty's
   // `max_y`) AND stay under the glyph, not sink to the enlarged cell's floor — because `gy` is the
   // glyph box, not the cell. Measured: at lineHeight 2 the line sits ~71% down a 2x cell, not 91%.
@@ -88,6 +102,6 @@
     Math.max(...tallU.litRows) < tallCh * 0.85; // clamped near the glyph, well above the floor
   checks.itIsStillCrispInATallCell = tallU.peak >= 230;
 
-  window.__proof = { ok: Object.values(checks).every(Boolean), checks, dpr: devicePixelRatio, cw, ch, uPeak: u.peak, sPeak: s.peak };
+  window.__proof = { ok: Object.values(checks).every(Boolean), checks, dpr: devicePixelRatio, cw, ch, uPeak: u.peak, sPeak: s.peak, thicknessFraction };
   window.__done = true;
 </script>

@@ -105,6 +105,18 @@ pub fn device_cell(
 ///
 /// A cell narrower than the glyph (negative spacing) offsets by zero: the glyph starts at the cell's
 /// edge and is cropped on the far side.
+/// Underline / strikethrough thickness in device pixels, from the font SIZE — `max(1, round(font_px
+/// / 15))`, where `font_px = font_size * dpr` is the em in device px. This is xterm.js's rule
+/// (`addon-webgl/src/TextureAtlas.ts`, `Math.max(1, Math.floor(fontSize * dpr / 15))`), used because a
+/// Canvas renderer has no font file and therefore no `underline_thickness` metric the native
+/// terminals read (#517; `TextMetrics` exposes only box + baseline, measured). It replaces beamterm's
+/// `0.05 * glyph_box` (#267), which was ~2x too heavy — measured 11.3% of the cell against xterm's
+/// 6.2%, and box-relative so `lineHeight`/font-family could distort it. `round`, not `floor`, so a
+/// 15px em rounds to 1 rather than truncating to 0 before the `max`.
+pub fn line_thickness(font_px: f32) -> u32 {
+    ((font_px / 15.0).round() as u32).max(1)
+}
+
 pub fn glyph_offset(cell: (u32, u32), char_px: (u32, u32)) -> (u32, u32) {
     let dx = cell.0.saturating_sub(char_px.0);
     let dy = cell.1.saturating_sub(char_px.1);
@@ -117,6 +129,24 @@ mod tests {
 
     /// The measured ink box of `█` at `FONT_SIZE * 1` in Chromium (#328): 10 x 16 device px.
     const CHAR: (u32, u32) = (10, 16);
+
+    #[test]
+    fn line_thickness_is_the_xterm_font_size_formula() {
+        // xterm.js: `max(1, floor(fontSize*dpr/15))`. We `round`, which agrees on all the whole-px
+        // cases below and only differs by rounding a fractional em UP toward 1 rather than down.
+        assert_eq!(line_thickness(16.0 * 1.0), 1); // 16px @ dpr 1  → 1.07 → 1
+        assert_eq!(line_thickness(16.0 * 2.0), 2); // 16px @ dpr 2  → 2.13 → 2
+        assert_eq!(line_thickness(32.0 * 2.0), 4); // 32px @ dpr 2  → 4.27 → 4
+        assert_eq!(line_thickness(48.0 * 2.0), 6); // 48px @ dpr 2  → 6.4  → 6, vs beamterm's 11
+    }
+
+    #[test]
+    fn line_thickness_never_vanishes() {
+        // A tiny em must still draw a 1px line — the `max(1)` floor, the reason a small underline is
+        // visible at all (#515's floor, now the metric's floor).
+        assert_eq!(line_thickness(1.0), 1);
+        assert_eq!(line_thickness(7.0), 1); // 7/15 = 0.47 → rounds to 0 → floored to 1
+    }
 
     #[test]
     fn the_defaults_reproduce_the_cell_the_rasteriser_measured() {
