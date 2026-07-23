@@ -179,6 +179,18 @@ decoration); it is rejected here because it drops a highlight the user explicitl
   `selectionForeground`, DIM, minimum contrast) reach both. Both references arrived at a separate
   channel for the same reason (`RenderableCell.underline`, `textDecorationColor`), which is also where
   a future `SGR 58` lands.
+  **`SGR 58` has now landed (#520), and it gives `I_line` two regimes by authorship of the line colour.**
+  A *follow-fg* line (no `SGR 58`) rides the cell-wide treatments above, as #513 said — a decoration's
+  fg, `selectionForeground`, DIM and minimum contrast all reach it, because its colour is the glyph's.
+  An *explicitly declared* underline colour is **authoritative**: drawn raw, immune to every one of those
+  — a decoration fg (top or bottom), `selectionForeground`, DIM, and minimum contrast all leave it alone.
+  The two-lens (#520 slice 5) established this as the only coherent stance: adjusting an explicit colour
+  by some of those rules but not others — which the first implementation did, letting a top decoration and
+  dim/contrast rewrite it while selection and a bottom decoration could not — is an invented asymmetry
+  with no basis in the layer stack. xterm draws the explicit underline `strokeStyle` raw with its
+  threshold-clear disabled, for the same reason. So the axis is **authorship**, the same one rule 5 turns
+  on: a colour the application declared for the line is the application's, and the glyph's treatments do
+  not get to rewrite it.
   One rule is deliberately shared rather than duplicated: **#226's contrast exclusion gates both inks
   together.** It exists because `ensure_contrast_ratio` reads `eff_bg`, so per-cell correction over a
   varying background breaks a run — and an underline is exactly as continuous across cells as a tile
