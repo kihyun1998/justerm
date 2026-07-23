@@ -170,6 +170,20 @@ deferred behavior) it tracks — then add what you find here.** Seeds (caught in
 - **Wide-char spacer is a distinct marker, not a blank.** The trailing column of a width-2 char must
   carry a "wide-char spacer" marker (flag/variant), not a plain blank — else overwrite, erase,
   selection, and cursor positioning go wrong. [#2]
+- **A cell's extended attributes are stored in two halves — a presence bit in the cell, the value in
+  the row — so copying a cell copies only half of it.** Combining marks (#45), the OSC 8 hyperlink
+  (#46) and the SGR 58 underline colour (#520) do not fit the packed 12-byte cell, so each keeps a
+  *bit* in the cell and its *value* in a column-keyed sparse map on the `Row`. Every path that moves,
+  relocates or synthesizes a cell must carry the map entries with it — the mode-2027 width promotions
+  (`relocate_cluster_wide` / `promote_cluster_to_wide`), the second half of a wide glyph, ICH/DCH
+  shifts, reflow. Miss one and the bit arrives with nothing behind it: the flag-gated read then returns
+  the **default**, silently, with no crash — a hyperlink or underline colour that simply evaporates.
+  Carry the whole family in one step (`Row::ext_attrs_at` → `Row::set_ext_attrs`) rather than naming
+  each rider, the way xterm.js re-keys `_combined` *and* `_extendedAttrs` through a single
+  `_copyCellMapsFrom` for every cell `copyCellsFrom` moves — a rider added later is then covered by
+  construction. The dual hazard: the maps are deliberately left holding stale entries (harmless under
+  the gate), so a carry must **clear** as well as set, or a new cell inherits the previous occupant's
+  value. [#521]
 - **Background Color Erase (BCE).** Erase (ED/EL) fills cleared cells with the *current SGR
   background*, not default. [#8; note in #2 if deferred]
 - **Cursor-move damage (the previous cursor cell is hidden damage).** Moving the cursor changes *no
