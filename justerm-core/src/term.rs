@@ -12,7 +12,7 @@ use crate::color::Color;
 use crate::cursor::{Cursor, CursorShape, Pen};
 use crate::damage::{LineBounds, LineDamage, ScrollOp, TermDamage};
 use crate::event::TermEvent;
-use crate::grid::{Grid, Row};
+use crate::grid::{ExtAttrs, Grid, Row};
 use crate::input::{
     KeyEvent, MouseEncoding, MouseEvent, MouseProtocol, encode_focus, encode_key, encode_mouse,
     encode_paste,
@@ -1904,13 +1904,29 @@ impl Term {
         None
     }
 
+    /// Is `(line, col)` the wide-wrap artefact — the blank a width-2 glyph left behind when it
+    /// did not fit, which the text extractors drop entirely?
+    ///
+    /// Position is part of the definition, not a shortcut: the artefact is only ever the **last**
+    /// column of a soft-wrapped row. The marker alone is not enough, because the row-shift verbs
+    /// (ICH/DCH) move whole cells and carry it inward, where it describes nothing — and a stale
+    /// marker mid-row must stay an ordinary blank, or two visually separate words silently
+    /// become one in the clipboard (#528).
+    fn is_wrap_artefact(&self, line: usize, col: usize) -> bool {
+        let cells = self.abs_line(line);
+        cells[col].is_leading_spacer() && col + 1 == cells.len()
+    }
+
     /// Walk left to the first cell of `p`'s word (a maximal run of non-boundary
     /// chars), following a soft wrap into the previous row.
     fn word_start(&self, p: BufferPoint) -> BufferPoint {
         let cells = self.abs_line(p.line);
         let (mut line, mut col) = (p.line, p.col.min(cells.len().saturating_sub(1)));
         while let Some((pl, pc)) = self.prev_pos(line, col) {
-            if is_word_boundary(self.abs_line(pl)[pc].c()) {
+            // The wrap artefact represents no column of text, so the walk passes *through* it
+            // rather than stopping — else a word that wrapped only because a wide glyph did not
+            // fit would be cut in half (#528).
+            if !self.is_wrap_artefact(pl, pc) && is_word_boundary(self.abs_line(pl)[pc].c()) {
                 break;
             }
             line = pl;
@@ -1925,8 +1941,8 @@ impl Term {
         let cells = self.abs_line(p.line);
         let (mut line, mut col) = (p.line, p.col.min(cells.len().saturating_sub(1)));
         while let Some((nl, nc)) = self.next_pos(line, col) {
-            if is_word_boundary(self.abs_line(nl)[nc].c()) {
-                break;
+            if !self.is_wrap_artefact(nl, nc) && is_word_boundary(self.abs_line(nl)[nc].c()) {
+                break; // (see `word_start`: the artefact is transparent to the walk)
             }
             line = nl;
             col = nc;
@@ -2609,6 +2625,95 @@ impl Term {
 
     // ---- printing ------------------------------------------------------------
 
+    /// The extended attributes the pen currently stamps onto a cell it writes: the open OSC 8
+    /// hyperlink (#26/#46) and a non-default underline colour (SGR 58, #520).
+    ///
+    /// The colour is gated on the UNDERLINE attribute — an underline colour is meaningless on a
+    /// cell that draws no underline, and xterm likewise does not persist it there
+    /// (`AttributeData isEmpty()` ignores the colour; `InputHandler.test.ts:2084`). That keeps
+    /// it off the wire for cells that never draw it (ADR-0020: no inert per-cell payload). SGR 58
+    /// is the *underline* colour, so STRIKETHROUGH alone does not arm it.
+    ///
+    /// One place, because there are three sites that write a pen-built cell (the glyph, its wide
+    /// spacer, and the vacated wrap column) — mirroring the pen half of `Row::ext_attrs_at`, so a
+    /// later rider is added here rather than at each of them (#521/#528).
+    fn pen_ext_attrs(&self) -> ExtAttrs {
+        let ucolor = self.cursor.pen.underline_color;
+        let armed =
+            ucolor != Color::Default && self.cursor.pen.flags.contains(CellFlags::UNDERLINE);
+        ExtAttrs::from_pen(self.current_link, armed.then_some(ucolor))
+    }
+
+    /// Will the next `wrapline()` actually reach another row?
+    ///
+    /// `wrapline` → `linefeed` advances in exactly two cases: the cursor sits at the scroll
+    /// region's bottom (so the region scrolls under it), or it has a row below it on screen.
+    /// Parked *below* a DECSTBM region on the last row it does neither — it silently stays put.
+    ///
+    /// Both wide-at-boundary paths must ask before they commit anything, because both destroy
+    /// content on the assumption that the row is about to change: `write_glyph` blanks the column
+    /// it is leaving, and `relocate_cluster_wide` writes its cluster to `(cursor.row, 0..=1)`
+    /// *after* the wrap — which is the same row when nothing advanced, so it lands on live cells.
+    /// Reasoning only about the vacated source column misses that second case entirely.
+    ///
+    /// This mirrors `linefeed`'s own condition; the two must be read together.
+    fn wrapline_advances(&self) -> bool {
+        self.cursor.row == self.scroll_bottom || self.cursor.row + 1 < self.grid.rows()
+    }
+
+    /// Blank the last column as the soft-wrap artefact it is, when a width-2 glyph could not fit
+    /// there (#528). Shared by the two paths that reach this state: `write_glyph`'s wide-at-boundary
+    /// wrap and `relocate_cluster_wide`'s promoted cluster.
+    ///
+    /// The column is **written**, not merely flagged: a blank built from the current pen, exactly
+    /// as every reference does it — xterm.js `setCellFromCodepoint(col, 0, 1, curAttr)`
+    /// (`InputHandler.ts:609-611`; `BufferLine.ts:244-251` takes the pen's fg/bg *and* its
+    /// `extended` link/colour), ghostty `printCell(0, .spacer_head)` (`Terminal.zig:1410-1412`,
+    /// whose `printCell` stamps the cursor's hyperlink), alacritty `write_at_cursor(' ')` under a
+    /// `LEADING_WIDE_CHAR_SPACER` template (`mod.rs:1108-1113`, assigning `extra` from it).
+    ///
+    /// Flagging in place instead left the previous occupant's glyph, hyperlink and underline colour
+    /// alive in a cell every text reader skips — so a renderer drew a character that could not be
+    /// copied, searched or announced (#528). Building from `Pen::cell` also clears the presence
+    /// bits, so no stale side-map entry can be read back through the new cell.
+    ///
+    /// WRAPLINE marks the row a continuation rather than a hard line-end (search, logical lines
+    /// #113 and reflow #7 all read it); the leading-spacer marker makes the text extractors skip
+    /// the blank instead of joining `"ab한"` → `"ab 한"`.
+    ///
+    /// The marker is **alacritty's** `LEADING_WIDE_CHAR_SPACER` (`term/cell.rs`) — ghostty calls
+    /// the same thing `.spacer_head`. It is *not* xterm's: xterm.js has no marker at all, writing
+    /// a bare null cell and re-inferring the artefact at reflow time from "ends in null and the
+    /// following line starts with a wide char". That difference has a consequence here — in
+    /// xterm.js a lost marker degrades to an empty cell that trimming drops anyway, whereas
+    /// justerm writes `' '`, so the marker is the *only* thing keeping this column out of the
+    /// extracted text.
+    fn vacate_for_wrap(&mut self, row: usize, col: usize) {
+        // Writing this column makes the vacate an overwrite like any other, so it inherits the
+        // no-orphan obligation every other overwrite site carries (`write_glyph`,
+        // `promote_cluster_to_wide`, `insert_chars`, `delete_chars`, the erase path): if the
+        // column was the *spacer* of a wide glyph, blanking it destroys the spacer marker and
+        // strands the lead. That is unrecoverable rather than merely untidy — every repair path
+        // keys off `is_wide_spacer()`, so once the marker is gone no later write, ECH, EL, ICH
+        // or DCH can ever clear the orphan.
+        let repaired_lead = col > 0 && self.grid.cell(row, col).is_wide_spacer();
+        if repaired_lead {
+            self.grid.cell_mut(row, col - 1).reset();
+        }
+        let mut vacated = self.cursor.pen.cell(' ');
+        vacated.insert_flags(CellFlags::WRAPLINE);
+        vacated.set_leading_spacer();
+        *self.grid.cell_mut(row, col) = vacated;
+        let ext = self.pen_ext_attrs();
+        self.grid.row_mut(row).set_ext_attrs(col, ext);
+        // The cell's contents changed, so a frame-mode consumer must be told or it keeps painting
+        // the old glyph (ADR-0003: every mutation site records damage) — and that covers the
+        // repaired lead too, which is a second changed cell, not a bookkeeping detail. ghostty
+        // pins exactly this: its "print over wide spacer tail" test asserts the dirty bit on the
+        // *repaired lead*, not on the cell that was written.
+        self.damage_span(row, col - usize::from(repaired_lead), col);
+    }
+
     /// Write one glyph at the cursor, handling deferred wrap and the wide-char
     /// spacer, then advance the cursor (deferring the wrap if it hits the edge).
     fn write_glyph(&mut self, c: char, width: usize) {
@@ -2632,14 +2737,11 @@ impl Term {
             if !self.autowrap {
                 return;
             }
-            // Mark the row soft-wrapped, like the pending-wrap path above: the
-            // vacated last column is a continuation, not a hard line-end. Search,
-            // logical lines (#113), and reflow (#7) all read WRAPLINE for the join.
-            // Also tag it a leading spacer so the text extractors skip the blank
-            // (xterm's LEADING_WIDE_CHAR_SPACER) instead of joining "ab한"→"ab 한".
-            let vacated = self.grid.cell_mut(self.cursor.row, cols - 1);
-            vacated.insert_flags(CellFlags::WRAPLINE);
-            vacated.set_leading_spacer();
+            // …but only if the wrap actually happens: vacating for a wrap that never occurs
+            // blanks a column holding a live glyph.
+            if self.wrapline_advances() {
+                self.vacate_for_wrap(self.cursor.row, cols - 1);
+            }
             self.wrapline();
         }
 
@@ -2667,25 +2769,10 @@ impl Term {
             cell.insert_flags(CellFlags::WIDE_CHAR);
         }
         *self.grid.cell_mut(row, col) = cell;
-        // Stamp the open hyperlink, if any, into the row's link map (#26/#46).
-        if let Some(link) = self.current_link {
-            self.grid.row_mut(row).set_link(col, link);
-        }
-        // Stamp a non-default underline colour (SGR 58, #520) into the row's ucolor
-        // map — the 12-byte cell has no room for a fourth colour, so it rides the
-        // side map gated by the cell's UCOLOR_PRESENT bit, like the link. Gated on
-        // the UNDERLINE attribute: an underline colour is meaningless on a cell that
-        // draws no underline, and xterm likewise does not persist it there
-        // (`AttributeData isEmpty()` ignores the colour; `InputHandler.test.ts:2084`).
-        // This keeps the colour off the slice-2 wire for cells that never draw it
-        // (ADR-0020: no inert per-cell payload). SGR 58 is the *underline* colour, so
-        // STRIKETHROUGH alone does not arm it.
-        let ucolor = self.cursor.pen.underline_color;
-        let colour_the_underline =
-            ucolor != Color::Default && self.cursor.pen.flags.contains(CellFlags::UNDERLINE);
-        if colour_the_underline {
-            self.grid.row_mut(row).set_ucolor(col, ucolor);
-        }
+        // Stamp the pen's extended attrs — the open hyperlink (#26/#46) and a non-default
+        // underline colour (#520) — into the row's side maps.
+        let ext = self.pen_ext_attrs();
+        self.grid.row_mut(row).set_ext_attrs(col, ext);
 
         // The trailing column of a wide glyph carries a distinct spacer marker —
         // and the same link + underline colour, so a hover/selection/underline over
@@ -2694,12 +2781,7 @@ impl Term {
             let mut spacer = self.cursor.pen.cell(' ');
             spacer.insert_flags(CellFlags::WIDE_CHAR_SPACER);
             *self.grid.cell_mut(row, col + 1) = spacer;
-            if let Some(link) = self.current_link {
-                self.grid.row_mut(row).set_link(col + 1, link);
-            }
-            if colour_the_underline {
-                self.grid.row_mut(row).set_ucolor(col + 1, ucolor);
-            }
+            self.grid.row_mut(row).set_ext_attrs(col + 1, ext);
         }
 
         // Record damage for the cell(s) just written.
@@ -2858,8 +2940,11 @@ impl Term {
     /// autowrap off, or a 1-column screen (no room for a wide cell anywhere), it stays narrow.
     fn relocate_cluster_wide(&mut self, row: usize, col: usize) {
         let cols = self.grid.cols();
-        if cols < 2 || !self.autowrap {
-            return; // nowhere to place a wide cell — leave it narrow
+        if cols < 2 || !self.autowrap || !self.wrapline_advances() {
+            // Nowhere to place a wide cell — leave it narrow. `!wrapline_advances()` joins the
+            // other two for the same reason: with no next row, the relocation would write the
+            // cluster over columns 0-1 of the *current* row and destroy whatever is there.
+            return;
         }
         // Capture the base cell (glyph + attrs), its marks, and its extended attrs before
         // vacating. The extended attrs (hyperlink, underline colour) must be read HERE and not
@@ -2871,13 +2956,10 @@ impl Term {
             .map(<[char]>::to_vec)
             .unwrap_or_default();
         let ext = self.grid.row_ref(row).ext_attrs_at(col);
-        // Vacate the last column as a soft-wrap leading spacer (mirrors write_glyph 2457-2459).
-        // reset() clears the base's combining bit, so its stale marks entry is never read again.
-        let vacated = self.grid.cell_mut(row, col);
-        vacated.reset();
-        vacated.insert_flags(CellFlags::WRAPLINE);
-        vacated.set_leading_spacer();
-        self.damage_span(row, col, col);
+        // Vacate the last column as a soft-wrap artefact — the same step `write_glyph` takes for a
+        // wide glyph that cannot fit, and now literally the same code, so the two cannot drift
+        // apart again (#528; they held opposite behaviours until then).
+        self.vacate_for_wrap(row, col);
         // Advance to the next line (scrolls if at the bottom); cursor lands at col 0.
         self.wrapline();
         let nr = self.cursor.row;

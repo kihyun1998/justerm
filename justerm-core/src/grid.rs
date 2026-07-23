@@ -46,6 +46,16 @@ pub(crate) struct ExtAttrs {
     ucolor: Option<Color>,
 }
 
+impl ExtAttrs {
+    /// The family as the *pen* currently holds it — the other source besides a cell
+    /// (`Row::ext_attrs_at`). Every print-path site that stamps a freshly built cell
+    /// goes through here, so the gating rules live in one place and a later rider is
+    /// added once (#521/#528).
+    pub(crate) fn from_pen(link: Option<NonZeroU32>, ucolor: Option<Color>) -> ExtAttrs {
+        ExtAttrs { link, ucolor }
+    }
+}
+
 /// Re-key a sparse column map to follow a `copy_within(src, dst)` cell shift: the
 /// live entry for a moved cell travels to the cell's new column. Vacated source
 /// keys whose cell loses its gate bit are left stale — harmless under the
