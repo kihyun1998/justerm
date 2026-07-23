@@ -28,6 +28,24 @@ type Links = BTreeMap<usize, NonZeroU32>;
 /// entry — a `Default` underline follows the fg and needs no storage.
 type UColors = BTreeMap<usize, Color>;
 
+/// Every **extended attribute** live at one column — the family that rides the
+/// row's flag-gated side maps rather than the 12-byte cell: the OSC 8 hyperlink
+/// (#46) and the SGR 58 underline colour (#520). Combining marks are deliberately
+/// *not* here: they are content, re-attached mark-by-mark through
+/// [`Row::push_combining`], not carried as an opaque value.
+///
+/// It exists so a path that *moves* or *grows* a cell carries the whole family in
+/// one step ([`Row::ext_attrs_at`] → [`Row::set_ext_attrs`]) instead of naming each
+/// rider — the same shape as xterm.js's `_copyCellMapsFrom`, which re-keys
+/// `_combined` and `_extendedAttrs` together for every cell `copyCellsFrom` moves.
+/// Adding a rider (an underline *style*, say) is a field here plus the two arms
+/// below; every carry site is covered by construction (#521).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ExtAttrs {
+    link: Option<NonZeroU32>,
+    ucolor: Option<Color>,
+}
+
 /// Re-key a sparse column map to follow a `copy_within(src, dst)` cell shift: the
 /// live entry for a moved cell travels to the cell's new column. Vacated source
 /// keys whose cell loses its gate bit are left stale — harmless under the
@@ -194,6 +212,38 @@ impl Row {
     pub(crate) fn set_ucolor(&mut self, col: usize, color: Color) {
         self.cells[col].set_ucolored(true);
         self.ucolors.insert(col, color);
+    }
+
+    /// Every extended attribute live at `col`, as one value (#521). Flag-gated per
+    /// rider, so a stale entry an overwrite left behind is never picked up.
+    pub(crate) fn ext_attrs_at(&self, col: usize) -> ExtAttrs {
+        ExtAttrs {
+            link: self.link_at(col),
+            ucolor: self.ucolor_at(col),
+        }
+    }
+
+    /// Make `col` carry **exactly** `attrs` — each rider's presence bit and map
+    /// entry set together, or *both cleared*. Clearing matters as much as setting:
+    /// the promotion paths write over a column that may still hold a live entry, and
+    /// they build the new cell by copying one that may still carry a presence bit,
+    /// so "set what is there" alone would leave either half of the gate dangling
+    /// (#521).
+    pub(crate) fn set_ext_attrs(&mut self, col: usize, attrs: ExtAttrs) {
+        match attrs.link {
+            Some(link) => self.set_link(col, link),
+            None => {
+                self.cells[col].set_linked(false);
+                self.links.remove(&col);
+            }
+        }
+        match attrs.ucolor {
+            Some(color) => self.set_ucolor(col, color),
+            None => {
+                self.cells[col].set_ucolored(false);
+                self.ucolors.remove(&col);
+            }
+        }
     }
 
     /// Re-key every map to follow a `copy_within(src, dst)` cell shift (ICH/DCH),
@@ -574,5 +624,46 @@ mod tests {
         let lines = g.take_lines();
         let got: String = lines.iter().map(|r| r[0].c()).collect();
         assert_eq!(got, "bc ");
+    }
+
+    /// `set_ext_attrs` is "make this column carry **exactly** these attrs". The
+    /// clearing half is invisible through the public API — the flag-gate hides a
+    /// stale entry either way — so it is pinned here, at the primitive that owns
+    /// the guarantee: a caller handing it `None` must leave neither a set presence
+    /// bit nor a readable map entry behind (#521).
+    #[test]
+    fn set_ext_attrs_clears_both_halves_of_the_gate() {
+        let mut row = Row::blank(2);
+        let link = NonZeroU32::new(7).unwrap();
+        row.set_link(0, link);
+        row.set_ucolor(0, Color::Indexed(3));
+        assert_eq!(row.ext_attrs_at(0).link, Some(link));
+        assert_eq!(row.ext_attrs_at(0).ucolor, Some(Color::Indexed(3)));
+
+        row.set_ext_attrs(0, ExtAttrs::default());
+        assert!(!row.cells[0].is_linked(), "presence bit cleared");
+        assert!(!row.cells[0].is_ucolored(), "presence bit cleared");
+        assert!(row.links.is_empty(), "and the map entry with it");
+        assert!(row.ucolors.is_empty());
+        // Re-arming the bit by hand must not resurrect anything.
+        row.cells[0].set_linked(true);
+        row.cells[0].set_ucolored(true);
+        assert_eq!(row.ext_attrs_at(0), ExtAttrs::default());
+    }
+
+    /// The carry itself: reading a column's family and stamping it onto another
+    /// column reproduces both riders together — the one step the promotion paths
+    /// rely on so a future rider needs no new call site (#521).
+    #[test]
+    fn ext_attrs_round_trip_from_one_column_to_another() {
+        let mut row = Row::blank(2);
+        let link = NonZeroU32::new(4).unwrap();
+        row.set_link(0, link);
+        row.set_ucolor(0, Color::Rgb(1, 2, 3));
+        let carried = row.ext_attrs_at(0);
+        row.set_ext_attrs(1, carried);
+        assert_eq!(row.link_at(1), Some(link));
+        assert_eq!(row.ucolor_at(1), Some(Color::Rgb(1, 2, 3)));
+        assert_eq!(row.ext_attrs_at(1), carried);
     }
 }

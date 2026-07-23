@@ -2830,9 +2830,16 @@ impl Term {
         self.grid
             .cell_mut(row, col)
             .insert_flags(CellFlags::WIDE_CHAR);
+        // The spacer is the lead's second half, so it takes the LEAD's extended attrs — the
+        // hyperlink and underline colour riding the row's side maps — exactly as write_glyph
+        // stamps both halves of a wide write. `pen.cell(' ')` carries neither (and the pen may
+        // have moved on since the base was printed), so they are re-attached here; a base with
+        // none clears whatever the overwritten column held (#521).
+        let ext = self.grid.row_ref(row).ext_attrs_at(col);
         let mut spacer = self.cursor.pen.cell(' ');
         spacer.insert_flags(CellFlags::WIDE_CHAR_SPACER);
         *self.grid.cell_mut(row, col + 1) = spacer;
+        self.grid.row_mut(row).set_ext_attrs(col + 1, ext);
         // The cursor sat at col+1 (just past the narrow base); move it over the new spacer, applying
         // the same last-column pending-wrap rule as a wide write.
         let new_col = col + 2;
@@ -2854,12 +2861,16 @@ impl Term {
         if cols < 2 || !self.autowrap {
             return; // nowhere to place a wide cell — leave it narrow
         }
-        // Capture the base cell (glyph + attrs) and its marks before vacating.
+        // Capture the base cell (glyph + attrs), its marks, and its extended attrs before
+        // vacating. The extended attrs (hyperlink, underline colour) must be read HERE and not
+        // after the move: they live in the *source row's* side maps, and `wrapline()` below may
+        // scroll — after which that row is a different (or recycled) `Row` (#521).
         let base = *self.grid.cell(row, col);
         let marks: Vec<char> = self
             .combining_at(row, col)
             .map(<[char]>::to_vec)
             .unwrap_or_default();
+        let ext = self.grid.row_ref(row).ext_attrs_at(col);
         // Vacate the last column as a soft-wrap leading spacer (mirrors write_glyph 2457-2459).
         // reset() clears the base's combining bit, so its stale marks entry is never read again.
         let vacated = self.grid.cell_mut(row, col);
@@ -2879,9 +2890,15 @@ impl Term {
         for m in marks {
             self.grid.row_mut(nr).push_combining(0, m);
         }
+        // Re-attach the extended attrs to BOTH halves at the new row. `lead` copied the base's
+        // presence bits but not its map entries, so without this the bit is set with nothing
+        // behind it — the read is gated and silently returns the default, and the frame stops
+        // round-tripping (the cell encodes as linked with no index).
+        self.grid.row_mut(nr).set_ext_attrs(0, ext);
         let mut spacer = self.cursor.pen.cell(' ');
         spacer.insert_flags(CellFlags::WIDE_CHAR_SPACER);
         *self.grid.cell_mut(nr, 1) = spacer;
+        self.grid.row_mut(nr).set_ext_attrs(1, ext);
         // Cursor just past the wide cell (pending-wrap if it fills a 2-column row).
         if cols <= 2 {
             self.cursor.col = cols - 1;

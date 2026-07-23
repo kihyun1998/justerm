@@ -6,7 +6,12 @@
 //! behaviour verbatim, so the cursor stays in sync with wcwidth apps (the reason clustering is
 //! opt-in — cf. #301). Verified against ghostty/kitty (both gate clustering behind ?2027).
 
-use justerm_core::{Engine, decode, encode};
+use justerm_core::{Color, Engine, decode, encode};
+
+/// OSC 8 open, for the extended-attr carry tests below.
+const LINK_OPEN: &[u8] = b"\x1b]8;;https://example.com\x07";
+/// Mode 2027 on, underline armed, underline colour = indexed 1, hyperlink open.
+const EXT_ATTR_PEN: &[u8] = b"\x1b[?2027h\x1b[4m\x1b[58:5:1m";
 
 #[test]
 fn mode_2027_tracked_and_decrqm_reports_it() {
@@ -296,4 +301,125 @@ fn reflow_after_a_wide_char_wrap_injects_no_phantom_space() {
         1,
         "still searchable across reflow"
     );
+}
+
+// ---- width promotion carries the whole extended-attr family (#521) ------------
+//
+// A cell's hyperlink (#46) and underline colour (#520) ride per-row, column-keyed
+// side maps gated by a presence bit. When a width promotion *moves* a cell
+// (`relocate_cluster_wide`) or *grows* it (`promote_cluster_to_wide`), the bit
+// travels with the copied cell but the map entry does not follow by itself — so
+// the family must be re-attached explicitly, the way xterm.js's `copyCellsFrom`
+// re-keys `_combined` **and** `_extendedAttrs` together (`BufferLine.ts`
+// `_copyCellMapsFrom`).
+
+#[test]
+fn mode_2027_relocation_carries_the_extended_attrs_to_both_halves() {
+    // ▶ lands in the LAST column as a narrow base; the VS16 promotes it to width 2,
+    // which does not fit — so the whole cluster relocates to (1, 0..=1).
+    let mut t = Engine::new(2, 24);
+    t.feed(EXT_ATTR_PEN);
+    t.feed(LINK_OPEN);
+    t.feed("X\u{25B6}\u{FE0F}".as_bytes());
+
+    assert_eq!(t.grid().cell(1, 0).c(), '\u{25B6}', "relocated lead");
+    assert!(t.grid().cell(1, 0).is_wide(), "promoted to wide");
+    assert!(t.grid().cell(1, 1).is_wide_spacer(), "its spacer");
+
+    let link = t.link_at(1, 0).expect("the hyperlink rode the relocation");
+    assert_eq!(t.hyperlink(link), Some("https://example.com"));
+    assert_eq!(t.link_at(1, 1), Some(link), "both halves agree on the link");
+    assert_eq!(t.underline_color_at(1, 0), Color::Indexed(1));
+    assert_eq!(
+        t.underline_color_at(1, 1),
+        Color::Indexed(1),
+        "both halves agree on the underline colour"
+    );
+
+    // Right reason: the attrs MOVED, they were not duplicated — the vacated last
+    // column is a soft-wrap leading spacer and carries neither.
+    assert_eq!(t.link_at(0, 1), None, "vacated column keeps no link");
+    assert_eq!(t.underline_color_at(0, 1), Color::Default);
+    // …and 'X', printed under the same pen, is untouched.
+    assert_eq!(t.link_at(0, 0), Some(link));
+    // The cluster itself still survives the relocation (#303).
+    assert_eq!(t.accessible_text().trim_end(), "X\u{25B6}\u{FE0F}");
+}
+
+#[test]
+fn mode_2027_in_place_promotion_gives_the_spacer_the_leads_extended_attrs() {
+    // Same promotion with room to grow: the base stays put and gains a spacer at
+    // col+1, which `write_glyph` would have stamped with the same link + colour.
+    let mut t = Engine::new(80, 24);
+    t.feed(EXT_ATTR_PEN);
+    t.feed(LINK_OPEN);
+    t.feed("\u{25B6}\u{FE0F}".as_bytes());
+
+    assert!(t.grid().cell(0, 0).is_wide());
+    assert!(t.grid().cell(0, 1).is_wide_spacer());
+    let link = t.link_at(0, 0).expect("the lead kept its link");
+    assert_eq!(t.link_at(0, 1), Some(link), "both halves agree on the link");
+    assert_eq!(t.underline_color_at(0, 0), Color::Indexed(1));
+    assert_eq!(
+        t.underline_color_at(0, 1),
+        Color::Indexed(1),
+        "both halves agree on the underline colour"
+    );
+}
+
+#[test]
+fn mode_2027_promotion_does_not_resurrect_a_stale_extended_attr() {
+    // The spacer overwrites a column that HAD a live link + colour. The promoted
+    // base has neither, so neither half may report one — a carry that only ever
+    // *sets* would leave the old column's entry readable under the new cell.
+    let mut t = Engine::new(80, 24);
+    t.feed(b"\x1b[?2027h\x1b[4m\x1b[58:5:2m");
+    t.feed(LINK_OPEN);
+    t.feed(b"ab"); // both columns carry the link + indexed-2 underline colour
+    t.feed(b"\x1b]8;;\x07\x1b[59m\x1b[24m"); // close the link, drop the colour + underline
+    t.feed(b"\x1b[H"); // back to (0,0), over 'a'
+    t.feed("\u{25B6}\u{FE0F}".as_bytes()); // narrow base then promote over 'b'
+
+    assert!(t.grid().cell(0, 1).is_wide_spacer());
+    assert_eq!(t.link_at(0, 0), None, "the new lead has no link");
+    assert_eq!(t.link_at(0, 1), None, "and neither does its spacer");
+    assert_eq!(t.underline_color_at(0, 0), Color::Default);
+    assert_eq!(t.underline_color_at(0, 1), Color::Default);
+}
+
+#[test]
+fn relocated_extended_attrs_survive_the_wire_round_trip() {
+    // Real proof (ADR-0005): the carried link + colour reach a frame-mode consumer,
+    // not just the in-process grid.
+    let mut t = Engine::new(2, 24);
+    t.feed(EXT_ATTR_PEN);
+    t.feed(LINK_OPEN);
+    t.feed("X\u{25B6}\u{FE0F}".as_bytes());
+    let frame = t.frame();
+    let decoded = decode(&encode(&frame)).expect("round-trips");
+    // NB: `decoded == frame` is deliberately NOT asserted here. It does not hold for
+    // *any* frame carrying an underline colour — `decode_cell` restores the link
+    // presence bit (`set_linked(link != 0)`) but nothing restores `UCOLOR_PRESENT`
+    // after the v13 ucolor group is read, so the cell bit comes back clear. That is a
+    // pre-existing #520 codec asymmetry, independent of the carry under test (it
+    // reproduces on a plain `\e[4m\e[58:5:1mA`), and the group below is what a
+    // frame-mode consumer actually reads.
+    let span = decoded
+        .spans
+        .iter()
+        .find(|s| s.line == 1)
+        .expect("row 1 is a damage span");
+    let col = |c: usize| c - span.left as usize;
+    assert_eq!(
+        span.ucolors.get(&col(0)).copied(),
+        Some(Color::Indexed(1)),
+        "lead's underline colour on the wire"
+    );
+    assert_eq!(
+        span.ucolors.get(&col(1)).copied(),
+        Some(Color::Indexed(1)),
+        "spacer's too"
+    );
+    assert!(span.links.contains_key(&col(0)), "lead's link on the wire");
+    assert!(span.links.contains_key(&col(1)), "spacer's too");
 }
