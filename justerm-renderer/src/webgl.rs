@@ -130,8 +130,26 @@ flat in vec2 v_cell;
 in vec2 v_tex;
 out vec4 FragColor;
 // A horizontal line centred at `c` (cell-local y, 0..1) with soft edges (beamterm cell.frag).
-float hline(float y, float c, float thick) {
-    return 1.0 - smoothstep(0.0, thick, abs(y - c));
+// A horizontal line at glyph-box-normalised centre `c`, half-thickness `half` (also normalised),
+// resolved to FULL coverage on the device-pixel rows it covers — not the `1 - smoothstep` tent it was
+// (a beamterm port, #267). The tent peaks at 1 only at the exact centre and has no plateau, so a
+// sub-pixel band integrates below 1 and the line reads grey at small cells (measured 118/255 at
+// dpr 1). Every GPU terminal (kitty/ghostty/wezterm) draws a straight line as a solid, pixel-snapped
+// fill instead; this does the same in the fragment shader (#515).
+//
+// `char_h` is `u_char_size.y`, the glyph box in device px — already a fragment uniform (#338), so no
+// new plumbing. The band is floored to one whole device pixel and snapped to the pixel grid, and its
+// centre is pulled inside `[0,1]` so a floored band never spills into the next row (the invariant
+// alacritty holds with `max_y` and we did not). `fwidth` gives one device pixel in normalised units.
+float hline(float gy, float c, float halfth, float char_h) {
+    float px = 1.0 / max(char_h, 1.0);              // one device pixel, in gy units
+    float th = max(halfth * 2.0, px);                 // thickness floor: >= 1 device px
+    float top = clamp(c - th * 0.5, 0.0, 1.0 - th); // centre-clamp: stay in the cell
+    // Full coverage across the band with a single-pixel antialiased edge, so the line is crisp but
+    // not stair-stepped at fractional DPR.
+    float aa = 0.5 * fwidth(gy);
+    return clamp((gy - (top - aa)) / max(aa, 1e-5), 0.0, 1.0)
+         * clamp(((top + th + aa) - gy) / max(aa, 1e-5), 0.0, 1.0);
 }
 // Which cell of the cursor's `span`-wide box is this, or -1 for a fragment outside it? Mirrors
 // `cursor::covers`.
@@ -189,14 +207,21 @@ void main() {
 
     float underline = float((v_glyph >> 13u) & 1u);
     float strike = float((v_glyph >> 14u) & 1u);
-    // Fixed cell-local positions (underline below baseline, strikethrough mid-cell). beamterm
-    // derives these per-font from metrics; a font-metric-driven position is a later refinement.
+    // Fixed glyph-box positions (underline below baseline, strikethrough mid-cell) and a fixed
+    // 0.05-of-box half-thickness. A font-metric-driven position and thickness is a later refinement
+    // (see #515: the 0.05 box fraction diverges from the comparables' font-metric thickness). The
+    // *rendering* of the band, though, is no longer beamterm's tent — `hline` now snaps it to whole
+    // device pixels and fills solid (#515), which is why it stays crisp at small cells.
     // Decorations are GLYPH-local, not cell-local: with `lineHeight = 1.5` a cell-local 0.88 would
-    // drop the underline far below the text it underlines. The glyph's own coverage no longer needs
-    // these uniforms (#359 bakes the offset into the bitmap), but its decorations still do.
-    // Identical at the default, where the two spaces coincide (#338).
+    // drop the underline far below the text it underlines. That glyph-box space is also what keeps
+    // the band inside the cell under a tall lineHeight — `gy` is bounded to the box, so `hline`'s
+    // centre-clamp holds without any cell-relative `max_y` (the invariant alacritty needs a clamp
+    // for). The glyph's own coverage no longer needs these uniforms (#359 bakes the offset into the
+    // bitmap), but its decorations still do. Identical at the default, where the two spaces coincide
+    // (#338).
     float gy = (v_tex.y * u_cell_size.y - u_char_offset.y) / u_char_size.y;
-    float line = max(hline(gy, 0.88, 0.05) * underline, hline(gy, 0.5, 0.05) * strike);
+    float line = max(hline(gy, 0.88, 0.05, u_char_size.y) * underline,
+                     hline(gy, 0.5, 0.05, u_char_size.y) * strike);
     // #513: the line draws in its OWN ink, which the packer resolved without the glyph-only rules
     // (ADR-0019 rule 4 — `I_line` is TEXT class). Still overridden by a block cursor, because the
     // cursor recolours the whole cell rather than the glyph: `base_line` follows `base_fg` there.
