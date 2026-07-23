@@ -109,6 +109,7 @@ uniform vec3 u_default_bg;    // the default terminal background — only IT is 
 uniform highp vec2 u_cell_size;   // the grid cell in device px
 uniform highp vec2 u_char_size;   // the glyph box inside it (#338) — decorations only
 uniform highp vec2 u_char_offset; // where that box starts
+uniform highp float u_line_thickness; // underline/strikethrough thickness in device px (#517)
 // The cursor (#270): (col, row, span, shape). Shape 0 = NO cursor; otherwise `shape_id + 1`, so
 // 1 = block, 2 = underline, 3 = bar, 4 = hollow block. Every shape lives here rather than in the
 // instance buffer, so moving or blinking the cursor costs one uniform and no upload — a block
@@ -137,16 +138,22 @@ out vec4 FragColor;
 // dpr 1). Every GPU terminal (kitty/ghostty/wezterm) draws a straight line as a solid, pixel-snapped
 // fill instead; this does the same in the fragment shader (#515).
 //
-// `char_h` is `u_char_size.y`, the glyph box in device px — already a fragment uniform (#338), so no
-// new plumbing. The band is floored to one whole device pixel and snapped to the pixel grid, and its
-// centre is pulled inside `[0,1]` so a floored band never spills into the next row (the invariant
-// alacritty holds with `max_y` and we did not). `fwidth` gives one device pixel in normalised units.
-float hline(float gy, float c, float halfth, float char_h) {
-    float px = 1.0 / max(char_h, 1.0);              // one device pixel, in gy units
-    float th = max(halfth * 2.0, px);                 // thickness floor: >= 1 device px
-    float top = clamp(c - th * 0.5, 0.0, 1.0 - th); // centre-clamp: stay in the cell
-    // Full coverage across the band with a single-pixel antialiased edge, so the line is crisp but
-    // not stair-stepped at fractional DPR.
+// `char_h` is `u_char_size.y`, the glyph box in device px (a fragment uniform since #338), and
+// `thick_px` is the line thickness in device px — `u_line_thickness`, computed host-side as
+// `max(1, round(font_size * dpr / 15))`. That is xterm.js's rule (`TextureAtlas.ts`,
+// `max(1, floor(fontSize*dpr/15))`), the right reference because it is a Canvas renderer under our
+// constraint (no font file, so no `underline_thickness` metric — #517). The old `0.05 * box`
+// half-thickness was a beamterm inheritance (#267), ~2x too heavy (measured 11.3% of the cell vs
+// xterm's 6.2%). Working in device px and dividing by `char_h` only to reach `gy` space keeps the
+// thickness tied to the font size, not the box, so `lineHeight` and font family cannot distort it.
+//
+// The band is snapped to the pixel grid and its centre pulled inside `[0,1]` so it never spills into
+// the next row (the invariant alacritty holds with `max_y` and we did not). `fwidth` is one device
+// pixel in normalised units, for a single-pixel antialiased edge — crisp, not stair-stepped at
+// fractional DPR.
+float hline(float gy, float c, float thick_px, float char_h) {
+    float th = max(thick_px, 1.0) / max(char_h, 1.0); // device-px thickness, in gy units
+    float top = clamp(c - th * 0.5, 0.0, 1.0 - th);   // centre-clamp: stay in the cell
     float aa = 0.5 * fwidth(gy);
     return clamp((gy - (top - aa)) / max(aa, 1e-5), 0.0, 1.0)
          * clamp(((top + th + aa) - gy) / max(aa, 1e-5), 0.0, 1.0);
@@ -207,11 +214,13 @@ void main() {
 
     float underline = float((v_glyph >> 13u) & 1u);
     float strike = float((v_glyph >> 14u) & 1u);
-    // Fixed glyph-box positions (underline below baseline, strikethrough mid-cell) and a fixed
-    // 0.05-of-box half-thickness. A font-metric-driven position and thickness is a later refinement
-    // (see #515: the 0.05 box fraction diverges from the comparables' font-metric thickness). The
-    // *rendering* of the band, though, is no longer beamterm's tent — `hline` now snaps it to whole
-    // device pixels and fills solid (#515), which is why it stays crisp at small cells.
+    // Fixed glyph-box positions (underline below baseline, strikethrough mid-cell); the THICKNESS is
+    // no longer a box fraction — it is `u_line_thickness`, xterm.js's `max(1, round(font_size*dpr/15))`
+    // in device px (#517), so it tracks the font size, not the cell. The *rendering* of the band is
+    // also no longer beamterm's tent — `hline` snaps it to whole device pixels and fills solid (#515),
+    // which is why it stays crisp at small cells. The positions (0.88 / 0.5) are still fixed fractions;
+    // deriving them from font metrics is not available here (Canvas 2D exposes no `underline_position`
+    // — #517) and a better fraction is a later refinement.
     // Decorations are GLYPH-local, not cell-local: with `lineHeight = 1.5` a cell-local 0.88 would
     // drop the underline far below the text it underlines. That glyph-box space is also what keeps
     // the band inside the cell under a tall lineHeight — `gy` is bounded to the box, so `hline`'s
@@ -220,8 +229,8 @@ void main() {
     // bitmap), but its decorations still do. Identical at the default, where the two spaces coincide
     // (#338).
     float gy = (v_tex.y * u_cell_size.y - u_char_offset.y) / u_char_size.y;
-    float line = max(hline(gy, 0.88, 0.05, u_char_size.y) * underline,
-                     hline(gy, 0.5, 0.05, u_char_size.y) * strike);
+    float line = max(hline(gy, 0.88, u_line_thickness, u_char_size.y) * underline,
+                     hline(gy, 0.5, u_line_thickness, u_char_size.y) * strike);
     // #513: the line draws in its OWN ink, which the packer resolved without the glyph-only rules
     // (ADR-0019 rule 4 — `I_line` is TEXT class). Still overridden by a block cursor, because the
     // cursor recolours the whole cell rather than the glyph: `base_line` follows `base_fg` there.
@@ -396,6 +405,7 @@ struct Pipeline {
     u_cell_size: glow::UniformLocation,
     u_char_size: glow::UniformLocation,
     u_char_offset: glow::UniformLocation,
+    u_line_thickness: glow::UniformLocation,
     u_padding_frac: glow::UniformLocation,
     u_bg_alpha: glow::UniformLocation,
     u_default_bg: glow::UniformLocation,
@@ -423,6 +433,7 @@ pub struct JustermRenderer {
     u_cell_size: glow::UniformLocation,
     u_char_size: glow::UniformLocation,
     u_char_offset: glow::UniformLocation,
+    u_line_thickness: glow::UniformLocation,
     u_bg_alpha: glow::UniformLocation,
     u_cursor: glow::UniformLocation,
     u_cursor_color: glow::UniformLocation,
@@ -665,6 +676,7 @@ impl JustermRenderer {
             u_cell_size,
             u_char_size,
             u_char_offset,
+            u_line_thickness,
             u_padding_frac,
             u_bg_alpha,
             u_default_bg,
@@ -703,6 +715,7 @@ impl JustermRenderer {
             u_cell_size,
             u_char_size,
             u_char_offset,
+            u_line_thickness,
             u_bg_alpha,
             u_cursor,
             u_cursor_color,
@@ -804,6 +817,7 @@ impl JustermRenderer {
             let u_cell_size = uniform(gl, program, "u_cell_size")?;
             let u_char_size = uniform(gl, program, "u_char_size")?;
             let u_char_offset = uniform(gl, program, "u_char_offset")?;
+            let u_line_thickness = uniform(gl, program, "u_line_thickness")?;
             let u_padding_frac = uniform(gl, program, "u_padding_frac")?;
             let u_bg_alpha = uniform(gl, program, "u_bg_alpha")?;
             let u_default_bg = uniform(gl, program, "u_default_bg")?;
@@ -824,6 +838,7 @@ impl JustermRenderer {
                 u_cell_size,
                 u_char_size,
                 u_char_offset,
+                u_line_thickness,
                 u_padding_frac,
                 u_bg_alpha,
                 u_default_bg,
@@ -1356,6 +1371,7 @@ impl JustermRenderer {
         self.u_projection = pipeline.u_projection;
         self.u_cell_size = pipeline.u_cell_size;
         self.u_char_size = pipeline.u_char_size;
+        self.u_line_thickness = pipeline.u_line_thickness;
         self.u_char_offset = pipeline.u_char_offset;
         self.u_bg_alpha = pipeline.u_bg_alpha;
         self.u_cursor = pipeline.u_cursor;
@@ -2201,6 +2217,10 @@ impl JustermRenderer {
                 Some(&self.u_char_offset),
                 self.char_offset.0 as f32,
                 self.char_offset.1 as f32,
+            );
+            self.gl.uniform_1_f32(
+                Some(&self.u_line_thickness),
+                crate::metrics::line_thickness(self.font_size * self.dpr) as f32,
             );
             self.gl.uniform_1_f32(Some(&self.u_bg_alpha), self.bg_alpha);
             // `u_cursor.w == 0` means NO cursor; a shape is `shape_id + 1`. Every shape — block
