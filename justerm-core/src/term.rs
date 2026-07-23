@@ -528,6 +528,7 @@ impl Term {
             let mut cells = Vec::with_capacity(right - left + 1);
             let mut combining = std::collections::BTreeMap::new();
             let mut links = std::collections::BTreeMap::new();
+            let mut ucolors = std::collections::BTreeMap::new();
             let row = self.abs_row(top + line);
             for col in left..=right {
                 let cell = row[col];
@@ -552,6 +553,13 @@ impl Term {
                         .expect("link_remap just set, nonzero");
                     links.insert(col - left, fidx);
                 }
+                // Underline colour (SGR 58, #520): a colour reference, not a
+                // side-table index, so it rides the span inline. `ucolor_at` is
+                // flag-gated + already Default-filtered (the stamp only fires on an
+                // underlined cell), so a present entry is a real non-default colour.
+                if let Some(color) = row.ucolor_at(col) {
+                    ucolors.insert(col - left, color);
+                }
                 cells.push(cell);
             }
             spans.push(Span {
@@ -561,6 +569,7 @@ impl Term {
                 cells,
                 combining,
                 links,
+                ucolors,
             });
         }
 
@@ -850,6 +859,13 @@ impl Term {
     /// [`Term::hyperlink`]. Mirrors `grid().cell(row, col)`.
     pub(crate) fn screen_link_at(&self, row: usize, col: usize) -> Option<core::num::NonZeroU32> {
         self.grid.row_ref(row).link_at(col)
+    }
+
+    /// The underline colour (SGR 58, #520) at screen `(row, col)`, as a theme-agnostic
+    /// reference. `Color::Default` means "follow the fg" — the common case, and what an
+    /// unset cell returns. Mirror of [`Term::screen_link_at`].
+    pub(crate) fn screen_underline_color_at(&self, row: usize, col: usize) -> Color {
+        self.grid.row_ref(row).ucolor_at(col).unwrap_or_default()
     }
 
     /// The hyperlink-pool index at **viewport** `(row, col)` (visible window,
@@ -2655,15 +2671,34 @@ impl Term {
         if let Some(link) = self.current_link {
             self.grid.row_mut(row).set_link(col, link);
         }
+        // Stamp a non-default underline colour (SGR 58, #520) into the row's ucolor
+        // map — the 12-byte cell has no room for a fourth colour, so it rides the
+        // side map gated by the cell's UCOLOR_PRESENT bit, like the link. Gated on
+        // the UNDERLINE attribute: an underline colour is meaningless on a cell that
+        // draws no underline, and xterm likewise does not persist it there
+        // (`AttributeData isEmpty()` ignores the colour; `InputHandler.test.ts:2084`).
+        // This keeps the colour off the slice-2 wire for cells that never draw it
+        // (ADR-0020: no inert per-cell payload). SGR 58 is the *underline* colour, so
+        // STRIKETHROUGH alone does not arm it.
+        let ucolor = self.cursor.pen.underline_color;
+        let colour_the_underline =
+            ucolor != Color::Default && self.cursor.pen.flags.contains(CellFlags::UNDERLINE);
+        if colour_the_underline {
+            self.grid.row_mut(row).set_ucolor(col, ucolor);
+        }
 
         // The trailing column of a wide glyph carries a distinct spacer marker —
-        // and the same link, so a hover/selection over either half agrees.
+        // and the same link + underline colour, so a hover/selection/underline over
+        // either half agrees.
         if width == 2 && col + 1 < cols {
             let mut spacer = self.cursor.pen.cell(' ');
             spacer.insert_flags(CellFlags::WIDE_CHAR_SPACER);
             *self.grid.cell_mut(row, col + 1) = spacer;
             if let Some(link) = self.current_link {
                 self.grid.row_mut(row).set_link(col + 1, link);
+            }
+            if colour_the_underline {
+                self.grid.row_mut(row).set_ucolor(col + 1, ucolor);
             }
         }
 
@@ -3167,6 +3202,15 @@ impl Term {
                     }
                 }
                 49 => pen.bg = Color::Default,
+                // Underline colour (SGR 58 / 59, #520) — same extended-colour grammar
+                // as 38/48 (colon `58:2:r:g:b` / `58:5:n`, or legacy semicolon), so it
+                // reuses `parse_extended_color` verbatim. 59 returns to "follow the fg".
+                58 => {
+                    if let Some(c) = parse_extended_color(param, &mut iter) {
+                        pen.underline_color = c;
+                    }
+                }
+                59 => pen.underline_color = Color::Default,
                 // bright foreground/background (aixterm) → palette 8..=15.
                 90..=97 => pen.fg = Color::Indexed((code - 90 + 8) as u8),
                 100..=107 => pen.bg = Color::Indexed((code - 100 + 8) as u8),

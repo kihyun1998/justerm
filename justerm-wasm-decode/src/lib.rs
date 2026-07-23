@@ -62,6 +62,10 @@ struct Flat {
     /// `justerm_core::encode_color`) — the `fg`/`bg` columns.
     fg: Vec<u32>,
     bg: Vec<u32>,
+    /// Per-cell underline colour ref (SGR 58, #520) as a tagged u32, `0` = Default
+    /// (follow the fg) — the `underlineColor` column. Densified from the wire's
+    /// sparse per-span group: a cell with no coloured underline reads `0`.
+    underline_color: Vec<u32>,
     /// Per-cell `CellFlags` bits — the `flags` column.
     flags: Vec<u16>,
     /// Per-cell frame-local side-table / hyperlink indices (`0` = none) — the
@@ -123,6 +127,7 @@ fn flatten(frame: &Frame) -> Flat {
     let mut codepoints = Vec::with_capacity(cell_count);
     let mut fg = Vec::with_capacity(cell_count);
     let mut bg = Vec::with_capacity(cell_count);
+    let mut underline_color = Vec::with_capacity(cell_count);
     let mut flags = Vec::with_capacity(cell_count);
     let mut extra = Vec::with_capacity(cell_count);
     let mut link = Vec::with_capacity(cell_count);
@@ -142,6 +147,13 @@ fn flatten(frame: &Frame) -> Flat {
             codepoints.push(cell.c() as u32);
             fg.push(justerm_core::encode_color(cell.fg()));
             bg.push(justerm_core::encode_color(cell.bg()));
+            // Underline colour rides the span's sparse ucolor map (per column, #520),
+            // like combining/link; densify to `0` (Default) where absent.
+            underline_color.push(
+                span.ucolors
+                    .get(&col)
+                    .map_or(0, |&c| justerm_core::encode_color(c)),
+            );
             flags.push(cell.flags().bits());
             // Combining/link indices ride on the span (per column), not the cell,
             // since slices #45/#46 moved them into per-row maps.
@@ -176,6 +188,7 @@ fn flatten(frame: &Frame) -> Flat {
         codepoints,
         fg,
         bg,
+        underline_color,
         flags,
         extra,
         link,
@@ -225,9 +238,10 @@ fn flatten_overlay_spans(spans: &[justerm_core::SelectionSpan]) -> Vec<u32> {
 /// A decoded damage frame, presented for a web renderer.
 ///
 /// Scalars come via getters; cells are exposed as **structure-of-arrays** — one
-/// zero-copy typed-array column per field (`codepoints`/`fg`/`bg`/`flags`/
-/// `extra`/`link`) plus the `spans` directory — so a consumer reads `frame.fg[i]`
-/// with no byte-offset knowledge and no per-cell boundary crossing (#34/#35).
+/// zero-copy typed-array column per field (`codepoints`/`fg`/`bg`/`underlineColor`/
+/// `flags`/`extra`/`link`) plus the `spans` directory — so a consumer reads
+/// `frame.fg[i]` with no byte-offset knowledge and no per-cell boundary crossing
+/// (#34/#35).
 #[wasm_bindgen]
 pub struct DecodedFrame {
     flat: Flat,
@@ -365,6 +379,15 @@ impl DecodedFrame {
     #[wasm_bindgen(getter)]
     pub fn bg(&self) -> js_sys::Uint32Array {
         unsafe { js_sys::Uint32Array::view(&self.flat.bg) }
+    }
+
+    /// Per-cell underline colour references (SGR 58, #520) as tagged `u32`s (as
+    /// [`DecodedFrame::fg`]). `0` = `Default` — the underline follows the fg. Only
+    /// cells drawing a coloured underline carry a non-zero value; resolve with
+    /// `resolveRgb`, the same as `fg`/`bg`.
+    #[wasm_bindgen(getter, js_name = underlineColor)]
+    pub fn underline_color(&self) -> js_sys::Uint32Array {
+        unsafe { js_sys::Uint32Array::view(&self.flat.underline_color) }
     }
 
     /// Per-cell `CellFlags` bits. Test with the constants from `flags()`.
@@ -584,6 +607,7 @@ mod tests {
             cells,
             combining: BTreeMap::new(),
             links: BTreeMap::new(),
+            ucolors: BTreeMap::new(),
         }
     }
 
@@ -699,12 +723,43 @@ mod tests {
                 cells,
                 combining: BTreeMap::new(),
                 links: BTreeMap::new(),
+                ucolors: BTreeMap::new(),
             }],
         );
         let flat = flatten(&frame);
         // tagged u32: high byte = tag (0 Default, 1 Indexed, 2 Rgb), low 24 = payload.
         assert_eq!(flat.fg, vec![(1 << 24) | 9, 0]);
         assert_eq!(flat.bg, vec![(2 << 24) | (1 << 16) | (2 << 8) | 3, 0]);
+    }
+
+    #[test]
+    fn flatten_exposes_the_underline_colour_column() {
+        // #520 slice 3: the underline colour rides the span's sparse ucolor map;
+        // flatten densifies it to a per-cell tagged-u32 column, `0` where absent —
+        // exactly as fg/bg. Col 0 draws a red underline; col 1 has none.
+        let cells = vec![
+            Cell::from_parts('A', Color::Default, Color::Default, CellFlags::UNDERLINE),
+            Cell::from_parts('B', Color::Default, Color::Default, CellFlags::empty()),
+        ];
+        let frame = partial(
+            80,
+            24,
+            vec![Span {
+                line: 0,
+                left: 0,
+                right: 1,
+                cells,
+                combining: BTreeMap::new(),
+                links: BTreeMap::new(),
+                ucolors: BTreeMap::from([(0, Color::Rgb(255, 0, 0))]),
+            }],
+        );
+        let flat = flatten(&frame);
+        assert_eq!(
+            flat.underline_color,
+            vec![(2 << 24) | (255 << 16), 0],
+            "col 0 = Rgb(255,0,0) tagged; col 1 = 0 (Default, follow fg)"
+        );
     }
 
     #[test]
@@ -729,6 +784,7 @@ mod tests {
                 // extra/link ride the span now (per column), not the cell.
                 combining: BTreeMap::from([(0, NonZeroU32::new(3).unwrap())]),
                 links: BTreeMap::from([(0, NonZeroU32::new(7).unwrap())]),
+                ucolors: BTreeMap::new(),
             }],
         );
         let flat = flatten(&frame);
@@ -998,6 +1054,7 @@ mod tests {
                     // the `coloured` cell (column 2) references grapheme + link 1.
                     combining: BTreeMap::from([(2, NonZeroU32::new(1).unwrap())]),
                     links: BTreeMap::from([(2, NonZeroU32::new(1).unwrap())]),
+                    ucolors: BTreeMap::new(),
                 },
                 ascii_span(3, 10, "hi"),
             ],

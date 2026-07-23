@@ -3,7 +3,7 @@
 //! `README.md` is this package's npm front page — wasm-pack copies it verbatim into the tarball
 //! (`readme = "README.md"` in Cargo.toml). Nothing else checks it: no compiler reads it, no test
 //! imports it, and its numbers are prose. So its canonical usage snippet asserted
-//! `wireVersion() === 2` against a shipped `WIRE_VERSION` of 12 — ten wire bumps — and a reader who
+//! `wireVersion() === 2` against a shipped `WIRE_VERSION` of 13 — eleven wire bumps — and a reader who
 //! pasted it got a failing assert on the package's first page.
 //!
 //! `include_str!` is load-bearing: a moved or renamed README fails to COMPILE here rather than

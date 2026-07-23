@@ -88,9 +88,16 @@ const BG_DIM: u32 = 1 << 27;
 // LINK_PRESENT: an OSC 8 hyperlink index lives in the row's link map at this
 // column (#46). Reuses xterm's `BgFlags.HAS_EXTENDED = 0x10000000` (bit 28)
 // exactly — in xterm this is a *shared* "extended attrs present" gate (link +
-// underline colour); justerm models only the link, so it is link-only here and
-// would widen to an extended-attrs map if underline colour is ever added.
+// underline colour). justerm keeps the two concerns in *separate* per-row maps
+// (as combining and links are separate, #520/ADR-none), so it gates each with
+// its own bit rather than xterm's one shared object.
 const BG_LINK: u32 = 1 << 28;
+// UCOLOR_PRESENT (#520): a non-default underline colour (SGR 58) lives in the
+// row's ucolor map at this column. Its own presence bit, gating a separate map —
+// the 12-byte cell (three packed words) has no room for a fourth colour, so the
+// colour rides a side map exactly as the hyperlink does (bits 30,31 stay free
+// for a later underline *style* / a second extended attr).
+const BG_UCOLOR: u32 = 1 << 29;
 const BG_FLAG_MASK: u32 = BG_ITALIC | BG_DIM;
 
 /// Pack a colour reference into the low 26 bits of a colour word (mode + value);
@@ -241,6 +248,14 @@ impl Cell {
         self.bg & BG_LINK != 0
     }
 
+    /// Does this column carry a non-default underline colour (SGR 58, #520)? When
+    /// true, the `Color` reference lives in the row's ucolor map at this column —
+    /// flag-gated exactly like the hyperlink: never read the ucolor map without
+    /// first checking this bit.
+    pub fn is_ucolored(&self) -> bool {
+        self.bg & BG_UCOLOR != 0
+    }
+
     /// Overwrite the base code point, preserving the layout markers.
     pub fn set_c(&mut self, c: char) {
         self.content = (self.content & !CODEPOINT_MASK) | c as u32;
@@ -267,6 +282,16 @@ impl Cell {
             self.bg |= BG_LINK;
         } else {
             self.bg &= !BG_LINK;
+        }
+    }
+
+    /// Mark (or unmark) this column as carrying a non-default underline colour in
+    /// the row's ucolor map (#520). Mirror of [`Cell::set_linked`].
+    pub fn set_ucolored(&mut self, on: bool) {
+        if on {
+            self.bg |= BG_UCOLOR;
+        } else {
+            self.bg &= !BG_UCOLOR;
         }
     }
 
@@ -436,5 +461,34 @@ mod tests {
         );
         assert!(spacer.is_wide_spacer());
         assert!(!Cell::default().is_wide_spacer());
+    }
+
+    /// The underline-colour presence bit (#520) is its own bg-word bit, independent
+    /// of the link bit that shares the word and of the bg colour value — toggling
+    /// it disturbs neither, and it does NOT grow the cell (the 12-byte pin above
+    /// still holds because the colour rides a side map, not the cell).
+    #[test]
+    fn the_ucolor_presence_bit_is_independent_of_the_link_bit_and_bg_colour() {
+        let mut cell = Cell::from_parts('u', Color::Default, Color::Rgb(1, 2, 3), CellFlags::DIM);
+        assert!(!cell.is_ucolored());
+        assert!(!cell.is_linked());
+
+        cell.set_ucolored(true);
+        cell.set_linked(true);
+        assert!(cell.is_ucolored() && cell.is_linked());
+        // The bg colour and the DIM flag (both in the bg word) survive both bits.
+        assert_eq!(cell.bg(), Color::Rgb(1, 2, 3));
+        assert!(cell.flags().contains(CellFlags::DIM));
+
+        // Clearing one leaves the other and the colour intact.
+        cell.set_linked(false);
+        assert!(cell.is_ucolored() && !cell.is_linked());
+        cell.set_ucolored(false);
+        assert!(!cell.is_ucolored());
+        assert_eq!(
+            cell.bg(),
+            Color::Rgb(1, 2, 3),
+            "bg colour intact after clearing"
+        );
     }
 }
