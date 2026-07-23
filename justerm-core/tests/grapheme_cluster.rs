@@ -317,10 +317,18 @@ fn reflow_after_a_wide_char_wrap_injects_no_phantom_space() {
 fn mode_2027_relocation_carries_the_extended_attrs_to_both_halves() {
     // ▶ lands in the LAST column as a narrow base; the VS16 promotes it to width 2,
     // which does not fit — so the whole cluster relocates to (1, 0..=1).
+    //
+    // The link and colour are RELEASED before the VS16 arrives. That separates the two
+    // sources this test is about: the relocated cell takes what the *cell* carried (stamped
+    // when ▶ was printed), while the column it vacates is blanked from the *pen*, which by
+    // then holds nothing. With the pen still open both sources agree and the assertions
+    // below could not tell them apart (#521/#528).
     let mut t = Engine::new(2, 24);
     t.feed(EXT_ATTR_PEN);
     t.feed(LINK_OPEN);
-    t.feed("X\u{25B6}\u{FE0F}".as_bytes());
+    t.feed("X\u{25B6}".as_bytes());
+    t.feed(b"\x1b]8;;\x07\x1b[59m\x1b[24m"); // close the link, drop the colour + underline
+    t.feed("\u{FE0F}".as_bytes()); // now promote → relocate
 
     assert_eq!(t.grid().cell(1, 0).c(), '\u{25B6}', "relocated lead");
     assert!(t.grid().cell(1, 0).is_wide(), "promoted to wide");
@@ -336,8 +344,11 @@ fn mode_2027_relocation_carries_the_extended_attrs_to_both_halves() {
         "both halves agree on the underline colour"
     );
 
-    // Right reason: the attrs MOVED, they were not duplicated — the vacated last
-    // column is a soft-wrap leading spacer and carries neither.
+    // Right reason: the attrs MOVED with the glyph, they were not duplicated. The vacated
+    // column is blanked from the pen, which no longer holds either — so it keeps neither,
+    // while the relocated cell above keeps both. (Were the link still open, the blank would
+    // legitimately take it: a vacated column is a pen-written blank, not an erasure —
+    // `wide_wrap_vacate.rs` covers that half.)
     assert_eq!(t.link_at(0, 1), None, "vacated column keeps no link");
     assert_eq!(t.underline_color_at(0, 1), Color::Default);
     // …and 'X', printed under the same pen, is untouched.

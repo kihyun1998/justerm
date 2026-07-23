@@ -170,6 +170,37 @@ deferred behavior) it tracks — then add what you find here.** Seeds (caught in
 - **Wide-char spacer is a distinct marker, not a blank.** The trailing column of a width-2 char must
   carry a "wide-char spacer" marker (flag/variant), not a plain blank — else overwrite, erase,
   selection, and cursor positioning go wrong. [#2]
+- **The column a wrapped wide glyph vacates is a blank *written with the current pen* — flagging
+  a cell is not the same as writing one.** When a width-2 glyph cannot fit in the last column it
+  wraps, and that column becomes a soft-wrap artefact (WRAPLINE + the leading-spacer marker the
+  text extractors skip). It must be **written**: a blank built from the pen, carrying the pen's
+  fg/bg and its still-open hyperlink / armed underline colour. All three references do exactly
+  this — xterm.js `setCellFromCodepoint(col, 0, 1, curAttr)`, ghostty `printCell(0, .spacer_head)`
+  (which stamps the cursor's hyperlink), alacritty `write_at_cursor(' ')` under a
+  `LEADING_WIDE_CHAR_SPACER` template. Two failure modes sit on either side of that: OR-ing the
+  markers onto the previous occupant leaves a glyph the extractors skip but a renderer still
+  draws — a character you can see and cannot copy, search or have announced (#528) — while
+  `reset()`-ing to a *default* cell punches an uncoloured notch into a coloured run. Note the
+  marker setter's name is a trap: `set_leading_spacer` only *records* that the column is blank.
+  The ordinary pending-wrap soft wrap is a different case and must NOT be blanked — there the
+  last column holds real content and merely gains WRAPLINE.
+  Three consequences that only showed up once the column was written, each of which cost a
+  regression before it was understood:
+  ① **Writing the column makes the vacate an overwrite**, so it inherits the no-orphan obligation
+  every other overwrite carries — if the column was a wide glyph's *spacer*, blanking it destroys
+  the marker every repair path keys off (`is_wide_spacer`), stranding the lead **permanently**.
+  Damage the repaired lead too: it is a second changed cell, and ghostty asserts the dirty bit on
+  exactly that cell rather than the written one.
+  ② **Commit nothing until the wrap is known to happen.** `wrapline` → `linefeed` silently stays
+  put when the cursor is parked *below* a DECSTBM region on the last row. Both paths destroy
+  content on the assumption the row is about to change — `write_glyph` blanks the column it
+  leaves, and the mode-2027 relocation writes its cluster to `(cursor.row, 0..=1)` *after* the
+  wrap, which is the same row when nothing advanced. Reasoning only about the vacated source
+  column misses the second entirely.
+  ③ **Position is part of the artefact's definition** — it is only ever the *last* column of a
+  soft-wrapped row. The marker alone is not a sufficient test, because the row-shift verbs
+  (ICH/DCH) move whole cells and carry it inward, where it describes nothing; treating a migrated
+  marker as an artefact joins two visually separate words in the clipboard. [#528]
 - **A cell's extended attributes are stored in two halves — a presence bit in the cell, the value in
   the row — so copying a cell copies only half of it.** Combining marks (#45), the OSC 8 hyperlink
   (#46) and the SGR 58 underline colour (#520) do not fit the packed 12-byte cell, so each keeps a

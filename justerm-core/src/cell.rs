@@ -343,7 +343,13 @@ impl Cell {
         self.content & (C_SPACER | C_LEADING_SPACER) != 0
     }
 
-    /// Mark this (blank) column as the leading spacer of a wrapped wide glyph.
+    /// Mark this column as the leading spacer of a wrapped wide glyph.
+    ///
+    /// **Records** that the column is blank; it does not make it so. The caller must have
+    /// written the blank first — this only ORs a marker onto whatever cell is there. Setting
+    /// it over a live glyph leaves a cell the text extractors skip while a renderer still
+    /// draws it, which is exactly the defect #528 fixed (`Term::vacate_for_wrap` is the one
+    /// place that establishes the precondition).
     pub fn set_leading_spacer(&mut self) {
         self.content |= C_LEADING_SPACER;
     }
