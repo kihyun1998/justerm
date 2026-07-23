@@ -1,0 +1,8 @@
+[2J[H[4:3m[58:2::255:0:0mmisspeled[59m[4:0m  (58:2:: rgb curly)
+[4:2m[58:2:1:0:200:0mwarnign[59m[4:0m  (58:2:C rgb double)
+[4:1m[58:5:9meror[59m[24m  (58:5 indexed straight)
+[4m[58;2;0;128;255mhyperlink[59m[24m  (58;2 rgb semicolon)
+[4:4m[58;5;46mhint[59m[4:0m  (58;5 indexed semicolon)
+[58:2::128:64:255mno-underline-here[4:5mthen-dashed[59m[4:0m  (deferred colour)
+[38;2;255;255;255m[4:3m[58:2::255:0:0mwhite text, red curl[0m
+[0m
