@@ -25,7 +25,7 @@ use crate::overlay::{
 use crate::palette::Palette;
 use crate::render_policy::{ColorPolicy, dim_foreground, resolve_cell};
 
-/// Floats per cell instance: `col, row, bg(3), fg(3), glyph_field, line_fg`.
+/// Floats per cell instance: `col, row, bg(3), fg(3), glyph_field, line_fg, bg_default`.
 ///
 /// `line_fg` is the ink an underline / strikethrough draws in (#513), carried **packed** as a single
 /// `0xRRGGBB` rather than unpacked into three floats like `bg` and `fg`. A colour maxes at `2²⁴ − 1`
@@ -34,7 +34,17 @@ use crate::render_policy::{ColorPolicy, dim_foreground, resolve_cell};
 /// including `0x000000`, `0xFFFFFF`, `0x010101` and both sides of the sign-bit boundary, all exact.
 /// Packed because a line is *rare* — every cell would otherwise pay three floats for a channel almost
 /// none of them use, and ADR-0021 keeps one instance buffer resident per grid.
-pub const INSTANCE_FLOATS: usize = 10;
+///
+/// `bg_default` is the #455 translucency-provenance flag (`1.0` / `0.0`): whether this cell's
+/// background is the pristine **default backdrop** — the only surface #298 makes translucent. It is
+/// *provenance*, not colour: the shader used to infer it by comparing the resolved bg to
+/// `u_default_bg`, so any cell whose composite happened to land on the default RGB (an `SGR 48` set to
+/// the theme bg, an `Indexed` slot resolving to it, a decoration painting it) went translucent inside
+/// otherwise-opaque content. ADR-0019's totality clause forbids that — resolution follows the cell's
+/// state, not an accident of the fold — so the packer, which knows every layer that touched the bg,
+/// emits the answer and the shader stops guessing. It costs its own float because #513 already spent
+/// `line_fg`'s exact-integer budget: a colour fills all 24 f32-safe bits, leaving no spare bit to ride.
+pub const INSTANCE_FLOATS: usize = 11;
 
 /// A decoded frame's per-cell grid: dimensions + the four parallel column arrays the packer
 /// reads (all row-major, ideally length `cols*rows`). `bg`/`fg` are tagged-u32 colour refs,
@@ -61,7 +71,7 @@ pub struct Frame<'a> {
 }
 
 /// Pack a [`Frame`] (row-major) into per-cell instance data
-/// `[col, row, bg_r, bg_g, bg_b, fg_r, fg_g, fg_b, glyph_field, line_fg]`. Colours resolve through the injected
+/// `[col, row, bg_r, bg_g, bg_b, fg_r, fg_g, fg_b, glyph_field, line_fg, bg_default]`. Colours resolve through the injected
 /// `policy`: inverse swaps the fg/bg and a bold ANSI 0–7 fg brightens to 8–15 ([`resolve_cell`], #223);
 /// a DIM cell's fg fades toward its bg (#232, [`dim_foreground`]); `minimumContrastRatio` nudges an
 /// illegible fg (#225); and a *selected* cell takes `selectionForeground` (#227) and has its DIM
@@ -456,6 +466,32 @@ pub fn pack_instances(
                 glyph_field(slot, cell_flags)
             };
 
+            // #455: is this cell's background the pristine DEFAULT backdrop — the one surface #298
+            // makes translucent? It is iff NOTHING wrote the bg channel: the ref is Default (tag 0,
+            // the file's own predicate, cf. `inverse_default_bg` above), the cell is not inverse (which
+            // swaps the fg IN as the bg — content), no decoration painted a bg (bottom or top), and no
+            // selection/search/active highlight composited one (`kind`). These are exactly the four
+            // sites above that assign the bg channel, so the flag is complete by construction rather
+            // than by inference. The shader keys translucency on this instead of comparing the resolved
+            // colour to `u_default_bg`, which coincidentally caught any content cell that happened to
+            // land on the default RGB (ADR-0019 totality: state, not arithmetic).
+            //
+            // Both references decide this by provenance too, not by resolved colour — the convergence is
+            // the point (ADR-0019: two references agreeing is signal). alacritty's `compute_bg_alpha`
+            // (`display/content.rs`) checks `bg == Color::Named(NamedColor::Background)` under the
+            // comment *"an RGB color matching the background should not be transparent … computed using
+            // the named input color, rather than checking the RGB after its color is computed"* — the
+            // #455 bug, guarded at the source. xterm keys on the colour MODE bits (`bg & CM_MASK !=
+            // CM_DEFAULT`) and simply draws no background rect for a default cell. The block-cursor cell
+            // is the one class neither reaches through these signals; both force it opaque by a dedicated
+            // path (alacritty `content.rs` "we must adjust alpha to make it visible"), which here is the
+            // shader's separate `!block` term — so it is correctly outside this predicate.
+            let bg_is_default_backdrop = (bg_ref >> 24) == 0
+                && !is_inverse(cell_flags)
+                && !deco_bg
+                && top.bg.is_none()
+                && kind.is_none();
+
             out.extend_from_slice(&[
                 col as f32,
                 row as f32,
@@ -467,6 +503,7 @@ pub fn pack_instances(
                 fg_rgb[2],
                 field as f32,
                 line_packed as f32,
+                if bg_is_default_backdrop { 1.0 } else { 0.0 },
             ]);
         }
     }
@@ -543,6 +580,9 @@ mod tests {
             33.0,
             // #513 `line_fg`, packed: with no rule diverting it, the line's ink is the cell's own.
             0xFF_FF_FF as f32,
+            // #455 `bg_default`: this cell's bg is an explicit Rgb (E06C75), NOT the default ref, so it
+            // is content — opaque, flag 0.0.
+            0.0,
         ];
         assert_eq!(
             got.len(),
@@ -553,6 +593,142 @@ mod tests {
         for (i, (a, b)) in got.iter().zip(expect.iter()).enumerate() {
             assert!((a - b).abs() < 1e-6, "float {i}: got {a}, want {b}");
         }
+    }
+
+    /// The index of the #455 translucency-provenance flag: the last float of the instance record.
+    const BACKDROP: usize = INSTANCE_FLOATS - 1;
+
+    #[test]
+    fn the_default_backdrop_flag_keys_on_provenance_not_colour_equality() {
+        // #455: translucency (#298) must key on whether the bg is the DEFAULT *reference* — the
+        // pristine backdrop L0 declares — not on the resolved RGB coinciding with the default
+        // colour. Two cells resolve to the SAME bg colour here:
+        //   cell A — Default ref                         → the backdrop, translucency-eligible (1.0)
+        //   cell B — an explicit Rgb set to that colour  → content, opaque (0.0)
+        // The retired `base_bg == u_default_bg` shader test made them identical (both translucent):
+        // a pinhole of see-through inside opaque content. The flag removes the coincidence.
+        let p = palette(); // default_bg = 0x1E1E2E
+        let default_colour = 0x1E_1E_2E;
+        let f = Frame {
+            cols: 2,
+            rows: 1,
+            bg: &[
+                0,                          /* Default */
+                (2 << 24) | default_colour, /* Rgb == default */
+            ],
+            fg: &[0, 0],
+            slots: &[0, 0],
+            flags: &[0, 0],
+            codepoints: &[],
+        };
+        let got = pack_instances(
+            &f,
+            &p,
+            true,
+            &Overlay::default(),
+            &ColorPolicy::default(),
+            &[],
+        );
+        // Both cells resolve to the SAME bg colour — so a colour test cannot tell them apart...
+        assert_eq!(
+            &got[2..5],
+            &got[2 + INSTANCE_FLOATS..5 + INSTANCE_FLOATS],
+            "precondition: both cells resolve to the identical bg colour"
+        );
+        // ...but only the Default-ref cell is flagged as the translucency-eligible backdrop.
+        assert_eq!(got[BACKDROP], 1.0, "Default ref → the backdrop");
+        assert_eq!(
+            got[BACKDROP + INSTANCE_FLOATS],
+            0.0,
+            "explicit Rgb equal to the default colour → content, opaque"
+        );
+    }
+
+    #[test]
+    fn every_layer_that_writes_the_bg_channel_clears_the_backdrop_flag() {
+        // #455 enumeration pin (doubles as the Step-5 completeness check): the flag is 1.0 for the
+        // pristine default cell and 0.0 the moment ANY layer contributes a background — matching the
+        // four bg-writing sites in `pack_instances`. A layer that touches only the FG (an fg-only
+        // decoration) must NOT clear it: the backdrop is unchanged, so it stays translucency-eligible.
+        let p = palette();
+        let backdrop = |flags: u16, bg: u32, ov: Overlay, decos: &[DecorationRect]| {
+            let (bgs, fgs, slots, flgs) = ([bg], [0u32], [0u16], [flags]);
+            let f = Frame {
+                cols: 1,
+                rows: 1,
+                bg: &bgs,
+                fg: &fgs,
+                slots: &slots,
+                flags: &flgs,
+                codepoints: &[],
+            };
+            let got = pack_instances(&f, &p, true, &ov, &ColorPolicy::default(), decos);
+            got[BACKDROP]
+        };
+        // The bare default cell — the one surface #298 makes translucent.
+        assert_eq!(
+            backdrop(0, 0, Overlay::default(), &[]),
+            1.0,
+            "Default ref, no inverse, no decoration, no highlight → the backdrop"
+        );
+        // 1) an explicit SGR / Rgb background is content.
+        assert_eq!(
+            backdrop(0, (2 << 24) | 0x1E_1E_2E, Overlay::default(), &[]),
+            0.0,
+            "explicit Rgb bg (even == default colour) → content"
+        );
+        // 2) inverse swaps the fg IN as the shown bg — content (a highlight-shaped surface).
+        assert_eq!(
+            backdrop(INVERSE, 0, Overlay::default(), &[]),
+            0.0,
+            "inverse default cell → the swapped-in fg is content"
+        );
+        // 3) a bottom decoration bg paints beneath the glyph — content.
+        assert_eq!(
+            backdrop(
+                0,
+                0,
+                Overlay::default(),
+                &[deco(DecorationLayer::Bottom, Some(0x804000), None)]
+            ),
+            0.0,
+            "bottom-decoration bg → content"
+        );
+        // 4) a top decoration bg replaces the background — content.
+        assert_eq!(
+            backdrop(
+                0,
+                0,
+                Overlay::default(),
+                &[deco(DecorationLayer::Top, Some(0x004080), None)]
+            ),
+            0.0,
+            "top-decoration bg → content"
+        );
+        // 5) a selection / search highlight composites a background — content (else it would vanish
+        //    on a translucent terminal, the very #298 bug this flag exists to keep fixed).
+        assert_eq!(
+            backdrop(0, 0, selected(&[0, 0, 0], &[]), &[]),
+            0.0,
+            "selection over the default bg → content"
+        );
+        assert_eq!(
+            backdrop(0, 0, selected(&[], &[0, 0, 0]), &[]),
+            0.0,
+            "search match over the default bg → content"
+        );
+        // A bg-NEUTRAL layer leaves it eligible: an fg-only decoration changes the ink, not the
+        // backdrop, so the default background still shows through where the glyph does not.
+        assert_eq!(
+            backdrop(
+                0,
+                0,
+                Overlay::default(),
+                &[deco(DecorationLayer::Bottom, None, Some(0x00FF00))]
+            ),
+            1.0,
+            "fg-only decoration does not touch the backdrop → still translucency-eligible"
+        );
     }
 
     #[test]
