@@ -84,6 +84,9 @@ export interface RendererBackend {
     flags: Uint16Array,
     extra: Uint16Array,
     sideTable: string[],
+    /** Per-cell underline colour column (SGR 58, #520) — trailing/optional, so an older
+     * renderer build still satisfies this seam. Tagged u32 like fg/bg (`0` = Default). */
+    underlineColors?: Uint32Array,
   ): void;
   /** Retain the selection/match spans + blend colours; re-pack the grid (#271). */
   setOverlay(
@@ -453,6 +456,11 @@ export class JustermRenderer implements Renderer {
       asU16(frame.flags),
       asU16(frame.extra),
       Array.from(frame.sideTable),
+      // #520: the underline colour column (SGR 58). Trailing arg on the renderer's apply_damage;
+      // the renderer packs it as the base ink of the line channel so an underline draws in its
+      // own colour. All compositing stays in the renderer (post-#273/#504) — this is pure forwarding.
+      // Optional on the frame (a fixture may omit it) → empty scatters as all-Default.
+      asU32(frame.underlineColor ?? new Uint32Array(0)),
     );
   }
 

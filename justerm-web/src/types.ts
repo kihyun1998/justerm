@@ -23,6 +23,14 @@ export interface DecodedFrame {
   /** Per-cell fg/bg colour refs (tagged u32; resolve with `resolveRgb`). */
   readonly fg: ArrayLike<number>;
   readonly bg: ArrayLike<number>;
+  /**
+   * Per-cell underline colour ref (SGR 58, #520): tagged u32 like {@link fg}/{@link bg}
+   * (`0` = Default → the underline follows the fg). Only cells drawing a coloured underline
+   * carry a non-zero value — `justerm-wasm-decode`'s `underlineColor` getter. **Optional**: the
+   * wasm class always provides it, but a hand-built frame (a test fixture, or a consumer that
+   * predates it) may omit it — the renderer treats an absent column as all-Default.
+   */
+  readonly underlineColor?: ArrayLike<number>;
   /** Per-cell `CellFlags` bits. */
   readonly flags: ArrayLike<number>;
   /** Per-cell 1-based grapheme-cluster index (`0` = none → `sideTable[extra-1]`). */

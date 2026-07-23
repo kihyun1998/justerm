@@ -9,11 +9,11 @@ importers:
   .:
     dependencies:
       justerm-renderer:
-        specifier: ^0.6.0
-        version: 0.6.0
+        specifier: ^0.7.0
+        version: 0.7.0
       justerm-wasm-decode:
-        specifier: ^0.9.1
-        version: 0.9.1
+        specifier: ^0.10.0
+        version: 0.10.0
     devDependencies:
       '@playwright/test':
         specifier: ^1.61.1
@@ -717,11 +717,11 @@ packages:
     resolution: {integrity: sha512-34wB/Y7MW7bzjKRjUKTa46I2Z7eV62Rkhva+KkopW7Qvv/OSWBqvkSY7vusOPrNuZcUG3tApvdVgNB8POj3SPw==}
     engines: {node: '>=10'}
 
-  justerm-renderer@0.6.0:
-    resolution: {integrity: sha512-0Gvsm2uBIYoHHHfqg2/LyJBDa6+f2ACFYdbqEwQUQyZiaJhxloN4QocwKGVHcX6V71KyCaE7PxT5BWornnFX/A==}
+  justerm-renderer@0.7.0:
+    resolution: {integrity: sha512-nfNN8E0p3XG/RmL8VV+4dY5QGOORNjZl3L0HUkpOawqPxm56gKEXeE93OLsd2bmPiH5TVQ5sKVBGrOF9lBca0w==}
 
-  justerm-wasm-decode@0.9.1:
-    resolution: {integrity: sha512-zrXwZNRhezu6VqX9Z/yz7PEQYuSnwhgUkI+lY2MEnAc7Ue1DXFGLDXnjTtp3THr25KmwEW4Wras2plkXOsn+tQ==}
+  justerm-wasm-decode@0.10.0:
+    resolution: {integrity: sha512-9YkNuRAkMtq/BqwCJts1U3Kkq9WFUETFlKiYBDpAdWeFYxqiWolVKn/yKN2QusTjXFWg39TvIMPF/1gT3eDpTw==}
 
   lilconfig@3.1.3:
     resolution: {integrity: sha512-/vlFKAoH5Cgt3Ie+JLhRbwOsCQePABiU3tJ1egGvyQ+33R/vcwM2Zl2QR/LzjsBeItPt3oSVXapn+m4nQDvpzw==}
@@ -1510,9 +1510,9 @@ snapshots:
 
   joycon@3.1.1: {}
 
-  justerm-renderer@0.6.0: {}
+  justerm-renderer@0.7.0: {}
 
-  justerm-wasm-decode@0.9.1: {}
+  justerm-wasm-decode@0.10.0: {}
 
   lilconfig@3.1.3: {}
 
