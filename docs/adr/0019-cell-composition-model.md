@@ -176,7 +176,8 @@ decoration); it is rejected here because it drops a highlight the user explicitl
   one ink colour, so where the glyph is *kept* the line necessarily shares it and rule 4 cannot be
   honoured there. The instance record now carries a second ink, so rule 4 holds on every route — the
   glyph-only rules (the #239 re-tint) stop at the glyph, and the cell-wide ones (a decoration's fg,
-  `selectionForeground`, DIM, minimum contrast) reach both. Both references arrived at a separate
+  `selectionForeground`, DIM, minimum contrast) reach both — for a *follow-fg* line; an explicitly
+  declared `SGR 58` colour is immune to them (the amendment below). Both references arrived at a separate
   channel for the same reason (`RenderableCell.underline`, `textDecorationColor`), which is also where
   a future `SGR 58` lands.
   **`SGR 58` has now landed (#520), and it gives `I_line` two regimes by authorship of the line colour.**

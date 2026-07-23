@@ -3220,10 +3220,25 @@ impl Term {
     }
 }
 
-/// Parse `38`/`48` extended colour, in either form:
+/// Parse `38`/`48`/`58` extended colour (foreground / background / underline colour, #520), in
+/// either form:
 /// - sub-parameter (colon) form inline in `param`: `38:5:n`, `38:2:r:g:b`
 ///   (optionally `38:2:cs:r:g:b` with a colorspace id), or
 /// - legacy (semicolon) form: pull the following top-level params from `iter`.
+///
+/// The colon RGB form is **count-based** (`off = if param.len() >= 6 { 3 } else { 2 }`): a 5-param
+/// `38:2:r:g:b` (no colorspace slot) reads RGB(r,g,b) directly, while a 6-param `38:2:cs:r:g:b` — or
+/// `38:2::r:g:b` with an *empty* cs, the form kitty/nvim actually emit — skips the colorspace slot.
+/// The short 5-param form is **non-conformant to T.416 / ISO-8613-6** (the de-jure standard always
+/// carries a colorspace field), but tolerating it is the **ecosystem-dominant** behaviour, verified
+/// against real source (2026-07, #520): VTE (`src/sgr.hh`, branches on `n > 4`), foot (`csi.c`,
+/// `sub.idx >= 5`) and alacritty (`ansi.rs`, `params.len() > 4`) all count the sub-parameters and
+/// decode the short form as RGB(r,g,b), exactly as here. VTE's own comment calls it a "common
+/// misinterpretation of the standard" (foot: "bastard version") that it supports anyway; **only
+/// xterm.js is strict** (always consumes a colorspace slot, so it misreads the short form). So a
+/// difference from xterm here is deliberate leniency shared with the non-xterm ecosystem, not a
+/// defect — the ADR-0004 spec-faithfulness is about not *omitting* behaviour, not about rejecting a
+/// widely-emitted non-standard input.
 fn parse_extended_color<'a, I>(param: &[u16], iter: &mut I) -> Option<Color>
 where
     I: Iterator<Item = &'a [u16]>,
