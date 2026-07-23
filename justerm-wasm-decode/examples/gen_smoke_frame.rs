@@ -45,6 +45,7 @@ fn main() {
             )],
             combining: BTreeMap::new(),
             links: BTreeMap::new(),
+            ucolors: BTreeMap::new(),
         }],
         side_table: vec![],
         link_table: vec![],

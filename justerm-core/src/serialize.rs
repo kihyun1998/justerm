@@ -17,7 +17,7 @@ use std::collections::BTreeMap;
 
 /// Wire magic ("juSTerm") + format version. A new feature bumps `VERSION`.
 const MAGIC: [u8; 2] = *b"JT";
-const VERSION: u8 = 12; // v12 adds a fifth overlay group: the consumer-designated active search match's spans (#428); v11 adds a fourth overlay group: every live marker's absolute buffer line for the overview ruler (#120 S3); v10 adds a marker kind discriminant + optional i32 exit to the overlay marker group (#159); v9 adds the alt-screen flag in the header (#149); v8 adds the mouse wanted-events mask in the header (#129/ADR-0016); v7 overlay marker group (#118/ADR-0015); v6 overlay selection + search-match spans (#108/ADR-0014); v5 scroll position (#112/ADR-0013); v4 cursor shape+blink (#81); v3 cursor row/col/visibility (#38)
+const VERSION: u8 = 13; // v13 adds a per-span underline-colour group: sparse (col, Color) pairs for cells drawing a coloured underline (SGR 58, #520); v12 adds a fifth overlay group: the consumer-designated active search match's spans (#428); v11 adds a fourth overlay group: every live marker's absolute buffer line for the overview ruler (#120 S3); v10 adds a marker kind discriminant + optional i32 exit to the overlay marker group (#159); v9 adds the alt-screen flag in the header (#149); v8 adds the mouse wanted-events mask in the header (#129/ADR-0016); v7 overlay marker group (#118/ADR-0015); v6 overlay selection + search-match spans (#108/ADR-0014); v5 scroll position (#112/ADR-0013); v4 cursor shape+blink (#81); v3 cursor row/col/visibility (#38)
 
 /// The wire-format version (the gating `VERSION` byte), exposed so a binding can
 /// assert at load that its decoder matches the backend encoder (#34/ADR-0008).
@@ -49,6 +49,14 @@ pub struct Span {
     pub cells: Vec<Cell>,
     pub combining: BTreeMap<usize, NonZeroU32>,
     pub links: BTreeMap<usize, NonZeroU32>,
+    /// Underline colours (SGR 58, #520): span-relative column → the `Color`
+    /// reference the cell's coloured underline draws in. Sparse — only cells that
+    /// carry a non-default underline colour appear (gated on the `UNDERLINE`
+    /// attribute at parse time). Unlike `combining`/`links` this is a colour
+    /// reference, not a side-table index, so it ships inline (no `_table` on the
+    /// [`Frame`]). Kept off the per-cell record so a plain-text frame pays nothing
+    /// (ADR-0020: no inert per-cell payload).
+    pub ucolors: BTreeMap<usize, Color>,
 }
 
 /// A stable handle to a buffer line, handed out by `Engine::add_marker` (#118).
@@ -262,6 +270,18 @@ pub fn encode(frame: &Frame) -> Vec<u8> {
         out.extend_from_slice(&(uri.len() as u16).to_le_bytes());
         out.extend_from_slice(uri.as_bytes());
     }
+    // Underline-colour group (SGR 58, #520, v13): one sparse map per span, in span
+    // order, so the column keys need no span index — the decoder reads exactly
+    // `span_count` maps and attaches each to its span. Each entry is `(col u16,
+    // colour u32)`, the colour packed by the same `encode_color` as fg/bg. A frame
+    // with no coloured underlines pays 2 bytes per span (the zero count).
+    for span in &frame.spans {
+        out.extend_from_slice(&(span.ucolors.len() as u16).to_le_bytes());
+        for (&col, &color) in &span.ucolors {
+            out.extend_from_slice(&(col as u16).to_le_bytes());
+            out.extend_from_slice(&encode_color(color).to_le_bytes());
+        }
+    }
     // Overlay section (#108): each group is a u16 count then that many
     // `(row, left, right)` u16 viewport triples. Selection first, then search
     // matches. Append-only, version-gated — a future group (markers, #118) adds
@@ -433,6 +453,7 @@ pub fn decode(bytes: &[u8]) -> Result<Frame, DecodeError> {
             cells,
             combining,
             links,
+            ucolors: BTreeMap::new(),
         });
     }
     let side_table_count = r.u16()?;
@@ -451,6 +472,16 @@ pub fn decode(bytes: &[u8]) -> Result<Frame, DecodeError> {
         let len = r.u16()? as usize;
         let bytes = r.take(len)?;
         link_table.push(String::from_utf8_lossy(bytes).into_owned());
+    }
+    // Underline-colour group (v13, #520): inverse of the encode above — one sparse
+    // map per span, in span order, so each attaches to `spans[i]` positionally.
+    for span in &mut spans {
+        let count = r.u16()?;
+        for _ in 0..count {
+            let col = r.u16()? as usize;
+            let color = decode_color(r.u32()?)?;
+            span.ucolors.insert(col, color);
+        }
     }
     // Overlay section (#108): selection group then match group, each a count +
     // `(row, left, right)` triples (inverse of `encode_overlay_spans`).

@@ -511,6 +511,7 @@ fn round_trip_span_of_plain_cells() {
             cells,
             combining: BTreeMap::new(),
             links: BTreeMap::new(),
+            ucolors: BTreeMap::new(),
         }],
         side_table: vec![],
         link_table: vec![],
@@ -550,6 +551,7 @@ fn round_trip_distinct_colour_references() {
             cells,
             combining: BTreeMap::new(),
             links: BTreeMap::new(),
+            ucolors: BTreeMap::new(),
         }],
         side_table: vec![],
         link_table: vec![],
@@ -607,6 +609,7 @@ fn round_trip_cell_flags_incl_layout_markers() {
             cells: vec![lead, spacer],
             combining: BTreeMap::new(),
             links: BTreeMap::new(),
+            ucolors: BTreeMap::new(),
         }],
         side_table: vec![],
         link_table: vec![],
@@ -656,14 +659,15 @@ fn decode_rejects_superseded_version() {
     ));
 }
 
-/// The wire is gated at version 11 (the #120 S3 marker-lines group, atop the #159
-/// marker kind + exit, #149 alt-screen flag, #129 mouse mask and #118 marker
-/// group). Both the exported `WIRE_VERSION` constant and the byte the encoder emits
-/// must read 12 — the value the WASM decoder's `wire_version()` mirrors in lockstep
-/// (ADR-0008), so a drift here trips before it can desync a binding.
+/// The wire is gated at version 13 (the #520 per-span underline-colour group, atop
+/// the #428 active-match group, #120 S3 marker-lines, #159 marker kind + exit, #149
+/// alt-screen flag, #129 mouse mask and #118 marker group). Both the exported
+/// `WIRE_VERSION` constant and the byte the encoder emits must read 13 — the value
+/// the WASM decoder's `wire_version()` mirrors in lockstep (ADR-0008), so a drift
+/// here trips before it can desync a binding.
 #[test]
-fn wire_version_is_twelve() {
-    assert_eq!(justerm_core::WIRE_VERSION, 12);
+fn wire_version_is_thirteen() {
+    assert_eq!(justerm_core::WIRE_VERSION, 13);
     let mut term = Engine::new(1, 1);
     term.feed(b"x");
     let bytes = encode(&term.frame());
@@ -700,6 +704,7 @@ fn round_trip_grapheme_side_table() {
             // column 0 -> side_table[0] (1-based index)
             combining: BTreeMap::from([(0, NonZeroU32::new(1).unwrap())]),
             links: BTreeMap::new(),
+            ucolors: BTreeMap::new(),
         }],
         side_table: vec![vec!['\u{0301}']], // combining acute accent
         link_table: vec![],
@@ -735,6 +740,7 @@ fn cell_record_is_fixed_18_bytes() {
             cells: vec![Cell::default(); n],
             combining: BTreeMap::new(),
             links: BTreeMap::new(),
+            ucolors: BTreeMap::new(),
         }],
         side_table: vec![],
         link_table: vec![],
@@ -1022,6 +1028,7 @@ fn round_trip_full_frame_with_cells() {
             .collect(),
         combining: BTreeMap::new(),
         links: BTreeMap::new(),
+        ucolors: BTreeMap::new(),
     };
     let frame = Frame {
         cols: 3,

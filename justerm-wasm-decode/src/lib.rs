@@ -584,6 +584,7 @@ mod tests {
             cells,
             combining: BTreeMap::new(),
             links: BTreeMap::new(),
+            ucolors: BTreeMap::new(),
         }
     }
 
@@ -699,6 +700,7 @@ mod tests {
                 cells,
                 combining: BTreeMap::new(),
                 links: BTreeMap::new(),
+                ucolors: BTreeMap::new(),
             }],
         );
         let flat = flatten(&frame);
@@ -729,6 +731,7 @@ mod tests {
                 // extra/link ride the span now (per column), not the cell.
                 combining: BTreeMap::from([(0, NonZeroU32::new(3).unwrap())]),
                 links: BTreeMap::from([(0, NonZeroU32::new(7).unwrap())]),
+                ucolors: BTreeMap::new(),
             }],
         );
         let flat = flatten(&frame);
@@ -998,6 +1001,7 @@ mod tests {
                     // the `coloured` cell (column 2) references grapheme + link 1.
                     combining: BTreeMap::from([(2, NonZeroU32::new(1).unwrap())]),
                     links: BTreeMap::from([(2, NonZeroU32::new(1).unwrap())]),
+                    ucolors: BTreeMap::new(),
                 },
                 ascii_span(3, 10, "hi"),
             ],

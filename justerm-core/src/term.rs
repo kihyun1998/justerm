@@ -528,6 +528,7 @@ impl Term {
             let mut cells = Vec::with_capacity(right - left + 1);
             let mut combining = std::collections::BTreeMap::new();
             let mut links = std::collections::BTreeMap::new();
+            let mut ucolors = std::collections::BTreeMap::new();
             let row = self.abs_row(top + line);
             for col in left..=right {
                 let cell = row[col];
@@ -552,6 +553,13 @@ impl Term {
                         .expect("link_remap just set, nonzero");
                     links.insert(col - left, fidx);
                 }
+                // Underline colour (SGR 58, #520): a colour reference, not a
+                // side-table index, so it rides the span inline. `ucolor_at` is
+                // flag-gated + already Default-filtered (the stamp only fires on an
+                // underlined cell), so a present entry is a real non-default colour.
+                if let Some(color) = row.ucolor_at(col) {
+                    ucolors.insert(col - left, color);
+                }
                 cells.push(cell);
             }
             spans.push(Span {
@@ -561,6 +569,7 @@ impl Term {
                 cells,
                 combining,
                 links,
+                ucolors,
             });
         }
 

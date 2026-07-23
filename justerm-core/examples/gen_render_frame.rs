@@ -39,6 +39,7 @@ fn main() {
             cells,
             combining: BTreeMap::new(),
             links: BTreeMap::new(),
+            ucolors: BTreeMap::new(),
         });
     }
 

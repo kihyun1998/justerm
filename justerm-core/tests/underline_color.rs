@@ -7,7 +7,7 @@
 //! `Engine::underline_color_at` (it rides a per-row map, not the 12-byte cell,
 //! mirroring the hyperlink map #46).
 
-use justerm_core::{Color, Engine};
+use justerm_core::{Color, Engine, decode, encode};
 
 /// Feed a byte stream and return a fresh engine holding the result.
 fn run(bytes: &[u8]) -> Engine {
@@ -150,6 +150,74 @@ fn the_vm_captured_form_matrix_round_trips_every_encoding() {
     let last = t.grid().cell(0, 20).c(); // somewhere in "  (58:2:: rgb curly)"
     assert_ne!(last, ' ', "row 0 has a trailing label past the word");
     assert_eq!(t.underline_color_at(0, 20), Color::Default);
+}
+
+#[test]
+fn the_underline_colour_survives_the_wire_round_trip() {
+    // Slice 2 proof (#520): the colour crosses encode → decode intact, on the span's
+    // ucolor group (span-relative columns). Two colours on one row + a plain cell.
+    let mut t = Engine::new(80, 24);
+    t.feed(b"\x1b[4m\x1b[58:2::255:0:0mAB\x1b[58:5:9mC\x1b[59mD");
+    let bytes = encode(&t.frame());
+    let decoded = decode(&bytes).expect("v13 round-trips");
+    let span = decoded
+        .spans
+        .iter()
+        .find(|s| s.line == 0)
+        .expect("row 0 is a damage span");
+    // Columns are span-relative (offset from `span.left`); the row starts at col 0.
+    let at = |c: usize| span.ucolors.get(&(c - span.left as usize)).copied();
+    assert_eq!(at(0), Some(Color::Rgb(255, 0, 0)), "A");
+    assert_eq!(at(1), Some(Color::Rgb(255, 0, 0)), "B");
+    assert_eq!(at(2), Some(Color::Indexed(9)), "C switched to indexed 9");
+    assert_eq!(at(3), None, "D after 59 → no colour on the wire");
+}
+
+#[test]
+fn wire_ucolours_attach_to_the_right_span_positionally() {
+    // The wire group has NO explicit span index — it relies on encode and decode
+    // walking the span list in the same order (Lens ①). Two rows with DIFFERENT
+    // colours must not cross-contaminate: proves the positional attachment, the one
+    // place a width/order desync would actually bite.
+    let mut t = Engine::new(80, 24);
+    t.feed(b"\x1b[4m\x1b[58:5:1mA\r\n\x1b[58:2::0:255:0mB");
+    let decoded = decode(&encode(&t.frame())).expect("round-trips");
+    // Each row has exactly one coloured cell; grab its single ucolor value (column-
+    // offset-agnostic, so the assertion is about which SPAN holds which colour).
+    let row = |line: u16| {
+        let s = decoded
+            .spans
+            .iter()
+            .find(|s| s.line == line)
+            .unwrap_or_else(|| panic!("span for row {line}"));
+        s.ucolors.values().copied().next()
+    };
+    assert_eq!(
+        row(0),
+        Some(Color::Indexed(1)),
+        "row 0 keeps its indexed colour"
+    );
+    assert_eq!(
+        row(1),
+        Some(Color::Rgb(0, 255, 0)),
+        "row 1 keeps its rgb colour — not row 0's"
+    );
+}
+
+#[test]
+fn a_plain_frame_adds_no_underline_colour_bytes_to_the_wire() {
+    // The group is sparse: a frame with no coloured underlines costs only the
+    // per-span zero-count (2 bytes/span), never a per-cell field. Encode the same
+    // frame with and without a coloured underline and confirm the plain one is
+    // smaller — pins that the colour is not on every cell record.
+    let mut plain = Engine::new(80, 1);
+    plain.feed(b"just plain text");
+    let mut coloured = Engine::new(80, 1);
+    coloured.feed(b"\x1b[4m\x1b[58:2::255:0:0mjust plain text");
+    assert!(
+        encode(&coloured.frame()).len() > encode(&plain.frame()).len(),
+        "the coloured frame carries extra ucolor bytes; the plain one does not"
+    );
 }
 
 #[test]

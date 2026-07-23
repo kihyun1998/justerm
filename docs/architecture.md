@@ -150,8 +150,9 @@ hyperlink id was added exactly as the format promised — a **versioned** additi
 side-table (`link_table`), never an overload of a live field; the `VERSION` byte gates it. **Underline
 colour** (SGR 58, #520) follows the *same* path, not the spare-bits one: a full `Color` reference is
 26 bits — too big to ride `flags` — so it is stored engine-side in a per-row map like the hyperlink
-(gated by a `UCOLOR_PRESENT` cell bit) and will reach the wire as its own versioned group (core landed
-first; the wire group is a later slice, so the 18-byte record above is unchanged for now). What the
+(gated by a `UCOLOR_PRESENT` cell bit) and reaches the wire as its own versioned group (**v13**, #520):
+a per-span **sparse** group of `(col, Color)` pairs, so the 18-byte per-cell record above is unchanged —
+only cells that draw a coloured underline cost bytes, not every cell. What the
 `flags` bits 11–15 still genuinely reserve is the underline **style** (single/double/curly/dotted) —
 a small enum that *does* fit spare bits — plus the colour tags' spare 6 bits.
 
@@ -368,7 +369,8 @@ deferred behavior) it tracks — then add what you find here.** Seeds (caught in
   map per concern** (as combining and links already are), gating each with its own bit — so the maps must
   be threaded in lockstep across every op (the coherence the shared object gives xterm for free). The
   colour is stored only where an `UNDERLINE` attribute is present (inert otherwise, and xterm likewise
-  does not persist it) and does not yet reach the wire — a later slice. [#520]
+  does not persist it). On the wire it is a per-span **sparse** group of `(col, Color)` pairs (v13), not
+  a per-cell field, so a plain-text frame pays nothing for it. [#520]
 - **The scroll op is recorded (not diff-detected), screen-relative, and ordered before the spans.**
   Per ADR-0003 the frame carries `{top, bottom, count}` *ahead of* the damage spans; the decoder shifts
   its mirror grid first, then applies spans — reversing the order lands spans on pre-scroll rows. #6

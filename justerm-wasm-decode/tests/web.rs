@@ -54,6 +54,7 @@ fn sample_frame() -> Frame {
         right: left + s.chars().count() as u16 - 1,
         combining: Default::default(),
         links: Default::default(),
+        ucolors: Default::default(),
     };
     Frame {
         cols: 80,
@@ -77,8 +78,8 @@ fn sample_frame() -> Frame {
 }
 
 #[wasm_bindgen_test]
-fn wire_version_is_twelve() {
-    assert_eq!(wire_version(), 12); // #428 bumped 11 -> 12 for the active-match group
+fn wire_version_is_thirteen() {
+    assert_eq!(wire_version(), 13); // #520 bumped 12 -> 13 for the underline-colour group
 }
 
 // #316 D2: the regex validator crosses the boundary with core's dialect, so the web
@@ -187,6 +188,7 @@ fn colour_and_flag_columns_carry_tagged_values() {
             cells: vec![cell],
             combining: Default::default(),
             links: Default::default(),
+            ucolors: Default::default(),
         }],
         side_table: vec![],
         link_table: vec![],
