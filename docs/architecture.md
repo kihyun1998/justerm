@@ -147,9 +147,13 @@ id), `fg`/`bg` (u32 each = tag byte `Default|Indexed|Rgb` + 24-bit payload; the 
 grapheme index, `0` = none), and — since wire **v2** (#26) — `link` (u16 frame-local hyperlink index,
 `0` = none) = **4+4+4+2+2+2 = 18 bytes**, 2-aligned. Width is derived from `flags & WIDE_CHAR`. The
 hyperlink id was added exactly as the format promised — a **versioned** addition with its own index +
-side-table (`link_table`), never an overload of a live field; the `VERSION` byte gates it. Remaining
-"reserve room for later" is *spare bits*, not padding: underline style+colour use `flags` bits 11–15
-and the colour tags' spare 6 bits.
+side-table (`link_table`), never an overload of a live field; the `VERSION` byte gates it. **Underline
+colour** (SGR 58, #520) follows the *same* path, not the spare-bits one: a full `Color` reference is
+26 bits — too big to ride `flags` — so it is stored engine-side in a per-row map like the hyperlink
+(gated by a `UCOLOR_PRESENT` cell bit) and will reach the wire as its own versioned group (core landed
+first; the wire group is a later slice, so the 18-byte record above is unchanged for now). What the
+`flags` bits 11–15 still genuinely reserve is the underline **style** (single/double/curly/dotted) —
+a small enum that *does* fit spare bits — plus the colour tags' spare 6 bits.
 
 ## Hidden VT state — model these (and grow this list)
 
@@ -354,10 +358,17 @@ deferred behavior) it tracks — then add what you find here.** Seeds (caught in
   identically to combining (`Row::move_maps` re-keys both maps together; reflow threads both). Reads go
   through `Engine::link_at(row, col)` / `viewport_link_at` (the link is no longer on the `Cell`); the
   decoded index rides `Span.links`. With this `Cell` is **12 bytes** — three packed `u32`, no `Option`
-  field (the #43 epic target, matching xterm.js's `BufferLine` cell). Deliberate simplification: xterm's
-  `HAS_EXTENDED` is a *shared* gate (link **and** underline colour/style in one `ExtendedAttrs` object);
-  justerm models only the link, so the map is link-only — it widens to an extended-attrs map, with bit and
-  serialization parity intact, if underline colour (SGR 58) is ever added. [#26, #46]
+  field (the #43 epic target, matching xterm.js's `BufferLine` cell). [#26, #46]
+- **Underline colour (SGR 58) rides the *same* machinery — a third per-row map, gated by its own
+  `UCOLOR_PRESENT` bit (#520).** A cell that draws a coloured underline stores a `Color` reference in
+  `Row`'s `BTreeMap<col, Color>`, gated by bg bit 29. Carry/reflow/recycle/`move_maps` thread it exactly
+  like the link and combining maps; read through `Engine::underline_color_at(row, col)` (`Color::Default`
+  = follow the fg). **Where justerm diverges from xterm:** xterm's `HAS_EXTENDED` is a *shared* gate
+  holding link **and** underline colour/style in one `ExtendedAttrs` object; justerm keeps a **separate
+  map per concern** (as combining and links already are), gating each with its own bit — so the maps must
+  be threaded in lockstep across every op (the coherence the shared object gives xterm for free). The
+  colour is stored only where an `UNDERLINE` attribute is present (inert otherwise, and xterm likewise
+  does not persist it) and does not yet reach the wire — a later slice. [#520]
 - **The scroll op is recorded (not diff-detected), screen-relative, and ordered before the spans.**
   Per ADR-0003 the frame carries `{top, bottom, count}` *ahead of* the damage spans; the decoder shifts
   its mirror grid first, then applies spans — reversing the order lands spans on pre-scroll rows. #6

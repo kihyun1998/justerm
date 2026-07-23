@@ -4,6 +4,7 @@
 //! ring (a later slice) can move whole rows in/out cheaply.
 
 use crate::cell::{Cell, CellFlags};
+use crate::color::Color;
 use core::num::NonZeroU32;
 use std::collections::BTreeMap;
 use std::ops::{Deref, DerefMut};
@@ -20,6 +21,12 @@ type Combining = BTreeMap<usize, Vec<char>>;
 /// per-row, flag-gated sparse-map design as [`Combining`], gated by the cell's
 /// `LINK_PRESENT` bit instead (xterm's `_extendedAttrs` / `HAS_EXTENDED`, #46).
 type Links = BTreeMap<usize, NonZeroU32>;
+
+/// A row's non-default underline colours (SGR 58, #520): column → the underline
+/// `Color` reference. Same per-row, flag-gated sparse-map design as [`Links`],
+/// gated by the cell's `UCOLOR_PRESENT` bit. Only non-`Default` colours get an
+/// entry — a `Default` underline follows the fg and needs no storage.
+type UColors = BTreeMap<usize, Color>;
 
 /// Re-key a sparse column map to follow a `copy_within(src, dst)` cell shift: the
 /// live entry for a moved cell travels to the cell's new column. Vacated source
@@ -39,19 +46,22 @@ fn move_map<V>(map: &mut BTreeMap<usize, V>, src: std::ops::Range<usize>, dst: u
     }
 }
 
-/// One row of cells **plus** its per-row, column-keyed combining and link maps.
+/// One row of cells **plus** its per-row, column-keyed combining, link, and
+/// underline-colour maps.
 ///
 /// The maps ride with the row through scroll / scrollback / reflow for free (the
-/// row is the unit that moves), which is why combining (#45) and hyperlinks (#46)
-/// live here rather than in global per-cell indices — no leak, cleared on row
-/// reuse. `Row` derefs to `[Cell]`, so index/iterate/slice sites are unchanged;
-/// the maps are reached through the dedicated methods so the flag-gate (read iff
-/// the cell's `COMBINED_PRESENT` / `LINK_PRESENT` bit is set) is never bypassed.
+/// row is the unit that moves), which is why combining (#45), hyperlinks (#46),
+/// and underline colours (#520) live here rather than in global per-cell indices —
+/// no leak, cleared on row reuse. `Row` derefs to `[Cell]`, so index/iterate/slice
+/// sites are unchanged; the maps are reached through the dedicated methods so the
+/// flag-gate (read iff the cell's `COMBINED_PRESENT` / `LINK_PRESENT` /
+/// `UCOLOR_PRESENT` bit is set) is never bypassed.
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct Row {
     cells: Vec<Cell>,
     combining: Combining,
     links: Links,
+    ucolors: UColors,
 }
 
 impl Row {
@@ -61,31 +71,39 @@ impl Row {
             cells: vec![Cell::default(); cols],
             combining: Combining::new(),
             links: Links::new(),
+            ucolors: UColors::new(),
         }
     }
 
-    /// Wrap a cell vector as a row with no combining marks or links.
+    /// Wrap a cell vector as a row with no combining marks, links, or ucolors.
     pub(crate) fn from_cells(cells: Vec<Cell>) -> Row {
         Row {
             cells,
             combining: Combining::new(),
             links: Links::new(),
+            ucolors: UColors::new(),
         }
     }
 
     /// Build a row from cells and its maps (the reflow re-split path).
-    pub(crate) fn new(cells: Vec<Cell>, combining: Combining, links: Links) -> Row {
+    pub(crate) fn new(
+        cells: Vec<Cell>,
+        combining: Combining,
+        links: Links,
+        ucolors: UColors,
+    ) -> Row {
         Row {
             cells,
             combining,
             links,
+            ucolors,
         }
     }
 
-    /// Consume the row into its cells, combining map, and link map (the reflow
-    /// join path).
-    pub(crate) fn into_parts(self) -> (Vec<Cell>, Combining, Links) {
-        (self.cells, self.combining, self.links)
+    /// Consume the row into its cells, combining map, link map, and ucolor map
+    /// (the reflow join path).
+    pub(crate) fn into_parts(self) -> (Vec<Cell>, Combining, Links, UColors) {
+        (self.cells, self.combining, self.links, self.ucolors)
     }
 
     /// Resize to `cols`, padding with blanks or truncating; map entries for
@@ -103,6 +121,9 @@ impl Row {
         if self.links.keys().next_back().is_some_and(|&m| m >= cols) {
             self.links.retain(|&col, _| col < cols);
         }
+        if self.ucolors.keys().next_back().is_some_and(|&m| m >= cols) {
+            self.ucolors.retain(|&col, _| col < cols);
+        }
     }
 
     /// Empty the row, keeping the cell allocation — for recycling a row buffer
@@ -112,6 +133,7 @@ impl Row {
         self.cells.clear();
         self.combining.clear();
         self.links.clear();
+        self.ucolors.clear();
     }
 
     /// The combining marks at `col`, or `None`. Flag-gated: returns `Some` only
@@ -130,6 +152,17 @@ impl Row {
     pub(crate) fn link_at(&self, col: usize) -> Option<NonZeroU32> {
         if self.cells[col].is_linked() {
             self.links.get(&col).copied()
+        } else {
+            None
+        }
+    }
+
+    /// The non-default underline colour at `col`, or `None` (which the caller reads
+    /// as `Default` — follow the fg). Flag-gated by the cell's `UCOLOR_PRESENT` bit,
+    /// so a stale map entry an overwrite left behind is never surfaced (#520).
+    pub(crate) fn ucolor_at(&self, col: usize) -> Option<Color> {
+        if self.cells[col].is_ucolored() {
+            self.ucolors.get(&col).copied()
         } else {
             None
         }
@@ -155,11 +188,21 @@ impl Row {
         self.links.insert(col, link);
     }
 
-    /// Re-key both maps to follow a `copy_within(src, dst)` cell shift (ICH/DCH),
-    /// so a cluster or link stays attached to its glyph at the new column.
+    /// Stamp `col`'s glyph with a non-default underline colour, setting the presence
+    /// bit (the print path calls this on every cell written while the pen's underline
+    /// colour is non-default, #520). Mirror of [`Row::set_link`].
+    pub(crate) fn set_ucolor(&mut self, col: usize, color: Color) {
+        self.cells[col].set_ucolored(true);
+        self.ucolors.insert(col, color);
+    }
+
+    /// Re-key every map to follow a `copy_within(src, dst)` cell shift (ICH/DCH),
+    /// so a cluster, link, or underline colour stays attached to its glyph at the
+    /// new column.
     pub(crate) fn move_maps(&mut self, src: std::ops::Range<usize>, dst: usize) {
         move_map(&mut self.combining, src.clone(), dst);
-        move_map(&mut self.links, src, dst);
+        move_map(&mut self.links, src.clone(), dst);
+        move_map(&mut self.ucolors, src, dst);
     }
 }
 
@@ -199,9 +242,11 @@ pub(crate) fn reflow(
     let mut logical: Vec<Vec<Cell>> = Vec::new();
     let mut logical_comb: Vec<Combining> = Vec::new();
     let mut logical_links: Vec<Links> = Vec::new();
+    let mut logical_ucolors: Vec<UColors> = Vec::new();
     let mut current: Vec<Cell> = Vec::new();
     let mut current_comb: Combining = Combining::new();
     let mut current_links: Links = Links::new();
+    let mut current_ucolors: UColors = UColors::new();
     // Per point: (logical line, offset, found-yet).
     let mut tracked: Vec<(usize, usize, bool)> = vec![(0, 0, false); points.len()];
     for (i, row) in rows.into_iter().enumerate() {
@@ -212,7 +257,7 @@ pub(crate) fn reflow(
         }
         let soft = row.last().is_some_and(|c| c.is_wrapline());
         let base = current.len();
-        let (cells, comb, links) = row.into_parts();
+        let (cells, comb, links, ucolors) = row.into_parts();
         // Carry live map entries, re-keyed to the logical-line offset (flag-gated:
         // a stale entry whose cell lost its bit is dropped).
         for (col, marks) in comb {
@@ -223,6 +268,11 @@ pub(crate) fn reflow(
         for (col, link) in links {
             if cells[col].is_linked() {
                 current_links.insert(base + col, link);
+            }
+        }
+        for (col, color) in ucolors {
+            if cells[col].is_ucolored() {
+                current_ucolors.insert(base + col, color);
             }
         }
         if soft {
@@ -248,19 +298,22 @@ pub(crate) fn reflow(
             logical.push(std::mem::take(&mut current));
             logical_comb.push(std::mem::take(&mut current_comb));
             logical_links.push(std::mem::take(&mut current_links));
+            logical_ucolors.push(std::mem::take(&mut current_ucolors));
         }
     }
     if !current.is_empty() {
         logical.push(current);
         logical_comb.push(current_comb);
         logical_links.push(current_links);
+        logical_ucolors.push(current_ucolors);
     }
     // Trailing blank lines are absorbed, not preserved as rows (the maps are
-    // trimmed in lockstep so all three stay index-aligned).
+    // trimmed in lockstep so all four stay index-aligned).
     while logical.last().is_some_and(|l| l.is_empty()) {
         logical.pop();
         logical_comb.pop();
         logical_links.pop();
+        logical_ucolors.pop();
     }
 
     // 2. Re-split each logical line into `new_cols`-wide rows, mapping each
@@ -270,6 +323,7 @@ pub(crate) fn reflow(
     for (li, line) in logical.iter().enumerate() {
         let comb = &logical_comb[li];
         let links = &logical_links[li];
+        let ucolors = &logical_ucolors[li];
         let start = out.len();
         if line.is_empty() {
             out.push(Row::blank(new_cols));
@@ -292,7 +346,12 @@ pub(crate) fn reflow(
                     .range(i..i + take)
                     .map(|(&col, &link)| (col - i, link))
                     .collect();
-                let mut row = Row::new(line[i..i + take].to_vec(), seg_comb, seg_links);
+                let seg_ucolors: UColors = ucolors
+                    .range(i..i + take)
+                    .map(|(&col, &color)| (col - i, color))
+                    .collect();
+                let mut row =
+                    Row::new(line[i..i + take].to_vec(), seg_comb, seg_links, seg_ucolors);
                 row.resize(new_cols);
                 i += take;
                 if i < line.len() {

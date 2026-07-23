@@ -13,6 +13,11 @@ pub struct Pen {
     pub fg: Color,
     pub bg: Color,
     pub flags: CellFlags,
+    /// The underline colour (SGR 58, #520): what an underline / strikethrough draws
+    /// in, independent of `fg`. `Default` means "follow the fg". It is *not* packed
+    /// into the printed `Cell` (the 12-byte cell is full); the print path stamps a
+    /// non-default value into the row's ucolor map. See `term.rs::write_glyph`.
+    pub underline_color: Color,
 }
 
 impl Pen {

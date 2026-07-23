@@ -145,6 +145,16 @@ impl Engine {
         self.term.screen_link_at(row, col)
     }
 
+    /// The underline colour (SGR 58, #520) at **screen** `(row, col)` — same
+    /// coordinates as [`Engine::grid`]'s `cell(row, col)`. A theme-agnostic
+    /// [`Color`] reference; [`Color::Default`] means the underline follows the
+    /// glyph's foreground (the common case, and what a cell with no SGR 58 returns).
+    /// Like the hyperlink, the colour rides a per-row side table, not the 12-byte
+    /// [`Cell`] (#520).
+    pub fn underline_color_at(&self, row: usize, col: usize) -> Color {
+        self.term.screen_underline_color_at(row, col)
+    }
+
     /// The OSC 8 hyperlink index at **viewport** `(row, col)` — the visible
     /// window including scrollback at the current scroll, same coordinates as
     /// [`Engine::viewport_line`] — or `None`.
