@@ -53,6 +53,23 @@ Added 2026-07-24. Every row grepped at the pinned SHAs that day.
 | Zero dimensions are **rejected**, not clamped: `ResizeError.InvalidValue`, with a test asserting no mutation on rejection | ghostty | `terminal/Terminal.zig:3679`, `:3721`; test `:3885` |
 | ⚠ ghostty says the 1-wide case *"should be prevented downstream"*, but its downstream floor is **1**, not 2 (`@max(1, calc_cols)`) — so it ships the path it documents as *"pretty broken"*. This is the argument **for** flooring in the engine rather than delegating | ghostty | `terminal/Terminal.zig:1422-1426` vs `renderer/size.zig:260-261`; the destroy-the-glyph path `PageList.zig:1783-1788` |
 
+## Word selection started *on* a separator — the references disagree, so justerm is not an outlier
+
+Added 2026-07-24, clearing a candidate defect raised by #547's Lens ①: justerm's word walkers break
+only on the **neighbour** cell's class, never on the start cell's own, so word-selecting the interior
+space of `"ab cd"` returns `"ab cd"` — both words joined. That looked like a bug and is not.
+
+| Fact | Reference | Site |
+|---|---|---|
+| Whitespace **is** a semantic escape char (`",│\|:\"' ()[]{}<>\t"`, note the space) — but both semantic walkers **exclude the starting cell**, so starting *on* a space never terminates there and the selection joins the words on either side. `iter_from(point)` never yields `point`: `next()` advances *before* returning, `prev()` decrements before returning | alacritty | const `term/mod.rs:45`; `term/search.rs:541` `inline_search_left` (`iter.prev()` first), `:564` `inline_search_right`; iterator semantics `grid/mod.rs:412` `iter_from`, `:595-609` `next` |
+| The **opposite** design: an explicit branch on the start cell's own class — `if (line.charAt(startIndex) === ' ')` expands over whitespace *only*, `else` expands until whitespace. Double-clicking a space selects the whitespace run and never crosses into a word | xterm.js | `browser/services/SelectionService.ts:858-865`, inside `_getWordAt` (`:833`); the caller carries an explicit `allowWhitespaceOnlySelection` flag (`:344`, `:988`) |
+
+**Verdict recorded so it is not re-litigated: justerm converges with alacritty, and the references are
+1:1.** So "the walk crosses a separator" is not by itself evidence of a defect here — by the two-lens
+divergence-direction rule, a split reference means this is a *product* choice, not a correctness fix.
+Valid as long as justerm's word-boundary set keeps treating the start cell like alacritty does; #545
+(injecting the boundary set instead of hardcoding it) is the issue that would revisit it.
+
 ## What a blanked / freed cell is made of
 
 | Fact | Reference | Site |
