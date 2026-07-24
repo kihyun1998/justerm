@@ -454,9 +454,15 @@ pub(crate) fn reflow(
                 let mut take = (line.len() - i).min(new_cols);
                 // Don't split a wide char from its spacer: if the row would end
                 // on a WIDE_CHAR lead, drop it to the next row (xterm's newCols-1).
-                if i + take < line.len() && line[i + take - 1].is_wide() {
+                let vacates_for_wide = i + take < line.len() && line[i + take - 1].is_wide();
+                if vacates_for_wide {
                     take -= 1;
                 }
+                // `take == 0` is reachable only at `new_cols == 1`, where a pair cannot be
+                // represented at all. The pair is left split across rows there — malformed, but
+                // *recoverably* so; dropping the spacer instead loses it irreversibly and leaves a
+                // spacer-less lead that `write_glyph`'s orphan repair then uses to free a real
+                // neighbouring character. Tracked with the minimum-width proposal.
                 let take = take.max(1); // guard the 1-col degenerate case
                 // Segment maps: entries in [i, i+take) re-keyed to col - i.
                 let seg_comb: Combining = comb
@@ -474,6 +480,18 @@ pub(crate) fn reflow(
                 let mut row =
                     Row::new(line[i..i + take].to_vec(), seg_comb, seg_links, seg_ucolors);
                 row.resize(new_cols);
+                // Reflow is a *producer* of the wide-wrap artefact, so it owes the artefact's
+                // marker — the column just vacated is a blank the text extractors must skip, not
+                // a space the app typed. Without it a resize injects a phantom space into copy,
+                // search and accessible text (#533). alacritty marks the same cell at both of its
+                // equivalent sites (`grid/resize.rs:155-157` grow, `:293-297` shrink, the latter
+                // `mem::replace`-ing the last column with a `LEADING_WIDE_CHAR_SPACER`); ghostty
+                // sets `.wide = .spacer_head` (`PageList.zig:1767`). The cell stays a **default**
+                // blank: unlike the print path (#528), reflow has no pen — it is a re-split of
+                // rows that already exist — and all three references build it from defaults.
+                if vacates_for_wide && take < new_cols {
+                    row.cells[new_cols - 1].set_leading_spacer();
+                }
                 i += take;
                 if i < line.len() {
                     row.set_wrapped(true);
