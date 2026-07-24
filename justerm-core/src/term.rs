@@ -3156,6 +3156,16 @@ impl Term {
     /// Background Color Erase (BCE): erased cells carry the current SGR
     /// background only — fg and text attributes reset to default (matches
     /// xterm/alacritty, where the fill is `cursor.template.bg.into()`).
+    ///
+    /// **Cleared concern, with its validity condition — an empty range would break the pair
+    /// invariant.** With `from == to` the first guard below still frees the lead at `from - 1`
+    /// while the second is skipped (`to > from` is false) and the fill loop does nothing, so the
+    /// spacer at `from` would survive its lead — an ADR-0025 D4 break, and the exact lead-less
+    /// orphan the word walk must then treat as opaque. This is unreachable **as long as every
+    /// caller passes a non-empty range**, which holds today: `ECH` clamps to
+    /// `(col + n).min(cols)` with `n >= 1` (both `CSI X` and `CSI 0 X` erase one cell), and every
+    /// `EL`/`ED` site passes `0..cols` or `0..=cursor`. A future caller that can pass an empty
+    /// range must guard here first.
     fn clear_cells(&mut self, row: usize, from: usize, to: usize) {
         let cols = self.grid.cols();
         // Don't orphan a wide char straddling the erase boundary.
