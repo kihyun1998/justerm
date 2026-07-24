@@ -202,6 +202,10 @@ deferred behavior) it tracks — then add what you find here.** Seeds (caught in
   soft-wrapped row. The marker alone is not a sufficient test, because the row-shift verbs
   (ICH/DCH) move whole cells and carry it inward, where it describes nothing; treating a migrated
   marker as an artefact joins two visually separate words in the clipboard. [#528]
+> The three entries that follow are conformance cases of **ADR-0025** (row-scoped and
+> wide-pair-scoped state has one owner and one lifecycle) — split storage, marker-is-established,
+> and row-property. Read the ADR for the rule; these are its instances.
+
 - **A cell's extended attributes are stored in two halves — a presence bit in the cell, the value in
   the row — so copying a cell copies only half of it.** Combining marks (#45), the OSC 8 hyperlink
   (#46) and the SGR 58 underline colour (#520) do not fit the packed 12-byte cell, so each keeps a
