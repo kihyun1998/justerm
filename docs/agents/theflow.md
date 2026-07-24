@@ -87,10 +87,52 @@ need the separate checks in the gate matrix below.
 
 ## Step 1 — reference routing table
 
-Read real source with `gh api …/contents/<path> --jq .content | base64 -d`, then
-`grep -n` / `sed -n` the actual lines. **WebFetch is banned** — it summarizes and
-drops method bodies (e.g. xterm.js `InputHandler.ts`, 3.7K lines: the registry
-shows, handler bodies like `setOrReportIndexedColor` get cut).
+Read real source from the **local pinned reference trees** in `../.refs/` (sibling
+of this repo, same convention as `../just-shield`), with `rg -n <symbol> -A 8`.
+**WebFetch is banned** — it summarizes and drops method bodies (e.g. xterm.js
+`InputHandler.ts`, 3.7K lines: the registry shows, handler bodies like
+`setOrReportIndexedColor` get cut).
+
+| Reference | Path | Pinned SHA (2026-07-24) |
+|---|---|---|
+| alacritty | `../.refs/alacritty` (sparse: `alacritty_terminal`, `alacritty/src`) | `852e971cddfabe222d2d5bcda466e130f53af207` |
+| ghostty | `../.refs/ghostty` (sparse: `src`) | `e6e26e165ab143f087761cee9f8a479801a27ba7` |
+| xterm.js | `../.refs/xterm.js` (sparse: `src`, `addons`) | `699f5537b0232e444cb98261b8b3991c3cfecb5e` |
+
+Create them once (they are outside the repo, so nothing to gitignore):
+
+```bash
+mkdir -p ../.refs && cd ../.refs
+git clone --depth 1 --filter=blob:none --sparse https://github.com/alacritty/alacritty alacritty
+cd alacritty && git sparse-checkout set alacritty_terminal alacritty/src && cd ..
+git clone --depth 1 --filter=blob:none --sparse https://github.com/ghostty-org/ghostty ghostty
+cd ghostty && git sparse-checkout set src && cd ..
+git clone --depth 1 --filter=blob:none --sparse https://github.com/xtermjs/xterm.js xterm.js
+cd xterm.js && git sparse-checkout set src addons && cd ..
+```
+
+**Why local rather than `gh api`, which this step used to prescribe.** `gh api`
+cannot grep: an 8-line fact costs a whole-file fetch (`Terminal.zig` is ~10K lines)
+over the network, *and* the whole file lands in context, so every later turn in the
+pass is slower too. Latency scaled with `files × size`, not `facts × difficulty` —
+which is why a Step 5 pass took 20–30 minutes. Measured on the switch: four cited
+facts (alacritty `clear_wide`, its `LEADING_WIDE_CHAR_SPACER` removal, ghostty
+`blankCell`/`clearCells`, xterm.js `_eraseAttrData`) resolved in **0.35 s** total.
+
+Two things this buys beyond speed, both load-bearing:
+
+- **A citation can be checked in seconds.** #530's body claimed ghostty defaults a
+  freed cell, scored the references 2:1, and was wrong — `printCell` calls
+  `Screen.clearCells` (`Screen.zig:1667`, filling `blankCell()` at `:1929`), not
+  `page.zig:1215`'s zeroing `clearCells`. The real tally was 3:0. One `rg` settles
+  that class of error; a network fetch is expensive enough that nobody re-checks.
+- **Line numbers stop rotting.** Issues cite `file:line`; upstream moves. #534 cites
+  alacritty `term/mod.rs:1006-1008`, which is `:1007` at the pinned SHA above. Cite
+  the SHA with the line, or the reader cannot tell drift from error.
+
+**Refreshing a pin is a deliberate act, not a habit.** `git fetch --depth 1 && git
+reset --hard origin/<default>`, then update the SHA here in the same change — a pin
+that moves silently makes every recorded citation unverifiable at once.
 
 | Change type | Real source to read |
 |---|---|
@@ -220,8 +262,17 @@ Traps this layer must respect:
 ## Step 5 — adversarial two-lens
 
 Lens ① this repo — `architecture.md` §"Hidden VT state" + sibling cell-walk
-(search / selection / logical-lines). Lens ② reference — xterm.js / alacritty
-real source via `gh api`. Never collapse to one lens even for a small fix (#158).
+(search / selection / logical-lines). Lens ② reference — xterm.js / alacritty /
+ghostty real source from the **local pinned trees** (Step 1's table; `rg`, not
+`gh api`). Never collapse to one lens even for a small fix (#158).
+
+**Start the pass at GREEN and keep working — it is read-only, so it is not a
+barrier.** Both lenses only read; nothing they do can conflict with Step 6's doc
+sweep or Step 7's gates. Run them as background agents the moment Step 3 is green
+and collect before opening the PR, so the wall clock is `max(lens, rest)` rather
+than the sum. The discipline is unchanged and is the *only* part that is
+non-negotiable: **no merge before the findings are harvested and dispositioned.**
+Sequencing is not discipline; harvesting is.
 Precedent: #113 logical-lines (single-buffer view missed the alt-screen
 cross-buffer defect; also surfaced the same bug in `search()` → #144; the
 `abs_floor()` centralization covers logical_lines/#113 · search/#144 ·
