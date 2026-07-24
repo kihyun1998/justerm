@@ -1929,16 +1929,31 @@ impl Term {
     /// stepped onto its second cell before breaking on the lead and started the highlight on
     /// half a glyph (`　abc`, double-click `a` → `1..=4` instead of `2..=4`); and a **lead-less**
     /// trailing spacer (#529's orphan) claimed to continue a glyph that is not there, merging
-    /// two words in the clipboard. Requiring a wide lead answers both, and reaches the same
-    /// place ghostty does by construction — it resolves a spacer through its lead rather than
-    /// classifying the spacer cell.
+    /// two words in the clipboard. Requiring a wide, non-boundary lead answers both. Note the
+    /// boundary clause has exactly **one** live trigger under the current fixed set — U+3000;
+    /// `│` is East-Asian-Ambiguous (width 1) and the rest of the set is ASCII — so it is a real
+    /// case, not a class.
+    ///
+    /// Resolving a spacer through its lead is alacritty's idiom, in a walk:
+    /// `term/search.rs:457-460` (`skip_wide`) *replaces* a `WIDE_CHAR_SPACER` cell with
+    /// `iter.prev()` and matches on that. Ghostty states the same principle in its print path
+    /// (`Terminal.zig:1132-1142`, *"the previous cell is a wide spacer tail, so we actually want
+    /// the cell before that because that has the actual content"*), and its **write-side**
+    /// integrity rule is this predicate clause for clause — `page.zig:514-534` rejects a spacer
+    /// tail at `x == 0` and one whose `cells[x-1].wide != .wide`. What ghostty does *not* do is
+    /// model this in its own word selection: `Screen.zig:3204` `selectWord` breaks on
+    /// `!hasText()`, i.e. it classifies the spacer cell and stops there — the pre-#535 justerm
+    /// behaviour. Do not read ghostty's selection code as precedent for this.
     ///
     /// Gating on the char alone cut every CJK word at its first glyph, because a trailing
     /// spacer's char is a space and read as a boundary (#535). For that **trailing** kind the
     /// walk was the crate's outlier — `append_cell`, `viewport_logical_lines` and `search`
-    /// already skipped it — and it now matches alacritty (`search.rs` gates the same flag in
-    /// all three of its walkers) and xterm.js (`_isCharWordSeparator` returns early on a
-    /// width-0 cell, with the same stated reason).
+    /// already skipped it. It now matches alacritty, which gates the flag in both inline walkers
+    /// (`search.rs:556`, `:580`) plus a forward normalizer in `semantic_search_left` (`:521-525`)
+    /// — `semantic_search_right` has no gate at all. xterm.js converges on the *transparency*
+    /// only (`_isCharWordSeparator` returns early on a width-0 cell): its stated reason is that
+    /// such cells *"are always to the right of wide characters"*, which is precisely the
+    /// assumption the lead-less clause above exists to reject.
     ///
     /// For the **leading** kind the comparison inverts, and not in this walk's favour: those
     /// same extractors gate on `is_spacer()` with *no* position test, so a marker stranded
