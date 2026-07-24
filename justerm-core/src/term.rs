@@ -1913,6 +1913,22 @@ impl Term {
         cells[col].is_leading_spacer() && col + 1 == cells.len()
     }
 
+    /// A `' '` cell the word walk passes *through* rather than stopping on, because it
+    /// belongs to a glyph and is not a gap between words. Two kinds, gated differently
+    /// (ADR-0025 D3 — position is part of the definition):
+    /// - a wide glyph's **trailing** spacer (`is_wide_spacer`) — transparent *wherever* it
+    ///   sits, since it is always the second cell of an on-screen wide glyph;
+    /// - the **leading**-spacer wrap artefact — transparent *only* at the last column of a
+    ///   wrapped row (`is_wrap_artefact`); a marker a row-shift carried inward describes
+    ///   nothing and must still end a word (#528).
+    ///
+    /// Gating on the char alone cut every CJK word at its first glyph, because a trailing
+    /// spacer's char is a space and read as a boundary (#535); every other text extractor
+    /// already gates on the spacer marker (`is_spacer`), so the word walk was the outlier.
+    fn is_walk_transparent_spacer(&self, line: usize, col: usize) -> bool {
+        self.is_wrap_artefact(line, col) || self.abs_line(line)[col].is_wide_spacer()
+    }
+
     /// Walk left to the first cell of `p`'s word (a maximal run of non-boundary
     /// chars), following a soft wrap into the previous row.
     fn word_start(&self, p: BufferPoint) -> BufferPoint {
@@ -1922,7 +1938,9 @@ impl Term {
             // The wrap artefact represents no column of text, so the walk passes *through* it
             // rather than stopping — else a word that wrapped only because a wide glyph did not
             // fit would be cut in half (#528).
-            if !self.is_wrap_artefact(pl, pc) && is_word_boundary(self.abs_line(pl)[pc].c()) {
+            if !self.is_walk_transparent_spacer(pl, pc)
+                && is_word_boundary(self.abs_line(pl)[pc].c())
+            {
                 break;
             }
             line = pl;
@@ -1937,8 +1955,10 @@ impl Term {
         let cells = self.abs_line(p.line);
         let (mut line, mut col) = (p.line, p.col.min(cells.len().saturating_sub(1)));
         while let Some((nl, nc)) = self.next_pos(line, col) {
-            if !self.is_wrap_artefact(nl, nc) && is_word_boundary(self.abs_line(nl)[nc].c()) {
-                break; // (see `word_start`: the artefact is transparent to the walk)
+            if !self.is_walk_transparent_spacer(nl, nc)
+                && is_word_boundary(self.abs_line(nl)[nc].c())
+            {
+                break; // (see `word_start`: a glyph's spacer is transparent to the walk)
             }
             line = nl;
             col = nc;

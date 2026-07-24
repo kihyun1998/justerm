@@ -168,6 +168,89 @@ fn selection_skips_wide_char_spacer() {
     assert_eq!(term.selection_text().as_deref(), Some("한국"));
 }
 
+/// A Word selection over a CJK run selects the whole word from ANY column in it. A
+/// wide glyph's trailing spacer is a space, so the cell-by-cell walk used to stop
+/// *inside* the glyph and cut every CJK word at its first character (#535). The walk
+/// must pass through a trailing wide spacer, the way it already passes through the
+/// wrap artefact — ADR-0025 D2: reads gate on the spacer marker uniformly.
+#[test]
+fn word_select_expands_over_a_cjk_word() {
+    let mut term = Engine::new(80, 24);
+    term.feed("한글날".as_bytes()); // three width-2 glyphs → cols 0..=5
+
+    // From the first glyph's lead...
+    term.selection_begin(0, 0, Side::Left, SelectionType::Word);
+    assert_eq!(term.selection_text().as_deref(), Some("한글날"));
+
+    // ...and from a middle glyph's lead — the whole word, not just its tail.
+    term.selection_begin(0, 2, Side::Left, SelectionType::Word); // lead of 글
+    assert_eq!(term.selection_text().as_deref(), Some("한글날"));
+}
+
+/// A word mixing ASCII and CJK ("ab한글cd") has no boundary inside it, so a
+/// double-click anywhere selects the whole run — the trailing spacers between the
+/// wide glyphs must not end it. (The pre-fix walk cut it to "ab한".)
+#[test]
+fn word_select_spans_a_mixed_ascii_cjk_word() {
+    let mut term = Engine::new(80, 24);
+    term.feed("ab한글cd".as_bytes());
+
+    term.selection_begin(0, 0, Side::Left, SelectionType::Word);
+
+    assert_eq!(term.selection_text().as_deref(), Some("ab한글cd"));
+}
+
+/// The Word selection's *range* covers both cells of every wide glyph, so the
+/// highlight does not bisect one (#535 acceptance: assert the range, not only the
+/// text). "한글날" occupies cols 0..=5 inclusive.
+#[test]
+fn word_select_range_spans_full_wide_glyphs() {
+    let mut term = Engine::new(80, 24);
+    term.feed("한글날".as_bytes());
+
+    term.selection_begin(0, 0, Side::Left, SelectionType::Word);
+
+    assert_eq!(
+        term.selection_range(),
+        vec![SelectionSpan {
+            row: 0,
+            left: 0,
+            right: 5
+        }]
+    );
+}
+
+/// The trailing-spacer fix must NOT make a *leading* spacer transparent everywhere:
+/// the wrap artefact is only an artefact at the last column of a wrapped row, and a
+/// marker a row-shift (DCH) carried inward must still end a word (#528/#532 position
+/// rule). On a 6-col screen "abcde" + 한 wraps 한, leaving col 5 a leading-spacer
+/// artefact; DCH 2 shifts it to col 3 mid-row. A double-click on "cde" stops there —
+/// it does not swallow the wrapped 한 on the next row. Holds whether or not #534 has
+/// cleared the stale marker: a plain blank ends the word just the same.
+#[test]
+fn word_select_stops_at_a_mid_row_wrap_marker() {
+    let mut term = Engine::new(6, 4);
+    term.feed("abcde".as_bytes());
+    term.feed("한".as_bytes()); // 한 cannot fit in col 5 → wraps; col 5 = leading-spacer artefact
+    term.feed(b"\x1b[1;1H\x1b[2P"); // DCH 2 at row 0 → "cde", the marker migrates to col 3
+
+    term.selection_begin(0, 0, Side::Left, SelectionType::Word); // double-click "c"
+
+    // The word is "cde"; the walk must stop *at* the stale marker (col 3), not pass
+    // through it. Assert the RANGE — the text alone cannot tell the two apart, because
+    // the marker cell is a blank that text extraction drops either way (right=2 here vs
+    // right=3 if the marker were wrongly treated as transparent).
+    assert_eq!(term.selection_text().as_deref(), Some("cde"));
+    assert_eq!(
+        term.selection_range(),
+        vec![SelectionSpan {
+            row: 0,
+            left: 0,
+            right: 2
+        }]
+    );
+}
+
 // ===========================================================================
 // selection_range — viewport line spans for highlight (option (a))
 // ===========================================================================
