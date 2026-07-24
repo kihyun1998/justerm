@@ -1923,8 +1923,26 @@ impl Term {
     ///   nothing and must still end a word (#528).
     ///
     /// Gating on the char alone cut every CJK word at its first glyph, because a trailing
-    /// spacer's char is a space and read as a boundary (#535); every other text extractor
-    /// already gates on the spacer marker (`is_spacer`), so the word walk was the outlier.
+    /// spacer's char is a space and read as a boundary (#535). For that **trailing** kind the
+    /// walk was the crate's outlier — `append_cell`, `viewport_logical_lines` and `search`
+    /// already skipped it — and it now matches alacritty (`search.rs` gates the same flag in
+    /// all three of its walkers) and xterm.js (`_isCharWordSeparator` returns early on a
+    /// width-0 cell, with the same stated reason).
+    ///
+    /// For the **leading** kind the comparison inverts, and not in this walk's favour: those
+    /// same extractors gate on `is_spacer()` with *no* position test, so a marker stranded
+    /// mid-row is dropped from the text and two visually separate words merge. Measured on a
+    /// 6-column screen — `"cde"` + a DCH-stranded marker + `"XY"` renders as `cde XY` but
+    /// copies as `"cdeXY"`, and `search("cdeXY")` matches. The position rule here bounds the
+    /// selection *range*; it cannot fix that *text*. So do not "align" this walk with the
+    /// extractors — the direction is the other way, and #534 (nothing clears a stale marker)
+    /// subsumes both by fixing it at the write site.
+    ///
+    /// Note what that makes the position clause: a read-site approximation of the invariant
+    /// ghostty enforces when writing (a mid-row spacer head is `unreachable` there, because a
+    /// row shift clears it). Alacritty, which gates leading-everywhere, does *not* clear it on
+    /// `delete_chars` either — so its unconditional gate has this same merge defect. Once #534
+    /// lands, `is_wrap_artefact`'s position clause is redundant rather than load-bearing.
     fn is_walk_transparent_spacer(&self, line: usize, col: usize) -> bool {
         self.is_wrap_artefact(line, col) || self.abs_line(line)[col].is_wide_spacer()
     }
