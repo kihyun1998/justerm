@@ -3085,7 +3085,9 @@ impl Term {
     /// Relocate a last-column narrow cluster to the next line as a wide cell (#303): its base +
     /// side-table marks move to `(next_row, 0..=1)` and the vacated last column becomes a soft-wrap
     /// (WRAPLINE + leading spacer), exactly as `write_glyph` wraps a wide glyph that can't fit. With
-    /// autowrap off, or a 1-column screen (no room for a wide cell anywhere), it stays narrow.
+    /// autowrap off it stays narrow. The `cols < 2` arm is **unreachable since #547** —
+    /// `MIN_COLUMNS = 2` is the floor on every path that sets a width — and is kept only as a
+    /// bounds guard for the `col + 1` writes below, not as a described behaviour.
     fn relocate_cluster_wide(&mut self, row: usize, col: usize) {
         let cols = self.grid.cols();
         if cols < 2 || !self.autowrap || !self.wrapline_advances() {
