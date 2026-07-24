@@ -107,7 +107,9 @@ CI 의 `supply-chain` 게이트는 **just-shield**(같은 소유자=first-party,
 **모든 substantive 변경(core·wasm·web·renderer)은 `theflow` 스킬의 7단계 규율로 짠다** — ① 참조·선례·
 외부/레지스트리 사실 실측 대조(추측 금지) → ② 경계(메커니즘 core / 정책 소비처; 계약≠결함, 막은 양방향
 누수) → ③ 순수 로직 `/tdd`(RED→GREEN) + test-trust 게이트(fix off→red, right reason) → ④ real 왕복
-증명(가짜 백엔드 아님; 최강 증명=실 소비처 penterm 링크, DoD ④) → ⑤ adversarial 2렌즈(subagent) → ⑥
+증명(가짜 백엔드 아님; 최강 증명=실 소비처 penterm 링크, DoD ④) → ⑤ adversarial 완전성 패스(subagent
+1개가 형제+참조 *양쪽* corpus 를 읽는다 — corpus 로 쪼개면 방향 판정을 못 해 메인 스레드로 넘어온다;
+2026-07-24 합침. 반증 렌즈 1개 추가는 무조건 트리거 3개에서만) → ⑥
 behavior 서술 표면 sweep(docs.rs doc-comment·릴리스 노트·**발행 README**·glossary·ADR *근거*·types.ts·
 **Epic 본문+라벨**, stale rationale 회수) → ⑦
 게이트 전부 → PR/머지, 릴리스 후 downstream loop(소비처 workaround 제거·bug-pin 테스트 flip). 스킬은

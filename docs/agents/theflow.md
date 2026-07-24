@@ -277,45 +277,58 @@ Traps this layer must respect:
 - Visual/color changes still need a browser verify even when Step 5 is skipped
   for a closed surface — a synthetic-input unit is not a substitute (#223).
 
-## Step 5 — adversarial two-lens
+## Step 5 — adversarial completeness pass (one lens, both corpora)
 
-Lens ① this repo — `architecture.md` §"Hidden VT state" + sibling cell-walk
-(search / selection / logical-lines). Lens ② reference — xterm.js / alacritty /
-ghostty real source from the **local pinned trees** (Step 1's table; `rg`, not
-`gh api`). Never collapse to one lens even for a small fix (#158).
+**One lens, briefed on both corpora.** ① this repo — `architecture.md` §"Hidden
+VT state" + sibling cell-walk (search / selection / logical-lines); ② the
+reference — xterm.js / alacritty / ghostty real source from the **local pinned
+trees** (Step 1's table; `rg`, not `gh api`). These are two *reading assignments
+for one agent*, not two agents. **Never drop either corpus** because the fix looks
+small (#158) — that is what the old never-collapse rule protected, and it is
+unchanged.
 
-**Direction — a divergence is not a direction, and it is *routed*, not reasoned
-out by hand.** A lens reporting "differs from the reference" has not thereby said
-"move to the reference". The direction depends on what the two lenses **share**:
+**Why they merged (2026-07-24, measured on #547).** Splitting by corpus gave the
+sibling lens no way to decide *direction*: it saw that two artifacts disagree but
+not whether the reference shares the disagreement, so every such finding came back
+to the main thread to be settled from cold — against the pinned tree the *other*
+lens had open the whole time. Its two rejected findings (`write_glyph` line
+destruction; word-select across a separator — both answered "alacritty does the
+same") took **~40% of that pass's main-thread calls** and changed no code. Precision
+tells the same story: the reference lens, which had to read both sides to compare
+at all, returned 3 real defects out of 4 and self-graded the fourth correctly; the
+sibling lens returned 2 out of 5. The split also did not buy independence — both
+lenses are the same model on the same brief and differ only in which files they
+open, so what it actually bought was coverage, at the price of an adjudication
+errand.
 
-- **only lens ② diverges** — the sibling is reference-correct and this layer alone
-  drifted → move toward the reference;
-- **both lenses share the divergence** — sibling == this layer, both drift from the
+**Direction — a divergence is not a direction, and the lens now owes you the
+direction.** "Differs from the reference" does not by itself say "move to the
+reference". It depends on what the two corpora **share**:
+
+- **only the reference diverges** — the sibling is reference-correct and this layer
+  alone drifted → move toward the reference;
+- **both corpora share the divergence** — sibling == this layer, both drift from the
   reference → a **family** decision: keep the consumer-neutral behaviour now and
   track the reference-parity fix as a coordinated multi-layer change.
 
-**Lens ① structurally cannot make this call.** It sees the divergence but not
-whether the reference shares it, because it never opens the reference — no wording
-of the brief fixes that. So an `UNADJUDICATED` finding from lens ① is **routed to
-lens ②**, which already has the pinned tree open, as one short question — *"does
-<reference> do the same at `<file:line>`?"* — and never adjudicated in the main
-thread. Measured cost of adjudicating by hand: #547's two rejected findings
-(`write_glyph` line destruction; word-select across a separator — both answered
-"alacritty does the same") took **~40% of that pass's main-thread calls** and
-changed no code, while lens ② sat on the answer the whole time.
+Precedent for the rule itself: **#396** (slice-2 `minimumContrastRatio` — the
+reference side found justerm-web's double-pass was a *beamterm-forced* compromise
+the renderer's own architecture does not need → moved to xterm's single pass, more
+correct *and* still web-neutral for the common case) vs **#399** (slice-4 tile
+re-tint — the sibling side found `renderer == web` byte-for-byte while the
+reference side found *both* diverge from xterm → kept web-neutral for #273, family
+fix tracked as #398). Deferrals tracked as issues (#398 tile-retint, #400
+search-match-solid), so the closed #272 leaves zero silent gaps.
 
-Precedent for the rule itself: **#396** (slice-2 `minimumContrastRatio` — lens ②
-found justerm-web's double-pass was a *beamterm-forced* compromise the renderer's
-own architecture does not need → moved to xterm's single pass, more correct *and*
-still web-neutral for the common case) vs **#399** (slice-4 tile re-tint — lens ①
-found `renderer == web` byte-for-byte, lens ② found *both* diverge from xterm →
-kept web-neutral for #273, family fix tracked as #398). Deferrals tracked as issues
-(#398 tile-retint, #400 search-match-solid), so the closed #272 leaves zero silent
-gaps.
+**A second lens is bought with stance, and only on the unconditional triggers
+below.** Same material, opposite job: the first hunts gaps, the second tries to
+**refute** them and to break the convergence claim. Both read everything, so both
+can still adjudicate a direction and their disagreement is information rather than
+an errand.
 
 **Start the pass at GREEN and keep working — it is read-only, so it is not a
-barrier.** Both lenses only read; nothing they do can conflict with Step 6's doc
-sweep or Step 7's gates. Run them as background agents the moment Step 3 is green
+barrier.** The lens only reads; nothing it does can conflict with Step 6's doc
+sweep or Step 7's gates. Run it as a background agent the moment Step 3 is green
 and collect before opening the PR, so the wall clock is `max(lens, rest)` rather
 than the sum. The discipline is unchanged and is the *only* part that is
 non-negotiable: **no merge before the findings are harvested and dispositioned.**
@@ -333,10 +346,10 @@ cost to finish. A finding that costs more to dismiss than the change cost to wri
 is the pass telling you it found something worth the user's judgement, not a thing
 to quietly out-investigate.
 
-**Brief each lens with a frontier and with what is already known.** Without both, a
+**Brief the lens with a frontier and with what is already known.** Without both, a
 pass spends most of its budget re-walking ground the last one covered — the wide-glyph
 neighbourhood was enumerated from scratch by #528, #529, #533, #534 and #535 in turn.
-The brief carries four things:
+The brief carries five things:
 
 1. **The frontier** — the functions the diff touches, plus one hop of callers and
    callees, plus the invariants `architecture.md` names for that area. This bounds how
@@ -346,16 +359,16 @@ The brief carries four things:
 2. **The open-issue list** (`gh issue list`). A gap that is already filed comes back as
    one line — *"already filed: #534"* — instead of a fresh three-page write-up. Being
    re-found is signal about reachability, but it is cheap signal; pay one line for it.
-3. **The relevant rows of `reference-facts.md`**, so lens ② starts from the map rather
-   than re-deriving it, and so a row that turns out wrong gets corrected rather than
-   silently re-learned.
+3. **The relevant rows of `reference-facts.md`**, so the reference half of the brief
+   starts from the map rather than re-deriving it, and so a row that turns out wrong
+   gets corrected rather than silently re-learned.
 4. **What the last pass on this area found**, when there was one. A lens that knows
    #532 already fixed the leading-spacer half of a predicate looks at the trailing half
    (which is exactly how #535 was found).
 5. **The output contract** — the skill's four disposition grades (`CONFIRMED` /
    `UNADJUDICATED` / `INERT` / `DELIBERATE`), stated in the brief itself. The first
    four items bound what the lens *looks at*; this one bounds what it costs to act on
-   what it returns, which is the half that lands on the main thread. #547's lenses
+   what it returns, which is the half that lands on the main thread. #547's two lenses
    volunteered "inert" and "deliberate" on two findings without being asked — and
    those two were reproduced from scratch anyway, because nothing said a graded
    dismissal is spendable evidence.
@@ -369,8 +382,9 @@ word-sel/#207). Gate on *enumeration risk*, not diff size; a reactive spike that
 keeps catching new gaps is the trigger. Record an explicit skip for a closed
 surface.
 
-**Unconditional triggers — three paths where both lenses run regardless of the
-judgement above.** justerm has no money path, no production mutation and nothing
+**Unconditional triggers — three paths that run the pass regardless of the
+judgement above, and that are the only places the second (refuting) lens is worth
+its cost.** justerm has no money path, no production mutation and nothing
 destructive, so the schema's usual examples do not apply; here a path is sacred
 when it is **irreversible** (already published) or **silent** (wrong answer, no
 crash, user-visible state quietly corrupted). You do not get to skip these because
@@ -380,7 +394,7 @@ the diff is small:
    crates.io and npm are immutable; a consumer decoding a wrong layout gets
    garbage cells, not an error. Touching `struct → encode → decode → Flat →
    getter → types.ts` in one crate and not the others is exactly the failure a
-   single lens misses.
+   pass that stops reading half the family misses.
 2. **The release path — `.github/workflows/*` publish jobs + `docs/agents/release.md`.**
    Publishing is tag-driven and automatic: pushing `vX.Y.Z` ships to both
    registries with no confirmation step, and nothing but a yank comes back.
@@ -389,7 +403,7 @@ the diff is small:
    every reader that indexes absolutely — grep `abs_floor` and the raw
    `scrollback.len()` walks rather than trusting a count written here.** On the alt screen an unfloored index reads the wrong region and
    returns *plausible* text: selection, search and markers silently disagree with
-   the screen. This is on the list because the two-lens pass has found a fresh
+   the screen. This is on the list because the completeness pass has found a fresh
    sibling three times — #113 (logical lines) → #144 (`search`) → #207
    (word-selection `prev_pos`) — so "I checked the obvious callers" has a measured
    failure rate here.
@@ -666,14 +680,15 @@ release.md):
 
 - **No consumer workaround / contract≠defect** — #297/#300 (VS16 FE0F renderer workaround blocked, root → #301); the core per-char width & theme-agnostic color are contracts.
 - **Concept ≠ mechanism** — #150 (accessible-view: VSCode concept, xterm.js extraction mechanism).
-- **Two-lens, never collapse** — #113/#144/#207 (alt-screen cross-buffer via `abs_floor()`); #158 ("fix is small → one lens" caught).
-- **Two-lens divergence *direction* (which way the fix goes)** — **the rule and its
-  routing now live in Step 5 above**, not here, because it was measured to be
-  unreachable from an index: #547 paid ~40% of one pass's main-thread calls
-  re-deriving by hand a call this file already documented, and the index is not read
-  while a pass is being briefed. This entry stays only as the evidence pointer —
-  #396 vs #399, deferrals #398/#400, closed #272 with zero silent gaps. A rule whose
-  only home is the war-story index is a rule that fires after the cost, not before it.
+- **Never drop a corpus** — #113/#144/#207 (alt-screen cross-buffer via `abs_floor()`); #158 ("fix is small → skip the reference" caught). Note what #158 actually was: a *corpus* was dropped, not an agent merged — the precedent never spoke to how many subagents read it, which is why merging to one lens over both corpora (2026-07-24) does not contradict it. The event itself lives only in conversation; the issue body and comments carry no record of it, so this line is the whole durable trace.
+- **A divergence is not a direction** — **the rule now lives in Step 5 above**, not
+  here, because it was measured to be unreachable from an index: #547 paid ~40% of one
+  pass's main-thread calls re-deriving by hand a call this file already documented, and
+  the index is not read while a pass is being briefed. That cost is also what retired
+  the corpus split — a lens holding both sides adjudicates direction itself. This entry
+  stays only as the evidence pointer — #396 vs #399, deferrals #398/#400, closed #272
+  with zero silent gaps. A rule whose only home is the war-story index is a rule that
+  fires after the cost, not before it.
 - **Real round-trip / visual side effects** — #166 (reveal-focus headless miss), #172 (live MCP path), #223 (browser verify skipped).
 - **Probe a runtime fact / readPixels≠screenshot** — #328/#331 (dpr≠1 coord bug green on dpr-1), #352, #337 (tautology); #369 (a throwaway `rustc` probe pinned that an unclamped `+inf` fraction saturates `cursor_thickness`'s `u32` cast to `u32::MAX` — correcting a PR rationale that had credited `frac.max(0.0)`; the setter's `[0,1]` clamp is the load-bearing defence, `frac.max(0.0)` only neutralises `NaN`).
 - **Test-trust gate** — #355 (both RED = you broke the proof; re-run baseline GREEN, remove guards one at a time).
