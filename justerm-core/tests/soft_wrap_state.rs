@@ -6,8 +6,9 @@
 //! the logical line, injecting a newline into copy and breaking any search across the wrap.
 //!
 //! Both references keep it out of a cell's reach for this reason: ghostty holds `wrap` on the
-//! `Row`, xterm.js holds `isWrapped` on the `BufferLine` and makes `replaceCells` take
-//! `clearWrap` as an explicit argument rather than letting a cell clear decide it.
+//! `Row`, xterm.js holds `isWrapped` on the `BufferLine` and takes `clearWrap` as an explicit
+//! argument on its erase helper (`_eraseInBufferLine`) rather than letting a cell clear decide
+//! it.
 //!
 //! The tests below are written against the three ways a cell at the last column gets touched —
 //! a plain write, an erase, and a structural repair — plus the one case where the wrap *should*
@@ -288,4 +289,41 @@ fn ich_leaves_the_wrap_alone() {
     let mut t = wrapped_line();
     t.feed(b"\x1b[1;2H\x1b[1@");
     assert!(t.grid().is_row_wrapped(0), "ICH must not end the wrap");
+}
+
+#[test]
+fn the_wrap_artefact_and_the_row_flag_never_disagree() {
+    // The wide-wrap artefact (#528) is still a *cell* marker at the last column while soft-wrap
+    // is now a *row* field, so the two could drift apart: an erase that destroys the marker but
+    // leaves the row wrapped turns the artefact's blank into visible text, and a later reflow
+    // bakes it in permanently ("abcd한" reading as "abcd 한").
+    //
+    // The per-verb erase rule closes it — every verb that clears the last column also ends the
+    // wrap — so the pair moves together. Pinned here because the coupling is implicit: nothing
+    // in the types ties the cell marker to the row flag, and ghostty enforces the same pairing
+    // as a page-integrity invariant rather than leaving it to discipline.
+    for (label, seq) in [
+        ("ECH at the last column", &b"\x1b[1;5H\x1b[1X"[..]),
+        ("EL 0 at the last column", &b"\x1b[1;5H\x1b[K"[..]),
+        ("DCH from column 0", &b"\x1b[1;1H\x1b[1P"[..]),
+    ] {
+        let mut t = Engine::new(5, 3);
+        t.feed("abcd\u{D55C}".as_bytes()); // 한 cannot fit in the last column -> vacate + wrap
+        assert!(t.grid().is_row_wrapped(0), "{label}: fixture");
+        t.feed(seq);
+        assert!(
+            !t.grid().is_row_wrapped(0),
+            "{label}: the verb that cleared the artefact also ended the wrap"
+        );
+        let text = t.accessible_text().trim_end().to_string();
+        assert!(
+            !text.contains(" \u{D55C}"),
+            "{label}: no phantom space before the wrapped glyph, got {text:?}"
+        );
+        t.resize(9, 3);
+        assert!(
+            !t.accessible_text().contains(" \u{D55C}"),
+            "{label}: and a reflow does not bake one in"
+        );
+    }
 }

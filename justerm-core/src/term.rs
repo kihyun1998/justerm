@@ -2674,8 +2674,9 @@ impl Term {
     /// the soft-wrap link. A plain `EL` on a wrapped row already does the same, so the root is
     /// that a *row* property is stored in a cell — not something to patch here alone, or this
     /// path and the erase path would disagree. Both references keep it out of reach: ghostty and
-    /// xterm.js hold it on the row/line, and xterm.js's `replaceCells` takes `clearWrap` as an
-    /// explicit argument rather than letting a cell clear decide it.
+    /// xterm.js hold it on the row/line, and xterm.js takes `clearWrap` as an explicit argument
+    /// on its erase helper (`_eraseInBufferLine`, `InputHandler.ts:1175`) rather than letting a
+    /// cell clear decide it.
     ///
     /// Known cost, accepted rather than overlooked: with DECSCA the freed cell loses its
     /// protection. ghostty has the same hole and flags it in its own source; justerm does not

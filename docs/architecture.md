@@ -241,7 +241,8 @@ deferred behavior) it tracks — then add what you find here.** Seeds (caught in
   became `"abc
 Z"`, and a search across the wrap went from 1 hit to 0). It now lives on the
   `Row`, where no cell operation can reach it, matching both references (ghostty's `Row.wrap`,
-  xterm.js's `BufferLine.isWrapped` plus an explicit `clearWrap` argument on `replaceCells`).
+  xterm.js's `BufferLine.isWrapped`, with `clearWrap` an explicit argument on its erase helper
+  `_eraseInBufferLine` — *not* on `replaceCells`, which takes `respectProtect` there).
   The wire is unchanged: the bit is *derived* onto a span's last cell at encode time, so it is
   wire-only and never set on a live cell. **Ending the wrap is now an explicit act, and only an
   erase does it** — `Term::erase_in_line` clears it when the erase covers the whole line, which is
