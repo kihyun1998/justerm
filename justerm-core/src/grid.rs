@@ -401,7 +401,18 @@ pub(crate) fn reflow(
             current.extend(cells);
         } else {
             let mut cells = cells;
-            while cells.last() == Some(&Cell::default()) {
+            // Trim the hard-ended line's trailing blanks by **content**, not by full-cell
+            // equality. A cell the app never wrote and one it erased to a coloured background
+            // (BCE) are both "no content" — reflow is finding where the logical line *ends*, and a
+            // background is not content. Comparing against `Cell::default()` kept a BCE tail on the
+            // line, so a narrowing resize re-split it into an extra row of coloured blanks the app
+            // never typed (a phantom row that steals from scrollback on a short screen). Both
+            // references trim on content only: xterm.js `getTrimmedLength` tests `HAS_CONTENT_MASK`,
+            // alacritty `line_length` tests `c != ' '` — and xterm keeps the background-aware
+            // variant a *separate* function for the callers (the DOM renderer) that want it, which
+            // reflow is not. This does not erase a cell that survives on screen (#530): it decides
+            // a line's length, it does not blank anything.
+            while cells.last().is_some_and(Cell::is_blank) {
                 cells.pop();
             }
             current.extend(cells);
