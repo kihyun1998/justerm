@@ -84,6 +84,33 @@ trailing `C_SPACER`, and the reach-**back** repair of the previous row's leading
 lead is overwritten (alacritty/ghostty both reach to `row-1, last_column`). "Set one half and not the
 other" is the #529 orphan.
 
+**D4's precondition, and what supplies it (#547, 2026-07-24).** D4 is stated unconditionally, and as
+first drafted it was **not satisfiable at every size the engine accepted**: at one column there is
+physically no room for both halves, while `Term::resize` clamped to `cols.max(1)` and the constructor
+did not clamp columns at all. A rule declared over a size the engine also declares supported is a rule
+with an unstated precondition, and that gap is not theoretical — it produced the withdrawn half of
+#533, where D4 read as universal was implemented as "keep the pair together by dropping the spacer" and
+lost data irreversibly (`"ab한cd"` → `resize(1)` → `resize(8)` → the next overwrite yields `"abX d"`,
+destroying the `'c'`, because every repair path in the crate keys off `is_wide_spacer()` and a
+spacer-less lead has none).
+
+`justerm-core` now publishes **`MIN_COLUMNS = 2`** and clamps `cols` up to it in both the constructor
+and `resize` (#547). **That clamp is D4's grounds:** a pair always has room, so D4 holds for every
+screen the engine can be in, and no reader needs a width test before trusting it. This is the *accepted*
+branch of the choice recorded on #547 — the alternative was to keep one column and give D4 an explicit
+exception ("at one column a pair cannot be represented, the buffer is knowingly malformed, readers must
+not assume the invariant"), which was rejected on the measured data loss above plus 0-of-3 reference
+support: alacritty `MIN_COLUMNS = 2` and xterm.js `MINIMUM_COLS = 2` forbid the width outright with the
+wide-char reason stated in both, and ghostty permits it only by destroying the glyph
+(*"pretty broken … should be prevented downstream"*). It is a **product/contract judgement by the
+maintainer**, not a derivation — `resize(1, r)` silently becoming 2 columns is a contract change, and
+reversing it is theirs. It also reverses #536's stated premise (*"1 column is a supported size, not a
+rejected one"*); #536 is re-scoped to the defensive `damage_span` clamp, not closed, since that clamp
+is still correct for any future caller computing `col + width`.
+
+D4's scope is unchanged in the other direction: the floor guarantees *room* for a pair, not that every
+verb carries it. #529 is still an open D4 violation at any width.
+
 ### Conformance map (the open cluster, resolved *against* D1–D4)
 
 These stop being independent "(a) or (b)" decisions and become conformance items; the fix site follows
@@ -121,7 +148,12 @@ from the rule, not from the issue:
   above a shifted region, using `end_wrap`, the wrap-flag analogue of #534's marker clear.
 - **#529** — a pair-move D4 violation: carry the trailing half.
 - **#536** — a robustness edge of the pair-repair span on a degenerate width; in scope as the same
-  code family, though it is a bounds guard, not a state-ownership rule.
+  code family, though it is a bounds guard, not a state-ownership rule. **Its reproduction is now
+  unreachable** through the public API (#547 removed the one-column screen), so what remains is the
+  guard itself: `damage_span` still stores an unclamped bound for any future caller computing
+  `col + width`. Re-scoped, not closed.
+- **#547** — not a conformance item but D4's **precondition**: `MIN_COLUMNS = 2` is what makes "both
+  halves move together" satisfiable at every supported size. See the D4 note above.
 
 ### Adjacent, deliberately *not* folded in
 

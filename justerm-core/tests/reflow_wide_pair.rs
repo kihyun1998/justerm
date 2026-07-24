@@ -20,10 +20,12 @@
 //! pen (alacritty `cursor.template`, ghostty `printCell`, xterm.js `curAttr`) while each one's
 //! reflow path builds from defaults.
 //!
-//! **Out of scope here:** a width of one column, where a pair cannot be represented at all and
-//! reflow leaves it split across rows. Both alacritty (`MIN_COLUMNS = 2`) and xterm.js
+//! **Not reachable here any more:** a width of one column, where a pair cannot be represented at
+//! all and reflow left it split across rows. Both alacritty (`MIN_COLUMNS = 2`) and xterm.js
 //! (`MINIMUM_COLS = 2`) forbid that width outright for exactly this reason, and ghostty destroys
-//! the glyph; that is a contract decision, tracked separately, not a #533 conformance item.
+//! the glyph; justerm followed them in #547, so `justerm_core::MIN_COLUMNS` is now the floor and
+//! the split-pair shape below one pair-width is unreachable rather than merely out of scope. That
+//! was a contract decision, not a #533 conformance item — see `tests/min_columns.rs`.
 //!
 //! ADR-0025 D3 (position is part of a leading marker's definition) is the governing rule.
 

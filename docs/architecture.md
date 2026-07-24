@@ -26,9 +26,23 @@ iterator when it returns a `TermDamage` enum whose `Full` variant the shape coul
 `frame()`, the entry point this file's entire §Serialization is about, and ~25 other public methods.
 
 The parts of the surface that are genuinely *contract* rather than signature are below and stay here:
-the frame/damage cadence (§Cadence), the wire format (§Serialization), and the mode-gating that decides
+the frame/damage cadence (§Cadence), the wire format (§Serialization), the mode-gating that decides
 what `encode_key` / `encode_mouse` / `encode_paste` / `encode_focus` emit (§Hidden VT state, "Input
-encoding is mode-gated").
+encoding is mode-gated"), and the minimum width immediately below — a clamp is behaviour the
+signature cannot state.
+
+**Minimum width: `MIN_COLUMNS = 2`, applied silently (#547).** Construction and `resize` widen `cols`
+up to two; `rows` is floored at 1 on `resize`. One column cannot hold a width-2 glyph — it needs a
+`WIDE_CHAR` lead *and* the `WIDE_CHAR_SPACER` that stands for its second half — and a half-written pair
+is the malformed state every repair path keys off, so the floor is what makes ADR-0025 D4 (*both halves
+of a pair move together*) unconditionally satisfiable instead of true only above an unstated width.
+**Consequences a consumer must plan for:** `resize(1, rows)` yields a **2**-column grid with no error
+and no signal, so a consumer that drags a pane to one column must read the width back from the frame
+header (or `grid().cols()`) rather than assuming the value it passed. It also must not report the
+*requested* width to its PTY — a `TIOCSWINSZ` of 1 column would tell the application a width the buffer
+does not have. Both references a terminal *engine* compares to forbid the width for the same reason
+(alacritty `MIN_COLUMNS = 2`, xterm.js `MINIMUM_COLS = 2`); ghostty permits it and destroys the glyph.
+justerm clamps in the core, where xterm.js clamps, because justerm has no app layer to clamp in.
 
 ## Cell
 

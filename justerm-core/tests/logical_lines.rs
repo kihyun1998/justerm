@@ -4,7 +4,7 @@
 //! Built TDD. Reuses the search/selection coordinate model (wrap-join,
 //! wide-spacer skip).
 
-use justerm_core::Engine;
+use justerm_core::{Engine, MIN_COLUMNS};
 
 /// A single unwrapped row yields one logical line whose text is the row content
 /// (trailing blanks trimmed) and whose map sends each char to its `(row, col)`.
@@ -211,16 +211,17 @@ fn interior_wrap_boundary_spaces_are_preserved() {
     assert_eq!(lines[0].text, "ab  cd");
 }
 
-/// Degenerate 1-column grid: each char wraps to its own row, joined into one
-/// logical line.
+/// Degenerate narrowest grid: every row wraps, and all of them join into one logical
+/// line. Two columns *is* the narrowest — `Engine::new(1, _)` is widened to
+/// `MIN_COLUMNS` (#547), because one column cannot hold a width-2 glyph.
 #[test]
-fn single_column_grid_joins_each_row() {
-    let mut term = Engine::new(1, 3);
-    term.feed(b"ab"); // "a"(WRAPLINE) | "b"
+fn narrowest_grid_joins_each_row() {
+    let mut term = Engine::new(MIN_COLUMNS, 3);
+    term.feed(b"abcd"); // "ab"(WRAPLINE) | "cd"
 
     let lines = term.viewport_logical_lines();
 
     assert_eq!(lines.len(), 1);
-    assert_eq!(lines[0].text, "ab");
-    assert_eq!(lines[0].cells, vec![(0, 0), (1, 0)]);
+    assert_eq!(lines[0].text, "abcd");
+    assert_eq!(lines[0].cells, vec![(0, 0), (0, 1), (1, 0), (1, 1)]);
 }
