@@ -1,6 +1,7 @@
 import type { Palette } from "justerm-wasm-decode/colors.js";
 import { CursorBlink } from "./cursor";
 import type { DecorationRect } from "./decorations";
+import { MINIMUM_COLS, MINIMUM_ROWS } from "./fit";
 
 import type { Renderer } from "./renderer";
 import type { DecodedFrame, FlagBits } from "./types";
@@ -175,8 +176,15 @@ export function decorationWire(rects: readonly DecorationRect[]): Uint32Array {
 
 /** The `cols`×`rows` grid that fits a CSS-pixel box, given the cell's CSS size. Pixel→cell is
  * consumer policy (ADR-0017) and the renderer takes a *grid* (#331), so the adapter owns this
- * division — the same `floor(box / cell)` xterm's FitAddon does. Floored to at least 1 (a grid
- * must have a cell). Pure, so the fractional-DPR rounding is testable. */
+ * division — the same `floor(box / cell)` xterm's FitAddon does. Pure, so the fractional-DPR
+ * rounding is testable.
+ *
+ * Floored at {@link MINIMUM_COLS}×{@link MINIMUM_ROWS}, not at one cell (#547). "A grid must have
+ * a cell" was the old reason and it under-shot: the engine clamps `resize(1, r)` up to two
+ * columns, so a 1-column proposal is a grid it can never be in. Driving the engine at 1 while it
+ * holds 2 puts every span of the frame outside this grid and the surface silently stops updating.
+ * The clamp is pull-only on the core side — a consumer reads the width back, it is not told — so
+ * agreeing with the floor here is what keeps the two in step. */
 export function gridForBox(
   cssWidth: number,
   cssHeight: number,
@@ -184,8 +192,8 @@ export function gridForBox(
   cellCssHeight: number,
 ): { cols: number; rows: number } {
   return {
-    cols: Math.max(1, Math.floor(cssWidth / cellCssWidth)),
-    rows: Math.max(1, Math.floor(cssHeight / cellCssHeight)),
+    cols: Math.max(MINIMUM_COLS, Math.floor(cssWidth / cellCssWidth)),
+    rows: Math.max(MINIMUM_ROWS, Math.floor(cssHeight / cellCssHeight)),
   };
 }
 

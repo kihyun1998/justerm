@@ -458,12 +458,15 @@ pub(crate) fn reflow(
                 if vacates_for_wide {
                     take -= 1;
                 }
-                // `take == 0` is reachable only at `new_cols == 1`, where a pair cannot be
-                // represented at all. The pair is left split across rows there — malformed, but
-                // *recoverably* so; dropping the spacer instead loses it irreversibly and leaves a
-                // spacer-less lead that `write_glyph`'s orphan repair then uses to free a real
-                // neighbouring character. Tracked with the minimum-width proposal.
-                let take = take.max(1); // guard the 1-col degenerate case
+                // `take == 0` is reachable only at `new_cols == 1`, and #547 made that width
+                // unreachable: `MIN_COLUMNS = 2` floors every entry into `Term::resize`, this
+                // function's only caller. The guard stays anyway, because what it prevents is a
+                // *hang*, not a wrong cell — at `take == 0` this loop never advances `i`.
+                // xterm.js documents the identical failure at the identical width
+                // ("Calling this with a `newCols` value of `1` will lock up.",
+                // `common/buffer/BufferReflow.ts:173`), so the cost of one `max` is well spent
+                // on the day someone adds a second caller. Valid as long as `MIN_COLUMNS >= 2`.
+                let take = take.max(1);
                 // Segment maps: entries in [i, i+take) re-keyed to col - i.
                 let seg_comb: Combining = comb
                     .range(i..i + take)

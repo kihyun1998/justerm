@@ -44,7 +44,14 @@ export type { SearchOptions, SearchPort, SearchResult } from "./search";
 // Fit (#114) — container px → cols/rows (xterm FitAddon parity: padding + scrollbar
 // subtract, floor, min 2×1, guards) → a debounced resize intent (ResizePort) the backend
 // applies as Engine::resize + PTY SIGWINCH. `observeResize` wires the ResizeObserver.
-export { FitController, observeResize, proposeDimensions, StubResizePort } from "./fit";
+export {
+  FitController,
+  MINIMUM_COLS,
+  MINIMUM_ROWS,
+  observeResize,
+  proposeDimensions,
+  StubResizePort,
+} from "./fit";
 export type { Dimensions, FitInput, FitPadding, ResizePort } from "./fit";
 // Links — two sources: OSC8 explicit (frame link/linkTable) + plain-URL regex
 // over the engine's logical lines (ADR-0017: core assembles, web matches). The

@@ -39,9 +39,22 @@ export interface Dimensions {
   rows: number;
 }
 
-/** The smallest usable grid (xterm `FitAddon` `MINIMUM_COLS`/`MINIMUM_ROWS`). */
-const MINIMUM_COLS = 2;
-const MINIMUM_ROWS = 1;
+/**
+ * The smallest grid the engine can be in — the mirror of `justerm_core::MIN_COLUMNS` (#547) and
+ * of its row floor, which happen to be the same values xterm's `FitAddon` uses
+ * (`MINIMUM_COLS`/`MINIMUM_ROWS`).
+ *
+ * Exported because this package has **two** paths from a pixel box to a grid — this one and
+ * {@link import("./justerm-renderer").gridForBox} — and they must not disagree. They did: a
+ * 1-column proposal is a grid the engine can never adopt, since `Engine::resize(1, r)` silently
+ * yields 2. A consumer driving the engine at 1 while it holds 2 puts every span of the frame
+ * outside the renderer's grid, and the surface stops updating.
+ *
+ * Hand-mirrored, like the wasm getters in `types.ts`: the core constant is Rust and does not
+ * cross the wire. If core ever raises its floor, this is the line that must follow.
+ */
+export const MINIMUM_COLS = 2;
+export const MINIMUM_ROWS = 1;
 
 /**
  * Propose the `cols`/`rows` that fill the available box (xterm `FitAddon`).

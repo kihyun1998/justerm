@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { DecorationRect } from "../src/decorations";
+import { MINIMUM_COLS, proposeDimensions } from "../src/fit";
 import {
   asU16,
   asU32,
@@ -157,9 +158,29 @@ describe("gridForBox", () => {
     expect(gridForBox(1648, 100, 16.5, 33).cols).toBe(99);
   });
 
-  it("never returns a zero-cell grid (a grid must have a cell)", () => {
-    expect(gridForBox(3, 3, 8, 16)).toEqual({ cols: 1, rows: 1 });
-    expect(gridForBox(0, 0, 8, 16)).toEqual({ cols: 1, rows: 1 });
+  it("floors at the engine's minimum grid, not at one cell", () => {
+    // Was `{ cols: 1, rows: 1 }`. justerm-core publishes MIN_COLUMNS = 2 and clamps to it, so a
+    // 1-column proposal is a grid the engine can never be in: the consumer would drive the engine
+    // at 1, the engine would silently hold 2, and every span of the 2-column frame would fall
+    // outside the 1-column renderer grid — the surface stops updating. A wide glyph needs a lead
+    // *and* a spacer; there is no such thing as a 1-column terminal any more.
+    expect(gridForBox(3, 3, 8, 16)).toEqual({ cols: MINIMUM_COLS, rows: 1 });
+    expect(gridForBox(0, 0, 8, 16)).toEqual({ cols: MINIMUM_COLS, rows: 1 });
+  });
+
+  it("agrees with the fit path, which already floored at the same value", () => {
+    // The two sizing paths in this package must not disagree: `proposeDimensions` (fit.ts) has
+    // always floored at MINIMUM_COLS, `gridForBox` floored at 1. A consumer using the renderer
+    // adapter's `resize` + `terminalSize` therefore got a different answer from one using
+    // `proposeDimensions` for the same box.
+    const tiny = { parentWidth: 3, parentHeight: 3, cellWidth: 8, cellHeight: 16 };
+    const fitted = proposeDimensions({
+      ...tiny,
+      padding: { top: 0, right: 0, bottom: 0, left: 0 },
+      scrollbarWidth: 0,
+      scrollback: 0,
+    });
+    expect(gridForBox(3, 3, 8, 16).cols).toBe(fitted?.cols);
   });
 });
 

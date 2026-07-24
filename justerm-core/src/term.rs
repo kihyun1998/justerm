@@ -266,6 +266,30 @@ fn dec_special_graphics(c: char) -> char {
 /// Default scrollback retention when not specified.
 const DEFAULT_SCROLLBACK: usize = 10_000;
 
+/// The narrowest screen the engine represents: **two columns**.
+///
+/// A width-2 glyph occupies a `WIDE_CHAR` lead *and* the `WIDE_CHAR_SPACER` that
+/// stands for its second half, so one column cannot hold one — and a pair with only
+/// one half written is the malformed state every repair path in this crate keys off
+/// (ADR-0025 D4). `Term::with_scrollback` and [`Term::resize`] clamp `cols` up to
+/// this, which is what makes D4 (*both halves of a pair move together*)
+/// unconditionally satisfiable rather than true only above some unstated width.
+///
+/// Both references that a terminal *engine* can be compared to forbid one column for
+/// exactly this reason — alacritty's `MIN_COLUMNS = 2` and xterm.js's
+/// `MINIMUM_COLS = 2` — and the third (ghostty) permits it only by destroying the
+/// glyph.
+///
+/// The clamp is **silent and pull-only**: a `resize(1, rows)` during a pane drag is
+/// widened rather than rejected, and no event reports it. Both references instead
+/// make the clamped size the one that travels outward — alacritty derives its
+/// `WindowSize` from the clamped `SizeInfo`, xterm.js fires `onResize` with the
+/// clamped pair — so a justerm consumer must do that correlation itself: read the
+/// width back from [`Term::grid`] / the frame header and size the PTY from *that*,
+/// never from the value it requested. Sizing a PTY to one column leaves the
+/// application rendering for a width the buffer does not have (#547).
+pub const MIN_COLUMNS: usize = 2;
+
 /// The state DECSC (ESC 7) saves and DECRC (ESC 8) restores: position, pen/SGR,
 /// pending-wrap, and origin mode (per ADR-0004 — DECRC restores origin mode,
 /// which Alacritty omits). Cursor *visibility* is deliberately not part of this
@@ -360,6 +384,15 @@ impl Term {
     }
 
     pub fn with_scrollback(cols: usize, rows: usize, scrollback_limit: usize) -> Self {
+        // Both clamps mirror `resize` exactly, so a screen cannot be born at a size a
+        // resize would refuse. They are not the same *kind* of rule, though: the width
+        // floor is a published contract (#547 — one column was supported and no longer
+        // is), while the row floor is `resize`'s own long-standing "a terminal is never
+        // 0-tall" that this constructor merely failed to enforce while carrying the
+        // same `scroll_bottom: rows - 1` below. That gap was a subtract-overflow panic
+        // on `rows == 0`, not a degenerate screen.
+        let cols = cols.max(MIN_COLUMNS);
+        let rows = rows.max(1);
         Term {
             grid: Grid::new(cols, rows),
             alt_grid: Grid::new(cols, rows),
@@ -2020,10 +2053,14 @@ impl Term {
     /// Resize the screen to `cols` x `rows`. Rows dropped off the top (on shrink)
     /// enter scrollback. Column reflow of soft-wrapped lines is layered on top
     /// separately (#7). The whole screen is damaged.
+    ///
+    /// `cols` is widened to [`MIN_COLUMNS`] — a narrower screen cannot hold a
+    /// width-2 glyph, so it is clamped rather than represented (#547).
     pub fn resize(&mut self, cols: usize, rows: usize) {
-        // A terminal is never 0-wide/0-tall; clamp so the math below (rows - 1,
-        // chunking by cols) can't underflow or divide by zero.
-        let cols = cols.max(1);
+        // A terminal is never 0-tall; clamp so the math below (rows - 1) can't
+        // underflow. Columns clamp to MIN_COLUMNS, not 1: chunking by cols needs a
+        // non-zero width, but a *wide glyph* needs two (#547).
+        let cols = cols.max(MIN_COLUMNS);
         let rows = rows.max(1);
         let old_cols = self.grid.cols();
         let limit = self.scrollback_limit;
@@ -3049,7 +3086,9 @@ impl Term {
     /// Relocate a last-column narrow cluster to the next line as a wide cell (#303): its base +
     /// side-table marks move to `(next_row, 0..=1)` and the vacated last column becomes a soft-wrap
     /// (WRAPLINE + leading spacer), exactly as `write_glyph` wraps a wide glyph that can't fit. With
-    /// autowrap off, or a 1-column screen (no room for a wide cell anywhere), it stays narrow.
+    /// autowrap off it stays narrow. The `cols < 2` arm is **unreachable since #547** —
+    /// `MIN_COLUMNS = 2` is the floor on every path that sets a width — and is kept only as a
+    /// bounds guard for the `col + 1` writes below, not as a described behaviour.
     fn relocate_cluster_wide(&mut self, row: usize, col: usize) {
         let cols = self.grid.cols();
         if cols < 2 || !self.autowrap || !self.wrapline_advances() {

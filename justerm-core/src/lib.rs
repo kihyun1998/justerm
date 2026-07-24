@@ -37,7 +37,7 @@ pub use serialize::{
     MarkerPosition, Overlay, Span, WIRE_VERSION, decode, encode, encode_cell_record, encode_color,
 };
 
-pub use term::{CommandLine, Term};
+pub use term::{CommandLine, MIN_COLUMNS, Term};
 
 use vte::Parser;
 
@@ -53,6 +53,10 @@ pub struct Engine {
 
 impl Engine {
     /// A blank engine with a `cols` × `rows` screen and a default scrollback cap.
+    ///
+    /// `cols` is widened to [`MIN_COLUMNS`] — a narrower screen cannot represent a
+    /// width-2 glyph, so the engine clamps rather than accepting a size it would
+    /// have three different answers for (#547).
     pub fn new(cols: usize, rows: usize) -> Self {
         Engine {
             parser: Parser::new(),
@@ -60,7 +64,8 @@ impl Engine {
         }
     }
 
-    /// Like [`Engine::new`] but with an explicit scrollback line limit.
+    /// Like [`Engine::new`] but with an explicit scrollback line limit. `cols` is
+    /// clamped to [`MIN_COLUMNS`] the same way.
     pub fn with_scrollback(cols: usize, rows: usize, scrollback_limit: usize) -> Self {
         Engine {
             parser: Parser::new(),
@@ -76,6 +81,11 @@ impl Engine {
 
     /// Resize the screen to `cols` x `rows`. Rows that scroll off the top enter
     /// scrollback; the whole screen is damaged. (Soft-wrap reflow lands in #7.)
+    ///
+    /// `cols` is widened to [`MIN_COLUMNS`] **silently**: a `resize(1, rows)` during
+    /// a pane drag yields a two-column screen with no error. Read the resulting
+    /// width back from [`Engine::grid`] or the frame header rather than assuming the
+    /// value passed here, and size the PTY from that same width (#547).
     pub fn resize(&mut self, cols: usize, rows: usize) {
         self.term.resize(cols, rows);
     }
