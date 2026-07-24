@@ -27,9 +27,15 @@ bitflags::bitflags! {
         /// plain blank — overwrite, erase, selection, and cursor positioning all
         /// depend on knowing this column belongs to the wide char to its left.
         const WIDE_CHAR_SPACER = 1 << 9;
-        /// Set on the last cell of a row that soft-wrapped (auto-wrap) into the
-        /// next — distinguishes a soft wrap from a hard CR/LF line-end so reflow
-        /// (#7) can merge and re-split logical lines.
+        /// A row that soft-wrapped (auto-wrap) into the next — distinguishing it from a hard
+        /// CR/LF line-end so reflow (#7) can merge and re-split logical lines.
+        ///
+        /// **Wire-only.** The live grid holds this on the `Row` (`Grid::is_row_wrapped`); it used
+        /// to live here, where every whole-cell write and clear destroyed it and ordinary typing
+        /// in the last column silently split the logical line (#538). The wire has no per-row
+        /// slot, so it is derived back onto a span's last cell at encode time — which is why the
+        /// storage could move without a format change. On a cell read from the live grid this bit
+        /// is never set.
         const WRAPLINE = 1 << 10;
         // bits 11..=15 reserved (underline style/colour, hyperlink id).
     }
@@ -41,8 +47,8 @@ bitflags::bitflags! {
 // `xtermjs/xterm.js@master` `src/common/buffer/Constants.ts`). The fg/bg colour
 // words are byte-identical to xterm's `Attributes` + `FgFlags`/`BgFlags`; the
 // content word keeps justerm's explicit layout-marker flags where xterm stores a
-// 2-bit `wcwidth` value (justerm's model is flag-based — the spacer and per-cell
-// WRAPLINE are load-bearing for overwrite/selection/reflow).
+// 2-bit `wcwidth` value (justerm's model is flag-based — the spacer markers are load-bearing for
+// overwrite/selection/reflow; WRAPLINE is wire-only, the live flag is on the `Row`, #538).
 //
 //   content u32: codepoint(21) | COMBINED(1) | WIDE | SPACER | WRAP | reserved
 //   fg/bg   u32: colour value(24) | colour mode(2) | flags(6)
@@ -355,11 +361,22 @@ impl Cell {
     /// it over a live glyph leaves a cell the text extractors skip while a renderer still
     /// draws it, which is exactly the defect #528 fixed (`Term::vacate_for_wrap` is the one
     /// place that establishes the precondition).
+    /// Drop the leading-spacer marker, leaving the cell otherwise untouched.
+    ///
+    /// The marker is only meaningful on a row that soft-wraps — it records that a width-2 glyph
+    /// could not fit and moved on. When the wrap ends, or when an erase blanks the column the
+    /// marker described, it has to go, or the text extractors keep skipping a column that is now
+    /// a real blank (#538).
+    pub fn clear_leading_spacer(&mut self) {
+        self.content &= !C_LEADING_SPACER;
+    }
+
     pub fn set_leading_spacer(&mut self) {
         self.content |= C_LEADING_SPACER;
     }
 
-    /// Did this row soft-wrap into the next (WRAPLINE on its last cell)?
+    /// Does this **wire** cell end a soft-wrapped row? See `CellFlags::WRAPLINE` — on the live
+    /// grid this is always false and `Grid::is_row_wrapped` is the question to ask (#538).
     pub fn is_wrapline(&self) -> bool {
         self.content & C_WRAP != 0
     }

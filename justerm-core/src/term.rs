@@ -530,8 +530,17 @@ impl Term {
             let mut links = std::collections::BTreeMap::new();
             let mut ucolors = std::collections::BTreeMap::new();
             let row = self.abs_row(top + line);
+            let last_col = row.len().saturating_sub(1);
             for col in left..=right {
-                let cell = row[col];
+                let mut cell = row[col];
+                // Soft-wrap is a row property (#538), but the wire has no per-row slot — so it is
+                // *derived* back onto the last cell's WRAPLINE bit here, which keeps the format
+                // byte-identical and is why moving the storage needed no VERSION bump. The bit is
+                // therefore wire-only: on a live grid it is never set, and `Row::is_wrapped` is
+                // the question to ask.
+                if col == last_col && row.is_wrapped() {
+                    cell.insert_flags(CellFlags::WRAPLINE);
+                }
                 // Combining clusters and hyperlinks live in the row's maps; each
                 // tagged cell contributes its reference to the frame, recorded on
                 // the span by span-relative column (the cell holds only the bit).
@@ -897,12 +906,7 @@ impl Term {
             0
         };
         let mut start = top;
-        while start > floor
-            && self
-                .abs_line(start - 1)
-                .last()
-                .is_some_and(|c| c.is_wrapline())
-        {
+        while start > floor && self.abs_row(start - 1).is_wrapped() {
             start -= 1;
         }
 
@@ -933,7 +937,7 @@ impl Term {
                         }
                     }
                 }
-                let soft = cells.last().is_some_and(|c| c.is_wrapline());
+                let soft = self.abs_row(cur).is_wrapped();
                 if soft && cur + 1 < total {
                     cur += 1;
                 } else {
@@ -1035,7 +1039,7 @@ impl Term {
                         }
                     }
                 }
-                let soft = cells.last().is_some_and(|c| c.is_wrapline());
+                let soft = self.abs_row(line).is_wrapped();
                 if soft && line + 1 < total {
                     line += 1;
                 } else {
@@ -1338,12 +1342,7 @@ impl Term {
     /// the handful of commands in a session.
     fn doc_line_of(&self, grid: &Grid, abs: usize) -> usize {
         (0..abs)
-            .filter(|&l| {
-                !self
-                    .line_in(grid, l)
-                    .last()
-                    .is_some_and(|c| c.is_wrapline())
-            })
+            .filter(|&l| !self.row_in(grid, l).is_wrapped())
             .count()
     }
 
@@ -1837,7 +1836,7 @@ impl Term {
             }
 
             let is_last = line == end_line;
-            let soft = cells.last().is_some_and(|c| c.is_wrapline());
+            let soft = self.row_in(grid, line).is_wrapped();
             if is_last || !soft {
                 out.push_str(current.trim_end());
                 current.clear();
@@ -1875,7 +1874,7 @@ impl Term {
         // scrollback row below it, even when that row carries WRAPLINE (#207).
         if line > self.abs_floor() {
             let prev = self.abs_line(line - 1);
-            if prev.last().is_some_and(|c| c.is_wrapline()) {
+            if self.abs_row(line - 1).is_wrapped() {
                 return Some((line - 1, prev.len() - 1));
             }
         }
@@ -1895,10 +1894,7 @@ impl Term {
         // alt) must not soft-wrap-join down into the alt grid. `line >= floor` holds
         // for any position reachable on alt once `prev_pos` is floored; kept explicit
         // so no future caller can cross from a primary row.
-        if line >= self.abs_floor()
-            && line + 1 < total
-            && cells.last().is_some_and(|c| c.is_wrapline())
-        {
+        if line >= self.abs_floor() && line + 1 < total && self.abs_row(line).is_wrapped() {
             return Some((line + 1, 0));
         }
         None
@@ -2570,10 +2566,8 @@ impl Term {
         {
             let prev = self.cursor.row - 1;
             let last = self.grid.cols() - 1;
-            if self.grid.cell(prev, last).is_wrapline() {
-                self.grid
-                    .cell_mut(prev, last)
-                    .remove_flags(CellFlags::WRAPLINE);
+            if self.grid.row_ref(prev).is_wrapped() {
+                self.grid.row_mut(prev).set_wrapped(false);
                 self.cursor.row = prev;
                 self.cursor.col = last;
             }
@@ -2680,8 +2674,9 @@ impl Term {
     /// the soft-wrap link. A plain `EL` on a wrapped row already does the same, so the root is
     /// that a *row* property is stored in a cell — not something to patch here alone, or this
     /// path and the erase path would disagree. Both references keep it out of reach: ghostty and
-    /// xterm.js hold it on the row/line, and xterm.js's `replaceCells` takes `clearWrap` as an
-    /// explicit argument rather than letting a cell clear decide it.
+    /// xterm.js hold it on the row/line, and xterm.js takes `clearWrap` as an explicit argument
+    /// on its erase helper (`_eraseInBufferLine`, `InputHandler.ts:1175`) rather than letting a
+    /// cell clear decide it.
     ///
     /// Known cost, accepted rather than overlooked: with DECSCA the freed cell loses its
     /// protection. ghostty has the same hole and flags it in its own source; justerm does not
@@ -2750,9 +2745,9 @@ impl Term {
             self.free_cell(row, col - 1);
         }
         let mut vacated = self.cursor.pen.cell(' ');
-        vacated.insert_flags(CellFlags::WRAPLINE);
         vacated.set_leading_spacer();
         *self.grid.cell_mut(row, col) = vacated;
+        self.grid.row_mut(row).set_wrapped(true);
         let ext = self.pen_ext_attrs();
         self.grid.row_mut(row).set_ext_attrs(col, ext);
         // The cell's contents changed, so a frame-mode consumer must be told or it keeps painting
@@ -2772,9 +2767,7 @@ impl Term {
         // tell it from a hard CR/LF line-end.
         if self.cursor.pending_wrap {
             let row = self.cursor.row;
-            self.grid
-                .cell_mut(row, cols - 1)
-                .insert_flags(CellFlags::WRAPLINE);
+            self.grid.row_mut(row).set_wrapped(true);
             self.wrapline();
         }
 
@@ -3113,26 +3106,100 @@ impl Term {
         }
     }
 
-    /// Erase in display (ED): 0 = cursor→end, 1 = start→cursor, 2 = all.
+    /// End `row`'s soft wrap, because something just destroyed the content that was continuing
+    /// onto the next row.
+    ///
+    /// Which verbs owe this is **not** derivable from the erased range — it is a per-verb rule,
+    /// and both references spell it out call site by call site rather than inferring it:
+    ///
+    /// | verb | ends the wrap? | xterm | ghostty |
+    /// |---|---|---|---|
+    /// | `EL 0` (erase right) | **yes**, at any column | `ClearRight` → `LineClrWrapped` unconditionally (`util.c:1871`) | `cursorResetWrap()` in `eraseLine(.right)` |
+    /// | `ECH` | **yes**, at any column | same `ClearRight` (`util.c:1961`) | `cursorResetWrap()` in `eraseChars` |
+    /// | `DCH` | **yes** | `screen.c` | `cursorResetWrap()` — *"Our row's soft-wrap is always reset"* |
+    /// | `EL 1` (erase left) | no | `ClearLeft`, no clear | no |
+    /// | `ICH` | no | no | no |
+    ///
+    /// The shape behind the three that do: each destroys content **from the cursor rightward**, so
+    /// "this row continues past its last column" can no longer be asserted. Erasing leftward or
+    /// inserting blanks leaves the tail — and whatever it flowed into — intact.
+    ///
+    /// **`EL 2` is a deliberate divergence.** justerm ends the wrap; xterm does not (`ClearLine`,
+    /// `util.c:1905`, has no `LineClrWrapped`) and ghostty copies that with a comment naming it —
+    /// *"it seems like complete should reset the soft-wrap state of the line but in xterm it does
+    /// not."* justerm differs because it *joins* logical lines for `accessible_text` / `search` /
+    /// selection text, so a blanked-but-still-wrapped row visibly merges two lines in copy — a
+    /// consequence xterm does not carry. Recorded rather than silently matched or silently
+    /// diverged; see #538.
+    fn end_wrap(&mut self, row: usize) {
+        self.grid.row_mut(row).set_wrapped(false);
+        // The flag is stored on the `Row` but rides the wire on the row's **last cell**, derived
+        // at encode time. Every other cell-carried fact changes only when that cell is written,
+        // so damage covers it for free; this one does not, and a `Partial` frame would never
+        // re-ship the bit — leaving a frame-mode consumer with two rows joined forever. Damaging
+        // here rather than at each caller is what keeps that true for call sites added later.
+        let last = self.grid.cols() - 1;
+        self.damage_span(row, last, last);
+        // Note the artefact marker is NOT cleared here: every verb that ends a wrap also destroys
+        // content through the last column (`EL 0`/`ECH` erase rightward, `DCH` blanks the far end
+        // via BCE), so `clear_cells` has already blanked the marker's cell by the time this runs.
+        // The leftward erases are the ones that end the wrap without touching that column, and
+        // they go through `drop_artefact_if_erased` instead. (ghostty couples them in one call —
+        // `cursorResetWrap` clears the wrap and a `spacer_head` — because its erase path does not
+        // separately blank the cell; justerm's does.)
+    }
+
+    /// Drop a wide-wrap artefact marker that has outlived the wrap it belonged to, without
+    /// touching the wrap itself.
+    ///
+    /// The mirror of the marker clean-up inside `end_wrap`, for the verbs that erase *leftward*:
+    /// `EL 1` and `ED 1` correctly leave the wrap alone (the row's tail still flows onward), but
+    /// they can still clear the last column, and then the artefact's blank turns into visible
+    /// text that a reflow bakes in permanently. Only the marker goes; the wrap is the caller's
+    /// business.
+    fn drop_artefact_if_erased(&mut self, row: usize, from: usize, to: usize) {
+        let last = self.grid.cols() - 1;
+        if from <= last && to > last {
+            self.grid.cell_mut(row, last).clear_leading_spacer();
+        }
+    }
+
     fn erase_display(&mut self, mode: u16) {
         let (cols, rows) = (self.grid.cols(), self.grid.rows());
         let (cr, cc) = (self.cursor.row, self.cursor.col);
         match mode {
             0 => {
+                // Erases this row's tail and every row below, so nothing can continue from here
+                // — and the rows below cannot continue either.
                 self.clear_cells(cr, cc, cols);
+                self.end_wrap(cr);
                 for row in (cr + 1)..rows {
                     self.clear_cells(row, 0, cols);
+                    self.end_wrap(row);
                 }
             }
             1 => {
+                // Leftward: this row's tail survives, so its own wrap does. The rows *above* are
+                // gone entirely.
                 for row in 0..cr {
                     self.clear_cells(row, 0, cols);
+                    self.end_wrap(row);
                 }
                 self.clear_cells(cr, 0, cc + 1);
+                self.drop_artefact_if_erased(cr, 0, cc + 1);
+                // Covering the whole row means nothing continues from it. xterm.js has a
+                // dedicated arm for exactly this case, in its own words: *"Deleted entire
+                // previous line. This next line can no longer be wrapped."*
+                // (`InputHandler.ts:1248-1252` — under its continuation polarity that assignment
+                // is this engine's `end_wrap(cr)`.) `EL 1` has no such arm there, and none here.
+                if cc + 1 == cols {
+                    self.end_wrap(cr);
+                }
             }
             2 => {
                 for row in 0..rows {
                     self.clear_cells(row, 0, cols);
+                    self.end_wrap(row);
                 }
             }
             _ => {}
@@ -3144,9 +3211,22 @@ impl Term {
         let cols = self.grid.cols();
         let (cr, cc) = (self.cursor.row, self.cursor.col);
         match mode {
-            0 => self.clear_cells(cr, cc, cols),
-            1 => self.clear_cells(cr, 0, cc + 1),
-            2 => self.clear_cells(cr, 0, cols),
+            // Erase right — ends the wrap at any column (xterm's `ClearRight`).
+            0 => {
+                self.clear_cells(cr, cc, cols);
+                self.end_wrap(cr);
+            }
+            // Erase left — the tail survives, so the wrap does. The artefact marker does not:
+            // if the erase reached the last column it just blanked the cell the marker described.
+            1 => {
+                self.clear_cells(cr, 0, cc + 1);
+                self.drop_artefact_if_erased(cr, 0, cc + 1);
+            }
+            // Erase the whole line — see `end_wrap`: a deliberate divergence from xterm.
+            2 => {
+                self.clear_cells(cr, 0, cols);
+                self.end_wrap(cr);
+            }
             _ => {}
         }
     }
@@ -3160,6 +3240,11 @@ impl Term {
         let (row, col) = (self.cursor.row, self.cursor.col);
         let to = (col + n).min(cols);
         self.clear_cells(row, col, to);
+        // Destroys content from the cursor rightward, so the row can no longer be continuing —
+        // unconditionally, at any column and for any `n`. Both references do exactly this (see
+        // `end_wrap`): xterm routes ECH through the same `ClearRight` as `EL 0`, ghostty calls
+        // `cursorResetWrap()` in `eraseChars`.
+        self.end_wrap(row);
     }
 
     /// ICH (CSI Pn @): insert `n` blanks at the cursor, shifting the rest of the
@@ -3227,6 +3312,9 @@ impl Term {
         if self.grid.cell(r, col).is_wide_spacer() {
             self.free_cell(r, col);
         }
+        // The shift pulls the tail left and blanks the far end, so the row stops continuing —
+        // ghostty says it outright (*"Our row's soft-wrap is always reset"* in `deleteChars`).
+        self.end_wrap(r);
         self.damage_span(r, col, cols - 1);
     }
 

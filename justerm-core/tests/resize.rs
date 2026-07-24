@@ -2,17 +2,18 @@
 
 use justerm_core::{CellFlags, Engine};
 
-/// An auto-wrap marks the row it leaves as soft-wrapped (WRAPLINE on its last
-/// cell); an explicit newline ends the line hard, so no WRAPLINE.
+/// An auto-wrap marks the row it leaves as soft-wrapped; an explicit newline ends the line hard.
+/// Asked of the *row*: the flag moved off the last cell in #538, because a cell write there used
+/// to destroy it.
 #[test]
 fn auto_wrap_marks_wrapline_but_hard_newline_does_not() {
     let mut soft = Engine::new(3, 2);
     soft.feed(b"abcd"); // 'abc' fills row 0, 'd' auto-wraps to row 1
-    assert!(soft.grid().cell(0, 2).flags().contains(CellFlags::WRAPLINE));
+    assert!(soft.grid().is_row_wrapped(0));
 
     let mut hard = Engine::new(3, 2);
     hard.feed(b"ab\r\nc"); // 'ab', then a hard CR/LF
-    assert!(!hard.grid().cell(0, 1).flags().contains(CellFlags::WRAPLINE));
+    assert!(!hard.grid().is_row_wrapped(0));
 }
 
 /// Growing the row count keeps existing content and adds blank rows at the
@@ -53,7 +54,7 @@ fn shrink_rows_preserves_top_lines_in_scrollback() {
 fn shrink_cols_rewraps_soft_wrapped_line() {
     let mut term = Engine::new(4, 4);
     term.feed(b"abcdef"); // "abcd"(WRAPLINE) + "ef"
-    assert!(term.grid().cell(0, 3).flags().contains(CellFlags::WRAPLINE));
+    assert!(term.grid().is_row_wrapped(0));
 
     term.resize(2, 4); // narrow to 2 cols → "abcdef" rewraps as ab|cd|ef
 
@@ -61,12 +62,12 @@ fn shrink_cols_rewraps_soft_wrapped_line() {
         (term.grid().cell(0, 0).c(), term.grid().cell(0, 1).c()),
         ('a', 'b')
     );
-    assert!(term.grid().cell(0, 1).flags().contains(CellFlags::WRAPLINE));
+    assert!(term.grid().is_row_wrapped(0));
     assert_eq!(
         (term.grid().cell(1, 0).c(), term.grid().cell(1, 1).c()),
         ('c', 'd')
     );
-    assert!(term.grid().cell(1, 1).flags().contains(CellFlags::WRAPLINE));
+    assert!(term.grid().is_row_wrapped(1));
     assert_eq!(
         (term.grid().cell(2, 0).c(), term.grid().cell(2, 1).c()),
         ('e', 'f')

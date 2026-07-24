@@ -33,7 +33,10 @@ fn the_wrapped_column_keeps_no_trace_of_its_previous_occupant() {
         ' ',
         "the old glyph is gone, not merely flagged"
     );
-    assert!(g.cell(0, 2).is_wrapline(), "still marked a soft wrap");
+    assert!(
+        t.grid().is_row_wrapped(0),
+        "the row is still marked a soft wrap"
+    );
     assert_eq!(
         t.link_at(0, 2),
         None,
@@ -227,7 +230,11 @@ fn vacating_over_a_wide_spacer_repairs_its_orphaned_lead() {
         (0..3).map(|c| t.grid().cell(0, c).c()).collect::<String>(),
         "a X"
     );
-    assert_eq!(t.accessible_text().trim_end(), "a X\n\u{AC00}");
+    // NB: this expected value was `"a X\n가"` when the test was written (#532), which **froze the
+    // #538 bug**: writing `X` into the last column destroyed that row's WRAPLINE and split the
+    // logical line. With soft-wrap held on the row a cell write cannot reach it, so the line stays
+    // joined — which is the behaviour this test always meant to describe.
+    assert_eq!(t.accessible_text().trim_end(), "a X\u{AC00}");
 }
 
 #[test]

@@ -172,7 +172,8 @@ deferred behavior) it tracks — then add what you find here.** Seeds (caught in
   selection, and cursor positioning go wrong. [#2]
 - **The column a wrapped wide glyph vacates is a blank *written with the current pen* — flagging
   a cell is not the same as writing one.** When a width-2 glyph cannot fit in the last column it
-  wraps, and that column becomes a soft-wrap artefact (WRAPLINE + the leading-spacer marker the
+  wraps, and that column becomes a soft-wrap artefact (the row is marked wrapped, and the column
+  gets the leading-spacer marker the
   text extractors skip). It must be **written**: a blank built from the pen, carrying the pen's
   fg/bg and its still-open hyperlink / armed underline colour. All three references do exactly
   this — xterm.js `setCellFromCodepoint(col, 0, 1, curAttr)`, ghostty `printCell(0, .spacer_head)`
@@ -183,7 +184,7 @@ deferred behavior) it tracks — then add what you find here.** Seeds (caught in
   `reset()`-ing to a *default* cell punches an uncoloured notch into a coloured run. Note the
   marker setter's name is a trap: `set_leading_spacer` only *records* that the column is blank.
   The ordinary pending-wrap soft wrap is a different case and must NOT be blanked — there the
-  last column holds real content and merely gains WRAPLINE.
+  last column holds real content and the row is merely marked wrapped.
   Three consequences that only showed up once the column was written, each of which cost a
   regression before it was understood:
   ① **Writing the column makes the vacate an overwrite**, so it inherits the no-orphan obligation
@@ -234,13 +235,34 @@ deferred behavior) it tracks — then add what you find here.** Seeds (caught in
   The value is not a compromise between references — it is xterm.js's `_eraseAttrData()` exactly
   (`DEFAULT_ATTR_DATA` plus `curAttr.bg & ~0xFC000000`), which is what its `replaceCells` /
   `insertCells` / `deleteCells` repairs are handed; only its *print* path uses the whole pen.
-  **A row property must not live where a cell clear can reach it.** `WRAPLINE` is stored in the
-  last cell, and `Cell::reset()` clears the whole content word — so freeing (or erasing) the last
-  column silently breaks that row's soft-wrap link and splits the logical line. Both references
-  put it out of reach: ghostty holds `wrap` on the `Row`, xterm.js holds `isWrapped` on the
-  `BufferLine` and makes `replaceCells` take `clearWrap` as an explicit argument. Unfixed here —
-  the root is the storage location, and patching one caller would only make it disagree with the
-  erase path.
+  **A row property must not live where a cell write or clear can reach it — fixed in #538.**
+  Soft-wrap used to ride `WRAPLINE` in the row's last cell, and every whole-cell operation takes
+  the whole content word with it: a plain overwrite of the last column, an erase, or a structural
+  repair all silently broke the row's wrap link and split the logical line (measured: `"abcdZ"`
+  became `"abc
+Z"`, and a search across the wrap went from 1 hit to 0). It now lives on the
+  `Row`, where no cell operation can reach it, matching both references (ghostty's `Row.wrap`,
+  xterm.js's `BufferLine.isWrapped`, with `clearWrap` an explicit argument on its erase helper
+  `_eraseInBufferLine` — *not* on `replaceCells`, which takes `respectProtect` there).
+  The wire is unchanged: the bit is *derived* onto a span's last cell at encode time, so it is
+  wire-only and never set on a live cell. **Ending the wrap is an explicit act, and it is
+  per-verb, not derivable from the erased range.** `Term::end_wrap` is called by the verbs that
+  destroy content *from the cursor rightward* — `EL 0`, `ECH`, `DCH` — at any column, because
+  after them "this row continues past its last column" can no longer be asserted; `EL 1` and
+  `ICH` leave it, because the tail (and whatever it flowed into) survives. This matches C xterm
+  (`ClearRight` ends with an unconditional `LineClrWrapped`) and ghostty (`cursorResetWrap` in
+  `eraseLine(.right)` / `eraseChars` / `deleteChars`) call site for call site — *not* xterm.js,
+  whose `clearWrap` governs the opposite-polarity `isWrapped` flag and so answers a different
+  question. `end_wrap` is a *complete* operation: it also damages the last column (the wrap rides
+  the wire there, and nothing else would re-ship it) and drops any wide-wrap artefact marker in
+  that column (the marker only means anything on a row that wraps — ghostty couples the two the
+  same way, in the same reset). The leftward erases (`EL 1`, `ED 1`) keep the wrap but still drop
+  an artefact marker they blanked, and `ED 1` ends the wrap when it covered the whole row (xterm.js
+  does the same, `InputHandler.ts:1248`). **`EL 2` is a deliberate divergence, split 2:2:** justerm
+  and alacritty end the wrap there, C xterm and ghostty do not (ghostty's source says it *"seems
+  like complete should"* but xterm does not). justerm ends it because it *joins* logical lines for
+  copy/search, so a blanked-but-still-wrapped row would visibly merge two lines — a cost xterm does
+  not carry.
   **Still inconsistent, deliberately unfixed here:** `LF`/`RI` expose a *default* line while
   `SU`/`SD`/`IL`/`DL` expose a BCE one — the crate does not yet agree with itself everywhere. [#530]
 - **Cursor-move damage (the previous cursor cell is hidden damage).** Moving the cursor changes *no
@@ -334,12 +356,14 @@ deferred behavior) it tracks — then add what you find here.** Seeds (caught in
   regression**: it optimized the already-free `rotate_left` while taxing every cell access with a `phys()`
   mapping; reverted in `1fa3b14`. ADR-0009 amendment has the numbers. Lesson: profile the *kind* of cost
   before assigning a Big-O.)* [#41]
-- **Soft-wrap (WRAPLINE) vs a hard line-end must be distinguished for reflow.** An auto-wrap (the
-  deferred last-column wrap firing) marks the row it leaves as *soft-wrapped* — a `WRAPLINE` flag on
-  its last cell (Alacritty's encoding; xterm.js instead flags the continuation row). An explicit
-  CR/LF/NEL ends the line *hard*. Reflow (#7) merges soft-wrapped rows into one logical line and
-  re-splits at the new width; without this flag every line looks identical and reflow corrupts
-  content. [#7]
+- **Soft-wrap vs a hard line-end must be distinguished for reflow.** An auto-wrap (the deferred
+  last-column wrap firing) marks the row it leaves as *soft-wrapped*; an explicit CR/LF/NEL ends the
+  line *hard*. Reflow (#7) merges soft-wrapped rows into one logical line and re-splits at the new
+  width; without the distinction every line looks identical and reflow corrupts content. The flag is
+  a **property of the row** (`Grid::is_row_wrapped`) — it began on the last cell, Alacritty-style,
+  and moved in #538 because a cell write there destroyed it (see the "row property" entry above).
+  xterm.js flags the continuation row instead; either encoding works, but neither reference keeps it
+  where a cell operation can reach it. [#7, #538]
 
 - **Selection coordinates are absolute-from-oldest, and only three events move them.** Anchors are
   stored as a line index into `[scrollback ++ screen]` counted from the oldest line — NOT viewport

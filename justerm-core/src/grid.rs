@@ -3,7 +3,7 @@
 //! Rows are stored as separate `Vec`s (not one flat buffer) so the scrollback
 //! ring (a later slice) can move whole rows in/out cheaply.
 
-use crate::cell::{Cell, CellFlags};
+use crate::cell::Cell;
 use crate::color::Color;
 use core::num::NonZeroU32;
 use std::collections::BTreeMap;
@@ -90,6 +90,20 @@ pub struct Row {
     combining: Combining,
     links: Links,
     ucolors: UColors,
+    /// Did this row soft-wrap (auto-wrap) into the next one?
+    ///
+    /// A property of the **row**, and stored on the row for a reason: it used to ride
+    /// `CellFlags::WRAPLINE` in the last cell, where every whole-cell write and clear destroyed it
+    /// — ordinary typing in the last column silently split the logical line (#538). Here no cell
+    /// operation can reach it. Both references keep it off the cell too, though the field is not
+    /// the same: ghostty's `Row.wrap` is this exact flag (the row wraps *into* the next), while
+    /// xterm.js's `BufferLine.isWrapped` is the opposite-polarity link (the row *continues* the
+    /// previous one) — ghostty's `wrap_continuation`, not its `wrap`. The distinction matters when
+    /// borrowing xterm.js's `clearWrap` values, which describe the *previous* row's link.
+    ///
+    /// It still crosses the wire as the last cell's `WRAPLINE` bit, derived at encode time, so the
+    /// format is unchanged.
+    wrapped: bool,
 }
 
 impl Row {
@@ -100,6 +114,7 @@ impl Row {
             combining: Combining::new(),
             links: Links::new(),
             ucolors: UColors::new(),
+            wrapped: false,
         }
     }
 
@@ -110,6 +125,7 @@ impl Row {
             combining: Combining::new(),
             links: Links::new(),
             ucolors: UColors::new(),
+            wrapped: false,
         }
     }
 
@@ -125,6 +141,7 @@ impl Row {
             combining,
             links,
             ucolors,
+            wrapped: false,
         }
     }
 
@@ -162,6 +179,42 @@ impl Row {
         self.combining.clear();
         self.links.clear();
         self.ucolors.clear();
+        self.wrapped = false;
+    }
+
+    /// Blank this row **in place** — every cell reset, and every row-scoped property with them.
+    ///
+    /// The distinction from a cell loop is the whole point. Soft-wrap is a property of the row
+    /// (#538), so `for cell in row { cell.reset() }` leaves a blanked row still claiming to
+    /// continue into the next one — and because the row *struct* is what scroll rotates and what
+    /// the alt grid keeps, that stale claim outlives the content it described. Blanking is one
+    /// operation so a caller cannot blank half of a row's state; a future row-scoped field is
+    /// covered by construction, the same way `Row::clear` covers the side maps for a recycled
+    /// buffer.
+    ///
+    /// Keeps the cell allocation and the row's width — unlike [`Row::clear`], which empties the
+    /// `Vec` for a buffer about to be re-fitted.
+    pub(crate) fn blank_in_place(&mut self) {
+        for cell in self.cells.iter_mut() {
+            cell.reset();
+        }
+        self.wrapped = false;
+    }
+
+    /// Did this row soft-wrap into the next one? See [`Row::wrapped`] for why this is a row
+    /// property and not a cell flag (#538).
+    pub(crate) fn is_wrapped(&self) -> bool {
+        self.wrapped
+    }
+
+    /// Mark (or unmark) this row as soft-wrapped into the next.
+    ///
+    /// Unmarking is per-verb, not derivable from what was erased — see `Term::end_wrap`, which is
+    /// the only place that unmarks and carries the rule with its references. An *overwrite* of the
+    /// last column must leave it set (that was the whole point of #538: a cell write cannot decide
+    /// a row property), and so must a leftward erase.
+    pub(crate) fn set_wrapped(&mut self, wrapped: bool) {
+        self.wrapped = wrapped;
     }
 
     /// The combining marks at `col`, or `None`. Flag-gated: returns `Some` only
@@ -315,7 +368,7 @@ pub(crate) fn reflow(
                 tracked[pi] = (logical.len(), current.len() + pc, true);
             }
         }
-        let soft = row.last().is_some_and(|c| c.is_wrapline());
+        let soft = row.is_wrapped();
         let base = current.len();
         let (cells, comb, links, ucolors) = row.into_parts();
         // Carry live map entries, re-keyed to the logical-line offset (flag-gated:
@@ -345,10 +398,7 @@ pub(crate) fn reflow(
             if cells.last().is_some_and(Cell::is_leading_spacer) {
                 cells.pop();
             }
-            current.extend(cells.into_iter().map(|mut c| {
-                c.remove_flags(CellFlags::WRAPLINE);
-                c
-            }));
+            current.extend(cells);
         } else {
             let mut cells = cells;
             while cells.last() == Some(&Cell::default()) {
@@ -415,7 +465,7 @@ pub(crate) fn reflow(
                 row.resize(new_cols);
                 i += take;
                 if i < line.len() {
-                    row[new_cols - 1].insert_flags(CellFlags::WRAPLINE);
+                    row.set_wrapped(true);
                 }
                 out.push(row);
             }
@@ -458,6 +508,17 @@ impl Grid {
 
     pub fn rows(&self) -> usize {
         self.rows
+    }
+
+    /// Did `row` soft-wrap (auto-wrap) into the next one — i.e. are the two rows one logical
+    /// line?
+    ///
+    /// Ask this, not the last cell's `WRAPLINE` flag: soft-wrap is a property of the row and is
+    /// stored there, so a cell never carries it on a live grid (#538). The flag still appears on
+    /// the *wire*, derived onto a span's last cell at encode time, which is a different layer —
+    /// see `docs/architecture.md` §Cell on the two things called "cell" here.
+    pub fn is_row_wrapped(&self, row: usize) -> bool {
+        self.lines[row].is_wrapped()
     }
 
     /// Read a cell. Panics on out-of-bounds (callers clamp to the grid).
@@ -506,9 +567,7 @@ impl Grid {
         // Rotate the region's top line to its bottom, then blank it: every line
         // in the region shifts up one and the region's bottom becomes empty.
         self.lines[top..=bottom].rotate_left(1);
-        for cell in self.lines[bottom].iter_mut() {
-            cell.reset();
-        }
+        self.lines[bottom].blank_in_place();
     }
 
     /// Full-screen scroll up that **moves** the evicted top row out instead of
@@ -552,9 +611,7 @@ impl Grid {
     /// screen (which always starts cleared).
     pub fn clear(&mut self) {
         for row in &mut self.lines {
-            for cell in row.iter_mut() {
-                cell.reset();
-            }
+            row.blank_in_place();
         }
     }
 
@@ -565,9 +622,7 @@ impl Grid {
         // Rotate the region's bottom line to its top, then blank it: every line
         // in the region shifts down one and the region's top becomes empty.
         self.lines[top..=bottom].rotate_right(1);
-        for cell in self.lines[top].iter_mut() {
-            cell.reset();
-        }
+        self.lines[top].blank_in_place();
     }
 }
 
