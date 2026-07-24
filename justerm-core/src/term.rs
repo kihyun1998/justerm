@@ -2644,6 +2644,22 @@ impl Term {
         ExtAttrs::from_pen(self.current_link, armed.then_some(ucolor))
     }
 
+    /// Free a cell that has stopped being part of a glyph — the *structural repair* every
+    /// overwrite, erase and row-shift owes the no-orphan invariant when it destroys one half of
+    /// a width-2 glyph, plus the spacer a mode-2027 demotion no longer needs.
+    ///
+    /// This is **not** an erase. The app asked for something at a *different* column; freeing
+    /// this one is the engine keeping its own invariant. But it is still a mutation, so it
+    /// **damages** — and that is the half every site used to forget, because each function
+    /// damaged its own range and the repaired cell lies outside it by construction (that is what
+    /// makes it a repair). A frame-mode consumer therefore kept painting the destroyed glyph.
+    /// Bundling the reset with its damage is the point of this helper: a repair site added later
+    /// cannot forget the half that has no compiler behind it (#530).
+    fn free_cell(&mut self, row: usize, col: usize) {
+        self.grid.cell_mut(row, col).reset();
+        self.damage_span(row, col, col);
+    }
+
     /// Will the next `wrapline()` actually reach another row?
     ///
     /// `wrapline` → `linefeed` advances in exactly two cases: the cursor sits at the scroll
@@ -2698,7 +2714,7 @@ impl Term {
         // or DCH can ever clear the orphan.
         let repaired_lead = col > 0 && self.grid.cell(row, col).is_wide_spacer();
         if repaired_lead {
-            self.grid.cell_mut(row, col - 1).reset();
+            self.free_cell(row, col - 1);
         }
         let mut vacated = self.cursor.pen.cell(' ');
         vacated.insert_flags(CellFlags::WRAPLINE);
@@ -2758,10 +2774,10 @@ impl Term {
         // clear it so no stray lead/spacer is left behind.
         let last = col + width - 1;
         if col > 0 && self.grid.cell(row, col).is_wide_spacer() {
-            self.grid.cell_mut(row, col - 1).reset();
+            self.free_cell(row, col - 1);
         }
         if last + 1 < cols && self.grid.cell(row, last).is_wide() {
-            self.grid.cell_mut(row, last + 1).reset();
+            self.free_cell(row, last + 1);
         }
 
         let mut cell = self.cursor.pen.cell(c);
@@ -2882,7 +2898,7 @@ impl Term {
             .cell_mut(row, col)
             .remove_flags(CellFlags::WIDE_CHAR);
         if col + 1 < cols {
-            self.grid.cell_mut(row, col + 1).reset(); // free the now-unused spacer
+            self.free_cell(row, col + 1); // free the now-unused spacer
         }
         // The cluster shrank 2→1: the cursor sat just past the wide cell (col+2, or pending-wrap on
         // the last column); it now sits just past the single-width cell at col+1.
@@ -2907,7 +2923,7 @@ impl Term {
         // (the cursor may have been repositioned before the joining scalar arrived). Reset that
         // orphan, exactly as write_glyph does (2462-2470), so no dangling spacer survives.
         if self.grid.cell(row, col + 1).is_wide() && col + 2 < cols {
-            self.grid.cell_mut(row, col + 2).reset();
+            self.free_cell(row, col + 2);
         }
         self.grid
             .cell_mut(row, col)
@@ -3048,10 +3064,10 @@ impl Term {
         let cols = self.grid.cols();
         // Don't orphan a wide char straddling the erase boundary.
         if from > 0 && self.grid.cell(row, from).is_wide_spacer() {
-            self.grid.cell_mut(row, from - 1).reset();
+            self.free_cell(row, from - 1);
         }
         if to > from && to < cols && self.grid.cell(row, to - 1).is_wide() {
-            self.grid.cell_mut(row, to).reset();
+            self.free_cell(row, to);
         }
 
         let bg = self.cursor.pen.bg;
@@ -3139,14 +3155,14 @@ impl Term {
         // a lead just before the gap lost its spacer; the first shifted cell may
         // be a spacer whose lead did not move.
         if col > 0 && self.grid.cell(r, col - 1).is_wide() {
-            self.grid.cell_mut(r, col - 1).reset();
+            self.free_cell(r, col - 1);
         }
         if col + n < cols && self.grid.cell(r, col + n).is_wide_spacer() {
-            self.grid.cell_mut(r, col + n).reset();
+            self.free_cell(r, col + n);
         }
         // A lead shifted to the last column lost its spacer off the edge.
         if self.grid.cell(r, cols - 1).is_wide() {
-            self.grid.cell_mut(r, cols - 1).reset();
+            self.free_cell(r, cols - 1);
         }
         self.damage_span(r, col, cols - 1);
     }
@@ -3174,10 +3190,10 @@ impl Term {
         // a lead just before the cut lost its spacer; the cell now at the cursor
         // may be a spacer whose lead was deleted.
         if col > 0 && self.grid.cell(r, col - 1).is_wide() {
-            self.grid.cell_mut(r, col - 1).reset();
+            self.free_cell(r, col - 1);
         }
         if self.grid.cell(r, col).is_wide_spacer() {
-            self.grid.cell_mut(r, col).reset();
+            self.free_cell(r, col);
         }
         self.damage_span(r, col, cols - 1);
     }
