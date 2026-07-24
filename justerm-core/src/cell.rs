@@ -217,6 +217,22 @@ impl Cell {
             .expect("codepoint bits always hold a valid char")
     }
 
+    /// Does this cell hold no **content** — no glyph and no layout marker?
+    ///
+    /// A blank the app never wrote and one it erased to a coloured background are both blank: the
+    /// background is not content. But a wide-char spacer, a leading-spacer wrap artefact, or a
+    /// combining-cluster carrier all *mean* something at their column even though their base
+    /// code point is a space — they are not blank. Used by reflow to find where a hard-ended
+    /// line ends (mirrors xterm.js `getTrimmedLength` / alacritty `line_length`, which likewise
+    /// test content, not the background); it says nothing about a cell's colour.
+    pub fn is_blank(&self) -> bool {
+        // Space codepoint, and none of the content-marker bits set. `content` holds the codepoint
+        // plus the COMBINED / WIDE / SPACER / WRAP / LEADING_SPACER markers, so a single check on
+        // the whole word covers every "means something here" case at once.
+        self.content & (CODEPOINT_MASK | CONTENT_MARKER_MASK | C_COMBINED | C_LEADING_SPACER)
+            == ' ' as u32
+    }
+
     /// The foreground colour reference.
     pub fn fg(&self) -> Color {
         unpack_color(self.fg)
