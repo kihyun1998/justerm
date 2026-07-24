@@ -2644,6 +2644,56 @@ impl Term {
         ExtAttrs::from_pen(self.current_link, armed.then_some(ucolor))
     }
 
+    /// Free a cell that has stopped being part of a glyph — the *structural repair* every
+    /// overwrite, erase and row-shift owes the no-orphan invariant when it destroys one half of
+    /// a width-2 glyph, plus the spacer a mode-2027 demotion no longer needs.
+    ///
+    /// This is **not** an erase. The app asked for something at a *different* column; freeing
+    /// this one is the engine keeping its own invariant. But it is still a mutation, so it
+    /// **damages** — and that is the half every site used to forget, because each function
+    /// damaged its own range and the repaired cell lies outside it by construction (that is what
+    /// makes it a repair). A frame-mode consumer therefore kept painting the destroyed glyph.
+    /// Bundling the reset with its damage is the point of this helper: a repair site added later
+    /// cannot forget the half that has no compiler behind it (#530).
+    ///
+    /// The cell it leaves is a **blank carrying the current background** — the same rule
+    /// `clear_cells` already applies to a BCE erase, extended to the repair, so one sentence
+    /// covers both: *a blank cell carries the current background.* A bare `Cell::default()`
+    /// would punch an uncoloured notch into a coloured run, which no reference implementation
+    /// does.
+    ///
+    /// Deliberately the pen's **background only** — not its full attributes, and this is not a
+    /// compromise between references: it is byte-for-byte xterm.js's `_eraseAttrData()`
+    /// (`DEFAULT_ATTR_DATA` + `curAttr.bg & ~0xFC000000`, i.e. default everything plus the pen's
+    /// background colour), which is what its `replaceCells` / `insertCells` / `deleteCells`
+    /// repairs are handed — eight of the twelve sites here. Only xterm's *print* path uses the
+    /// whole pen. Taking the whole pen
+    /// (xterm.js `setCellFromCodepoint(x, 0, 1, curAttr)`) would plant the pen's hyperlink and,
+    /// worse, its DECSCA protection onto a cell the app never wrote — a cell no later erase could
+    /// clear. Taking the *cell's own* attributes (alacritty `clear_wide`, which keeps `extra`)
+    /// would leave the destroyed glyph's hyperlink alive and clickable, the defect #529 is filed
+    /// against. Both were considered and rejected; the maintainer chose this on 2026-07-24 and it
+    /// is theirs to reverse (see #530 for what they were shown).
+    ///
+    /// Known limitation, pre-existing and wider than this helper: `reset()` clears the whole
+    /// content word, so freeing the **last** column also drops that row's `WRAPLINE` and breaks
+    /// the soft-wrap link. A plain `EL` on a wrapped row already does the same, so the root is
+    /// that a *row* property is stored in a cell — not something to patch here alone, or this
+    /// path and the erase path would disagree. Both references keep it out of reach: ghostty and
+    /// xterm.js hold it on the row/line, and xterm.js's `replaceCells` takes `clearWrap` as an
+    /// explicit argument rather than letting a cell clear decide it.
+    ///
+    /// Known cost, accepted rather than overlooked: with DECSCA the freed cell loses its
+    /// protection. ghostty has the same hole and flags it in its own source; justerm does not
+    /// implement DECSCA today, so revisit if it lands.
+    fn free_cell(&mut self, row: usize, col: usize) {
+        let bg = self.cursor.pen.bg;
+        let cell = self.grid.cell_mut(row, col);
+        cell.reset();
+        cell.set_bg(bg);
+        self.damage_span(row, col, col);
+    }
+
     /// Will the next `wrapline()` actually reach another row?
     ///
     /// `wrapline` → `linefeed` advances in exactly two cases: the cursor sits at the scroll
@@ -2696,9 +2746,8 @@ impl Term {
         // strands the lead. That is unrecoverable rather than merely untidy — every repair path
         // keys off `is_wide_spacer()`, so once the marker is gone no later write, ECH, EL, ICH
         // or DCH can ever clear the orphan.
-        let repaired_lead = col > 0 && self.grid.cell(row, col).is_wide_spacer();
-        if repaired_lead {
-            self.grid.cell_mut(row, col - 1).reset();
+        if col > 0 && self.grid.cell(row, col).is_wide_spacer() {
+            self.free_cell(row, col - 1);
         }
         let mut vacated = self.cursor.pen.cell(' ');
         vacated.insert_flags(CellFlags::WRAPLINE);
@@ -2707,11 +2756,10 @@ impl Term {
         let ext = self.pen_ext_attrs();
         self.grid.row_mut(row).set_ext_attrs(col, ext);
         // The cell's contents changed, so a frame-mode consumer must be told or it keeps painting
-        // the old glyph (ADR-0003: every mutation site records damage) — and that covers the
-        // repaired lead too, which is a second changed cell, not a bookkeeping detail. ghostty
-        // pins exactly this: its "print over wide spacer tail" test asserts the dirty bit on the
-        // *repaired lead*, not on the cell that was written.
-        self.damage_span(row, col - usize::from(repaired_lead), col);
+        // the old glyph (ADR-0003: every mutation site records damage). The *repaired* lead above
+        // is damaged by `free_cell`, which owns that pairing for all twelve repair sites — this
+        // site used to hand-roll it, and keeping both left neither able to discriminate.
+        self.damage_span(row, col, col);
     }
 
     /// Write one glyph at the cursor, handling deferred wrap and the wide-char
@@ -2758,10 +2806,10 @@ impl Term {
         // clear it so no stray lead/spacer is left behind.
         let last = col + width - 1;
         if col > 0 && self.grid.cell(row, col).is_wide_spacer() {
-            self.grid.cell_mut(row, col - 1).reset();
+            self.free_cell(row, col - 1);
         }
         if last + 1 < cols && self.grid.cell(row, last).is_wide() {
-            self.grid.cell_mut(row, last + 1).reset();
+            self.free_cell(row, last + 1);
         }
 
         let mut cell = self.cursor.pen.cell(c);
@@ -2882,7 +2930,7 @@ impl Term {
             .cell_mut(row, col)
             .remove_flags(CellFlags::WIDE_CHAR);
         if col + 1 < cols {
-            self.grid.cell_mut(row, col + 1).reset(); // free the now-unused spacer
+            self.free_cell(row, col + 1); // free the now-unused spacer
         }
         // The cluster shrank 2→1: the cursor sat just past the wide cell (col+2, or pending-wrap on
         // the last column); it now sits just past the single-width cell at col+1.
@@ -2907,7 +2955,7 @@ impl Term {
         // (the cursor may have been repositioned before the joining scalar arrived). Reset that
         // orphan, exactly as write_glyph does (2462-2470), so no dangling spacer survives.
         if self.grid.cell(row, col + 1).is_wide() && col + 2 < cols {
-            self.grid.cell_mut(row, col + 2).reset();
+            self.free_cell(row, col + 2);
         }
         self.grid
             .cell_mut(row, col)
@@ -3048,10 +3096,10 @@ impl Term {
         let cols = self.grid.cols();
         // Don't orphan a wide char straddling the erase boundary.
         if from > 0 && self.grid.cell(row, from).is_wide_spacer() {
-            self.grid.cell_mut(row, from - 1).reset();
+            self.free_cell(row, from - 1);
         }
         if to > from && to < cols && self.grid.cell(row, to - 1).is_wide() {
-            self.grid.cell_mut(row, to).reset();
+            self.free_cell(row, to);
         }
 
         let bg = self.cursor.pen.bg;
@@ -3139,14 +3187,14 @@ impl Term {
         // a lead just before the gap lost its spacer; the first shifted cell may
         // be a spacer whose lead did not move.
         if col > 0 && self.grid.cell(r, col - 1).is_wide() {
-            self.grid.cell_mut(r, col - 1).reset();
+            self.free_cell(r, col - 1);
         }
         if col + n < cols && self.grid.cell(r, col + n).is_wide_spacer() {
-            self.grid.cell_mut(r, col + n).reset();
+            self.free_cell(r, col + n);
         }
         // A lead shifted to the last column lost its spacer off the edge.
         if self.grid.cell(r, cols - 1).is_wide() {
-            self.grid.cell_mut(r, cols - 1).reset();
+            self.free_cell(r, cols - 1);
         }
         self.damage_span(r, col, cols - 1);
     }
@@ -3174,10 +3222,10 @@ impl Term {
         // a lead just before the cut lost its spacer; the cell now at the cursor
         // may be a spacer whose lead was deleted.
         if col > 0 && self.grid.cell(r, col - 1).is_wide() {
-            self.grid.cell_mut(r, col - 1).reset();
+            self.free_cell(r, col - 1);
         }
         if self.grid.cell(r, col).is_wide_spacer() {
-            self.grid.cell_mut(r, col).reset();
+            self.free_cell(r, col);
         }
         self.damage_span(r, col, cols - 1);
     }
