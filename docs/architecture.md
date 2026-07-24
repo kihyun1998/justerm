@@ -234,13 +234,20 @@ deferred behavior) it tracks — then add what you find here.** Seeds (caught in
   The value is not a compromise between references — it is xterm.js's `_eraseAttrData()` exactly
   (`DEFAULT_ATTR_DATA` plus `curAttr.bg & ~0xFC000000`), which is what its `replaceCells` /
   `insertCells` / `deleteCells` repairs are handed; only its *print* path uses the whole pen.
-  **A row property must not live where a cell clear can reach it.** `WRAPLINE` is stored in the
-  last cell, and `Cell::reset()` clears the whole content word — so freeing (or erasing) the last
-  column silently breaks that row's soft-wrap link and splits the logical line. Both references
-  put it out of reach: ghostty holds `wrap` on the `Row`, xterm.js holds `isWrapped` on the
-  `BufferLine` and makes `replaceCells` take `clearWrap` as an explicit argument. Unfixed here —
-  the root is the storage location, and patching one caller would only make it disagree with the
-  erase path.
+  **A row property must not live where a cell write or clear can reach it — fixed in #538.**
+  Soft-wrap used to ride `WRAPLINE` in the row's last cell, and every whole-cell operation takes
+  the whole content word with it: a plain overwrite of the last column, an erase, or a structural
+  repair all silently broke the row's wrap link and split the logical line (measured: `"abcdZ"`
+  became `"abc
+Z"`, and a search across the wrap went from 1 hit to 0). It now lives on the
+  `Row`, where no cell operation can reach it, matching both references (ghostty's `Row.wrap`,
+  xterm.js's `BufferLine.isWrapped` plus an explicit `clearWrap` argument on `replaceCells`).
+  The wire is unchanged: the bit is *derived* onto a span's last cell at encode time, so it is
+  wire-only and never set on a live cell. **Ending the wrap is now an explicit act, and only an
+  erase does it** — `Term::erase_in_line` clears it when the erase covers the whole line, which is
+  xterm.js's rule (`clearWrap` is true for `EL 2` and for `EL 0` at column 0, false for a partial
+  erase). ECH/ICH/DCH blank cells and must never touch it, which is why the rule sits on the erase
+  helper and not in `clear_cells`.
   **Still inconsistent, deliberately unfixed here:** `LF`/`RI` expose a *default* line while
   `SU`/`SD`/`IL`/`DL` expose a BCE one — the crate does not yet agree with itself everywhere. [#530]
 - **Cursor-move damage (the previous cursor cell is hidden damage).** Moving the cursor changes *no
@@ -334,12 +341,14 @@ deferred behavior) it tracks — then add what you find here.** Seeds (caught in
   regression**: it optimized the already-free `rotate_left` while taxing every cell access with a `phys()`
   mapping; reverted in `1fa3b14`. ADR-0009 amendment has the numbers. Lesson: profile the *kind* of cost
   before assigning a Big-O.)* [#41]
-- **Soft-wrap (WRAPLINE) vs a hard line-end must be distinguished for reflow.** An auto-wrap (the
-  deferred last-column wrap firing) marks the row it leaves as *soft-wrapped* — a `WRAPLINE` flag on
-  its last cell (Alacritty's encoding; xterm.js instead flags the continuation row). An explicit
-  CR/LF/NEL ends the line *hard*. Reflow (#7) merges soft-wrapped rows into one logical line and
-  re-splits at the new width; without this flag every line looks identical and reflow corrupts
-  content. [#7]
+- **Soft-wrap vs a hard line-end must be distinguished for reflow.** An auto-wrap (the deferred
+  last-column wrap firing) marks the row it leaves as *soft-wrapped*; an explicit CR/LF/NEL ends the
+  line *hard*. Reflow (#7) merges soft-wrapped rows into one logical line and re-splits at the new
+  width; without the distinction every line looks identical and reflow corrupts content. The flag is
+  a **property of the row** (`Grid::is_row_wrapped`) — it began on the last cell, Alacritty-style,
+  and moved in #538 because a cell write there destroyed it (see the "row property" entry above).
+  xterm.js flags the continuation row instead; either encoding works, but neither reference keeps it
+  where a cell operation can reach it. [#7, #538]
 
 - **Selection coordinates are absolute-from-oldest, and only three events move them.** Anchors are
   stored as a line index into `[scrollback ++ screen]` counted from the oldest line — NOT viewport

@@ -159,11 +159,12 @@ fn mode_2027_promotion_at_last_column_relocates_the_cluster_to_the_next_line() {
     t.feed("\u{1F1F0}".as_bytes()); // 🇰 → narrow at (0,1) last column, cursor pending-wrap
     t.feed("\u{1F1F7}".as_bytes()); // 🇷 joins → promote → no room → relocate to row 1
     let g = t.grid();
-    // Row 0 soft-wraps: 'X' stays, the vacated last column carries WRAPLINE.
+    // Row 0 soft-wraps: 'X' stays and the row continues into row 1. Asked of the *row* — soft-wrap
+    // moved off the last cell in #538, because a cell write there used to destroy it.
     assert_eq!(g.cell(0, 0).c(), 'X');
     assert!(
-        g.cell(0, 1).is_wrapline(),
-        "row 0 soft-wraps at the vacated last column"
+        g.is_row_wrapped(0),
+        "row 0 soft-wraps after the cluster relocated off it"
     );
     // The flag is relocated to row 1 as ONE wide cell.
     assert_eq!(

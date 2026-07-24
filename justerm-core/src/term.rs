@@ -530,8 +530,17 @@ impl Term {
             let mut links = std::collections::BTreeMap::new();
             let mut ucolors = std::collections::BTreeMap::new();
             let row = self.abs_row(top + line);
+            let last_col = row.len().saturating_sub(1);
             for col in left..=right {
-                let cell = row[col];
+                let mut cell = row[col];
+                // Soft-wrap is a row property (#538), but the wire has no per-row slot — so it is
+                // *derived* back onto the last cell's WRAPLINE bit here, which keeps the format
+                // byte-identical and is why moving the storage needed no VERSION bump. The bit is
+                // therefore wire-only: on a live grid it is never set, and `Row::is_wrapped` is
+                // the question to ask.
+                if col == last_col && row.is_wrapped() {
+                    cell.insert_flags(CellFlags::WRAPLINE);
+                }
                 // Combining clusters and hyperlinks live in the row's maps; each
                 // tagged cell contributes its reference to the frame, recorded on
                 // the span by span-relative column (the cell holds only the bit).
@@ -897,12 +906,7 @@ impl Term {
             0
         };
         let mut start = top;
-        while start > floor
-            && self
-                .abs_line(start - 1)
-                .last()
-                .is_some_and(|c| c.is_wrapline())
-        {
+        while start > floor && self.abs_row(start - 1).is_wrapped() {
             start -= 1;
         }
 
@@ -933,7 +937,7 @@ impl Term {
                         }
                     }
                 }
-                let soft = cells.last().is_some_and(|c| c.is_wrapline());
+                let soft = self.abs_row(cur).is_wrapped();
                 if soft && cur + 1 < total {
                     cur += 1;
                 } else {
@@ -1035,7 +1039,7 @@ impl Term {
                         }
                     }
                 }
-                let soft = cells.last().is_some_and(|c| c.is_wrapline());
+                let soft = self.abs_row(line).is_wrapped();
                 if soft && line + 1 < total {
                     line += 1;
                 } else {
@@ -1338,12 +1342,7 @@ impl Term {
     /// the handful of commands in a session.
     fn doc_line_of(&self, grid: &Grid, abs: usize) -> usize {
         (0..abs)
-            .filter(|&l| {
-                !self
-                    .line_in(grid, l)
-                    .last()
-                    .is_some_and(|c| c.is_wrapline())
-            })
+            .filter(|&l| !self.row_in(grid, l).is_wrapped())
             .count()
     }
 
@@ -1837,7 +1836,7 @@ impl Term {
             }
 
             let is_last = line == end_line;
-            let soft = cells.last().is_some_and(|c| c.is_wrapline());
+            let soft = self.row_in(grid, line).is_wrapped();
             if is_last || !soft {
                 out.push_str(current.trim_end());
                 current.clear();
@@ -1875,7 +1874,7 @@ impl Term {
         // scrollback row below it, even when that row carries WRAPLINE (#207).
         if line > self.abs_floor() {
             let prev = self.abs_line(line - 1);
-            if prev.last().is_some_and(|c| c.is_wrapline()) {
+            if self.abs_row(line - 1).is_wrapped() {
                 return Some((line - 1, prev.len() - 1));
             }
         }
@@ -1895,10 +1894,7 @@ impl Term {
         // alt) must not soft-wrap-join down into the alt grid. `line >= floor` holds
         // for any position reachable on alt once `prev_pos` is floored; kept explicit
         // so no future caller can cross from a primary row.
-        if line >= self.abs_floor()
-            && line + 1 < total
-            && cells.last().is_some_and(|c| c.is_wrapline())
-        {
+        if line >= self.abs_floor() && line + 1 < total && self.abs_row(line).is_wrapped() {
             return Some((line + 1, 0));
         }
         None
@@ -2570,10 +2566,8 @@ impl Term {
         {
             let prev = self.cursor.row - 1;
             let last = self.grid.cols() - 1;
-            if self.grid.cell(prev, last).is_wrapline() {
-                self.grid
-                    .cell_mut(prev, last)
-                    .remove_flags(CellFlags::WRAPLINE);
+            if self.grid.row_ref(prev).is_wrapped() {
+                self.grid.row_mut(prev).set_wrapped(false);
                 self.cursor.row = prev;
                 self.cursor.col = last;
             }
@@ -2750,9 +2744,9 @@ impl Term {
             self.free_cell(row, col - 1);
         }
         let mut vacated = self.cursor.pen.cell(' ');
-        vacated.insert_flags(CellFlags::WRAPLINE);
         vacated.set_leading_spacer();
         *self.grid.cell_mut(row, col) = vacated;
+        self.grid.row_mut(row).set_wrapped(true);
         let ext = self.pen_ext_attrs();
         self.grid.row_mut(row).set_ext_attrs(col, ext);
         // The cell's contents changed, so a frame-mode consumer must be told or it keeps painting
@@ -2772,9 +2766,7 @@ impl Term {
         // tell it from a hard CR/LF line-end.
         if self.cursor.pending_wrap {
             let row = self.cursor.row;
-            self.grid
-                .cell_mut(row, cols - 1)
-                .insert_flags(CellFlags::WRAPLINE);
+            self.grid.row_mut(row).set_wrapped(true);
             self.wrapline();
         }
 
@@ -3119,23 +3111,44 @@ impl Term {
         let (cr, cc) = (self.cursor.row, self.cursor.col);
         match mode {
             0 => {
-                self.clear_cells(cr, cc, cols);
+                self.erase_in_line(cr, cc, cols);
                 for row in (cr + 1)..rows {
-                    self.clear_cells(row, 0, cols);
+                    self.erase_in_line(row, 0, cols);
                 }
             }
             1 => {
                 for row in 0..cr {
-                    self.clear_cells(row, 0, cols);
+                    self.erase_in_line(row, 0, cols);
                 }
-                self.clear_cells(cr, 0, cc + 1);
+                self.erase_in_line(cr, 0, cc + 1);
             }
             2 => {
                 for row in 0..rows {
-                    self.clear_cells(row, 0, cols);
+                    self.erase_in_line(row, 0, cols);
                 }
             }
             _ => {}
+        }
+    }
+
+    /// Erase `[from, to)` on `row` **as an ED/EL erase** — the BCE fill plus the one thing that
+    /// separates an erase from every other cell-clearing verb: it can end the row's soft wrap.
+    ///
+    /// A row wraps because its content continues on the next row, so the wrap survives a *partial*
+    /// erase (the rest of the line is still there) and ends only when the erase takes the whole
+    /// line. That is xterm.js's rule too, spelled as a `clearWrap` argument on
+    /// `_eraseInBufferLine` — passed `true` for `EL 2` and for `EL 0` at column 0, `false` for a
+    /// partial erase (`InputHandler.ts:1236, 1246, 1323, 1326, 1329`). Deriving it from the range
+    /// here says the same thing without a parameter every caller has to get right.
+    ///
+    /// Deliberately **not** in `clear_cells`: ECH / ICH / DCH also blank cells and must never touch
+    /// the wrap, which is why xterm.js puts `clearWrap` on the erase helper and not on
+    /// `replaceCells`. One divergence, on a degenerate case: `EL 1` with the cursor on the last
+    /// column erases the whole line and so ends the wrap here, where xterm.js hard-codes `false`.
+    fn erase_in_line(&mut self, row: usize, from: usize, to: usize) {
+        self.clear_cells(row, from, to);
+        if from == 0 && to == self.grid.cols() {
+            self.grid.row_mut(row).set_wrapped(false);
         }
     }
 
@@ -3144,9 +3157,9 @@ impl Term {
         let cols = self.grid.cols();
         let (cr, cc) = (self.cursor.row, self.cursor.col);
         match mode {
-            0 => self.clear_cells(cr, cc, cols),
-            1 => self.clear_cells(cr, 0, cc + 1),
-            2 => self.clear_cells(cr, 0, cols),
+            0 => self.erase_in_line(cr, cc, cols),
+            1 => self.erase_in_line(cr, 0, cc + 1),
+            2 => self.erase_in_line(cr, 0, cols),
             _ => {}
         }
     }

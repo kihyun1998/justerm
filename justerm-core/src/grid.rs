@@ -3,7 +3,7 @@
 //! Rows are stored as separate `Vec`s (not one flat buffer) so the scrollback
 //! ring (a later slice) can move whole rows in/out cheaply.
 
-use crate::cell::{Cell, CellFlags};
+use crate::cell::Cell;
 use crate::color::Color;
 use core::num::NonZeroU32;
 use std::collections::BTreeMap;
@@ -90,6 +90,17 @@ pub struct Row {
     combining: Combining,
     links: Links,
     ucolors: UColors,
+    /// Did this row soft-wrap (auto-wrap) into the next one?
+    ///
+    /// A property of the **row**, and stored on the row for a reason: it used to ride
+    /// `CellFlags::WRAPLINE` in the last cell, where every whole-cell write and clear destroyed it
+    /// — ordinary typing in the last column silently split the logical line (#538). Here no cell
+    /// operation can reach it. Both references do the same: ghostty's `Row.wrap`, xterm.js's
+    /// `BufferLine.isWrapped`.
+    ///
+    /// It still crosses the wire as the last cell's `WRAPLINE` bit, derived at encode time, so the
+    /// format is unchanged.
+    wrapped: bool,
 }
 
 impl Row {
@@ -100,6 +111,7 @@ impl Row {
             combining: Combining::new(),
             links: Links::new(),
             ucolors: UColors::new(),
+            wrapped: false,
         }
     }
 
@@ -110,6 +122,7 @@ impl Row {
             combining: Combining::new(),
             links: Links::new(),
             ucolors: UColors::new(),
+            wrapped: false,
         }
     }
 
@@ -125,6 +138,7 @@ impl Row {
             combining,
             links,
             ucolors,
+            wrapped: false,
         }
     }
 
@@ -162,6 +176,23 @@ impl Row {
         self.combining.clear();
         self.links.clear();
         self.ucolors.clear();
+        self.wrapped = false;
+    }
+
+    /// Did this row soft-wrap into the next one? See [`Row::wrapped`] for why this is a row
+    /// property and not a cell flag (#538).
+    pub(crate) fn is_wrapped(&self) -> bool {
+        self.wrapped
+    }
+
+    /// Mark (or unmark) this row as soft-wrapped into the next.
+    ///
+    /// Unmarking is only correct when the row's *content* stops continuing — erasing the whole
+    /// line, or a hard line-end arriving. A partial erase or an overwrite of the last column must
+    /// leave it set, which is xterm.js's rule too (`_eraseInBufferLine`'s `clearWrap` is passed
+    /// `true` only for `EL 2` and for `EL 0` with the cursor at column 0).
+    pub(crate) fn set_wrapped(&mut self, wrapped: bool) {
+        self.wrapped = wrapped;
     }
 
     /// The combining marks at `col`, or `None`. Flag-gated: returns `Some` only
@@ -315,7 +346,7 @@ pub(crate) fn reflow(
                 tracked[pi] = (logical.len(), current.len() + pc, true);
             }
         }
-        let soft = row.last().is_some_and(|c| c.is_wrapline());
+        let soft = row.is_wrapped();
         let base = current.len();
         let (cells, comb, links, ucolors) = row.into_parts();
         // Carry live map entries, re-keyed to the logical-line offset (flag-gated:
@@ -345,10 +376,7 @@ pub(crate) fn reflow(
             if cells.last().is_some_and(Cell::is_leading_spacer) {
                 cells.pop();
             }
-            current.extend(cells.into_iter().map(|mut c| {
-                c.remove_flags(CellFlags::WRAPLINE);
-                c
-            }));
+            current.extend(cells);
         } else {
             let mut cells = cells;
             while cells.last() == Some(&Cell::default()) {
@@ -415,7 +443,7 @@ pub(crate) fn reflow(
                 row.resize(new_cols);
                 i += take;
                 if i < line.len() {
-                    row[new_cols - 1].insert_flags(CellFlags::WRAPLINE);
+                    row.set_wrapped(true);
                 }
                 out.push(row);
             }
@@ -461,6 +489,17 @@ impl Grid {
     }
 
     /// Read a cell. Panics on out-of-bounds (callers clamp to the grid).
+    /// Did `row` soft-wrap (auto-wrap) into the next one — i.e. are the two rows one logical
+    /// line?
+    ///
+    /// Ask this, not the last cell's `WRAPLINE` flag: soft-wrap is a property of the row and is
+    /// stored there, so a cell never carries it on a live grid (#538). The flag still appears on
+    /// the *wire*, derived onto a span's last cell at encode time, which is a different layer —
+    /// see `docs/architecture.md` §Cell on the two things called "cell" here.
+    pub fn is_row_wrapped(&self, row: usize) -> bool {
+        self.lines[row].is_wrapped()
+    }
+
     pub fn cell(&self, row: usize, col: usize) -> &Cell {
         &self.lines[row][col]
     }
