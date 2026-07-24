@@ -179,6 +179,25 @@ impl Row {
         self.wrapped = false;
     }
 
+    /// Blank this row **in place** — every cell reset, and every row-scoped property with them.
+    ///
+    /// The distinction from a cell loop is the whole point. Soft-wrap is a property of the row
+    /// (#538), so `for cell in row { cell.reset() }` leaves a blanked row still claiming to
+    /// continue into the next one — and because the row *struct* is what scroll rotates and what
+    /// the alt grid keeps, that stale claim outlives the content it described. Blanking is one
+    /// operation so a caller cannot blank half of a row's state; a future row-scoped field is
+    /// covered by construction, the same way `Row::clear` covers the side maps for a recycled
+    /// buffer.
+    ///
+    /// Keeps the cell allocation and the row's width — unlike [`Row::clear`], which empties the
+    /// `Vec` for a buffer about to be re-fitted.
+    pub(crate) fn blank_in_place(&mut self) {
+        for cell in self.cells.iter_mut() {
+            cell.reset();
+        }
+        self.wrapped = false;
+    }
+
     /// Did this row soft-wrap into the next one? See [`Row::wrapped`] for why this is a row
     /// property and not a cell flag (#538).
     pub(crate) fn is_wrapped(&self) -> bool {
@@ -545,9 +564,7 @@ impl Grid {
         // Rotate the region's top line to its bottom, then blank it: every line
         // in the region shifts up one and the region's bottom becomes empty.
         self.lines[top..=bottom].rotate_left(1);
-        for cell in self.lines[bottom].iter_mut() {
-            cell.reset();
-        }
+        self.lines[bottom].blank_in_place();
     }
 
     /// Full-screen scroll up that **moves** the evicted top row out instead of
@@ -591,9 +608,7 @@ impl Grid {
     /// screen (which always starts cleared).
     pub fn clear(&mut self) {
         for row in &mut self.lines {
-            for cell in row.iter_mut() {
-                cell.reset();
-            }
+            row.blank_in_place();
         }
     }
 
@@ -604,9 +619,7 @@ impl Grid {
         // Rotate the region's bottom line to its top, then blank it: every line
         // in the region shifts down one and the region's top becomes empty.
         self.lines[top..=bottom].rotate_right(1);
-        for cell in self.lines[top].iter_mut() {
-            cell.reset();
-        }
+        self.lines[top].blank_in_place();
     }
 }
 

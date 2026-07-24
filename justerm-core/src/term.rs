@@ -3105,50 +3105,65 @@ impl Term {
         }
     }
 
-    /// Erase in display (ED): 0 = cursor→end, 1 = start→cursor, 2 = all.
+    /// End `row`'s soft wrap, because something just destroyed the content that was continuing
+    /// onto the next row.
+    ///
+    /// Which verbs owe this is **not** derivable from the erased range — it is a per-verb rule,
+    /// and both references spell it out call site by call site rather than inferring it:
+    ///
+    /// | verb | ends the wrap? | xterm | ghostty |
+    /// |---|---|---|---|
+    /// | `EL 0` (erase right) | **yes**, at any column | `ClearRight` → `LineClrWrapped` unconditionally (`util.c:1871`) | `cursorResetWrap()` in `eraseLine(.right)` |
+    /// | `ECH` | **yes**, at any column | same `ClearRight` (`util.c:1961`) | `cursorResetWrap()` in `eraseChars` |
+    /// | `DCH` | **yes** | `screen.c` | `cursorResetWrap()` — *"Our row's soft-wrap is always reset"* |
+    /// | `EL 1` (erase left) | no | `ClearLeft`, no clear | no |
+    /// | `ICH` | no | no | no |
+    ///
+    /// The shape behind the three that do: each destroys content **from the cursor rightward**, so
+    /// "this row continues past its last column" can no longer be asserted. Erasing leftward or
+    /// inserting blanks leaves the tail — and whatever it flowed into — intact.
+    ///
+    /// **`EL 2` is a deliberate divergence.** justerm ends the wrap; xterm does not (`ClearLine`,
+    /// `util.c:1905`, has no `LineClrWrapped`) and ghostty copies that with a comment naming it —
+    /// *"it seems like complete should reset the soft-wrap state of the line but in xterm it does
+    /// not."* justerm differs because it *joins* logical lines for `accessible_text` / `search` /
+    /// selection text, so a blanked-but-still-wrapped row visibly merges two lines in copy — a
+    /// consequence xterm does not carry. Recorded rather than silently matched or silently
+    /// diverged; see #538.
+    fn end_wrap(&mut self, row: usize) {
+        self.grid.row_mut(row).set_wrapped(false);
+    }
+
     fn erase_display(&mut self, mode: u16) {
         let (cols, rows) = (self.grid.cols(), self.grid.rows());
         let (cr, cc) = (self.cursor.row, self.cursor.col);
         match mode {
             0 => {
-                self.erase_in_line(cr, cc, cols);
+                // Erases this row's tail and every row below, so nothing can continue from here
+                // — and the rows below cannot continue either.
+                self.clear_cells(cr, cc, cols);
+                self.end_wrap(cr);
                 for row in (cr + 1)..rows {
-                    self.erase_in_line(row, 0, cols);
+                    self.clear_cells(row, 0, cols);
+                    self.end_wrap(row);
                 }
             }
             1 => {
+                // Leftward: this row's tail survives, so its own wrap does. The rows *above* are
+                // gone entirely.
                 for row in 0..cr {
-                    self.erase_in_line(row, 0, cols);
+                    self.clear_cells(row, 0, cols);
+                    self.end_wrap(row);
                 }
-                self.erase_in_line(cr, 0, cc + 1);
+                self.clear_cells(cr, 0, cc + 1);
             }
             2 => {
                 for row in 0..rows {
-                    self.erase_in_line(row, 0, cols);
+                    self.clear_cells(row, 0, cols);
+                    self.end_wrap(row);
                 }
             }
             _ => {}
-        }
-    }
-
-    /// Erase `[from, to)` on `row` **as an ED/EL erase** — the BCE fill plus the one thing that
-    /// separates an erase from every other cell-clearing verb: it can end the row's soft wrap.
-    ///
-    /// A row wraps because its content continues on the next row, so the wrap survives a *partial*
-    /// erase (the rest of the line is still there) and ends only when the erase takes the whole
-    /// line. That is xterm.js's rule too, spelled as a `clearWrap` argument on
-    /// `_eraseInBufferLine` — passed `true` for `EL 2` and for `EL 0` at column 0, `false` for a
-    /// partial erase (`InputHandler.ts:1236, 1246, 1323, 1326, 1329`). Deriving it from the range
-    /// here says the same thing without a parameter every caller has to get right.
-    ///
-    /// Deliberately **not** in `clear_cells`: ECH / ICH / DCH also blank cells and must never touch
-    /// the wrap, which is why xterm.js puts `clearWrap` on the erase helper and not on
-    /// `replaceCells`. One divergence, on a degenerate case: `EL 1` with the cursor on the last
-    /// column erases the whole line and so ends the wrap here, where xterm.js hard-codes `false`.
-    fn erase_in_line(&mut self, row: usize, from: usize, to: usize) {
-        self.clear_cells(row, from, to);
-        if from == 0 && to == self.grid.cols() {
-            self.grid.row_mut(row).set_wrapped(false);
         }
     }
 
@@ -3157,9 +3172,18 @@ impl Term {
         let cols = self.grid.cols();
         let (cr, cc) = (self.cursor.row, self.cursor.col);
         match mode {
-            0 => self.erase_in_line(cr, cc, cols),
-            1 => self.erase_in_line(cr, 0, cc + 1),
-            2 => self.erase_in_line(cr, 0, cols),
+            // Erase right — ends the wrap at any column (xterm's `ClearRight`).
+            0 => {
+                self.clear_cells(cr, cc, cols);
+                self.end_wrap(cr);
+            }
+            // Erase left — the tail survives, so the wrap does.
+            1 => self.clear_cells(cr, 0, cc + 1),
+            // Erase the whole line — see `end_wrap`: a deliberate divergence from xterm.
+            2 => {
+                self.clear_cells(cr, 0, cols);
+                self.end_wrap(cr);
+            }
             _ => {}
         }
     }
@@ -3173,6 +3197,11 @@ impl Term {
         let (row, col) = (self.cursor.row, self.cursor.col);
         let to = (col + n).min(cols);
         self.clear_cells(row, col, to);
+        // Destroys content from the cursor rightward, so the row can no longer be continuing —
+        // unconditionally, at any column and for any `n`. Both references do exactly this (see
+        // `end_wrap`): xterm routes ECH through the same `ClearRight` as `EL 0`, ghostty calls
+        // `cursorResetWrap()` in `eraseChars`.
+        self.end_wrap(row);
     }
 
     /// ICH (CSI Pn @): insert `n` blanks at the cursor, shifting the rest of the
@@ -3240,6 +3269,9 @@ impl Term {
         if self.grid.cell(r, col).is_wide_spacer() {
             self.free_cell(r, col);
         }
+        // The shift pulls the tail left and blanks the far end, so the row stops continuing —
+        // ghostty says it outright (*"Our row's soft-wrap is always reset"* in `deleteChars`).
+        self.end_wrap(r);
         self.damage_span(r, col, cols - 1);
     }
 
