@@ -95,8 +95,11 @@ pub struct Row {
     /// A property of the **row**, and stored on the row for a reason: it used to ride
     /// `CellFlags::WRAPLINE` in the last cell, where every whole-cell write and clear destroyed it
     /// — ordinary typing in the last column silently split the logical line (#538). Here no cell
-    /// operation can reach it. Both references do the same: ghostty's `Row.wrap`, xterm.js's
-    /// `BufferLine.isWrapped`.
+    /// operation can reach it. Both references keep it off the cell too, though the field is not
+    /// the same: ghostty's `Row.wrap` is this exact flag (the row wraps *into* the next), while
+    /// xterm.js's `BufferLine.isWrapped` is the opposite-polarity link (the row *continues* the
+    /// previous one) — ghostty's `wrap_continuation`, not its `wrap`. The distinction matters when
+    /// borrowing xterm.js's `clearWrap` values, which describe the *previous* row's link.
     ///
     /// It still crosses the wire as the last cell's `WRAPLINE` bit, derived at encode time, so the
     /// format is unchanged.
@@ -206,10 +209,10 @@ impl Row {
 
     /// Mark (or unmark) this row as soft-wrapped into the next.
     ///
-    /// Unmarking is only correct when the row's *content* stops continuing — erasing the whole
-    /// line, or a hard line-end arriving. A partial erase or an overwrite of the last column must
-    /// leave it set, which is xterm.js's rule too (`_eraseInBufferLine`'s `clearWrap` is passed
-    /// `true` only for `EL 2` and for `EL 0` with the cursor at column 0).
+    /// Unmarking is per-verb, not derivable from what was erased — see `Term::end_wrap`, which is
+    /// the only place that unmarks and carries the rule with its references. An *overwrite* of the
+    /// last column must leave it set (that was the whole point of #538: a cell write cannot decide
+    /// a row property), and so must a leftward erase.
     pub(crate) fn set_wrapped(&mut self, wrapped: bool) {
         self.wrapped = wrapped;
     }
@@ -507,7 +510,6 @@ impl Grid {
         self.rows
     }
 
-    /// Read a cell. Panics on out-of-bounds (callers clamp to the grid).
     /// Did `row` soft-wrap (auto-wrap) into the next one — i.e. are the two rows one logical
     /// line?
     ///
@@ -519,6 +521,7 @@ impl Grid {
         self.lines[row].is_wrapped()
     }
 
+    /// Read a cell. Panics on out-of-bounds (callers clamp to the grid).
     pub fn cell(&self, row: usize, col: usize) -> &Cell {
         &self.lines[row][col]
     }

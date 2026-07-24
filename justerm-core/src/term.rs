@@ -3133,6 +3133,35 @@ impl Term {
     /// diverged; see #538.
     fn end_wrap(&mut self, row: usize) {
         self.grid.row_mut(row).set_wrapped(false);
+        // The flag is stored on the `Row` but rides the wire on the row's **last cell**, derived
+        // at encode time. Every other cell-carried fact changes only when that cell is written,
+        // so damage covers it for free; this one does not, and a `Partial` frame would never
+        // re-ship the bit — leaving a frame-mode consumer with two rows joined forever. Damaging
+        // here rather than at each caller is what keeps that true for call sites added later.
+        let last = self.grid.cols() - 1;
+        self.damage_span(row, last, last);
+        // Note the artefact marker is NOT cleared here: every verb that ends a wrap also destroys
+        // content through the last column (`EL 0`/`ECH` erase rightward, `DCH` blanks the far end
+        // via BCE), so `clear_cells` has already blanked the marker's cell by the time this runs.
+        // The leftward erases are the ones that end the wrap without touching that column, and
+        // they go through `drop_artefact_if_erased` instead. (ghostty couples them in one call —
+        // `cursorResetWrap` clears the wrap and a `spacer_head` — because its erase path does not
+        // separately blank the cell; justerm's does.)
+    }
+
+    /// Drop a wide-wrap artefact marker that has outlived the wrap it belonged to, without
+    /// touching the wrap itself.
+    ///
+    /// The mirror of the marker clean-up inside `end_wrap`, for the verbs that erase *leftward*:
+    /// `EL 1` and `ED 1` correctly leave the wrap alone (the row's tail still flows onward), but
+    /// they can still clear the last column, and then the artefact's blank turns into visible
+    /// text that a reflow bakes in permanently. Only the marker goes; the wrap is the caller's
+    /// business.
+    fn drop_artefact_if_erased(&mut self, row: usize, from: usize, to: usize) {
+        let last = self.grid.cols() - 1;
+        if from <= last && to > last {
+            self.grid.cell_mut(row, last).clear_leading_spacer();
+        }
     }
 
     fn erase_display(&mut self, mode: u16) {
@@ -3157,6 +3186,15 @@ impl Term {
                     self.end_wrap(row);
                 }
                 self.clear_cells(cr, 0, cc + 1);
+                self.drop_artefact_if_erased(cr, 0, cc + 1);
+                // Covering the whole row means nothing continues from it. xterm.js has a
+                // dedicated arm for exactly this case, in its own words: *"Deleted entire
+                // previous line. This next line can no longer be wrapped."*
+                // (`InputHandler.ts:1248-1252` — under its continuation polarity that assignment
+                // is this engine's `end_wrap(cr)`.) `EL 1` has no such arm there, and none here.
+                if cc + 1 == cols {
+                    self.end_wrap(cr);
+                }
             }
             2 => {
                 for row in 0..rows {
@@ -3178,8 +3216,12 @@ impl Term {
                 self.clear_cells(cr, cc, cols);
                 self.end_wrap(cr);
             }
-            // Erase left — the tail survives, so the wrap does.
-            1 => self.clear_cells(cr, 0, cc + 1),
+            // Erase left — the tail survives, so the wrap does. The artefact marker does not:
+            // if the erase reached the last column it just blanked the cell the marker described.
+            1 => {
+                self.clear_cells(cr, 0, cc + 1);
+                self.drop_artefact_if_erased(cr, 0, cc + 1);
+            }
             // Erase the whole line — see `end_wrap`: a deliberate divergence from xterm.
             2 => {
                 self.clear_cells(cr, 0, cols);

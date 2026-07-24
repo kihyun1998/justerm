@@ -361,6 +361,16 @@ impl Cell {
     /// it over a live glyph leaves a cell the text extractors skip while a renderer still
     /// draws it, which is exactly the defect #528 fixed (`Term::vacate_for_wrap` is the one
     /// place that establishes the precondition).
+    /// Drop the leading-spacer marker, leaving the cell otherwise untouched.
+    ///
+    /// The marker is only meaningful on a row that soft-wraps — it records that a width-2 glyph
+    /// could not fit and moved on. When the wrap ends, or when an erase blanks the column the
+    /// marker described, it has to go, or the text extractors keep skipping a column that is now
+    /// a real blank (#538).
+    pub fn clear_leading_spacer(&mut self) {
+        self.content &= !C_LEADING_SPACER;
+    }
+
     pub fn set_leading_spacer(&mut self) {
         self.content |= C_LEADING_SPACER;
     }

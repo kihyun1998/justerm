@@ -315,6 +315,11 @@ fn the_wrap_artefact_and_the_row_flag_never_disagree() {
             !t.grid().is_row_wrapped(0),
             "{label}: the verb that cleared the artefact also ended the wrap"
         );
+        assert!(
+            !t.grid().cell(0, 4).is_leading_spacer(),
+            "{label}: and the marker went with it — a marker on a hard-ended row would make text \
+             extraction skip a real blank"
+        );
         let text = t.accessible_text().trim_end().to_string();
         assert!(
             !text.contains(" \u{D55C}"),
@@ -326,4 +331,99 @@ fn the_wrap_artefact_and_the_row_flag_never_disagree() {
             "{label}: and a reflow does not bake one in"
         );
     }
+}
+
+// ---- the wrap is stored on the row but transmitted on the last cell ------------------------
+
+#[test]
+fn changing_the_wrap_reships_the_column_that_carries_it() {
+    // The flag lives on `Row` and rides the wire on the last cell. Every other cell-carried fact
+    // changes only when that cell is written, so damage covers it for free; `end_wrap` broke that
+    // coupling — it can flip the wire bit without touching the column the bit is encoded on, and
+    // a `Partial` frame then never re-ships it. The consumer keeps two rows joined forever.
+    //
+    // This is the branch's central claim ("the format is unchanged, so the storage could move"),
+    // so it is asserted rather than assumed.
+    let mut t = Engine::new(20, 3);
+    t.feed(b"abcdefghijklmnopqrstZ"); // row 0 wraps
+    let f0 = t.frame();
+    let s0 = f0.spans.iter().find(|s| s.line == 0).expect("row 0");
+    assert!(
+        s0.cells
+            .last()
+            .unwrap()
+            .flags()
+            .contains(CellFlags::WRAPLINE),
+        "fixture: the consumer has been told row 0 wraps"
+    );
+
+    t.reset_damage();
+    t.feed(b"\x1b[1;3H\x1b[2X"); // ECH 2 at column 2 — ends the wrap, far from the last column
+    assert!(!t.grid().is_row_wrapped(0), "fixture: the wrap ended");
+
+    let f1 = t.frame();
+    let span = f1
+        .spans
+        .iter()
+        .find(|s| s.line == 0 && s.right as usize >= 19)
+        .expect("the column carrying the wrap bit is re-shipped when the wrap changes");
+    assert!(
+        !span.cells[19 - span.left as usize]
+            .flags()
+            .contains(CellFlags::WRAPLINE),
+        "and it now says the row does not wrap"
+    );
+}
+
+#[test]
+fn el1_and_ed1_at_the_last_column_leave_no_orphaned_artefact() {
+    // `EL 1` / `ED 1` erase leftward, so by the per-verb rule they correctly do NOT end the wrap
+    // — but they still clear the last column, which is where the wide-wrap artefact's marker
+    // lives. Leaving the marker there would make the extractors keep skipping a column that is
+    // now a real blank, and the marker would describe a glyph that is gone.
+    //
+    // What is asserted here is the *agreement*, not a particular text: the marker survives only
+    // on a row that still wraps. ghostty ties the two the same way — `cursorResetWrap` clears
+    // the row's wrap AND a spacer head left in the last cell, in one call.
+    for (label, seq) in [
+        ("EL 1", &b"\x1b[1;5H\x1b[1K"[..]),
+        ("ED 1", &b"\x1b[1;5H\x1b[1J"[..]),
+    ] {
+        let mut t = Engine::new(5, 3);
+        t.feed("abcd\u{D55C}".as_bytes()); // 한 cannot fit in the last column -> vacate + wrap
+        assert!(
+            t.grid().cell(0, 4).is_leading_spacer(),
+            "{label}: fixture — the artefact marker is there to begin with"
+        );
+        t.feed(seq);
+        assert!(
+            !t.grid().cell(0, 4).is_leading_spacer(),
+            "{label}: the erase blanked the column the marker described, so the marker goes"
+        );
+        // The blank it leaves is now honest: a real column of the (still-wrapped, for EL 1)
+        // logical line rather than one every text reader silently drops.
+        let text = t.accessible_text().trim_end().to_string();
+        assert!(
+            text.ends_with('\u{D55C}'),
+            "{label}: the wrapped glyph still reads back, got {text:?}"
+        );
+    }
+}
+
+#[test]
+fn ed1_covering_the_whole_row_ends_its_wrap() {
+    // `ED 1` with the cursor on the last column erases the entire row, so nothing continues from
+    // it. xterm.js has a dedicated arm for exactly this, with the reason in its own words —
+    // "Deleted entire previous line. This next line can no longer be wrapped."
+    // (`InputHandler.ts:1248-1252`; under its continuation polarity that assignment is this
+    // engine's `end_wrap(cursor_row)`.) `EL 1` has no such arm in xterm.js and none here.
+    let mut t = Engine::new(4, 3);
+    t.feed(b"abcdZ");
+    t.feed(b"\x1b[1;4H\x1b[1J"); // ED 1, cursor on the last column
+    assert!(!t.grid().is_row_wrapped(0));
+    assert_eq!(
+        t.accessible_text().trim_end(),
+        "\nZ",
+        "the emptied row does not merge with the one below it"
+    );
 }

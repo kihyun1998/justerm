@@ -172,7 +172,8 @@ deferred behavior) it tracks — then add what you find here.** Seeds (caught in
   selection, and cursor positioning go wrong. [#2]
 - **The column a wrapped wide glyph vacates is a blank *written with the current pen* — flagging
   a cell is not the same as writing one.** When a width-2 glyph cannot fit in the last column it
-  wraps, and that column becomes a soft-wrap artefact (WRAPLINE + the leading-spacer marker the
+  wraps, and that column becomes a soft-wrap artefact (the row is marked wrapped, and the column
+  gets the leading-spacer marker the
   text extractors skip). It must be **written**: a blank built from the pen, carrying the pen's
   fg/bg and its still-open hyperlink / armed underline colour. All three references do exactly
   this — xterm.js `setCellFromCodepoint(col, 0, 1, curAttr)`, ghostty `printCell(0, .spacer_head)`
@@ -183,7 +184,7 @@ deferred behavior) it tracks — then add what you find here.** Seeds (caught in
   `reset()`-ing to a *default* cell punches an uncoloured notch into a coloured run. Note the
   marker setter's name is a trap: `set_leading_spacer` only *records* that the column is blank.
   The ordinary pending-wrap soft wrap is a different case and must NOT be blanked — there the
-  last column holds real content and merely gains WRAPLINE.
+  last column holds real content and the row is merely marked wrapped.
   Three consequences that only showed up once the column was written, each of which cost a
   regression before it was understood:
   ① **Writing the column makes the vacate an overwrite**, so it inherits the no-orphan obligation
@@ -244,11 +245,24 @@ Z"`, and a search across the wrap went from 1 hit to 0). It now lives on the
   xterm.js's `BufferLine.isWrapped`, with `clearWrap` an explicit argument on its erase helper
   `_eraseInBufferLine` — *not* on `replaceCells`, which takes `respectProtect` there).
   The wire is unchanged: the bit is *derived* onto a span's last cell at encode time, so it is
-  wire-only and never set on a live cell. **Ending the wrap is now an explicit act, and only an
-  erase does it** — `Term::erase_in_line` clears it when the erase covers the whole line, which is
-  xterm.js's rule (`clearWrap` is true for `EL 2` and for `EL 0` at column 0, false for a partial
-  erase). ECH/ICH/DCH blank cells and must never touch it, which is why the rule sits on the erase
-  helper and not in `clear_cells`.
+  wire-only and never set on a live cell. **Ending the wrap is an explicit act, and it is
+  per-verb, not derivable from the erased range.** `Term::end_wrap` is called by the verbs that
+  destroy content *from the cursor rightward* — `EL 0`, `ECH`, `DCH` — at any column, because
+  after them "this row continues past its last column" can no longer be asserted; `EL 1` and
+  `ICH` leave it, because the tail (and whatever it flowed into) survives. This matches C xterm
+  (`ClearRight` ends with an unconditional `LineClrWrapped`) and ghostty (`cursorResetWrap` in
+  `eraseLine(.right)` / `eraseChars` / `deleteChars`) call site for call site — *not* xterm.js,
+  whose `clearWrap` governs the opposite-polarity `isWrapped` flag and so answers a different
+  question. `end_wrap` is a *complete* operation: it also damages the last column (the wrap rides
+  the wire there, and nothing else would re-ship it) and drops any wide-wrap artefact marker in
+  that column (the marker only means anything on a row that wraps — ghostty couples the two the
+  same way, in the same reset). The leftward erases (`EL 1`, `ED 1`) keep the wrap but still drop
+  an artefact marker they blanked, and `ED 1` ends the wrap when it covered the whole row (xterm.js
+  does the same, `InputHandler.ts:1248`). **`EL 2` is a deliberate divergence, split 2:2:** justerm
+  and alacritty end the wrap there, C xterm and ghostty do not (ghostty's source says it *"seems
+  like complete should"* but xterm does not). justerm ends it because it *joins* logical lines for
+  copy/search, so a blanked-but-still-wrapped row would visibly merge two lines — a cost xterm does
+  not carry.
   **Still inconsistent, deliberately unfixed here:** `LF`/`RI` expose a *default* line while
   `SU`/`SD`/`IL`/`DL` expose a BCE one — the crate does not yet agree with itself everywhere. [#530]
 - **Cursor-move damage (the previous cursor cell is hidden damage).** Moving the cursor changes *no
