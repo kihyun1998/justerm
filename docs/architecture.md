@@ -31,8 +31,11 @@ what `encode_key` / `encode_mouse` / `encode_paste` / `encode_focus` emit (§Hid
 encoding is mode-gated"), and the minimum width immediately below — a clamp is behaviour the
 signature cannot state.
 
-**Minimum width: `MIN_COLUMNS = 2`, applied silently (#547).** Construction and `resize` widen `cols`
-up to two; `rows` is floored at 1 on `resize`. One column cannot hold a width-2 glyph — it needs a
+**Minimum size: `MIN_COLUMNS = 2` columns × 1 row, applied silently (#547).** Construction and
+`resize` widen `cols` up to two and `rows` up to one. Only the width is a published constant, and
+only the width is a *contract change*: the row floor is one that `resize` always held (*"a terminal
+is never 0-tall"*) and that the constructor merely failed to enforce, where it panicked on a
+subtract overflow rather than yielding a degenerate screen. One column cannot hold a width-2 glyph — it needs a
 `WIDE_CHAR` lead *and* the `WIDE_CHAR_SPACER` that stands for its second half — and a half-written pair
 is the malformed state every repair path keys off, so the floor is what makes ADR-0025 D4 (*both halves
 of a pair move together*) unconditionally satisfiable instead of true only above an unstated width.

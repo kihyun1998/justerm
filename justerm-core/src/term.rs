@@ -384,14 +384,15 @@ impl Term {
     }
 
     pub fn with_scrollback(cols: usize, rows: usize, scrollback_limit: usize) -> Self {
-        // Widen to the narrowest representable screen (#547) — the same clamp
-        // `resize` applies, so a screen cannot be born at a width a resize would
-        // refuse. Note the asymmetry this does NOT fix: `resize` also floors `rows`
-        // at 1, this does not, and `scroll_bottom: rows - 1` below underflows on
-        // `rows == 0`. Both references floor rows in their constructor too
-        // (xterm.js `MINIMUM_ROWS`, alacritty `MIN_SCREEN_LINES`); tracked, not
-        // silently folded into a columns decision.
+        // Both clamps mirror `resize` exactly, so a screen cannot be born at a size a
+        // resize would refuse. They are not the same *kind* of rule, though: the width
+        // floor is a published contract (#547 — one column was supported and no longer
+        // is), while the row floor is `resize`'s own long-standing "a terminal is never
+        // 0-tall" that this constructor merely failed to enforce while carrying the
+        // same `scroll_bottom: rows - 1` below. That gap was a subtract-overflow panic
+        // on `rows == 0`, not a degenerate screen.
         let cols = cols.max(MIN_COLUMNS);
+        let rows = rows.max(1);
         Term {
             grid: Grid::new(cols, rows),
             alt_grid: Grid::new(cols, rows),
