@@ -472,6 +472,30 @@ that *describes* the behavior:
   #440↔#490 (wire channel), #494/#495/#496 (one branch's entry condition / fg / bg,
   each filed as its own independent "(a) or (b)" decision), #437↔#441 (one port
   capability, two symptoms).
+  **The spine — the third filing outcome, and the home a throughline needs before it
+  earns an ADR.** The artifact-grep above has a third result besides "a conflict" and
+  "nothing": a **sibling that shares your root without conflicting** — a second issue in
+  the same mechanism, the first sign of a cluster. There is nowhere to put the throughline
+  yet (an ADR needs two triggers, below; an issue holds one decision), so today it is
+  reconstructed by archaeology — ADR-0019 out of 20 issues, ADR-0025 out of ~7, both
+  extracted *after* the cluster was already filed verb-by-verb. Close that gap with a
+  **spine issue**: a cheap, reversible *hypothesis* anchor, **one per artifact family**.
+  - *When* — the moment the grep finds ≥1 sibling and no existing spine (trigger **1**,
+    below the ADR bar; on the second issue that rhymes, not the first).
+  - *What* — `spine: <suspected shared root>` (e.g. *"a row/pair property stored in a cell
+    that whole-cell writes mutate"*). The body is a **hypothesis, not a decision** — the
+    suspected root, the sibling roster, and what is explicitly *not yet* decided. It
+    promises nothing, so it is free to close as "one decision after all".
+  - *How* — every sibling links it with GitHub tracked-by (`part of #<spine>`) **at filing
+    time**, so the throughline exists from issue two, not from a retroactive sweep. The
+    spine is the hub, so a one-way `sibling → spine` link suffices (the spine body lists
+    them all); the both-ways rule above is only for *conflicts* between peers.
+
+  So the filing outcomes are three: existing spine → attach; sibling(s) but no spine →
+  **open the spine**; nothing → an ordinary single issue. Spines are bounded by artifact
+  families, not by issue count, so this does not cascade — and because the anchor is openly
+  a hypothesis, it sidesteps the "an issue per observation" trap: it never pretends to be
+  load-bearing.
 
 ### Where a promoted decision record goes, and what earns one
 
@@ -486,6 +510,15 @@ issue number — 0018 and 0019 do not.
 
 **What earns one.** The portable bar governs: **two or more Step 5 promotion
 triggers**, not one. Below that it is a decision and belongs in the issue as usual.
+
+**The rung below the record is the spine, not the void.** One trigger is not an ADR — but
+it is not nothing either: it opens or attaches to the **spine issue** (Step 6, filing-time
+obligation), so the throughline has a home from the first rhyming sibling instead of being
+reconstructed after the fact. At two triggers the spine *promotes* — its accumulated roster
+and measured numbers become the ADR's `Context` almost verbatim, so promotion is a copy
+rather than the archaeology that produced ADR-0019 (20 issues) and ADR-0025 (~7). A spine
+that never reaches two triggers closes as "a single decision after all"; the anchor was
+cheap and is cheap to retire.
 
 Areas already known to have hit the bar — check these first, since a new question
 in one of them is probably a conformance item under an existing record rather than
@@ -600,6 +633,7 @@ release.md):
 - **Behavior-surface drift** — #129/#135 (`mouseWantedEvents` reached `types.ts` only at S16 — grep the wire mirror).
 - **The backlog is a surface too (pivot sweep + file-time conflict check)** — 2026-07-21 sweep of all 22 open issues: one pivot (#273) had falsified premises in 4 of them (#398 names a file deleted in #407 and an acceptance box whose comparand is gone; #249/#317 §2 defer to a beamterm/"shared shader" layer that no longer exists; #325 still says "blocked by #273"), and 3 more pairs/clusters were live conflicts nobody had cross-linked (#440↔#490 wire channel; #494/#495/#496 = one branch's entry condition/fg/bg decided separately; #437↔#441 one port capability). Nothing fails when an issue's *premise* dies — it survives as a reason not to act, or points at a deleted file. Sweep the open backlog after a pivot; grep it by touched artifact before filing a follow-up; correct by comment, never by rewriting the body.
 - **A cluster that keeps re-deciding itself = a missing model (Step 5 promotion)** — the 2026-07 cell-composition cluster. Of its 20 issues **17 were surfaced by another issue in the same set** (`#453 → {#494, #495, #496}`, `#494 → {#506, #507, #508}`); one pair — *a tile glyph's ink vs a background-ish layer* — was decided **8 separate times** (#241, #398, #430③, #453, #494, #496, #507, #508); **11** decisions contradicted or narrowed an earlier one (#453 measured *both* of its own body's premises false before starting); and xterm could not arbitrate the last four (silent #494, self-contradictory across its own call sites #495, judged the outlier #459, demoted to ADR-0017 grounds #458). Every one was filed and doc-commented exactly as this flow prescribes — **the sink was wrong, not the discipline**: an issue holds one decision with its rejected alternatives and a doc-comment pins a rule to one branch, so neither can hold a rule that *spans* decisions (#494's rationale reached 80 lines of comment on a single `if`). Promoted to **ADR-0019**, which *derives* #430 and #494 instead of restating them, and settles #507 as an implementation choice and #398 as won't-fix-with-a-reason. **How the promotion then went wrong is the more useful half.** Its first amendment generalised "a bg-only layer replaces a background-class glyph" across every route, reclassified three pins as conformance defects and spawned #496/#511 to flip them; the branch reached green host + GL proofs before two lenses and a wider prototype showed the rule erases box-drawing and shading whenever a user drags a selection over them or cycles search matches. Retracted the same day and replaced by **rule 5** (*an interaction highlight does not remove content; a declared decoration may*) — the pins were right, #496/#511 closed won't-do, no renderer change. Two lessons, both cheap to miss: a model can be internally coherent and still be reporting a defect in itself, and the tell was available early — the rule had **no user-facing benefit** anyone could name, only symmetry. Both references (xterm's flat `$fg` over a blended `$bg`, alacritty's explicit `"Reveal inversed text when fg/bg is the same"` guard) had said so from the start and were waved off with "our model governs"; it does, but a reference agreeing *with another reference* against you is signal, not noise. The trigger to notice next time is the shape, not the subject: re-deciding a known pair, a consequence *chain* rather than an edge, an earlier premise measured false, a reference that cannot arbitrate, two artifacts in this repo requiring opposite things.
+- **The throughline needs a home before it earns an ADR — the spine (Step 5 / Step 6).** Both records above were archaeology: **ADR-0019** out of 20 issues, **ADR-0025** out of ~7 (#521/#528/#533/#534/#535/#538/#540/#529 filed verb-by-verb before their shared root — a row/pair property a whole-cell write silently mutates — was named). The rung below the ADR bar was the *void*, so the model had nowhere to accrete until the cluster was already big enough to promote. The fix is a **spine issue** opened at the *first* rhyming sibling (trigger 1), that every follow-up attaches to via GitHub tracked-by (`part of #<spine>`) at filing time — the roster then gathers in one place and promotion is a copy, not a dig. One spine per *artifact family*, so the anchor cannot cascade; it is a hypothesis, free to close as "one decision after all".
 - **External/registry facts** — web consumes *published* wasm (new binding `undefined` until republish); clean-room worktree only, regex discriminators `=x` / `(?i)abc` / `(?<name>x)`.
 - **Downstream contract history** — penterm wire VERSION bumps justerm#38/#41/#81; #100 rename API/wire-invariant drop-in.
 
@@ -609,7 +643,7 @@ precedents index inline.)
 ## Refs
 
 - Contract spec: `docs/architecture.md` (cells · damage · viewport/scroll · cadence · selection · serialization; §"Hidden VT state"). It deliberately does **not** carry the engine API list any more — that shape belongs to `justerm-core/src/lib.rs` / docs.rs, and the prose copy had drifted to advertising a method that never existed.
-- Decisions: `docs/adr/` — 0005 (encode/decode round-trip), 0008 (decode boundary), 0013/0014 (viewport state in header), 0017 (mechanism core / policy consumer), 0018 (justerm-renderer pivot), 0019 (renderer cell composition — layered, per-channel, total; xterm is a design input, not a validator), 0020 (what qualifies for the per-frame snapshot — state / not derivable / viewport-bounded), 0021 (one GL context draws N grids as viewports; the resource tier rule), 0022 (the cell is the ink box of the font's `█`, and what derives from it), 0023 (a spacing setting is CSS px because `font_size` is), 0024 (a decoration is colours + a mark; span projection and precedence).
+- Decisions: `docs/adr/` — 0005 (encode/decode round-trip), 0008 (decode boundary), 0013/0014 (viewport state in header), 0017 (mechanism core / policy consumer), 0018 (justerm-renderer pivot), 0019 (renderer cell composition — layered, per-channel, total; xterm is a design input, not a validator), 0020 (what qualifies for the per-frame snapshot — state / not derivable / viewport-bounded), 0021 (one GL context draws N grids as viewports; the resource tier rule), 0022 (the cell is the ink box of the font's `█`, and what derives from it), 0023 (a spacing setting is CSS px because `font_size` is), 0024 (a decoration is colours + a mark; span projection and precedence), 0025 (a row/wide-pair property has one owner and one set/clear/repair lifecycle, not a per-verb rule).
   The five most recent govern axes this flow keeps landing on. **0020–0023 were promoted to accepted
   on 2026-07-22** (`039c1cb`); **0024 alone is still proposed** (authored, not adjudicated):
   **0020** — what qualifies for the per-frame snapshot (state not occurrence · not derivable by the
