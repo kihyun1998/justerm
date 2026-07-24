@@ -220,6 +220,55 @@ fn word_select_range_spans_full_wide_glyphs() {
     );
 }
 
+/// A trailing spacer has no character of its own — its meaning is its **lead's** (ADR-0025
+/// D4: the pair reads as one unit). So the walk must not step onto the spacer of a lead that
+/// is *itself* a word boundary. U+3000 IDEOGRAPHIC SPACE is the trigger: the one
+/// East-Asian-Wide char `is_whitespace()` accepts, and ordinary in CJK prose. Treating its
+/// spacer as transparent starts the highlight on the space's right half, bisecting the pair —
+/// the exact defect this feature's range assertion exists to prevent.
+#[test]
+fn word_select_does_not_start_on_a_wide_boundary_glyphs_spacer() {
+    let mut term = Engine::new(10, 3);
+    term.feed("\u{3000}abc".as_bytes()); // 　 fills cols 0..=1; "abc" is cols 2..=4
+
+    term.selection_begin(0, 2, Side::Left, SelectionType::Word); // double-click 'a'
+
+    assert_eq!(term.selection_text().as_deref(), Some("abc"));
+    assert_eq!(
+        term.selection_range(),
+        vec![SelectionSpan {
+            row: 0,
+            left: 2,
+            right: 4
+        }],
+        "the highlight starts at 'a', not on the ideographic space's second cell"
+    );
+}
+
+/// A trailing spacer that has **no wide lead** continues nothing, so it must end a word. A
+/// spacer only *stands for* a glyph; taking it at its word merges the runs on either side —
+/// the same clipboard corruption `is_wrap_artefact` guards for the leading kind. The orphan
+/// state is #529's (a width promotion under mode 2027 strands a lead-less `C_SPACER`); the
+/// assertion holds either way, since with #529 fixed there is simply no orphan to cross.
+#[test]
+fn word_select_stops_at_a_lead_less_orphan_spacer() {
+    let mut term = Engine::new(6, 4);
+    term.feed(b"\x1b[?2027h"); // grapheme clustering: width promotion can strand a spacer
+    term.feed(b"\x1b[2;2H");
+    term.feed("한".as_bytes());
+    term.feed(b"\x1b[2;4Hxy");
+    term.feed(b"\x1b[1;6H");
+    term.feed("\u{25B6}\u{FE0F}".as_bytes()); // ▶️ promoted to wide; row 1 gains an orphan spacer
+
+    term.selection_begin(1, 0, Side::Left, SelectionType::Word);
+
+    assert_eq!(
+        term.selection_text().as_deref(),
+        Some("\u{25B6}\u{FE0F}"),
+        "the walk stops at the orphan spacer — it must not swallow the following word"
+    );
+}
+
 /// The trailing-spacer fix must NOT make a *leading* spacer transparent everywhere:
 /// the wrap artefact is only an artefact at the last column of a wrapped row, and a
 /// marker a row-shift (DCH) carried inward must still end a word (#528/#532 position

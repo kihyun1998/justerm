@@ -1916,11 +1916,22 @@ impl Term {
     /// A `' '` cell the word walk passes *through* rather than stopping on, because it
     /// belongs to a glyph and is not a gap between words. Two kinds, gated differently
     /// (ADR-0025 D3 — position is part of the definition):
-    /// - a wide glyph's **trailing** spacer (`is_wide_spacer`) — transparent *wherever* it
-    ///   sits, since it is always the second cell of an on-screen wide glyph;
+    /// - a wide glyph's **trailing** spacer (`is_wide_spacer`) — transparent where it actually
+    ///   continues a wide lead whose character is not itself a boundary. A trailing spacer
+    ///   carries no character of its own; it *stands for its lead* (ADR-0025 D4 — the pair is
+    ///   one unit), so both halves of that test read the lead, never the spacer;
     /// - the **leading**-spacer wrap artefact — transparent *only* at the last column of a
     ///   wrapped row (`is_wrap_artefact`); a marker a row-shift carried inward describes
     ///   nothing and must still end a word (#528).
+    ///
+    /// Reading the spacer cell alone was wrong twice, both caught by the two-lens pass and
+    /// both measured: **U+3000** IDEOGRAPHIC SPACE is wide *and* `is_whitespace()`, so the walk
+    /// stepped onto its second cell before breaking on the lead and started the highlight on
+    /// half a glyph (`　abc`, double-click `a` → `1..=4` instead of `2..=4`); and a **lead-less**
+    /// trailing spacer (#529's orphan) claimed to continue a glyph that is not there, merging
+    /// two words in the clipboard. Requiring a wide lead answers both, and reaches the same
+    /// place ghostty does by construction — it resolves a spacer through its lead rather than
+    /// classifying the spacer cell.
     ///
     /// Gating on the char alone cut every CJK word at its first glyph, because a trailing
     /// spacer's char is a space and read as a boundary (#535). For that **trailing** kind the
@@ -1944,7 +1955,14 @@ impl Term {
     /// `delete_chars` either — so its unconditional gate has this same merge defect. Once #534
     /// lands, `is_wrap_artefact`'s position clause is redundant rather than load-bearing.
     fn is_walk_transparent_spacer(&self, line: usize, col: usize) -> bool {
-        self.is_wrap_artefact(line, col) || self.abs_line(line)[col].is_wide_spacer()
+        if self.is_wrap_artefact(line, col) {
+            return true;
+        }
+        let cells = self.abs_line(line);
+        cells[col].is_wide_spacer()
+            && col > 0
+            && cells[col - 1].is_wide()
+            && !is_word_boundary(cells[col - 1].c())
     }
 
     /// Walk left to the first cell of `p`'s word (a maximal run of non-boundary
