@@ -284,6 +284,35 @@ Lens ① this repo — `architecture.md` §"Hidden VT state" + sibling cell-walk
 ghostty real source from the **local pinned trees** (Step 1's table; `rg`, not
 `gh api`). Never collapse to one lens even for a small fix (#158).
 
+**Direction — a divergence is not a direction, and it is *routed*, not reasoned
+out by hand.** A lens reporting "differs from the reference" has not thereby said
+"move to the reference". The direction depends on what the two lenses **share**:
+
+- **only lens ② diverges** — the sibling is reference-correct and this layer alone
+  drifted → move toward the reference;
+- **both lenses share the divergence** — sibling == this layer, both drift from the
+  reference → a **family** decision: keep the consumer-neutral behaviour now and
+  track the reference-parity fix as a coordinated multi-layer change.
+
+**Lens ① structurally cannot make this call.** It sees the divergence but not
+whether the reference shares it, because it never opens the reference — no wording
+of the brief fixes that. So an `UNADJUDICATED` finding from lens ① is **routed to
+lens ②**, which already has the pinned tree open, as one short question — *"does
+<reference> do the same at `<file:line>`?"* — and never adjudicated in the main
+thread. Measured cost of adjudicating by hand: #547's two rejected findings
+(`write_glyph` line destruction; word-select across a separator — both answered
+"alacritty does the same") took **~40% of that pass's main-thread calls** and
+changed no code, while lens ② sat on the answer the whole time.
+
+Precedent for the rule itself: **#396** (slice-2 `minimumContrastRatio` — lens ②
+found justerm-web's double-pass was a *beamterm-forced* compromise the renderer's
+own architecture does not need → moved to xterm's single pass, more correct *and*
+still web-neutral for the common case) vs **#399** (slice-4 tile re-tint — lens ①
+found `renderer == web` byte-for-byte, lens ② found *both* diverge from xterm →
+kept web-neutral for #273, family fix tracked as #398). Deferrals tracked as issues
+(#398 tile-retint, #400 search-match-solid), so the closed #272 leaves zero silent
+gaps.
+
 **Start the pass at GREEN and keep working — it is read-only, so it is not a
 barrier.** Both lenses only read; nothing they do can conflict with Step 6's doc
 sweep or Step 7's gates. Run them as background agents the moment Step 3 is green
@@ -291,6 +320,18 @@ and collect before opening the PR, so the wall clock is `max(lens, rest)` rather
 than the sum. The discipline is unchanged and is the *only* part that is
 non-negotiable: **no merge before the findings are harvested and dispositioned.**
 Sequencing is not discipline; harvesting is.
+
+**Harvest in rank order, and cap what one finding may cost.** "Dispositioned" is
+not "each one chased to the ground". The pass runs in the background, but the
+harvest is serial main-thread work — which is where a pass actually becomes
+expensive, and the part no one budgets: **#547 spent ~9 min of lens wall-clock
+(parallel, unfelt) and ~45 main-thread calls processing the result.** Take the
+`CONFIRMED` findings first, `INERT` / `DELIBERATE` last and at one line each. If
+disposing of a single finding passes **five tool calls** without settling, stop
+working it — it goes into the user's batch with what you have and what it would
+cost to finish. A finding that costs more to dismiss than the change cost to write
+is the pass telling you it found something worth the user's judgement, not a thing
+to quietly out-investigate.
 
 **Brief each lens with a frontier and with what is already known.** Without both, a
 pass spends most of its budget re-walking ground the last one covered — the wide-glyph
@@ -311,6 +352,13 @@ The brief carries four things:
 4. **What the last pass on this area found**, when there was one. A lens that knows
    #532 already fixed the leading-spacer half of a predicate looks at the trailing half
    (which is exactly how #535 was found).
+5. **The output contract** — the skill's four disposition grades (`CONFIRMED` /
+   `UNADJUDICATED` / `INERT` / `DELIBERATE`), stated in the brief itself. The first
+   four items bound what the lens *looks at*; this one bounds what it costs to act on
+   what it returns, which is the half that lands on the main thread. #547's lenses
+   volunteered "inert" and "deliberate" on two findings without being asked — and
+   those two were reproduced from scratch anyway, because nothing said a graded
+   dismissal is spendable evidence.
 
 Anything outside the frontier that the lens notices anyway is still reported — the
 frontier is a search order, not a gag.
@@ -484,8 +532,8 @@ that *describes* the behavior:
   body holds, how a sibling links it, and where its write-back lands all live in the skill;
   the tracker is GitHub, so its defaults apply unchanged (`part of #<spine>` tracked-by, an
   edited body for the roster, comments for each finding's evidence) and this repo has no
-  exception to record. What it *does* supply is the **preemption list — the record table in
-  Step 5 below**. An area that already carries a record, *accepted or proposed*, has the
+  exception to record. What it *does* supply is the **preemption list — the record table
+  below**. An area that already carries a record, *accepted or proposed*, has the
   home a spine would provide, so a sibling there is filed as a conformance item under that
   record and no spine opens beside it. Two live cases, both found while looking for a
   cluster to anchor: **ADR-0025** (proposed) is doing exactly a spine's job for the
@@ -503,8 +551,9 @@ rewriting history: a status-line note when a later change moves the *reason*
 `superseded by` pair when it is replaced (ADR-0002↔0018). An ADR may carry no
 issue number — 0018 and 0019 do not.
 
-**What earns one.** The portable bar governs: **two or more Step 5 promotion
-triggers**, not one. Below that it is a decision and belongs in the issue as usual.
+**What earns one.** The portable bar governs: **two or more promotion triggers**
+(the skill's § "Promotion", which runs on a cluster's clock — *not* inside every
+Step 5 pass), not one. Below that it is a decision and belongs in the issue as usual.
 
 **The rung below the record is the spine issue** — the rule is in the skill, this repo's
 values in Step 6. The archaeology it exists to prevent, measured here: **ADR-0019 out of 20
@@ -527,8 +576,8 @@ sibling attaches to the record instead of opening an anchor beside it.
 | **Span projection / decoration geometry** (viewport clamp, anchor, precedence) | **ADR-0024** (proposed) | **Promoted 2026-07-21**, over #120/#198/#202/#457/#458/#459/#461/#463/#480/#498. The triggers that carried it, kept because they are what the bar looks like in practice: "which decoration wins" was decided at three granularities (#452 per-property within a marker, #458 across markers, #498 ruler marks); #452→#457→#461 is a consequence chain, with #461 recorded as *"the vertical mirror of 457"*; and #457 found a repo test comment asserting the opposite of the behaviour. Kept out of ADR-0019 deliberately — consumer policy under ADR-0017, viewport-only; 0024 opens by placing itself on *"the axis ADR-0019 explicitly put out of its own scope"* |
 
 Naming the areas is the point: a maintainer can see a cluster has been re-decided
-long before the person inside it can, so Step 5 starts by asking whether the work
-sits in one of these rather than re-deriving that from scratch each pass.
+long before the person inside it can, so a promotion check starts by asking whether
+the work sits in one of these rather than re-deriving that from scratch each pass.
 
 ## Step 7 — gate matrix + downstream loop
 
@@ -618,7 +667,13 @@ release.md):
 - **No consumer workaround / contract≠defect** — #297/#300 (VS16 FE0F renderer workaround blocked, root → #301); the core per-char width & theme-agnostic color are contracts.
 - **Concept ≠ mechanism** — #150 (accessible-view: VSCode concept, xterm.js extraction mechanism).
 - **Two-lens, never collapse** — #113/#144/#207 (alt-screen cross-buffer via `abs_floor()`); #158 ("fix is small → one lens" caught).
-- **Two-lens divergence *direction* (which way the fix goes)** — a lens finding "differs from the reference" does NOT by itself say "move to the reference". The *direction* depends on what the two lenses **share**: if only the reference lens (②) diverges (the sibling is reference-correct, this layer alone drifted) you move toward the reference; if BOTH lenses share the divergence (sibling == this layer, both drift from the reference) it is a **family** decision — keep the consumer-neutral behaviour now, track the reference-parity fix as a coordinated multi-layer change. #396 (slice-2 `minimumContrastRatio`: Lens ② found justerm-web's double-pass was a *beamterm-forced* compromise the renderer's own architecture doesn't need → moved to xterm's single pass, MORE correct AND still web-neutral for the common case) vs #399 (slice-4 tile re-tint: Lens ① found `renderer == web` byte-for-byte, Lens ② found *both* diverge from xterm → kept web-neutral for #273, family fix tracked #398). One lens structurally cannot make this call — it sees the divergence but not whether the sibling shares it. Deferrals tracked as issues (#398 tile-retint, #400 search-match-solid), so the closed #272 leaves zero silent gaps.
+- **Two-lens divergence *direction* (which way the fix goes)** — **the rule and its
+  routing now live in Step 5 above**, not here, because it was measured to be
+  unreachable from an index: #547 paid ~40% of one pass's main-thread calls
+  re-deriving by hand a call this file already documented, and the index is not read
+  while a pass is being briefed. This entry stays only as the evidence pointer —
+  #396 vs #399, deferrals #398/#400, closed #272 with zero silent gaps. A rule whose
+  only home is the war-story index is a rule that fires after the cost, not before it.
 - **Real round-trip / visual side effects** — #166 (reveal-focus headless miss), #172 (live MCP path), #223 (browser verify skipped).
 - **Probe a runtime fact / readPixels≠screenshot** — #328/#331 (dpr≠1 coord bug green on dpr-1), #352, #337 (tautology); #369 (a throwaway `rustc` probe pinned that an unclamped `+inf` fraction saturates `cursor_thickness`'s `u32` cast to `u32::MAX` — correcting a PR rationale that had credited `frac.max(0.0)`; the setter's `[0,1]` clamp is the load-bearing defence, `frac.max(0.0)` only neutralises `NaN`).
 - **Test-trust gate** — #355 (both RED = you broke the proof; re-run baseline GREEN, remove guards one at a time).
