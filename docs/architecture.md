@@ -164,6 +164,12 @@ alacritty / xterm) or vttest reveals them. **Before implementing any VT-semantic
 #6, #7, #8, #10): read how a reference terminal handles that area and enumerate the hidden state (flags,
 deferred behavior) it tracks — then add what you find here.** Seeds (caught in #2 review, 2026-06-16):
 
+The bullets below are the *seeds* — narrative descriptions of individual pieces of hidden state. The
+**soft-wrap flag and the wide-char-spacer markers specifically** have a consolidated
+**ownership + lifecycle** model — who stores each, which verb sets / clears / repairs it, how reads
+gate — in **ADR-0025**. Read that first for those two; keep these bullets as the implementation detail
+under it.
+
 - **Pending-wrap (deferred last-column wrap).** Printing into the last column does *not* advance to
   the next line — the cursor stays put with a `wrapnext` flag, and wrap happens on the *next* print.
   Eager wrap is a classic off-by-one bug (lines shift). [#2]
