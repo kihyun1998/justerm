@@ -458,10 +458,11 @@ pub(crate) fn reflow(
                 if vacates_for_wide {
                     take -= 1;
                 }
-                // `take == 0` is reachable only at `new_cols == 1`: there is no room to both
-                // drop the lead and keep a column, so the lead is taken alone — and then its
-                // spacer cannot follow it either (handled after the push).
-                let forced_lead_alone = take == 0;
+                // `take == 0` is reachable only at `new_cols == 1`, where a pair cannot be
+                // represented at all. The pair is left split across rows there — malformed, but
+                // *recoverably* so; dropping the spacer instead loses it irreversibly and leaves a
+                // spacer-less lead that `write_glyph`'s orphan repair then uses to free a real
+                // neighbouring character. Tracked with the minimum-width proposal.
                 let take = take.max(1); // guard the 1-col degenerate case
                 // Segment maps: entries in [i, i+take) re-keyed to col - i.
                 let seg_comb: Combining = comb
@@ -488,18 +489,10 @@ pub(crate) fn reflow(
                 // sets `.wide = .spacer_head` (`PageList.zig:1767`). The cell stays a **default**
                 // blank: unlike the print path (#528), reflow has no pen — it is a re-split of
                 // rows that already exist — and all three references build it from defaults.
-                if vacates_for_wide && !forced_lead_alone {
+                if vacates_for_wide && take < new_cols {
                     row.cells[new_cols - 1].set_leading_spacer();
                 }
                 i += take;
-                // At one column a pair cannot be represented at all, and the crate already
-                // decided what that looks like: `write_glyph` gates the spacer on
-                // `col + 1 < cols`, so it writes the lead alone. Reflow follows rather than
-                // stranding the spacer on its own row, where it would be a lead-less orphan —
-                // an ADR-0025 D4 break that bisects the logical word.
-                if forced_lead_alone && i < line.len() && line[i].is_wide_spacer() {
-                    i += 1;
-                }
                 if i < line.len() {
                     row.set_wrapped(true);
                 }
