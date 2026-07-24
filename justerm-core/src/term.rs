@@ -2655,8 +2655,29 @@ impl Term {
     /// makes it a repair). A frame-mode consumer therefore kept painting the destroyed glyph.
     /// Bundling the reset with its damage is the point of this helper: a repair site added later
     /// cannot forget the half that has no compiler behind it (#530).
+    ///
+    /// The cell it leaves is a **blank carrying the current background** — the same rule
+    /// `clear_cells` already applies to a BCE erase, extended to the repair, so one sentence
+    /// covers both: *a blank cell carries the current background.* A bare `Cell::default()`
+    /// would punch an uncoloured notch into a coloured run, which no reference implementation
+    /// does.
+    ///
+    /// Deliberately the pen's **background only** — not its full attributes. Taking the whole pen
+    /// (xterm.js `setCellFromCodepoint(x, 0, 1, curAttr)`) would plant the pen's hyperlink and,
+    /// worse, its DECSCA protection onto a cell the app never wrote — a cell no later erase could
+    /// clear. Taking the *cell's own* attributes (alacritty `clear_wide`, which keeps `extra`)
+    /// would leave the destroyed glyph's hyperlink alive and clickable, the defect #529 is filed
+    /// against. Both were considered and rejected; the maintainer chose this on 2026-07-24 and it
+    /// is theirs to reverse (see #530 for what they were shown).
+    ///
+    /// Known cost, accepted rather than overlooked: with DECSCA the freed cell loses its
+    /// protection. ghostty has the same hole and flags it in its own source; justerm does not
+    /// implement DECSCA today, so revisit if it lands.
     fn free_cell(&mut self, row: usize, col: usize) {
-        self.grid.cell_mut(row, col).reset();
+        let bg = self.cursor.pen.bg;
+        let cell = self.grid.cell_mut(row, col);
+        cell.reset();
+        cell.set_bg(bg);
         self.damage_span(row, col, col);
     }
 
