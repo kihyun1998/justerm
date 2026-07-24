@@ -1913,6 +1913,73 @@ impl Term {
         cells[col].is_leading_spacer() && col + 1 == cells.len()
     }
 
+    /// A `' '` cell the word walk passes *through* rather than stopping on, because it
+    /// belongs to a glyph and is not a gap between words. Two kinds, gated differently
+    /// (ADR-0025 D3 — position is part of the definition):
+    /// - a wide glyph's **trailing** spacer (`is_wide_spacer`) — transparent where it actually
+    ///   continues a wide lead whose character is not itself a boundary. A trailing spacer
+    ///   carries no character of its own; it *stands for its lead* (ADR-0025 D4 — the pair is
+    ///   one unit), so both halves of that test read the lead, never the spacer;
+    /// - the **leading**-spacer wrap artefact — transparent *only* at the last column of a
+    ///   wrapped row (`is_wrap_artefact`); a marker a row-shift carried inward describes
+    ///   nothing and must still end a word (#528).
+    ///
+    /// Reading the spacer cell alone was wrong twice, both caught by the two-lens pass and
+    /// both measured: **U+3000** IDEOGRAPHIC SPACE is wide *and* `is_whitespace()`, so the walk
+    /// stepped onto its second cell before breaking on the lead and started the highlight on
+    /// half a glyph (`　abc`, double-click `a` → `1..=4` instead of `2..=4`); and a **lead-less**
+    /// trailing spacer (#529's orphan) claimed to continue a glyph that is not there, merging
+    /// two words in the clipboard. Requiring a wide, non-boundary lead answers both. Note the
+    /// boundary clause has exactly **one** live trigger under the current fixed set — U+3000;
+    /// `│` is East-Asian-Ambiguous (width 1) and the rest of the set is ASCII — so it is a real
+    /// case, not a class.
+    ///
+    /// Resolving a spacer through its lead is alacritty's idiom, in a walk:
+    /// `term/search.rs:457-460` (`skip_wide`) *replaces* a `WIDE_CHAR_SPACER` cell with
+    /// `iter.prev()` and matches on that. Ghostty states the same principle in its print path
+    /// (`Terminal.zig:1132-1142`, *"the previous cell is a wide spacer tail, so we actually want
+    /// the cell before that because that has the actual content"*), and its **write-side**
+    /// integrity rule is this predicate clause for clause — `page.zig:514-534` rejects a spacer
+    /// tail at `x == 0` and one whose `cells[x-1].wide != .wide`. What ghostty does *not* do is
+    /// model this in its own word selection: `Screen.zig:3204` `selectWord` breaks on
+    /// `!hasText()`, i.e. it classifies the spacer cell and stops there — the pre-#535 justerm
+    /// behaviour. Do not read ghostty's selection code as precedent for this.
+    ///
+    /// Gating on the char alone cut every CJK word at its first glyph, because a trailing
+    /// spacer's char is a space and read as a boundary (#535). For that **trailing** kind the
+    /// walk was the crate's outlier — `append_cell`, `viewport_logical_lines` and `search`
+    /// already skipped it. It now matches alacritty, which gates the flag in both inline walkers
+    /// (`search.rs:556`, `:580`) plus a forward normalizer in `semantic_search_left` (`:521-525`)
+    /// — `semantic_search_right` has no gate at all. xterm.js converges on the *transparency*
+    /// only (`_isCharWordSeparator` returns early on a width-0 cell): its stated reason is that
+    /// such cells *"are always to the right of wide characters"*, which is precisely the
+    /// assumption the lead-less clause above exists to reject.
+    ///
+    /// For the **leading** kind the comparison inverts, and not in this walk's favour: those
+    /// same extractors gate on `is_spacer()` with *no* position test, so a marker stranded
+    /// mid-row is dropped from the text and two visually separate words merge. Measured on a
+    /// 6-column screen — `"cde"` + a DCH-stranded marker + `"XY"` renders as `cde XY` but
+    /// copies as `"cdeXY"`, and `search("cdeXY")` matches. The position rule here bounds the
+    /// selection *range*; it cannot fix that *text*. So do not "align" this walk with the
+    /// extractors — the direction is the other way, and #534 (nothing clears a stale marker)
+    /// subsumes both by fixing it at the write site.
+    ///
+    /// Note what that makes the position clause: a read-site approximation of the invariant
+    /// ghostty enforces when writing (a mid-row spacer head is `unreachable` there, because a
+    /// row shift clears it). Alacritty, which gates leading-everywhere, does *not* clear it on
+    /// `delete_chars` either — so its unconditional gate has this same merge defect. Once #534
+    /// lands, `is_wrap_artefact`'s position clause is redundant rather than load-bearing.
+    fn is_walk_transparent_spacer(&self, line: usize, col: usize) -> bool {
+        if self.is_wrap_artefact(line, col) {
+            return true;
+        }
+        let cells = self.abs_line(line);
+        cells[col].is_wide_spacer()
+            && col > 0
+            && cells[col - 1].is_wide()
+            && !is_word_boundary(cells[col - 1].c())
+    }
+
     /// Walk left to the first cell of `p`'s word (a maximal run of non-boundary
     /// chars), following a soft wrap into the previous row.
     fn word_start(&self, p: BufferPoint) -> BufferPoint {
@@ -1922,7 +1989,9 @@ impl Term {
             // The wrap artefact represents no column of text, so the walk passes *through* it
             // rather than stopping — else a word that wrapped only because a wide glyph did not
             // fit would be cut in half (#528).
-            if !self.is_wrap_artefact(pl, pc) && is_word_boundary(self.abs_line(pl)[pc].c()) {
+            if !self.is_walk_transparent_spacer(pl, pc)
+                && is_word_boundary(self.abs_line(pl)[pc].c())
+            {
                 break;
             }
             line = pl;
@@ -1937,8 +2006,10 @@ impl Term {
         let cells = self.abs_line(p.line);
         let (mut line, mut col) = (p.line, p.col.min(cells.len().saturating_sub(1)));
         while let Some((nl, nc)) = self.next_pos(line, col) {
-            if !self.is_wrap_artefact(nl, nc) && is_word_boundary(self.abs_line(nl)[nc].c()) {
-                break; // (see `word_start`: the artefact is transparent to the walk)
+            if !self.is_walk_transparent_spacer(nl, nc)
+                && is_word_boundary(self.abs_line(nl)[nc].c())
+            {
+                break; // (see `word_start`: a glyph's spacer is transparent to the walk)
             }
             line = nl;
             col = nc;
@@ -3085,6 +3156,16 @@ impl Term {
     /// Background Color Erase (BCE): erased cells carry the current SGR
     /// background only — fg and text attributes reset to default (matches
     /// xterm/alacritty, where the fill is `cursor.template.bg.into()`).
+    ///
+    /// **Cleared concern, with its validity condition — an empty range would break the pair
+    /// invariant.** With `from == to` the first guard below still frees the lead at `from - 1`
+    /// while the second is skipped (`to > from` is false) and the fill loop does nothing, so the
+    /// spacer at `from` would survive its lead — an ADR-0025 D4 break, and the exact lead-less
+    /// orphan the word walk must then treat as opaque. This is unreachable **as long as every
+    /// caller passes a non-empty range**, which holds today: `ECH` clamps to
+    /// `(col + n).min(cols)` with `n >= 1` (both `CSI X` and `CSI 0 X` erase one cell), and every
+    /// `EL`/`ED` site passes `0..cols` or `0..=cursor`. A future caller that can pass an empty
+    /// range must guard here first.
     fn clear_cells(&mut self, row: usize, from: usize, to: usize) {
         let cols = self.grid.cols();
         // Don't orphan a wide char straddling the erase boundary.

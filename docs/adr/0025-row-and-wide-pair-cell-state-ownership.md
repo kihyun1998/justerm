@@ -98,6 +98,25 @@ from the rule, not from the issue:
 - **#535** — the word walkers are READ sites and must gate on **both** spacer kinds (D2, "gate
   uniformly"); every other extractor already does (`is_spacer()`), so the walkers are the outlier
   inside the crate as well as against alacritty.
+  **Amended by the implementation (2026-07-24).** "Gate uniformly" means *apply the model
+  uniformly*, not *call `is_spacer()`*. Implementing it showed the bare predicate is wrong twice
+  over, and both corrections come straight out of D3 and D4:
+  - by **D3**, the leading kind is transparent only at the last column of a wrapped row, so the
+    walkers use `is_wrap_artefact`, not `is_leading_spacer`. `is_spacer()` has no position test;
+    using it would re-open #528.
+  - by **D4**, a *trailing* spacer carries no character of its own — it stands for its lead — so
+    the walkers resolve it **through the lead**: transparent only where `col > 0`, the previous
+    cell `is_wide()`, and that lead is not itself a word boundary. Reading the spacer cell alone
+    started a highlight on half of a wide whitespace glyph (U+3000 is wide *and*
+    `is_whitespace()`), and let the walk cross #529's lead-less orphan and merge two words in the
+    clipboard.
+
+  The correction is the ADR working as intended — D4 answered a combination this list had not
+  anticipated — but it is recorded here because the original line, read as a standing instruction,
+  says to do the thing that is wrong. Note also what it does **not** fix: the extractors
+  (`append_cell`, `viewport_logical_lines`, `search`) still gate `is_spacer()` with no position
+  test, so a stranded marker still merges words in the *text*. That is a read-site symptom of
+  #534 and is fixed at the write site, not by widening this predicate.
 - **#540** — the row-shift verbs are CLEAR sites for the **wrap flag** (D2): end the wrap on the row
   above a shifted region, using `end_wrap`, the wrap-flag analogue of #534's marker clear.
 - **#529** — a pair-move D4 violation: carry the trailing half.
