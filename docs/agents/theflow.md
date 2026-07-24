@@ -132,7 +132,17 @@ Two things this buys beyond speed, both load-bearing:
 
 **Refreshing a pin is a deliberate act, not a habit.** `git fetch --depth 1 && git
 reset --hard origin/<default>`, then update the SHA here in the same change — a pin
-that moves silently makes every recorded citation unverifiable at once.
+that moves silently makes every recorded citation unverifiable at once. A refresh
+also invalidates the line numbers in `reference-facts.md`; re-verify the rows it
+moves in the same change.
+
+**Start from `docs/agents/reference-facts.md`, not from a blank tree.** It is the
+accumulated map of what each reference actually does — every row `file:line` at the
+pinned SHA, grepped before it was recorded. Read the section covering your area first,
+then go to source for what is missing, and add what you learn back as a row. Three of
+its rows exist because the obvious grep hit gives the *wrong* answer (ghostty's two
+`clearCells`, xterm.js's `save`/`restore` bracket around the underline ink, and which
+function actually takes `clearWrap`) — that is the class of mistake the file is for.
 
 | Change type | Real source to read |
 |---|---|
@@ -273,6 +283,29 @@ and collect before opening the PR, so the wall clock is `max(lens, rest)` rather
 than the sum. The discipline is unchanged and is the *only* part that is
 non-negotiable: **no merge before the findings are harvested and dispositioned.**
 Sequencing is not discipline; harvesting is.
+
+**Brief each lens with a frontier and with what is already known.** Without both, a
+pass spends most of its budget re-walking ground the last one covered — the wide-glyph
+neighbourhood was enumerated from scratch by #528, #529, #533, #534 and #535 in turn.
+The brief carries four things:
+
+1. **The frontier** — the functions the diff touches, plus one hop of callers and
+   callees, plus the invariants `architecture.md` names for that area. This bounds how
+   *far* the lens walks. It does **not** bound whether it runs: that is still
+   enumeration risk (above), and the three unconditional surfaces ignore the frontier
+   entirely.
+2. **The open-issue list** (`gh issue list`). A gap that is already filed comes back as
+   one line — *"already filed: #534"* — instead of a fresh three-page write-up. Being
+   re-found is signal about reachability, but it is cheap signal; pay one line for it.
+3. **The relevant rows of `reference-facts.md`**, so lens ② starts from the map rather
+   than re-deriving it, and so a row that turns out wrong gets corrected rather than
+   silently re-learned.
+4. **What the last pass on this area found**, when there was one. A lens that knows
+   #532 already fixed the leading-spacer half of a predicate looks at the trailing half
+   (which is exactly how #535 was found).
+
+Anything outside the frontier that the lens notices anyway is still reported — the
+frontier is a search order, not a gag.
 Precedent: #113 logical-lines (single-buffer view missed the alt-screen
 cross-buffer defect; also surfaced the same bug in `search()` → #144; the
 `abs_floor()` centralization covers logical_lines/#113 · search/#144 ·
