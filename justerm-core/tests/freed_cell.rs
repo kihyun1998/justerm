@@ -103,6 +103,9 @@ fn inserting_at_a_wide_spacer_damages_the_lead_it_strands() {
     t.feed(b"\x1b[1@");
     assert_eq!(t.grid().cell(0, 2).c(), ' ');
     assert_damaged(&t, 0, 2, "insert_chars repair below the shifted range");
+    // The same ICH also frees the spacer the shift pushed off its lead, one column up.
+    assert_damaged(&t, 0, 4, "insert_chars repair above the shifted range");
+    assert_eq!(t.grid().cell(0, 4).bg(), Color::Indexed(2));
 }
 
 #[test]
@@ -207,4 +210,90 @@ fn the_freed_cell_reaches_a_frame_mode_consumer() {
     let cell = &span.cells[2 - span.left as usize];
     assert_eq!(cell.c(), ' ');
     assert_eq!(cell.bg(), Color::Indexed(2));
+}
+
+// ---- the sites a mutation pass found unpinned -------------------------------------------
+
+#[test]
+fn deleting_a_wide_lead_frees_the_spacer_left_behind() {
+    // DCH deletes the lead itself; the spacer that slides into its place has no lead any more.
+    let mut t = red_run_green_pen();
+    t.feed(b"\x1b[1;3H"); // onto 한's lead
+    t.reset_damage();
+    t.feed(b"\x1b[1P");
+    assert!(
+        !t.grid().cell(0, 2).is_wide_spacer(),
+        "the stranded spacer was freed"
+    );
+    assert_eq!(t.grid().cell(0, 2).bg(), Color::Indexed(2));
+    assert_damaged(&t, 0, 2, "delete_chars repair of the stranded spacer");
+}
+
+#[test]
+fn inserting_pushes_a_wide_lead_to_the_last_column_and_frees_it() {
+    // ICH shifts a wide lead to the last column, where its spacer no longer fits. That repair
+    // targets `cols - 1` unconditionally — the one site that can sit far from the shift.
+    let mut t = Engine::new(6, 3);
+    t.feed(b"\x1b[41m");
+    t.feed("abc\u{D55C}".as_bytes()); // 한 at columns 3-4
+    t.feed(b"\x1b[42m");
+    t.feed(b"\x1b[1;1H");
+    t.reset_damage();
+    t.feed(b"\x1b[2@"); // shift right by 2 → the lead reaches the last column
+    let last = t.grid().cell(0, 5);
+    assert!(!last.is_wide(), "no wide lead survives at the last column");
+    assert_eq!(
+        last.bg(),
+        Color::Indexed(2),
+        "freed into the pen's background"
+    );
+    assert_damaged(&t, 0, 5, "insert_chars repair at the right margin");
+}
+
+#[test]
+fn a_promotion_that_overwrites_a_wide_glyph_frees_its_far_half() {
+    // mode 2027: a narrow base promoted to width 2 writes its spacer over a wide glyph's lead,
+    // stranding that glyph's spacer one column further on.
+    let mut t = Engine::new(8, 3);
+    t.feed(b"\x1b[?2027h\x1b[41m");
+    t.feed("\u{1F1F0}".as_bytes()); // 🇰 — a lone regional indicator, narrow, at column 0
+    t.feed(b"\x1b[1;2H");
+    t.feed("\u{D55C}".as_bytes()); // 한 at columns 1-2
+    t.feed(b"\x1b[42m");
+    t.feed(b"\x1b[1;1H"); // back onto the RI so the next RI joins it
+    t.feed(b"\x1b[C"); // …but the cursor must sit just past it for the join
+    t.reset_damage();
+    t.feed("\u{1F1F7}".as_bytes()); // 🇷 joins → promotes to wide → spacer lands on 한's lead
+
+    assert!(
+        t.grid().cell(0, 0).is_wide(),
+        "the flag promoted to width 2"
+    );
+    assert!(
+        !t.grid().cell(0, 2).is_wide_spacer(),
+        "한's stranded spacer was freed"
+    );
+    assert_eq!(t.grid().cell(0, 2).bg(), Color::Indexed(2));
+    assert_damaged(&t, 0, 2, "promote_cluster_to_wide repair of the far half");
+}
+
+#[test]
+fn the_wrap_vacate_frees_its_orphaned_lead_into_the_pens_background() {
+    // `vacate_for_wrap`'s own repair (#528) goes through the same helper, so it takes the pen
+    // too — and its two cells (the freed lead and the written artefact) agree, because the pen
+    // has not moved between them.
+    let mut t = Engine::new(4, 3);
+    t.feed(b"\x1b[41m");
+    t.feed("ab\u{D55C}".as_bytes()); // 한 at columns 2-3
+    t.feed(b"\x1b[42m");
+    t.feed(b"\x1b[1;4H"); // onto 한's spacer, the last column
+    t.feed("\u{AC00}".as_bytes()); // wide, cannot fit → vacate col 3, free the lead at col 2
+
+    assert_eq!(t.grid().cell(0, 2).bg(), Color::Indexed(2), "freed lead");
+    assert_eq!(t.grid().cell(0, 3).bg(), Color::Indexed(2), "wrap artefact");
+    assert_eq!(
+        t.grid().cell(0, 1).bg(),
+        Color::Indexed(1),
+        "and the untouched neighbour keeps the run's red"
+    );
 }

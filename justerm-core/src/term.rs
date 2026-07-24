@@ -2662,13 +2662,26 @@ impl Term {
     /// would punch an uncoloured notch into a coloured run, which no reference implementation
     /// does.
     ///
-    /// Deliberately the pen's **background only** — not its full attributes. Taking the whole pen
+    /// Deliberately the pen's **background only** — not its full attributes, and this is not a
+    /// compromise between references: it is byte-for-byte xterm.js's `_eraseAttrData()`
+    /// (`DEFAULT_ATTR_DATA` + `curAttr.bg & ~0xFC000000`, i.e. default everything plus the pen's
+    /// background colour), which is what its `replaceCells` / `insertCells` / `deleteCells`
+    /// repairs are handed — eight of the twelve sites here. Only xterm's *print* path uses the
+    /// whole pen. Taking the whole pen
     /// (xterm.js `setCellFromCodepoint(x, 0, 1, curAttr)`) would plant the pen's hyperlink and,
     /// worse, its DECSCA protection onto a cell the app never wrote — a cell no later erase could
     /// clear. Taking the *cell's own* attributes (alacritty `clear_wide`, which keeps `extra`)
     /// would leave the destroyed glyph's hyperlink alive and clickable, the defect #529 is filed
     /// against. Both were considered and rejected; the maintainer chose this on 2026-07-24 and it
     /// is theirs to reverse (see #530 for what they were shown).
+    ///
+    /// Known limitation, pre-existing and wider than this helper: `reset()` clears the whole
+    /// content word, so freeing the **last** column also drops that row's `WRAPLINE` and breaks
+    /// the soft-wrap link. A plain `EL` on a wrapped row already does the same, so the root is
+    /// that a *row* property is stored in a cell — not something to patch here alone, or this
+    /// path and the erase path would disagree. Both references keep it out of reach: ghostty and
+    /// xterm.js hold it on the row/line, and xterm.js's `replaceCells` takes `clearWrap` as an
+    /// explicit argument rather than letting a cell clear decide it.
     ///
     /// Known cost, accepted rather than overlooked: with DECSCA the freed cell loses its
     /// protection. ghostty has the same hole and flags it in its own source; justerm does not
@@ -2733,8 +2746,7 @@ impl Term {
         // strands the lead. That is unrecoverable rather than merely untidy — every repair path
         // keys off `is_wide_spacer()`, so once the marker is gone no later write, ECH, EL, ICH
         // or DCH can ever clear the orphan.
-        let repaired_lead = col > 0 && self.grid.cell(row, col).is_wide_spacer();
-        if repaired_lead {
+        if col > 0 && self.grid.cell(row, col).is_wide_spacer() {
             self.free_cell(row, col - 1);
         }
         let mut vacated = self.cursor.pen.cell(' ');
@@ -2744,11 +2756,10 @@ impl Term {
         let ext = self.pen_ext_attrs();
         self.grid.row_mut(row).set_ext_attrs(col, ext);
         // The cell's contents changed, so a frame-mode consumer must be told or it keeps painting
-        // the old glyph (ADR-0003: every mutation site records damage) — and that covers the
-        // repaired lead too, which is a second changed cell, not a bookkeeping detail. ghostty
-        // pins exactly this: its "print over wide spacer tail" test asserts the dirty bit on the
-        // *repaired lead*, not on the cell that was written.
-        self.damage_span(row, col - usize::from(repaired_lead), col);
+        // the old glyph (ADR-0003: every mutation site records damage). The *repaired* lead above
+        // is damaged by `free_cell`, which owns that pairing for all twelve repair sites — this
+        // site used to hand-roll it, and keeping both left neither able to discriminate.
+        self.damage_span(row, col, col);
     }
 
     /// Write one glyph at the cursor, handling deferred wrap and the wide-char

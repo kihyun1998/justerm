@@ -217,6 +217,32 @@ deferred behavior) it tracks — then add what you find here.** Seeds (caught in
   value. [#521]
 - **Background Color Erase (BCE).** Erase (ED/EL) fills cleared cells with the *current SGR
   background*, not default. [#8; note in #2 if deferred]
+- **A blank cell carries the current background — including one no app asked for.** BCE covers the
+  blanks an *erase* creates. The same rule governs the blanks a **structural repair** creates: when
+  an overwrite, erase or row shift destroys one half of a width-2 glyph, the engine frees the other
+  half to keep its no-orphan invariant, and that cell is a blank in the pen's background, not a
+  `Cell::default()`. Otherwise a coloured run gets an uncoloured notch wherever a wide glyph was
+  broken. Note the repair is **not** an erase — the app asked for something at a *different* column
+  — so two things follow that an erase gets for free. ① It **damages**: the freed cell lies outside
+  the operation's own range by construction, so every function's own span misses it, and a
+  frame-mode consumer keeps painting the destroyed glyph. Reset and damage are bundled in
+  `Term::free_cell` precisely because the damage half has no compiler behind it. ② It takes the
+  pen's **background only**. Taking the pen's full attributes would plant its hyperlink — and its
+  DECSCA protection — on a cell the app never wrote; keeping the *cell's own* attributes would
+  leave the destroyed glyph's hyperlink alive and clickable. Both were rejected; see #530 for the
+  record and for the accepted cost (a freed cell loses DECSCA protection, as it does in ghostty).
+  The value is not a compromise between references — it is xterm.js's `_eraseAttrData()` exactly
+  (`DEFAULT_ATTR_DATA` plus `curAttr.bg & ~0xFC000000`), which is what its `replaceCells` /
+  `insertCells` / `deleteCells` repairs are handed; only its *print* path uses the whole pen.
+  **A row property must not live where a cell clear can reach it.** `WRAPLINE` is stored in the
+  last cell, and `Cell::reset()` clears the whole content word — so freeing (or erasing) the last
+  column silently breaks that row's soft-wrap link and splits the logical line. Both references
+  put it out of reach: ghostty holds `wrap` on the `Row`, xterm.js holds `isWrapped` on the
+  `BufferLine` and makes `replaceCells` take `clearWrap` as an explicit argument. Unfixed here —
+  the root is the storage location, and patching one caller would only make it disagree with the
+  erase path.
+  **Still inconsistent, deliberately unfixed here:** `LF`/`RI` expose a *default* line while
+  `SU`/`SD`/`IL`/`DL` expose a BCE one — the crate does not yet agree with itself everywhere. [#530]
 - **Cursor-move damage (the previous cursor cell is hidden damage).** Moving the cursor changes *no
   cell content*, so a content-only damage model records nothing — yet the rendered output changed. How
   the cursor is *drawn* is the renderer's choice: justerm-renderer draws it as a **native overlay**

@@ -312,7 +312,12 @@ impl Cell {
         self.bg &= !bg;
     }
 
-    /// Reset to a blank default cell.
+    /// Reset to a blank **default** cell — default background included.
+    ///
+    /// That is rarely what a terminal operation wants on its own: a blank the engine creates
+    /// carries the current background (BCE for an erase, and the same for a structural repair,
+    /// #530). Callers pair this with `set_bg`; `Term::free_cell` and the erase paths are the
+    /// places that do. Using it bare leaves an uncoloured notch in a coloured run.
     pub fn reset(&mut self) {
         *self = Cell::default();
     }
