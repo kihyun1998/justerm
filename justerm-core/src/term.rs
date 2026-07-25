@@ -2777,14 +2777,15 @@ impl Term {
     /// against. Both were considered and rejected; the maintainer chose this on 2026-07-24 and it
     /// is theirs to reverse (see #530 for what they were shown).
     ///
-    /// Known limitation, pre-existing and wider than this helper: `reset()` clears the whole
-    /// content word, so freeing the **last** column also drops that row's `WRAPLINE` and breaks
-    /// the soft-wrap link. A plain `EL` on a wrapped row already does the same, so the root is
-    /// that a *row* property is stored in a cell — not something to patch here alone, or this
-    /// path and the erase path would disagree. Both references keep it out of reach: ghostty and
-    /// xterm.js hold it on the row/line, and xterm.js takes `clearWrap` as an explicit argument
-    /// on its erase helper (`_eraseInBufferLine`, `InputHandler.ts:1175`) rather than letting a
-    /// cell clear decide it.
+    /// What used to be recorded here as a known limitation is **resolved** (#538, ADR-0025 D1):
+    /// `reset()` still clears the whole content word, but the soft-wrap link is no longer part of
+    /// it. The live flag is on the `Row`, so freeing the last column — here or on the erase path —
+    /// cannot break a wrap; `CellFlags::WRAPLINE` is wire-only, derived onto the last cell at
+    /// encode time and never read back (`cell.rs`). Ending a wrap is now an explicit per-verb call
+    /// (`end_wrap`), which is the shape both references already had and the reason the move was
+    /// made: ghostty and xterm.js hold the flag on the row/line, and xterm.js takes `clearWrap` as
+    /// an explicit argument on its erase helper (`_eraseInBufferLine`, `InputHandler.ts:1175`)
+    /// rather than letting a cell clear decide it.
     ///
     /// Known cost, accepted rather than overlooked: with DECSCA the freed cell loses its
     /// protection. ghostty has the same hole and flags it in its own source; justerm does not

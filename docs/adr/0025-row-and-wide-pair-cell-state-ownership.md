@@ -1,9 +1,13 @@
 # ADR-0025: Row-scoped and wide-pair-scoped state has one owner and one lifecycle, not a per-verb rule
 
-Status: **proposed** (2026-07-24). DRAFT for adjudication — promotes the model that has been
-accreting one issue at a time across the soft-wrap / wide-char-spacer cluster (#521, #528, #530,
-#532, #533, #534, #535, #538, #540, and the wire-derivation half of #7) into a single record that
-*derives* the open questions instead of answering each verb separately. Scoped to **core VT buffer
+Status: **proposed** (2026-07-24; roster refreshed 2026-07-25). DRAFT for adjudication — promotes
+the model that has been accreting one issue at a time across the soft-wrap / wide-char-spacer
+cluster (#521, #528, #530, #532, #533, #534, #535, #538, #540, and the wire-derivation half of #7)
+into a single record that *derives* the open questions instead of answering each verb separately.
+That list is the *history* the record was promoted out of. The **live roster and its status live in
+#552**, not in this file: a hand-copied roster went stale in five places within three days of being
+written (2026-07-25 audit), while D1–D4 needed no edit at all. This file holds the rule; the tracker
+holds who is open. Scoped to **core VT buffer
 state** — how a row/pair property is stored, set, cleared, repaired and read. What such a cell then
 *composites to* is ADR-0019 (renderer); this is one layer below it, the same relation ADR-0024 has to
 ADR-0019.
@@ -61,6 +65,17 @@ the pair's designated cell for pair properties. Where the wire format forces the
 encode time and is never the authoritative copy** — no live reader consults it. `#538` realised this for
 the wrap flag; a future packing pressure on a spacer marker takes the same shape.
 
+A derived bit carries **two** obligations, not one — the encode-side derivation *and* the decode-side
+re-arm — and only the first is visible at the site that writes it. `WRAPLINE` satisfies the second for
+free, because it is a `CellFlags` bit (`cell.rs:39`) and so travels in the flags byte: `serialize.rs`
+never names it, and the derivation in `term.rs::frame` is the whole story. A presence bit that lives
+*outside* `CellFlags` has to be reconstructed from whether its wire group carries an entry, and #531 is
+that second obligation missing on the ucolor rider (the encoder sets it, the decoder never re-arms it, so
+`Cell::is_ucolored()` lies on every decoded cell). Cross-linked, **not folded**: #531 is a codec
+conformance bug, not a row/pair ownership question. It is recorded here because it is the general form
+of a clause this ADR states for exactly one bit, and because a *future* packing of a spacer marker
+(the sentence above) would inherit the same trap.
+
 **D2 — One property, one lifecycle, spelled out per verb — not "remember the rule everywhere".** Each
 such property has exactly one SET site-class, one CLEAR/REPAIR discipline, and read sites that gate
 **uniformly**. The alternative — a rule a human re-applies at each new write/erase/shift site — is
@@ -111,10 +126,13 @@ is still correct for any future caller computing `col + width`.
 D4's scope is unchanged in the other direction: the floor guarantees *room* for a pair, not that every
 verb carries it. #529 is still an open D4 violation at any width.
 
-### Conformance map (the open cluster, resolved *against* D1–D4)
+### Conformance map (resolved *against* D1–D4)
 
 These stop being independent "(a) or (b)" decisions and become conformance items; the fix site follows
-from the rule, not from the issue:
+from the rule, not from the issue.
+
+**Status: #552.** The entries below hold each item's *rule* — which decision it conforms to, and where
+the fix site follows from. Whether it is still open is the tracker's answer, not this file's.
 
 - **#533** — reflow is a SET site for the artefact (D2). It creates the vacated column, so it owes
   `set_leading_spacer()`, exactly as `write_glyph`'s wrap path does. (The padding cell stays
@@ -144,6 +162,13 @@ from the rule, not from the issue:
   (`append_cell`, `viewport_logical_lines`, `search`) still gate `is_spacer()` with no position
   test, so a stranded marker still merges words in the *text*. That is a read-site symptom of
   #534 and is fixed at the write site, not by widening this predicate.
+
+  **One rationale in that amendment is now pinned to #545.** Keeping U+3000 a word boundary (via
+  `char::is_whitespace()`) was argued *on the grounds that core has no injection point for the
+  boundary set* — which is exactly what #545 is filed to add. #545 is **not** a conformance item of
+  this ADR (it is policy routing, ADR-0017 — see "Adjacent" below), but when it lands, this
+  rationale must be re-stated as a **default the consumer may override** rather than as a property
+  of the predicate. Recorded so the sweep reaches it from here.
 - **#540** — the row-shift verbs are CLEAR sites for the **wrap flag** (D2): end the wrap on the row
   above a shifted region, using `end_wrap`, the wrap-flag analogue of #534's marker clear.
 - **#529** — a pair-move D4 violation: carry the trailing half.
@@ -154,15 +179,43 @@ from the rule, not from the issue:
   `col + width`. Re-scoped, not closed.
 - **#547** — not a conformance item but D4's **precondition**: `MIN_COLUMNS = 2` is what makes "both
   halves move together" satisfiable at every supported size. See the D4 note above.
+- **#549** — a **D1 read-side** violation in reflow, and the item that showed this list had a blind
+  spot (added 2026-07-25, filed 2026-07-24 out of #533's lens pass and missed by two amendments of
+  this record). The re-split loop in `grid.rs` does three things, and this ADR already owned two of
+  them: it sets the artefact marker (#533, D2 SET) and it sets the row's wrap flag (D1). The third —
+  mapping each tracked point (cursor, selection anchors, OSC-133 columns) to its new position — is
+  the one that is wrong, and wrong for a reason this model names: it **re-derives** a fact the loop
+  already owns instead of reading the owner. `new_points[pi] = (start + off / new_cols, off %
+  new_cols)` (`grid.rs:508`) assumes every emitted row holds `new_cols` content cells, while the
+  loop deliberately emits a short row (`take -= 1`, `grid.rs:457`) whenever a row would end on a
+  `WIDE_CHAR` lead — i.e. **the divergence exists only because of D4**, the pair that must not be
+  split. Every wide glyph on a re-split boundary drifts every later anchor by one cell, and the
+  errors accumulate until the point crosses into a neighbouring row. The fix follows from the rule:
+  record the point *inside* the emit loop, where the segment's true `[i, i + take)` extent is known
+  and where `set_wrapped` is already decided — not from arithmetic after the fact.
+- **#531** — not a conformance item; the decode-side half of D1's derived-bit clause, on a different
+  rider. See the D1 note above.
 
 ### Adjacent, deliberately *not* folded in
 
 **"Background is not content" is a different rule and stays separate.** Reflow trims a hard-ended line
 by *content* (`is_blank()`), not full-cell equality, so a BCE-coloured tail does not re-split into a
-phantom row (the current `fix/reflow-trim-by-content` work). That is about *where a line ends*, and it
+phantom row (shipped in `0cd5216`, the #530 follow-up). That is about *where a line ends*, and it
 sits next to D1–D4 in the same file, but it governs the *background*, which these rules explicitly say
 nothing about (#530: a freed/erased blank keeps its background; trimming decides length, it does not
 blank a cell). Recorded here only so the neighbour is not later mistaken for a fifth rule of this model.
+
+**Which characters separate words is policy, not state (#545).** The word walkers are read sites this
+ADR does govern (see #535), but the *boundary set* they consult is a different axis entirely: ADR-0017
+routes it to the consumer (mechanism in core, policy injected), and all three references expose it as a
+user knob. Folding it in here would put a policy decision inside a state-ownership record and let a
+future reader think D1–D4 have an opinion about character classes; they have none. The only tie is the
+stale-rationale pin recorded under #535 above.
+
+**Snapping a consumer-side span to a wide pair is projection, not ownership (#454).** That a decoration
+or selection span must not bisect a width-2 glyph is D4's *echo* one layer up, but the span lives in the
+consumer and is resolved against the frame, so it belongs to ADR-0024 (projection/precedence) with
+ADR-0019 underneath. This record stops at the core buffer, exactly as alternative (C) below says.
 
 ## Named prior art
 
@@ -191,6 +244,15 @@ history above.
   record; a *new* verb added later (a future scroll/insert primitive) inherits the SET/CLEAR/REPAIR
   obligation by construction, the way #521's `ext_attrs` carry became automatic once it was stated as
   "carry the whole family in one step".
+  **Measured boundary of that claim (2026-07-25, #549).** "By construction" holds for a *property* —
+  something that is set, cleared, repaired and read. It did **not** cover a row's **extent**: reflow
+  inherited the SET obligation (#533) and still shipped with a point mapping that re-derived how many
+  cells a row holds, because no D1–D4 clause says a non-uniform emission has an owner to consult. The
+  narrow reading is that D1's "no live reader consults the derived copy" extends from *bits* to any
+  *re-derivation* of an owned fact, which is how #549 is filed above. The wider reading — a fifth rule
+  covering non-uniform emission generally — is **not taken here**: one instance is not a pattern, and
+  alternative (D) below is the standing reason this record grows per-property rather than by
+  aggregate. Revisit if a second non-uniform emitter appears.
 - `end_wrap`'s per-verb table, `drop_artefact_if_erased`, and the four `architecture.md` bullets get one
   home. They stay as *implementation* comments but stop being the *only* statement of a cross-verb rule;
   `architecture.md §"Hidden VT state"` gains a one-line pointer here (Step 6).
