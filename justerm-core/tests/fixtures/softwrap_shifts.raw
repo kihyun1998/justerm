@@ -1,0 +1,11 @@
+[2J[HHEAD line, short.
+WRAP-A aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+MID one
+WRAP-B bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+MID two
+WRAP-C cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+TAIL line, short.
+[3;1H[L[3;1H[M[5;1H[2L[5;1H[2M[S[T[2S[2T[1;1HM[4;12r[4;1HM[6;1H[M[6;1H[L[S[T[r[2J[HWITNESS HEAD
+W wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww
+VICTIM ROW
+[3;1H[M[3;1HMARKER

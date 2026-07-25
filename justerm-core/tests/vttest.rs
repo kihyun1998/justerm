@@ -8,6 +8,15 @@
 //! "systematic net" that surfaces hidden state we did not think to assert.
 //!
 //! This file is a growing net: add cases as dogfood reveals tail behaviour.
+//!
+//! **A capture is pinned on two surfaces, not one** (#554). The char dump below is
+//! blind to the soft-wrap link, because that link is not a character — it decides
+//! whether two rows are *one logical line*, so a capture whose lines are silently
+//! merged produces a byte-identical dump. That blindness was measured, not
+//! theorised: throughout #540 every golden here stayed green while the engine
+//! merged two unrelated logical lines. Capture tests therefore go through
+//! `check_capture`, which pins the char grid **and** the logical lines in one call
+//! so neither half can be added without the other.
 
 use justerm_core::Engine;
 
@@ -30,6 +39,40 @@ fn dump(term: &Engine) -> String {
         cur.row, cur.col, cur.visible
     ));
     s
+}
+
+/// Render the buffer's **logical** lines — soft-wrapped rows joined back into the
+/// one line they belong to, which is what copy, search and accessible text see.
+///
+/// This is the surface `dump` structurally cannot show. The wrap link is not a
+/// character: it decides whether two rows are one line, so a capture whose logical
+/// lines are silently merged produces a byte-identical char dump. Throughout #540
+/// the char goldens were green while `accessible_text` returned `"abcdefghmnop"`
+/// for what should have been two lines.
+///
+/// Both references keep the two surfaces separate for the same reason — ghostty's
+/// dump takes an explicit `unwrap` option (*"Whether to unwrap soft-wrapped
+/// lines"*, `terminal/formatter.zig:88-90` @ `e6e26e1`) and its resize/reflow tests
+/// assert the wrapped and unwrapped forms of one screen.
+fn logical_lines(term: &Engine) -> String {
+    let mut s = String::from("--- logical lines ---\n");
+    for line in term.accessible_text().lines() {
+        s.push_str(&format!("{:?}\n", line.trim_end()));
+    }
+    s
+}
+
+/// Pin a **capture** on both surfaces at once: the char grid and the logical lines.
+///
+/// One call, so a capture cannot be added with only half its goldens — which is the
+/// failure this helper exists to prevent, and the one #554 records: the corpus was
+/// blind to an entire class of defect because every golden asserted characters only.
+/// Deliberately not folded into `dump`: nine synthetic `check` cases share that
+/// function, and a logical-line section means nothing at `check(5, 2, b"hi", …)`
+/// scale while forcing all nine expectations to be rewritten.
+fn check_capture(term: &Engine, chars: &str, logical: &str) {
+    assert_eq!(dump(term), chars, "char grid");
+    assert_eq!(logical_lines(term), logical, "logical lines");
 }
 
 /// Feed `input` into a fresh `cols`×`rows` engine and assert its screen dump
@@ -157,7 +200,11 @@ fn htop_capture_redraw() {
     let altcut = raw.windows(8).position(|w| w == b"\x1b[?1049l").unwrap();
     let mut term = Engine::new(80, 24);
     term.feed(&raw[..altcut]);
-    assert_eq!(dump(&term), include_str!("fixtures/htop.altscreen.golden"));
+    check_capture(
+        &term,
+        include_str!("fixtures/htop.altscreen.golden"),
+        include_str!("fixtures/htop.altscreen.logical.golden"),
+    );
 }
 
 /// #20 dogfood — REAL captured `top` session (80x24, procps-ng on RHEL; see
@@ -173,7 +220,11 @@ fn htop_capture_redraw() {
 fn top_capture_redraw() {
     let mut term = Engine::new(80, 24);
     term.feed(include_bytes!("fixtures/top.raw"));
-    assert_eq!(dump(&term), include_str!("fixtures/top.golden"));
+    check_capture(
+        &term,
+        include_str!("fixtures/top.golden"),
+        include_str!("fixtures/top.logical.golden"),
+    );
 }
 
 // ===========================================================================
@@ -193,7 +244,11 @@ fn top_capture_redraw() {
 fn vim_capture_restores_primary_on_quit() {
     let mut term = Engine::new(80, 24);
     term.feed(include_bytes!("fixtures/vim_redraw.raw"));
-    assert_eq!(dump(&term), include_str!("fixtures/vim_redraw.full.golden"));
+    check_capture(
+        &term,
+        include_str!("fixtures/vim_redraw.full.golden"),
+        include_str!("fixtures/vim_redraw.full.logical.golden"),
+    );
 }
 
 /// Feed up to the alt-screen teardown (?1049l) to assert the editor screen vim
@@ -208,9 +263,10 @@ fn vim_capture_altscreen_redraw() {
     let altcut = raw.windows(8).position(|w| w == b"\x1b[?1049l").unwrap();
     let mut term = Engine::new(80, 24);
     term.feed(&raw[..altcut]);
-    assert_eq!(
-        dump(&term),
-        include_str!("fixtures/vim_redraw.altscreen.golden")
+    check_capture(
+        &term,
+        include_str!("fixtures/vim_redraw.altscreen.golden"),
+        include_str!("fixtures/vim_redraw.altscreen.logical.golden"),
     );
 }
 
@@ -249,5 +305,61 @@ fn editor_redraw_delete_and_erase() {
 |      |
 cursor=(2,3) visible=true
 ",
+    );
+}
+
+// ===========================================================================
+// #554 dogfood — SOFT WRAP under the row-shift verbs. The combination the four
+// captures above structurally cannot contain: a program that emits IL/DL is a
+// full-screen application, and a full-screen application positions every row
+// with CUP, so it never lets the terminal continue a line. Replaying all four
+// yields zero soft-wrapped rows, which is why the whole soft-wrap / wide-pair
+// cluster (ADR-0025, spine #552) had no dogfood coverage — #540's defects were
+// green against every capture in the corpus while merging two logical lines.
+// Recorded by tests/fixtures/capture-softwrap.sh; see its header for the
+// measurements behind that claim.
+// ===========================================================================
+
+/// Deterministic soft-wrap + every row-shift verb (IL/DL/SU/SD/RI, one set inside
+/// a DECSTBM region). Content is written with **no CUP**: each line is simply
+/// longer than the screen, so the terminal itself continues it — the state under
+/// test. The shift verbs are emitted deliberately rather than by an application
+/// redrawing, exactly as `undercurl_matrix.raw` is a deterministic printf; that is
+/// what makes it the source of truth and reproducible without a VM.
+///
+/// The logical golden is where this capture earns its place. `WRAP-A` is 107
+/// columns — 80 on its first row, 27 continuing — and a `DL` deletes the first
+/// row, so the arithmetic pins the survivor: the golden must show a lone
+/// 27-character line, not a 107-character one and not a merge with its new
+/// neighbour. The char golden cannot tell those three apart.
+#[test]
+fn softwrap_shifts_capture() {
+    let mut term = Engine::new(80, 24);
+    term.feed(include_bytes!("fixtures/softwrap_shifts.raw"));
+    check_capture(
+        &term,
+        include_str!("fixtures/softwrap_shifts.golden"),
+        include_str!("fixtures/softwrap_shifts.logical.golden"),
+    );
+}
+
+/// REAL captured `less -X` session (80x24, macOS `less` under `expect`; the other
+/// captures are RHEL `script(1)` recordings — recorded here because no Linux VM
+/// was available, and the stream is a valid one either way). Paging backward over
+/// long lines emits 24 x `RI` (`ESC M`) across genuinely soft-wrapped content,
+/// which is `reverse_index` — one of the five call sites #540 routed through
+/// `Term::shift_region`, and the only one a real application reaches on its own.
+///
+/// The wraps live in scrollback rather than the grid, so the logical golden is the
+/// only surface that shows them at all: each `LINEnn` must stay its own line, with
+/// the 147-column ones joined and nothing merged across them.
+#[test]
+fn less_softwrap_capture() {
+    let mut term = Engine::new(80, 24);
+    term.feed(include_bytes!("fixtures/less_softwrap.raw"));
+    check_capture(
+        &term,
+        include_str!("fixtures/less_softwrap.golden"),
+        include_str!("fixtures/less_softwrap.logical.golden"),
     );
 }
