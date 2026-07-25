@@ -280,10 +280,18 @@ Z"`, and a search across the wrap went from 1 hit to 0). It now lives on the
   (`ClearRight` ends with an unconditional `LineClrWrapped`) and ghostty (`cursorResetWrap` in
   `eraseLine(.right)` / `eraseChars` / `deleteChars`) call site for call site — *not* xterm.js,
   whose `clearWrap` governs the opposite-polarity `isWrapped` flag and so answers a different
-  question. `end_wrap` is a *complete* operation: it also damages the last column (the wrap rides
-  the wire there, and nothing else would re-ship it) and drops any wide-wrap artefact marker in
-  that column (the marker only means anything on a row that wraps — ghostty couples the two the
-  same way, in the same reset). The leftward erases (`EL 1`, `ED 1`) keep the wrap but still drop
+  question. A second caller class ends the wrap without erasing anything: the **row-shift verbs**
+  (`IL`/`DL`/`SU`/`SD` and the region paths in `LF`/`RI`, all through `Term::shift_region`, #540).
+  The wrap flag is a claim about *adjacency*, and a shift can falsify it without touching a cell —
+  at the two seams where a row's next neighbour changed, and, when the region starts at the grid's
+  top, on the last *scrollback* row (the readers walk `[scrollback ++ grid]` as one buffer). The
+  interior of the region is safe by construction because whole `Row`s rotate, so a pair moves
+  together. `end_wrap` damages the last column (the wrap rides the wire there, and nothing else
+  would re-ship it), which is why `shift_region` records the scroll op *before* the seam clears:
+  `record_scroll` rotates `line_damage` with the content, so a clear damaged earlier is carried to
+  the wrong row. It does **not** drop the wide-wrap artefact marker in that column — the erase
+  verbs above have already blanked it through the last column, and the leftward erases go through
+  `drop_artefact_if_erased` instead; the marker's own lifecycle across every verb is #534. The leftward erases (`EL 1`, `ED 1`) keep the wrap but still drop
   an artefact marker they blanked, and `ED 1` ends the wrap when it covered the whole row (xterm.js
   does the same, `InputHandler.ts:1248`). **`EL 2` is a deliberate divergence, split 2:2:** justerm
   and alacritty end the wrap there, C xterm and ghostty do not (ghostty's source says it *"seems

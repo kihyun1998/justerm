@@ -169,8 +169,31 @@ the fix site follows from. Whether it is still open is the tracker's answer, not
   this ADR (it is policy routing, ADR-0017 — see "Adjacent" below), but when it lands, this
   rationale must be re-stated as a **default the consumer may override** rather than as a property
   of the predicate. Recorded so the sweep reaches it from here.
-- **#540** — the row-shift verbs are CLEAR sites for the **wrap flag** (D2): end the wrap on the row
-  above a shifted region, using `end_wrap`, the wrap-flag analogue of #534's marker clear.
+- **#540** — the row-shift verbs are CLEAR sites for the **wrap flag** (D2), the analogue of #534's
+  marker clear. **Amended by the implementation (2026-07-25).** The roster line read "end the wrap
+  on the row above a shifted region"; shipping it found the rule is wider, and each widening comes
+  out of D1/D2 rather than out of the verb:
+  - **Two seams, not one.** The flag is a claim about *adjacency*, and rotating whole `Row`s keeps
+    it true inside the region, so a shift falsifies it exactly where a row's next neighbour
+    changed: above the region, *and* at the row that loses its continuation to the blank. The
+    second one merges *visible* text across the region boundary and was not in the issue.
+  - **The seam is not always a grid row (D2, "read sites gate uniformly" applied to writes).** With
+    the region at the grid's top, the row above is the last **scrollback** row, because the readers
+    walk `[scrollback ++ grid]` as one buffer. `linefeed` is exempt — it evicts row 0 *into*
+    scrollback, so adjacency survives.
+  - **Clearing the owner is half the obligation; the derived copy owes damage (D1).** `record_scroll`
+    rotates `line_damage` with the content, so a seam clear damaged before it lands on the wrong
+    row — the model split the rows and the wire never said so. Ordering now lives inside the one
+    primitive rather than at five call sites.
+  - **A CLEAR rule needs its SET site to be honest.** The guard that protects a live
+    soft-wrap-at-the-last-row was preserving a *false* claim: `write_glyph` set the flag without
+    asking `wrapline_advances()`, the predicate both wide-at-boundary paths already ask, so a row
+    parked below a DECSTBM region claimed a wrap forever. Fixed at the set site in the same change.
+  No reference implements the rule: ghostty clears every row a full-width IL/DL touches *before*
+  its row swap, so it splits interior pairs and still never reaches above the shifted range;
+  alacritty clears nothing on any scroll path; xterm.js's mirrored polarity moves the exposure to
+  the other seam rather than removing it. Derived under ADR-0004 (the spec outranks any
+  implementation), which is the first item in this roster with **0-of-3** reference support.
 - **#529** — a pair-move D4 violation: carry the trailing half.
 - **#536** — a robustness edge of the pair-repair span on a degenerate width; in scope as the same
   code family, though it is a bounds guard, not a state-ownership rule. **Its reproduction is now
