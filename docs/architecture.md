@@ -225,6 +225,30 @@ under it.
   soft-wrapped row. The marker alone is not a sufficient test, because the row-shift verbs
   (ICH/DCH) move whole cells and carry it inward, where it describes nothing; treating a migrated
   marker as an artefact joins two visually separate words in the clipboard. [#528]
+  ④ **The marker has a lifetime, and its claim has two clauses.** It asserts *"this row
+  soft-wraps, and its last column is the blank **that** pair vacated"* — so it must be cleared when
+  either clause goes false, and for a long time nothing in the crate cleared it at all.
+  `Term::end_wrap` owns the first clause (a row that stops wrapping cannot hold an artefact), which
+  is why `DCH` ends its wrap *before* the shift rather than after: the marker is a cell bit the
+  shift would otherwise carry inward. `Term::void_wrap_artefact_above` owns the second, and the
+  rule at its four call sites is one sentence: **the record survives only an in-place same-width
+  overwrite** — a narrow write, an erase or a shift at columns 0/1 all end the pair the record was
+  about, and a wide lead that arrives later by some other route did not *wrap* from anywhere. The
+  clear is one-way; nothing re-arms it. The row above may be the last **scrollback** row, since the
+  readers walk `[scrollback ++ grid]` as one buffer — including `shift_region`'s `top == 0` seam,
+  the one wrap-ending path that is not a grid row and so has to couple the clear itself.
+  Ported, not derived: ghostty gates the print path on `cell.wide != wide`
+  (`Terminal.zig:1484`) and reaches up a row from `DCH`/`ECH` through
+  `Screen.splitCellBoundary` (`Screen.zig:1873`); alacritty has the print half only and clears
+  unconditionally, dropping records that are still true. Only justerm's `ICH` site has no
+  counterpart.
+  **Ask before the mutation, never after.** The post-state form (*"is a wide lead standing at
+  column 0 now?"*) is the intuitive one and it is wrong three ways — a `DCH` that pulls the next
+  wide glyph left satisfies it, two-step placements (VS16 promotion, IRM's insert-then-write)
+  satisfy it only at the end, and running it inside `insert_chars` cleared the marker
+  `vacate_for_wrap` had just set, because `write_glyph` routes IRM's gap-opener through there
+  *between* the set and the write. That last one is the general lesson: **a repair keyed on a state
+  predicate must not run while that state is mid-construction.** [#534]
 > The three entries that follow are conformance cases of **ADR-0025** (row-scoped and
 > wide-pair-scoped state has one owner and one lifecycle) — split storage, marker-is-established,
 > and row-property. Read the ADR for the rule; these are its instances.

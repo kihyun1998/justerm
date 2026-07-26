@@ -370,23 +370,25 @@ impl Cell {
         self.content & (C_SPACER | C_LEADING_SPACER) != 0
     }
 
+    /// Drop the leading-spacer marker, leaving the cell otherwise untouched.
+    ///
+    /// The marker claims two things at once, and it has to go when **either** stops holding, or
+    /// the text extractors keep skipping a column that is now a real blank: the row still
+    /// soft-wraps (`Term::end_wrap` owns that half — #538, #540), and the continuation still
+    /// begins with the wide lead that could not fit (`Term::repair_wrap_artefact_above` owns that
+    /// one — #534). Clearing is deliberately one-way: nothing here re-arms the marker, because a
+    /// wide glyph typed at column 0 of the next row did not *wrap* from anywhere.
+    pub fn clear_leading_spacer(&mut self) {
+        self.content &= !C_LEADING_SPACER;
+    }
+
     /// Mark this column as the leading spacer of a wrapped wide glyph.
     ///
     /// **Records** that the column is blank; it does not make it so. The caller must have
     /// written the blank first — this only ORs a marker onto whatever cell is there. Setting
     /// it over a live glyph leaves a cell the text extractors skip while a renderer still
     /// draws it, which is exactly the defect #528 fixed (`Term::vacate_for_wrap` is the one
-    /// place that establishes the precondition).
-    /// Drop the leading-spacer marker, leaving the cell otherwise untouched.
-    ///
-    /// The marker is only meaningful on a row that soft-wraps — it records that a width-2 glyph
-    /// could not fit and moved on. When the wrap ends, or when an erase blanks the column the
-    /// marker described, it has to go, or the text extractors keep skipping a column that is now
-    /// a real blank (#538).
-    pub fn clear_leading_spacer(&mut self) {
-        self.content &= !C_LEADING_SPACER;
-    }
-
+    /// place that establishes the precondition; reflow is the other set site, #533).
     pub fn set_leading_spacer(&mut self) {
         self.content |= C_LEADING_SPACER;
     }

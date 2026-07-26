@@ -140,6 +140,56 @@ the fix site follows from. Whether it is still open is the tracker's answer, not
 - **#534** — overwrite / ICH / DCH are CLEAR/REPAIR sites (D2 + D3): a write past the marker, or a
   shift of it off the last column, must drop it, reaching back to the previous row when the overwrite
   lands on a wrapped lead (D4).
+  **Amended by the implementation (2026-07-27).** The roster line named three verbs; implementing it
+  showed the rule is not about verbs at all, and each correction comes out of D1/D2 rather than out
+  of the verb list:
+  - **The marker's claim has two clauses, so it has two owners.** It asserts *"this row soft-wraps"*
+    **and** *"its continuation still begins with the wide lead that could not fit"*. Splitting it
+    that way is what collapses the verb list: `end_wrap` already runs at every site that falsifies
+    the first clause (including #540's row-shift seams), so clearing there covers `DL`/`SU`/`IL`/`SD`
+    and every wrap-ending erase without naming any of them. Only the second clause needed a new
+    primitive.
+  - **The record survives exactly one thing: an in-place same-width overwrite.** Anything else
+    reaching columns 0/1 of the continuation — a narrow write, an erase, a shift either way — ends
+    the pair the record was *about*, and a wide lead arriving afterwards by some other route did
+    not wrap from anywhere. That single sentence replaces the verb list, and it is why the check is
+    made **before** each mutation rather than after it. Both references gate on the pre-state:
+    ghostty on `cell.wide != wide` (`Terminal.zig:1484` @ `e6e26e1`), keeping the marker on a
+    wide-over-wide print; alacritty only on the overwritten cell being wide
+    (`term/mod.rs:994`, clear at `:1004-1008` @ `852e971`), so it drops a record that is still
+    true. **Direction: only alacritty diverges**, so justerm follows ghostty.
+    The post-state form — *"is a wide lead standing at column 0 now?"* — was implemented first and
+    is **wrong three ways**, each measured: a `DCH` that pulls the *next* wide glyph left satisfies
+    it while the pair the record was about is deleted; a VS16 promotion under mode 2027 and IRM's
+    insert-then-write are two-step placements that satisfy it only at the end; and worst, running
+    the check inside `insert_chars` cleared the marker `vacate_for_wrap` had set microseconds
+    earlier, *inside its own set site's critical section*. The last one is the general lesson and it
+    is not in D1–D4: **a repair keyed on a state predicate must not run while that state is
+    mid-construction.**
+  - **Two verbs in the roster line were wrong, both measured.** `ICH` cannot strand a marker: a
+    right shift always pushes the last column off the edge. And `DCH` needed an *ordering* fix, not
+    a clear — its `end_wrap` ran after the shift, by which time the marker had already moved
+    inward. Same shape as #540's `record_scroll` lesson: the clear must happen where the state
+    still is.
+  - **Two falsifying verbs were missing from the roster** — an *erase* of the wrapped lead (`EL`/
+    `ED`/`ECH` covering column 0 of the continuation) and an *intra-row shift* at column 0. Both are
+    **ported, not derived**: ghostty's `Screen.splitCellBoundary` (`Screen.zig:1831`, up-a-row
+    branch at `:1873`) is called from `deleteChars` (`Terminal.zig:3107-3109`) and `eraseChars`
+    (`:3159-3160`). Only justerm's `ICH` site has no counterpart. An earlier draft of this
+    amendment claimed 0-of-3 support here on the strength of rows 33/36 of
+    `reference-facts.md`; that was wrong, and the row is now marked ⚠ because it is the easy wrong
+    conclusion to reach from the print-path citation alone.
+  - **The seam-only choice inherited from #540 has a validity condition worth naming.** ghostty
+    clears the marker on *every* shifted row; justerm clears at the seams because it rotates whole
+    `Row`s. ghostty's own comment gives two reasons for the blanket clear, and the second is
+    **left/right margins (DECSLRM)** — a partial-row shift can break an interior pair without
+    moving its neighbour. justerm implements no DECSLRM, so seam-only is sound *as long as that
+    stays true*; the day margins land, #540's rule and this one break together.
+  - **The read side does not change, and that is the point.** The extractors' bare `is_spacer()`
+    gate, recorded under #535 above as a live symptom, is now safe by construction rather than by a
+    position test. `is_wrap_artefact`'s position clause survives as defence in depth — it is the
+    read-side echo of ghostty's write-side page invariant (*"Spacer heads must be at the end"*,
+    `page.zig:537`).
 - **#535** — the word walkers are READ sites and must gate on **both** spacer kinds (D2, "gate
   uniformly"); every other extractor already does (`is_spacer()`), so the walkers are the outlier
   inside the crate as well as against alacritty.

@@ -363,3 +363,35 @@ fn less_softwrap_capture() {
         include_str!("fixtures/less_softwrap.logical.golden"),
     );
 }
+
+/// Deterministic soft wrap of a **wide** glyph, then the verbs that falsify the artefact marker
+/// it leaves behind (#534). The other two soft-wrap captures supply wrapped rows but no wrapped
+/// *pair*: replaying all six checked-in captures observes the marker **zero** times, so the wide
+/// half of the ADR-0025 roster had no dogfood coverage even after #555 gave the rest of it some.
+/// Measured before writing this; this capture observes it 43 times.
+///
+/// Each line is 79 narrow columns followed by `한`, so the terminal itself cannot fit the pair and
+/// vacates the last column — no CUP places the content. Then one verb per line falsifies one of
+/// the marker's two clauses: `A` overwrites the wrapped lead, `B` erases the continuation row,
+/// `C` deletes the lead with `DCH`, `D` shifts the pair right with `ICH`, `E` removes the
+/// continuation with `DL`.
+///
+/// **The char golden cannot see any of this.** The marker is a content bit, not a character, so
+/// with the fix reverted `dump` is byte-identical while three of the logical lines lose the blank
+/// the artefact turned back into — `A` reads `…xxxZ` instead of `…xxx Z`, and `B`'s `Q` sits one
+/// column early. That is the discriminating check #554 demands of a new capture, run here.
+///
+/// `E` is deliberately **not** pinned by the golden: after #540 ended the wrap, its orphaned
+/// marker sits on the last column of a hard-ended row, where a trailing blank is trimmed either
+/// way. It is only observable through the word walk and through reflow, which is where
+/// `wrap_artefact_lifecycle.rs` pins it. Recorded so the gap is not later read as coverage.
+#[test]
+fn softwrap_wide_capture() {
+    let mut term = Engine::new(80, 24);
+    term.feed(include_bytes!("fixtures/softwrap_wide.raw"));
+    check_capture(
+        &term,
+        include_str!("fixtures/softwrap_wide.golden"),
+        include_str!("fixtures/softwrap_wide.logical.golden"),
+    );
+}

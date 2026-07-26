@@ -1,0 +1,13 @@
+[2J[HWIDE-HEAD line, short.
+A-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx한글-tailA
+MID-A
+B-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx한글-tailB
+MID-B
+C-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx한글-tailC
+MID-C
+D-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx한글-tailD
+MID-D
+E-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx한글-tailE
+MID-E
+WIDE-TAIL line, short.
+[3;1HZ[6;1H[2K[6;5HQ[9;1H[1P[12;1H[1@[15;1H[M[24;1H

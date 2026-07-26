@@ -106,6 +106,43 @@ cols=80
   printf '\033[3;1HMARKER'                 # write into the row that slid up
 } > softwrap_shifts.raw
 
+# --- 3. deterministic soft wrap of a WIDE glyph, and the verbs that falsify it -
+# Capture 1 supplies wrapped rows; it does not supply a wrapped *pair*. Measured
+# on the whole corpus before writing this: replaying all six checked-in captures
+# observes the wide-wrap artefact marker ZERO times, so the wide half of the
+# ADR-0025 roster still had no dogfood coverage after #554/#555 gave the rest of
+# it some. This capture observes it 43 times.
+#
+# Each line is 79 narrow columns followed by a wide glyph, so the terminal itself
+# cannot fit the pair and vacates the last column — again no CUP for the content.
+# Then exactly one verb per line falsifies one of the marker's two clauses ("this
+# row still wraps" / "its continuation still begins with the wide lead"):
+{
+  printf '\033[2J\033[H'
+  printf 'WIDE-HEAD line, short.\r\n'
+  for tag in A B C D E; do
+    # 1 (tag) + 1 (dash) + 77 = 79 columns, so the wide glyph starts at the last
+    # column and cannot fit there. Getting this length wrong is silent: at 78 the
+    # pair fits and the capture stops testing anything.
+    pad=$(printf 'x%.0s' $(seq 1 77))
+    printf '%s-%s한글-tail%s\r\n' "$tag" "$pad" "$tag"
+    printf 'MID-%s\r\n' "$tag"
+  done
+  printf 'WIDE-TAIL line, short.\r\n'
+  printf '\033[3;1HZ'                # A: overwrite the wrapped lead
+  printf '\033[6;1H\033[2K\033[6;5HQ' # B: erase the continuation, then write into it
+  printf '\033[9;1H\033[1P'          # C: DCH at column 0 deletes the lead
+  printf '\033[12;1H\033[1@'         # D: ICH at column 0 shifts the pair right
+  printf '\033[15;1H\033[M'          # E: DL removes the continuation (row-shift seam)
+  printf '\033[24;1H'
+} > softwrap_wide.raw
+# The `Q` in B is the witness, same role as capture 1's `MARKER`: without it the
+# line ends in the artefact's blank, which trims away and the golden cannot fail.
+# `E` has no such witness and cannot be given one — after #540 ends the wrap, an
+# orphaned marker sits at the last column of a hard-ended row, where a trailing
+# blank is trimmed whether or not it is skipped. It is pinned by the unit tests
+# (word walk, reflow) instead; do not read this capture as covering it.
+
 # --- 2. best-effort real less (needs a real PTY) -----------------------------
 if command -v expect >/dev/null 2>&1 && command -v less >/dev/null 2>&1; then
   python3 -c "

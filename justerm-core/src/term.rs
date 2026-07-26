@@ -1937,10 +1937,17 @@ impl Term {
     /// did not fit, which the text extractors drop entirely?
     ///
     /// Position is part of the definition, not a shortcut: the artefact is only ever the **last**
-    /// column of a soft-wrapped row. The marker alone is not enough, because the row-shift verbs
-    /// (ICH/DCH) move whole cells and carry it inward, where it describes nothing — and a stale
+    /// column of a soft-wrapped row. The marker alone is not enough, because a row-shift verb
+    /// moves whole cells and can carry it inward, where it describes nothing — and a stale
     /// marker mid-row must stay an ordinary blank, or two visually separate words silently
     /// become one in the clipboard (#528).
+    ///
+    /// Since #534 the write sites keep that from arising: `DCH` ends the wrap **before** its
+    /// shift, so the marker is cleared while it is still at the last column, and `ICH` pushes it
+    /// off the edge. So this clause is now defence in depth rather than the only defence —
+    /// deliberately kept, because it is one comparison and it is the read side's own statement of
+    /// ghostty's write-side page invariant (*"Spacer heads must be at the end"*,
+    /// `terminal/page.zig:537` @ `e6e26e1`), which that engine asserts rather than tolerates.
     fn is_wrap_artefact(&self, line: usize, col: usize) -> bool {
         let cells = self.abs_line(line);
         cells[col].is_leading_spacer() && col + 1 == cells.len()
@@ -1988,20 +1995,21 @@ impl Term {
     /// such cells *"are always to the right of wide characters"*, which is precisely the
     /// assumption the lead-less clause above exists to reject.
     ///
-    /// For the **leading** kind the comparison inverts, and not in this walk's favour: those
-    /// same extractors gate on `is_spacer()` with *no* position test, so a marker stranded
-    /// mid-row is dropped from the text and two visually separate words merge. Measured on a
-    /// 6-column screen — `"cde"` + a DCH-stranded marker + `"XY"` renders as `cde XY` but
-    /// copies as `"cdeXY"`, and `search("cdeXY")` matches. The position rule here bounds the
-    /// selection *range*; it cannot fix that *text*. So do not "align" this walk with the
-    /// extractors — the direction is the other way, and #534 (nothing clears a stale marker)
-    /// subsumes both by fixing it at the write site.
+    /// For the **leading** kind the comparison used to invert, and not in this walk's favour:
+    /// those same extractors gate on `is_spacer()` with *no* position test, so a marker stranded
+    /// mid-row was dropped from the text and two visually separate words merged. Measured on a
+    /// 6-column screen — `"cde"` + a DCH-stranded marker + `"XY"` rendered as `cde XY` and copied
+    /// as `"cdeXY"`, with `search("cdeXY")` matching. The position rule here bounds the selection
+    /// *range*; it never could fix that *text*, which is why the direction was to fix the write
+    /// site rather than to widen the extractors. **#534 did that**, so the extractors' bare
+    /// `is_spacer()` is now safe by construction: no path leaves a marker whose claim is false.
+    /// Do not add a position test to them on this reasoning — the invariant is upstream.
     ///
-    /// Note what that makes the position clause: a read-site approximation of the invariant
-    /// ghostty enforces when writing (a mid-row spacer head is `unreachable` there, because a
-    /// row shift clears it). Alacritty, which gates leading-everywhere, does *not* clear it on
-    /// `delete_chars` either — so its unconditional gate has this same merge defect. Once #534
-    /// lands, `is_wrap_artefact`'s position clause is redundant rather than load-bearing.
+    /// Note what that leaves the position clause here: a read-site echo of the invariant ghostty
+    /// enforces when writing (a mid-row spacer head is a page-integrity violation there, because
+    /// a row shift clears it). Alacritty, which gates leading-everywhere, still does *not* clear
+    /// on `delete_chars` — so its unconditional gate carries the merge defect justerm no longer
+    /// has.
     fn is_walk_transparent_spacer(&self, line: usize, col: usize) -> bool {
         if self.is_wrap_artefact(line, col) {
             return true;
@@ -2921,6 +2929,16 @@ impl Term {
 
         let (row, col) = (self.cursor.row, self.cursor.col);
 
+        // Overwriting either half of a pair that wrapped from the row above ends that pair, so the
+        // row above's artefact record is void (#534). The one exception is the in-place same-width
+        // overwrite — a wide lead replaced by another wide lead at the same column — which is
+        // ghostty's `if (cell.wide != wide)` escape and the reason this is asked *before* the
+        // write rather than after it. Note IRM has already run its own check inside `insert_chars`
+        // by the time this would fire, on the pre-shift state, which is the correct one.
+        if col <= 1 && self.wrapped_pair_at_row_start(row) && !(col == 0 && width == 2) {
+            self.void_wrap_artefact_above(row);
+        }
+
         // Overwriting one half of an existing wide glyph orphans the other —
         // clear it so no stray lead/spacer is left behind.
         let last = col + width - 1;
@@ -3225,6 +3243,14 @@ impl Term {
     /// range must guard here first.
     fn clear_cells(&mut self, row: usize, from: usize, to: usize) {
         let cols = self.grid.cols();
+        // Erasing either half of a pair that wrapped from the row above ends it, so that row's
+        // artefact record is void (#534). `from <= 1` rather than `from == 0` because erasing from
+        // column 1 destroys the spacer and the no-orphan repair below then frees the lead. ghostty
+        // reaches the same row from its erase path — `Screen.splitCellBoundary`'s `x == 0 or x ==
+        // 1` branch (`Screen.zig:1873` @ `e6e26e1`), called from `eraseChars` (`Terminal.zig:3159`).
+        if from <= 1 && to > from && self.wrapped_pair_at_row_start(row) {
+            self.void_wrap_artefact_above(row);
+        }
         // Don't orphan a wide char straddling the erase boundary.
         if from > 0 && self.grid.cell(row, from).is_wide_spacer() {
             self.free_cell(row, from - 1);
@@ -3278,13 +3304,92 @@ impl Term {
         // here rather than at each caller is what keeps that true for call sites added later.
         let last = self.grid.cols() - 1;
         self.damage_span(row, last, last);
-        // Note the artefact marker is NOT cleared here: every verb that ends a wrap also destroys
-        // content through the last column (`EL 0`/`ECH` erase rightward, `DCH` blanks the far end
-        // via BCE), so `clear_cells` has already blanked the marker's cell by the time this runs.
-        // The leftward erases are the ones that end the wrap without touching that column, and
-        // they go through `drop_artefact_if_erased` instead. (ghostty couples them in one call —
-        // `cursorResetWrap` clears the wrap and a `spacer_head` — because its erase path does not
-        // separately blank the cell; justerm's does.)
+        // The wrap artefact goes with the wrap. The marker's claim is "the last column is the
+        // blank a width-2 glyph vacated **because this row continues onto the next**", so a row
+        // that stops continuing cannot hold one (ADR-0025 D3 — position is part of the test, and
+        // so is the wrap it is positioned in). Coupling the two here is what makes the row-shift
+        // seams and every wrap-ending erase a single rule instead of a clear per verb: ghostty
+        // couples them in one function the same way — `Screen.cursorResetWrap`
+        // (`terminal/Screen.zig:1524` @ `e6e26e1`, spacer-head clear at `:1539-1545`), reached from
+        // `deleteChars` / `eraseChars` / `eraseLine`. It early-returns on `if (!page_row.wrap)`;
+        // this one clears unconditionally, which is strictly safer.
+        //
+        // Most callers erase through this column anyway, so the clear is redundant for them; the
+        // ones it is *not* redundant for are the row-shift seams (#540's `shift_region`, which
+        // ends a wrap without touching a cell) and `delete_chars`, whose marker rides the shift.
+        // The leftward erases are the mirror case — they blank this column while the wrap
+        // legitimately survives — and go through `drop_artefact_if_erased` instead.
+        //
+        // One wrap-ending path deliberately does *not* reach here: `shift_region`'s `top == 0`
+        // seam, whose row is in scrollback rather than the grid. It couples the same two clears
+        // inline; see the comment there.
+        self.grid.cell_mut(row, last).clear_leading_spacer();
+    }
+
+    /// The pair that wrapped into `row` is about to be destroyed or moved, so the artefact record
+    /// on the row **above** it is void — drop it. **Call before the mutation.**
+    ///
+    /// The marker makes a claim with two clauses: this row soft-wraps (owned by `end_wrap`), and
+    /// its last column is the blank *that specific pair* vacated. This is the second clause, and
+    /// the rule behind every call site is one sentence: **the record survives only an in-place
+    /// same-width overwrite.** Anything else that reaches columns 0/1 of the continuation — a
+    /// narrow write, an erase, a shift in either direction — ends the pair the record was about,
+    /// and a wide lead that arrives afterwards by some other route did not *wrap* from anywhere.
+    ///
+    /// Both references gate on that, and both gate on the state **before** the write rather than
+    /// after it:
+    ///
+    /// - ghostty `Terminal.zig:1484` @ `e6e26e1` — the whole wide-repair `switch` sits under
+    ///   `if (cell.wide != wide)`, so a wide glyph overwritten by another wide glyph skips it; the
+    ///   reach-back stanza then appears in the `.wide` (`:1501-1506`) and `.spacer_tail`
+    ///   (`:1529-1532`) arms only.
+    /// - alacritty `term/mod.rs:994` @ `852e971` — the reach-back at `:1004-1008` is inside
+    ///   `if cursor_cell.flags.intersects(WIDE_CHAR | WIDE_CHAR_SPACER)`, but with no
+    ///   width-unchanged escape, so it drops a record that is still true. Alacritty is the outlier
+    ///   of the two and justerm follows ghostty.
+    ///
+    /// Asking *after* the mutation instead looks equivalent and is not: it answers "is some wide
+    /// lead standing at column 0", which a `DCH` that pulls the *next* wide glyph left also
+    /// satisfies, and which a two-step placement (a narrow base promoted to wide by VS16 under
+    /// mode 2027, or IRM's insert-then-write) satisfies only at the end. Both were measured
+    /// disagreeing with the rule above before this took its current form.
+    ///
+    /// The erase and intra-row-shift call sites are **ported, not derived**: ghostty's
+    /// `Screen.splitCellBoundary` (`Screen.zig:1831`, the `x == 0 or x == 1` branch at `:1873`)
+    /// reaches up one row and clears the previous row's spacer head, and it is called from
+    /// `deleteChars` (`Terminal.zig:3107-3109`) and `eraseChars` (`:3159-3160`). Only justerm's
+    /// `ICH` site has no counterpart — ghostty's `insertBlanks` (`:2988`) calls it nowhere.
+    ///
+    /// `row == 0` does not mean "no row above": on the primary screen the text readers walk
+    /// `[scrollback ++ grid]` as one buffer (`abs_floor() == 0`), so the row above grid row 0 is
+    /// the last **scrollback** row and it can carry the marker. Alacritty reaches the same row for
+    /// the same reason — its `topmost_line()` is `Line(-history_size)` (`grid/mod.rs:504`), so
+    /// `point.line - 1` indexes into history; ghostty is the one that stops at the viewport
+    /// (`cursor.y > 0`). On the alt screen `abs_floor()` is the screen top, so no join crosses the
+    /// boundary and there is nothing to repair.
+    ///
+    /// No damage is owed by either branch, and for a stronger reason than #540's: the marker is a
+    /// `content` bit outside `CONTENT_MARKER_MASK`, so `Cell::flags()` never sees it and it does
+    /// not cross the wire at all. The `damage_span` below is defensive, not load-bearing.
+    fn void_wrap_artefact_above(&mut self, row: usize) {
+        if row > 0 {
+            let last = self.grid.cols() - 1;
+            if self.grid.cell(row - 1, last).is_leading_spacer() {
+                self.grid.cell_mut(row - 1, last).clear_leading_spacer();
+                self.damage_span(row - 1, last, last);
+            }
+        } else if !self.on_alt
+            && let Some(cell) = self.scrollback.back_mut().and_then(|r| r.last_mut())
+        {
+            cell.clear_leading_spacer();
+        }
+    }
+
+    /// Is a wide pair standing at columns 0..=1 of `row` — i.e. is there a record for
+    /// `void_wrap_artefact_above` to void? A cheap pre-mutation test the four call sites share, so
+    /// the rule lives in one place rather than being re-derived per verb (ADR-0025 D2).
+    fn wrapped_pair_at_row_start(&self, row: usize) -> bool {
+        self.grid.cell(row, 0).is_wide()
     }
 
     /// Drop a wide-wrap artefact marker that has outlived the wrap it belonged to, without
@@ -3337,8 +3442,18 @@ impl Term {
     ///   seam rather than removing it: a spliced-in line keeps a continuation claim about a
     ///   predecessor it never met.
     ///
-    /// A stale wide-wrap *marker* on the seam row is the same shift's other half and belongs to
-    /// #534, which owns that marker's lifecycle across every verb (ADR-0025 D3).
+    /// The seam row's wide-wrap *marker* is the same shift's other half, and it now rides along:
+    /// `end_wrap` clears both (#534), and the `top == 0` branch below — the one seam whose row is
+    /// not a grid row — couples them inline for the same reason.
+    ///
+    /// **Validity condition for clearing at the seams rather than everywhere.** ghostty clears the
+    /// wrap and the spacer head on *every* row a full-width IL/DL touches, and its own comment
+    /// gives two reasons: it splits interior pairs, **and** it supports left/right margins
+    /// (DECSLRM), where a partial-row shift can break an interior pair without moving its
+    /// neighbour. justerm rotates whole `Row`s and implements no DECSLRM, so an interior pair and
+    /// its continuation always move together and seam-only is sound. If left/right margins ever
+    /// land, this rule and #534's marker rule break at the same time — neither is safe under a
+    /// shift that moves part of a row.
     fn shift_region(&mut self, top: usize, bottom: usize, down: bool, evicts_to_scrollback: bool) {
         if down {
             self.grid.scroll_down_region(top, bottom);
@@ -3370,8 +3485,19 @@ impl Term {
             // only reaches the wire while `display_offset > 0`, and there `damage()` returns an
             // empty `Partial` (`term.rs`, the frozen-viewport short-circuit) while any scroll that
             // *moves* the viewport marks full damage. Valid as long as that short-circuit holds.
+            //
+            // The artefact marker goes with the wrap here exactly as it does in `end_wrap`, and
+            // this branch is the reason that coupling cannot simply live in `end_wrap`: it is the
+            // one wrap-ending path whose row is not a grid row, so it does not call it. Leaving it
+            // out left #534's defect alive one row above the grid — reachable from every
+            // `scroll_region_lines` verb, since all of them pass `evicts_to_scrollback: false`,
+            // and visible as a word selection one cell too wide plus a reflow that bakes the
+            // stranded marker mid-row.
             if let Some(row) = self.scrollback.back_mut() {
                 row.set_wrapped(false);
+                if let Some(cell) = row.last_mut() {
+                    cell.clear_leading_spacer();
+                }
             }
         }
         // The blank lands at `bottom` going up and at `top` going down, so the row that lost its
@@ -3497,6 +3623,15 @@ impl Term {
         if n == 0 {
             return;
         }
+        // Shifting a wrapped pair out of columns 0/1 ends it, so the row above's artefact record
+        // is void (#534). Asked **before** the shift, which is what keeps IRM correct: `write_glyph`
+        // routes its wide-at-boundary insert through here *after* `vacate_for_wrap` has just set
+        // the marker on the row above, and a post-shift test would see the freshly blanked gap and
+        // clear the marker inside its own SET site's critical section. Pre-shift the question is
+        // about the pair that was actually there, which is the one the record is about.
+        if col <= 1 && self.wrapped_pair_at_row_start(r) {
+            self.void_wrap_artefact_above(r);
+        }
         let bg = self.cursor.pen.bg;
         let row = self.grid.row_mut(r);
         // Shift [col .. cols-n) right by n; the tail falls off the edge. The
@@ -3521,6 +3656,9 @@ impl Term {
         if self.grid.cell(r, cols - 1).is_wide() {
             self.free_cell(r, cols - 1);
         }
+        // Note ICH needs no repair to *this* row's marker: a right shift always pushes the last
+        // column off the edge, so it discards a marker rather than carrying one inward —
+        // measured, and pinned by `ich_discards_the_marker_off_the_edge`.
         self.damage_span(r, col, cols - 1);
     }
 
@@ -3532,6 +3670,27 @@ impl Term {
         let n = n.min(cols - col);
         if n == 0 {
             return;
+        }
+        // The shift pulls the tail left and blanks the far end, so the row stops continuing —
+        // ghostty says it outright (*"Our row's soft-wrap is always reset"* in `deleteChars`,
+        // `Terminal.zig:3133` @ `e6e26e1`).
+        //
+        // **Before the shift, not after** (#534): `end_wrap` clears the artefact marker at the
+        // *last* column, and the marker is a cell bit that the shift carries inward with every
+        // other cell. Ending the wrap afterwards would clear a column the marker has already left,
+        // stranding it mid-row where it describes nothing (ADR-0025 D3) and silently swallows the
+        // blank between two runs in copy, search and accessible text. Same shape as #540's
+        // `record_scroll` ordering: the clear has to happen where the state still is.
+        self.end_wrap(r);
+        // Deleting a wrapped pair out of columns 0/1 ends it, so the row above's artefact record
+        // is void — and this is where the "ask before, not after" rule earns its keep twice over:
+        // a `DCH` can pull the *next* wide glyph left into column 0, which a post-shift "is a wide
+        // lead standing here?" test happily accepts even though the pair the record was about has
+        // been deleted. ghostty asks the same question at the same point:
+        // `Screen.splitCellBoundary(cursor.x)` from `deleteChars` (`Terminal.zig:3107` @ `e6e26e1`),
+        // whose `x == 0 or x == 1` branch reaches up a row and clears the spacer head.
+        if col <= 1 && self.wrapped_pair_at_row_start(r) {
+            self.void_wrap_artefact_above(r);
         }
         let bg = self.cursor.pen.bg;
         let row = self.grid.row_mut(r);
@@ -3552,9 +3711,6 @@ impl Term {
         if self.grid.cell(r, col).is_wide_spacer() {
             self.free_cell(r, col);
         }
-        // The shift pulls the tail left and blanks the far end, so the row stops continuing —
-        // ghostty says it outright (*"Our row's soft-wrap is always reset"* in `deleteChars`).
-        self.end_wrap(r);
         self.damage_span(r, col, cols - 1);
     }
 
