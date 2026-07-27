@@ -151,7 +151,10 @@ for i in range(40):
 " > long.txt
   cat > drive.exp <<'EXP'
 set timeout 25
-spawn -noecho env TERM=xterm-256color LINES=24 COLUMNS=80 less -X long.txt
+# LC_ALL pins a UTF-8 locale and must stay one -- plain C is NOT a valid
+# simplification: it makes the app drop Unicode output, which is the material this
+# engine exists to get right (measured: htop's U+25BD sort glyph vanishes under C).
+spawn -noecho env LC_ALL=C.UTF-8 TERM=xterm-256color LINES=24 COLUMNS=80 less -X long.txt
 sleep 1
 send " "      ;# forward a page
 sleep 1

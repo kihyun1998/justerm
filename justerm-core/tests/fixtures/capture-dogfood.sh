@@ -48,7 +48,10 @@ stty rows 24 cols 80 || true   # fix PTY winsize (the value the TUIs read via io
 } > keys.txt
 
 : > note.txt
-TERM=xterm-256color script -q -c 'vim -u NONE -N -s keys.txt note.txt' vim.raw </dev/null
+# LC_ALL pins a UTF-8 locale and must stay one -- plain C is NOT a valid
+# simplification: it makes the app drop Unicode output, which is the material this
+# engine exists to get right (measured: htop's U+25BD sort glyph vanishes under C).
+LC_ALL=C.UTF-8 TERM=xterm-256color script -q -c 'vim -u NONE -N -s keys.txt note.txt' vim.raw </dev/null
 
 # Capture a foreground TUI for ~4s, or leave an empty *.raw if it is not installed.
 #   $1 = output basename (-> $1.raw)   $2 = command line (first word = binary)
@@ -56,7 +59,10 @@ capture_tui() {
   local out="$1.raw" cmd="$2"
   : > "$out"
   if command -v "${cmd%% *}" >/dev/null; then
-    TERM=xterm-256color script -q -c "timeout -s INT 4 $cmd" "$out" </dev/null || true
+    # LC_ALL pins a UTF-8 locale and must stay one -- plain C is NOT a valid
+    # simplification: it makes the app drop Unicode output, which is the material this
+    # engine exists to get right (measured: htop's U+25BD sort glyph vanishes under C).
+    LC_ALL=C.UTF-8 TERM=xterm-256color script -q -c "timeout -s INT 4 $cmd" "$out" </dev/null || true
   else
     echo "NOTE: ${cmd%% *} not installed -> $out left empty" >&2
   fi
