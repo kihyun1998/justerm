@@ -14,14 +14,21 @@ VT 바이트 스트림을 터미널 화면 상태(그리드 + 스크롤백)로 �
 - **상세 계약(구현 시 참조)**: **`docs/architecture.md`** — 셀·damage·뷰포트/스크롤·cadence·
   selection·직렬화·엔진 API 의 authoritative 스펙. 핵심 결정 근거는 `docs/adr/`(0001 vte·0002
   beamterm→0018 justerm-renderer·0019 셀 합성 모델 — 렌더러가 셀 하나를 bg/fg/잉크로 푸는
-  *전역함수*, xterm 은 validator 아닌 설계 입력). 최근 4개는 *proposed*(작성됨, 미판정):
+  *전역함수*, xterm 은 validator 아닌 설계 입력). 아래는 최근 ADR 의 *한 줄 라우팅*일 뿐 —
+  **status(proposed/accepted)는 여기 안 적는다**: 각 ADR 파일 머리의 `Status:` 줄이 authoritative 이고,
+  그걸 여기 복사하면 게이트가 없어 조용히 낡는다(2026-07-22 에 0020–0023 이 accepted 됐는데 이 문단은
+  닷새 뒤까지 "최근 4개는 proposed" 라고 말하면서 다섯 개를 나열하고 있었다 — `architecture.md` 가
+  엔진 API 목록을 통째로 지운 것과 같은 이유):
   **0020** 프레임 스냅샷에 실릴 자격(상태냐 사건이냐 / 소비처가 이미 쥐었나 / 뷰포트로 유계인가 —
   wire 그룹을 하나 더 얹기 전에 통과해야 하는 3규칙), **0021** 전역 WebGL2 컨텍스트 1개가 N 그리드를
   뷰포트로(`TerminalSurface`, 자원 3층 + 층 배정 규칙; #287), **0022** 셀 = 폰트 `█` 의 잉크 박스와
   거기서 파생되는 모든 기하(측정 방식은 beamterm 물림, 근거 미검증으로 등급 표시),
   **0023** 간격 설정의 단위는 CSS px(=`font_size` 와 같은 공간; 양 레퍼런스는 device px 라 한 폰트 서술이
   두 단위를 말함), **0024** decoration 은 *색 + 마크*이지 객체가 아님 → 투영/precedence 규칙 6개가
-  거기서 파생(셀=등록순서, ruler=클래스 먼저; ADR-0019 가 out of scope 로 밀어낸 축).
+  거기서 파생(셀=등록순서, ruler=클래스 먼저; ADR-0019 가 out of scope 로 밀어낸 축),
+  **0025** row/wide-pair 상태는 주인 하나 + 생명주기 하나이지 verb 마다의 규칙이 아님(`Cell` 은
+  셀 단위로 쓰이는데 wrap 링크는 *행*, spacer 마커는 *pair* 의 사실이라 생기는 어긋남 — 이 영역의
+  새 질문은 D1–D4 에 대한 conformance 로 다룬다; 로스터는 spine #552).
   큰 그림·빌드플랜은 GitHub **Epic #1**(엔진, closed) + 슬라이스
   #2–#12, 이후 **#103**(web)·**#258**(renderer). *이 repo 안에서 전부 참조 가능* — penterm 안 봐도 됨.
 - **설계 출처(역사)**: penterm 의 `.scratch/rust-terminal-engine/PRD.md` — 이 계약이 grill 로
