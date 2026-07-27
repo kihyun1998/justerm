@@ -434,6 +434,20 @@ Z"`, and a search across the wrap went from 1 hit to 0). It now lives on the
   and moved in #538 because a cell write there destroyed it (see the "row property" entry above).
   xterm.js flags the continuation row instead; either encoding works, but neither reference keeps it
   where a cell operation can reach it. [#7, #538]
+- **A point reflow tracks is a position in the logical line, and "one past the last cell" is one of
+  them.** `grid::reflow` carries the cursor, both selection anchors and every OSC-133 command mark
+  through the re-split. All three can sit *just after* the content, and when the last row comes out
+  full that is a column the grid does not have — so the returned point is allowed to leave the grid
+  (`col == new_cols`, or a row the fit has not created yet) and the **seam in `Term::resize` resolves
+  it per kind**: the cursor reads it as the next write position (the row after), a command mark keeps
+  it as an **exclusive** bound meaning "all of this row" (`extract_lines` clips `[b, c)`), a selection
+  anchor is clamped. Deciding it inside `reflow` picked one kind's answer for all three — a mark then
+  landed on the first row of the *next logical line* and swallowed that line's newline. Marker columns
+  therefore have domain `[0, cols]`. The bound that keeps a raw-written anchor from indexing a row
+  that does not exist lives at the seam too, against the **final** geometry (`scrollback + rows`):
+  bounding against what `reflow` emitted clamped away rows the caller's fit was about to create.
+  ghostty splits the same three ways inside its own reflow — every non-cursor pin is clamped before it
+  can widen a row, the cursor pin never is. [#562, #549, #559]
 
 - **Selection coordinates are absolute-from-oldest, and only three events move them.** Anchors are
   stored as a line index into `[scrollback ++ screen]` counted from the oldest line — NOT viewport

@@ -345,6 +345,19 @@ impl DerefMut for Row {
 /// rather than a test inside the re-split loop: `points` scales with the number of commands in the
 /// buffer, and the loop scales with rows.
 ///
+/// **A returned point is a position in the logical line, not necessarily a cell.** Two of its
+/// components deliberately leave the grid (#562), because a point that sits *just after* the last
+/// cell is a real place and the caller — not this function — knows what that means for the kind of
+/// point it holds:
+///
+/// - `col` may equal `new_cols`. The cursor reads that as the next write position (the row after);
+///   an OSC-133 mark reads it as an **exclusive** bound meaning "all of this row"; a selection
+///   anchor is clamped. Answering `(row + 1, 0)` here picked the cursor's reading for all three.
+/// - `row` may be **past the last row emitted**, for a point on a trailing blank line the join
+///   absorbed. Nothing extra is emitted for it: the row is one the caller's fit will create
+///   (`Grid::set_screen` pads at the bottom), and bounding it against `out.len()` here would clamp
+///   away a row that is about to exist. The bound belongs at the seam, against the final geometry.
+///
 /// **A wide pair straddling the new boundary *is* special-cased** — the re-split emits a short row
 /// rather than splitting the pair, and marks the column it vacates as the wrap artefact (#533). An
 /// earlier version of this comment said the opposite long after the guard landed, and the mapping
@@ -559,16 +572,23 @@ pub(crate) fn reflow(
                 None => (start, 0),
                 Some(&(last_off, last_take, last_row)) if off >= last_off + last_take => {
                     // `off == line.len()`: the point sits *after* the last cell, so no segment
-                    // contains it — a cursor parked past the content rather than on a glyph. It
-                    // belongs in the column after the last one if that row has room, and at the
-                    // start of the row after it if the row is full. Pinned by two tests, because
-                    // clamping it back onto a full row is the obvious wrong answer and the old
-                    // arithmetic happened to get this case right.
-                    if last_take < new_cols {
-                        (last_row, last_take)
-                    } else {
-                        (last_row + 1, 0)
-                    }
+                    // contains it — parked past the content rather than on a glyph. The honest
+                    // answer is the column just after the last one, and when that row came out
+                    // **full** it is `new_cols` — a column the grid does not have.
+                    //
+                    // Returned anyway, because the three kinds of point want different things from
+                    // it and this function cannot know which it holds (#562): the cursor wants the
+                    // next *write* position (the row after), an OSC-133 mark wants an **exclusive**
+                    // bound meaning "all of this row" (`extract_lines` clips `[b, c)`), and a
+                    // selection anchor wants to be clamped inside the grid. Answering `(row + 1, 0)`
+                    // here picked the cursor's answer for all three, which put a mark on the first
+                    // row of the *next logical line* and made it swallow that line's newline.
+                    // `Term::resize` resolves it per kind at the seam.
+                    //
+                    // ghostty splits the same three ways inside its own reflow — a non-cursor pin is
+                    // clamped before it can widen anything, the cursor pin never is
+                    // (`terminal/PageList.zig:1576-1606` @ `e6e26e1`).
+                    (last_row, last_take)
                 }
                 Some(_) => {
                     // Segments tile `[0, line.len())` in order, so the one holding `off` is the
@@ -580,36 +600,25 @@ pub(crate) fn reflow(
             };
         }
     }
-    // A point one past the end of the **last** logical line names a row that was never emitted:
-    // `(last_row + 1, 0)` above is only in range while another line follows. That index reaches
-    // `Grid::row`, which indexes `lines` directly — and only the cursor is clamped on the way in
-    // (`Cursor::set_point`); selection anchors and OSC-133 marks are written back raw. So an
-    // out-of-range row is a **panic crossing into the consumer's process**, the same class as #536,
-    // reachable from an ordinary drag past the end of a line followed by a resize.
+    // A point whose logical line was a **trailing blank** keeps its distance from the content, in
+    // lines. The join absorbs those lines rather than emitting them, so the row named here is one
+    // this function never produced — and that is correct: `reflow` does not own the row count. Its
+    // caller's fit does (`Grid::set_screen` pads blank rows at the bottom), and the bound belongs
+    // there too, against the *final* geometry rather than against `out.len()`.
     //
-    // This guard exists because without it the change *widens* that pre-existing panic: the old
-    // arithmetic only went out of range when `line.len() % new_cols == 0`, which a short row makes
-    // impossible, so a line containing a wide pair on the boundary — the very shape this change is
-    // about — was safe before and would not have been after.
+    // Clamping it here instead collapsed the cursor onto the last content row, so the next byte
+    // overwrote the content it should have followed (#562 symptom 2). The earlier guard also
+    // clamped a point that was merely one row past — a row the fit was about to create — which is
+    // how a resize folded the cursor back onto the last glyph and destroyed it (symptom 3).
     //
-    // Clamping to the last real cell is the *approximation*, not the answer. The answer is that
-    // `points` cannot express "one past the last cell" at all, which is why this case exists.
-    // ghostty removes it by construction — it grows the source row so a pin is never past the end
-    // (`terminal/PageList.zig:1584-1596`, `:1602-1607` @ `e6e26e1`) and clamps a pin past the
-    // destination width rather than inventing a position beyond it; alacritty lifts the cursor
-    // outside the grid before reflow and restores it (`alacritty_terminal/src/grid/resize.rs`
-    // `:113-116` grow, `:248-251` shrink, restore `:173-177` @ `852e971`). Both avoid it
-    // structurally; justerm returns a grid coordinate and therefore cannot. Tracked separately.
-    let last_row = out.len().saturating_sub(1);
-    for p in new_points.iter_mut() {
-        if p.0 > last_row {
-            *p = (last_row, new_cols.saturating_sub(1));
-        }
-    }
-    // A point whose logical line was trimmed (trailing blank) clamps to the end.
-    for (pi, &(pl, _, _)) in tracked.iter().enumerate() {
+    // Nothing is materialised for this: ghostty is explicit that preserving a blank row must cost
+    // **no destination row** (`if (!src_row.wrap_continuation) self.new_rows += 1; return;`,
+    // `terminal/PageList.zig:1610-1616` @ `e6e26e1`). A port that emits a real row instead pays out
+    // of the active area, and on a pane with no scrollback to absorb the displaced one — the alt
+    // screen — that is content destruction. Measured: 22 alt lines became 21.
+    for (pi, &(pl, poff, _)) in tracked.iter().enumerate() {
         if pl >= logical.len() {
-            new_points[pi] = (out.len().saturating_sub(1), 0);
+            new_points[pi] = (out.len() + (pl - logical.len()), poff.min(new_cols));
         }
     }
 

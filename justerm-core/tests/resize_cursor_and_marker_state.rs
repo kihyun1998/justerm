@@ -132,13 +132,19 @@ fn a_resize_taken_on_the_alt_screen_keeps_the_primary_markers_columns() {
 fn the_primary_resize_control_is_unchanged() {
     // Pins the comparand of the test above: if the primary path ever regressed, that assert would
     // pass for the wrong reason.
+    //
+    // This expected value used to carry a trailing `\n`, annotated as "#549's end-of-line gap, not
+    // this one" — a defect frozen as the comparand because the sibling test only needs the two
+    // screens to *agree*. #562 closed that gap: the C mark ending a full row now bounds the command
+    // as `col == cols` instead of being answered with the next row's column 0, which is the first
+    // row of the following logical line.
     let mut t = shell_transcript(20);
 
     t.resize(6, 6);
 
     assert_eq!(
         t.command_lines().first().map(|c| c.command.clone()),
-        Some("echo hello world\n".to_string()),
-        "pre-existing trailing newline is #549's end-of-line gap, not this one"
+        Some("echo hello world".to_string()),
+        "the command text is width-independent"
     );
 }

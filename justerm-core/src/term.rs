@@ -318,6 +318,15 @@ struct Marker {
     /// marks — CommandStart(B)/OutputStart(C) columns bound the *typed command*
     /// (excluding the prompt), like VSCode's `commandStartX`/`commandExecutedX`.
     /// Plain `add_marker` decorations are row-granular and carry `col = 0`.
+    ///
+    /// **Domain is `[0, cols]`, not `[0, cols - 1]` (#562)** — a bound, not a cell.
+    /// A command that exactly fills its row ends *one past* the last column, and
+    /// that value is what `extract_lines` wants: it clips `[b_col, c_col)`, so the
+    /// exclusive end absorbs it through `.min(cells.len())`. Storing `cursor.col`
+    /// alone (the cursor is held at `cols - 1` with `pending_wrap`) cost such a
+    /// command its last character with no resize involved. The **inclusive** side
+    /// cannot absorb it, so `extract_lines` steps a `from` of `cells.len()` to the
+    /// next line rather than selecting an empty run and flushing a `\n`.
     col: usize,
     /// Plain for a `add_marker` decoration; a command-boundary role for an
     /// OSC 133 mark (#158). All kinds share the anchor/eviction machinery.
@@ -1303,7 +1312,16 @@ impl Term {
             return;
         }
         let line = self.scrollback.len() + self.cursor.row;
-        self.push_marker(line, self.cursor.col, kind);
+        // `cursor.col` alone is one column short whenever the command exactly filled the row: the
+        // cursor that has just written the last cell is held *at* `cols - 1` with `pending_wrap`
+        // set, because "one past the last column" is not a column (#562). A command mark's column
+        // is an **exclusive** bound on the command text, so it wants precisely that unrepresentable
+        // value — `extract_lines` clips `[b_col, c_col)` and `.min(cells.len())` absorbs it.
+        //
+        // Without this, `$ ` + `abcd` at 6 columns recorded `abc`: no resize involved, so this half
+        // of #562 was reachable on a screen that never changed size.
+        let col = self.cursor.col + usize::from(self.cursor.pending_wrap);
+        self.push_marker(line, col, kind);
     }
 
     /// The OSC 133 command-boundary marks in buffer order — `(id, absolute line,
@@ -1851,6 +1869,20 @@ impl Term {
         end_line: usize,
         to_end: usize,
     ) -> String {
+        // The two column bounds are **not** symmetric: `to_end` is exclusive and absorbs a
+        // one-past column through `.min(cells.len())` below, but `from` is inclusive and cannot.
+        // A `from` of `cells.len()` — a command-start mark on a row its prompt exactly filled
+        // (#562) — names the first cell of the *next* row, so step there. Left in place it selects
+        // an empty run on this row and then, because the row is hard-ended, flushes that run with a
+        // `\n` the command never contained; `doc_line_of` reported the wrong document line beside
+        // it, sending an a11y "jump to previous command" one row off.
+        let (start_line, from) =
+            if from >= self.line_in(grid, start_line).len() && start_line < end_line {
+                (start_line + 1, 0)
+            } else {
+                (start_line, from)
+            };
+
         let mut out = String::new();
         let mut current = String::new();
         for line in start_line..=end_line {
@@ -2173,13 +2205,19 @@ impl Term {
             self.scrollback = r.scrollback;
             self.cursor.set_point(r.cursor, rows, cols);
             if let Some(sel) = &mut self.selection {
+                // A selection endpoint is **UI** state, so its reading of `col == cols` (#562) is
+                // neither the cursor's nor a mark's: it is clamped into the grid. UI state may not
+                // move the application's content to make room for itself — the criterion that
+                // decided this, and the one ghostty encodes by clamping every non-cursor pin before
+                // it can widen a row (`terminal/PageList.zig:1576-1585` @ `e6e26e1`) while leaving
+                // the cursor pin unclamped (`:1602-1606`).
                 sel.anchor.point = BufferPoint {
                     line: r.extras[0].0,
-                    col: r.extras[0].1,
+                    col: r.extras[0].1.min(cols - 1),
                 };
                 sel.focus.point = BufferPoint {
                     line: r.extras[1].0,
-                    col: r.extras[1].1,
+                    col: r.extras[1].1.min(cols - 1),
                 };
             }
             let marker_off = sel_pts.len();
@@ -4083,14 +4121,34 @@ fn reflow_pane(
         dropped += 1;
     }
 
+    // `reflow` may answer `col == cols` — "just after the last cell", which is a real place in the
+    // logical line and no place in the grid (#562). The **cursor's** reading of it is the next
+    // *write* position, so a full row means the start of the row after; the caller's row fit
+    // provides that row (`Grid::set_screen` pads at the bottom). A mark reads the same value the
+    // opposite way and keeps it verbatim — see `Term::resize`.
+    let cursor_row = pts[0].0.saturating_sub(split);
+    let cursor = if pts[0].1 == dims.cols {
+        (cursor_row + 1, 0)
+    } else {
+        (cursor_row, pts[0].1)
+    };
+
+    // The bound on a tracked line belongs **here**, not inside `reflow`: this is where the final
+    // geometry is known. The screen is padded to `dims.rows` whatever `reflow` emitted, so the last
+    // addressable absolute line is `sb.len() + dims.rows - 1`. Bounding against `reflow`'s own row
+    // count instead clamped away rows the fit was about to create (#562), while still being the
+    // only thing standing between an out-of-range anchor and a panic in the consumer's process —
+    // selection anchors and marks are written back raw, unlike the cursor (`Cursor::set_point`).
+    let max_line = sb.len() + dims.rows - 1;
+
     // The cursor returns to screen-relative (its absolute index minus the
     // history split). The extras stay absolute, shifted down by any lines the
     // cap dropped from the front of history.
     PaneReflow {
-        cursor: (pts[0].0.saturating_sub(split), pts[0].1),
+        cursor,
         extras: pts[1..]
             .iter()
-            .map(|&(l, c)| (l.saturating_sub(dropped), c))
+            .map(|&(l, c)| (l.saturating_sub(dropped).min(max_line), c))
             .collect(),
         screen: all,
         scrollback: sb,
