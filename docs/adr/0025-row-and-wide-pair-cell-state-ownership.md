@@ -1,7 +1,29 @@
 # ADR-0025: Row-scoped and wide-pair-scoped state has one owner and one lifecycle, not a per-verb rule
 
-Status: **proposed** (2026-07-24; roster refreshed 2026-07-25). DRAFT for adjudication — promotes
-the model that has been accreting one issue at a time across the soft-wrap / wide-char-spacer
+Status: **accepted** (2026-07-27, #552) — proposed 2026-07-24, roster refreshed 2026-07-25.
+
+**The adjudication, recorded as an event and not only as reasoning**, because a product judgement and
+a derivation have different reversal criteria and a record that does not say which it holds reads as
+a derivation. The maintainer was shown: four slices shipped against D1–D4 — #535 (PR #546), #533
+(PR #548), #540 (PR #553), #534 (PR #556) — with **no edit to any rule** in the process; each new
+combination resolved by pointing at an existing clause rather than by deciding afresh; and D4's one
+missing piece turned out to be a *precondition* (#547), not a wrong rule. The alternative was to
+leave it proposed and keep deciding the area issue by issue, which is alternative (A) below and is
+what failed three times before this record existed. They chose to accept. **Reversing it is theirs**,
+not a matter of a better argument about any single clause.
+
+What acceptance changes in practice: a new question in this area arrives as a **conformance item**
+against D1–D4 rather than as a fresh "(a) or (b)" decision, and a combination the rules cannot answer
+is an **amendment** to this file rather than a new record. The open roster (#529, #536, #549, #557)
+is read that way from here.
+
+What it does **not** cover, so the scope of the judgement is not read wider than it was: the deferred
+fifth rule for non-uniform emission (Consequences, below — #549 is filed under the narrow reading),
+and the three neighbours deliberately kept out (background-is-not-content, the word-boundary set
+#545, consumer-side span projection #454). Those were not adjudicated here.
+
+This record promotes
+the model that had been accreting one issue at a time across the soft-wrap / wide-char-spacer
 cluster (#521, #528, #530, #532, #533, #534, #535, #538, #540, and the wire-derivation half of #7)
 into a single record that *derives* the open questions instead of answering each verb separately.
 That list is the *history* the record was promoted out of. The **live roster and its status live in
