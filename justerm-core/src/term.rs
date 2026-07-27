@@ -1361,6 +1361,16 @@ impl Term {
                         // clips to `[b_col, c_col)`, excluding both prompt and output.
                         // Command marks anchor primary content — read the primary
                         // grid so the text is right even while on the alt screen (#192).
+                        // Where the *typed* command begins, which is not always where B was
+                        // emitted: a prompt that ends its row leaves B past that row's content, and
+                        // the command really starts on the next line. Normalised **here** rather
+                        // than inside `extract_lines`, because the two answers differ by caller —
+                        // a selection that starts in a line's trailing blanks does contain the
+                        // break that follows, a command does not — and because `doc_line_of` needs
+                        // the same value. Feeding it the raw `b_line` reported the command one
+                        // document line early, which is the a11y "jump to previous command" target.
+                        let (b_line, b_col) =
+                            self.command_start(self.primary_grid(), b_line, b_col, m.line);
                         let command =
                             self.extract_lines(self.primary_grid(), b_line, b_col, m.line, m.col);
                         out.push(CommandLine {
@@ -1383,6 +1393,32 @@ impl Term {
             }
         }
         out
+    }
+
+    /// Advance an OSC-133 `CommandStart` position past any hard-ended line that holds no command
+    /// text at or after it, stopping before `end` (the matching `OutputStart`).
+    ///
+    /// B is emitted at the cursor, so a prompt that fills — or merely ends — its row leaves the mark
+    /// in that row's trailing blanks (#562). Two things then go wrong if the raw position is used:
+    /// `extract_lines` selects an empty run and, because the row is hard-ended, flushes it with a
+    /// `\n` the command never contained; and `doc_line_of` names the prompt's line rather than the
+    /// command's. Both were reachable **without any resize** — the row only has to end before its
+    /// width, which an 8-column row holding a 6-column prompt does.
+    ///
+    /// Only hard-ended rows advance. On a soft-wrapped row the continuation is the same logical
+    /// line, its trailing blanks are real content (a space at a wrap boundary was typed), and no
+    /// `\n` is flushed there anyway.
+    fn command_start(&self, grid: &Grid, line: usize, col: usize, end: usize) -> (usize, usize) {
+        let (mut line, mut col) = (line, col);
+        while line < end && !self.row_in(grid, line).is_wrapped() {
+            let cells = self.line_in(grid, line);
+            if col < cells.len() && !cells[col..].iter().all(Cell::is_blank) {
+                break;
+            }
+            line += 1;
+            col = 0;
+        }
+        (line, col)
     }
 
     /// The document (logical) line index that absolute buffer line `abs` renders

@@ -17,10 +17,13 @@
 //! a mark at the end of a line swallow the newline after it, and what folded the cursor back onto
 //! the last glyph.
 //!
-//! Prior art for the split itself is ghostty, which does exactly this inside its reflow: a
-//! non-cursor tracked pin past the content is clamped first
-//! (`if (p.x >= cols_len) p.x = @min(p.x, self.page.size.cols - 1 - self.x)`) and only then widens
-//! the row, while the cursor pin is never clamped (`terminal/PageList.zig:1576-1606` @ `e6e26e1`).
+//! Prior art covers **two** of those three rows. ghostty clamps a non-cursor tracked pin past the
+//! content (`if (p.x >= cols_len) p.x = @min(p.x, self.page.size.cols - 1 - self.x)`) before it can
+//! widen the row, and never clamps the cursor pin (`terminal/PageList.zig:1576-1606` @ `e6e26e1`).
+//! The **mark** row is derived, not ported: ghostty's clamp lands a pin strictly *inside* the
+//! destination, and it has no column-bearing semantic mark to want otherwise (`semantic_prompt` is
+//! a row property). `col == cols` follows from `extract_lines` clipping `[b, c)` — the exclusive
+//! end is the only value that can mean "all of this row".
 //!
 //! What this file deliberately does **not** fix, so the gap stays visible: the distance a point sits
 //! past the content (`poff.min(line.len())` in the join) is still collapsed to "one past". Carrying
@@ -87,15 +90,78 @@ fn a_mark_at_a_filled_last_column_records_the_whole_command() {
 }
 
 #[test]
-fn a_command_start_mark_past_its_row_does_not_prepend_a_newline() {
-    // `extract_lines` clips `[from, to)` — `to` is exclusive but `from` is **inclusive**, so a B
-    // mark at `col == cols` must move to the next line rather than flush an empty run and a `\n`.
+fn a_command_start_mark_past_its_rows_content_does_not_prepend_a_newline() {
+    // `extract_lines` clips `[from, to)` — `to` is exclusive and absorbs a one-past column, `from`
+    // is **inclusive** and cannot: it selects an empty run and, the row being hard-ended, flushes
+    // that run with a `\n` the command never contained.
+    //
+    // The trigger is the mark sitting past its row's **content**, not past its width, so it needs
+    // no resize at all: an 8-column row holding a 6-column prompt is enough. A first attempt keyed
+    // the guard on the row width and fixed only the resized case — the refuting lens caught that
+    // the same fixture still failed without the resize.
     let mut t = Engine::new(8, 6);
     t.feed(b"abcdef\x1b]133;B\x07\r\ngh\x1b]133;C\x07\r\n");
+
+    assert_eq!(command(&t).as_deref(), Some("gh"), "no resize involved");
 
     t.resize(3, 6);
 
     assert_eq!(command(&t).as_deref(), Some("gh"));
+}
+
+#[test]
+fn a_command_reports_the_document_line_it_is_actually_on() {
+    // The command's `line` is the a11y "jump to previous command" target, and it must name the line
+    // the *command text* is on — not where the prompt's B mark happened to be emitted. Both come
+    // from the same start position, so normalising one and not the other made them disagree: the
+    // text moved to line 1 while the reported line stayed 0.
+    let mut t = Engine::new(8, 6);
+    t.feed(b"abcdef\x1b]133;B\x07\r\ngh\x1b]133;C\x07\r\n");
+
+    let before = t.command_lines().first().map(|c| c.line);
+    t.resize(3, 6);
+
+    assert_eq!(before, Some(1), "no resize involved");
+    assert_eq!(t.command_lines().first().map(|c| c.line), Some(1));
+}
+
+#[test]
+fn a_selection_starting_past_a_full_row_skips_to_the_next_line() {
+    // The `from` normalisation above is reached by `selection_text` too, and the change is
+    // deliberate rather than collateral: alacritty does the same thing in `selection.rs`
+    // (`range_simple` — *"Wrap to next line when selection starts to the right of last column"* —
+    // sets `start.point.column = Column(0); start.point.line += 1`). Pinned because nothing else
+    // covers this path and the comment at the seam only talks about OSC-133.
+    let mut t = Engine::with_scrollback(6, 3, 100);
+    t.feed(b"abcdef\r\nghijkl\r\n");
+    t.selection_begin(0, 5, Side::Right, SelectionType::Char);
+    t.selection_extend(1, 5, Side::Right);
+
+    assert_eq!(
+        t.selection_text().as_deref(),
+        Some("ghijkl"),
+        "an anchor after the last cell of line 0 selects line 1, not a leading break"
+    );
+}
+
+#[test]
+fn a_point_on_an_absorbed_blank_line_does_not_jump_a_row() {
+    // The absorbed-blank branch clamps the column, and clamping it *to* `new_cols` made the clamp
+    // emit the seam's "just past a full row" signal — so a cursor parked one column further right
+    // moved a whole row. A blank line has no full row to be just past.
+    let mut seen = Vec::new();
+    for parked in [3usize, 4, 5] {
+        let mut t = Engine::new(8, 6);
+        t.feed(b"ab\r\n");
+        t.feed(format!("\x1b[2;{}H", parked + 1).as_bytes());
+        t.resize(4, 6);
+        seen.push((t.cursor().row, t.cursor().col));
+    }
+    assert_eq!(
+        seen,
+        vec![(1, 3), (1, 3), (1, 3)],
+        "columns past the new width clamp to the same cell; none of them changes the row"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -192,27 +258,28 @@ fn a_hard_line_break_survives_the_resize() {
 }
 
 #[test]
-fn an_alt_column_resize_keeps_every_line() {
-    // Constraint 3. The alt screen has no scrollback, so any design that materialises one extra row
+fn an_alt_column_resize_does_not_spend_a_row_on_a_tracked_point() {
+    // Constraint 3. The alt screen has no scrollback, so a design that materialises one extra row
     // for a tracked point pays for it out of the visible area — content destruction, not scrolling.
-    let mut t = Engine::new(80, 24);
+    //
+    // The fixture is deliberately **tight**, and the first version of this test was not: 22 short
+    // lines in 24 rows resized 80→40 re-splits nothing and leaves two rows of slack, so a one-row
+    // cost was unobservable and the test stayed green under exactly the design it names. Here every
+    // line doubles at the new width and the pane is full, so one extra row is one more line gone.
+    //
+    // Losing `aaaaaa` is not the defect: 3 lines × 2 rows into a 4-row pane with no history cannot
+    // fit, and that is ordinary alt truncation. What is asserted is that the *tracked point* costs
+    // nothing on top of it.
+    let mut t = Engine::new(6, 4);
     t.feed(b"\x1b[?1049h");
-    for i in 1..=22 {
-        t.feed(format!("line{i}\r\n").as_bytes());
-    }
-    let before = t.accessible_text().lines().count();
+    t.feed(b"aaaaaa\r\nbbbbbb\r\ncccccc\r\n");
 
-    t.resize(40, 24);
+    t.resize(3, 4);
 
     assert_eq!(
-        t.accessible_text().lines().count(),
-        before,
-        "no line may be lost: {:?}",
-        t.accessible_text()
-    );
-    assert!(
-        t.accessible_text().contains("line1\n"),
-        "line1 specifically"
+        t.accessible_text().trim_end(),
+        "bbbbbb\ncccccc",
+        "materialising the absorbed blank row would cost one more line than truncation alone"
     );
 }
 
@@ -249,9 +316,16 @@ fn a_mark_on_an_absorbed_blank_line_stays_inside_the_buffer() {
 }
 
 #[test]
-fn a_selection_anchor_stays_inside_the_grid() {
-    // UI state is clamped: an anchor may not name a column the grid does not have, and may not move
-    // the application's content to make room for itself.
+fn a_selection_does_not_move_the_apps_content() {
+    // What this pins is the **second** half of "UI state may not move app content": no design that
+    // widens or materialises for a tracked point may make a selected buffer lay out differently
+    // from an unselected one. It is the fixture #562 records as the discriminating one — line 1
+    // must be non-empty ahead of the blank so the trailing-blank trim actually runs in both arms.
+    //
+    // It does **not** pin the `.min(cols - 1)` on the anchor column, and an earlier comment here
+    // claimed it did. Measured: removing that clamp leaves this test green and reddens
+    // `reflow_point_mapping::a_point_past_a_full_last_row_of_the_last_line_does_not_name_a_row_that_does_not_exist`
+    // instead — the #559 test, which is where that guard is pinned.
     let mut t = Engine::with_scrollback(6, 3, 100);
     t.feed(b"aaaaaa\r\nbbbbbb\r\n");
     t.feed(b"\x1b[1;1H");

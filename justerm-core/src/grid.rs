@@ -585,9 +585,16 @@ pub(crate) fn reflow(
                     // row of the *next logical line* and made it swallow that line's newline.
                     // `Term::resize` resolves it per kind at the seam.
                     //
-                    // ghostty splits the same three ways inside its own reflow — a non-cursor pin is
-                    // clamped before it can widen anything, the cursor pin never is
-                    // (`terminal/PageList.zig:1576-1606` @ `e6e26e1`).
+                    // ghostty splits **two** of the three the same way inside its own reflow: a
+                    // non-cursor pin is clamped before it can widen anything, the cursor pin never
+                    // is (`terminal/PageList.zig:1576-1606` @ `e6e26e1`). The mark's reading has no
+                    // prior art there and is derived here — ghostty's clamp puts a pin strictly
+                    // *inside* the destination and then widens the row to include it, the opposite
+                    // of a bound sitting outside the grid, and it has no column-bearing semantic
+                    // mark to want one (`semantic_prompt` is a row property, `:1573`). The nearest
+                    // reference for "one past is representable" is xterm.js's `x === cols`, which
+                    // is its **cursor**. Derived, not ported: `extract_lines` clips `[b, c)`, so the
+                    // exclusive end is the only value that can mean "all of this row".
                     (last_row, last_take)
                 }
                 Some(_) => {
@@ -611,14 +618,28 @@ pub(crate) fn reflow(
     // clamped a point that was merely one row past — a row the fit was about to create — which is
     // how a resize folded the cursor back onto the last glyph and destroyed it (symptom 3).
     //
-    // Nothing is materialised for this: ghostty is explicit that preserving a blank row must cost
-    // **no destination row** (`if (!src_row.wrap_continuation) self.new_rows += 1; return;`,
-    // `terminal/PageList.zig:1610-1616` @ `e6e26e1`). A port that emits a real row instead pays out
-    // of the active area, and on a pane with no scrollback to absorb the displaced one — the alt
-    // screen — that is content destruction. Measured: 22 alt lines became 21.
+    // Nothing is materialised for this, and ghostty is the precedent — but for a narrower reason
+    // than "a blank row is free". It **defers** the row (`if (!src_row.wrap_continuation)
+    // self.new_rows += 1; return;`, `terminal/PageList.zig:1610-1616` @ `e6e26e1`) and *pays the
+    // debt by scrolling* the moment a non-blank row follows (`while (self.new_rows > 0)
+    // cursorScrollOrNewPage(...)`, `:1634-1637`). What is free is specifically a blank row with
+    // nothing after it — its own comment: *"so that blank rows at the end of the page list are
+    // never written"*. That is exactly this case, because the join only absorbs **trailing** blank
+    // lines. A port that emitted a real row here instead would pay out of the active area, and on a
+    // pane with no scrollback to absorb the displaced one — the alt screen — that is content
+    // destruction. Measured: 22 alt lines became 21.
     for (pi, &(pl, poff, _)) in tracked.iter().enumerate() {
         if pl >= logical.len() {
-            new_points[pi] = (out.len() + (pl - logical.len()), poff.min(new_cols));
+            // Clamped **below** `new_cols`, not to it. `col == new_cols` is the "just past a full
+            // row" signal the seam reads, and an absorbed line is blank — it has no full row for
+            // the cursor to be just past. Clamping to `new_cols` made the signal fall out of
+            // ordinary arithmetic: a cursor parked one column further left stayed on its row while
+            // one column further right jumped a whole row (measured at width 4, parked columns 3
+            // and 4). A value that carries meaning must not also be an upper bound.
+            new_points[pi] = (
+                out.len() + (pl - logical.len()),
+                poff.min(new_cols.saturating_sub(1)),
+            );
         }
     }
 
