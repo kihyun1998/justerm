@@ -310,7 +310,18 @@ Z"`, and a search across the wrap went from 1 hit to 0). It now lives on the
   at the two seams where a row's next neighbour changed, and, when the region starts at the grid's
   top, on the last *scrollback* row (the readers walk `[scrollback ++ grid]` as one buffer). The
   interior of the region is safe by construction because whole `Row`s rotate, so a pair moves
-  together. `end_wrap` damages the last column (the wrap rides the wire there, and nothing else
+  together.
+  **Each seam carries exactly one exemption, and both are facts about the caller that the shift
+  cannot see** — so they are parameters, not tests. The **top** seam is exempt when the linefeed
+  evicts row 0 into scrollback: adjacency survives one row further back. The **bottom** seam is
+  exempt when the shift is the one `wrapline` asked for: the blank it exposes is not a stranger that
+  displaced a continuation, it *is* the continuation, about to be written into (#557). Geometry is
+  not the discriminator — #540's guard first read "only when a stationary row sits below the region",
+  which holds perfectly at a *region's* bottom while the scroll is still serving the wrap, and split
+  the line the scroll existed to continue. **Why** the shift happens is the discriminator: a verb
+  displaces a continuation that already existed, a wrap-serving linefeed creates one. xterm.js
+  carries the same fact in the same place — `BufferService.scroll(eraseAttr, isWrapped)`, with only
+  the auto-wrap branch of `_print` passing `true`. `end_wrap` damages the last column (the wrap rides the wire there, and nothing else
   would re-ship it), which is why `shift_region` records the scroll op *before* the seam clears:
   `record_scroll` rotates `line_damage` with the content, so a clear damaged earlier is carried to
   the wrong row. It does **not** drop the wide-wrap artefact marker in that column — the erase

@@ -2400,17 +2400,25 @@ impl Term {
     /// Move down one line. At the bottom margin, scroll the region instead;
     /// below the region, just descend (no scroll). Column is unchanged (raw LF;
     /// CR is what returns to column 0).
-    /// A line feed, with the one fact the shift itself cannot see: whether the auto-wrap asked
-    /// for it.
-    ///
-    /// `serves_wrap` is the **bottom** seam's exemption, the mirror of `evicts_to_scrollback` for
-    /// the top one. When `wrapline` drives this, the blank that lands at the region's bottom *is*
-    /// where the wrapped text is about to go — so the row that #540 would call "the one that lost
-    /// its continuation to the blank" is in fact the row whose continuation the blank **is** (#557).
+    /// An ordinary line feed — `LF`/`VT`/`FF`, `IND` and `NEL`. None of them serves a wrap.
     fn linefeed(&mut self) {
         self.linefeed_inner(false);
     }
 
+    /// A line feed, carrying the one fact the shift itself cannot see: whether the auto-wrap asked
+    /// for it.
+    ///
+    /// `serves_wrap` is the **bottom** seam's exemption in `shift_region`, the mirror of
+    /// `evicts_to_scrollback` for the top one. When `wrapline` drives this, the blank that lands at
+    /// the region's bottom *is* where the wrapped text is about to go — so the row that #540 would
+    /// call "the one that lost its continuation to the blank" is in fact the row whose continuation
+    /// that blank **is** (#557).
+    ///
+    /// xterm.js threads the identical fact through the identical seam, in the opposite direction:
+    /// `BufferService.scroll(eraseAttr, isWrapped)` stamps the *destination* row
+    /// (`common/services/BufferService.ts:68`/`:77` @ `699f553`), and exactly one of its four
+    /// non-test callers passes `true` — the auto-wrap branch of `_print` (`InputHandler.ts:588`),
+    /// not `lineFeed`, `index` or the ED-2 loop.
     fn linefeed_inner(&mut self, serves_wrap: bool) {
         // New-line mode (LNM ?20): a line feed also returns to column 0 (#71).
         if self.newline_mode {

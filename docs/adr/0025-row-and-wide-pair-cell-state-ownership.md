@@ -266,8 +266,7 @@ the fix site follows from. Whether it is still open is the tracker's answer, not
   alacritty clears nothing on any scroll path; xterm.js's mirrored polarity moves the exposure to
   the other seam rather than removing it. Derived under ADR-0004 (the spec outranks any
   implementation), which is the first item in this roster with **0-of-3** reference support.
-- **#557** — the same CLEAR site, **over-firing**: a rule with no reference to check it against got
-  its own scope wrong, which is the cost ADR-0004 derivation carries and worth recording as such.
+- **#557** — the same CLEAR site, **over-firing**.
   #540's bottom-seam guard exempted only the *screen's* bottom edge, on the recorded ground that
   *"the link is only broken when there is a stationary row below the region"*. That is **necessary
   but not sufficient**: at a DECSTBM region's bottom the same `wrapline`-asked-for scroll happens
@@ -281,9 +280,26 @@ the fix site follows from. Whether it is still open is the tracker's answer, not
   generalisation, and it is what makes the next shift caller's obligation legible instead of
   remembered. Both exemptions stay one-sided: a wrap-serving scroll still falsifies the top seam.
 
-  Confirmed narrow by mutation: widening `serves_wrap` to every `shift_region` call turns #540's own
-  suite red (`su_ends_the_wrap_above_the_blank_it_exposed`,
-  `sd_ends_the_wrap_at_the_regions_bottom_edge`, `the_seam_clear_reaches_the_wire_not_just_the_model`).
+  **Two claims in the first draft of this entry were wrong, and both are the same failure as #562's.**
+
+  - *"a rule with no reference to check it against"* — inherited from #540's 0-of-3 framing, which is
+    right about the seam **clear** and false about this **exemption**. xterm.js carries the identical
+    caller fact in the identical place: `BufferService.scroll(eraseAttr, isWrapped)`
+    (`common/services/BufferService.ts:68`, stamping at `:77`), with exactly one of four non-test
+    callers passing `true` — the auto-wrap branch of `_print` (`InputHandler.ts:588`) and not
+    `lineFeed` (`:750`), `index` (`:3366`) or the ED-2 loop (`:1270`). Ported in shape, mirrored in
+    polarity: xterm.js stamps the destination row, justerm exempts the source seam's clear. ghostty
+    reaches the same outcome structurally (its `index()` path has no `wrap` assignment at all). The
+    row now lives in `reference-facts.md` — it was absent, which is why the derivation started from
+    a blank slate.
+  - *"widening `serves_wrap` to every `shift_region` call turns #540's own suite red"* — true, and
+    **not evidence**: that mutation is discriminated by the *down-shift* tests, which `serves_wrap`
+    can never reach (it is only ever `true` with `down == false`). The mutation that tests this
+    exemption is widening to every **up-shift** (`let orphaned = if !down`), and the whole crate
+    stays green under it except one test — `a_verb_that_displaces_a_real_continuation_still_clears`,
+    added by this change. So the narrowness rests on a single control, and #540's suite does not pin
+    the region-bottom up-shift clear at all. Recorded rather than papered over: a mutation the guard
+    cannot reach proves nothing about the guard.
 - **#529** — a pair-move D4 violation: carry the trailing half.
 - **#536** — a robustness edge of the pair-repair span on a degenerate width; in scope as the same
   code family, though it is a bounds guard, not a state-ownership rule. **Its reproduction is now
