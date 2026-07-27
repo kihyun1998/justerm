@@ -14,8 +14,10 @@ not a matter of a better argument about any single clause.
 
 What acceptance changes in practice: a new question in this area arrives as a **conformance item**
 against D1–D4 rather than as a fresh "(a) or (b)" decision, and a combination the rules cannot answer
-is an **amendment** to this file rather than a new record. The open roster (#529, #536, #549, #557)
-is read that way from here.
+is an **amendment** to this file rather than a new record. The open roster is read that way from
+here — and it is **not listed in this file**: it lives in the spine (#552), because a hand-copied one
+here went stale in five places within three days of being written. This sentence used to carry
+`(#529, #536, #549, #557)` and was wrong again by the time #562 was settled.
 
 What it does **not** cover, so the scope of the judgement is not read wider than it was: the deferred
 fifth rule for non-uniform emission (Consequences, below — #549 is filed under the narrow reading),
@@ -392,6 +394,44 @@ the fix site follows from. Whether it is still open is the tracker's answer, not
   corrected reading and now also record alacritty `grid/resize.rs:374-384`, the one reference site
   that *sets* a wrap flag from a reflow's output — absent from the file, and therefore unread, for
   all five attempts.
+- **#562** — settled, and **the rule of record was D1 twice, in opposite directions.** The five
+  rejected designs above all tried to answer "one past the last cell" *inside* `reflow`. They could
+  not, because `reflow` does not own what the answer depends on:
+
+  - **The row count is the caller's.** `Grid::set_screen` decides how many rows exist (it pads at the
+    bottom); `reflow` was bounding tracked points against `out.len()`, its own emission — a D1
+    read-side violation of exactly #549's shape, one level up. It clamped away rows the fit was about
+    to create, which is both symptom 2 (the cursor collapsed off a trailing blank line) and symptom 3
+    (the cursor folded back onto the last glyph and the next byte destroyed it). The bound is not
+    gone — removing it re-opens a real panic (`index out of bounds: the len is 2 but the index is 2`
+    in `Grid::row`, reachable from an OSC-133 mark plus a resize, #536's class) — it **moved** to the
+    seam, where the final geometry is known.
+  - **The meaning of "one past" is the point kind's.** The cursor, a selection anchor and a command
+    mark are three different owners with three different answers, and `points: &[(usize, usize)]`
+    erases which is which. So `reflow` now returns the honest logical position (`col` may equal
+    `new_cols`) and `Term::resize` resolves it per kind. This is the criterion the previous entry
+    salvaged — *UI state must not move app content; app state may* — and it turned out to be **in the
+    reference verbatim**: ghostty clamps every non-cursor tracked pin before it can widen a row
+    (`PageList.zig:1576-1585`) and never clamps the cursor pin (`:1602-1606`). Design 1 was rejected
+    for a symptom that clause prevents.
+
+  **A citation in the entry above is corrected here.** It calls alacritty `grid/resize.rs:374-384`
+  "the one reference site that sets a wrap flag from a reflow's output" — true — and implies it is
+  therefore prior art for a justerm seam that does the same. It is not, and that inference cost
+  designs 3, 4 and 5: alacritty lifts its cursor outside the grid **only when `input_needs_wrap` was
+  already set**, so its `column == columns` is a flag the cursor arrived with. justerm never hands
+  `reflow` a one-past column (`Cursor::point()` returns `col ≤ cols - 1`; `pending_wrap` rides
+  beside the reflow), so the same value means a cursor parked past content by CUP. The guards cannot
+  fire. `reference-facts.md` carries the correction.
+
+  **Two defects outside the issue's four came out of the same gap**, both fixed here: an OSC-133 mark
+  emitted at a filled last column was written one column short **with no resize involved**
+  (`add_command_mark` stored `cursor.col` and ignored `pending_wrap`), and `extract_lines` is
+  asymmetric — its `to` is exclusive and absorbs a one-past column, its `from` is inclusive and
+  cannot. **What is deliberately still open**: the *distance* a point sits past the content is still
+  collapsed to "one past". Carrying it needs destination rows to spill into, and spending those rows
+  destroys content on a pane with no scrollback — which is only a constraint at all because justerm
+  reflows the alt screen and 0 of 3 references do, with no record saying why.
 - **#531** — not a conformance item; the decode-side half of D1's derived-bit clause, on a different
   rider. See the D1 note above.
 
