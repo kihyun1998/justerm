@@ -2400,7 +2400,18 @@ impl Term {
     /// Move down one line. At the bottom margin, scroll the region instead;
     /// below the region, just descend (no scroll). Column is unchanged (raw LF;
     /// CR is what returns to column 0).
+    /// A line feed, with the one fact the shift itself cannot see: whether the auto-wrap asked
+    /// for it.
+    ///
+    /// `serves_wrap` is the **bottom** seam's exemption, the mirror of `evicts_to_scrollback` for
+    /// the top one. When `wrapline` drives this, the blank that lands at the region's bottom *is*
+    /// where the wrapped text is about to go — so the row that #540 would call "the one that lost
+    /// its continuation to the blank" is in fact the row whose continuation the blank **is** (#557).
     fn linefeed(&mut self) {
+        self.linefeed_inner(false);
+    }
+
+    fn linefeed_inner(&mut self, serves_wrap: bool) {
         // New-line mode (LNM ?20): a line feed also returns to column 0 (#71).
         if self.newline_mode {
             self.carriage_return();
@@ -2449,7 +2460,13 @@ impl Term {
                     self.markers_shift_below_margin(below);
                     self.invalidate_search_highlights();
                     let evicted = self.grid.row_owned(0);
-                    self.shift_region(self.scroll_top, self.scroll_bottom, false, true);
+                    self.shift_region(
+                        self.scroll_top,
+                        self.scroll_bottom,
+                        false,
+                        true,
+                        serves_wrap,
+                    );
                     evicted
                 };
                 self.scrollback.push_back(evicted);
@@ -2499,7 +2516,13 @@ impl Term {
                 // guard needed. `markers_rotate_region` routes via `markers_mut`.
                 self.markers_rotate_region(base + self.scroll_top, base + self.scroll_bottom, true);
                 self.invalidate_search_highlights();
-                self.shift_region(self.scroll_top, self.scroll_bottom, false, false);
+                self.shift_region(
+                    self.scroll_top,
+                    self.scroll_bottom,
+                    false,
+                    false,
+                    serves_wrap,
+                );
             }
         } else if self.cursor.row + 1 < self.grid.rows() {
             self.cursor.row += 1;
@@ -2602,7 +2625,7 @@ impl Term {
             // screen, so no guard (see `linefeed`).
             self.markers_rotate_region(base + self.scroll_top, base + self.scroll_bottom, false);
             self.invalidate_search_highlights();
-            self.shift_region(self.scroll_top, self.scroll_bottom, true, false);
+            self.shift_region(self.scroll_top, self.scroll_bottom, true, false, false);
         } else if self.cursor.row > 0 {
             self.cursor.row -= 1;
         }
@@ -2734,7 +2757,7 @@ impl Term {
 
     /// Auto-wrap at end of line: line-feed then return to column 0.
     fn wrapline(&mut self) {
-        self.linefeed();
+        self.linefeed_inner(true);
         self.cursor.col = 0;
         self.cursor.pending_wrap = false;
     }
@@ -3466,6 +3489,19 @@ impl Term {
     /// region, so the scroll op the caller records does not cover it and a `Partial` frame would
     /// never re-ship the derived `WRAPLINE` bit.
     ///
+    /// **Each seam has exactly one exemption, and both are facts about the caller that this
+    /// function cannot see** — which is why they are parameters rather than tests:
+    ///
+    /// - `evicts_to_scrollback` exempts the **top** seam: a linefeed pushes row 0 into scrollback,
+    ///   so the readers' `[scrollback ++ grid]` walk finds the continuation one row further back
+    ///   and adjacency survives.
+    /// - `serves_wrap` exempts the **bottom** seam: the shift was asked for by `wrapline`, so the
+    ///   blank it exposes at `bottom` is not a stranger that displaced a continuation — it *is*
+    ///   the continuation, about to be written into (#557).
+    ///
+    /// Both are one-sided on purpose. A wrap-serving scroll still falsifies the top seam, and a
+    /// scrollback-evicting linefeed still falsifies the bottom one when no wrap asked for it.
+    ///
     /// **No reference implements this rule**, so it is derived rather than ported — ADR-0004, the
     /// spec is the authority for VT semantics, above any implementation:
     ///
@@ -3492,7 +3528,14 @@ impl Term {
     /// its continuation always move together and seam-only is sound. If left/right margins ever
     /// land, this rule and #534's marker rule break at the same time — neither is safe under a
     /// shift that moves part of a row.
-    fn shift_region(&mut self, top: usize, bottom: usize, down: bool, evicts_to_scrollback: bool) {
+    fn shift_region(
+        &mut self,
+        top: usize,
+        bottom: usize,
+        down: bool,
+        evicts_to_scrollback: bool,
+        serves_wrap: bool,
+    ) {
         if down {
             self.grid.scroll_down_region(top, bottom);
         } else {
@@ -3547,16 +3590,30 @@ impl Term {
         // ordinary soft-wrap-at-the-last-row state: `wrapline` sets the flag and the linefeed
         // scrolls precisely so the continuation has somewhere to land, which is the *next* row
         // after this shift. Its claim is about a row that does not exist yet, so the shift makes it
-        // true rather than false. The link is only broken when there is a stationary row below the
-        // region (`bottom + 1 < rows`): then the continuation stayed put while its lead moved up.
+        // true rather than false.
         //
-        // That rests on an invariant worth naming, because it was not true when this guard was
-        // first written: **a row only claims a wrap if a next row will exist for it**. A row parked
-        // below a DECSTBM region kept a permanent false claim, and this guard preserved it — the
+        // **The rest of that guard's original rationale was too narrow, and #557 is what it cost.**
+        // It read: *"the link is only broken when there is a stationary row below the region
+        // (`bottom + 1 < rows`): then the continuation stayed put while its lead moved up."* A
+        // stationary row below is **necessary but not sufficient**. At a *region's* bottom the same
+        // wrapline-asked-for scroll happens with `bottom + 1 < rows` perfectly true, and the clear
+        // then split the logical line the scroll existed to continue. The geometry was never the
+        // discriminator; **why the shift is happening** is — which is what `serves_wrap` carries.
+        //
+        // The guard stays anyway: it is the screen-bottom case of the same fact, and it also holds
+        // for a *non*-wrap-serving linefeed at the screen edge.
+        //
+        // One invariant is still worth naming, because it was not true when this guard was first
+        // written: **a row only claims a wrap if a next row will exist for it**. A row parked below
+        // a DECSTBM region kept a permanent false claim, and this guard preserved it — the #540
         // completeness pass merged two unrelated logical lines through exactly that hole. The claim
         // is now gated at its set site (`write_glyph` asks `wrapline_advances`), so the guard's
         // premise holds. Valid as long as that gate stays.
-        let orphaned = if down {
+        let orphaned = if serves_wrap {
+            // The blank this shift just exposed is the continuation the wrap is waiting for, so
+            // there is nothing to falsify — see the `serves_wrap` note on `linefeed_inner` (#557).
+            None
+        } else if down {
             Some(bottom)
         } else if bottom + 1 < self.grid.rows() {
             bottom.checked_sub(1)
@@ -3769,7 +3826,7 @@ impl Term {
         // SU/SD/IL/DL don't accrue scrollback, so `base` is stable across the loop.
         let base = self.scrollback.len();
         for _ in 0..n {
-            self.shift_region(top, bottom, down, false);
+            self.shift_region(top, bottom, down, false, false);
             // Rotate anchors with the content, like `linefeed`/`reverse_index`
             // (#162). `up` = content moved up = the non-`down` case. Markers rotate
             // with the active buffer (#187) — alt-scoped on the alt screen, so no

@@ -266,6 +266,24 @@ the fix site follows from. Whether it is still open is the tracker's answer, not
   alacritty clears nothing on any scroll path; xterm.js's mirrored polarity moves the exposure to
   the other seam rather than removing it. Derived under ADR-0004 (the spec outranks any
   implementation), which is the first item in this roster with **0-of-3** reference support.
+- **#557** — the same CLEAR site, **over-firing**: a rule with no reference to check it against got
+  its own scope wrong, which is the cost ADR-0004 derivation carries and worth recording as such.
+  #540's bottom-seam guard exempted only the *screen's* bottom edge, on the recorded ground that
+  *"the link is only broken when there is a stationary row below the region"*. That is **necessary
+  but not sufficient**: at a DECSTBM region's bottom the same `wrapline`-asked-for scroll happens
+  with a stationary row below, and the clear then split the logical line the scroll existed to
+  continue (`"\x1b[1;3r\x1b[3;1Habcdz"` → `"\n\nabcd\nz"`, expected `"\n\nabcdz"`).
+
+  The discriminator is not geometry but **why the shift is happening** — a verb *displaces* a
+  continuation that already existed, a wrap-serving linefeed *creates* one. `shift_region` cannot
+  see that, so it is a parameter, exactly like the `evicts_to_scrollback` that already exempts the
+  top seam. **Each seam now has one exemption and both are caller facts**; that symmetry is the
+  generalisation, and it is what makes the next shift caller's obligation legible instead of
+  remembered. Both exemptions stay one-sided: a wrap-serving scroll still falsifies the top seam.
+
+  Confirmed narrow by mutation: widening `serves_wrap` to every `shift_region` call turns #540's own
+  suite red (`su_ends_the_wrap_above_the_blank_it_exposed`,
+  `sd_ends_the_wrap_at_the_regions_bottom_edge`, `the_seam_clear_reaches_the_wire_not_just_the_model`).
 - **#529** — a pair-move D4 violation: carry the trailing half.
 - **#536** — a robustness edge of the pair-repair span on a degenerate width; in scope as the same
   code family, though it is a bounds guard, not a state-ownership rule. **Its reproduction is now
