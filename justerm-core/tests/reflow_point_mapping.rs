@@ -95,8 +95,15 @@ fn the_cursor_rides_the_same_mapping() {
 
     t.resize(3, 10);
 
-    // Rows after the re-split: "ab"+artefact | 한 c | d. The cursor sat on `d`.
-    assert_eq!((t.cursor().row, t.cursor().col), (2, 0));
+    // Rows after the re-split: "ab"+artefact | 한 c | d.
+    //
+    // `(2, 1)`, not `(2, 0)`: the fixture fills all six columns, so the cursor is parked on `d`
+    // with the wrap **deferred** — it is logically one past `d`, and `d` lands at `(2, 0)`. This
+    // assertion originally read `(2, 0)` because `resize` used to drop `pending_wrap`, which put
+    // the cursor *on* `d` and let the next byte overwrite it. Both this expectation and that
+    // reset moved in the same change; the drift this test is about is unchanged either way, and
+    // `a_wide_glyph_on_the_boundary_does_not_drift_a_selection` pins it without the cursor.
+    assert_eq!((t.cursor().row, t.cursor().col), (2, 1));
 }
 
 #[test]
@@ -137,7 +144,8 @@ fn the_drift_reaches_a_frame_mode_consumer_through_the_wire() {
     t.resize(3, 10);
 
     let frame = decode(&encode(&t.frame())).expect("round-trip");
-    assert_eq!((frame.cursor_row, frame.cursor_col), (2, 0));
+    // One past `d`, for the reason spelled out in `the_cursor_rides_the_same_mapping`.
+    assert_eq!((frame.cursor_row, frame.cursor_col), (2, 1));
 }
 
 // ---- side conditions: what must NOT change ---------------------------------------------------
@@ -205,7 +213,9 @@ fn a_wide_glyph_that_does_not_land_on_the_boundary_changes_nothing() {
 
     t.resize(4, 10);
 
-    assert_eq!((t.cursor().row, t.cursor().col), (1, 1));
+    // Rows: "ab한" | "cd". One past `d` at `(1, 1)` is `(1, 2)` — again the deferred wrap, not the
+    // mapping, which is exactly this test's point: no short row is emitted at width 4.
+    assert_eq!((t.cursor().row, t.cursor().col), (1, 2));
     assert_eq!(t.accessible_text().trim_end(), "ab한cd");
 }
 
