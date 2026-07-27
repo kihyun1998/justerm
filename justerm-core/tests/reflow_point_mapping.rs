@@ -12,16 +12,20 @@
 //! cells off, which is enough to cross into a neighbouring row and land on an unrelated glyph.
 //!
 //! ADR-0025 files this as a **D1 read-side** violation — the loop owns each segment's real extent
-//! (`[i, i + take)`), so the mapping reads the owner instead of recomputing it. Both references
-//! decide the point inside their reflow loop for the same reason:
+//! (`[i, i + take)`), so the mapping reads the owner instead of recomputing it. All three
+//! references decide the position where the real extent is known, and none divides an offset by the
+//! new width:
 //!
-//! - alacritty `alacritty_terminal/src/grid/resize.rs:167-188` @ `852e971` — `if i ==
+//! - **xterm.js precomputes the same array** — `reflowSmallerGetNewLineLengths`
+//!   (`common/buffer/BufferReflow.ts:179` @ `699f553`), documented as *"pre-compute the wrapping
+//!   points since wide characters may need to be wrapped onto the following line"*, yielding
+//!   `newCols` or `newCols - 1` per row. That is the closest prior art for this design.
+//! - **ghostty** moves a tracked pin by assignment from the write cursor's live position inside its
+//!   reflow loop (`terminal/PageList.zig:1650-1659` @ `e6e26e1`); its `tracked_pins` is the closest
+//!   analogue of `points` — anchors *and* marks, not just the cursor.
+//! - **alacritty** `alacritty_terminal/src/grid/resize.rs:169-188` @ `852e971` — `if i ==
 //!   cursor_buffer_line && reflow` adjusts the cursor while that line is being processed, against
 //!   `num_wrapped`, the count of cells actually wrapped.
-//! - xterm.js `common/buffer/BufferReflow.ts:46-47` @ `699f553` — the larger path refuses to touch
-//!   lines containing the cursor at all (*"If these lines contain the cursor don't touch them"*),
-//!   and `Buffer._reflowSmaller` handles it separately. Neither reference computes a position by
-//!   dividing an offset by the new width.
 //!
 //! Everything riding `points` is affected: selection anchors, the cursor, and the OSC-133 command
 //! columns. Points at offset 0 of a logical line are immune, so this bites *intra-line* offsets.
@@ -164,6 +168,32 @@ fn a_point_past_a_full_last_row_moves_to_the_next_row() {
     t.resize(3, 10);
 
     assert_eq!((t.cursor().row, t.cursor().col), (2, 0));
+}
+
+#[test]
+fn a_point_past_a_full_last_row_of_the_last_line_does_not_name_a_row_that_does_not_exist() {
+    // The mirror of the test above at the buffer's end, where `(last_row + 1, 0)` has no row to
+    // land on. `Grid::row` indexes `lines` directly and a selection anchor is written back
+    // unclamped, so this was an index-out-of-bounds **panic** — a library crashing its consumer,
+    // the #536 class.
+    //
+    // It is pinned here rather than merely fixed because this change would otherwise have *widened*
+    // it: the old arithmetic went out of range only when `line.len() % new_cols == 0`, which a
+    // short row makes impossible, so a line with a wide pair on the boundary — this change's whole
+    // subject — was safe before. Caught by the refuting lens, not by me.
+    let mut t = Engine::new(12, 2);
+    t.feed("ab한cdef".as_bytes()); // 8 cells; at 3 columns: "ab"+artefact | 한 c | d e f
+    t.selection_begin(0, 8, Side::Left, SelectionType::Char);
+    t.selection_extend(0, 8, Side::Right);
+
+    t.resize(3, 2);
+
+    let spans = t.selection_range();
+    assert_eq!(spans.len(), 1);
+    assert!(
+        spans[0].row < t.grid().rows(),
+        "the anchor must name a row that exists"
+    );
 }
 
 #[test]

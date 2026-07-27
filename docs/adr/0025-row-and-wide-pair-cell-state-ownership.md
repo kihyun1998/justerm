@@ -281,8 +281,9 @@ the fix site follows from. Whether it is still open is the tracker's answer, not
   mapping each tracked point (cursor, selection anchors, OSC-133 columns) to its new position — is
   the one that is wrong, and wrong for a reason this model names: it **re-derives** a fact the loop
   already owns instead of reading the owner. `new_points[pi] = (start + off / new_cols, off %
-  new_cols)` (`grid.rs:508`) assumes every emitted row holds `new_cols` content cells, while the
-  loop deliberately emits a short row (`take -= 1`, `grid.rs:457`) whenever a row would end on a
+  new_cols)` (in `grid::reflow`'s re-split loop; the expression is gone as of PR #559, so it is
+  cited by shape rather than by a line that now points elsewhere) assumes every emitted row holds
+  `new_cols` content cells, while the loop deliberately emits a short row (`take -= 1`) whenever a row would end on a
   `WIDE_CHAR` lead — i.e. **the divergence exists only because of D4**, the pair that must not be
   split. Every wide glyph on a re-split boundary drifts every later anchor by one cell, and the
   errors accumulate until the point crosses into a neighbouring row. The fix follows from the rule:

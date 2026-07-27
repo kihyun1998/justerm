@@ -460,15 +460,30 @@ pub(crate) fn reflow(
     // point crossed into a neighbouring row (#549, an ADR-0025 D1 read-side violation — the same
     // "don't re-derive what the owner already knows" clause the wrap flag lives under).
     //
-    // Both references decide the point inside their own reflow loop for the same reason: alacritty
-    // adjusts the cursor while processing its line, against `num_wrapped`
-    // (`grid/resize.rs:167-188` @ `852e971`); xterm.js refuses to reflow lines containing the
-    // cursor at all (`common/buffer/BufferReflow.ts:46-47` @ `699f553`). Neither divides an offset
-    // by the new width.
+    // All three references decide the position where the real extent is known, and none divides an
+    // offset by the new width:
     //
-    // Held outside the loop and cleared per line so this costs one allocation, and mapped in a
-    // single pass afterwards rather than per segment — `points` carries every OSC-133 marker, so
-    // nesting the two would scale with rows × markers.
+    // - **xterm.js precomputes exactly this array** — `reflowSmallerGetNewLineLengths`
+    //   (`common/buffer/BufferReflow.ts:179` @ `699f553`), whose doc names the reason: *"pre-compute
+    //   the wrapping points since wide characters may need to be wrapped onto the following line …
+    //   will only contain the values `newCols` … and `newCols - 1` (when the line does end with a
+    //   wide character), except for the last value"*. That is this `Vec`, in the reference.
+    // - **ghostty** moves a tracked pin by assignment from the write cursor's live position inside
+    //   its reflow loop (`terminal/PageList.zig:1650-1659` @ `e6e26e1`) — its `tracked_pins` is the
+    //   closest analogue of `points` (anchors *and* marks, not just the cursor).
+    // - **alacritty** re-anchors the cursor on the iteration that processes its own line, against
+    //   `num_wrapped` (`alacritty_terminal/src/grid/resize.rs:169-188` @ `852e971`).
+    //
+    // (xterm.js also skips the cursor's wrapped run in the *larger* path, but that is gated on its
+    // `reflowCursorLine` option — `BufferReflow.ts:45`, `Buffer.ts:337`/`:370`/`:391` — so it is a
+    // policy, not a refusal.)
+    //
+    // Held outside the loop and cleared per line, so this costs one allocation. Mapped in a single
+    // pass afterwards rather than tested per segment: `points` carries every OSC-133 command mark
+    // in the buffer, and the per-segment shape would be rows × points. Note what that does **not**
+    // claim — it is not faster than the arithmetic it replaces. That was `O(points)` per logical
+    // line and this is too (the `pl != li` filter below is the dominant term either way); measured
+    // on 8000 marks over 8000 lines, a narrow-then-widen resize is identical within noise.
     let mut segments: Vec<(usize, usize, usize)> = Vec::new();
     for (li, line) in logical.iter().enumerate() {
         let comb = &logical_comb[li];
@@ -563,6 +578,32 @@ pub(crate) fn reflow(
                     (seg_row, off - seg_off)
                 }
             };
+        }
+    }
+    // A point one past the end of the **last** logical line names a row that was never emitted:
+    // `(last_row + 1, 0)` above is only in range while another line follows. That index reaches
+    // `Grid::row`, which indexes `lines` directly — and only the cursor is clamped on the way in
+    // (`Cursor::set_point`); selection anchors and OSC-133 marks are written back raw. So an
+    // out-of-range row is a **panic crossing into the consumer's process**, the same class as #536,
+    // reachable from an ordinary drag past the end of a line followed by a resize.
+    //
+    // This guard exists because without it the change *widens* that pre-existing panic: the old
+    // arithmetic only went out of range when `line.len() % new_cols == 0`, which a short row makes
+    // impossible, so a line containing a wide pair on the boundary — the very shape this change is
+    // about — was safe before and would not have been after.
+    //
+    // Clamping to the last real cell is the *approximation*, not the answer. The answer is that
+    // `points` cannot express "one past the last cell" at all, which is why this case exists.
+    // ghostty removes it by construction — it grows the source row so a pin is never past the end
+    // (`terminal/PageList.zig:1584-1596`, `:1602-1607` @ `e6e26e1`) and clamps a pin past the
+    // destination width rather than inventing a position beyond it; alacritty lifts the cursor
+    // outside the grid before reflow and restores it (`alacritty_terminal/src/grid/resize.rs`
+    // `:113-116` grow, `:248-251` shrink, restore `:173-177` @ `852e971`). Both avoid it
+    // structurally; justerm returns a grid coordinate and therefore cannot. Tracked separately.
+    let last_row = out.len().saturating_sub(1);
+    for p in new_points.iter_mut() {
+        if p.0 > last_row {
+            *p = (last_row, new_cols.saturating_sub(1));
         }
     }
     // A point whose logical line was trimmed (trailing blank) clamps to the end.
