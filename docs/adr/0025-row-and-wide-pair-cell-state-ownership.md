@@ -315,6 +315,49 @@ the fix site follows from. Whether it is still open is the tracker's answer, not
   semantic prompt (`:1573`). Recorded as a second instance of the same shape as the extent note —
   still one short of promoting a fifth rule, and alternative (D) is the standing reason this record
   grows per-property rather than by aggregate.
+
+  **Attempted 2026-07-27, NOT settled — five designs built and measured, five rejected.** No code
+  shipped; this paragraph and the corrected `reference-facts.md` rows are the whole product. It is
+  recorded at this length because the expensive part was not writing any of the five, it was
+  discovering why each fails, and every one of them looks correct until measured.
+
+  | # | design | what it broke, measured |
+  |---|---|---|
+  | 1 | keep each logical line long enough to hold every tracked point | a **selection** anchored at a line's end moved the app's text down a row (`row2="QQ "` → `row3="QQ "`) |
+  | 2 | same, but gated on the cursor: stop the trailing-blank **cell** trim below it | #530 — a BCE tail the cursor is parked in then costs a row, and `CUP` + `EL` under a colour is how a prompt redraws |
+  | 3 | let `reflow` return `col == new_cols` and have the cursor read it as `pending_wrap` | **deleted a hard line break**: `"abcdef\r\n…"` + resize + one byte → `"abcdefZ"` where master gives `"abcdef\nZ"`, because `pending_wrap` means *continue this logical line* |
+  | 4 | 3 plus alacritty's two guards (`col == width` exactly, last cell not already wrapped) | same deletion at cursor columns 4 and 5 — the guards cannot fire, see the root below |
+  | 5 | 4 plus reverting `saved_cursor` to a clamp (alacritty `resize.rs:386`) | lost a glyph instead: `"abcd…"` → `"abc!"` |
+
+  Alongside 1–5, a separate cursor-gated exemption for the trailing-blank **line** destroyed content
+  outright on the alt screen (80×24, stock): the exemption emits one more row and the alt caller has
+  no scrollback to receive the displaced one, so `"line1"` was gone. ghostty avoids that by
+  preserving such a row **without spending a destination row** (`PageList.zig:1610-1616` — on
+  `cols_len == 0` it returns early and only bumps a counter).
+
+  **The root, and why every attempt above was at the wrong layer.** `grid::reflow`'s join collapses
+  a tracked point to `poff.min(line.len())`. A cursor two cells past the content and a cursor one
+  cell past it become the *same* offset, and a cursor at the end of a **hard-ended** line becomes
+  indistinguishable from one at the end of a **full** row. Attempts 3–5 all tried to recover that
+  distinction *after* the collapse, by strengthening a predicate; it is not recoverable there. The
+  fix belongs in the join, where the distance past the content still exists. alacritty has no such
+  problem because a cursor column stays a real column through its reflow and is lifted out of the
+  grid only when `input_needs_wrap` is already set (`grid/resize.rs:113-116`, `:248-251`).
+
+  **One reusable rule did come out of it**, and it is the criterion that killed design 1: **UI state
+  must not move app content; app state may.** A highlight is the user's and transient; the cursor is
+  the application's own write position. D1–D4 do not state this and it is not specific to reflow.
+
+  **Two citations in the paragraph above are wrong and are superseded here.** `cols_len =
+  @max(cols_len, p.x + 1)` does not grow a row past its width — it raises the floor of a *downward*
+  trim (`PageList.zig:1564-1570`) so a cell a pin sits on is not trimmed away, and ghostty never has
+  a past-the-end pin at all. And the tally reads the opposite way round from the obvious one: it is
+  **ghostty and alacritty** that carry "past" as state, and **xterm.js** that carries it as a column
+  value (`x === cols`) — which it then discards on every resize (`Buffer.ts:251` before `:264`).
+  That clause was misread three times during this work; the ⚠ rows in `reference-facts.md` carry the
+  corrected reading and now also record alacritty `grid/resize.rs:374-384`, the one reference site
+  that *sets* a wrap flag from a reflow's output — absent from the file, and therefore unread, for
+  all five attempts.
 - **#531** — not a conformance item; the decode-side half of D1's derived-bit clause, on a different
   rider. See the D1 note above.
 
