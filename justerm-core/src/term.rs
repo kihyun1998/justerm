@@ -2099,7 +2099,7 @@ impl Term {
             let alt_pts: Vec<(usize, usize)> = self
                 .alt_markers
                 .iter()
-                .map(|m| (m.line - old_base, 0))
+                .map(|m| (m.line - old_base, m.col))
                 .collect();
             let alt = self.grid.take_lines();
             let r_alt = reflow_pane(alt, VecDeque::new(), self.cursor.point(), &alt_pts, dims);
@@ -2108,8 +2108,15 @@ impl Term {
 
             // Primary is inactive here, but markers anchor *primary* content, so
             // they reflow with it (the selection is already cleared on alt enter).
-            let marker_pts: Vec<(usize, usize)> =
-                self.normal_markers.iter().map(|m| (m.line, 0)).collect();
+            // `(line, col)`, not `(line, 0)`: the column is what bounds OSC-133 command-text
+            // extraction (#166), and discarding it here truncated the recorded command for any
+            // resize taken while a full-screen app was up. The primary branch below has always
+            // passed and restored both; this one is the sibling that did not.
+            let marker_pts: Vec<(usize, usize)> = self
+                .normal_markers
+                .iter()
+                .map(|m| (m.line, m.col))
+                .collect();
             let primary = self.alt_grid.take_lines();
             let r = reflow_pane(
                 primary,
@@ -2123,10 +2130,21 @@ impl Term {
             self.saved_cursor.set_point(r.cursor, rows, cols);
             for (i, m) in self.normal_markers.iter_mut().enumerate() {
                 m.line = r.extras[i].0;
+                m.col = r.extras[i].1;
             }
             let new_base = self.scrollback.len();
             for (i, m) in self.alt_markers.iter_mut().enumerate() {
                 m.line = new_base + r_alt.extras[i].0;
+                // The alt half carries the column for the same reason, but **unpinned**: only the
+                // primary case above is covered by a test. `add_marker` always passes column 0,
+                // and I could not get an OSC-133 mark (the only column-bearing kind) to appear in
+                // `alt_markers` at all — `command_marks()` came back empty for a `133;B`/`133;C`
+                // pair fed while on the alt screen, and I have not explained why. That is a gap in
+                // my knowledge, not evidence the column is structurally zero: `push_marker` takes
+                // a column and `markers_mut` routes by active buffer, so the field is reachable in
+                // principle. Carrying it keeps the two halves stating one invariant instead of
+                // two; if the alt path is genuinely marker-column-free, this line is a no-op.
+                m.col = r_alt.extras[i].1;
             }
         } else {
             // Active = primary (cursor, scrollback); inactive = alt. The selection
@@ -2175,8 +2193,28 @@ impl Term {
             self.alt_grid.set_screen(r.screen, cols, rows);
         }
 
-        // Margins reset to the full screen; tab stops reset to the default grid.
-        self.cursor.pending_wrap = false;
+        // Carry the deferred wrap across the resize — it is *cursor* state, and it used to be
+        // reset here alongside the margins and tab stops, which are screen configuration and do
+        // legitimately reset. Losing it meant the next byte overwrote the last glyph instead of
+        // wrapping past it, on a column resize *and* on a rows-only one where no reflow runs at
+        // all.
+        //
+        // The flag means "the cursor is logically one past the column it sits on". Where the
+        // reflow leaves it somewhere other than the last column that logical position **is**
+        // representable, so the flag is cleared and the cursor takes it instead — ghostty's rule,
+        // stated in its own words for the saved cursor: *"If we had pending wrap set and we're no
+        // longer at the end of the line, we unset the pending wrap and move the cursor to reflect
+        // the correct next position"* (`terminal/Screen.zig:2092-2098` @ `e6e26e1`). alacritty
+        // reaches the same place from the other side, lifting the cursor outside the grid before
+        // reflowing and clamping it back afterwards (`grid/resize.rs:113-116`, `:248-251`,
+        // `:173-177` @ `852e971`); xterm.js needs no rule because `x === cols` is representable.
+        //
+        // `col + 1` cannot overflow the row: the branch requires `col != cols - 1`, and `col` is
+        // already clamped below `cols` by `Cursor::set_point`.
+        if self.cursor.pending_wrap && self.cursor.col != cols - 1 {
+            self.cursor.pending_wrap = false;
+            self.cursor.col += 1;
+        }
         self.scroll_top = 0;
         self.scroll_bottom = rows - 1;
         self.tabs = default_tabs(cols);
