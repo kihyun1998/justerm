@@ -74,7 +74,10 @@ LUA
   printf 'iThisss lien has mispelled wordz and lowercase paris.\033' > keys.txt  # \033=ESC leaves insert
   printf ':redraw!\015' >> keys.txt                                              # \015=Enter forces a repaint
   printf ':q!\015'      >> keys.txt
-  TERM=xterm-256color script -q -c 'nvim -u init.lua -i NONE -s keys.txt' undercurl_nvim.raw </dev/null || true
+  # LC_ALL pins a UTF-8 locale and must stay one -- plain C is NOT a valid
+  # simplification: it makes the app drop Unicode output, which is the material this
+  # engine exists to get right (measured: htop's U+25BD sort glyph vanishes under C).
+  LC_ALL=C.UTF-8 TERM=xterm-256color script -q -c 'nvim -u init.lua -i NONE -s keys.txt' undercurl_nvim.raw </dev/null || true
 fi
 
 echo "=== sizes ==="; wc -c undercurl_matrix.raw undercurl_nvim.raw 2>/dev/null

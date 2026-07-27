@@ -249,7 +249,7 @@ guard fires before the old one.
 
 | Layer | Real proof |
 |---|---|
-| **core / wasm** | `encode→decode` round-trip (ADR-0005) · `vttest` · **real PTY capture** (the user's RHEL 9 VM, `capture-dogfood.sh` — vim/top/htop; TUI needs a foreground timeout, alt-screen apps snapshot just before `?1049l`). **A capture proves only what its golden asserts, and only what its material contains** (#554): capture tests go through `check_capture`, which pins the char grid *and* the logical lines, because the soft-wrap link is not a character and a char-only golden stays green through a merged logical line. And a TUI capture cannot supply soft-wrap material at all — a program that emits IL/DL positions every row with CUP — so that half comes from `capture-softwrap.sh` (a deterministic printf plus a real `less`). Before trusting a new capture, turn the fix it guards *off* and confirm the golden goes red: the first `softwrap_shifts.raw` exercised all five row-shift verbs and still passed with #540's repair disabled, because later shifts washed the stale flags out. **A corpus can supply an axis and still miss its combination** (#534): after #554/#555 the corpus had soft-wrap material, and all six captures still observed the wide-wrap artefact marker **zero** times — soft-wrap material is not *wide*-soft-wrap material, so "this area is covered now" was true of one axis and false of the pair. Measure the state the fix is about (count it during replay), don't infer coverage from the feature the capture was named for |
+| **core / wasm** | `encode→decode` round-trip (ADR-0005) · `vttest` · **real PTY capture** (the RHEL 9 VM, `capture-dogfood.sh` — vim/top/htop; TUI needs a foreground timeout, alt-screen apps snapshot just before `?1049l`; access procedure in §"Recording a capture on the VM" below — it is agent-side, no user in the loop). **A capture proves only what its golden asserts, and only what its material contains** (#554): capture tests go through `check_capture`, which pins the char grid *and* the logical lines, because the soft-wrap link is not a character and a char-only golden stays green through a merged logical line. And a TUI capture cannot supply soft-wrap material at all — a program that emits IL/DL positions every row with CUP — so that half comes from `capture-softwrap.sh` (a deterministic printf plus a real `less`). Before trusting a new capture, turn the fix it guards *off* and confirm the golden goes red: the first `softwrap_shifts.raw` exercised all five row-shift verbs and still passed with #540's repair disabled, because later shifts washed the stale flags out. **A corpus can supply an axis and still miss its combination** (#534): after #554/#555 the corpus had soft-wrap material, and all six captures still observed the wide-wrap artefact marker **zero** times — soft-wrap material is not *wide*-soft-wrap material, so "this area is covered now" was true of one axis and false of the pair. Measure the state the fix is about (count it during replay), don't infer coverage from the feature the capture was named for |
 | **web** | `pnpm demo` real browser (DPR / coords / render bugs; canvas buffer = CSS×DPR, geometry from `rect.h/ROWS`) + `pnpm test:e2e` (Playwright headless, `webServer` auto-starts `pnpm demo` → real wasm+controller round-trip). a11y proven via **SR-consumed proxies**: announce = aria-live `textContent`, signal = console log; **suppression proof = with SR off, neither appears** |
 | **renderer — gate** | `pnpm run build:wasm && pnpm exec playwright test` over `demo/*.html` × dpr **1 / 1.1 / 1.5 / 2**, reading `window.__proof.ok`; coordinates via `demo/proof.js`, `cell_width()` in device px |
 | **renderer — eyeball** | **Playwright MCP against a real browser**, never a headless screenshot: `pnpm build:wasm` → serve (`node scripts/serve.mjs`, :8269) → `browser_navigate` a scratch `demo/*.html` → `browser_evaluate` to redraw/scale → `browser_take_screenshot`. The gate and the eyeball are different tools for different questions and neither substitutes: the gate asserts pixels the compositor never touched, the eyeball is the only way to see what a user sees. Delete the scratch page afterwards — both spec runners auto-collect `demo/*.html` |
@@ -276,6 +276,43 @@ Traps this layer must respect:
   scratch page, or #352 turns it white before you can read anything.
 - Visual/color changes still need a browser verify even when Step 5 is skipped
   for a closed surface — a synthetic-input unit is not a substitute (#223).
+
+### Recording a capture on the VM
+
+A `capture-*.sh` recording needs a real PTY, and this workstation has none —
+Git Bash ships neither `script` nor `expect` (measured 2026-07-27). The RHEL 9.2
+box supplies one and is reachable **without the user in the loop**: `justerm-vm`
+is a `~/.ssh/config` alias (`192.168.136.135`, `root`, key `~/.ssh/justerm_vm`,
+`IdentitiesOnly yes`). Capture → retrieval → golden → gate is all agent-side.
+
+```bash
+scp justerm-core/tests/fixtures/capture-softwrap.sh justerm-vm:/tmp/
+ssh -tt justerm-vm 'stty rows 24 cols 80; stty size; \
+    rm -rf /tmp/capout && mkdir /tmp/capout && bash /tmp/capture-softwrap.sh /tmp/capout'
+scp justerm-vm:/tmp/capout/'*.raw' "$SCRATCH/"
+```
+
+- **`-tt` is not optional, and its absence is silent.** The agent's shell has no
+  tty, so plain `ssh` gives the remote side none either and `script(1)`'s pty is
+  left unsized — the TUI then reads a winsize nobody chose and lays out to it.
+  Nothing errors. Print `stty size` and confirm `24 80` *inside* the same
+  invocation before trusting a byte of the recording.
+- **Prove the pipe before trusting a recording.** The deterministic captures are
+  byte-reproducible by construction, so re-record them and `sha256sum` against
+  the checked-in fixtures — a match proves transfer, locale, line endings and
+  `.gitattributes` all round-trip. Measured on setup: `softwrap_shifts.raw` and
+  `softwrap_wide.raw` both reproduce identically. A recording of a *live* app
+  can never be diffed this way, which is exactly why the deterministic ones are
+  the instrument that certifies the path.
+- **Pin the locale, and pin it to a UTF-8 one.** The scripts pin `TERM`
+  everywhere and `LC_ALL` nowhere; this box is `ko_KR.UTF-8`, and the same htop
+  recording differs by locale — measured, `e2 96 bd` (`▽`, its sort indicator)
+  appears under the box locale and vanishes under `LC_ALL=C`. So "just pin it to
+  C" is the wrong repair: it would strip precisely the Unicode material this
+  engine exists to get right. Pin `LC_ALL=C.UTF-8` next to `TERM`.
+- **`expect` is absent** (installable — `expect.x86_64` sits in
+  `rhel-9-for-x86_64-appstream-rpms`, no EPEL needed). Without it
+  `capture-softwrap.sh`'s real-`less` half silently writes a 0-byte file.
 
 ## Step 5 — adversarial completeness pass (one lens, both corpora)
 

@@ -52,7 +52,10 @@ LUA
 } > keys.txt
 
 : > out.txt
-TERM=xterm-256color script -q -c 'nvim -u init.lua -i NONE -s keys.txt out.txt' neovim.raw </dev/null || true
+# LC_ALL pins a UTF-8 locale and must stay one -- plain C is NOT a valid
+# simplification: it makes the app drop Unicode output, which is the material this
+# engine exists to get right (measured: htop's U+25BD sort glyph vanishes under C).
+LC_ALL=C.UTF-8 TERM=xterm-256color script -q -c 'nvim -u init.lua -i NONE -s keys.txt out.txt' neovim.raw </dev/null || true
 
 echo "=== size ==="; wc -c neovim.raw
 echo "=== sanity: kitty push/pop present? (expect a >1u and a <u) ==="
