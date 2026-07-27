@@ -2937,7 +2937,7 @@ impl Term {
         let mut vacated = self.cursor.pen.cell(' ');
         vacated.set_leading_spacer();
         *self.grid.cell_mut(row, col) = vacated;
-        self.grid.row_mut(row).set_wrapped(true);
+        self.begin_wrap(row);
         let ext = self.pen_ext_attrs();
         self.grid.row_mut(row).set_ext_attrs(col, ext);
         // The cell's contents changed, so a frame-mode consumer must be told or it keeps painting
@@ -2969,7 +2969,7 @@ impl Term {
             // #540 completeness pass, which found a row-shift verb inheriting the bogus flag and
             // merging two unrelated logical lines.)
             if self.wrapline_advances() {
-                self.grid.row_mut(row).set_wrapped(true);
+                self.begin_wrap(row);
             }
             self.wrapline();
         }
@@ -3363,6 +3363,28 @@ impl Term {
     /// not."* justerm differs because it *joins* logical lines for `accessible_text` / `search` /
     /// selection text, so a blanked-but-still-wrapped row visibly merges two lines in copy — a
     /// consequence xterm does not carry. Recorded rather than silently matched or silently
+    /// Mark `row` as soft-wrapping into the next one — and damage the cell the bit rides on.
+    ///
+    /// The exact mirror of [`Term::end_wrap`], and it exists for the mirror of that function's
+    /// reason. The flag lives on the `Row` (#538) and reaches a consumer only as the last cell's
+    /// `WRAPLINE`, derived at encode time. Every other cell-carried fact changes when that cell is
+    /// written, so damage covers it for free; this one does not, and a `Partial` frame would never
+    /// ship the bit — a frame-mode consumer rebuilding logical lines from cells then keeps the two
+    /// rows *split* forever, the exact dual of the "joined forever" that `end_wrap` guards.
+    ///
+    /// `end_wrap` took that obligation in #540; the set side never did. It stayed invisible because
+    /// a wrap normally moves the cursor to the next row, and `frame_damage` tops the frame up with
+    /// the old cursor cell. When a **scroll serves the wrap** the cursor keeps its row index, so
+    /// nothing tops it up — which is how #557 surfaced it.
+    ///
+    /// Damaging here rather than at each caller is what keeps this true for set sites added later,
+    /// the same argument `end_wrap`'s comment makes.
+    fn begin_wrap(&mut self, row: usize) {
+        self.grid.row_mut(row).set_wrapped(true);
+        let last = self.grid.cols() - 1;
+        self.damage_span(row, last, last);
+    }
+
     /// diverged; see #538.
     fn end_wrap(&mut self, row: usize) {
         self.grid.row_mut(row).set_wrapped(false);
