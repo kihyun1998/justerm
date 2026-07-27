@@ -332,17 +332,27 @@ impl DerefMut for Row {
     }
 }
 
-/// Re-wrap physical `rows` to `new_cols`. Soft-wrapped rows (WRAPLINE on the
-/// last cell) are joined into logical lines, then each logical line is re-split
-/// at `new_cols` with WRAPLINE set on every segment but the last. Trailing blank
-/// rows are absorbed (re-created by the caller's row-count fit). See #7.
+/// Re-wrap physical `rows` to `new_cols`. Soft-wrapped rows are joined into logical lines, then
+/// each logical line is re-split at `new_cols` with the wrap flag set on every segment but the
+/// last. Trailing blank rows are absorbed (re-created by the caller's row-count fit). See #7.
 ///
-/// `points` are `(row, col)` coordinates to track through the reflow (the cursor
-/// and any selection anchors); the returned `Vec` maps each to its new position,
-/// index-aligned with the input.
+/// The flag is read from and written to the **`Row`**, not the last cell: soft wrap is a row
+/// property (#538) and `WRAPLINE` survives only as a wire bit derived at encode time.
 ///
-/// Common-90%: trailing blanks on a hard-ended row are trimmed, and a wide-char
-/// split across the new boundary is not yet special-cased.
+/// `points` are `(row, col)` coordinates to track through the reflow — the cursor, any selection
+/// anchors, **and every OSC-133 command mark** — and the returned `Vec` maps each to its new
+/// position, index-aligned with the input. That last group is why the mapping is a single pass
+/// rather than a test inside the re-split loop: `points` scales with the number of commands in the
+/// buffer, and the loop scales with rows.
+///
+/// **A wide pair straddling the new boundary *is* special-cased** — the re-split emits a short row
+/// rather than splitting the pair, and marks the column it vacates as the wrap artefact (#533). An
+/// earlier version of this comment said the opposite long after the guard landed, and the mapping
+/// below was written against that sentence: it divided the offset by `new_cols`, which is only
+/// right if every row is full (#549).
+///
+/// Common-90%: trailing blanks on a hard-ended row are trimmed by *content*, so a BCE-coloured
+/// tail does not re-split into a phantom row (#530).
 pub(crate) fn reflow(
     rows: Vec<Row>,
     new_cols: usize,
@@ -441,11 +451,46 @@ pub(crate) fn reflow(
     //    tracked point to its new (row, col).
     let mut out: Vec<Row> = Vec::new();
     let mut new_points = vec![(0usize, 0usize); points.len()];
+    // Where each emitted row of the current logical line actually starts and how many content
+    // cells it actually holds: `(first offset, cells, row index)`. The re-split loop is the owner
+    // of that extent — it is the thing that decides `take` — so the point mapping below reads it
+    // instead of recomputing the position as `off / new_cols`, which silently assumes every row is
+    // full. It is not: the anti-split guard emits a **short** row whenever one would end on a
+    // `WIDE_CHAR` lead, and each such row shifted every later point by one, accumulating until the
+    // point crossed into a neighbouring row (#549, an ADR-0025 D1 read-side violation — the same
+    // "don't re-derive what the owner already knows" clause the wrap flag lives under).
+    //
+    // All three references decide the position where the real extent is known, and none divides an
+    // offset by the new width:
+    //
+    // - **xterm.js precomputes exactly this array** — `reflowSmallerGetNewLineLengths`
+    //   (`common/buffer/BufferReflow.ts:179` @ `699f553`), whose doc names the reason: *"pre-compute
+    //   the wrapping points since wide characters may need to be wrapped onto the following line …
+    //   will only contain the values `newCols` … and `newCols - 1` (when the line does end with a
+    //   wide character), except for the last value"*. That is this `Vec`, in the reference.
+    // - **ghostty** moves a tracked pin by assignment from the write cursor's live position inside
+    //   its reflow loop (`terminal/PageList.zig:1650-1659` @ `e6e26e1`) — its `tracked_pins` is the
+    //   closest analogue of `points` (anchors *and* marks, not just the cursor).
+    // - **alacritty** re-anchors the cursor on the iteration that processes its own line, against
+    //   `num_wrapped` (`alacritty_terminal/src/grid/resize.rs:169-188` @ `852e971`).
+    //
+    // (xterm.js also skips the cursor's wrapped run in the *larger* path, but that is gated on its
+    // `reflowCursorLine` option — `BufferReflow.ts:45`, `Buffer.ts:337`/`:370`/`:391` — so it is a
+    // policy, not a refusal.)
+    //
+    // Held outside the loop and cleared per line, so this costs one allocation. Mapped in a single
+    // pass afterwards rather than tested per segment: `points` carries every OSC-133 command mark
+    // in the buffer, and the per-segment shape would be rows × points. Note what that does **not**
+    // claim — it is not faster than the arithmetic it replaces. That was `O(points)` per logical
+    // line and this is too (the `pl != li` filter below is the dominant term either way); measured
+    // on 8000 marks over 8000 lines, a narrow-then-widen resize is identical within noise.
+    let mut segments: Vec<(usize, usize, usize)> = Vec::new();
     for (li, line) in logical.iter().enumerate() {
         let comb = &logical_comb[li];
         let links = &logical_links[li];
         let ucolors = &logical_ucolors[li];
         let start = out.len();
+        segments.clear();
         if line.is_empty() {
             out.push(Row::blank(new_cols));
         } else {
@@ -495,6 +540,7 @@ pub(crate) fn reflow(
                 if vacates_for_wide && take < new_cols {
                     row.cells[new_cols - 1].set_leading_spacer();
                 }
+                segments.push((i, take, out.len()));
                 i += take;
                 if i < line.len() {
                     row.set_wrapped(true);
@@ -503,10 +549,61 @@ pub(crate) fn reflow(
             }
         }
         for (pi, &(pl, poff, _)) in tracked.iter().enumerate() {
-            if pl == li {
-                let off = poff.min(line.len());
-                new_points[pi] = (start + off / new_cols, off % new_cols);
+            if pl != li {
+                continue;
             }
+            let off = poff.min(line.len());
+            new_points[pi] = match segments.last() {
+                // The empty-line branch emits one blank row and runs no segment loop, so the only
+                // offset a point can have here is 0.
+                None => (start, 0),
+                Some(&(last_off, last_take, last_row)) if off >= last_off + last_take => {
+                    // `off == line.len()`: the point sits *after* the last cell, so no segment
+                    // contains it — a cursor parked past the content rather than on a glyph. It
+                    // belongs in the column after the last one if that row has room, and at the
+                    // start of the row after it if the row is full. Pinned by two tests, because
+                    // clamping it back onto a full row is the obvious wrong answer and the old
+                    // arithmetic happened to get this case right.
+                    if last_take < new_cols {
+                        (last_row, last_take)
+                    } else {
+                        (last_row + 1, 0)
+                    }
+                }
+                Some(_) => {
+                    // Segments tile `[0, line.len())` in order, so the one holding `off` is the
+                    // last whose start is `<= off`.
+                    let k = segments.partition_point(|&(s, _, _)| s <= off) - 1;
+                    let (seg_off, _, seg_row) = segments[k];
+                    (seg_row, off - seg_off)
+                }
+            };
+        }
+    }
+    // A point one past the end of the **last** logical line names a row that was never emitted:
+    // `(last_row + 1, 0)` above is only in range while another line follows. That index reaches
+    // `Grid::row`, which indexes `lines` directly — and only the cursor is clamped on the way in
+    // (`Cursor::set_point`); selection anchors and OSC-133 marks are written back raw. So an
+    // out-of-range row is a **panic crossing into the consumer's process**, the same class as #536,
+    // reachable from an ordinary drag past the end of a line followed by a resize.
+    //
+    // This guard exists because without it the change *widens* that pre-existing panic: the old
+    // arithmetic only went out of range when `line.len() % new_cols == 0`, which a short row makes
+    // impossible, so a line containing a wide pair on the boundary — the very shape this change is
+    // about — was safe before and would not have been after.
+    //
+    // Clamping to the last real cell is the *approximation*, not the answer. The answer is that
+    // `points` cannot express "one past the last cell" at all, which is why this case exists.
+    // ghostty removes it by construction — it grows the source row so a pin is never past the end
+    // (`terminal/PageList.zig:1584-1596`, `:1602-1607` @ `e6e26e1`) and clamps a pin past the
+    // destination width rather than inventing a position beyond it; alacritty lifts the cursor
+    // outside the grid before reflow and restores it (`alacritty_terminal/src/grid/resize.rs`
+    // `:113-116` grow, `:248-251` shrink, restore `:173-177` @ `852e971`). Both avoid it
+    // structurally; justerm returns a grid coordinate and therefore cannot. Tracked separately.
+    let last_row = out.len().saturating_sub(1);
+    for p in new_points.iter_mut() {
+        if p.0 > last_row {
+            *p = (last_row, new_cols.saturating_sub(1));
         }
     }
     // A point whose logical line was trimmed (trailing blank) clamps to the end.

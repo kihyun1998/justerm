@@ -281,13 +281,40 @@ the fix site follows from. Whether it is still open is the tracker's answer, not
   mapping each tracked point (cursor, selection anchors, OSC-133 columns) to its new position — is
   the one that is wrong, and wrong for a reason this model names: it **re-derives** a fact the loop
   already owns instead of reading the owner. `new_points[pi] = (start + off / new_cols, off %
-  new_cols)` (`grid.rs:508`) assumes every emitted row holds `new_cols` content cells, while the
-  loop deliberately emits a short row (`take -= 1`, `grid.rs:457`) whenever a row would end on a
+  new_cols)` (in `grid::reflow`'s re-split loop; the expression is gone as of PR #559, so it is
+  cited by shape rather than by a line that now points elsewhere) assumes every emitted row holds
+  `new_cols` content cells, while the loop deliberately emits a short row (`take -= 1`) whenever a row would end on a
   `WIDE_CHAR` lead — i.e. **the divergence exists only because of D4**, the pair that must not be
   split. Every wide glyph on a re-split boundary drifts every later anchor by one cell, and the
   errors accumulate until the point crosses into a neighbouring row. The fix follows from the rule:
   record the point *inside* the emit loop, where the segment's true `[i, i + take)` extent is known
   and where `set_wrapped` is already decided — not from arithmetic after the fact.
+  **Amended by the implementation (2026-07-27).** Two corrections, one to the shape and one to the
+  reference tally:
+  - **The loop records the extent; the mapping still runs once per line.** "Record the point inside
+    the loop" read as "test every point at every segment", which is `rows × points` — and `points`
+    carries **every OSC-133 command mark in the buffer**, not just the cursor and two anchors. The
+    loop pushes `(first offset, take, row index)` into a per-line `Vec` and the mapping reads it
+    afterwards. The D1 obligation is to read the owner rather than re-derive; it says nothing about
+    *when*, and the cost does.
+  - **This is 3-of-3, not 2-of-2.** The record's #549 note cited alacritty and xterm.js; the
+    closest prior art was missing. ghostty moves a tracked pin **by assignment from the write
+    cursor's live position** inside its reflow write loop (`PageList.zig:1650-1659` @ `e6e26e1`) —
+    no arithmetic at all. All three decide the position where the real extent is known.
+
+  **What the pass sharpened about D1's boundary, recorded here and not promoted.** The Consequences
+  note below says "by construction" covered a *property* but not a row's **extent**. It also does
+  not cover a tracked point's **domain**: `points` is typed as a grid coordinate, while reflow needs
+  to express `[0, len]` — a point may sit *one past* the last cell (a `pending_wrap` cursor, an
+  anchor in the trailing blanks, a mark at end of line). justerm must therefore pick an in-grid
+  approximation, and four pre-existing defects live in exactly that gap (one of them a panic).
+  **Neither reference has the problem**, and they avoid it structurally rather than by clamping:
+  alacritty lifts the cursor *outside the grid* before reflow and restores it
+  (`grid/resize.rs:113-116`, `:248-251`, `:173-177`), ghostty **grows the source row to contain the
+  pin** (`PageList.zig:1584-1596`, `:1602-1607`) and refuses to absorb a blank row carrying a
+  semantic prompt (`:1573`). Recorded as a second instance of the same shape as the extent note —
+  still one short of promoting a fifth rule, and alternative (D) is the standing reason this record
+  grows per-property rather than by aggregate.
 - **#531** — not a conformance item; the decode-side half of D1's derived-bit clause, on a different
   rider. See the D1 note above.
 
