@@ -2170,7 +2170,13 @@ impl Term {
                 .map(|m| (m.line - old_base, m.col))
                 .collect();
             let alt = self.grid.take_lines();
-            let r_alt = reflow_pane(alt, VecDeque::new(), self.cursor.point(), &alt_pts, dims);
+            let r_alt = reflow_pane(
+                alt,
+                VecDeque::new(),
+                self.cursor.point(),
+                &alt_pts,
+                ReflowDims { limit: 0, ..dims },
+            );
             self.grid.set_screen(r_alt.screen, cols, rows);
             self.cursor.set_point(r_alt.cursor, rows, cols);
 
@@ -2197,22 +2203,48 @@ impl Term {
             self.scrollback = r.scrollback;
             self.saved_cursor.set_point(r.cursor, rows, cols);
             for (i, m) in self.normal_markers.iter_mut().enumerate() {
-                m.line = r.extras[i].0;
+                m.line = r.extras[i].0.saturating_sub(r.evicted);
                 m.col = r.extras[i].1;
             }
+            // The alt half lives in a different frame from the primary one above, and adding the
+            // two was the defect: `extras` count from the top of the alt pane's own history, and
+            // the alt screen **has** no history — every row the shrink pushed off the top is gone,
+            // not archived. Passing the primary's scrollback limit made `reflow_pane` keep them,
+            // so a rows-only resize (no reflow at all) reported a marker four lines past the end of
+            // the buffer. The limit is `0` here because that is what an alt screen's history is.
+            //
+            // A marker whose row went with it is **disposed**, matching what the alt screen already
+            // does when a row leaves by scrolling (`markers_rotate_region` fires `MarkerDisposed`
+            // for the marker on the departing edge). Silently relocating it to row 0 would put a
+            // decoration on content it was never attached to.
             let new_base = self.scrollback.len();
-            for (i, m) in self.alt_markers.iter_mut().enumerate() {
-                m.line = new_base + r_alt.extras[i].0;
-                // The alt half carries the column for the same reason, but **unpinned**: only the
-                // primary case above is covered by a test. `add_marker` always passes column 0,
-                // and I could not get an OSC-133 mark (the only column-bearing kind) to appear in
-                // `alt_markers` at all — `command_marks()` came back empty for a `133;B`/`133;C`
-                // pair fed while on the alt screen, and I have not explained why. That is a gap in
-                // my knowledge, not evidence the column is structurally zero: `push_marker` takes
-                // a column and `markers_mut` routes by active buffer, so the field is reachable in
-                // principle. Carrying it keeps the two halves stating one invariant instead of
-                // two; if the alt path is genuinely marker-column-free, this line is a no-op.
-                m.col = r_alt.extras[i].1;
+            let mut alt_disposed = Vec::new();
+            let mut i = 0;
+            self.alt_markers.retain_mut(|m| {
+                let (line, col) = r_alt.extras[i];
+                i += 1;
+                match line.checked_sub(r_alt.evicted) {
+                    Some(row) if row < rows => {
+                        m.line = new_base + row;
+                        // The column rides along for the same reason as the primary half, but
+                        // **unpinned**: `add_marker` always passes column 0, and I could not get an
+                        // OSC-133 mark (the only column-bearing kind) to appear in `alt_markers` at
+                        // all. That is a gap in my knowledge, not evidence the column is
+                        // structurally zero — `push_marker` takes a column and `markers_mut` routes
+                        // by active buffer, so the field is reachable in principle. Carrying it
+                        // keeps the two halves stating one invariant; if the alt path really is
+                        // marker-column-free, this line is a no-op.
+                        m.col = col;
+                        true
+                    }
+                    _ => {
+                        alt_disposed.push(m.id);
+                        false
+                    }
+                }
+            });
+            for id in alt_disposed {
+                self.events.push(TermEvent::MarkerDisposed(id));
             }
         } else {
             // Active = primary (cursor, scrollback); inactive = alt. The selection
@@ -2248,22 +2280,28 @@ impl Term {
                 // it can widen a row (`terminal/PageList.zig:1576-1585` @ `e6e26e1`) while leaving
                 // the cursor pin unclamped (`:1602-1606`).
                 sel.anchor.point = BufferPoint {
-                    line: r.extras[0].0,
+                    line: r.extras[0].0.saturating_sub(r.evicted),
                     col: r.extras[0].1.min(cols - 1),
                 };
                 sel.focus.point = BufferPoint {
-                    line: r.extras[1].0,
+                    line: r.extras[1].0.saturating_sub(r.evicted),
                     col: r.extras[1].1.min(cols - 1),
                 };
             }
             let marker_off = sel_pts.len();
             for (i, m) in self.normal_markers.iter_mut().enumerate() {
-                m.line = r.extras[marker_off + i].0;
+                m.line = r.extras[marker_off + i].0.saturating_sub(r.evicted);
                 m.col = r.extras[marker_off + i].1;
             }
 
             let alt = self.alt_grid.take_lines();
-            let r = reflow_pane(alt, VecDeque::new(), (0, 0), &[], dims);
+            let r = reflow_pane(
+                alt,
+                VecDeque::new(),
+                (0, 0),
+                &[],
+                ReflowDims { limit: 0, ..dims },
+            );
             self.alt_grid.set_screen(r.screen, cols, rows);
         }
 
@@ -4115,9 +4153,21 @@ struct PaneReflow {
     scrollback: VecDeque<Row>,
     /// The cursor's new screen-relative position.
     cursor: (usize, usize),
-    /// Each tracked extra point's new **absolute** position, index-aligned with
-    /// the `extra_abs` argument.
+    /// Each tracked extra point's new position **in this pane's own `[history ++ screen]` frame**,
+    /// index-aligned with the `extra_abs` argument — *before* any history the caller discards.
+    ///
+    /// Reported raw, with `evicted` beside it, because the two callers translate differently and
+    /// doing it here silently picked the primary's answer for both: the primary keeps its history,
+    /// so an extra's absolute line only moves by what the cap threw away, while the alt pane has no
+    /// history at all and everything above the screen is *gone*. Adding the alt result to the
+    /// primary's scrollback length then produced a line the buffer does not have — reachable
+    /// without any reflow, on a rows-only resize.
     extras: Vec<(usize, usize)>,
+    /// Rows that left the buffer entirely off the front of this pane's history. For the primary
+    /// that is the scrollback cap's eviction; for the alt pane, whose limit is `0` because it has
+    /// no history, it is every row the shrink pushed off the top. An extra whose raw line is below
+    /// this **is not in the buffer any more** — the caller decides what that means for its kind.
+    evicted: usize,
 }
 
 /// Reflow one pane (its `scrollback` joined with `screen`) to `dims`, tracking
@@ -4170,22 +4220,23 @@ fn reflow_pane(
     };
 
     // The bound on a tracked line belongs **here**, not inside `reflow`: this is where the final
-    // geometry is known. The screen is padded to `dims.rows` whatever `reflow` emitted, so the last
-    // addressable absolute line is `sb.len() + dims.rows - 1`. Bounding against `reflow`'s own row
+    // geometry is known. The screen is padded to `dims.rows` whatever `reflow` emitted, so this
+    // pane's last addressable line is `split + dims.rows - 1`. Bounding against `reflow`'s own row
     // count instead clamped away rows the fit was about to create (#562), while still being the
     // only thing standing between an out-of-range anchor and a panic in the consumer's process —
     // selection anchors and marks are written back raw, unlike the cursor (`Cursor::set_point`).
-    let max_line = sb.len() + dims.rows - 1;
+    // Expressed in this pane's own frame, so it is the same frame `extras` and `evicted` are in.
+    let max_line = split + dims.rows - 1;
 
-    // The cursor returns to screen-relative (its absolute index minus the
-    // history split). The extras stay absolute, shifted down by any lines the
-    // cap dropped from the front of history.
+    // The cursor returns to screen-relative (its absolute index minus the history split). The
+    // extras stay in this pane's frame — see the field docs for why they are not shifted here.
     PaneReflow {
         cursor,
         extras: pts[1..]
             .iter()
-            .map(|&(l, c)| (l.saturating_sub(dropped).min(max_line), c))
+            .map(|&(l, c)| (l.min(max_line), c))
             .collect(),
+        evicted: dropped,
         screen: all,
         scrollback: sb,
     }
