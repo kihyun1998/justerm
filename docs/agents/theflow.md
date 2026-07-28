@@ -704,7 +704,14 @@ cargo clippy --workspace --all-targets
 cargo check --manifest-path fuzz/Cargo.toml
 cargo build -p justerm-wasm-decode --tests --target wasm32-unknown-unknown
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps   # rustdoc lints ≠ clippy, ≠ doctests
+node .github/scripts/check-map-links.mjs docs CLAUDE.md CONTEXT.md README.md
 ```
+(the last one is the **prose** counterpart of the rustdoc gate above it: rustdoc
+resolves links inside `///` comments, nothing resolved the ones *between* the
+markdown docs. It checks `#anchors` too — a missing file 404s loudly, a missing
+anchor degrades **silently** to the top of the target, and
+`reference-facts.md`'s headings embed issue numbers and verification dates that
+get rewritten by routine re-verification. Cheap enough to run on any doubt.)
 (`--workspace` blind spots: `cargo fmt --all --check` is pinned 1.96.0;
 `justerm-wasm-decode/tests/web.rs` is wasm32-only and 0-compiles on host — its
 runtime assertions run only in the browser CI job. Keep version-pinned tests in

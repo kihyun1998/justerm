@@ -88,19 +88,15 @@ ls territory/ invariant/             # what exists; the folder is the roster
 A territory with nothing governing it writes exactly `**None.**` under `## Governing decisions`, so
 the first command stays honest without anyone maintaining a list.
 
-**Known gap — the anchor links are not gated.** File links break loudly; a `#section-anchor` that
-stops matching degrades *silently* to the top of the target file, and `reference-facts.md`'s headings
-carry issue numbers and verification dates that will be edited. They were validated once, by
-generating GitHub's slug for every heading in the target and comparing:
+**The links are gated.** `.github/scripts/check-map-links.mjs` runs on every PR (the `test` job) and
+resolves every relative markdown link under `docs/`, `CLAUDE.md`, `CONTEXT.md` and `README.md` —
+**including `#anchors`**, whose failure mode is the reason the gate exists: a missing file is loud
+(404), while a missing anchor degrades *silently* to the top of the target document, and
+`reference-facts.md`'s headings embed issue numbers and verification dates that get edited.
 
 ```sh
-# slug: lowercase, drop anything not [a-z0-9 _-], spaces -> hyphens
-sed -n 's/^#\{1,\} \(.*\)$/\1/p' FILE | tr '[:upper:]' '[:lower:]' \
-  | sed 's/[^a-z0-9 _-]//g; s/ /-/g'
+node .github/scripts/check-map-links.mjs docs CLAUDE.md CONTEXT.md README.md
 ```
-
-Nothing runs that on a change. Until something does, treat a reference link as verified only as of
-the commit that added it.
 
 ## Current coverage
 

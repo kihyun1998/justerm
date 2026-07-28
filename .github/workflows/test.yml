@@ -39,6 +39,22 @@ jobs:
         run: cargo doc --workspace --no-deps
         env:
           RUSTDOCFLAGS: -D warnings
+      # The prose counterpart of the rustdoc gate above: rustdoc checks links inside `///` comments,
+      # and until now nothing checked the ones between the markdown docs. `docs/map/` is a link graph
+      # whose entire value is edges that resolve, and it links OUT to docs/adr/ and to
+      # docs/agents/reference-facts.md — files it must not edit and whose headings it does not own.
+      #
+      # A missing file is at least loud (404 on GitHub). A missing `#anchor` is SILENT: GitHub and
+      # Obsidian both fall back to the top of the target document, so a link that used to land on one
+      # verified row starts pointing at a whole file and the reader never learns they were misrouted.
+      # These anchors are known-volatile — reference-facts.md headings embed issue numbers and
+      # verification dates (`## Damage / dirty tracking (#536, verified 2026-07-28)`), so a routine
+      # re-verification rewrites the slug without touching the file that links to it.
+      #
+      # Runs on every PR (not at publish, like check-published-readme.mjs) because these documents are
+      # read by whoever picks up the next change, not by a registry visitor.
+      - name: Doc links (relative paths + #anchors resolve)
+        run: node .github/scripts/check-map-links.mjs docs CLAUDE.md CONTEXT.md README.md
 
   # justerm-renderer is EXCLUDED from the root workspace (its web-sys/glow deps are wasm32-only), so
   # `cargo test --workspace` above never touches it — for slices #259..#340 nothing gated it at all
