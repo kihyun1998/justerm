@@ -49,6 +49,19 @@ The most thoroughly recorded territory in the map so far — the contrast case a
   `Term::mark_fully_damaged`, `Term::set_display_offset`, `Term::scroll_up` / `scroll_down` /
   `scroll_to_bottom` / `scroll_delta`
 
+## Reference behaviour
+
+In `docs/agents/reference-facts.md` — **linked, never restated** (each row is pinned to a `file:line`
+at a recorded SHA; a paraphrase drops the pin).
+
+- [Damage / dirty tracking](../../agents/reference-facts.md#damage--dirty-tracking-536-verified-2026-07-28)
+  — the headline is that **justerm's granularity is the outlier and nothing upstream can supply a
+  bound for it**: xterm.js is row-granular with no column axis, ghostty is a per-row bool, and
+  alacritty has column bounds only because it has no print-site bound at all (it brackets a line via
+  the old and new cursor points). So there is no upstream clamp to port. It also carries the rule
+  justerm clamps toward — ghostty's *"dirty tracking may have false positives but should never have
+  false negatives"*.
+
 ## Cross-cutting invariants
 
 *(none identified yet)*

@@ -51,6 +51,28 @@ right.**
   comment**), `Term::shift_region`, `Term::drop_artefact_if_erased`, `Term::free_cell`
 - `justerm-core/src/term.rs` — `MIN_COLUMNS` (defined there, re-exported from `lib.rs`)
 
+## Reference behaviour
+
+Verified against the pinned trees, in `docs/agents/reference-facts.md` — **linked, never restated**:
+each row there carries a `file:line` at a recorded SHA, and paraphrasing it here would drop the pin
+that makes it checkable.
+
+- [Soft wrap is a row property](../../agents/reference-facts.md#soft-wrap-is-a-row-property) — both
+  references keep the flag off the cell, and the polarity differs (ghostty's `Row.wrap` = "wraps into
+  the next", xterm.js's `isWrapped` = "continues the previous"). Also carries the direct evidence for
+  D2's named table: **which verbs end a wrap is a per-verb rule, not derivable from the erased range**
+- [Row-shift verbs and the wrap link](../../agents/reference-facts.md#row-shift-verbs-and-the-wrap-link-540-verified-2026-07-25)
+- [Wide glyphs, spacers, and the wrap artefact](../../agents/reference-facts.md#wide-glyphs-spacers-and-the-wrap-artefact)
+- [Relocating a cluster that grew to width 2](../../agents/reference-facts.md#relocating-a-cluster-that-grew-to-width-2-529-verified-2026-07-28)
+- [Minimum screen size](../../agents/reference-facts.md#minimum-screen-size-547) — D4's precondition
+- [What a blanked / freed cell is made of](../../agents/reference-facts.md#what-a-blanked--freed-cell-is-made-of)
+  — with the trap recorded beside it: `fn clearCells` has two ghostty definitions and taking the first
+  grep hit is how #530's body reached the wrong verdict
+
+**Known divergence, deliberate:** `EL 2` does not end the wrap in either C xterm or ghostty, and
+justerm ends it (#538) — because justerm *joins* logical lines for copy and search, so a
+blanked-but-still-wrapped row would visibly merge two lines, a cost the references do not carry.
+
 ## Cross-cutting invariants
 
 - [alt-screen absolute-index floor](../invariant/alt-screen-buffer-floor.md) — `Term::end_wrap`'s

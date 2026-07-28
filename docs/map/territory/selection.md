@@ -54,6 +54,20 @@ status.
   `word_end`, `is_word_boundary`. Extracted from `term.rs` in #585
 - Consumers: justerm-web does pixel→cell and clipboard; justerm-renderer paints the highlight
 
+## Reference behaviour
+
+In `docs/agents/reference-facts.md` — **linked, never restated** (each row is pinned to a `file:line`
+at a recorded SHA; a paraphrase drops the pin).
+
+- [Word selection started *on* a separator](../../agents/reference-facts.md#word-selection-started-on-a-separator--the-references-disagree-so-justerm-is-not-an-outlier)
+  — justerm's walkers break on the **neighbour** cell's class, never the start cell's own, so
+  word-selecting the space in `"ab cd"` returns both words joined. That looks like a defect and is
+  not: alacritty does the same and xterm.js does the opposite, so a **split reference makes this a
+  product choice, not a correctness fix**. Recorded explicitly so it is not re-litigated
+- [Mapping a tracked point through reflow](../../agents/reference-facts.md#mapping-a-tracked-point-through-reflow-549-verified-2026-07-27)
+  — how a reference carries an anchor across a re-split, which is what `reflow(points)` does with the
+  selection
+
 ## Cross-cutting invariants
 
 - [alt-screen absolute-index floor](../invariant/alt-screen-buffer-floor.md) — `Term::prev_pos` must
@@ -83,6 +97,8 @@ Check these after changing this territory:
   re-decided, and their grounds exist only in code comments.
 - **Block selection over wide characters is unspecified** — no artifact states what happens when a
   rectangular range cuts a width-2 glyph in half.
-- **Word-selection boundaries** — which character classes form a word is a *policy*, which under
-  ADR-0017 may belong to the consumer, yet it lives in core. No record of that routing being
-  considered.
+- **Word-selection boundaries** — which character classes form a word is a *policy* that under
+  ADR-0017 may belong to the consumer, yet the set is hardcoded in core. ~~No record.~~ The
+  *behaviour* is recorded and cleared (see §Reference behaviour); what is open is the **routing** —
+  #545 (inject the boundary set instead of hardcoding it) is the issue that would move it, and the
+  reference verdict holds only as long as the start-cell rule stays alacritty's.

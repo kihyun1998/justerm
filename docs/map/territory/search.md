@@ -65,6 +65,15 @@ precedence against selection.
   `abs_row` / `abs_floor`, `line_in`, `extract_lines`). Extracted in #585; `walk.rs`'s module doc
   names search as one of the read surfaces standing on it
 
+## Reference behaviour
+
+**None.** `docs/agents/reference-facts.md` has no entry for search — the match model, the smart-case
+rule and the regex dialect have never been compared against a pinned tree. The dialect is the sharp
+one: `SearchOptions` is described as mirroring xterm.js's `ISearchOptions`, but that claim is
+unverified prose in a doc comment, and the two engines' regex grammars genuinely differ (no
+lookaround, no backreferences, Unicode-aware `\w \d \b`) — which is exactly the shape of difference a
+pinned comparison exists to catch.
+
 ## Cross-cutting invariants
 
 - [alt-screen absolute-index floor](../invariant/alt-screen-buffer-floor.md) — `search()` walks

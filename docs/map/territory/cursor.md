@@ -54,6 +54,19 @@ Read out of the source; there is no record to read instead.
   `Term::reset_damage` (advances `prev_cursor` — the ack is what defines "old"), `Term::write_glyph`
   (pen → cell, ucolor stamp)
 
+## Reference behaviour
+
+In `docs/agents/reference-facts.md` — **linked, never restated** (each row is pinned to a `file:line`
+at a recorded SHA; a paraphrase drops the pin).
+
+- [Cursor blink — who decides](../../agents/reference-facts.md#cursor-blink--who-decides-575-verified-2026-07-28)
+  — both references resolve blink from the **same two inputs** (the application's mode and the user's
+  setting) and the side that expressed an explicit intent wins; they differ only in which side carries
+  the three-state. justerm follows alacritty's placement, which is what ADR-0017 already implies and
+  needs no wire change
+- [What a blanked / freed cell is made of](../../agents/reference-facts.md#what-a-blanked--freed-cell-is-made-of)
+  — what the pen contributes to an erase fill, i.e. what turning on BCE would mean for `Pen`
+
 ## Cross-cutting invariants
 
 - [row-keyed side maps](../invariant/row-keyed-side-maps.md) — `underline_color` reaches the row's
@@ -78,6 +91,8 @@ Read out of the source; there is no record to read instead.
   survive as code comments.
 - **"Cursor" names three things** (position / pen / caret report) and no artifact says so. A change
   request phrased as "the cursor" is ambiguous across all three.
-- **Blink is split** — the engine reports the mode, the consumer owns the phase. This is the correct
-  ADR-0017 split but it is nowhere recorded as a decision, and the consumer side re-derived it once
-  already (blink pushed as an `isVisible` phase).
+- **Blink is split** — the engine reports the mode, the consumer owns the phase. ~~Nowhere recorded.~~
+  It *is* recorded, in `reference-facts.md` (#575) with both references compared and the ADR-0017
+  reasoning stated — this note claimed otherwise until it grew a `## Reference behaviour` section,
+  which is the argument for that section in one line: a map with nowhere to put verified external
+  facts does not merely omit them, it **reports holes that are not there**.

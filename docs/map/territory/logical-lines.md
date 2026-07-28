@@ -45,6 +45,15 @@ context contract is.
   from: `prev_pos` / `next_pos`, `extract_lines`, `append_cell`, `is_wrap_artefact`,
   `is_walk_transparent_spacer`. Extracted in #585
 
+## Reference behaviour
+
+**None.** `docs/agents/reference-facts.md` has no entry for logical-line assembly. This one matters
+more than an empty section usually does, because the territory's central claim is a *reference
+equivalence*: `text` is documented as matching xterm's `translateToString(true)` (wrap-joined,
+spacers skipped, trailing blanks trimmed). A consumer's URL regex is tuned against that shape, so the
+claim is load-bearing — and it is currently an unpinned paraphrase in a doc comment, never grepped
+against the pinned tree.
+
 ## Cross-cutting invariants
 
 - [alt-screen absolute-index floor](../invariant/alt-screen-buffer-floor.md) — the wrap-run walk must

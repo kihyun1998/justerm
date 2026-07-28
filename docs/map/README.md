@@ -37,6 +37,12 @@ does not go looking for a helper they have never heard of.
   territory, it is invisible from the other N-1 — which is exactly how it gets rediscovered.
 - **Never edit existing artifacts.** This map only links *out*. The reverse direction is free
   (Obsidian backlinks).
+- **Reference facts are linked, never restated.** `docs/agents/reference-facts.md` holds what
+  alacritty / ghostty / xterm.js actually do, and every row there is pinned to a `file:line` at a
+  recorded SHA. A paraphrase here would read identically and carry no pin — the one place in this map
+  where copying is destructive rather than merely redundant. Territory notes link to the **specific
+  section anchor**, and an empty `## Reference behaviour` means the area has never been compared to a
+  reference.
 - **Symbols, never line numbers**, in `## Code`. A line number is an ungated copy of something the
   compiler owns — the same mistake as the prose API list `architecture.md` had to delete.
 - Links are standard relative markdown — e.g. `[selection](territory/selection.md)`. `[[wikilinks]]`
@@ -81,6 +87,20 @@ ls territory/ invariant/             # what exists; the folder is the roster
 
 A territory with nothing governing it writes exactly `**None.**` under `## Governing decisions`, so
 the first command stays honest without anyone maintaining a list.
+
+**Known gap — the anchor links are not gated.** File links break loudly; a `#section-anchor` that
+stops matching degrades *silently* to the top of the target file, and `reference-facts.md`'s headings
+carry issue numbers and verification dates that will be edited. They were validated once, by
+generating GitHub's slug for every heading in the target and comparing:
+
+```sh
+# slug: lowercase, drop anything not [a-z0-9 _-], spaces -> hyphens
+sed -n 's/^#\{1,\} \(.*\)$/\1/p' FILE | tr '[:upper:]' '[:lower:]' \
+  | sed 's/[^a-z0-9 _-]//g; s/ /-/g'
+```
+
+Nothing runs that on a change. Until something does, treat a reference link as verified only as of
+the commit that added it.
 
 ## Current coverage
 
