@@ -364,6 +364,20 @@ Z"`, and a search across the wrap went from 1 hit to 0). It now lives on the
   double-enter/leave is a no-op. The alt screen has no scrollback, and tab stops + scroll margins are
   *not* per-screen — they persist across the swap. The engine emits whichever grid is active; the
   switch is transparent to consumers. DEC private modes arrive as a `?` in the CSI `intermediates`. [#8]
+- **The alt screen resizes but does not reflow.** Both grids take the new dimensions on every resize
+  — that part is load-bearing, because leaving alt used to restore an old-sized grid and a damage-driven
+  render could panic on the mismatch — but only the **primary** re-splits its content. Reflow re-wraps
+  a long line so *history* stays readable at the new width, and it assumes the content is text that
+  **flows**; the alt screen has no history, its content is a **layout** rather than a paragraph
+  (re-wrapping a process table means nothing), and the application already knows the new size and
+  repaints. All three references take the same position with the same shape — one flag on the same
+  resize function: ghostty `alt.resize(.{ .reflow = false })`, alacritty `grid.resize(!is_alt, …)`,
+  xterm.js gating on `_hasScrollback` with the alt buffer built as `new Buffer(false, …)`.
+  Re-splitting it is not merely wasted work: measured on a real `htop` recording taken across a live
+  `SIGWINCH`, it leaves debris in the cells htop does not overwrite, because htop repaints **without**
+  erasing first (`vim` hides this by clearing). justerm re-split the alt grid from #8 until #567 —
+  never by decision, but because the fix that made both screens take the new dimensions reached for a
+  helper that re-splits when the column count changes. [#567, #8]
 - **Anchor lifecycle: selection/marker anchors are absolute-line coords shifted in lockstep with
   buffer mutation — and share the alt grid's line range.** Selection endpoints (#3) and decoration/
   command markers (#118/#158) store `[scrollback ++ screen]`-absolute lines. Eviction

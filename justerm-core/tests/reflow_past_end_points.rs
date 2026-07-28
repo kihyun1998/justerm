@@ -258,20 +258,21 @@ fn a_hard_line_break_survives_the_resize() {
 }
 
 #[test]
-fn an_alt_column_resize_does_not_spend_a_row_on_a_tracked_point() {
-    // Constraint 3. The alt screen has no scrollback, so a design that materialises one extra row
-    // for a tracked point pays for it out of the visible area — content destruction, not scrolling.
+fn a_pane_with_no_history_does_not_spend_a_row_on_a_tracked_point() {
+    // Constraint 3, re-aimed. It used to be an **alt-screen** test, because the alt screen is the
+    // pane with no history to absorb a displaced row. Since #567 the alt screen does not reflow at
+    // all, so that fixture re-splits nothing and the test could no longer fail — the constraint did
+    // not go away with it, though: any pane whose scrollback limit is 0 destroys content instead of
+    // scrolling, and that is now expressed directly.
     //
-    // The fixture is deliberately **tight**, and the first version of this test was not: 22 short
-    // lines in 24 rows resized 80→40 re-splits nothing and leaves two rows of slack, so a one-row
-    // cost was unobservable and the test stayed green under exactly the design it names. Here every
-    // line doubles at the new width and the pane is full, so one extra row is one more line gone.
+    // Keep this tight. The first version of the alt test had 22 short lines in 24 rows resized
+    // 80->40 — nothing re-split and two rows of slack, so a one-row cost was unobservable and it
+    // stayed green under exactly the design it names.
     //
-    // Losing `aaaaaa` is not the defect: 3 lines × 2 rows into a 4-row pane with no history cannot
-    // fit, and that is ordinary alt truncation. What is asserted is that the *tracked point* costs
-    // nothing on top of it.
-    let mut t = Engine::new(6, 4);
-    t.feed(b"\x1b[?1049h");
+    // Losing `aaaaaa` is not the defect: 3 lines x 2 rows into a 4-row pane with nowhere to put the
+    // overflow cannot fit, and that is ordinary truncation. What is asserted is that the *tracked
+    // point* costs nothing on top of it.
+    let mut t = Engine::with_scrollback(6, 4, 0);
     t.feed(b"aaaaaa\r\nbbbbbb\r\ncccccc\r\n");
 
     t.resize(3, 4);
