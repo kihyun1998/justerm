@@ -152,6 +152,11 @@ fn a_primary_marker_shifts_by_what_the_scrollback_cap_evicted() {
     for i in 0..5 {
         t.feed(format!("line{i}xx\r\n").as_bytes());
     }
+    // Park the cursor **on** content rather than on the blank line after it. Otherwise the seam's
+    // row budget (#567 ①) buys a row for the cursor, one more line scrolls into history, and the cap
+    // evicts one more — which moves these numbers for a reason that has nothing to do with the
+    // translation this test exists to pin. Isolating the variable, not chasing the expectation.
+    t.feed(b"\x1b[1;1H");
     let ids: Vec<_> = (0..3).map(|r| t.add_marker(r)).collect();
     assert_eq!(marker_lines(&t), vec![2, 3, 4], "fixture");
 
