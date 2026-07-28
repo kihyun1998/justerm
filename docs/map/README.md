@@ -72,21 +72,29 @@ are the roster.
 - Territories — [cursor](territory/cursor.md) ·
   [damage & viewport](territory/damage-and-viewport.md) ·
   [logical lines](territory/logical-lines.md) ·
+  [release & published surface](territory/release-and-published-surface.md) ·
   [search & active match](territory/search.md) ·
   [selection](territory/selection.md) ·
   [wide glyph & soft wrap](territory/wide-glyph-and-soft-wrap.md)
 - Cross-cutting invariants — [alt-screen absolute-index floor](invariant/alt-screen-buffer-floor.md) ·
-  [row-keyed side maps](invariant/row-keyed-side-maps.md)
+  [row-keyed side maps](invariant/row-keyed-side-maps.md) ·
+  [workspace exclusion is gate invisibility](invariant/workspace-exclusion-is-gate-invisibility.md)
 
 Ask the questions instead of copying the answers (run from `docs/map/`):
 
 ```sh
-rg -l '^\*\*None\.\*\*' territory/   # territories with no governing decision — the holes
+# no decision record governs this area
+rg -lU '## Governing decisions\r?\n\r?\n\*\*None\.\*\*' territory/
+# never compared against a reference implementation — a different hole
+rg -lU '## Reference behaviour\r?\n\r?\n\*\*None\.\*\*' territory/
 ls territory/ invariant/             # what exists; the folder is the roster
 ```
 
-A territory with nothing governing it writes exactly `**None.**` under `## Governing decisions`, so
-the first command stays honest without anyone maintaining a list.
+An empty section writes exactly `**None.**`, so these stay honest without anyone maintaining a list —
+but **the query has to name its section.** The first version of it grepped for the bare sentinel and
+reported a territory with four governing ADRs as ungoverned, because the same sentinel also marks an
+empty `## Reference behaviour`. A command in place of a stored answer is only better if it answers
+the question it claims to; an unscoped one is a stored answer with extra steps and more confidence.
 
 **The links are gated.** `.github/scripts/check-map-links.mjs` runs on every PR (the `test` job) and
 resolves every relative markdown link under `docs/`, `CLAUDE.md`, `CONTEXT.md` and `README.md` —
@@ -100,17 +108,28 @@ node .github/scripts/check-map-links.mjs docs CLAUDE.md CONTEXT.md README.md
 
 ## Current coverage
 
-**Eight notes — core only.** Not the whole system. Territories with no note yet, referenced as
-`(no note yet)` by the notes above:
+**The scope is everything in this repository**, not `justerm-core`. That includes the crates a
+`--workspace` command never visits and the artifacts that only exist on a registry — the frozen
+`justerm-facade` tombstone is mapped for exactly that reason: zero commits, zero gates, and a
+permanent published surface that breaks silently if anyone treats it as ordinary code.
 
-VT interpretation (`term.rs`, 3682 lines = 41% of core) · grid & scrollback · input encoding
-(`input.rs`, 801 lines) · frame & wire · hyperlinks · grapheme clusters · color references & palette ·
-marker & decoration · a11y · renderer pipeline · cell geometry · infrastructure (CI / supply chain /
-release)
+Territories are **not** bounded by crate. Decoration spans core's wire, the renderer and the web
+widget; cursor is split with the consumer by design. Renderer and web notes attach to territories
+that already exist here rather than forming a second map.
 
-Nothing outside `justerm-core` is mapped yet. Territories are **not** bounded by crate — decoration
-spans core wire, renderer and web — so the renderer and web notes will attach to territories that
-already exist here rather than forming a separate map.
+What has no note yet, referenced as `(no note yet)` by the notes above:
+
+VT interpretation (`term.rs` — still the largest single file in core) · grid & scrollback · input
+encoding · frame & wire · hyperlinks · grapheme clusters · colour references & palette · marker &
+decoration · a11y · renderer pipeline · cell geometry · CI & supply chain
+
+Line counts are deliberately not quoted here. `term.rs` went 4,893 → 3,682 across four days of #584
+slices; a number maintained by hand is the same defect as a roster maintained by hand, one size
+smaller. Ask instead:
+
+```sh
+find justerm-core/src justerm-renderer/src justerm-web/src -name '*.rs' -o -name '*.ts' | xargs wc -l | sort -rn | head
+```
 
 ### What the measurements found
 
