@@ -150,6 +150,23 @@ is still correct for any future caller computing `col + width`.
 D4's scope is unchanged in the other direction: the floor guarantees *room* for a pair, not that every
 verb carries it. #529 is still an open D4 violation at any width.
 
+**One clause above is now too strong (#529, 2026-07-28): *"no reader needs a width test before
+trusting it"*.** The floor guarantees a pair *fits on the screen*; it does not guarantee that a lead
+already in the buffer has a column to its right. `Row::resize` truncates cells with no wide repair,
+and since #567 the alt screen resizes **without** reflowing — so narrowing a 4-column alt screen
+through a pair leaves a `WIDE_CHAR` lead standing in the *last* column. Measured: `?1049h`, `한` at
+columns 1-2, `resize(2, 3)` → `cell(1, 1).is_wide()`. A repair site that reads `lead + 1` therefore
+still needs its bound, and #529's does: with the bound removed, that state plus a relocation panics
+with `index out of bounds: the len is 2 but the index is 2`. The precondition holds for *placing* a
+pair, which is what #547 was deciding; it does not extend to *reading* one. The truncation itself is
+a separate D4 break, unfiled — it is `Row::resize`'s, not the relocation's, and **ghostty holds the
+same position**: its non-reflow column shrink clears only the cells beyond the new width
+(`PageList.zig:2362-2374` @ `e6e26e1`, `page.clearCells(row, cols, self.cols)`) with no repair on the
+surviving side, and its page-integrity verifier constrains only the spacer side — `.wide => {}` is
+empty, while `.spacer_tail` must follow a wide and `.spacer_head` must sit at the end
+(`page.zig:510-545`). A lead with no tail is legal there by construction, so this is a shared
+position, not an outlier to correct.
+
 ### Conformance map (resolved *against* D1–D4)
 
 These stop being independent "(a) or (b)" decisions and become conformance items; the fix site follows

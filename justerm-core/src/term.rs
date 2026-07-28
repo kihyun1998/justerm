@@ -3342,7 +3342,13 @@ impl Term {
     /// Relocate a last-column narrow cluster to the next line as a wide cell (#303): its base +
     /// side-table marks move to `(next_row, 0..=1)` and the vacated last column becomes a soft-wrap
     /// (WRAPLINE + leading spacer), exactly as `write_glyph` wraps a wide glyph that can't fit. With
-    /// autowrap off it stays narrow. The `cols < 2` arm is **unreachable since #547** —
+    /// autowrap off it stays narrow.
+    ///
+    /// The destination is an **overwrite**, so it owes the no-orphan repair every other overwrite
+    /// site owes (#529, ADR-0025 D4) — see the comment at that site for why justerm restates it
+    /// once per wide-writing path where the references get it structurally.
+    ///
+    /// The `cols < 2` arm is **unreachable since #547** —
     /// `MIN_COLUMNS = 2` is the floor on every path that sets a width — and is kept only as a
     /// bounds guard for the `col + 1` writes below, not as a described behaviour.
     fn relocate_cluster_wide(&mut self, row: usize, col: usize) {
@@ -3370,6 +3376,62 @@ impl Term {
         // Advance to the next line (scrolls if at the bottom); cursor lands at col 0.
         self.wrapline();
         let nr = self.cursor.row;
+        // The destination is an overwrite like any other, so it owes the same no-orphan repair
+        // `write_glyph` performs for its own trailing column (#529, D4): the spacer about to land
+        // on `(nr, 1)` half-destroys a wide glyph standing there, stranding its far half at
+        // `(nr, 2)` — a `WIDE_CHAR_SPACER` with no lead to its left, still carrying the destroyed
+        // glyph's hyperlink and underline colour. Asked *before* the writes, on the pre-write
+        // state, exactly as `write_glyph`'s `last + 1` check is.
+        //
+        // Two of the three references have this exact site, and both repair it without a rule of
+        // their own, because they write a pair as two *separate* cell writes and the repair lives
+        // in the write:
+        //   - xterm.js names the case outright — *"Combining character widens 1 column to 2. Move
+        //     old character to next line."* (`InputHandler.ts:583-611` @ 699f553,
+        //     `copyCellsFrom(oldRow, oldCol, 0, oldWidth, false)` at `:605-607`). The relocation
+        //     leaves `x == 2`, so its once-per-run right-edge repair (`:668-669`) lands on exactly
+        //     the orphaned column.
+        //   - ghostty relocates in `Terminal.zig:1188-1252` @ e6e26e1 and reaches the repair
+        //     through `cursorRight(1); printCell(0, .spacer_tail)` (`:1251-1252`) — that second
+        //     `printCell` runs the `cell.wide != wide` switch (`:1484`) whose `.wide` arm clears
+        //     the neighbouring lead's tail (`:1489-1499`).
+        //   - alacritty has **no** counterpart: a width-0 codepoint returns early through
+        //     `push_zerowidth` (`term/mod.rs:1069-1085` @ 852e971), so a cluster never changes
+        //     width and nothing is ever relocated. Its orphan repair (`:994-1008`) is still the
+        //     mechanism reference, reached the same way — one repair per `write_at_cursor`.
+        // justerm writes both halves in one step, so the repair is not structural here and each
+        // wide-writing path restates it — this is the third (`write_glyph`,
+        // `promote_cluster_to_wide`, and now the relocation).
+        //
+        // What justerm does **not** copy is ghostty's reach-back at this site: its `.wide` arm
+        // also clears the previous row's `.spacer_head` (`:1504-1506`, gated `cursor.y > 0 and
+        // cursor.x <= 1`) — the very marker this relocation set seven statements earlier
+        // (`:1200`). Derived from source, not executed. Suppressing it here is #534's rule
+        // verbatim: a repair keyed on a state predicate must not fire while that state is
+        // mid-construction.
+        //
+        // The other two obligations `write_glyph` carries are N/A here, recorded because an
+        // unexplained omission is what gets re-litigated:
+        //   - the *left*-orphan repair asks `col > 0`, and the lead lands at column 0.
+        //   - `void_wrap_artefact_above(nr)` would clear a record that `vacate_for_wrap` **just
+        //     set**, in both the advance case (`nr == row + 1`, so its target `nr - 1` is `row`)
+        //     and the scroll case (`nr == row`, the source rotated up to `row - 1`). Firing it
+        //     would be self-clobbering, not merely redundant — the same shape as #534's
+        //     mid-construction rule. Measured after a repairing relocation: `is_row_wrapped(0)`
+        //     and `(0, cols-1).is_leading_spacer()` both hold.
+        //
+        // `2 < cols` is a live bound, not defence in depth. The print paths cannot leave a
+        // `WIDE_CHAR` lead in the last column — `write_glyph` wraps rather than write one there
+        // and `promote_cluster_to_wide` relocates rather than promote in place — but `Row::resize`
+        // can: the alt screen resizes without reflowing (#567), so truncating a row through a pair
+        // strands its lead in the final column. The relocation then meets `is_wide() == true` at
+        // `cols == 2`, and without the bound reads `(nr, 2)` on a two-column grid — an
+        // out-of-bounds panic in a library, inside a consumer's process, reachable by shrinking a
+        // window over a CJK glyph. Pinned by `min_columns.rs::
+        // a_relocation_beside_a_truncated_wide_lead_does_not_index_past_the_row`.
+        if 2 < cols && self.grid.cell(nr, 1).is_wide() {
+            self.free_cell(nr, 2);
+        }
         // Re-place the base as a wide lead + spacer, re-attaching the marks fresh (drop the combining
         // bit so push_combining starts a clean cluster at the new column).
         let mut lead = base;

@@ -147,6 +147,42 @@ fn narrowing_never_splits_a_pair_across_rows() {
     assert_eq!(row_text(&term, 0).trim_end(), "abX cd");
 }
 
+/// A `WIDE_CHAR` lead **can** stand in the last column, and a relocation that lands beside one
+/// at the floor must not index past the row (#529).
+///
+/// The floor guarantees a pair *fits*; it does not guarantee every path keeps one together. The
+/// alt screen resizes but does not reflow (#567), so `Row::resize` truncates: 한 at columns 1-2
+/// of a 4-column alt screen narrowed to 2 loses its spacer and leaves a lead in the last column.
+/// A mode-2027 promotion then relocating onto that row asks `cell(nr, 1).is_wide()` — true — and
+/// without the width bound reads `(nr, 2)` on a 2-column grid: `index out of bounds: the len is
+/// 2 but the index is 2`, in a library, inside a consumer's process.
+///
+/// The lead-less lead itself is **not** repaired here and is not this issue's scope; this test
+/// pins only that the relocation survives meeting one. Both halves were measured: with the bound
+/// removed this input panics, and with it restored the whole workspace is green.
+#[test]
+fn a_relocation_beside_a_truncated_wide_lead_does_not_index_past_the_row() {
+    let mut term = Engine::new(4, 3);
+    term.feed(b"\x1b[?1049h"); // alt: resizes, does not reflow
+    term.feed(b"\x1b[2;2H");
+    term.feed("한".as_bytes()); // pair at (1,1)-(1,2)
+    term.resize(2, 3); // truncation strands the lead in the last column
+    assert!(
+        term.grid().cell(1, 1).is_wide(),
+        "precondition: the truncated lead really does sit in the last column"
+    );
+
+    term.feed(b"\x1b[?2027h");
+    term.feed(b"\x1b[1;2H");
+    term.feed("\u{25B6}".as_bytes()); // ▶ — narrow, at the last column
+    term.feed("\u{FE0F}".as_bytes()); // VS16 → promote → no room → relocate onto row 1
+
+    let grid = term.grid();
+    assert_eq!(grid.cell(1, 0).c(), '\u{25B6}', "the cluster relocated");
+    assert!(grid.cell(1, 0).is_wide());
+    assert!(grid.cell(1, 1).is_spacer(), "and its own spacer is intact");
+}
+
 /// The `(row, col)` of the first `WIDE_CHAR` lead in the grid.
 fn wide_lead(term: &Engine) -> Option<(usize, usize)> {
     let grid = term.grid();

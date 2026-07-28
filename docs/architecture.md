@@ -193,6 +193,17 @@ under it.
 - **Wide-char spacer is a distinct marker, not a blank.** The trailing column of a width-2 char must
   carry a "wide-char spacer" marker (flag/variant), not a plain blank — else overwrite, erase,
   selection, and cursor positioning go wrong. [#2]
+- **A `WIDE_CHAR` lead can stand in the *last* column, so a repair that reads `lead + 1` needs its
+  bound.** The print paths cannot produce this — `write_glyph` wraps rather than write a lead it
+  cannot pair, and a mode-2027 promotion at the last column relocates instead. `Row::resize` can:
+  it truncates cells with no wide repair, and since #567 the alt screen resizes **without**
+  reflowing, so narrowing straight through a pair strands its lead at the new right edge (measured:
+  `?1049h`, `한` at columns 1-2 of 4, `resize(2, 3)` → `cell(1, 1).is_wide()`). `MIN_COLUMNS = 2`
+  does not cover this — the floor guarantees a pair *fits*, which is about **placing** one, not
+  about what is already in the buffer. The consequence is asymmetric and worth stating plainly: a
+  reader that skips the lead-less lead is merely wrong on screen, while a repair site that indexes
+  `lead + 1` unbounded **panics inside the consumer's process** (#529's guard; #536 is the same
+  class one function over). [#529, #567]
 - **The column a wrapped wide glyph vacates is a blank *written with the current pen* — flagging
   a cell is not the same as writing one.** When a width-2 glyph cannot fit in the last column it
   wraps, and that column becomes a soft-wrap artefact (the row is marked wrapped, and the column
