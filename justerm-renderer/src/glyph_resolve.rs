@@ -118,8 +118,21 @@ pub fn resolve_frame<B, E>(
     // A wide lead assigns its right half to the following (spacer) cell.
     let mut pending_right: Option<u16> = None;
     for idx in 0..count {
-        // A wide glyph never spans rows (core wraps a lead off the last column), so a
-        // pending right-half must not leak across a row boundary — reset at col 0.
+        // A wide glyph never spans rows, so a pending right-half must not leak across a row
+        // boundary — reset at col 0.
+        //
+        // This reset is **load-bearing, not defensive**, and the reason first written here — *"core
+        // wraps a lead off the last column"* — covers only the print paths. Since justerm-core #529
+        // (ADR-0025, "D4's scope") a `WIDE_CHAR` lead in the final column is a **declared legal
+        // state**: `Row::resize` truncates through a pair without repair, and the alt screen resizes
+        // without reflowing, so narrowing a window over a CJK glyph strands one. Such a lead sets
+        // `pending_right` that no spacer ever consumes, and without this reset the next row's first
+        // cell would inherit it. Handling the state here is contract conformance, not a workaround:
+        // whether a lead has its spacer is decidable from the viewport alone, so it is the
+        // consumer's by ADR-0017 and core owes no helper for it.
+        //
+        // The rendered result is a lead drawn as its left half only — clipped, never overflowing
+        // into a neighbour and never mismatched against another row's glyph.
         if (idx as u32).is_multiple_of(cols) {
             pending_right = None;
         }
