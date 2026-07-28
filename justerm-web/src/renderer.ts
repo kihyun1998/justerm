@@ -29,4 +29,13 @@ export interface Renderer {
    * Optional: a renderer with no cursor/selection may omit it.
    */
   setFocused?(focused: boolean): void;
+  /**
+   * An IME composition started (`true`) or ended (`false`) (#592). The caret stays put for the
+   * duration — two of the three references do this, and for the same reason: the caret is the
+   * anchor a composing user is reading against.
+   *
+   * Driven from the composition events on the hidden textarea, not from a frame: composition is a
+   * browser-side fact the engine never sees. Optional: a renderer with no cursor may omit it.
+   */
+  setComposing?(composing: boolean): void;
 }

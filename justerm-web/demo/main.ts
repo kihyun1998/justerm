@@ -1043,6 +1043,7 @@ declare global {
     __precedenceProbe?: () => PrecedenceProbe;
     __cursorBlinkProbe?: () => Promise<CursorBlinkProbe>;
     __blinkIdleProbe?: () => Promise<BlinkIdleProbe>;
+    __composeCaretProbe?: () => Promise<ComposeCaretProbe>;
     __aboveTopProbe?: () => AboveTopProbe;
     __rulerAnchorProbe?: () => RulerAnchorProbe;
   }
@@ -1074,6 +1075,70 @@ interface BlinkIdleProbe {
   /** After simulated user input restarts the idle clock, one interval later. */
   afterInputOff: string;
 }
+
+/** #592 — the cursor cell while an IME composition is open. */
+interface ComposeCaretProbe {
+  /** Cursor hidden — the reference the samples are read against. */
+  background: string;
+  /** Application asked to blink, NOT composing: sampled either side of one 600ms interval. */
+  idleOn: string;
+  idleOff: string;
+  /** Same application state, but mid-composition — sampled a full interval apart. */
+  composingA: string;
+  composingB: string;
+  /** After the composition ends, one interval later. */
+  afterEndOff: string;
+}
+
+window.__composeCaretProbe = async (): Promise<ComposeCaretProbe> => {
+  // #592: the caret must stop blinking while an IME composition is open. The composition events are
+  // dispatched from the e2e side onto the real hidden textarea, so the real CompositionController
+  // and the real Terminal wiring run — this probe only samples.
+  const gl = canvas.getContext('webgl2')!;
+  const { width: cw, height: ch } = renderer.cellSize();
+  const sample = (): string => {
+    render();
+    const x = Math.round(CURSOR_COL * cw) + 2;
+    const y = gl.drawingBufferHeight - 1 - (Math.round(CURSOR_ROW * ch) + 2);
+    const px = new Uint8Array(4);
+    gl.readPixels(x, y, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    return 'rgb(' + px[0] + ',' + px[1] + ',' + px[2] + ')';
+  };
+  const wait = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+  const ta = document.querySelector('textarea')!;
+
+  const savedBlink = cursorBlink;
+  const savedShown = cursorShown;
+
+  cursorShown = false;
+  const background = sample();
+  cursorShown = true;
+
+  cursorBlink = true; // the application asks to blink
+  renderer.restartCursorBlink();
+  const idleOn = sample();
+  await wait(750);
+  const idleOff = sample(); // blinking, as a control
+
+  ta.dispatchEvent(new CompositionEvent('compositionstart'));
+  ta.dispatchEvent(new CompositionEvent('compositionupdate', { data: 'ㅎ' }));
+  const composingA = sample();
+  await wait(750);
+  const composingB = sample(); // a full interval later and still solid
+
+  ta.value = '한';
+  ta.selectionStart = 1;
+  ta.selectionEnd = 1;
+  ta.dispatchEvent(new CompositionEvent('compositionend', { data: '한' }));
+  await wait(750);
+  const afterEndOff = sample(); // blinking again
+
+  cursorBlink = savedBlink;
+  cursorShown = savedShown;
+  renderer.restartCursorBlink();
+  render();
+  return { background, idleOn, idleOff, composingA, composingB, afterEndOff };
+};
 
 window.__blinkIdleProbe = async (): Promise<BlinkIdleProbe> => {
   // #593: with no user input the cursor stops blinking and parks solid. The default is five minutes,
