@@ -54,9 +54,13 @@ precedence against selection.
 ## Code
 
 - `justerm-core/src/search.rs` — `Match`, `SearchOptions`, `is_valid_regex`
-- `justerm-core/src/term.rs` — `Term::search`, `search_with`, `search_scroll_to`, `match_spans`,
-  `set_search_highlights`, `set_active_search_highlight`, `set_active_search_match`,
-  `invalidate_search_highlights`
+- `justerm-core/src/term/search.rs` — `Term::search`, `search_with`, `search_scroll_to`,
+  `match_spans`, `set_search_highlights`, `set_active_search_highlight`,
+  `set_active_search_match`, `invalidate_search_highlights`, and the whole-word predicate
+  `word_bounded`. Extracted from `term.rs` in #586. Note the crate now has **two** files named
+  `search.rs`: this one holds the engine's mechanism, `src/search.rs` above holds the types — a
+  bare `search.rs:NN` citation is ambiguous, and reference citations to alacritty's file of the
+  same name are spelled in full for that reason
 - `justerm-core/src/term/walk.rs` — the shared floor search reaches cells through (`abs_line` /
   `abs_row` / `abs_floor`, `line_in`, `extract_lines`). Extracted in #585; `walk.rs`'s module doc
   names search as one of the read surfaces standing on it
