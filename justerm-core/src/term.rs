@@ -2148,6 +2148,33 @@ impl Term {
 
         // Both screens are resized. Scrollback pairs with the PRIMARY screen
         // (whichever is active) — the alt screen has no history of its own.
+        // `reflow: true` is the *primary* pane's setting and is deliberately a constant, **not**
+        // `self.autowrap`. ghostty gates its equivalent on DECAWM — `.reflow =
+        // self.modes.get(.wraparound)` (`terminal/Terminal.zig` `resize`) — and the reading that
+        // makes that coherent is the one this file just accepted for the alt screen: an application
+        // that turns autowrap off is placing lines itself, so its content is a layout rather than a
+        // flow, and re-wrapping it changes what it drew.
+        //
+        // Not followed here, for three reasons, and they are recorded rather than filed because
+        // nothing observable is known to break either way (measured: with DECAWM off, a full
+        // 6-column row still re-splits into two rows at width 3 exactly as it does with DECAWM on;
+        // the difference against ghostty is that ghostty truncates that row instead).
+        //
+        // - **The wrap flag is not a lie.** `Row::is_wrapped` means "this row continues into the
+        //   next", which after a re-split is simply true. DECAWM governs the **write** path — where
+        //   a glyph goes when the cursor is at the last column — not how stored content is laid out
+        //   again later. Dropping the flag would make `"abcdef"` extract as `"abc\ndef"`.
+        // - **The mode is global and momentary; the buffer is neither.** DECAWM is read at resize
+        //   time and would decide the fate of history written under the opposite setting. A TUI that
+        //   turns it off while drawing would, on a resize landing in that window, leave every
+        //   properly wrapped line in scrollback un-reflowed.
+        // - **It costs content.** Not reflowing truncates each row to the new width, so the tail of
+        //   a long line leaves the grid. justerm keeps it.
+        //
+        // There is no per-row signal to be finer with: a row written under DECAWM off and a row that
+        // merely ended early are both simply unwrapped. "Do not re-split an unwrapped logical line"
+        // would break ordinary reflow, since a line that exactly fills its width carries no wrap
+        // flag either.
         let dims = ReflowDims {
             old_cols,
             cols,
