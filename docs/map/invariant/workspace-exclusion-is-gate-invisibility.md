@@ -32,7 +32,7 @@ invariant rather than a note in any one crate's territory.
 
 ## Territories it holds in
 
-- [release & published surface](../territory/release-and-published-surface.md) — the facade's
+- [release](../territory/release.md) — the facade's
   exclusion is what keeps it frozen, and its exclusion is why nothing gates it either
 - **renderer** *(no note yet)* — the crate this has actually bitten
 - **infrastructure / CI** *(no note yet)* — where the compensating per-manifest gates live

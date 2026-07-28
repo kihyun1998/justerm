@@ -22,20 +22,20 @@ they share only the constraint that the cell word is full. The rules above there
 places that never call each other, and a fourth fact hitting the same wall will reach for the same
 hatch.
 
-This is the same *shape* as [wide glyph & soft wrap](../territory/wide-glyph-and-soft-wrap.md)'s
+This is the same *shape* as [wide glyph](../territory/wide-glyph.md)'s
 problem (a truth whose scope is not the cell it is stored in) but not the same fact: there the row/pair
 owns the meaning, here the row owns the *storage* while the meaning stays per-cell. ADR-0025 D1 governs
 the first; nothing governs this one.
 
 ## Territories it holds in
 
-- [cursor](../territory/cursor.md) — `Pen::underline_color` (SGR 58) is deliberately **not** packed
+- [pen](../territory/pen.md) — `Pen::underline_color` (SGR 58) is deliberately **not** packed
   into the printed cell; the print path stamps it into the row's ucolor map (#520)
 - **hyperlinks** *(no note yet)* — OSC 8 link ids, moved out of the cell into the row's link map
   (#45/#46)
 - **grapheme clusters** *(no note yet)* — multi-code-point cluster overflow, kept out so the cell stays
   fixed-width (#45/#46)
-- [wide glyph & soft wrap](../territory/wide-glyph-and-soft-wrap.md) — adjacent, not identical: the
+- [wide glyph](../territory/wide-glyph.md) — adjacent, not identical: the
   extended-attr rider a wide lead carries is one of these maps meeting the pair rule (#521)
 
 Storage: `Row { cells, combining, links, ucolors, wrapped }` in `justerm-core/src/grid.rs`; the

@@ -69,13 +69,30 @@ stale within days: `#552` records exactly that, a hand-copied roster stale in fi
 after it was written. The links themselves are cheap and a link checker catches them; the *columns*
 are the roster.
 
-- Territories — [cursor](territory/cursor.md) ·
+**One concept, one note.** Two notes are never merged because they feel related — what that costs is
+the ability to *point at one of them*, and every edge into a merged note is then drawn thicker than
+the truth. Where several concepts genuinely belong side by side, an **aggregate** note says why and
+owns no detail of its own.
+
+- Territories — [active match](territory/active-match.md) ·
+  [caret report](territory/caret-report.md) ·
+  [cursor position](territory/cursor-position.md) ·
+  [damage](territory/damage.md) ·
+  [frame](territory/frame.md) ·
+  [logical lines](territory/logical-lines.md) ·
+  [pen](territory/pen.md) ·
+  [published surface](territory/published-surface.md) ·
+  [release](territory/release.md) ·
+  [search](territory/search.md) ·
+  [selection](territory/selection.md) ·
+  [soft wrap](territory/soft-wrap.md) ·
+  [viewport](territory/viewport.md) ·
+  [wide glyph](territory/wide-glyph.md) ·
+  [wire format](territory/wire-format.md)
+- Aggregates (relationship only, no detail) — [cursor](territory/cursor.md) ·
   [damage & viewport](territory/damage-and-viewport.md) ·
   [frame & wire](territory/frame-and-wire.md) ·
-  [logical lines](territory/logical-lines.md) ·
   [release & published surface](territory/release-and-published-surface.md) ·
-  [search & active match](territory/search.md) ·
-  [selection](territory/selection.md) ·
   [wide glyph & soft wrap](territory/wide-glyph-and-soft-wrap.md)
 - Cross-cutting invariants — [alt-screen absolute-index floor](invariant/alt-screen-buffer-floor.md) ·
   [row-keyed side maps](invariant/row-keyed-side-maps.md) ·
