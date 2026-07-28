@@ -275,6 +275,48 @@ by quirk-gating `?12`. Corpus limits: six programs, bash only, no vi-mode shell 
 zsh), which is where DECSCUSR emitters are most likely to live — so "nothing uses DECSCUSR" is
 **not** established, only "nothing in this corpus did".
 
+## Text blink — SGR 5 (#576, verified 2026-07-29)
+
+⚠ **The headline is a negative result: only one of the three references animates blinking text at
+all, and it ships the feature off.** That is why this section exists as evidence rather than as a
+port — there is **no inheritable cadence**, so justerm-web exposes an *interval* (`0` = off, the
+default) instead of a boolean with a number baked in. A design that had assumed "pick the reference's
+rate" would have been picking xterm.js's `0`.
+
+Note what the tally is *not*: it is not "nobody wants this". All three parse SGR 5 and carry the
+attribute; the split is entirely about whether the renderer acts on it.
+
+| Fact | Reference | Site |
+|---|---|---|
+| **Implements text blink, as an opt-in consumer interval.** `TextBlinkStateManager` runs a `setInterval` and flips `isBlinkOn`; the duration is the `blinkIntervalDuration` option | xterm.js | `src/browser/renderer/shared/TextBlinkStateManager.ts` (whole file), `:66-88` (`_updateIntervalState`) |
+| ⚠ **The default is `0`, i.e. disabled** — the option is validated `>= 0` and throws below it | xterm.js | `src/common/services/OptionsService.ts:17`, validation at `:173-178` |
+| The interval runs only when there is something to blink **and the viewport is visible**: `duration > 0 && needsBlinkInViewport && isViewportVisible` | xterm.js | `TextBlinkStateManager.ts:67` |
+| `needsBlinkInViewport` comes from a **per-row scan of the viewport** for `cell.isBlink()`, kept as a row flag array plus a count | xterm.js | `addons/addon-webgl/src/WebglRenderer.ts:529-531`, `:608`; the DOM twin at `browser/renderer/dom/DomRenderer.ts:650-659` |
+| ⚠ **Stopping forces the phase back ON and re-renders** — a stopped blink must never leave text hidden | xterm.js | `TextBlinkStateManager.ts:83-87` |
+| The concealed phase is expressed as an ink flag, not as an erase: `fg \|= FgFlags.INVISIBLE` (webgl) / a `xterm-blink-hidden` class (DOM) | xterm.js | `WebglRenderer.ts:562`, `dom/DomRendererRowFactory.ts:166-168` |
+| **Negative result: no text blink anywhere in the tree.** Every `blink` hit under `alacritty_terminal/src` is the *cursor*; SGR 5 sets no cell flag | alacritty | `alacritty_terminal/src/**` — grepped, cursor-only (`event.rs:45`, `term/mod.rs:1987`, `:2036`) |
+| **Negative result: parses and stores it, never draws it.** `sgr.zig` maps SGR 5 (and 6) to `.blink`, `style.zig` carries `flags.blink` and round-trips it in DECRQSS output — and the renderer reads `cursor_blink_visible` only | ghostty | `src/terminal/sgr.zig:291`, `:293`; `src/terminal/style.zig:33`, `:343`; `src/renderer/generic.zig:1130`, `:1378` (no cell-blink read anywhere) |
+
+**Direction, since a divergence is not a direction.** justerm's renderer already conceals a blinking
+cell on the off phase (`justerm-renderer/src/attrs.rs` `is_concealed`, #282) and takes the phase in
+the damage header — i.e. the *engine side* is xterm-shaped and the two silent references are the
+outliers. What was missing was only the consumer's clock, so this is "this layer alone drifted → move
+toward the reference", not a family decision.
+
+**What justerm-web deliberately does not port, and why** (recorded so the next reader does not read
+these as oversights):
+
+- **`needsBlinkInViewport`** — xterm.js can scan the viewport because it *holds the buffer*. A
+  frame-mode consumer holds damage, not the grid (ADR-0018/0020), so the exact question "is there a
+  blinking cell on screen right now" is not answerable on this side at all. The equivalent guarantee
+  comes from the opposite end: the feature is off unless a consumer sets an interval, so the default
+  costs nothing.
+- **`setViewportVisible`** — justerm-web's phase runs on the existing rAF loop, and a browser stops
+  firing rAF for a hidden document, so the condition xterm.js observes explicitly is structural here.
+- **Throwing on a negative interval** — this widget's other policy setters adopt-and-report rather
+  than panic across the seam (`CursorBlink.setIdleTimeout`), and internal coherence is the recorded
+  tie-breaker for consumer-facing API shape (ADR-0023's posture).
+
 ## Renderer ink channels
 
 | Fact | Reference | Site |

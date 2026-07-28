@@ -1081,3 +1081,63 @@ test("the caret stops blinking while an IME composition is open (#592)", async (
   // …and it is not a one-way door: the composition ends and the blink resumes.
   expect(p.afterEndOff).toBe(p.background);
 });
+
+// #576: SGR 5 (blink) text was implemented on both sides of the widget and died in the middle —
+// core carries the cell flag, the renderer conceals a blinking cell on the off phase, and the
+// widget never flipped the phase, so `ESC[5m` text rendered identically to plain text. The phase
+// arithmetic is unit-tested (`TextBlink`); this is the only place the wiring can be proven, since
+// `JustermRenderer`'s constructor is private and needs a GL context. It also had nowhere to run
+// until this slice: the demo emitted no blinking cell.
+test("SGR 5 text blinks only when the consumer asks, and never by default (#576)", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await expect(page.getByRole("button", { name: "SGR 5 text: OFF" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Text blink: OFF" })).toBeVisible();
+
+  const p = await page.evaluate(() => window.__textBlinkProbe!());
+
+  // The cell must actually paint, or every equality below is vacuously true on an empty cell.
+  expect(p.defaultA, `background ${p.background}`).not.toBe(p.background);
+
+  // THE DEFAULT: the application asked for blinking text and the consumer did not opt in, so the
+  // text stays drawn across more than a full interval. This is the reference position — xterm.js
+  // ships `blinkIntervalDuration: 0`, alacritty has no text blink, ghostty never draws the flag.
+  expect(p.defaultB).toBe(p.defaultA);
+
+  // THE FIX: once the consumer sets an interval, the same cells alternate between drawn and
+  // background-only. Sampled a half-interval apart, so both phases appear.
+  expect(new Set(p.phases)).toEqual(new Set([p.defaultA, p.background]));
+
+  // …and that alternation is not an artefact of the probe re-emitting a frame each time: these
+  // samples were read in the blink loop's own rAF turns, with no frame behind them (turns where
+  // the loop did not present are dropped by the probe). An idle terminal depends on this path
+  // alone — nothing re-emits a frame when there is no output.
+  expect(p.loopSamples.length).toBeGreaterThanOrEqual(3); // one present per interval, 5 sampled
+  expect(new Set(p.loopSamples)).toEqual(new Set([p.defaultA, p.background]));
+
+  // Turning the blink off must leave the text SHOWN, not stuck in the phase it happened to be in —
+  // the `beforeDisable` sample proves it really was off when the interval was cleared.
+  expect(p.beforeDisable).toBe(p.background);
+  expect(p.afterDisable).toBe(p.defaultA);
+});
+
+// #576 + #119: `prefers-reduced-motion` outranks both the application's SGR 5 and the consumer's
+// interval. Derived rather than ported (no reference has the input) and settled on #575/#583:
+// reduced motion can only ever subtract motion, so letting it win can never make steady text blink.
+// Driven through Playwright's real media emulation, so the widget's own matchMedia listener runs.
+test("prefers-reduced-motion pins blinking text visible (#576)", async ({ page }) => {
+  await page.goto("/");
+  await expect(page.getByRole("button", { name: "SGR 5 text: OFF" })).toBeVisible();
+
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  const p = await page.evaluate(() => window.__textBlinkProbe!());
+
+  // Every sample — including the ones taken with an interval set, and any the loop presented — is
+  // the drawn cell. Nothing ever reaches the concealed phase. (`loopSamples` is expected to be
+  // near-empty here for the same reason the assertion holds: with no phase to flip, the loop has
+  // nothing to present.)
+  const seen = new Set([...p.phases, ...p.loopSamples, p.beforeDisable, p.afterDisable]);
+  expect(p.defaultA, `background ${p.background}`).not.toBe(p.background);
+  expect(seen).toEqual(new Set([p.defaultA]));
+});

@@ -4,6 +4,7 @@ import { MINIMUM_COLS, proposeDimensions } from "../src/fit";
 import {
   asU16,
   asU32,
+  blinkPhaseHeader,
   cursorCommand,
   damageHeader,
   decorationWire,
@@ -60,6 +61,35 @@ describe("damageHeader", () => {
 
   it("passes blinkOn=false through as 0", () => {
     expect(damageHeader(frame(), false)[7]).toBe(0);
+  });
+});
+
+// #576: the renderer takes the SGR-5 phase in the damage header and keeps it (`last_blink_on`),
+// so flipping the phase between frames means re-issuing an EMPTY damage that carries only the new
+// bit — the retained grid then re-packs at the new phase with no cell touched.
+describe("blinkPhaseHeader", () => {
+  it("carries the new phase over an otherwise empty damage", () => {
+    expect(Array.from(blinkPhaseHeader(80, 24, false))).toEqual([80, 24, 1, 0, 0, 0, 0, 0]);
+    expect(Array.from(blinkPhaseHeader(80, 24, true))).toEqual([80, 24, 1, 0, 0, 0, 0, 1]);
+  });
+
+  it("is Partial, never Full — a Full header would wipe the retained grid", () => {
+    // The renderer wipes on kind 0 before scattering, and this damage scatters nothing, so a Full
+    // phase flip would blank the terminal instead of re-drawing it. The single most dangerous
+    // value in this header.
+    expect(blinkPhaseHeader(80, 24, true)[2]).toBe(1);
+  });
+
+  it("declares no scroll, so the flip cannot shift the grid", () => {
+    const h = blinkPhaseHeader(80, 24, false);
+    expect(h[3]).toBe(0);
+    expect(Array.from(h.slice(4, 7))).toEqual([0, 0, 0]);
+  });
+
+  it("is an 8-slot Uint32Array, like the frame header the renderer validates", () => {
+    const h = blinkPhaseHeader(1, 1, true);
+    expect(h).toBeInstanceOf(Uint32Array);
+    expect(h.length).toBe(8);
   });
 });
 

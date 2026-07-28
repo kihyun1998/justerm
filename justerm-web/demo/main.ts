@@ -172,6 +172,26 @@ let cursorShown = true;
 const CURSOR_ROW = 5;
 const CURSOR_COL = 2;
 
+// #576: SGR 5 (blink) text. Split into the two halves the design splits it into — the APPLICATION
+// asks for blinking cells (`sgr5Text`, which core would report as the cell flag), and the CONSUMER
+// decides whether and how fast they blink (`setTextBlinkInterval`, off by default). Both start off,
+// which is what a widget with no configuration does.
+//
+// The cells are `█` (U+2588) on purpose: a concealed cell collapses to background only, so the ink
+// has to fill the cell for a single-pixel probe to tell the phases apart — a normal glyph leaves
+// the sampled corner background in *both* phases. Row 7 is clear of every other probe's cells (see
+// CURSOR_ROW's note: rows 0, 2 and 5 are taken).
+let sgr5Text = false;
+let textBlinkOn = false;
+/** The demo's consumer-side cadence. Arbitrary on purpose — there is no reference default (only
+ * xterm.js animates text blink and its `blinkIntervalDuration` defaults to `0`), so this number is
+ * the demo's product choice, not a constant of the widget. */
+const DEMO_TEXT_BLINK_INTERVAL = 600;
+const BLINK_ROW = 7;
+const BLINK_COL = 4;
+const BLINK_WIDTH = 3;
+const BLOCK_GLYPH = 0x2588;
+
 // #150 accessible view: the Accessible view button summons the whole-log document (a real backend runs
 // core `accessible_text`; the demo joins its log), Escape closes + returns focus.
 canvas.tabIndex = 0; // make the canvas a focus target for restore
@@ -447,6 +467,26 @@ function toggleCursorBlink(): void {
   render(); // re-emit so the next frame carries the new mode
 }
 
+// #576, the application's half: emit a run of cells carrying SGR 5 — what `ESC[5m` would set.
+function toggleSgr5Text(): void {
+  sgr5Text = !sgr5Text;
+  sgr5TextBtn.textContent = `SGR 5 text: ${sgr5Text ? "ON" : "OFF"}`;
+  console.log(
+    `[demo] cell BLINK flag = ${sgr5Text} at row ${BLINK_ROW}, cols ${BLINK_COL}..${BLINK_COL + BLINK_WIDTH - 1} (the application's half, #576)`,
+  );
+  render(); // re-emit so the next frame carries the flag
+}
+
+// #576, the consumer's half: the interval is the policy, and `0` (the default) means the text is
+// shown steadily. This is the knob a consumer sets; nothing the application sends can turn it on.
+function toggleTextBlink(): void {
+  textBlinkOn = !textBlinkOn;
+  const ms = textBlinkOn ? DEMO_TEXT_BLINK_INTERVAL : 0;
+  renderer.setTextBlinkInterval(ms);
+  textBlinkBtn.textContent = `Text blink: ${textBlinkOn ? `${ms}ms` : "OFF"}`;
+  console.log(`[demo] setTextBlinkInterval(${ms}) (the consumer's half, #576)`);
+}
+
 function toggleAppMouse(): void {
   // S16 (#133): flip the frame's mouse-tracking mask. ON → the widget reports a
   // wheel notch to the app (input sink logs it); OFF → wheel scrolls scrollback.
@@ -519,6 +559,8 @@ const terseBtn = demoButton("Announce: VERBOSE", toggleTerse);
 const srBtn = demoButton("Screen reader: ON", toggleScreenReader);
 const appMouseBtn = demoButton("App mouse: OFF", toggleAppMouse);
 const cursorBlinkBtn = demoButton("Cursor blink: OFF", toggleCursorBlink); // #575
+const sgr5TextBtn = demoButton("SGR 5 text: OFF", toggleSgr5Text); // #576 (application half)
+const textBlinkBtn = demoButton("Text blink: OFF", toggleTextBlink); // #576 (consumer half)
 const titleBtn = demoButton("Set title", emitTitle); // #117
 const bellBtn = demoButton("Bell", emitBell); // #117
 const cwdBtn = demoButton("Set cwd", emitCwd); // #117
@@ -535,6 +577,8 @@ controls.append(
   srBtn,
   appMouseBtn,
   cursorBlinkBtn,
+  sgr5TextBtn,
+  textBlinkBtn,
   titleBtn,
   bellBtn,
   cwdBtn,
@@ -580,6 +624,16 @@ function viewportFrame(out?: { scrollCount: number }): DecodedFrame {
     offset += COLS;
   }
   const n = codepoints.length;
+  const flags: number[] = new Array(n).fill(0);
+  // #576: the application's half — a run of cells carrying SGR 5. Every row emitted COLS cells in
+  // order above, so the flat index is row-major.
+  if (sgr5Text) {
+    for (let i = 0; i < BLINK_WIDTH; i++) {
+      const at = BLINK_ROW * COLS + BLINK_COL + i;
+      codepoints[at] = BLOCK_GLYPH;
+      flags[at] = renderer.cellFlags.blink;
+    }
+  }
   return {
     cols: COLS,
     rows: ROWS,
@@ -588,7 +642,7 @@ function viewportFrame(out?: { scrollCount: number }): DecodedFrame {
     codepoints,
     fg: new Array(n).fill(0),
     bg: new Array(n).fill(0),
-    flags: new Array(n).fill(0),
+    flags,
     extra: new Array(n).fill(0),
     spans,
     sideTable: [],
@@ -1042,6 +1096,7 @@ declare global {
     __decorationProbe?: () => DecorationProbe;
     __precedenceProbe?: () => PrecedenceProbe;
     __cursorBlinkProbe?: () => Promise<CursorBlinkProbe>;
+    __textBlinkProbe?: () => Promise<TextBlinkProbe>;
     __blinkIdleProbe?: () => Promise<BlinkIdleProbe>;
     __composeCaretProbe?: () => Promise<ComposeCaretProbe>;
     __aboveTopProbe?: () => AboveTopProbe;
@@ -1060,6 +1115,24 @@ interface CursorBlinkProbe {
   blinkOff: string;
   /** Application says BLINK but the consumer forces steady — the override, one interval later. */
   forcedSteady: string;
+}
+
+/** #576 — a blinking (`ESC[5m`) cell's pixel under each half of the decision. */
+interface TextBlinkProbe {
+  /** No SGR 5 cell at all — the background a concealed cell must match. */
+  background: string;
+  /** SGR 5 set, consumer opted OUT (the default): sampled over more than a full interval. */
+  defaultA: string;
+  defaultB: string;
+  /** Consumer opted in: four samples a half-interval apart, so both phases are covered. */
+  phases: string[];
+  /** The blink loop's own presents over three intervals, with no frame re-emitted. Turns where the
+   * loop did not present are dropped rather than reported as a colour. */
+  loopSamples: string[];
+  /** The last sample before the interval was cleared (should be the off phase). */
+  beforeDisable: string;
+  /** Immediately after clearing the interval, with no frame re-emitted. */
+  afterDisable: string;
 }
 
 /** #593 — the cursor cell's pixel before and after the idle timeout fires. */
@@ -1245,6 +1318,105 @@ window.__cursorBlinkProbe = async (): Promise<CursorBlinkProbe> => {
   cursorShown = savedShown;
   render();
   return { background, steadyA, steadyB, blinkOn, blinkOff, forcedSteady };
+};
+
+window.__textBlinkProbe = async (): Promise<TextBlinkProbe> => {
+  // #576: SGR 5 text must alternate between drawn and background-only, on the CONSUMER's interval
+  // and never by default. The unit tests pin the phase arithmetic; this drives the real wasm
+  // renderer through the real adapter and reads a blinking cell — the only thing that proves the
+  // cell flag, the header bit and the re-pack actually meet.
+  const gl = canvas.getContext("webgl2")!;
+  const { width: cw, height: ch } = renderer.cellSize(); // device px
+  // The blinking cells are `█`, so any pixel inside one is ink on the on phase and background on
+  // the off phase. Read in the SAME synchronous turn as the draw (no preserveDrawingBuffer).
+  const readCell = (): string => {
+    const x = Math.round(BLINK_COL * cw) + 2;
+    const y = gl.drawingBufferHeight - 1 - (Math.round(BLINK_ROW * ch) + 2);
+    const px = new Uint8Array(4);
+    gl.readPixels(x, y, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    return `rgb(${px[0]},${px[1]},${px[2]})`;
+  };
+  const sample = (): string => {
+    render(); // re-emit → the adapter packs at its CURRENT text-blink phase
+    return readCell();
+  };
+  /**
+   * Samples read in the blink loop's own rAF turns over `ms`, with **no frame re-emitted** — the
+   * only reads here that could not have come from a frame, and the path an idle terminal depends
+   * on.
+   *
+   * rAF callbacks run in registration order within a frame and the loop re-registers itself at the
+   * end of each tick, so a callback registered now runs after the loop's next tick, before the
+   * browser composites. But the loop only *presents* on a turn where a phase actually flipped —
+   * every other turn there is no draw and the read comes back `rgb(0,0,0)` (there is no
+   * `preserveDrawingBuffer`). Those are dropped: black is not a colour anything here paints (the
+   * background is `rgb(30,30,46)`), so it is an unambiguous "the loop did not present this turn",
+   * and what survives is precisely the loop's own output. The yield is **one present per
+   * interval** — the phase changes value once per half-period, not twice — so sample over several
+   * intervals or the count comes back at the edge of the assertion.
+   */
+  const NO_PRESENT = "rgb(0,0,0)";
+  const sampleFromLoop = async (ms: number): Promise<string[]> => {
+    const out: string[] = [];
+    const deadline = performance.now() + ms;
+    while (performance.now() < deadline) {
+      const v = await new Promise<string>((r) => requestAnimationFrame(() => r(readCell())));
+      if (v !== NO_PRESENT) out.push(v);
+    }
+    return out;
+  };
+  const wait = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+  const PAST_ONE_INTERVAL = DEMO_TEXT_BLINK_INTERVAL + 150;
+
+  const savedSgr5 = sgr5Text;
+  const savedInterval = textBlinkOn ? DEMO_TEXT_BLINK_INTERVAL : 0;
+
+  // (1) No SGR 5 anywhere — the background the concealed phase must match.
+  sgr5Text = false;
+  renderer.setTextBlinkInterval(0);
+  const background = sample();
+
+  // (2) The application asks for blinking text, the consumer has NOT opted in. Sampled across more
+  //     than a full interval: text stays drawn, which is the default this widget ships.
+  sgr5Text = true;
+  const defaultA = sample();
+  await wait(PAST_ONE_INTERVAL);
+  const defaultB = sample();
+
+  // (3) The consumer opts in. Now the same cells must leave and come back. The phase is a free
+  //     clock (`floor(now / interval) % 2`), so the samples are taken a full interval apart and
+  //     one of them necessarily lands on each phase.
+  renderer.setTextBlinkInterval(DEMO_TEXT_BLINK_INTERVAL);
+  const phases: string[] = [];
+  for (let i = 0; i < 4; i++) {
+    phases.push(sample());
+    await wait(DEMO_TEXT_BLINK_INTERVAL / 2 + 60);
+  }
+
+  // (4) The loop's own presents, with no frame behind them (see `sampleFromLoop`) — three
+  //     intervals (one present per interval), so both phases are reached with margin. The demo's own
+  //     300ms append timer has to stop first: it presents a frame each tick, and a frame carries
+  //     the phase too, so leaving it running makes this section pass with the loop disabled.
+  window.clearInterval(appendTimer);
+  const loopSamples = await sampleFromLoop(DEMO_TEXT_BLINK_INTERVAL * 5);
+  appendTimer = window.setInterval(appendTick, 300);
+
+  // (5) Turning it off must leave the text SHOWN, not stuck in whatever phase it was in — the
+  //     failure xterm.js avoids by forcing its phase true and re-rendering when the interval stops.
+  //     Timed to land while the phase is off: poll until a sample reads as background, and report
+  //     what the last poll saw so the e2e can tell a real off phase from a vacuous pass.
+  let beforeDisable = sample();
+  for (let i = 0; i < 10 && beforeDisable !== background; i++) {
+    await wait(80);
+    beforeDisable = sample();
+  }
+  renderer.setTextBlinkInterval(0);
+  const afterDisable = readCell(); // no render() — the disable itself must have presented
+
+  sgr5Text = savedSgr5;
+  renderer.setTextBlinkInterval(savedInterval);
+  render();
+  return { background, defaultA, defaultB, phases, loopSamples, beforeDisable, afterDisable };
 };
 
 window.__aboveTopProbe = (): AboveTopProbe => {
@@ -1600,7 +1772,7 @@ canvas.addEventListener("click", (e) => {
 // Append a line every 300ms; follow the bottom only when not scrolled up. Each
 // append is "output" — search re-highlights (debounced) and links re-detect.
 let next = 0;
-setInterval(() => {
+function appendTick(): void {
   log.push(`row ${next++} — select · find=Ctrl-F · link: https://github.com/kihyun1998/justerm`);
   search.onFrame();
   updateCount();
@@ -1609,7 +1781,12 @@ setInterval(() => {
   const scrollCount = Math.max(0, log.length - ROWS) - Math.max(0, log.length - 1 - ROWS);
   if (displayOffset === 0) render({ scrollCount });
   else bar.update({ displayOffset, scrollbackLen: maxOffset(), rows: ROWS });
-}, 300);
+}
+// Named + handle-held so a probe can stop it: this timer *presents a frame* three times a second,
+// which is invisible to every other probe here (they sample in the same turn as their own draw)
+// but silently answers for the blink loop — #576's probe measured the phase alternating with the
+// loop's re-pack disabled, because these frames were carrying it.
+let appendTimer = window.setInterval(appendTick, 300);
 render();
 
 // #114 S11: auto-fit. On container (viewport) resize, compute the grid from the CSS box +

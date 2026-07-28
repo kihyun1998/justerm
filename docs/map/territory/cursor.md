@@ -41,6 +41,10 @@ Read out of the source; there is no record to read instead.
   classic off-by-one that shifts every subsequent line.
 - **The engine reports the mode, never the animation.** `visible` (DEC ?25), `shape`
   (DECSCUSR, `Block` default), `blink` (att610 ?12) are state; the blink phase is the consumer's.
+  **This is not a cursor rule** — it is ADR-0017's split applied to time-varying presentation, and it
+  has a second instance one attribute over: SGR 5 *text* blink stores a cell flag, the renderer
+  conceals on the phase it is handed, and the consumer owns the clock (#282 → #576). Two clocks, not
+  one: the caret's restarts on input, text's does not.
 - **The cursor is invisible while scrolled up** — the frame reports
   `cursor_visible && display_offset == 0`.
 - **Position is clamped on set**, to `rows-1` / `cols-1`.
@@ -59,6 +63,9 @@ Read out of the source; there is no record to read instead.
 In `docs/agents/reference-facts.md` — **linked, never restated** (each row is pinned to a `file:line`
 at a recorded SHA; a paraphrase drops the pin).
 
+- [Text blink — SGR 5](../../agents/reference-facts.md#text-blink--sgr-5-576-verified-2026-07-29)
+  — the sibling clock, and a **negative result** worth reading before assuming a default: only one of
+  the three references animates blinking text at all, and it ships the interval defaulting to `0`
 - [Cursor blink — who decides](../../agents/reference-facts.md#cursor-blink--who-decides-575-verified-2026-07-28)
   — both references resolve blink from the **same two inputs** (the application's mode and the user's
   setting) and the side that expressed an explicit intent wins; they differ only in which side carries
