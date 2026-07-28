@@ -214,6 +214,46 @@ nothing upstream can supply a bound for it.
 | ⚠ **The asymmetry stated as a rule, and the reason justerm clamps toward over-damage**: *"Dirty tracking may have false positives but should never have false negatives. A false negative would result in a visual artifact on the screen."* | ghostty | `page.zig:1993-1995` |
 | **No reference bounds or asserts its damage range anywhere** — so there is no upstream clamp to port, and the only reference with a column axis is a library carrying justerm's own pre-#536 shape | all three | as above |
 
+## Cursor blink — who decides (#575, verified 2026-07-28)
+
+This file had **no cursor section at all** before #575, which is why justerm-web blinked
+unconditionally for its whole life without anyone comparing that to a reference. Both references
+resolve blinking from the **same two inputs** — the application's mode and the user's setting — and
+the one that expressed an explicit intent wins. They differ only in *which side* carries the
+three-state, and justerm follows alacritty's placement because it is the one ADR-0017 already
+implies (core reports the mechanism, the consumer holds the policy) and it needs no wire change.
+
+| Fact | Reference | Site |
+|---|---|---|
+| **The resolution, verbatim: the application's mode wins, the user option is the fallback.** `decPrivateModes.cursorBlink` is `boolean \| undefined`, so `undefined` means "the app has not spoken" | xterm.js | `browser/renderer/dom/DomRenderer.ts:531` (`?? rawOptions.cursorBlink`), same shape for the shape at `:532` |
+| **The mirrored resolution: a user *force* wins, otherwise the application decides.** `Always`/`Never` return `Some`, `On`/`Off` return `None` — so the three-state sits on the *consumer* side here | alacritty | `alacritty/src/event.rs:1631`, `alacritty/src/config/cursor.rs:125-131` |
+| DECSCUSR `0` **resets to "the app has not spoken"**, it does not mean "steady block" — both fields go back to `undefined` | xterm.js | `common/InputHandler.ts:2855-2856`, the blink write at `:2873` |
+| ⚠ **`CSI ?12 h/l` is ignored unless a quirk is enabled**, because it writes the *user's* option rather than the app channel | xterm.js | `common/InputHandler.ts:1958-1960` (set), `:2217-2219` (reset), the DECRQM report at `:2371` |
+| `?12` writes the terminal's cursor style and fires a UI event; DECRQM reports it back | alacritty | `alacritty_terminal/src/term/mod.rs:1987-1990`, `:2036-2039`, report at `:2053-2055` |
+| The default is **not blinking**, on both | xterm.js / alacritty | `common/services/OptionsService.ts:16` (`cursorBlink: false`); `alacritty/src/config/cursor.rs:107` (`Shape(shape) => blinking: false`) |
+| Focus gates blinking — a blurred terminal is solid. (Valid as long as alacritty keeps `is_focused` in this expression; justerm-web already did this and it is now confirmed rather than assumed) | alacritty | `alacritty/src/event.rs:1643` |
+| Also gated: an IME preedit suppresses the blink, and there is a **blink timeout** (default 5s) that stops it entirely. **justerm-web has neither** — collected, not filed | alacritty | `alacritty/src/event.rs:1633` (preedit), `:1645` (`schedule_blinking_timeout`), `config/cursor.rs:34, 63-70` |
+| ⚠ **Negative result: `prefers-reduced-motion` has no prior art.** Zero hits across xterm.js's entire `src`; alacritty is native, so the question cannot arise there. justerm-web's #119 behaviour is original, and its precedence over an application request is **derived, not ported** — reduced motion only ever *subtracts* motion, so it is safe in one direction only | xterm.js | `src/**` — grepped, 0 matches |
+
+**Measured, not read (real PTY, RHEL 9.2, `TERM=xterm-256color`, 24×80, 2026-07-28).** What real
+programs actually emit, because the reference sources above do not say which channel gets used:
+
+| Program | DECSCUSR `CSI Ps SP q` | att610 `CSI ?12 h/l` |
+|---|---|---|
+| bash (login), less | none | none |
+| vim (both normal and `startinsert`) | **none** | `?12h` ×1, `?12l` ×1 |
+| htop, top | **none** | `?12l` ×1 |
+
+⚠ **The `?12` is not an application preference — it is terminfo's cursor-visibility string carrying
+one.** `xterm-256color` defines `cnorm=\E[?12l\E[?25h` and `cvvis=\E[?12;25h`, so an ncurses
+`curs_set()` turns the blink off as a *side effect*. And this is not a terminfo gap: the same entry
+does advertise DECSCUSR (`Ss=\E[%p1%d q`, `Se=\E[2 q`) and the programs still did not use it. The
+consequence for a consumer is concrete — merely quitting vim pins the cursor steady for the rest of
+the session — which is why justerm-web carries an override, and is the same hazard xterm.js answers
+by quirk-gating `?12`. Corpus limits: six programs, bash only, no vi-mode shell prompt (starship /
+zsh), which is where DECSCUSR emitters are most likely to live — so "nothing uses DECSCUSR" is
+**not** established, only "nothing in this corpus did".
+
 ## Renderer ink channels
 
 | Fact | Reference | Site |
