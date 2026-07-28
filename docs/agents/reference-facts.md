@@ -197,6 +197,23 @@ parameter, not a side effect of clearing a cell); the function named is wrong. T
 `clearWrap` half of #538's acceptance cites `_eraseInBufferLine` correctly, so the same
 change carries both the right and the wrong name.
 
+## Damage / dirty tracking (#536, verified 2026-07-28)
+
+This file had **no damage section at all** before #536, which is why justerm's `damage_span` shape
+was never checked against anything. The headline is that justerm's granularity is the outlier and
+nothing upstream can supply a bound for it.
+
+| Fact | Reference | Site |
+|---|---|---|
+| Column bounds exist and `expand` is `min`/`max` with **no clamp** — justerm's `LineBounds::expand` is a copy of it | alacritty | `alacritty_terminal/src/term/mod.rs:165-168`, `damage_line` at `:257-259` |
+| ~12 damage sites compute column ranges (backspace `(column - 1, column)`, `EL` `(left, right - 1)`, CR, tabs), but **every bound derives from a column or `columns()`** — never from a glyph width | alacritty | `term/mod.rs:1199, :1238, :1250, :1406, :1416, :1530, :1551, :1588, :1615, :1649`; points at `:476, :1025` |
+| ⚠ **The print path records no damage at all.** `Term::input` writes a wide glyph *and* its spacer without damaging; coverage comes from damaging the previous and current cursor **points**, which — because `expand` is min/max — *bracket* everything printed on that line: *"Add information about old cursor position and new one if they are not the same, so we cover everything that was produced by `Term::input`"*. So alacritty has no width-derived bound because it has no print-site bound; structural, not stylistic. justerm cannot copy this — ADR-0003 records damage at the mutation site | alacritty | `term/mod.rs:1062-1137` (`input`), the bracket at `:472-478` |
+| A resize rebuilds the bounds **and resets `last_cursor`** — *"Reset point, so old cursor won't end up outside of the viewport"* — i.e. the stale cursor is neutralised at **write** time. justerm rebuilds + `mark_fully_damaged` and clamps the stale cursor at **read** time instead (`frame_damage`); equivalent safety, opposite placement | alacritty | `term/mod.rs:236-247` |
+| Dirty tracking is **row-granular only** — `markDirty(y)` / `markRangeDirty`, no column axis exists to get wrong | xterm.js | `common/InputHandler.ts:3651-3685` |
+| Dirty is a **per-row `bool`**, set through a resolved `Pin`, so an out-of-range mark is not representable | ghostty | `page.zig:1985-1996`, `PageList.zig:6265-6267` |
+| ⚠ **The asymmetry stated as a rule, and the reason justerm clamps toward over-damage**: *"Dirty tracking may have false positives but should never have false negatives. A false negative would result in a visual artifact on the screen."* | ghostty | `page.zig:1993-1995` |
+| **No reference bounds or asserts its damage range anywhere** — so there is no upstream clamp to port, and the only reference with a column axis is a library carrying justerm's own pre-#536 shape | all three | as above |
+
 ## Renderer ink channels
 
 | Fact | Reference | Site |
