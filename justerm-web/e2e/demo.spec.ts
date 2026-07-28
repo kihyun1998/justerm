@@ -1028,3 +1028,30 @@ test("a steady cursor stays put and a blinking one leaves the cell (#575)", asyn
   // the app is still asking to blink here, and the cursor stays.
   expect(p.forcedSteady).toBe(p.steadyA);
 });
+
+// #593: with no user input the cursor stops blinking and parks solid — both references do this
+// (alacritty 5s, xterm.js 5min) and justerm-web blinked forever. The resolution is unit-tested; this
+// proves the wiring, which vitest cannot reach (`JustermRenderer`'s constructor is private and needs
+// a GL context). The probe drives the real consumer knob down to a 2s window rather than waiting out
+// the five-minute default.
+test("the cursor stops blinking after an idle period, and input revives it (#593)", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await expect(page.getByRole("button", { name: "Cursor blink: OFF" })).toBeVisible();
+
+  const p = await page.evaluate(() => window.__blinkIdleProbe!());
+
+  // The cursor paints and genuinely blinks inside the idle window — without this the idle
+  // assertions below could pass on a cell that never changes.
+  expect(p.beforeOn, `background ${p.background}`).not.toBe(p.background);
+  expect(p.beforeOff).toBe(p.background);
+
+  // THE FIX: past the timeout with no input, the cursor is solid — and stays solid a full blink
+  // interval later, so this is a stopped blink rather than a lucky sample on the ON phase.
+  expect(p.idleA).toBe(p.beforeOn);
+  expect(p.idleB).toBe(p.beforeOn);
+
+  // …and it is not a one-way door: user input restarts the idle clock and the blink resumes.
+  expect(p.afterInputOff).toBe(p.background);
+});

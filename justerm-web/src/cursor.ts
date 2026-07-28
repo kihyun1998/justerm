@@ -2,6 +2,20 @@
 export const BLINK_INTERVAL = 600;
 
 /**
+ * How long the cursor keeps blinking with no user input before it parks solid, in ms (#593).
+ *
+ * **Five minutes, xterm.js's value** (`browser/renderer/shared/Constants.ts:12`,
+ * `CURSOR_BLINK_IDLE_TIMEOUT = 5 * 60 * 1000` @ `699f553`) — *not* alacritty's five seconds
+ * (`alacritty/src/config/cursor.rs:34` @ `852e971`). Both references implement the same rule and
+ * disagree by 60x, so neither is inheritable on authority; the tie-breaker is that justerm-web's
+ * reset set is already exactly xterm.js's (a key/text intent plus pointer-down), so matching the
+ * reference we are structurally identical to is the least arbitrary default available. Five seconds
+ * also stops the caret while a user is merely *reading* long output, which reads as a freeze rather
+ * than as a feature. Overridable per consumer — this is policy (ADR-0017), not a constant of nature.
+ */
+export const BLINK_IDLE_TIMEOUT = 5 * 60 * 1000;
+
+/**
  * Cursor blink state — the *phase* is a web-side policy (the engine reports only the mode), but
  * **whether** the cursor blinks at all is resolved here from two inputs (#575):
  *
@@ -32,11 +46,21 @@ export class CursorBlink {
   private reducedMotion = false;
   private appBlink = false;
   private override: boolean | undefined = undefined;
+  /** When the user last interacted — the idle clock (#593). Distinct from `lastRestart`: see
+   * {@link restart} vs {@link restartFromInput}. */
+  private lastInput = 0;
+  private idleTimeoutMs = BLINK_IDLE_TIMEOUT;
 
   /** Whether the cursor is shown at time `now` (ms). */
   isVisible(now: number): boolean {
     // Not blinking at all, reduced motion, or unfocused = solid (and solid means *shown*).
     if (!this.blinking() || this.reducedMotion || !this.focused) {
+      return true;
+    }
+    // Idle too long → park solid (#593). A pure read of `(now, lastInput)`, so it composes with the
+    // gates above instead of being a latch that needs un-latching — which is what made a timeout
+    // fit this chain at all.
+    if (this.idleTimeoutMs > 0 && now - this.lastInput > this.idleTimeoutMs) {
       return true;
     }
     return Math.floor((now - this.lastRestart) / BLINK_INTERVAL) % 2 === 0;
@@ -69,9 +93,34 @@ export class CursorBlink {
     this.override = blink;
   }
 
-  /** Show the cursor now and reset the blink phase (call on typing/cursor move). */
+  /**
+   * Reset the blink **phase** so the caret shows at once — for a cursor *move*, which is application
+   * output (a TUI repainting moves the cursor every frame).
+   *
+   * Deliberately does **not** touch the idle clock. Both references reset theirs on *user input*
+   * only — alacritty in `on_typing_start` (`event.rs:1201-1213`), xterm.js in
+   * `restartBlinkAnimation` (keystroke / mousedown) — so feeding cursor movement into it would mean
+   * a terminal running any live TUI never idles out, which is broader than either. Use
+   * {@link restartFromInput} on the input path.
+   */
   restart(now: number): void {
     this.lastRestart = now;
+  }
+
+  /** The user interacted: reset the blink phase **and** the idle clock (#593). */
+  restartFromInput(now: number): void {
+    this.lastRestart = now;
+    this.lastInput = now;
+  }
+
+  /**
+   * How long to keep blinking with no user input before parking solid, in ms.
+   * `0` disables the timeout entirely — alacritty's `blink_timeout: 0` (`config/cursor.rs:64-70`).
+   * A negative or non-finite value is treated as `0` rather than throwing: a renderer that panics
+   * across a policy setter is a worse contract than one that reports what it adopted.
+   */
+  setIdleTimeout(ms: number): void {
+    this.idleTimeoutMs = Number.isFinite(ms) && ms > 0 ? ms : 0;
   }
 
   /** Focus gates blinking — unfocused terminals show a solid cursor (alacritty gates on
