@@ -234,6 +234,26 @@ implies (core reports the mechanism, the consumer holds the policy) and it needs
 | Focus gates blinking — a blurred terminal is solid. (Valid as long as alacritty keeps `is_focused` in this expression; justerm-web already did this and it is now confirmed rather than assumed) | alacritty | `alacritty/src/event.rs:1643` |
 | Also gated: an IME preedit suppresses the blink, and there is a **blink timeout** (default 5s) that stops it entirely. **justerm-web has neither** — collected, not filed | alacritty | `alacritty/src/event.rs:1633` (preedit), `:1645` (`schedule_blinking_timeout`), `config/cursor.rs:34, 63-70` |
 | ⚠ **Negative result: `prefers-reduced-motion` has no prior art.** Zero hits across xterm.js's entire `src`; alacritty is native, so the question cannot arise there. justerm-web's #119 behaviour is original, and its precedence over an application request is **derived, not ported** — reduced motion only ever *subtracts* motion, so it is safe in one direction only | xterm.js | `src/**` — grepped, 0 matches |
+| **The whole decision is one ordered chain, and ghostty writes its own down as such** — *"the order of conditionals below is important. It represents a priority system of how we determine what state overrides cursor visibility and style."* Order: `viewport → preedit → password_input → visible (DECTCEM) → focused → blinking`. Note it resolves **shape and visibility together** (returns `?Style`), where justerm-web's chain resolves *blink only* | ghostty | `src/renderer/cursor.zig:35-67` |
+| ⚠ **A preedit outranks DECTCEM there** — an explicitly hidden cursor is *shown* as a solid block during composition, *"because it shows an important editing state to the user"*. Nothing in justerm-web's chain can currently override `cursorVisible: false` (#592) | ghostty | `src/renderer/cursor.zig:47` |
+| alacritty suppresses the blink during a preedit too, as a term in the same expression | alacritty | `alacritty/src/event.rs:1633` |
+| **Negative result: xterm.js has no preedit rule for the caret.** Its only `isComposing` guard near the cursor is `_syncTextArea`, which stops *moving the hidden textarea* mid-composition — an IME-disturbance guard, unrelated to the caret | xterm.js | `browser/CoreBrowserTerminal.ts:337-339` |
+
+### Idle timeout — both stop blinking, 60x apart (#593, verified 2026-07-28)
+
+⚠ **They are the same rule, not two models.** An earlier reading of this recorded alacritty's clock as
+measuring *time spent blinking* and xterm.js's as measuring *idleness*. That is wrong:
+`on_typing_start` reschedules the blink on every keystroke and, when the timeout has already fired,
+calls `update_cursor_blinking()` — which clears the latch. **Both are "stop after N with no user
+input".** The corrected difference is the threshold and the reset set.
+
+| Fact | Reference | Site |
+|---|---|---|
+| Stops after **5 seconds**; `0` disables; floored at `blink_interval * 2 * MIN_BLINK_CYCLES_BEFORE_PAUSE` | alacritty | `alacritty/src/config/cursor.rs:34`, `:63-70`; armed at `event.rs:1645`, latch `window_context.rs:54`, cleared `event.rs:1641` |
+| Typing resets it — including reviving an already-timed-out blink | alacritty | `alacritty/src/event.rs:1201-1213` (`on_typing_start`) |
+| Stops after **5 minutes**; reset by keystroke / mousedown (`restartBlinkAnimation`) and by focus `resume()`, paused on blur | xterm.js | `browser/renderer/shared/Constants.ts:12`, manager at `browser/renderer/dom/DomRenderer.ts:663-717` |
+| It stops the **animation**, not the state machine — a CSS class on the row container | xterm.js | `DomRenderer.ts:713` `_stopBlinkingDueToIdle` |
+| **Negative result: ghostty has no timeout at all.** `style()` takes `blink_visible` as an input; no timer, idle state or latch anywhere in the blink path | ghostty | `src/renderer/cursor.zig` (whole file) |
 
 **Measured, not read (real PTY, RHEL 9.2, `TERM=xterm-256color`, 24×80, 2026-07-28).** What real
 programs actually emit, because the reference sources above do not say which channel gets used:

@@ -23,7 +23,7 @@ export type { ScrollOptions, WheelContext, WheelLike } from "./scroll-control";
 // #504 (the renderer composites colour in wasm, #273).
 export { CellMirror } from "./cell-mirror";
 // Cursor — blink state (web policy). The renderer draws the cursor natively (#270).
-export { BLINK_INTERVAL, CursorBlink } from "./cursor";
+export { BLINK_IDLE_TIMEOUT, BLINK_INTERVAL, CursorBlink } from "./cursor";
 // Scrollbar — custom DOM slider over the canvas (thumb math + drag → offset).
 export { dragToDisplayOffset, Scrollbar, scrollbarMetrics } from "./scrollbar";
 export type { ScrollbarMetrics, ScrollbarOptions, ScrollPosition } from "./scrollbar";

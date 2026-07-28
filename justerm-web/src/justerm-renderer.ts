@@ -66,6 +66,15 @@ export interface JustermRendererOptions {
    * {@link JustermRenderer.setCursorBlink}.
    */
   cursorBlink?: boolean;
+  /**
+   * How long the cursor keeps blinking with no user input before parking solid, in ms (#593).
+   * `0` disables the timeout. Omit for the default — 5 minutes, xterm.js's `CURSOR_BLINK_IDLE_TIMEOUT`.
+   *
+   * Exposed because the two references disagree by 60x (alacritty stops after **5 seconds**), so the
+   * number is a product choice rather than a standard. Change it at runtime with
+   * {@link JustermRenderer.setCursorBlinkTimeout}.
+   */
+  cursorBlinkTimeout?: number;
   theme: Theme;
 }
 
@@ -373,6 +382,7 @@ export class JustermRenderer implements Renderer {
     );
     // `undefined` is the default (follow the application), so this is a no-op unless set (#575).
     instance.setCursorBlink(opts.cursorBlink);
+    if (opts.cursorBlinkTimeout !== undefined) instance.setCursorBlinkTimeout(opts.cursorBlinkTimeout);
     return instance;
   }
 
@@ -567,8 +577,24 @@ export class JustermRenderer implements Renderer {
   /** Show the cursor and reset its blink phase (#107) — the widget calls this on a key intent so
    * the caret stays solid while typing rather than blinking off right after a keystroke. */
   restartCursorBlink(): void {
-    this.blink.restart(now());
+    // The INPUT path — this is the only caller that means "the user did something", so it is the one
+    // that resets the idle clock (#593). `updateCursor`'s move branch calls the phase-only
+    // `restart()`, because a cursor move is application output.
+    this.blink.restartFromInput(now());
     this.redrawCursor();
+  }
+
+  /**
+   * How long the cursor keeps blinking with no user input before parking solid, in ms (#593).
+   * `0` disables it. Defaults to {@link BLINK_IDLE_TIMEOUT} (5 minutes, xterm.js's value).
+   *
+   * Consumer policy (ADR-0017), so it is injected rather than assumed — the two references disagree
+   * on the number by 60x. The live counterpart of
+   * {@link JustermRendererOptions.cursorBlinkTimeout}.
+   */
+  setCursorBlinkTimeout(ms: number): void {
+    this.blink.setIdleTimeout(ms);
+    if (this.cursor) this.redrawCursor();
   }
 
   /**

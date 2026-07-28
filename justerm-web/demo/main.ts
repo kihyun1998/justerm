@@ -12,6 +12,7 @@
 import {
   Accessibility,
   AccessibleViewController,
+  BLINK_IDLE_TIMEOUT,
   CommandAnnounceController,
   CommandNavController,
   computeLinks,
@@ -1041,6 +1042,7 @@ declare global {
     __decorationProbe?: () => DecorationProbe;
     __precedenceProbe?: () => PrecedenceProbe;
     __cursorBlinkProbe?: () => Promise<CursorBlinkProbe>;
+    __blinkIdleProbe?: () => Promise<BlinkIdleProbe>;
     __aboveTopProbe?: () => AboveTopProbe;
     __rulerAnchorProbe?: () => RulerAnchorProbe;
   }
@@ -1058,6 +1060,68 @@ interface CursorBlinkProbe {
   /** Application says BLINK but the consumer forces steady — the override, one interval later. */
   forcedSteady: string;
 }
+
+/** #593 — the cursor cell's pixel before and after the idle timeout fires. */
+interface BlinkIdleProbe {
+  /** Cursor hidden — the reference the samples below are read against. */
+  background: string;
+  /** Blinking, sampled either side of one 600ms interval, well inside the idle window. */
+  beforeOn: string;
+  beforeOff: string;
+  /** Past the idle timeout with NO input, sampled a full interval apart. */
+  idleA: string;
+  idleB: string;
+  /** After simulated user input restarts the idle clock, one interval later. */
+  afterInputOff: string;
+}
+
+window.__blinkIdleProbe = async (): Promise<BlinkIdleProbe> => {
+  // #593: with no user input the cursor stops blinking and parks solid. The default is five minutes,
+  // which an e2e cannot wait out — so this drives the real consumer knob (`setCursorBlinkTimeout`)
+  // down to a testable window. That is the same policy path a consumer uses, not a test backdoor.
+  const gl = canvas.getContext("webgl2")!;
+  const { width: cw, height: ch } = renderer.cellSize();
+  const sample = (): string => {
+    render(); // re-emit → the adapter redraws the cursor at its CURRENT phase, same turn as the read
+    const x = Math.round(CURSOR_COL * cw) + 2;
+    const y = gl.drawingBufferHeight - 1 - (Math.round(CURSOR_ROW * ch) + 2);
+    const px = new Uint8Array(4);
+    gl.readPixels(x, y, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    return `rgb(${px[0]},${px[1]},${px[2]})`;
+  };
+  const wait = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+  const savedBlink = cursorBlink;
+  const savedShown = cursorShown;
+
+  cursorShown = false;
+  const background = sample();
+  cursorShown = true;
+
+  cursorBlink = true; // the application asks to blink
+  renderer.setCursorBlinkTimeout(2000); // …and the consumer shortens the idle window to 2s
+
+  renderer.restartCursorBlink(); // "the user typed" — phase and idle clock both start here
+  const beforeOn = sample();
+  await wait(750);
+  const beforeOff = sample(); // still well inside the 2s window → blinking
+
+  await wait(1600); // 2.35s since the last input → idled out
+  const idleA = sample();
+  await wait(650);
+  const idleB = sample(); // a full interval later and still solid: the blink really stopped
+
+  renderer.restartCursorBlink(); // input resets the idle clock
+  await wait(650);
+  const afterInputOff = sample(); // blinking again
+
+  renderer.setCursorBlinkTimeout(BLINK_IDLE_TIMEOUT);
+  cursorBlink = savedBlink;
+  cursorShown = savedShown;
+  renderer.restartCursorBlink();
+  render();
+  return { background, beforeOn, beforeOff, idleA, idleB, afterInputOff };
+};
 
 window.__cursorBlinkProbe = async (): Promise<CursorBlinkProbe> => {
   // #575: the widget must resolve the cursor blink from the application's mode and the consumer's

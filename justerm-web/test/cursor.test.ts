@@ -138,3 +138,84 @@ describe("CursorBlink", () => {
     expect(blink.isVisible(600)).toBe(false); // focused again → blinks
   });
 });
+
+// #593 — both references stop blinking after a period with no user input, and justerm-web blinked
+// forever. Verified in the pinned trees (2026-07-28): alacritty 5s (`config/cursor.rs:34`, reset by
+// `on_typing_start` at `event.rs:1201-1213`) and xterm.js 5min
+// (`browser/renderer/shared/Constants.ts:12`, reset by `restartBlinkAnimation`). ghostty has none.
+//
+// It is NOT a latch and needs no timer: `lastInput` is a timestamp the class already had to keep, so
+// the whole rule is one more pure read of `(now, lastInput)` — which is what settles #591's doubt
+// that a timeout could not fit a chain of pure functions.
+describe("CursorBlink — idle timeout (#593)", () => {
+  const MIN = 60_000;
+
+  it("blinks normally while the idle timeout has not elapsed", () => {
+    const blink = new CursorBlink();
+    blink.setAppBlink(true);
+
+    expect([blink.isVisible(0), blink.isVisible(600), blink.isVisible(1200)]).toEqual([true, false, true]);
+  });
+
+  // The default is xterm.js's 5 minutes, not alacritty's 5 seconds. The two disagree by 60x so
+  // neither is inheritable on authority; the tie-breaker is that justerm-web's reset set is already
+  // exactly xterm.js's (key/text intents + pointer-down), so matching the reference we are
+  // structurally identical to is the least arbitrary default available. It is an option regardless.
+  it("defaults to five minutes, and goes solid once that passes with no input", () => {
+    const blink = new CursorBlink();
+    blink.setAppBlink(true);
+
+    // Just inside: still blinking (5min is an exact multiple of 600ms, so this phase is 'off').
+    expect(blink.isVisible(5 * MIN - 600)).toBe(false);
+    // Past it: solid, and solid means SHOWN — the cursor parks visible, it does not vanish.
+    expect(blink.isVisible(5 * MIN + 1)).toBe(true);
+    expect(blink.isVisible(5 * MIN + 601)).toBe(true);
+  });
+
+  it("is configurable, and a keystroke restarts the idle clock", () => {
+    const blink = new CursorBlink();
+    blink.setAppBlink(true);
+    blink.setIdleTimeout(10_000);
+
+    expect(blink.isVisible(10_601)).toBe(true); // idled out
+
+    blink.restartFromInput(10_601); // the user typed
+
+    expect(blink.isVisible(11_201)).toBe(false); // blinking again, phase restarted
+    expect(blink.isVisible(20_602)).toBe(true); // …and idles out again 10s later
+  });
+
+  // The discriminating case, and the reason `restart` and `restartFromInput` are separate methods.
+  // A cursor MOVE is application output — `top` repainting once a second moves the cursor — and both
+  // references reset their clock on *user input* only. Feeding the move into the idle clock would
+  // mean a terminal running any live TUI never idles out, which is broader than either reference.
+  it("a cursor move restarts the phase but NOT the idle clock", () => {
+    const blink = new CursorBlink();
+    blink.setAppBlink(true);
+    blink.setIdleTimeout(10_000);
+
+    blink.restart(9_000); // the app moved the cursor — phase resets from here
+
+    expect(blink.isVisible(9_300)).toBe(true); // phase was restarted at 9000, so this is 'on'
+    expect(blink.isVisible(9_601)).toBe(false); // …and flips 600ms later: still blinking
+    expect(blink.isVisible(10_001)).toBe(true); // but the IDLE clock never moved → solid past 10s
+  });
+
+  // alacritty's `blink_timeout: 0` disables the timeout entirely (`config/cursor.rs:64-70`).
+  it("a timeout of 0 disables the idle stop", () => {
+    const blink = new CursorBlink();
+    blink.setAppBlink(true);
+    blink.setIdleTimeout(0);
+
+    expect(blink.isVisible(60 * MIN + 600)).toBe(false); // an hour in and still blinking
+  });
+
+  // The chain is unchanged above it: an idled-out cursor is solid, and so is one whose application
+  // never asked to blink — the timeout cannot resurrect a blink nobody requested.
+  it("does not make a non-blinking cursor blink", () => {
+    const blink = new CursorBlink();
+    blink.setIdleTimeout(10_000);
+
+    expect([blink.isVisible(600), blink.isVisible(10_601)]).toEqual([true, true]);
+  });
+});
