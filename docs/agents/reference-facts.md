@@ -38,6 +38,21 @@ column and must re-verify the rows it moves.
 | Row-shift verbs reset the wrap rather than leaving a mid-row marker | ghostty | `Terminal.zig:3133` `deleteChars`, `:3163` `eraseChars`, `:3208` `eraseLine`, all → `cursorResetWrap()` |
 | A dedicated hook exists for orphaned spacer heads when a row is shifted | ghostty | `Terminal.zig:2579` `rowWillBeShifted` |
 
+### Relocating a cluster that grew to width 2 (#529, verified 2026-07-28)
+
+justerm's `relocate_cluster_wide` — a narrow base at the last column that a joining scalar (VS16,
+a second RI) promotes to width 2, so the whole cluster moves to the next row — is **not** novel, and
+the 2:1 split below is the useful part. The concept exists in two references and is *structurally
+absent* from the third, while the mechanism it needs (a wide write's far-half repair) is in all three.
+
+| Fact | Reference | Site |
+|---|---|---|
+| A direct counterpart, named in a comment: *"Combining character widens 1 column to 2. Move old character to next line."* — `copyCellsFrom(oldRow, oldCol, 0, oldWidth, false)`, then the source columns are cleared | xterm.js | `common/InputHandler.ts:583-611`, the move at `:605-607`, the source clear at `:608-610` |
+| …and its orphan repair is **not** incidental here: the relocation leaves `x == 2`, so the once-per-print-run right-edge repair tests exactly the column the relocated pair half-destroyed | xterm.js | `common/InputHandler.ts:668-669` |
+| A direct counterpart, reached through two `printCell` calls — the second (`.spacer_tail`, at `x == 1`) runs the same `cell.wide != wide` repair switch, so the far half is freed with no rule of its own | ghostty | `Terminal.zig:1188-1252`, spacer-head set at `:1200`, lead at `:1205`/`:1240`, spacer at `:1251-1252` |
+| **No counterpart at all** — a width-0 codepoint returns early through `push_zerowidth`, so a cluster never changes width and nothing is ever relocated. A negative result, not an unread file: alacritty is the mechanism reference here but not the concept reference | alacritty | `alacritty_terminal/src/term/mod.rs:1069-1085` |
+| ⚠ **ghostty's reach-back fires at its own relocation and clears the marker it just set.** The `.spacer_tail` write lands at `cursor.x == 1`; if the destination cell is `.wide`, the `.wide` arm clears the tail **and then** clears the previous row's `.spacer_head` under `cursor.y > 0 and cursor.x <= 1` — the head this relocation set seven statements earlier. justerm deliberately does not port this: it is #534's mid-construction rule (a repair keyed on a state predicate must not run while that state is being built). **Derived from source, not executed** — the composition is read off the two sites, no ghostty binary was run | ghostty | `Terminal.zig:1200` (the set), `:1251-1252` (the spacer write), `:1484` (the gate), `:1504-1506` (the reach-back) |
+
 ### The marker's clear discipline (#534, verified 2026-07-27)
 
 Row 33 and row 36 above name the same repair in the two references, and read together they look like
