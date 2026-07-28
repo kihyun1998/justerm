@@ -117,8 +117,9 @@ soft-wrapped row. A row-shift verb (ICH/DCH) that carries the marker inward has 
 describes nothing and must be dropped (#528's position rule, generalised). Position is part of the
 test, never the marker alone.
 
-**D4 — Both halves of a pair move together, set and clear.** Any path that moves, synthesises or frees
-one cell of a width-2 glyph carries the *whole pair* — the lead's extended-attr rider (#521), the
+**D4 — Both halves of a pair move together, set and clear** *(within the verbs that edit; see "D4's
+scope" below — a structural reallocation may break a pair, and the result is a legal state)*. Any
+path that moves, synthesises or frees one cell of a width-2 glyph carries the *whole pair* — the lead's extended-attr rider (#521), the
 trailing `C_SPACER`, and the reach-**back** repair of the previous row's leading spacer when a wrapped
 lead is overwritten (alacritty/ghostty both reach to `row-1, last_column`). "Set one half and not the
 other" is the #529 orphan.
@@ -148,7 +149,7 @@ rejected one"*); #536 is re-scoped to the defensive `damage_span` clamp, not clo
 is still correct for any future caller computing `col + width`.
 
 D4's scope is unchanged in the other direction: the floor guarantees *room* for a pair, not that every
-verb carries it. #529 is still an open D4 violation at any width.
+verb carries it — #529 was a D4 violation at any width, independent of the floor.
 
 **One clause above is now too strong (#529, 2026-07-28): *"no reader needs a width test before
 trusting it"*.** The floor guarantees a pair *fits on the screen*; it does not guarantee that a lead
@@ -158,14 +159,53 @@ through a pair leaves a `WIDE_CHAR` lead standing in the *last* column. Measured
 columns 1-2, `resize(2, 3)` → `cell(1, 1).is_wide()`. A repair site that reads `lead + 1` therefore
 still needs its bound, and #529's does: with the bound removed, that state plus a relocation panics
 with `index out of bounds: the len is 2 but the index is 2`. The precondition holds for *placing* a
-pair, which is what #547 was deciding; it does not extend to *reading* one. The truncation itself is
-a separate D4 break, unfiled — it is `Row::resize`'s, not the relocation's, and **ghostty holds the
-same position**: its non-reflow column shrink clears only the cells beyond the new width
-(`PageList.zig:2362-2374` @ `e6e26e1`, `page.clearCells(row, cols, self.cols)`) with no repair on the
-surviving side, and its page-integrity verifier constrains only the spacer side — `.wide => {}` is
-empty, while `.spacer_tail` must follow a wide and `.spacer_head` must sit at the end
-(`page.zig:510-545`). A lead with no tail is legal there by construction, so this is a shared
-position, not an outlier to correct.
+pair, which is what #547 was deciding; it does not extend to *reading* one. Where that leaves the
+truncation itself is the next clause.
+
+**D4's scope, stated (#529, 2026-07-28): D4 governs the verbs that *edit*, not the operations that
+*reallocate*.** Until now D4 read as universal, and `Row::resize` breaks it: narrowing straight
+through a pair drops the spacer and leaves the lead. Rather than a violation to fix, this is the
+boundary of the rule, and **a lead with no spacer is a legal buffer state**. Three grounds, in the
+order they were measured:
+
+1. **Repairing destroys text that currently survives.** The stranded lead still reads back: measured
+   at 8 columns, `"abcdef한"` before and after `resize(7)`, and again after widening to 8 — through
+   `accessible_text`, so copy, search and the screen reader all still see the glyph. Freeing the lead
+   would delete it. That is the property that got #533's withdrawn half rejected (*"lost data
+   irreversibly"*), and it is the same move one direction over: that attempt dropped the spacer to
+   keep the lead, this one would drop the lead. **#533's specific corruption does not transfer** —
+   probed on today's engine, an overwrite beside the stranded lead, a widen-then-overwrite, and an
+   `ECH` ending on it all leave neighbours intact, because that corruption came from the 1-column
+   path `MIN_COLUMNS = 2` has since removed. The *reason for rejecting* transfers even though the
+   symptom does not.
+2. **A repair contradicts #567.** The alt screen resizes but does not reflow because the application
+   already knows the new size and repaints, and touching its cells is measured harm: a real `htop`
+   recording across a live `SIGWINCH` leaves debris precisely because htop repaints without erasing
+   first. Blanking a cell during a resize is that class of action.
+3. **3 of 3 references leave the same state on a non-reflow shrink.** ghostty clears only beyond the
+   new width (`PageList.zig:2362-2374` @ `e6e26e1`) and its page-integrity verifier constrains only
+   the spacer side — `.wide => {}` is empty, while `.spacer_tail` must follow a wide and
+   `.spacer_head` must sit at the end (`page.zig:510-545`), so a tailless lead is legal there *by
+   construction*. xterm.js's shrink is a bare `subarray` view truncation with no pair repair
+   (`BufferLine.ts:401-412` @ `699f553`). alacritty reflows instead, so it does not arbitrate.
+
+The **derivation** is the three grounds above; the **contract** — that justerm now publishes a state
+its own D4 would have forbidden — is the maintainer's, taken on 2026-07-28 against the alternative of
+repairing at `Term::resize`, and theirs to reverse. Note what the alternative would also have cost:
+`Row::resize` has no pen, no cursor and no damage, so `free_cell` cannot be called there at all, and
+a repair would have to move a layer up and re-open #530's "which background" question for an
+operation no application requested.
+
+**What the scope clause obliges in exchange.** Declaring the state legal moves the burden to readers,
+so it is recorded where readers look rather than only here: `docs/architecture.md` § "Hidden VT state"
+carries the entry, and the asymmetry it names is the operative part — a reader that mishandles a
+lead-less lead is merely wrong on screen, while one that indexes `lead + 1` unbounded panics inside
+the consumer's process. All twelve `is_wide()` readers in core were checked at the time of writing and
+each is safe; that was previously a coincidence and is now a requirement. **Consumers inherit the same
+obligation**, and by ADR-0017 it is genuinely theirs: whether a lead has its spacer is decidable from
+the viewport alone (a wide lead in the last column has none), so no whole-buffer knowledge is
+involved and core owes no helper for it. A renderer guard against this state is therefore *contract
+conformance*, not a workaround for a core defect — which is only true because this clause exists.
 
 ### Conformance map (resolved *against* D1–D4)
 
@@ -320,6 +360,16 @@ the fix site follows from. Whether it is still open is the tracker's answer, not
     the region-bottom up-shift clear at all. Recorded rather than papered over: a mutation the guard
     cannot reach proves nothing about the guard.
 - **#529** — a pair-move D4 violation: carry the trailing half.
+  **Amended by the implementation (2026-07-28, PR #573).** The rule needed no edit — the destination
+  of a relocation is an overwrite, so it owes what every overwrite owes — but the pass named the shape
+  that makes this recur: **justerm has to state per path what the references get by construction.**
+  Both references that relocate a promoted cluster repair the orphan without a rule of their own,
+  because they write a pair as two *separate* cell writes and the repair lives in the write (xterm.js
+  `InputHandler.ts:583-611` + `:668-669`; ghostty `Terminal.zig:1188-1252` via `cursorRight(1);
+  printCell(0, .spacer_tail)`). alacritty has no counterpart at all — a width-0 codepoint returns
+  early through `push_zerowidth` (`term/mod.rs:1069-1085`), so a cluster never changes width. justerm
+  writes both halves in one step, so "a sibling already does this" is never evidence that a new
+  wide-writing path does. This was the third such path.
 - **#536** — a robustness edge of the pair-repair span on a degenerate width; in scope as the same
   code family, though it is a bounds guard, not a state-ownership rule. **Its reproduction is now
   unreachable** through the public API (#547 removed the one-column screen), so what remains is the
