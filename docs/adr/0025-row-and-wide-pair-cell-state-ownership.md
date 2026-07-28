@@ -181,10 +181,13 @@ by a cursor advance of 3, so the renderer repaints stale text as part of a fresh
 *only* at the write site would state the bound where it is needed but not where the value enters,
 leaving `print` free to grow a second reader; ghostty guards both ends for that reason, and justerm
 already has a second width reader of its own — `try_grapheme_join` measures a cluster with
-`UnicodeWidthStr` and acts only on `== 2` / `== 1`, so a cluster width of 3 falls through with no cell
-written and no bound derived. **That path is benign today and the clearance is conditional**: it holds
-while the cluster path never synthesises a cell from its measured width. If it ever does, it needs the
-same clamp.
+`UnicodeWidthStr` and acts only on `== 2` / `== 1`, so a cluster width of 3 falls through untouched.
+**That path is benign, and the reason is stronger than the fall-through**: it never *creates* a cell.
+It joins a scalar into the side table of a cell an earlier `print` already wrote through the clamped
+path, so every base it touches is a well-formed pair before it starts — measured under DECSET 2027,
+where a width-3 base with a mark joined onto it produces the identical layout to the width-2 control,
+and pinned by a test. **The clearance holds while that stays true**: if the cluster path ever gains the
+ability to synthesise a cell from a measured width, it needs the clamp too.
 
 This also settles what #536's re-scoped guard was for. That guard is what **detected** this — a
 randomized lane tripped it — and PR #581 recorded the opposite conclusion at the time

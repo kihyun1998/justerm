@@ -134,3 +134,57 @@ fn a_wide_glyph_fills_a_two_column_grid_as_a_pair() {
         );
     }
 }
+
+/// The **other** width path. Under grapheme-cluster mode (DECSET 2027, #295) `print` tries
+/// `try_grapheme_join` *before* it ever reaches `c.width()`, and that path measures a
+/// cluster with `UnicodeWidthStr` — a second width reader, which `print`'s clamp does not
+/// cover.
+///
+/// It cannot produce this defect, and the reason is stronger than "it only acts on 2 and
+/// 1": the cluster path never *creates* a cell. It joins a scalar into the side table of a
+/// cell some earlier `print` already wrote through the clamped path, so every base it
+/// touches is a well-formed pair before it starts. **That is the condition to re-check if
+/// the cluster path ever gains the ability to synthesise a cell from a measured width.**
+#[test]
+fn the_clamp_holds_under_grapheme_cluster_mode() {
+    const ON: &str = "\x1b[?2027h";
+    const MARK: char = '\u{0301}'; // a combining acute — grapheme-extends its base
+
+    // A lone width-3 glyph joins nothing, so it still falls through to the clamped path.
+    for (label, glyph) in [("width-3", W3), ("width-2 control", W2)] {
+        let mut e = Engine::new(12, 1);
+        e.feed(format!("{ON}a{glyph}b").as_bytes());
+        let cells = e.viewport_line(0);
+        assert!(cells[1].is_wide(), "{label}: lead is a pair under 2027");
+        assert!(
+            cells[2].is_spacer(),
+            "{label}: spacer follows it under 2027"
+        );
+        assert_eq!(cells[3].c(), 'b', "{label}: 'b' at column 3 under 2027");
+    }
+
+    // And a *cluster* whose measured width is 3 — the width-3 base with a mark joined onto
+    // it — leaves the already-clamped pair exactly as it found it.
+    for (label, glyph) in [("width-3", W3), ("width-2 control", W2)] {
+        let mut e = Engine::new(12, 1);
+        e.feed(format!("{ON}{glyph}{MARK}b").as_bytes());
+        let cells = e.viewport_line(0);
+        assert!(cells[0].is_wide(), "{label}: the joined base stays a pair");
+        assert!(
+            cells[1].is_spacer(),
+            "{label}: its spacer survives the join"
+        );
+        assert_eq!(
+            cells[2].c(),
+            'b',
+            "{label}: the join consumed no extra column"
+        );
+        // The pair took columns 0–1 and 'b' took 2, so the cursor sits at 3. The mark
+        // itself moved it by nothing — that is what "joined into the side table" means.
+        assert_eq!(
+            e.cursor().col,
+            3,
+            "{label}: the joined mark consumed no column of its own"
+        );
+    }
+}
