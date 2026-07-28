@@ -2153,16 +2153,20 @@ impl Term {
             cols,
             rows,
             limit,
+            reflow: true,
         };
         let scrollback = std::mem::take(&mut self.scrollback);
         if self.on_alt {
             // Active = alt (cursor, no scrollback); inactive = primary. Selection
             // is primary-only and cleared on alt enter, so no anchors to track.
-            // Alt markers DO ride this reflow (#187): justerm column-reflows the
-            // alt grid, so a marker must follow its content or it drifts off. Their
-            // stored line is `base + alt_row` (base = primary scrollback len), so
-            // convert to alt-local rows for the pane, and re-anchor on the reflowed
-            // base afterward (the primary scrollback below may rewrap its length).
+            // Alt markers still ride this pane, but **not because it reflows** — since #567 it does
+            // not, so a marker's content no longer moves under it and the old reason here ("justerm
+            // column-reflows the alt grid, so a marker must follow its content") is retracted. What
+            // they ride it for is the row *fit*: a shrink still drops rows off the top, and a marker
+            // on one of those has left a screen with no history to hold it. Their stored line is
+            // `base + alt_row` (base = primary scrollback len), so convert to alt-local rows here
+            // and re-anchor on the new base afterward — the primary scrollback below may rewrap and
+            // change length even when the alt grid does not move at all.
             let old_base = scrollback.len();
             let alt_pts: Vec<(usize, usize)> = self
                 .alt_markers
@@ -2175,7 +2179,11 @@ impl Term {
                 VecDeque::new(),
                 self.cursor.point(),
                 &alt_pts,
-                ReflowDims { limit: 0, ..dims },
+                ReflowDims {
+                    limit: 0,
+                    reflow: false,
+                    ..dims
+                },
             );
             self.grid.set_screen(r_alt.screen, cols, rows);
             self.cursor.set_point(r_alt.cursor, rows, cols);
@@ -2300,7 +2308,11 @@ impl Term {
                 VecDeque::new(),
                 (0, 0),
                 &[],
-                ReflowDims { limit: 0, ..dims },
+                ReflowDims {
+                    limit: 0,
+                    reflow: false,
+                    ..dims
+                },
             );
             self.alt_grid.set_screen(r.screen, cols, rows);
         }
@@ -4145,6 +4157,20 @@ struct ReflowDims {
     cols: usize,
     rows: usize,
     limit: usize,
+    /// Whether a column change may **re-split** this pane's content, or only re-fit its rows.
+    ///
+    /// False for the alt screen (#567). Reflow re-splits a long line so history stays readable at
+    /// the new width — it assumes the content is text that *flows*. The alt screen has no history,
+    /// its content is a **layout** rather than a paragraph (re-wrapping htop's columns means
+    /// nothing), and the application already knows the new size and repaints. All three references
+    /// take the same position with the same shape — one flag on the same resize function:
+    /// ghostty `alt.resize(.{ .reflow = false })`, alacritty `grid.resize(!is_alt, …)`, xterm.js
+    /// gating on `_hasScrollback` with the alt buffer built as `new Buffer(false, …)`.
+    ///
+    /// It is not merely wasted work: measured on a real `htop` recording taken across a live
+    /// `SIGWINCH`, re-splitting leaves debris in the cells htop does not overwrite, because htop
+    /// repaints **without** clearing. `vim` hides it by erasing first.
+    reflow: bool,
 }
 
 /// The result of reflowing one pane.
@@ -4190,7 +4216,7 @@ fn reflow_pane(
     pts.push((scroll_len + point.0, point.1));
     pts.extend_from_slice(extra_abs);
 
-    let pts = if dims.cols != dims.old_cols {
+    let pts = if dims.reflow && dims.cols != dims.old_cols {
         let (reflowed, np) = crate::grid::reflow(all, dims.cols, &pts);
         all = reflowed;
         np

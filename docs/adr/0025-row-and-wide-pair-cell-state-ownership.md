@@ -430,8 +430,20 @@ the fix site follows from. Whether it is still open is the tracker's answer, not
   asymmetric — its `to` is exclusive and absorbs a one-past column, its `from` is inclusive and
   cannot. **What is deliberately still open**: the *distance* a point sits past the content is still
   collapsed to "one past". Carrying it needs destination rows to spill into, and spending those rows
-  destroys content on a pane with no scrollback — which is only a constraint at all because justerm
-  reflows the alt screen and 0 of 3 references do, with no record saying why.
+  destroys content on a pane with no scrollback — which was only a constraint at all because justerm
+  reflowed the alt screen and 0 of 3 references do.
+
+  **That premise is now false (#567, 2026-07-28): the alt screen resizes but no longer reflows.** It
+  was never a decision — the fix that made both screens take the new dimensions reached for a helper
+  that re-splits when the columns change, and #187 later built on the side effect. Turning it off
+  reddened exactly one test in the whole workspace, and a real `htop` recording across a live
+  `SIGWINCH` showed re-splitting is *harmful* rather than merely useless. Two consequences for this
+  record: the alt half of the "measured failures" above is no longer reachable, and the deferred
+  half of #562 is unblocked. **Note the exact width of what this record rejects** — the evidence is
+  that materialising a row *unconditionally* destroys content, not that materialising is wrong. When
+  the seam spends one within a visible budget, this file is **amended**, not read narrowly: `reflow`
+  does not create rows; the seam may, when the pane can pay. Recorded in #567 so the next reader
+  finds the amendment rather than re-opening it as a violation.
 - **#531** — not a conformance item; the decode-side half of D1's derived-bit clause, on a different
   rider. See the D1 note above.
 

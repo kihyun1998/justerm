@@ -123,19 +123,34 @@ fn alt_marker_survives_wire_roundtrip() {
 /// alt marker must ride that reflow or it drifts off its content. (#187
 /// completeness pass — both lenses flagged this as the one gap.)
 #[test]
-fn alt_marker_reflows_on_column_resize() {
+fn an_alt_marker_stays_put_because_its_content_does() {
+    // This test used to assert the opposite — that the marker followed its content *up* as the line
+    // unwrapped — and it was the only thing in the workspace that depended on the alt screen being
+    // reflowed at all. That was never a decision: `8f09d58` needed both screens to end up at the new
+    // *dimensions*, reached for the `reflow_pane` helper, and re-splitting came along with it. #187
+    // then built on the side effect; its own acceptance criteria are five lifecycle items and
+    // mention neither resize nor reflow.
+    //
+    // The alt screen no longer reflows (#567), so `"abcdefgh"` keeps its wrap at 8 columns until the
+    // application repaints — and a marker that followed content which did not move would be the
+    // defect. What #187 actually built (alt-scoped creation, rotation on alt scroll, disposal on
+    // alt-leave) is untouched and still covered by the tests around this one.
     let mut t = Engine::new(4, 4);
     t.feed(b"\x1b[?1049h");
     t.feed(b"abcdefgh"); // 4 cols: row0 "abcd"(wrap) → row1 "efgh"
     let id = t.add_marker(1); // marker on the "efgh" row
     assert_eq!(t.frame().overlay.markers, vec![plain(id, 1)]);
 
-    t.resize(8, 4); // widen: "abcdefgh" unwraps onto row0
+    t.resize(8, 4); // widen — the alt grid re-fits its rows, it does not re-split them
 
     assert_eq!(
         t.frame().overlay.markers,
-        vec![plain(id, 0)],
-        "the alt marker follows its content up as the line unwraps"
+        vec![plain(id, 1)],
+        "the content stayed on row 1, so the marker did too"
+    );
+    assert!(
+        t.grid().is_row_wrapped(0),
+        "and the row still claims its wrap: nothing re-split it"
     );
 }
 
