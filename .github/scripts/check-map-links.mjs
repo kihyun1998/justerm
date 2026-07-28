@@ -115,8 +115,44 @@ for (const root of roots) {
   }
 }
 
+// Reciprocity: an invariant note names the territories it holds in, and each of those territories
+// must name it back under `## Cross-cutting invariants`.
+//
+// This is not symmetry for its own sake. The map's reading protocol says a change starts at its
+// territory and follows that section as a checklist — so an invariant the territory does not list is
+// invisible at exactly the moment it is needed. The reverse direction is NOT free here: Obsidian
+// backlinks are a separate panel, absent on GitHub, and not the section the reader was told to read.
+//
+// Found by this check on its first run: `wide-glyph-and-soft-wrap` did not list `row-keyed-side-maps`,
+// while #557 (a wrap-clearing fix entering at exactly that territory) changed `hyperlink` — a
+// row-keyed side map.
+const MAP_ROOT = 'docs/map';
+if (existsSync(join(MAP_ROOT, 'invariant'))) {
+  for (const inv of markdownFiles(join(MAP_ROOT, 'invariant'))) {
+    const invName = inv.split(/[\\/]/).pop();
+    const body = readFileSync(inv, 'utf8');
+    for (const m of body.matchAll(/\]\(\.\.\/territory\/([a-z0-9-]+\.md)\)/g)) {
+      const terr = join(MAP_ROOT, 'territory', m[1]);
+      if (!existsSync(terr)) continue;
+      const section = readFileSync(terr, 'utf8')
+        .split(/\r?\n/)
+        .reduce((acc, line) => {
+          if (/^## /.test(line)) acc.inSection = /^## Cross-cutting invariants/.test(line);
+          else if (acc.inSection) acc.text += line + '\n';
+          return acc;
+        }, { inSection: false, text: '' }).text;
+      if (!section.includes(`invariant/${invName}`)) {
+        problems.push(
+          `${terr}: ## Cross-cutting invariants does not list ${invName}, which claims this territory\n` +
+            `    (one-way edge — the territory is the entry point, so the reader never sees it)`,
+        );
+      }
+    }
+  }
+}
+
 if (problems.length > 0) {
-  console.error(`check-map-links: ${problems.length} broken link(s) of ${checked} checked\n`);
+  console.error(`check-map-links: ${problems.length} problem(s) of ${checked} links checked\n`);
   for (const p of problems) console.error(`  ${p}`);
   process.exit(1);
 }

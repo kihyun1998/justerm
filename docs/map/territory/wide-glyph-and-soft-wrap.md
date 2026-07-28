@@ -77,6 +77,10 @@ blanked-but-still-wrapped row would visibly merge two lines, a cost the referenc
 
 - [alt-screen absolute-index floor](../invariant/alt-screen-buffer-floor.md) — `Term::end_wrap`'s
   previous-row join must not cross the boundary on alt
+- [row-keyed side maps](../invariant/row-keyed-side-maps.md) — **adjacent, not the same fact.** Here
+  the row or pair owns the *meaning* (D1); there the row owns the *storage* while the meaning stays
+  per-cell. They meet where a wide lead carries an extended-attr rider (#521), and any verb that
+  moves or frees a pair half owes the presence bit as well as the cell
 
 ## Blast radius
 
