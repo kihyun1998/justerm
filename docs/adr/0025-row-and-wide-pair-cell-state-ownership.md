@@ -440,10 +440,19 @@ the fix site follows from. Whether it is still open is the tracker's answer, not
   `SIGWINCH` showed re-splitting is *harmful* rather than merely useless. Two consequences for this
   record: the alt half of the "measured failures" above is no longer reachable, and the deferred
   half of #562 is unblocked. **Note the exact width of what this record rejects** — the evidence is
-  that materialising a row *unconditionally* destroys content, not that materialising is wrong. When
-  the seam spends one within a visible budget, this file is **amended**, not read narrowly: `reflow`
-  does not create rows; the seam may, when the pane can pay. Recorded in #567 so the next reader
-  finds the amendment rather than re-opening it as a violation.
+  that materialising a row *unconditionally* destroys content, not that materialising is wrong.
+
+  **Amended (#567 ①, 2026-07-28), as that note said it would be: `reflow` does not create rows; the
+  seam may, when the pane can pay.** A cursor just after the content needs a row that exists only
+  while the pane is shorter than the screen; when the content fills it, the row has to be bought,
+  and the price is one line of history — the pane **scrolls**, which is what a terminal does when
+  content grows past the bottom. `reflow` could never make that call because the budget is not in
+  its scope, which is the actual content of all five rejected designs. The gate is `limit > 0` and
+  deliberately **not** "is this the alt screen": since #567 the alt panes pass `limit: 0` because
+  that is what an alt screen's history is, so they are excluded by the budget rather than by a
+  branch — and needing that branch is what the design carrying this rule was rejected for. Both
+  directions are pinned: removing the budget puts the cursor back on top of a glyph, and giving it
+  to every pane destroys a line on one with no history.
 - **#531** — not a conformance item; the decode-side half of D1's derived-bit clause, on a different
   rider. See the D1 note above.
 

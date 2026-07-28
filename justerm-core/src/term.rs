@@ -4224,6 +4224,35 @@ fn reflow_pane(
         pts
     };
 
+    // The cursor can land one row past everything the reflow emitted — "just after the content"
+    // when the content ends on a full row (#562). That row is real, and while the pane is shorter
+    // than the screen the caller's fit supplies it for free. When the content already fills the
+    // pane it has to be bought, and the price is one row of history: the pane **scrolls**, which is
+    // what a terminal does when content grows past the bottom. Without it the cursor was pulled
+    // back onto the last glyph and the next byte destroyed a character — the ordinary shell shape,
+    // a prompt at the bottom of a full screen.
+    //
+    // Five earlier designs made `reflow` itself materialise the row and were rejected on
+    // measurements (a cursor at column 59 resized to width 4 emptied the buffer; a blank-line
+    // exemption turned 22 alt lines into 21). `reflow` cannot see this pane's budget, so it spent
+    // what it did not have. Here the budget is in scope, and it is the gate: a pane with no history
+    // cannot pay — the displaced row would be destroyed rather than archived — so it keeps clamping.
+    //
+    // `limit > 0`, deliberately, and not "is this the alt screen": since #567 the alt panes pass
+    // `limit: 0` because that is what an alt screen's history is, so they are excluded by the budget
+    // rather than by a branch. That branch is what the design carrying this rule was rejected for
+    // needing.
+    //
+    // This **amends** ADR-0025 rather than reading it narrowly: `reflow` does not create rows; the
+    // seam may, when the pane can pay. What that record measured is that materialising
+    // *unconditionally* destroys content.
+    let cursor_abs = pts[0].0 + usize::from(pts[0].1 == dims.cols);
+    if dims.limit > 0 {
+        while all.len() <= cursor_abs {
+            all.push(Row::blank(dims.cols));
+        }
+    }
+
     let split = all.len().saturating_sub(dims.rows);
     let history: Vec<Row> = all.drain(0..split).collect();
     let mut sb: VecDeque<Row> = history.into();

@@ -460,6 +460,13 @@ Z"`, and a search across the wrap went from 1 hit to 0). It now lives on the
   therefore have domain `[0, cols]`. The bound that keeps a raw-written anchor from indexing a row
   that does not exist lives at the seam too, against the **final** geometry (`scrollback + rows`):
   bounding against what `reflow` emitted clamped away rows the caller's fit was about to create.
+  **The row that position needs is bought at the seam, not created by `reflow`.** While the pane is
+  shorter than the screen the fit supplies it for free; when the content already fills the pane the
+  pane **scrolls** for it, which costs one line of history and is what a terminal does when content
+  grows past the bottom. A pane with no history cannot pay — the displaced line would be destroyed
+  rather than archived — so it clamps instead, and the gate is that budget (`limit > 0`) rather than
+  a test for the alt screen: the alt panes carry a limit of `0` because that is what their history
+  is, so they fall out of it by construction (#567).
   ghostty splits the same three ways inside its own reflow — every non-cursor pin is clamped before it
   can widen a row, the cursor pin never is. [#562, #549, #559]
 
