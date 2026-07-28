@@ -508,10 +508,24 @@ that *describes* the behavior:
   carried *"(Soft-wrap reflow lands in #7.)"* on docs.rs for six weeks after #7
   closed (2026-06-17), because `resize` is a doc-comment, not a README. When you
   close an issue a doc-comment *promises*, grep the sources for its number, not
-  just the READMEs. Cheap sweep, run when closing anything:
-  `rg '///.*(lands in|not yet|will land|planned|once #|until #)' --glob '*.rs'`
-  — at the time of writing this returns exactly one hit, so a second hit means a
-  habit is forming, not a slip.
+  just the READMEs. **And not only the sources** — the same rot in
+  `architecture.md` §Cadence was worse: it carried an *"Open question … Tracked in
+  #13"* after #13 closed, and what shipped was not the design that paragraph
+  predicted, so a reader planning work from it would have rebuilt a solved problem.
+  A stale pointer costs a wasted lookup; a stale *prediction* costs the work.
+  Cheap sweep, run when closing anything:
+  ```
+  rg -n '(lands in|will land|not yet|planned|open question|tracked in|carried over|once #|until #)' \
+     --glob '*.rs' --glob '*.md' --glob '*.ts'
+  ```
+  **Judge this sweep by what it cannot see, never by its hit count.** The
+  narrower first version of it (`///` doc-comments only, `lands in|not yet|...`)
+  returned exactly one hit, and that one hit read as reassurance — while the
+  worse of the two defects sat outside it on both axes, in a `.md` file and
+  phrased *"Tracked in"*. A low count means the pattern is clean **or** the
+  pattern is narrow, and the two are indistinguishable from the number. When a
+  hit turns up, widen the pattern with the phrasing that produced it before
+  fixing the hit.
 - **Release notes = GitHub Releases** (tag-driven, `docs/agents/release.md`).
   **There is no `CHANGELOG.md`.** Never rewrite a published entry; if the repo and
   the registry would disagree for a version, open a new note, don't edit the

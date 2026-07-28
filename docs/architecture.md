@@ -103,12 +103,23 @@ already built in #4; the **pacing** (when to pull, RTT/vsync timing, ≤1-in-fli
 lives in the consumer's transport (PenTerm's Tauri Channel) — NOT in justerm (CLAUDE.md: no IPC). So
 #13's engine work is narrow: the viewport-vs-screen damage mapping above.
 
-**Open question — viewport-vs-screen damage (carried over from #4 / ADR-0003).** Damage (#4) is
-recorded against the *screen*, but the consumer renders the *viewport*. While scrolled up under
-follow-bottom "stay" (#3), the screen scrolls yet the viewport is unchanged — so a screen scroll op
-must NOT be applied to a scrolled-up viewport (it would shift a frozen view). The cadence work owns
-mapping screen damage → viewport damage (and suppressing/ translating scroll ops while
-`display_offset > 0`). Tracked in **#13** (cadence).
+**Viewport-vs-screen damage — settled in #13, and not by the mapping this section once predicted.**
+The problem is real: damage (#4) is recorded against the *screen*, but the consumer renders the
+*viewport*, and while scrolled up under follow-bottom "stay" (#3) the screen scrolls while the
+viewport does not — so a screen scroll op applied to a scrolled-up viewport would shift a frozen view.
+This section carried it as an open question owed a *translation layer* ("map screen damage → viewport
+damage, suppress or translate scroll ops"). **No such layer was built, and none is needed.** What
+`display_offset > 0` means is that nothing the consumer can see has changed, so there is nothing to
+translate — only nothing to send:
+
+- `Term::damage` and `Term::frame_damage` both return an **empty** `Partial` while `display_offset > 0`.
+  A frozen viewport reports no damage rather than translated damage.
+- A user scroll *moves* the viewport, and that path sets `full_damage` — so the frame after a scroll
+  is a full redraw, which is also why no scroll op has to be suppressed for a scrolled-up view.
+
+The asymmetry is the whole design: damage is defined against **what the consumer can see**, not
+against the screen, and the screen is merely where it happens to be recorded. Anyone reaching for a
+translation layer here is re-solving a solved problem.
 
 ## Selection
 
@@ -399,12 +410,15 @@ Z"`, and a search across the wrap went from 1 hit to 0). It now lives on the
   +rows)`. So an alt-screen scroll must NOT rotate primary markers or it silently disposes them.** The
   selection dodges this only because it is *cleared* on alt enter; markers are guarded explicitly
   (`if !self.on_alt` around `markers_rotate_region` in `linefeed`/`reverse_index`). [#158]
-- **Anchor rotation gap (tracked): the CSI line-editing verbs don't move anchors.** Only
-  `linefeed`/`reverse_index` rotate anchors today; `scroll_region_lines` (SU/SD/IL/DL) moves content
-  via `grid.scroll_*_region` + `record_scroll` but calls *neither* `markers_rotate_region` nor
-  `selection_rotate_region`, so a primary-screen IL/DL (zsh/fish multi-line prompt redraw, completion
-  menus) leaves marks + live selection pointing at the wrong line. Pre-existing (selection has it too);
-  tracked in **#162**. [#158]
+- **Anchor rotation: the CSI line-editing verbs move anchors too (closed by #162).** This entry was
+  a gap and is kept as a *modelled* one, because it is the second half of the rule above and reads
+  wrongly without it. `scroll_region_lines` (SU/SD/IL/DL) moves content via `grid.scroll_*_region` +
+  `record_scroll` and now rotates both anchor sets alongside it — `selection_rotate_region` and
+  `markers_rotate_region`, under the same `!on_alt` guard `linefeed`/`reverse_index` use, and with
+  `up = !down` since "content moved up" is the non-`down` case. Before that, a primary-screen IL/DL
+  (zsh/fish multi-line prompt redraw, completion menus) left marks and a live selection pointing at
+  the wrong line. **Any new verb that moves rows owes the same rotation**; the tell is a call to
+  `grid.scroll_*_region` or `record_scroll` without one beside it. [#158, #162]
 - **OSC 133 shell-integration marks: only `A/B/C/D` are parsed.** `133;A` prompt-start, `;B`
   command-start, `;C` output-start, `;D[;exit]` finished → a kinded marker at the cursor line; the exit
   field parses to `i32`, else `None` (matching VSCode's FinalTerm handler, safer than WezTerm's

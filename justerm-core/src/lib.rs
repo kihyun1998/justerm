@@ -80,7 +80,22 @@ impl Engine {
     }
 
     /// Resize the screen to `cols` x `rows`. Rows that scroll off the top enter
-    /// scrollback; the whole screen is damaged. (Soft-wrap reflow lands in #7.)
+    /// scrollback; the whole screen is damaged.
+    ///
+    /// **The primary screen reflows; the alternate screen does not (#567).** On the
+    /// primary, soft-wrapped logical lines are re-split at the new width — scrollback
+    /// included, since it is one buffer with the screen — so a long line keeps its tail
+    /// instead of being truncated. Reflow is *not* gated on DECAWM: the wrap flag records
+    /// that a row continues into the next one, which stays true after a re-split, and
+    /// re-reading a momentary mode at resize time would decide the fate of history written
+    /// under the opposite setting. The alt screen is re-fit only — rows are dropped or added
+    /// to reach the new size and nothing re-wraps, because a full-screen application places
+    /// its own lines and re-wrapping them would change what it drew.
+    ///
+    /// **What a consumer must redo afterwards.** Query-derived state is *invalidated* and
+    /// user-authored state is *re-anchored*: search highlights are dropped (re-run the
+    /// search at the new width — a reflow moves match coordinates and can change the match
+    /// set), while the selection is carried to its new coordinates for you.
     ///
     /// `cols` is widened to [`MIN_COLUMNS`] **silently**: a `resize(1, rows)` during
     /// a pane drag yields a two-column screen with no error. Read the resulting

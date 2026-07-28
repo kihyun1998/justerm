@@ -67,12 +67,11 @@ The most thoroughly recorded territory in the map so far — the contrast case a
 
 ## Known holes / open
 
-- **`architecture.md` §Cadence still declares this an open question, and it is not.** It says the
-  mapping is *"Tracked in **#13** (cadence)"* — #13 closed 2026-06-17, and `Term::damage` /
-  `Term::frame_damage` both gate on `display_offset > 0` today. Worse than a stale pointer: the
-  paragraph describes a design (*"mapping screen damage → viewport damage"*) that was **not** what
-  shipped; the answer was "report nothing while frozen, full damage on scroll". A reader planning work
-  from that paragraph would build the wrong thing.
+- ~~`architecture.md` §Cadence declares this an open question and it is not.~~ **Fixed.** The section
+  now states the resolution instead of predicting a translation layer that was never built. Kept as a
+  line here because the *shape* of that defect is the one to watch on this territory: the paragraph
+  did not merely point at a closed issue, it described a **design that never shipped**, so a reader
+  planning work from it would have rebuilt a solved problem.
 - **`damage()` vs `frame_damage()` is a public/private split with no record.** One is the public
   flow-control primitive, the other is frame-internal, and the reason (content-only must stay
   content-only) survives only in a doc comment.

@@ -102,10 +102,13 @@ already exist here rather than forming a separate map.
   governing decision.**
 - `cursor` is *mentioned* in 19 of the 25 ADRs and is the **subject of none**. Of the eight territories
   written so far, **four have no governing record at all** (`rg -l '^\*\*None\.\*\*' territory/`).
-- Two published surfaces describe behaviour that no longer exists: `Engine::resize`'s doc comment
-  promised soft-wrap reflow "lands in #7" for six weeks after #7 closed, and `architecture.md`
-  §Cadence still declares the viewport-vs-screen damage mapping an open question "tracked in #13" —
-  #13 is closed, and what shipped is not the design that paragraph describes.
+- **Three** surfaces described behaviour that no longer exists — all now fixed, and the count is the
+  point: the first sweep found one, and widening the phrasing found two more.
+  `Engine::resize` promised soft-wrap reflow "lands in #7" for six weeks after #7 closed;
+  `architecture.md` §Cadence called the viewport-vs-screen damage mapping an open question "tracked in
+  #13", closed, and predicted a translation layer that was never built; §Hidden VT state said
+  `scroll_region_lines` rotates *neither* marker nor selection anchors, which #162 closed — it rotates
+  both. A sweep is judged by what it cannot see, not by its hit count.
 
 ## Language
 
