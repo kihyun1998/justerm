@@ -55,6 +55,17 @@ export interface JustermRendererOptions {
    * (`@font-face`/`FontFace`) before an unfamiliar `fontFamily` is the consumer's job. */
   fontFamily: string;
   fontSize: number;
+  /**
+   * Force the cursor to blink (`true`) or stay steady (`false`), overriding the application.
+   * Omit (or `undefined`) to **follow the application's** DECSCUSR / `CSI ?12` mode, which is the
+   * default and what both references default to (#575).
+   *
+   * Deliberately here rather than on {@link Theme}: `Theme` is colours plus the two colour
+   * policies that resolve against them, and a blink is motion, not a colour. xterm.js draws the
+   * same line — `cursorBlink` is an option, its theme is colours only. Change it at runtime with
+   * {@link JustermRenderer.setCursorBlink}.
+   */
+  cursorBlink?: boolean;
   theme: Theme;
 }
 
@@ -347,7 +358,7 @@ export class JustermRenderer implements Renderer {
     };
     const canvas = document.querySelector<HTMLCanvasElement>(opts.canvasSelector);
     if (!canvas) throw new Error(`justerm-renderer: canvas ${opts.canvasSelector} not found`);
-    return new JustermRenderer(
+    const instance = new JustermRenderer(
       backend,
       canvas,
       (ansi) => decoder.buildPalette(ansi),
@@ -360,6 +371,9 @@ export class JustermRenderer implements Renderer {
       t.activeMatchBg ?? 0x995200,
       t.selectionInactiveBg ?? 0x30313d,
     );
+    // `undefined` is the default (follow the application), so this is a no-op unless set (#575).
+    instance.setCursorBlink(opts.cursorBlink);
+    return instance;
   }
 
   /** The cell-decoding context (palette + flag bits) the a11y mirror (#119) reads so it decodes
@@ -502,6 +516,11 @@ export class JustermRenderer implements Renderer {
    * no cursor and fell a bar back to a block), a bar renders as a real bar. Blink phase stays
    * consumer policy — the blink loop calls `clearCursor`/`setCursor` on the off/on flip. */
   private updateCursor(frame: DecodedFrame): void {
+    // The application's blink mode rides every frame (wire v4, #81) — core writes it from both
+    // DECSCUSR and `CSI ?12 h/l`. Applied only when the frame actually carries it, so a frame that
+    // omits the field (an older backend, a hand-built fixture) leaves the last known mode alone
+    // rather than silently forcing steady. `CursorBlink` resolves it against the consumer override.
+    if (frame.cursorBlink !== undefined) this.blink.setAppBlink(frame.cursorBlink);
     const cmd = cursorCommand(frame);
     if (cmd.kind === "none") return;
     if (cmd.kind === "clear") {
@@ -550,6 +569,22 @@ export class JustermRenderer implements Renderer {
   restartCursorBlink(): void {
     this.blink.restart(now());
     this.redrawCursor();
+  }
+
+  /**
+   * Force the cursor to blink (`true`) / stay steady (`false`), or `undefined` to follow the
+   * application's DECSCUSR / `CSI ?12` mode (#575). The live counterpart of
+   * {@link JustermRendererOptions.cursorBlink}.
+   *
+   * Redraws immediately: a change of blink authority is not carried by any frame, so waiting for
+   * one would leave the cursor in the previous phase until the next output — the same reason
+   * {@link setFocused} redraws. Guarded on there *being* a cursor, because {@link create} applies
+   * the initial value before the first frame and before the first fit: `redrawCursor` presents,
+   * and presenting an unsized canvas is a GL call with nothing to draw.
+   */
+  setCursorBlink(blink: boolean | undefined): void {
+    this.blink.setBlinkOverride(blink);
+    if (this.cursor) this.redrawCursor();
   }
 
   /** Focus gates the blink (blurred → solid) and the selection tint (active ↔ inactive, #115).

@@ -1000,3 +1000,31 @@ test("a full-width ruler mark is layered above a gutter mark in the DOM (#498)",
   expect(second!.top).toBe(first!.top); // same line → same track position
   expect(second!.bottom).toBe(first!.bottom);
 });
+
+// #575: the widget used to blink the cursor unconditionally and never read the frame's blink mode,
+// so an application asking for a STEADY cursor got a blinking one. The resolution itself is
+// unit-tested; this is the only place the *wiring* can be proven — `JustermRenderer`'s constructor
+// is private and needs a GL context, so vitest cannot reach `updateCursor` at all. It also had
+// nowhere to run until this slice: the demo emitted no cursor fields, so no cursor was ever drawn.
+test("a steady cursor stays put and a blinking one leaves the cell (#575)", async ({ page }) => {
+  await page.goto("/");
+  await expect(page.getByRole("button", { name: "Cursor blink: OFF" })).toBeVisible();
+
+  const p = await page.evaluate(() => window.__cursorBlinkProbe!());
+
+  // The cursor must actually paint, or every equality below is vacuously true on an empty cell.
+  expect(p.steadyA, `background ${p.background}`).not.toBe(p.background);
+
+  // THE FIX: the application asked for steady, so the cell must look identical a full blink
+  // interval later. Pre-#575 the widget blinked regardless and this came back as the background.
+  expect(p.steadyB).toBe(p.steadyA);
+
+  // …and the assertion above only means something if blinking is observable at this pixel at all:
+  // with the application asking to blink, the cursor leaves the cell and the background returns.
+  expect(p.blinkOn).toBe(p.steadyA);
+  expect(p.blinkOff).toBe(p.background);
+
+  // The consumer override outranks the application (alacritty's `blinking_override().unwrap_or`):
+  // the app is still asking to blink here, and the cursor stays.
+  expect(p.forcedSteady).toBe(p.steadyA);
+});

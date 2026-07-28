@@ -1,33 +1,119 @@
 import { describe, expect, it } from "vitest";
 import { CursorBlink } from "../src/cursor";
 
+// #575 — the widget used to blink unconditionally and never read the frame's blink mode, so an
+// application asking for a STEADY cursor (`CSI 2 q`, `CSI ?12 l`) got a blinking one. Blinking is
+// now resolved from two inputs, mirroring the two references (both pinned trees, read 2026-07-28):
+//
+//   xterm.js  `browser/renderer/dom/DomRenderer.ts:531` @ 699f553
+//             `decPrivateModes.cursorBlink ?? rawOptions.cursorBlink`  — app wins, option is fallback
+//   alacritty `alacritty/src/event.rs:1631` @ 852e971
+//             `cursor_style.blinking_override().unwrap_or(terminal_blinking)` — a consumer FORCE
+//             wins, otherwise the app decides (`config/cursor.rs:125-131`: Always/Never => Some,
+//             On/Off => None)
+//
+// justerm follows alacritty's placement, because it is the one ADR-0017 already implies: core
+// reports the application's intent (mechanism), the consumer holds the three-state override
+// (policy). That needs no wire change — core's `cursor_blink` bool is already enough.
 describe("CursorBlink", () => {
-  // xterm BLINK_INTERVAL = 600ms: the cursor shows for the first interval, hides
-  // for the next, and so on. Time is injected so the state is testable without
-  // real timers.
+  // The default is SOLID, not blinking, and this is the behaviour flip #575 is about. Both
+  // references default the same way (xterm.js `OptionsService.ts:16` `cursorBlink: false`,
+  // alacritty `config/cursor.rs:107` `Shape(shape) => blinking: false`), and core's
+  // `Cursor::blink` starts `false` — so the widget's old unconditional blink was the outlier.
+  it("is solid until something asks it to blink", () => {
+    const blink = new CursorBlink();
+
+    expect([blink.isVisible(0), blink.isVisible(600), blink.isVisible(1200)]).toEqual([true, true, true]);
+  });
+
+  // The application's intent arrives on every frame as `cursorBlink` (wire v4, #81), written by
+  // BOTH DECSCUSR (`term.rs:2938`) and att610 `?12 h/l` (`term.rs:4505-4506`).
+  it("follows the application's blink mode", () => {
+    const blink = new CursorBlink();
+
+    blink.setAppBlink(true);
+    expect([blink.isVisible(0), blink.isVisible(600), blink.isVisible(1200)]).toEqual([true, false, true]);
+
+    // `CSI 2 q` / `CSI ?12 l` — the app asks for steady, and it is honoured from that moment.
+    blink.setAppBlink(false);
+    expect([blink.isVisible(0), blink.isVisible(600), blink.isVisible(1200)]).toEqual([true, true, true]);
+  });
+
+  // The consumer override is the escape hatch both references have and justerm-web did not.
+  // MEASURED, which is why it is not hypothetical (RHEL 9.2, real PTY, TERM=xterm-256color): of six
+  // real applications, ZERO emit DECSCUSR, and vim/htop/top all emit `CSI ?12 l` — because
+  // terminfo's own `cnorm=\E[?12l\E[?25h` carries a blink-off. So merely quitting vim pins the
+  // cursor steady for the rest of the session, with no way back. `undefined` = follow the app.
+  it("lets a consumer force blinking on, against the application", () => {
+    const blink = new CursorBlink();
+    blink.setAppBlink(false); // the app (or terminfo's cnorm) said steady
+
+    blink.setBlinkOverride(true);
+
+    expect([blink.isVisible(0), blink.isVisible(600), blink.isVisible(1200)]).toEqual([true, false, true]);
+  });
+
+  it("lets a consumer force blinking off, against the application", () => {
+    const blink = new CursorBlink();
+    blink.setAppBlink(true); // the app asked to blink
+
+    blink.setBlinkOverride(false);
+
+    expect([blink.isVisible(0), blink.isVisible(600), blink.isVisible(1200)]).toEqual([true, true, true]);
+  });
+
+  // Clearing the override returns authority to the application rather than latching the last
+  // forced value — the `??` semantics, not a copy.
+  it("returns authority to the application when the override is cleared", () => {
+    const blink = new CursorBlink();
+    blink.setAppBlink(true);
+    blink.setBlinkOverride(false);
+    expect(blink.isVisible(600)).toBe(true); // forced steady
+
+    blink.setBlinkOverride(undefined);
+
+    expect(blink.isVisible(600)).toBe(false); // the app's "blink" is in charge again
+  });
+
+  // xterm BLINK_INTERVAL = 600ms: the cursor shows for the first interval, hides for the next, and
+  // so on. Time is injected so the state is testable without real timers.
   it("toggles visibility every 600ms", () => {
     const blink = new CursorBlink();
+    blink.setAppBlink(true);
 
     expect([blink.isVisible(0), blink.isVisible(599), blink.isVisible(600), blink.isVisible(1200)]).toEqual(
       [true, true, false, true],
     );
   });
 
-  // prefers-reduced-motion (#119): the blink is motion the user asked to avoid,
-  // so the cursor stays solid regardless of phase. The media query is read at the
-  // integration layer and injected via setReducedMotion.
-  it("stays solid when reduced motion is requested", () => {
+  // prefers-reduced-motion (#119): the blink is motion the user asked to avoid, so the cursor stays
+  // solid regardless of phase. NEITHER reference has this — xterm.js's `src` has zero
+  // `prefers-reduced-motion` hits and alacritty is native — so the precedence is derived, not
+  // ported: reduced motion only ever SUBTRACTS motion, so letting it win can never make a steady
+  // cursor blink. It therefore outranks an application that explicitly asked to blink.
+  it("stays solid when reduced motion is requested, even if the application asked to blink", () => {
     const blink = new CursorBlink();
+    blink.setAppBlink(true);
     blink.setReducedMotion(true);
 
     expect([blink.isVisible(0), blink.isVisible(600), blink.isVisible(1200)]).toEqual([true, true, true]);
   });
 
-  // Typing or moving the cursor restarts the animation: the cursor shows at once
-  // and the interval resets from that moment, so it never blinks off right after
-  // input (xterm restartBlinkAnimation).
+  // ...and it outranks a consumer force too: an accessibility preference is not overridable by the
+  // page's own styling choice.
+  it("stays solid under reduced motion even when the consumer forces blinking on", () => {
+    const blink = new CursorBlink();
+    blink.setBlinkOverride(true);
+    blink.setReducedMotion(true);
+
+    expect([blink.isVisible(0), blink.isVisible(600), blink.isVisible(1200)]).toEqual([true, true, true]);
+  });
+
+  // Typing or moving the cursor restarts the animation: the cursor shows at once and the interval
+  // resets from that moment, so it never blinks off right after input (xterm restartBlinkAnimation).
   it("shows immediately and resets the phase on restart", () => {
     const blink = new CursorBlink();
+    blink.setAppBlink(true);
     expect(blink.isVisible(600)).toBe(false); // would be hidden mid-blink
 
     blink.restart(600);
@@ -38,9 +124,11 @@ describe("CursorBlink", () => {
   });
 
   // Unfocused terminals stop blinking — the cursor stays solid (xterm pause sets
-  // isCursorVisible = true and clears the interval).
+  // isCursorVisible = true and clears the interval; alacritty gates on `is_focused`,
+  // `alacritty/src/event.rs:1643`).
   it("stays solid while unfocused", () => {
     const blink = new CursorBlink();
+    blink.setAppBlink(true);
 
     blink.setFocused(false);
     expect(blink.isVisible(600)).toBe(true); // would blink off if focused

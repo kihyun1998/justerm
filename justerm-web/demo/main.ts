@@ -149,6 +149,28 @@ let altScreen = false;
 // scrollback — the app-vs-local wheel branch, driven by the real frame mask.
 let appMouse = false;
 
+// #575: the APPLICATION's cursor blink mode, as core reports it on every frame (wire v4, #81 —
+// written by both DECSCUSR `CSI Ps SP q` and att610 `CSI ?12 h/l`). The widget resolves it against
+// its own three-state override (`JustermRendererOptions.cursorBlink`).
+//
+// The demo emitted **no cursor fields at all** until this slice, so `cursorCommand()` always
+// returned `{kind:"none"}` and no cursor was ever drawn here. That is why nothing exercised the
+// resolution — and plausibly why #575 survived: the only real-browser surface could not show it.
+let cursorBlink = false;
+let cursorShown = true;
+/**
+ * Where the demo parks its cursor.
+ *
+ * **Every other pixel probe on this page assumes a cursorless canvas**, so this must not land on a
+ * cell any of them samples — a steady cursor paints the cell and their baselines come back as the
+ * cursor colour instead of the background. Measured the moment the cursor was added: `(0,0)` broke
+ * `__aboveTopProbe` (*"row 0: baseline rgb(205,214,244)"*). Currently sampled elsewhere:
+ * `(0..3, 0)` by `__aboveTopProbe`, `(DECO_ROW, 1)` by `__precedenceProbe`, and
+ * `(DECO_ROW, 0)` / `(DECO_ROW, COLS-1)` by `__decorationProbe`. Row 5 is clear of all of them.
+ */
+const CURSOR_ROW = 5;
+const CURSOR_COL = 2;
+
 // #150 accessible view: the Accessible view button summons the whole-log document (a real backend runs
 // core `accessible_text`; the demo joins its log), Escape closes + returns focus.
 canvas.tabIndex = 0; // make the canvas a focus target for restore
@@ -414,6 +436,16 @@ function toggleScreenReader(): void {
   );
 }
 
+// #575: flip the APPLICATION's blink mode on the emitted frames — what `CSI 1 q` / `CSI 2 q` (or
+// `CSI ?12 h` / `CSI ?12 l`) would do. With the widget's override left at its default
+// (`undefined` = follow the application), this button is the whole decision.
+function toggleCursorBlink(): void {
+  cursorBlink = !cursorBlink;
+  cursorBlinkBtn.textContent = `Cursor blink: ${cursorBlink ? "ON" : "OFF"}`;
+  console.log(`[demo] frame.cursorBlink = ${cursorBlink} (the application's mode, #575)`);
+  render(); // re-emit so the next frame carries the new mode
+}
+
 function toggleAppMouse(): void {
   // S16 (#133): flip the frame's mouse-tracking mask. ON → the widget reports a
   // wheel notch to the app (input sink logs it); OFF → wheel scrolls scrollback.
@@ -485,6 +517,7 @@ const decoBtn = demoButton("Decorate line: OFF", toggleDecorateLine);
 const terseBtn = demoButton("Announce: VERBOSE", toggleTerse);
 const srBtn = demoButton("Screen reader: ON", toggleScreenReader);
 const appMouseBtn = demoButton("App mouse: OFF", toggleAppMouse);
+const cursorBlinkBtn = demoButton("Cursor blink: OFF", toggleCursorBlink); // #575
 const titleBtn = demoButton("Set title", emitTitle); // #117
 const bellBtn = demoButton("Bell", emitBell); // #117
 const cwdBtn = demoButton("Set cwd", emitCwd); // #117
@@ -500,6 +533,7 @@ controls.append(
   terseBtn,
   srBtn,
   appMouseBtn,
+  cursorBlinkBtn,
   titleBtn,
   bellBtn,
   cwdBtn,
@@ -604,6 +638,13 @@ function viewportFrame(out?: { scrollCount: number }): DecodedFrame {
         ? PRECEDENCE_MARKER_IDS.flatMap((id) => [id, precedenceLine!])
         : []),
     ],
+    // #575: the cursor rides every frame, like core emits it. `cursorBlink` is the application's
+    // half of the blink decision; the widget resolves it against its consumer override.
+    cursorRow: CURSOR_ROW,
+    cursorCol: CURSOR_COL,
+    cursorVisible: cursorShown,
+    cursorShape: 0, // block
+    cursorBlink,
     ...(out && out.scrollCount > 0
       ? { hasScroll: true, scrollTop: 0, scrollBottom: ROWS - 1, scrollCount: out.scrollCount }
       : {}),
@@ -999,10 +1040,84 @@ declare global {
     __rulerLayerProbe?: () => RulerLayerProbe;
     __decorationProbe?: () => DecorationProbe;
     __precedenceProbe?: () => PrecedenceProbe;
+    __cursorBlinkProbe?: () => Promise<CursorBlinkProbe>;
     __aboveTopProbe?: () => AboveTopProbe;
     __rulerAnchorProbe?: () => RulerAnchorProbe;
   }
 }
+/** #575 — the cursor cell's pixel under each blink authority. */
+interface CursorBlinkProbe {
+  /** Cursor hidden (DECTCEM off) — what the cell looks like with no cursor at all. */
+  background: string;
+  /** Application says STEADY, sampled twice across more than one blink interval. */
+  steadyA: string;
+  steadyB: string;
+  /** Application says BLINK: just after a phase restart, then one interval later. */
+  blinkOn: string;
+  blinkOff: string;
+  /** Application says BLINK but the consumer forces steady — the override, one interval later. */
+  forcedSteady: string;
+}
+
+window.__cursorBlinkProbe = async (): Promise<CursorBlinkProbe> => {
+  // #575: the widget must resolve the cursor blink from the application's mode and the consumer's
+  // override, instead of blinking unconditionally. The unit tests pin the resolution; this drives
+  // the REAL wasm renderer through the real adapter and reads the cursor cell, which is the only
+  // thing that proves the frame's `cursorBlink` actually reaches `CursorBlink` — the adapter's
+  // private constructor puts that wiring out of vitest's reach.
+  const gl = canvas.getContext("webgl2")!;
+  const { width: cw, height: ch } = renderer.cellSize(); // device px
+  // Read the cursor cell's own corner in the SAME synchronous turn as the draw — there is no
+  // preserveDrawingBuffer, so a read on a later turn races the present and comes back black.
+  const sample = (): string => {
+    render(); // re-emit the frame → the adapter redraws the cursor at its CURRENT phase
+    const x = Math.round(CURSOR_COL * cw) + 2;
+    const y = gl.drawingBufferHeight - 1 - (Math.round(CURSOR_ROW * ch) + 2);
+    const px = new Uint8Array(4);
+    gl.readPixels(x, y, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    return `rgb(${px[0]},${px[1]},${px[2]})`;
+  };
+  const wait = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+  // One full blink interval is 600ms (`BLINK_INTERVAL`); 750 lands safely inside the OFF half.
+  const PAST_ONE_INTERVAL = 750;
+
+  const savedBlink = cursorBlink;
+  const savedShown = cursorShown;
+
+  // (1) No cursor at all — the reference the other samples are compared against.
+  cursorShown = false;
+  const background = sample();
+  cursorShown = true;
+
+  // (2) The application asks for a STEADY cursor. Pre-#575 the widget ignored this and blinked, so
+  //     `steadyB` came back as the background.
+  cursorBlink = false;
+  renderer.restartCursorBlink(); // phase origin = now, so the sample below is a full interval in
+  const steadyA = sample();
+  await wait(PAST_ONE_INTERVAL);
+  const steadyB = sample();
+
+  // (3) The application asks it to BLINK — the cursor must actually leave the cell.
+  cursorBlink = true;
+  renderer.restartCursorBlink();
+  const blinkOn = sample();
+  await wait(PAST_ONE_INTERVAL);
+  const blinkOff = sample();
+
+  // (4) The consumer override beats the application (alacritty's `blinking_override`): the app is
+  //     still asking to blink, and the cursor stays put.
+  renderer.setCursorBlink(false);
+  renderer.restartCursorBlink();
+  await wait(PAST_ONE_INTERVAL);
+  const forcedSteady = sample();
+  renderer.setCursorBlink(undefined); // back to following the application
+
+  cursorBlink = savedBlink;
+  cursorShown = savedShown;
+  render();
+  return { background, steadyA, steadyB, blinkOn, blinkOff, forcedSteady };
+};
+
 window.__aboveTopProbe = (): AboveTopProbe => {
   // #461: a multi-row decoration whose marker sits ABOVE the viewport top must paint the rows
   // of it that are still visible, not vanish. Drive it for real: shift the marker's absolute
