@@ -29,12 +29,30 @@ territory edge cannot express, and the reason this node kind exists.
 
 ## Territories it holds in
 
-- [selection](../territory/selection.md) — the soft-wrap join in `Term::prev_pos` / `Term::next_pos`
+**Do not maintain the site list by hand — three artifacts already drifted apart doing that** (this
+note, `theflow.md`'s Step 5 entry and `walk.rs`'s module doc each named a *different* set, and none
+matched the code). Ask instead:
+
+```sh
+rg 'abs_floor\(\)' justerm-core/src/ | rg -v 'fn abs_floor'
+```
+
+Five call sites, as of #585/#586 — the territory links are the graph edge, the grep is the authority:
+
+- [selection](../territory/selection.md) — `Term::prev_pos` / `Term::next_pos`, the logical-line step
   (`term/walk.rs`; #207)
-- [wide glyph & soft wrap](../territory/wide-glyph-and-soft-wrap.md) — the previous-row join in
-  `Term::end_wrap`, and `Term::shift_region`
-- [search & active match](../territory/search.md) — the logical-line walk in `search()` (#144)
-- [logical lines](../territory/logical-lines.md) — `viewport_logical_lines` (#113)
+- [search & active match](../territory/search.md) — `Term::search_with` (`term/search.rs`; #144)
+- [logical lines](../territory/logical-lines.md) — `Term::viewport_logical_lines` (`term.rs`; #113)
+- **a11y / whole-buffer text** *(no note yet)* — `Term::accessible_text` (`term.rs`). It walks the
+  same way and was in none of the three hand-written lists, including this one
+
+**Two more sites satisfy the floor without calling it**, and they are the ones a grep for the
+function's name will never surface: `Term::end_wrap` and `Term::shift_region` reason it out in
+comments instead (*"on the alt screen `abs_floor()` is the screen top, so no join crosses the
+boundary at all"*). They belong to
+[wide glyph & soft wrap](../territory/wide-glyph-and-soft-wrap.md). A structural argument is a
+legitimate way to hold the invariant — but it is invisible to the check above, so it is written down
+here rather than left to be rediscovered as a "missing" floor.
 
 ## What a violation looks like
 

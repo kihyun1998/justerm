@@ -14,7 +14,7 @@ work*, spines by *the cluster that was re-litigated* — all **events**, and an 
 ## The failure this map exists to catch
 
 One fact — *"a reader walking the single `[scrollback ++ grid]` buffer by absolute index must floor at
-`scrollback.len()` on the alt screen"* — holds at four sites, was drawn nowhere, and was therefore
+`scrollback.len()` on the alt screen"* — holds across several read surfaces, was drawn nowhere, and was therefore
 discovered **three separate times** across months (#113 → #144 → #207). The `#552` roster is 15 issues
 of the same disease: one rule rediscovered one VT verb at a time. In both cases the helper function and
 the ADR arrived *after the fact*. Neither prevents a recurrence — the next author writing a *new* site

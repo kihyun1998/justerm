@@ -332,9 +332,10 @@ for one agent*, not two agents.
 
 The cell-walk sibling set that used to be hand-listed here is now
 [alt-screen absolute-index floor](../map/invariant/alt-screen-buffer-floor.md),
-which names all four sites and what each one does. It was removed rather than
-kept alongside the map on purpose: a second copy is what goes stale, and the copy
-is always the one the reader happens to open. **Never drop either corpus** because the fix looks
+which carries the grep that *derives* the sites rather than a count anyone has to
+keep true — three artifacts had each hand-written a different set. It was removed
+rather than kept alongside the map on purpose: a second copy is what goes stale,
+and the copy is always the one the reader happens to open. **Never drop either corpus** because the fix looks
 small (#158) — that is what the old never-collapse rule protected, and it is
 unchanged.
 
@@ -456,9 +457,19 @@ the diff is small:
    first, and centralising the expression (#585 folded the last open-coded copies
    into calls) does not retire it: every miss so far was a *fresh* unfloored walk
    that never mentioned `abs_floor`, so searching for the function's name cannot
-   find the defect this entry exists to catch.** On the alt screen an unfloored index reads the wrong region and
-   returns *plausible* text: selection, search and markers silently disagree with
-   the screen. This is on the list because the completeness pass has found a fresh
+   find the defect this entry exists to catch.** On the alt screen an unfloored index reads the wrong
+   region and returns *plausible* text — the caller gets content that is not on
+   screen, with no error anywhere.
+   **Do not enumerate the affected surfaces here.** This entry, `walk.rs`'s module
+   doc and the map's invariant note each hand-wrote a *different* set, and on
+   2026-07-28 all three were wrong against the code — the one that had been the
+   **first** discovery (`viewport_logical_lines`, #113) was missing from two of
+   them while its issue number sat in the same paragraph. The derivation lives
+   once, with the invariant:
+   [alt-screen absolute-index floor](../map/invariant/alt-screen-buffer-floor.md)
+   carries the grep that produces the call sites, plus the two that satisfy the
+   floor by *argument* instead and therefore never appear in any grep.
+   This is on the list because the completeness pass has found a fresh
    sibling three times — #113 (logical lines) → #144 (`search`) → #207
    (word-selection `prev_pos`) — so "I checked the obvious callers" has a measured
    failure rate here.
@@ -483,10 +494,10 @@ that *describes* the behavior:
   hit such a fact is where it is discovered, and at that moment no node exists —
   so a map that records invariants only after the third rediscovery is the same
   post-hoc archive as the helper someone eventually extracts. Measured here:
-  `abs_floor` holds at four sites and was found **three separate times**
-  (#113 → #144 → #207) across months; `Term::abs_floor` was extracted *after* the
-  third, and a helper prevents nothing because whoever writes a *new* walk never
-  goes looking for it. The `#552` roster is 15 issues of the same shape.
+  `abs_floor` holds across several read surfaces and was found **three separate
+  times** (#113 → #144 → #207) across months; `Term::abs_floor` was extracted
+  *after* the third, and a helper prevents nothing because whoever writes a *new*
+  walk never goes looking for it. The `#552` roster is 15 issues of the same shape.
   The map links *out* only — never edit an ADR to add a backlink (Obsidian
   supplies the reverse for free), and use symbols in `## Code`, never line
   numbers.
