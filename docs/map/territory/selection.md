@@ -91,6 +91,10 @@ Check these after changing this territory:
   (#430 pins the active ∩ selected fg channel). Both also share the absolute coordinate space
 - [damage & viewport](damage-and-viewport.md) — the highlight's visibility is gated by the same
   `display_offset` as everything else pushed into the engine
+- [logical lines](logical-lines.md) — `accessible_text` is listed under **both** territories' `## Code`
+  (it lives in this module, but its contract is a whole-buffer document), so a change to either side
+  can invalidate the other's pin. The edge was one-way until #587, and that is exactly how the move
+  broke logical-lines' pin without any sweep noticing
 - **reflow** — one of the three places the coordinate moves. `grid.rs`'s `reflow` takes selection
   anchors as tracked `points`, and #562 (reflow cannot express a point one past the last cell) surfaced
   right here
