@@ -7,7 +7,8 @@
 //! shift, so existing content keeps its absolute index); the only places it
 //! moves are cap eviction, in-screen region/RI scrolls, and reflow — each
 //! handled explicitly by `Term`. The cell-aware logic (text extraction, range
-//! clipping) lives in `term.rs`, where the cells are.
+//! clipping) lives in `term/selection.rs` — the `Term` half of this model, moved out
+//! of `term.rs` in #587.
 
 /// What a selection covers.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

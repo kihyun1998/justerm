@@ -39,16 +39,21 @@ status.
 - **Two outputs** — `selection_range()` yields **per-viewport-row** `SelectionSpan { row, left, right }`
   and emits nothing for off-screen rows. `selection_text()` yields copy text, applying the wrap join,
   trailing-whitespace trim and scrollback traversal.
-- **Split of labour** — `selection.rs` holds types only (75 lines). The cell-aware logic (text
-  extraction, range clipping) lives in `term.rs`, where the cells are.
+- **Split of labour** — `src/selection.rs` holds types only (75 lines). The cell-aware logic (text
+  extraction, range clipping) lives in `src/term/selection.rs`, where the cells are reachable —
+  moved out of `term.rs` in #587.
 
 ## Code
 
 - `justerm-core/src/selection.rs` — `SelectionType`, `Side`, `SelectionSpan`, `BufferPoint`, `Anchor`,
   `Selection::ordered`
-- `justerm-core/src/term.rs` — `Term::selection_begin` / `selection_extend` / `selection_clear` /
-  `selection_range` / `selection_text`; the three coordinate fixups
-  `selection_shift_below_margin` / `selection_evict_oldest` / `selection_rotate_region`
+- `justerm-core/src/term/selection.rs` — `Term::selection_begin` / `selection_extend` /
+  `selection_clear` / `selection_range` / `selection_text` / `accessible_text`; the three coordinate
+  fixups `selection_shift_below_margin` / `selection_evict_oldest` / `selection_rotate_region`; and
+  the private `resolve` / `Resolved` that turn a selection into absolute bounds. Extracted from
+  `term.rs` in #587. As with search, the crate now has **two** files named `selection.rs` — the
+  types in `src/selection.rs` above, the mechanism here — so a bare `selection.rs:NN` citation is
+  ambiguous
 - `justerm-core/src/term/walk.rs` — the shared buffer-walk floor the selection reaches cells through:
   `Term::abs_line` / `abs_row`, `prev_pos` / `next_pos` (the logical-line step), `word_start` /
   `word_end`, `is_word_boundary`. Extracted from `term.rs` in #585
