@@ -191,6 +191,16 @@ caps `keywords` at 5).
 | `renderer-v*` | **automatic** — a `release` job in `publish-renderer.yml` |
 | `web-v*` | **automatic** — a `release` job in `publish-web.yml` |
 
+**The hand-written `v*` note must name every change a consumer can *observe* without reading the
+diff** — not only the API ones. The war story below is about the renderer track and was answered by
+automating it, which left `v*` with the same exposure and no rule: a core behaviour change ships
+green through every gate and lands on a consumer as a surprise, because nothing in the release flow
+asks the question. Walk the PRs merged since the last tag and carry across what each says a consumer
+sees; the bodies are written for that and it is the only surface that survives the merge. The first
+one written under this rule is **#567** — the alt screen stopped reflowing on resize, so an
+application's layout now keeps its wrapping until the application repaints, and a cursor parked past
+the content can scroll a line into history where it previously overwrote a glyph.
+
 The two automated ones take the body from the **tag's own annotation** (what the `git tag -a -m`
 step in each track's flow above already writes), so there is one source for the note. `%(contents)`
 returns the annotation for an annotated tag; for a *lightweight* tag it falls through to the tagged
