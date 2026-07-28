@@ -70,7 +70,7 @@ at a recorded SHA; a paraphrase drops the pin).
 
 - [cursor](cursor.md) — the old+new cell fold lives here but the rule is about the caret; changing
   either side produces ghosting
-- **frame / wire** *(no note yet)* — damage, the scroll op and `display_offset` are all frame fields
+- [frame & wire](frame-and-wire.md) — damage, the scroll op and `display_offset` are all frame fields
   under ADR-0013/0020
 - [search & active match](search.md) · [selection](selection.md) — both hold pushed state whose
   visibility is gated by the same `display_offset`

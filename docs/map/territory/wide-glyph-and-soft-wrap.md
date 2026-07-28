@@ -88,7 +88,7 @@ blanked-but-still-wrapped row would visibly merge two lines, a cost the referenc
 - [logical lines](logical-lines.md) · [search & active match](search.md) — share the same wrap-joined
   walk and the same spacer-skipping rule
 - [cursor](cursor.md) — `pending_wrap` is the entry condition for the wrap path
-- **frame / wire** *(no note yet)* — `WRAPLINE` is derived into a cell at encode time (D1). Changing
+- [frame & wire](frame-and-wire.md) — `WRAPLINE` is derived into a cell at encode time (D1). Changing
   the derivation rule is a wire-version event
 - **renderer** *(no note yet)* — how a spacer cell is drawn. VS16/ZWJ emoji arrive as `wide = false`
   because core uses per-char `UnicodeWidthChar`; DECSET 2027 (#295) is the opt-in clustering

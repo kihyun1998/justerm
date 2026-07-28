@@ -71,6 +71,7 @@ are the roster.
 
 - Territories — [cursor](territory/cursor.md) ·
   [damage & viewport](territory/damage-and-viewport.md) ·
+  [frame & wire](territory/frame-and-wire.md) ·
   [logical lines](territory/logical-lines.md) ·
   [release & published surface](territory/release-and-published-surface.md) ·
   [search & active match](territory/search.md) ·
@@ -117,11 +118,19 @@ Territories are **not** bounded by crate. Decoration spans core's wire, the rend
 widget; cursor is split with the consumer by design. Renderer and web notes attach to territories
 that already exist here rather than forming a second map.
 
-What has no note yet, referenced as `(no note yet)` by the notes above:
+What has no note yet. Prioritise by **how many notes point at it** — a dangling reference is a reader
+hitting a dead end, and it is a better signal than commit frequency (which misses everything that
+never changes; see the tombstone above). Ask:
 
-VT interpretation (`term.rs` — still the largest single file in core) · grid & scrollback · input
-encoding · frame & wire · hyperlinks · grapheme clusters · colour references & palette · marker &
-decoration · a11y · renderer pipeline · cell geometry · CI & supply chain
+```sh
+rg -o '\*\*[a-zA-Z /&-]+\*\* \*\(no (territory )?note yet\)\*' . --no-filename \
+  | sed 's/\*//g; s/ (no.*//' | sort | uniq -c | sort -rn
+```
+
+Currently: **renderer** (7 references — the largest crate in the family at ~14.5k lines across 19
+modules, so it is probably several territories, not one) · VT interpretation (`term.rs`) · grid &
+scrollback · input encoding · marker & decoration · a11y · hyperlinks · grapheme clusters · colour
+references & palette · cell geometry · CI & supply chain
 
 Line counts are deliberately not quoted here. `term.rs` went 4,893 → 3,682 across four days of #584
 slices; a number maintained by hand is the same defect as a roster maintained by hand, one size

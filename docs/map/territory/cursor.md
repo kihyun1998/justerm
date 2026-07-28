@@ -79,7 +79,7 @@ at a recorded SHA; a paraphrase drops the pin).
   Changing either the fold or what `reset_damage` stores as `prev_cursor` produces caret ghosting
 - [wide glyph & soft wrap](wide-glyph-and-soft-wrap.md) — `pending_wrap` is the entry condition for
   the wrap path, so wrap-rule changes meet the cursor here
-- **frame / wire** *(no note yet)* — visibility, shape and blink mode are frame fields; adding a caret
+- [frame & wire](frame-and-wire.md) — visibility, shape and blink mode are frame fields; adding a caret
   property is a wire-version question under ADR-0020
 - **renderer** *(no note yet)* — the caret is drawn there. Scalar policies (`setCursorContrast`,
   `setCursorThickness`) are renderer-side and consume only what the frame reports

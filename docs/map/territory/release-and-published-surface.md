@@ -73,10 +73,10 @@ naming convention rather than on a measured comparison.
 
 ## Blast radius
 
-- **frame / wire** *(no note yet)* — a `WIRE_VERSION` bump ships on `v*` to two registries at once,
+- [frame & wire](frame-and-wire.md) — a `WIRE_VERSION` bump ships on `v*` to two registries at once,
   and a consumer decoding a wrong layout gets garbage cells rather than an error. This is one of
   theflow's unconditional Step 5 triggers for that reason
-- **renderer pipeline** *(no note yet)* — its own track means a `v*` release does **not** carry it;
+- **renderer** *(no note yet)* — its own track means a `v*` release does **not** carry it;
   a change needing both must push two tags
 - **a11y / web widget** *(no note yet)* — `justerm-web` consumes the *published* wasm decoder, not a
   workspace link, so a new binding is `undefined` at runtime until the wasm package is republished

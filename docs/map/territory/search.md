@@ -86,7 +86,7 @@ pinned comparison exists to catch.
   the active match is painted **above** selection, so their precedence is a single decision touching
   both (the active ∩ selected fg channel is pinned separately)
 - [logical lines](logical-lines.md) — the same wrap-joined walk; #144 fixed both in one change
-- **frame / wire** *(no note yet)* — highlights and the active match are overlay groups; adding one is
+- [frame & wire](frame-and-wire.md) — highlights and the active match are overlay groups; adding one is
   an ADR-0020 question and a wire-version bump
 - **renderer** *(no note yet)* — `ActiveMatch` is its own overlay kind with its own rank, applied
   additively
