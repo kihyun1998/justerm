@@ -1960,6 +1960,16 @@ impl Term {
     /// Write one glyph at the cursor, handling deferred wrap and the wide-char
     /// spacer, then advance the cursor (deferring the wrap if it hits the edge).
     fn write_glyph(&mut self, c: char, width: usize) {
+        // Every wide branch below is gated on `width == 2`, and the four unguarded uses
+        // (`insert_chars`, `col + width - 1` twice, the cursor advance) assume the same bound.
+        // The caller coerces (#595); this states the assumption at the site that holds it, so a
+        // future second caller fails a test rather than writing an unmarked run of blanks.
+        // Ghostty pairs its own source-side clamp with the same assertion for the same reason
+        // (`Terminal.zig`, *"it is possible to have a width of 3 … assert(width <= 2)"*).
+        debug_assert!(
+            width <= 2,
+            "write_glyph({c:?}, {width}) — the cell model represents at most a pair"
+        );
         let cols = self.grid.cols();
 
         // Resolve a deferred last-column wrap before placing the next glyph.
@@ -3409,7 +3419,24 @@ impl Perform for Term {
             // previous base glyph rather than dropping it.
             Some(0) => self.push_combining(c),
             None => {}
-            Some(width) => self.write_glyph(c, width),
+            // Coerced to a pair, because a pair is the only multi-column shape the cell model
+            // has (`WIDE_CHAR` + exactly one `WIDE_CHAR_SPACER`) — see ADR-0025, which states
+            // every clause over "a pair" and never over a wider run. `unicode-width` genuinely
+            // returns 3 for at least one codepoint (U+17D8 KHMER SIGN BEYYAL, a ligature drawn
+            // as three characters), and that value is not wrong — it is unrepresentable here.
+            //
+            // Left uncoerced, the width fell through *every* wide branch in `write_glyph`
+            // (each gated on `width == 2`) while still driving the cursor advance, so the glyph
+            // landed as a lone narrow cell followed by columns that no flag distinguished from
+            // real blanks: search could not find the text on screen and word selection split
+            // the run, handing the clipboard a space the buffer never held (#595).
+            //
+            // All three references bound it, and ghostty says why in the same words —
+            // `unicode/props.zig:11-13`, *"We clamp to [0, 2] … i.e. 3-em dash becomes a 2-em
+            // dash"*. Clamping *here* rather than inside `write_glyph` keeps the two jobs apart:
+            // this is the policy for an out-of-range external value, and the invariant it
+            // establishes is asserted at the site that depends on it.
+            Some(width) => self.write_glyph(c, width.min(2)),
         }
     }
 

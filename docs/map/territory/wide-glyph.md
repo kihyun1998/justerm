@@ -45,7 +45,10 @@ ADR-0025 is authoritative; this is routing. **If they disagree, the ADR is right
 - `justerm-core/src/grid.rs` — `Row::resize` (the boundary of D4's scope), `reflow`
 - `justerm-core/src/term.rs` — `Term::write_glyph`, `Term::drop_artefact_if_erased`,
   `Term::free_cell`, `Term::vacate_for_wrap`
-- `justerm-core/src/term.rs` — `MIN_COLUMNS` (defined there, re-exported from `lib.rs`)
+- `justerm-core/src/term.rs` — `MIN_COLUMNS` (defined there, re-exported from `lib.rs`), and its
+  mirror `Term::print`'s `width.min(2)` with the matching `debug_assert` in `Term::write_glyph`
+  (#595). The two are the pair model's preconditions from opposite sides: `MIN_COLUMNS` floors the
+  screen so a pair has room, the clamp caps the glyph so a pair is enough
 
 ## Reference behaviour
 
@@ -56,6 +59,10 @@ recorded SHA; a paraphrase drops the pin).
 - [Relocating a cluster that grew to width 2](../../agents/reference-facts.md#relocating-a-cluster-that-grew-to-width-2-529-verified-2026-07-28)
 - [Minimum screen size](../../agents/reference-facts.md#minimum-screen-size-547) — both references
   forbid one column for this exact reason; ghostty permits it and destroys the glyph
+- [Maximum glyph width](../../agents/reference-facts.md#maximum-glyph-width-595) — the mirror of the
+  one above, and the pair model's *other* precondition: 3 of 3 references cap a glyph at a pair, so a
+  width of 3 from `unicode-width` never reaches the grid unmarked. justerm was the only one not
+  capping it. Each reference's bound is weaker than its headline — the rows carry the qualifications
 - [What a blanked / freed cell is made of](../../agents/reference-facts.md#what-a-blanked--freed-cell-is-made-of)
   — with the trap beside it: ghostty has two `clearCells` and the first grep hit is how #530's body
   reached the wrong verdict

@@ -148,6 +148,51 @@ reversing it is theirs. It also reverses #536's stated premise (*"1 column is a 
 rejected one"*); #536 was re-scoped to the defensive `damage_span` guard rather than closed, since
 that guard is correct for any future caller computing `col + width` — it has since shipped.
 
+**The second precondition, and it is the mirror of the first (#595, 2026-07-29).** #547 bounded the
+**grid** so a pair always has room. Nothing bounded the **glyph**, so a pair was not always enough:
+`unicode-width` 0.2 reports **3** for `U+17D8` KHMER SIGN BEYYAL, and `Term::print` passed that value
+through unchanged. D1–D4 have no clause for it — every rule here is stated over *a pair*, and a triple
+has no represented form at all — so the write path simply fell through: each wide branch in
+`write_glyph` is gated on `width == 2`, while the cursor advance and the damage bound are not. The
+glyph landed as a lone narrow cell trailed by columns that carried **no flag distinguishing them from
+real blanks**, which is worse than a malformed pair: `is_walk_transparent_spacer` has nothing to make
+transparent, so `search` could not find text that was on screen and word selection split the run,
+handing the clipboard a space the buffer never held.
+
+`Term::print` now coerces to a pair (`width.min(2)`) and `write_glyph` asserts the bound it depends on.
+**Unlike #547 this is a derivation, not a product judgement** — it is reversible by a better derivation,
+not only by the maintainer. All three references bound it and none permits a triple: ghostty clamps at
+the source (`unicode/props.zig:10-14`, *"We clamp to [0, 2] … i.e. 3-em dash becomes a 2-em dash"*)
+**and** asserts at the write site (`Terminal.zig:1310-1315`, *"it is possible to have a width of 3 …
+`assert(width <= 2)`"*); xterm.js types it `0 | 1 | 2`; alacritty coerces at the write site
+(`if width == 1 { … } else { … }`, exactly one spacer). The rows in `reference-facts.md` carry the
+qualifications each of those bounds actually has — none of the three is as absolute as its headline.
+
+**The two guards are not equivalent, and the difference is why this shipped.** The clamp runs in every
+build; `debug_assert!` does not, so the assertion is a *detector for development*, not a backstop in
+production. That is the same division `damage_span` already records — and this defect is the proof of
+its cost: the guard that would have caught this was a `debug_assert`, so release builds absorbed the
+out-of-range value silently for as long as it existed. Ghostty's pairing is stronger than ours here,
+since Zig's `assert` survives into ReleaseSafe.
+
+Two rejected alternatives, both measured. Widening the `width == 2` tests to `width >= 2` leaves the
+third column **unwritten** — it keeps its prior content, is covered by the damage span, and is claimed
+by a cursor advance of 3, so the renderer repaints stale text as part of a fresh glyph. And clamping
+*only* at the write site would state the bound where it is needed but not where the value enters,
+leaving `print` free to grow a second reader; ghostty guards both ends for that reason, and justerm
+already has a second width reader of its own — `try_grapheme_join` measures a cluster with
+`UnicodeWidthStr` and acts only on `== 2` / `== 1`, so a cluster width of 3 falls through with no cell
+written and no bound derived. **That path is benign today and the clearance is conditional**: it holds
+while the cluster path never synthesises a cell from its measured width. If it ever does, it needs the
+same clamp.
+
+This also settles what #536's re-scoped guard was for. That guard is what **detected** this — a
+randomized lane tripped it — and PR #581 recorded the opposite conclusion at the time
+(*"7000 randomized feed/resize/frame cases produced no violation. So this guards a class, not a live
+defect"*). It guarded a live defect; the random lane had simply never drawn the codepoint. The
+measurement was honest and the inference from it was not, which is the argument for keeping such a
+guard even when it looks unreachable.
+
 D4's scope is unchanged in the other direction: the floor guarantees *room* for a pair, not that every
 verb carries it — #529 was a D4 violation at any width, independent of the floor.
 
