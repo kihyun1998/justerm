@@ -352,10 +352,12 @@ the fix site follows from. Whether it is still open is the tracker's answer, not
   still one short of promoting a fifth rule, and alternative (D) is the standing reason this record
   grows per-property rather than by aggregate.
 
-  **Attempted 2026-07-27, NOT settled — five designs built and measured, five rejected.** No code
-  shipped; this paragraph and the corrected `reference-facts.md` rows are the whole product. It is
-  recorded at this length because the expensive part was not writing any of the five, it was
-  discovering why each fails, and every one of them looks correct until measured.
+  **Attempted 2026-07-27, five designs built and measured, five rejected — and then settled a day
+  later (#562 → PR #565, #567 → PRs #568/#569).** When this paragraph was written no code had
+  shipped and it said so; that sentence is retracted here rather than deleted, because the roster
+  below is the reason the settlement was possible at all. It is recorded at this length because the
+  expensive part was not writing any of the five, it was discovering why each fails, and every one
+  of them looks correct until measured.
 
   | # | design | what it broke, measured |
   |---|---|---|
@@ -368,17 +370,34 @@ the fix site follows from. Whether it is still open is the tracker's answer, not
   Alongside 1–5, a separate cursor-gated exemption for the trailing-blank **line** destroyed content
   outright on the alt screen (80×24, stock): the exemption emits one more row and the alt caller has
   no scrollback to receive the displaced one, so `"line1"` was gone. ghostty avoids that by
-  preserving such a row **without spending a destination row** (`PageList.zig:1610-1616` — on
-  `cols_len == 0` it returns early and only bumps a counter).
+  **deferring** such a row (`PageList.zig:1610-1616` — on `cols_len == 0` it returns early and only
+  bumps a counter). *Corrected:* this said ghostty spends **no** destination row, which is true only
+  for a blank row with nothing after it — its own comment, *"so that blank rows at the end of the
+  page list are never written"*. When a non-blank row follows, `:1634-1637` pays the debt by
+  scrolling (`while (self.new_rows > 0) cursorScrollOrNewPage(...)`). The narrow reading is the one
+  that applies here, because the join only absorbs *trailing* blank lines — but the general claim
+  was wrong, and #567 ① is justerm doing the same thing ghostty does: spending the row when the pane
+  can pay for it.
 
-  **The root, and why every attempt above was at the wrong layer.** `grid::reflow`'s join collapses
-  a tracked point to `poff.min(line.len())`. A cursor two cells past the content and a cursor one
-  cell past it become the *same* offset, and a cursor at the end of a **hard-ended** line becomes
-  indistinguishable from one at the end of a **full** row. Attempts 3–5 all tried to recover that
-  distinction *after* the collapse, by strengthening a predicate; it is not recoverable there. The
-  fix belongs in the join, where the distance past the content still exists. alacritty has no such
-  problem because a cursor column stays a real column through its reflow and is lifted out of the
-  grid only when `input_needs_wrap` is already set (`grid/resize.rs:113-116`, `:248-251`).
+  **The root — as written here, and as it turned out.** This paragraph claimed it was
+  `grid::reflow`'s join collapsing a tracked point to `poff.min(line.len())`: a cursor two cells past
+  the content and one cell past it become the same offset, and the end of a **hard-ended** line
+  becomes indistinguishable from the end of a **full** row. Attempts 3–5 tried to recover that
+  distinction *after* the collapse by strengthening a predicate, and it is indeed not recoverable
+  there.
+
+  **Measured a day later, that collapse causes none of the four symptoms this was filed for** (#562).
+  It is a *no-op* in each: `18.min(18)`, `6.min(6)`, and the trailing-blank-line case never reaches
+  the line at all. The three symptoms came from three different clamps — the answer `(row + 1, 0)`
+  being the cursor's reading imposed on a mark, the absorbed-blank-line clamp, and #559's defensive
+  bound against `reflow`'s own emission. The `min` does lose the *distance* past the content, which
+  is a real fifth symptom nobody had listed and which #567 ① then settled at the seam. Left standing
+  with its correction rather than rewritten: a stated root that survives four symptoms untouched is
+  the more useful thing to have on the record.
+
+  alacritty has no such problem because a cursor column stays a real column through its reflow and is
+  lifted out of the grid only when `input_needs_wrap` is already set (`grid/resize.rs:113-116`,
+  `:248-251`) — which is also why its guards could never fire here; see the #562 entry.
 
   **One reusable rule did come out of it**, and it is the criterion that killed design 1: **UI state
   must not move app content; app state may.** A highlight is the user's and transient; the cursor is
@@ -428,10 +447,17 @@ the fix site follows from. Whether it is still open is the tracker's answer, not
   emitted at a filled last column was written one column short **with no resize involved**
   (`add_command_mark` stored `cursor.col` and ignored `pending_wrap`), and `extract_lines` is
   asymmetric — its `to` is exclusive and absorbs a one-past column, its `from` is inclusive and
-  cannot. **What is deliberately still open**: the *distance* a point sits past the content is still
-  collapsed to "one past". Carrying it needs destination rows to spill into, and spending those rows
-  destroys content on a pane with no scrollback — which was only a constraint at all because justerm
+  cannot. **What this entry left open, and #567 ① then closed**: a point past the content only got
+  the row it needs while the pane was shorter than the screen, so on a full one — a prompt at the
+  bottom, the ordinary shell shape — the cursor was pulled back onto the last glyph and the next byte
+  destroyed a character. Having the row costs a line of history, which is why it was left: spending
+  it destroys content on a pane with no scrollback, and that was a constraint only because justerm
   reflowed the alt screen and 0 of 3 references do.
+
+  *(The narrower thing that is still collapsed: `poff.min(line.len())` still loses **how far** past
+  the content a point sat. Nothing observable is known to depend on it — the seam clamps such a
+  column into the row either way — and it is the fifth symptom noted against the stated root above,
+  not a gap left by this entry.)*
 
   **That premise is now false (#567, 2026-07-28): the alt screen resizes but no longer reflows.** It
   was never a decision — the fix that made both screens take the new dimensions reached for a helper
