@@ -145,8 +145,8 @@ wide-char reason stated in both, and ghostty permits it only by destroying the g
 (*"pretty broken … should be prevented downstream"*). It is a **product/contract judgement by the
 maintainer**, not a derivation — `resize(1, r)` silently becoming 2 columns is a contract change, and
 reversing it is theirs. It also reverses #536's stated premise (*"1 column is a supported size, not a
-rejected one"*); #536 is re-scoped to the defensive `damage_span` clamp, not closed, since that clamp
-is still correct for any future caller computing `col + width`.
+rejected one"*); #536 was re-scoped to the defensive `damage_span` guard rather than closed, since
+that guard is correct for any future caller computing `col + width` — it has since shipped.
 
 D4's scope is unchanged in the other direction: the floor guarantees *room* for a pair, not that every
 verb carries it — #529 was a D4 violation at any width, independent of the floor.
@@ -371,10 +371,17 @@ the fix site follows from. Whether it is still open is the tracker's answer, not
   writes both halves in one step, so "a sibling already does this" is never evidence that a new
   wide-writing path does. This was the third such path.
 - **#536** — a robustness edge of the pair-repair span on a degenerate width; in scope as the same
-  code family, though it is a bounds guard, not a state-ownership rule. **Its reproduction is now
-  unreachable** through the public API (#547 removed the one-column screen), so what remains is the
-  guard itself: `damage_span` still stores an unclamped bound for any future caller computing
-  `col + width`. Re-scoped, not closed.
+  code family, though it is a bounds guard, not a state-ownership rule. Its reproduction was made
+  unreachable by #547 (the one-column screen is gone), and the guard itself then landed as its own
+  scope: `damage_span` asserts its span in debug and clamps it in release.
+  **Amended by the implementation (2026-07-28).** The census this record implied — one offending
+  caller — was wrong, and the true one is the argument for centralising: **four** call sites derive
+  a damage bound from a *wide pair's width* (`write_glyph`'s `col + width - 1`,
+  `promote_cluster_to_wide`'s `col + 1`, `demote_cluster_to_narrow`'s self-clamped
+  `(col + 1).min(cols - 1)`, and `relocate_cluster_wide`'s literal `(0, 1)`, which is valid only
+  because of #547). Three carried a private guard; one did not. That is the same shape as #529's
+  entry above — justerm restates per site what a reference gets structurally — and it is why the
+  guard belongs at the single point every damage record passes through rather than at the caller.
 - **#547** — not a conformance item but D4's **precondition**: `MIN_COLUMNS = 2` is what makes "both
   halves move together" satisfiable at every supported size. See the D4 note above.
 - **#549** — a **D1 read-side** violation in reflow, and the item that showed this list had a blind

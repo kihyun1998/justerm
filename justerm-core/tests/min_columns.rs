@@ -106,8 +106,10 @@ fn print_and_reflow_agree_at_the_floor() {
 
 /// #536's reproduction, through the public API: a width-2 glyph on the narrowest screen the
 /// engine accepts used to record an out-of-range damage span and panic in `frame()`. The floor
-/// makes that reproduction unreachable — it does **not** fix `damage_span`'s missing clamp,
-/// which is still #536's own scope for any future caller computing `col + width`.
+/// makes that reproduction unreachable; the clamp itself landed separately, as #536's own scope
+/// (`damage_span` now asserts its span in debug and clamps it in release, so no caller computing
+/// `col + width` can store an out-of-range bound). Both halves are needed and neither subsumes the
+/// other: the floor removes this input, the clamp removes the class.
 #[test]
 fn frame_does_not_panic_at_the_floor_after_a_wide_glyph() {
     let mut term = Engine::new(1, 3);

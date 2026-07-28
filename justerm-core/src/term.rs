@@ -517,8 +517,57 @@ impl Term {
     }
 
     /// Record that columns `[left, right]` of `row` changed.
+    ///
+    /// Both columns are **clamped to the last column, and asserted in debug** (#536).
+    ///
+    /// Ten of the fourteen call sites derive their bound from a cursor column or from `cols`.
+    /// **Four derive it from a wide pair's width**, and that is the shape worth centralising:
+    /// `write_glyph`'s `col + width - 1` (which had no guard — this issue), `promote_cluster_to_wide`'s
+    /// `col + 1` (guarded by its own `col + 1 >= cols` early return), `demote_cluster_to_narrow`'s
+    /// `(col + 1).min(cols - 1)` (self-clamped), and `relocate_cluster_wide`'s literal `(0, 1)`
+    /// (valid only because `MIN_COLUMNS = 2`, #547). Three carried a private guard and one did not.
+    ///
+    /// No reference has this shape to port a clamp from: alacritty computes damage ranges too
+    /// (`term/mod.rs:1406`, `:1649` @ `852e971`) but always from a column or `columns()` — its print
+    /// path records no damage at all, relying on the previous and current cursor *points* to bracket
+    /// the line — while xterm.js tracks whole rows (`markDirty(y)`) and ghostty a per-row
+    /// `dirty: bool`. alacritty's `LineDamageBounds::expand`, which this one is a copy of, is equally
+    /// unguarded.
+    ///
+    /// The two halves do different jobs:
+    ///
+    /// - the **`debug_assert` is the detector**. An out-of-range bound is stored silently and
+    ///   detonates later, when `frame()` slices the row, so the stack trace accuses the reader
+    ///   rather than the writer. That delay is what #536 was filed about, and the assert collapses
+    ///   it — a bad caller dies here, at the site that recorded it (measured: an injected off-by-one
+    ///   moved the panic from `frame()`'s slice to this line).
+    /// - the **clamp is the release backstop**, and it clamps *toward a false positive*. justerm is
+    ///   a library, so a panic crosses into the consumer's process; over-damaging repaints a cell
+    ///   that did not change, which costs nothing a consumer can see. ghostty states the asymmetry
+    ///   as a rule: *"Dirty tracking may have false positives but should never have false negatives.
+    ///   A false negative would result in a visual artifact on the screen."* (`page.zig:1993-1995`).
+    ///
+    /// **`left` is guarded for that reason, and it is the axis that can actually lose a cell.**
+    /// Clamping `right` cannot under-report — columns past the last do not exist. But `LineBounds`
+    /// marks a line undamaged with `left = cols, right = 0` and `is_damaged()` is `left <= right`,
+    /// so a single `expand` with `left > right` on an otherwise-clean line leaves the line reading
+    /// as undamaged and **drops its whole span silently**. Unreachable from the ten column-derived
+    /// sites today; guarded because that is precisely the failure ghostty's rule forbids.
+    ///
+    /// `row` is deliberately left to panic on the index, and that is **not** in tension with
+    /// `frame_damage` clamping a row fifty lines below (`prev_cursor.0.min(rows - 1)`). The two
+    /// rows are different kinds of thing under the same rule: `prev_cursor` is a *stale remembered*
+    /// coordinate that a shrinking resize may have put out of range, so clamping it repaints the
+    /// nearest surviving cell — a false positive. `row` here is a *live computed* index for the
+    /// mutation just made, so clamping it would damage a different line than the one that changed:
+    /// a false negative on the real line, which is the outcome the rule forbids.
     fn damage_span(&mut self, row: usize, left: usize, right: usize) {
-        self.line_damage[row].expand(left, right);
+        let last = self.grid.cols().saturating_sub(1);
+        debug_assert!(
+            left <= right && right <= last,
+            "damage_span({row}, {left}, {right}) is not a span inside [0, {last}]"
+        );
+        self.line_damage[row].expand(left.min(last), right.min(last));
     }
 
     /// The first-class scroll recorded since the last `reset_damage`, if any.
