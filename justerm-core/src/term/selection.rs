@@ -76,9 +76,6 @@ impl Term {
         self.selection = None;
     }
 
-    /// Shift the selection up by one absolute line after the oldest history line
-    /// is evicted by the scrollback cap. An endpoint clamps to the new top; if
-    /// the whole selection was on the evicted line, it is cleared.
     /// Shift selection endpoints anchored at absolute line `>= from` down by
     /// one (#449): a top-anchored sub-region scroll grew scrollback while the
     /// rows below the margin stayed fixed on screen, so their content's
@@ -97,6 +94,9 @@ impl Term {
         }
     }
 
+    /// Shift the selection up by one absolute line after the oldest history line
+    /// is evicted by the scrollback cap. An endpoint clamps to the new top; if
+    /// the whole selection was on the evicted line, it is cleared.
     pub(super) fn selection_evict_oldest(&mut self) {
         let Some((a, f)) = self
             .selection
