@@ -316,11 +316,25 @@ scp justerm-vm:/tmp/capout/'*.raw' "$SCRATCH/"
 
 ## Step 5 — adversarial completeness pass (one lens, both corpora)
 
-**One lens, briefed on both corpora.** ① this repo — `architecture.md` §"Hidden
-VT state" + sibling cell-walk (search / selection / logical-lines); ② the
+**Brief the lens from the map first — it is the pre-computed answer to this
+step's question.** Open the territories the change touches under `docs/map/`;
+their `## Blast radius` is the sibling list and their `## Cross-cutting
+invariants` are the facts that hold beyond this territory. That is the corpus-①
+brief, and building it by hand is what this step used to spend its budget on —
+the expensive half of a lens pass is the main-thread harvest, so a wrong or
+missing sibling set is paid for twice.
+
+**One lens, briefed on both corpora.** ① this repo — `docs/map/` (above) +
+`architecture.md` §"Hidden VT state"; ② the
 reference — xterm.js / alacritty / ghostty real source from the **local pinned
 trees** (Step 1's table; `rg`, not `gh api`). These are two *reading assignments
-for one agent*, not two agents. **Never drop either corpus** because the fix looks
+for one agent*, not two agents.
+
+The cell-walk sibling set that used to be hand-listed here is now
+[alt-screen absolute-index floor](../map/invariant/alt-screen-buffer-floor.md),
+which names all four sites and what each one does. It was removed rather than
+kept alongside the map on purpose: a second copy is what goes stale, and the copy
+is always the one the reader happens to open. **Never drop either corpus** because the fix looks
 small (#158) — that is what the old never-collapse rule protected, and it is
 unchanged.
 
@@ -454,6 +468,28 @@ the diff is small:
 No change ends at the code; nothing compiles the drift away. Sweep every surface
 that *describes* the behavior:
 
+- **`docs/map/` — the dependency graph. Two obligations, and the second is the
+  one that makes the map preventive rather than archival.**
+  1. **Coverage** — is the territory this change touched present in the map, and
+     is its `## Blast radius` list still right? A territory with no governing
+     record is a *valid* entry; leave the blank. Coverage may lag.
+  2. **Promotion** — *is the fact this fix revealed also true outside this
+     territory?* If yes, the change **does not land** until a cross-cutting note
+     exists for it under `docs/map/invariant/`. Answer it by grep, not by
+     judgement: in this repo the question is usually *"does this hold at any site
+     that walks `[scrollback ++ grid]` by absolute index / that writes a `Cell`
+     word carrying a row-or-pair fact?"*
+  Promotion cannot lag, and that asymmetry is the whole point. The *first* site to
+  hit such a fact is where it is discovered, and at that moment no node exists —
+  so a map that records invariants only after the third rediscovery is the same
+  post-hoc archive as the helper someone eventually extracts. Measured here:
+  `abs_floor` holds at four sites and was found **three separate times**
+  (#113 → #144 → #207) across months; `Term::abs_floor` was extracted *after* the
+  third, and a helper prevents nothing because whoever writes a *new* walk never
+  goes looking for it. The `#552` roster is 15 issues of the same shape.
+  The map links *out* only — never edit an ADR to add a backlink (Obsidian
+  supplies the reverse for free), and use symbols in `## Code`, never line
+  numbers.
 - **Public doc-comments → docs.rs.** `justerm-core`/`justerm-wasm-decode` ship
   their `///` / `//!` comments verbatim as the crate's **docs.rs** API reference
   (core has ~20 in `lib.rs` alone) — the surface most likely to still describe the
@@ -466,6 +502,16 @@ that *describes* the behavior:
   items only, where every one of those links is dead. `cargo test` does **not**
   cover this — it runs doctests (the code examples), not link resolution — and
   clippy is a different tool that does not carry rustdoc's lints.
+  **A doc-comment can also go stale forward, and nothing catches that.** The
+  publish-time phrase check below rejects *"lands in #N"* — but only in a
+  **README**, and only at publish. `justerm-core/src/lib.rs`'s `Engine::resize`
+  carried *"(Soft-wrap reflow lands in #7.)"* on docs.rs for six weeks after #7
+  closed (2026-06-17), because `resize` is a doc-comment, not a README. When you
+  close an issue a doc-comment *promises*, grep the sources for its number, not
+  just the READMEs. Cheap sweep, run when closing anything:
+  `rg '///.*(lands in|not yet|will land|planned|once #|until #)' --glob '*.rs'`
+  — at the time of writing this returns exactly one hit, so a second hit means a
+  habit is forming, not a slip.
 - **Release notes = GitHub Releases** (tag-driven, `docs/agents/release.md`).
   **There is no `CHANGELOG.md`.** Never rewrite a published entry; if the repo and
   the registry would disagree for a version, open a new note, don't edit the

@@ -11,6 +11,13 @@ VT 바이트 스트림을 터미널 화면 상태(그리드 + 스크롤백)로 �
   라이브러리'에서 'first-party 풀스택'으로 피벗함(ADR-0012→0018) — 단 *core 경계는 불변*(core 는 여전히 안 그림).
 - **첫 소비처 = PenTerm** (Tauri 터미널 앱). `justerm-core` 는 penterm 전용이 아니라 *재사용 가능한 독립
   크레이트*다.
+- **착수 전 배선도**: **`docs/map/`** (허브 `docs/map/README.md`) — *"이걸 건드리면 뭐가 같이
+  움직이나"*(수평)와 *"이 코드는 어떤 설계·결정에서 나왔나"*(수직)에 답하는 링크 그래프. 아래
+  ADR/architecture.md 는 **사건**으로 색인돼 있어(결정한 날·작업·재결정 클러스터) 둘 다 못 답한다.
+  영토 노트는 **배타적이지 않고**, N개 영토에 걸치는 사실은 *횡단 불변식* 노트로 승격한다 —
+  `abs_floor` 가 네 곳에 걸린 채 아무 데도 안 그려져 있어 세 번 따로 발견된(#113→#144→#207) 실패가
+  이 층이 존재하는 이유다. **빈 `## Governing decisions` 는 결함이 아니라 산출물이다.** 유지 규율은
+  `docs/agents/theflow.md` Step 6.
 - **상세 계약(구현 시 참조)**: **`docs/architecture.md`** — 셀·damage·뷰포트/스크롤·cadence·
   selection·직렬화·엔진 API 의 authoritative 스펙. 핵심 결정 근거는 `docs/adr/`(0001 vte·0002
   beamterm→0018 justerm-renderer·0019 셀 합성 모델 — 렌더러가 셀 하나를 bg/fg/잉크로 푸는
@@ -76,7 +83,8 @@ cargo bench              # throughput 마이크로벤치(추세 기록)
 ## 핵심 규칙
 
 - **주석**: 영어 (코드 주석은 영어로 작성한다).
-- **CONTEXT.md / docs/adr/**: 영어 (LLM 토큰 효율). 그 외 사람이 읽는 문서·CLAUDE.md: 한국어.
+- **CONTEXT.md / docs/adr/ / docs/map/**: 영어 (LLM 토큰 효율 — `docs/map/` 은 *모든* 착수 시점에
+  에이전트가 읽으므로 glossary 와 같은 근거가 적용된다). 그 외 사람이 읽는 문서·CLAUDE.md: 한국어.
 - **네이밍**: Rust 관용(snake_case 함수/모듈, CamelCase 타입).
 - **커밋 메시지**: 관련 GitHub 이슈 번호 참조 (`feat: ... (#12)`). `Co-Authored-By` trailer 금지.
 - **컴플라이언스는 누적**: VT 정합성(8.6K SLoC급 long tail)은 한 방에 못 짠다 — 공통 90% 부터,
