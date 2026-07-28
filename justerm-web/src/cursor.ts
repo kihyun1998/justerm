@@ -50,11 +50,13 @@ export class CursorBlink {
    * {@link restart} vs {@link restartFromInput}. */
   private lastInput = 0;
   private idleTimeoutMs = BLINK_IDLE_TIMEOUT;
+  private composing = false;
 
   /** Whether the cursor is shown at time `now` (ms). */
   isVisible(now: number): boolean {
-    // Not blinking at all, reduced motion, or unfocused = solid (and solid means *shown*).
-    if (!this.blinking() || this.reducedMotion || !this.focused) {
+    // Not blinking at all, reduced motion, unfocused, or mid-composition = solid (and solid means
+    // *shown*).
+    if (!this.blinking() || this.reducedMotion || !this.focused || this.composing) {
       return true;
     }
     // Idle too long → park solid (#593). A pure read of `(now, lastInput)`, so it composes with the
@@ -105,6 +107,27 @@ export class CursorBlink {
    */
   restart(now: number): void {
     this.lastRestart = now;
+  }
+
+  /**
+   * An IME composition is in progress (#592) — the caret stays put until it ends.
+   *
+   * Two of the three references do this and for the same stated reason: alacritty suppresses the
+   * blink in the same expression that resolves it (`alacritty/src/event.rs:1633`), and ghostty
+   * forces a solid block during preedit *"because it shows an important editing state to the user"*
+   * (`src/renderer/cursor.zig:47`). xterm.js has no rule at all.
+   *
+   * **Measured before building, in a real browser**: with the application silent — the default since
+   * #575 — the caret is *already* solid during composition, and no content cell changes either. So
+   * this is a no-op in the common case and bites only where an application explicitly asked to
+   * blink. Narrow on purpose.
+   *
+   * It suppresses the blink and nothing else. It deliberately does not touch the idle clock: someone
+   * mid-composition has not gone idle, but {@link restartFromInput} is the only thing that speaks
+   * for input, and giving this gate a second job is how a chain of single-purpose gates rots.
+   */
+  setComposing(composing: boolean): void {
+    this.composing = composing;
   }
 
   /** The user interacted: reset the blink phase **and** the idle clock (#593). */

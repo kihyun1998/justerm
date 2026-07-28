@@ -598,6 +598,18 @@ export class JustermRenderer implements Renderer {
   }
 
   /**
+   * An IME composition started / ended (#592) — the caret stays put for the duration.
+   *
+   * Redraws immediately: no frame carries this (composition never reaches the engine), so waiting
+   * for one would leave the caret mid-phase until the next output — the same reason
+   * {@link setFocused} redraws.
+   */
+  setComposing(composing: boolean): void {
+    this.blink.setComposing(composing);
+    if (this.cursor) this.redrawCursor();
+  }
+
+  /**
    * Force the cursor to blink (`true`) / stay steady (`false`), or `undefined` to follow the
    * application's DECSCUSR / `CSI ?12` mode (#575). The live counterpart of
    * {@link JustermRendererOptions.cursorBlink}.

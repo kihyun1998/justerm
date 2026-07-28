@@ -245,10 +245,16 @@ export class Terminal {
     );
     // Composition events only fire on the focused textarea; route them to the
     // controller, then clear the textarea once its deferred read has run.
-    const onStart = (): void => composition.compositionStart();
+    // The caret also stops blinking for the duration (#592) — composition is a browser fact the
+    // engine never sees, so this is the only place that can tell the renderer about it.
+    const onStart = (): void => {
+      composition.compositionStart();
+      this.renderer.setComposing?.(true);
+    };
     const onUpdate = (e: CompositionEvent): void => composition.compositionUpdate(e.data);
     const onEnd = (): void => {
       composition.compositionEnd();
+      this.renderer.setComposing?.(false);
       this.clearTextareaWhenIdle();
     };
     ta.addEventListener("compositionstart", onStart);

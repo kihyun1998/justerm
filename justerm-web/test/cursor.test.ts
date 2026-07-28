@@ -219,3 +219,64 @@ describe("CursorBlink — idle timeout (#593)", () => {
     expect([blink.isVisible(600), blink.isVisible(10_601)]).toEqual([true, true]);
   });
 });
+
+// #592 — while an IME composition is in progress the caret stays put. Two of the three references do
+// this (pinned trees, 2026-07-28): alacritty suppresses the blink as a term in the same expression
+// (`alacritty/src/event.rs:1633` @ 852e971), and ghostty forces a solid block during preedit
+// (`src/renderer/cursor.zig:47` @ e6e26e1, *"it shows an important editing state to the user"*).
+// xterm.js has no rule — its only `isComposing` guard near the cursor is `_syncTextArea`.
+//
+// MEASURED before building (real browser, composition driven through the hidden textarea): with the
+// application silent — the default since #575 — the cursor is ALREADY solid during composition, and
+// the content cells never change either. So this gate is a no-op in the common case and bites only
+// where an application explicitly asked to blink. That narrowness is the point, not a shortcoming.
+//
+// NOT adopted: ghostty's stronger form, where a preedit outranks DECTCEM and *reveals* a cursor the
+// application hid. That inverts `cursorCommand`'s contract for a rare case; recorded on #592.
+describe("CursorBlink — IME composition (#592)", () => {
+  it("stays solid while composing, even though the application asked to blink", () => {
+    const blink = new CursorBlink();
+    blink.setAppBlink(true);
+
+    blink.setComposing(true);
+
+    expect([blink.isVisible(0), blink.isVisible(600), blink.isVisible(1200)]).toEqual([true, true, true]);
+  });
+
+  it("resumes blinking when the composition ends", () => {
+    const blink = new CursorBlink();
+    blink.setAppBlink(true);
+    blink.setComposing(true);
+    expect(blink.isVisible(600)).toBe(true); // suppressed
+
+    blink.setComposing(false);
+
+    expect([blink.isVisible(600), blink.isVisible(1200)]).toEqual([false, true]);
+  });
+
+  // The no-op case the browser measurement found, pinned so a later change cannot quietly make
+  // composition *start* a blink that nobody asked for.
+  it("does not make a non-blinking cursor blink", () => {
+    const blink = new CursorBlink();
+
+    blink.setComposing(true);
+    expect([blink.isVisible(0), blink.isVisible(600)]).toEqual([true, true]);
+
+    blink.setComposing(false);
+    expect([blink.isVisible(0), blink.isVisible(600)]).toEqual([true, true]);
+  });
+
+  // Composing suppresses the blink; it does not touch the idle clock (#593) or the phase. A user
+  // mid-composition has plainly not gone idle, and `restartFromInput` is the only thing that speaks
+  // for input — keeping the two separate is what stops this gate from acquiring a second job.
+  it("leaves the idle clock alone", () => {
+    const blink = new CursorBlink();
+    blink.setAppBlink(true);
+    blink.setIdleTimeout(10_000);
+
+    blink.setComposing(true);
+    blink.setComposing(false);
+
+    expect(blink.isVisible(10_601)).toBe(true); // still idled out — composing did not count as input
+  });
+});

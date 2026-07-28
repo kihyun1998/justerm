@@ -1055,3 +1055,29 @@ test("the cursor stops blinking after an idle period, and input revives it (#593
   // …and it is not a one-way door: user input restarts the idle clock and the blink resumes.
   expect(p.afterInputOff).toBe(p.background);
 });
+
+// #592: the caret stops blinking while an IME composition is open. Two of the three references do
+// this (alacritty `event.rs:1633`, ghostty `renderer/cursor.zig:47`); xterm.js has no rule. Measured
+// before building: with the application silent — the default since #575 — the caret is already solid
+// during composition, so this gate bites only where an application asked to blink, which is exactly
+// the state this test sets up. The composition events go to the real hidden textarea, so the real
+// CompositionController and Terminal wiring run; vitest cannot reach either.
+test("the caret stops blinking while an IME composition is open (#592)", async ({ page }) => {
+  await page.goto("/");
+  await expect(page.getByRole("button", { name: "Cursor blink: OFF" })).toBeVisible();
+  await page.locator("#term").dispatchEvent("mousedown"); // focus the hidden textarea
+
+  const p = await page.evaluate(() => window.__composeCaretProbe!());
+
+  // Control: with the application asking to blink and no composition, the caret really does blink at
+  // this pixel — without it the composing assertions could pass on a cell that never changes.
+  expect(p.idleOn, `background ${p.background}`).not.toBe(p.background);
+  expect(p.idleOff).toBe(p.background);
+
+  // THE FIX: mid-composition the caret is solid, and stays solid a full blink interval later.
+  expect(p.composingA).toBe(p.idleOn);
+  expect(p.composingB).toBe(p.idleOn);
+
+  // …and it is not a one-way door: the composition ends and the blink resumes.
+  expect(p.afterEndOff).toBe(p.background);
+});
