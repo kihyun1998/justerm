@@ -601,9 +601,15 @@ export class JustermRenderer implements Renderer {
    * xterm.js answers this exactly, by scanning the viewport it owns. A frame-mode consumer holds
    * damage, not the grid, so the exact question is not answerable here — but the gate only needs to
    * be **conservative**, because a false positive costs one redundant re-pack while a false
-   * negative would freeze blinking text. So: a Full frame *replaces* the answer (it carries every
-   * row, so its verdict is exact), and a Partial frame can only *add* to it. The result decays only
-   * at the next Full frame, which is the safe direction.
+   * negative would freeze blinking text. So: a Full frame *replaces* the answer, and a Partial
+   * frame can only *add* to it. The result decays only at the next Full frame, which is the safe
+   * direction.
+   *
+   * **What the exactness of the Full case rests on**, cited at the layer that owns it rather than
+   * at the renderer's paraphrase of it: core emits full damage as every row at full width
+   * (`justerm-core/src/term.rs`, `TermDamage::Full` → `(0..rows).map(|l| (l, 0, cols - 1))`), which
+   * `FrameKind::Full` states as its contract (*"Every row is present"*, `serialize.rs`). If a Full
+   * frame ever became a subset, this gate would start producing the one error it must not.
    *
    * Without this, a consumer that opts in pays a full re-pack per half-period on every terminal —
    * `resolve_and_pack` walks every cell and `plan_upload` diffs the result — even where no cell has
