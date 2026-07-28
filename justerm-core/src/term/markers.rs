@@ -56,9 +56,6 @@ impl Term {
         }
     }
 
-    /// Register a decoration marker at viewport `row`, returning its stable id
-    /// (#118). The row is resolved to an absolute buffer line (like a selection
-    /// anchor), so the marker tracks that content through scroll/eviction/reflow.
     /// The active buffer's marker list (#177 S0) — alt while on the alt screen,
     /// else normal. Add/rotate/project operate on this; primary-scoped queries
     /// (`command_marks`/`command_lines`) and scrollback eviction read
@@ -80,6 +77,9 @@ impl Term {
         }
     }
 
+    /// Register a decoration marker at viewport `row`, returning its stable id
+    /// (#118). The row is resolved to an absolute buffer line (like a selection
+    /// anchor), so the marker tracks that content through scroll/eviction/reflow.
     pub fn add_marker(&mut self, row: usize) -> MarkerId {
         // On the alt screen this anchors an *alt-scoped* marker (#187): per-buffer
         // storage (#186) keeps it out of the primary list, and it is disposed on
@@ -256,10 +256,6 @@ impl Term {
         }
     }
 
-    /// Shift markers down one absolute line after the oldest history line is
-    /// evicted; a marker *on* that line (abs 0) has left the buffer, so it is
-    /// disposed and announced (#118) — the marker analogue of
-    /// `selection_evict_oldest`, but a list with per-marker disposal.
     /// The marker analogue of `selection_shift_below_margin` (#449) — primary
     /// only, because the accrual branch that needs it is primary-only.
     pub(super) fn markers_shift_below_margin(&mut self, from: usize) {
@@ -270,6 +266,10 @@ impl Term {
         }
     }
 
+    /// Shift markers down one absolute line after the oldest history line is
+    /// evicted; a marker *on* that line (abs 0) has left the buffer, so it is
+    /// disposed and announced (#118) — the marker analogue of
+    /// `selection_evict_oldest`, but a list with per-marker disposal.
     pub(super) fn markers_evict_oldest(&mut self) {
         // Scrollback eviction is primary-only (the alt screen has none).
         let mut disposed = Vec::new();
