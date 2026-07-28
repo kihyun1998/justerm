@@ -950,15 +950,9 @@ impl Term {
         let bottom = top + rows; // abs lines [top, bottom) are on screen
 
         // If viewport row 0 is a wrap-continuation, walk up into scrollback to
-        // the logical line's true start so an edge-spanning URL still matches.
-        // On the alt screen the scrollback belongs to the *primary* buffer, so
-        // the walk must stop at the screen top (`scrollback.len()`) — the alt
-        // buffer is separate (selection clears on alt-swap for the same reason).
-        let floor = if self.on_alt {
-            self.scrollback.len()
-        } else {
-            0
-        };
+        // the logical line's true start so an edge-spanning URL still matches —
+        // floored, because on alt that scrollback is the *primary* buffer's.
+        let floor = self.abs_floor();
         let mut start = top;
         while start > floor && self.abs_row(start - 1).is_wrapped() {
             start -= 1;
@@ -1053,17 +1047,10 @@ impl Term {
         };
         let total = self.scrollback.len() + self.grid.rows();
 
-        // On the alt screen the scrollback belongs to the *primary* buffer, so the
-        // walk must start at the screen top (`scrollback.len()`): primary matches are
-        // unreachable on alt, and a primary WRAPLINE row would otherwise soft-wrap-join
-        // into the alt grid and corrupt the haystack at the boundary. Mirrors the
-        // `viewport_logical_lines` floor (#113) — the alt buffer is separate (selection
-        // clears on alt-swap for the same reason). (#144)
-        let floor = if self.on_alt {
-            self.scrollback.len()
-        } else {
-            0
-        };
+        // Floored: primary matches are unreachable on alt, and a primary WRAPLINE row
+        // would otherwise soft-wrap-join into the alt grid and corrupt the haystack at
+        // the boundary. (#144)
+        let floor = self.abs_floor();
         let mut matches = Vec::new();
         let mut r = floor;
         while r < total {
@@ -1876,11 +1863,7 @@ impl Term {
         if total == 0 {
             return String::new();
         }
-        let start = if self.on_alt {
-            self.scrollback.len()
-        } else {
-            0
-        };
+        let start = self.abs_floor();
         let mut doc = self.extract_lines(&self.grid, start, 0, total - 1, usize::MAX);
         // Trim *trailing* empty lines (blank screen rows below the content) — pure
         // noise to a listener, and what a fresh screen would otherwise emit. Keep

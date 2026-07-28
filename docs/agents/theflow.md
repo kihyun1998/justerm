@@ -436,12 +436,13 @@ the diff is small:
    Publishing is tag-driven and automatic: pushing `vX.Y.Z` ships to both
    registries with no confirmation step, and nothing but a yank comes back.
 3. **Absolute-index walks over the concatenated `[scrollback ++ grid]` buffer —
-   `abs_floor()` (`term/walk.rs` since #585, with the word-selection walkers
-   `prev_pos` / `next_pos`) and every reader that indexes absolutely — grep
-   `abs_floor` and the raw `scrollback.len()` walks rather than trusting a count
-   written here. Note the walkers moving into one module did *not* centralise the
-   rule: `viewport_logical_lines`, `search` and `accessible_text` still open-code
-   the floor expression in `term.rs`.** On the alt screen an unfloored index reads the wrong region and
+   `abs_floor()` (`term/walk.rs` since #585) and every reader that indexes
+   absolutely — grep `abs_floor` *and* the raw `scrollback.len()` walks rather
+   than trusting a count written here. The second grep is not redundant with the
+   first, and centralising the expression (#585 folded the last open-coded copies
+   into calls) does not retire it: every miss so far was a *fresh* unfloored walk
+   that never mentioned `abs_floor`, so searching for the function's name cannot
+   find the defect this entry exists to catch.** On the alt screen an unfloored index reads the wrong region and
    returns *plausible* text: selection, search and markers silently disagree with
    the screen. This is on the list because the completeness pass has found a fresh
    sibling three times — #113 (logical lines) → #144 (`search`) → #207

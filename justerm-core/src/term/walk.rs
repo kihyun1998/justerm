@@ -5,18 +5,24 @@
 //! decoration markers and `accessible_text` reach the buffer's cells through
 //! `abs_line` / `abs_row` here rather than indexing it themselves.
 //!
-//! The alt-screen floor contract is **not** yet centralised, and this module is
-//! not where that finishes: on the alt screen `scrollback` holds the *primary*
-//! buffer's history, so an absolute-index walk has to floor at `scrollback.len()`
-//! — a defect this crate has shipped three separate times (#113, #144, #207).
-//! `abs_floor` states that rule and the two logical-line walkers here obey it,
-//! but `viewport_logical_lines`, `search` and `accessible_text` still open-code
-//! the same `if on_alt { scrollback.len() } else { 0 }` expression back in
-//! `term.rs`. Do not read this module's existence as "the floor is handled".
+//! `abs_floor` is the alt-screen floor contract, and since #585 it is the *only*
+//! spelling of it: on the alt screen `scrollback` holds the *primary* buffer's
+//! history, so an absolute-index walk has to floor at `scrollback.len()` — a
+//! defect this crate has shipped three separate times (#113, #144, #207). Every
+//! reader that walks absolutely now calls it rather than open-coding
+//! `if on_alt { scrollback.len() } else { 0 }`, so `rg abs_floor` finds every walk
+//! that *has* a floor. Keep it that way: a new absolute walk calls `abs_floor`.
+//!
+//! It does **not** find the ones that don't, which is the defect that actually
+//! ships. All three historical misses predate `abs_floor` — each wrote a fresh
+//! absolute walk with no floor at all, and a future one whose author does not know
+//! the rule exists will not call this function either, so its name will not appear
+//! for a grep to catch. That is why `theflow.md`'s Step 5 entry asks for the raw
+//! `scrollback.len()` sweep *as well*, and why centralising here does not retire
+//! that second pass.
 //!
 //! Visibility is `pub(super)` for what `term.rs` actually calls, private for what
-//! only this module walks with — `abs_floor` included, since its only callers are
-//! the two walkers below. `pub(super)` is not a widening: an item private to
+//! only this module walks with. `pub(super)` is not a widening: an item private to
 //! `term` was already visible to `term` and all of its descendants, which is
 //! exactly what `pub(super)` in a child restores.
 
@@ -145,7 +151,12 @@ impl Term {
     /// join across it. Mirrors the `search()` (#144) and `viewport_logical_lines`
     /// (#113) floors: justerm's single `[scrollback ++ grid]` buffer reproduces the
     /// primary↔alt isolation xterm gets from separate `Buffer` objects.
-    fn abs_floor(&self) -> usize {
+    ///
+    /// The same separation is why the *selection* is cleared on an alt swap rather
+    /// than re-anchored — a span cannot mean anything across the boundary either.
+    /// Read that as one rule with two expressions, not two coincidences: if this
+    /// floor ever moves, the selection's alt handling is the sibling to check.
+    pub(super) fn abs_floor(&self) -> usize {
         if self.on_alt {
             self.scrollback.len()
         } else {
