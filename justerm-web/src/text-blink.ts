@@ -27,6 +27,9 @@
 export class TextBlink {
   private intervalMs = 0;
   private reducedMotion = false;
+  /** When the current run of blinking started — the phase is measured from here, so switching the
+   * blink on always begins with the text **shown**. See {@link TextBlink.setIntervalMs}. */
+  private origin = 0;
 
   /** Whether text blink is actually running — an interval was set *and* motion is allowed. */
   get enabled(): boolean {
@@ -39,21 +42,30 @@ export class TextBlink {
    */
   isVisible(now: number): boolean {
     if (!this.enabled) return true;
-    return Math.floor(now / this.intervalMs) % 2 === 0;
+    return Math.floor(Math.max(0, now - this.origin) / this.intervalMs) % 2 === 0;
   }
 
   /**
    * The half-period in ms — xterm.js's `blinkIntervalDuration`. `0` (the default) disables the
-   * blink entirely.
+   * blink entirely. `now` anchors the phase (see below).
    *
    * A negative, fractional-below-1 or non-finite value is treated as `0` rather than throwing:
    * xterm.js does throw on a negative (`OptionsService.ts:173-178`), but this widget's other
    * policy setters report what they adopted instead of panicking across the seam
    * ({@link CursorBlink.setIdleTimeout}), and internal coherence is the tie-breaker for a
    * consumer-facing API shape.
+   *
+   * **Switching the blink ON anchors the phase**, so the text is shown at that instant rather than
+   * possibly vanishing the moment a consumer enables the feature. Both corpora agree here, which is
+   * what makes it a direction rather than a difference: xterm.js sets `_blinkOn = true` before
+   * arming its interval (`TextBlinkStateManager.ts:72-73`) and the sibling {@link CursorBlink}
+   * anchors through `restart()`. Note what this is *not*: the phase still has no restart affordance
+   * on the input path — anchoring happens only when blinking starts, never while it runs.
    */
-  setIntervalMs(ms: number): void {
+  setIntervalMs(ms: number, now: number): void {
+    const was = this.enabled;
     this.intervalMs = Number.isFinite(ms) && ms >= 1 ? Math.floor(ms) : 0;
+    if (!was && this.enabled) this.origin = now;
   }
 
   /**
@@ -64,8 +76,13 @@ export class TextBlink {
    * letting it win can never make steady text blink. Derived rather than ported (xterm.js's `src`
    * has zero `prefers-reduced-motion` hits; alacritty and ghostty are native), and it generalises
    * to any later motion knob on this widget rather than being a per-feature call.
+   *
+   * Releasing it re-anchors the phase for the same reason enabling an interval does — leaving
+   * reduced motion is a blink *start*, and a start shows the text.
    */
-  setReducedMotion(reduced: boolean): void {
+  setReducedMotion(reduced: boolean, now: number): void {
+    const was = this.enabled;
     this.reducedMotion = reduced;
+    if (!was && this.enabled) this.origin = now;
   }
 }

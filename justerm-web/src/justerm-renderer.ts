@@ -219,6 +219,16 @@ export function blinkPhaseHeader(cols: number, rows: number, blinkOn: boolean): 
   return h;
 }
 
+/** Whether any cell in a frame's flag column carries `blinkBit` (#576). Pure, so the gate on the
+ * phase re-pack is unit-testable without a backend — and separate from the frame it came from, so
+ * a `number[]` fixture and the decoder's `Uint16Array` are the same code path. */
+export function carriesBlink(flags: ArrayLike<number>, blinkBit: number): boolean {
+  for (let i = 0; i < flags.length; i++) {
+    if (((flags[i] ?? 0) & blinkBit) !== 0) return true;
+  }
+  return false;
+}
+
 /** Flatten projected decoration rects into the renderer's stride-6 wire
  * `[row, left, right, layer(0=bottom/1=top), bg, fg]…`. `bg`/`fg` are absolute `0xRRGGBB`
  * used verbatim (the consumer already resolved its theme — #393); an absent override becomes
@@ -340,7 +350,14 @@ export class JustermRenderer implements Renderer {
    * so it must not run while they disagree with the grid the renderer holds — see
    * {@link JustermRenderer.repackAtTextBlinkPhase}. `undefined` until the first frame. */
   private lastFrameGrid: { cols: number; rows: number } | undefined;
+  /** Whether any cell the renderer holds may carry `BLINK` — the gate on the phase re-pack (#576).
+   * See {@link JustermRenderer.trackBlinkCells} for why it over-approximates and why that is sound. */
+  private mayHaveBlinkCells = false;
   private rafId: number | undefined;
+  /** Held so {@link JustermRenderer.dispose} can detach: since #576 this listener *draws* (it
+   * re-packs and presents), so leaving it attached lets a disposed widget repaint its canvas. */
+  private readonly motionQuery: MediaQueryList;
+  private readonly onMotionChange: (e: MediaQueryListEvent) => void;
   /** Focus gates the selection colour (focused → `selectionBg`, blurred → the dimmer
    * `selectionInactiveBg`) and the blink (blurred → solid). xterm's two selection colours (#115). */
   private focused = true;
@@ -370,16 +387,20 @@ export class JustermRenderer implements Renderer {
     private selectionInactiveBg: number,
   ) {
     // Honour prefers-reduced-motion (#119): suppress the cursor blink AND the SGR-5 text blink
-    // (#576), tracking changes live. Text needs the re-sync that the cursor does not: a change
-    // landing on the off phase would otherwise leave that text invisible until the next frame.
-    const mq = window.matchMedia("(prefers-reduced-motion: reduce)");
-    this.blink.setReducedMotion(mq.matches);
-    this.textBlink.setReducedMotion(mq.matches);
-    mq.addEventListener("change", (e) => {
+    // (#576), tracking changes live. Text needs two things the cursor does not: a re-sync (a change
+    // landing on the off phase would otherwise leave that text invisible until the next frame) and
+    // a loop start — releasing reduced motion is the one path that turns blinking on without going
+    // through `setTextBlinkInterval`, and with a hidden cursor nothing else would ever start it.
+    this.motionQuery = window.matchMedia("(prefers-reduced-motion: reduce)");
+    this.blink.setReducedMotion(this.motionQuery.matches);
+    this.textBlink.setReducedMotion(this.motionQuery.matches, now());
+    this.onMotionChange = (e: MediaQueryListEvent): void => {
       this.blink.setReducedMotion(e.matches);
-      this.textBlink.setReducedMotion(e.matches);
+      this.textBlink.setReducedMotion(e.matches, now());
       this.syncTextBlinkPhase();
-    });
+      if (this.textBlink.enabled) this.startBlinkLoop();
+    };
+    this.motionQuery.addEventListener("change", this.onMotionChange);
   }
 
   static async create(opts: JustermRendererOptions): Promise<JustermRenderer> {
@@ -546,8 +567,6 @@ export class JustermRenderer implements Renderer {
     // blinking cells back on until the loop's next flip. `apply_damage` stores this as the
     // renderer's `last_blink_on`, so the two stay in step by construction.
     const textBlinkOn = this.textBlink.isVisible(now());
-    this.lastTextBlinkOn = textBlinkOn;
-    this.lastFrameGrid = { cols: frame.cols, rows: frame.rows };
     this.backend.apply_damage(
       damageHeader(frame, textBlinkOn),
       asU32(frame.spans),
@@ -563,9 +582,40 @@ export class JustermRenderer implements Renderer {
       // Optional on the frame (a fixture may omit it) → empty scatters as all-Default.
       asU32(frame.underlineColor ?? new Uint32Array(0)),
     );
+    // Everything below records what the renderer NOW holds, so it is committed only after
+    // `apply_damage` returns: that call refuses a malformed span directory (`webgl.rs`, #355) and
+    // returns *before* it stores the phase, so recording first would leave this side believing it
+    // pushed a phase the renderer never took — and the loop, seeing no flip, would not correct it.
+    this.lastTextBlinkOn = textBlinkOn;
+    this.lastFrameGrid = { cols: frame.cols, rows: frame.rows };
+    this.trackBlinkCells(frame);
     // A frame is the only thing that establishes a grid to re-pack, so the loop starts here as
     // well as at the cursor — a terminal with a hidden cursor still blinks its SGR 5 text.
     if (this.textBlink.enabled) this.startBlinkLoop();
+  }
+
+  /**
+   * Track whether the renderer's grid may hold a `BLINK` cell — xterm.js's `needsBlinkInViewport`
+   * (`TextBlinkStateManager.ts:67`), adapted to frame mode (#576).
+   *
+   * xterm.js answers this exactly, by scanning the viewport it owns. A frame-mode consumer holds
+   * damage, not the grid, so the exact question is not answerable here — but the gate only needs to
+   * be **conservative**, because a false positive costs one redundant re-pack while a false
+   * negative would freeze blinking text. So: a Full frame *replaces* the answer (it carries every
+   * row, so its verdict is exact), and a Partial frame can only *add* to it. The result decays only
+   * at the next Full frame, which is the safe direction.
+   *
+   * Without this, a consumer that opts in pays a full re-pack per half-period on every terminal —
+   * `resolve_and_pack` walks every cell and `plan_upload` diffs the result — even where no cell has
+   * ever carried SGR 5, and the produced buffer is byte-identical. **Measured** (demo, 600ms
+   * interval, 3.0s, presenting rAF turns, identical conditions either side): 16 with three blinking
+   * cells on screen, 11 with none — a delta of 5, which is exactly the 5 phase flips in that window.
+   * The work behind each is proportional to `cols × rows`.
+   */
+  private trackBlinkCells(frame: DecodedFrame): void {
+    const here = carriesBlink(frame.flags, this.flagBits.blink);
+    // kind 0 = Full, 1 = Partial (the same encoding `damageHeader` puts on the wire).
+    this.mayHaveBlinkCells = frame.kind === 0 ? here : this.mayHaveBlinkCells || here;
   }
 
   render(): void {
@@ -706,7 +756,7 @@ export class JustermRenderer implements Renderer {
    * true and re-rendering when its interval stops (`TextBlinkStateManager._updateIntervalState`).
    */
   setTextBlinkInterval(ms: number): void {
-    this.textBlink.setIntervalMs(ms);
+    this.textBlink.setIntervalMs(ms, now());
     this.syncTextBlinkPhase();
     if (this.textBlink.enabled) this.startBlinkLoop();
   }
@@ -764,10 +814,13 @@ export class JustermRenderer implements Renderer {
    * grid whenever the SGR 5 text phase flips (#576).
    *
    * The two phases are separate clocks but share one loop and, when they flip together, **one
-   * present** — the same "pack once, present once" rule `applyFrame` follows (#421). rAF is also
-   * what makes the text half's viewport gate structural: a browser stops firing it for a hidden
-   * document, which is the condition xterm.js has to observe explicitly
-   * (`TextBlinkStateManager.setViewportVisible`).
+   * present** — the same "pack once, present once" rule `applyFrame` follows (#421).
+   *
+   * rAF stops firing for a hidden *document*, so a backgrounded tab costs nothing. That is **not**
+   * the same guarantee as xterm.js's `setViewportVisible`, which is fed by an `IntersectionObserver`
+   * on the screen element: a terminal scrolled out of view inside a visible page keeps ticking here.
+   * The gap applies equally to the cursor half of this loop, so it is a widget-level decision rather
+   * than a text-blink one, and is left as it was.
    */
   private startBlinkLoop(): void {
     if (this.rafId !== undefined) return;
@@ -776,9 +829,11 @@ export class JustermRenderer implements Renderer {
       const cursorOn = this.blink.isVisible(t);
       const cursorFlip = cursorOn !== this.lastBlinkOn;
       const textOn = this.textBlink.isVisible(t);
-      const textFlip = textOn !== this.lastTextBlinkOn;
-      // The text re-pack goes first: it re-issues the whole grid, and the cursor is a uniform on
-      // top of it, so packing after would drop the cursor for one frame.
+      // Gated on there being something to conceal: the flip is a full re-pack, and running it over
+      // a grid with no BLINK cell produces a byte-identical buffer at the cost of a walk over every
+      // cell. The two orders below are interchangeable (the cursor is a shader uniform, not an
+      // instance — `webgl.rs` `set_cursor` sets no `needs_repack`), so this one is only convention.
+      const textFlip = this.mayHaveBlinkCells && textOn !== this.lastTextBlinkOn;
       const repacked = textFlip && this.repackAtTextBlinkPhase(textOn);
       if (cursorFlip) this.pushCursor(cursorOn);
       if (repacked || cursorFlip) this.backend.render();
@@ -787,11 +842,15 @@ export class JustermRenderer implements Renderer {
     this.rafId = requestAnimationFrame(tick);
   }
 
-  /** Stop the blink loop. */
+  /** Stop the blink loop and detach the reduced-motion listener. Both are draw paths now (#576):
+   * the listener re-packs and presents, so a disposed widget that kept it would still repaint its
+   * canvas. Note that nothing calls this yet — `Terminal.dispose` does not, and `dispose` is not on
+   * the `Renderer` port — so the loop currently outlives the widget either way. */
   dispose(): void {
     if (this.rafId !== undefined) {
       cancelAnimationFrame(this.rafId);
       this.rafId = undefined;
     }
+    this.motionQuery.removeEventListener("change", this.onMotionChange);
   }
 }

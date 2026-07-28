@@ -5,6 +5,7 @@ import {
   asU16,
   asU32,
   blinkPhaseHeader,
+  carriesBlink,
   cursorCommand,
   damageHeader,
   decorationWire,
@@ -90,6 +91,32 @@ describe("blinkPhaseHeader", () => {
     const h = blinkPhaseHeader(1, 1, true);
     expect(h).toBeInstanceOf(Uint32Array);
     expect(h.length).toBe(8);
+  });
+});
+
+// #576: the gate on the phase re-pack — xterm.js's `needsBlinkInViewport`, which it answers exactly
+// by scanning the viewport it owns. A frame-mode consumer has damage, not the grid, so this is the
+// conservative half of that question: it may say yes when the answer is no (one redundant re-pack)
+// and must never say no when the answer is yes (frozen blinking text).
+describe("carriesBlink", () => {
+  const BLINK = 0x10; // core's `CellFlags::BLINK` (1 << 4); the adapter reads it from `flags()`
+
+  it("finds the bit anywhere in the column, and reports absence", () => {
+    expect(carriesBlink(new Uint16Array([0, 0, BLINK, 0]), BLINK)).toBe(true);
+    expect(carriesBlink(new Uint16Array([0, 0, 0]), BLINK)).toBe(false);
+    expect(carriesBlink(new Uint16Array(0), BLINK)).toBe(false);
+  });
+
+  it("masks rather than compares, so a cell with other attributes still counts", () => {
+    // The failure this pins: `flags[i] === BLINK` would miss every bold/underlined blinking cell,
+    // and the loop would then never re-pack for them.
+    expect(carriesBlink(new Uint16Array([0x01 | BLINK]), BLINK)).toBe(true);
+    expect(carriesBlink(new Uint16Array([0x01 | 0x04]), BLINK)).toBe(false);
+  });
+
+  it("reads a plain-array fixture the same way as the decoder's Uint16Array", () => {
+    expect(carriesBlink([0, BLINK], BLINK)).toBe(true);
+    expect(carriesBlink([0, 0], BLINK)).toBe(false);
   });
 });
 

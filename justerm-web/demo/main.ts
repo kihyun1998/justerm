@@ -1397,8 +1397,12 @@ window.__textBlinkProbe = async (): Promise<TextBlinkProbe> => {
   //     intervals (one present per interval), so both phases are reached with margin. The demo's own
   //     300ms append timer has to stop first: it presents a frame each tick, and a frame carries
   //     the phase too, so leaving it running makes this section pass with the loop disabled.
+  //     The cursor is forced steady for the same reason: it shares the loop, so a blinking caret
+  //     would present on its own schedule and those turns would read as text-blink presents.
   window.clearInterval(appendTimer);
+  renderer.setCursorBlink(false);
   const loopSamples = await sampleFromLoop(DEMO_TEXT_BLINK_INTERVAL * 5);
+  renderer.setCursorBlink(undefined);
   appendTimer = window.setInterval(appendTick, 300);
 
   // (5) Turning it off must leave the text SHOWN, not stuck in whatever phase it was in — the

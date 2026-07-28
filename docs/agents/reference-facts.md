@@ -291,6 +291,8 @@ attribute; the split is entirely about whether the renderer acts on it.
 | **Implements text blink, as an opt-in consumer interval.** `TextBlinkStateManager` runs a `setInterval` and flips `isBlinkOn`; the duration is the `blinkIntervalDuration` option | xterm.js | `src/browser/renderer/shared/TextBlinkStateManager.ts` (whole file), `:66-88` (`_updateIntervalState`) |
 | ⚠ **The default is `0`, i.e. disabled** — the option is validated `>= 0` and throws below it | xterm.js | `src/common/services/OptionsService.ts:17`, validation at `:173-178` |
 | The interval runs only when there is something to blink **and the viewport is visible**: `duration > 0 && needsBlinkInViewport && isViewportVisible` | xterm.js | `TextBlinkStateManager.ts:67` |
+| ⚠ **"Viewport visible" means an `IntersectionObserver`, not document visibility** — a terminal scrolled out of view inside a visible page stops blinking. Do not read this as something rAF gives you for free | xterm.js | `src/browser/services/RenderService.ts:126-137` (observer), `:140-142` (dispatch), consumed at `addons/addon-webgl/src/WebglRenderer.ts:251-253` |
+| **Starting the blink forces the phase ON** before arming the interval, so enabling it never conceals the text at that instant | xterm.js | `TextBlinkStateManager.ts:72-73` |
 | `needsBlinkInViewport` comes from a **per-row scan of the viewport** for `cell.isBlink()`, kept as a row flag array plus a count | xterm.js | `addons/addon-webgl/src/WebglRenderer.ts:529-531`, `:608`; the DOM twin at `browser/renderer/dom/DomRenderer.ts:650-659` |
 | ⚠ **Stopping forces the phase back ON and re-renders** — a stopped blink must never leave text hidden | xterm.js | `TextBlinkStateManager.ts:83-87` |
 | The concealed phase is expressed as an ink flag, not as an erase: `fg \|= FgFlags.INVISIBLE` (webgl) / a `xterm-blink-hidden` class (DOM) | xterm.js | `WebglRenderer.ts:562`, `dom/DomRendererRowFactory.ts:166-168` |
@@ -306,13 +308,22 @@ toward the reference", not a family decision.
 **What justerm-web deliberately does not port, and why** (recorded so the next reader does not read
 these as oversights):
 
-- **`needsBlinkInViewport`** — xterm.js can scan the viewport because it *holds the buffer*. A
-  frame-mode consumer holds damage, not the grid (ADR-0018/0020), so the exact question "is there a
-  blinking cell on screen right now" is not answerable on this side at all. The equivalent guarantee
-  comes from the opposite end: the feature is off unless a consumer sets an interval, so the default
-  costs nothing.
-- **`setViewportVisible`** — justerm-web's phase runs on the existing rAF loop, and a browser stops
-  firing rAF for a hidden document, so the condition xterm.js observes explicitly is structural here.
+- **`needsBlinkInViewport` is ported, in its conservative form** — and the reasoning that first said
+  it needn't be is recorded here because it was wrong in an instructive way. *"The feature is off
+  unless a consumer opts in, so the default costs nothing"* is true and answers a **different
+  question**: xterm's gate protects the *enabled* case, which is the only one that costs anything.
+  And "a frame-mode consumer cannot answer it" is too strong — the gate only has to be
+  **conservative** (a false positive costs one redundant re-pack; only a false negative would freeze
+  blinking text), and a Full frame carries every row, so a replace-on-Full / or-on-Partial latch over
+  the frame's flag column is sound. Without it, an opted-in consumer pays `resolve_and_pack` over
+  every cell plus a full `plan_upload` diff twice a second on grids where no cell has ever carried
+  SGR 5, producing a byte-identical buffer.
+- **`setViewportVisible` is NOT covered by rAF, and the first version of this note said it was.**
+  xterm's input is an `IntersectionObserver({threshold: 0})` on the screen element
+  (`src/browser/services/RenderService.ts:126-142` → `addons/addon-webgl/src/WebglRenderer.ts:251-253`),
+  not document visibility. rAF keeps firing at full rate for a terminal scrolled out of view inside a
+  visible document, so that case is still ungated here. It is a **family-level** gap rather than this
+  slice's: justerm-web's cursor loop has no visibility input either, and the fix belongs to both.
 - **Throwing on a negative interval** — this widget's other policy setters adopt-and-report rather
   than panic across the seam (`CursorBlink.setIdleTimeout`), and internal coherence is the recorded
   tie-breaker for consumer-facing API shape (ADR-0023's posture).
