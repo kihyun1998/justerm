@@ -244,7 +244,8 @@ impl Term {
     /// case, not a class.
     ///
     /// Resolving a spacer through its lead is alacritty's idiom, in a walk:
-    /// `term/search.rs:457-460` (`skip_wide`) *replaces* a `WIDE_CHAR_SPACER` cell with
+    /// `alacritty_terminal/src/term/search.rs:457-460` (`skip_wide`; spelled in full because #586
+    /// gave this crate a `term/search.rs` too) *replaces* a `WIDE_CHAR_SPACER` cell with
     /// `iter.prev()` and matches on that. Ghostty states the same principle in its print path
     /// (`Terminal.zig:1132-1142`, *"the previous cell is a wide spacer tail, so we actually want
     /// the cell before that because that has the actual content"*), and its **write-side**
