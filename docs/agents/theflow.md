@@ -88,7 +88,9 @@ need the separate checks in the gate matrix below.
 ## Step 1 — reference routing table
 
 Read real source from the **local pinned reference trees** in `../.refs/` (sibling
-of this repo, same convention as `../just-shield`), with `rg -n <symbol> -A 8`.
+of the **main checkout**, same convention as `../just-shield`), with
+`rg -n <symbol> -A 8`. Working in a worktree, `../.refs/` is *not* that path and
+returns zero hits instead of an error — see Step 7 "What a worktree breaks".
 **WebFetch is banned** — it summarizes and drops method bodies (e.g. xterm.js
 `InputHandler.ts`, 3.7K lines: the registry shows, handler bodies like
 `setOrReportIndexedColor` get cut).
@@ -253,7 +255,7 @@ guard fires before the old one.
 | **web** | `pnpm demo` real browser (DPR / coords / render bugs; canvas buffer = CSS×DPR, geometry from `rect.h/ROWS`) + `pnpm test:e2e` (Playwright headless, `webServer` auto-starts `pnpm demo` → real wasm+controller round-trip). a11y proven via **SR-consumed proxies**: announce = aria-live `textContent`, signal = console log; **suppression proof = with SR off, neither appears** |
 | **renderer — gate** | `pnpm run build:wasm && pnpm exec playwright test` over `demo/*.html` × dpr **1 / 1.1 / 1.5 / 2**, reading `window.__proof.ok`; coordinates via `demo/proof.js`, `cell_width()` in device px |
 | **renderer — eyeball** | **Playwright MCP against a real browser**, never a headless screenshot: `pnpm build:wasm` → serve (`node scripts/serve.mjs`, :8269) → `browser_navigate` a scratch `demo/*.html` → `browser_evaluate` to redraw/scale → `browser_take_screenshot`. The gate and the eyeball are different tools for different questions and neither substitutes: the gate asserts pixels the compositor never touched, the eyeball is the only way to see what a user sees. Delete the scratch page afterwards — both spec runners auto-collect `demo/*.html` |
-| **strongest — real consumer** | **penterm.** Link the local build in: `[patch.crates-io] justerm-core = { path = "../justerm/justerm-core" }` in `../penterm/src-tauri/Cargo.toml`, run penterm's **full** suite. Strongest evidence = a penterm test that *pinned the old bug as expected* now **breaks** while the rest stays green. For a wasm/web change, link via a **clean-room worktree** (a local pkg-swap pollutes the pnpm store) |
+| **strongest — real consumer** | **penterm.** Link the local build in: `[patch.crates-io] justerm-core = { path = "<worktree>/justerm-core" }` in `../penterm/src-tauri/Cargo.toml` — **point it at the worktree you are editing**, not at the main checkout (`../justerm/…` builds master and the proof passes for the wrong reason). Run penterm's **full** suite. Strongest evidence = a penterm test that *pinned the old bug as expected* now **breaks** while the rest stays green. For a wasm/web change, link via a **clean-room worktree** (a local pkg-swap pollutes the pnpm store) |
 
 Traps this layer must respect:
 
@@ -759,7 +761,10 @@ CI wired since #333 (`renderer`, `renderer-proofs`).
 commit` always commits — a pipeline's status is `tail`'s). **Never move a
 threshold** (coverage floor / lint budget) to turn a build green.
 
-**Branch / PR / CI:** branch → `feat(<scope>): … (#issue)` (**no `Co-Authored-By`
+**Worktree / PR / CI:** **worktree, not a bare branch** — every substantive change
+starts with `git worktree add .claude/worktrees/<slug> -b <branch>` (the convention
+already on disk; the harness's worktree tool lands in the same place). Never edit on
+`master` in the main checkout. → `feat(<scope>): … (#issue)` (**no `Co-Authored-By`
 trailer**) → squash PR (`Closes #issue`) → confirm CI jobs green:
 `test` / `wasm` / `renderer` / `renderer-proofs` / `web` / `web-e2e`. A PR touching
 `.github/workflows/**` also gets **`supply-chain`** (path-filtered, so it is absent
@@ -769,6 +774,19 @@ repo root, not `.github/workflows`**: given the wrong path it reports "0 workflo
 scanned" *and* a green "no violations", a vacuous pass. Don't watch CI *during*
 implementation (local gates mirror it) — except wasm browser `wasm_bindgen_test`,
 which runs only in the CI wasm job, so check it once per wasm-decode-changing PR.
+
+**What a worktree breaks: every `../` in this document.** The sibling paths here
+(`../.refs/`, `../penterm/`, `../just-shield`) are written relative to the **main
+checkout**, and a worktree sits somewhere else — so resolve them against the main
+checkout, never against the worktree's own `..`. This fails *silently*, which is why
+it is written down: `rg -n <symbol> ../.refs/alacritty` from a worktree is not an
+error, it is **zero hits**, and zero hits reads exactly like "no prior art" (Step 1's
+"unverified ≠ absent", inverted — the tool answered, the answer was about the wrong
+directory). Use an absolute path, or run reference reads from the main checkout.
+Two consequences that bite hardest: the penterm `[patch.crates-io]` path must point
+at the **worktree you are editing** (Step 4), and `cargo run -- scan --strict <justerm
+repo root>` takes the *worktree* root — pointed at nothing it reports "0 workflows
+scanned" plus a green "no violations".
 
 **Release tracks (tag-driven, all inert until a tag is pushed):** `v*` → `justerm-core`
 (crates.io) + `justerm-wasm-decode` (npm), lockstep; `renderer-v*` → `justerm-renderer`
