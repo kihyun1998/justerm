@@ -94,6 +94,18 @@ Any *new* reader that walks the buffer by absolute index. Test: if a function us
 `scrollback.len() + grid.rows()` as its total, or reaches cells through `abs_line` / `abs_row`, it is
 subject to this invariant.
 
+**A third category exists, and the test above does not catch it — deliberately unfloored walks.**
+`Term::doc_line_of` and `Term::command_start` (`term/markers.rs` since #588) walk absolutely and have
+no floor *and must not get one*. They do not choose the grid themselves — `Term::command_lines` threads
+`primary_grid()` into them, and into `extract_lines` on the same call, so all three run in
+`[scrollback ++ primary]`: one coherent buffer even while the alt screen is showing, because OSC 133
+command marks are primary-only by definition (`#192`). They also slip the test's phrasing, reaching cells
+through `row_in` / `line_in(grid, …)` rather than `abs_line` / `abs_row`. The failure mode here is the
+mirror of the other three: not a missing floor, but someone adding one and silently breaking command
+navigation on the alt screen. **Validity condition:** this holds only while command marks stay
+primary-scoped. If an alt-scoped command mark is ever introduced, these two walks need the floor after
+all.
+
 **Do not search for `abs_floor` and conclude you are done.** #585 folded the last open-coded copies
 into calls, so `rg abs_floor` now finds every walk that *has* a floor — and that is the opposite of
 the defect. All three historical misses **predate** the helper: each was a fresh absolute walk with
