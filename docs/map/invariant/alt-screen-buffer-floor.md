@@ -29,30 +29,38 @@ territory edge cannot express, and the reason this node kind exists.
 
 ## Territories it holds in
 
-**Do not maintain the site list by hand — three artifacts already drifted apart doing that** (this
-note, `theflow.md`'s Step 5 entry and `walk.rs`'s module doc each named a *different* set, and none
-matched the code). Ask instead:
+**Derive what a grep can see; hand-write only what it cannot — and label which is which.** Both
+halves are load-bearing, and this section is the evidence for both. Hand-maintaining the *derivable*
+half is what went wrong: this note, `theflow.md`'s Step 5 entry and `walk.rs`'s module doc each named
+a different set of call sites and none matched the code. But the two sites in the second half below
+appear in **no** grep for `abs_floor`, and they are the ones most likely to be mistaken for a missing
+floor — so a grep-only rule would delete exactly what is hardest to rediscover.
+
+Derivable half — ask, do not store:
 
 ```sh
 rg 'abs_floor\(\)' justerm-core/src/ | rg -v 'fn abs_floor'
 ```
 
-Five call sites, as of #585/#586 — the territory links are the graph edge, the grep is the authority:
+Call sites as of #585/#586/#587 — the territory links are the graph edge, the grep is the authority:
 
 - [selection](../territory/selection.md) — `Term::prev_pos` / `Term::next_pos`, the logical-line step
   (`term/walk.rs`; #207)
 - [search & active match](../territory/search.md) — `Term::search_with` (`term/search.rs`; #144)
 - [logical lines](../territory/logical-lines.md) — `Term::viewport_logical_lines` (`term.rs`; #113)
-- **a11y / whole-buffer text** *(no note yet)* — `Term::accessible_text` (`term.rs`). It walks the
-  same way and was in none of the three hand-written lists, including this one
+- **a11y / whole-buffer text** *(no territory note yet)* — `Term::accessible_text`, which moved to
+  `term/selection.rs` with #587 because it reuses selection's extraction path, not because it is a
+  selection. Its `## Code` entry is carried by **both** [selection](../territory/selection.md) and
+  [logical lines](../territory/logical-lines.md)
 
-**Two more sites satisfy the floor without calling it**, and they are the ones a grep for the
-function's name will never surface: `Term::end_wrap` and `Term::shift_region` reason it out in
-comments instead (*"on the alt screen `abs_floor()` is the screen top, so no join crosses the
+Non-derivable half — **maintained by hand on purpose, and this is the part no automation replaces.**
+Two sites satisfy the floor *without calling it*: `Term::end_wrap` and `Term::shift_region` argue it
+out in comments instead (*"on the alt screen `abs_floor()` is the screen top, so no join crosses the
 boundary at all"*). They belong to
 [wide glyph & soft wrap](../territory/wide-glyph-and-soft-wrap.md). A structural argument is a
-legitimate way to hold the invariant — but it is invisible to the check above, so it is written down
-here rather than left to be rediscovered as a "missing" floor.
+legitimate way to hold the invariant, and it is permanently invisible to the grep above — which makes
+these the two entries most likely to be read as a *missing* floor and "fixed" into a redundant call.
+Update them by hand when the write path moves; never expect a tool to notice.
 
 ## What a violation looks like
 
