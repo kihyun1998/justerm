@@ -39,8 +39,10 @@ context contract is.
 ## Code
 
 - `justerm-core/src/logical.rs` — `LogicalLine` (the shape only)
-- `justerm-core/src/term.rs` — `Term::viewport_logical_lines`, `Term::viewport_line`,
-  `Term::accessible_text` (the whole buffer as one document, a different contract from this one)
+- `justerm-core/src/term.rs` — `Term::viewport_logical_lines`, `Term::viewport_line`
+- `justerm-core/src/term/selection.rs` — `Term::accessible_text` (the whole buffer as one document,
+  a different contract from this one). It sits in the selection module because it reuses that
+  module's extraction path, not because it is a selection — moved there with it in #587
 - `justerm-core/src/term/walk.rs` — the stepping and materialisation primitives the join is built
   from: `prev_pos` / `next_pos`, `extract_lines`, `append_cell`, `is_wrap_artefact`,
   `is_walk_transparent_spacer`. Extracted in #585

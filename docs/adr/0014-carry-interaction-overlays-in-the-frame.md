@@ -52,8 +52,10 @@ must be *sent* — the same reasoning ADR-0013 used for scroll position. The ove
 state, not cell content; it rides the frame for the same reason the cursor and scroll position do.
 
 **Viewport coordinates, re-projected by `frame()`.** Selection/match anchors live in *absolute* buffer
-coordinates (`selection.rs:3`, `search.rs:3`), but the wire carries them as *viewport* spans, because
-`frame()` already re-projects the cells against `display_offset` (`term.rs:448`). Projecting the overlay
+coordinates (the module docs of `src/selection.rs` and `src/search.rs` — the crate-level *type*
+modules, not the `term/` siblings of the same name that #586/#587 added), but the wire carries them
+as *viewport* spans, because `Term::frame` already re-projects the cells against `display_offset`.
+Projecting the overlay
 in the same place keeps **one anchoring authority**: on every scroll the engine re-emits the spans at
 their new viewport rows and drops what scrolled off-screen. Absolute coordinates can't cross alone — the
 consumer does not know the scroll offset to resolve them.

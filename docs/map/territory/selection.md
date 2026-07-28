@@ -39,16 +39,21 @@ status.
 - **Two outputs** — `selection_range()` yields **per-viewport-row** `SelectionSpan { row, left, right }`
   and emits nothing for off-screen rows. `selection_text()` yields copy text, applying the wrap join,
   trailing-whitespace trim and scrollback traversal.
-- **Split of labour** — `selection.rs` holds types only (75 lines). The cell-aware logic (text
-  extraction, range clipping) lives in `term.rs`, where the cells are.
+- **Split of labour** — `src/selection.rs` holds types only (75 lines). The cell-aware logic (text
+  extraction, range clipping) lives in `src/term/selection.rs`, where the cells are reachable —
+  moved out of `term.rs` in #587.
 
 ## Code
 
 - `justerm-core/src/selection.rs` — `SelectionType`, `Side`, `SelectionSpan`, `BufferPoint`, `Anchor`,
   `Selection::ordered`
-- `justerm-core/src/term.rs` — `Term::selection_begin` / `selection_extend` / `selection_clear` /
-  `selection_range` / `selection_text`; the three coordinate fixups
-  `selection_shift_below_margin` / `selection_evict_oldest` / `selection_rotate_region`
+- `justerm-core/src/term/selection.rs` — `Term::selection_begin` / `selection_extend` /
+  `selection_clear` / `selection_range` / `selection_text` / `accessible_text`; the three coordinate
+  fixups `selection_shift_below_margin` / `selection_evict_oldest` / `selection_rotate_region`; and
+  the private `resolve` / `Resolved` that turn a selection into absolute bounds. Extracted from
+  `term.rs` in #587. As with search, the crate now has **two** files named `selection.rs` — the
+  types in `src/selection.rs` above, the mechanism here — so a bare `selection.rs:NN` citation is
+  ambiguous
 - `justerm-core/src/term/walk.rs` — the shared buffer-walk floor the selection reaches cells through:
   `Term::abs_line` / `abs_row`, `prev_pos` / `next_pos` (the logical-line step), `word_start` /
   `word_end`, `is_word_boundary`. Extracted from `term.rs` in #585
@@ -86,6 +91,10 @@ Check these after changing this territory:
   (#430 pins the active ∩ selected fg channel). Both also share the absolute coordinate space
 - [damage & viewport](damage-and-viewport.md) — the highlight's visibility is gated by the same
   `display_offset` as everything else pushed into the engine
+- [logical lines](logical-lines.md) — `accessible_text` is listed under **both** territories' `## Code`
+  (it lives in this module, but its contract is a whole-buffer document), so a change to either side
+  can invalidate the other's pin. The edge was one-way until #587, and that is exactly how the move
+  broke logical-lines' pin without any sweep noticing
 - **reflow** — one of the three places the coordinate moves. `grid.rs`'s `reflow` takes selection
   anchors as tracked `points`, and #562 (reflow cannot express a point one past the last cell) surfaced
   right here

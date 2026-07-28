@@ -57,7 +57,7 @@ does not go looking for a helper they have never heard of.
 - **GitHub issues are not nodes** — spine `#552`, Epic `#287`, `#562`. They exist only as text inside a
   note. Some of the hottest material in this repo is invisible to the graph; this is mitigated, not
   solved.
-- **Source files are not nodes** — `term.rs` (4333 lines) is text under `## Code`. It is also
+- **Source files are not nodes** — `term.rs` (3981 lines) is text under `## Code`. It is also
   shrinking under #584, which is moving the read surfaces into `term/` siblings, so treat any line
   count here as the date it was written rather than a fact to rely on.
 
@@ -103,7 +103,7 @@ node .github/scripts/check-map-links.mjs docs CLAUDE.md CONTEXT.md README.md
 **Eight notes — core only.** Not the whole system. Territories with no note yet, referenced as
 `(no note yet)` by the notes above:
 
-VT interpretation (`term.rs`, 4333 lines = 49% of core) · grid & scrollback · input encoding
+VT interpretation (`term.rs`, 3981 lines = 45% of core) · grid & scrollback · input encoding
 (`input.rs`, 801 lines) · frame & wire · hyperlinks · grapheme clusters · color references & palette ·
 marker & decoration · a11y · renderer pipeline · cell geometry · infrastructure (CI / supply chain /
 release)
