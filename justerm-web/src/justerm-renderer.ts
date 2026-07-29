@@ -127,6 +127,32 @@ export interface JustermRendererOptions {
    * (`config/window.rs:46`). Change it at runtime with {@link JustermRenderer.setBgAlpha}.
    */
   bgAlpha?: number;
+  /**
+   * Extra space between columns, in **CSS pixels** (#578). Defaults to `0`.
+   *
+   * CSS px, not device px, because {@link fontSize} is (ADR-0023) — one font description should not
+   * speak two units. Both references disagree and take device px, which is why the same setting is a
+   * different gap on a Retina display there and moving a window between monitors re-lays-out the
+   * text. The renderer applies `round(letterSpacing * dpr)`.
+   *
+   * May be **negative**, which narrows the cell and crops the glyph rather than condensing it.
+   *
+   * **Moves the cell**, so see {@link JustermRenderer.setLetterSpacing} for the re-fit obligation
+   * this creates — at `create` time it is free, because the first fit has not run yet.
+   */
+  letterSpacing?: number;
+  /**
+   * A multiplier on the glyph height, `>= 1` (#578). Defaults to `1`.
+   *
+   * Unitless by construction, which is why ADR-0023's CSS-px rule does not apply to it — there is no
+   * unit to get wrong.
+   *
+   * **The renderer clamps rather than rejects**, and the value it adopts may be *smaller* than the
+   * one asked for: a cell the glyph atlas cannot hold is shrunk to one it can (#359). It also rolls
+   * the change back entirely if the atlas re-bake fails. So this is a request, not a setting — read
+   * the result back from the cell size rather than assuming it took.
+   */
+  lineHeight?: number;
   theme: Theme;
 }
 
@@ -193,6 +219,12 @@ export interface RendererBackend {
    * consumer must re-fit. A no-op if unchanged; a non-finite / `<1` size is guarded by the renderer. */
   setFontSize(cssPx: number): void;
   setFontFamily(family: string): void;
+  /** Extra space between columns in **CSS px** (ADR-0023 — the space `fontSize` already speaks), and
+   * a multiplier on the glyph height (`>= 1`). Both move the cell, so the consumer must re-fit; both
+   * are clamped or rolled back by the renderer, so the result is read back rather than assumed (#338,
+   * #359). */
+  setLetterSpacing(cssPx: number): void;
+  setLineHeight(multiplier: number): void;
   /** Swap the palette + default fg/bg for a live theme change (#405): re-resolve every retained
    * cell against the new scheme. `paletteColors` is the 256 pre-built indexed colours. */
   setPalette(paletteColors: Uint32Array, defaultFg: number, defaultBg: number): void;
@@ -474,6 +506,20 @@ export class JustermRenderer implements Renderer {
     // is computed at the consumer's cell. Each is a no-op at the renderer's default (monospace/16).
     backend.setFontFamily(opts.fontFamily);
     backend.setFontSize(opts.fontSize);
+    // Spacing (#578) — before the first fit, so the initial grid is computed at the consumer's final
+    // cell. Each is a no-op at the renderer's default (0 / 1.0), and unlike the runtime setters below
+    // there is nothing to re-fit here: `create` returns before the consumer has fitted once.
+    //
+    // **Order relative to the font calls above does not matter**, and this comment used to claim it
+    // did ("both derive the cell from the glyph metrics those establish") — a dependency the renderer
+    // deliberately removed. Every path that changes the glyph box, the DPR or either spacing value
+    // funnels through `recompute_cell`, which reads all four together, and the font path explicitly
+    // re-derives the cell from the *surviving* spacing policy. So font-then-spacing and
+    // spacing-then-font land on the same cell. Stated because a comment asserting a constraint that
+    // does not exist is one someone later "fixes" by reordering, and then has to re-derive why it was
+    // safe.
+    backend.setLetterSpacing(opts.letterSpacing ?? 0);
+    backend.setLineHeight(opts.lineHeight ?? 1);
 
     const palette: Palette = {
       colors: paletteColors,
@@ -549,6 +595,49 @@ export class JustermRenderer implements Renderer {
    * a webfont before an unfamiliar family (the browser silently falls back otherwise). */
   setFontFamily(family: string): void {
     this.backend.setFontFamily(family);
+  }
+
+  /**
+   * Change the letter spacing (CSS px) / line height (multiplier `>= 1`) at runtime (#578). The live
+   * counterparts of {@link JustermRendererOptions.letterSpacing} / {@link
+   * JustermRendererOptions.lineHeight}, whose docs carry the units and the clamping.
+   *
+   * **The consumer must re-fit afterwards**, exactly as for {@link setFontSize}/{@link
+   * setFontFamily}: call {@link resize} with the CSS box. These do not do it for you, because this
+   * object has no reference to the fit — the widget and the consumer own that (the demo's
+   * `setFontSize(); fit(); render();` is the shape, #417). Skipping it is not cosmetic: the renderer
+   * re-sizes its own drawing buffer to the new cell, so the canvas display box the adapter set from
+   * `cssWidth()`/`cssHeight()` immediately describes a buffer that no longer exists.
+   *
+   * **Call this {@link resize} directly — not `FitController.fit()`**, even if you hold one. That
+   * controller skips its flush when the proposed `cols`/`rows` match the last ones it saw, which is
+   * the right behaviour for a container resize and the wrong one here: a spacing change can move the
+   * cell while leaving the grid identical (guaranteed once the `MINIMUM_COLS`/`MINIMUM_ROWS` floors
+   * bind), and then the deduped flush never reaches {@link resize}, so the canvas box keeps
+   * describing the replaced buffer and the browser scales it. A grid-keyed dedupe structurally cannot
+   * express "the cell moved but the grid did not".
+   *
+   * xterm.js draws the same line, which is why this is a shape rather than a preference: an option
+   * change there re-lays out at the *current* grid (`RenderService.ts` `handleResize(cols, rows)`) and
+   * its `FitAddon` registers no listeners at all — re-deriving the grid from the pixel box stays
+   * manual. alacritty auto-re-fits, but it owns its OS window; an embeddable widget does not.
+   *
+   * **Read the cell back rather than deriving it from what you passed.** `adopt_spacing` can hand you
+   * something other than what you asked for in three separate ways, and none of them reports an error:
+   * a `lineHeight` whose cell the atlas cannot hold is *shrunk* (#359); a failed atlas re-bake rolls
+   * the whole change back to the previous spacing; and while the GL context is lost the policy is
+   * stored but the cell does not move at all until `webglcontextrestored`. {@link cellSize} and
+   * {@link terminalSize} are the truth afterwards — and `terminalSize` matters as much as the cell,
+   * because the renderer's internal re-size adopts what the drawing buffer will actually grant (#339),
+   * so a large enough cell shrinks the *grid* as well.
+   */
+  setLetterSpacing(cssPx: number): void {
+    this.backend.setLetterSpacing(cssPx);
+  }
+
+  /** See {@link setLetterSpacing} — same cell-moving contract, same re-fit and read-back obligation. */
+  setLineHeight(multiplier: number): void {
+    this.backend.setLineHeight(multiplier);
   }
 
   /**

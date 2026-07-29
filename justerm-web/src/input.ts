@@ -186,9 +186,22 @@ export interface MouseEventLike {
 /** Canvas origin + cell size + grid dimensions, to map pixels to cells. `cols`/`rows` bound the
  * result so a pointer outside the grid clamps to the edge cell instead of a negative / past-the-end
  * coordinate — which would wrap to a huge value in core's `MouseEvent.col: usize` (#266). */
+/**
+ * The geometry a pointer event is resolved against. **Every length here is in CSS pixels**, because
+ * that is the space `clientX`/`clientY` arrive in and this struct is subtracted from and divided into
+ * them directly (see `pointerCell` below).
+ *
+ * The unit is stated because it went undocumented and the published README's example then drifted:
+ * it built `cellWidth`/`cellHeight` from `renderer.cellSize()`, which is **device** px, so on any
+ * display with `devicePixelRatio !== 1` every click resolved to the wrong cell (#578). The renderer
+ * offers `cssCellWidth()`/`cssCellHeight()`, or divide `cellSize()` by `devicePixelRatio` as the demo
+ * does. Nothing type-checks a unit, so it has to be written down.
+ */
 export interface CellGeometry {
+  /** The canvas's top-left in CSS px, viewport-relative — typically `getBoundingClientRect()`. */
   originX: number;
   originY: number;
+  /** One cell, in **CSS** px. Not `renderer.cellSize()`, which is device px. */
   cellWidth: number;
   cellHeight: number;
   cols: number;

@@ -6,6 +6,18 @@ internal coherence for a consumer-facing setting's unit — is carried in the bi
 so a future metric setter routes by it without reopening this. Scoped to consumer-facing metric settings on
 `justerm-renderer`; the cell they modify is ADR-0022, the tier they live in is ADR-0021.
 
+**Amended 2026-07-29 (#578): the scope line above is narrower than reality, and the decision itself is
+unchanged.** When this was written the setting was reachable only through the renderer's own wasm class,
+so "consumer-facing" meant a consumer of `justerm-renderer`. `justerm-web` now re-exposes it as
+`JustermRendererOptions.letterSpacing` **in the same unit**, so this ADR is the *widget's* contract too,
+and its coherence argument now spans two published packages instead of one — `fontSize` and
+`letterSpacing` sit on the same options object, which is the strongest form of the "one font description
+should not speak two units" reasoning below. Nothing in the Decision or the Consequences becomes false;
+this is recorded because a reader checking whether the rule governs the widget would otherwise conclude
+from the scope line that it does not. The unit is now also pinned by a browser test at
+`deviceScaleFactor: 2` — a 4 CSS-px setting measured as 8 device px — which did not exist when this was
+accepted, so the divergence is guarded rather than merely argued.
+
 ## Context
 
 `setLetterSpacing` widens the grid cell without changing the glyph. The only question this ADR settles

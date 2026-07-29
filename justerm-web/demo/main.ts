@@ -54,13 +54,21 @@ import { FakeSearchEngine } from "./fake-search";
 // reloading with it set — hence a query parameter rather than a button (the button drives the runtime
 // setter, which is the other half). Absent ⇒ the option is genuinely omitted below, which is the
 // state the "unset behaves exactly as today" check reads.
-const bootBgAlpha = new URLSearchParams(location.search).get("bgAlpha");
+const bootParams = new URLSearchParams(location.search);
+const bootBgAlpha = bootParams.get("bgAlpha");
+// #578: same reason as `bgAlpha` above — `create` runs once per page load, so the OPTION half of a
+// knob is only reachable by booting with it set. These two additionally have to be applied BEFORE the
+// first `fit()`, which is the acceptance criterion a runtime setter cannot demonstrate.
+const bootLetterSpacing = bootParams.get("letterSpacing");
+const bootLineHeight = bootParams.get("lineHeight");
 
 const renderer = await JustermRenderer.create({
   canvasSelector: "#term",
   fontFamily: "monospace",
   fontSize: 16,
   ...(bootBgAlpha === null ? {} : { bgAlpha: Number(bootBgAlpha) }),
+  ...(bootLetterSpacing === null ? {} : { letterSpacing: Number(bootLetterSpacing) }),
+  ...(bootLineHeight === null ? {} : { lineHeight: Number(bootLineHeight) }),
   theme: {
     ansi: [
       0x000000, 0xcd0000, 0x00cd00, 0xcdcd00, 0x0000ee, 0xcd00cd, 0x00cdcd, 0xe5e5e5, 0x7f7f7f,
@@ -402,6 +410,32 @@ function toggleFontSize(): void {
   fontBtn.textContent = `Font: ${demoFontSize}px`;
   console.log(`[demo] font size ${demoFontSize}px → grid ${COLS}x${ROWS}`);
 }
+// #578: the two typography knobs. Both MOVE THE CELL, so each follows `toggleFontSize`'s shape
+// exactly — setter, then `fit()`, then `render()`. That order is the contract, not a convention: the
+// renderer re-sizes its own drawing buffer inside the setter, so without the `fit()` the demo would
+// keep driving the engine at the old grid while the canvas display box describes a buffer that no
+// longer exists.
+let demoLetterSpacing = bootLetterSpacing === null ? 0 : Number(bootLetterSpacing);
+let demoLineHeight = bootLineHeight === null ? 1 : Number(bootLineHeight);
+
+function toggleLetterSpacing(): void {
+  demoLetterSpacing = demoLetterSpacing === 0 ? 4 : 0;
+  renderer.setLetterSpacing(demoLetterSpacing);
+  fit();
+  render();
+  letterSpacingBtn.textContent = `Letter spacing: ${demoLetterSpacing}px`;
+  console.log(`[demo] setLetterSpacing(${demoLetterSpacing}) → grid ${COLS}x${ROWS} (#578)`);
+}
+
+function toggleLineHeight(): void {
+  demoLineHeight = demoLineHeight === 1 ? 1.6 : 1;
+  renderer.setLineHeight(demoLineHeight);
+  fit();
+  render();
+  lineHeightBtn.textContent = `Line height: ${demoLineHeight}`;
+  console.log(`[demo] setLineHeight(${demoLineHeight}) → grid ${COLS}x${ROWS} (#578)`);
+}
+
 // #420: a runtime theme swap exercises the wired setTheme (renderer setPalette #405). Two schemes
 // with opposite defaults (dark ↔ light) so any sampled pixel changes; the demo samples the drawing
 // buffer (device px — readPixels there is reliable, unlike a composited screenshot #352) and logs it.
@@ -551,6 +585,23 @@ Object.assign(controls.style, {
   left: "0",
   right: "0",
   display: "flex",
+  // #578: WRAP. Without it this row overflows the viewport once enough buttons accumulate, and a
+  // button past the right edge is *visible to `toBeVisible()` but not clickable* — `locator.click`
+  // just times out. Adding this slice's two buttons crossed that threshold and broke #420 and #429,
+  // which had nothing to do with spacing; the bar had simply run out of room. Epic #583 has four more
+  // slices, each of which adds controls.
+  //
+  // **This trades a horizontal limit for a vertical one on the same counter, and the new axis is the
+  // one that matters.** The bar is `position: fixed; bottom: 0` with `zIndex: 200`, so each wrapped
+  // row grows it UPWARD over the canvas and over the accessible-view overlay (z 100). It does not
+  // resize the canvas, so the pixel probes are unaffected — they all sample the top rows. What it
+  // eats is **pointer hit-testing near the bottom edge**, which is what broke in the first place:
+  // scrollbar-track drags, selection drag-scroll past the last row, and clicks on the lower
+  // accessible-view rows would be intercepted. Nothing in the suite reaches there today (its canvas
+  // pointer work is all at y≈50, and the scrollbar tests read DOM state rather than dragging), so
+  // this is headroom being spent, one row per slice, not a present failure. When a bottom-edge
+  // pointer test does appear, move the bar into the layout instead of overlaying it.
+  flexWrap: "wrap",
   gap: "8px",
   alignItems: "center",
   padding: "6px 10px",
@@ -609,6 +660,10 @@ const prevBtn = demoButton("Prev command", navPrevCommand, false);
 const nextBtn = demoButton("Next command", navNextCommand, false);
 const fontBtn = demoButton("Font: 16px", toggleFontSize); // #417: runtime setFontSize
 const themeBtn = demoButton("Theme: dark", toggleTheme); // #420: runtime setTheme
+// Labels derived, since `?letterSpacing=` / `?lineHeight=` may have booted this page away from the
+// defaults — same reason as the Bg alpha button (#577).
+const letterSpacingBtn = demoButton(`Letter spacing: ${demoLetterSpacing}px`, toggleLetterSpacing); // #578
+const lineHeightBtn = demoButton(`Line height: ${demoLineHeight}`, toggleLineHeight); // #578
 controls.append(
   viewBtn,
   altBtn,
@@ -627,6 +682,8 @@ controls.append(
   prevBtn,
   nextBtn,
   fontBtn,
+  letterSpacingBtn,
+  lineHeightBtn,
   themeBtn,
 );
 document.body.appendChild(controls);
@@ -1145,7 +1202,55 @@ declare global {
     __aboveTopProbe?: () => AboveTopProbe;
     __rulerAnchorProbe?: () => RulerAnchorProbe;
     __bgAlphaProbe?: () => Promise<BgAlphaProbe>;
+    __spacingProbe?: () => SpacingProbe;
   }
+}
+
+/**
+ * #578 — one consistent snapshot of every quantity a cell-size change moves.
+ *
+ * The point of grouping them is that the interesting claim is not any single number but that they
+ * still **agree**: the renderer's own grid, the grid the demo drives its engine at, and the device
+ * drawing buffer are three values that a spacing change can desynchronise, and the failure is silent
+ * (spans land outside the grid and the surface simply stops updating — the shape #547 describes).
+ */
+interface SpacingSnapshot {
+  /** The cell in DEVICE px, as the renderer reports it. */
+  cellW: number;
+  cellH: number;
+  /** The grid the RENDERER holds — what `resize` actually adopted, not what it was asked for. */
+  cols: number;
+  rows: number;
+  /** The grid the DEMO is driving its engine at. Must equal the pair above after any `fit()`. */
+  demoCols: number;
+  demoRows: number;
+  /** The device drawing buffer. Must equal grid x cell exactly (#331). */
+  bufW: number;
+  bufH: number;
+}
+
+/** #578 — the spacing knobs, sampled across a change and back. */
+interface SpacingProbe {
+  /** **Read before this probe touches anything** — the state `create` + the page's first `fit()` left
+   * behind. The only way to observe the OPTION half of the knob, since everything after this point
+   * has been through a setter. */
+  boot: SpacingSnapshot;
+  /** The renderer's defaults (`0` / `1`), reached by an explicit setter call rather than assumed. */
+  base: SpacingSnapshot;
+  /** After `setLetterSpacing(4)` + `fit()` — the cell widens, so fewer columns fit. */
+  spaced: SpacingSnapshot;
+  /** After `setLineHeight(1.6)` + `fit()` — the cell heightens, so fewer rows fit. */
+  tall: SpacingSnapshot;
+  /** After an absurd `setLineHeight(40)`: the renderer may adopt a SMALLER cell than asked because
+   * the atlas cannot hold it (#359), or roll the change back entirely. Reported rather than
+   * asserted-at, since which one happens is the renderer's to decide — what matters is that the
+   * snapshot still agrees with itself. */
+  huge: SpacingSnapshot;
+  /** The requested multiplier for `huge`, so the e2e can state the adopted-vs-requested relation
+   * without hardcoding the demo's number. */
+  hugeRequested: number;
+  /** Back at the defaults — must return to `base` exactly. */
+  restored: SpacingSnapshot;
 }
 /**
  * #577 — the background opacity, read off the **alpha channel** of the drawing buffer.
@@ -1566,6 +1671,65 @@ window.__bgAlphaProbe = async (): Promise<BgAlphaProbe> => {
   renderer.setBgAlpha(savedAlpha);
   render();
   return { defaultBg, defaultInk, translucentBg, translucentInk, liveNoFrame, restoredBg };
+};
+
+window.__spacingProbe = (): SpacingProbe => {
+  // #578: the consumer half of #338. Both knobs move the CELL, and the cell is what the grid, the
+  // drawing buffer and every px->cell conversion are derived from — so the thing worth proving is not
+  // that the setter took, but that everything downstream of it moved together.
+  //
+  // Synchronous on purpose: `setLetterSpacing` / `setLineHeight` / `fit` / `render` are all immediate,
+  // so there is no clock to wait on and nothing to sample over time. That also makes this the one
+  // probe on this page with no timer to stop.
+  const snap = (): SpacingSnapshot => {
+    const cell = renderer.cellSize(); // device px
+    const ts = renderer.terminalSize(); // what the renderer ADOPTED, not what it was asked
+    return {
+      cellW: cell.width,
+      cellH: cell.height,
+      cols: ts.cols,
+      rows: ts.rows,
+      demoCols: COLS,
+      demoRows: ROWS,
+      bufW: canvas.width,
+      bufH: canvas.height,
+    };
+  };
+  // The consumer's obligation, in one place: change the cell, then re-fit. Deliberately spelled out
+  // here rather than reusing the buttons — the buttons toggle, and a probe that toggled would depend
+  // on the state it happened to start in (`?letterSpacing=` can boot this page anywhere).
+  const apply = (ls: number, lh: number): SpacingSnapshot => {
+    renderer.setLetterSpacing(ls);
+    renderer.setLineHeight(lh);
+    fit();
+    render();
+    return snap();
+  };
+
+  const savedLs = demoLetterSpacing;
+  const savedLh = demoLineHeight;
+
+  // FIRST, before any setter runs: what `create` applied and the page's initial `fit()` adopted.
+  // Acceptance criterion "the option is applied before the first fit" is only observable here — one
+  // `apply()` later and this page is indistinguishable from one that booted at the defaults.
+  const boot = snap();
+
+  const base = apply(0, 1);
+  const spaced = apply(4, 1);
+  const tall = apply(0, 1.6);
+  // An absurd multiplier: the renderer either shrinks the cell to one the atlas can hold (#359) or
+  // rolls the change back. Both are legal; the probe reports what happened rather than assuming.
+  const HUGE = 40;
+  const huge = apply(0, HUGE);
+  const restored = apply(0, 1);
+
+  demoLetterSpacing = savedLs;
+  demoLineHeight = savedLh;
+  renderer.setLetterSpacing(savedLs);
+  renderer.setLineHeight(savedLh);
+  fit();
+  render();
+  return { boot, base, spaced, tall, huge, hugeRequested: HUGE, restored };
 };
 
 window.__disposeProbe = async (): Promise<DisposeProbe> => {

@@ -59,7 +59,9 @@ application misbehaves.
 
 ## Cross-cutting invariants
 
-*(none identified yet)*
+- [the cell size is derived state](../invariant/cell-size-is-derived-state.md)
+  — `CellGeometry` is a cell divisor with a lifetime and a unit, and nothing type-checks either
+  (#578)
 
 ## Blast radius
 
