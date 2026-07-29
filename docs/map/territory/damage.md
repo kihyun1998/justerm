@@ -65,7 +65,7 @@ at a recorded SHA; a paraphrase drops the pin).
 - [caret report](caret-report.md) — the old+new fold lives in this code but the rule is about the
   caret; changing either side produces ghosting
 - [frame](frame.md) — damage and the scroll op are frame fields, so their shape is a wire question
-- **renderer** *(no note yet)* — the family renderer re-packs every frame and diffs, so it does
+- [GPU upload](gpu-upload.md) — the family renderer re-packs every frame and diffs, so it does
   **not** consume incremental damage the way an incremental-repaint renderer would. Damage's
   efficiency argument is aimed at the *wire*, not at that renderer
 

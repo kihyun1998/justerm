@@ -54,7 +54,7 @@ avoid it by having their frontend hold the model — has never been checked.
   contract
 - [cell compositing](cell-compositing.md) — consumes the dense grid and would misread a sparse one
   without ever erroring
-- **GL context lifecycle** *(no note yet)* — a context loss invalidates GPU state but **not** this
+- [GL context lifecycle](gl-context-lifecycle.md) — a context loss invalidates GPU state but **not** this
   grid, which is what allows a restore without a full re-send from the engine
 
 ## Known holes / open

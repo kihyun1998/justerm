@@ -81,7 +81,7 @@ recorded SHA; a paraphrase drops the pin).
   changes what all three return
 - [pen](pen.md) — both halves are stamped from the same pen
 - [wire format](wire-format.md) — width is derived at both ends rather than transmitted
-- **renderer** *(no note yet)* — how a spacer cell is drawn, and the emoji classification that cannot
+- [emoji classification](emoji-classification.md) — how a spacer cell is drawn, and the classification that cannot
   use `wide` because of the per-character rule above
 
 ## Known holes / open

@@ -63,7 +63,7 @@ unconditional Step 5 trigger.
 - [release & published surface](release-and-published-surface.md) — a bump ships on `v*`, and that
   tag fires **two** publishes at once (crates.io + npm)
 - [frame](frame.md) — the shape being encoded; a new group is a new version
-- **renderer** *(no note yet)* — decodes into GPU buffers and never parses escape sequences, which is
+- [frame adapter](frame-adapter.md) — decodes into GPU buffers and never parses escape sequences, which is
   the constraint that ruled out re-emit
 - `justerm-web/src/types.ts` — hand-written, so a new field is `undefined` in TypeScript until
   someone mirrors it **and** the wasm package is republished

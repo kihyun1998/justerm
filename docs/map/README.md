@@ -76,15 +76,18 @@ owns no detail of its own.
 
 - Territories — [active match](territory/active-match.md) ·
   [built-in block glyphs](territory/builtin-block-glyphs.md) ·
+  [caret drawing](territory/caret-drawing.md) ·
   [caret report](territory/caret-report.md) ·
   [cell compositing](territory/cell-compositing.md) ·
   [cell geometry](territory/cell-geometry.md) ·
   [cursor position](territory/cursor-position.md) ·
   [damage](territory/damage.md) ·
   [decoration](territory/decoration.md) ·
+  [emoji classification](territory/emoji-classification.md) ·
   [colour policy](territory/colour-policy.md) ·
   [frame](territory/frame.md) ·
   [frame adapter](territory/frame-adapter.md) ·
+  [GL context lifecycle](territory/gl-context-lifecycle.md) ·
   [glyph atlas](territory/glyph-atlas.md) ·
   [GPU upload](territory/gpu-upload.md) ·
   [logical lines](territory/logical-lines.md) ·

@@ -59,7 +59,9 @@ grounds as unverified, which is unusual enough to be worth knowing before buildi
 
 ## Cross-cutting invariants
 
-*(none identified yet)*
+- [workspace exclusion is gate invisibility](../invariant/workspace-exclusion-is-gate-invisibility.md)
+  — this crate is outside the root workspace, so no `--workspace` or `--all` command reaches it;
+  every gate it has is named for it by `--manifest-path`
 
 ## Blast radius
 

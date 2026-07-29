@@ -34,7 +34,11 @@ invariant rather than a note in any one crate's territory.
 
 - [release](../territory/release.md) — the facade's
   exclusion is what keeps it frozen, and its exclusion is why nothing gates it either
-- **renderer** *(no note yet)* — the crate this has actually bitten
+- the renderer crate — the one this has actually bitten. Its territories, all inside a crate no
+  `--workspace` command reaches: [cell compositing](../territory/cell-compositing.md) ·
+  [cell geometry](../territory/cell-geometry.md) ·
+  [glyph atlas](../territory/glyph-atlas.md) ·
+  [built-in block glyphs](../territory/builtin-block-glyphs.md)
 - **infrastructure / CI** *(no note yet)* — where the compensating per-manifest gates live
 
 Derivable half — the exclusion list is one grep, and it is the authority:

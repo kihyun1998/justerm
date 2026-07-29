@@ -61,7 +61,7 @@ at a recorded SHA; a paraphrase drops the pin).
 - [wide glyph](wide-glyph.md) — a wide glyph's two cells are stamped from the same pen, and the
   lead's extended-attr rider is where the pen meets the pair rule (#521)
 - [cursor position](cursor-position.md) — same struct, same writing verbs; no semantic coupling
-- **renderer** *(no note yet)* — consumes the finished cell under ADR-0019; the pen decides what it
+- [colour policy](colour-policy.md) — consumes the finished cell under ADR-0019; the pen decides what it
   receives, not how it is resolved
 
 ## Known holes / open

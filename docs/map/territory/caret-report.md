@@ -75,7 +75,7 @@ at a recorded SHA; a paraphrase drops the pin).
 - [damage](damage.md) — a caret move damages **two** cells, old and new, and the "old" is defined by
   the consumer's last ack rather than by wall time
 - [frame](frame.md) — five header scalars; adding a sixth is an ADR-0020 question and a wire bump
-- **renderer** *(no note yet)* — draws it, and its scalar policies (`setCursorContrast`,
+- [caret drawing](caret-drawing.md) — draws it, and its scalar policies (`setCursorContrast`,
   `setCursorThickness`) consume only what is reported here
 - **a11y / web widget** *(no note yet)* — the blink policy resolution lives in `justerm-web`, which
   makes this territory one of the few that genuinely spans the crate boundary

@@ -54,7 +54,9 @@ is unusually clean and it is currently unverifiable.
 
 ## Cross-cutting invariants
 
-*(none identified yet)*
+- [workspace exclusion is gate invisibility](../invariant/workspace-exclusion-is-gate-invisibility.md)
+  — this crate is outside the root workspace, so no `--workspace` or `--all` command reaches it;
+  every gate it has is named for it by `--manifest-path`
 
 ## Blast radius
 

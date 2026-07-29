@@ -66,7 +66,7 @@ inside a record rather than a pinned row that survives an upstream move.
   and disposal decide what the registry must reconcile
 - [frame](frame.md) — consumes two overlay groups, and R5 is the reason the absolute one exists
 - [viewport](viewport.md) — the ruler is buffer-relative, dividing by `scrollback_len + rows`
-- **renderer** *(no note yet)* — colour overrides enter the ADR-0019 layer stack there, and the
+- [cell compositing](cell-compositing.md) — colour overrides enter the ADR-0019 layer stack there, and the
   precedence rules above decide what reaches it
 
 ## Known holes / open

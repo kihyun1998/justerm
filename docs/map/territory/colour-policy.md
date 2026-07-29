@@ -40,6 +40,11 @@ this is what resolves it.
 - `justerm-renderer/src/contrast.rs` — `ensure_contrast_ratio`
 - `justerm-renderer/src/attrs.rs` — the SGR flag decode, `is_inverse` / `is_dim` / `is_concealed`,
   `glyph_field`, `BLANK_SLOT`
+- `justerm-renderer/src/glyph_class.rs` — `treat_glyph_as_background_color`: the **exception**.
+  Powerline separators and box-drawing elements butt against the neighbouring cell, so a contrast
+  nudge on one opens a visible seam. xterm excludes them (`excludeFromContrastRatioDemands`) and
+  re-tints them toward the selection colour instead; since #507 the set is **unioned with what this
+  crate draws itself** ([built-in block glyphs](builtin-block-glyphs.md))
 - `justerm-renderer/src/webgl.rs` — `set_palette`, `set_bg_alpha`, `set_bold_to_bright`,
   `set_minimum_contrast_ratio`, `set_selection_foreground`
 

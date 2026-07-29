@@ -39,7 +39,8 @@ it.
 - `justerm-renderer/src/glyph_cache.rs` — the slot map and LRU regions
 - `justerm-renderer/src/rasterizer.rs` — OffscreenCanvas rasterisation (**wasm32/browser only**)
 - `justerm-renderer/src/bitmap.rs` — `InkBounds` and the pure bitmap helpers
-- `justerm-renderer/src/emoji.rs` · `glyph_class.rs` — the classification the cache takes as input
+- `justerm-renderer/src/emoji.rs` · `bitmap.rs` — the classification the cache takes as input, as a
+  `GlyphKind` (see [emoji classification](emoji-classification.md))
 
 ## Reference behaviour
 
@@ -49,7 +50,9 @@ target**, not one of the three reference terminals, and pinned by nothing.
 
 ## Cross-cutting invariants
 
-*(none identified yet)*
+- [workspace exclusion is gate invisibility](../invariant/workspace-exclusion-is-gate-invisibility.md)
+  — this crate is outside the root workspace, so no `--workspace` or `--all` command reaches it;
+  every gate it has is named for it by `--manifest-path`
 
 ## Blast radius
 
