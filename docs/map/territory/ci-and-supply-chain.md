@@ -42,8 +42,12 @@ Nothing governs the gate matrix itself — which checks exist, and what each is 
 - `.github/workflows/fuzz.yml` · `supply-chain.yml`
 - `.github/workflows/publish-crate.yml` · `publish-wasm.yml` · `publish-renderer.yml` ·
   `publish-web.yml`
-- `.github/scripts/check-published-readme.mjs` · `check-map-links.mjs` · `check-map-note.mjs`
+- `.github/scripts/check-published-readme.mjs` · `check-map-links.mjs` · `check-map-note.mjs` ·
+  `check-tool-pins.mjs`
 - `justerm-wasm-decode/tests/readme_pins.rs`
+- `.github/dependabot.yml` — what keeps the SHA pins current (ADR-0006 leans on it), and since #616
+  the renderer's own dependency graph too. Note what it cannot reach: a version literal inside a
+  `run:` line, which is why the `wasm-pack` pin is held by `check-tool-pins.mjs` instead
 - `docs/agents/theflow.md` §"Step 7 — gate matrix" is the operational list, and is **not** a decision
   record
 

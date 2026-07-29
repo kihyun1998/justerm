@@ -771,6 +771,13 @@ cd justerm-renderer && pnpm run test:proofs                                     
 ```
 CI wired since #333 (`renderer`, `renderer-proofs`).
 
+**Your local `wasm-pack` must match the pin, or `test:proofs` is not the gate CI runs (#616).** CI
+installs the version in `WASM_PACK_VERSION` (`rg -n WASM_PACK_VERSION .github/workflows/`); a local
+`wasm-pack --version` that differs means the pixel assertions ran against different codegen and a
+different `wasm-opt` than the ones that will judge the PR. This is not hypothetical — it is the state
+#616 was filed from: CI on 0.15.0, a maintainer's local proofs on 0.14.0, both green.
+`cargo install wasm-pack --locked --version <pinned>` aligns them.
+
 **Gate hygiene:** run each gate **bare, never piped** (`test … | tail -1 &&
 commit` always commits — a pipeline's status is `tail`'s). **Never move a
 threshold** (coverage floor / lint budget) to turn a build green.

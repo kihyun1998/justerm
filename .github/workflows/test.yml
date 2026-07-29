@@ -14,6 +14,12 @@ on:
 permissions:
   contents: read
 
+# Pinned so the tool that builds the wasm is the same one every run (#616) — see the long
+# rationale in publish-renderer.yml. Nothing watches this string (Dependabot does not read
+# `run:` lines), so its refresh trigger is recorded in `docs/agents/release.md`.
+env:
+  WASM_PACK_VERSION: "0.15.0"
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -55,6 +61,12 @@ jobs:
       # read by whoever picks up the next change, not by a registry visitor.
       - name: Doc links (relative paths + #anchors resolve)
         run: node .github/scripts/check-map-links.mjs docs CLAUDE.md CONTEXT.md README.md
+      # The build-tool pin (#616) lives in three workflow-level `env:` blocks, and nothing else would
+      # notice them drifting apart — Dependabot does not read `run:` lines. Same shape as the doc-link
+      # gate above and as readme_pins.rs: a constant that appears in more than one place is held
+      # together by a check that runs on every PR, not by a human remembering to grep.
+      - name: Build-tool pins agree across workflows
+        run: node .github/scripts/check-tool-pins.mjs
 
   # justerm-renderer is EXCLUDED from the root workspace (its web-sys/glow deps are wasm32-only), so
   # `cargo test --workspace` above never touches it — for slices #259..#340 nothing gated it at all
@@ -114,7 +126,7 @@ jobs:
       - name: Add wasm32 target
         run: rustup target add wasm32-unknown-unknown
       - name: Install wasm-pack
-        run: cargo install wasm-pack --locked
+        run: cargo install wasm-pack --locked --version "${{ env.WASM_PACK_VERSION }}"
       # No new third-party action (same reasoning as wasm-pack / cargo-fuzz above): the runner image
       # already ships Node, and pnpm is one npm install away.
       #
@@ -202,9 +214,13 @@ jobs:
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
       - name: Add wasm32 target
         run: rustup target add wasm32-unknown-unknown
-      # Same install model as fuzz.yml's cargo-fuzz: compile from source, no new third-party action.
+      # Installed through cargo rather than a third-party setup action, like fuzz.yml's cargo-fuzz —
+      # but no longer the *same* model: this one is version-pinned (#616) and that one is not, on
+      # purpose (fuzz.yml publishes nothing and runs on a floating nightly, so pinning its tool while
+      # the compiler moves would be theatre). "Compile from source" is also usually wrong here: while
+      # the pin matches the runner image, cargo short-circuits and installs nothing.
       - name: Install wasm-pack
-        run: cargo install wasm-pack --locked
+        run: cargo install wasm-pack --locked --version "${{ env.WASM_PACK_VERSION }}"
       - name: Test (node)
         run: wasm-pack test --node justerm-wasm-decode
       # Build both published targets — bundler (Vite/webpack) and web (no-bundler ESM) — so a break

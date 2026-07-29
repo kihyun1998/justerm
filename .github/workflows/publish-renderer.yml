@@ -22,6 +22,35 @@ on:
 permissions:
   contents: read
 
+# The tool that emits the published artifact, pinned (#616) — for **determinism, not speed**.
+# Unpinned, `cargo install wasm-pack` takes whatever is newest at tag time, so two tags cut a week
+# apart can ship differently-generated wasm from an identical source tree. The divergence was live
+# when this was written: crates.io served 0.15.0 while a maintainer's machine built proofs on 0.14.0.
+#
+# What the pin actually buys, stated narrowly because the first draft of this comment overstated it:
+# wasm-pack's own codegen, and the `wasm-opt` (binaryen) release it downloads. It does **not** buy
+# the `wasm-bindgen` CLI — wasm-pack derives that from the crate's lockfile (its binary cache holds
+# `wasm-bindgen-cargo-install-<lock version>`), so #613 already pinned that half.
+#
+# `--version X.Y.Z` is an **exact** requirement, not a caret ("it is not treated as a caret
+# requirement like Cargo dependencies are" — `cargo help install`). `~0.15` was considered and
+# rejected: it would absorb a patch bump silently, which is the nondeterminism this pin exists to
+# remove.
+#
+# **Nothing watches this string.** Dependabot updates `uses:` refs and cargo manifests, never the
+# contents of a `run:` line — measured: `git log -S "cargo install wasm-pack"` returns three commits,
+# all human. Two things stand in for that: `.github/scripts/check-tool-pins.mjs` keeps the three
+# copies of this literal identical (a gate, run on every PR), and `docs/agents/release.md` carries
+# the human decision of *when to move it*.
+#
+# Cost, so the next reader is not surprised: while this equals the version the runner image ships,
+# the install short-circuits (~0.2s, measured). Any other value — including a patch bump in the
+# image — makes cargo build wasm-pack from source, and the two publish jobs pay that uncached,
+# because they drop the cache action on purpose to keep `NPM_TOKEN` away from it (R6 / ADR-0006).
+# That is the accepted price of a deterministic artifact, not an oversight.
+env:
+  WASM_PACK_VERSION: "0.15.0"
+
 jobs:
   publish:
     runs-on: ubuntu-latest
@@ -43,7 +72,7 @@ jobs:
       - name: Add wasm32 target
         run: rustup target add wasm32-unknown-unknown
       - name: Install wasm-pack
-        run: cargo install wasm-pack --locked
+        run: cargo install wasm-pack --locked --version "${{ env.WASM_PACK_VERSION }}"
 
       # The lockfile gate for the published artifact (#613), and it has to be its OWN step: passing
       # `-- --locked` to the build below would be a gate that inspects nothing, because wasm-pack

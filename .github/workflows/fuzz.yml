@@ -29,6 +29,12 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
+      # Deliberately NOT version-pinned, unlike wasm-pack in the other workflows (#616). The pin
+      # there buys reproducibility of a *published artifact*; this job publishes nothing to a
+      # registry — its outputs are a crash reproducer and a corpus, consumed only by the next run of
+      # this same job. And it installs a floating `nightly` on the line above, so pinning the tool
+      # while the compiler moves underneath would buy nothing. Recorded because every other install
+      # in this repo is now pinned, and an unexplained exception reads as an oversight.
       - name: Install nightly toolchain and cargo-fuzz
         run: |
           rustup toolchain install nightly --profile minimal

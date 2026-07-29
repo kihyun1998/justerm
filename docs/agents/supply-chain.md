@@ -67,6 +67,14 @@ Trust classes: local / same-owner = first-party (skipped); `actions/*`,`github/*
   it advances the pinned SHA *and* its version comment together, so pins stay immutable **and**
   current. A **major** bump (e.g. checkout v6→v7) is deliberately surfaced for human review rather
   than auto-merged — that surfacing *is* the gate working, not a bug.
+- **The one pin that does NOT ride Dependabot: `WASM_PACK_VERSION` (#616).** It is a literal inside a
+  `run:` line, and Dependabot reads `uses:` refs and cargo manifests, never command text (measured:
+  `git log -S "cargo install wasm-pack"` → three commits, all human). Nor does just-shield see it —
+  R3 matches `curl | sh` pipe installs only, so a `cargo install` of an unpinned tool is outside
+  every rule in the table above. Two things cover it instead: the three copies are held identical by
+  `.github/scripts/check-tool-pins.mjs` on every PR, and *when to move the number* is a release-time
+  decision recorded in `docs/agents/release.md`. Read that before assuming this pin is stale — being
+  behind crates.io is the cheap state, not the broken one.
 - **Intentionally accept** a finding: a reason-mandatory ignore comment on (or above) the line —
   `# just-shield: ignore R1 -- <reason>`. No `--` reason → the ignore is void and reported 🔵.
   Ignored findings are not hidden; they stay in the report as ⚪ with their reason.
