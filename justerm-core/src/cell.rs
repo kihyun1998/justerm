@@ -183,6 +183,15 @@ impl core::fmt::Debug for Cell {
             .field("flags", &self.flags())
             .field("combined", &self.is_combined())
             .field("linked", &self.is_linked())
+            // Every cell-state bit that lives OUTSIDE `flags()` — the three presence
+            // bits and the engine-internal leading-spacer marker. `flags()` above
+            // covers the rest; these do not appear in it, so omitting one makes two
+            // unequal cells print as two identical lines. Not hypothetical: #531 read
+            // exactly that way in a failing `assert_eq!(frame, …)` (the ucolor bit was
+            // missing here), and `leading_spacer` reproduced it a second time in the
+            // same session. A bit added to this struct is added here too.
+            .field("ucolored", &self.is_ucolored())
+            .field("leading_spacer", &self.is_leading_spacer())
             .finish()
     }
 }

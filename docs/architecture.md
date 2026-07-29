@@ -289,6 +289,15 @@ under it.
   construction. The dual hazard: the maps are deliberately left holding stale entries (harmless under
   the gate), so a carry must **clear** as well as set, or a new cell inherits the previous occupant's
   value. [#521]
+  **The wire is the third mover, and it fails in the *opposite* direction.** A presence bit never
+  travels as a bit: `encode_color` keeps only mode+value, so `BG_LINK` / `BG_UCOLOR` are dropped, and
+  `CellFlags` carries none. So on decode every bit is **reconstructed** from whether its group carries
+  an entry — `decode_cell` derives `combined` / `linked` from the cell record's own `extra` / `link`,
+  and the ucolor group's own loop must arm `UCOLOR_PRESENT`, because a colour reference rides a
+  *separate* group rather than a cell-record field. Where a missed grid-side carry leaves a bit with
+  nothing behind it, a missed wire-side re-arm leaves the **value with no bit**: the gated read returns
+  `Default` while the map holds the real colour, and the frame stops being a round-trip fixed point.
+  A rider that reaches the wire as a group, not as a cell field, owes its own re-arm here. [#531]
 - **Background Color Erase (BCE).** Erase (ED/EL) fills cleared cells with the *current SGR
   background*, not default. [#8; note in #2 if deferred]
 - **A blank cell carries the current background — including one no app asked for.** BCE covers the
@@ -588,8 +597,12 @@ Z"`, and a search across the wrap went from 1 hit to 0). It now lives on the
 - **Underline colour (SGR 58) rides the *same* machinery — a third per-row map, gated by its own
   `UCOLOR_PRESENT` bit (#520).** A cell that draws a coloured underline stores a `Color` reference in
   `Row`'s `BTreeMap<col, Color>`, gated by bg bit 29. Carry/reflow/recycle/`move_maps` thread it exactly
-  like the link and combining maps; read through `Engine::underline_color_at(row, col)` (`Color::Default`
-  = follow the fg). **Where justerm diverges from xterm:** xterm's `HAS_EXTENDED` is a *shared* gate
+  like the link and combining maps — **and so does `decode`, which is the threading site this list
+  omitted until #531**: the gating bit is not encodable, so the decoder re-arms it from the group, and
+  a rider whose author reads only the in-memory rules ships a value its own gate hides. Note the
+  regime *inverts* across the wire: in memory the bit is authoritative and the map is a flag-gated
+  cache, while on the wire the map is authoritative and the bit is derived from it. Read through
+  `Engine::underline_color_at(row, col)` (`Color::Default` = follow the fg). **Where justerm diverges from xterm:** xterm's `HAS_EXTENDED` is a *shared* gate
   holding link **and** underline colour/style in one `ExtendedAttrs` object; justerm keeps a **separate
   map per concern** (as combining and links already are), gating each with its own bit — so the maps must
   be threaded in lockstep across every op (the coherence the shared object gives xterm for free). The

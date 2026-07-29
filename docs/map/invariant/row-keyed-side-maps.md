@@ -13,6 +13,20 @@ map obeys the same three rules:
    and reflow, which is why the escape hatch is *row*-keyed rather than grid-keyed.
 3. **A write that clears the cell owes the bit, not the map.** Clearing the presence bit is what
    retires the fact; purging the map is an optimisation, never the correctness step.
+4. **Across the wire the bit is *reconstructed*, never transmitted.** The wire's flag field carries
+   only `CellFlags`, and **no presence bit is a `CellFlags` bit** — they are spread across the
+   packed words (the combining gate rides the *content* word and is stripped by the codepoint mask;
+   the link and underline-colour gates ride the *bg* word and are stripped by the colour encoding).
+   The word does not matter and naming only one of them is how this rule gets read as narrower than
+   it is: what matters is that no presence bit survives encoding, so `decode` re-derives each one
+   from whether its group carries an entry for that column.
+   Where the group rides the per-cell record the cell decoder does it; where it is a *separate*
+   group, that group's own loop owes the re-arm. A rider that adds a group and not a re-arm produces
+   a frame whose value is present and whose gate is shut.
+
+Rule 4 is the one a reader is least likely to derive, because rules 1–3 are all about the in-memory
+row and read as complete. It arrived by defect: [wire format](../territory/wire-format.md) shipped the
+underline-colour group with no re-arm, and nothing noticed for two releases.
 
 ## Why it is cross-cutting
 
@@ -37,6 +51,10 @@ the first; nothing governs this one.
   fixed-width (#45/#46)
 - [wide glyph](../territory/wide-glyph.md) — adjacent, not identical: the
   extended-attr rider a wide lead carries is one of these maps meeting the pair rule (#521)
+- [wire format](../territory/wire-format.md) — where rule 4 applies and the only territory in which
+  the regime **inverts**: in memory the bit is authoritative and the map is a gated cache, on the wire
+  the map is authoritative and the bit is derived from it. #531 is what happens when a site under the
+  second regime is written by someone reading the first (#531)
 
 Storage: `Row { cells, combining, links, ucolors, wrapped }` in `justerm-core/src/grid.rs`; the
 combining and link maps share one implementation.
@@ -50,20 +68,27 @@ Two symptoms, from opposite directions:
   on freshly typed text.
 - **Map does not ride** — a row-moving verb rebuilds cells without carrying the maps, and combining
   marks / links / underline colours vanish on scroll or reflow while the glyphs survive.
+- **Gate shut over a live value** — the rule-4 failure, and the only one of the three that is
+  invisible on a live grid: the map holds the fact, the bit does not, so the gated read returns the
+  default. It reaches a consumer only through the wire, which is why no grid test can see it.
 
-The first is silent and looks like a rendering bug; the second looks like data loss.
+The first is silent and looks like a rendering bug; the second looks like data loss; the third looks
+like the feature was never used on that cell.
 
 ## Discovery history
 
-Thinner than [alt-screen absolute-index floor](alt-screen-buffer-floor.md) — this is a *deliberate*
-pattern that was extended, not a bug found three times — but it is recorded here because the extension
-is exactly when the rules get re-derived rather than read.
+Thinner than [alt-screen absolute-index floor](alt-screen-buffer-floor.md) — this began as a
+*deliberate* pattern that was extended, not a bug found three times — but it is recorded here because
+the extension is exactly when the rules get re-derived rather than read. That prediction then came
+true against the note itself: rules 1–3 were written from the in-memory row and read as the whole
+rule, so #531 rediscovered rule 4 rather than reading it.
 
 | Event | Site | Issue |
 |---|---|---|
 | Pattern established | combining marks, hyperlinks | #43 epic → #45 / #46 |
 | Pattern extended years later | SGR 58 underline colour | #520 |
 | Rules met the pair rule | extended-attr rider on a wide lead | #521 (in the #552 roster) |
+| Rule 4 found by defect | the underline-colour group crossed the wire with no re-arm | #531 |
 
 The tell that this note earns its place: #520 did not open a decision about *where* underline colour
 should live. It reached for the hatch, correctly, from a code comment — which means the rules survive
@@ -73,4 +98,5 @@ only as long as the next author reads that comment.
 
 The next per-cell attribute that does not fit the packed cell. Test: if a feature wants a new field on
 `Cell` and the cell is full, it is subject to this invariant — and the first question is not "where do
-I store it" but "which presence bit gates it, and which verbs clear that bit".
+I store it" but "which presence bit gates it, which verbs clear that bit, and — if it crosses the
+wire — which decode site re-arms it".

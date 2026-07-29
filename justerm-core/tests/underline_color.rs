@@ -205,6 +205,148 @@ fn wire_ucolours_attach_to_the_right_span_positionally() {
 }
 
 #[test]
+fn an_engine_frame_carrying_a_coloured_underline_is_a_wire_fixed_point() {
+    // #531: `decode(encode(f)) == f` on a frame from a REAL `Engine`.
+    //
+    // Read the scope carefully: this is NOT the general claim that every engine frame is a
+    // wire fixed point. `Frame` equality compares whole packed `Cell`s, which embed
+    // engine-internal markers that ADR-0020 R2 excludes from being frame *content* — a
+    // frame carrying a `C_LEADING_SPACER` is unequal after the round trip and correctly
+    // so, because no consumer reads that bit (measured: its only readers are `term.rs`'s
+    // grid-side repair paths). What this asserts is the underline colour's own gate, on a
+    // fixture with no such marker. ADR-0005's contract, asserted on a frame from a
+    // REAL `Engine`. The starting point is the whole test: `tests/robustness.rs`'s
+    // round-trip property is driven from a *decoded* frame, so it proves
+    // `decode ∘ encode ∘ decode == decode` — a fixed point of the decoder's own output,
+    // which by construction cannot observe an encode-side asymmetry. Measured before the
+    // fix: this was `false` while the decoded frame WAS a fixed point of itself.
+    let mut t = Engine::new(10, 2);
+    t.feed(b"\x1b[4m\x1b[58:5:1mA");
+    let frame = t.frame();
+    assert_eq!(
+        decode(&encode(&frame)).expect("round-trips"),
+        frame,
+        "an SGR 58 frame must survive the wire unchanged"
+    );
+}
+
+#[test]
+fn decoding_re_arms_the_presence_bit_on_exactly_the_coloured_columns() {
+    // #531: on this wire the presence bits never travel *as bits* — `UCOLOR_PRESENT`
+    // lives in the bg word's bit 29, which `encode_color` drops, and `CellFlags` carries
+    // no presence bit. They are RECONSTRUCTED from whether the group carries an entry,
+    // exactly as `decode_cell` derives `combined`/`linked` from `extra`/`link`. Without
+    // the re-arm, `Cell::is_ucolored()` — public, and the documented gate for reading the
+    // ucolor map (`grid.rs::ucolor_at`) — lies on every decoded cell.
+    //
+    // The negative half is what makes this a proof rather than an observation: an
+    // implementation that armed the bit unconditionally would pass the first assert.
+    let mut t = Engine::new(10, 2);
+    t.feed(b"\x1b[4m\x1b[58:5:1mA\x1b[59mB");
+    let decoded = decode(&encode(&t.frame())).expect("round-trips");
+    let span = decoded
+        .spans
+        .iter()
+        .find(|s| s.line == 0)
+        .expect("row 0 is a damage span");
+
+    assert!(span.ucolors.contains_key(&0) && !span.ucolors.contains_key(&1));
+    assert!(
+        span.cells[0].is_ucolored(),
+        "A carries a colour → bit re-armed"
+    );
+    assert!(
+        !span.cells[1].is_ucolored(),
+        "B has no colour → bit stays clear"
+    );
+    assert_eq!(
+        span.cells.iter().filter(|c| c.is_ucolored()).count(),
+        span.ucolors.len(),
+        "exactly the columns in the group carry the bit — no blanket arming"
+    );
+}
+
+#[test]
+fn the_re_arm_indexes_the_span_relatively_not_absolutely() {
+    // The group's keys are SPAN-relative (`term.rs` inserts `col - left`), so the re-arm
+    // must index `span.cells` by the bare key. Every other test here happens to produce a
+    // span with `left == 0`, where span-relative and absolute agree — so they ALL pass
+    // against `span.cells.get_mut(col + span.left as usize)`, a wrong implementation that
+    // arms an unrelated live cell on any partial frame that does not start at column 0.
+    // This test exists to make `left > 0` reachable, and it is the same distinction the
+    // encoder had to get right at `term.rs`'s `ucolors.insert(col - left, color)`.
+    let mut t = Engine::new(20, 2);
+    t.feed(b"................");
+    let _ = t.frame();
+    t.reset_damage();
+    // Damage a run starting at column 8, so the span's `left` is non-zero.
+    t.feed(b"\x1b[1;9H\x1b[4m\x1b[58:5:1mZZ");
+    let frame = t.frame();
+    let span = frame
+        .spans
+        .iter()
+        .find(|s| s.line == 0)
+        .expect("row 0 is a damage span");
+    assert!(span.left > 0, "the fixture must produce a non-zero left");
+    let left = span.left as usize;
+
+    let decoded = decode(&encode(&frame)).expect("round-trips");
+    let dspan = decoded
+        .spans
+        .iter()
+        .find(|s| s.line == 0)
+        .expect("row 0 survives");
+    let armed: Vec<usize> = dspan
+        .cells
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| c.is_ucolored())
+        .map(|(i, _)| i)
+        .collect();
+    let keys: Vec<usize> = dspan.ucolors.keys().copied().collect();
+    assert_eq!(
+        armed, keys,
+        "the armed columns are the group's own keys — not those keys shifted by left ({left})"
+    );
+    assert_eq!(decoded, frame, "and the frame is still a wire fixed point");
+}
+
+#[test]
+fn a_ucolor_column_past_the_end_of_its_span_does_not_panic_the_decoder() {
+    // #531 hazard, measured: the group's `col` key is NOT bounded against the span's
+    // width — a patched frame decodes `Ok` with `ucolors={9999: …}` over a 2-cell span.
+    // So re-arming via `span.cells[col]` is an out-of-bounds panic on attacker-influenced
+    // input (`tests/robustness.rs` names `decode`'s input exactly that), which ADR-0008
+    // forbids. Encoding a hand-edited `Frame` produces that buffer with no byte patching:
+    // `encode` writes whatever the map holds.
+    //
+    // Scope: the re-arm is skipped for an out-of-range column and the entry is left in
+    // the map — deliberately NOT rejected. Whether a group key outside its frame should
+    // be a `DecodeError` is the same question as #582 (a span outside the frame it rides
+    // on), and answering half of it here would pre-empt that decision.
+    let mut t = Engine::new(4, 2);
+    t.feed(b"\x1b[4m\x1b[58:5:1mA");
+    let mut frame = t.frame();
+    let span = &mut frame.spans[0];
+    let width = span.cells.len();
+    span.ucolors.clear();
+    span.ucolors.insert(9999, Color::Indexed(1));
+
+    let decoded = decode(&encode(&frame)).expect("decodes without panicking");
+    let dspan = &decoded.spans[0];
+    assert_eq!(dspan.ucolors.get(&9999), Some(&Color::Indexed(1)));
+    assert_eq!(
+        dspan.cells.len(),
+        width,
+        "the span is still its declared width"
+    );
+    assert!(
+        !dspan.cells.iter().any(|c| c.is_ucolored()),
+        "an out-of-range key arms no cell"
+    );
+}
+
+#[test]
 fn a_plain_frame_adds_no_underline_colour_bytes_to_the_wire() {
     // The group is sparse: a frame with no coloured underlines costs only the
     // per-span zero-count (2 bytes/span), never a per-cell field. Encode the same
