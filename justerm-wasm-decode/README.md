@@ -32,7 +32,7 @@ import { resolveRgb, decodeColorRef, FG, BG } from "justerm-wasm-decode/colors.j
 // Bundler target (Vite/webpack): the above imports work directly.
 // Web target (no bundler): `import init, { ... } from "justerm-wasm-decode"; await init();` first.
 
-console.assert(wireVersion() === 13); // optional: assert the backend encoder agrees
+console.assert(wireVersion() === 14); // optional: assert the backend encoder agrees
 
 // --- once at startup / on theme change ---
 // buildPalette fills 0..15 from your scheme's ANSI colours and 16..255 from the
@@ -89,8 +89,8 @@ One entry per cell, in span order. `spans` is a flat directory: 5 `u32`s per spa
 | `codepoints` | `Uint32Array` | base Unicode codepoint (not an atlas glyph id) |
 | `fg` / `bg` | `Uint32Array` | colour references — pass to `resolveRgb` |
 | `flags` | `Uint16Array` | attribute + layout bits — test with `flags()` constants |
-| `extra` | `Uint16Array` | 1-based `sideTable` index for a grapheme cluster (`0` = none) |
-| `link` | `Uint16Array` | 1-based `linkTable` index for an OSC 8 hyperlink (`0` = none) |
+| `extra` | `Uint32Array` | 1-based `sideTable` index for a grapheme cluster (`0` = none) |
+| `link` | `Uint32Array` | 1-based `linkTable` index for an OSC 8 hyperlink (`0` = none) |
 
 `frame.sideTable` (`string[]`) and `frame.linkTable` (`string[]`) carry the referenced clusters/URIs.
 

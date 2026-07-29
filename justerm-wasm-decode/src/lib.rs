@@ -70,8 +70,15 @@ struct Flat {
     flags: Vec<u16>,
     /// Per-cell frame-local side-table / hyperlink indices (`0` = none) — the
     /// `extra` / `link` columns.
-    extra: Vec<u16>,
-    link: Vec<u16>,
+    ///
+    /// `u32`, not `u16`, since v14 (#621). Both index tables whose size is bounded by
+    /// the *viewport*, and the frame header stores `cols` and `rows` as `u16` **each**
+    /// — so a legal viewport holds far more cells than a `u16` index can number.
+    /// Keeping these narrow after the wire widened would have relocated the very
+    /// defect #621 removed, one layer downstream, where nothing would have caught it.
+    /// `types.ts` declares both as `ArrayLike<number>`, so the JS contract is unchanged.
+    extra: Vec<u32>,
+    link: Vec<u32>,
     /// Span directory: `SPAN_STRIDE` `u32`s per span — see [`SPAN_STRIDE`].
     /// `cell_offset` is the index of the span's first cell within the cell
     /// columns (`codepoints`/`fg`/…); `cell_count` is its number of cells.
@@ -131,6 +138,8 @@ fn flatten(frame: &Frame) -> Flat {
     let mut flags = Vec::with_capacity(cell_count);
     let mut extra = Vec::with_capacity(cell_count);
     let mut link = Vec::with_capacity(cell_count);
+    // Rebuilt here rather than read off the wire (v14, #621) — see the push site.
+    let mut side_table: Vec<Vec<char>> = Vec::new();
     let mut spans = Vec::with_capacity(frame.spans.len() * SPAN_STRIDE);
     let mut cell_offset: u32 = 0;
     for span in &frame.spans {
@@ -155,10 +164,25 @@ fn flatten(frame: &Frame) -> Flat {
                     .map_or(0, |&c| justerm_core::encode_color(c)),
             );
             flags.push(cell.flags().bits());
-            // Combining/link indices ride on the span (per column), not the cell,
-            // since slices #45/#46 moved them into per-row maps.
-            extra.push(span.combining.get(&col).map_or(0, |n| n.get() as u16));
-            link.push(span.links.get(&col).map_or(0, |n| n.get() as u16));
+            // Combining/link references ride on the span (per column), not the cell,
+            // since slices #45/#46 moved them into per-row maps — and since v14 (#621)
+            // they are sparse wire groups rather than fields on the cell record.
+            //
+            // The JS-facing shape is unchanged: a dense `extra` column of 1-based
+            // indices into a `sideTable`. The wire no longer carries that table, so it
+            // is **built here**, which is precisely this crate's job (ADR-0008: flatten
+            // the wire's logical form into the renderer's structure-of-arrays). One
+            // entry per combining cell, in cell order — the same thing `Term::frame`
+            // used to ship, reconstructed on the consumer's side of the boundary where
+            // it costs no wire bytes.
+            extra.push(match span.combining.get(&col) {
+                Some(cluster) => {
+                    side_table.push(cluster.clone());
+                    side_table.len() as u32
+                }
+                None => 0,
+            });
+            link.push(span.links.get(&col).map_or(0, |n| n.get()));
         }
     }
 
@@ -193,7 +217,7 @@ fn flatten(frame: &Frame) -> Flat {
         extra,
         link,
         spans,
-        side_table: frame.side_table.clone(),
+        side_table,
         link_table: frame.link_table.clone(),
         selection_spans: flatten_overlay_spans(&frame.overlay.selection),
         match_spans: flatten_overlay_spans(&frame.overlay.matches),
@@ -399,14 +423,14 @@ impl DecodedFrame {
     /// Per-cell frame-local grapheme side-table index (`0` = none; else
     /// `sideTable[extra - 1]`).
     #[wasm_bindgen(getter)]
-    pub fn extra(&self) -> js_sys::Uint16Array {
-        unsafe { js_sys::Uint16Array::view(&self.flat.extra) }
+    pub fn extra(&self) -> js_sys::Uint32Array {
+        unsafe { js_sys::Uint32Array::view(&self.flat.extra) }
     }
 
     /// Per-cell frame-local hyperlink index (`0` = none; else `linkTable[link - 1]`).
     #[wasm_bindgen(getter)]
-    pub fn link(&self) -> js_sys::Uint16Array {
-        unsafe { js_sys::Uint16Array::view(&self.flat.link) }
+    pub fn link(&self) -> js_sys::Uint32Array {
+        unsafe { js_sys::Uint32Array::view(&self.flat.link) }
     }
 
     /// Span directory: 5 `u32`s per span — `line, left, right, cell_offset,
@@ -627,7 +651,6 @@ mod tests {
             alt_screen: false,
             scroll: None,
             spans,
-            side_table: vec![],
             link_table: vec![],
             overlay: Default::default(),
         }
@@ -781,8 +804,9 @@ mod tests {
                 left: 0,
                 right: 1,
                 cells,
-                // extra/link ride the span now (per column), not the cell.
-                combining: BTreeMap::from([(0, NonZeroU32::new(3).unwrap())]),
+                // Both ride the span (per column), not the cell — and since v14 (#621)
+                // the cluster is inline while the link is still a table index.
+                combining: BTreeMap::from([(0, vec!['e', '\u{301}'])]),
                 links: BTreeMap::from([(0, NonZeroU32::new(7).unwrap())]),
                 ucolors: BTreeMap::new(),
             }],
@@ -792,7 +816,18 @@ mod tests {
             flat.flags,
             vec![(CellFlags::BOLD | CellFlags::ITALIC).bits(), 0]
         );
-        assert_eq!(flat.extra, vec![3, 0]); // 1-based index, 0 = none
+        // 1-based index, 0 = none — and since v14 (#621) *assigned here* rather than
+        // passed through. The old fixture handed `flatten` an index of 3 into a table
+        // nothing had built, and the column echoed it back; now the first cluster in
+        // cell order is entry 1 by construction, so an arbitrary number can no longer
+        // survive the trip.
+        assert_eq!(flat.extra, vec![1, 0]);
+        assert_eq!(
+            flat.side_table,
+            vec![vec!['e', '\u{301}']],
+            "and `extra[0]` indexes it — a column with no table behind it is the bug \
+             this pairing exists to catch",
+        );
         assert_eq!(flat.link, vec![7, 0]);
     }
 
@@ -846,14 +881,27 @@ mod tests {
     // --- S2: side-table + link-table carried through ---
 
     #[test]
-    fn flatten_carries_side_and_link_tables() {
-        let mut frame = partial(80, 24, vec![ascii_span(0, 0, "x")]);
-        frame.side_table = vec![vec!['e', '\u{301}'], vec!['a', '\u{308}']];
+    fn flatten_rebuilds_the_side_table_and_carries_the_link_table() {
+        // Since v14 (#621) the wire has no side table: clusters ride their column. The
+        // JS-facing shape is unchanged (`extra` indexes a `sideTable`), so `flatten`
+        // *builds* that table — which makes this a test of the rebuild, not of a copy.
+        // The link table is still carried through, because that one is still interned.
+        let mut span = ascii_span(0, 0, "ea");
+        span.combining.insert(0, vec!['\u{301}']);
+        span.combining.insert(1, vec!['\u{308}']);
+        let mut frame = partial(80, 24, vec![span]);
         frame.link_table = vec!["https://example.com".to_string()];
+
         let flat = flatten(&frame);
         assert_eq!(
             flat.side_table,
-            vec![vec!['e', '\u{301}'], vec!['a', '\u{308}']]
+            vec![vec!['\u{301}'], vec!['\u{308}']],
+            "one entry per combining cell, in cell order",
+        );
+        assert_eq!(
+            flat.extra,
+            vec![1, 2],
+            "1-based indices into the table just built — 0 would mean 'no cluster'",
         );
         assert_eq!(flat.link_table, vec!["https://example.com".to_string()]);
     }
@@ -1051,14 +1099,13 @@ mod tests {
                     left: 0,
                     right: 2,
                     cells: vec![wide, spacer, coloured],
-                    // the `coloured` cell (column 2) references grapheme + link 1.
-                    combining: BTreeMap::from([(2, NonZeroU32::new(1).unwrap())]),
+                    // the `coloured` cell (column 2) carries a cluster + link 1.
+                    combining: BTreeMap::from([(2, vec!['\u{301}'])]),
                     links: BTreeMap::from([(2, NonZeroU32::new(1).unwrap())]),
                     ucolors: BTreeMap::new(),
                 },
                 ascii_span(3, 10, "hi"),
             ],
-            side_table: vec![vec!['e', '\u{301}']],
             link_table: vec!["https://x.example".to_string()],
             overlay: Default::default(),
         };
@@ -1079,7 +1126,16 @@ mod tests {
             (7, 13, false)
         );
         assert_eq!(flat.scroll, Some((0, 23, 5)));
-        assert_eq!(flat.side_table, native.side_table);
+        // There is no `native.side_table` to compare against since v14 (#621) — the wire
+        // carries no such table, so `flatten` builds one. Assert what it built against
+        // the clusters the native frame actually carries; a copy check would have
+        // nothing left to copy and would quietly assert nothing.
+        let native_clusters: Vec<Vec<char>> = native
+            .spans
+            .iter()
+            .flat_map(|s| s.combining.values().cloned())
+            .collect();
+        assert_eq!(flat.side_table, native_clusters);
         assert_eq!(flat.link_table, native.link_table);
 
         // SoA columns: each equals the corresponding field of every native cell,
@@ -1092,6 +1148,10 @@ mod tests {
         let mut exp_link = Vec::new();
         let mut expected_spans = Vec::new();
         let mut off: u32 = 0;
+        // The 1-based side-table index `flatten` assigns, recomputed independently here
+        // rather than read back from `flat` — otherwise the assertion below compares the
+        // implementation with itself.
+        let mut next_cluster: u32 = 0;
         for span in &native.spans {
             let n = span.cells.len() as u32;
             expected_spans.extend_from_slice(&[
@@ -1107,8 +1167,14 @@ mod tests {
                 exp_fg.push(justerm_core::encode_color(cell.fg()));
                 exp_bg.push(justerm_core::encode_color(cell.bg()));
                 exp_flags.push(cell.flags().bits());
-                exp_extra.push(span.combining.get(&col).map_or(0, |x| x.get() as u16));
-                exp_link.push(span.links.get(&col).map_or(0, |x| x.get() as u16));
+                exp_extra.push(match span.combining.get(&col) {
+                    Some(_) => {
+                        next_cluster += 1;
+                        next_cluster
+                    }
+                    None => 0,
+                });
+                exp_link.push(span.links.get(&col).map_or(0, |x| x.get()));
             }
         }
         assert_eq!(flat.codepoints, exp_codepoints);

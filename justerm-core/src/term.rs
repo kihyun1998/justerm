@@ -308,6 +308,32 @@ const DEFAULT_SCROLLBACK: usize = 10_000;
 /// application rendering for a width the buffer does not have (#547).
 pub const MIN_COLUMNS: usize = 2;
 
+/// The widest grid the engine will hold, and the mirror of [`MIN_COLUMNS`] — but derived
+/// from a different kind of constraint, which is why the two are not symmetric.
+///
+/// The floor is **semantic**: a width-2 glyph needs two cells, so one column is a screen
+/// no correct grid can be. The ceiling is **representational**: the frame header stores
+/// `cols` and `rows` as `u16` each, so a grid wider than `u16::MAX` cannot be *described*
+/// to a consumer even though the engine could hold it. Without the clamp that mismatch was
+/// silent — measured, `Engine::new(70_000, 2)` built a 70 000-column grid whose frame
+/// declared `cols = 4464` and decoded `Ok`, so a consumer laid out 4464 columns of a
+/// 70 000-column screen with nothing reporting the difference (#621).
+///
+/// No reference bounds a grid this way, and that is expected rather than a divergence:
+/// none of them serializes a grid, so none has a header field to overflow. This is the
+/// one axis where justerm's own wire is the only authority.
+///
+/// **A backstop, not a policy.** A 4K display at a very small font is roughly 550 columns;
+/// this is two orders of magnitude past any real terminal, so it should never be reached
+/// by a consumer that is not already doing something wrong. The clamp is silent and
+/// pull-only on the same terms as [`MIN_COLUMNS`] — read the size back from
+/// [`Term::grid`] rather than trusting the value you passed in.
+pub const MAX_COLUMNS: usize = u16::MAX as usize;
+
+/// The tallest grid the engine will hold. The row half of [`MAX_COLUMNS`] — same
+/// `u16` header field, same reasoning, same silent-clamp contract.
+pub const MAX_ROWS: usize = u16::MAX as usize;
+
 /// The state DECSC (ESC 7) saves and DECRC (ESC 8) restores: position, pen/SGR,
 /// pending-wrap, and origin mode (per ADR-0004 — DECRC restores origin mode,
 /// which Alacritty omits). Cursor *visibility* is deliberately not part of this
@@ -398,8 +424,10 @@ impl Term {
         // 0-tall" that this constructor merely failed to enforce while carrying the
         // same `scroll_bottom: rows - 1` below. That gap was a subtract-overflow panic
         // on `rows == 0`, not a degenerate screen.
-        let cols = cols.max(MIN_COLUMNS);
-        let rows = rows.max(1);
+        // …and the ceiling is the header's, not the glyph's: `frame.cols`/`rows` are u16,
+        // so a wider grid would be built and then misdescribed on the wire (#621).
+        let cols = cols.clamp(MIN_COLUMNS, MAX_COLUMNS);
+        let rows = rows.clamp(1, MAX_ROWS);
         Term {
             grid: Grid::new(cols, rows),
             alt_grid: Grid::new(cols, rows),
@@ -601,10 +629,14 @@ impl Term {
             ),
         };
 
-        let mut side_table: Vec<Vec<char>> = Vec::new();
-        // Same frame-local renumber for the hyperlink side-table (#26).
+        // Frame-local renumber for the hyperlink table (#26). `u32`, not `u16`: the
+        // narrower width could not number one distinct URI per cell of a viewport the
+        // frame header's own `cols`/`rows` permit, and the wrap did not merely truncate
+        // — `link_remap[l] = … as u16` yielded 0 at the 65536th URI and the
+        // `NonZeroU32::new(…).expect(…)` below turned it into a panic *in the engine*,
+        // on a stream it had parsed correctly (#621).
         let mut link_table: Vec<String> = Vec::new();
-        let mut link_remap = vec![0u16; self.hyperlink_pool.len() + 1];
+        let mut link_remap = vec![0u32; self.hyperlink_pool.len() + 1];
         // Cells come from the viewport at `display_offset`, not the live grid:
         // viewport row `line` is absolute buffer line `top + line` (scrollback
         // when scrolled up, the live grid when `display_offset == 0`, where
@@ -634,20 +666,21 @@ impl Term {
                 // tagged cell contributes its reference to the frame, recorded on
                 // the span by span-relative column (the cell holds only the bit).
                 if let Some(marks) = row.combining_at(col) {
-                    side_table.push(marks.to_vec());
-                    let idx = core::num::NonZeroU32::new(side_table.len() as u32)
-                        .expect("side_table just pushed, len >= 1");
-                    combining.insert(col - left, idx);
+                    // The cluster itself, at its column — no side table and no index
+                    // since v14 (#621). Nothing interned these (this push was
+                    // unconditional), so the index only ever bought indirection.
+                    combining.insert(col - left, marks.to_vec());
                 }
                 if let Some(lidx) = row.link_at(col) {
                     // Renumber the global pool index to a contiguous frame-local
-                    // one (only referenced URIs ship), same as the old per-cell link.
+                    // one (only referenced URIs ship). This half stays interned —
+                    // cells share a URI, and all three references share it too.
                     let l = lidx.get() as usize;
                     if link_remap[l] == 0 {
                         link_table.push(self.hyperlink_pool[l - 1].clone());
-                        link_remap[l] = link_table.len() as u16;
+                        link_remap[l] = link_table.len() as u32;
                     }
-                    let fidx = core::num::NonZeroU32::new(link_remap[l] as u32)
+                    let fidx = core::num::NonZeroU32::new(link_remap[l])
                         .expect("link_remap just set, nonzero");
                     links.insert(col - left, fidx);
                 }
@@ -699,7 +732,6 @@ impl Term {
             alt_screen: self.on_alt,
             scroll: self.scroll_delta(),
             spans,
-            side_table,
             link_table,
             // Interaction overlays projected onto this viewport (#108): the
             // engine-owned selection and the consumer-supplied search highlights,
@@ -931,9 +963,12 @@ impl Term {
     pub fn resize(&mut self, cols: usize, rows: usize) {
         // A terminal is never 0-tall; clamp so the math below (rows - 1) can't
         // underflow. Columns clamp to MIN_COLUMNS, not 1: chunking by cols needs a
-        // non-zero width, but a *wide glyph* needs two (#547).
-        let cols = cols.max(MIN_COLUMNS);
-        let rows = rows.max(1);
+        // non-zero width, but a *wide glyph* needs two (#547). The ceiling is the frame
+        // header's u16, clamped here as well as in the constructor — a ceiling that held
+        // only until the first resize is the gap `new` had against this function's own row
+        // floor before #547 (#621).
+        let cols = cols.clamp(MIN_COLUMNS, MAX_COLUMNS);
+        let rows = rows.clamp(1, MAX_ROWS);
         let old_cols = self.grid.cols();
         let limit = self.scrollback_limit;
 

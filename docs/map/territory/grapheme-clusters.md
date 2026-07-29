@@ -29,7 +29,9 @@ the decision has to be made per scalar, with no lookahead, against a cluster tha
 - **Width is still per character** (see [wide glyph](wide-glyph.md)), which is why VS16 and keycap
   sequences arrive as `wide = false` and why the renderer classifies emoji by structure rather than by
   width. Mode 2027 is what would change that, and it is off.
-- **On the wire the overflow becomes a frame-local index** into the grapheme side table — the same
+- **On the wire the cluster is inlined at its column** in the span's sparse combining group (v14,
+  #621 — it was a frame-local index into a side table until then, and the table is gone because
+  nothing ever interned it). The same
   arrangement hyperlinks use, for the same fixed-stride reason.
 
 ## Code
@@ -39,7 +41,7 @@ the decision has to be made per scalar, with no lookahead, against a cluster tha
 - `justerm-core/src/grid.rs` — `Combining`, the row's column-keyed cluster map
 - `justerm-core/src/term.rs` — `Term::grapheme_clustering` (the mode), and the print path that
   extends or breaks
-- `justerm-core/src/serialize.rs` — `Frame`'s `side_table`
+- `justerm-core/src/serialize.rs` — `Span`'s `combining`
 
 ## Reference behaviour
 
@@ -59,7 +61,7 @@ than a comparison against what the references do when the mode is enabled.
   switch that would make a cluster's width a cluster-level fact
 - [emoji classification](emoji-classification.md) — classifies structurally *because* it cannot use
   `wide`, which is a direct consequence of the above
-- [wire format](wire-format.md) — the side table and its frame-local indices
+- [wire format](wire-format.md) — the sparse per-span groups that carry rare per-cell payloads
 - [logical lines](logical-lines.md) · [selection](selection.md) — text extraction reads the cluster,
   not the inline code point, so a change to what a cluster contains changes copied text
 

@@ -17,7 +17,7 @@ use std::collections::BTreeMap;
 
 /// Wire magic ("juSTerm") + format version. A new feature bumps `VERSION`.
 const MAGIC: [u8; 2] = *b"JT";
-const VERSION: u8 = 13; // v13 adds a per-span underline-colour group: sparse (col, Color) pairs for cells drawing a coloured underline (SGR 58, #520); v12 adds a fifth overlay group: the consumer-designated active search match's spans (#428); v11 adds a fourth overlay group: every live marker's absolute buffer line for the overview ruler (#120 S3); v10 adds a marker kind discriminant + optional i32 exit to the overlay marker group (#159); v9 adds the alt-screen flag in the header (#149); v8 adds the mouse wanted-events mask in the header (#129/ADR-0016); v7 overlay marker group (#118/ADR-0015); v6 overlay selection + search-match spans (#108/ADR-0014); v5 scroll position (#112/ADR-0013); v4 cursor shape+blink (#81); v3 cursor row/col/visibility (#38)
+const VERSION: u8 = 14; // v14 moves combining clusters and hyperlink refs off the fixed cell record (18 B -> 14 B) into per-span sparse groups, inlining the cluster (no side-table) but keeping the URI table interned, and widens every count/length prefix they use to u32 — the engine could hold a cluster, a URI, or a viewport its own decoder then rejected or, worse, mis-read as Ok (#621); v13 adds a per-span underline-colour group: sparse (col, Color) pairs for cells drawing a coloured underline (SGR 58, #520); v12 adds a fifth overlay group: the consumer-designated active search match's spans (#428); v11 adds a fourth overlay group: every live marker's absolute buffer line for the overview ruler (#120 S3); v10 adds a marker kind discriminant + optional i32 exit to the overlay marker group (#159); v9 adds the alt-screen flag in the header (#149); v8 adds the mouse wanted-events mask in the header (#129/ADR-0016); v7 overlay marker group (#118/ADR-0015); v6 overlay selection + search-match spans (#108/ADR-0014); v5 scroll position (#112/ADR-0013); v4 cursor shape+blink (#81); v3 cursor row/col/visibility (#38)
 
 /// The wire-format version (the gating `VERSION` byte), exposed so a binding can
 /// assert at load that its decoder matches the backend encoder (#34/ADR-0008).
@@ -34,20 +34,39 @@ pub enum FrameKind {
 
 /// A damaged column run on one line, with its cells.
 ///
-/// `combining` and `links` map a span-relative column to its frame-local index
-/// (1-based) — `combining` into [`Frame::side_table`], `links` into
-/// [`Frame::link_table`]. These are the per-cell `extra`/`link` references lifted
-/// out of the cell now that combining clusters (#45) and hyperlinks (#46) live in
-/// per-row maps. A column is present iff its cell carries the matching bit; on the
-/// wire they are the cell record's `extra`/`link` fields, so the bytes are
-/// unchanged.
+/// `combining` and `links` map a span-relative column to what that cell carries —
+/// combining clusters (#45) and hyperlinks (#46) live in per-row maps, so neither
+/// rides the cell. Since v14 (#621) both are **sparse wire groups of their own**,
+/// not indices in the cell record, which is what removed the `u16` ceilings the
+/// engine could legitimately exceed.
+///
+/// The two are deliberately **not** symmetric, and the asymmetry is measured rather
+/// than stylistic:
+///
+/// - `combining` holds the cluster **inline**. `Term::frame` pushes one entry per
+///   combining cell with no interning, so an index bought nothing but a level of
+///   indirection and a table to count. Inlining is size-neutral (measured: −0.5% on
+///   a combining-heavy frame) and buys the deletion of both.
+/// - `links` holds a **1-based index into [`Frame::link_table`]**, because that
+///   table *is* interned (`Term::frame`'s `link_remap` ships each referenced URI
+///   once). Inlining a URI at every linked cell was measured at +171…403% on
+///   link-dense frames, and all three references share one copy across cells —
+///   ghostty ref-counts its hyperlink set explicitly *"so that a set of cells can
+///   share the same hyperlink without duplicating the data"*, xterm.js keys cells to
+///   an `OscLinkService` id, alacritty holds `Arc<HyperlinkInner>`.
+///
+/// A column is present in either map iff its cell carries the matching bit — and,
+/// as with `ucolors` below, that bit does **not** travel on the wire (the record
+/// encodes `cell.c()` and `encode_color(bg)`, which drop `C_COMBINED` and
+/// `LINK_PRESENT` respectively). `decode` re-arms both from these maps' own entries.
+/// A `Span` built by hand for a test owes the same pairing.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Span {
     pub line: u16,
     pub left: u16,
     pub right: u16,
     pub cells: Vec<Cell>,
-    pub combining: BTreeMap<usize, NonZeroU32>,
+    pub combining: BTreeMap<usize, Vec<char>>,
     pub links: BTreeMap<usize, NonZeroU32>,
     /// Underline colours (SGR 58, #520): span-relative column → the `Color`
     /// reference the cell's coloured underline draws in. Sparse — only cells that
@@ -158,9 +177,10 @@ pub struct Overlay {
 }
 
 /// One serialized damage cycle: the decoded logical form that `encode`/`decode`
-/// round-trip. `side_table` holds this frame's grapheme clusters (referenced by
-/// each cell's frame-local `extra`); `link_table` holds its OSC 8 hyperlink URIs
-/// (referenced by each cell's frame-local `link`).
+/// round-trip. `link_table` holds this frame's OSC 8 hyperlink URIs, each shipped
+/// once and referenced by [`Span::links`]. Grapheme clusters have **no** table —
+/// since v14 (#621) they are inlined at their column in [`Span::combining`],
+/// because nothing interned them and the table only bought an index to overflow.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Frame {
     pub cols: u16,
@@ -197,7 +217,6 @@ pub struct Frame {
     pub alt_screen: bool,
     pub scroll: Option<ScrollOp>,
     pub spans: Vec<Span>,
-    pub side_table: Vec<Vec<char>>,
     pub link_table: Vec<String>,
     /// Interaction overlays for this viewport (#108): selection, search
     /// highlights, the active match, and markers — see [`Overlay`].
@@ -257,26 +276,44 @@ pub fn encode(frame: &Frame) -> Vec<u8> {
         out.extend_from_slice(&span.line.to_le_bytes());
         out.extend_from_slice(&span.left.to_le_bytes());
         out.extend_from_slice(&span.right.to_le_bytes());
-        for (col, cell) in span.cells.iter().enumerate() {
-            // The grapheme and hyperlink indices now ride on the span (per
-            // column), not the cell.
-            let extra = span.combining.get(&col).map_or(0, |n| n.get() as u16);
-            let link = span.links.get(&col).map_or(0, |n| n.get() as u16);
-            out.extend_from_slice(&encode_cell_record(cell, extra, link));
+        for cell in &span.cells {
+            out.extend_from_slice(&encode_cell_record(cell));
         }
     }
-    out.extend_from_slice(&(frame.side_table.len() as u16).to_le_bytes());
-    for cluster in &frame.side_table {
-        out.extend_from_slice(&(cluster.len() as u16).to_le_bytes());
-        for &ch in cluster {
-            out.extend_from_slice(&(ch as u32).to_le_bytes());
-        }
-    }
-    // Hyperlink side-table: each URI as a length-prefixed UTF-8 byte run (#26).
-    out.extend_from_slice(&(frame.link_table.len() as u16).to_le_bytes());
+    // Hyperlink table (#26), interned: each referenced URI ships once as a
+    // length-prefixed UTF-8 run, and `Span::links` points at it. Both the count and
+    // the length are u32 since v14 — the old u16 length rejected a URI the engine
+    // stores happily, and the old u16 count could not describe one entry per cell of
+    // a viewport the header's own `cols`/`rows` (u16 *each*) permit (#621).
+    out.extend_from_slice(&(frame.link_table.len() as u32).to_le_bytes());
     for uri in &frame.link_table {
-        out.extend_from_slice(&(uri.len() as u16).to_le_bytes());
+        out.extend_from_slice(&(uri.len() as u32).to_le_bytes());
         out.extend_from_slice(uri.as_bytes());
+    }
+    // Combining-cluster group (#45, v14): one sparse map per span, in span order, so
+    // the column keys need no span index — the same positional convention `ucolors`
+    // uses below. Each entry is `(col u16, len u32, len * char u32)`, the cluster
+    // inline. There is no side-table and no index: nothing interned them, so the
+    // indirection only bought a second count to overflow (#621).
+    for span in &frame.spans {
+        out.extend_from_slice(&(span.combining.len() as u32).to_le_bytes());
+        for (&col, cluster) in &span.combining {
+            out.extend_from_slice(&(col as u16).to_le_bytes());
+            out.extend_from_slice(&(cluster.len() as u32).to_le_bytes());
+            for &ch in cluster {
+                out.extend_from_slice(&(ch as u32).to_le_bytes());
+            }
+        }
+    }
+    // Hyperlink reference group (#46, v14): same positional shape, but the value is a
+    // 1-based index into `link_table` rather than the URI — see `Span`'s doc for why
+    // this half stays interned where the one above does not.
+    for span in &frame.spans {
+        out.extend_from_slice(&(span.links.len() as u32).to_le_bytes());
+        for (&col, &idx) in &span.links {
+            out.extend_from_slice(&(col as u16).to_le_bytes());
+            out.extend_from_slice(&idx.get().to_le_bytes());
+        }
     }
     // Underline-colour group (SGR 58, #520, v13): one sparse map per span, in span
     // order, so the column keys need no span index — the decoder reads exactly
@@ -333,10 +370,30 @@ pub fn encode(frame: &Frame) -> Vec<u8> {
     out
 }
 
-/// Encode one overlay group: a u16 span count, then each span as three u16s
+/// Encode one overlay group: a u32 span count, then each span as three u16s
 /// (`row`, `left`, `right`) in viewport coordinates.
+///
+/// The count is u32 since v14 (#621), and this is the *same* defect as the cluster
+/// and URI fields — found by that issue's own acceptance item ("do not assume those
+/// two are the only `as u16` narrowings"), which the first sweep answered for the
+/// `(row, left, right)` triples and not for the count above them. A one-character
+/// search over a large viewport reaches it: measured at 1000×133, 66 000 highlight
+/// spans wrapped the count to 464, and `decode` returned **`Ok`** having also
+/// fabricated 928 marker-lines and 3 active-match spans the engine never had — the
+/// wrapped count leaves the reader mid-group, and every group after it is read from
+/// the wrong offset.
+///
+/// **This widens the three viewport-projected groups and deliberately not the two
+/// marker groups**, which keep their `u16` counts a few lines below. That is not an
+/// oversight and not inconsistency: `frame()` clips selection / matches /
+/// active-match to the viewport, so their counts are `O(viewport)` — ADR-0020 R3
+/// satisfied, and widening entrenches nothing. The marker groups report **every
+/// live marker**, on-screen or not; they are unbounded by the viewport and are the
+/// one R3 violation ADR-0020 records against itself. Widening those would make that
+/// violation cheaper to keep, which is precisely what #490 exists to remove — so
+/// they stay narrow and stay #490's.
 fn encode_overlay_spans(out: &mut Vec<u8>, spans: &[SelectionSpan]) {
-    out.extend_from_slice(&(spans.len() as u16).to_le_bytes());
+    out.extend_from_slice(&(spans.len() as u32).to_le_bytes());
     for s in spans {
         out.extend_from_slice(&(s.row as u16).to_le_bytes());
         out.extend_from_slice(&(s.left as u16).to_le_bytes());
@@ -346,29 +403,29 @@ fn encode_overlay_spans(out: &mut Vec<u8>, spans: &[SelectionSpan]) {
 
 /// Length in bytes of one fixed-width wire cell record (see
 /// [`encode_cell_record`]).
-pub const CELL_RECORD_LEN: usize = 18;
+pub const CELL_RECORD_LEN: usize = 14;
 
-/// Encode one [`Cell`] to its fixed 18-byte little-endian record:
-/// `c` u32 (Unicode scalar) · `fg` u32 · `bg` u32 · `flags` u16 · `extra` u16
-/// (frame-local grapheme index, 0 = none) · `link` u16 (frame-local hyperlink
-/// index, 0 = none). Width derives from `flags`.
+/// Encode one [`Cell`] to its fixed 14-byte little-endian record:
+/// `c` u32 (Unicode scalar) · `fg` u32 · `bg` u32 · `flags` u16. Width derives
+/// from `flags`.
 ///
-/// `extra` and `link` are passed in rather than read from the cell: combining
-/// clusters (#45) and hyperlinks (#46) now live in per-row maps, so both indices
-/// ride on the [`Span`], not the cell. The wire bytes are unchanged.
+/// **The record carries no grapheme or hyperlink reference (v14, #621).** Both were
+/// `u16` fields on every cell, and widening them to hold what the engine can
+/// legitimately store would have inflated a record every cell pays — the trade
+/// ADR-0008's Axis 4 already rejected in the other direction. They moved to sparse
+/// per-[`Span`] groups instead, which is why this record *shrank* by 4 bytes:
+/// measured, −20.9% on an ordinary frame that carries neither.
 ///
 /// This is the single definition of the cell record layout — [`encode`] writes
 /// it per span cell, and an alternate consumer (the WASM decoder, #34/ADR-0008)
 /// reuses it to lay decoded cells out flat without re-implementing the layout,
 /// so the two cannot drift.
-pub fn encode_cell_record(cell: &Cell, extra: u16, link: u16) -> [u8; CELL_RECORD_LEN] {
+pub fn encode_cell_record(cell: &Cell) -> [u8; CELL_RECORD_LEN] {
     let mut r = [0u8; CELL_RECORD_LEN];
     r[0..4].copy_from_slice(&(cell.c() as u32).to_le_bytes());
     r[4..8].copy_from_slice(&encode_color(cell.fg()).to_le_bytes());
     r[8..12].copy_from_slice(&encode_color(cell.bg()).to_le_bytes());
     r[12..14].copy_from_slice(&cell.flags().bits().to_le_bytes());
-    r[14..16].copy_from_slice(&extra.to_le_bytes());
-    r[16..18].copy_from_slice(&link.to_le_bytes());
     r
 }
 
@@ -442,44 +499,75 @@ pub fn decode(bytes: &[u8]) -> Result<Frame, DecodeError> {
         // subtraction in `usize` cannot underflow.
         let n = right as usize - left as usize + 1;
         let mut cells = Vec::with_capacity(n);
-        let mut combining = BTreeMap::new();
-        let mut links = BTreeMap::new();
-        for col in 0..n {
-            let (cell, extra, link) = decode_cell(&mut r)?;
-            if let Some(idx) = NonZeroU32::new(extra as u32) {
-                combining.insert(col, idx);
-            }
-            if let Some(idx) = NonZeroU32::new(link as u32) {
-                links.insert(col, idx);
-            }
-            cells.push(cell);
+        for _ in 0..n {
+            cells.push(decode_cell(&mut r)?);
         }
         spans.push(Span {
             line,
             left,
             right,
             cells,
-            combining,
-            links,
+            // Filled from their own groups below (v14): the record no longer carries
+            // either reference, so neither the maps nor the cells' presence bits can
+            // be built here.
+            combining: BTreeMap::new(),
+            links: BTreeMap::new(),
             ucolors: BTreeMap::new(),
         });
     }
-    let side_table_count = r.u16()?;
-    let mut side_table = Vec::with_capacity(side_table_count as usize);
-    for _ in 0..side_table_count {
-        let len = r.u16()?;
-        let mut cluster = Vec::with_capacity(len as usize);
-        for _ in 0..len {
-            cluster.push(char::from_u32(r.u32()?).ok_or(DecodeError::BadTag)?);
-        }
-        side_table.push(cluster);
-    }
-    let link_count = r.u16()?;
-    let mut link_table = Vec::with_capacity(link_count as usize);
+    // Counts and lengths are u32 since v14 — see `encode`. Note the deliberate loss of
+    // `Vec::with_capacity`: these counts are attacker-influenced (`tests/robustness.rs`
+    // drives `decode` from arbitrary bytes) and a u32 one can now declare 4 billion
+    // entries, so reserving up front would turn a 12-byte buffer into an OOM. Growing
+    // as the entries actually arrive is bounded by the input's own length.
+    let link_count = r.u32()?;
+    let mut link_table = Vec::new();
     for _ in 0..link_count {
-        let len = r.u16()? as usize;
+        let len = r.u32()? as usize;
         let bytes = r.take(len)?;
         link_table.push(String::from_utf8_lossy(bytes).into_owned());
+    }
+    // Combining group (v14, #621): inverse of the encode above — one sparse map per
+    // span, in span order, attached to `spans[i]` positionally.
+    //
+    // Re-arming `C_COMBINED` here is not a nicety, it is the only place left that can.
+    // The bit never travels *as a bit*: the record encodes `cell.c()`, the char, so
+    // the content word's marker is dropped. Until v14 `decode_cell` could reconstruct
+    // it inline from `extra != 0` because the index rode the record; now that it does
+    // not, this loop inherits that duty — the same reconstruction `ucolors` has always
+    // done, and the defect #531 was filed for when it was missing.
+    //
+    // Bounds-gated on the same terms as `ucolors`: `col` is attacker-influenced and
+    // nothing on the wire bounds it against the span's width, so an out-of-range key
+    // arms no cell and is left in the map. Whether it should be *rejected* is #582's
+    // question, and answering half of it here would pre-empt that decision.
+    for span in &mut spans {
+        let count = r.u32()?;
+        for _ in 0..count {
+            let col = r.u16()? as usize;
+            let len = r.u32()?;
+            let mut cluster = Vec::new();
+            for _ in 0..len {
+                cluster.push(char::from_u32(r.u32()?).ok_or(DecodeError::BadTag)?);
+            }
+            if let Some(cell) = span.cells.get_mut(col) {
+                cell.set_combined(true);
+            }
+            span.combining.insert(col, cluster);
+        }
+    }
+    // Hyperlink reference group (v14, #621): same shape, and `LINK_PRESENT` is re-armed
+    // for the same reason — it lives in the bg word, which `encode_color` drops.
+    for span in &mut spans {
+        let count = r.u32()?;
+        for _ in 0..count {
+            let col = r.u16()? as usize;
+            let idx = NonZeroU32::new(r.u32()?).ok_or(DecodeError::BadTag)?;
+            if let Some(cell) = span.cells.get_mut(col) {
+                cell.set_linked(true);
+            }
+            span.links.insert(col, idx);
+        }
     }
     // Underline-colour group (v13, #520): inverse of the encode above — one sparse
     // map per span, in span order, so each attaches to `spans[i]` positionally.
@@ -574,7 +662,6 @@ pub fn decode(bytes: &[u8]) -> Result<Frame, DecodeError> {
         alt_screen,
         scroll,
         spans,
-        side_table,
         link_table,
         overlay,
     })
@@ -584,8 +671,9 @@ pub fn decode(bytes: &[u8]) -> Result<Frame, DecodeError> {
 /// right)` u16 triples back into viewport [`SelectionSpan`]s (inverse of
 /// [`encode_overlay_spans`]).
 fn decode_overlay_spans(r: &mut Reader) -> Result<Vec<SelectionSpan>, DecodeError> {
-    let count = r.u16()?;
-    let mut spans = Vec::with_capacity(count as usize);
+    let count = r.u32()?;
+    // No `with_capacity`: the count is attacker-influenced and now u32 — see `decode`.
+    let mut spans = Vec::new();
     for _ in 0..count {
         let row = r.u16()? as usize;
         let left = r.u16()? as usize;
@@ -595,28 +683,28 @@ fn decode_overlay_spans(r: &mut Reader) -> Result<Vec<SelectionSpan>, DecodeErro
     Ok(spans)
 }
 
-/// Decode one 18-byte cell record (inverse of [`encode_cell_record`]), returning
-/// the cell and its raw `extra` grapheme index and `link` index (0 = none). A
-/// non-zero index sets the corresponding presence bit; the caller records the
-/// indices on the span.
+/// Decode one 14-byte cell record (inverse of [`encode_cell_record`]).
 ///
-/// **Two of the three presence bits are re-armed here, not all three.** They are
-/// reconstructed rather than transmitted (the bits live in the packed colour words,
-/// which [`encode_color`] strips), and this function can only reconstruct the two
-/// whose evidence rides the cell record itself. `UCOLOR_PRESENT` is armed by
-/// [`decode`]'s underline-colour group loop, because its evidence is a separate
-/// group read further down the buffer (#531).
-fn decode_cell(r: &mut Reader) -> Result<(Cell, u16, u16), DecodeError> {
+/// **No presence bit is re-armed here — since v14 (#621), none of the three can be.**
+/// They are reconstructed rather than transmitted (they live in the packed content
+/// and colour words, which [`encode_color`] and `Cell::c` strip), and every one of
+/// them now has its evidence in a sparse group read further down the buffer:
+/// `C_COMBINED` and `LINK_PRESENT` from the combining and link groups, and
+/// `UCOLOR_PRESENT` from the underline-colour group as it always was (#531).
+///
+/// This doc used to say *two of the three are re-armed here*, and that exception —
+/// "mine rides the record, so it needs nothing" — is the reading #531 was filed for.
+/// There is no longer a member of the set it could apply to.
+fn decode_cell(r: &mut Reader) -> Result<Cell, DecodeError> {
     let c = char::from_u32(r.u32()?).ok_or(DecodeError::BadTag)?;
     let fg = decode_color(r.u32()?)?;
     let bg = decode_color(r.u32()?)?;
     let flags = CellFlags::from_bits_retain(r.u16()?);
-    let extra = r.u16()?;
-    let link = r.u16()?;
-    let mut cell = Cell::from_parts(c, fg, bg, flags);
-    cell.set_combined(extra != 0);
-    cell.set_linked(link != 0);
-    Ok((cell, extra, link))
+    // `C_COMBINED` and `LINK_PRESENT` are deliberately left off here and re-armed by
+    // `decode` from the per-span groups (v14, #621). This function used to set them
+    // from the record's `extra`/`link`; with those gone it has nothing to read, and
+    // guessing `false` is correct precisely because the groups are the authority.
+    Ok(Cell::from_parts(c, fg, bg, flags))
 }
 
 /// Decode a tagged-u32 colour reference (inverse of [`encode_color`]).

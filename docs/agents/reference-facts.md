@@ -405,28 +405,56 @@ xterm. But copying the rule required copying its premise: xterm's dispose is saf
 nothing is expected to come back. #606 therefore had to **declare** `Terminal.dispose()` end-of-life
 (and make `mount()` throw afterwards) rather than inherit the behaviour and hope. A reference read
 without its enabling condition is how a correct rule lands in a codebase that cannot support it.
-## Per-cell payload length — nobody caps it, but one fails loudly (#621, verified 2026-07-29)
+## Per-cell payload length — nobody caps a cluster, the one that can run out *grows*, and a URI is a different answer (#621, verified 2026-07-29)
 
-Added 2026-07-29 while filing #621. Every row grepped at the pinned SHAs that day. The occasion:
-justerm's wire writes the grapheme cluster and the OSC 8 URI behind `u16` length prefixes
+Added 2026-07-29 while filing #621; **the conclusion corrected the same day** — see the note under the
+table, which is the more useful half of this section. Every row grepped at the pinned SHAs. The
+occasion: justerm's wire writes the grapheme cluster and the OSC 8 URI behind `u16` length prefixes
 (`serialize.rs`), and nothing on the producing side bounds either — so `feed()`ing 70000 combining
 marks produces a frame whose own `decode` answers `Err(BadTag)`.
 
 **The question is not "should a terminal cap cluster length".** No reference does, so capping in the
 engine would be justerm drifting alone *and* would discard Unicode material this engine exists to
 carry. The useful split is what happens when the storage cannot take it: two references cannot run
-out, and the one that can **returns an error rather than truncating**. That is the row that bears on
-the choice in #621, and it points at making the failure visible rather than at shrinking the input.
+out, and the one that can **grows until it fits**.
+
+**A URI is not the same question and does not share the answer — rows 5-6.** The cluster rows below
+say nothing about OSC 8, and the first version of this section let its title imply they did.
 
 | Fact | Reference | Site |
 |---|---|---|
 | Appends to a JS string with no cap and no failure mode — *"we already have a combined string, simply add"*. Growth is bounded only by the engine's own memory | xterm.js | `common/buffer/BufferLine.ts:263-265` |
 | `push_zerowidth` pushes onto an unbounded `Vec<char>` behind the cell's `extra`; no length check at the write site | alacritty | `term/cell.rs:164-166` |
-| ⚠ The closest thing to a bound in any reference, and it is **not a length cap**: the grapheme arena can run out, and ghostty converts that into a *named, propagated error* rather than truncating — the comment on the branch reads *"The grapheme alloc capacity needs to be increased"*, i.e. it is treated as a capacity to raise, not a limit to enforce | ghostty | `terminal/page.zig:1520-1523` |
+| The grapheme arena can run out, and the allocator reports it as a *named* error — the comment on the branch reads *"The grapheme alloc capacity needs to be increased"* | ghostty | `terminal/page.zig:1520-1523` |
+| ⚠ **…and that error is a growth signal, not an answer.** The caller catches it in a `while (true)` loop — *"Grow our capacity until we can fit the extra bytes"* — reallocating the page until the payload fits, so the error never reaches a user. Ghostty's answer to "the storage cannot take it" is **make the storage bigger** | ghostty | `terminal/PageList.zig:1871-1886` |
+| ⚠ **A URI *is* capped, by the reference the cluster rows read as uncapped.** The OSC parser builds its payload into a `LimitedStringBuilder(PAYLOAD_LIMIT)`, `PAYLOAD_LIMIT = 10000000` | xterm.js | `common/parser/OscParser.ts:196`, `common/parser/Constants.ts:67` |
+| ⚠ **…and its failure mode is silent whole-sequence discard**, not truncation and not an error: on overflow the builder *clears itself* and reports it, `put` short-circuits, and `end` returns without ever calling the handler — so the hyperlink simply never happens | xterm.js | `common/StringBuilder.ts:52-53`, `common/parser/OscParser.ts:209-221` |
 
-The direction that falls out: 3 of 3 leave the *input* unbounded, and the only one with a hard
-storage limit surfaces it as an error. justerm's current behaviour — encode silently emits a length
-its own decoder rejects — matches none of them, and is the one shape all three avoid.
+The direction that falls out, **for clusters**: 3 of 3 leave the *input* unbounded, and the only one
+with a hard storage limit **grows past it**. justerm's pre-#621 behaviour — encode silently emits a
+length its own decoder rejects — matched none of them, and is the one shape all three avoid.
+
+**For URIs the tally is 2:1, not 3:0**, and it does not change #621's direction: 10 000 000 is two
+orders of magnitude past the `u16::MAX` that was actually in question, so "widen the field" is still
+the answer either way. What it changes is what may be *cited*. This section may not be used to say
+"no reference caps a URI".
+
+**Correction, same day, and it is why row 4 exists.** This section first carried only row 3 and
+concluded that ghostty *"points at making the failure visible rather than at shrinking the input"* —
+i.e. that it argued for a fallible writer. That reading survives exactly as long as you stop at the
+`return`. One caller up, the error is caught and answered by growing the arena, so the reference
+argues for **widening the field**, which is close to the opposite recommendation. The citation was
+correct and the conclusion was not: precisely the failure mode Rule 2 above records from #610 (*"two
+quoted the right line and drew a wrong conclusion from it"*), reproduced here by the person who wrote
+that rule down. **A `return` is not a stance until you have read its caller.**
+
+**Second correction, 2026-07-29, and it is the same failure at a different scale.** Rows 5-6 were
+added after a refuting lens found that this section — four grapheme-side rows — was being cited for
+a claim about **URIs**, in `docs/map/territory/wire-format.md` and in #621's own decision comment.
+Nobody mis-read a citation this time; the extension happened in the *gap between* the rows and the
+heading, which said "nobody caps it" without naming what "it" was. The lesson is narrower than the
+first correction's and worth keeping separate: **a section's title is cited as if it were a row.**
+Scope the heading to what the rows actually establish.
 
 ## Background transparency — the shape of the knob (#577, verified 2026-07-29)
 

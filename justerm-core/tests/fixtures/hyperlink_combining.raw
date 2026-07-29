@@ -1,0 +1,12 @@
+[2J[HHYPERLINK + COMBINING capture
+file 1: ]8;;file:///home/user/project/src/module_1.rsmodule_1.rs]8;;
+file 2: ]8;;file:///home/user/project/src/module_2.rsmodule_2.rs]8;;
+file 3: ]8;;file:///home/user/project/src/module_3.rsmodule_3.rs]8;;
+file 4: ]8;;file:///home/user/project/src/module_4.rsmodule_4.rs]8;;
+build 1: ]8;;https://ci.example.com/org/repo/actions/runs/1234567890the same run, linked again]8;;
+build 2: ]8;;https://ci.example.com/org/repo/actions/runs/1234567890the same run, linked again]8;;
+build 3: ]8;;https://ci.example.com/org/repo/actions/runs/1234567890the same run, linked again]8;;
+combining: é ä ó̧̈ done
+both: ]8;;https://example.com/caf%C3%A9café résumé]8;;
+wide: ]8;;https://example.com/wide한글-link]8;;
+[24;1H

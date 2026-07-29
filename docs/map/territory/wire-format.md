@@ -9,8 +9,9 @@ IPC by identity.
 ## Governing decisions
 
 - [**ADR-0005 — binary reference-based serialization**](../../adr/0005-binary-reference-based-serialization.md)
-  — binary, little-endian, **fixed-width 18-byte cell records**, colour *references* not resolved
-  RGB, plus a grapheme side-table. Rejects Mosh's protobuf baseline-diff and xterm.js's
+  — binary, little-endian, **fixed-width cell records** (18 bytes when 0005 was written; 14 since
+  v14/#621), colour *references* not resolved
+  RGB. Rejects Mosh's protobuf baseline-diff and xterm.js's
   escape-sequence re-emit (which a non-parsing GPU renderer cannot consume)
 - [**ADR-0008 — wasm-decode as a separate crate**](../../adr/0008-wasm-decode-binding-separate-crate.md)
   — who decodes on the other side, and why it is its own crate on the same version lockstep
@@ -20,12 +21,21 @@ IPC by identity.
 
 ## Design model
 
-- **Fixed stride is the whole point.** `CELL_RECORD_LEN = 18`, every cell the same width, so a
+- **Fixed stride is the whole point.** `CELL_RECORD_LEN = 14`, every cell the same width, so a
   consumer takes **one contiguous typed-array view** with no per-field parse. Every other decision
-  here defends that property.
-- **Anything variable-length becomes a side-table with a frame-local index.** Grapheme clusters
-  (`side_table`) and OSC 8 URIs (`link_table`) are referenced by a `u16` in the cell record —
-  the wire's version of the same escape hatch the in-memory rows use.
+  here defends that property. It was 18 until v14 (#621) — the record shrank because the two
+  variable-length references left it, not because a field was dropped.
+- **Anything rare or variable-length becomes a sparse per-span group, keyed by column** — combining
+  clusters, OSC 8 link references and underline colours all ride one. The record carries only what
+  *every* cell has. Whether a group inlines its value or points into a frame-local table is decided
+  per group by whether cells share it: a URI is shared, so `link_table` stays and is interned; a
+  cluster is not, so it is inlined and there is no table (#621, measured both ways).
+- **A group's count is `u32` iff the group is viewport-bounded.** The three overlay span groups and
+  the two new per-span groups scale with the viewport, and the header admits a viewport far larger
+  than `u16::MAX` cells, so their counts are u32. The two *marker* groups keep `u16` counts on
+  purpose: they report every live marker rather than a viewport projection, which is the one
+  ADR-0020 R3 violation the ADR records against itself, and widening them would make it cheaper to
+  keep (that is #490's, not this file's).
 - **Colours are references, never hex.** `Default | Indexed(u8) | Rgb(..)` encoded as a `u32`. The
   engine is theme-agnostic by identity, so palette resolution happens after decode, in the consumer.
 - **The record reserves room** for underline style/colour and a hyperlink id, so adding them later is
@@ -45,9 +55,14 @@ IPC by identity.
 ## Reference behaviour
 
 One axis only —
-[per-cell payload length](../../agents/reference-facts.md#per-cell-payload-length--nobody-caps-it-but-one-fails-loudly-621-verified-2026-07-29):
-no reference caps a grapheme cluster or a URI, and the one whose storage *can* run out returns a
-named error rather than truncating. That bears on #621.
+[per-cell payload length](../../agents/reference-facts.md#per-cell-payload-length--nobody-caps-a-cluster-the-one-that-can-run-out-grows-and-a-uri-is-a-different-answer-621-verified-2026-07-29):
+no reference caps a grapheme **cluster**, and the one whose storage *can* run out **grows until
+the payload fits** rather than truncating or failing. The **URI** axis is different and was
+originally recorded wrong here: xterm.js *does* cap an OSC payload, at 10 000 000 chars, discarding
+the whole sequence silently. Neither bound is near `u16::MAX`, so #621's direction is unaffected —
+but read the correction notes in that section before citing it. Its first version concluded the
+opposite of its own citation, and its second extended a cluster-only finding to URIs without a
+URI-side row.
 
 **The choice of format itself is still uncompared.** ADR-0005 argues against Mosh and xterm.js by
 description rather than by pinned rows, so the comparison that picked this shape has never been
@@ -85,9 +100,8 @@ unconditional Step 5 trigger.
   rejected from description, and the one axis now measured is unrelated to that decision.
 - **No compatibility story is recorded.** "Version and payload move together, mismatch is rejected"
   is the implemented behaviour; nothing states whether that is a decision or an interim position.
-- **The format cannot carry every value the engine legitimately holds, and says so only at decode.**
-  The grapheme-cluster and OSC 8 URI runs ride `u16` length prefixes with nothing bounding the
-  producing side, so a cluster past `u16::MAX` encodes and then fails its own `decode` — measured,
-  and filed as #621. Note this is *not* the "is this input malformed" question the span-bounds work
-  asks: the engine's value is correct and the field is too small for it. The two look alike and a
-  fix for one does not reach the other.
+- **~~The format cannot carry every value the engine legitimately holds~~ — closed by #621 (v14).**
+  Length prefixes and viewport-bounded group counts are `u32`, and the two per-cell indices that
+  could not be widened without inflating every record were removed from it instead. Kept as a hole
+  only in this sense: it was *not* the "is this input malformed" question the span-bounds work asks
+  (#582), the two look alike, and a fix for one still does not reach the other.
