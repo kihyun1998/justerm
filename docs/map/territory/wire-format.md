@@ -50,9 +50,11 @@ re-checked against those sources.
 
 ## Cross-cutting invariants
 
-- [row-keyed side maps](../invariant/row-keyed-side-maps.md) — the grapheme and link tables are this
-  format's instance of the same "the fixed record is full, put it beside and gate it with a bit"
-  pattern the in-memory rows use
+- [row-keyed side maps](../invariant/row-keyed-side-maps.md) — the grapheme table, the link table and
+  the underline-colour group are this format's instance of the same "the fixed record is full, put it
+  beside and gate it with a bit" pattern the in-memory rows use. Its **rule 4 is this format's own**:
+  the gating bit is not encodable, so `decode` reconstructs every presence bit from group membership,
+  and a group added without a re-arm ships a value its gate hides
 
 ## Blast radius
 

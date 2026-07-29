@@ -183,6 +183,10 @@ impl core::fmt::Debug for Cell {
             .field("flags", &self.flags())
             .field("combined", &self.is_combined())
             .field("linked", &self.is_linked())
+            // All three presence bits, or a diff between two cells that differ only
+            // in the third one prints as two identical lines (#531: that is exactly
+            // how the missing ucolor re-arm read in a failing `assert_eq!(frame, …)`).
+            .field("ucolored", &self.is_ucolored())
             .finish()
     }
 }

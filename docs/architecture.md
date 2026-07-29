@@ -289,6 +289,15 @@ under it.
   construction. The dual hazard: the maps are deliberately left holding stale entries (harmless under
   the gate), so a carry must **clear** as well as set, or a new cell inherits the previous occupant's
   value. [#521]
+  **The wire is the third mover, and it fails in the *opposite* direction.** A presence bit never
+  travels as a bit: `encode_color` keeps only mode+value, so `BG_LINK` / `BG_UCOLOR` are dropped, and
+  `CellFlags` carries none. So on decode every bit is **reconstructed** from whether its group carries
+  an entry — `decode_cell` derives `combined` / `linked` from the cell record's own `extra` / `link`,
+  and the ucolor group's own loop must arm `UCOLOR_PRESENT`, because a colour reference rides a
+  *separate* group rather than a cell-record field. Where a missed grid-side carry leaves a bit with
+  nothing behind it, a missed wire-side re-arm leaves the **value with no bit**: the gated read returns
+  `Default` while the map holds the real colour, and the frame stops being a round-trip fixed point.
+  A rider that reaches the wire as a group, not as a cell field, owes its own re-arm here. [#531]
 - **Background Color Erase (BCE).** Erase (ED/EL) fills cleared cells with the *current SGR
   background*, not default. [#8; note in #2 if deferred]
 - **A blank cell carries the current background — including one no app asked for.** BCE covers the

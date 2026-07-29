@@ -93,12 +93,20 @@ A derived bit carries **two** obligations, not one — the encode-side derivatio
 re-arm — and only the first is visible at the site that writes it. `WRAPLINE` satisfies the second for
 free, because it is a `CellFlags` bit (`cell.rs:39`) and so travels in the flags byte: `serialize.rs`
 never names it, and the derivation in `term.rs::frame` is the whole story. A presence bit that lives
-*outside* `CellFlags` has to be reconstructed from whether its wire group carries an entry, and #531 is
-that second obligation missing on the ucolor rider (the encoder sets it, the decoder never re-arms it, so
-`Cell::is_ucolored()` lies on every decoded cell). Cross-linked, **not folded**: #531 is a codec
+*outside* `CellFlags` has to be reconstructed from whether its wire group carries an entry, and #531 was
+that second obligation missing on the ucolor rider (the encoder set it, the decoder never re-armed it, so
+`Cell::is_ucolored()` returned false on every decoded cell). Cross-linked, **not folded**: #531 is a codec
 conformance bug, not a row/pair ownership question. It is recorded here because it is the general form
 of a clause this ADR states for exactly one bit, and because a *future* packing of a spacer marker
 (the sentence above) would inherit the same trap.
+
+**Resolved 2026-07-29 (#531), and the general form now has its own home** —
+[`docs/map/invariant/row-keyed-side-maps.md`](../map/invariant/row-keyed-side-maps.md) rule 4, which
+states the decode-side obligation for *every* rider gated by a presence bit rather than only for the
+one this ADR happens to name. Read the amendment as narrowing this ADR's scope, not extending it: what
+D1 owns is where a row/pair property lives, and the round-trip obligation on a derived bit turned out
+to be a wire fact that holds for riders D1 says nothing about. The trap the paragraph above predicts
+for a future spacer-marker packing is therefore now caught by that rule, not by remembering this note.
 
 **D2 — One property, one lifecycle, spelled out per verb — not "remember the rule everywhere".** Each
 such property has exactly one SET site-class, one CLEAR/REPAIR discipline, and read sites that gate
@@ -602,7 +610,9 @@ the fix site follows from. Whether it is still open is the tracker's answer, not
   directions are pinned: removing the budget puts the cursor back on top of a glyph, and giving it
   to every pane destroys a line on one with no history.
 - **#531** — not a conformance item; the decode-side half of D1's derived-bit clause, on a different
-  rider. See the D1 note above.
+  rider. **Closed 2026-07-29**, and it left the clause smaller rather than larger: the obligation
+  generalised out to the map's row-keyed-side-maps rule 4, so this ADR no longer carries the only
+  statement of it. See the D1 note above.
 
 ### Adjacent, deliberately *not* folded in
 

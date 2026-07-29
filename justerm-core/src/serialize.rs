@@ -56,6 +56,14 @@ pub struct Span {
     /// reference, not a side-table index, so it ships inline (no `_table` on the
     /// [`Frame`]). Kept off the per-cell record so a plain-text frame pays nothing
     /// (ADR-0020: no inert per-cell payload).
+    ///
+    /// Like `combining` and `links`, a column here is present iff its cell carries
+    /// the matching bit ([`Cell::is_ucolored`]) — but that bit does **not** travel on
+    /// the wire (`encode_color` keeps only mode+value, and `CellFlags` holds no
+    /// presence bits), so `decode` re-arms it from this map's own entries. A `Span`
+    /// built by hand for a test owes the same pairing: an entry here without
+    /// [`Cell::set_ucolored`] on the cell is a column the gated readers cannot see.
+    /// (#531)
     pub ucolors: BTreeMap<usize, Color>,
 }
 
@@ -480,6 +488,27 @@ pub fn decode(bytes: &[u8]) -> Result<Frame, DecodeError> {
         for _ in 0..count {
             let col = r.u16()? as usize;
             let color = decode_color(r.u32()?)?;
+            // Re-arm `UCOLOR_PRESENT` from the group (#531). On this wire a presence
+            // bit never travels *as a bit*: it lives in the bg word (`BG_UCOLOR`),
+            // which `encode_color` drops when it keeps only mode+value, and
+            // `CellFlags` carries no presence bits. So every one of them is
+            // *reconstructed* from whether its group carries an entry — the same
+            // derivation `decode_cell` performs for `combined`/`linked`, which can do
+            // it inline only because `extra`/`link` ride the cell record while a
+            // colour reference rides a separate group. `Row::ucolor_at` gates the map
+            // read on this bit, so without the re-arm `Cell::is_ucolored()` returns
+            // false on a decoded cell whose column *does* carry a colour.
+            //
+            // Bounds-gated on purpose: `col` is attacker-influenced (see
+            // `tests/robustness.rs`) and nothing on the wire bounds it against the
+            // span's width, so an unchecked `span.cells[col]` would panic where
+            // ADR-0008 owes a typed error. An out-of-range key arms no cell and is
+            // left in the map — whether it should instead be *rejected* is #582's
+            // question (a group riding a frame it does not fit), and answering half
+            // of it here would pre-empt that decision.
+            if let Some(cell) = span.cells.get_mut(col) {
+                cell.set_ucolored(true);
+            }
             span.ucolors.insert(col, color);
         }
     }
@@ -570,6 +599,13 @@ fn decode_overlay_spans(r: &mut Reader) -> Result<Vec<SelectionSpan>, DecodeErro
 /// the cell and its raw `extra` grapheme index and `link` index (0 = none). A
 /// non-zero index sets the corresponding presence bit; the caller records the
 /// indices on the span.
+///
+/// **Two of the three presence bits are re-armed here, not all three.** They are
+/// reconstructed rather than transmitted (the bits live in the packed colour words,
+/// which [`encode_color`] strips), and this function can only reconstruct the two
+/// whose evidence rides the cell record itself. `UCOLOR_PRESENT` is armed by
+/// [`decode`]'s underline-colour group loop, because its evidence is a separate
+/// group read further down the buffer (#531).
 fn decode_cell(r: &mut Reader) -> Result<(Cell, u16, u16), DecodeError> {
     let c = char::from_u32(r.u32()?).ok_or(DecodeError::BadTag)?;
     let fg = decode_color(r.u32()?)?;
