@@ -84,7 +84,7 @@ sites, the outlier, or demoted — so a difference from it is not by itself a de
   draws it as an overlay instead, so the two stay separable
 - [wire format](wire-format.md) — consumes decoded cells; a colour-encoding change lands here first
 - [cell geometry](cell-geometry.md) — supplies the box each instance is drawn into
-- **glyph atlas** *(no note yet)* — supplies the resolved slot this packer assumes
+- [glyph atlas](glyph-atlas.md) — supplies the resolved slot this packer assumes
 
 ## Known holes / open
 

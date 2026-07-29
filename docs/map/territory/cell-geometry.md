@@ -66,7 +66,7 @@ grounds as unverified, which is unusual enough to be worth knowing before buildi
 - [built-in block glyphs](builtin-block-glyphs.md) — exists *because* of the box split above; a change to
   the nesting changes what those glyphs must be drawn to
 - [cell compositing](cell-compositing.md) — supplies the box every instance is drawn into
-- **glyph atlas** *(no note yet)* — rasterises into slots sized by this measurement
+- [glyph atlas](glyph-atlas.md) — rasterises into slots sized by this measurement
 - [caret report](caret-report.md) — `setCursorThickness` and the caret rects are expressed in this
   geometry
 - **a11y / web widget** *(no note yet)* — the resize contract runs consumer→CSS box, renderer→`cols`

@@ -60,7 +60,7 @@ is unusually clean and it is currently unverifiable.
 
 - [cell geometry](cell-geometry.md) — the cell/glyph box split is the *cause* of this territory. If
   the nesting rule changes, this module's reason to exist changes with it
-- **glyph atlas** *(no note yet)* — these glyphs occupy atlas slots like any other, but are produced
+- [glyph atlas](glyph-atlas.md) — these glyphs occupy atlas slots like any other, but are produced
   rather than rasterised from a font
 - [cell compositing](cell-compositing.md) — a built-in glyph is still a glyph field in the instance
 

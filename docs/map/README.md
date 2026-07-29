@@ -82,7 +82,11 @@ owns no detail of its own.
   [cursor position](territory/cursor-position.md) ·
   [damage](territory/damage.md) ·
   [decoration](territory/decoration.md) ·
+  [colour policy](territory/colour-policy.md) ·
   [frame](territory/frame.md) ·
+  [frame adapter](territory/frame-adapter.md) ·
+  [glyph atlas](territory/glyph-atlas.md) ·
+  [GPU upload](territory/gpu-upload.md) ·
   [logical lines](territory/logical-lines.md) ·
   [marker](territory/marker.md) ·
   [pen](territory/pen.md) ·
