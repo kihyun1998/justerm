@@ -76,9 +76,22 @@ fn sample_frame() -> Frame {
     }
 }
 
+/// The binding forwards the engine's wire version unchanged (ADR-0008 lockstep).
+///
+/// **Deliberately not a literal, unlike its host-side sibling.** This file is
+/// wasm32-only: `cargo build --target wasm32-unknown-unknown` compiles it — which is
+/// the documented gate, and which a wrong *value* passes — while the assertion runs
+/// only in CI's `wasm` job. So a hardcoded number here rots invisibly through every
+/// local gate and fails after the PR is already open. Measured: #621 bumped 13 -> 14,
+/// every local gate went green, and this line was the only red in CI.
+///
+/// The literal belongs where something runs it on every PR — `justerm-core`'s
+/// `wire_version_is_fourteen`, which pins `WIRE_VERSION` *and* the byte the encoder
+/// emits. What is worth asserting here, and cannot be asserted there, is that the
+/// **binding** hands out that same number rather than a copy that drifted.
 #[wasm_bindgen_test]
-fn wire_version_is_thirteen() {
-    assert_eq!(wire_version(), 13); // #520 bumped 12 -> 13 for the underline-colour group
+fn wire_version_matches_the_engine() {
+    assert_eq!(wire_version(), justerm_core::WIRE_VERSION);
 }
 
 // #316 D2: the regex validator crosses the boundary with core's dialect, so the web
