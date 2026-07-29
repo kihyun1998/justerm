@@ -259,6 +259,51 @@ fn decoding_re_arms_the_presence_bit_on_exactly_the_coloured_columns() {
 }
 
 #[test]
+fn the_re_arm_indexes_the_span_relatively_not_absolutely() {
+    // The group's keys are SPAN-relative (`term.rs` inserts `col - left`), so the re-arm
+    // must index `span.cells` by the bare key. Every other test here happens to produce a
+    // span with `left == 0`, where span-relative and absolute agree — so they ALL pass
+    // against `span.cells.get_mut(col + span.left as usize)`, a wrong implementation that
+    // arms an unrelated live cell on any partial frame that does not start at column 0.
+    // This test exists to make `left > 0` reachable, and it is the same distinction the
+    // encoder had to get right at `term.rs`'s `ucolors.insert(col - left, color)`.
+    let mut t = Engine::new(20, 2);
+    t.feed(b"................");
+    let _ = t.frame();
+    t.reset_damage();
+    // Damage a run starting at column 8, so the span's `left` is non-zero.
+    t.feed(b"\x1b[1;9H\x1b[4m\x1b[58:5:1mZZ");
+    let frame = t.frame();
+    let span = frame
+        .spans
+        .iter()
+        .find(|s| s.line == 0)
+        .expect("row 0 is a damage span");
+    assert!(span.left > 0, "the fixture must produce a non-zero left");
+    let left = span.left as usize;
+
+    let decoded = decode(&encode(&frame)).expect("round-trips");
+    let dspan = decoded
+        .spans
+        .iter()
+        .find(|s| s.line == 0)
+        .expect("row 0 survives");
+    let armed: Vec<usize> = dspan
+        .cells
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| c.is_ucolored())
+        .map(|(i, _)| i)
+        .collect();
+    let keys: Vec<usize> = dspan.ucolors.keys().copied().collect();
+    assert_eq!(
+        armed, keys,
+        "the armed columns are the group's own keys — not those keys shifted by left ({left})"
+    );
+    assert_eq!(decoded, frame, "and the frame is still a wire fixed point");
+}
+
+#[test]
 fn a_ucolor_column_past_the_end_of_its_span_does_not_panic_the_decoder() {
     // #531 hazard, measured: the group's `col` key is NOT bounded against the span's
     // width — a patched frame decodes `Ok` with `ucolors={9999: …}` over a 2-cell span.

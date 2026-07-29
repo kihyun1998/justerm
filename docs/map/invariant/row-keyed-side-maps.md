@@ -13,9 +13,13 @@ map obeys the same three rules:
    and reflow, which is why the escape hatch is *row*-keyed rather than grid-keyed.
 3. **A write that clears the cell owes the bit, not the map.** Clearing the presence bit is what
    retires the fact; purging the map is an optimisation, never the correctness step.
-4. **Across the wire the bit is *reconstructed*, never transmitted.** The presence bits live in the
-   packed colour words, which the wire's colour encoding strips, and the wire's flag field carries
-   none — so `decode` re-derives each bit from whether its group carries an entry for that column.
+4. **Across the wire the bit is *reconstructed*, never transmitted.** The wire's flag field carries
+   only `CellFlags`, and **no presence bit is a `CellFlags` bit** — they are spread across the
+   packed words (the combining gate rides the *content* word and is stripped by the codepoint mask;
+   the link and underline-colour gates ride the *bg* word and are stripped by the colour encoding).
+   The word does not matter and naming only one of them is how this rule gets read as narrower than
+   it is: what matters is that no presence bit survives encoding, so `decode` re-derives each one
+   from whether its group carries an entry for that column.
    Where the group rides the per-cell record the cell decoder does it; where it is a *separate*
    group, that group's own loop owes the re-arm. A rider that adds a group and not a re-arm produces
    a frame whose value is present and whose gate is shut.
