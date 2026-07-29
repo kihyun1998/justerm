@@ -57,7 +57,7 @@ does not go looking for a helper they have never heard of.
 - **GitHub issues are not nodes** — spine `#552`, Epic `#287`, `#562`. They exist only as text inside a
   note. Some of the hottest material in this repo is invisible to the graph; this is mitigated, not
   solved.
-- **Source files are not nodes** — `term.rs` (3682 lines) is text under `## Code`. It is also
+- **Source files are not nodes** — `term.rs` (3646 lines) is text under `## Code`. It is also
   shrinking under #584, which is moving the read surfaces into `term/` siblings, so treat any line
   count here as the date it was written rather than a fact to rely on.
 
@@ -176,9 +176,10 @@ modules, so it is probably several territories, not one) · VT interpretation (`
 scrollback · input encoding · marker & decoration · a11y · hyperlinks · grapheme clusters · colour
 references & palette · cell geometry · CI & supply chain
 
-Line counts are deliberately not quoted here. `term.rs` went 4,893 → 3,682 across four days of #584
+Line counts are deliberately not quoted here — and this paragraph used to quote two anyway, one of
+which had already gone stale by #601. `term.rs` lost roughly a quarter of itself across #584's
 slices; a number maintained by hand is the same defect as a roster maintained by hand, one size
-smaller. Ask instead:
+smaller, and a sentence that says so while carrying one is the smallest version of it. Ask instead:
 
 ```sh
 find justerm-core/src justerm-renderer/src justerm-web/src -name '*.rs' -o -name '*.ts' | xargs wc -l | sort -rn | head

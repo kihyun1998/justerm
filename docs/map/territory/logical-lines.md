@@ -25,21 +25,31 @@ context contract is.
 
 - **`LogicalLine { text, cells }`** — `text` is the wrap-joined string; `cells` maps each `char` of
   `text` back to a viewport `(row, col)`.
-- **`text` matches xterm's `translateToString(true)`**: wrap-joined across soft-wrapped rows,
-  wide-char spacers skipped, trailing blanks trimmed. Matching a named reference exactly is the whole
-  point — a consumer's URL regex is tuned against that shape.
+- **`text` does *not* match xterm's `translateToString(true)`** — the claim was checked against the
+  pinned tree in #601 and only the spacer skip survives. The **wrap join** is absent there
+  (`translateToString` spans one `BufferLine`; xterm pairs it with `Buffer.getWrappedRangeForLine`),
+  and the **trim differs**: xterm's `getTrimmedLength` scans for content, so a *printed* trailing
+  space is kept, while `text.trim_end()` cannot tell one from a blank cell and drops both. A
+  consumer's URL regex is still tuned against this shape — the shape was just never the one the
+  sentence named.
 - **`row` is `i32`, and out-of-range is deliberate.** A row outside `0..rows` is off-screen wrapped
   context — a line that wraps in from above the top, or out past the bottom. It is *present* so that a
   URL spanning the viewport edge still matches; the consumer highlights only the in-range cells.
   **This is the field most likely to be mishandled**: a consumer that treats `cells` as viewport-safe
   will index out of bounds or highlight the wrong row.
-- **The module holds only the returned shape.** The cell-aware assembly lives in `term.rs`, where the
-  cells are — the same split as [selection](selection.md).
+- **The module holds only the returned shape.** The cell-aware assembly lives in
+  `justerm-core/src/term/logical.rs`, where the cells are reachable — moved out of `term.rs` in #601,
+  the same split as [selection](selection.md).
 
 ## Code
 
 - `justerm-core/src/logical.rs` — `LogicalLine` (the shape only)
-- `justerm-core/src/term.rs` — `Term::viewport_logical_lines`, `Term::viewport_line`
+- `justerm-core/src/term/logical.rs` — `Term::viewport_logical_lines` (extracted from `term.rs` in
+  #601, the last read surface to leave it under #584)
+- `justerm-core/src/term.rs` — `Term::viewport_line`. It stayed: it returns one viewport row's cells
+  and walks nothing. Worth knowing anyway — it open-codes the scrollback-vs-grid branch that
+  `walk.rs`'s `line_in` already owns, after doing its own viewport-to-absolute conversion (which
+  `line_in` does not do — it takes an absolute index)
 - `justerm-core/src/term/selection.rs` — `Term::accessible_text` (the whole buffer as one document,
   a different contract from this one). It sits in the selection module because it reuses that
   module's extraction path, not because it is a selection — moved there with it in #587
@@ -49,12 +59,15 @@ context contract is.
 
 ## Reference behaviour
 
-**None.** `docs/agents/reference-facts.md` has no entry for logical-line assembly. This one matters
-more than an empty section usually does, because the territory's central claim is a *reference
-equivalence*: `text` is documented as matching xterm's `translateToString(true)` (wrap-joined,
-spacers skipped, trailing blanks trimmed). A consumer's URL regex is tuned against that shape, so the
-claim is load-bearing — and it is currently an unpinned paraphrase in a doc comment, never grepped
-against the pinned tree.
+In `docs/agents/reference-facts.md` — **linked, never restated** (each row carries a `file:line` at a
+recorded SHA; a paraphrase drops the pin).
+
+- [Logical-line assembly](../../agents/reference-facts.md#logical-line-assembly-601) — and the reason
+  this section existed as a flagged hole until #601: the territory's central claim was a *reference
+  equivalence* (`text` matches xterm's `translateToString(true)`) that had never been grepped against
+  the pinned tree. It was checked, and it was **partly wrong** — the spacer skip and the right-trim
+  hold, the wrap join does not, because that method spans one `BufferLine`. An unpinned paraphrase
+  survived long enough to become the section that justified pinning it.
 
 ## Cross-cutting invariants
 
