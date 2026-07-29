@@ -428,6 +428,32 @@ The direction that falls out: 3 of 3 leave the *input* unbounded, and the only o
 storage limit surfaces it as an error. justerm's current behaviour — encode silently emits a length
 its own decoder rejects — matches none of them, and is the one shape all three avoid.
 
+## Background transparency — the shape of the knob (#577, verified 2026-07-29)
+
+The file had **zero** rows on transparency before this, though `set_bg_alpha` has existed since #298
+and `justerm-renderer/README` and `colour-policy.md` both name it. The two references answer the
+design question in genuinely different shapes, so "what does the reference do" needs the shape spelled
+out before any value is copied.
+
+| Fact | Reference | Site |
+|---|---|---|
+| The knob is a **scalar** `opacity: Percentage` (0.0–1.0), and it lives under **`window`**, not under `colors` | alacritty | `config/window.rs:46` |
+| The knob is a **boolean** `allowTransparency`, default **`false`**, and it is an *option* — the theme is colours only | xterm.js | `common/services/OptionsService.ts:47` |
+| ⚠ **The boolean is not the alpha.** With it off, xterm *discards* the alpha channel of the theme colour it was given — so the amount of transparency is carried by the colour, and the option only says whether to honour it. A scalar has no place to live in that model | xterm.js | `addons/addon-webgl/src/TextureAtlas.ts:339` |
+| The option feeds the **GL context creation flag** (`alpha: this._config.allowTransparency`), so changing it rebuilds the atlas rather than re-drawing. justerm creates its context `alpha: true` unconditionally (#298), which is why justerm can toggle at runtime and xterm cannot | xterm.js | `addons/addon-webgl/src/TextureAtlas.ts:101` |
+| Only the **default-background** cell is transparent: `compute_bg_alpha` returns `0.` for `Color::Named(NamedColor::Background)` and `1.` for everything else — an explicitly coloured cell stays opaque | alacritty | `display/content.rs:388-396` |
+| …and the clear carries the opacity, which is what the `0.` above reveals: the transparent cell draws nothing and the cleared buffer shows through | alacritty | `display/mod.rs:470` |
+| Extending alpha to explicitly coloured cells is a separate **opt-in**, `colors.transparent_background_colors` — not the default. justerm has no equivalent | alacritty | `display/content.rs:275-278` |
+| ⚠ **alacritty also makes the surface behind itself transparent** — `window.set_transparent(config.window_opacity() < 1.)`. It can, because it owns the OS window. A browser widget cannot: the page behind the canvas is the consumer's, which is why `bgAlpha`'s doc says making it transparent is consumer CSS and is the first thing to check when the option appears to do nothing | alacritty | `display/window.rs:197` |
+
+**Direction.** Not a divergence to fix. On the *shape* of the knob the references split 1–1 (alacritty
+scalar, xterm boolean-plus-colour-alpha) and justerm took alacritty's in #298, so there is no majority
+to be an outlier against. On *which cells* go transparent, justerm's shader
+(`webgl.rs` `bg_a = (!block && v_bg_default > 0.5) ? mix(u_bg_alpha, 1.0, cov) : 1.0`) converges with
+alacritty's **default** exactly — default-bg only, glyph coverage pulled back to opaque, cursor cell
+forced opaque. The one thing justerm has no expression for is alacritty's
+`transparent_background_colors` opt-in, which is an absent *feature*, not a wrong behaviour.
+
 ## Renderer ink channels
 
 | Fact | Reference | Site |
