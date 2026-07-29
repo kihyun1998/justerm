@@ -48,8 +48,13 @@ prior-art (as `justerm-core` studied xterm.js) and build fresh in justerm's own 
 - **Crate placement (this slice, #259): excluded from the cargo workspace, independent version track.**
   The renderer depends on `web-sys`/`glow` (browser/GL-heavy). Keeping it out of `members` preserves
   the clean host `cargo test --workspace` gate — the same reason `fuzz` and `justerm-facade` are
-  excluded. Its own gate is `cargo build -p justerm-renderer --target wasm32-unknown-unknown` (a
-  documented blind spot, like the wasm32-only `justerm-wasm-decode/tests/web.rs`). Independent semver
+  excluded. Its own gate is
+  `cargo build --manifest-path justerm-renderer/Cargo.toml --target wasm32-unknown-unknown` (a
+  documented blind spot, like the wasm32-only `justerm-wasm-decode/tests/web.rs`). **`-p
+  justerm-renderer` — what this line said until #608 — cannot work**: `-p` selects from the
+  workspace and this crate is deliberately in none, so it errors with *"did not match any
+  packages"*. A crate excluded to protect a gate is also excluded from the flag most people reach
+  for to run that gate. Independent semver
   also matches beamterm's own model and the renderer's distinct release cadence.
 
 ## Coordinate spaces: device pixels are the source of truth

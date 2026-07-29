@@ -9,6 +9,13 @@ members = ["justerm-core", "justerm-wasm-decode"]
 # gate. It carries its own version track and is gated with
 # `cargo build --manifest-path justerm-renderer/Cargo.toml --target wasm32-unknown-unknown`
 # (host `cargo test` runs its pure `color` module).
+#
+# The list below is NOT what makes these crates standalone — `fuzz` and `justerm-renderer`
+# each declare their own `[workspace]`, which is what actually holds from anywhere. This
+# `exclude` only keeps THIS workspace from claiming them, and it is stated as paths relative
+# to THIS file, so it is the wrong parent's answer as soon as the crate is reached from a git
+# worktree (#608). `justerm-facade` still relies on this list alone; it is a frozen tombstone
+# nobody edits, so the gap is known and unbitten rather than fixed.
 exclude = ["fuzz", "justerm-facade", "justerm-renderer"]
 resolver = "3"
 

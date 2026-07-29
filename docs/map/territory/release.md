@@ -49,7 +49,10 @@ What a stranger *reads* once it has shipped is a different concept — see
 - `.github/workflows/publish-crate.yml` · `publish-wasm.yml` · `publish-renderer.yml` ·
   `publish-web.yml`
 - Root `Cargo.toml` — `[workspace.package] version`, and the `exclude` list that keeps the facade and
-  the renderer off the lockstep
+  the renderer off the lockstep. Since #608 the renderer's standalone status has a **second**
+  anchor, `justerm-renderer/Cargo.toml`'s own `[workspace]`; the `exclude` entry alone did not
+  survive being reached from a git worktree
+  ([workspace exclusion is gate invisibility](../invariant/workspace-exclusion-is-gate-invisibility.md))
 - `justerm-facade/Cargo.toml` — the frozen version and the do-not-republish note
 
 ## Reference behaviour

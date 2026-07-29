@@ -790,6 +790,20 @@ at the **worktree you are editing** (Step 4), and `cargo run -- scan --strict <j
 repo root>` takes the *worktree* root — pointed at nothing it reports "0 workflows
 scanned" plus a green "no violations".
 
+**The same shape once broke cargo itself, and the fix is the general lesson (#608).** A
+worktree does not only break `../` in prose — it breaks any fact stated as a path in a
+*parent* file, because the parent a tool finds is not the parent you meant. `justerm-renderer`
+was excluded from the workspace by the **root** manifest only, and cargo resolves a crate's
+workspace by walking *upward*: from a worktree it climbed past the worktree root (which
+excludes the crate) into the main checkout's manifest, matched the crate against an `exclude`
+list of paths that were not this one, and refused to build. Every renderer gate — fmt, test,
+clippy, build, doc — plus `wasm-pack build` failed **before starting**, in the workflow this
+same section prescribes. The repair was to state the fact where it cannot be resolved against
+the wrong file: an empty `[workspace]` table in the crate itself, which `fuzz` had carried all
+along. Generalise before assuming this one was the last: **a fact about a directory belongs in
+that directory**. Unlike the `../` hazard above this one fails loudly, which is the only reason
+it was found in an afternoon rather than by silent absence.
+
 **Release tracks (tag-driven, all inert until a tag is pushed):** `v*` → `justerm-core`
 (crates.io) + `justerm-wasm-decode` (npm), lockstep; `renderer-v*` → `justerm-renderer`
 (npm); `web-v*` → `justerm-web` (npm, #466 — **published since `web-v0.7.0`**, now at

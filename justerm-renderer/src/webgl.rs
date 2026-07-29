@@ -2102,11 +2102,20 @@ impl JustermRenderer {
     /// itself (xterm's `cursorAccent`, alacritty's `text_color`). Colours are resolved by the
     /// consumer — the renderer stays theme-agnostic.
     ///
-    /// A **block** repaints the cell, so it lands in the instance buffer and takes effect on the
-    /// next `applyFrame`/`applyDamage`. The **strokes** are shader uniforms and take effect on the
-    /// next [`render`](Self::render) alone: moving or blinking a bar costs no upload. Blink phase
-    /// is the consumer's policy, exactly as `blink_on` is (#282) — call `clearCursor` for the off
-    /// phase.
+    /// **Every shape, the block included, lives in the cursor uniform** (`u_cursor` + its colours,
+    /// declared with `FRAG_SRC` in this file) and is resolved per fragment. So any cursor change —
+    /// move, blink, shape — takes effect on the next [`render`](Self::render) alone: one uniform,
+    /// no re-pack and no instance upload. Blink phase is the consumer's policy, exactly as
+    /// `blink_on` is (#282) — call `clearCursor` for the off phase.
+    ///
+    /// A block *could* have been an instance: it is a colour override on the cell, not geometry,
+    /// and both references draw it that way. It is not one because ADR-0018
+    /// (`docs/adr/0018-justerm-renderer.md`) makes that **the contract, not an
+    /// optimisation** — a blink tick produces no terminal output, so a block packed into the
+    /// instances could not blink off without the consumer re-feeding the frame (an early #270 draft
+    /// did exactly that). Two consequences follow rather than cause it: un-painting would need a
+    /// re-pack, and per-fragment resolution keeps the ordering free, since the instance colours
+    /// arrive already inverse-swapped and the glyph already concealed.
     #[wasm_bindgen(js_name = setCursor)]
     pub fn set_cursor(
         &mut self,
