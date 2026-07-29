@@ -82,16 +82,40 @@ files in a crate you just edited exits 0 exactly like a clean run does.
 | Occurrence | Site | Issue |
 |---|---|---|
 | 1st | `justerm-renderer` had **no gate at all** across slices #259–#340 — `cargo fmt --all` visited zero of its files and exited 0, and 13 slices of unformatted code accumulated behind that green tick | #333 |
+| 2nd | `justerm-wasm-decode/tests/web.rs` held a **second copy** of the wire-version pin, hardcoded to `13`. A `WIRE_VERSION` bump to 14 left every local gate green — including the wasm-target build, which compiled the stale assertion without running it — and CI's `wasm` job was the only red, after the PR was already open | #621 |
 
-One recorded occurrence, and it ran for thirteen slices before anyone looked — which is the argument
-for the node. A defect that announces itself is found once; this one is found only when someone
-happens to run the right command by hand.
+Two occurrences, and they differ in the way that matters: the first was *no* gate, the second was a
+gate that **ran and passed while answering a different question**. The first is discoverable by
+reading the command; the second is not, because the command genuinely reaches the file. When
+auditing this invariant, do not stop at "is there a gate" — ask **which of compile / run / assert it
+actually performs**.
 
 **A sibling shape, different mechanism, same symptom:** `justerm-wasm-decode/tests/web.rs` is
 `#![cfg(target_arch = "wasm32")]`, so on the host it compiles to *nothing* and `cargo test
 --workspace` passes over it. Not a workspace exclusion — a target gate — but it produces the same
-"green, inspected nothing" outcome, and it is reached by
-`cargo build -p justerm-wasm-decode --tests --target wasm32-unknown-unknown`.
+"green, inspected nothing" outcome. Measured: `cargo test -p justerm-wasm-decode --test web` on the
+host reports **`running 0 tests`**, and exits 0.
+
+**And its compensating gate is only half a gate — this is the sharper trap of the two.**
+`cargo build -p justerm-wasm-decode --tests --target wasm32-unknown-unknown` reaches the file, so it
+is easy to read as coverage. It **compiles** the tests; it never **runs** them. An
+`assert_eq!(wire_version(), 13)` against a shipped `14` compiles perfectly — assertions are runtime
+constructs and the compiler only checks that comparing two `u8`s type-checks. The runtime assertions
+in this file execute in **one place on earth**: CI's `wasm` job, through
+`wasm-bindgen-test-runner` under node.
+
+That is worse than the workspace case rather than merely different. An excluded crate has *no* gate
+and the absence is discoverable by reading the command; this one has a gate that runs, passes, and
+answers a question you did not ask. #621 hit it exactly that way — every local gate green, the wasm
+job the only red, on a literal that had rotted.
+
+**The repair generalises past this file: do not put a value in here that lives somewhere else.** The
+fix was not to bump `13` to `14` (which rots again at the next bump) but to delete the literal —
+`assert_eq!(wire_version(), justerm_core::WIRE_VERSION)` states the binding's actual contract
+(*forward the constant*) and cannot go stale. The literal belongs in `justerm-core`'s own test, which
+runs on host on every PR. **A duplicated expectation is only as fresh as the slowest place that
+checks it** — so the copy that lives where nothing local can run it should assert a *relationship*,
+never a *number*.
 
 ## Where it will recur
 
