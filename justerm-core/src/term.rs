@@ -629,10 +629,14 @@ impl Term {
             ),
         };
 
-        let mut side_table: Vec<Vec<char>> = Vec::new();
-        // Same frame-local renumber for the hyperlink side-table (#26).
+        // Frame-local renumber for the hyperlink table (#26). `u32`, not `u16`: the
+        // narrower width could not number one distinct URI per cell of a viewport the
+        // frame header's own `cols`/`rows` permit, and the wrap did not merely truncate
+        // — `link_remap[l] = … as u16` yielded 0 at the 65536th URI and the
+        // `NonZeroU32::new(…).expect(…)` below turned it into a panic *in the engine*,
+        // on a stream it had parsed correctly (#621).
         let mut link_table: Vec<String> = Vec::new();
-        let mut link_remap = vec![0u16; self.hyperlink_pool.len() + 1];
+        let mut link_remap = vec![0u32; self.hyperlink_pool.len() + 1];
         // Cells come from the viewport at `display_offset`, not the live grid:
         // viewport row `line` is absolute buffer line `top + line` (scrollback
         // when scrolled up, the live grid when `display_offset == 0`, where
@@ -662,20 +666,21 @@ impl Term {
                 // tagged cell contributes its reference to the frame, recorded on
                 // the span by span-relative column (the cell holds only the bit).
                 if let Some(marks) = row.combining_at(col) {
-                    side_table.push(marks.to_vec());
-                    let idx = core::num::NonZeroU32::new(side_table.len() as u32)
-                        .expect("side_table just pushed, len >= 1");
-                    combining.insert(col - left, idx);
+                    // The cluster itself, at its column — no side table and no index
+                    // since v14 (#621). Nothing interned these (this push was
+                    // unconditional), so the index only ever bought indirection.
+                    combining.insert(col - left, marks.to_vec());
                 }
                 if let Some(lidx) = row.link_at(col) {
                     // Renumber the global pool index to a contiguous frame-local
-                    // one (only referenced URIs ship), same as the old per-cell link.
+                    // one (only referenced URIs ship). This half stays interned —
+                    // cells share a URI, and all three references share it too.
                     let l = lidx.get() as usize;
                     if link_remap[l] == 0 {
                         link_table.push(self.hyperlink_pool[l - 1].clone());
-                        link_remap[l] = link_table.len() as u16;
+                        link_remap[l] = link_table.len() as u32;
                     }
-                    let fidx = core::num::NonZeroU32::new(link_remap[l] as u32)
+                    let fidx = core::num::NonZeroU32::new(link_remap[l])
                         .expect("link_remap just set, nonzero");
                     links.insert(col - left, fidx);
                 }
@@ -727,7 +732,6 @@ impl Term {
             alt_screen: self.on_alt,
             scroll: self.scroll_delta(),
             spans,
-            side_table,
             link_table,
             // Interaction overlays projected onto this viewport (#108): the
             // engine-owned selection and the consumer-supplied search highlights,

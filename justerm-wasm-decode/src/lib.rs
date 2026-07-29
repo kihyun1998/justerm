@@ -70,8 +70,15 @@ struct Flat {
     flags: Vec<u16>,
     /// Per-cell frame-local side-table / hyperlink indices (`0` = none) — the
     /// `extra` / `link` columns.
-    extra: Vec<u16>,
-    link: Vec<u16>,
+    ///
+    /// `u32`, not `u16`, since v14 (#621). Both index tables whose size is bounded by
+    /// the *viewport*, and the frame header stores `cols` and `rows` as `u16` **each**
+    /// — so a legal viewport holds far more cells than a `u16` index can number.
+    /// Keeping these narrow after the wire widened would have relocated the very
+    /// defect #621 removed, one layer downstream, where nothing would have caught it.
+    /// `types.ts` declares both as `ArrayLike<number>`, so the JS contract is unchanged.
+    extra: Vec<u32>,
+    link: Vec<u32>,
     /// Span directory: `SPAN_STRIDE` `u32`s per span — see [`SPAN_STRIDE`].
     /// `cell_offset` is the index of the span's first cell within the cell
     /// columns (`codepoints`/`fg`/…); `cell_count` is its number of cells.
@@ -131,6 +138,8 @@ fn flatten(frame: &Frame) -> Flat {
     let mut flags = Vec::with_capacity(cell_count);
     let mut extra = Vec::with_capacity(cell_count);
     let mut link = Vec::with_capacity(cell_count);
+    // Rebuilt here rather than read off the wire (v14, #621) — see the push site.
+    let mut side_table: Vec<Vec<char>> = Vec::new();
     let mut spans = Vec::with_capacity(frame.spans.len() * SPAN_STRIDE);
     let mut cell_offset: u32 = 0;
     for span in &frame.spans {
@@ -155,10 +164,25 @@ fn flatten(frame: &Frame) -> Flat {
                     .map_or(0, |&c| justerm_core::encode_color(c)),
             );
             flags.push(cell.flags().bits());
-            // Combining/link indices ride on the span (per column), not the cell,
-            // since slices #45/#46 moved them into per-row maps.
-            extra.push(span.combining.get(&col).map_or(0, |n| n.get() as u16));
-            link.push(span.links.get(&col).map_or(0, |n| n.get() as u16));
+            // Combining/link references ride on the span (per column), not the cell,
+            // since slices #45/#46 moved them into per-row maps — and since v14 (#621)
+            // they are sparse wire groups rather than fields on the cell record.
+            //
+            // The JS-facing shape is unchanged: a dense `extra` column of 1-based
+            // indices into a `sideTable`. The wire no longer carries that table, so it
+            // is **built here**, which is precisely this crate's job (ADR-0008: flatten
+            // the wire's logical form into the renderer's structure-of-arrays). One
+            // entry per combining cell, in cell order — the same thing `Term::frame`
+            // used to ship, reconstructed on the consumer's side of the boundary where
+            // it costs no wire bytes.
+            extra.push(match span.combining.get(&col) {
+                Some(cluster) => {
+                    side_table.push(cluster.clone());
+                    side_table.len() as u32
+                }
+                None => 0,
+            });
+            link.push(span.links.get(&col).map_or(0, |n| n.get()));
         }
     }
 
@@ -193,7 +217,7 @@ fn flatten(frame: &Frame) -> Flat {
         extra,
         link,
         spans,
-        side_table: frame.side_table.clone(),
+        side_table,
         link_table: frame.link_table.clone(),
         selection_spans: flatten_overlay_spans(&frame.overlay.selection),
         match_spans: flatten_overlay_spans(&frame.overlay.matches),
@@ -399,14 +423,14 @@ impl DecodedFrame {
     /// Per-cell frame-local grapheme side-table index (`0` = none; else
     /// `sideTable[extra - 1]`).
     #[wasm_bindgen(getter)]
-    pub fn extra(&self) -> js_sys::Uint16Array {
-        unsafe { js_sys::Uint16Array::view(&self.flat.extra) }
+    pub fn extra(&self) -> js_sys::Uint32Array {
+        unsafe { js_sys::Uint32Array::view(&self.flat.extra) }
     }
 
     /// Per-cell frame-local hyperlink index (`0` = none; else `linkTable[link - 1]`).
     #[wasm_bindgen(getter)]
-    pub fn link(&self) -> js_sys::Uint16Array {
-        unsafe { js_sys::Uint16Array::view(&self.flat.link) }
+    pub fn link(&self) -> js_sys::Uint32Array {
+        unsafe { js_sys::Uint32Array::view(&self.flat.link) }
     }
 
     /// Span directory: 5 `u32`s per span — `line, left, right, cell_offset,
