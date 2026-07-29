@@ -34,7 +34,10 @@ contiguous ranges that actually changed.
 ## Code
 
 - `justerm-renderer/src/upload.rs` — the planner (pure, host-testable)
-- `justerm-renderer/src/webgl.rs` — executes the plan via `buffer_sub_data` (browser-only)
+- `justerm-renderer/src/webgl.rs` — executes the plan via `buffer_sub_data_u8_slice` (browser-only).
+  The module docs on both sides shorten that to "buffer_sub_data", which is the `web-sys` family
+  name and not a method that exists — quoted rather than backticked here, because a name under this
+  heading is meant to be one you can grep
 - `justerm-renderer/src/frame.rs` — produces the freshly packed instances being diffed
 
 ## Reference behaviour

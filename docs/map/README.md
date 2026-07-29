@@ -136,6 +136,19 @@ resolves every relative markdown link under `docs/`, `CLAUDE.md`, `CONTEXT.md` a
 node .github/scripts/check-map-links.mjs docs CLAUDE.md CONTEXT.md README.md
 ```
 
+**Verify a note as you finish it, not the batch at the end.** `check-map-note.mjs` takes one file and
+runs in a second — section set for its kind, every symbol under `## Code`, and nothing restating a
+value another artifact owns:
+
+```sh
+node .github/scripts/check-map-note.mjs docs/map/territory/selection.md
+```
+
+The cadence is the point. Twenty-seven notes were written and verified once at the end, and all four
+defects that pass found were **the same class**, spread across notes written hours apart — checking
+after the third would have ended it there. Batching happens when checking is expensive, so the script
+exists to make it cheap rather than to be remembered.
+
 ## Current coverage
 
 **The scope is everything in this repository**, not `justerm-core`. That includes the crates a
