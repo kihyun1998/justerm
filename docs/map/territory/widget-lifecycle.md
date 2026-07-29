@@ -6,8 +6,14 @@ Who owns the work that keeps happening after the call that started it returns �
 media-query and window listeners, a11y timers, resize observation — and who is responsible for
 stopping it.
 
-**Nothing composes them today.** Each piece was added by the slice that needed it, each has a
-perfectly good teardown handle, and no artifact says whose job it is to call them.
+**One seam is composed; the rest are not.** Since #606 the widget ends what it was *handed* — the
+frame source's subscriptions, its own DOM listeners, and the renderer — and that rule is written where
+a consumer reads it (`justerm-web/README.md` § Tearing down, plus the `Renderer` port's doc). Every
+other piece was added by the slice that needed it, has a perfectly good teardown handle, and still has
+nobody calling it.
+
+The distinction is the useful part: the composed seam is the one where a *type* could carry the
+obligation. The rest depend on a consumer remembering, and the measurement below says none does.
 
 ## Governing decisions
 
@@ -80,7 +86,19 @@ In `docs/agents/reference-facts.md` — **linked, never restated**.
 
 ## Cross-cutting invariants
 
-*(none identified yet)*
+**None — checked, not assumed (#606).** The rule this territory gained ("what a layer is handed
+across a port, that layer ends") was tested for reach before being left here, because a fact that
+holds in N territories belongs in `invariant/` and is invisible from the other N-1 if it is not.
+
+It has exactly one site. The criterion is *a port through which a collaborator with its own ambient
+work is injected*, and `justerm-web` is the only layer in the family with one: `justerm-renderer`
+takes a canvas **selector** and a theme, not a collaborator; `justerm-core` takes bytes and holds no
+listener, timer or loop by design (the no-I/O invariant in `CLAUDE.md`). The `DecorationRegistry`
+handle is the mirror image — the widget hands *out* something the consumer ends — which is a
+different rule, not this one at a second site.
+
+Promote it the day a second injected-collaborator port exists. The multi-viewport work (#287) is the
+likely candidate: a `TerminalSurface` holding N grids would be exactly that shape.
 
 ## Blast radius
 
@@ -88,8 +106,9 @@ Everything the widget attaches, because the missing owner is a property of the c
 than of any one collaborator.
 
 - [caret drawing](caret-drawing.md) · [caret report](caret-report.md) — the blink phase is driven by
-  the loop `Terminal` cannot reach, and neither blink loop pauses when the terminal is off-screen
-  (tracked: #606, #607)
+  the rAF loop this territory owns. `Terminal` can now **end** it (#606); what it still cannot do is
+  **pause** it, so neither blink loop stops while the terminal is off-screen (#607). Ending and
+  pausing turned out to be separable questions, which is why one shipped without the other
 - [GL context lifecycle](gl-context-lifecycle.md) — the consumer sets the restore timeout and reacts
   to the callback, so context recovery is one more thing with no stated owner
 - [events & replies](events-and-replies.md) — both queues are drained on a cadence the consumer
