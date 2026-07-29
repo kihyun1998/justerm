@@ -63,6 +63,14 @@ legitimate way to hold the invariant, and it is permanently invisible to the gre
 these the two entries most likely to be read as a *missing* floor and "fixed" into a redundant call.
 Update them by hand when the write path moves; never expect a tool to notice.
 
+A third satisfies it by **construction** rather than by argument, found by #601's pass: `Term::viewport_link_at`
+reaches cells through `abs_row` — so the recurrence test below flags it — but its index is
+`scrollback.len() - display_offset + row`, and `display_offset` is pinned to 0 on the alt screen
+(`enter_alt_screen` zeroes it, `set_display_offset` returns early while `on_alt`). So on alt the index
+is `scrollback.len() + row`, already at or above the floor. **Validity condition:** this holds only
+while `display_offset` cannot be non-zero on the alt screen. If viewing alt scrollback ever becomes a
+thing, this site needs the floor like any other.
+
 ## What a violation looks like
 
 Inside an alt-screen application (vim · htop · less), **text the user cannot see gets pulled in**.
