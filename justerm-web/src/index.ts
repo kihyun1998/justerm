@@ -24,6 +24,8 @@ export type { ScrollOptions, WheelContext, WheelLike } from "./scroll-control";
 export { CellMirror } from "./cell-mirror";
 // Cursor — blink state (web policy). The renderer draws the cursor natively (#270).
 export { BLINK_IDLE_TIMEOUT, BLINK_INTERVAL, CursorBlink } from "./cursor";
+// SGR 5 text blink phase (#576) — the caret's sibling policy, on its own clock and off by default.
+export { TextBlink } from "./text-blink";
 // Scrollbar — custom DOM slider over the canvas (thumb math + drag → offset).
 export { dragToDisplayOffset, Scrollbar, scrollbarMetrics } from "./scrollbar";
 export type { ScrollbarMetrics, ScrollbarOptions, ScrollPosition } from "./scrollbar";

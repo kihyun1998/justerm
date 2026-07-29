@@ -180,4 +180,9 @@ export interface FlagBits {
   inverse: number;
   dim: number;
   hidden: number;
+  /** SGR 5 (#576). The renderer conceals a cell carrying this on the off phase of the consumer's
+   * text-blink clock, exactly as it always conceals {@link FlagBits.hidden} (`ESC[8m`) — the two
+   * share `is_concealed`. The last cell flag the wasm getter (`flags().blink`) exposed and this
+   * mirror did not, which is why nothing on this side could name a blinking cell. */
+  blink: number;
 }
