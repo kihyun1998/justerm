@@ -51,13 +51,14 @@ justerm clamps in the core, where xterm.js clamps, because justerm has no app la
 
 Fixed-width record for fast typed-array decode. Two layers wear this name and they store the overflow
 differently — say which you mean: the **in-memory** cell (`justerm-core`'s `Cell`, a packed
-fixed-width value) and the **wire** cell record (§Serialization, 18 bytes). The fields below are the
+fixed-width value) and the **wire** cell record (§Serialization, 14 bytes). The fields below are the
 model both share.
 
 - `content`: a **grapheme cluster** (combining marks/emoji-correct). The primary code point is inline
   and the cluster overflow is kept out of the cell so it stays fixed-width — in memory via a presence
   bit (`COMBINED_PRESENT`) with the cluster in the row's column-keyed map (#45/#46), on the wire via a
-  frame-local index into the grapheme side-table.
+  cluster inlined at its column in the span's sparse combining group (v14, #621 — there is no
+  grapheme side-table and no per-cell index).
 - `fg` / `bg`: **color references** — `Default | Indexed(u8 0..255) | Rgb(u8,u8,u8)`. **Never resolved
   hex** — the consumer/renderer maps indices→hex via its (frozen) scheme. Engine is theme-agnostic.
 - `attrs`: standard 8 (bold/dim/italic/underline/blink/inverse/hidden/strikethrough). The record
@@ -132,8 +133,9 @@ position/style/visibility.
 ## Serialization (the wire format the engine offers)
 
 Binary, **reference-based** (matches the Cell above — references, not RGB), little-endian,
-**fixed-width 18-byte cell records** (`CELL_RECORD_LEN`; the field-by-field arithmetic is below) + a
-grapheme side-table for rare multi-code-point clusters.
+**fixed-width 14-byte cell records** (`CELL_RECORD_LEN`; the field-by-field arithmetic is below) + a
+sparse per-span group for the rare cells carrying a multi-code-point cluster (v14, #621 — there is
+no grapheme side-table any more).
 Designed for a consumer to ship over its own transport (e.g. a Tauri Channel) and decode straight into
 typed arrays (a fixed stride → one contiguous view, no per-field parse). The engine provides the
 *format* **and both directions** (`encode` a damage frame / `decode` it — the round-trip is the test);
@@ -151,8 +153,12 @@ A **frame** serializes one damage cycle (`damage()` + `scroll_delta()`):
   policy #119 suppresses output reads on it), kind (`Full` | `Partial`).
 - **scroll op** (optional) — `{top, bottom, count}` (ADR-0003); the decoder applies it *before* the spans.
 - **spans** — for `Partial`, each `{line, left, right}` then `(right−left+1)` cell records; `Full` = all rows.
-- **side-table** — only the clusters referenced *this frame*, renumbered frame-local; each cell's
-  `extra` rewritten to the local index.
+- **combining group** (v14, #621) — one sparse `(col, cluster)` map per span, in span order, the
+  cluster inline. No side-table and no per-cell index: nothing interned the clusters, so the
+  indirection bought only a second count to overflow.
+- **link group + `link_table`** (v14, #621) — one sparse `(col, index)` map per span, addressing a
+  frame-local table of the URIs referenced *this* frame. This half stays interned because cells
+  genuinely share a URI, and every reference does the same.
 - **overlay** (v6, #108/ADR-0014; v7, #118/ADR-0015) — interaction state as *viewport* coordinates, five
   groups: a selection-span group then a search-match-span group (each a `u16` count + `(row, left, right)`
   `u16` triples), then a marker group (`u16` count + `(marker_id u32, row u16)` pairs; v10, #159, appends a
@@ -171,16 +177,26 @@ A **frame** serializes one damage cycle (`damage()` + `scroll_delta()`):
 
 The **cell record** (little-endian): `c` (u32 Unicode scalar — *not* the renderer's atlas glyph
 id), `fg`/`bg` (u32 each = tag byte `Default|Indexed|Rgb` + 24-bit payload; the tag is mandatory so
-`Default ≠ Indexed(0) ≠ Rgb(0,0,0)`), `flags` (u16, incl. layout markers), `extra` (u16 frame-local
-grapheme index, `0` = none), and — since wire **v2** (#26) — `link` (u16 frame-local hyperlink index,
-`0` = none) = **4+4+4+2+2+2 = 18 bytes**, 2-aligned. Width is derived from `flags & WIDE_CHAR`. The
+`Default ≠ Indexed(0) ≠ Rgb(0,0,0)`), and `flags` (u16, incl. layout markers)
+= **4+4+4+2 = 14 bytes**, 2-aligned. Width is derived from `flags & WIDE_CHAR`.
+
+It was **18 bytes until v14** (#621): the record also carried `extra` and `link`, two u16 frame-local
+indices for a grapheme cluster and an OSC 8 URI. Both were too narrow for values the engine
+legitimately holds — a viewport can hold more cells than a `u16` can number, since the header stores
+`cols` and `rows` as u16 *each* — and widening them in place would have inflated a record **every**
+cell pays, which is the trade ADR-0008's Axis 4 rejected in the other direction. So they left the
+record for sparse per-span groups instead, and the record shrank: measured, −20.9% on an ordinary
+frame that carries neither. The
 hyperlink id was added exactly as the format promised — a **versioned** addition with its own index +
 side-table (`link_table`), never an overload of a live field; the `VERSION` byte gates it. **Underline
 colour** (SGR 58, #520) follows the *same* path, not the spare-bits one: a full `Color` reference is
 26 bits — too big to ride `flags` — so it is stored engine-side in a per-row map like the hyperlink
 (gated by a `UCOLOR_PRESENT` cell bit) and reaches the wire as its own versioned group (**v13**, #520):
-a per-span **sparse** group of `(col, Color)` pairs, so the 18-byte per-cell record above is unchanged —
-only cells that draw a coloured underline cost bytes, not every cell. What the
+a per-span **sparse** group of `(col, Color)` pairs, so the per-cell record above is unchanged —
+only cells that draw a coloured underline cost bytes, not every cell. **v14 (#621) generalised that
+shape rather than adding to it**: combining clusters and hyperlink references took the same route out
+of the record, which is why the record is now 14 bytes rather than 18. The sparse-group pattern is now
+how *every* rare per-cell payload reaches the wire, not a special case for one of them. What the
 `flags` bits 11–15 still genuinely reserve is the underline **style** (single/double/curly/dotted) —
 a small enum that *does* fit spare bits — plus the colour tags' spare 6 bits.
 
@@ -292,9 +308,12 @@ under it.
   **The wire is the third mover, and it fails in the *opposite* direction.** A presence bit never
   travels as a bit: `encode_color` keeps only mode+value, so `BG_LINK` / `BG_UCOLOR` are dropped, and
   `CellFlags` carries none. So on decode every bit is **reconstructed** from whether its group carries
-  an entry — `decode_cell` derives `combined` / `linked` from the cell record's own `extra` / `link`,
-  and the ucolor group's own loop must arm `UCOLOR_PRESENT`, because a colour reference rides a
-  *separate* group rather than a cell-record field. Where a missed grid-side carry leaves a bit with
+  an entry — and **since v14 (#621) that is true of all three of them, with no exceptions left**.
+  `combined` / `linked` used to be the exception: `decode_cell` could set them inline from the cell
+  record's own `extra` / `link`, so only `UCOLOR_PRESENT` needed a group loop of its own. #621 moved
+  both references out of the record, so all three bits are now armed by their own group's loop and
+  none arrives with its cell. Read the exception as *gone*, not as "mine might be like `extra`" —
+  that reading is what produced #531. Where a missed grid-side carry leaves a bit with
   nothing behind it, a missed wire-side re-arm leaves the **value with no bit**: the gated read returns
   `Default` while the map holds the real colour, and the frame stops being a round-trip fixed point.
   A rider that reaches the wire as a group, not as a cell field, owes its own re-arm here. [#531]
@@ -584,10 +603,12 @@ Z"`, and a search across the wrap went from 1 hit to 0). It now lives on the
   explicitly only where cells change column**: ICH/DCH re-key the map alongside the cell shift, and reflow
   re-keys per column when splitting/merging rows (xterm's `_copyCellMapsFrom`); print-overwrite, erase, and
   whole-row scroll need nothing. Serialization gathers each combined cell's cluster into the frame-local
-  `side_table`, recording the index on the **span** (`Span.combining`, the per-cell `extra` lifted out of
-  the cell); the wire bytes are unchanged. [#6, #45]
+  span's own sparse `(col, cluster)` group (`Span.combining`) — the cluster itself, at its column. It
+  was a frame-local `side_table` + an index on the span until v14, and before #45 that index sat on the
+  cell; each move took it further from the cell and the last one removed the index entirely, because
+  nothing ever interned these clusters for it to point at. [#6, #45, #621]
 - **OSC 8 hyperlinks ride the *same* per-row-map machinery, gated by the `LINK_PRESENT` bit.** The `Row`
-  carries a second `BTreeMap<col, hyperlink-pool index>` (the URI dedup pool, `hyperlink_pool`, stays
+  carries a second `BTreeMap<col, hyperlink-pool index>` (the pool, `hyperlink_pool`, stays
   global — only the per-column reference moved), gated by the cell's `LINK_PRESENT` bit, which reuses
   xterm's `BgFlags.HAS_EXTENDED` (`0x10000000`, bg bit 28) **exactly**. Carry/reflow/recycle treat it
   identically to combining (`Row::move_maps` re-keys both maps together; reflow threads both). Reads go
@@ -687,15 +708,17 @@ Z"`, and a search across the wrap went from 1 hit to 0). It now lives on the
   injected across the boundary — unlike alacritty's `EventListener` push model, which would couple the
   engine to the consumer's event loop and break the "feed in, pull out" symmetry. OSC 8 hyperlink is
   deliberately excluded: a hyperlink applies to *subsequently printed cells* until closed, so it is
-  per-cell state (modelled like a grapheme side-table, versioned into the wire), not an event — its own
-  slice (#26). OSC string terminator may be BEL or ST; vte consumes it and calls `osc_dispatch` once, so
+  per-cell state (versioned into the wire as its own group), not an event — its own
+  slice (#26). Note the two stopped being modelled alike at v14: a URI is genuinely shared between
+  cells and keeps its frame-local table, while a cluster is not and is now inlined (#621). OSC string terminator may be BEL or ST; vte consumes it and calls `osc_dispatch` once, so
   an OSC-terminating BEL is not double-counted as a bell. [#12]
 - **An OSC 8 hyperlink is ambient pen-like state stamped onto cells — not an event, and not closed by
   an SGR reset.** `OSC 8 ; params ; URI` opens a link (the URI is interned into a `hyperlink_pool` and
   becomes "current"); `OSC 8 ; ; ` (empty URI) closes it. Every glyph printed while open carries a
   `Cell.link` index into the pool — both halves of a wide glyph, so a hover/selection over either
   agrees. The index is plain `Copy` data, so it rides the cell through scroll/scrollback/reflow exactly
-  like the grapheme `extra`, and it renumbers frame-local into the wire's `link_table` the same way.
+  like the presence bit for a cluster, and it renumbers frame-local into the wire's `link_table` —
+  which, unlike the cluster's vanished side-table, is still there and still interned (#621).
   The catch: a hyperlink is **orthogonal to SGR** — `CSI 0 m` (reset attributes) must *not* close it;
   only an empty-URI OSC 8 does (and it persists across line-feeds until then). It is cell state, not a
   point-in-time event, which is why it is here and not on the `drain_events` surface (alacritty agrees —

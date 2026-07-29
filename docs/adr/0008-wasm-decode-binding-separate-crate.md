@@ -121,8 +121,17 @@ side-table — i.e. exactly justerm's wire record — is the shape both renderer
 
 ### Axis 4 — stride: keep the wire's 18-byte record as-is, do not re-align
 
-The wire cell record is `c` u32 · `fg` u32 · `bg` u32 · `flags` u16 · `extra` u16 · `link` u16 =
-**18 bytes, 2-aligned** (ADR-0005). The decoder exposes that record *unchanged*; it does not
+**Amended 2026-07-29 (#621, wire v14).** The record is now `c` u32 · `fg` u32 · `bg` u32 · `flags`
+u16 = **14 bytes**, still 2-aligned: `extra` and `link` left it for sparse per-span groups, because
+widening them in place would have inflated a record every cell pays — *this* axis's own argument,
+applied in the direction it did not anticipate. The decision below is unchanged and its reasoning
+survives transitively (a 14-byte record is still heterogeneous, so an aligned stride still gives no
+clean field access). Two numbers in it do not: the equivalent re-alignment is now **14→16 B, +14%**,
+not 18→24 B and a third, and at 16 B the three u32 fields would in fact be 4-aligned. The decision
+holds on the heterogeneity argument alone; do not cite its arithmetic.
+
+The wire cell record was `c` u32 · `fg` u32 · `bg` u32 · `flags` u16 · `extra` u16 · `link` u16 =
+**18 bytes, 2-aligned** (ADR-0005) when this was written. The decoder exposes that record *unchanged*; it does not
 re-lay cells to a 4/8-byte-aligned stride. Re-alignment's only benefit is enabling JS
 `Uint32Array`/`Uint16Array` views (whose `byteOffset` must be 4-aligned) instead of `DataView`
 (which reads any offset). But the record is **heterogeneous** (mixed u32/u16), so even at an aligned

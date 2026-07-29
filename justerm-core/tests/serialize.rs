@@ -397,10 +397,16 @@ fn decode_rejects_bad_marker_kind_and_truncated_exit() {
     let bytes = encode(&frame);
     // With every prior section empty, the tail is the marker group `marker_count(2)`
     // + record `id(4) row(2) kind(1) present(1) exit(4)`, then the v11 marker_lines
-    // group `count(2)` (0 here), then the v12 active-match group `count(2)` (0 here).
-    // So the kind byte is 10 from the end and the exit occupies bytes [len-8, len-4).
+    // group `count(2)` (0 here), then the v12 active-match group `count(4)` (0 here).
+    //
+    // The last of those is **4 bytes, not 2, since v14** (#621): the three
+    // viewport-projected overlay groups widened their counts while the two marker
+    // groups deliberately did not, so this tail mixes both widths and the offsets
+    // below are not symmetric. Counting back: active-match count 4, marker-lines
+    // count 2, exit 4, present 1 — so the kind byte is 12 from the end and the exit
+    // occupies [len-10, len-6).
     let mut bad_kind = bytes.clone();
-    let k = bad_kind.len() - 10;
+    let k = bad_kind.len() - 12;
     bad_kind[k] = 5; // unknown discriminant (valid kinds are 0..=4)
     assert!(
         decode(&bad_kind).is_err(),
@@ -408,7 +414,9 @@ fn decode_rejects_bad_marker_kind_and_truncated_exit() {
     );
 
     let mut truncated = bytes.clone();
-    truncated.truncate(truncated.len() - 6); // drop the two tail group counts + into the i32 exit
+    // Drop both tail group counts (2 + 4 since v14, #621) and two bytes into the i32
+    // exit — the point is to land *inside* the exit, not merely before it.
+    truncated.truncate(truncated.len() - 8);
     assert!(
         decode(&truncated).is_err(),
         "a truncated exit must error, not panic"

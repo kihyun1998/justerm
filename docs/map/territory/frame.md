@@ -24,7 +24,7 @@ The *shape* is here; the bytes are [wire format](wire-format.md).
 ## Design model
 
 - **Three layers, three different reasons to exist.** Header *scalars* · cell *content* (`spans` plus
-  the grapheme and link side-tables) · `overlay`. ADR-0020's rules are how a candidate is sorted into
+  the link table; clusters inline since v14/#621) · `overlay`. ADR-0020's rules are how a candidate is sorted into
   one of them or refused.
 - **Scalars ride the header because a consumer cannot derive them from cell damage** and they change
   nearly every frame: caret row/col/visible/shape/blink, `display_offset`, `scrollback_len`,

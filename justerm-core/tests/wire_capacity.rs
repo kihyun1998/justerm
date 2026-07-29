@@ -83,6 +83,16 @@ fn a_viewport_with_more_combining_cells_than_the_old_count_survives_the_wire() {
     //
     // So the assertion that matters is not `is_ok()` — that was already true while the
     // frame was wrong. It is equality with the frame the engine actually holds.
+    //
+    // **Read this as a shape regression pin, not as evidence about the v14 code.** Measured
+    // with a single-point mutation matrix over the whole fix: this test reddens under
+    // exactly one reversion (dropping `decode`'s `set_combined` re-arm), and the much
+    // cheaper cluster-length test above catches that same one. It cannot discriminate more,
+    // because after v14 there is no viewport-scaled count left in the combining path to
+    // overflow — the count is per span. What it still buys is a guard against *reintroducing*
+    // a frame-wide table, which no cheaper test would notice. It is also the most expensive
+    // test in this file (~66 000 cells), so if it ever needs to be dropped for time, drop it
+    // knowing that and not on the belief that it is load-bearing for the current code.
     let cols = 300;
     let rows = 220;
     assert!(
@@ -114,6 +124,48 @@ fn a_viewport_with_more_combining_cells_than_the_old_count_survives_the_wire() {
         "more combining cells than the old count fit — the frame must survive intact, \
          not decode Ok into fabricated references",
     );
+}
+
+#[test]
+fn more_highlight_spans_than_the_old_count_survives_the_wire() {
+    // The fifth case, and the one the first `as u16` sweep missed: it classified the
+    // overlay groups' `(row, left, right)` *triples* as bounded — which they are — and
+    // never looked at the count above them.
+    //
+    // Measured before the fix, with a one-character search over a large viewport:
+    //
+    //   1000x132   65 500 spans -> 65 500   Ok, equal
+    //   1000x133   66 000 spans ->     464  Ok, *** and 928 marker-lines + 3 active
+    //                                       spans FABRICATED from nothing ***
+    //   1000x134   66 500 spans -> Err(BadTag)
+    //
+    // The fabrication is the tell, and it is worse than the truncation: a wrapped count
+    // leaves the reader mid-group, so every group *after* it decodes from the wrong
+    // offset. The engine had zero markers.
+    let (cols, rows) = (1000, 133);
+    let mut e = Engine::new(cols, rows);
+    let line = "ax".repeat(cols / 2);
+    for _ in 0..rows {
+        e.feed(line.as_bytes());
+        e.feed(b"\r\n");
+    }
+    e.set_search_highlights(e.search("a"));
+
+    let frame = e.frame();
+    assert!(
+        frame.overlay.matches.len() > PAST_U16,
+        "fixture must cross the old count, got {}",
+        frame.overlay.matches.len(),
+    );
+    let decoded = decode(&encode(&frame)).expect("must decode");
+    // Named separately from the whole-frame equality below: these two were invented by
+    // the desync rather than merely lost, and a bare `!=` would not say so.
+    assert!(
+        decoded.overlay.marker_lines.is_empty() && decoded.overlay.active_match.is_empty(),
+        "the engine had no markers and no active match — decoding any is the reader \
+         walking out of the highlight group and into the next one",
+    );
+    assert!(decoded == frame, "the highlight group must survive intact");
 }
 
 #[test]

@@ -55,6 +55,16 @@ proptest! {
     /// fully arbitrary. This exercises justerm's own state machine (grid/scrollback/cursor) atop the
     /// `vte` tokenizer against adversarial escape sequences.
     #[test]
+    /// **These bounds are why no capacity defect in #621 could be found here, and that is
+    /// deliberate rather than a gap to widen.** 200×100 is 20 000 cells and 2048 bytes of
+    /// stream, so this generator cannot reach a `u16::MAX` table count, a 65 536-entry
+    /// highlight group, or a 65 536-character cluster — every one of #621's four cases
+    /// needed a directed fixture (`tests/wire_capacity.rs`) built at the threshold.
+    /// Raising the bounds would not fix that: the volume needed is thousands of times
+    /// larger, the run time scales with it, and a random stream reaches a specific
+    /// overflow with vanishing probability. Property tests answer "does anything panic on
+    /// junk"; a capacity ceiling is answered by walking to it on purpose. Each fix brings
+    /// its own directed test — do not read a green here as coverage of one.
     fn feed_never_panics_on_arbitrary_input(
         cols in 1usize..=200,
         rows in 1usize..=100,

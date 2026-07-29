@@ -370,10 +370,30 @@ pub fn encode(frame: &Frame) -> Vec<u8> {
     out
 }
 
-/// Encode one overlay group: a u16 span count, then each span as three u16s
+/// Encode one overlay group: a u32 span count, then each span as three u16s
 /// (`row`, `left`, `right`) in viewport coordinates.
+///
+/// The count is u32 since v14 (#621), and this is the *same* defect as the cluster
+/// and URI fields — found by that issue's own acceptance item ("do not assume those
+/// two are the only `as u16` narrowings"), which the first sweep answered for the
+/// `(row, left, right)` triples and not for the count above them. A one-character
+/// search over a large viewport reaches it: measured at 1000×133, 66 000 highlight
+/// spans wrapped the count to 464, and `decode` returned **`Ok`** having also
+/// fabricated 928 marker-lines and 3 active-match spans the engine never had — the
+/// wrapped count leaves the reader mid-group, and every group after it is read from
+/// the wrong offset.
+///
+/// **This widens the three viewport-projected groups and deliberately not the two
+/// marker groups**, which keep their `u16` counts a few lines below. That is not an
+/// oversight and not inconsistency: `frame()` clips selection / matches /
+/// active-match to the viewport, so their counts are `O(viewport)` — ADR-0020 R3
+/// satisfied, and widening entrenches nothing. The marker groups report **every
+/// live marker**, on-screen or not; they are unbounded by the viewport and are the
+/// one R3 violation ADR-0020 records against itself. Widening those would make that
+/// violation cheaper to keep, which is precisely what #490 exists to remove — so
+/// they stay narrow and stay #490's.
 fn encode_overlay_spans(out: &mut Vec<u8>, spans: &[SelectionSpan]) {
-    out.extend_from_slice(&(spans.len() as u16).to_le_bytes());
+    out.extend_from_slice(&(spans.len() as u32).to_le_bytes());
     for s in spans {
         out.extend_from_slice(&(s.row as u16).to_le_bytes());
         out.extend_from_slice(&(s.left as u16).to_le_bytes());
@@ -651,8 +671,9 @@ pub fn decode(bytes: &[u8]) -> Result<Frame, DecodeError> {
 /// right)` u16 triples back into viewport [`SelectionSpan`]s (inverse of
 /// [`encode_overlay_spans`]).
 fn decode_overlay_spans(r: &mut Reader) -> Result<Vec<SelectionSpan>, DecodeError> {
-    let count = r.u16()?;
-    let mut spans = Vec::with_capacity(count as usize);
+    let count = r.u32()?;
+    // No `with_capacity`: the count is attacker-influenced and now u32 — see `decode`.
+    let mut spans = Vec::new();
     for _ in 0..count {
         let row = r.u16()? as usize;
         let left = r.u16()? as usize;
@@ -662,17 +683,18 @@ fn decode_overlay_spans(r: &mut Reader) -> Result<Vec<SelectionSpan>, DecodeErro
     Ok(spans)
 }
 
-/// Decode one 18-byte cell record (inverse of [`encode_cell_record`]), returning
-/// the cell and its raw `extra` grapheme index and `link` index (0 = none). A
-/// non-zero index sets the corresponding presence bit; the caller records the
-/// indices on the span.
+/// Decode one 14-byte cell record (inverse of [`encode_cell_record`]).
 ///
-/// **Two of the three presence bits are re-armed here, not all three.** They are
-/// reconstructed rather than transmitted (the bits live in the packed colour words,
-/// which [`encode_color`] strips), and this function can only reconstruct the two
-/// whose evidence rides the cell record itself. `UCOLOR_PRESENT` is armed by
-/// [`decode`]'s underline-colour group loop, because its evidence is a separate
-/// group read further down the buffer (#531).
+/// **No presence bit is re-armed here — since v14 (#621), none of the three can be.**
+/// They are reconstructed rather than transmitted (they live in the packed content
+/// and colour words, which [`encode_color`] and `Cell::c` strip), and every one of
+/// them now has its evidence in a sparse group read further down the buffer:
+/// `C_COMBINED` and `LINK_PRESENT` from the combining and link groups, and
+/// `UCOLOR_PRESENT` from the underline-colour group as it always was (#531).
+///
+/// This doc used to say *two of the three are re-armed here*, and that exception —
+/// "mine rides the record, so it needs nothing" — is the reading #531 was filed for.
+/// There is no longer a member of the set it could apply to.
 fn decode_cell(r: &mut Reader) -> Result<Cell, DecodeError> {
     let c = char::from_u32(r.u32()?).ok_or(DecodeError::BadTag)?;
     let fg = decode_color(r.u32()?)?;

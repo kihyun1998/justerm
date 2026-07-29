@@ -89,8 +89,8 @@ One entry per cell, in span order. `spans` is a flat directory: 5 `u32`s per spa
 | `codepoints` | `Uint32Array` | base Unicode codepoint (not an atlas glyph id) |
 | `fg` / `bg` | `Uint32Array` | colour references — pass to `resolveRgb` |
 | `flags` | `Uint16Array` | attribute + layout bits — test with `flags()` constants |
-| `extra` | `Uint16Array` | 1-based `sideTable` index for a grapheme cluster (`0` = none) |
-| `link` | `Uint16Array` | 1-based `linkTable` index for an OSC 8 hyperlink (`0` = none) |
+| `extra` | `Uint32Array` | 1-based `sideTable` index for a grapheme cluster (`0` = none) |
+| `link` | `Uint32Array` | 1-based `linkTable` index for an OSC 8 hyperlink (`0` = none) |
 
 `frame.sideTable` (`string[]`) and `frame.linkTable` (`string[]`) carry the referenced clusters/URIs.
 
