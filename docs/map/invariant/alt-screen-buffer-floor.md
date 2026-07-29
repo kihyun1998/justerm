@@ -47,7 +47,8 @@ Call sites as of #585/#586/#587 — the territory links are the graph edge, the 
 - [selection](../territory/selection.md) — `Term::prev_pos` / `Term::next_pos`, the logical-line step
   (`term/walk.rs`; #207)
 - [search & active match](../territory/search.md) — `Term::search_with` (`term/search.rs`; #144)
-- [logical lines](../territory/logical-lines.md) — `Term::viewport_logical_lines` (`term.rs`; #113)
+- [logical lines](../territory/logical-lines.md) — `Term::viewport_logical_lines`
+  (`term/logical.rs` since #601; #113)
 - **a11y / whole-buffer text** *(no territory note yet)* — `Term::accessible_text`, which moved to
   `term/selection.rs` with #587 because it reuses selection's extraction path, not because it is a
   selection. Its `## Code` entry is carried by **both** [selection](../territory/selection.md) and
