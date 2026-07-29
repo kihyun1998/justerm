@@ -45,9 +45,11 @@ IPC by identity.
 ## Reference behaviour
 
 One axis only —
-[per-cell payload length](../../agents/reference-facts.md#per-cell-payload-length--nobody-caps-it-but-one-fails-loudly-621-verified-2026-07-29):
-no reference caps a grapheme cluster or a URI, and the one whose storage *can* run out returns a
-named error rather than truncating. That bears on #621.
+[per-cell payload length](../../agents/reference-facts.md#per-cell-payload-length--nobody-caps-it-and-the-one-that-can-run-out-grows-621-verified-2026-07-29):
+no reference caps a grapheme cluster or a URI, and the one whose storage *can* run out **grows until
+the payload fits** rather than truncating or failing. That bears on #621 — and read the correction
+note in that section before citing it, because its first version concluded the opposite from a
+correct citation.
 
 **The choice of format itself is still uncompared.** ADR-0005 argues against Mosh and xterm.js by
 description rather than by pinned rows, so the comparison that picked this shape has never been
