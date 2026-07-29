@@ -45,6 +45,15 @@ jobs:
       - name: Install wasm-pack
         run: cargo install wasm-pack --locked
 
+      # The lockfile gate for the published artifact (#613), and it has to be its OWN step: passing
+      # `-- --locked` to the build below would be a gate that inspects nothing, because wasm-pack
+      # resolves and writes `Cargo.lock` before cargo build runs — measured both ways (no lock: it
+      # creates one; stale lock: it rewrites one) while bare cargo refuses in both. So the assertion
+      # goes through a bare cargo command first. `cargo metadata` is the cheapest one that resolves,
+      # and on refusal it leaves the lock untouched.
+      - name: Assert the lockfile matches the manifest
+        run: cargo metadata --manifest-path justerm-renderer/Cargo.toml --format-version 1 --locked > /dev/null
+
       # Bundler target is the published artifact (justerm-web's Vite consumes it). Unlike
       # justerm-wasm-decode there is no finish-pkg step — the renderer ships pure wasm-bindgen output,
       # no hand-written JS helpers.
