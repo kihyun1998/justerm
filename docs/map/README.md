@@ -96,6 +96,7 @@ owns no detail of its own.
   [glyph atlas](territory/glyph-atlas.md) ·
   [GPU upload](territory/gpu-upload.md) ·
   [grapheme clusters](territory/grapheme-clusters.md) ·
+  [grid & scrollback](territory/grid-and-scrollback.md) ·
   [hyperlinks](territory/hyperlinks.md) ·
   [logical lines](territory/logical-lines.md) ·
   [marker](territory/marker.md) ·
