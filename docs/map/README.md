@@ -83,6 +83,7 @@ owns no detail of its own.
   [cursor position](territory/cursor-position.md) ·
   [damage](territory/damage.md) ·
   [decoration](territory/decoration.md) ·
+  [events & replies](territory/events-and-replies.md) ·
   [emoji classification](territory/emoji-classification.md) ·
   [colour policy](territory/colour-policy.md) ·
   [frame](territory/frame.md) ·
@@ -94,6 +95,7 @@ owns no detail of its own.
   [marker](territory/marker.md) ·
   [pen](territory/pen.md) ·
   [published surface](territory/published-surface.md) ·
+  [reflow](territory/reflow.md) ·
   [release](territory/release.md) ·
   [search](territory/search.md) ·
   [selection](territory/selection.md) ·
