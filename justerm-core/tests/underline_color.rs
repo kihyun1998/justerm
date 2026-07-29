@@ -206,7 +206,15 @@ fn wire_ucolours_attach_to_the_right_span_positionally() {
 
 #[test]
 fn an_engine_frame_carrying_a_coloured_underline_is_a_wire_fixed_point() {
-    // #531: `decode(encode(f)) == f` — ADR-0005's contract, asserted on a frame from a
+    // #531: `decode(encode(f)) == f` on a frame from a REAL `Engine`.
+    //
+    // Read the scope carefully: this is NOT the general claim that every engine frame is a
+    // wire fixed point. `Frame` equality compares whole packed `Cell`s, which embed
+    // engine-internal markers that ADR-0020 R2 excludes from being frame *content* — a
+    // frame carrying a `C_LEADING_SPACER` is unequal after the round trip and correctly
+    // so, because no consumer reads that bit (measured: its only readers are `term.rs`'s
+    // grid-side repair paths). What this asserts is the underline colour's own gate, on a
+    // fixture with no such marker. ADR-0005's contract, asserted on a frame from a
     // REAL `Engine`. The starting point is the whole test: `tests/robustness.rs`'s
     // round-trip property is driven from a *decoded* frame, so it proves
     // `decode ∘ encode ∘ decode == decode` — a fixed point of the decoder's own output,
