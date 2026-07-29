@@ -71,7 +71,12 @@ if (isAggregate) {
 
 // 2 — symbols named under ## Code
 const codeSection = /^## Code\r?\n([\s\S]*?)^## /m.exec(raw)?.[1] ?? '';
-if (codeSection.trim()) {
+// A territory can legitimately have no code — a design that is recorded and not built. That is a
+// state worth representing rather than a note to reject, so `## Code` takes the same `**None.**`
+// sentinel the other sections use, and the symbol check stands down for it. The prose after the
+// sentinel is then free to name things that deliberately do not exist yet.
+const noCode = /^\s*\*\*None\.\*\*/.test(codeSection);
+if (codeSection.trim() && !noCode) {
   const blob = [];
   const walk = (dir) => {
     if (!existsSync(dir)) return;
@@ -118,7 +123,10 @@ if (codeSection.trim()) {
     const pats = [
       // Rust and TypeScript declaration keywords — the map spans both, and omitting `class` /
       // `interface` reported every TS type the notes name as unresolved.
-      new RegExp(`(?:fn|struct|enum|const|static|type|trait|mod|class|interface|let|var)\\s+${s}\\b`),
+      // Rust and TypeScript declaration keywords — the map spans both, and omitting `class` /
+      // `interface` reported every TS type the notes name as unresolved. `impl` is here because a
+      // note may legitimately name a *foreign* trait the tree implements but does not declare.
+      new RegExp(`(?:fn|struct|enum|const|static|type|trait|mod|class|interface|let|var|impl)\\s+${s}\\b`),
       new RegExp(`\\b${s}\\s*[:(!]`),
       new RegExp(`^\\s*${s}\\s*,?\\s*$`, 'm'),
       new RegExp(`^\\s*${s}\\s*=`, 'm'),

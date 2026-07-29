@@ -126,6 +126,8 @@ Ask the questions instead of copying the answers (run from `docs/map/`):
 rg -lU '## Governing decisions\r?\n\r?\n\*\*None\.\*\*' territory/
 # never compared against a reference implementation — a different hole
 rg -lU '## Reference behaviour\r?\n\r?\n\*\*None\.\*\*' territory/
+# recorded but not built — a decision waiting for code, the inverse of the two above
+rg -lU '## Code\r?\n\r?\n\*\*None\.\*\*' territory/
 ls territory/ invariant/             # what exists; the folder is the roster
 ```
 
