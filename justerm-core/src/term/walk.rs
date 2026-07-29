@@ -1,9 +1,9 @@
 //! Buffer-walk primitives: absolute-index access, logical-line stepping, word
 //! extent, and text materialisation over the single `[scrollback ++ grid]` buffer.
 //!
-//! These are the shared floor the *read* surfaces stand on — search, selection,
-//! decoration markers and `accessible_text` reach the buffer's cells through
-//! `abs_line` / `abs_row` here rather than indexing it themselves.
+//! These are the shared floor the *read* surfaces stand on. **Which surfaces, and
+//! which of them floor by calling `abs_floor` rather than by argument, is not written
+//! down here** — it lives once, in `docs/map/invariant/alt-screen-buffer-floor.md`.
 //!
 //! `abs_floor` is the alt-screen floor contract, and since #585 it is the *only*
 //! spelling of it: on the alt screen `scrollback` holds the *primary* buffer's

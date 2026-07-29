@@ -469,8 +469,10 @@ the diff is small:
    them while its issue number sat in the same paragraph. The derivation lives
    once, with the invariant:
    [alt-screen absolute-index floor](../map/invariant/alt-screen-buffer-floor.md)
-   carries the grep that produces the call sites, plus the two that satisfy the
-   floor by *argument* instead and therefore never appear in any grep.
+   carries the grep that produces the call sites, plus the ones that satisfy the
+   floor *without calling it* — by argument, or by construction — and therefore
+   never appear in any grep. Their number is kept there, not here: this sentence
+   said "the two" until #601 made it three.
    This is on the list because the completeness pass has found a fresh
    sibling three times — #113 (logical lines) → #144 (`search`) → #207
    (word-selection `prev_pos`) — so "I checked the obvious callers" has a measured
