@@ -44,9 +44,15 @@ IPC by identity.
 
 ## Reference behaviour
 
-**None.** No entry in `docs/agents/reference-facts.md`. ADR-0005 argues against Mosh and xterm.js by
-description rather than by pinned rows, so the comparison that chose this format has never been
-re-checked against those sources.
+One axis only —
+[per-cell payload length](../../agents/reference-facts.md#per-cell-payload-length--nobody-caps-it-but-one-fails-loudly-621-verified-2026-07-29):
+no reference caps a grapheme cluster or a URI, and the one whose storage *can* run out returns a
+named error rather than truncating. That bears on #621.
+
+**The choice of format itself is still uncompared.** ADR-0005 argues against Mosh and xterm.js by
+description rather than by pinned rows, so the comparison that picked this shape has never been
+re-checked against those sources — and the row above does not touch it. Read the section as covering
+one measured question, not the territory.
 
 ## Cross-cutting invariants
 
@@ -75,7 +81,13 @@ unconditional Step 5 trigger.
 - **`types.ts` is an ungated copy of the wasm surface.** A field can exist in core, ship in the
   binding, and be invisible to the web widget with no error anywhere — the failure is a silent
   `undefined`.
-- **No reference comparison** (§Reference behaviour) for a format whose alternatives were rejected
-  from description.
+- **No reference comparison of the format choice** (§Reference behaviour) — the alternatives were
+  rejected from description, and the one axis now measured is unrelated to that decision.
 - **No compatibility story is recorded.** "Version and payload move together, mismatch is rejected"
   is the implemented behaviour; nothing states whether that is a decision or an interim position.
+- **The format cannot carry every value the engine legitimately holds, and says so only at decode.**
+  The grapheme-cluster and OSC 8 URI runs ride `u16` length prefixes with nothing bounding the
+  producing side, so a cluster past `u16::MAX` encodes and then fails its own `decode` — measured,
+  and filed as #621. Note this is *not* the "is this input malformed" question the span-bounds work
+  asks: the engine's value is correct and the field is too small for it. The two look alike and a
+  fix for one does not reach the other.
