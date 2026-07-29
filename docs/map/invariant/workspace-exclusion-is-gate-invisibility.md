@@ -39,7 +39,7 @@ invariant rather than a note in any one crate's territory.
   [cell geometry](../territory/cell-geometry.md) ·
   [glyph atlas](../territory/glyph-atlas.md) ·
   [built-in block glyphs](../territory/builtin-block-glyphs.md)
-- **infrastructure / CI** *(no note yet)* — where the compensating per-manifest gates live
+- [CI & supply chain](../territory/ci-and-supply-chain.md) — where the compensating per-manifest gates live
 
 Derivable half — **two greps, and the second is the one that holds from anywhere** (#608):
 

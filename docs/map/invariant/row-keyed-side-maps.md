@@ -31,9 +31,9 @@ the first; nothing governs this one.
 
 - [pen](../territory/pen.md) — `Pen::underline_color` (SGR 58) is deliberately **not** packed
   into the printed cell; the print path stamps it into the row's ucolor map (#520)
-- **hyperlinks** *(no note yet)* — OSC 8 link ids, moved out of the cell into the row's link map
+- [hyperlinks](../territory/hyperlinks.md) — OSC 8 link ids, moved out of the cell into the row's link map
   (#45/#46)
-- **grapheme clusters** *(no note yet)* — multi-code-point cluster overflow, kept out so the cell stays
+- [grapheme clusters](../territory/grapheme-clusters.md) — multi-code-point cluster overflow, kept out so the cell stays
   fixed-width (#45/#46)
 - [wide glyph](../territory/wide-glyph.md) — adjacent, not identical: the
   extended-attr rider a wide lead carries is one of these maps meeting the pair rule (#521)

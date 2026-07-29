@@ -78,6 +78,7 @@ owns no detail of its own.
   [active match](territory/active-match.md) ·
   [built-in block glyphs](territory/builtin-block-glyphs.md) ·
   [caret drawing](territory/caret-drawing.md) ·
+  [CI & supply chain](territory/ci-and-supply-chain.md) ·
   [caret report](territory/caret-report.md) ·
   [cell compositing](territory/cell-compositing.md) ·
   [cell geometry](territory/cell-geometry.md) ·
@@ -94,6 +95,8 @@ owns no detail of its own.
   [GL context lifecycle](territory/gl-context-lifecycle.md) ·
   [glyph atlas](territory/glyph-atlas.md) ·
   [GPU upload](territory/gpu-upload.md) ·
+  [grapheme clusters](territory/grapheme-clusters.md) ·
+  [hyperlinks](territory/hyperlinks.md) ·
   [logical lines](territory/logical-lines.md) ·
   [marker](territory/marker.md) ·
   [pen](territory/pen.md) ·
