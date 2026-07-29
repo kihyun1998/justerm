@@ -848,10 +848,21 @@ export class JustermRenderer implements Renderer {
     this.rafId = requestAnimationFrame(tick);
   }
 
-  /** Stop the blink loop and detach the reduced-motion listener. Both are draw paths now (#576):
-   * the listener re-packs and presents, so a disposed widget that kept it would still repaint its
-   * canvas. Note that nothing calls this yet — `Terminal.dispose` does not, and `dispose` is not on
-   * the `Renderer` port — so the loop currently outlives the widget either way. */
+  /**
+   * Stop the blink loop and detach the reduced-motion listener. Both are draw paths (#576): the
+   * listener re-packs and presents, so a widget that kept it would still repaint its canvas after
+   * being disposed.
+   *
+   * **Called by `Terminal.dispose()` since #606** — the sentence that stood here until then said
+   * *"nothing calls this yet"*, which was the defect, not a caveat. Idempotent, as the `Renderer`
+   * port requires: `cancelAnimationFrame` is guarded and `removeEventListener` is a no-op the
+   * second time, so a consumer that also calls it is not punished.
+   *
+   * **Stops work, does not release memory.** The wasm instance, its retained grid and glyph atlas,
+   * the GL context and the canvas context-loss listeners the Rust side owns all survive — they go
+   * with the binding's `free()`, which cannot be called while the consumer still holds this object.
+   * A consumer tearing down for good should drop its own reference and let the page go.
+   */
   dispose(): void {
     if (this.rafId !== undefined) {
       cancelAnimationFrame(this.rafId);

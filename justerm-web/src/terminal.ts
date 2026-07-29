@@ -163,6 +163,9 @@ export class Terminal {
   /** Last cursor cell the textarea was moved to, so it repositions only on a move
    * (not every frame — that would force a layout read+write per output flush). */
   private textareaCell = "";
+  /** Latched by {@link Terminal.dispose} (#606): the widget's lifecycle is one-shot, so this both
+   * keeps the renderer from being disposed twice and refuses a re-mount. */
+  private disposed = false;
 
   constructor(
     private readonly source: FrameSource,
@@ -177,8 +180,24 @@ export class Terminal {
     this.textarea?.focus();
   }
 
-  /** Begin consuming frames from the source; wire the DOM if options were given. */
+  /**
+   * Begin consuming frames from the source; wire the DOM if options were given.
+   *
+   * **Not callable after {@link Terminal.dispose}** (#606). The alternative — a widget that can be
+   * unmounted and mounted again — is a larger contract than this one currently keeps, and pretending
+   * to keep it is worse than refusing: `textareaCell` survives disposal, so a remounted widget would
+   * park the IME candidate window at the canvas origin until the cursor next moved, and a re-mounted
+   * renderer would have lost its `prefers-reduced-motion` listener for good (its only registration is
+   * in a private constructor). Throwing names the contract at the moment it is broken; the reference
+   * makes the same call structurally — xterm.js's disposable store latches on dispose and `open()`
+   * has no re-entry path. Build a new `Terminal` (and a new renderer) instead.
+   */
   mount(): void {
+    if (this.disposed) {
+      throw new Error(
+        "justerm-web: this Terminal was disposed — build a new one rather than re-mounting",
+      );
+    }
     this.unsubscribe = this.source.subscribe((frame) => {
       this.renderer.applyFrame(frame);
       this.renderer.render();
@@ -350,8 +369,18 @@ export class Terminal {
     }
   }
 
-  /** Stop consuming frames and detach DOM listeners; safe to call more than once. */
+  /**
+   * **End of life** for this widget: stop consuming frames, detach DOM listeners, and dispose the
+   * renderer it was handed (#606). Safe to call more than once; the renderer is disposed exactly
+   * once. After this the widget cannot be mounted again — see {@link Terminal.mount}.
+   *
+   * The renderer is disposed **last**, after the widget has stopped feeding it, so nothing arrives
+   * at an already-ended renderer. (xterm.js disposes its addons in reverse registration order for
+   * the same reason.)
+   */
   dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
     this.unsubscribe?.();
     this.unsubscribe = undefined;
     this.eventUnsub?.();
@@ -362,6 +391,9 @@ export class Terminal {
     this.textarea?.remove();
     this.textarea = undefined;
     this.composition = undefined;
+    // The consumer built this and handed it over; the widget drove it, so the widget ends it.
+    // Optional on the port, so a renderer with nothing of its own to stop simply omits it.
+    this.renderer.dispose?.();
   }
 }
 

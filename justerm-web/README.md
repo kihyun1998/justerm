@@ -67,6 +67,24 @@ each is an injected seam rather than a built-in policy, so the host stays in con
 transport, clipboard and theme. See the [demo](https://github.com/kihyun1998/justerm/blob/master/justerm-web/demo/main.ts)
 for a fully wired example.
 
+## Tearing down
+
+`Terminal.dispose()` is **end of life**, not unmount. It stops consuming frames, detaches the
+listeners it attached, and disposes the renderer you handed it — so nothing the widget started can
+still draw. Build a new `Terminal` (and a new renderer) rather than mounting a disposed one; it
+throws if you try.
+
+```ts
+term.dispose(); // also disposes `renderer`
+```
+
+Two things it does **not** cover, so they are yours:
+
+- **Anything you constructed and kept** — a `Scrollbar`, the resize observer returned by
+  `observeResize`, the accessibility controllers. The widget never saw them, so it cannot end them.
+- **GPU memory.** Disposing stops the renderer's work; the wasm instance, its GL context and glyph
+  atlas live until you drop your own reference and let the page collect it.
+
 ## What it does and does not do
 
 **Does**: renders frames, resolves the injected theme, tracks selection and search

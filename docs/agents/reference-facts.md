@@ -383,6 +383,29 @@ these as oversights):
   than panic across the seam (`CursorBlink.setIdleTimeout`), and internal coherence is the recorded
   tie-breaker for consumer-facing API shape (ADR-0023's posture).
 
+## Widget teardown — who ends a handed-over component (#606, verified 2026-07-29)
+
+The question justerm-web could not answer from its own code: the consumer **constructs** the renderer
+and hands it to `Terminal`, so may the widget end it? Only one reference has the shape (alacritty and
+ghostty are native applications with no injected-component lifecycle), and it answers clearly — with a
+**condition** that turns out to matter more than the answer.
+
+| Fact | Reference | Site |
+|---|---|---|
+| **The widget disposes what it was handed.** `AddonManager.dispose()` walks its addons in **reverse** registration order calling `instance.dispose()` on each — and the addons are consumer-constructed (`new FitAddon()` → `terminal.loadAddon(addon)`) | xterm.js | `src/common/public/AddonManager.ts:17-21`; the hand-over at `src/browser/public/Terminal.ts:244-246` |
+| The manager is registered in the terminal's own disposable store, so the cascade is `Terminal.dispose()` → `super.dispose()` → store → each addon | xterm.js | `src/browser/public/Terminal.ts:36`, `:200-202` |
+| **Idempotence is bought, not assumed.** `loadAddon` **replaces** the addon's own `dispose` with a wrapper (`instance.dispose = () => this._wrappedAddonDispose(loadedAddon)`) that early-returns when already disposed — so either party may call it, twice is a no-op | xterm.js | `src/common/public/AddonManager.ts:26`, `:30`, `:34-37` |
+| ⚠ **The condition the rule rests on: dispose is END OF LIFE.** `DisposableStore` latches `_isDisposed` permanently, and anything `add`ed afterwards is disposed **immediately** rather than stored (`if (this._isDisposed) { o.dispose(); }`). There is no re-open path | xterm.js | `src/common/Lifecycle.ts:46-52` (add), `:54-62` (dispose) |
+| **Negative result: no counterpart in the other two.** alacritty and ghostty own their renderer outright — no injected component, no teardown protocol to compare. So this rule has **one** witness, not three | alacritty / ghostty | structural; nothing to cite |
+
+**Direction, and why the condition is the load-bearing half.** justerm-web alone drifted — its
+`FrameSource` port already handed the widget a teardown means (`Unsubscribe`) while the `Renderer`
+port handed it none, so the two injected ports disagreed with each other before either disagreed with
+xterm. But copying the rule required copying its premise: xterm's dispose is safe to cascade *because*
+nothing is expected to come back. #606 therefore had to **declare** `Terminal.dispose()` end-of-life
+(and make `mount()` throw afterwards) rather than inherit the behaviour and hope. A reference read
+without its enabling condition is how a correct rule lands in a codebase that cannot support it.
+
 ## Renderer ink channels
 
 | Fact | Reference | Site |

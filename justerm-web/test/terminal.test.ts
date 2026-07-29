@@ -10,11 +10,16 @@ import type { Renderer } from "../src/renderer";
 class FakeRenderer implements Renderer {
   applied: DecodedFrame[] = [];
   renderCount = 0;
+  /** #606: counted rather than flagged, so "disposed twice" is a distinguishable failure. */
+  disposeCount = 0;
   applyFrame(frame: DecodedFrame): void {
     this.applied.push(frame);
   }
   render(): void {
     this.renderCount++;
+  }
+  dispose(): void {
+    this.disposeCount++;
   }
 }
 
@@ -56,6 +61,58 @@ describe("Terminal wiring", () => {
 
     expect(renderer.applied).toEqual([]);
     expect(renderer.renderCount).toBe(0);
+  });
+
+  // #606: unsubscribing stops *frames* reaching the renderer, which is what the test above
+  // asserts — but the renderer keeps its own clocks (a rAF blink loop, a `prefers-reduced-motion`
+  // listener that draws), so a disposed widget could still repaint its canvas. The widget is
+  // handed the renderer, so the widget ends it: the same rule xterm.js applies to a
+  // consumer-constructed addon (`AddonManager.dispose()` calls `instance.dispose()` on each), and
+  // the same one `FrameSource` already gets here through the `Unsubscribe` it returns.
+  it("disposes the renderer it was handed (#606)", () => {
+    const source = new StubFrameSource();
+    const renderer = new FakeRenderer();
+    const term = new Terminal(source, renderer);
+    term.mount();
+    term.dispose();
+
+    expect(renderer.disposeCount).toBe(1);
+  });
+
+  it("disposes the renderer even when the widget was never mounted", () => {
+    // `dispose()` is documented safe to call on an unmounted widget, and a consumer that builds a
+    // Terminal and bails before mounting still handed over a renderer that may already have started
+    // its loop (`JustermRenderer.create` applies the consumer's blink options before any frame).
+    const renderer = new FakeRenderer();
+    new Terminal(new StubFrameSource(), renderer).dispose();
+
+    expect(renderer.disposeCount).toBe(1);
+  });
+
+  it("does not dispose the renderer twice", () => {
+    // The port requires `dispose()` to be idempotent, but the widget must not lean on that: the
+    // consumer may hold the same renderer and call it too. xterm.js buys idempotence by wrapping
+    // the addon's own method (`AddonManager.ts:28-37`); this side simply does not call twice.
+    const renderer = new FakeRenderer();
+    const term = new Terminal(new StubFrameSource(), renderer);
+    term.mount();
+    term.dispose();
+    term.dispose();
+
+    expect(renderer.disposeCount).toBe(1);
+  });
+
+  it("refuses to re-mount after dispose, rather than half-working (#606)", () => {
+    // `dispose()` is END OF LIFE, not unmount — declared because the alternative is already broken:
+    // `textareaCell` survives dispose, so a remounted widget parks the IME candidate window at the
+    // canvas origin until the cursor moves, and a re-mounted renderer would have lost its
+    // reduced-motion listener permanently (its only `addEventListener` is in a private constructor).
+    // xterm.js draws the same line — its disposable store latches and `open()` has no re-entry.
+    const term = new Terminal(new StubFrameSource(), new FakeRenderer());
+    term.mount();
+    term.dispose();
+
+    expect(() => term.mount()).toThrow(/disposed/i);
   });
 
   // #117: the event channel is independent of the DOM group, so it wires with no

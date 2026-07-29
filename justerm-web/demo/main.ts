@@ -1096,6 +1096,7 @@ declare global {
     __decorationProbe?: () => DecorationProbe;
     __precedenceProbe?: () => PrecedenceProbe;
     __cursorBlinkProbe?: () => Promise<CursorBlinkProbe>;
+    __disposeProbe?: () => Promise<DisposeProbe>;
     __textBlinkProbe?: () => Promise<TextBlinkProbe>;
     __blinkIdleProbe?: () => Promise<BlinkIdleProbe>;
     __composeCaretProbe?: () => Promise<ComposeCaretProbe>;
@@ -1115,6 +1116,15 @@ interface CursorBlinkProbe {
   blinkOff: string;
   /** Application says BLINK but the consumer forces steady — the override, one interval later. */
   forcedSteady: string;
+}
+
+/** #606 — how many rAF turns the renderer presented in, before and after the widget was disposed. */
+interface DisposeProbe {
+  /** Presents while the widget is live and the caret is blinking — must be > 0, or the check below
+   * is vacuous. */
+  beforeDispose: number;
+  /** Presents after `Terminal.dispose()`. The claim is zero. */
+  afterDispose: number;
 }
 
 /** #576 — a blinking (`ESC[5m`) cell's pixel under each half of the decision. */
@@ -1421,6 +1431,50 @@ window.__textBlinkProbe = async (): Promise<TextBlinkProbe> => {
   renderer.setTextBlinkInterval(savedInterval);
   render();
   return { background, defaultA, defaultB, phases, loopSamples, beforeDisable, afterDisable };
+};
+
+window.__disposeProbe = async (): Promise<DisposeProbe> => {
+  // #606: after `Terminal.dispose()` nothing the widget started may still reach the renderer. The
+  // unit tests prove the *call* happens against a fake; only here can the consequence be observed —
+  // the renderer's rAF loop is real, it is what repaints the canvas, and `JustermRenderer`'s
+  // constructor is private, so vitest cannot reach any of it.
+  //
+  // Counted, not sampled for colour: a turn in which the loop presented reads as a real pixel, and a
+  // turn in which it did not reads black (no `preserveDrawingBuffer`). So "presents per second" is
+  // directly observable, and the claim under test — *zero* after dispose — is the one number that
+  // cannot be faked by a lucky sample. Technique carried over from #576's blink probe.
+  const gl = canvas.getContext("webgl2")!;
+  const { width: cw, height: ch } = renderer.cellSize();
+  const NO_PRESENT = "rgb(0,0,0)";
+  const countPresents = async (ms: number): Promise<number> => {
+    let n = 0;
+    const deadline = performance.now() + ms;
+    while (performance.now() < deadline) {
+      await new Promise<void>((r) => requestAnimationFrame(() => r()));
+      const x = Math.round(CURSOR_COL * cw) + 2;
+      const y = gl.drawingBufferHeight - 1 - (Math.round(CURSOR_ROW * ch) + 2);
+      const px = new Uint8Array(4);
+      gl.readPixels(x, y, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+      if (`rgb(${px[0]},${px[1]},${px[2]})` !== NO_PRESENT) n++;
+    }
+    return n;
+  };
+
+  // The demo's own 300ms timer presents frames too, and a frame is not what this measures — stop it
+  // so every present counted below came from the loop the widget started. (#576 learned this the
+  // hard way: with the timer running, a disabled loop still looked alive.)
+  window.clearInterval(appendTimer);
+  cursorBlink = true; // the application asks to blink → the loop has something to flip
+  render();
+  renderer.restartCursorBlink();
+
+  const beforeDispose = await countPresents(1500);
+  term.dispose();
+  const afterDispose = await countPresents(1500);
+
+  // Deliberately not restored: the widget is disposed and this page is done. Playwright navigates
+  // fresh per test, so nothing leaks to the next one.
+  return { beforeDispose, afterDispose };
 };
 
 window.__aboveTopProbe = (): AboveTopProbe => {
