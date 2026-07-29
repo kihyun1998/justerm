@@ -174,6 +174,63 @@ for (const file of markdownFiles(MAP_ROOT)) {
   }
 }
 
+// A repo path cited from a CODE comment is a link too, and until now nothing looked at it.
+//
+// Everything above walks `.md` only. But the map's whole repair for a hand-maintained list is to
+// replace it with a pointer — #602 did exactly that, cutting `term/walk.rs`'s copy of the read-surface
+// set down to "it lives once, in `docs/map/invariant/alt-screen-buffer-floor.md`". That pointer is
+// load-bearing in the same way an anchor is, and it fails the same silent way: rename the note and the
+// comment goes on naming a file that is not there, with no 404 and no gate. Replacing a stale list
+// with a stale pointer would be a lateral move.
+//
+// Scoped deliberately tight, because false positives are the failure mode this file designs against
+// (see the header above): comment lines only, backticked only, and only paths under a known top-level
+// directory ending in `.md`. A path built at runtime or mentioned in prose without backticks is not
+// matched — this checks citations, not every string that looks like one.
+const CODE_ROOTS = [
+  'justerm-core',
+  'justerm-renderer',
+  'justerm-web',
+  'justerm-wasm-decode',
+  '.github/scripts', // these cite docs too, including the comment you are reading
+];
+const SKIP_DIRS = new Set(['node_modules', 'target', 'dist', 'pkg', '.git']);
+const CITED_PATH = /`((?:docs|teach|justerm-[a-z-]+)\/[A-Za-z0-9_./-]+\.md)`/g;
+const isComment = (line) => /^\s*(\/\/|\/\*|\*|#)/.test(line);
+
+function sourceFiles(root) {
+  if (!existsSync(root)) return [];
+  const found = [];
+  const walk = (dir) => {
+    for (const entry of readdirSync(dir)) {
+      if (SKIP_DIRS.has(entry)) continue;
+      const p = join(dir, entry);
+      if (statSync(p).isDirectory()) walk(p);
+      else if (/\.(rs|ts|tsx|mjs|js)$/.test(entry)) found.push(p);
+    }
+  };
+  walk(root);
+  return found;
+}
+
+for (const codeRoot of CODE_ROOTS) {
+  for (const file of sourceFiles(codeRoot)) {
+    const lines = readFileSync(file, 'utf8').split(/\r?\n/);
+    lines.forEach((line, i) => {
+      if (!isComment(line)) return;
+      for (const m of line.matchAll(CITED_PATH)) {
+        checked++;
+        if (!existsSync(m[1])) {
+          problems.push(
+            `${file}:${i + 1}: comment cites a repo file that does not exist -> ${m[1]}\n` +
+              `    (nothing else checks this — a renamed target leaves the comment pointing at nothing, silently)`,
+          );
+        }
+      }
+    });
+  }
+}
+
 if (problems.length > 0) {
   console.error(`check-map-links: ${problems.length} problem(s) of ${checked} links checked\n`);
   for (const p of problems) console.error(`  ${p}`);

@@ -16,12 +16,30 @@ column and must re-verify the rows it moves.
    unverifiable, and an unverifiable row is how a wrong fact gets eternal life —
    #530's body scored the references 2:1 on exactly such a claim and was wrong; the
    real tally was 3:0. A row a reader can `rg` in five seconds cannot do that.
-2. **Verify before recording, not before quoting.** Every row below was grepped
-   against the pinned tree on the day it was added. Copying a citation out of an issue
-   body *is not verification* — several of those citations turned out to be off.
-3. **Record the mechanism when the site alone misleads.** Two rows below carry a
+2. **Verify before recording, not before quoting — and do not type the line number.**
+   Every row below was grepped against the pinned tree on the day it was added. Copying a
+   citation out of an issue body or a lens report *is not verification* — on 2026-07-29
+   five rows went in wrong in two days that way (#610), and review caught all five while
+   tooling caught none. So the number comes out of the tree, not out of your hands:
+
+   ```sh
+   node .github/scripts/cite.mjs xterm.js common/buffer/BufferLine.ts --find 'startCol +='
+   node .github/scripts/cite.mjs xterm.js common/buffer/BufferLine.ts:569
+   ```
+
+   The first locates the line so nobody counts by eye; the second prints it with two lines
+   of context and hands back the `Site` cell to paste. `--pins` checks the local trees
+   against the SHAs this file's line numbers are valid at.
+3. **The tool does not read the row for you — that half is still yours.** Of those five
+   errors it puts the evidence in front of you for three (a wrong file, two off-by-ones);
+   the other two were a *correct* citation with a wrong conclusion drawn from it — a `u2`
+   field called too narrow to hold a 3 when it holds 0–3, and a mask called a runtime check
+   when it admits the value it was said to reject. Nothing mechanical reaches that class,
+   and it was the more dangerous of the two: an accurate `file:line` is exactly what makes
+   a wrong reading of it credible. Read the lines the tool prints.
+4. **Record the mechanism when the site alone misleads.** Two rows below carry a
    "read this too" note because the obvious grep hit gives the opposite answer.
-4. **This file does not decide anything.** It records what a reference *does*.
+5. **This file does not decide anything.** It records what a reference *does*.
    Whether justerm should match it is ADR/issue territory — and per ADR-0004,
    spec-faithful beats reference-faithful where they disagree.
 

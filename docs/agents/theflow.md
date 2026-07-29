@@ -113,6 +113,18 @@ git clone --depth 1 --filter=blob:none --sparse https://github.com/xtermjs/xterm
 cd xterm.js && git sparse-checkout set src addons && cd ..
 ```
 
+**Recording what you found: do not type the line number.** `rg` is for *finding*; the
+number that ends up in [reference-facts.md](reference-facts.md) comes out of the tree, via
+`node .github/scripts/cite.mjs <tree> <path> --find '<text>'` to locate it and
+`… <tree> <path>:<line>` to print it with context and emit the `Site` cell. This exists
+because the transcription step is where the errors were: five wrong rows in two days
+(#610), four of them wrong at the moment they were written, all five from copying a lens
+report instead of re-opening the source. The tool resolves the trees from the **main
+checkout**, so unlike the bare `../.refs/` above it is correct from a worktree too;
+`--pins` checks the local trees against the SHAs in the table above. It does not read the
+row *for* you — two of those five were a correct citation with a wrong conclusion drawn
+from it, which is a class no tool reaches.
+
 **Why local rather than `gh api`, which this step used to prescribe.** `gh api`
 cannot grep: an 8-line fact costs a whole-file fetch (`Terminal.zig` is ~10K lines)
 over the network, *and* the whole file lands in context, so every later turn in the
