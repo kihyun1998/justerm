@@ -6,8 +6,9 @@
 font, **to the cell instead of to the ink box**. They are the characters TUIs use to tile a region,
 and tiling is exactly what breaks when a glyph is drawn to its own bounds.
 
-At 2,831 lines this is the **second-largest module in the family and the largest with no governing
-record at all**.
+It is the **second-largest module in the family and the largest with no governing record at all**
+— `find justerm-renderer/src -name '*.rs' | xargs wc -l | sort -rn` for the current ranking, since
+a line count written here is a stored answer to a question a command answers better.
 
 ## Governing decisions
 
@@ -54,19 +55,21 @@ is unusually clean and it is currently unverifiable.
 
 ## Cross-cutting invariants
 
-*(none identified yet)*
+- [workspace exclusion is gate invisibility](../invariant/workspace-exclusion-is-gate-invisibility.md)
+  — this crate is outside the root workspace, so no `--workspace` or `--all` command reaches it;
+  every gate it has is named for it by `--manifest-path`
 
 ## Blast radius
 
 - [cell geometry](cell-geometry.md) — the cell/glyph box split is the *cause* of this territory. If
   the nesting rule changes, this module's reason to exist changes with it
-- **glyph atlas** *(no note yet)* — these glyphs occupy atlas slots like any other, but are produced
+- [glyph atlas](glyph-atlas.md) — these glyphs occupy atlas slots like any other, but are produced
   rather than rasterised from a font
 - [cell compositing](cell-compositing.md) — a built-in glyph is still a glyph field in the instance
 
 ## Known holes / open
 
-- **2,831 lines with zero governing records and zero public surface.** Nothing about it is
+- **Thousands of lines with zero governing records and zero public surface.** Nothing about it is
   addressable from outside, and nothing decides it — the largest ungoverned mass measured in this
   family.
 - **The reference agreement is quoted, not pinned.** Two named symbols in two upstream projects,

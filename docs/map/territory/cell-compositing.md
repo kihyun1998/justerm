@@ -18,7 +18,8 @@ becomes an actual colour — the engine never does that by identity.
 - [ADR-0018 — build justerm-renderer](../../adr/0018-justerm-renderer.md) — this is the "A-ii"
   hot-path-in-wasm decision the whole crate exists to execute
 - [ADR-0024 — decoration projection and precedence](../../adr/0024-decoration-projection-and-precedence.md)
-  *(proposed)* — the axis ADR-0019 deliberately put out of its own scope
+  — the axis ADR-0019 deliberately put out of its own scope (check its `Status:` line; it is not
+  copied here)
 
 ## Design model
 
@@ -72,7 +73,9 @@ sites, the outlier, or demoted — so a difference from it is not by itself a de
 
 ## Cross-cutting invariants
 
-*(none identified yet)*
+- [workspace exclusion is gate invisibility](../invariant/workspace-exclusion-is-gate-invisibility.md)
+  — this crate is outside the root workspace, so no `--workspace` or `--all` command reaches it;
+  every gate it has is named for it by `--manifest-path`
 
 ## Blast radius
 
@@ -84,13 +87,14 @@ sites, the outlier, or demoted — so a difference from it is not by itself a de
   draws it as an overlay instead, so the two stay separable
 - [wire format](wire-format.md) — consumes decoded cells; a colour-encoding change lands here first
 - [cell geometry](cell-geometry.md) — supplies the box each instance is drawn into
-- **glyph atlas** *(no note yet)* — supplies the resolved slot this packer assumes
+- [glyph atlas](glyph-atlas.md) — supplies the resolved slot this packer assumes
 
 ## Known holes / open
 
 - **The policy setters have no records.** `set_bg_alpha`, `set_minimum_contrast_ratio`,
   `set_bold_to_bright`, `set_selection_foreground` each change what a cell resolves to, and ADR-0019
   governs the *model* rather than the individual knobs.
-- **ADR-0024 is `proposed`** while its rules are what feed the Bottom/Top layers here.
+- **The record feeding the Bottom/Top layers may not be accepted yet** — ADR-0024's `Status:`
+  line is the place to check, and it is not restated here.
 - **The "every frame re-packs" property is load-bearing and unrecorded.** It is why incremental
   repaint work from the previous renderer was deliberately not ported, and it lives in no record.

@@ -85,6 +85,25 @@ Added 2026-07-24. Every row grepped at the pinned SHAs that day.
 | Zero dimensions are **rejected**, not clamped: `ResizeError.InvalidValue`, with a test asserting no mutation on rejection | ghostty | `terminal/Terminal.zig:3679`, `:3721`; test `:3885` |
 | ⚠ ghostty says the 1-wide case *"should be prevented downstream"*, but its downstream floor is **1**, not 2 (`@max(1, calc_cols)`) — so it ships the path it documents as *"pretty broken"*. This is the argument **for** flooring in the engine rather than delegating | ghostty | `terminal/Terminal.zig:1422-1426` vs `renderer/size.zig:260-261`; the destroy-the-glyph path `PageList.zig:1783-1788` |
 
+## Logical-line assembly (#601)
+
+Added 2026-07-29. Grepped at the pinned SHAs that day, and the occasion is worth recording: the
+[logical lines](../map/territory/logical-lines.md) territory had been carrying *"`text` matches
+xterm's `translateToString(true)`"* as its central design claim, flagged in its own `## Reference
+behaviour` as **an unpinned paraphrase that had never been grepped**. It was grepped, and it is
+partly wrong in **two** places, not one — which is what the flag was for.
+
+| Fact | Reference | Site |
+|---|---|---|
+| `translateToString(trimRight)` is a **`BufferLine`** method — it spans **one row**, not a wrapped run. So the headline equivalence is false in its load-bearing half: justerm's `viewport_logical_lines` joins soft-wrapped rows, and this does not | xterm.js | `common/buffer/BufferLine.ts:536` |
+| Reaching a wrapped run needs a **second** call — the range comes from `Buffer.getWrappedRangeForLine`, which selection drives before translating each line | xterm.js | `common/buffer/Buffer.ts:562` |
+| The spacer skip **does** match: xterm advances by the cell's own width, `startCol += (content >> WIDTH_SHIFT) \|\| 1` | xterm.js | `common/buffer/BufferLine.ts:569` |
+| ⚠ The right-trim **does not quite** — `trimRight` clips to `getTrimmedLength()`, which scans back for `HAS_CONTENT_MASK`, so a *printed* space (`cp == 32`) is content and survives. justerm's `text.trim_end()` cannot tell a printed space from a blank cell and drops both, so the two disagree on a line ending in typed spaces | xterm.js | clip `common/buffer/BufferLine.ts:553`; the scan `:484-490` |
+
+**Direction: justerm is a superset, and nothing moves toward the reference.** Joining the wrapped run
+inside the engine is the whole point of ADR-0017 for this surface — a frame-mode consumer cannot do it
+— so the divergence is the feature. Only the *claim* was wrong.
+
 ## Maximum glyph width (#595)
 
 Added 2026-07-29. Every row grepped at the pinned SHAs that day. The mirror of the section above:

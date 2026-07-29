@@ -10,7 +10,8 @@ every erase verb may or may not end.
 
 - [**ADR-0025 — row and wide-pair cell state ownership**](../../adr/0025-row-and-wide-pair-cell-state-ownership.md)
   — **D1 and D2** are this territory's half (D3/D4 govern [wide glyph](wide-glyph.md))
-- Live roster: **spine #552** (a GitHub issue — not a graph node)
+- **spine #552** — the cluster ADR-0025 was extracted from, now closed. A GitHub issue, so not a
+  graph node: read it for the fifteen-issue archaeology, not for current state
 
 ## Design model
 

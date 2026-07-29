@@ -13,7 +13,8 @@ verb that writes, moves, erases or frees a cell has to know the pair exists.
   and #529 amendments
 - [ADR-0022 — cell geometry from an ink scan](../../adr/0022-cell-geometry-from-an-ink-scan.md) —
   the renderer-side geometry a width-2 cell is drawn into
-- Live roster: **spine #552** (a GitHub issue — not a graph node)
+- **spine #552** — the cluster ADR-0025 was extracted from, now closed. A GitHub issue, so not a
+  graph node: read it for the fifteen-issue archaeology, not for current state
 
 ## Design model
 
@@ -81,7 +82,7 @@ recorded SHA; a paraphrase drops the pin).
   changes what all three return
 - [pen](pen.md) — both halves are stamped from the same pen
 - [wire format](wire-format.md) — width is derived at both ends rather than transmitted
-- **renderer** *(no note yet)* — how a spacer cell is drawn, and the emoji classification that cannot
+- [emoji classification](emoji-classification.md) — how a spacer cell is drawn, and the classification that cannot
   use `wide` because of the per-character rule above
 
 ## Known holes / open

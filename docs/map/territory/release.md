@@ -70,7 +70,10 @@ pinned tree.
   at once; a consumer decoding a wrong layout gets garbage cells, not an error
 - [published surface](published-surface.md) — publishing is what snapshots the README, so every
   release freezes prose as well as code
-- **renderer** *(no note yet)* — its own track, so it can silently fall behind a `v*` release
+- the renderer crate — its own track, so it can silently fall behind a `v*` release. Every
+  renderer territory ships on that tag and none on `v*`; start at
+  [cell compositing](cell-compositing.md) (`rg -l 'justerm-renderer/src' docs/map/territory/`
+  for the set — a count written here was wrong within a day)
 - **a11y / web widget** *(no note yet)* — `justerm-web` consumes the *published* wasm decoder, so a
   new binding is `undefined` at runtime until that package is republished
 

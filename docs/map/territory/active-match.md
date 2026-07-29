@@ -57,7 +57,7 @@ has never been compared against a pinned tree, and it is the one that decides pi
 - [selection](selection.md) — the overlap partner. A change to either's rank changes the other's
   appearance where they intersect
 - [frame](frame.md) — a fifth overlay group, added at wire v12
-- **renderer** *(no note yet)* — where the ranking is actually resolved, additively rather than by
+- [cell compositing](cell-compositing.md) — where the ranking is actually resolved, additively rather than by
   replacement
 
 ## Known holes / open

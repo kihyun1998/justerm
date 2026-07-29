@@ -17,7 +17,6 @@ use crate::input::{
     KeyEvent, MouseEncoding, MouseEvent, MouseProtocol, encode_focus, encode_key, encode_mouse,
     encode_paste,
 };
-use crate::logical::LogicalLine;
 use crate::search::Match;
 use crate::selection::{BufferPoint, Selection};
 use crate::serialize::{Frame, FrameKind, MarkerId, MarkerKind, Overlay, Span};
@@ -38,6 +37,10 @@ mod selection;
 /// The decoration-marker surface (#588) — marks anchored to absolute buffer lines, the
 /// OSC 133 command queries over them, and the anchor fixups the write path drives.
 mod markers;
+
+/// Viewport logical lines (#601) — the soft-wrap-joined text a consumer needs for URL
+/// detection and the a11y mirror. The last read surface to leave this file under #584.
+mod logical;
 
 /// Owns the authoritative screen state and applies VT actions to it.
 pub struct Term {
@@ -917,72 +920,6 @@ impl Term {
     pub(crate) fn viewport_link_at(&self, row: usize, col: usize) -> Option<core::num::NonZeroU32> {
         let idx = self.scrollback.len() - self.display_offset + row;
         self.abs_row(idx).link_at(col)
-    }
-
-    /// The viewport's logical lines (#113/ADR-0017): each line's text plus a
-    /// per-char map to its viewport `(row, col)`. Wide-char spacers are skipped
-    /// and trailing blanks trimmed (so the text is 1:1 with `cells`). Empty rows
-    /// are dropped. The cell-aware assembly the consumer can't do in frame mode.
-    pub fn viewport_logical_lines(&self) -> Vec<LogicalLine> {
-        let rows = self.grid.rows();
-        let total = self.scrollback.len() + rows;
-        let top = self.scrollback.len() - self.display_offset; // abs line of viewport row 0
-        let bottom = top + rows; // abs lines [top, bottom) are on screen
-
-        // If viewport row 0 is a wrap-continuation, walk up into scrollback to
-        // the logical line's true start so an edge-spanning URL still matches —
-        // floored, because on alt that scrollback is the *primary* buffer's.
-        let floor = self.abs_floor();
-        let mut start = top;
-        while start > floor && self.abs_row(start - 1).is_wrapped() {
-            start -= 1;
-        }
-
-        let mut out = Vec::new();
-        let mut line = start;
-        while line < bottom {
-            // Accumulate one logical line forward while each row soft-wraps; the
-            // tail may run past `bottom` (off-screen below) — included too.
-            let mut text = String::new();
-            let mut map: Vec<(i32, usize)> = Vec::new();
-            let mut cur = line;
-            loop {
-                let cells = self.abs_line(cur);
-                for (col, cell) in cells.iter().enumerate() {
-                    if cell.is_spacer() {
-                        continue;
-                    }
-                    // Signed viewport row: < 0 above the top, >= rows below.
-                    let vrow = cur as i32 - top as i32;
-                    text.push(cell.c());
-                    map.push((vrow, col));
-                    // Combining marks (#45) ride the same cell — append each and
-                    // map it to that cell so `text` stays 1:1 with `cells`.
-                    if let Some(marks) = self.combining_at(cur, col) {
-                        for &m in marks {
-                            text.push(m);
-                            map.push((vrow, col));
-                        }
-                    }
-                }
-                let soft = self.abs_row(cur).is_wrapped();
-                if soft && cur + 1 < total {
-                    cur += 1;
-                } else {
-                    break;
-                }
-            }
-            // Trim trailing blanks (only the last row can have them), keeping
-            // `text` and `cells` in lockstep.
-            let trimmed = text.trim_end();
-            map.truncate(trimmed.chars().count());
-            text.truncate(trimmed.len());
-            if !text.is_empty() {
-                out.push(LogicalLine { text, cells: map });
-            }
-            line = cur + 1;
-        }
-        out
     }
 
     /// Resize the screen to `cols` x `rows`. Rows dropped off the top (on shrink)

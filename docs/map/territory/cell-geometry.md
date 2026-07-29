@@ -44,7 +44,8 @@ an ink scan of the font's `█`.
 - `justerm-renderer/src/dpr.rs` — `css_px`, `grid_px`, the device↔CSS derivation
 - `justerm-renderer/src/webgl.rs` — `css_cell_width`, `css_cell_height`, `css_width`, `css_height`,
   `cols`, `rows`, `set_font_size`, `set_font_family`, `set_line_height`, `set_letter_spacing`,
-  `set_device_pixel_ratio` — eleven of the crate's thirty-three exports
+  `set_device_pixel_ratio` — the largest single share of the crate's wasm exports
+  (`rg -c '#\[wasm_bindgen' justerm-renderer/src/webgl.rs` for the total)
 
 ## Reference behaviour
 
@@ -59,14 +60,16 @@ grounds as unverified, which is unusual enough to be worth knowing before buildi
 
 ## Cross-cutting invariants
 
-*(none identified yet)*
+- [workspace exclusion is gate invisibility](../invariant/workspace-exclusion-is-gate-invisibility.md)
+  — this crate is outside the root workspace, so no `--workspace` or `--all` command reaches it;
+  every gate it has is named for it by `--manifest-path`
 
 ## Blast radius
 
 - [built-in block glyphs](builtin-block-glyphs.md) — exists *because* of the box split above; a change to
   the nesting changes what those glyphs must be drawn to
 - [cell compositing](cell-compositing.md) — supplies the box every instance is drawn into
-- **glyph atlas** *(no note yet)* — rasterises into slots sized by this measurement
+- [glyph atlas](glyph-atlas.md) — rasterises into slots sized by this measurement
 - [caret report](caret-report.md) — `setCursorThickness` and the caret rects are expressed in this
   geometry
 - **a11y / web widget** *(no note yet)* — the resize contract runs consumer→CSS box, renderer→`cols`

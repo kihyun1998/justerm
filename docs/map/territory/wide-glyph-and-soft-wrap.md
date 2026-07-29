@@ -32,5 +32,6 @@ different failure modes.
 
 ## The cluster this area is famous for
 
-`#552`, fifteen issues — one rule rediscovered one VT verb at a time before ADR-0025 named it. The
+`#552` (closed), fifteen issues — one rule rediscovered one VT verb at a time before ADR-0025
+named it. The
 tell that a change belongs here: **a `Cell` write deciding a fact whose scope is a row or a pair.**
