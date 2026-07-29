@@ -1221,6 +1221,39 @@ test("bgAlpha given at create boots translucent, without touching the setter (#5
   expect(p.defaultInk[3]).toBe(255);
 });
 
+// #577 downstream: a garbage `bgAlpha` must not blank the terminal.
+//
+// **This test could not exist before `justerm-renderer@0.8.0`** and is the reason this file's pin was
+// raised. `set_bg_alpha` used to pass a non-finite value straight into the uniform, and because every
+// fragment's alpha is `mix(u_bg_alpha, 1.0, coverage)`, the glyphs went transparent with the
+// background — the whole terminal vanished, silently. Against the published 0.7.0 both assertions
+// below read 0. So this is the widget-level counterpart of the renderer's own `bg-alpha.html` proof:
+// that one guards the mechanism, this one guards that a *consumer* passing a bad number through the
+// real published dependency still has a terminal.
+//
+// Reachable from type-correct code — TypeScript's `number` includes `NaN`, so `Number(configValue)`
+// on a malformed config produces exactly this. The demo's `?bgAlpha=` parameter reproduces it via
+// `Number("foo")`, which is the same path a consumer would take.
+test("a non-finite bgAlpha falls back to opaque instead of blanking the terminal (#577)", async ({
+  page,
+}) => {
+  await page.goto("/?bgAlpha=foo");
+  // Wait for the probe itself rather than for a button label: the other tests here gate on
+  // `getByRole("button", { name: … })`, but this page boots with `Number("foo")`, so its button reads
+  // `Bg alpha: NaN` — a label that exists only to describe a malformed input and is a brittle thing
+  // to key a test on. The probe's existence is the actual precondition.
+  await page.waitForFunction(() => typeof window.__bgAlphaProbe === "function");
+  const p = await page.evaluate(() => window.__bgAlphaProbe!());
+
+  // Both channels, because the background alone was the *lesser* half of the old failure.
+  expect(p.defaultBg[3]).toBe(255);
+  expect(p.defaultInk[3]).toBe(255);
+
+  // …and the terminal is genuinely drawn, not merely opaque-and-empty — otherwise a renderer that
+  // cleared to an opaque nothing would satisfy the two lines above.
+  expect(`rgb(${p.defaultInk.slice(0, 3)})`).not.toBe(`rgb(${p.defaultBg.slice(0, 3)})`);
+});
+
 // #606: `Terminal.dispose()` is end of life, and the renderer it was handed must stop with it. The
 // unit tests prove the widget *calls* dispose on a fake; this is the only place the consequence is
 // observable — the rAF loop is real and it is what repaints the canvas. Counted rather than sampled
