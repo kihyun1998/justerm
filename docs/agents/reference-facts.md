@@ -85,6 +85,24 @@ Added 2026-07-24. Every row grepped at the pinned SHAs that day.
 | Zero dimensions are **rejected**, not clamped: `ResizeError.InvalidValue`, with a test asserting no mutation on rejection | ghostty | `terminal/Terminal.zig:3679`, `:3721`; test `:3885` |
 | ⚠ ghostty says the 1-wide case *"should be prevented downstream"*, but its downstream floor is **1**, not 2 (`@max(1, calc_cols)`) — so it ships the path it documents as *"pretty broken"*. This is the argument **for** flooring in the engine rather than delegating | ghostty | `terminal/Terminal.zig:1422-1426` vs `renderer/size.zig:260-261`; the destroy-the-glyph path `PageList.zig:1783-1788` |
 
+## Maximum glyph width (#595)
+
+Added 2026-07-29. Every row grepped at the pinned SHAs that day. The mirror of the section above:
+that one floors the **screen** so a pair always has room, this one caps the **glyph** so a pair is
+always enough. Both are preconditions for ADR-0025's D1–D4, which are stated only over *a pair*.
+
+The occasion: `unicode-width` 0.2 reports **3** for `U+17D8` KHMER SIGN BEYYAL, and justerm passed it
+through. **3 of 3 references bound it and none permits a triple** — so this was justerm drifting
+alone, not a family divergence.
+
+| Fact | Reference | Site |
+|---|---|---|
+| Clamps at the **source**, in the *comment on the field* rather than in its type — *"We clamp to [0, 2] since Ghostty handles control characters and we max out at 2 for wide characters (i.e. 3-em dash becomes a 2-em dash)"*. ⚠ The field is `u2`, which holds **0–3**, so the type does *not* forbid a triple; the clamp does | ghostty | `src/unicode/props.zig:10-14` |
+| **And** asserts at the **write site** — *"it is possible to have a width of `3` and a width of `-1` from uucode.x's wcwidth … `assert(width <= 2)`"*. So ghostty does source **and** site, and its own comment says why the second is reachable: the upstream table is what produces the out-of-range value | ghostty | `src/terminal/Terminal.zig:1310-1315` |
+| The width is a **type**, `0 \| 1 \| 2` — and that is the *whole* bound. ⚠ It is **not** enforced at runtime: `extractWidth` returns `((value >> 1) & 0x3) as UnicodeCharWidth`, a checker-only cast, and `createPropertyValue` packs `((width & 3) << 1)`, whose mask admits 3. A provider emitting 3 would carry it through unchanged; none does | xterm.js | type `common/services/Services.ts:342`; packing/extraction `common/services/UnicodeService.ts:22`, `:28` |
+| Coerces at the **write site**: `if width == 1 { … } else { WIDE_CHAR + exactly one spacer, cursor += 2 }`, so any width above 1 becomes a pair | alacritty | `alacritty_terminal/src/term/mod.rs:1104-1137` |
+| ⚠ alacritty's coercion is **incomplete**: the IRM shift above it runs with the *unclamped* width, so insert mode opens a 3-column gap and writes 2. This is the argument for bounding at the source rather than only coercing at the write branch — justerm clamps in `print`, upstream of its own `insert_chars` | alacritty | `term/mod.rs:1093-1101` (the shift) vs `:1104` (the coercion) |
+
 ## Word selection started *on* a separator — the references disagree, so justerm is not an outlier
 
 Added 2026-07-24, clearing a candidate defect raised by #547's Lens ①: justerm's word walkers break
