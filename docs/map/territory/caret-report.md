@@ -23,6 +23,11 @@ though one is derived from the other.
 - **Mode, never phase.** `visible` (DEC ?25), `shape` (DECSCUSR, `Block` by default) and `blink`
   (att610 ?12) are *state*. The blink phase — the actual on/off animation — is the consumer's, and
   the engine has no timer.
+  **This is not a caret rule** — it is ADR-0017's split applied to time-varying presentation, and it
+  has a second instance one attribute over: SGR 5 *text* blink stores a cell flag, the renderer
+  conceals on the phase it is handed, and the consumer owns the clock (#282 → #576). Two clocks, not
+  one: the caret's restarts on user input, the text's does not, so sharing them would make typing
+  reset a blink that no reference ties to input.
 - **Hidden while scrolled up.** The frame reports `cursor_visible && display_offset == 0`: a caret
   drawn on a frozen viewport would sit at a position the user is not looking at.
 - **Position rides the header**, not the cell content, because the caret moves on almost every frame
@@ -53,6 +58,11 @@ at a recorded SHA; a paraphrase drops the pin).
   the three-state. justerm follows alacritty's placement because it is what ADR-0017 implies and it
   needs no wire change. Also records that `CSI ?12 h/l` is ignored in xterm.js unless a quirk is
   enabled, because it writes the *user's* option rather than the application channel
+- [Text blink — SGR 5](../../agents/reference-facts.md#text-blink--sgr-5-576-verified-2026-07-29)
+  — the sibling clock, and a **negative result** worth reading before assuming a default: only one of
+  the three references animates blinking text at all, and it ships the interval defaulting to `0`.
+  Linked from here because the *split* it demonstrates is this note's rule, not because a text cell
+  is a caret
 
 ## Cross-cutting invariants
 

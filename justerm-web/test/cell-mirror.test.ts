@@ -11,6 +11,7 @@ const F: FlagBits = {
   inverse: 0x200,
   dim: 0x400,
   hidden: 0x800,
+  blink: 0x10, // #576 — the mirror ignores it (text is text either phase), but the map carries it
 };
 
 const cp = (s: string): number => s.codePointAt(0)!;

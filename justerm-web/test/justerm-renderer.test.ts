@@ -4,6 +4,8 @@ import { MINIMUM_COLS, proposeDimensions } from "../src/fit";
 import {
   asU16,
   asU32,
+  blinkPhaseHeader,
+  carriesBlink,
   cursorCommand,
   damageHeader,
   decorationWire,
@@ -60,6 +62,61 @@ describe("damageHeader", () => {
 
   it("passes blinkOn=false through as 0", () => {
     expect(damageHeader(frame(), false)[7]).toBe(0);
+  });
+});
+
+// #576: the renderer takes the SGR-5 phase in the damage header and keeps it (`last_blink_on`),
+// so flipping the phase between frames means re-issuing an EMPTY damage that carries only the new
+// bit — the retained grid then re-packs at the new phase with no cell touched.
+describe("blinkPhaseHeader", () => {
+  it("carries the new phase over an otherwise empty damage", () => {
+    expect(Array.from(blinkPhaseHeader(80, 24, false))).toEqual([80, 24, 1, 0, 0, 0, 0, 0]);
+    expect(Array.from(blinkPhaseHeader(80, 24, true))).toEqual([80, 24, 1, 0, 0, 0, 0, 1]);
+  });
+
+  it("is Partial, never Full — a Full header would wipe the retained grid", () => {
+    // The renderer wipes on kind 0 before scattering, and this damage scatters nothing, so a Full
+    // phase flip would blank the terminal instead of re-drawing it. The single most dangerous
+    // value in this header.
+    expect(blinkPhaseHeader(80, 24, true)[2]).toBe(1);
+  });
+
+  it("declares no scroll, so the flip cannot shift the grid", () => {
+    const h = blinkPhaseHeader(80, 24, false);
+    expect(h[3]).toBe(0);
+    expect(Array.from(h.slice(4, 7))).toEqual([0, 0, 0]);
+  });
+
+  it("is an 8-slot Uint32Array, like the frame header the renderer validates", () => {
+    const h = blinkPhaseHeader(1, 1, true);
+    expect(h).toBeInstanceOf(Uint32Array);
+    expect(h.length).toBe(8);
+  });
+});
+
+// #576: the gate on the phase re-pack — xterm.js's `needsBlinkInViewport`, which it answers exactly
+// by scanning the viewport it owns. A frame-mode consumer has damage, not the grid, so this is the
+// conservative half of that question: it may say yes when the answer is no (one redundant re-pack)
+// and must never say no when the answer is yes (frozen blinking text).
+describe("carriesBlink", () => {
+  const BLINK = 0x10; // core's `CellFlags::BLINK` (1 << 4); the adapter reads it from `flags()`
+
+  it("finds the bit anywhere in the column, and reports absence", () => {
+    expect(carriesBlink(new Uint16Array([0, 0, BLINK, 0]), BLINK)).toBe(true);
+    expect(carriesBlink(new Uint16Array([0, 0, 0]), BLINK)).toBe(false);
+    expect(carriesBlink(new Uint16Array(0), BLINK)).toBe(false);
+  });
+
+  it("masks rather than compares, so a cell with other attributes still counts", () => {
+    // The failure this pins: `flags[i] === BLINK` would miss every bold/underlined blinking cell,
+    // and the loop would then never re-pack for them.
+    expect(carriesBlink(new Uint16Array([0x01 | BLINK]), BLINK)).toBe(true);
+    expect(carriesBlink(new Uint16Array([0x01 | 0x04]), BLINK)).toBe(false);
+  });
+
+  it("reads a plain-array fixture the same way as the decoder's Uint16Array", () => {
+    expect(carriesBlink([0, BLINK], BLINK)).toBe(true);
+    expect(carriesBlink([0, 0], BLINK)).toBe(false);
   });
 });
 
