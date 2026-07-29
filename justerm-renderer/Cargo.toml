@@ -16,6 +16,18 @@ keywords = ["terminal", "webgl", "renderer", "wasm", "ansi"]
 # Published as an npm artifact via wasm-pack, not to crates.io (like justerm-wasm-decode).
 publish = false
 
+# This crate is its own workspace root, stated HERE rather than only implied by the root
+# manifest's `exclude` (#608). The two are not equivalent: `exclude` is a fact about one
+# directory, so cargo — which walks *upward* from the crate looking for a workspace —
+# resolves it correctly only when the crate sits under that exact root. From a git worktree
+# it does not: the worktree's root excludes the crate, so cargo keeps climbing, reaches the
+# main checkout's manifest, and matches the crate against an `exclude` list of paths that
+# are not this one. It then declares the crate a member that is not there, and **every**
+# renderer gate — fmt, test, clippy, build, doc, and `wasm-pack build` — fails before it
+# starts. Worktrees are the prescribed workflow (`docs/agents/theflow.md` § Step 7), so that
+# is the normal path, not an edge case. `fuzz/Cargo.toml` has carried this line all along.
+[workspace]
+
 # `cdylib` is the wasm artifact wasm-pack ships; `rlib` lets the crate's own
 # pure-logic tests + future wasm-bindgen-test targets link it.
 [lib]

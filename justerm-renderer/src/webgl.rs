@@ -2102,11 +2102,21 @@ impl JustermRenderer {
     /// itself (xterm's `cursorAccent`, alacritty's `text_color`). Colours are resolved by the
     /// consumer — the renderer stays theme-agnostic.
     ///
-    /// A **block** repaints the cell, so it lands in the instance buffer and takes effect on the
-    /// next `applyFrame`/`applyDamage`. The **strokes** are shader uniforms and take effect on the
-    /// next [`render`](Self::render) alone: moving or blinking a bar costs no upload. Blink phase
-    /// is the consumer's policy, exactly as `blink_on` is (#282) — call `clearCursor` for the off
-    /// phase.
+    /// **Every shape, the block included, is a uniform** — `u_cursor` and its colours, resolved per
+    /// fragment (the shader stanza at the top of this file). A cursor change therefore takes effect
+    /// on the next [`render`](Self::render) alone: no re-pack, no upload, whether it moves, blinks
+    /// or changes shape. A block is a colour override on the cell rather than geometry, which is
+    /// precisely why it is *not* an instance — one that lived in the instance buffer could not be
+    /// un-painted without re-packing the frame. Blink phase is the consumer's policy, exactly as
+    /// `blink_on` is (#282) — call `clearCursor` for the off phase.
+    ///
+    /// This paragraph asserted the opposite until #608 — *"a block repaints the cell, so it lands
+    /// in the instance buffer and takes effect on the next `applyFrame`/`applyDamage`"* — against
+    /// the design comment it sits below, the shader, and this method's own body, which sets no
+    /// `needs_repack`. It was caught from outside the crate: a consumer-side comment written in
+    /// #576 stated the true version, leaving two artifacts in the repo saying opposite things about
+    /// one mechanism. Nothing gates a doc against the code it describes, which is the whole reason
+    /// that class of drift needs a hand sweep (`docs/agents/theflow.md` § Step 6).
     #[wasm_bindgen(js_name = setCursor)]
     pub fn set_cursor(
         &mut self,
