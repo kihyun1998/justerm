@@ -30,9 +30,20 @@ status.
   `[scrollback ++ screen]` from the oldest line. Not viewport coordinates.
 - **Why absolute**: it is invariant under a top-anchored scroll. A line evicted into scrollback grows
   `scrollback.len()` by exactly the screen shift, so existing content keeps its absolute index.
-- **The coordinate moves in exactly three places** — scrollback cap eviction, in-screen region/RI
-  scroll, and reflow. `Term` handles each explicitly (`Term::selection_evict_oldest`,
-  `Term::selection_rotate_region`, `Term::selection_shift_below_margin`).
+- **Four things move the coordinate, and they do not line up one-to-one with the fixups.**
+  `selection.rs`'s module doc names three *kinds* — cap eviction, in-screen region/RI scroll, reflow —
+  and that count is the one worth quoting, but the handlers are:
+
+  | what moves it | handler |
+  |---|---|
+  | scrollback cap eviction | `Term::selection_evict_oldest` |
+  | an in-screen region / RI scroll moving content | `Term::selection_rotate_region` |
+  | a **top-anchored sub-region** scroll growing scrollback while rows below the margin stay put, so their absolute index rises (#449) | `Term::selection_shift_below_margin` |
+  | reflow re-splitting logical lines | `grid.rs`'s `reflow`, via tracked points |
+
+  The third is the one a three-item list hides: nothing on screen moved and no line was evicted, yet
+  every absolute index below the margin changed — because `scrollback.len()` grew and the coordinate
+  is measured from the oldest line. It is the counter-case to the invariant directly above.
 - **`Side` (Left/Right)** — which edge of a cell the anchor sits on. Lets a drag include or exclude the
   cell under the pointer; this is what makes mouse precision possible.
 - **Four types** — Char (runs across lines) / Word / Line / Block (rectangular).
@@ -95,14 +106,14 @@ Check these after changing this territory:
   (it lives in this module, but its contract is a whole-buffer document), so a change to either side
   can invalidate the other's pin. The edge was one-way until #587, and that is exactly how the move
   broke logical-lines' pin without any sweep noticing
-- **reflow** — one of the three places the coordinate moves. `grid.rs`'s `reflow` takes selection
+- [reflow](reflow.md) — the fourth row of the table above. `grid.rs`'s `reflow` takes selection
   anchors as tracked `points`, and #562 (reflow cannot express a point one past the last cell) surfaced
   right here
 
 ## Known holes / open
 
 - **Zero governing records.** The whole §Design model above is unrecorded. *"Why absolute
-  coordinates"* and *"why exactly three places move the coordinate"* are the kind of thing that gets
+  coordinates"* and *"what moves the coordinate"* are the kind of thing that gets
   re-decided, and their grounds exist only in code comments.
 - **Block selection over wide characters is unspecified** — no artifact states what happens when a
   rectangular range cuts a width-2 glyph in half.

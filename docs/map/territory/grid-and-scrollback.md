@@ -61,7 +61,9 @@ once, in prose, about upstream code that moves.
 - [viewport](viewport.md) — `scrollback_len + rows` is the addressable height, and eviction changes it
   under a consumer's feet
 - [selection](selection.md) · [marker](marker.md) — anchors are absolute-line coordinates, so
-  eviction is one of exactly three events that move them
+  eviction is one of the things that move them — and so, less obviously, is a top-anchored
+  sub-region scroll that grows history without moving anything on screen ([selection](selection.md)
+  carries the set)
 - [reflow](reflow.md) — screen and scrollback re-lay as one stream
 - [soft wrap](soft-wrap.md) — a wrap link can point from the last scrollback row into the grid, which
   is why the artefact clear has to couple across that seam

@@ -68,8 +68,8 @@ That reasoning is in a code comment rather than in a record.
 Everything anchored to a line, because reflow is the one operation that moves content **between**
 rows rather than within one.
 
-- [selection](selection.md) — anchors are tracked points; reflow is one of exactly three events that
-  move an absolute coordinate
+- [selection](selection.md) — anchors are tracked points, and reflow is one of the four things that
+  move an absolute coordinate (that note carries the set; a three-item count hides one of them)
 - [marker](marker.md) — same, and alt markers additionally re-anchor on a base that shifts when the
   primary scrollback rewraps beneath them
 - [search](search.md) — highlights are invalidated rather than moved, which is the asymmetry above
