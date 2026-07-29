@@ -535,18 +535,19 @@ that *describes* the behavior:
   carried *"(Soft-wrap reflow lands in #7.)"* on docs.rs for six weeks after #7
   closed (2026-06-17), because `resize` is a doc-comment, not a README. When you
   close an issue a doc-comment *promises*, grep the sources for its number, not
-  just the READMEs — **and `docs/map/` is in that grep.** A territory note may cite
-  an issue two ways and only one survives closing it: as *evidence* (*"five designs
-  were built and rejected — read it, the failures are the content"*, still true
-  afterwards) or as *status* (*"#606: dispose cannot stop the loop"*, false the
-  moment it lands). The second kind entered the map in bulk the first time the open
-  backlog was read as an input — 2 such citations became 11 in one session — so
-  closing an issue means checking whether a note now asserts something the fix
-  disproved. `rg '#<n>' docs/map/` is the whole check. **And not only the sources** — the same rot in
+  just the READMEs. **And not only the sources** — the same rot in
   `architecture.md` §Cadence was worse: it carried an *"Open question … Tracked in
   #13"* after #13 closed, and what shipped was not the design that paragraph
   predicted, so a reader planning work from it would have rebuilt a solved problem.
   A stale pointer costs a wasted lookup; a stale *prediction* costs the work.
+  **`docs/map/` belongs in that grep too, for a reason peculiar to it.** A territory
+  note may cite an issue two ways and only one survives closing it: as *evidence*
+  (*"five designs were built and rejected — read it, the failures are the content"*,
+  still true afterwards) or as *status* (*"#606: dispose cannot stop the loop"*,
+  false the moment it lands). The second kind arrived in bulk the first time the
+  open backlog was read as a map input — 2 such citations became 11 in one session —
+  so closing an issue means checking whether a note now asserts something the fix
+  disproved. `rg '#<n>' docs/map/` is the whole check.
   Cheap sweep, run when closing anything:
   ```
   rg -n '(lands in|will land|not yet|planned|open question|tracked in|carried over|once #|until #)' \
