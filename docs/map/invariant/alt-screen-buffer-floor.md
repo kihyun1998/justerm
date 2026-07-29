@@ -42,7 +42,9 @@ Derivable half — ask, do not store:
 rg 'abs_floor\(\)' justerm-core/src/ | rg -v 'fn abs_floor'
 ```
 
-Call sites as of #585/#586/#587 — the territory links are the graph edge, the grep is the authority:
+Call sites as of #601 — the territory links are the graph edge, the grep is the authority. Both
+artifacts that used to keep their own copy now point here instead: `theflow.md`'s Step 5 entry and,
+since #602, `walk.rs`'s module doc.
 
 - [selection](../territory/selection.md) — `Term::prev_pos` / `Term::next_pos`, the logical-line step
   (`term/walk.rs`; #207)
