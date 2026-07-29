@@ -409,13 +409,20 @@ fn relocated_extended_attrs_survive_the_wire_round_trip() {
     t.feed("X\u{25B6}\u{FE0F}".as_bytes());
     let frame = t.frame();
     let decoded = decode(&encode(&frame)).expect("round-trips");
-    // NB: `decoded == frame` is deliberately NOT asserted here. It does not hold for
-    // *any* frame carrying an underline colour — `decode_cell` restores the link
-    // presence bit (`set_linked(link != 0)`) but nothing restores `UCOLOR_PRESENT`
-    // after the v13 ucolor group is read, so the cell bit comes back clear. That is a
-    // pre-existing #520 codec asymmetry, independent of the carry under test (it
-    // reproduces on a plain `\e[4m\e[58:5:1mA`), and the group below is what a
-    // frame-mode consumer actually reads.
+    // NB: `decoded == frame` is deliberately NOT asserted here, but the reason changed
+    // with #531 — do not read the old one back in. The underline-colour half is now
+    // symmetric: `decode` re-arms `UCOLOR_PRESENT` from the ucolor group, so on this
+    // exact fixture the lead's bit round-trips (measured: `ucolored true->true`).
+    //
+    // What still makes the frames unequal is a *different* bit, and only one cell
+    // carries it: `leading_spacer true->false` at line 0 col 1. `C_LEADING_SPACER`
+    // (`cell.rs`) is engine-internal — it is excluded from `CONTENT_MARKER_MASK`, so it
+    // never reaches `cell.flags()` and therefore never reaches the wire, and unlike the
+    // ucolor bit *no group carries evidence of it*, so there is nothing for `decode` to
+    // reconstruct it from. That is a deliberate storage decision, not a missing re-arm.
+    // Its consequence — that `serialize.rs`'s "the round-trip is the contract" has a
+    // reachable counterexample — is a separate question from the carry under test, and
+    // the group below is what a frame-mode consumer actually reads.
     let span = decoded
         .spans
         .iter()

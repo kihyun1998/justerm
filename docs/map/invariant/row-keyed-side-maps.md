@@ -47,6 +47,10 @@ the first; nothing governs this one.
   fixed-width (#45/#46)
 - [wide glyph](../territory/wide-glyph.md) — adjacent, not identical: the
   extended-attr rider a wide lead carries is one of these maps meeting the pair rule (#521)
+- [wire format](../territory/wire-format.md) — where rule 4 applies and the only territory in which
+  the regime **inverts**: in memory the bit is authoritative and the map is a gated cache, on the wire
+  the map is authoritative and the bit is derived from it. #531 is what happens when a site under the
+  second regime is written by someone reading the first (#531)
 
 Storage: `Row { cells, combining, links, ucolors, wrapped }` in `justerm-core/src/grid.rs`; the
 combining and link maps share one implementation.

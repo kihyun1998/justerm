@@ -597,8 +597,12 @@ Z"`, and a search across the wrap went from 1 hit to 0). It now lives on the
 - **Underline colour (SGR 58) rides the *same* machinery — a third per-row map, gated by its own
   `UCOLOR_PRESENT` bit (#520).** A cell that draws a coloured underline stores a `Color` reference in
   `Row`'s `BTreeMap<col, Color>`, gated by bg bit 29. Carry/reflow/recycle/`move_maps` thread it exactly
-  like the link and combining maps; read through `Engine::underline_color_at(row, col)` (`Color::Default`
-  = follow the fg). **Where justerm diverges from xterm:** xterm's `HAS_EXTENDED` is a *shared* gate
+  like the link and combining maps — **and so does `decode`, which is the threading site this list
+  omitted until #531**: the gating bit is not encodable, so the decoder re-arms it from the group, and
+  a rider whose author reads only the in-memory rules ships a value its own gate hides. Note the
+  regime *inverts* across the wire: in memory the bit is authoritative and the map is a flag-gated
+  cache, while on the wire the map is authoritative and the bit is derived from it. Read through
+  `Engine::underline_color_at(row, col)` (`Color::Default` = follow the fg). **Where justerm diverges from xterm:** xterm's `HAS_EXTENDED` is a *shared* gate
   holding link **and** underline colour/style in one `ExtendedAttrs` object; justerm keeps a **separate
   map per concern** (as combining and links already are), gating each with its own bit — so the maps must
   be threaded in lockstep across every op (the coherence the shared object gives xterm for free). The
