@@ -69,24 +69,55 @@ stale within days: `#552` records exactly that, a hand-copied roster stale in fi
 after it was written. The links themselves are cheap and a link checker catches them; the *columns*
 are the roster.
 
-- Territories — [cursor](territory/cursor.md) ·
-  [damage & viewport](territory/damage-and-viewport.md) ·
+**One concept, one note.** Two notes are never merged because they feel related — what that costs is
+the ability to *point at one of them*, and every edge into a merged note is then drawn thicker than
+the truth. Where several concepts genuinely belong side by side, an **aggregate** note says why and
+owns no detail of its own.
+
+- Territories — [active match](territory/active-match.md) ·
+  [built-in block glyphs](territory/builtin-block-glyphs.md) ·
+  [caret report](territory/caret-report.md) ·
+  [cell compositing](territory/cell-compositing.md) ·
+  [cell geometry](territory/cell-geometry.md) ·
+  [cursor position](territory/cursor-position.md) ·
+  [damage](territory/damage.md) ·
+  [decoration](territory/decoration.md) ·
+  [frame](territory/frame.md) ·
   [logical lines](territory/logical-lines.md) ·
-  [search & active match](territory/search.md) ·
+  [marker](territory/marker.md) ·
+  [pen](territory/pen.md) ·
+  [published surface](territory/published-surface.md) ·
+  [release](territory/release.md) ·
+  [search](territory/search.md) ·
   [selection](territory/selection.md) ·
+  [soft wrap](territory/soft-wrap.md) ·
+  [viewport](territory/viewport.md) ·
+  [wide glyph](territory/wide-glyph.md) ·
+  [wire format](territory/wire-format.md)
+- Aggregates (relationship only, no detail) — [cursor](territory/cursor.md) ·
+  [damage & viewport](territory/damage-and-viewport.md) ·
+  [frame & wire](territory/frame-and-wire.md) ·
+  [release & published surface](territory/release-and-published-surface.md) ·
   [wide glyph & soft wrap](territory/wide-glyph-and-soft-wrap.md)
 - Cross-cutting invariants — [alt-screen absolute-index floor](invariant/alt-screen-buffer-floor.md) ·
-  [row-keyed side maps](invariant/row-keyed-side-maps.md)
+  [row-keyed side maps](invariant/row-keyed-side-maps.md) ·
+  [workspace exclusion is gate invisibility](invariant/workspace-exclusion-is-gate-invisibility.md)
 
 Ask the questions instead of copying the answers (run from `docs/map/`):
 
 ```sh
-rg -l '^\*\*None\.\*\*' territory/   # territories with no governing decision — the holes
+# no decision record governs this area
+rg -lU '## Governing decisions\r?\n\r?\n\*\*None\.\*\*' territory/
+# never compared against a reference implementation — a different hole
+rg -lU '## Reference behaviour\r?\n\r?\n\*\*None\.\*\*' territory/
 ls territory/ invariant/             # what exists; the folder is the roster
 ```
 
-A territory with nothing governing it writes exactly `**None.**` under `## Governing decisions`, so
-the first command stays honest without anyone maintaining a list.
+An empty section writes exactly `**None.**`, so these stay honest without anyone maintaining a list —
+but **the query has to name its section.** The first version of it grepped for the bare sentinel and
+reported a territory with four governing ADRs as ungoverned, because the same sentinel also marks an
+empty `## Reference behaviour`. A command in place of a stored answer is only better if it answers
+the question it claims to; an unscoped one is a stored answer with extra steps and more confidence.
 
 **The links are gated.** `.github/scripts/check-map-links.mjs` runs on every PR (the `test` job) and
 resolves every relative markdown link under `docs/`, `CLAUDE.md`, `CONTEXT.md` and `README.md` —
@@ -100,17 +131,36 @@ node .github/scripts/check-map-links.mjs docs CLAUDE.md CONTEXT.md README.md
 
 ## Current coverage
 
-**Eight notes — core only.** Not the whole system. Territories with no note yet, referenced as
-`(no note yet)` by the notes above:
+**The scope is everything in this repository**, not `justerm-core`. That includes the crates a
+`--workspace` command never visits and the artifacts that only exist on a registry — the frozen
+`justerm-facade` tombstone is mapped for exactly that reason: zero commits, zero gates, and a
+permanent published surface that breaks silently if anyone treats it as ordinary code.
 
-VT interpretation (`term.rs`, 3682 lines = 41% of core) · grid & scrollback · input encoding
-(`input.rs`, 801 lines) · frame & wire · hyperlinks · grapheme clusters · color references & palette ·
-marker & decoration · a11y · renderer pipeline · cell geometry · infrastructure (CI / supply chain /
-release)
+Territories are **not** bounded by crate. Decoration spans core's wire, the renderer and the web
+widget; cursor is split with the consumer by design. Renderer and web notes attach to territories
+that already exist here rather than forming a second map.
 
-Nothing outside `justerm-core` is mapped yet. Territories are **not** bounded by crate — decoration
-spans core wire, renderer and web — so the renderer and web notes will attach to territories that
-already exist here rather than forming a separate map.
+What has no note yet. Prioritise by **how many notes point at it** — a dangling reference is a reader
+hitting a dead end, and it is a better signal than commit frequency (which misses everything that
+never changes; see the tombstone above). Ask:
+
+```sh
+rg -o '\*\*[a-zA-Z /&-]+\*\* \*\(no (territory )?note yet\)\*' . --no-filename \
+  | sed 's/\*//g; s/ (no.*//' | sort | uniq -c | sort -rn
+```
+
+Currently: **renderer** (7 references — the largest crate in the family at ~14.5k lines across 19
+modules, so it is probably several territories, not one) · VT interpretation (`term.rs`) · grid &
+scrollback · input encoding · marker & decoration · a11y · hyperlinks · grapheme clusters · colour
+references & palette · cell geometry · CI & supply chain
+
+Line counts are deliberately not quoted here. `term.rs` went 4,893 → 3,682 across four days of #584
+slices; a number maintained by hand is the same defect as a roster maintained by hand, one size
+smaller. Ask instead:
+
+```sh
+find justerm-core/src justerm-renderer/src justerm-web/src -name '*.rs' -o -name '*.ts' | xargs wc -l | sort -rn | head
+```
 
 ### What the measurements found
 

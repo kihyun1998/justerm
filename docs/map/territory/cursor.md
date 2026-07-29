@@ -1,105 +1,39 @@
-# Territory — cursor
+# Aggregate — cursor
 
-## What it is
+**This note owns no detail.** It exists because *"the cursor"* names three separate concepts, and a
+request phrased that way is ambiguous across all three. Follow the links; the content lives there.
 
-Where the next glyph lands, what appearance it lands with, and what the consumer is told to draw as a
-caret. Three things share the name and only the first is obviously "the cursor":
+| Concept | Note | One line |
+|---|---|---|
+| Where the next glyph lands | [cursor position](cursor-position.md) | `row` / `col` + the deferred last-column wrap. Engine-internal |
+| What it looks like when it lands | [pen](pen.md) | the SGR template cell stamped into every printed cell |
+| What the consumer is told to draw | [caret report](caret-report.md) | visibility, shape, blink **mode** — reported, never animated |
 
-1. **Position** — `row` / `col`, plus the deferred-wrap state
-2. **Pen** — the current SGR appearance copied into each printed cell
-3. **Caret report** — visibility, shape and blink *mode*, reported on the frame; the engine never
-   animates
+## Why these three sit together
 
-## Governing decisions
+They share a **struct** and a set of **writing verbs**, not a purpose. `Cursor` holds the position
+and the `Pen`, and the print path touches both on every glyph — so a change to the print path meets
+all three at once even though nothing about their rules is shared.
 
-**None.**
+That is the whole relationship, and stating it is this note's only job. It is also the reason the
+three were written as one note first: sharing a struct reads like sharing a concept until you
+measure their blast radii, which turn out to have almost no overlap.
 
-This is the sharpest vertical hole measured in this repo: `cursor` is **mentioned in 19 of the 25
-ADRs and is the subject of none**. Grep says "well covered"; nothing governs it.
+## What splits them
 
-Adjacent records that do not govern it:
+Each answers to a different authority.
 
-- [ADR-0003 — damage model](../../adr/0003-damage-model-incremental-bounds.md) decides the damage
-  grain, and the cursor's old+new cell fold rides that mechanism — but the *rule* ("fold the last-acked
-  cursor cell in, but only when it moved") lives in a code comment, not in 0003
-- [ADR-0019 — cell composition model](../../adr/0019-cell-composition-model.md) governs how the
-  renderer resolves a cell's ink, which is where a cell-invert caret is realised — renderer-side, and
-  it does not decide what the engine reports
+- **Position** answers to the VT specification — DECOM, DECAWM, reverse wraparound, the deferred
+  wrap. Wrong here means a silently shifted screen.
+- **Pen** answers to the cell model — it is a template `Cell`, chosen so that enabling BCE later is a
+  switch rather than a refactor. Wrong here means wrong colours.
+- **Caret report** answers to the **consumer boundary** (ADR-0017) — mode crosses the wire, phase
+  does not. Wrong here means the caret ghosts, blinks when it should not, or is drawn on a viewport
+  the user is not looking at.
 
-## Design model
+## The trap this note records
 
-Read out of the source; there is no record to read instead.
-
-- **The pen is a template cell.** `Pen { fg, bg, flags, underline_color }`, and `Pen::cell(c)` stamps
-  it onto a glyph. Modelled after Alacritty deliberately: making erase (ED/EL) fill with `bg` instead
-  of `Default` *is* BCE (background colour erase), with no structural change.
-- **`underline_color` is in the pen but not in the cell.** The 12-byte cell is full, so the print path
-  stamps a non-default value into the row's ucolor map — see
-  [row-keyed side maps](../invariant/row-keyed-side-maps.md).
-- **`pending_wrap` is the deferred last-column wrap** (xterm's *wrapnext*). A print that fills the last
-  column leaves the cursor put and defers the wrap to the *next* print. Eager wrapping here is the
-  classic off-by-one that shifts every subsequent line.
-- **The engine reports the mode, never the animation.** `visible` (DEC ?25), `shape`
-  (DECSCUSR, `Block` default), `blink` (att610 ?12) are state; the blink phase is the consumer's.
-  **This is not a cursor rule** — it is ADR-0017's split applied to time-varying presentation, and it
-  has a second instance one attribute over: SGR 5 *text* blink stores a cell flag, the renderer
-  conceals on the phase it is handed, and the consumer owns the clock (#282 → #576). Two clocks, not
-  one: the caret's restarts on input, text's does not.
-- **The cursor is invisible while scrolled up** — the frame reports
-  `cursor_visible && display_offset == 0`.
-- **Position is clamped on set**, to `rows-1` / `cols-1`.
-- **Two cursors exist**: `cursor` and `saved_cursor`, the latter saved on alt-screen enter (DEC 1049)
-  and restored on leave.
-
-## Code
-
-- `justerm-core/src/cursor.rs` — `Pen`, `CursorShape`, `Cursor`, `Cursor::point` / `set_point`
-- `justerm-core/src/term.rs` — `Term::cursor`, `Term::frame_damage` (the old+new fold),
-  `Term::reset_damage` (advances `prev_cursor` — the ack is what defines "old"), `Term::write_glyph`
-  (pen → cell, ucolor stamp)
-
-## Reference behaviour
-
-In `docs/agents/reference-facts.md` — **linked, never restated** (each row is pinned to a `file:line`
-at a recorded SHA; a paraphrase drops the pin).
-
-- [Text blink — SGR 5](../../agents/reference-facts.md#text-blink--sgr-5-576-verified-2026-07-29)
-  — the sibling clock, and a **negative result** worth reading before assuming a default: only one of
-  the three references animates blinking text at all, and it ships the interval defaulting to `0`
-- [Cursor blink — who decides](../../agents/reference-facts.md#cursor-blink--who-decides-575-verified-2026-07-28)
-  — both references resolve blink from the **same two inputs** (the application's mode and the user's
-  setting) and the side that expressed an explicit intent wins; they differ only in which side carries
-  the three-state. justerm follows alacritty's placement, which is what ADR-0017 already implies and
-  needs no wire change
-- [What a blanked / freed cell is made of](../../agents/reference-facts.md#what-a-blanked--freed-cell-is-made-of)
-  — what the pen contributes to an erase fill, i.e. what turning on BCE would mean for `Pen`
-
-## Cross-cutting invariants
-
-- [row-keyed side maps](../invariant/row-keyed-side-maps.md) — `underline_color` reaches the row's
-  ucolor map, not the cell
-
-## Blast radius
-
-- [damage & viewport](damage-and-viewport.md) — a *pure* cursor move changes no cell content, so
-  `damage()` (content-only) misses it by design and `frame_damage()` folds in the old + current cells.
-  Changing either the fold or what `reset_damage` stores as `prev_cursor` produces caret ghosting
-- [wide glyph & soft wrap](wide-glyph-and-soft-wrap.md) — `pending_wrap` is the entry condition for
-  the wrap path, so wrap-rule changes meet the cursor here
-- **frame / wire** *(no note yet)* — visibility, shape and blink mode are frame fields; adding a caret
-  property is a wire-version question under ADR-0020
-- **renderer** *(no note yet)* — the caret is drawn there. Scalar policies (`setCursorContrast`,
-  `setCursorThickness`) are renderer-side and consume only what the frame reports
-
-## Known holes / open
-
-- **Zero governing records**, against the highest mention count in the ADR corpus. The rules most at
-  risk of being re-derived are `pending_wrap`'s deferral and the old+new damage fold — both currently
-  survive as code comments.
-- **"Cursor" names three things** (position / pen / caret report) and no artifact says so. A change
-  request phrased as "the cursor" is ambiguous across all three.
-- **Blink is split** — the engine reports the mode, the consumer owns the phase. ~~Nowhere recorded.~~
-  It *is* recorded, in `reference-facts.md` (#575) with both references compared and the ADR-0017
-  reasoning stated — this note claimed otherwise until it grew a `## Reference behaviour` section,
-  which is the argument for that section in one line: a map with nowhere to put verified external
-  facts does not merely omit them, it **reports holes that are not there**.
+*"Cursor"* is a **singular noun hiding a merge**. A territory named with an `&` announces that it
+covers two things and gets questioned; this one did not, and it went unnoticed until its three blast
+lists were written out separately and barely overlapped. When a note's own §Known holes says *"this
+name means three things"*, that is a split waiting to be done, not a documented quirk.

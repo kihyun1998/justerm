@@ -84,7 +84,7 @@ Check these after changing this territory:
 
 - [wide glyph & soft wrap](wide-glyph-and-soft-wrap.md) — `selection_text` performs the wrap join and
   drops the wide-wrap artefact, so a change to the pair/wrap rules changes extraction output
-- **frame / wire** *(no note yet)* — the highlight leaves as an overlay group, so ADR-0014's wire group
+- [frame & wire](frame-and-wire.md) — the highlight leaves as an overlay group, so ADR-0014's wire group
   is affected
 - [search & active match](search.md) — the active search match is painted **on top of** selection in
   its own colour, so the precedence between the two overlays is a single decision touching both

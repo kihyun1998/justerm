@@ -57,7 +57,7 @@ Non-derivable half — **maintained by hand on purpose, and this is the part no 
 Two sites satisfy the floor *without calling it*: `Term::end_wrap` and `Term::shift_region` argue it
 out in comments instead (*"on the alt screen `abs_floor()` is the screen top, so no join crosses the
 boundary at all"*). They belong to
-[wide glyph & soft wrap](../territory/wide-glyph-and-soft-wrap.md). A structural argument is a
+[soft wrap](../territory/soft-wrap.md). A structural argument is a
 legitimate way to hold the invariant, and it is permanently invisible to the grep above — which makes
 these the two entries most likely to be read as a *missing* floor and "fixed" into a redundant call.
 Update them by hand when the write path moves; never expect a tool to notice.
