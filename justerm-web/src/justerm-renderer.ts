@@ -40,7 +40,15 @@ export interface Theme {
    * match covers a selected cell, this fg paints over {@link activeMatchBg} — pick the two to
    * read on each other, or set {@link minimumContrastRatio}. */
   selectionForeground?: number;
-  /** Minimum fg/bg contrast ratio (WCAG, 1..21). Defaults to 1 (off, like xterm) (#225). */
+  /** Minimum fg/bg contrast ratio (WCAG, 1..21). Defaults to 1 (off, like xterm) (#225).
+   *
+   * Corrects against the background the cell composites to *within the canvas* — a highlight or
+   * decoration bg wins over the cell's own. It does **not** account for
+   * {@link JustermRendererOptions.bgAlpha}: the correction runs on the nominal opaque colour, so
+   * under a translucent background the real contrast against whatever is behind the canvas may be
+   * lower than the ratio asked for. That is not an oversight to fix here — xterm.js discards the
+   * background's alpha byte before computing luminance, and ghostty composites first and still uses
+   * only `bg.rgb`. None of the three can know what is behind the window. */
   minimumContrastRatio?: number;
   /** Draw bold text in the bright (8-15) ANSI colour — xterm's
    * drawBoldTextInBrightColors (#223). Defaults to true (xterm's default). */
@@ -89,6 +97,36 @@ export interface JustermRendererOptions {
    * {@link JustermRenderer.setTextBlinkInterval}.
    */
   textBlinkInterval?: number;
+  /**
+   * Background opacity: `0` fully transparent, `1` opaque (the default). Makes the terminal
+   * see-through to whatever is behind the canvas — the page, or a Tauri window's desktop — while
+   * glyph pixels stay fully opaque (#577, consumer half of #298).
+   *
+   * **The canvas must also have something to be see-through *to*.** The renderer only stops writing
+   * opaque background pixels; a page that paints an opaque colour behind the canvas will look
+   * exactly as it does today. Making the page/window transparent is consumer CSS, not the widget's,
+   * and it is the first thing to check when this appears to do nothing.
+   *
+   * Only cells carrying the **default** background are affected — a cell with an explicit SGR
+   * background, and the cursor cell, stay opaque. That is alacritty's rule (`compute_bg_alpha`
+   * returns `0.` only for the named background colour), and it is what keeps coloured output
+   * readable over an arbitrary desktop.
+   *
+   * **Widget chrome is not alpha-aware.** The scrollbar thumb is a translucent white
+   * (`rgba(255,255,255,0.25)`) over a track with no background of its own, which reads well against
+   * an opaque terminal and may not against a light desktop showing through at a low `bgAlpha`. Left
+   * as-is deliberately rather than fixed blind: no reference can arbitrate it (xterm.js uses the
+   * browser's native scrollbar; alacritty and ghostty draw no DOM chrome at all), and the failure
+   * needs a combination — low alpha, a transparent page, a light backdrop — that nobody has actually
+   * hit. If you build that combination, restyle the scrollbar from your side.
+   *
+   * Deliberately here rather than on {@link Theme}, though an alpha is the closest thing on this
+   * roster to a colour: it changes no palette entry, only how much of what is behind shows through.
+   * Both references put it outside the colour scheme too — xterm.js's `allowTransparency` is an
+   * option (`OptionsService.ts:47`), alacritty's `opacity` sits under `window`, not `colors`
+   * (`config/window.rs:46`). Change it at runtime with {@link JustermRenderer.setBgAlpha}.
+   */
+  bgAlpha?: number;
   theme: Theme;
 }
 
@@ -147,6 +185,10 @@ export interface RendererBackend {
   setBoldToBright(enabled: boolean): void;
   setMinimumContrastRatio(ratio: number): void;
   setSelectionForeground(color: number | undefined): void;
+  /** Background cell opacity, `0`..`1` (#298). The renderer clamps; it is read at *draw* time
+   * (the clear colour and a shader uniform), not at pack time, so unlike `setBoldToBright` this
+   * needs no re-pack — a bare `render` presents it. */
+  setBgAlpha(alpha: number): void;
   /** Re-bake the atlas at a new font size (CSS px) / family (#406/#413). The cell size moves, so the
    * consumer must re-fit. A no-op if unchanged; a non-finite / `<1` size is guarded by the renderer. */
   setFontSize(cssPx: number): void;
@@ -424,6 +466,10 @@ export class JustermRenderer implements Renderer {
     backend.setBoldToBright(t.boldToBright ?? true);
     backend.setMinimumContrastRatio(t.minimumContrastRatio ?? 1);
     backend.setSelectionForeground(t.selectionForeground);
+    // Background opacity (#577). Set unconditionally at the renderer's own default, so the value the
+    // renderer holds is the one this object states rather than one nobody wrote down. No `render`
+    // here — nothing has been drawn yet, and the first frame presents it.
+    backend.setBgAlpha(opts.bgAlpha ?? 1);
     // Font family + size (#406/#413, wired #417). Applied before the first fit, so the initial grid
     // is computed at the consumer's cell. Each is a no-op at the renderer's default (monospace/16).
     backend.setFontFamily(opts.fontFamily);
@@ -505,10 +551,38 @@ export class JustermRenderer implements Renderer {
     this.backend.setFontFamily(family);
   }
 
+  /**
+   * Change the background opacity at runtime (#577) — `0` transparent, `1` opaque. The live
+   * counterpart of {@link JustermRendererOptions.bgAlpha}, whose doc carries the full contract
+   * (which cells it reaches, and the consumer CSS it depends on to be visible at all).
+   *
+   * **No re-fit**, unlike {@link setFontSize}/{@link setFontFamily}: the cell geometry does not
+   * move, so the grid the consumer drives its engine at is unaffected.
+   *
+   * Presents immediately, and — unlike {@link setCursorBlink} / {@link setTextBlinkInterval}, which
+   * first check that there is a cursor or a frame to redraw — does so unconditionally. Those guards
+   * exist because their redraw has nothing to say without retained content; this one always does.
+   * The alpha rides the *clear* colour as well as the per-cell one (`webgl.rs` `draw`), so even an
+   * empty terminal changes, and a consumer that sets this before the first frame sees it at once
+   * rather than at the next output.
+   *
+   * Out-of-range values are the renderer's to clamp (`set_bg_alpha`, `[0,1]`) and are deliberately
+   * not re-clamped here — two layers holding the same bound is how they drift apart.
+   */
+  setBgAlpha(alpha: number): void {
+    this.backend.setBgAlpha(alpha);
+    this.backend.render();
+  }
+
   /** Swap the colour scheme at runtime (#420) — rebuild the 256-colour palette from the new ANSI
    * colours and push it (+ the theme's policy colours) to the renderer, which re-resolves every
    * retained cell in wasm. No re-fit needed (the cell geometry is unchanged); it presents on the
-   * render below. The a11y cell mirror reads only text, so it needs no re-notification. */
+   * render below. The a11y cell mirror reads only text, so it needs no re-notification.
+   *
+   * **Leaves {@link setBgAlpha} alone**, which is the point of keeping the alpha off {@link Theme}
+   * (#577): swapping the colour scheme does not silently make a translucent terminal opaque again.
+   * Stated because it is a property of where the field lives rather than of any code here — nothing
+   * in this method would have to change for it to be false. */
   setTheme(theme: Theme): void {
     const colors = this.buildPalette(Uint32Array.from(theme.ansi));
     this.palette = { colors, defaultFg: theme.defaultFg, defaultBg: theme.defaultBg };
