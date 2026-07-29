@@ -405,6 +405,28 @@ xterm. But copying the rule required copying its premise: xterm's dispose is saf
 nothing is expected to come back. #606 therefore had to **declare** `Terminal.dispose()` end-of-life
 (and make `mount()` throw afterwards) rather than inherit the behaviour and hope. A reference read
 without its enabling condition is how a correct rule lands in a codebase that cannot support it.
+## Per-cell payload length — nobody caps it, but one fails loudly (#621, verified 2026-07-29)
+
+Added 2026-07-29 while filing #621. Every row grepped at the pinned SHAs that day. The occasion:
+justerm's wire writes the grapheme cluster and the OSC 8 URI behind `u16` length prefixes
+(`serialize.rs`), and nothing on the producing side bounds either — so `feed()`ing 70000 combining
+marks produces a frame whose own `decode` answers `Err(BadTag)`.
+
+**The question is not "should a terminal cap cluster length".** No reference does, so capping in the
+engine would be justerm drifting alone *and* would discard Unicode material this engine exists to
+carry. The useful split is what happens when the storage cannot take it: two references cannot run
+out, and the one that can **returns an error rather than truncating**. That is the row that bears on
+the choice in #621, and it points at making the failure visible rather than at shrinking the input.
+
+| Fact | Reference | Site |
+|---|---|---|
+| Appends to a JS string with no cap and no failure mode — *"we already have a combined string, simply add"*. Growth is bounded only by the engine's own memory | xterm.js | `common/buffer/BufferLine.ts:263-265` |
+| `push_zerowidth` pushes onto an unbounded `Vec<char>` behind the cell's `extra`; no length check at the write site | alacritty | `term/cell.rs:164-166` |
+| ⚠ The closest thing to a bound in any reference, and it is **not a length cap**: the grapheme arena can run out, and ghostty converts that into a *named, propagated error* rather than truncating — the comment on the branch reads *"The grapheme alloc capacity needs to be increased"*, i.e. it is treated as a capacity to raise, not a limit to enforce | ghostty | `terminal/page.zig:1520-1523` |
+
+The direction that falls out: 3 of 3 leave the *input* unbounded, and the only one with a hard
+storage limit surfaces it as an error. justerm's current behaviour — encode silently emits a length
+its own decoder rejects — matches none of them, and is the one shape all three avoid.
 
 ## Renderer ink channels
 
