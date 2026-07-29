@@ -19,6 +19,13 @@ on:
 permissions:
   contents: read
 
+# Pinned so the tool that builds the wasm is the same one every run (#616) — see the long
+# rationale in publish-renderer.yml. Nothing watches this string (Dependabot does not read
+# `run:` lines), so two things stand in: `.github/scripts/check-tool-pins.mjs` keeps the copies
+# identical on every PR, and `docs/agents/release.md` carries the decision of when to move it.
+env:
+  WASM_PACK_VERSION: "0.15.0"
+
 jobs:
   publish:
     runs-on: ubuntu-latest
@@ -38,7 +45,7 @@ jobs:
       - name: Add wasm32 target
         run: rustup target add wasm32-unknown-unknown
       - name: Install wasm-pack
-        run: cargo install wasm-pack --locked
+        run: cargo install wasm-pack --locked --version "${{ env.WASM_PACK_VERSION }}"
 
       # Bundler target is the published artifact (PenTerm's Vite/webpack consumes it).
       # finish-pkg folds in the hand-written colour helpers (colors.js/.d.ts).

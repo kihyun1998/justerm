@@ -26,6 +26,29 @@ bump. So map the change to the version like this (pre-1.0 / 0.x semver):
 
 ## Cut a release (what the maintainer/agent does)
 
+**Before any of the three tracks: consider the pinned build tool (#616).** The three publish/test
+workflows pin `WASM_PACK_VERSION` in a workflow-level `env:` block. That the three copies *agree* is
+gated (`.github/scripts/check-tool-pins.mjs`, every PR); whether the number should *move* is not, and
+cannot be — Dependabot never reads a `run:` line (measured: `git log -S "cargo install wasm-pack"`
+returns three commits, all human). This paragraph is that missing half.
+
+```sh
+cargo search wasm-pack --limit 1              # what crates.io serves now
+rg -n 'WASM_PACK_VERSION' .github/workflows/  # what we build with
+```
+
+**Being behind crates.io is not by itself a reason to bump**, and this is the one place it is easy to
+get backwards. While the pin equals the version the GitHub runner image ships, the install
+short-circuits in ~0.2s; any other value makes cargo build wasm-pack from source, and the two publish
+jobs pay that **uncached** — they drop the cache action on purpose to keep `NPM_TOKEN` away from a
+third-party action. So moving the pin ahead of the image buys a newer tool at the cost of a cold
+compile inside the token-holding job, at tag time.
+
+Bump when there is a reason to (a fix you need, a `wasm-bindgen` floor, a security advisory), in the
+**release-prep PR** so CI proves the new tool builds — never at tag time, where a failure costs a
+re-tag. Staying put is a valid answer; not looking is not, which is the state #616 found (crates.io
+on 0.15.0 while a maintainer's local proofs ran on 0.14.0).
+
 1. Bump `[workspace.package] version` in `Cargo.toml`; refresh the lock (`cargo check --workspace`).
 2. Gate **the whole workspace** (not just the core crate): `cargo test --workspace` green,
    `cargo clippy --workspace --all-targets` clean. The `--workspace` is load-bearing — a bare

@@ -5,6 +5,23 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+  # justerm-renderer is EXCLUDED from the root workspace, so the entry above has never reached it —
+  # measured from Dependabot's own history, which touches root `Cargo.toml`/`Cargo.lock` and the
+  # workflows and nothing under `justerm-renderer/`, `fuzz/` or `justerm-facade/`. That left the one
+  # crate shipping a compiled binary to a registry as the only one whose eight direct dependencies
+  # nobody watched (#616).
+  #
+  # Two earlier changes are what make this entry work at all: #608 gave the crate its own
+  # `[workspace]`, so this directory is a self-contained root, and #613 tracked its `Cargo.lock` —
+  # without a lockfile the cargo updater can only move declared requirements, never transitives.
+  #
+  # Cost, stated because it is not zero: `test.yml` runs on every pull_request with no path filter,
+  # so each bump PR runs `renderer-proofs` too, which its own comment documents as
+  # environment-sensitive by construction (runner fonts, SwiftShader).
+  - package-ecosystem: "cargo"
+    directory: "/justerm-renderer"
+    schedule:
+      interval: "weekly"
   # The GitHub Actions used by the test + supply-chain workflows. With actions pinned to commit
   # SHAs (ADR-0006), this is what makes SHA-pinning cheap: Dependabot opens the bump PR with the
   # new SHA and a version comment, so pins stay both immutable and up to date.
