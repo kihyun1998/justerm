@@ -972,6 +972,62 @@ fn engine_frame_round_trips_real_captures() {
     }
 }
 
+/// The same round-trip over the two axes the corpus above structurally cannot
+/// contain: OSC 8 hyperlinks and combining clusters (#621,
+/// `fixtures/capture-hyperlink.sh`).
+///
+/// Measured before these fixtures existed: replaying **all ten** checked-in
+/// captures at 80×24 yielded `combining cells 0, linked cells 0, link_table 0`
+/// — every one of them. So the test above was green through the entire v13→v14
+/// wire change while asserting nothing about it. The cause is structural, not
+/// an oversight in what was recorded: the corpus is full-screen TUIs, and a TUI
+/// emits neither. (Same shape as #554, one axis over.)
+///
+/// The round trip is the witness *and the char grid is not*: a combining mark is
+/// not in the grid at all — the grid holds the base codepoint and the marks live
+/// in the row's side map — so a char-grid golden is blind to exactly what this
+/// capture is for. `Frame` equality compares the combining and link maps and the
+/// presence bits `decode` re-arms, which is what #621 moved.
+#[test]
+fn engine_frame_round_trips_hyperlink_and_combining_captures() {
+    let mut term = Engine::new(80, 24);
+    term.feed(include_bytes!("fixtures/hyperlink_combining.raw"));
+    let f = term.frame();
+
+    // The capture must still carry the material, or this test quietly becomes the
+    // one it was written to replace. Counted, not assumed.
+    let linked: usize = f.spans.iter().map(|s| s.links.len()).sum();
+    let combining: usize = f.spans.iter().map(|s| s.combining.len()).sum();
+    assert!(linked > 0 && combining > 0, "capture lost its material");
+    assert!(
+        f.link_table.len() < linked,
+        "one URI is deliberately repeated across cells and rows, so the interned \
+         table must be strictly smaller than the linked-cell count — this ratio is \
+         what makes the capture able to tell the two candidate wire shapes apart",
+    );
+    // The combination neither axis reaches alone: a column keyed in *both* sparse
+    // groups. They are keyed the same way, so this is where their keying can
+    // disagree, and no single-feature fixture produces it.
+    assert!(
+        f.spans
+            .iter()
+            .any(|s| s.links.keys().any(|c| s.combining.contains_key(c))),
+        "capture must carry a cell that is both linked and combining",
+    );
+    assert_eq!(decode(&encode(&f)).expect("decode"), f);
+
+    // And the real application's own bytes, so the shape is not only one the
+    // capture script believes in.
+    let mut term = Engine::new(80, 24);
+    term.feed(include_bytes!("fixtures/ls_hyperlink.raw"));
+    let f = term.frame();
+    assert!(
+        f.spans.iter().map(|s| s.links.len()).sum::<usize>() > 0,
+        "real `ls --hyperlink` capture lost its links",
+    );
+    assert_eq!(decode(&encode(&f)).expect("decode"), f);
+}
+
 /// A crafted frame whose span has left > right must be a clean error, not a
 /// u16-underflow panic — decode consumes untrusted bytes off a transport.
 #[test]
