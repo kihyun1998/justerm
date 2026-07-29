@@ -80,9 +80,12 @@ web release too. The `v*` track's "public Rust API" wording above is correct **f
 
 Cut a renderer release:
 
-1. Bump `version` in `justerm-renderer/Cargo.toml`.
+1. Bump `version` in `justerm-renderer/Cargo.toml`, and **commit the `Cargo.lock` the bump rewrites**
+   (this crate's lock is tracked since #613 — the version line lives in it too). The publish job
+   asserts the two agree and refuses the tag if they do not.
 2. Gate the renderer (out of every cargo umbrella — see `docs/agents/theflow.md` §gate matrix):
    `cargo fmt/test/clippy/build --manifest-path justerm-renderer/Cargo.toml` + `pnpm test:proofs`.
+   The `test` step carries `--locked`, so a forgotten lock refresh fails here rather than at the tag.
 3. Commit, then tag: `git tag -a renderer-vX.Y.Z -m "renderer-vX.Y.Z — …"`.
 4. Push the tag: `git push origin renderer-vX.Y.Z`.
 

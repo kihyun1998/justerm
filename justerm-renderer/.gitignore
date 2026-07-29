@@ -1,6 +1,11 @@
 /target
 /pkg
-Cargo.lock
+# `Cargo.lock` is TRACKED (#613) — it was ignored here from the scaffold commit (#259) with no
+# rationale, which left the one crate that ships a compiled binary to a registry as the only one
+# whose dependency graph was resolved fresh at every publish. Nothing consumes this crate as a Rust
+# library (`publish = false`; see docs/agents/release.md), so the "libraries do not commit a lock"
+# convention does not apply — what npm receives is the build output, and the lock is the only record
+# of what went into it.
 # The headless proof runner (#328). `pnpm-lock.yaml` stays tracked.
 /node_modules
 /test-results
