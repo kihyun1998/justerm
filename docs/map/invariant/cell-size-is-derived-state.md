@@ -66,29 +66,36 @@ renderer keeps drawing correctly — it is the consumer's arithmetic that is wro
   fed it CSS-px `clientX`/`clientY`, so every click was off by the device pixel ratio on a Retina
   display (#578). This one is not even time-dependent — it was wrong from the first click.
 
+## The roster lives in the spine, not here
+
+**Which issues are instances is tracked on spine #630, deliberately.** This note holds the rule; the
+roster is a different kind of fact and wants a different home.
+
+That split is not a preference — it is #552's measured result, recorded in
+[theflow.md](../../agents/theflow.md): a hand-copied roster inside ADR-0025 *went stale in five places
+within three days* while the rule itself (D1–D4) needed no edit. A roster wants a mutable home and a
+rule wants an immutable one, so they separate **even after the rule exists**. Copying the instance list
+into this file would reproduce exactly the failure that observation is about.
+
+What the spine carries and this note deliberately does not: the current instance list, the recurrence
+sites, and the open question (*what should an invalidation signal look like?*).
+
 ## Discovery history
 
-Recorded because the shape of the discovery is the argument for writing it down: **each instance was
-found while doing something else, and none of them was found by the layer that owns the cell.**
+Kept here because it is about the *rule*, not about who is currently on the list: **every instance so
+far was found while doing something else, and none was found by the layer that owns the cell.**
 
 - **#417** wired `setFontSize`/`setFontFamily` and established the consumer-re-fits contract in a
-  doc-comment. The contract was right; it was pinned to two setters rather than to the cell.
+  doc-comment. The contract was right; it was pinned to two setters rather than to the cell — which is
+  why adding two more setters found readers nobody had re-checked.
 - **#547** floored the fit at `MINIMUM_COLS`/`MINIMUM_ROWS` after a 1-column proposal desynchronised
-  the engine from the renderer — the same silent-desync failure, reached from the box side.
-- **#578** added two more setters and found the stale-cache and deduped-flush instances *while
-  looking for something else* — the adversarial pass asked "which readers did you not check?", not
-  "is there a bug in the textarea".
-- **#325** is the fifth setter and is still unwired, so it will arrive with the same obligation.
+  the engine from the renderer — the same silent-desync failure, reached from the box side instead of
+  the cell side.
+- **#578** added two setters and found two stale readers *while looking for something else*: the
+  adversarial pass asked "which readers of the cell did you not check?", not "is there a bug in the
+  textarea". It also found the unit half — a published README example that had been dividing CSS-px
+  pointer coordinates by a device-px cell.
 
-## Where it will recur
-
-- **#325** (`setDevicePixelRatio`) — the cell's fourth input, and the only one that moves without a
-  consumer asking. A resolution change is the case where nobody calls a setter at all.
-- **#580** (cursor contrast / thickness) — *not* an instance, and worth saying so: those are draw-time
-  scalars that leave the cell alone. The tell for membership is whether the value reaches
-  `recompute_cell`.
-- **#579** (context-loss surface) — a spacing change while the context is lost stores the policy and
-  defers the cell move to `restore()`, so the consumer's re-fit runs against the *old* cell and the
-  correction arrives with no signal.
-- **#287** (multi-viewport) — one context serving N grids means N cells; a per-grid cell change would
-  need this invariant expressed per viewport rather than per renderer.
+The membership test, so the list can be derived rather than remembered: **does the value reach
+`recompute_cell`?** `setCursorContrast`/`setCursorThickness` (#580) do not — they are draw-time scalars
+and are not instances, which is worth stating because they look like near neighbours.

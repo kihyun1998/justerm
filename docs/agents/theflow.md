@@ -717,6 +717,19 @@ a fresh decision. This table is also the **spine preemption check** the filing s
 runs: an area listed here already has the home a spine would provide, so a new
 sibling attaches to the record instead of opening an anchor beside it.
 
+**Only a decision record preempts a spine — a `docs/map/invariant/` note does not, and the
+temptation to read it as one is real enough to have happened (#578).** The two look
+interchangeable from a distance: both name a cross-cutting fact, both list where it
+holds. But a map note is *descriptive* and belongs in a file, while a roster is *current
+state* and belongs somewhere editable — which is #552's measured result, not a
+preference: a hand-copied roster inside ADR-0025 went stale in five places in three
+days while D1–D4 needed no edit. So a map note and a spine are **complements**, and the
+split is the rule they encode — the note keeps the fact, the spine keeps who is on the
+list and what is not yet decided. Writing the roster into the note reproduces exactly the
+failure #552 exists to record. Live case: the note
+[the cell size is derived state](../map/invariant/cell-size-is-derived-state.md) with
+spine **#630**.
+
 | Area | Record | State |
 |---|---|---|
 | Renderer **cell composition** (a cell's bg / fg / ink) | **ADR-0019** | Recorded. Open questions here resolve *against the model*; a combination it cannot answer is an amendment |
