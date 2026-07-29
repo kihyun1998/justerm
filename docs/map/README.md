@@ -78,8 +78,10 @@ owns no detail of its own.
   [caret report](territory/caret-report.md) ·
   [cursor position](territory/cursor-position.md) ·
   [damage](territory/damage.md) ·
+  [decoration](territory/decoration.md) ·
   [frame](territory/frame.md) ·
   [logical lines](territory/logical-lines.md) ·
+  [marker](territory/marker.md) ·
   [pen](territory/pen.md) ·
   [published surface](territory/published-surface.md) ·
   [release](territory/release.md) ·
