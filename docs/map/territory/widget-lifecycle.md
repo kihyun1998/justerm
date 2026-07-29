@@ -18,40 +18,65 @@ perfectly good teardown handle, and no artifact says whose job it is to call the
 
 ## Design model
 
-There is no model yet — which is the finding, not a gap in this note. What exists is an inventory,
-measured 2026-07-29:
+**One rule is settled (#606); the rest of the inventory is still unowned.**
+
+- **What the widget is handed, the widget ends.** `Terminal` receives exactly three things
+  (`source`, `renderer`, `options`), and `dispose()` now releases all of them: both `FrameSource`
+  subscriptions, its own DOM listeners, and — since #606 — the renderer, through an optional
+  `dispose?()` on the `Renderer` port. Derived, not invented: xterm.js disposes each
+  consumer-constructed addon from `Terminal.dispose()`, and this repo's other injected port already
+  worked this way through the `Unsubscribe` it returns. See
+  [reference behaviour](#reference-behaviour).
+- **`Terminal.dispose()` is end of life, not unmount.** `mount()` after it throws. Declared rather
+  than left open because the alternative was already broken: `textareaCell` survives disposal (a
+  remounted widget parks the IME candidate window at the canvas origin until the cursor moves), and a
+  re-mounted renderer would have lost its `prefers-reduced-motion` listener permanently — its only
+  registration is in a private constructor.
+- **It stops work, not memory.** The renderer's wasm instance, GL context, glyph atlas and the
+  canvas context-loss listeners its Rust side owns all survive `dispose()`; they belong to the
+  binding's `free()`, which is unsafe while the consumer still holds the object.
+
+Inventory, re-measured 2026-07-29 — the sweep #605 asked for:
 
 | Ambient work | teardown handle | who calls it |
 |---|---|---|
-| the renderer's rAF blink loop + reduced-motion listener | `dispose()` | **nobody** |
-| the scrollbar | `dispose()` | the consumer |
-| resize observation | returns a disposer | the consumer |
+| the renderer's rAF blink loop + reduced-motion listener | `dispose()` | **`Terminal`** (#606) |
 | input attachment | returns a disposer | `Terminal`, via `detach` |
-| the a11y controller and accessible view | `dispose()` | the consumer |
+| the frame source's two subscriptions | returns `Unsubscribe` | `Terminal` |
+| the scrollbar's window listeners | `dispose()` | nobody |
+| resize observation | returns a disposer | nobody — the demo writes `void disposeFit;` |
+| the a11y controller's announce timer | `dispose()` | nobody |
+| the accessible view's keydown | **none** | — |
+| the search debounce | **none** | — |
 
-- **`Terminal.dispose()` tears down exactly what `Terminal` itself attached** — its own listeners and
-  the input attachment — and nothing else. That is a defensible scope; the problem is that no other
-  scope exists.
-- **The renderer's loop is unreachable by construction.** `dispose` is not on the `Renderer` port, so
-  `Terminal` *cannot* call it even if it wanted to. This is a **type-level** obstacle, not an
-  oversight in a call site, which is why it survives review.
-- **The obligation is currently split three ways** — `Terminal`, the consumer, and nobody — with no
-  document stating the division. A consumer that disposes the widget and expects the page to go quiet
-  gets a rAF loop that keeps running.
+- **The remaining rows share one cause and it is not the renderer's.** Every collaborator above is
+  consumer-constructed and exported individually; the only thing with a `dispose()` a consumer is
+  plausibly told to call is `Terminal`, and it owns only what it builds. **There is no composition
+  root.** Measured: every `.dispose()` call in production code is a *decoration handle*
+  (`lineDecoration`, `full`, `gutter`) — no collaborator lifecycle is ended anywhere, and
+  `Terminal.dispose()` itself is called nowhere outside tests.
+- **Why #606 was separable from that.** The renderer's was the only row a consumer could not close by
+  discipline: `dispose` was not on the port, a **type-level** obstacle rather than a missing call.
+  The rest are callable and uncalled, which is a different question — tracked on the spine #605.
 
 ## Code
 
 - `justerm-web/src/terminal.ts` — `Terminal`, `dispose`, and the listeners it owns
+- `justerm-web/src/renderer.ts` — the port, and the `dispose?()` that made the renderer reachable
 - `justerm-web/src/justerm-renderer.ts` — the rAF blink loop and the reduced-motion listener, and
-  its own `dispose` that nothing reaches
+  the `dispose` `Terminal` now calls
 - `justerm-web/src/scrollbar.ts` · `fit.ts` — collaborators with their own disposers
 - `justerm-web/src/accessibility-dom.ts` — the a11y timers and their teardown
 
 ## Reference behaviour
 
-**None** in `docs/agents/reference-facts.md`. How xterm.js composes teardown across its addons —
-whether a single `dispose` cascades, and what it guarantees about ambient work — has never been
-checked, and it is the closest available prior art for exactly this problem.
+In `docs/agents/reference-facts.md` — **linked, never restated**.
+
+- [Who ends a component the consumer handed over](../../agents/reference-facts.md#widget-teardown--who-ends-a-handed-over-component-606-verified-2026-07-29)
+  — xterm.js disposes each consumer-constructed addon from `Terminal.dispose()`, idempotently, and
+  its lifecycle is one-shot by construction. That last part is a **condition** on the rule, not
+  decoration: the reference is safe to copy only because its dispose is end-of-life, which is why
+  #606 had to declare the same thing rather than assume it.
 
 ## Cross-cutting invariants
 
@@ -76,10 +101,12 @@ than of any one collaborator.
 
 ## Known holes / open
 
-- **The whole territory is a hole.** There is an inventory and no model, so every entry above is a
-  convention rather than a contract. Deciding the ownership is tracked in #605.
-- **`Terminal.dispose()` cannot reach the renderer's blink loop**, because `dispose` is not on the
-  `Renderer` port — so this is not fixable at a call site without changing the type. Tracked: #606.
+- **One rule now exists; the territory is still mostly convention.** #606 settled what happens to
+  what the widget is *handed*. Six collaborators the consumer keeps have teardown nobody calls, and
+  two have none at all — that is a **composition-root** question, still tracked on #605.
+- ~~`Terminal.dispose()` cannot reach the renderer's blink loop.~~ Closed by #606: `dispose?()` is on
+  the `Renderer` port and `Terminal.dispose()` calls it, proven in a real browser by counting the
+  loop's presenting rAF turns before (>0) and after (0) disposal.
 - **Neither blink loop pauses when the terminal is off-screen**, so a backgrounded tab keeps
   animating. Tracked: #607.
 - **No reference comparison** for teardown composition, which is the one thing a widget library is

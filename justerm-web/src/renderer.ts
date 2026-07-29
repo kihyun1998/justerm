@@ -38,4 +38,36 @@ export interface Renderer {
    * browser-side fact the engine never sees. Optional: a renderer with no cursor may omit it.
    */
   setComposing?(composing: boolean): void;
+  /**
+   * Release what the renderer runs on its own behalf — its animation loop and any listener it
+   * registered (#606). Called by {@link import("./terminal").Terminal.dispose}, **once**.
+   *
+   * **Why the widget calls this on an object it did not construct.** The consumer builds the
+   * renderer and hands it over; the widget then drives it, and the renderer starts clocks *because*
+   * it was driven — a rAF blink loop, a `prefers-reduced-motion` listener that redraws. Unsubscribing
+   * from the frame source stops frames, not those. So without this the widget can be disposed and
+   * its canvas still repaint. Both references for "who ends a handed-over component" answer the same
+   * way: xterm.js disposes each consumer-constructed addon from `Terminal.dispose()`
+   * (`common/public/AddonManager.ts` `dispose()` → `instance.dispose()`), and this port's sibling,
+   * `FrameSource`, already gets the same treatment through the `Unsubscribe` it returns — it simply
+   * handed the widget a means, and this one did not.
+   *
+   * **`Terminal.dispose()` is end of life, not unmount.** After it, the widget refuses to mount
+   * again, so this is called once per widget and a renderer is not expected to come back. Reusing
+   * one renderer across two Terminals is therefore not supported: the second `dispose()` would end a
+   * renderer the first widget still holds.
+   *
+   * **Implementations must be idempotent** — a consumer that also calls `dispose()` on the renderer
+   * it built must not be punished for it. (xterm.js buys this by wrapping the addon's own method
+   * behind an `isDisposed` guard; this port asks for it instead of imposing a wrapper.)
+   *
+   * **What this does NOT promise.** It stops *work*, not *memory*: the concrete
+   * {@link import("./justerm-renderer").JustermRenderer} keeps its wasm instance, GL context, glyph
+   * atlas and the canvas context-loss listeners its Rust side owns — those are released by the wasm
+   * binding's `free()`, which cannot be called while the consumer still holds the object. A renderer
+   * that needs to release GPU resources should say so in its own docs.
+   *
+   * Optional: a renderer with nothing of its own to end (the test fake) may omit it.
+   */
+  dispose?(): void;
 }

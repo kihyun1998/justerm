@@ -1141,3 +1141,23 @@ test("prefers-reduced-motion pins blinking text visible (#576)", async ({ page }
   expect(p.defaultA, `background ${p.background}`).not.toBe(p.background);
   expect(seen).toEqual(new Set([p.defaultA]));
 });
+
+// #606: `Terminal.dispose()` is end of life, and the renderer it was handed must stop with it. The
+// unit tests prove the widget *calls* dispose on a fake; this is the only place the consequence is
+// observable — the rAF loop is real and it is what repaints the canvas. Counted rather than sampled
+// for colour: a rAF turn the loop presented in reads as a pixel, one it skipped reads black, so
+// "presents per 1.5s" is measurable and the claim (zero, after dispose) cannot pass by luck.
+test("a disposed widget stops the renderer it was handed (#606)", async ({ page }) => {
+  await page.goto("/");
+  await expect(page.getByRole("button", { name: "Cursor blink: OFF" })).toBeVisible();
+
+  const p = await page.evaluate(() => window.__disposeProbe!());
+
+  // Control: the loop really is presenting while the widget is alive, or the assertion below would
+  // hold for a renderer that never drew anything.
+  expect(p.beforeDispose).toBeGreaterThan(0);
+
+  // THE FIX: nothing the widget started reaches the renderer any more. Before #606 the widget could
+  // not have stopped it even if it wanted to — `dispose` was not on the `Renderer` port.
+  expect(p.afterDispose).toBe(0);
+});
