@@ -44,7 +44,8 @@ an ink scan of the font's `█`.
 - `justerm-renderer/src/dpr.rs` — `css_px`, `grid_px`, the device↔CSS derivation
 - `justerm-renderer/src/webgl.rs` — `css_cell_width`, `css_cell_height`, `css_width`, `css_height`,
   `cols`, `rows`, `set_font_size`, `set_font_family`, `set_line_height`, `set_letter_spacing`,
-  `set_device_pixel_ratio` — eleven of the crate's thirty-three exports
+  `set_device_pixel_ratio` — the largest single share of the crate's wasm exports
+  (`rg -c '#\[wasm_bindgen' justerm-renderer/src/webgl.rs` for the total)
 
 ## Reference behaviour
 

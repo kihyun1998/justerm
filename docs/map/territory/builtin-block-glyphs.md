@@ -6,8 +6,9 @@
 font, **to the cell instead of to the ink box**. They are the characters TUIs use to tile a region,
 and tiling is exactly what breaks when a glyph is drawn to its own bounds.
 
-At 2,831 lines this is the **second-largest module in the family and the largest with no governing
-record at all**.
+It is the **second-largest module in the family and the largest with no governing record at all**
+— `find justerm-renderer/src -name '*.rs' | xargs wc -l | sort -rn` for the current ranking, since
+a line count written here is a stored answer to a question a command answers better.
 
 ## Governing decisions
 
@@ -68,7 +69,7 @@ is unusually clean and it is currently unverifiable.
 
 ## Known holes / open
 
-- **2,831 lines with zero governing records and zero public surface.** Nothing about it is
+- **Thousands of lines with zero governing records and zero public surface.** Nothing about it is
   addressable from outside, and nothing decides it — the largest ungoverned mass measured in this
   family.
 - **The reference agreement is quoted, not pinned.** Two named symbols in two upstream projects,

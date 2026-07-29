@@ -12,7 +12,9 @@ The first territory in this map that lives **outside `justerm-core`**.
 ## Governing decisions
 
 - [**ADR-0024 — decoration projection and precedence**](../../adr/0024-decoration-projection-and-precedence.md)
-  — R1 through R6, the whole model. *(Status: proposed)*
+  — R1 through R6, the whole model. **Check its `Status:` line before relying on it** — that line
+  is authoritative and is deliberately not copied here (`CLAUDE.md`: a status copied into another
+  document has no gate and goes stale silently)
 - [ADR-0019 — cell composition model](../../adr/0019-cell-composition-model.md) — decoration colours
   enter the renderer's layer stack under this model; 0024 opens by placing itself on **the axis
   ADR-0019 explicitly put out of its own scope**
@@ -71,8 +73,10 @@ inside a record rather than a pinned row that survives an upstream move.
 
 ## Known holes / open
 
-- **ADR-0024 is still `proposed`.** The model is implemented and shipping; the record has not been
-  accepted, so the strongest statement available about this territory is a proposal.
+- **The governing record may still be a proposal while the model ships.** Read ADR-0024's
+  `Status:` line rather than trusting this sentence — but if it is still `proposed`, the
+  strongest statement available about this territory is a proposal, and that is worth knowing
+  before treating R1–R6 as settled.
 - **No pinned reference comparison** (§Reference behaviour) for a model that carries a *declared
   divergence* (R4) — the divergence is argued inside the record and nothing re-checks it.
 - **The consumer half is spread across two crates and mapped by neither.** `justerm-web` and

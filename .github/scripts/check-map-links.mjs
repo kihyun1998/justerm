@@ -151,6 +151,29 @@ if (existsSync(join(MAP_ROOT, 'invariant'))) {
   }
 }
 
+// A decision record's `Status:` line is authoritative and must not be copied into the map.
+//
+// CLAUDE.md states the rule and the reason: a status copied elsewhere has no gate, so it goes stale
+// silently — which already happened once, when CLAUDE.md itself called four accepted ADRs "proposed"
+// for five days. The map re-introduced it anyway (a territory note carrying "*(Status: proposed)*"),
+// which is why this is a gate rather than a convention: the pull toward restating a status is strong
+// because the status is genuinely load-bearing when a shipping model is governed by a proposal.
+// Say "check its Status line" instead.
+for (const file of markdownFiles(MAP_ROOT)) {
+  const body = readFileSync(file, 'utf8')
+    .replace(/```[\s\S]*?```/g, (m) => ' '.repeat(m.length))
+    .replace(/`[^`\n]*`/g, (m) => ' '.repeat(m.length));
+  // "ADR-0024 ... proposed" / "proposed ... ADR-0024" within one sentence
+  for (const m of body.matchAll(
+    /(ADR-\d{4}[^.\n]{0,120}?\b(?:is |still |remains |currently )(?:proposed|accepted)\b|\bStatus:\s*(?:proposed|accepted))/gi,
+  )) {
+    problems.push(
+      `${file}: restates a decision record's status — "${m[0].trim().slice(0, 70)}"\n` +
+        `    (the ADR's own Status: line is authoritative; a copy here has no gate. Say "check its Status line")`,
+    );
+  }
+}
+
 if (problems.length > 0) {
   console.error(`check-map-links: ${problems.length} problem(s) of ${checked} links checked\n`);
   for (const p of problems) console.error(`  ${p}`);
