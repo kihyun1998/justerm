@@ -77,7 +77,7 @@ at a recorded SHA; a paraphrase drops the pin).
 - [frame](frame.md) — five header scalars; adding a sixth is an ADR-0020 question and a wire bump
 - [caret drawing](caret-drawing.md) — draws it, and its scalar policies (`setCursorContrast`,
   `setCursorThickness`) consume only what is reported here
-- **a11y / web widget** *(no note yet)* — the blink policy resolution lives in `justerm-web`, which
+- [widget lifecycle](widget-lifecycle.md) — the blink policy resolution lives in `justerm-web`, which
   makes this territory one of the few that genuinely spans the crate boundary
 
 ## Known holes / open

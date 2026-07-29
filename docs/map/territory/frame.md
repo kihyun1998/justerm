@@ -74,7 +74,7 @@ Adding a group is one of theflow's **unconditional** Step 5 triggers: it forces 
   ownership column above decides who refreshes each after a resize
 - [frame adapter](frame-adapter.md) · [cell compositing](cell-compositing.md) — consume every group, and resolve the `active_match` / `selection`
   ranking
-- **a11y** *(no note yet)* — gates its announce policy on `alt_screen`, which exists for that reason
+- [accessibility](accessibility.md) — gates its announce policy on `alt_screen`, which exists for that reason
 
 ## Known holes / open
 

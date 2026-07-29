@@ -72,7 +72,7 @@ grounds as unverified, which is unusual enough to be worth knowing before buildi
 - [glyph atlas](glyph-atlas.md) — rasterises into slots sized by this measurement
 - [caret report](caret-report.md) — `setCursorThickness` and the caret rects are expressed in this
   geometry
-- **a11y / web widget** *(no note yet)* — the resize contract runs consumer→CSS box, renderer→`cols`
+- [fit](fit.md) — the resize contract runs consumer→CSS box, renderer→`cols`
   / `rows`, which is the reverse of what a grid-first API would do
 
 ## Known holes / open

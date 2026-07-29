@@ -54,7 +54,7 @@ comparison set for this territory is smaller than for the rest of the crate.
   be rebuilt, not merely re-bound
 - [GPU upload](gpu-upload.md) — the "last uploaded" state it diffs against is invalidated by a loss,
   so a restore has to force a full upload rather than a diff
-- **a11y / web widget** *(no note yet)* — the consumer sets the timeout and reacts to the callback
+- [widget lifecycle](widget-lifecycle.md) — the consumer sets the timeout and reacts to the callback
 
 ## Known holes / open
 

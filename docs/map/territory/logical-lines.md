@@ -82,7 +82,7 @@ recorded SHA; a paraphrase drops the pin).
   spacers, so both rules land here directly
 - [selection](selection.md) — `selection_text` performs the same join for copy, by a different path.
   Two implementations of "join a wrapped line" exist; a change to the joining rule must reach both
-- **a11y** *(no note yet)* — the screen-reader mirror consumes this shape; a change to trimming or
+- [accessibility](accessibility.md) — the screen-reader mirror consumes this shape; a change to trimming or
   off-screen context changes what is announced
 
 ## Known holes / open

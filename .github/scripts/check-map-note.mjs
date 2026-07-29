@@ -116,7 +116,9 @@ if (codeSection.trim()) {
     // declaration, call/field, enum variant, macro, or TOML key — the four shapes that produced
     // false positives when only declarations were matched.
     const pats = [
-      new RegExp(`(?:fn|struct|enum|const|static|type|trait|mod)\\s+${s}\\b`),
+      // Rust and TypeScript declaration keywords — the map spans both, and omitting `class` /
+      // `interface` reported every TS type the notes name as unresolved.
+      new RegExp(`(?:fn|struct|enum|const|static|type|trait|mod|class|interface|let|var)\\s+${s}\\b`),
       new RegExp(`\\b${s}\\s*[:(!]`),
       new RegExp(`^\\s*${s}\\s*,?\\s*$`, 'm'),
       new RegExp(`^\\s*${s}\\s*=`, 'm'),

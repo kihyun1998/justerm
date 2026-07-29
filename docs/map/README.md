@@ -74,7 +74,8 @@ the ability to *point at one of them*, and every edge into a merged note is then
 the truth. Where several concepts genuinely belong side by side, an **aggregate** note says why and
 owns no detail of its own.
 
-- Territories — [active match](territory/active-match.md) ·
+- Territories — [accessibility](territory/accessibility.md) ·
+  [active match](territory/active-match.md) ·
   [built-in block glyphs](territory/builtin-block-glyphs.md) ·
   [caret drawing](territory/caret-drawing.md) ·
   [caret report](territory/caret-report.md) ·
@@ -87,7 +88,9 @@ owns no detail of its own.
   [emoji classification](territory/emoji-classification.md) ·
   [colour policy](territory/colour-policy.md) ·
   [frame](territory/frame.md) ·
+  [fit](territory/fit.md) ·
   [frame adapter](territory/frame-adapter.md) ·
+  [input encoding](territory/input-encoding.md) ·
   [GL context lifecycle](territory/gl-context-lifecycle.md) ·
   [glyph atlas](territory/glyph-atlas.md) ·
   [GPU upload](territory/gpu-upload.md) ·
@@ -102,6 +105,7 @@ owns no detail of its own.
   [soft wrap](territory/soft-wrap.md) ·
   [viewport](territory/viewport.md) ·
   [wide glyph](territory/wide-glyph.md) ·
+  [widget lifecycle](territory/widget-lifecycle.md) ·
   [wire format](territory/wire-format.md)
 - Aggregates (relationship only, no detail) — [cursor](territory/cursor.md) ·
   [damage & viewport](territory/damage-and-viewport.md) ·

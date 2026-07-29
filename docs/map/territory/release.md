@@ -74,7 +74,7 @@ pinned tree.
   renderer territory ships on that tag and none on `v*`; start at
   [cell compositing](cell-compositing.md) (`rg -l 'justerm-renderer/src' docs/map/territory/`
   for the set — a count written here was wrong within a day)
-- **a11y / web widget** *(no note yet)* — `justerm-web` consumes the *published* wasm decoder, so a
+- [widget lifecycle](widget-lifecycle.md) — `justerm-web` consumes the *published* wasm decoder, so a
   new binding is `undefined` at runtime until that package is republished
 
 ## Known holes / open
