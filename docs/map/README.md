@@ -75,7 +75,10 @@ the truth. Where several concepts genuinely belong side by side, an **aggregate*
 owns no detail of its own.
 
 - Territories — [active match](territory/active-match.md) ·
+  [built-in block glyphs](territory/builtin-block-glyphs.md) ·
   [caret report](territory/caret-report.md) ·
+  [cell compositing](territory/cell-compositing.md) ·
+  [cell geometry](territory/cell-geometry.md) ·
   [cursor position](territory/cursor-position.md) ·
   [damage](territory/damage.md) ·
   [decoration](territory/decoration.md) ·
