@@ -23,7 +23,7 @@ coordinated; they collide only at the tool's assumption that "the workspace" mea
 
 | Crate | Why it is excluded |
 |---|---|
-| `fuzz` | carries its own `[workspace]`; nightly + libFuzzer toolchain |
+| `fuzz` | nightly + libFuzzer toolchain |
 | `justerm-facade` | frozen at `0.5.1` forever — must **not** be dragged by the version-lockstep that ties `justerm-core` and `justerm-wasm-decode` together |
 | `justerm-renderer` | `web-sys` / `glow` are wasm32-only, so membership would break the host `cargo test --workspace` outright |
 
@@ -41,11 +41,27 @@ invariant rather than a note in any one crate's territory.
   [built-in block glyphs](../territory/builtin-block-glyphs.md)
 - **infrastructure / CI** *(no note yet)* — where the compensating per-manifest gates live
 
-Derivable half — the exclusion list is one grep, and it is the authority:
+Derivable half — **two greps, and the second is the one that holds from anywhere** (#608):
 
 ```sh
-rg -A3 '^exclude' Cargo.toml
+rg -A3 '^exclude' Cargo.toml                       # what THIS root disclaims
+rg -l '^\[workspace\]' */Cargo.toml                # which crates declare their own root
 ```
+
+The first was called "the authority" here until #608 measured otherwise. `exclude` is a list of
+paths *relative to the file it sits in*, and cargo resolves a crate's workspace by walking
+**upward** — so from a git worktree it climbs past the worktree's root into the main checkout's
+manifest, compares the crate against paths that are not this one, and refuses to build it. Every
+renderer gate died there, in the workflow `theflow.md` § Step 7 prescribes. `fuzz` and
+`justerm-renderer` now each declare `[workspace]`, which is a fact about the directory stated *in*
+that directory and therefore survives being reached from anywhere; `justerm-facade` still relies on
+the list alone, deliberately (a tombstone nobody edits — see below).
+
+**The two declarations are jointly load-bearing, and that is the safe direction.** A root that lists
+a member which itself declares `[workspace]` does not silently win: `cargo metadata` reproduces
+*"error: multiple workspace roots found in the same workspace"*. So deleting `justerm-renderer` from
+`exclude` can no longer quietly re-include it — it breaks every root `--workspace` gate at once,
+loudly, instead of dragging a wasm32-only crate into the host test run.
 
 Non-derivable half — **which gates compensate, and which do not.** `test.yml` names
 `justerm-renderer` explicitly in its own job (fmt, test, clippy, build, rustdoc — each by

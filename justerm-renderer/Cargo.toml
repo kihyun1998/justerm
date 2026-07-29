@@ -3,7 +3,9 @@ name = "justerm-renderer"
 # Independent version track: this crate is EXCLUDED from the root workspace
 # (see the root Cargo.toml comment + ADR-0018). web-sys/glow make it wasm32-only,
 # so it must stay out of the host `cargo test --workspace` gate; its own gate is
-# `cargo build -p justerm-renderer --target wasm32-unknown-unknown`.
+# `cargo build --manifest-path justerm-renderer/Cargo.toml --target wasm32-unknown-unknown`.
+# NOT `-p justerm-renderer`: a `-p` flag selects from the workspace, and this crate is in none,
+# so that form errors with "did not match any packages" (#608).
 version = "0.7.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"

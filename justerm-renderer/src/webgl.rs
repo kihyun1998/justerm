@@ -2102,21 +2102,20 @@ impl JustermRenderer {
     /// itself (xterm's `cursorAccent`, alacritty's `text_color`). Colours are resolved by the
     /// consumer — the renderer stays theme-agnostic.
     ///
-    /// **Every shape, the block included, is a uniform** — `u_cursor` and its colours, resolved per
-    /// fragment (the shader stanza at the top of this file). A cursor change therefore takes effect
-    /// on the next [`render`](Self::render) alone: no re-pack, no upload, whether it moves, blinks
-    /// or changes shape. A block is a colour override on the cell rather than geometry, which is
-    /// precisely why it is *not* an instance — one that lived in the instance buffer could not be
-    /// un-painted without re-packing the frame. Blink phase is the consumer's policy, exactly as
+    /// **Every shape, the block included, lives in the cursor uniform** (`u_cursor` + its colours,
+    /// declared with `FRAG_SRC` in this file) and is resolved per fragment. So any cursor change —
+    /// move, blink, shape — takes effect on the next [`render`](Self::render) alone: one uniform,
+    /// no re-pack and no instance upload. Blink phase is the consumer's policy, exactly as
     /// `blink_on` is (#282) — call `clearCursor` for the off phase.
     ///
-    /// This paragraph asserted the opposite until #608 — *"a block repaints the cell, so it lands
-    /// in the instance buffer and takes effect on the next `applyFrame`/`applyDamage`"* — against
-    /// the design comment it sits below, the shader, and this method's own body, which sets no
-    /// `needs_repack`. It was caught from outside the crate: a consumer-side comment written in
-    /// #576 stated the true version, leaving two artifacts in the repo saying opposite things about
-    /// one mechanism. Nothing gates a doc against the code it describes, which is the whole reason
-    /// that class of drift needs a hand sweep (`docs/agents/theflow.md` § Step 6).
+    /// A block *could* have been an instance: it is a colour override on the cell, not geometry,
+    /// and both references draw it that way. It is not one because ADR-0018
+    /// (`docs/adr/0018-justerm-renderer.md`) makes that **the contract, not an
+    /// optimisation** — a blink tick produces no terminal output, so a block packed into the
+    /// instances could not blink off without the consumer re-feeding the frame (an early #270 draft
+    /// did exactly that). Two consequences follow rather than cause it: un-painting would need a
+    /// re-pack, and per-fragment resolution keeps the ordering free, since the instance colours
+    /// arrive already inverse-swapped and the glyph already concealed.
     #[wasm_bindgen(js_name = setCursor)]
     pub fn set_cursor(
         &mut self,
