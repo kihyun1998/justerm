@@ -85,7 +85,10 @@ fn a_viewport_with_more_combining_cells_than_the_old_count_survives_the_wire() {
     // frame was wrong. It is equality with the frame the engine actually holds.
     let cols = 300;
     let rows = 220;
-    assert!(cols * rows > PAST_U16, "the fixture must cross the old count");
+    assert!(
+        cols * rows > PAST_U16,
+        "the fixture must cross the old count"
+    );
 
     let mut e = Engine::new(cols, rows);
     let mut stream = String::new();
