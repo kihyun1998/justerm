@@ -14,6 +14,12 @@
     - default (bg_alpha = 1.0): a background cell's pixels are fully opaque (alpha 255).
     - setBgAlpha(0.5):          a background cell's pixels are ~half alpha (~127), while the
                                 glyph 'A' still has opaque strokes (max alpha 255).
+    - setBgAlpha(NaN):          falls back to OPAQUE (#577). Not a cosmetic guard — a NaN uniform
+                                makes mix(u_bg_alpha, 1.0, cov) NaN for every fragment, so the glyph
+                                goes transparent too and the terminal disappears silently. The glyph
+                                cell is asserted alongside the background for that reason.
+    - setBgAlpha(-3):           still CLAMPED to 0. The control for the line above: a setter that
+                                ignored its argument would satisfy the NaN check on its own.
   Build: wasm-pack build --target web --dev --out-dir pkg
 -->
 <canvas id="c" width="128" height="32"></canvas>
@@ -62,9 +68,29 @@
   const transInverse = cellAlpha(2); // the INVERSE space: its highlight bg must stay opaque
   const transExplicit = cellAlpha(4);// #455: explicit Rgb == default colour must stay opaque
 
+  // 3) #577: a NON-FINITE alpha must fall back to opaque, not propagate.
+  // `f32::clamp` compares with `<` / `>`, both false for NaN, so the bare clamp this setter used to
+  // have passed NaN straight into the uniform. That is not a wrong background — every fragment's
+  // alpha becomes `mix(NaN, 1.0, cov)` = NaN, so the GLYPH goes transparent with the background and
+  // the terminal vanishes with no error. Both cells are read for exactly that reason: checking only
+  // the background would let the worse half of the failure through.
+  // Reachable from type-correct consumer code — TypeScript's `number` includes NaN, so an ordinary
+  // `Number(configValue)` arrives as one.
+  r.setBgAlpha(NaN);
+  apply();
+  r.render();
+  const nanBg = cellAlpha(1);
+  const nanGlyph = cellAlpha(0);
+  // …and a finite out-of-range value was never the problem: the clamp already handled it. Kept as
+  // the control, so `nanFallsBackToOpaque` cannot pass by the setter simply ignoring its argument.
+  r.setBgAlpha(-3);
+  apply();
+  r.render();
+  const negBg = cellAlpha(1);
+
   window.__proof = {
     dpr: window.devicePixelRatio, deviceCell: [CW, CH], gridFit: gridFit(gl, r, COLS, 1),
-    opaqueBg, transBg, transGlyph, transInverse, transExplicit,
+    opaqueBg, transBg, transGlyph, transInverse, transExplicit, nanBg, nanGlyph, negBg,
     checks: {
       // Default: an uncovered cell is fully opaque.
       defaultOpaque: opaqueBg.min === 255 && opaqueBg.max === 255,
@@ -79,6 +105,14 @@
       // backdrop — it stays fully opaque. Under the old colour-equality test this cell was the
       // pinhole (translucent like cell 1), so this check is red on the pre-#455 shader.
       explicitDefaultColourStaysOpaque: transExplicit.min === 255 && transExplicit.max === 255,
+      // #577: NaN falls back to opaque. BOTH cells asserted — the background is the obvious half,
+      // the glyph is the half that made this fatal rather than cosmetic. Red on the pre-#577 setter,
+      // where both read 0.
+      nanFallsBackToOpaque:
+        nanBg.min === 255 && nanBg.max === 255 && nanGlyph.max === 255,
+      // Control for the check above: a FINITE out-of-range value must still be clamped, not caught
+      // by the new guard. Without this, a setter that ignored its argument entirely would pass.
+      finiteOutOfRangeStillClamps: negBg.max <= 4,
     },
   };
   window.__proof.ok = Object.values(window.__proof.checks).every(Boolean);

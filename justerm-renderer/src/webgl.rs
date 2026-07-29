@@ -1879,9 +1879,27 @@ impl JustermRenderer {
     /// consumer injects this policy (ADR-0017) to make the terminal background see-through to the
     /// page/desktop behind the canvas, while glyph pixels stay opaque. Clamped to `[0, 1]`; takes
     /// effect on the next [`render`](Self::render) (#298).
+    ///
+    /// **A non-finite value falls back to `1.0` (opaque), like every other float setter here.**
+    /// `f32::clamp` compares with `<` / `>`, both false for `NaN`, so a bare clamp *passes NaN
+    /// through* — and this was the only float setter on this type without the guard (#577). The
+    /// consequence was not a wrong background: `bg_a = mix(u_bg_alpha, 1.0, cov)` makes every
+    /// fragment's alpha `NaN`, so glyph pixels go transparent too and the whole terminal
+    /// disappears with no error anywhere. Measured, not reasoned: booting the widget at `NaN`
+    /// read `[30,30,46,0]` on a background cell **and `[205,214,244,0]` inside a glyph**, against
+    /// `[…,128]` / `[…,255]` for a valid `0.5`.
+    ///
+    /// Reachable from type-correct consumer code, which is why the guard is here and not at the
+    /// caller: TypeScript's `number` includes `NaN`, so an ordinary `Number(configValue)` arrives
+    /// as one. Finite out-of-range values were never the problem — the clamp already handles them
+    /// (`-3` and `9` measured as fully transparent and fully opaque respectively).
     #[wasm_bindgen(js_name = setBgAlpha)]
     pub fn set_bg_alpha(&mut self, alpha: f32) {
-        self.bg_alpha = alpha.clamp(0.0, 1.0);
+        self.bg_alpha = if alpha.is_finite() {
+            alpha.clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
     }
 
     /// Draw bold text in the bright (8–15) ANSI colour (#223/#272) — xterm's
