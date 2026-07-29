@@ -3,7 +3,6 @@
 //! API only (no engine/PTY/transport). Format spec: `docs/architecture.md`
 //! §Serialization + ADR-0005.
 
-use core::num::NonZeroU32;
 use justerm_core::{
     Cell, CellFlags, Color, Engine, Frame, FrameKind, MarkerId, MarkerKind, MarkerLine,
     MarkerPosition, MouseEvents, Overlay, ScrollOp, SelectionSpan, SelectionType, Side, Span,
@@ -30,7 +29,6 @@ fn round_trip_empty_partial_frame() {
         alt_screen: false,
         scroll: None,
         spans: vec![],
-        side_table: vec![],
         link_table: vec![],
         overlay: Default::default(),
     };
@@ -58,7 +56,6 @@ fn round_trip_overlay_selection_and_match_spans() {
         alt_screen: false,
         scroll: None,
         spans: vec![],
-        side_table: vec![],
         link_table: vec![],
         overlay: Overlay {
             selection: vec![
@@ -109,7 +106,6 @@ fn round_trip_overlay_active_match_spans() {
         alt_screen: false,
         scroll: None,
         spans: vec![],
-        side_table: vec![],
         link_table: vec![],
         overlay: Overlay::default(),
     };
@@ -177,7 +173,6 @@ fn round_trip_mouse_events_mask() {
         alt_screen: false,
         scroll: None,
         spans: vec![],
-        side_table: vec![],
         link_table: vec![],
         overlay: Overlay::default(),
     };
@@ -206,7 +201,6 @@ fn round_trip_alt_screen_flag() {
         alt_screen: true,
         scroll: None,
         spans: vec![],
-        side_table: vec![],
         link_table: vec![],
         overlay: Overlay::default(),
     };
@@ -234,7 +228,6 @@ fn round_trip_overlay_marker_positions() {
         alt_screen: false,
         scroll: None,
         spans: vec![],
-        side_table: vec![],
         link_table: vec![],
         overlay: Overlay::default(),
     };
@@ -274,7 +267,6 @@ fn round_trip_overlay_marker_lines() {
         alt_screen: false,
         scroll: None,
         spans: vec![],
-        side_table: vec![],
         link_table: vec![],
         overlay: Overlay::default(),
     };
@@ -334,7 +326,6 @@ fn round_trip_overlay_marker_kinds() {
         alt_screen: false,
         scroll: None,
         spans: vec![],
-        side_table: vec![],
         link_table: vec![],
         overlay: Overlay::default(),
     };
@@ -395,7 +386,6 @@ fn decode_rejects_bad_marker_kind_and_truncated_exit() {
         alt_screen: false,
         scroll: None,
         spans: vec![],
-        side_table: vec![],
         link_table: vec![],
         overlay: Overlay::default(),
     };
@@ -445,7 +435,6 @@ fn round_trip_scroll_position() {
         alt_screen: false,
         scroll: None,
         spans: vec![],
-        side_table: vec![],
         link_table: vec![],
         overlay: Default::default(),
     };
@@ -475,7 +464,6 @@ fn round_trip_cursor_position_and_visibility() {
         alt_screen: false,
         scroll: None,
         spans: vec![],
-        side_table: vec![],
         link_table: vec![],
         overlay: Default::default(),
     };
@@ -513,7 +501,6 @@ fn round_trip_span_of_plain_cells() {
             links: BTreeMap::new(),
             ucolors: BTreeMap::new(),
         }],
-        side_table: vec![],
         link_table: vec![],
         overlay: Default::default(),
     };
@@ -553,7 +540,6 @@ fn round_trip_distinct_colour_references() {
             links: BTreeMap::new(),
             ucolors: BTreeMap::new(),
         }],
-        side_table: vec![],
         link_table: vec![],
         overlay: Default::default(),
     };
@@ -611,7 +597,6 @@ fn round_trip_cell_flags_incl_layout_markers() {
             links: BTreeMap::new(),
             ucolors: BTreeMap::new(),
         }],
-        side_table: vec![],
         link_table: vec![],
         overlay: Default::default(),
     };
@@ -647,7 +632,6 @@ fn decode_rejects_superseded_version() {
         alt_screen: false,
         scroll: None,
         spans: vec![],
-        side_table: vec![],
         link_table: vec![],
         overlay: Default::default(),
     };
@@ -659,15 +643,17 @@ fn decode_rejects_superseded_version() {
     ));
 }
 
-/// The wire is gated at version 13 (the #520 per-span underline-colour group, atop
-/// the #428 active-match group, #120 S3 marker-lines, #159 marker kind + exit, #149
-/// alt-screen flag, #129 mouse mask and #118 marker group). Both the exported
-/// `WIRE_VERSION` constant and the byte the encoder emits must read 13 — the value
-/// the WASM decoder's `wire_version()` mirrors in lockstep (ADR-0008), so a drift
-/// here trips before it can desync a binding.
+/// The wire is gated at version 14 (#621 moved the grapheme and hyperlink references
+/// off the cell record into sparse per-span groups and widened their counts/lengths
+/// to u32, atop the #520 per-span underline-colour group, the #428 active-match
+/// group, #120 S3 marker-lines, #159 marker kind + exit, #149 alt-screen flag, #129
+/// mouse mask and #118 marker group). Both the exported `WIRE_VERSION` constant and
+/// the byte the encoder emits must read 14 — the value the WASM decoder's
+/// `wire_version()` mirrors in lockstep (ADR-0008), so a drift here trips before it
+/// can desync a binding.
 #[test]
-fn wire_version_is_thirteen() {
-    assert_eq!(justerm_core::WIRE_VERSION, 13);
+fn wire_version_is_fourteen() {
+    assert_eq!(justerm_core::WIRE_VERSION, 14);
     let mut term = Engine::new(1, 1);
     term.feed(b"x");
     let bytes = encode(&term.frame());
@@ -701,24 +687,30 @@ fn round_trip_grapheme_side_table() {
             left: 0,
             right: 1,
             cells: vec![accented, plain],
-            // column 0 -> side_table[0] (1-based index)
-            combining: BTreeMap::from([(0, NonZeroU32::new(1).unwrap())]),
+            // The cluster sits at its column, not behind an index into a table
+            // (v14, #621) — combining acute accent.
+            combining: BTreeMap::from([(0, vec!['\u{0301}'])]),
             links: BTreeMap::new(),
             ucolors: BTreeMap::new(),
         }],
-        side_table: vec![vec!['\u{0301}']], // combining acute accent
         link_table: vec![],
         overlay: Default::default(),
     };
     assert_eq!(decode(&encode(&frame)).expect("decode"), frame);
 }
 
-/// Acceptance #2: cells stay fixed-width — each added cell costs exactly 18
-/// bytes (16 + the v2 hyperlink `link` u16, #26), so a grapheme or linked cell
-/// is no wider than a plain one (cluster/URI live in the side-tables). Measured
-/// as the per-cell delta, independent of header size.
+/// Acceptance #2: cells stay fixed-width — each added cell costs exactly 14
+/// bytes, so a grapheme or linked cell is no wider than a plain one (the cluster
+/// and the URI reference ride sparse per-span groups). Measured as the per-cell
+/// delta, independent of header size.
+///
+/// It was 18 until v14 (#621): the record also carried `extra` and `link`, two u16
+/// references that no frame without a cluster or a hyperlink had any use for. The
+/// number here is the *fixed* part of the trade — a cell that carries neither now
+/// pays 4 bytes less, measured at −20.9% on an ordinary 80×24 frame — while the two
+/// cells that do carry one pay for it in their own group.
 #[test]
-fn cell_record_is_fixed_18_bytes() {
+fn cell_record_is_fixed_14_bytes() {
     let span_of = |n: usize| Frame {
         cols: 1,
         rows: 1,
@@ -742,13 +734,19 @@ fn cell_record_is_fixed_18_bytes() {
             links: BTreeMap::new(),
             ucolors: BTreeMap::new(),
         }],
-        side_table: vec![],
         link_table: vec![],
         overlay: Default::default(),
     };
     let one = encode(&span_of(1)).len();
     let two = encode(&span_of(2)).len();
-    assert_eq!(two - one, 18, "each added cell must cost exactly 18 bytes");
+    assert_eq!(two - one, 14, "each added cell must cost exactly 14 bytes");
+    assert_eq!(
+        two - one,
+        justerm_core::CELL_RECORD_LEN,
+        "the measured stride and the exported constant are the same number — an \
+         alternate consumer lays cells out by that constant (ADR-0008), so the two \
+         drifting apart is the failure this pins",
+    );
 }
 
 /// A recorded scroll op round-trips. It is encoded ahead of the spans so the
@@ -774,7 +772,6 @@ fn round_trip_scroll_op() {
             count: 3,
         }),
         spans: vec![],
-        side_table: vec![],
         link_table: vec![],
         overlay: Default::default(),
     };
@@ -799,7 +796,6 @@ fn round_trip_full_frame_kind() {
         alt_screen: false,
         scroll: None,
         spans: vec![],
-        side_table: vec![],
         link_table: vec![],
         overlay: Default::default(),
     };
@@ -915,10 +911,15 @@ fn engine_frame_is_full_after_resize() {
     assert_eq!(f.spans.len(), 3, "Full ships every row");
 }
 
-/// Trap #2: a frame ships only *live* clusters, indexed frame-local. Overwriting
-/// a combined cell clears its bit, so its (now stale) row-map entry is never
-/// gathered — only the surviving combined cell contributes to `side_table`, at
-/// frame-local index 1.
+/// Trap #2: a frame ships only *live* clusters. Overwriting a combined cell clears
+/// its bit, so its (now stale) row-map entry is never gathered — only the surviving
+/// combined cell contributes a cluster.
+///
+/// The claim is unchanged by v14 (#621); only where the cluster sits is. It used to
+/// be asserted through a frame-local index into `Frame::side_table`; now the cluster
+/// is *at* its column, so the test reads it directly. That is strictly the stronger
+/// assertion: the old form could pass with the right index pointing at the wrong
+/// table entry, and this one names the characters.
 #[test]
 fn engine_frame_ships_only_live_combining_clusters() {
     let mut term = Engine::new(5, 1);
@@ -926,21 +927,18 @@ fn engine_frame_ships_only_live_combining_clusters() {
     term.feed(b"\rx"); // CR to col0, overwrite 'e' with 'x' -> col0 bit cleared
     term.feed("o\u{0308}".as_bytes()); // col1 'o' + diaeresis -> combined
     let f = term.frame();
-    assert_eq!(
-        f.side_table,
-        vec![vec!['\u{0308}']],
-        "only the live cluster ships"
-    );
-    // Exactly one span column carries combining; it is the 'o', at frame-local 1.
-    let span = f
+    // Exactly one span column carries combining, and it is the 'o'. The overwritten
+    // 'e' contributes nothing — a second entry here would be the stale row-map read.
+    let carried: Vec<_> = f
         .spans
         .iter()
-        .find(|s| !s.combining.is_empty())
-        .expect("a span with combining");
-    let (&col, idx) = span.combining.iter().next().unwrap();
-    assert_eq!(idx.get(), 1, "the live cluster is frame-local index 1");
-    assert_eq!(span.cells[col].c(), 'o');
-    assert!(span.cells[col].is_combined());
+        .flat_map(|s| s.combining.iter().map(move |(&col, c)| (s, col, c)))
+        .collect();
+    assert_eq!(carried.len(), 1, "only the live cluster ships");
+    let (span, col, cluster) = &carried[0];
+    assert_eq!(*cluster, &vec!['\u{0308}'], "the diaeresis, not the acute");
+    assert_eq!(span.cells[*col].c(), 'o');
+    assert!(span.cells[*col].is_combined());
 }
 
 /// Integration: feed colours + a wide glyph + a combining mark, then the live
@@ -1045,7 +1043,6 @@ fn round_trip_full_frame_with_cells() {
         alt_screen: false,
         scroll: None,
         spans: vec![row(0), row(1)],
-        side_table: vec![],
         link_table: vec![],
         overlay: Default::default(),
     };
@@ -1075,7 +1072,6 @@ fn round_trip_negative_scroll_count() {
             count: -4,
         }),
         spans: vec![],
-        side_table: vec![],
         link_table: vec![],
         overlay: Default::default(),
     };

@@ -47,7 +47,6 @@ fn main() {
             links: BTreeMap::new(),
             ucolors: BTreeMap::new(),
         }],
-        side_table: vec![],
         link_table: vec![],
         overlay: Default::default(),
     };

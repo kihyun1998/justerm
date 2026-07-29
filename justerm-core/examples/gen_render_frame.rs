@@ -58,7 +58,6 @@ fn main() {
         alt_screen: false,
         scroll: None,
         spans,
-        side_table: vec![],
         link_table: vec![],
         overlay: Default::default(),
     };

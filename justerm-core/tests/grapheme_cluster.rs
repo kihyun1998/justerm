@@ -264,10 +264,17 @@ fn mode_2027_clustered_cell_survives_encode_decode_roundtrip() {
     let decoded = decode(&encode(&frame)).expect("decode");
     assert_eq!(decoded, frame, "clustered cell + side_table round-trips");
     // The decoded side-table actually carries the joined emoji (👩, 👧 rode the cluster).
-    let joined: String = decoded.side_table.iter().flatten().collect();
+    // Since v14 (#621) the cluster sits at its column rather than in a frame-level
+    // table, so this reads the span's own map. Same assertion, one indirection fewer.
+    let joined: String = decoded
+        .spans
+        .iter()
+        .flat_map(|s| s.combining.values())
+        .flatten()
+        .collect();
     assert!(
         joined.contains('\u{1F469}') && joined.contains('\u{1F467}'),
-        "joined emoji live in the round-tripped side_table"
+        "joined emoji live in the round-tripped cluster"
     );
 }
 

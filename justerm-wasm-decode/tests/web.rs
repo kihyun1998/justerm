@@ -71,7 +71,6 @@ fn sample_frame() -> Frame {
         alt_screen: false,
         scroll: None,
         spans: vec![span(0, 0, "hi"), span(1, 5, "abc")],
-        side_table: vec![],
         link_table: vec![],
         overlay: Default::default(),
     }
@@ -194,7 +193,6 @@ fn underline_colour_column_carries_the_tagged_reference() {
             links: Default::default(),
             ucolors: [(0usize, Color::Rgb(255, 0, 0))].into_iter().collect(),
         }],
-        side_table: vec![],
         link_table: vec![],
         overlay: Default::default(),
     };
@@ -234,7 +232,6 @@ fn colour_and_flag_columns_carry_tagged_values() {
             links: Default::default(),
             ucolors: Default::default(),
         }],
-        side_table: vec![],
         link_table: vec![],
         overlay: Default::default(),
     };
