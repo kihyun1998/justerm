@@ -40,7 +40,15 @@ export interface Theme {
    * match covers a selected cell, this fg paints over {@link activeMatchBg} — pick the two to
    * read on each other, or set {@link minimumContrastRatio}. */
   selectionForeground?: number;
-  /** Minimum fg/bg contrast ratio (WCAG, 1..21). Defaults to 1 (off, like xterm) (#225). */
+  /** Minimum fg/bg contrast ratio (WCAG, 1..21). Defaults to 1 (off, like xterm) (#225).
+   *
+   * Corrects against the background the cell composites to *within the canvas* — a highlight or
+   * decoration bg wins over the cell's own. It does **not** account for
+   * {@link JustermRendererOptions.bgAlpha}: the correction runs on the nominal opaque colour, so
+   * under a translucent background the real contrast against whatever is behind the canvas may be
+   * lower than the ratio asked for. That is not an oversight to fix here — xterm.js discards the
+   * background's alpha byte before computing luminance, and ghostty composites first and still uses
+   * only `bg.rgb`. None of the three can know what is behind the window. */
   minimumContrastRatio?: number;
   /** Draw bold text in the bright (8-15) ANSI colour — xterm's
    * drawBoldTextInBrightColors (#223). Defaults to true (xterm's default). */
@@ -561,7 +569,12 @@ export class JustermRenderer implements Renderer {
   /** Swap the colour scheme at runtime (#420) — rebuild the 256-colour palette from the new ANSI
    * colours and push it (+ the theme's policy colours) to the renderer, which re-resolves every
    * retained cell in wasm. No re-fit needed (the cell geometry is unchanged); it presents on the
-   * render below. The a11y cell mirror reads only text, so it needs no re-notification. */
+   * render below. The a11y cell mirror reads only text, so it needs no re-notification.
+   *
+   * **Leaves {@link setBgAlpha} alone**, which is the point of keeping the alpha off {@link Theme}
+   * (#577): swapping the colour scheme does not silently make a translucent terminal opaque again.
+   * Stated because it is a property of where the field lives rather than of any code here — nothing
+   * in this method would have to change for it to be false. */
   setTheme(theme: Theme): void {
     const colors = this.buildPalette(Uint32Array.from(theme.ansi));
     this.palette = { colors, defaultFg: theme.defaultFg, defaultBg: theme.defaultBg };

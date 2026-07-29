@@ -504,9 +504,15 @@ function toggleTextBlink(): void {
 }
 
 // #577: the consumer's background opacity. The page behind the canvas is what shows through, so the
-// visible effect of this button is the demo page's own background bleeding into the terminal — which
-// is exactly the dependency the option's doc warns about: the widget only stops writing opaque
-// pixels, it cannot make whatever is behind it transparent.
+// visible effect of this button is `index.html`'s checkerboard rising through the terminal — which is
+// exactly the dependency the option's doc warns about: the widget only stops writing opaque pixels,
+// it cannot make whatever is behind it transparent.
+//
+// That checkerboard is load-bearing, not decoration. The page background used to be `#1e1e2e`, the
+// same value `defaultBg` is set to below, so this button was visually a no-op while the e2e stayed
+// green — `readPixels` samples the drawing buffer before the compositor, so a passing pixel test and
+// an invisible feature are compatible states. Anything added here that a human is meant to SEE needs
+// a backdrop it can be seen against.
 function toggleBgAlpha(): void {
   bgAlpha = bgAlpha === 1 ? DEMO_BG_ALPHA : 1;
   renderer.setBgAlpha(bgAlpha);
