@@ -37,7 +37,7 @@ pub use serialize::{
     MarkerPosition, Overlay, Span, WIRE_VERSION, decode, encode, encode_cell_record, encode_color,
 };
 
-pub use term::{CommandLine, MIN_COLUMNS, Term};
+pub use term::{CommandLine, MAX_COLUMNS, MAX_ROWS, MIN_COLUMNS, Term};
 
 use vte::Parser;
 

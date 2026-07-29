@@ -308,6 +308,32 @@ const DEFAULT_SCROLLBACK: usize = 10_000;
 /// application rendering for a width the buffer does not have (#547).
 pub const MIN_COLUMNS: usize = 2;
 
+/// The widest grid the engine will hold, and the mirror of [`MIN_COLUMNS`] — but derived
+/// from a different kind of constraint, which is why the two are not symmetric.
+///
+/// The floor is **semantic**: a width-2 glyph needs two cells, so one column is a screen
+/// no correct grid can be. The ceiling is **representational**: the frame header stores
+/// `cols` and `rows` as `u16` each, so a grid wider than `u16::MAX` cannot be *described*
+/// to a consumer even though the engine could hold it. Without the clamp that mismatch was
+/// silent — measured, `Engine::new(70_000, 2)` built a 70 000-column grid whose frame
+/// declared `cols = 4464` and decoded `Ok`, so a consumer laid out 4464 columns of a
+/// 70 000-column screen with nothing reporting the difference (#621).
+///
+/// No reference bounds a grid this way, and that is expected rather than a divergence:
+/// none of them serializes a grid, so none has a header field to overflow. This is the
+/// one axis where justerm's own wire is the only authority.
+///
+/// **A backstop, not a policy.** A 4K display at a very small font is roughly 550 columns;
+/// this is two orders of magnitude past any real terminal, so it should never be reached
+/// by a consumer that is not already doing something wrong. The clamp is silent and
+/// pull-only on the same terms as [`MIN_COLUMNS`] — read the size back from
+/// [`Term::grid`] rather than trusting the value you passed in.
+pub const MAX_COLUMNS: usize = u16::MAX as usize;
+
+/// The tallest grid the engine will hold. The row half of [`MAX_COLUMNS`] — same
+/// `u16` header field, same reasoning, same silent-clamp contract.
+pub const MAX_ROWS: usize = u16::MAX as usize;
+
 /// The state DECSC (ESC 7) saves and DECRC (ESC 8) restores: position, pen/SGR,
 /// pending-wrap, and origin mode (per ADR-0004 — DECRC restores origin mode,
 /// which Alacritty omits). Cursor *visibility* is deliberately not part of this
@@ -398,8 +424,10 @@ impl Term {
         // 0-tall" that this constructor merely failed to enforce while carrying the
         // same `scroll_bottom: rows - 1` below. That gap was a subtract-overflow panic
         // on `rows == 0`, not a degenerate screen.
-        let cols = cols.max(MIN_COLUMNS);
-        let rows = rows.max(1);
+        // …and the ceiling is the header's, not the glyph's: `frame.cols`/`rows` are u16,
+        // so a wider grid would be built and then misdescribed on the wire (#621).
+        let cols = cols.clamp(MIN_COLUMNS, MAX_COLUMNS);
+        let rows = rows.clamp(1, MAX_ROWS);
         Term {
             grid: Grid::new(cols, rows),
             alt_grid: Grid::new(cols, rows),
@@ -931,9 +959,12 @@ impl Term {
     pub fn resize(&mut self, cols: usize, rows: usize) {
         // A terminal is never 0-tall; clamp so the math below (rows - 1) can't
         // underflow. Columns clamp to MIN_COLUMNS, not 1: chunking by cols needs a
-        // non-zero width, but a *wide glyph* needs two (#547).
-        let cols = cols.max(MIN_COLUMNS);
-        let rows = rows.max(1);
+        // non-zero width, but a *wide glyph* needs two (#547). The ceiling is the frame
+        // header's u16, clamped here as well as in the constructor — a ceiling that held
+        // only until the first resize is the gap `new` had against this function's own row
+        // floor before #547 (#621).
+        let cols = cols.clamp(MIN_COLUMNS, MAX_COLUMNS);
+        let rows = rows.clamp(1, MAX_ROWS);
         let old_cols = self.grid.cols();
         let limit = self.scrollback_limit;
 
