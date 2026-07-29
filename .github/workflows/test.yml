@@ -68,8 +68,13 @@ jobs:
         run: rustup target add wasm32-unknown-unknown
       - name: Format
         run: cargo fmt --manifest-path justerm-renderer/Cargo.toml --check
-      - name: Test (host — pure modules)
-        run: cargo test --manifest-path justerm-renderer/Cargo.toml
+      # `--locked` here is the lockfile gate (#613): this crate's `Cargo.lock` is tracked, and this
+      # is the first BARE cargo command in the job, which is the only kind the flag works through —
+      # `wasm-pack ... -- --locked` resolves and rewrites the lock before cargo ever sees the flag,
+      # so an assertion placed there passes while inspecting nothing. Fails here, at PR time, when
+      # `Cargo.toml` and `Cargo.lock` disagree.
+      - name: Test (host — pure modules; asserts the lockfile)
+        run: cargo test --manifest-path justerm-renderer/Cargo.toml --locked
       - name: Clippy (wasm32 — the GL layer is 0-compile on host)
         run: cargo clippy --manifest-path justerm-renderer/Cargo.toml --target wasm32-unknown-unknown --all-targets -- -D warnings
       - name: Build (wasm32)
