@@ -89,6 +89,28 @@ export interface JustermRendererOptions {
    * {@link JustermRenderer.setTextBlinkInterval}.
    */
   textBlinkInterval?: number;
+  /**
+   * Background opacity: `0` fully transparent, `1` opaque (the default). Makes the terminal
+   * see-through to whatever is behind the canvas — the page, or a Tauri window's desktop — while
+   * glyph pixels stay fully opaque (#577, consumer half of #298).
+   *
+   * **The canvas must also have something to be see-through *to*.** The renderer only stops writing
+   * opaque background pixels; a page that paints an opaque colour behind the canvas will look
+   * exactly as it does today. Making the page/window transparent is consumer CSS, not the widget's,
+   * and it is the first thing to check when this appears to do nothing.
+   *
+   * Only cells carrying the **default** background are affected — a cell with an explicit SGR
+   * background, and the cursor cell, stay opaque. That is alacritty's rule (`compute_bg_alpha`
+   * returns `0.` only for the named background colour), and it is what keeps coloured output
+   * readable over an arbitrary desktop.
+   *
+   * Deliberately here rather than on {@link Theme}, though an alpha is the closest thing on this
+   * roster to a colour: it changes no palette entry, only how much of what is behind shows through.
+   * Both references put it outside the colour scheme too — xterm.js's `allowTransparency` is an
+   * option (`OptionsService.ts:47`), alacritty's `opacity` sits under `window`, not `colors`
+   * (`config/window.rs:46`). Change it at runtime with {@link JustermRenderer.setBgAlpha}.
+   */
+  bgAlpha?: number;
   theme: Theme;
 }
 
@@ -147,6 +169,10 @@ export interface RendererBackend {
   setBoldToBright(enabled: boolean): void;
   setMinimumContrastRatio(ratio: number): void;
   setSelectionForeground(color: number | undefined): void;
+  /** Background cell opacity, `0`..`1` (#298). The renderer clamps; it is read at *draw* time
+   * (the clear colour and a shader uniform), not at pack time, so unlike `setBoldToBright` this
+   * needs no re-pack — a bare `render` presents it. */
+  setBgAlpha(alpha: number): void;
   /** Re-bake the atlas at a new font size (CSS px) / family (#406/#413). The cell size moves, so the
    * consumer must re-fit. A no-op if unchanged; a non-finite / `<1` size is guarded by the renderer. */
   setFontSize(cssPx: number): void;
@@ -424,6 +450,10 @@ export class JustermRenderer implements Renderer {
     backend.setBoldToBright(t.boldToBright ?? true);
     backend.setMinimumContrastRatio(t.minimumContrastRatio ?? 1);
     backend.setSelectionForeground(t.selectionForeground);
+    // Background opacity (#577). Set unconditionally at the renderer's own default, so the value the
+    // renderer holds is the one this object states rather than one nobody wrote down. No `render`
+    // here — nothing has been drawn yet, and the first frame presents it.
+    backend.setBgAlpha(opts.bgAlpha ?? 1);
     // Font family + size (#406/#413, wired #417). Applied before the first fit, so the initial grid
     // is computed at the consumer's cell. Each is a no-op at the renderer's default (monospace/16).
     backend.setFontFamily(opts.fontFamily);
@@ -503,6 +533,29 @@ export class JustermRenderer implements Renderer {
    * a webfont before an unfamiliar family (the browser silently falls back otherwise). */
   setFontFamily(family: string): void {
     this.backend.setFontFamily(family);
+  }
+
+  /**
+   * Change the background opacity at runtime (#577) — `0` transparent, `1` opaque. The live
+   * counterpart of {@link JustermRendererOptions.bgAlpha}, whose doc carries the full contract
+   * (which cells it reaches, and the consumer CSS it depends on to be visible at all).
+   *
+   * **No re-fit**, unlike {@link setFontSize}/{@link setFontFamily}: the cell geometry does not
+   * move, so the grid the consumer drives its engine at is unaffected.
+   *
+   * Presents immediately, and — unlike {@link setCursorBlink} / {@link setTextBlinkInterval}, which
+   * first check that there is a cursor or a frame to redraw — does so unconditionally. Those guards
+   * exist because their redraw has nothing to say without retained content; this one always does.
+   * The alpha rides the *clear* colour as well as the per-cell one (`webgl.rs` `draw`), so even an
+   * empty terminal changes, and a consumer that sets this before the first frame sees it at once
+   * rather than at the next output.
+   *
+   * Out-of-range values are the renderer's to clamp (`set_bg_alpha`, `[0,1]`) and are deliberately
+   * not re-clamped here — two layers holding the same bound is how they drift apart.
+   */
+  setBgAlpha(alpha: number): void {
+    this.backend.setBgAlpha(alpha);
+    this.backend.render();
   }
 
   /** Swap the colour scheme at runtime (#420) — rebuild the 256-colour palette from the new ANSI

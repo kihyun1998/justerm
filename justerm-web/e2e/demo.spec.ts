@@ -1142,6 +1142,85 @@ test("prefers-reduced-motion pins blinking text visible (#576)", async ({ page }
   expect(seen).toEqual(new Set([p.defaultA]));
 });
 
+// #577: the renderer has drawn translucent backgrounds since #298 — including the awkward half, a GL
+// context created `alpha: true` / `premultipliedAlpha: false` precisely so its straight-colour output
+// composites over the page — and the widget exposed no way to ask for it, so a see-through terminal
+// was unreachable through the package. There is nothing pure to unit-test on the consumer side (the
+// value is forwarded, and the clamp is deliberately the renderer's), so this browser round trip is
+// the whole proof rather than a supplement to one.
+//
+// Read off the ALPHA channel, unlike every other pixel check in this file. The shader writes straight
+// colour and blending is never enabled, so `setBgAlpha` moves the fourth channel and leaves RGB
+// alone — comparing RGB would show no change and read as a failure. A screenshot cannot see this at
+// all: compositing happens against the page, which is opaque here.
+test("the consumer can make the terminal background translucent, live (#577)", async ({ page }) => {
+  await page.goto("/");
+  await expect(page.getByRole("button", { name: "Bg alpha: OPAQUE" })).toBeVisible();
+
+  const p = await page.evaluate(() => window.__bgAlphaProbe!());
+  const alpha = (px: number[]): number => px[3]!;
+  const rgb = (px: number[]): string => `rgb(${px[0]},${px[1]},${px[2]})`;
+
+  // The cells must actually paint, or every assertion below is vacuously true on a buffer nothing
+  // wrote to. Background and ink have to differ, too — otherwise "ink stayed opaque" says nothing.
+  expect(rgb(p.defaultBg)).not.toBe("rgb(0,0,0)");
+  expect(rgb(p.defaultInk)).not.toBe(rgb(p.defaultBg));
+
+  // UNSET = AS TODAY. The demo omits `bgAlpha` from its create options, so this is the boot state of
+  // an unconfigured widget: fully opaque, exactly as before this slice.
+  expect(alpha(p.defaultBg)).toBe(255);
+  expect(alpha(p.defaultInk)).toBe(255);
+
+  // THE FIX: at 0.5 a default-background cell becomes half transparent, so the page behind shows
+  // through once the consumer makes it visible. Rounding lands on 127 or 128 depending on the GL
+  // implementation's float→byte conversion, so this is a band rather than an equality.
+  expect(alpha(p.translucentBg)).toBeGreaterThan(110);
+  expect(alpha(p.translucentBg)).toBeLessThan(145);
+
+  // …and the COLOUR did not move — only the channel that should. This is what separates "we made the
+  // background translucent" from "we changed the background colour", which a same-turn readPixels
+  // cannot otherwise tell apart.
+  expect(rgb(p.translucentBg)).toBe(rgb(p.defaultBg));
+
+  // Glyph pixels stay fully opaque. Not a nicety: text that faded with its background would be
+  // unreadable over an arbitrary desktop, which is the whole use case. alacritty holds the same line
+  // (`compute_bg_alpha` returns `0.` only for the named background colour, `content.rs:388`).
+  expect(alpha(p.translucentInk)).toBe(255);
+  expect(rgb(p.translucentInk)).toBe(rgb(p.defaultInk));
+
+  // LIVE, WITH NO CONTENT FRAME. Read after `setBgAlpha` alone, with the demo's 300ms append timer
+  // stopped — so the only thing that could have put those pixels on the canvas is the setter's own
+  // present. With the timer left running this passes even if the setter never renders, which is the
+  // trap #576 was caught by and recorded on the epic.
+  expect(alpha(p.liveNoFrame)).toBeGreaterThan(50);
+  expect(alpha(p.liveNoFrame)).toBeLessThan(80); // 0.25 → ~64
+
+  // Not a one-way door: back to 1 restores the original pixel exactly.
+  expect(p.restoredBg).toEqual(p.defaultBg);
+});
+
+// #577, the OTHER half of the knob. The test above drives the runtime setter; `create` runs once per
+// page load, so the option is only reachable by booting with it set — which is what the demo's
+// `?bgAlpha=` parameter exists for. Worth its own test rather than folded into the one above: the two
+// paths are separate call sites, and the option's is the one a consumer writes first and the one that
+// stays silent if it is dropped (the renderer's own default is opaque, so a missing `create` call
+// looks exactly like a correct one until somebody asks for translucency).
+test("bgAlpha given at create boots translucent, without touching the setter (#577)", async ({
+  page,
+}) => {
+  await page.goto("/?bgAlpha=0.6");
+  await expect(page.getByRole("button", { name: "Bg alpha: 0.6" })).toBeVisible();
+
+  const p = await page.evaluate(() => window.__bgAlphaProbe!());
+
+  // `defaultBg` is read before the probe calls any setter, so this is purely what `create` applied.
+  expect(p.defaultBg[3]).toBeGreaterThan(140);
+  expect(p.defaultBg[3]).toBeLessThan(165); // 0.6 → ~153
+
+  // Ink is opaque here too — the option and the setter reach the same renderer state, not two.
+  expect(p.defaultInk[3]).toBe(255);
+});
+
 // #606: `Terminal.dispose()` is end of life, and the renderer it was handed must stop with it. The
 // unit tests prove the widget *calls* dispose on a fake; this is the only place the consequence is
 // observable — the rAF loop is real and it is what repaints the canvas. Counted rather than sampled

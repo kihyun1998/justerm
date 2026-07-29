@@ -50,10 +50,17 @@ import type { DecodedFrame } from "../src/types";
 import { FakeSelectionEngine } from "./fake-select";
 import { FakeSearchEngine } from "./fake-search";
 
+// #577: `create` runs once per page load, so the OPTION half of the knob is only reachable by
+// reloading with it set — hence a query parameter rather than a button (the button drives the runtime
+// setter, which is the other half). Absent ⇒ the option is genuinely omitted below, which is the
+// state the "unset behaves exactly as today" check reads.
+const bootBgAlpha = new URLSearchParams(location.search).get("bgAlpha");
+
 const renderer = await JustermRenderer.create({
   canvasSelector: "#term",
   fontFamily: "monospace",
   fontSize: 16,
+  ...(bootBgAlpha === null ? {} : { bgAlpha: Number(bootBgAlpha) }),
   theme: {
     ansi: [
       0x000000, 0xcd0000, 0x00cd00, 0xcdcd00, 0x0000ee, 0xcd00cd, 0x00cdcd, 0xe5e5e5, 0x7f7f7f,
@@ -191,6 +198,15 @@ const BLINK_ROW = 7;
 const BLINK_COL = 4;
 const BLINK_WIDTH = 3;
 const BLOCK_GLYPH = 0x2588;
+
+// #577: the consumer's background opacity. Starts at `1` and the option is deliberately left OFF the
+// `create` call below, so the page boots in the state a widget with no configuration is in — which is
+// what `__bgAlphaProbe`'s first sample reads, and the only way to observe the unset default at all.
+let bgAlpha = bootBgAlpha === null ? 1 : Number(bootBgAlpha);
+/** What the demo's button drops to. Arbitrary, like the blink interval: the references disagree on a
+ * default (alacritty ships `1.0`, xterm.js ships `allowTransparency: false`) and neither is a number
+ * this widget could inherit, so it is a demo choice — low enough that the page behind clearly shows. */
+const DEMO_BG_ALPHA = 0.5;
 
 // #150 accessible view: the Accessible view button summons the whole-log document (a real backend runs
 // core `accessible_text`; the demo joins its log), Escape closes + returns focus.
@@ -487,6 +503,19 @@ function toggleTextBlink(): void {
   console.log(`[demo] setTextBlinkInterval(${ms}) (the consumer's half, #576)`);
 }
 
+// #577: the consumer's background opacity. The page behind the canvas is what shows through, so the
+// visible effect of this button is the demo page's own background bleeding into the terminal — which
+// is exactly the dependency the option's doc warns about: the widget only stops writing opaque
+// pixels, it cannot make whatever is behind it transparent.
+function toggleBgAlpha(): void {
+  bgAlpha = bgAlpha === 1 ? DEMO_BG_ALPHA : 1;
+  renderer.setBgAlpha(bgAlpha);
+  bgAlphaBtn.textContent = `Bg alpha: ${bgAlpha === 1 ? "OPAQUE" : bgAlpha}`;
+  console.log(`[demo] setBgAlpha(${bgAlpha}) (the consumer's policy, #577)`);
+  // No `render()` here on purpose: the setter presents on its own, and a re-emit would hide it if it
+  // ever stopped doing so.
+}
+
 function toggleAppMouse(): void {
   // S16 (#133): flip the frame's mouse-tracking mask. ON → the widget reports a
   // wheel notch to the app (input sink logs it); OFF → wheel scrolls scrollback.
@@ -561,6 +590,12 @@ const appMouseBtn = demoButton("App mouse: OFF", toggleAppMouse);
 const cursorBlinkBtn = demoButton("Cursor blink: OFF", toggleCursorBlink); // #575
 const sgr5TextBtn = demoButton("SGR 5 text: OFF", toggleSgr5Text); // #576 (application half)
 const textBlinkBtn = demoButton("Text blink: OFF", toggleTextBlink); // #576 (consumer half)
+// Label derived, not hardcoded: `?bgAlpha=` may have booted this page translucent, and a button that
+// said OPAQUE then would be a false report of the state it is about to toggle.
+const bgAlphaBtn = demoButton(
+  `Bg alpha: ${bgAlpha === 1 ? "OPAQUE" : bgAlpha}`,
+  toggleBgAlpha,
+); // #577: runtime setBgAlpha
 const titleBtn = demoButton("Set title", emitTitle); // #117
 const bellBtn = demoButton("Bell", emitBell); // #117
 const cwdBtn = demoButton("Set cwd", emitCwd); // #117
@@ -579,6 +614,7 @@ controls.append(
   cursorBlinkBtn,
   sgr5TextBtn,
   textBlinkBtn,
+  bgAlphaBtn,
   titleBtn,
   bellBtn,
   cwdBtn,
@@ -1102,7 +1138,36 @@ declare global {
     __composeCaretProbe?: () => Promise<ComposeCaretProbe>;
     __aboveTopProbe?: () => AboveTopProbe;
     __rulerAnchorProbe?: () => RulerAnchorProbe;
+    __bgAlphaProbe?: () => Promise<BgAlphaProbe>;
   }
+}
+/**
+ * #577 — the background opacity, read off the **alpha channel** of the drawing buffer.
+ *
+ * Every other probe on this page compares RGB, because every other feature changes a colour. This
+ * one does not: the shader writes straight (non-premultiplied) colour, blending is never enabled,
+ * and what `setBgAlpha` moves is the fourth channel — so alpha is not a proxy for the effect here,
+ * it *is* the effect. Reading RGB would show no change and read as a failure.
+ *
+ * Deliberately not a screenshot: what a *composited* canvas looks like depends on what is behind it,
+ * and the page behind this one is opaque. `readPixels` sees the buffer before the compositor gets
+ * it, which is the only place the claim is observable at all (and the reason #352's white-canvas
+ * trap does not apply).
+ */
+interface BgAlphaProbe {
+  /** `[r,g,b,a]` of a blank default-background cell, with the option unset — the "as today" case. */
+  defaultBg: number[];
+  /** `[r,g,b,a]` inside a full-block glyph, with the option unset. */
+  defaultInk: number[];
+  /** The same background cell at `bgAlpha = 0.5`. */
+  translucentBg: number[];
+  /** The same glyph at `bgAlpha = 0.5` — ink must stay opaque, or text over a desktop is unreadable. */
+  translucentInk: number[];
+  /** The background cell after `setBgAlpha`, read with **no frame emitted and the demo's append
+   * timer stopped** — so the only thing that could have presented it is the setter itself. */
+  liveNoFrame: number[];
+  /** Back at `bgAlpha = 1`: the round trip must return to `defaultBg` exactly. */
+  restoredBg: number[];
 }
 /** #575 — the cursor cell's pixel under each blink authority. */
 interface CursorBlinkProbe {
@@ -1431,6 +1496,70 @@ window.__textBlinkProbe = async (): Promise<TextBlinkProbe> => {
   renderer.setTextBlinkInterval(savedInterval);
   render();
   return { background, defaultA, defaultB, phases, loopSamples, beforeDisable, afterDisable };
+};
+
+window.__bgAlphaProbe = async (): Promise<BgAlphaProbe> => {
+  // #577: the consumer half of #298. The renderer has drawn translucent backgrounds since #298 and
+  // the GL context has been created for it (`alpha: true`, `premultipliedAlpha: false`) all along —
+  // what was missing was any way to ask for it through the widget. This drives the real knob.
+  const gl = canvas.getContext("webgl2")!;
+  const { width: cw, height: ch } = renderer.cellSize(); // device px
+
+  // `readPixels` counts rows from the BOTTOM of the buffer, like every other probe here.
+  const readPx = (x: number, y: number): number[] => {
+    const px = new Uint8Array(4);
+    gl.readPixels(x, gl.drawingBufferHeight - 1 - y, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    return [px[0]!, px[1]!, px[2]!, px[3]!];
+  };
+  // The LAST column of a row: `viewportFrame` pads every short line out to COLS with spaces, so this
+  // cell is a blank default-background cell whatever the log happens to hold — which is what makes it
+  // a stable read rather than one that depends on the glyph that landed there.
+  const readBg = (): number[] => readPx(Math.round((COLS - 1) * cw) + 2, Math.round(BLINK_ROW * ch) + 2);
+  // The CENTRE of a full-block cell — `█` covers its cell completely, so this is ink under any font.
+  const readInk = (): number[] =>
+    readPx(Math.round(BLINK_COL * cw + cw / 2), Math.round(BLINK_ROW * ch + ch / 2));
+
+  const savedSgr5 = sgr5Text;
+  const savedAlpha = bgAlpha;
+
+  // Borrow the SGR-5 run purely for its `█` glyphs — with the interval at 0 they never blink, so this
+  // is a block of ink at a known cell and nothing to do with #576's behaviour.
+  renderer.setTextBlinkInterval(0);
+  sgr5Text = true;
+  // (1) Deliberately NO `setBgAlpha` here. The demo omits `bgAlpha` from its `create` options and
+  //     nothing has pressed the button, so this reads the state a widget with no configuration boots
+  //     in — the "unset behaves exactly as today" claim. Calling `setBgAlpha(1)` first would prove
+  //     only that the setter can restore opacity, which is a different (weaker) statement.
+  render();
+  const defaultBg = readBg();
+  const defaultInk = readInk();
+
+  // (2) Ask for translucency. Frame re-emitted here so this pair is about the *pixels*, not about
+  //     what presented them — (3) below is the one that isolates the presenting.
+  renderer.setBgAlpha(0.5);
+  render();
+  const translucentBg = readBg();
+  const translucentInk = readInk();
+
+  // (3) The live claim: a change with NO content frame behind it. The demo's 300ms append timer
+  //     presents a frame every tick, and a frame re-packs and presents at the current alpha too — so
+  //     with it running this section would pass with the setter's own `render()` deleted. #576 was
+  //     caught by exactly that and the lesson is written into the epic; stop the timer first.
+  window.clearInterval(appendTimer);
+  renderer.setBgAlpha(1);
+  render(); // establish the opaque baseline, then change it with nothing else touching the canvas
+  renderer.setBgAlpha(0.25);
+  const liveNoFrame = readBg();
+
+  // (4) Round-trip back to opaque — a knob that cannot be turned off is a one-way door.
+  renderer.setBgAlpha(1);
+  const restoredBg = readBg();
+
+  appendTimer = window.setInterval(appendTick, 300);
+  sgr5Text = savedSgr5;
+  renderer.setBgAlpha(savedAlpha);
+  render();
+  return { defaultBg, defaultInk, translucentBg, translucentInk, liveNoFrame, restoredBg };
 };
 
 window.__disposeProbe = async (): Promise<DisposeProbe> => {
