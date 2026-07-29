@@ -87,9 +87,9 @@ Every stateful territory downstream, because this is where state is written.
 - **The hidden-state catalogue is 30 entries and no territory owns most of them.** They are
   distributed across this map by subject, but the catalogue itself has no home in the graph — it is a
   section of a spec file, and the only artifact that knows what is *not* built.
-- **#47 — the VT compliance tail is perpetual and open by design.** Conformance is accumulated
-  dogfood-first, so "not implemented" is a normal state here rather than a defect, and nothing
-  distinguishes *deliberately absent* from *not reached yet* except prose.
+- **Conformance is accumulated, never declared complete.** Coverage grows dogfood-first, so
+  "not implemented" is a normal state here rather than a defect — and nothing distinguishes
+  *deliberately absent* from *not reached yet* except prose. The perpetual tail is tracked in #47.
 - **Modes tracked but not acted on have no single list.** Each is documented at its field; a consumer
   discovering which flags it must honour has to read the struct.
 - **ADR-0004's tie-breaker is stated once and applied everywhere.** Whether a given verb followed the

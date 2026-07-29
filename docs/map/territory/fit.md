@@ -70,7 +70,7 @@ diverges quietly.
 - **The silent `MIN_COLUMNS` clamp is invisible here.** Fit can propose one column; the engine
   returns two, and nothing in this territory says so — a consumer must read the width back from the
   frame.
-- **#578 — `setLetterSpacing` / `setLineHeight` are unreachable from the widget**, so two inputs that
-  change the cell size cannot be driven by the consumer that owns the box.
-- **#325 — no `matchMedia` listener for resolution changes**, so moving a window between displays
-  leaves the device-pixel ratio stale until something else triggers a fit.
+- **`setLetterSpacing` / `setLineHeight` are unreachable from the widget**, so two inputs that change
+  the cell size cannot be driven by the consumer that owns the box. Tracked: #578.
+- **No `matchMedia` listener watches for resolution changes**, so moving a window between displays
+  leaves the device-pixel ratio stale until something else triggers a fit. Tracked: #325.

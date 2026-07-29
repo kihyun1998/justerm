@@ -84,5 +84,5 @@ an editor rather than a terminal.
   model.
 - **The reset-on-reactivate obligation is a convention.** Every announce-related field must be reset
   in one place, with nothing enforcing it — and it has already been missed once.
-- **#448 — the invalid-regex search state is not exposed to AT**, so a screen-reader user gets no
-  signal that their search cannot run.
+- **The invalid-regex search state is not exposed to AT**, so a screen-reader user gets no signal
+  that their search cannot run. Tracked: #448.

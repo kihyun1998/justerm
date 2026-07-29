@@ -81,5 +81,5 @@ application misbehaves.
   record and no issue-level commitment.
 - **Two mode sets have to agree across a crate boundary.** The web mirrors `input.rs`'s intent types
   by hand, the same ungated mirroring `types.ts` does for the frame.
-- **#249 — in-progress IME composition is not rendered inline in the grid**, so what the user is
-  typing is invisible until it is confirmed.
+- **In-progress IME composition is not rendered inline in the grid**, so what the user is typing is
+  invisible until confirmation. Tracked: #249.

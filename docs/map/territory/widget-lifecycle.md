@@ -13,8 +13,8 @@ perfectly good teardown handle, and no artifact says whose job it is to call the
 
 **None.**
 
-- Live spine: **#605** — *"justerm-web's background work has no lifecycle owner"*. It holds the
-  measured inventory this note routes to; a GitHub issue, so not a graph node
+- The measured inventory this note routes to is in spine **#605** — *"justerm-web's background work
+  has no lifecycle owner"*. A GitHub issue, so not a graph node
 
 ## Design model
 
@@ -63,8 +63,8 @@ Everything the widget attaches, because the missing owner is a property of the c
 than of any one collaborator.
 
 - [caret drawing](caret-drawing.md) · [caret report](caret-report.md) — the blink phase is driven by
-  the loop nothing can stop (#606), and neither blink loop pauses when the terminal is off-screen
-  (#607)
+  the loop `Terminal` cannot reach, and neither blink loop pauses when the terminal is off-screen
+  (tracked: #606, #607)
 - [GL context lifecycle](gl-context-lifecycle.md) — the consumer sets the restore timeout and reacts
   to the callback, so context recovery is one more thing with no stated owner
 - [events & replies](events-and-replies.md) — both queues are drained on a cadence the consumer
@@ -76,11 +76,11 @@ than of any one collaborator.
 
 ## Known holes / open
 
-- **The whole territory is a hole.** There is an inventory and no model; #605 exists to decide who
-  owns what, and until it does every entry above is a convention.
-- **#606 — `Terminal.dispose()` cannot stop the renderer's blink loop**, because the port does not
-  expose `dispose`. Fixing the call site is not possible without changing the type.
-- **#607 — neither blink loop pauses when the terminal is off-screen**, so a backgrounded tab keeps
-  animating.
+- **The whole territory is a hole.** There is an inventory and no model, so every entry above is a
+  convention rather than a contract. Deciding the ownership is tracked in #605.
+- **`Terminal.dispose()` cannot reach the renderer's blink loop**, because `dispose` is not on the
+  `Renderer` port — so this is not fixable at a call site without changing the type. Tracked: #606.
+- **Neither blink loop pauses when the terminal is off-screen**, so a backgrounded tab keeps
+  animating. Tracked: #607.
 - **No reference comparison** for teardown composition, which is the one thing a widget library is
   usually judged on by its consumers.

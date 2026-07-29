@@ -15,7 +15,7 @@ nothing implementing it.
 - [**ADR-0021 — one WebGL2 context draws N terminal grids as viewports (`TerminalSurface`)**](../../adr/0021-single-context-multi-viewport.md)
   — the direction, the `TerminalSurface` shape, a three-layer resource split and the rules for
   assigning a resource to a layer. Read its `Status:` line rather than any restatement
-- Live epic: **#287** (a GitHub issue, so not a graph node)
+- The build plan lives in epic **#287** (a GitHub issue, so not a graph node)
 
 ## Design model
 

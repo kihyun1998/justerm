@@ -120,5 +120,5 @@ Check these after changing this territory:
 - **Word-selection boundaries** — which character classes form a word is a *policy* that under
   ADR-0017 may belong to the consumer, yet the set is hardcoded in core. ~~No record.~~ The
   *behaviour* is recorded and cleared (see §Reference behaviour); what is open is the **routing** —
-  #545 (inject the boundary set instead of hardcoding it) is the issue that would move it, and the
+  moving it means injecting the boundary set instead of hardcoding it (tracked: #545), and the
   reference verdict holds only as long as the start-cell rule stays alacritty's.

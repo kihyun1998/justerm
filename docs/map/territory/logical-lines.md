@@ -93,7 +93,7 @@ recorded SHA; a paraphrase drops the pin).
 - **The off-screen-context contract is undocumented outside the field's doc comment.** That a `row`
   may be negative or ≥ `rows` is a sharp edge on a public type with no record behind it.
 - **The soft-wrap run walk is intentionally unbounded** — scrollback-bounded rather than capped, so a
-  pathological buffer makes one call walk the whole history. #206 is open to cap it, and the cap's
-  home would be `walk.rs` since `search` shares the walk.
+  pathological buffer makes one call walk the whole history. A cap's home would be `walk.rs`, since
+  `search` shares the walk. Tracked: #206.
 - **`accessible_text` vs `viewport_logical_lines` overlap is unstated** — one is whole-buffer, one is
   viewport-plus-context, and no artifact says which a consumer should reach for.
