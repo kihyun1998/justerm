@@ -775,11 +775,18 @@ export class JustermRenderer implements Renderer {
       asU32(frame.fg),
       asU32(frame.bg),
       asU16(frame.flags),
-      // #627: `asU32`, not `asU16`. Both ends of this column are u32 now (the decoder emits one,
-      // renderer >= 0.9.0 takes one), so the steady state is the identity branch. Until the
-      // `justerm-wasm-decode` pin moves to the v14 release (#633 step 5) the published 0.11.0
-      // decoder still returns a `Uint16Array`, so this takes the `Uint32Array.from` fallback —
-      // a widening copy, correct for every value a u16 can hold, and it ends with that bump.
+      // #627: `asU32`, not `asU16` — renderer >= 0.9.0 takes this column as u32, and narrowing it
+      // back truncated silently above `u16::MAX` while copying every frame.
+      //
+      // Whether the identity branch is taken is **the frame producer's** business, not this
+      // package's. `frame` arrives through `FrameSource.push`, so the width of `extra` is decided by
+      // whoever decoded it — a consumer on `justerm-wasm-decode` >= 0.12.0 hands a `Uint32Array`
+      // (identity, zero JS allocation); one still on 0.11.0 hands a `Uint16Array` and pays one
+      // widening copy, correct for every value a u16 can hold. This package's own dependency on the
+      // decoder does **not** decide it: the only thing web imports from there is `buildPalette` plus
+      // the `Palette` type — `decodeFrame` is called nowhere in `src/`. An earlier version of this
+      // comment tied the copy to *our* pin moving at #633 step 5; that was wrong, and the pin bump
+      // it predicted has now landed without changing anything here.
       asU32(frame.extra),
       Array.from(frame.sideTable),
       // #520: the underline colour column (SGR 58). Trailing arg on the renderer's apply_damage;
