@@ -119,6 +119,7 @@ owns no detail of its own.
 - Cross-cutting invariants — [the cell size is derived state](invariant/cell-size-is-derived-state.md) ·
   [alt-screen absolute-index floor](invariant/alt-screen-buffer-floor.md) ·
   [row-keyed side maps](invariant/row-keyed-side-maps.md) ·
+  [an IME composition is browser-owned state the engine never sees](invariant/composition-is-browser-owned-state.md) ·
   [workspace exclusion is gate invisibility](invariant/workspace-exclusion-is-gate-invisibility.md)
 
 Ask the questions instead of copying the answers (run from `docs/map/`):
