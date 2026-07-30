@@ -175,7 +175,11 @@ const EMPTY_U16 = new Uint16Array(0);
  * GL context — the injected-seam pattern the beamterm adapter used via the `Renderer` port. The
  * real wasm instance is assigned to this in {@link JustermRenderer.create}, so a signature drift
  * is a compile error there. Method names match wasm-bindgen's output (snake_case where there is
- * no `js_name`, camelCase where there is). */
+ * no `js_name`, camelCase where there is).
+ *
+ * That declaration gates this mirror against the published *renderer* only. The other published
+ * package this widget consumes is gated separately, in `test/published-seam.types.ts` (#646),
+ * which asserts that the decoder's columns can feed these parameters — the pairing #627 broke. */
 export interface RendererBackend {
   /** Scatter a decoded frame's damage into the persistent grid, then re-pack. Header is
    * `[cols, rows, kind, hasScroll, scrollTop, scrollBottom, scrollCount, blinkOn]` (#285). */

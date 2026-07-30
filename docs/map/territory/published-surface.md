@@ -40,11 +40,20 @@ How a version gets there is [release](release.md).
   real renderer class to its own `RendererBackend` by a **typed declaration, not a cast**, so a
   signature drift in the published renderer is a compile error here; it fired on its first real test
   (#645), naming an `apply_damage` call site that a hand-written list of sites did not contain. The
-  decoder seam has no equivalent and, as declared, cannot: `DecodedFrame` types every column
-  `ArrayLike<number>` *deliberately*, so that plain-object demo and test fixtures satisfy it — and
-  that accepts a `Uint16Array` and a `Uint32Array` alike. #627 lived in exactly that gap for a
-  release, the decoder having widened its cluster-index column to u32 while the adapter went on
-  narrowing it back.
+  decoder seam went ungated through #627, the decoder having widened its cluster-index column to u32
+  while the adapter went on narrowing it back.
+- **The gate on that seam does not run through `types.ts`, and that is why it took a while to find
+  (#646).** `DecodedFrame` types every column `ArrayLike<number>` *deliberately*, so that plain-object
+  demo and test fixtures satisfy it, and that accepts a `Uint16Array` and a `Uint32Array` alike — so
+  the mirror this package owns is the one surface that structurally cannot pin a width. The fact worth
+  asserting turned out to be one layer out and to be about the **family** rather than about this
+  package: *the renderer's parameters must be able to take what the decoder produces.* `justerm-web`
+  is merely the only place where both published types are in scope, so the check lives here while
+  routing through neither of this package's own declarations, and `src/` gains no dependency on the
+  decoder's types. Two classes fall out of it, both derived rather than listed: a **width** that
+  stops feeding (`Feeds<decoder column, renderer parameter>`) and a **getter this package never
+  mirrored** (`Exclude<keyof wasm, keyof web>` must be `never` — the #129/#135 class, which a
+  hand-kept roster would have to predict and `keyof` does not).
 - **A version range decides when a consumed drift becomes reachable, which is not when it is
   introduced.** An npm 0.x caret is `>=0.N.0 <0.N+1.0`, so a widened column published by one family
   member is inert in another until that pin moves. The window a mismatch is dangerous in opens at
@@ -64,8 +73,10 @@ How a version gets there is [release](release.md).
 - `justerm-web/src/types.ts` — `DecodedFrame`, web's mirror of the published decoder's getters;
   width-agnostic by contract, so it gates a column's presence and never its width
 - `justerm-web/src/justerm-renderer.ts` — `RendererBackend`, web's mirror of the published
-  renderer, and the typed binding in `JustermRenderer.create` that is the only drift gate either
-  mirror has
+  renderer, and the typed binding in `JustermRenderer.create` that gates it
+- `justerm-web/test/published-seam.types.ts` — the decoder-side gate (#646): the published
+  decoder's columns must feed the published renderer's parameters, and every decoder getter must be
+  mirrored. Checked by `pnpm typecheck`, not by vitest, and it names what it cannot see
 - `justerm-web/package.json` — the two version ranges that decide when a consumed drift is reachable
 
 ## Reference behaviour
@@ -100,9 +111,18 @@ How a version gets there is [release](release.md).
   on docs.rs for six weeks after #7 closed.
 - **Only one constant is pinned.** `readme_pins.rs` covers `wireVersion()`; any other number a README
   quotes is unchecked, and a README that starts quoting a new one gets no pin unless someone adds it.
-- **One of web's two consumed seams is ungated, and the other one is the proof that gating works**
-  (#646). Both instances found so far were found by a person, not by a check: a missing *field*
-  (#129/#135, `mouseWantedEvents` reaching `types.ts` only at S16) and a disagreeing *width* (#627).
-  Whether the fix is worth its coupling — deriving one mirror's declarations from another package's
-  types — is undecided, and #646 records the ceiling: such a gate fires at the pin bump, so it makes
-  the window's *end* automatic rather than catching the drift earlier.
+- **Both seams are gated now (#646), but the decoder-side gate fires at the pin bump, not at the
+  drift.** `justerm-web` consumes *published* packages, so a column that widens on master is inert
+  here until a version range moves — the gate makes the window's *end* automatic and a half-bumped
+  state unmergeable (the two ranges are independent pins), which is strictly more than "remembered",
+  and still not an early warning. An earlier signal would have to live where the decoder is *built*,
+  and that means either importing the Rust toolchain into the one CI job deliberately built without
+  it, or pinning the getter list in `justerm-wasm-decode/src/lib.rs` against a checked-in roster —
+  a roster again, one language over. Neither was taken.
+- **What no type on this seam can see**, recorded because the gate's existence otherwise reads as
+  more coverage than it is: a column with no consumer that declares a width (`link`, `linkTable`,
+  `markerPositions`, `markerLines` — every path here takes them as `ArrayLike<number>`), and any
+  change to what the values *mean* at an unchanged width. `link` is the live instance of the first:
+  it widened to u32 in the same decoder release as `extra` and arrived at the #633 pin bump with
+  nothing observing it. Harmless — nothing narrows it — but it is the class, and the gate is blind
+  to it by construction.
