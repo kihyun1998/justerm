@@ -77,6 +77,9 @@ grounds as unverified, which is unusual enough to be worth knowing before buildi
   geometry
 - [fit](fit.md) — the resize contract runs consumer→CSS box, renderer→`cols`
   / `rows`, which is the reverse of what a grid-first API would do
+- [widget lifecycle](widget-lifecycle.md) — where a cell change *arrives* in the consumer, and the one
+  place it meets a cache that outlives it: the hidden textarea's anchor is re-read at a point of use
+  rather than invalidated, because nothing here pushes (#631)
 
 ## Known holes / open
 

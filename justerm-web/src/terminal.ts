@@ -75,6 +75,42 @@ export function routeWheel(
   return { kind: "scroll", displayOffset: wheelScrollTarget(lines, displayOffset, scrollbackLen)! };
 }
 
+/** Where the hidden textarea is anchored, in cells — the cursor cell a frame reported. */
+export interface TextareaAnchor {
+  col: number;
+  row: number;
+}
+
+/**
+ * Whether the hidden textarea must move, and the cache key to remember (#631).
+ *
+ * The key is the cursor's **cell coordinate**, but the anchor is computed from the **geometry** —
+ * so a cell-size change (`setFontSize`, `setFontFamily`, `setLetterSpacing`, `setLineHeight`, and
+ * `setDevicePixelRatio` once it is wired) moves what the anchor should be while leaving the
+ * coordinate identical. A coordinate-keyed cache structurally cannot express "the geometry moved",
+ * which is why `force` exists: the callers that sit at a moment something actually *reads* the
+ * anchor override the cache instead of trying to keep it fresh at all times.
+ *
+ * Why not simply drop the cache and re-read every frame, which is what all three references do
+ * (xterm.js `_syncTextArea`, ghostty `imePoint`, alacritty `update_ime_position` — none of them
+ * caches)? Because their cell is a **stored field** they push to (`dimensions.css.cell`,
+ * `size.cell`, `size_info`), while ours arrives through a consumer-supplied
+ * {@link TerminalOptions.getGeometry} callback whose cost we do not control — the demo's and the
+ * README's both do a `getBoundingClientRect()`. Per-frame is cheap for them and a forced layout
+ * read per output flush for us. Valid only as long as `getGeometry` stays a pull-based consumer
+ * callback; if the widget ever holds a pushed cell, prefer the reference's no-cache shape.
+ */
+export function textareaMove(
+  cursor: TextareaAnchor | undefined,
+  lastKey: string,
+  force: boolean,
+): { col: number; row: number; key: string } | undefined {
+  if (!cursor) return undefined;
+  const key = `${cursor.col},${cursor.row}`;
+  if (!force && key === lastKey) return undefined;
+  return { col: cursor.col, row: cursor.row, key };
+}
+
 /**
  * Wrap an {@link InputSink} so the renderer's local cursor/selection state tracks
  * input before each intent forwards: a KEY intent restarts the cursor blink (the
@@ -163,6 +199,11 @@ export class Terminal {
   /** Last cursor cell the textarea was moved to, so it repositions only on a move
    * (not every frame — that would force a layout read+write per output flush). */
   private textareaCell = "";
+  /** The cursor cell the latest frame reported, retained so the anchor can be re-synced at a
+   * point of use without waiting for a frame (#631). Not cleared when the cursor hides: an
+   * application can hide the caret and the user can still open an IME, and re-anchoring at the
+   * last known cell beats leaving the anchor wherever the geometry used to put it. */
+  private cursorAnchor: TextareaAnchor | undefined;
   /** Latched by {@link Terminal.dispose} (#606): the widget's lifecycle is one-shot, so this both
    * keeps the renderer from being disposed twice and refuses a re-mount. */
   private disposed = false;
@@ -175,8 +216,13 @@ export class Terminal {
 
   /** Focus the keyboard/IME input target (the hidden textarea, #116). Consumers
    * that move focus away — an accessible-view overlay, a control button — call this
-   * to return it, since the real input target is the textarea, not the canvas. */
+   * to return it, since the real input target is the textarea, not the canvas.
+   *
+   * Re-anchors first (#631): focusing is a read moment for the element's position — the browser's
+   * focus steps scroll the nearest scrollable ancestor to it — and the cell may have moved since
+   * the cursor last did. */
   focus(): void {
+    this.syncTextareaAnchor();
     this.textarea?.focus();
   }
 
@@ -185,8 +231,10 @@ export class Terminal {
    *
    * **Not callable after {@link Terminal.dispose}** (#606). The alternative — a widget that can be
    * unmounted and mounted again — is a larger contract than this one currently keeps, and pretending
-   * to keep it is worse than refusing: `textareaCell` survives disposal, so a remounted widget would
-   * park the IME candidate window at the canvas origin until the cursor next moved, and a re-mounted
+   * to keep it is worse than refusing: `textareaCell` and `cursorAnchor` survive disposal, so a
+   * remounted widget would park the IME candidate window at the *previous* mount's anchor — since
+   * #631 only until the next focus or composition start re-syncs it, which shortens the window
+   * without closing it — and a re-mounted
    * renderer would have lost its `prefers-reduced-motion` listener for good (its only registration is
    * in a private constructor). Throwing names the contract at the moment it is broken; the reference
    * makes the same call structurally — xterm.js's disposable store latches on dispose and `open()`
@@ -267,6 +315,13 @@ export class Terminal {
     // The caret also stops blinking for the duration (#592) — composition is a browser fact the
     // engine never sees, so this is the only place that can tell the renderer about it.
     const onStart = (): void => {
+      // Re-anchor BEFORE the controller is told a composition began (#631). The order is the
+      // contract, not a coincidence: this is the one moment the OS reads the anchor to place its
+      // candidate window, and any future "don't move the textarea mid-composition" guard (xterm
+      // has one) would key on the controller's `active` flag — so flipping these two lines would
+      // silently disable the re-sync. xterm.js orders its own `_syncTextArea()` before
+      // `compositionHelper.compositionstart()` for exactly that reason.
+      this.syncTextareaAnchor();
       composition.compositionStart();
       this.renderer.setComposing?.(true);
     };
@@ -288,7 +343,7 @@ export class Terminal {
     // Pointer-down focuses the textarea (it's pointer-events:none so the canvas
     // still gets the click for selection) and resets the blink phase.
     const onDown = (): void => {
-      ta.focus();
+      this.focus(); // not `ta.focus()` — routes through the anchor re-sync (#631)
       this.renderer.restartCursorBlink?.();
     };
     element.addEventListener("mousedown", onDown);
@@ -311,21 +366,49 @@ export class Terminal {
 
   /** Move the hidden textarea over the cursor cell so the IME candidate window
    * appears there (xterm's updateCompositionElements). Geometry from the same
-   * source the input uses; skipped when the cursor is absent/hidden. */
+   * source the input uses; skipped when the cursor is absent/hidden.
+   *
+   * Only touches the DOM (a layout read via `getGeometry` + two style writes) when the cursor
+   * actually moved, not on every output frame. That cache is keyed on the *coordinate*, so it
+   * cannot see a cell-size change — {@link Terminal.syncTextareaAnchor} is the path that can. */
   private positionTextarea(frame: DecodedFrame): void {
+    if (frame.cursorRow === undefined || frame.cursorVisible === false) return;
+    const cursor = { col: frame.cursorCol ?? 0, row: frame.cursorRow };
+    this.cursorAnchor = cursor;
+    this.applyTextareaAnchor(textareaMove(cursor, this.textareaCell, false));
+  }
+
+  /**
+   * Re-anchor the textarea at the retained cursor cell, re-reading the geometry (#631).
+   *
+   * The cache above holds a *coordinate* while the anchor is derived from the *geometry*, and a
+   * `setFontSize` / `setLetterSpacing` / `setLineHeight` with a stationary cursor moves the second
+   * without touching the first — so the widget cannot keep the anchor fresh by watching frames.
+   * Instead this runs at the moments something reads the anchor: composition start (the OS IME
+   * candidate window) and focus (the browser's focus steps scroll the nearest scrollable ancestor
+   * to the focused element). One geometry read per IME session and per focus, not per frame.
+   *
+   * xterm.js reaches the same conclusion for the same reason: an option change there never reaches
+   * `_syncTextArea` either (`RenderService.handleResize` forwards to the renderer without touching
+   * `BufferService`, so `onResize` never fires; and `Terminal.resize` early-returns on an unchanged
+   * grid), and its whole mitigation is the same re-sync at `compositionstart`, whose comment names
+   * this exact symptom. ghostty goes further and pushes the IME rect on every key event.
+   */
+  private syncTextareaAnchor(): void {
+    this.applyTextareaAnchor(textareaMove(this.cursorAnchor, this.textareaCell, true));
+  }
+
+  /** Write a decided move to the DOM. Both callers funnel here so the cache and the two style
+   * writes cannot drift apart; `undefined` is a decided no-op and leaves the cache alone. */
+  private applyTextareaAnchor(move: ReturnType<typeof textareaMove>): void {
+    if (!move) return;
     const ta = this.textarea;
     const getGeometry = this.options?.getGeometry;
-    if (!ta || !getGeometry || frame.cursorRow === undefined || frame.cursorVisible === false) return;
-    const col = frame.cursorCol ?? 0;
-    const row = frame.cursorRow;
-    // Only touch the DOM (a layout read via getGeometry + two style writes) when the
-    // cursor actually moved, not on every output frame.
-    const cell = `${col},${row}`;
-    if (cell === this.textareaCell) return;
-    this.textareaCell = cell;
+    if (!ta || !getGeometry) return;
+    this.textareaCell = move.key;
     const g = getGeometry();
-    ta.style.left = `${col * g.cellWidth}px`;
-    ta.style.top = `${row * g.cellHeight}px`;
+    ta.style.left = `${move.col * g.cellWidth}px`;
+    ta.style.top = `${move.row * g.cellHeight}px`;
   }
 
   /** Route a wheel notch through the shared accumulator, then dispatch: a

@@ -1,5 +1,12 @@
 import { describe, it, expect, vi } from "vitest";
-import { Terminal, rendererNotifyingSink, routeWheel, wheelGoesToApp, wheelScrollTarget } from "../src/terminal";
+import {
+  Terminal,
+  rendererNotifyingSink,
+  routeWheel,
+  textareaMove,
+  wheelGoesToApp,
+  wheelScrollTarget,
+} from "../src/terminal";
 import { StubFrameSource } from "../src/frame-source";
 import { MouseEvents, StubInputSink } from "../src/input";
 import type { Intent } from "../src/input";
@@ -104,8 +111,9 @@ describe("Terminal wiring", () => {
 
   it("refuses to re-mount after dispose, rather than half-working (#606)", () => {
     // `dispose()` is END OF LIFE, not unmount — declared because the alternative is already broken:
-    // `textareaCell` survives dispose, so a remounted widget parks the IME candidate window at the
-    // canvas origin until the cursor moves, and a re-mounted renderer would have lost its
+    // `textareaCell` + `cursorAnchor` survive dispose, so a remounted widget parks the IME candidate
+    // window at the previous mount's anchor (since #631, until the next focus or composition start
+    // re-syncs it — shorter, not gone), and a re-mounted renderer would have lost its
     // reduced-motion listener permanently (its only `addEventListener` is in a private constructor).
     // xterm.js draws the same line — its disposable store latches and `open()` has no re-entry.
     const term = new Terminal(new StubFrameSource(), new FakeRenderer());
@@ -277,5 +285,37 @@ describe("rendererNotifyingSink", () => {
       sink.send({ kind: "key", event: { key: { type: "enter" }, mods: 0, action: "press" } }),
     ).not.toThrow();
     expect(() => sink.send({ kind: "focus", focused: true })).not.toThrow();
+  });
+});
+
+/**
+ * #631 — the textarea anchor's dedupe. The cache key is the cursor's **cell coordinate**, but the
+ * anchor is computed from the **geometry**, and a cell-size change moves the geometry while leaving
+ * the coordinate identical. So the decision needs a way to say "re-read anyway", which is what the
+ * point-of-use callers (composition start, focus) pass.
+ */
+describe("textareaMove (#631)", () => {
+  it("moves when the cursor moved to another cell", () => {
+    expect(textareaMove({ col: 2, row: 5 }, "2,4", false)).toEqual({ col: 2, row: 5, key: "2,5" });
+  });
+
+  it("skips an unchanged cell — the per-frame layout read this cache exists to avoid", () => {
+    expect(textareaMove({ col: 2, row: 5 }, "2,5", false)).toBeUndefined();
+  });
+
+  it("moves anyway at an unchanged cell when forced: the geometry may have moved under it", () => {
+    // The whole defect. `setLineHeight(1.6)` with a stationary cursor leaves the anchor at
+    // `row * oldCellHeight`; the coordinate cache cannot see that, so the caller overrides it.
+    expect(textareaMove({ col: 2, row: 5 }, "2,5", true)).toEqual({ col: 2, row: 5, key: "2,5" });
+  });
+
+  it("stays undefined with no cursor to anchor to, forced or not", () => {
+    expect(textareaMove(undefined, "2,5", false)).toBeUndefined();
+    expect(textareaMove(undefined, "2,5", true)).toBeUndefined();
+  });
+
+  it("distinguishes a column-only move from a row-only move (the key carries both)", () => {
+    expect(textareaMove({ col: 3, row: 5 }, "2,5", false)?.key).toBe("3,5");
+    expect(textareaMove({ col: 2, row: 6 }, "2,5", false)?.key).toBe("2,6");
   });
 });

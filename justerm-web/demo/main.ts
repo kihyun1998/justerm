@@ -1203,6 +1203,7 @@ declare global {
     __rulerAnchorProbe?: () => RulerAnchorProbe;
     __bgAlphaProbe?: () => Promise<BgAlphaProbe>;
     __spacingProbe?: () => SpacingProbe;
+    __imeAnchorProbe?: () => ImeAnchorProbe;
   }
 }
 
@@ -1750,6 +1751,71 @@ window.__spacingProbe = (): SpacingProbe => {
     dpr: window.devicePixelRatio,
     restored,
   };
+};
+
+/**
+ * #631 — where the hidden textarea (the OS IME candidate window's anchor) sits across a cell-size
+ * change with a STATIONARY cursor. The demo's cursor is a constant (`CURSOR_ROW`/`CURSOR_COL`), which
+ * is what makes this page able to reproduce the defect at all: the widget's per-frame cache is keyed
+ * on the cursor *cell*, so a spacing change never invalidates it.
+ *
+ * Only observable in a real browser — `ta.style.top` is a DOM side effect, and no synthetic unit can
+ * see it (theflow Step 4). The composition event is dispatched by the e2e side onto the real
+ * textarea, so the real `Terminal` wiring runs; this probe only reads.
+ */
+interface ImeAnchorSnapshot {
+  /** The cell the widget's own `getGeometry` reports, in CSS px — the divisor it anchors with. */
+  cellW: number;
+  cellH: number;
+  /** `ta.style.left` / `ta.style.top`, parsed back to numbers. */
+  left: number;
+  top: number;
+}
+interface ImeAnchorProbe {
+  cursorRow: number;
+  cursorCol: number;
+  /** Before the cell moves. */
+  base: ImeAnchorSnapshot;
+  /** After `setLineHeight(1.6)` + the consumer's re-fit, cursor unmoved. */
+  afterCellMove: ImeAnchorSnapshot;
+  /** After a real `compositionstart` — the point-of-use re-sync. */
+  afterCompositionStart: ImeAnchorSnapshot;
+}
+
+window.__imeAnchorProbe = (): ImeAnchorProbe => {
+  const ta = document.querySelector('textarea')!;
+  const snap = (): ImeAnchorSnapshot => {
+    const g = getGeometry(); // the SAME callback the widget anchors with, not renderer.cellSize()
+    return {
+      cellW: g.cellWidth,
+      cellH: g.cellHeight,
+      left: parseFloat(ta.style.left || '0'),
+      top: parseFloat(ta.style.top || '0'),
+    };
+  };
+  // The consumer's obligation spelled out, as in `__spacingProbe` — not the toggle buttons, which
+  // depend on the state `?lineHeight=` happened to boot this page in.
+  const apply = (lh: number): void => {
+    renderer.setLineHeight(lh);
+    fit();
+    render();
+  };
+
+  const savedLh = demoLineHeight;
+
+  apply(1);
+  const base = snap();
+  apply(1.6);
+  const afterCellMove = snap(); // the cell moved; the cursor did not
+
+  ta.dispatchEvent(new CompositionEvent('compositionstart'));
+  const afterCompositionStart = snap();
+  ta.value = '';
+  ta.dispatchEvent(new CompositionEvent('compositionend', { data: '' })); // empty ⇒ no intent
+
+  apply(savedLh);
+  demoLineHeight = savedLh;
+  return { cursorRow: CURSOR_ROW, cursorCol: CURSOR_COL, base, afterCellMove, afterCompositionStart };
 };
 
 window.__disposeProbe = async (): Promise<DisposeProbe> => {
