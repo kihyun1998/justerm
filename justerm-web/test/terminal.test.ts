@@ -296,26 +296,77 @@ describe("rendererNotifyingSink", () => {
  */
 describe("textareaMove (#631)", () => {
   it("moves when the cursor moved to another cell", () => {
-    expect(textareaMove({ col: 2, row: 5 }, "2,4", false)).toEqual({ col: 2, row: 5, key: "2,5" });
+    expect(textareaMove({ col: 2, row: 5 }, "2,4", false, false)).toEqual({ col: 2, row: 5, key: "2,5" });
   });
 
   it("skips an unchanged cell — the per-frame layout read this cache exists to avoid", () => {
-    expect(textareaMove({ col: 2, row: 5 }, "2,5", false)).toBeUndefined();
+    expect(textareaMove({ col: 2, row: 5 }, "2,5", false, false)).toBeUndefined();
   });
 
   it("moves anyway at an unchanged cell when forced: the geometry may have moved under it", () => {
     // The whole defect. `setLineHeight(1.6)` with a stationary cursor leaves the anchor at
     // `row * oldCellHeight`; the coordinate cache cannot see that, so the caller overrides it.
-    expect(textareaMove({ col: 2, row: 5 }, "2,5", true)).toEqual({ col: 2, row: 5, key: "2,5" });
+    expect(textareaMove({ col: 2, row: 5 }, "2,5", true, false)).toEqual({ col: 2, row: 5, key: "2,5" });
   });
 
   it("stays undefined with no cursor to anchor to, forced or not", () => {
-    expect(textareaMove(undefined, "2,5", false)).toBeUndefined();
-    expect(textareaMove(undefined, "2,5", true)).toBeUndefined();
+    expect(textareaMove(undefined, "2,5", false, false)).toBeUndefined();
+    expect(textareaMove(undefined, "2,5", true, false)).toBeUndefined();
   });
 
   it("distinguishes a column-only move from a row-only move (the key carries both)", () => {
-    expect(textareaMove({ col: 3, row: 5 }, "2,5", false)?.key).toBe("3,5");
-    expect(textareaMove({ col: 2, row: 6 }, "2,5", false)?.key).toBe("2,6");
+    expect(textareaMove({ col: 3, row: 5 }, "2,5", false, false)?.key).toBe("3,5");
+    expect(textareaMove({ col: 2, row: 6 }, "2,5", false, false)?.key).toBe("2,6");
+  });
+});
+
+/**
+ * #637 — an output frame may not move the anchor while a composition is open.
+ *
+ * Adjudicated by measurement, not by reading the reference: with a real Korean IME on Windows the
+ * Hanja candidate window **follows the anchor down** as unsolicited output moves the cursor, so the OS
+ * re-reads the anchor mid-composition and the window walks away from the text being composed.
+ *
+ * That also dissolves xterm.js's apparent self-contradiction — `_syncTextArea` bailing while composing
+ * (`browser/CoreBrowserTerminal.ts:338`) and `CompositionHelper.updateCompositionElements` rewriting
+ * `left`/`top` every render (`browser/input/CompositionHelper.ts:273-274`) are not rival rules. Since
+ * the OS re-reads, whoever writes the position owns the window: xterm suppresses the INVOLUNTARY writer
+ * (the frame stream) and keeps the VOLUNTARY one (tracking its own preedit view). #249 would give this
+ * widget that second writer.
+ *
+ * The rule lives here rather than in `positionTextarea` because `force` already separates the two
+ * callers: the output-frame path passes `false`, and the point-of-use re-sync passes `true`. A forced
+ * move must still get through — `focus()` re-anchors mid-composition on purpose, and #631's
+ * `compositionstart` re-sync runs BEFORE the controller is told, so it would be gated by its own guard
+ * if `force` did not win.
+ */
+describe("textareaMove — the mid-composition guard (#637)", () => {
+  it("refuses an output-frame move while a composition is open", () => {
+    expect(textareaMove({ col: 2, row: 8 }, "2,5", false, true)).toBeUndefined();
+  });
+
+  it("still moves on an output frame when no composition is open", () => {
+    expect(textareaMove({ col: 2, row: 8 }, "2,5", false, false)).toEqual({
+      col: 2,
+      row: 8,
+      key: "2,8",
+    });
+  });
+
+  it("lets a forced point-of-use re-sync through even while composing (#631's order)", () => {
+    expect(textareaMove({ col: 2, row: 5 }, "2,5", true, true)).toEqual({
+      col: 2,
+      row: 5,
+      key: "2,5",
+    });
+  });
+
+  it("leaves the dedupe cache untouched, so the anchor catches up after the composition ends", () => {
+    // The suppressed move must NOT be recorded as applied: the caller keys its cache on the returned
+    // move, so a swallowed one has to stay a cache miss or the anchor would sit at the stale cell for
+    // as long as the cursor happens not to move again.
+    const suppressed = textareaMove({ col: 2, row: 8 }, "2,5", false, true);
+    expect(suppressed).toBeUndefined();
+    expect(textareaMove({ col: 2, row: 8 }, "2,5", false, false)?.key).toBe("2,8");
   });
 });

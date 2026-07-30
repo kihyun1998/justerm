@@ -99,15 +99,47 @@ export interface TextareaAnchor {
  * README's both do a `getBoundingClientRect()`. Per-frame is cheap for them and a forced layout
  * read per output flush for us. Valid only as long as `getGeometry` stays a pull-based consumer
  * callback; if the widget ever holds a pushed cell, prefer the reference's no-cache shape.
+ *
+ * `composing` suppresses the UNFORCED path only (#637). While a composition is open the OS re-reads
+ * the anchor to keep its candidate window placed — measured with a real Korean IME: the Hanja window
+ * follows the anchor down as unsolicited output moves the cursor, walking away from the text being
+ * composed. So an output frame must not move it, while a `force`d move must still get through: that is
+ * a caller sitting at a moment something reads the anchor, and #631's `compositionstart` re-sync runs
+ * before the controller is told a composition began — gating it here would silently disable #631, the
+ * failure its own comment warns about from the other direction.
+ *
+ * Suppression returns `undefined`, which the caller treats as a decided no-op that leaves the cache
+ * alone — so the move is not recorded as applied and the anchor catches up on the first frame after
+ * the composition ends, rather than waiting for the cursor to move again.
+ *
+ * **Freezing is this codebase's form of the rule, not the rule itself.** All three references converge
+ * on *the anchor tracks where the user's composition is, never where the output cursor went* — and two
+ * of the three do that by **actively re-aiming during the composition**, not by suppressing:
+ *
+ * - ghostty folds the preedit's width into the IME rect it pushes on every key event
+ *   (`src/Surface.zig:2108`, used at `:2151`) — no gate at all
+ * - alacritty picks the point *from* the preedit when there is one and from the cursor when there is
+ *   not (`alacritty/src/display/mod.rs:1136-1142`, `:1215`) — also no gate
+ * - xterm.js is the only one that suppresses, and only the **involuntary** writer: `_syncTextArea`
+ *   bails while composing (`browser/CoreBrowserTerminal.ts:338`, gating all three of its callers) while
+ *   `CompositionHelper.updateCompositionElements` deliberately rewrites `left`/`top` every render
+ *   (`browser/input/CompositionHelper.ts:273-274`)
+ *
+ * justerm-web cannot re-aim, because the preedit never reaches it — a composition is browser-owned
+ * state the engine never sees, and there is no preedit view here (#249). So "where the composition is"
+ * collapses to "where it started", and freezing is the only expression of the shared rule available.
+ * **If #249 lands, this guard is what has to give**: it would become the voluntary writer the other two
+ * references already are, and freezing would then be wrong rather than merely conservative.
  */
 export function textareaMove(
   cursor: TextareaAnchor | undefined,
   lastKey: string,
   force: boolean,
+  composing: boolean,
 ): { col: number; row: number; key: string } | undefined {
   if (!cursor) return undefined;
   const key = `${cursor.col},${cursor.row}`;
-  if (!force && key === lastKey) return undefined;
+  if (!force && (composing || key === lastKey)) return undefined;
   return { col: cursor.col, row: cursor.row, key };
 }
 
@@ -375,7 +407,7 @@ export class Terminal {
     if (frame.cursorRow === undefined || frame.cursorVisible === false) return;
     const cursor = { col: frame.cursorCol ?? 0, row: frame.cursorRow };
     this.cursorAnchor = cursor;
-    this.applyTextareaAnchor(textareaMove(cursor, this.textareaCell, false));
+    this.applyTextareaAnchor(textareaMove(cursor, this.textareaCell, false, this.composition?.active ?? false));
   }
 
   /**
@@ -388,6 +420,15 @@ export class Terminal {
    * candidate window) and focus (the browser's focus steps scroll the nearest scrollable ancestor
    * to the focused element). One geometry read per IME session and per focus, not per frame.
    *
+   * **KNOWN HOLE (#649): `force: true` beats #637's `composing` guard here, on purpose and wrongly.**
+   * The `compositionstart` caller needs the override (it runs *before* the controller is told, so a
+   * composing check would gate the very re-sync it exists to perform), but the `focus()` caller gets it
+   * too — and `cursorAnchor` keeps advancing on every frame during a composition, so a pointer-down
+   * mid-composition re-anchors to the superseded cursor cell that #637 exists to stop using. Measured;
+   * reachable only when the consumer left `element` non-focusable, which is why the demo is immune and
+   * why the fix is a contract decision rather than a one-line change. Do not "fix" it by gating `force`
+   * without reading #649 — three shapes are in play and one of them is documenting the requirement.
+   *
    * xterm.js reaches the same conclusion for the same reason: an option change there never reaches
    * `_syncTextArea` either (`RenderService.handleResize` forwards to the renderer without touching
    * `BufferService`, so `onResize` never fires; and `Terminal.resize` early-returns on an unchanged
@@ -395,7 +436,7 @@ export class Terminal {
    * this exact symptom. ghostty goes further and pushes the IME rect on every key event.
    */
   private syncTextareaAnchor(): void {
-    this.applyTextareaAnchor(textareaMove(this.cursorAnchor, this.textareaCell, true));
+    this.applyTextareaAnchor(textareaMove(this.cursorAnchor, this.textareaCell, true, this.composition?.active ?? false));
   }
 
   /** Write a decided move to the DOM. Both callers funnel here so the cache and the two style
