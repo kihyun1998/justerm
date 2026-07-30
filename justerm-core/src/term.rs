@@ -1856,6 +1856,8 @@ impl Term {
         let cell = self.grid.cell_mut(row, col);
         cell.reset();
         cell.set_bg(bg);
+        // As in `clear_cells`: the bits are gone, so release what they gated (#628).
+        self.grid.row_mut(row).purge_side_maps(col..col + 1);
         self.damage_span(row, col, col);
     }
 
@@ -2389,6 +2391,8 @@ impl Term {
             cell.reset();
             cell.set_bg(bg);
         }
+        // `reset` cleared the presence bits; this releases what they gated (#628).
+        self.grid.row_mut(row).purge_side_maps(from..to);
         if to > from {
             self.damage_span(row, from, to - 1);
         }
@@ -3743,19 +3747,83 @@ mod tests {
         );
 
         // The whole-buffer form of the same claim: 50 distinct opens through a buffer
-        // that holds four lines leaves at most four distinct URIs reachable.
-        let live: std::collections::HashSet<*const u8> = e
+        // that holds four lines leaves at most four entries *owned*.
+        //
+        // `owned_link_count` and not `link_at`, and that distinction is the test. The
+        // first version summed the gated reader, which counts **linked cells** — measured
+        // on an erased screen it read 0 while every URI was still allocated, so it could
+        // not fail for the property this test exists to assert.
+        // Deduped by allocation: one open covering three cells is three map entries and
+        // one URI, so counting entries would fail at 9 for a buffer holding four links.
+        let owned: std::collections::HashSet<*const u8> = e
             .term
             .scrollback
             .iter()
             .chain((0..2).map(|r| e.term.grid.row_ref(r)))
-            .flat_map(|r| (0..20).filter_map(|c| r.link_at(c)))
+            .flat_map(|r| r.owned_links())
             .map(|u| std::sync::Arc::as_ptr(u) as *const u8)
             .collect();
         assert!(
-            live.len() <= 4,
-            "a 4-line buffer cannot reference more than 4 links, found {}",
-            live.len(),
+            owned.len() <= 4,
+            "a 4-line buffer cannot own more than 4 distinct URIs, found {}",
+            owned.len(),
         );
+    }
+
+    /// #628 — erasing a cell in place releases its URI, not just its presence bit.
+    ///
+    /// The sibling of the eviction test above, and the case that one structurally cannot
+    /// see: `clear_cells` / `free_cell` blank a cell **without dropping its row**, so no
+    /// row-lifetime event fires. Under `row-keyed-side-maps` rule 3 leaving the map entry
+    /// is sanctioned — *"a write that clears the cell owes the bit, not the map"* — and
+    /// that was exactly right while the value was a 4-byte index: a stale entry is
+    /// unreadable through the gate and costs nothing.
+    ///
+    /// #628 changed what the entry *is*. The map now owns a heap string, so the same
+    /// sanctioned line retains one. Rule 3 still holds as stated — purging is not the
+    /// correctness step, and missing a site costs bounded retention rather than a wrong
+    /// answer — but the optimisation it calls optional became worth taking here.
+    /// All three references release at this point: alacritty's `Cell::reset` drops the
+    /// `Option<Arc<CellExtra>>` outright, ghostty's ref-counted set frees at zero, and
+    /// xterm.js's `_resetBufferLine` clears `_extendedAttrs` and disposes the line's
+    /// markers so `OscLinkService` deletes the entry.
+    #[test]
+    fn an_erased_cell_releases_its_uri_not_only_its_bit() {
+        let mut e = Engine::new(80, 24);
+        e.feed(b"]8;;https://example.com/erasedL]8;;");
+        let weak = {
+            let a = e
+                .term
+                .grid
+                .row_ref(0)
+                .link_at(0)
+                .expect("on screen")
+                .clone();
+            std::sync::Arc::downgrade(&a)
+        };
+        assert!(weak.upgrade().is_some(), "alive while on screen");
+
+        e.feed(b"[2J"); // ED 2 — erases in place; no row is dropped or reused
+
+        // The gated reader already says "no link", and so does the frame. Neither can
+        // see the retention, which is why this assertion holds the `Weak` instead:
+        // measured before the purge, both public views read 0 while the URI lived.
+        assert!(e.link_at(0, 0).is_none(), "the presence bit is cleared");
+        assert!(
+            weak.upgrade().is_none(),
+            "and the URI itself is released — before the purge the map kept owning it,              so an erased screen retained every link it had shown",
+        );
+    }
+
+    /// `Arc`, not `Rc`, and this is what makes that a fact rather than a comment.
+    ///
+    /// #628 chose `Arc<str>` for the row's link map on the stated ground that `Engine` is
+    /// `Send + Sync`; `Rc` would have removed both **silently** — no signature changes
+    /// here, and a downstream `Mutex<Engine>` failing to compile instead. The claim was
+    /// load-bearing and unpinned: a repo-wide grep for it found only prose.
+    #[test]
+    fn the_engine_stays_send_and_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<Engine>();
     }
 }

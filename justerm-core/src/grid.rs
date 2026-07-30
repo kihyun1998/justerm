@@ -190,6 +190,46 @@ impl Row {
     /// Empty the row, keeping the cell allocation — for recycling a row buffer
     /// (`scroll_up_recycle`). Clears cells and both maps so a reused row never
     /// surfaces a previous occupant's marks or links.
+    /// Every URI this row's map still **owns**, gate or no gate.
+    ///
+    /// Deliberately ungated, and that is the whole point: every public reader goes
+    /// through `LINK_PRESENT`, so an entry left behind by an in-place erase is invisible
+    /// to all of them. A test written against the gated reader therefore counts *linked
+    /// cells* and cannot fail for retention — measured, it read 0 while the URIs were
+    /// still allocated. Test-only observability for the one property the gate hides.
+    ///
+    /// Yields one item per **column**, not per distinct URI — a link over three cells is
+    /// three entries sharing one allocation, so a caller counting URIs must dedupe by
+    /// `Arc::as_ptr`. Stated because getting that wrong is a false failure, not a false
+    /// pass: it was measured at 9 for a four-line buffer holding four links.
+    #[cfg(test)]
+    pub(crate) fn owned_links(&self) -> impl Iterator<Item = &Arc<str>> {
+        self.links.values()
+    }
+
+    /// Drop every side-map entry in `cols`, without touching the cells.
+    ///
+    /// The companion to a blanking write. `Cell::reset` clears the presence bits, and
+    /// under [rule 3](../../docs/map/invariant/row-keyed-side-maps.md) that is all it
+    /// *owes* — a stale entry is unreadable through the gate, so purging is an
+    /// optimisation and never the correctness step. That stays true; what changed is the
+    /// price of skipping it. Since #628 the link map owns an `Arc<str>` and the combining
+    /// map owns a `Vec<char>`, so an entry left behind by an in-place erase retains a heap
+    /// allocation until the row is reused — invisible to every public reader, because they
+    /// are all gated on the bit the erase just cleared.
+    ///
+    /// All three references release here: alacritty's `Cell::reset` drops its
+    /// `Option<Arc<CellExtra>>` outright, ghostty's ref-counted set frees at zero, and
+    /// xterm.js's `_resetBufferLine` clears `_extendedAttrs` and disposes the line's
+    /// markers so `OscLinkService` deletes the entry.
+    pub(crate) fn purge_side_maps(&mut self, cols: core::ops::Range<usize>) {
+        for col in cols {
+            self.combining.remove(&col);
+            self.links.remove(&col);
+            self.ucolors.remove(&col);
+        }
+    }
+
     pub(crate) fn clear(&mut self) {
         self.cells.clear();
         self.combining.clear();
