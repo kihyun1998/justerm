@@ -162,11 +162,20 @@ impl Engine {
         self.term.drain_replies()
     }
 
-    /// The OSC 8 hyperlink index at **screen** `(row, col)` — the live grid, same
-    /// coordinates as [`Engine::grid`]'s `cell(row, col)` — or `None`. Combining
-    /// and links no longer ride on the [`Cell`] (#45/#46); read the
-    /// index here, then resolve it with [`Engine::hyperlink`].
-    pub fn link_at(&self, row: usize, col: usize) -> Option<core::num::NonZeroU32> {
+    /// The OSC 8 hyperlink **URI** at **screen** `(row, col)` — the live grid, same
+    /// coordinates as [`Engine::grid`]'s `cell(row, col)` — or `None` if that cell
+    /// carries no declared link.
+    ///
+    /// **One call, not two, since #628.** This returned a `NonZeroU32` index that a
+    /// second method resolved against a buffer-wide pool; the pool is gone (it was never
+    /// reclaimed, and nothing interned across opens that a shared `Arc` does not), so
+    /// there is no index left to hand out. The borrow lives as long as the row does.
+    ///
+    /// Do **not** confuse this with a decoded `Span`'s `links`, which is a *frame-local*
+    /// index into that frame's `link_table` and belongs to the wire, not to the engine.
+    /// The old two-call form invited exactly that mix-up and its doc-comment recommended
+    /// it: the two index spaces coincide only when a frame carries a single link.
+    pub fn link_at(&self, row: usize, col: usize) -> Option<&str> {
         self.term.screen_link_at(row, col)
     }
 
@@ -180,18 +189,12 @@ impl Engine {
         self.term.screen_underline_color_at(row, col)
     }
 
-    /// The OSC 8 hyperlink index at **viewport** `(row, col)` — the visible
-    /// window including scrollback at the current scroll, same coordinates as
-    /// [`Engine::viewport_line`] — or `None`.
-    pub fn viewport_link_at(&self, row: usize, col: usize) -> Option<core::num::NonZeroU32> {
+    /// The OSC 8 hyperlink **URI** at **viewport** `(row, col)` — the visible window
+    /// including scrollback at the current scroll, same coordinates as
+    /// [`Engine::viewport_line`] — or `None`. Mirror of [`Engine::link_at`], including
+    /// its #628 note about the vanished index.
+    pub fn viewport_link_at(&self, row: usize, col: usize) -> Option<&str> {
         self.term.viewport_link_at(row, col)
-    }
-
-    /// Resolve a hyperlink index (from [`Engine::link_at`] /
-    /// [`Engine::viewport_link_at`], or a decoded `Span`'s `links`) to its URI,
-    /// to make a cell clickable.
-    pub fn hyperlink(&self, link: core::num::NonZeroU32) -> Option<&str> {
-        self.term.hyperlink(link)
     }
 
     /// Number of lines currently held in scrollback history.

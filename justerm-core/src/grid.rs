@@ -5,9 +5,9 @@
 
 use crate::cell::Cell;
 use crate::color::Color;
-use core::num::NonZeroU32;
 use std::collections::BTreeMap;
 use std::ops::{Deref, DerefMut};
+use std::sync::Arc;
 
 /// A row's combining clusters: column → the combining marks attached to that
 /// column's base glyph. Sparse (most rows have none) and **flag-gated** — an
@@ -17,10 +17,23 @@ use std::ops::{Deref, DerefMut};
 /// carried when cells move column (ICH/DCH/reflow).
 type Combining = BTreeMap<usize, Vec<char>>;
 
-/// A row's hyperlinks: column → the global `hyperlink_pool` index (OSC 8). Same
-/// per-row, flag-gated sparse-map design as [`Combining`], gated by the cell's
-/// `LINK_PRESENT` bit instead (xterm's `_extendedAttrs` / `HAS_EXTENDED`, #46).
-type Links = BTreeMap<usize, NonZeroU32>;
+/// A row's hyperlinks: column → the URI itself, shared (OSC 8). Same per-row,
+/// flag-gated sparse-map design as [`Combining`], gated by the cell's `LINK_PRESENT`
+/// bit instead (xterm's `_extendedAttrs` / `HAS_EXTENDED`, #46).
+///
+/// **The value is the URI, not an index into a buffer-wide pool (#628).** It was an
+/// index until then, and that pool was never reclaimed — which is the same defect the
+/// combining map had and lost when #45 deleted `grapheme_pool` for exactly this shape.
+/// Links kept the pool only because #46 mirrored xterm's `_dataByLinkId` registry and
+/// ported the `_nextId++` half without the delete half.
+///
+/// `Arc<str>` rather than `String` because cells genuinely share a URI: one OSC 8 open
+/// covering a thousand cells is a thousand map entries pointing at one allocation, which
+/// is the sharing the pool existed to provide. It dies with the last row that holds it —
+/// no release path, no refcount of our own, no sweep. Alacritty's `Arc<HyperlinkInner>`
+/// is the same choice; `Rc` is **not** an option, because `Engine` is `Send + Sync` and
+/// `Rc` would remove that silently.
+type Links = BTreeMap<usize, Arc<str>>;
 
 /// A row's non-default underline colours (SGR 58, #520): column → the underline
 /// `Color` reference. Same per-row, flag-gated sparse-map design as [`Links`],
@@ -40,9 +53,12 @@ type UColors = BTreeMap<usize, Color>;
 /// `_combined` and `_extendedAttrs` together for every cell `copyCellsFrom` moves.
 /// Adding a rider (an underline *style*, say) is a field here plus the two arms
 /// below; every carry site is covered by construction (#521).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// **Not `Copy` since #628.** The link rider went from a `NonZeroU32` pool index to a
+/// shared `Arc<str>`, so the family is `Clone` only; the carry sites clone it, which is
+/// a refcount bump and is what makes the reclamation automatic.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct ExtAttrs {
-    link: Option<NonZeroU32>,
+    link: Option<Arc<str>>,
     ucolor: Option<Color>,
 }
 
@@ -51,7 +67,7 @@ impl ExtAttrs {
     /// (`Row::ext_attrs_at`). Every print-path site that stamps a freshly built cell
     /// goes through here, so the gating rules live in one place and a later rider is
     /// added once (#521/#528).
-    pub(crate) fn from_pen(link: Option<NonZeroU32>, ucolor: Option<Color>) -> ExtAttrs {
+    pub(crate) fn from_pen(link: Option<Arc<str>>, ucolor: Option<Color>) -> ExtAttrs {
         ExtAttrs { link, ucolor }
     }
 }
@@ -228,11 +244,11 @@ impl Row {
         }
     }
 
-    /// The hyperlink-pool index at `col`, or `None`. Flag-gated by the cell's
-    /// `LINK_PRESENT` bit (mirror of [`Row::combining_at`]).
-    pub(crate) fn link_at(&self, col: usize) -> Option<NonZeroU32> {
+    /// The hyperlink URI at `col`, or `None`. Flag-gated by the cell's `LINK_PRESENT`
+    /// bit (mirror of [`Row::combining_at`]).
+    pub(crate) fn link_at(&self, col: usize) -> Option<&Arc<str>> {
         if self.cells[col].is_linked() {
-            self.links.get(&col).copied()
+            self.links.get(&col)
         } else {
             None
         }
@@ -262,9 +278,10 @@ impl Row {
         }
     }
 
-    /// Stamp `col`'s glyph with a hyperlink-pool index, setting the presence bit
-    /// (the print path calls this on every cell written while a link is open).
-    pub(crate) fn set_link(&mut self, col: usize, link: NonZeroU32) {
+    /// Stamp `col`'s glyph with a hyperlink URI, setting the presence bit (the print
+    /// path calls this on every cell written while a link is open). The `Arc` clone is
+    /// a refcount bump, so a link over N cells is one allocation and N pointers.
+    pub(crate) fn set_link(&mut self, col: usize, link: Arc<str>) {
         self.cells[col].set_linked(true);
         self.links.insert(col, link);
     }
@@ -281,7 +298,7 @@ impl Row {
     /// rider, so a stale entry an overwrite left behind is never picked up.
     pub(crate) fn ext_attrs_at(&self, col: usize) -> ExtAttrs {
         ExtAttrs {
-            link: self.link_at(col),
+            link: self.link_at(col).cloned(),
             ucolor: self.ucolor_at(col),
         }
     }
@@ -532,7 +549,7 @@ pub(crate) fn reflow(
                     .collect();
                 let seg_links: Links = links
                     .range(i..i + take)
-                    .map(|(&col, &link)| (col - i, link))
+                    .map(|(&col, link)| (col - i, link.clone()))
                     .collect();
                 let seg_ucolors: UColors = ucolors
                     .range(i..i + take)
@@ -858,8 +875,8 @@ mod tests {
     #[test]
     fn set_ext_attrs_clears_both_halves_of_the_gate() {
         let mut row = Row::blank(2);
-        let link = NonZeroU32::new(7).unwrap();
-        row.set_link(0, link);
+        let link: Arc<str> = Arc::from("https://example.com/a");
+        row.set_link(0, link.clone());
         row.set_ucolor(0, Color::Indexed(3));
         assert_eq!(row.ext_attrs_at(0).link, Some(link));
         assert_eq!(row.ext_attrs_at(0).ucolor, Some(Color::Indexed(3)));
@@ -881,13 +898,19 @@ mod tests {
     #[test]
     fn ext_attrs_round_trip_from_one_column_to_another() {
         let mut row = Row::blank(2);
-        let link = NonZeroU32::new(4).unwrap();
-        row.set_link(0, link);
+        let link: Arc<str> = Arc::from("https://example.com/b");
+        row.set_link(0, link.clone());
         row.set_ucolor(0, Color::Rgb(1, 2, 3));
         let carried = row.ext_attrs_at(0);
-        row.set_ext_attrs(1, carried);
-        assert_eq!(row.link_at(1), Some(link));
+        row.set_ext_attrs(1, carried.clone());
+        assert_eq!(row.link_at(1), Some(&link));
         assert_eq!(row.ucolor_at(1), Some(Color::Rgb(1, 2, 3)));
         assert_eq!(row.ext_attrs_at(1), carried);
+        // The carry shares the allocation rather than copying the URI — the property
+        // that makes a link over a thousand cells cost one string (#628).
+        assert!(
+            Arc::ptr_eq(row.link_at(0).unwrap(), row.link_at(1).unwrap()),
+            "both columns must point at the same allocation, not equal copies",
+        );
     }
 }
