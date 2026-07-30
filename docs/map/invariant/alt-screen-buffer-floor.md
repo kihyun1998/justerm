@@ -51,7 +51,7 @@ since #602, `walk.rs`'s module doc.
 - [search & active match](../territory/search.md) — `Term::search_with` (`term/search.rs`; #144)
 - [logical lines](../territory/logical-lines.md) — `Term::viewport_logical_lines`
   (`term/logical.rs` since #601; #113)
-- **a11y / whole-buffer text** *(no territory note yet)* — `Term::accessible_text`, which moved to
+- [accessibility](../territory/accessibility.md) — `Term::accessible_text`, which moved to
   `term/selection.rs` with #587 because it reuses selection's extraction path, not because it is a
   selection. Its `## Code` entry is carried by **both** [selection](../territory/selection.md) and
   [logical lines](../territory/logical-lines.md)

@@ -179,14 +179,28 @@ hitting a dead end, and it is a better signal than commit frequency (which misse
 never changes; see the tombstone above). Ask:
 
 ```sh
-rg -o '\*\*[a-zA-Z /&-]+\*\* \*\(no (territory )?note yet\)\*' . --no-filename \
+rg -o '\*\*[a-zA-Z0-9 /&-]+\*\* \*\(no (territory )?note yet\)\*' . --no-filename \
   | sed 's/\*//g; s/ (no.*//' | sort | uniq -c | sort -rn
 ```
 
-Currently: **renderer** (7 references — the largest crate in the family at ~14.5k lines across 19
-modules, so it is probably several territories, not one) · VT interpretation (`term.rs`) · grid &
-scrollback · input encoding · marker & decoration · a11y · hyperlinks · grapheme clusters · colour
-references & palette · cell geometry · CI & supply chain
+**The answer is not stored here — run the query.** It used to be, as a hand-written *"Currently:
+renderer (7 references) · VT interpretation · grid & scrollback · input encoding · marker &
+decoration · a11y · hyperlinks · grapheme clusters · colour references & palette · cell geometry ·
+CI & supply chain"* list, and by 2026-07-30 **every area on it had a note** — so the paragraph told
+each new reader that eleven mapped territories were unmapped. That is the same defect as the roster
+columns two sections up, and it was the *more* expensive one: a stale roster is read as untidy, a
+stale hole list is read as work to do.
+
+Two things it took to notice, both worth keeping:
+
+- **The query above was silently wrong.** Its character class omitted digits, so `a11y` — the label
+  of the *only* remaining dangling reference — never matched, and it reported zero. Zero read as
+  "clean", which is indistinguishable from "the pattern is narrow" (the same warning this file gives
+  one section up, in that section's own tool).
+- **That last dangling marker was itself stale.** `invariant/alt-screen-buffer-floor.md` still said
+  *"a11y / whole-buffer text (no territory note yet)"* while
+  [accessibility](territory/accessibility.md) already carried `Term::accessible_text` under its
+  `## Code`. Because of the first defect nobody could see the second.
 
 Line counts are deliberately not quoted here — and this paragraph used to quote two anyway, one of
 which had already gone stale by #601. `term.rs` lost roughly a quarter of itself across #584's
