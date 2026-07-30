@@ -601,22 +601,29 @@ noted, since a row nobody can fail is a row nobody can trust.
 | ⚠ **The id-lookup map is a second map, and it is reclaimed, not weak.** `_entriesWithId` is deleted alongside `_dataByLinkId` when the entry's last line marker is disposed — so grouping does **not** cost xterm a permanent registry either. justerm has no disposal hook by design and expresses the same lifetime with `Weak` | xterm.js | `src/common/services/OscLinkService.ts:98-100` |
 | Its own doc states the user-visible contract: *"Cells that share the same ID and URI share hover feedback"* — the symptom, not the mechanism | xterm.js | `src/common/InputHandler.ts:3101-3102` |
 
-**Also read here and deliberately not ported, and the divergence is measured rather than reasoned:**
-xterm.js splits OSC 8's own arguments on the **first `;` only** (`setHyperlink`,
-`InputHandler.ts:3106-3112`) — `data.indexOf(';')`, then `slice(idx + 1)` takes *all* the rest as the
-URI — explicitly *"to support unencoded semi-colons in the URIs"*. justerm takes `params[2]` from
-vte's `;`-split, so it keeps only the first segment. Throwaway probe, 2026-07-30, deleted after
-reading:
+**Read here, measured, and then ported (#650).** xterm.js splits OSC 8's own arguments on the **first
+`;` only** (`setHyperlink`, `InputHandler.ts:3106-3112`) — `data.indexOf(';')`, then `slice(idx + 1)`
+takes *all* the rest as the URI — explicitly *"to support unencoded semi-colons in the URIs"*.
+justerm read `params[2]` out of vte's `;`-split and kept only the first segment. Throwaway probes,
+2026-07-30, deleted after reading; the numbers are why this became a fix rather than a note:
 
-| Fed | `Engine::link_at` returns |
+| Fed | `Engine::link_at`, before #650 |
 |---|---|
 | `OSC 8 ; ; https://example.com/a;b=c BEL` | `https://example.com/a` — truncated at the `;`, silently |
-| the same with `id=q` in `params` | `https://example.com/a` — the `id=` path is no different |
+| the same with `id=q` in `params` | `https://example.com/a` — the `id=` path was no different |
 | control: `https://example.com/a%3Bb=c` | `https://example.com/a%3Bb=c` — intact |
 
-The control is what pins the cause to the **raw** `;` rather than to anything else in the sequence.
-Out of scope for #635 (which is about `params[1]`, not `params[2..]`) — recorded here with its
-numbers so the next reader neither re-derives that it is a separate question nor has to re-measure it.
+Two things that table cannot show, and both were needed to act on it:
+
+- **The control pins the cause** to the *raw* `;` rather than to anything else in the parse. Without
+  it, "truncated" is a guess about which step dropped the tail.
+- **Nothing is lost at the parser**, which is what made this a rejoin instead of an impossibility —
+  vte hands the handler `["8", "", "https://example.com/a", "b=c"]`, and
+  `["8", "id=q", "https://x/p?a=1", "b=2", "c=3"]` for a longer one. Only the handler discarded it.
+
+The fix is `params[2..].join(';')`. The close survives it (`]8;;` is `["8", "", ""]`, whose rejoin is
+empty), and a `%3B` is still never decoded — `Hyperlink::uri` hands the target over exactly as
+declared, and openability is consumer policy (ADR-0017).
 
 **The trap this section exists to stop.** Reading only the first row of each reference gives *"they
 all keep a registry"* — which is how #46 arrived at a global pool and stopped. The reclamation is the

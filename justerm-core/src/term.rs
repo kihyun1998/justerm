@@ -3759,11 +3759,24 @@ impl Perform for Term {
                 // two — xterm.js states it as "links with no id will only ever be
                 // registered a single time" beside a lookup keyed on id-plus-uri
                 // (`OscLinkService.ts:34`, `:49-54`).
-                let uri = params.get(2).copied().unwrap_or(b"");
+                // The URI is `params[2..]` **rejoined**, not `params[2]` (#650). vte splits the
+                // OSC payload on `;`, so a URI carrying an unencoded `;` arrives in pieces and
+                // reading only the first dropped the rest — silently, with no error. Nothing is
+                // lost at the parser: measured, `]8;;https://x/a;b=c` arrives as
+                // `["8", "", "https://x/a", "b=c"]`. xterm.js special-cases the same thing from
+                // the other side, splitting on the *first* `;` only and taking all the rest as
+                // the URI, *"to support unencoded semi-colons in the URIs"*
+                // (`InputHandler.ts:3106-3112`). Reachable without anything exotic: `?a=1;b=2`
+                // is a legal query string and `;` is a legal filename byte.
+                //
+                // The close survives this: `]8;;` arrives as `["8", "", ""]`, whose rejoin is
+                // empty, and an empty URI still closes. Never decoded — a `%3B` stays `%3B`,
+                // because the engine hands the target over exactly as declared (ADR-0017).
+                let uri: Vec<u8> = params.get(2..).unwrap_or_default().join(&b';');
                 self.current_link = if uri.is_empty() {
                     None
                 } else {
-                    let uri = String::from_utf8_lossy(uri);
+                    let uri = String::from_utf8_lossy(&uri);
                     Some(match osc8_link_id(params.get(1).copied().unwrap_or(b"")) {
                         // No id declared: fresh per open, the reference-correct default.
                         None => std::sync::Arc::from(&*uri),
