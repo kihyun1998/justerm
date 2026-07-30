@@ -45,8 +45,8 @@ the first; nothing governs this one.
 
 - [pen](../territory/pen.md) — `Pen::underline_color` (SGR 58) is deliberately **not** packed
   into the printed cell; the print path stamps it into the row's ucolor map (#520)
-- [hyperlinks](../territory/hyperlinks.md) — OSC 8 link ids, moved out of the cell into the row's link map
-  (#45/#46)
+- [hyperlinks](../territory/hyperlinks.md) — OSC 8 URIs, moved out of the cell into the row's link
+  map (#45/#46), and since #628 the **value** rather than an index into a buffer-wide pool
 - [grapheme clusters](../territory/grapheme-clusters.md) — multi-code-point cluster overflow, kept out so the cell stays
   fixed-width (#45/#46)
 - [wide glyph](../territory/wide-glyph.md) — adjacent, not identical: the
@@ -57,7 +57,10 @@ the first; nothing governs this one.
   second regime is written by someone reading the first (#531)
 
 Storage: `Row { cells, combining, links, ucolors, wrapped }` in `justerm-core/src/grid.rs`; the
-combining and link maps share one implementation.
+combining and link maps share one implementation. They no longer store the same *kind* of value,
+though, and the difference is not arbitrary: combining and ucolor hold theirs inline because each is
+per-cell and unique, while the link map holds an `Arc<str>` because cells genuinely share a URI
+(#628). All three still die with the row, which is the property the rules below depend on.
 
 ## What a violation looks like
 
@@ -89,6 +92,7 @@ rule, so #531 rediscovered rule 4 rather than reading it.
 | Pattern extended years later | SGR 58 underline colour | #520 |
 | Rules met the pair rule | extended-attr rider on a wide lead | #521 (in the #552 roster) |
 | Rule 4 found by defect | the underline-colour group crossed the wire with no re-arm | #531 |
+| The map became the owner, not a pointer | the link map's value went from a pool index to an `Arc<str>`, so the row's lifetime *is* the URI's — the last of the three maps to stop referencing something outside itself | #628 |
 
 The tell that this note earns its place: #520 did not open a decision about *where* underline colour
 should live. It reached for the hatch, correctly, from a code comment — which means the rules survive

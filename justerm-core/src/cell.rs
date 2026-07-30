@@ -91,8 +91,8 @@ const FG_FLAG_MASK: u32 = FG_INVERSE | FG_BOLD | FG_UNDERLINE | FG_BLINK | FG_HI
 // bg flags, bits 26..28 — xterm BgFlags order.
 const BG_ITALIC: u32 = 1 << 26;
 const BG_DIM: u32 = 1 << 27;
-// LINK_PRESENT: an OSC 8 hyperlink index lives in the row's link map at this
-// column (#46). Reuses xterm's `BgFlags.HAS_EXTENDED = 0x10000000` (bit 28)
+// LINK_PRESENT: an OSC 8 hyperlink URI lives in the row's link map at this
+// column (#46; the URI itself rather than a pool index since #628). Reuses xterm's `BgFlags.HAS_EXTENDED = 0x10000000` (bit 28)
 // exactly — in xterm this is a *shared* "extended attrs present" gate (link +
 // underline colour). justerm keeps the two concerns in *separate* per-row maps
 // (as combining and links are separate, #520/ADR-none), so it gates each with
@@ -272,9 +272,10 @@ impl Cell {
         self.content & C_COMBINED != 0
     }
 
-    /// Does this column carry an OSC 8 hyperlink? When true, the hyperlink-pool
-    /// index lives in the row's link map at this column (#46) — flag-gated like
-    /// combining: never read the link map without first checking this bit.
+    /// Does this column carry an OSC 8 hyperlink? When true, the URI lives in the
+    /// row's link map at this column (#46; the URI itself rather than an index into a
+    /// buffer-wide pool since #628) — flag-gated like combining: never read the link
+    /// map without first checking this bit.
     pub fn is_linked(&self) -> bool {
         self.bg & BG_LINK != 0
     }

@@ -561,6 +561,35 @@ against the nominal opaque background and ignores `bgAlpha`; so do both referenc
 feature, by two different routes. None of the three can know what is behind the window, so there is
 nothing to converge *on* — which is why this is recorded here rather than filed as a defect.
 
+## OSC 8 hyperlinks — where the URI lives, and what frees it (#628/#635, verified 2026-07-30)
+
+The area had **no rows at all** until now, which `docs/map/territory/hyperlinks.md` recorded as a
+known hole while `LINK_PRESENT` carried an unpinned claim about xterm's bit layout. The occasion:
+#628 found justerm's `hyperlink_pool` was append-only — every OSC 8 open cost a `String` for the life
+of the `Term` — and the options turned on what the references do instead. Every row grepped at the
+pinned SHAs.
+
+Two questions, and they have **different answers**, which is the point of splitting them: *where does
+the URI live* and *what frees it*.
+
+| Fact | Reference | Site |
+|---|---|---|
+| The URI hangs off the cell's side structure as `Arc<HyperlinkInner>` — **no registry, no pool, no ids**. It dies with the last cell holding it, so there are no release paths because there is nothing to release *from* | alacritty | `alacritty_terminal/src/term/cell.rs:45` |
+| A cell→id map plus a ref-counted set, freed at refcount 0 — *"ref-counted so that a set of cells can share the same hyperlink **without duplicating the data**"* | ghostty | `src/terminal/hyperlink.zig:209` |
+| …and the id is deliberately **not** on the cell: *"its a waste to store the hyperlink ID in the cell itself"* — justerm already satisfies this half via the row map | ghostty | `src/terminal/hyperlink.zig:20-23` |
+| A global registry keyed by a minted id (`_nextId++`), which is the shape justerm's pool copied | xterm.js | `src/common/services/OscLinkService.ts:24` |
+| ⚠ **…and the registry is the thing that reclaims.** Each entry holds the line markers referencing it; when the last is disposed the entry is deleted from **both** maps. Copying `_nextId++` without this is what left justerm's pool immortal | xterm.js | `src/common/services/OscLinkService.ts:100` |
+| ⚠ **Dedup happens only when the sequence declares `id=`.** A link with no id *"will only ever be registered a single time"* and gets a fresh id per open; one with an id is looked up by an `id`-plus-`uri` key and reuses the entry. So "never merge on URI alone, always merge on a declared id" is one rule, not two — justerm does the first half and not the second (#635) | xterm.js | `src/common/services/OscLinkService.ts:51` |
+
+**Direction: 3:0 for reclamation, 1:2 for `id=` grouping.** All three free the storage; justerm was
+the only one that never did. Only xterm.js groups by `id=`, so that gap is a conformance item against
+the single reference that has the feature, not a divergence from a consensus.
+
+**The trap this section exists to stop.** Reading only the first row of each reference gives *"they
+all keep a registry"* — which is how #46 arrived at a global pool and stopped. The reclamation is the
+half that does not show up at the site where the id is minted, and in xterm.js it is eighty lines
+further down in the same file.
+
 ## Renderer ink channels
 
 | Fact | Reference | Site |

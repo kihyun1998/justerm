@@ -17,10 +17,18 @@ fn cells_under_open_link_carry_the_uri() {
     t.feed(b"ab");
     t.feed(CLOSE);
     assert_eq!(t.grid().cell(0, 0).c(), 'a');
-    let link = t.link_at(0, 0).expect("'a' should carry a link");
-    assert_eq!(t.hyperlink(link), Some("https://example.com"));
-    // Both cells of one link share the same side-table index.
-    assert_eq!(t.link_at(0, 1), Some(link));
+    assert_eq!(
+        t.link_at(0, 0).as_ref().map(|h| h.uri()),
+        Some("https://example.com"),
+        "'a' should carry the link",
+    );
+    // Both cells of one link resolve to the same URI — and since #628 they share the
+    // same allocation rather than an index into a table, which `grid.rs`'s
+    // `ext_attrs_round_trip_from_one_column_to_another` pins by pointer identity.
+    assert_eq!(
+        t.link_at(0, 1).as_ref().map(|h| h.uri()),
+        Some("https://example.com")
+    );
 }
 
 #[test]
@@ -71,10 +79,11 @@ fn link_survives_scroll_into_scrollback() {
     assert!(t.scrollback_len() >= 1);
     t.scroll_up(1);
     assert_eq!(t.viewport_line(0)[0].c(), 'L');
-    let link = t
-        .viewport_link_at(0, 0)
-        .expect("link survives scroll into scrollback");
-    assert_eq!(t.hyperlink(link), Some("https://example.com"));
+    assert_eq!(
+        t.viewport_link_at(0, 0).as_ref().map(|h| h.uri()),
+        Some("https://example.com"),
+        "link survives scroll into scrollback",
+    );
 }
 
 #[test]
@@ -125,8 +134,11 @@ fn link_follows_an_insert_shift() {
     t.feed(b"\x1b[1;1H"); // cursor home
     t.feed(b"\x1b[2@"); // ICH 2 -> 'L' shifts to col2
     assert_eq!(t.grid().cell(0, 2).c(), 'L');
-    let link = t.link_at(0, 2).expect("link followed the insert shift");
-    assert_eq!(t.hyperlink(link), Some("https://example.com"));
+    assert_eq!(
+        t.link_at(0, 2).as_ref().map(|h| h.uri()),
+        Some("https://example.com"),
+        "link followed the insert shift"
+    );
     assert_eq!(t.link_at(0, 0), None, "the opened gap carries no link");
 }
 
@@ -141,8 +153,11 @@ fn link_follows_a_delete_shift() {
     t.feed(b"\x1b[1;1H"); // cursor home
     t.feed(b"\x1b[2P"); // DCH 2 -> 'L' shifts to col0
     assert_eq!(t.grid().cell(0, 0).c(), 'L');
-    let link = t.link_at(0, 0).expect("link followed the delete shift");
-    assert_eq!(t.hyperlink(link), Some("https://example.com"));
+    assert_eq!(
+        t.link_at(0, 0).as_ref().map(|h| h.uri()),
+        Some("https://example.com"),
+        "link followed the delete shift"
+    );
 }
 
 #[test]
@@ -153,8 +168,11 @@ fn link_survives_resize_reflow() {
     t.feed(b"L");
     t.feed(CLOSE);
     t.resize(3, 2); // column change -> reflow
-    let link = t.link_at(0, 0).expect("link survives reflow");
-    assert_eq!(t.hyperlink(link), Some("https://example.com"));
+    assert_eq!(
+        t.link_at(0, 0).as_ref().map(|h| h.uri()),
+        Some("https://example.com"),
+        "link survives reflow"
+    );
 }
 
 #[test]

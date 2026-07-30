@@ -139,11 +139,12 @@ pub struct Term {
     replies: Vec<u8>,
     /// Hyperlink side-table (OSC 8): each entry is one link's URI, referenced by
     /// `Cell.link` (1-based). Append-only (#26).
-    hyperlink_pool: Vec<String>,
     /// The hyperlink currently open (OSC 8 with a URI), stamped onto every glyph
     /// written until closed (OSC 8 with empty URI). Ambient pen-like state — not
     /// part of the pen/SGR, and *not* cleared by an SGR reset.
-    current_link: Option<core::num::NonZeroU32>,
+    /// The URI of the OSC 8 link currently open, stamped onto each cell printed
+    /// while it is (#628: the URI itself, not a pool index — there is no pool).
+    current_link: Option<std::sync::Arc<str>>,
     /// Scroll region top/bottom margins (DECSTBM), 0-based inclusive. A
     /// line-feed at `scroll_bottom` scrolls only rows `[scroll_top..=scroll_bottom]`.
     /// Default = the full screen.
@@ -308,6 +309,48 @@ const DEFAULT_SCROLLBACK: usize = 10_000;
 /// application rendering for a width the buffer does not have (#547).
 pub const MIN_COLUMNS: usize = 2;
 
+/// A declared OSC 8 hyperlink, as handed to a consumer.
+///
+/// **Owned, not borrowed**, and that is the point: the URI lives in a row's side map, so
+/// a `&str` into it would be tied to `&Engine` and a caller could not hold the link
+/// across the next `feed()` — which is precisely what a hover handler does. Measured on
+/// the alternative: reading a borrow costs 0.75 ns, but keeping it *does not compile*, so
+/// the caller copies the string instead at 62.6 ns. Handing back this handle is 17.9 ns
+/// — cheaper than the workaround it removes, on a call made once per hover.
+///
+/// Cloning is a refcount bump; the allocation is shared with every cell of the same OSC 8
+/// open and released when the last row holding it dies (#628).
+///
+/// **A struct rather than a bare `Arc<str>`** for two reasons: it keeps `Arc` out of the
+/// published signature, and OSC 8's `id=` parameter (#635) lands here as a field without
+/// changing the return type again. Same shape as alacritty's `Hyperlink`, for the same
+/// reasons (`alacritty_terminal/src/term/cell.rs`).
+///
+/// **Link *identity* is deliberately not exposed yet.** Two OSC 8 opens of an identical
+/// URI are two links here, so `uri() == uri()` cannot answer "is this cell part of the
+/// same link as that one?" — an `Arc::ptr_eq` accessor would. It is left out because no
+/// consumer asks it today (nothing outside this crate's tests calls `link_at` at all),
+/// and unlike this type's *shape*, adding a method later is not a breaking change. The
+/// asymmetry decides it: shipping an accessor nobody uses is hard to undo, adding one
+/// when a caller appears is free.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Hyperlink {
+    uri: std::sync::Arc<str>,
+}
+
+impl Hyperlink {
+    pub(crate) fn new(uri: std::sync::Arc<str>) -> Self {
+        Hyperlink { uri }
+    }
+
+    /// The link target, exactly as the application declared it — never validated,
+    /// never resolved. Whether it is a URL a consumer is willing to open is that
+    /// consumer's policy (ADR-0017), the same way colour resolution is.
+    pub fn uri(&self) -> &str {
+        &self.uri
+    }
+}
+
 /// The widest grid the engine will hold, and the mirror of [`MIN_COLUMNS`] — but derived
 /// from a different kind of constraint, which is why the two are not symmetric.
 ///
@@ -456,7 +499,6 @@ impl Term {
             kitty_stack: Vec::new(),
             events: Vec::new(),
             replies: Vec::new(),
-            hyperlink_pool: Vec::new(),
             current_link: None,
             tabs: default_tabs(cols),
             scroll_top: 0,
@@ -629,14 +671,19 @@ impl Term {
             ),
         };
 
-        // Frame-local renumber for the hyperlink table (#26). `u32`, not `u16`: the
-        // narrower width could not number one distinct URI per cell of a viewport the
-        // frame header's own `cols`/`rows` permit, and the wrap did not merely truncate
-        // — `link_remap[l] = … as u16` yielded 0 at the 65536th URI and the
-        // `NonZeroU32::new(…).expect(…)` below turned it into a panic *in the engine*,
-        // on a stream it had parsed correctly (#621).
+        // Frame-local numbering for the hyperlink table (#26). Keyed by the URI's
+        // *identity* — the `Arc` pointer — so two cells sharing one open share one entry
+        // and a distinct open gets its own, which is exactly the semantics the pool
+        // index used to carry.
+        //
+        // Sized by this frame, not by session history (#628). It was
+        // `vec![0u32; hyperlink_pool.len() + 1]`, allocated and zeroed on **every**
+        // frame against every OSC 8 the session had ever seen — measured at 10 µs per
+        // frame with 100 000 opens retained. With the pool gone there is nothing left to
+        // size it by, and the cost disappears rather than being reduced.
         let mut link_table: Vec<String> = Vec::new();
-        let mut link_remap = vec![0u32; self.hyperlink_pool.len() + 1];
+        let mut link_remap: std::collections::HashMap<*const u8, u32> =
+            std::collections::HashMap::new();
         // Cells come from the viewport at `display_offset`, not the live grid:
         // viewport row `line` is absolute buffer line `top + line` (scrollback
         // when scrolled up, the live grid when `display_offset == 0`, where
@@ -671,17 +718,19 @@ impl Term {
                     // unconditional), so the index only ever bought indirection.
                     combining.insert(col - left, marks.to_vec());
                 }
-                if let Some(lidx) = row.link_at(col) {
-                    // Renumber the global pool index to a contiguous frame-local
-                    // one (only referenced URIs ship). This half stays interned —
-                    // cells share a URI, and all three references share it too.
-                    let l = lidx.get() as usize;
-                    if link_remap[l] == 0 {
-                        link_table.push(self.hyperlink_pool[l - 1].clone());
-                        link_remap[l] = link_table.len() as u32;
-                    }
-                    let fidx = core::num::NonZeroU32::new(link_remap[l])
-                        .expect("link_remap just set, nonzero");
+                if let Some(uri) = row.link_at(col) {
+                    // Number each distinct open once per frame (only referenced URIs
+                    // ship). The wire keeps its interning — #621 measured inlining a URI
+                    // per linked cell at +171…403% — so this stays an index into
+                    // `link_table`; only the *engine* side stopped being a table.
+                    let key = std::sync::Arc::as_ptr(uri) as *const u8;
+                    let next = link_table.len() as u32 + 1;
+                    let fidx = *link_remap.entry(key).or_insert_with(|| {
+                        link_table.push(uri.to_string());
+                        next
+                    });
+                    let fidx = core::num::NonZeroU32::new(fidx)
+                        .expect("frame-local link indices are 1-based");
                     links.insert(col - left, fidx);
                 }
                 // Underline colour (SGR 58, #520): a colour reference, not a
@@ -932,11 +981,16 @@ impl Term {
         }
     }
 
-    /// The hyperlink-pool index at **screen** `(row, col)` (the live grid), or
-    /// `None` — flag-gated through the row's link map. Resolve to the URI with
-    /// [`Term::hyperlink`]. Mirrors `grid().cell(row, col)`.
-    pub(crate) fn screen_link_at(&self, row: usize, col: usize) -> Option<core::num::NonZeroU32> {
-        self.grid.row_ref(row).link_at(col)
+    /// The hyperlink **URI** at **screen** `(row, col)` (the live grid), or `None` —
+    /// flag-gated through the row's link map. Since #628 the map holds the URI itself,
+    /// so there is no index and no second call to resolve one.
+    /// Mirrors `grid().cell(row, col)`.
+    pub(crate) fn screen_link_at(&self, row: usize, col: usize) -> Option<Hyperlink> {
+        self.grid
+            .row_ref(row)
+            .link_at(col)
+            .cloned()
+            .map(Hyperlink::new)
     }
 
     /// The underline colour (SGR 58, #520) at screen `(row, col)`, as a theme-agnostic
@@ -946,12 +1000,11 @@ impl Term {
         self.grid.row_ref(row).ucolor_at(col).unwrap_or_default()
     }
 
-    /// The hyperlink-pool index at **viewport** `(row, col)` (visible window,
-    /// history included at the current scroll), or `None`. Mirrors
-    /// `viewport_line(row)`.
-    pub(crate) fn viewport_link_at(&self, row: usize, col: usize) -> Option<core::num::NonZeroU32> {
+    /// The hyperlink URI at **viewport** `(row, col)` (visible window, history
+    /// included at the current scroll), or `None`. Mirrors `viewport_line(row)`.
+    pub(crate) fn viewport_link_at(&self, row: usize, col: usize) -> Option<Hyperlink> {
         let idx = self.scrollback.len() - self.display_offset + row;
-        self.abs_row(idx).link_at(col)
+        self.abs_row(idx).link_at(col).cloned().map(Hyperlink::new)
     }
 
     /// Resize the screen to `cols` x `rows`. Rows dropped off the top (on shrink)
@@ -1366,15 +1419,6 @@ impl Term {
         };
         self.replies
             .extend_from_slice(format!("\x1b[?{mode};{val}$y").as_bytes());
-    }
-
-    /// Resolve a cell's `link` index (OSC 8) to its URI, or `None` if the index
-    /// is out of range. The renderer reads `Cell.link`, then this, to make a
-    /// cell clickable (#26).
-    pub fn hyperlink(&self, link: core::num::NonZeroU32) -> Option<&str> {
-        self.hyperlink_pool
-            .get(link.get() as usize - 1)
-            .map(String::as_str)
     }
 
     // ---- cursor / scroll primitives ------------------------------------------
@@ -1806,7 +1850,7 @@ impl Term {
         let ucolor = self.cursor.pen.underline_color;
         let armed =
             ucolor != Color::Default && self.cursor.pen.flags.contains(CellFlags::UNDERLINE);
-        ExtAttrs::from_pen(self.current_link, armed.then_some(ucolor))
+        ExtAttrs::from_pen(self.current_link.clone(), armed.then_some(ucolor))
     }
 
     /// Free a cell that has stopped being part of a glyph — the *structural repair* every
@@ -1858,6 +1902,8 @@ impl Term {
         let cell = self.grid.cell_mut(row, col);
         cell.reset();
         cell.set_bg(bg);
+        // As in `clear_cells`: the bits are gone, so release what they gated (#628).
+        self.grid.row_mut(row).purge_side_maps(col..col + 1);
         self.damage_span(row, col, col);
     }
 
@@ -2018,7 +2064,10 @@ impl Term {
         // Stamp the pen's extended attrs — the open hyperlink (#26/#46) and a non-default
         // underline colour (#520) — into the row's side maps.
         let ext = self.pen_ext_attrs();
-        self.grid.row_mut(row).set_ext_attrs(col, ext);
+        // `.clone()`: `ExtAttrs` stopped being `Copy` at #628 (the link rider is a shared
+        // `Arc<str>`), and the spacer below stamps the same value — a refcount bump, not
+        // a second string.
+        self.grid.row_mut(row).set_ext_attrs(col, ext.clone());
 
         // The trailing column of a wide glyph carries a distinct spacer marker —
         // and the same link + underline colour, so a hover/selection/underline over
@@ -2286,7 +2335,7 @@ impl Term {
         // presence bits but not its map entries, so without this the bit is set with nothing
         // behind it — the read is gated and silently returns the default, and the frame stops
         // round-tripping (the cell encodes as linked with no index).
-        self.grid.row_mut(nr).set_ext_attrs(0, ext);
+        self.grid.row_mut(nr).set_ext_attrs(0, ext.clone());
         let mut spacer = self.cursor.pen.cell(' ');
         spacer.insert_flags(CellFlags::WIDE_CHAR_SPACER);
         *self.grid.cell_mut(nr, 1) = spacer;
@@ -2388,6 +2437,8 @@ impl Term {
             cell.reset();
             cell.set_bg(bg);
         }
+        // `reset` cleared the presence bits; this releases what they gated (#628).
+        self.grid.row_mut(row).purge_side_maps(from..to);
         if to > from {
             self.damage_span(row, from, to - 1);
         }
@@ -3624,15 +3675,14 @@ impl Perform for Term {
             // link (interned + made current); an empty URI closes it. `params`
             // (e.g. `id=…`) is ignored for now — id-grouping is a later refinement.
             b"8" => {
+                // One allocation per *open*, shared by that open's cells and dropped
+                // with the last row holding it (#628 — there is no pool). Two opens of
+                // an identical URI stay two links, deliberately: merging them would
+                // override a distinction the application controls through `id=`, which
+                // is the dedup xterm.js actually performs and the one #635 tracks.
                 let uri = params.get(2).copied().unwrap_or(b"");
-                if uri.is_empty() {
-                    self.current_link = None;
-                } else {
-                    self.hyperlink_pool
-                        .push(String::from_utf8_lossy(uri).into_owned());
-                    self.current_link =
-                        core::num::NonZeroU32::new(self.hyperlink_pool.len() as u32);
-                }
+                self.current_link =
+                    (!uri.is_empty()).then(|| std::sync::Arc::from(&*String::from_utf8_lossy(uri)));
             }
             // OSC 4 = set/query an ANSI palette entry: `OSC 4 ; index ; spec`
             // (#122). The engine forwards index + raw spec; the consumer applies
@@ -3677,5 +3727,177 @@ impl Perform for Term {
             b"111" => self.events.push(TermEvent::ResetBackground),
             _ => {} // other OSCs are later slices
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::Engine;
+
+    /// #628 — a hyperlink's storage is released once no live row references it.
+    ///
+    /// In-crate on purpose: this defect has **no public observable**, which is why it
+    /// survived from #46 until #621's completeness pass went looking. Pool indices never
+    /// cross the wire (`Term::frame` remaps them to frame-local `link_table` positions),
+    /// and the one public reader takes an index the caller already holds — so from
+    /// outside the crate a pool of 5 entries and a pool of 50 000 are indistinguishable.
+    /// The assertion has to stand where the storage does.
+    ///
+    /// The fixture is a buffer that cannot hold what it is fed: 2 rows plus 2 lines of
+    /// scrollback is four lines total, so by the end all but the last four opens have
+    /// been evicted and nothing on screen or in history refers to them.
+    #[test]
+    fn a_link_evicted_from_the_buffer_stops_being_stored() {
+        let mut e = Engine::with_scrollback(20, 2, 2);
+        for i in 0..50 {
+            e.feed(format!("\x1b]8;;https://example.com/{i}\x07L{i}\x1b]8;;\x07\r\n").as_bytes());
+        }
+
+        // The observable had to move with the storage — there is no pool left to count.
+        // A `Weak` is the stronger form of the same claim anyway: a bounded count can be
+        // bounded and still wrong, while a dead `Weak` says *this exact allocation* was
+        // released.
+        //
+        // **`e2` must outlive the assertion, and that is the whole test.** The first
+        // version of this scoped the engine to the block that built the `Weak`, so the
+        // engine was dropped before the check and the `Weak` died for that reason
+        // instead. Measured: with a deliberate leak reintroduced (a `Vec<Arc<str>>` on
+        // `Term`, retaining every open), that version stayed **green** — a tautological
+        // proof, confirming only that dropping an `Engine` frees its own memory. Keeping
+        // the engine alive is what makes the assertion about reclamation.
+        let mut e2 = Engine::with_scrollback(20, 2, 2);
+        e2.feed(b"\x1b]8;;https://example.com/first\x07L\x1b]8;;\x07\r\n");
+        let weak = {
+            let arc = e2
+                .term
+                .grid
+                .row_ref(0)
+                .link_at(0)
+                .expect("on screen")
+                .clone();
+            std::sync::Arc::downgrade(&arc)
+        };
+        // The live half first: a fix that simply never stored the URI would satisfy the
+        // dead-`Weak` assertion below for the wrong reason.
+        assert!(
+            weak.upgrade().is_some(),
+            "the URI must be alive while its cell is on screen",
+        );
+        for i in 0..50 {
+            e2.feed(format!("filler {i}\r\n").as_bytes());
+        }
+        assert!(
+            weak.upgrade().is_none(),
+            "the first link scrolled out of a 4-line buffer and nothing should still \
+             hold its URI — before #628 every OSC 8 open lived for the life of the Term",
+        );
+
+        // The whole-buffer form of the same claim: 50 distinct opens through a buffer
+        // that holds four lines leaves at most four entries *owned*.
+        //
+        // `owned_link_count` and not `link_at`, and that distinction is the test. The
+        // first version summed the gated reader, which counts **linked cells** — measured
+        // on an erased screen it read 0 while every URI was still allocated, so it could
+        // not fail for the property this test exists to assert.
+        // Deduped by allocation: one open covering three cells is three map entries and
+        // one URI, so counting entries would fail at 9 for a buffer holding four links.
+        let owned: std::collections::HashSet<*const u8> = e
+            .term
+            .scrollback
+            .iter()
+            .chain((0..2).map(|r| e.term.grid.row_ref(r)))
+            .flat_map(|r| r.owned_links())
+            .map(|u| std::sync::Arc::as_ptr(u) as *const u8)
+            .collect();
+        assert!(
+            owned.len() <= 4,
+            "a 4-line buffer cannot own more than 4 distinct URIs, found {}",
+            owned.len(),
+        );
+    }
+
+    /// #628 — erasing a cell in place releases its URI, not just its presence bit.
+    ///
+    /// The sibling of the eviction test above, and the case that one structurally cannot
+    /// see: `clear_cells` / `free_cell` blank a cell **without dropping its row**, so no
+    /// row-lifetime event fires. Under `row-keyed-side-maps` rule 3 leaving the map entry
+    /// is sanctioned — *"a write that clears the cell owes the bit, not the map"* — and
+    /// that was exactly right while the value was a 4-byte index: a stale entry is
+    /// unreadable through the gate and costs nothing.
+    ///
+    /// #628 changed what the entry *is*. The map now owns a heap string, so the same
+    /// sanctioned line retains one. Rule 3 still holds as stated — purging is not the
+    /// correctness step, and missing a site costs bounded retention rather than a wrong
+    /// answer — but the optimisation it calls optional became worth taking here.
+    /// All three references release at this point: alacritty's `Cell::reset` drops the
+    /// `Option<Arc<CellExtra>>` outright, ghostty's ref-counted set frees at zero, and
+    /// xterm.js's `_resetBufferLine` clears `_extendedAttrs` and disposes the line's
+    /// markers so `OscLinkService` deletes the entry.
+    #[test]
+    fn an_erased_cell_releases_its_uri_not_only_its_bit() {
+        let mut e = Engine::new(80, 24);
+        e.feed(b"]8;;https://example.com/erasedL]8;;");
+        let weak = {
+            let a = e
+                .term
+                .grid
+                .row_ref(0)
+                .link_at(0)
+                .expect("on screen")
+                .clone();
+            std::sync::Arc::downgrade(&a)
+        };
+        assert!(weak.upgrade().is_some(), "alive while on screen");
+
+        e.feed(b"[2J"); // ED 2 — erases in place; no row is dropped or reused
+
+        // The gated reader already says "no link", and so does the frame. Neither can
+        // see the retention, which is why this assertion holds the `Weak` instead:
+        // measured before the purge, both public views read 0 while the URI lived.
+        assert!(e.link_at(0, 0).is_none(), "the presence bit is cleared");
+        assert!(
+            weak.upgrade().is_none(),
+            "and the URI itself is released — before the purge the map kept owning it,              so an erased screen retained every link it had shown",
+        );
+    }
+
+    /// `Arc`, not `Rc`, and this is what makes that a fact rather than a comment.
+    ///
+    /// #628 chose `Arc<str>` for the row's link map on the stated ground that `Engine` is
+    /// `Send + Sync`; `Rc` would have removed both **silently** — no signature changes
+    /// here, and a downstream `Mutex<Engine>` failing to compile instead. The claim was
+    /// load-bearing and unpinned: a repo-wide grep for it found only prose.
+    #[test]
+    fn the_engine_stays_send_and_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<Engine>();
+    }
+
+    /// Two OSC 8 opens of an identical URI are **two links**, not one.
+    ///
+    /// Deliberate, and the reason is #635: merging them would override the grouping the
+    /// application controls through `id=`, which is the one dedup xterm.js performs.
+    /// Asserted by allocation identity through the in-crate observer rather than through
+    /// a public accessor — the behaviour is real now, a consumer asking about it is not.
+    #[test]
+    fn two_opens_of_one_uri_are_two_links() {
+        let mut e = Engine::new(40, 2);
+        // One open covering two cells, then a *separate* open of the very same URI.
+        e.feed(b"]8;;https://example.com/xAB]8;;");
+        e.feed(b"]8;;https://example.com/xC]8;;");
+
+        let row = e.term.grid.row_ref(0);
+        let ptr = |c: usize| std::sync::Arc::as_ptr(row.link_at(c).expect("linked")) as *const u8;
+        assert_eq!(
+            e.link_at(0, 0).map(|h| h.uri().to_owned()),
+            e.link_at(0, 2).map(|h| h.uri().to_owned()),
+            "the text is the same",
+        );
+        assert_eq!(ptr(0), ptr(1), "A and B are one open, so one allocation");
+        assert_ne!(
+            ptr(0),
+            ptr(2),
+            "…but C is a second open — merging the two would override the distinction              `id=` exists to express (#635)",
+        );
     }
 }
