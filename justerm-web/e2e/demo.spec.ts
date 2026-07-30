@@ -17,6 +17,26 @@ test.beforeEach(async ({ page }) => {
   await expect(page.getByRole("button", { name: /Finish command/ })).toBeVisible();
 });
 
+/**
+ * #653 — every test body therefore starts on a LIVE, fully mounted demo, and two consequences bite
+ * tests that watch the console:
+ *
+ * 1. **A test that navigates again owns two pages.** Anything done before that second `goto` —
+ *    `setViewportSize` above all — reaches the FIRST page, whose `ResizeObserver` is still running
+ *    and whose debounced `[fit] resize` (100ms) can land *after* the navigation starts. A
+ *    `page.on("console")` listener does not reset across navigations, so that log then answers a
+ *    poll about the second page while its module body is still evaluating. Drop the page first
+ *    (`await page.goto("about:blank")`) so the resize has nothing live to reach.
+ * 2. **A test that waits for the MOUNT fit is racing the hook.** The listener attaches after
+ *    `beforeEach` returned, so it only sees that flush if the 100ms debounce has not already fired.
+ *    `container resize drives a debounced fit intent (#114)` depends on this today; it has not been
+ *    observed failing, and its failure signature would be a poll timeout rather than #653's
+ *    `TypeError`, so it is named here rather than changed.
+ *
+ * Both are decided by machine speed, which is why #653 read as flaky for three CI runs while every
+ * local run passed.
+ */
+
 test("control bar shows the action buttons", async ({ page }) => {
   await expect(page.getByRole("button", { name: /Accessible view/ })).toBeVisible();
   await expect(page.getByRole("button", { name: /Alt screen: (ON|OFF)/ })).toBeVisible();
@@ -1468,7 +1488,18 @@ test("a real resize proposing the pre-change grid still reaches the port (#632)"
     return { cols: Number(m[1]), rows: Number(m[2]) };
   };
 
+  // #653: drop `beforeEach`'s page BEFORE resizing. Otherwise the resize below lands on a live
+  // demo and the fit it triggers belongs to a page this test is about to leave.
+  await page.goto("about:blank");
   await page.setViewportSize({ width: 800, height: 600 });
+  // #653: nothing may have logged yet. `beforeEach` already navigated, so without dropping that
+  // page first this resize lands on a LIVE demo whose ResizeObserver logs a fit ~100ms later — and
+  // that log, belonging to a page this test is about to navigate away from, then satisfies the poll
+  // below while `window.__fitProbe` is read from the half-evaluated next load. Waiting past the
+  // debounce makes the check deterministic; CI lost this race three times on 2026-07-30 and local
+  // machines win it, which is why it read as flaky.
+  await page.waitForTimeout(400);
+  expect(fits).toHaveLength(0);
   await page.goto("/");
   // The observer fires once on mount; that flush is what loads the controller's memory.
   await expect.poll(() => fits.length).toBeGreaterThan(0);
