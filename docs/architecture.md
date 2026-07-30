@@ -730,14 +730,22 @@ Z"`, and a search across the wrap went from 1 hit to 0). It now lives on the
   vanished side-table, is still there and still interned (#621), keyed here by the `Arc`'s identity
   so one open is one entry however many cells it covers.
 
-  **Two opens of an identical URI stay two links, deliberately.** Merging them would override the
-  distinction the application controls through OSC 8's `id=` parameter — the one dedup xterm.js
-  actually performs, and which justerm does not yet honour (#635).
+  **Two opens of an identical URI stay two links; an `id=` the application declared groups them.**
+  That is one rule and not two — merging on URI alone would override the distinction OSC 8's `id=`
+  parameter exists to express, and refusing to merge on a declared `id` would ignore the application
+  saying *these runs are one link*. `params` is a `:`-separated key=value list, `id` may sit anywhere
+  in it, and an empty value is **not** an id; the group key is `id` **and** URI together, so a reused
+  id pointing at a new target does not merge. The URI is everything after the *second* `;` — it is
+  rejoined from vte's split, so an unencoded `;` inside it is kept rather than truncating the target
+  (#650, matching xterm's deliberately special-cased split-on-first-`;`). It is never decoded: a
+  `%3B` stays a `%3B`. The group is held **weakly**: when the last row holding
+  the link goes, the key is gone too, and a later open of the same id is genuinely a new link — which
+  is why grouping did not reintroduce the pool #628 deleted (#635, xterm.js reaches the same lifetime
+  by deleting its `_entriesWithId` entry on last-marker disposal).
   The catch: a hyperlink is **orthogonal to SGR** — `CSI 0 m` (reset attributes) must *not* close it;
   only an empty-URI OSC 8 does (and it persists across line-feeds until then). It is cell state, not a
   point-in-time event, which is why it is here and not on the `drain_events` surface (alacritty agrees —
-  hyperlink is a Cell attribute, not an `Event`). The OSC 8 `id=` param (multi-line link grouping) is a
-  later refinement; the common-90% interns one pool entry per open. [#26]
+  hyperlink is a Cell attribute, not an `Event`). [#26, #635]
 
 - **Query replies are an outbound channel, drained pull-style and kept apart from events.** An app
   query (`CSI c` DA1, `CSI 5n`/`CSI 6n` DSR, `CSI ? Ps $ p` DECRQM) makes the engine *produce bytes the

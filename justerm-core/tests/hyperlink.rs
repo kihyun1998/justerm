@@ -203,3 +203,139 @@ fn hyperlink_round_trips_through_serialization() {
         "https://example.com"
     );
 }
+
+/// A URI carrying an unencoded `;` survives whole (#650).
+///
+/// `OSC 8 ; params ; URI` is `;`-separated, so vte hands the handler the URI in pieces; reading
+/// `params[2]` alone kept the first piece and dropped the rest, silently. xterm.js special-cases
+/// exactly this — it splits on the **first** `;` only, *"to support unencoded semi-colons in the
+/// URIs"* (`InputHandler.ts:3106`) — and nothing is lost at the parser, so this is a rejoin.
+///
+/// Reachable without anything exotic: `?a=1;b=2` is a legal query string, and `;` is a legal
+/// filename byte, so `ls --hyperlink=auto` can emit one inside a `file://` URI.
+#[test]
+fn a_uri_keeps_its_unencoded_semicolons() {
+    let mut t = Engine::new(60, 2);
+    t.feed(b"\x1b]8;;https://example.com/p?a=1;b=2\x07X\x1b]8;;\x07");
+    assert_eq!(
+        t.link_at(0, 0).map(|h| h.uri().to_owned()).as_deref(),
+        Some("https://example.com/p?a=1;b=2"),
+        "the tail after the first ';' belongs to the URI, not to another parameter",
+    );
+}
+
+/// The URI field and the `id=` field are independent: a semicolon-carrying URI still groups, and
+/// grouping still keys on the *whole* URI (#635 + #650 together).
+///
+/// Worth its own test because the two fixes touch the same handler: rejoining the tail changes what
+/// the group key is built from, so a rejoin that dropped the tail *after* keying would group two
+/// different URIs that happen to share a prefix.
+#[test]
+fn a_semicolon_uri_still_groups_by_id_on_its_whole_value() {
+    let mut t = Engine::new(60, 4);
+    t.feed(b"\x1b]8;id=q;https://x/p?a=1;b=2\x07A\x1b]8;;\x07\r\n");
+    t.feed(b"\x1b]8;id=q;https://x/p?a=1;b=2\x07B\x1b]8;;\x07");
+    assert_eq!(
+        t.link_at(0, 0).map(|h| h.uri().to_owned()).as_deref(),
+        Some("https://x/p?a=1;b=2"),
+        "the id= parse must not have eaten part of the URI",
+    );
+    assert_eq!(
+        t.frame().link_table.len(),
+        1,
+        "same id, same whole URI — one link",
+    );
+
+    // …and a URI differing only *after* the first ';' is a different link. This is the assertion a
+    // key built from the truncated value would fail.
+    let mut u = Engine::new(60, 4);
+    u.feed(b"\x1b]8;id=q;https://x/p?a=1;b=2\x07A\x1b]8;;\x07\r\n");
+    u.feed(b"\x1b]8;id=q;https://x/p?a=1;b=9\x07B\x1b]8;;\x07");
+    assert_eq!(
+        u.frame().link_table.len(),
+        2,
+        "the group key sees the whole URI, so these are two links",
+    );
+}
+
+/// The rejoin must not swallow the close. `OSC 8 ; ;` arrives as `["8", "", ""]`, whose rejoined
+/// tail is the empty string — still a close (#650).
+#[test]
+fn an_empty_uri_still_closes_after_the_rejoin() {
+    let mut t = Engine::new(60, 2);
+    t.feed(b"\x1b]8;;https://example.com/a;b\x07X\x1b]8;;\x07Y");
+    assert!(t.link_at(0, 0).is_some(), "X is inside the link");
+    assert!(
+        t.link_at(0, 1).is_none(),
+        "Y is after the close — a rejoin that produced a non-empty URI would leave it open",
+    );
+}
+
+/// A percent-encoded `%3B` is passed through untouched — the engine never decodes a URI.
+///
+/// Kept as a test rather than a comment because it is the control that pinned #650's cause to the
+/// *raw* `;`, and because it forecloses a future "fix" that starts decoding: `Hyperlink::uri` hands
+/// the target over exactly as declared, and whether it is openable is consumer policy (ADR-0017).
+#[test]
+fn a_percent_encoded_semicolon_is_not_decoded() {
+    let mut t = Engine::new(60, 2);
+    t.feed(b"\x1b]8;;https://example.com/a%3Bb=c\x07X\x1b]8;;\x07");
+    assert_eq!(
+        t.link_at(0, 0).map(|h| h.uri().to_owned()).as_deref(),
+        Some("https://example.com/a%3Bb=c"),
+    );
+}
+
+/// An `id=`-grouped link reaches the consumer as **one** link across two lines (#635).
+///
+/// This is the assertion that matches the user-visible symptom, and it is deliberately
+/// made after `encode`/`decode` rather than on the `Frame`: a consumer never sees an
+/// engine-side allocation, it sees a frame-local index into `link_table`, and grouping
+/// cells by that index is literally what `justerm-web/src/links.ts` does. So "hovering
+/// one half of a wrapped link highlights the other half" is true exactly when the two
+/// rows' indices are equal here — an in-crate `Arc` identity check cannot say that.
+#[test]
+fn an_id_grouped_link_round_trips_as_one_link_across_two_lines() {
+    let mut t = Engine::new(20, 4);
+    // The case `id=` exists for: one logical link the application had to emit as two runs.
+    t.feed(b"\x1b]8;id=grp;https://example.com/split\x07first\x1b]8;;\x07\r\n");
+    t.feed(b"\x1b]8;id=grp;https://example.com/split\x07second\x1b]8;;\x07");
+
+    let frame = t.frame();
+    let decoded = decode(&encode(&frame)).expect("decode");
+    assert_eq!(decoded, frame, "round-trip is lossless");
+
+    // One entry, because one link — the whole point. Two entries is the pre-#635 defect,
+    // and it is what the consumer would group by.
+    assert_eq!(
+        decoded.link_table,
+        vec!["https://example.com/split".to_string()],
+        "the grouped link ships once, not once per run",
+    );
+
+    // Both runs point at it. Collected across every span so this does not depend on how
+    // the damage happened to be split into spans.
+    let mut indices: Vec<u32> = decoded
+        .spans
+        .iter()
+        .flat_map(|s| s.links.values().map(|i| i.get()))
+        .collect();
+    indices.dedup();
+    indices.sort_unstable();
+    indices.dedup();
+    assert_eq!(
+        indices,
+        vec![1],
+        "every linked cell on both lines carries the same link index",
+    );
+
+    // And the halves really are on different lines — otherwise the assertion above would
+    // be satisfied by one run and prove nothing about grouping.
+    let lines: std::collections::BTreeSet<u16> = decoded
+        .spans
+        .iter()
+        .filter(|s| !s.links.is_empty())
+        .map(|s| s.line)
+        .collect();
+    assert_eq!(lines.len(), 2, "the two runs are on two separate lines");
+}

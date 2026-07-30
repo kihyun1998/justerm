@@ -137,14 +137,34 @@ pub struct Term {
     /// during `feed` for the consumer to write back to the PTY. Raw bytes →
     /// PTY, kept separate from typed `events` → UI.
     replies: Vec<u8>,
-    /// Hyperlink side-table (OSC 8): each entry is one link's URI, referenced by
-    /// `Cell.link` (1-based). Append-only (#26).
     /// The hyperlink currently open (OSC 8 with a URI), stamped onto every glyph
     /// written until closed (OSC 8 with empty URI). Ambient pen-like state — not
     /// part of the pen/SGR, and *not* cleared by an SGR reset.
-    /// The URI of the OSC 8 link currently open, stamped onto each cell printed
-    /// while it is (#628: the URI itself, not a pool index — there is no pool).
+    ///
+    /// The URI itself, not a pool index — there is no pool (#628). The lead paragraph
+    /// here used to describe one (*"Hyperlink side-table … referenced by `Cell.link`
+    /// (1-based). Append-only (#26)"*), left behind when its field was deleted.
     current_link: Option<std::sync::Arc<str>>,
+    /// Live OSC 8 `id=` groups: `"id;;uri"` → the allocation that key already named,
+    /// held **weakly** (#635).
+    ///
+    /// `Weak`, not `Arc`, is the whole lifetime story. A strong entry here would make
+    /// every id'd link immortal for the life of the `Term` — precisely the leak #628
+    /// deleted, re-entering through the door grouping opens. A dangling key is the
+    /// correct answer rather than a hole: the link it named has left the buffer, so a
+    /// later open of the same id is genuinely a new link. xterm.js expresses the same
+    /// lifetime by *deleting* its `_entriesWithId` entry when the last line marker
+    /// referencing it is disposed (`OscLinkService.ts:98-100`); justerm has no disposal
+    /// hook by design, and `Weak` is that lifetime without one.
+    link_ids: std::collections::HashMap<String, std::sync::Weak<str>>,
+    /// Map length at which [`Self::link_ids`] is swept for dangling keys, doubling each
+    /// time so the sweep is amortised O(1) per open and dead keys stay O(live).
+    ///
+    /// A sweep is affordable here for the reason #628's rejected option (c) was not:
+    /// staleness is observable in O(1) (`Weak::strong_count`), where (c) had to decide
+    /// "is the pool oversized" by counting live references — the O(buffer) walk it was
+    /// trying to avoid.
+    link_ids_sweep_at: usize,
     /// Scroll region top/bottom margins (DECSTBM), 0-based inclusive. A
     /// line-feed at `scroll_bottom` scrolls only rows `[scroll_top..=scroll_bottom]`.
     /// Default = the full screen.
@@ -351,6 +371,34 @@ impl Hyperlink {
     }
 }
 
+/// Length at which the `id=` group map is first swept for dangling keys, doubling from
+/// there. Small enough that a session declaring a handful of ids never pays a sweep,
+/// large enough that the sweep is not the common path.
+const LINK_IDS_FIRST_SWEEP: usize = 16;
+
+/// The `id=` value out of an OSC 8 `params` field, or `None` when it is absent or empty.
+///
+/// Three rules, each taken from xterm.js's `_createHyperlink` verbatim rather than from
+/// the spec prose, because each is a place a reasonable reading goes wrong
+/// (`src/common/InputHandler.ts:3128-3131` at the pinned SHA `699f5537b023`):
+///
+/// - **`:`-separated**, not `;` — `params` is one OSC argument holding a key=value list
+///   (`id=xyz123:foo=bar:baz=quux`), so the split is on colons (`params.split(':')`).
+/// - **`id` may sit anywhere in it** (`findIndex(e => e.startsWith('id='))`), so matching
+///   only a leading `id=` is the wrong parse and passes a single-parameter test.
+/// - **an empty value is not an id** (`slice(3) || undefined`). This is the one with teeth:
+///   an empty key would group every `id=`-with-no-value link in a session into one link
+///   across unrelated URIs, and it is a wrong answer that grows with uptime.
+///
+/// Only the first `id=` is consulted, matching `findIndex` — an empty first one yields
+/// `None` rather than searching on for a non-empty sibling.
+fn osc8_link_id(params: &[u8]) -> Option<&[u8]> {
+    params
+        .split(|b| *b == b':')
+        .find_map(|kv| kv.strip_prefix(b"id="))
+        .filter(|value| !value.is_empty())
+}
+
 /// The widest grid the engine will hold, and the mirror of [`MIN_COLUMNS`] — but derived
 /// from a different kind of constraint, which is why the two are not symmetric.
 ///
@@ -500,6 +548,8 @@ impl Term {
             events: Vec::new(),
             replies: Vec::new(),
             current_link: None,
+            link_ids: std::collections::HashMap::new(),
+            link_ids_sweep_at: LINK_IDS_FIRST_SWEEP,
             tabs: default_tabs(cols),
             scroll_top: 0,
             scroll_bottom: rows - 1,
@@ -3416,6 +3466,32 @@ impl Term {
             self.goto(self.vt52_y_row, coord);
         }
     }
+
+    /// The allocation an OSC 8 `id=` names: the live one if that id already named a link
+    /// with this same URI, else a fresh one recorded under the key (#635).
+    ///
+    /// Keyed on **id and URI together**, mirroring xterm.js's `_getEntryIdKey`
+    /// (`` `${id};;${uri}` ``, `OscLinkService.ts:87`). Keying on the id alone would follow
+    /// a reused id to a stale target — an application saying "same link" about two
+    /// different destinations has not said anything the engine should honour.
+    fn link_for_id(&mut self, id: &str, uri: &str) -> std::sync::Arc<str> {
+        let key = format!("{id};;{uri}");
+        // A key whose link has left the buffer is *absent*, not stale — the group it named
+        // is gone, so this open starts a new one. That is xterm.js's behaviour too, reached
+        // by deleting the entry rather than by letting a reference die.
+        if let Some(live) = self.link_ids.get(&key).and_then(std::sync::Weak::upgrade) {
+            return live;
+        }
+        // Amortised sweep before inserting, so dangling keys stay O(live) rather than
+        // O(ids ever declared). Doubling the threshold keeps it O(1) per open.
+        if self.link_ids.len() >= self.link_ids_sweep_at {
+            self.link_ids.retain(|_, weak| weak.strong_count() > 0);
+            self.link_ids_sweep_at = (self.link_ids.len() * 2).max(LINK_IDS_FIRST_SWEEP);
+        }
+        let fresh: std::sync::Arc<str> = std::sync::Arc::from(uri);
+        self.link_ids.insert(key, std::sync::Arc::downgrade(&fresh));
+        fresh
+    }
 }
 
 impl Perform for Term {
@@ -3672,17 +3748,41 @@ impl Perform for Term {
                 _ => {}
             },
             // OSC 8 = hyperlink: `OSC 8 ; params ; URI`. A non-empty URI opens a
-            // link (interned + made current); an empty URI closes it. `params`
-            // (e.g. `id=…`) is ignored for now — id-grouping is a later refinement.
+            // link (made current); an empty URI closes it. `params` carries the
+            // optional `id=` that groups runs into one link (#635).
             b"8" => {
                 // One allocation per *open*, shared by that open's cells and dropped
                 // with the last row holding it (#628 — there is no pool). Two opens of
                 // an identical URI stay two links, deliberately: merging them would
-                // override a distinction the application controls through `id=`, which
-                // is the dedup xterm.js actually performs and the one #635 tracks.
-                let uri = params.get(2).copied().unwrap_or(b"");
-                self.current_link =
-                    (!uri.is_empty()).then(|| std::sync::Arc::from(&*String::from_utf8_lossy(uri)));
+                // override a distinction the application controls through `id=`. That
+                // parameter is the *only* dedup performed, which is one rule and not
+                // two — xterm.js states it as "links with no id will only ever be
+                // registered a single time" beside a lookup keyed on id-plus-uri
+                // (`OscLinkService.ts:34`, `:49-54`).
+                // The URI is `params[2..]` **rejoined**, not `params[2]` (#650). vte splits the
+                // OSC payload on `;`, so a URI carrying an unencoded `;` arrives in pieces and
+                // reading only the first dropped the rest — silently, with no error. Nothing is
+                // lost at the parser: measured, `]8;;https://x/a;b=c` arrives as
+                // `["8", "", "https://x/a", "b=c"]`. xterm.js special-cases the same thing from
+                // the other side, splitting on the *first* `;` only and taking all the rest as
+                // the URI, *"to support unencoded semi-colons in the URIs"*
+                // (`InputHandler.ts:3106-3112`). Reachable without anything exotic: `?a=1;b=2`
+                // is a legal query string and `;` is a legal filename byte.
+                //
+                // The close survives this: `]8;;` arrives as `["8", "", ""]`, whose rejoin is
+                // empty, and an empty URI still closes. Never decoded — a `%3B` stays `%3B`,
+                // because the engine hands the target over exactly as declared (ADR-0017).
+                let uri: Vec<u8> = params.get(2..).unwrap_or_default().join(&b';');
+                self.current_link = if uri.is_empty() {
+                    None
+                } else {
+                    let uri = String::from_utf8_lossy(&uri);
+                    Some(match osc8_link_id(params.get(1).copied().unwrap_or(b"")) {
+                        // No id declared: fresh per open, the reference-correct default.
+                        None => std::sync::Arc::from(&*uri),
+                        Some(id) => self.link_for_id(&String::from_utf8_lossy(id), &uri),
+                    })
+                };
             }
             // OSC 4 = set/query an ANSI palette entry: `OSC 4 ; index ; spec`
             // (#122). The engine forwards index + raw spec; the consumer applies
@@ -3898,6 +3998,139 @@ mod tests {
             ptr(0),
             ptr(2),
             "…but C is a second open — merging the two would override the distinction              `id=` exists to express (#635)",
+        );
+    }
+
+    /// The other half of the rule above: an `id=` the application declared **does** group
+    /// (#635). One rule, not two — "never merge on URI alone, always merge on a declared
+    /// id" is how xterm.js states it (`OscLinkService.ts:34`, `:51` at the pinned SHA), and
+    /// justerm shipped the first half only because #26 ported `registerLink`'s id-minting
+    /// and not its lookup.
+    ///
+    /// Grouping is asserted as **allocation identity**, which is not an implementation
+    /// detail leaking into a test: since #628 the `Arc`'s address *is* link identity —
+    /// `Term::frame` interns `link_table` by `Arc::as_ptr`, so one allocation is what makes
+    /// two runs one link index on the wire, and that index is what a consumer groups by.
+    #[test]
+    fn the_same_id_and_uri_group_into_one_link() {
+        let mut e = Engine::new(40, 2);
+        // Two separate opens, same `id=` and same URI, on two different lines — the case
+        // the parameter exists for (a link that cannot be one contiguous run).
+        e.feed(b"\x1b]8;id=xyz;https://example.com/a\x07A\x1b]8;;\x07\r\n");
+        e.feed(b"\x1b]8;id=xyz;https://example.com/a\x07B\x1b]8;;\x07");
+
+        let ptr = |r: usize, c: usize| {
+            std::sync::Arc::as_ptr(e.term.grid.row_ref(r).link_at(c).expect("linked")) as *const u8
+        };
+        assert_eq!(
+            ptr(0, 0),
+            ptr(1, 0),
+            "the application said these two runs are one link, so they share one allocation",
+        );
+
+        // And the wire agrees, which is the half a consumer can actually see: one entry in
+        // `link_table`, referenced by both spans. Two entries is the defect.
+        let f = e.frame();
+        assert_eq!(f.link_table.len(), 1, "one link ships once");
+    }
+
+    /// Keyed on `id` **and** URI, not on `id` alone — xterm.js's `_getEntryIdKey` is
+    /// `` `${id};;${uri}` `` (`OscLinkService.ts:87`). An application reusing an id for a
+    /// different target has not said "same link"; treating it as one would follow a stale
+    /// declaration to the wrong URI.
+    #[test]
+    fn the_same_id_with_a_different_uri_stays_two_links() {
+        let mut e = Engine::new(40, 2);
+        e.feed(b"\x1b]8;id=xyz;https://example.com/a\x07A\x1b]8;;\x07\r\n");
+        e.feed(b"\x1b]8;id=xyz;https://example.com/b\x07B\x1b]8;;\x07");
+
+        let ptr = |r: usize, c: usize| {
+            std::sync::Arc::as_ptr(e.term.grid.row_ref(r).link_at(c).expect("linked")) as *const u8
+        };
+        assert_ne!(
+            ptr(0, 0),
+            ptr(1, 0),
+            "same id, different target — two links"
+        );
+        assert_eq!(e.frame().link_table.len(), 2, "and both ship");
+    }
+
+    /// `id=` with an **empty value** is no id at all, so the no-id rule applies and each
+    /// open is its own link. xterm.js reaches this by `parsedParams[i].slice(3) || undefined`
+    /// (`InputHandler.ts:3130`) — the `||` is the whole behaviour, and reading `slice(3)`
+    /// alone gives the opposite answer.
+    ///
+    /// Worth a test rather than a comment because the empty-string key is the one that
+    /// would group *every* `id=`-with-no-value link in a session into one, across unrelated
+    /// URIs — a wrong answer that grows with uptime.
+    #[test]
+    fn an_empty_id_value_is_no_id_at_all() {
+        let mut e = Engine::new(40, 2);
+        e.feed(b"\x1b]8;id=;https://example.com/a\x07A\x1b]8;;\x07\r\n");
+        e.feed(b"\x1b]8;id=;https://example.com/a\x07B\x1b]8;;\x07");
+
+        let ptr = |r: usize, c: usize| {
+            std::sync::Arc::as_ptr(e.term.grid.row_ref(r).link_at(c).expect("linked")) as *const u8
+        };
+        assert_ne!(
+            ptr(0, 0),
+            ptr(1, 0),
+            "no id declared, so the reference-correct fresh-per-open rule still holds",
+        );
+    }
+
+    /// `params` is a **`:`-separated** key=value list (`id=xyz123:foo=bar:baz=quux`), and
+    /// `id` may sit anywhere in it — xterm.js scans with `findIndex(e =>
+    /// e.startsWith('id='))` (`InputHandler.ts:3129`). Testing only a leading `id=` would
+    /// pass with a `starts_with` on the whole field, which is the wrong parse.
+    #[test]
+    fn the_id_param_is_found_among_other_params() {
+        let mut e = Engine::new(40, 2);
+        e.feed(b"\x1b]8;foo=bar:id=xyz:baz=quux;https://example.com/a\x07A\x1b]8;;\x07\r\n");
+        e.feed(b"\x1b]8;id=xyz;https://example.com/a\x07B\x1b]8;;\x07");
+
+        let ptr = |r: usize, c: usize| {
+            std::sync::Arc::as_ptr(e.term.grid.row_ref(r).link_at(c).expect("linked")) as *const u8
+        };
+        assert_eq!(
+            ptr(0, 0),
+            ptr(1, 0),
+            "the id is the same whatever else rides beside it",
+        );
+    }
+
+    /// The grouping registry must not become the pool #628 deleted.
+    ///
+    /// Whatever maps an `id=` to its link has to hold it **weakly**: a strong reference
+    /// would make every id'd link immortal for the life of the `Term` — the exact defect
+    /// #628 removed, re-entering through the door #635 opens. xterm.js's equivalent map is
+    /// reclaimed rather than weak (`_entriesWithId.delete` when the entry's last line
+    /// marker is disposed, `OscLinkService.ts:98-100`); justerm has no disposal hook by
+    /// design, so `Weak` is how the same lifetime is expressed here.
+    ///
+    /// This is the test that discriminates the two, and nothing public can: both spellings
+    /// group correctly, and they differ only in what stays alive afterwards.
+    #[test]
+    fn the_id_registry_does_not_keep_a_link_alive() {
+        let mut e = Engine::new(80, 24);
+        e.feed(b"\x1b]8;id=xyz;https://example.com/grouped\x07L\x1b]8;;\x07");
+        let weak = {
+            let a = e
+                .term
+                .grid
+                .row_ref(0)
+                .link_at(0)
+                .expect("on screen")
+                .clone();
+            std::sync::Arc::downgrade(&a)
+        };
+        assert!(weak.upgrade().is_some(), "alive while on screen");
+
+        e.feed(b"\x1b[2J"); // ED 2 — the in-place erase that releases the row's side maps
+
+        assert!(
+            weak.upgrade().is_none(),
+            "the id registry must hold a Weak — a strong entry would outlive the screen and              rebuild #628's leak one id at a time",
         );
     }
 }
