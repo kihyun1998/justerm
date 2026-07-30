@@ -24,7 +24,11 @@ const frame = (over: Partial<DecodedFrame> = {}): DecodedFrame =>
     fg: new Uint32Array(4),
     bg: new Uint32Array(4),
     flags: new Uint16Array(4),
-    extra: new Uint16Array(4),
+    // `Uint32Array`, matching what the decoder's `extra()` getter actually returns (#621/#627).
+    // It was a hand-written `Uint16Array`, which took `asU16`'s identity branch — the branch
+    // production had stopped taking — so this fixture's divergence from the real getter is
+    // *why* the truncating narrow at the seam went unseen. Mirror the getter, not the old width.
+    extra: new Uint32Array(4),
     spans: new Uint32Array(0),
     sideTable: [],
     ...over,
@@ -142,8 +146,27 @@ describe("asU32 span coercion (#467)", () => {
     expect(asU32([2 ** 32 + 3])[0], "a value >= 2**32 wraps mod 2**32").toBe(3);
   });
 
-  // The u16 sibling (`flags` / `extra`) has the identical seam — same contract, mod 2**16.
-  it("applies the same reinterpretation to the u16 sibling (flags / extra)", () => {
+  // #627: the `extra` column (per-cell 1-based grapheme-cluster index) crosses this seam as u32.
+  // It moved when the decoder widened it (#621) — a u16 cannot number one cluster per cell of a
+  // viewport the frame header's own `cols`/`rows` permit — and the adapter kept narrowing it back.
+  // Both halves are asserted: the identity branch (no per-frame copy, the load-bearing cost) and
+  // what the narrow did to an index past the u16 ceiling (silent, no error either way).
+  it("passes an extra index above u16::MAX through intact, where the u16 narrow corrupted it", () => {
+    const extra = new Uint32Array([65_536, 65_537]);
+    expect(asU32(extra), "the decoder's own array passes by reference — no per-frame copy").toBe(
+      extra,
+    );
+    expect(Array.from(asU32(extra))).toEqual([65_536, 65_537]);
+    // The narrow this replaced, pinned as the defect's mechanism so the reason this column may
+    // never be re-narrowed outlives the issue: 65536 -> 0, which the renderer reads as "no
+    // cluster" and drops the marks; 65537 -> 1, which resolves the *wrong* cluster.
+    expect(Array.from(asU16(extra)), "mod 2**16 — dropped marks, then a wrong cluster").toEqual([
+      0, 1,
+    ]);
+  });
+
+  // The u16 sibling (`flags` — no longer `extra`) has the identical seam — same contract, mod 2**16.
+  it("applies the same reinterpretation to the u16 sibling (flags)", () => {
     const real = new Uint16Array([1, 2]);
     expect(asU16(real)).toBe(real); // identity fast path, no copy
 

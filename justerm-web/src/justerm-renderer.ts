@@ -186,7 +186,12 @@ export interface RendererBackend {
     fg: Uint32Array,
     bg: Uint32Array,
     flags: Uint16Array,
-    extra: Uint16Array,
+    /** Per-cell 1-based grapheme-cluster index — **u32, not u16** (#621/#627). A `u16` cannot
+     * number one cluster per cell of a viewport the frame header's own `cols`/`rows` permit, so
+     * the column widened at the decoder; narrowing it back here truncated silently above
+     * `u16::MAX` (65536 → `0` = "no cluster", 65537 → the *wrong* cluster) and cost an
+     * unconditional per-frame copy. `flags` above stays u16 — only this column moved. */
+    extra: Uint32Array,
     sideTable: string[],
     /** Per-cell underline colour column (SGR 58, #520) — trailing/optional, so an older
      * renderer build still satisfies this seam. Tagged u32 like fg/bg (`0` = Default). */
@@ -399,7 +404,8 @@ export function cursorCommand(frame: DecodedFrame): CursorCommand {
  * Exported for the seam test only; not re-exported from the package `index.ts`. */
 export const asU32 = (a: ArrayLike<number>): Uint32Array =>
   a instanceof Uint32Array ? a : Uint32Array.from(a);
-/** The u16 sibling of {@link asU32} (feeds `flags` / `extra`), with the same contract: the
+/** The u16 sibling of {@link asU32} (feeds `flags` — and no longer `extra`, which widened to u32
+ * at #621/#627), with the same contract: the
  * fallback `Uint16Array.from` REINTERPRETS an out-of-range value (a negative or `>= 2**16` wraps
  * mod 2**16, `NaN`/±`Infinity` → `0`), it does not reject — the producer must clip, this cannot
  * validate (#467). Exported for the seam test only; not re-exported from `index.ts`. */
@@ -769,7 +775,12 @@ export class JustermRenderer implements Renderer {
       asU32(frame.fg),
       asU32(frame.bg),
       asU16(frame.flags),
-      asU16(frame.extra),
+      // #627: `asU32`, not `asU16`. Both ends of this column are u32 now (the decoder emits one,
+      // renderer >= 0.9.0 takes one), so the steady state is the identity branch. Until the
+      // `justerm-wasm-decode` pin moves to the v14 release (#633 step 5) the published 0.11.0
+      // decoder still returns a `Uint16Array`, so this takes the `Uint32Array.from` fallback —
+      // a widening copy, correct for every value a u16 can hold, and it ends with that bump.
+      asU32(frame.extra),
       Array.from(frame.sideTable),
       // #520: the underline colour column (SGR 58). Trailing arg on the renderer's apply_damage;
       // the renderer packs it as the base ink of the line channel so an underline draws in its
@@ -989,8 +1000,8 @@ export class JustermRenderer implements Renderer {
       EMPTY_U32,
       EMPTY_U32,
       EMPTY_U32,
-      EMPTY_U16,
-      EMPTY_U16,
+      EMPTY_U16, // flags — still u16
+      EMPTY_U32, // extra — u32 since #621/#627; `flags` above is the only u16 column left
       [],
       EMPTY_U32,
     );
