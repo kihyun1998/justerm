@@ -1809,7 +1809,7 @@ impl JustermRenderer {
         fg: &[u32],
         bg: &[u32],
         flags: &[u16],
-        extra: &[u16],
+        extra: &[u32],
         side_table: Vec<String>,
         // #520: the span-ordered underline colour column (SGR 58), tagged-u32 like `fg`/`bg`.
         // Optional + TRAILING for the same reason as `apply_frame` — a caller that predates it
