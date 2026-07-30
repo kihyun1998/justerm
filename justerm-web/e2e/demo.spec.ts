@@ -1263,6 +1263,17 @@ test("a non-finite bgAlpha falls back to opaque instead of blanking the terminal
 //
 // The invariant asserted at every stage is `buffer === grid x cell` (#331) together with
 // `demo grid === renderer grid`. Three values, any of which a spacing change can desynchronise.
+// **Why the width assertions below may be exact and the height ones may not.** The renderer's
+// `device_cell` adds the spacing term to the font's advance — `dx = round(letterSpacing * dpr)`, then
+// `w = char_px.0 + dx` — so a width *difference* depends only on the setting and the density, never on
+// the font, and is assertable to the pixel on any machine. Height is **multiplicative**
+// (`h = char_px.1 * lineHeight`), so a height difference scales with the font's own glyph box and only
+// its *direction* is portable. Valid as long as neither result reaches `device_cell`'s
+// `clamp(1, MAX_CELL_PX)` bounds, which the values used here are far from.
+//
+// No ABSOLUTE cell dimension is assertable either way: the cell derives from the font's `█` ink box
+// (ADR-0022) and CI's Linux fonts differ from a local machine's. Learned here — the first version of
+// the dpr-2 test below pinned `base.cellW === 18` and failed on CI at 20.
 const agrees = (s: {
   cellW: number;
   cellH: number;
@@ -1292,8 +1303,10 @@ test("a spacing change moves the cell and the whole geometry moves with it (#578
   // grid and px->cell geometry all agree afterwards", asserted at each step rather than only at the end.
   for (const s of [p.boot, p.base, p.spaced, p.tall, p.huge, p.restored]) agrees(s);
 
-  // LETTER SPACING widens the cell, so fewer columns fit the same viewport. Measured at dpr 1:
-  // 9 -> 13 device px for a 4 CSS-px setting, and 142 -> 98 columns.
+  // LETTER SPACING widens the cell, so fewer columns fit the same viewport. The `+ 4` below is
+  // `round(letterSpacing * dpr)`, so it depends on the density — assert the precondition rather than
+  // leaving the arithmetic implicit (the dpr-2 sibling test covers the scaled case).
+  expect(p.dpr).toBe(1);
   expect(p.spaced.cellW).toBe(p.base.cellW + 4);
   expect(p.spaced.cellH).toBe(p.base.cellH); // height untouched — it is a *column* gap
   expect(p.spaced.cols).toBeLessThan(p.base.cols);
@@ -1309,7 +1322,11 @@ test("a spacing change moves the cell and the whole geometry moves with it (#578
   // `bufH === rows * cellH` still holds. Had it fitted against the *requested* height the buffer and
   // the grid would disagree, which is precisely the silent desync this whole test exists for.
   expect(p.huge.cellH).toBeLessThan(p.base.cellH * p.hugeRequested);
-  expect(p.huge.cellH).toBeGreaterThan(p.tall.cellH); // it did grow, so this is a clamp not a no-op
+  // …and it DID grow, so this is a clamp rather than the setter being ignored. Compared against
+  // `base` rather than against `tall`: where the atlas clamp lands is font-dependent, so
+  // `huge > tall` is a relation between two derived values that a different font could invert, while
+  // `huge > base` is the claim itself.
+  expect(p.huge.cellH).toBeGreaterThan(p.base.cellH);
 
   // DEFAULTS ARE A NO-OP: back to 0/1 returns to the base geometry exactly, not approximately.
   expect(p.restored).toEqual(p.base);
@@ -1333,10 +1350,17 @@ test.describe("letterSpacing is CSS px, so its gap is density-independent (ADR-0
     await expect(page.getByRole("button", { name: "Letter spacing: 0px" })).toBeVisible();
     const p = await page.evaluate(() => window.__spacingProbe!());
 
-    // The cell itself is already doubled by the density — the control that proves dpr 2 took effect.
-    expect(p.base.cellW).toBe(18); // 9 at dpr 1
-    // …and the 4 CSS-px setting arrives as 8 device px. Under the reference behaviour it would be 4
-    // here, i.e. half the gap for the same setting.
+    // The control, asserting the CONDITION rather than a consequence of it. This line used to read
+    // `expect(p.base.cellW).toBe(18)` — twice the 9 measured locally — and CI's Linux fonts give a
+    // different glyph advance, so it was 20 there and the test failed on a machine difference while
+    // the behaviour below was correct. The cell derives from the font's `█` ink box (ADR-0022), so
+    // **no absolute cell dimension is portable**; only a difference between two cells measured on the
+    // same machine is.
+    expect(p.dpr).toBe(2);
+    // THE CLAIM, and it is font-independent because the spacing term is added to the advance rather
+    // than derived from it: a 4 CSS-px setting arrives as `round(4 * 2)` = 8 device px. Under either
+    // reference's device-px reading it would be 4 here — half the gap for the same number, which is
+    // the incoherence ADR-0023 spends reference parity to avoid.
     expect(p.spaced.cellW - p.base.cellW).toBe(8);
 
     agrees(p.spaced);

@@ -1249,6 +1249,17 @@ interface SpacingProbe {
   /** The requested multiplier for `huge`, so the e2e can state the adopted-vs-requested relation
    * without hardcoding the demo's number. */
   hugeRequested: number;
+  /**
+   * `window.devicePixelRatio` at the moment of sampling.
+   *
+   * Reported so a density test can assert the **condition** it set up rather than a font-derived
+   * consequence of it. The first version of that test proved dpr 2 had taken effect by checking
+   * `base.cellW === 18` (twice the 9 measured locally) — and CI's Linux fonts give a different glyph
+   * advance, so the cell is 20 there and the check failed on a machine difference while the behaviour
+   * it guards was correct. The cell comes from the font's `█` ink box (ADR-0022); **no absolute cell
+   * dimension is portable**, only differences between two cells measured on the same machine.
+   */
+  dpr: number;
   /** Back at the defaults — must return to `base` exactly. */
   restored: SpacingSnapshot;
 }
@@ -1729,7 +1740,16 @@ window.__spacingProbe = (): SpacingProbe => {
   renderer.setLineHeight(savedLh);
   fit();
   render();
-  return { boot, base, spaced, tall, huge, hugeRequested: HUGE, restored };
+  return {
+    boot,
+    base,
+    spaced,
+    tall,
+    huge,
+    hugeRequested: HUGE,
+    dpr: window.devicePixelRatio,
+    restored,
+  };
 };
 
 window.__disposeProbe = async (): Promise<DisposeProbe> => {
