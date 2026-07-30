@@ -62,7 +62,10 @@ an editor rather than a terminal.
 
 ## Cross-cutting invariants
 
-*(none identified yet)*
+- [alt-screen absolute-index floor](../invariant/alt-screen-buffer-floor.md) — `Term::accessible_text`
+  walks the concatenated `[scrollback ++ grid]` buffer by absolute index, so on the alt screen it
+  must floor at `scrollback.len()`. The failure is silent: the AT reads *plausible* text that is not
+  on screen
 
 ## Blast radius
 
