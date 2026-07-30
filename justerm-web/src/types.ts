@@ -33,7 +33,16 @@ export interface DecodedFrame {
   readonly underlineColor?: ArrayLike<number>;
   /** Per-cell `CellFlags` bits. */
   readonly flags: ArrayLike<number>;
-  /** Per-cell 1-based grapheme-cluster index (`0` = none → `sideTable[extra-1]`). */
+  /**
+   * Per-cell 1-based grapheme-cluster index (`0` = none → `sideTable[extra-1]`).
+   *
+   * `ArrayLike<number>` like every column here, so a plain-object fixture satisfies it — which
+   * means **this declaration cannot pin the column's width**, and a coercion narrowing it on the
+   * way to the renderer is invisible to the type system. The decoder returns a `Uint32Array`
+   * (widened at #621: a `u16` cannot number one cluster per cell of a viewport the header's own
+   * `cols`/`rows` permit); the width that has to agree is the one on `RendererBackend`'s
+   * `apply_damage`, and #627 is what happens when it does not.
+   */
   readonly extra: ArrayLike<number>;
   /** Span directory, stride 5: `[line, left, right, cell_offset, count]`. */
   readonly spans: ArrayLike<number>;
