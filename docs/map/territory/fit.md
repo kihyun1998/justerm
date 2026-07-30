@@ -49,7 +49,9 @@ diverges quietly.
 
 ## Cross-cutting invariants
 
-*(none identified yet)*
+- [the cell size is derived state](../invariant/cell-size-is-derived-state.md)
+  — the largest consumer of the cell, and the one whose `cols`/`rows` dedupe cannot express "the
+  cell moved but the grid did not" (#578)
 
 ## Blast radius
 

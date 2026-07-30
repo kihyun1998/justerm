@@ -456,6 +456,34 @@ heading, which said "nobody caps it" without naming what "it" was. The lesson is
 first correction's and worth keeping separate: **a section's title is cited as if it were a row.**
 Scope the heading to what the rows actually establish.
 
+## Who re-fits after a spacing change (#578, verified 2026-07-29)
+
+The load-bearing facts behind #578's central design call — the runtime spacing setters forward only,
+and the **consumer** re-derives the grid — were recorded in no artifact before this. ADR-0023 pins the
+*unit* question and stops there.
+
+| Fact | Reference | Site |
+|---|---|---|
+| A `letterSpacing` / `lineHeight` option change re-lays out **at the current grid** — the handler is `clear(); handleResize(bufferService.cols, bufferService.rows); _fullRefresh()`, reading the grid from the buffer service rather than re-deriving it from the pixel box | xterm.js | `browser/services/RenderService.ts:100-112` |
+| ⚠ **And the pixel-box half stays manual**: `FitAddon` registers **no listeners at all** — no `ResizeObserver`, no window handler. `fit()` is something the consumer calls. So xterm splits this exactly where justerm does | xterm.js | `addons/addon-fit/src/FitAddon.ts` (grep for `addEventListener|onResize|register(` returns nothing) |
+| alacritty **does** auto-re-fit: a font/offset change recomputes the cell, rebuilds `SizeInfo` from the same window box, and resizes the PTY + terminal when the column/line count moved | alacritty | `display/mod.rs:420` (`compute_cell_size`), `:714-722` (the PTY + terminal resize) |
+| xterm **throws** for `lineHeight < 1` where justerm clamps — already recorded at `webgl.rs` `set_line_height`, repeated here because it is the same call site | xterm.js | `common/services/OptionsService.ts:182-186` |
+
+**Direction — not a drift, and the two references are not in conflict.** justerm's renderer already
+performs xterm's half automatically: `adopt_spacing` ends with `self.resize(cols, rows)` at the stored
+grid, which *is* `handleResize(bufferService.cols, bufferService.rows)`. What is left to the consumer is
+precisely what xterm leaves to `FitAddon`. alacritty differs because it **owns its OS window** and can
+rebuild `SizeInfo` from a box it controls; an embeddable widget does not own its box — justerm's adapter
+pins the canvas to a grid-exact size, so the consumer measures the *viewport* instead. So the applicable
+analogue is xterm, and #578's own Sketch (*"drive a re-fit through the existing FitController path"*) was
+reasoning from the alacritty shape.
+
+**A second, repo-local reason the Sketch is wrong**, recorded because it is not derivable from either
+reference: `FitController` dedupes on `cols`/`rows`, and a spacing change can move the cell while
+leaving the grid identical (guaranteed once the `MINIMUM_COLS`/`MINIMUM_ROWS` floors bind). A
+grid-keyed dedupe cannot express *"the cell moved but the grid did not"*, so routing the re-fit through
+it would drop exactly the flush that resizes the canvas box.
+
 ## Background transparency — the shape of the knob (#577, verified 2026-07-29)
 
 The file had **zero** rows on transparency before this, though `set_bg_alpha` has existed since #298

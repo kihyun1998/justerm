@@ -60,6 +60,9 @@ grounds as unverified, which is unusual enough to be worth knowing before buildi
 
 ## Cross-cutting invariants
 
+- [the cell size is derived state](../invariant/cell-size-is-derived-state.md)
+  — this territory *produces* the value; the invariant is about everything downstream that divides
+  by it and cannot tell that it moved (#578)
 - [workspace exclusion is gate invisibility](../invariant/workspace-exclusion-is-gate-invisibility.md)
   — this crate is outside the root workspace, so no `--workspace` or `--all` command reaches it;
   every gate it has is named for it by `--manifest-path`

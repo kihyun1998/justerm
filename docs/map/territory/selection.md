@@ -86,6 +86,9 @@ at a recorded SHA; a paraphrase drops the pin).
 
 ## Cross-cutting invariants
 
+- [the cell size is derived state](../invariant/cell-size-is-derived-state.md)
+  — the pointer-to-cell conversion here divides by a cell that five setters can move, in a unit the
+  renderer does not report (#578)
 - [alt-screen absolute-index floor](../invariant/alt-screen-buffer-floor.md) — `Term::prev_pos` must
   not join down into the primary scrollback while on alt (#207)
 

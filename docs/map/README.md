@@ -116,7 +116,8 @@ owns no detail of its own.
   [frame & wire](territory/frame-and-wire.md) ·
   [release & published surface](territory/release-and-published-surface.md) ·
   [wide glyph & soft wrap](territory/wide-glyph-and-soft-wrap.md)
-- Cross-cutting invariants — [alt-screen absolute-index floor](invariant/alt-screen-buffer-floor.md) ·
+- Cross-cutting invariants — [the cell size is derived state](invariant/cell-size-is-derived-state.md) ·
+  [alt-screen absolute-index floor](invariant/alt-screen-buffer-floor.md) ·
   [row-keyed side maps](invariant/row-keyed-side-maps.md) ·
   [workspace exclusion is gate invisibility](invariant/workspace-exclusion-is-gate-invisibility.md)
 

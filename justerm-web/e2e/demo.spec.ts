@@ -1254,6 +1254,142 @@ test("a non-finite bgAlpha falls back to opaque instead of blanking the terminal
   expect(`rgb(${p.defaultInk.slice(0, 3)})`).not.toBe(`rgb(${p.defaultBg.slice(0, 3)})`);
 });
 
+// #578: the typography knobs. Unlike the other unwired-knob slices this one is not a pass-through —
+// both setters MOVE THE CELL, and the cell is what the grid, the drawing buffer and every px->cell
+// conversion derive from. So the thing under test is the *coupling*, not the setter: a spacing change
+// that does not re-fit leaves the engine on the old grid while the renderer draws at the new cell,
+// and the failure is silent — spans land outside the grid and the surface simply stops updating,
+// the shape #547 describes.
+//
+// The invariant asserted at every stage is `buffer === grid x cell` (#331) together with
+// `demo grid === renderer grid`. Three values, any of which a spacing change can desynchronise.
+// **Why the width assertions below may be exact and the height ones may not.** The renderer's
+// `device_cell` adds the spacing term to the font's advance — `dx = round(letterSpacing * dpr)`, then
+// `w = char_px.0 + dx` — so a width *difference* depends only on the setting and the density, never on
+// the font, and is assertable to the pixel on any machine. Height is **multiplicative**
+// (`h = char_px.1 * lineHeight`), so a height difference scales with the font's own glyph box and only
+// its *direction* is portable. Valid as long as neither result reaches `device_cell`'s
+// `clamp(1, MAX_CELL_PX)` bounds, which the values used here are far from.
+//
+// No ABSOLUTE cell dimension is assertable either way: the cell derives from the font's `█` ink box
+// (ADR-0022) and CI's Linux fonts differ from a local machine's. Learned here — the first version of
+// the dpr-2 test below pinned `base.cellW === 18` and failed on CI at 20.
+const agrees = (s: {
+  cellW: number;
+  cellH: number;
+  cols: number;
+  rows: number;
+  demoCols: number;
+  demoRows: number;
+  bufW: number;
+  bufH: number;
+}): void => {
+  // The renderer adopted what the demo believes it is driving.
+  expect(s.demoCols).toBe(s.cols);
+  expect(s.demoRows).toBe(s.rows);
+  // …and the device buffer is exactly grid x cell, so nothing overhangs (#331).
+  expect(s.bufW).toBe(s.cols * s.cellW);
+  expect(s.bufH).toBe(s.rows * s.cellH);
+};
+
+test("a spacing change moves the cell and the whole geometry moves with it (#578)", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await expect(page.getByRole("button", { name: "Letter spacing: 0px" })).toBeVisible();
+  const p = await page.evaluate(() => window.__spacingProbe!());
+
+  // Every stage is internally consistent — this is the acceptance criterion "engine grid, renderer
+  // grid and px->cell geometry all agree afterwards", asserted at each step rather than only at the end.
+  for (const s of [p.boot, p.base, p.spaced, p.tall, p.huge, p.restored]) agrees(s);
+
+  // LETTER SPACING widens the cell, so fewer columns fit the same viewport. The `+ 4` below is
+  // `round(letterSpacing * dpr)`, so it depends on the density — assert the precondition rather than
+  // leaving the arithmetic implicit (the dpr-2 sibling test covers the scaled case).
+  expect(p.dpr).toBe(1);
+  expect(p.spaced.cellW).toBe(p.base.cellW + 4);
+  expect(p.spaced.cellH).toBe(p.base.cellH); // height untouched — it is a *column* gap
+  expect(p.spaced.cols).toBeLessThan(p.base.cols);
+
+  // LINE HEIGHT heightens the cell, so fewer rows fit. 1.6x of a 19px cell measured as 30.
+  expect(p.tall.cellH).toBeGreaterThan(p.base.cellH);
+  expect(p.tall.cellW).toBe(p.base.cellW); // width untouched
+  expect(p.tall.rows).toBeLessThan(p.base.rows);
+
+  // THE ADOPTED VALUE, NOT THE REQUESTED ONE. An absurd multiplier is not honoured: the renderer
+  // shrinks a cell the glyph atlas cannot hold (#359). Measured — 40x of a 19px cell would be 760,
+  // and what came back was 254. The load-bearing part is the line after: the fit used 254, because
+  // `bufH === rows * cellH` still holds. Had it fitted against the *requested* height the buffer and
+  // the grid would disagree, which is precisely the silent desync this whole test exists for.
+  expect(p.huge.cellH).toBeLessThan(p.base.cellH * p.hugeRequested);
+  // …and it DID grow, so this is a clamp rather than the setter being ignored. Compared against
+  // `base` rather than against `tall`: where the atlas clamp lands is font-dependent, so
+  // `huge > tall` is a relation between two derived values that a different font could invert, while
+  // `huge > base` is the claim itself.
+  expect(p.huge.cellH).toBeGreaterThan(p.base.cellH);
+
+  // DEFAULTS ARE A NO-OP: back to 0/1 returns to the base geometry exactly, not approximately.
+  expect(p.restored).toEqual(p.base);
+});
+
+// #578 + ADR-0023: `letterSpacing` is CSS px because `fontSize` is, and the renderer applies
+// `round(letterSpacing * dpr)`. This is the repo's one deliberate divergence from BOTH references on a
+// public setter's unit — xterm.js adds it to an already-device-px char width
+// (`WebglRenderer.ts:671`), alacritty adds `font.offset` raw to device-px metrics — so under their
+// behaviour the same setting is a different visual gap per display, and moving a window between
+// monitors re-lays-out the text.
+//
+// Worth its own test rather than a comment: the divergence is the *reason* the ADR exists, and nothing
+// else in the suite would notice if the unit silently became device px. Driven at a real
+// deviceScaleFactor, so the scaling actually happens rather than being asserted about.
+test.describe("letterSpacing is CSS px, so its gap is density-independent (ADR-0023, #578)", () => {
+  test.use({ deviceScaleFactor: 2 });
+
+  test("a 4 CSS-px setting is 8 device px at dpr 2, not 4", async ({ page }) => {
+    await page.goto("/");
+    await expect(page.getByRole("button", { name: "Letter spacing: 0px" })).toBeVisible();
+    const p = await page.evaluate(() => window.__spacingProbe!());
+
+    // The control, asserting the CONDITION rather than a consequence of it. This line used to read
+    // `expect(p.base.cellW).toBe(18)` — twice the 9 measured locally — and CI's Linux fonts give a
+    // different glyph advance, so it was 20 there and the test failed on a machine difference while
+    // the behaviour below was correct. The cell derives from the font's `█` ink box (ADR-0022), so
+    // **no absolute cell dimension is portable**; only a difference between two cells measured on the
+    // same machine is.
+    expect(p.dpr).toBe(2);
+    // THE CLAIM, and it is font-independent because the spacing term is added to the advance rather
+    // than derived from it: a 4 CSS-px setting arrives as `round(4 * 2)` = 8 device px. Under either
+    // reference's device-px reading it would be 4 here — half the gap for the same number, which is
+    // the incoherence ADR-0023 spends reference parity to avoid.
+    expect(p.spaced.cellW - p.base.cellW).toBe(8);
+
+    agrees(p.spaced);
+  });
+});
+
+// #578: the OPTION half. `create` runs once per page load, so `letterSpacing`/`lineHeight` passed
+// there are only reachable by booting with them — and the claim is specifically that they are applied
+// BEFORE the first fit, so the initial grid is computed at the consumer's cell rather than at the
+// renderer's default and then corrected. One `setLetterSpacing` later the two are indistinguishable,
+// which is why the probe snapshots the boot state before touching anything.
+test("letterSpacing / lineHeight given at create apply before the first fit (#578)", async ({
+  page,
+}) => {
+  await page.goto("/?letterSpacing=4&lineHeight=1.6");
+  await expect(page.getByRole("button", { name: "Letter spacing: 4px" })).toBeVisible();
+  const p = await page.evaluate(() => window.__spacingProbe!());
+
+  // The boot cell carries BOTH options — not the renderer's 9x19 default.
+  expect(p.boot.cellW).toBe(p.base.cellW + 4);
+  expect(p.boot.cellH).toBeGreaterThan(p.base.cellH);
+
+  // And the grid the page has been driving since load was computed at that cell: it agrees with
+  // itself, and it is the smaller grid the bigger cell implies rather than the default one.
+  agrees(p.boot);
+  expect(p.boot.cols).toBeLessThan(p.base.cols);
+  expect(p.boot.rows).toBeLessThan(p.base.rows);
+});
+
 // #606: `Terminal.dispose()` is end of life, and the renderer it was handed must stop with it. The
 // unit tests prove the widget *calls* dispose on a fake; this is the only place the consequence is
 // observable — the rAF loop is real and it is what repaints the canvas. Counted rather than sampled

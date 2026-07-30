@@ -86,7 +86,12 @@ In `docs/agents/reference-facts.md` — **linked, never restated**.
 
 ## Cross-cutting invariants
 
-**None — checked, not assumed (#606).** The rule this territory gained ("what a layer is handed
+- [the cell size is derived state](../invariant/cell-size-is-derived-state.md)
+  — `textareaCell` is a cached *decision* that outlives the geometry it was computed from, so a cell
+  change with a stationary cursor leaves the IME anchor stale (#578). It is a lifecycle fact rather
+  than a geometry one: the cache has no invalidation path.
+
+**No invariant originates here — checked, not assumed (#606).** The rule this territory gained ("what a layer is handed
 across a port, that layer ends") was tested for reach before being left here, because a fact that
 holds in N territories belongs in `invariant/` and is invisible from the other N-1 if it is not.
 

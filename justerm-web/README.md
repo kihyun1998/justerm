@@ -54,10 +54,20 @@ const term = new Terminal(source, renderer, {
   element: document.getElementById("term-container")!,
   input: { send: (intent) => myBackend.send(intent) },
   // Pixel -> cell is host policy too, so the widget asks for the geometry it needs.
+  // Every length is CSS px, because that is what `clientX`/`clientY` are — `renderer.cellSize()`
+  // is DEVICE px, so divide it by the ratio or the pointer lands on the wrong cell at dpr != 1.
   getGeometry: () => {
     const r = canvas.getBoundingClientRect();
-    const { width: cellWidth, height: cellHeight } = renderer.cellSize();
-    return { originX: r.left, originY: r.top, cellWidth, cellHeight, cols, rows };
+    const cell = renderer.cellSize(); // device px
+    const dpr = window.devicePixelRatio || 1;
+    return {
+      originX: r.left,
+      originY: r.top,
+      cellWidth: cell.width / dpr,
+      cellHeight: cell.height / dpr,
+      cols,
+      rows,
+    };
   },
 });
 ```
