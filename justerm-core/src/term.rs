@@ -325,6 +325,14 @@ pub const MIN_COLUMNS: usize = 2;
 /// published signature, and OSC 8's `id=` parameter (#635) lands here as a field without
 /// changing the return type again. Same shape as alacritty's `Hyperlink`, for the same
 /// reasons (`alacritty_terminal/src/term/cell.rs`).
+///
+/// **Link *identity* is deliberately not exposed yet.** Two OSC 8 opens of an identical
+/// URI are two links here, so `uri() == uri()` cannot answer "is this cell part of the
+/// same link as that one?" — an `Arc::ptr_eq` accessor would. It is left out because no
+/// consumer asks it today (nothing outside this crate's tests calls `link_at` at all),
+/// and unlike this type's *shape*, adding a method later is not a breaking change. The
+/// asymmetry decides it: shipping an accessor nobody uses is hard to undo, adding one
+/// when a caller appears is free.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Hyperlink {
     uri: std::sync::Arc<str>,
@@ -340,14 +348,6 @@ impl Hyperlink {
     /// consumer's policy (ADR-0017), the same way colour resolution is.
     pub fn uri(&self) -> &str {
         &self.uri
-    }
-
-    /// Are these the *same* declared link — one OSC 8 open — rather than two opens that
-    /// happen to carry equal text? Pointer identity, so it answers the question
-    /// `uri() == uri()` cannot: justerm deliberately keeps two opens of one URI distinct,
-    /// because merging them would override the grouping `id=` exists to express (#635).
-    pub fn is_same_link(&self, other: &Hyperlink) -> bool {
-        std::sync::Arc::ptr_eq(&self.uri, &other.uri)
     }
 }
 
@@ -3873,27 +3873,31 @@ mod tests {
         assert_send_sync::<Engine>();
     }
 
-    /// `Hyperlink::is_same_link` answers what `uri() == uri()` cannot.
+    /// Two OSC 8 opens of an identical URI are **two links**, not one.
     ///
-    /// Two OSC 8 opens of an identical URI are two links here, deliberately — merging
-    /// them would override the grouping `id=` exists to express (#635). So a consumer
-    /// asking "is this cell part of the same link as that one?" needs identity, and the
-    /// two answers genuinely differ: equal text, different link.
+    /// Deliberate, and the reason is #635: merging them would override the grouping the
+    /// application controls through `id=`, which is the one dedup xterm.js performs.
+    /// Asserted by allocation identity through the in-crate observer rather than through
+    /// a public accessor — the behaviour is real now, a consumer asking about it is not.
     #[test]
-    fn same_link_is_identity_not_equal_text() {
+    fn two_opens_of_one_uri_are_two_links() {
         let mut e = Engine::new(40, 2);
         // One open covering two cells, then a *separate* open of the very same URI.
         e.feed(b"]8;;https://example.com/xAB]8;;");
         e.feed(b"]8;;https://example.com/xC]8;;");
-        let a = e.link_at(0, 0).expect("A is linked");
-        let b = e.link_at(0, 1).expect("B is linked");
-        let c = e.link_at(0, 2).expect("C is linked");
 
-        assert_eq!(a.uri(), c.uri(), "the text is the same");
-        assert!(a.is_same_link(&b), "A and B are one open");
-        assert!(
-            !a.is_same_link(&c),
-            "…but C is a second open, and identity must say so — this is the              distinction #635's `id=` grouping is about",
+        let row = e.term.grid.row_ref(0);
+        let ptr = |c: usize| std::sync::Arc::as_ptr(row.link_at(c).expect("linked")) as *const u8;
+        assert_eq!(
+            e.link_at(0, 0).map(|h| h.uri().to_owned()),
+            e.link_at(0, 2).map(|h| h.uri().to_owned()),
+            "the text is the same",
+        );
+        assert_eq!(ptr(0), ptr(1), "A and B are one open, so one allocation");
+        assert_ne!(
+            ptr(0),
+            ptr(2),
+            "…but C is a second open — merging the two would override the distinction              `id=` exists to express (#635)",
         );
     }
 }

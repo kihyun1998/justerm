@@ -31,8 +31,12 @@ They share a name and almost nothing else.
 - **The consumer gets an owned handle, not a borrow.** `Engine::link_at` returns `Hyperlink` — a
   thin `Arc` wrapper — because a borrow into the row's map cannot outlive `&Engine`, and the caller
   that needs one (a hover handler, while output keeps arriving) would copy the string instead: 62.6 ns
-  against the handle's 17.9 ns. `Hyperlink::is_same_link` answers by identity what `uri() == uri()`
-  cannot, since two opens of one URI are deliberately two links.
+  against the handle's 17.9 ns.
+- **Two opens of one URI are two links, and nothing public can currently tell.** `uri() == uri()`
+  says "same" where the engine says "different", and the `Arc::ptr_eq` accessor that would answer
+  properly is deliberately unshipped — no consumer asks yet, and adding a method later is not a
+  breaking change where changing `Hyperlink`'s shape would be. Pinned in-crate by
+  `two_opens_of_one_uri_are_two_links`.
 - **The row is the unit of lifetime, which is why there is almost no reclamation code.** The URI dies
   with the last row holding it (row reuse, scrollback eviction, reflow dropping a row) — plus one
   explicit purge where a cell is blanked *in place* (`Row::purge_side_maps`), because there no row
