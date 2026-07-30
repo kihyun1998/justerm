@@ -939,9 +939,10 @@ impl Term {
         }
     }
 
-    /// The hyperlink-pool index at **screen** `(row, col)` (the live grid), or
-    /// `None` — flag-gated through the row's link map. Since #628 this **is** the URI:
-    /// there is no second call to resolve an index. Mirrors `grid().cell(row, col)`.
+    /// The hyperlink **URI** at **screen** `(row, col)` (the live grid), or `None` —
+    /// flag-gated through the row's link map. Since #628 the map holds the URI itself,
+    /// so there is no index and no second call to resolve one.
+    /// Mirrors `grid().cell(row, col)`.
     pub(crate) fn screen_link_at(&self, row: usize, col: usize) -> Option<&str> {
         self.grid.row_ref(row).link_at(col).map(|u| &**u)
     }

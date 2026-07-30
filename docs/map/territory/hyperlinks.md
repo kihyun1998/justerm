@@ -25,13 +25,25 @@ They share a name and almost nothing else.
 
 ## Design model
 
-- **A declared link is an index, not a string.** The cell carries `LINK_PRESENT` and the row's link
-  map holds a column-keyed index into a buffer-wide `hyperlink_pool` — so the same URI repeated
-  across a thousand cells costs one string.
+- **A declared link is a shared string, and it lives on the row.** The cell carries `LINK_PRESENT`
+  and the row's link map holds a column-keyed `Arc<str>` — so one OSC 8 open covering a thousand
+  cells is a thousand map entries and one allocation.
+- **The row is the unit of lifetime, which is why there is no reclamation code.** The URI dies with
+  the last row holding it (row reuse, scrollback eviction, reflow dropping a row). It was an index
+  into a buffer-wide `hyperlink_pool` until #628, and that pool was **never** reclaimed — the same
+  defect the combining map had and lost when #45 deleted `grapheme_pool`. Links kept it only because
+  #46 mirrored xterm's `_dataByLinkId` registry and ported the id-minting half without the delete
+  half.
+- **`Arc`, not inlining, is the one way links differ from combining marks.** A cluster is per-cell
+  and unique, so the sibling map stores it by value; a URI is shared across an open's cells, so
+  storing it by value would duplicate it per cell — the shape #621 measured at +171…403% on the wire
+  and rejected there for the same reason. `Rc` is not an option: `Engine` is `Send + Sync`.
 - **`LINK_PRESENT` occupies xterm's `HAS_EXTENDED` slot**, which is the sibling of the combining-mark
   bit: both are presence flags gating a row-keyed side map.
-- **The wire re-indexes per frame.** `hyperlink_pool` indices are buffer-global; a frame carries only
-  the URIs it needs, remapped to frame-local `link_table` positions. A consumer never sees the pool.
+- **The wire indexes per frame, and that half is unchanged.** A frame carries only the URIs it needs,
+  numbered into frame-local `link_table` positions — keyed by the `Arc`'s identity since #628, so one
+  open is one entry however many cells it covers. A consumer never sees an engine-side handle, and a
+  decoded `Span`'s `links` is a *frame-local* index that must never be fed back to the engine.
 - **Detection is the inverse arrangement.** The engine assembles the viewport's logical-line text plus
   a per-character cell map — it has the whole buffer and the consumer does not — and the consumer runs
   the regex and `new URL()` validation over that text, mapping matches back through the cells.
@@ -42,17 +54,24 @@ They share a name and almost nothing else.
 
 - `justerm-core/src/cell.rs` — `LINK_PRESENT`
 - `justerm-core/src/grid.rs` — `Links`, the row's column-keyed link map
-- `justerm-core/src/term.rs` — `hyperlink_pool`, `Term::hyperlink`, and the per-frame remap into
-  `link_table`
+- `justerm-core/src/term.rs` — `Term::current_link` and the per-frame remap into `link_table`
 - `justerm-core/src/serialize.rs` — `Frame`'s `link_table`
 - `justerm-web/src/links.ts` — the URL regex and validation policy, over
   [logical lines](logical-lines.md)
 
 ## Reference behaviour
 
-**None** in `docs/agents/reference-facts.md`. `LINK_PRESENT` is described as occupying xterm's
-`HAS_EXTENDED` slot — a concrete claim about another implementation's bit layout, in a comment, with
-no pinned row.
+[OSC 8 hyperlinks — where the URI lives, and what frees it](../../agents/reference-facts.md#osc-8-hyperlinks--where-the-uri-lives-and-what-frees-it-628635-verified-2026-07-30)
+— added by #628, which is when the area first needed them. Two questions with **different** answers:
+all three references free the storage (3:0, and justerm was the outlier until #628), while only
+xterm.js groups by `id=` (1:2, so #635 is a conformance gap against one reference, not a consensus).
+
+Read the section's own warning before citing it: taking only the first row of each reference gives
+*"they all keep a registry"*, which is how #46 arrived at a permanent pool — the reclamation half
+does not appear at the site where the id is minted.
+
+Still unpinned: `LINK_PRESENT` is described as occupying xterm's `HAS_EXTENDED` slot — a concrete
+claim about another implementation's bit layout, in a comment, with no row.
 
 ## Cross-cutting invariants
 
@@ -73,8 +92,12 @@ no pinned row.
 
 ## Known holes / open
 
-- **Zero governing records** for either path, including the pool-and-index design that makes repeated
-  URIs cheap.
+- **Zero governing records** for either path, including the row-owned `Arc` design that makes a
+  repeated URI cheap and bounds its lifetime.
+- **`id=` grouping is not honoured** (#635): an application saying "these two runs are the same link"
+  is not heard, so a link split across lines is two links to the consumer. Deferred at #26 and
+  recorded in `architecture.md` as "a later refinement"; the other unported half of the same xterm
+  function that #628 finished.
 - **Nothing states whether the two paths may overlap.** A cell inside a declared OSC 8 link is also
   text that the URL regex will match; which one a click follows is undefined by every artifact.
 - **The `HAS_EXTENDED` claim is unpinned**, and it is a statement about another project's bit layout.

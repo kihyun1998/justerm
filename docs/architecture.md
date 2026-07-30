@@ -608,8 +608,9 @@ Z"`, and a search across the wrap went from 1 hit to 0). It now lives on the
   cell; each move took it further from the cell and the last one removed the index entirely, because
   nothing ever interned these clusters for it to point at. [#6, #45, #621]
 - **OSC 8 hyperlinks ride the *same* per-row-map machinery, gated by the `LINK_PRESENT` bit.** The `Row`
-  carries a second `BTreeMap<col, hyperlink-pool index>` (the pool, `hyperlink_pool`, stays
-  global — only the per-column reference moved), gated by the cell's `LINK_PRESENT` bit, which reuses
+  carries a second `BTreeMap<col, Arc<str>>` holding **the URI itself** (#628 — it held an index
+  into a buffer-wide `hyperlink_pool` until then, and that pool was never reclaimed; `Arc` because
+  cells genuinely share a URI, which is the one way links differ from combining marks), gated by the cell's `LINK_PRESENT` bit, which reuses
   xterm's `BgFlags.HAS_EXTENDED` (`0x10000000`, bg bit 28) **exactly**. Carry/reflow/recycle treat it
   identically to combining (`Row::move_maps` re-keys both maps together; reflow threads both). Reads go
   through `Engine::link_at(row, col)` / `viewport_link_at` (the link is no longer on the `Cell`); the
@@ -713,12 +714,19 @@ Z"`, and a search across the wrap went from 1 hit to 0). It now lives on the
   cells and keeps its frame-local table, while a cluster is not and is now inlined (#621). OSC string terminator may be BEL or ST; vte consumes it and calls `osc_dispatch` once, so
   an OSC-terminating BEL is not double-counted as a bell. [#12]
 - **An OSC 8 hyperlink is ambient pen-like state stamped onto cells — not an event, and not closed by
-  an SGR reset.** `OSC 8 ; params ; URI` opens a link (the URI is interned into a `hyperlink_pool` and
-  becomes "current"); `OSC 8 ; ; ` (empty URI) closes it. Every glyph printed while open carries a
-  `Cell.link` index into the pool — both halves of a wide glyph, so a hover/selection over either
-  agrees. The index is plain `Copy` data, so it rides the cell through scroll/scrollback/reflow exactly
-  like the presence bit for a cluster, and it renumbers frame-local into the wire's `link_table` —
-  which, unlike the cluster's vanished side-table, is still there and still interned (#621).
+  an SGR reset.** `OSC 8 ; params ; URI` opens a link (one `Arc<str>` per open, shared by that open's cells and
+  becomes "current"); `OSC 8 ; ; ` (empty URI) closes it. Every glyph printed while open is stamped
+  into the row's link map — both halves of a wide glyph, so a hover/selection over either agrees.
+  The cell carries only the `LINK_PRESENT` bit; the handle rides *the row*, which is the unit that
+  moves through scroll/scrollback/reflow, and that is what makes the URI die with the last row
+  holding it (#628 — there is no buffer-wide pool to reclaim, exactly as #45 arranged for combining
+  marks). Per frame it is renumbered into the wire's `link_table` — which, unlike the cluster's
+  vanished side-table, is still there and still interned (#621), keyed here by the `Arc`'s identity
+  so one open is one entry however many cells it covers.
+
+  **Two opens of an identical URI stay two links, deliberately.** Merging them would override the
+  distinction the application controls through OSC 8's `id=` parameter — the one dedup xterm.js
+  actually performs, and which justerm does not yet honour (#635).
   The catch: a hyperlink is **orthogonal to SGR** — `CSI 0 m` (reset attributes) must *not* close it;
   only an empty-URI OSC 8 does (and it persists across line-feeds until then). It is cell state, not a
   point-in-time event, which is why it is here and not on the `drain_events` surface (alacritty agrees —
