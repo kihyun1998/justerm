@@ -42,16 +42,28 @@ a CSS box and reads the grid back, rather than asking for 80×24 and being given
 
 ## Reference behaviour
 
-**None** in `docs/agents/reference-facts.md`, although the module names
-`FitAddon.proposeDimensions` as its model. An analog claim about a named reference, unpinned — and
-`proposeDimensions` is a function whose rounding behaviour is exactly the kind of detail that
-diverges quietly.
+In `docs/agents/reference-facts.md` — **linked, never restated**.
+
+- [Who re-fits after a spacing change](../../agents/reference-facts.md) § *#578* — the consumer does,
+  and it calls `resize()` rather than the fit; xterm draws the same line, alacritty differs because it
+  owns its OS window
+- [When is a resize redundant — box, grid, or cell](../../agents/reference-facts.md) § *#632* — the
+  three references **do not agree on one shape** (alacritty widens one key to box+cell; ghostty
+  dedupes the box and leaves its cell path undeduped; xterm keeps no fit-side memory and dedupes at
+  the sink). So "the reference does X" cannot settle a question here; each row carries the constraint
+  that makes its shape available, and ours converges with alacritty because `ResizePort` is published
+  and write-only
+
+Still unpinned: `proposeDimensions`'s own **rounding** behaviour against `FitAddon`'s, which the module
+names as its model — exactly the kind of detail that diverges quietly.
 
 ## Cross-cutting invariants
 
 - [the cell size is derived state](../invariant/cell-size-is-derived-state.md)
-  — the largest consumer of the cell, and the one whose `cols`/`rows` dedupe cannot express "the
-  cell moved but the grid did not" (#578)
+  — the largest consumer of the cell. Its dedupe could not express *"the cell moved but the grid did
+  not"* (#578) until #632 widened the key to carry the cell alongside the proposal. The residual is
+  recorded there: the cell is a **proxy** for "a grid write bypassed this controller", so the key is
+  only as complete as that set of writers
 
 ## Blast radius
 
@@ -72,7 +84,18 @@ diverges quietly.
 - **The silent `MIN_COLUMNS` clamp is invisible here.** Fit can propose one column; the engine
   returns two, and nothing in this territory says so — a consumer must read the width back from the
   frame.
-- **`setLetterSpacing` / `setLineHeight` are unreachable from the widget**, so two inputs that change
-  the cell size cannot be driven by the consumer that owns the box. Tracked: #578.
+- ~~`setLetterSpacing` / `setLineHeight` are unreachable from the widget.~~ Closed by **#578** — both
+  are wired, which is what took the count of setters that can move the cell from two to four and made
+  the two stale readers below reachable.
+- **A cell change inside the debounce window still proposes against the pre-change cell.** `latest` is
+  a snapshot taken when the `ResizeObserver` fired, and the flush replays it 100 ms later — so a
+  spacing change landing in between emits a grid derived from the *old* cell and stores that cell as
+  the key. It self-heals on the next observer fire, and there may not be one. Found by #632's
+  completeness pass; the cure is to read the geometry at flush time rather than replay a snapshot,
+  which is what xterm's `fit()` does by construction.
+- **The key remembers what was *proposed*, not what the renderer *adopted*.** A drawing-buffer clamp
+  (#339) can make the renderer take less than it was asked for, and then the remembered pair describes
+  a grid nobody holds — the same defect #632 fixed, one axis over. `terminalSize()` is the documented
+  truth; the controller never reads it, because `ResizePort` is write-only.
 - **No `matchMedia` listener watches for resolution changes**, so moving a window between displays
   leaves the device-pixel ratio stale until something else triggers a fit. Tracked: #325.

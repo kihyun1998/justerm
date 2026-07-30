@@ -504,6 +504,28 @@ leaving the grid identical (guaranteed once the `MINIMUM_COLS`/`MINIMUM_ROWS` fl
 grid-keyed dedupe cannot express *"the cell moved but the grid did not"*, so routing the re-fit through
 it would drop exactly the flush that resizes the canvas box.
 
+> ⚠ **Corrected 2026-07-30 (#632).** The paragraph above is kept as the record of what was believed,
+> but its mechanism is no longer live: the dedupe key now carries the cell, so the flush is not
+> dropped. The Sketch is still wrong, on a reason that was there all along and is **not** a dedupe
+> question — `ResizePort.resize(cols, rows)` carries a **grid**, while the canvas display box is set
+> only inside `JustermRenderer.resize(cssWidth, cssHeight)`, from a **box**. No chain from
+> `FitController` to that method exists in this repo. Do not cite the dedupe half as live prior art.
+
+## When is a resize redundant — box, grid, or cell (#632, verified 2026-07-30)
+
+Scoped to *when a resize may be skipped*, which is a different question from the section above (*who*
+re-fits). The headline is that **the three references do not agree on one shape**, so "the reference
+does X" cannot settle it — each row says which constraint makes its shape available.
+
+| Fact | Reference | Site |
+|---|---|---|
+| **Prior art for keying a resize dedupe on the CELL exists.** `handle_update` coalesces both input families, then runs **two** dedupes over the candidate: a grid-keyed one (`screen_lines`/`columns`) that resizes the PTY, the terminal and the damage tracker, and a **whole-`SizeInfo`** one that queues the renderer update. The memory is then assigned from the candidate — a live-updated snapshot, not state read back from a sink | alacritty | `alacritty/src/display/mod.rs:713-715` (grid), `:728` (full `new_size != self.size_info`), `:736` (the store) |
+| …and the cell is in that second key **by construction**: `SizeInfo` derives `PartialEq` and carries `cell_width` / `cell_height` among its fields | alacritty | `alacritty/src/display/mod.rs:144` (derive), `:153`, `:156` |
+| ⚠ **ghostty splits the two obligations instead of widening one key** — so its box-keyed dedupe is valid only *because* the cell has its own undeduped entry point. Do not read its box dedupe as permission to dedupe a cell change | ghostty | `src/Surface.zig:2495` (box dedupe, *"if the screen size didn't change, then our grid size could not have changed"*), `:2411` (`setCellSize`, no dedupe) |
+| **xterm.js keeps no fit-side memory at all** — its executed dedupe is at the sink (`Terminal.resize` vs `this.cols`/`this.rows`), which is available to it because the dedupe lives *on* the thing being resized. justerm's `ResizePort` is published and **write-only**, so that shape is unavailable — the reason the widened key is a proxy rather than the real thing | xterm.js | `addons/addon-fit/src/FitAddon.ts:47-54`; `browser/CoreBrowserTerminal.ts:1055-1062` |
+| **Direction: justerm-web converges with alacritty**, not with xterm. The `(cols, rows, cellWidth, cellHeight)` key is a live-updated snapshot widened to every input whose change can require an emit — alacritty's shape one layer up. This layer does **not** diverge alone, and there is no family parity fix to track | justerm-web | `justerm-web/src/fit.ts` `FitController.last` |
+| ⚠ **In-repo, the shape xterm uses does exist** — `JustermRenderer`'s `lastFrameGrid` compares against live `backend.cols()`/`rows()`. Cite *that* as the local example of "dedupe against authoritative live state", not `FitController` | justerm-web | `justerm-web/src/justerm-renderer.ts` `lastFrameGrid` |
+
 ## Background transparency — the shape of the knob (#577, verified 2026-07-29)
 
 The file had **zero** rows on transparency before this, though `set_bg_alpha` has existed since #298

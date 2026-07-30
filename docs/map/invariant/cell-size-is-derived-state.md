@@ -60,10 +60,15 @@ renderer keeps drawing correctly — it is the consumer's arithmetic that is wro
   cache key is the cell coordinate; the thing that went stale is the geometry. Fixed by **#631**, and
   the shape it chose is in the next section — measured before the fix: at row 5, an anchor of 95px
   against a correct 150px.
-- **Deduped flush.** `FitController` returns early when the proposed `cols`/`rows` match the last
-  pair, so a cell change that leaves the grid identical never reaches `resize()` — and `resize()` is
-  the only place the canvas CSS box is set. The browser then scales a drawing buffer that no longer
-  matches its display box.
+- **Deduped flush.** `FitController` returned early when the proposed `cols`/`rows` matched the last
+  pair, so a cell change that leaves the grid identical never reached `resize()` — and `resize()` is
+  the only place the canvas CSS box is set (`justerm-renderer.ts`, the only two `canvas.style.width/
+  height` writes in the package). The browser then scaled a drawing buffer that no longer matched its
+  display box. Worse and less obvious, the stale pair also **suppressed a later real resize**: once it
+  described a grid nobody held, any container resize that happened to propose it was dropped.
+  Fixed by **#632** — the key now carries the cell as well. Measured before the fix: a cell change
+  from 19px to 30px left the memory at `88x31` while the renderer held `88x20`, and a resize to a
+  viewport proposing `88x31` again never reached the port.
 - **Wrong unit.** The published README built `CellGeometry` from `renderer.cellSize()` (device px) and
   fed it CSS-px `clientX`/`clientY`, so every click was off by the device pixel ratio on a Retina
   display (#578). This one is not even time-dependent — it was wrong from the first click.
@@ -85,9 +90,19 @@ how badly it can be wrong** (#631, 2026-07-30):
   the cache is still stale between those moments, deliberately; the claim is that nothing reads it
   there. That makes the claim falsifiable by a *new reader*, which is the thing to check before
   adding one.
-- **Key the cache on authoritative live state.** The reference's executed dedupe prior art
-  (xterm.js `CoreBrowserTerminal.resize` compares against `this.cols`/`this.rows`, never a shadow
-  copy). Open for `FitController`, whose `lastCols`/`lastRows` *are* a shadow copy — see the spine.
+- **Key the cache on everything the value derives from.** A cache over a derived quantity must carry
+  *all* of its inputs, not the half the output happens to expose. `FitController` kept only the
+  proposal (`cols`/`rows`) and not the cell it came from, so the same pair from a different cell read
+  as "nothing happened" (#632). The key now carries both.
+  **The stronger form, and why it was not taken:** the reference's executed dedupe prior art holds no
+  copy at all — xterm.js's `CoreBrowserTerminal.resize` compares against `this.cols`/`this.rows`,
+  i.e. authoritative live state, because the dedupe lives *at* the thing being resized. Ours cannot:
+  `ResizePort` is write-only and published, so moving the dedupe there would hand every consumer a new
+  idempotency obligation over `Engine::resize` + SIGWINCH. **So the widened key is a proxy** — what
+  really invalidates it is any grid write that bypasses the controller, and the cell is merely the one
+  such write that exists today (#578's setters). An out-of-band `renderer.resize()` at an *unchanged*
+  cell would still leave it stale. Revisit if `ResizePort` ever becomes readable, or a second
+  out-of-band writer appears.
 
 **Why "just drop the cache" is not universally right here, even though every reference does it.**
 Their cell is a **stored field they push to** (`dimensions.css.cell`, `size.cell`, `size_info`);

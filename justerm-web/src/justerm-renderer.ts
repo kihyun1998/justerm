@@ -331,17 +331,36 @@ export function decorationWire(rects: readonly DecorationRect[]): Uint32Array {
  * columns, so a 1-column proposal is a grid it can never be in. Driving the engine at 1 while it
  * holds 2 puts every span of the frame outside this grid and the surface silently stops updating.
  * The clamp is pull-only on the core side — a consumer reads the width back, it is not told — so
- * agreeing with the floor here is what keeps the two in step. */
+ * agreeing with the floor here is what keeps the two in step.
+ *
+ * `undefined` when there is nothing to propose, matching what `proposeDimensions` refuses (#632): an
+ * **unmeasured cell** (either axis `0`) and a **non-finite box** (`NaN` from a detached or unlaid-out
+ * element, `Infinity` from a degenerate one). Refusing is deliberate and is not the same as clamping —
+ * a zero-sized *box* still yields the floors, because a container that measured as empty is a real
+ * answer, while a non-finite one means *"not measured"*, exactly when the terminal must not be shrunk.
+ * The floor agreement above and this refusal are two axes of the same invariant, and this axis was
+ * missing: `Math.max(2, Math.floor(NaN / 8))` is `NaN`, so `backend.resize(NaN)` coerced to `0` and the
+ * terminal came back 1×1 — through the path that actually reaches the renderer, while the guarded path
+ * was the one nothing calls.
+ *
+ * **One check covers both conditions, and that is measured rather than assumed.** A separate
+ * `cellCss* === 0` guard was written first, mirroring the sibling's, and a mutation test showed it
+ * could not fail: a zero cell makes the quotient `±Infinity` (or `NaN` for a zero box over a zero
+ * cell), so `Number.isFinite` already rejects every one of those inputs. It was removed rather than
+ * kept for symmetry — a branch that cannot change an outcome is untestable by construction, and the
+ * test below asserts the zero-cell *behaviour*, which is the part that must hold. (The sibling in
+ * `fit.ts` carries the same redundancy, inherited from xterm's `cell.width === 0` guard; left alone
+ * because it is working code and changing it would alter nothing.) */
 export function gridForBox(
   cssWidth: number,
   cssHeight: number,
   cellCssWidth: number,
   cellCssHeight: number,
-): { cols: number; rows: number } {
-  return {
-    cols: Math.max(MINIMUM_COLS, Math.floor(cssWidth / cellCssWidth)),
-    rows: Math.max(MINIMUM_ROWS, Math.floor(cssHeight / cellCssHeight)),
-  };
+): { cols: number; rows: number } | undefined {
+  const cols = Math.max(MINIMUM_COLS, Math.floor(cssWidth / cellCssWidth));
+  const rows = Math.max(MINIMUM_ROWS, Math.floor(cssHeight / cellCssHeight));
+  if (!Number.isFinite(cols) || !Number.isFinite(rows)) return undefined;
+  return { cols, rows };
 }
 
 /** What a frame says to do with the cursor, as a pure decision (no blink/state): `none` = the
@@ -609,13 +628,17 @@ export class JustermRenderer implements Renderer {
    * re-sizes its own drawing buffer to the new cell, so the canvas display box the adapter set from
    * `cssWidth()`/`cssHeight()` immediately describes a buffer that no longer exists.
    *
-   * **Call this {@link resize} directly — not `FitController.fit()`**, even if you hold one. That
-   * controller skips its flush when the proposed `cols`/`rows` match the last ones it saw, which is
-   * the right behaviour for a container resize and the wrong one here: a spacing change can move the
-   * cell while leaving the grid identical (guaranteed once the `MINIMUM_COLS`/`MINIMUM_ROWS` floors
-   * bind), and then the deduped flush never reaches {@link resize}, so the canvas box keeps
-   * describing the replaced buffer and the browser scales it. A grid-keyed dedupe structurally cannot
-   * express "the cell moved but the grid did not".
+   * **Call this {@link resize} directly — not `FitController.fit()`**, even if you hold one. The
+   * reason is a *signature*, not a bug: `ResizePort.resize(cols, rows)` carries a **grid**, and the
+   * canvas display box is set only here, from a **box**. So a flush reaches the consumer's port and
+   * stops there; nothing in that chain touches `canvas.style.width/height`. Secondarily, the flush is
+   * debounced (100 ms by default), which is 100 ms of displaying a buffer that no longer exists.
+   *
+   * Until #632 there was a third reason and it was the one written here: the controller deduped on
+   * `cols`/`rows` alone, so a cell change that left the grid identical was dropped outright.
+   * **That one is fixed** — the key now carries the cell too, so `FitController` is safe to keep
+   * using for container resizes across a spacing change. It still is not the thing that re-sizes
+   * this canvas.
    *
    * xterm.js draws the same line, which is why this is a shape rather than a preference: an option
    * change there re-lays out at the *current* grid (`RenderService.ts` `handleResize(cols, rows)`) and
@@ -625,8 +648,12 @@ export class JustermRenderer implements Renderer {
    * **Read the cell back rather than deriving it from what you passed.** `adopt_spacing` can hand you
    * something other than what you asked for in three separate ways, and none of them reports an error:
    * a `lineHeight` whose cell the atlas cannot hold is *shrunk* (#359); a failed atlas re-bake rolls
-   * the whole change back to the previous spacing; and while the GL context is lost the policy is
-   * stored but the cell does not move at all until `webglcontextrestored`. {@link cellSize} and
+   * the whole change back to the previous spacing; and while the GL context is lost the **cell moves
+   * immediately but the buffer does not** — `adopt_spacing` runs `recompute_cell()` *before* its
+   * lost-context guard (`webgl.rs`), so {@link cellSize} reports the new cell while the atlas re-bake
+   * and the drawing-buffer resize wait for `webglcontextrestored`. (This sentence used to say the cell
+   * "does not move at all", which was false against that ordering — corrected in #632, whose own
+   * reasoning depended on it.) {@link cellSize} and
    * {@link terminalSize} are the truth afterwards — and `terminalSize` matters as much as the cell,
    * because the renderer's internal re-size adopts what the drawing buffer will actually grant (#339),
    * so a large enough cell shrinks the *grid* as well.
@@ -696,12 +723,17 @@ export class JustermRenderer implements Renderer {
    * from what the renderer reports it must be (`cssWidth`/`cssHeight`) — forget that and the
    * device-px buffer displays at twice its size on a Retina screen. */
   resize(cssWidth: number, cssHeight: number): void {
-    const { cols, rows } = gridForBox(
+    const grid = gridForBox(
       cssWidth,
       cssHeight,
       this.backend.cssCellWidth(),
       this.backend.cssCellHeight(),
     );
+    // Nothing to propose — an unmeasured cell or a non-finite box (#632). Leave the renderer and the
+    // canvas box exactly as they are: resizing to a guess is how an unlaid-out container turned into
+    // a 1x1 terminal, and the CSS box below must not describe a buffer we did not ask for.
+    if (!grid) return;
+    const { cols, rows } = grid;
     this.backend.resize(cols, rows);
     this.canvas.style.width = `${this.backend.cssWidth()}px`;
     this.canvas.style.height = `${this.backend.cssHeight()}px`;
