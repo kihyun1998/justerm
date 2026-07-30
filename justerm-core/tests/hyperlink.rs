@@ -18,14 +18,17 @@ fn cells_under_open_link_carry_the_uri() {
     t.feed(CLOSE);
     assert_eq!(t.grid().cell(0, 0).c(), 'a');
     assert_eq!(
-        t.link_at(0, 0),
+        t.link_at(0, 0).as_ref().map(|h| h.uri()),
         Some("https://example.com"),
         "'a' should carry the link",
     );
     // Both cells of one link resolve to the same URI — and since #628 they share the
     // same allocation rather than an index into a table, which `grid.rs`'s
     // `ext_attrs_round_trip_from_one_column_to_another` pins by pointer identity.
-    assert_eq!(t.link_at(0, 1), Some("https://example.com"));
+    assert_eq!(
+        t.link_at(0, 1).as_ref().map(|h| h.uri()),
+        Some("https://example.com")
+    );
 }
 
 #[test]
@@ -77,7 +80,7 @@ fn link_survives_scroll_into_scrollback() {
     t.scroll_up(1);
     assert_eq!(t.viewport_line(0)[0].c(), 'L');
     assert_eq!(
-        t.viewport_link_at(0, 0),
+        t.viewport_link_at(0, 0).as_ref().map(|h| h.uri()),
         Some("https://example.com"),
         "link survives scroll into scrollback",
     );
@@ -132,7 +135,7 @@ fn link_follows_an_insert_shift() {
     t.feed(b"\x1b[2@"); // ICH 2 -> 'L' shifts to col2
     assert_eq!(t.grid().cell(0, 2).c(), 'L');
     assert_eq!(
-        t.link_at(0, 2),
+        t.link_at(0, 2).as_ref().map(|h| h.uri()),
         Some("https://example.com"),
         "link followed the insert shift"
     );
@@ -151,7 +154,7 @@ fn link_follows_a_delete_shift() {
     t.feed(b"\x1b[2P"); // DCH 2 -> 'L' shifts to col0
     assert_eq!(t.grid().cell(0, 0).c(), 'L');
     assert_eq!(
-        t.link_at(0, 0),
+        t.link_at(0, 0).as_ref().map(|h| h.uri()),
         Some("https://example.com"),
         "link followed the delete shift"
     );
@@ -166,7 +169,7 @@ fn link_survives_resize_reflow() {
     t.feed(CLOSE);
     t.resize(3, 2); // column change -> reflow
     assert_eq!(
-        t.link_at(0, 0),
+        t.link_at(0, 0).as_ref().map(|h| h.uri()),
         Some("https://example.com"),
         "link survives reflow"
     );

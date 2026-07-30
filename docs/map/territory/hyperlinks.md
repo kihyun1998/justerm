@@ -28,8 +28,15 @@ They share a name and almost nothing else.
 - **A declared link is a shared string, and it lives on the row.** The cell carries `LINK_PRESENT`
   and the row's link map holds a column-keyed `Arc<str>` — so one OSC 8 open covering a thousand
   cells is a thousand map entries and one allocation.
-- **The row is the unit of lifetime, which is why there is no reclamation code.** The URI dies with
-  the last row holding it (row reuse, scrollback eviction, reflow dropping a row). It was an index
+- **The consumer gets an owned handle, not a borrow.** `Engine::link_at` returns `Hyperlink` — a
+  thin `Arc` wrapper — because a borrow into the row's map cannot outlive `&Engine`, and the caller
+  that needs one (a hover handler, while output keeps arriving) would copy the string instead: 62.6 ns
+  against the handle's 17.9 ns. `Hyperlink::is_same_link` answers by identity what `uri() == uri()`
+  cannot, since two opens of one URI are deliberately two links.
+- **The row is the unit of lifetime, which is why there is almost no reclamation code.** The URI dies
+  with the last row holding it (row reuse, scrollback eviction, reflow dropping a row) — plus one
+  explicit purge where a cell is blanked *in place* (`Row::purge_side_maps`), because there no row
+  event fires and the map would go on owning the string behind a cleared bit. It was an index
   into a buffer-wide `hyperlink_pool` until #628, and that pool was **never** reclaimed — the same
   defect the combining map had and lost when #45 deleted `grapheme_pool`. Links kept it only because
   #46 mirrored xterm's `_dataByLinkId` registry and ported the id-minting half without the delete

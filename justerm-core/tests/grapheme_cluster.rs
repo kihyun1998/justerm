@@ -343,12 +343,12 @@ fn mode_2027_relocation_carries_the_extended_attrs_to_both_halves() {
     assert!(t.grid().cell(1, 1).is_wide_spacer(), "its spacer");
 
     assert_eq!(
-        t.link_at(1, 0),
+        t.link_at(1, 0).as_ref().map(|h| h.uri()),
         Some("https://example.com"),
         "the hyperlink rode the relocation",
     );
     assert_eq!(
-        t.link_at(1, 1),
+        t.link_at(1, 1).as_ref().map(|h| h.uri()),
         Some("https://example.com"),
         "both halves agree on the link"
     );
@@ -367,7 +367,10 @@ fn mode_2027_relocation_carries_the_extended_attrs_to_both_halves() {
     assert_eq!(t.link_at(0, 1), None, "vacated column keeps no link");
     assert_eq!(t.underline_color_at(0, 1), Color::Default);
     // …and 'X', printed under the same pen, is untouched.
-    assert_eq!(t.link_at(0, 0), Some("https://example.com"));
+    assert_eq!(
+        t.link_at(0, 0).as_ref().map(|h| h.uri()),
+        Some("https://example.com")
+    );
     // The cluster itself still survives the relocation (#303).
     assert_eq!(t.accessible_text().trim_end(), "X\u{25B6}\u{FE0F}");
 }

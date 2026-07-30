@@ -90,13 +90,13 @@ fn a_still_open_hyperlink_and_underline_colour_reach_the_wrapped_column() {
     t.feed("\u{D55C}".as_bytes()); // at col 2 via pending-wrap? no — 'ab' leaves the cursor at col 2
 
     assert_eq!(
-        t.link_at(0, 2),
+        t.link_at(0, 2).as_ref().map(|h| h.uri()),
         Some("https://example.com"),
         "the open link reached the vacated column",
     );
     assert_eq!(t.underline_color_at(0, 2), Color::Indexed(1));
     assert_eq!(
-        t.link_at(0, 0),
+        t.link_at(0, 0).as_ref().map(|h| h.uri()),
         Some("https://example.com"),
         "same run as the text before it"
     );

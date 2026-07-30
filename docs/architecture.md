@@ -613,8 +613,14 @@ Z"`, and a search across the wrap went from 1 hit to 0). It now lives on the
   cells genuinely share a URI, which is the one way links differ from combining marks), gated by the cell's `LINK_PRESENT` bit, which reuses
   xterm's `BgFlags.HAS_EXTENDED` (`0x10000000`, bg bit 28) **exactly**. Carry/reflow/recycle treat it
   identically to combining (`Row::move_maps` re-keys both maps together; reflow threads both). Reads go
-  through `Engine::link_at(row, col)` / `viewport_link_at` (the link is no longer on the `Cell`); the
-  decoded index rides `Span.links`. With this `Cell` is **12 bytes** — three packed `u32`, no `Option`
+  through `Engine::link_at(row, col)` / `viewport_link_at`, which hand back an **owned `Hyperlink`**
+  rather than a borrow: the URI lives in the row's map, so a `&str` would be tied to `&Engine` and a
+  hover handler could not hold it across the next `feed()`. Measured — the borrow reads at 0.75 ns but
+  cannot be kept, and the caller's workaround (copying the string) costs 62.6 ns against the handle's
+  17.9 ns, so the borrow saves nothing and moves a larger cost outward. A struct rather than a bare
+  `Arc<str>` keeps `Arc` out of the published signature and gives `id=` (#635) somewhere to land
+  without changing the return type again; alacritty's `Hyperlink` is the same shape for the same
+  reasons. The decoded index rides `Span.links`. With this `Cell` is **12 bytes** — three packed `u32`, no `Option`
   field (the #43 epic target, matching xterm.js's `BufferLine` cell). [#26, #46]
 - **Underline colour (SGR 58) rides the *same* machinery — a third per-row map, gated by its own
   `UCOLOR_PRESENT` bit (#520).** A cell that draws a coloured underline stores a `Color` reference in

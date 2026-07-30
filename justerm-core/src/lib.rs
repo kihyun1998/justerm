@@ -37,7 +37,7 @@ pub use serialize::{
     MarkerPosition, Overlay, Span, WIRE_VERSION, decode, encode, encode_cell_record, encode_color,
 };
 
-pub use term::{CommandLine, MAX_COLUMNS, MAX_ROWS, MIN_COLUMNS, Term};
+pub use term::{CommandLine, Hyperlink, MAX_COLUMNS, MAX_ROWS, MIN_COLUMNS, Term};
 
 use vte::Parser;
 
@@ -169,13 +169,19 @@ impl Engine {
     /// **One call, not two, since #628.** This returned a `NonZeroU32` index that a
     /// second method resolved against a buffer-wide pool; the pool is gone (it was never
     /// reclaimed, and nothing interned across opens that a shared `Arc` does not), so
-    /// there is no index left to hand out. The borrow lives as long as the row does.
+    /// there is no index left to hand out.
+    ///
+    /// **Owned, not borrowed** — a `&str` into the row's map would be tied to `&Engine`,
+    /// so a hover handler could not keep it across the next [`Engine::feed`]. Measured:
+    /// the borrow reads at 0.75 ns but cannot be held at all, and the caller's workaround
+    /// (copying the string) costs 62.6 ns against this handle's 17.9 ns. See
+    /// [`Hyperlink`].
     ///
     /// Do **not** confuse this with a decoded `Span`'s `links`, which is a *frame-local*
     /// index into that frame's `link_table` and belongs to the wire, not to the engine.
     /// The old two-call form invited exactly that mix-up and its doc-comment recommended
     /// it: the two index spaces coincide only when a frame carries a single link.
-    pub fn link_at(&self, row: usize, col: usize) -> Option<&str> {
+    pub fn link_at(&self, row: usize, col: usize) -> Option<Hyperlink> {
         self.term.screen_link_at(row, col)
     }
 
@@ -193,7 +199,7 @@ impl Engine {
     /// including scrollback at the current scroll, same coordinates as
     /// [`Engine::viewport_line`] — or `None`. Mirror of [`Engine::link_at`], including
     /// its #628 note about the vanished index.
-    pub fn viewport_link_at(&self, row: usize, col: usize) -> Option<&str> {
+    pub fn viewport_link_at(&self, row: usize, col: usize) -> Option<Hyperlink> {
         self.term.viewport_link_at(row, col)
     }
 
