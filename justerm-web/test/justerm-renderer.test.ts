@@ -211,8 +211,8 @@ describe("gridForBox", () => {
 
   it("floors a fractional-DPR cell size the same way", () => {
     // 16.5 CSS px/cell (33 device px at dpr 2) — 100 cols fit in 1650, 99 in a 1648 box.
-    expect(gridForBox(1650, 100, 16.5, 33).cols).toBe(100);
-    expect(gridForBox(1648, 100, 16.5, 33).cols).toBe(99);
+    expect(gridForBox(1650, 100, 16.5, 33)?.cols).toBe(100);
+    expect(gridForBox(1648, 100, 16.5, 33)?.cols).toBe(99);
   });
 
   it("floors at the engine's minimum grid, not at one cell", () => {
@@ -237,7 +237,47 @@ describe("gridForBox", () => {
       scrollbarWidth: 0,
       scrollback: 0,
     });
-    expect(gridForBox(3, 3, 8, 16).cols).toBe(fitted?.cols);
+    expect(gridForBox(3, 3, 8, 16)?.cols).toBe(fitted?.cols);
+  });
+
+  // The SAME invariant on its other axis (#632). `proposeDimensions` guards an unmeasured cell and a
+  // non-finite box and returns `undefined` — deliberately, because a non-finite box means "not
+  // measured", exactly when the terminal must NOT be shrunk. `gridForBox` had neither guard, and it
+  // is the path that actually reaches the renderer: `Math.max(2, Math.floor(NaN / 8))` is `NaN`, so
+  // `backend.resize(NaN)` coerced to 0 and came back as a 1x1 terminal.
+  const asFit = (w: number, h: number, cw: number, ch: number) =>
+    proposeDimensions({
+      parentWidth: w,
+      parentHeight: h,
+      cellWidth: cw,
+      cellHeight: ch,
+      padding: { top: 0, right: 0, bottom: 0, left: 0 },
+      scrollbarWidth: 0,
+      scrollback: 0,
+    });
+
+  it("proposes nothing for an unmeasured cell, like the fit path", () => {
+    expect(gridForBox(800, 240, 0, 16)).toBeUndefined();
+    expect(gridForBox(800, 240, 8, 0)).toBeUndefined();
+    expect(asFit(800, 240, 0, 16)).toBeUndefined(); // the invariant, asserted as agreement
+    expect(asFit(800, 240, 8, 0)).toBeUndefined();
+  });
+
+  it("proposes nothing for a non-finite box, like the fit path", () => {
+    expect(gridForBox(NaN, 240, 8, 16)).toBeUndefined();
+    expect(gridForBox(800, NaN, 8, 16)).toBeUndefined();
+    expect(gridForBox(Infinity, 240, 8, 16)).toBeUndefined();
+    expect(asFit(NaN, 240, 8, 16)).toBeUndefined();
+    expect(asFit(800, NaN, 8, 16)).toBeUndefined();
+    expect(asFit(Infinity, 240, 8, 16)).toBeUndefined();
+  });
+
+  // THE SIDE CONDITION: a zero-sized BOX is not an unmeasured one. Both paths clamp it to the floors
+  // rather than refusing, so the new guards cannot have been widened into "any degenerate input
+  // refuses" — which would silently shrink a terminal whose container has not been laid out yet.
+  it("still clamps a zero-sized box to the floors on both paths", () => {
+    expect(gridForBox(0, 0, 8, 16)).toEqual({ cols: MINIMUM_COLS, rows: 1 });
+    expect(asFit(0, 0, 8, 16)).toEqual({ cols: MINIMUM_COLS, rows: 1 });
   });
 });
 

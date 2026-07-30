@@ -59,6 +59,12 @@ export interface Dimensions {
  * yields 2. A consumer driving the engine at 1 while it holds 2 puts every span of the frame
  * outside the renderer's grid, and the surface stops updating.
  *
+ * **That was one axis of the agreement; the other was found later (#632).** This path also *refuses*
+ * (`undefined`) for an unmeasured cell or a non-finite box, and `gridForBox` did not — so the path
+ * that actually reaches the renderer turned an unlaid-out container into a 1×1 terminal while the
+ * guarded path was the one nothing calls. Both now refuse. When adding a third box→grid path, check
+ * **both** axes: the floor and the refusal.
+ *
  * Hand-mirrored, like the wasm getters in `types.ts`: the core constant is Rust and does not
  * cross the wire. If core ever raises its floor, this is the line that must follow.
  */

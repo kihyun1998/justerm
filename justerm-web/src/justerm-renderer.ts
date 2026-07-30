@@ -331,17 +331,36 @@ export function decorationWire(rects: readonly DecorationRect[]): Uint32Array {
  * columns, so a 1-column proposal is a grid it can never be in. Driving the engine at 1 while it
  * holds 2 puts every span of the frame outside this grid and the surface silently stops updating.
  * The clamp is pull-only on the core side — a consumer reads the width back, it is not told — so
- * agreeing with the floor here is what keeps the two in step. */
+ * agreeing with the floor here is what keeps the two in step.
+ *
+ * `undefined` when there is nothing to propose, matching what `proposeDimensions` refuses (#632): an
+ * **unmeasured cell** (either axis `0`) and a **non-finite box** (`NaN` from a detached or unlaid-out
+ * element, `Infinity` from a degenerate one). Refusing is deliberate and is not the same as clamping —
+ * a zero-sized *box* still yields the floors, because a container that measured as empty is a real
+ * answer, while a non-finite one means *"not measured"*, exactly when the terminal must not be shrunk.
+ * The floor agreement above and this refusal are two axes of the same invariant, and this axis was
+ * missing: `Math.max(2, Math.floor(NaN / 8))` is `NaN`, so `backend.resize(NaN)` coerced to `0` and the
+ * terminal came back 1×1 — through the path that actually reaches the renderer, while the guarded path
+ * was the one nothing calls.
+ *
+ * **One check covers both conditions, and that is measured rather than assumed.** A separate
+ * `cellCss* === 0` guard was written first, mirroring the sibling's, and a mutation test showed it
+ * could not fail: a zero cell makes the quotient `±Infinity` (or `NaN` for a zero box over a zero
+ * cell), so `Number.isFinite` already rejects every one of those inputs. It was removed rather than
+ * kept for symmetry — a branch that cannot change an outcome is untestable by construction, and the
+ * test below asserts the zero-cell *behaviour*, which is the part that must hold. (The sibling in
+ * `fit.ts` carries the same redundancy, inherited from xterm's `cell.width === 0` guard; left alone
+ * because it is working code and changing it would alter nothing.) */
 export function gridForBox(
   cssWidth: number,
   cssHeight: number,
   cellCssWidth: number,
   cellCssHeight: number,
-): { cols: number; rows: number } {
-  return {
-    cols: Math.max(MINIMUM_COLS, Math.floor(cssWidth / cellCssWidth)),
-    rows: Math.max(MINIMUM_ROWS, Math.floor(cssHeight / cellCssHeight)),
-  };
+): { cols: number; rows: number } | undefined {
+  const cols = Math.max(MINIMUM_COLS, Math.floor(cssWidth / cellCssWidth));
+  const rows = Math.max(MINIMUM_ROWS, Math.floor(cssHeight / cellCssHeight));
+  if (!Number.isFinite(cols) || !Number.isFinite(rows)) return undefined;
+  return { cols, rows };
 }
 
 /** What a frame says to do with the cursor, as a pure decision (no blink/state): `none` = the
@@ -704,12 +723,17 @@ export class JustermRenderer implements Renderer {
    * from what the renderer reports it must be (`cssWidth`/`cssHeight`) — forget that and the
    * device-px buffer displays at twice its size on a Retina screen. */
   resize(cssWidth: number, cssHeight: number): void {
-    const { cols, rows } = gridForBox(
+    const grid = gridForBox(
       cssWidth,
       cssHeight,
       this.backend.cssCellWidth(),
       this.backend.cssCellHeight(),
     );
+    // Nothing to propose — an unmeasured cell or a non-finite box (#632). Leave the renderer and the
+    // canvas box exactly as they are: resizing to a guess is how an unlaid-out container turned into
+    // a 1x1 terminal, and the CSS box below must not describe a buffer we did not ask for.
+    if (!grid) return;
+    const { cols, rows } = grid;
     this.backend.resize(cols, rows);
     this.canvas.style.width = `${this.backend.cssWidth()}px`;
     this.canvas.style.height = `${this.backend.cssHeight()}px`;
