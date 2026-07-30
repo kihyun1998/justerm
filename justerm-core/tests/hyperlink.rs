@@ -203,3 +203,57 @@ fn hyperlink_round_trips_through_serialization() {
         "https://example.com"
     );
 }
+
+/// An `id=`-grouped link reaches the consumer as **one** link across two lines (#635).
+///
+/// This is the assertion that matches the user-visible symptom, and it is deliberately
+/// made after `encode`/`decode` rather than on the `Frame`: a consumer never sees an
+/// engine-side allocation, it sees a frame-local index into `link_table`, and grouping
+/// cells by that index is literally what `justerm-web/src/links.ts` does. So "hovering
+/// one half of a wrapped link highlights the other half" is true exactly when the two
+/// rows' indices are equal here — an in-crate `Arc` identity check cannot say that.
+#[test]
+fn an_id_grouped_link_round_trips_as_one_link_across_two_lines() {
+    let mut t = Engine::new(20, 4);
+    // The case `id=` exists for: one logical link the application had to emit as two runs.
+    t.feed(b"\x1b]8;id=grp;https://example.com/split\x07first\x1b]8;;\x07\r\n");
+    t.feed(b"\x1b]8;id=grp;https://example.com/split\x07second\x1b]8;;\x07");
+
+    let frame = t.frame();
+    let decoded = decode(&encode(&frame)).expect("decode");
+    assert_eq!(decoded, frame, "round-trip is lossless");
+
+    // One entry, because one link — the whole point. Two entries is the pre-#635 defect,
+    // and it is what the consumer would group by.
+    assert_eq!(
+        decoded.link_table,
+        vec!["https://example.com/split".to_string()],
+        "the grouped link ships once, not once per run",
+    );
+
+    // Both runs point at it. Collected across every span so this does not depend on how
+    // the damage happened to be split into spans.
+    let mut indices: Vec<u32> = decoded
+        .spans
+        .iter()
+        .flat_map(|s| s.links.values().map(|i| i.get()))
+        .collect();
+    indices.dedup();
+    indices.sort_unstable();
+    indices.dedup();
+    assert_eq!(
+        indices,
+        vec![1],
+        "every linked cell on both lines carries the same link index",
+    );
+
+    // And the halves really are on different lines — otherwise the assertion above would
+    // be satisfied by one run and prove nothing about grouping.
+    let lines: std::collections::BTreeSet<u16> = decoded
+        .spans
+        .iter()
+        .filter(|s| !s.links.is_empty())
+        .map(|s| s.line)
+        .collect();
+    assert_eq!(lines.len(), 2, "the two runs are on two separate lines");
+}

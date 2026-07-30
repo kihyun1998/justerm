@@ -579,11 +579,33 @@ the URI live* and *what frees it*.
 | …and the id is deliberately **not** on the cell: *"its a waste to store the hyperlink ID in the cell itself"* — justerm already satisfies this half via the row map | ghostty | `src/terminal/hyperlink.zig:20-23` |
 | A global registry keyed by a minted id (`_nextId++`), which is the shape justerm's pool copied | xterm.js | `src/common/services/OscLinkService.ts:24` |
 | ⚠ **…and the registry is the thing that reclaims.** Each entry holds the line markers referencing it; when the last is disposed the entry is deleted from **both** maps. Copying `_nextId++` without this is what left justerm's pool immortal | xterm.js | `src/common/services/OscLinkService.ts:100` |
-| ⚠ **Dedup happens only when the sequence declares `id=`.** A link with no id *"will only ever be registered a single time"* and gets a fresh id per open; one with an id is looked up by an `id`-plus-`uri` key and reuses the entry. So "never merge on URI alone, always merge on a declared id" is one rule, not two — justerm does the first half and not the second (#635) | xterm.js | `src/common/services/OscLinkService.ts:51` |
+| ⚠ **Dedup happens only when the sequence declares `id=`.** A link with no id *"will only ever be registered a single time"* and gets a fresh id per open; one with an id is looked up by an `id`-plus-`uri` key and reuses the entry. So "never merge on URI alone, always merge on a declared id" is one rule, not two — justerm shipped the first half only until #635 closed the second | xterm.js | `src/common/services/OscLinkService.ts:51` |
 
 **Direction: 3:0 for reclamation, 1:2 for `id=` grouping.** All three free the storage; justerm was
 the only one that never did. Only xterm.js groups by `id=`, so that gap is a conformance item against
 the single reference that has the feature, not a divergence from a consensus.
+
+### How xterm.js parses `id=`, and the three places a reasonable reading goes wrong (#635, verified 2026-07-30)
+
+Added while implementing the grouping half. Rows split this finely because each was checked against a
+*wrong* implementation that still passes a single-parameter test — the mutation that reddens each is
+noted, since a row nobody can fail is a row nobody can trust.
+
+| Fact | Reference | Site |
+|---|---|---|
+| `params` is a **`:`-separated** key=value list — `id=xyz123:foo=bar:baz=quux` — and the split is on colons, not on the OSC `;` | xterm.js | `src/common/InputHandler.ts:3100` |
+| ⚠ **`id` may sit anywhere in that list**: the scan is `findIndex(e => e.startsWith('id='))`, so matching only a *leading* `id=` is the wrong parse and is green on every single-parameter test | xterm.js | `src/common/InputHandler.ts:3129` |
+| ⚠ **An empty value is not an id** — `slice(3) \|\| undefined`, and the `\|\|` is the entire behaviour. Reading `slice(3)` alone gives the opposite answer, and the resulting empty key groups *every* `id=`-with-no-value link in a session across unrelated URIs: a wrong answer that grows with uptime | xterm.js | `src/common/InputHandler.ts:3130` |
+| Only the **first** `id=` is consulted (`findIndex`), so an empty first one yields no id rather than searching on for a non-empty sibling | xterm.js | `src/common/InputHandler.ts:3129-3131` |
+| The group key is `` `${id};;${uri}` `` — **id and URI together**, so a reused id aimed at a new target is not the same link | xterm.js | `src/common/services/OscLinkService.ts:87` |
+| ⚠ **The id-lookup map is a second map, and it is reclaimed, not weak.** `_entriesWithId` is deleted alongside `_dataByLinkId` when the entry's last line marker is disposed — so grouping does **not** cost xterm a permanent registry either. justerm has no disposal hook by design and expresses the same lifetime with `Weak` | xterm.js | `src/common/services/OscLinkService.ts:98-100` |
+| Its own doc states the user-visible contract: *"Cells that share the same ID and URI share hover feedback"* — the symptom, not the mechanism | xterm.js | `src/common/InputHandler.ts:3101-3102` |
+
+**Also read here and deliberately not ported:** xterm.js splits OSC 8's own arguments on the **first
+`;` only** (`setHyperlink`, `InputHandler.ts:3106-3112`), explicitly *"to support unencoded
+semi-colons in the URIs"*. justerm takes `params[2]` from vte's `;`-split, so a URI containing a raw
+`;` is truncated at it. Out of scope for #635 — recorded so the next reader of this section does not
+have to re-derive that it is a separate question.
 
 **The trap this section exists to stop.** Reading only the first row of each reference gives *"they
 all keep a registry"* — which is how #46 arrived at a global pool and stopped. The reclamation is the

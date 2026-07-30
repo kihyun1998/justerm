@@ -32,6 +32,18 @@ They share a name and almost nothing else.
   thin `Arc` wrapper — because a borrow into the row's map cannot outlive `&Engine`, and the caller
   that needs one (a hover handler, while output keeps arriving) would copy the string instead: 62.6 ns
   against the handle's 17.9 ns.
+- **One dedup rule, stated in two directions.** Never merge on URI alone; always merge on an `id=`
+  the application declared. Both halves come from the same reference sentence pair, and shipping only
+  the first is what #635 closed. The group key is `id` **and** URI (a reused id aimed at a new target
+  is not the same link), an empty `id=` value is no id at all, and `params` is a `:`-separated list in
+  which `id` may sit anywhere — each of the three is a place a reasonable reading goes wrong, so each
+  is pinned by its own test rather than by a comment.
+- **The group registry is `Weak`, and that is the whole reason grouping did not undo #628.** An
+  id→link map holding strong references would make every id'd link immortal for the life of the
+  `Term` — the exact defect #628 removed, re-entering through the door grouping opens. A dangling key
+  is the *correct* answer, not a hole: the link it named has left the buffer, so a later open of that
+  id is a new link. The sweep for dangling keys is affordable here for the reason #628's rejected
+  sweep option was not — staleness is O(1) (`Weak::strong_count`) instead of an O(buffer) walk.
 - **Two opens of one URI are two links, and nothing public can currently tell.** `uri() == uri()`
   says "same" where the engine says "different", and the `Arc::ptr_eq` accessor that would answer
   properly is deliberately unshipped — no consumer asks yet, and adding a method later is not a
@@ -75,7 +87,10 @@ They share a name and almost nothing else.
 [OSC 8 hyperlinks — where the URI lives, and what frees it](../../agents/reference-facts.md#osc-8-hyperlinks--where-the-uri-lives-and-what-frees-it-628635-verified-2026-07-30)
 — added by #628, which is when the area first needed them. Two questions with **different** answers:
 all three references free the storage (3:0, and justerm was the outlier until #628), while only
-xterm.js groups by `id=` (1:2, so #635 is a conformance gap against one reference, not a consensus).
+xterm.js groups by `id=` (1:2 — so #635 was a conformance item against the one reference that has the
+feature, not a divergence from a consensus, and it is closed). The section's second half records how
+that reference *parses* `id=`, row by row, because three separate readings of it are wrong in ways a
+single-parameter test cannot see.
 
 Read the section's own warning before citing it: taking only the first row of each reference gives
 *"they all keep a registry"*, which is how #46 arrived at a permanent pool — the reclamation half
@@ -105,10 +120,12 @@ claim about another implementation's bit layout, in a comment, with no row.
 
 - **Zero governing records** for either path, including the row-owned `Arc` design that makes a
   repeated URI cheap and bounds its lifetime.
-- **`id=` grouping is not honoured** (#635): an application saying "these two runs are the same link"
-  is not heard, so a link split across lines is two links to the consumer. Deferred at #26 and
-  recorded in `architecture.md` as "a later refinement"; the other unported half of the same xterm
-  function that #628 finished.
+- **Whether a *public* accessor should answer "same link?"** is still open, and #635 made the question
+  live rather than settling it. Grouping now works, so two runs genuinely are one link — but the only
+  way to observe that from outside the crate is a decoded frame's `link_table` index, which is
+  frame-local and belongs to the wire. `Hyperlink` still exposes `uri()` alone, and the `Arc::ptr_eq`
+  accessor that would answer directly stays deliberately unshipped (no consumer asks). A consumer that
+  wanted to ask *in engine coordinates* currently cannot.
 - **Nothing states whether the two paths may overlap.** A cell inside a declared OSC 8 link is also
   text that the URL regex will match; which one a click follows is undefined by every artifact.
 - **The `HAS_EXTENDED` claim is unpinned**, and it is a statement about another project's bit layout.
