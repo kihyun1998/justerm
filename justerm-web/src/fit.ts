@@ -23,7 +23,16 @@ export interface FitInput {
   parentHeight: number;
   /** The terminal element's padding, CSS px. */
   padding: FitPadding;
-  /** The renderer's CSS cell size, px. */
+  /**
+   * The renderer's CSS cell size, px — `cellSize()` divided by `devicePixelRatio`, or
+   * `cssCellWidth()`/`cssCellHeight()` where the backend offers them.
+   *
+   * **Pass it live and unrounded.** Since #632 this is not only a divisor: {@link FitController}
+   * carries it in the key that decides whether a flush is redundant, so it is also how the
+   * controller learns that a cell-size change happened. A `readInput` that rounds it (or caches it
+   * across a spacing change) silently defeats that — the fit still *looks* right while a real
+   * resize can be deduped away, which is the failure #632 exists to close.
+   */
   cellWidth: number;
   cellHeight: number;
   /** Px a *layout* scrollbar occupies (subtracted from width). Pass `0` for an overlay
@@ -112,9 +121,51 @@ export class FitController {
   private readonly clearTimer: (handle: number) => void;
   private latest: FitInput | undefined;
   private timer: number | undefined;
-  /** The last grid actually emitted, to skip a resize that doesn't change it. */
-  private lastCols: number | undefined;
-  private lastRows: number | undefined;
+  /**
+   * The last intent actually emitted — the grid **and the cell it was derived from** (#632).
+   *
+   * `cols`/`rows` alone is half of what {@link proposeDimensions} consumes: the same pair can come
+   * from different cells, so a `cols`/`rows`-only memory cannot express *"the cell moved but the
+   * grid did not"*. Two silent failures followed from that, and both are in this one field:
+   *
+   * 1. A **cell change re-derives the grid outside this controller** — per #578 the consumer calls
+   *    `renderer.resize()` directly — so the remembered pair kept describing the pre-change grid. A
+   *    later genuine container resize that happened to propose exactly that pair was deduped and
+   *    never reached the {@link ResizePort}: the engine holds a grid the box no longer wants, which
+   *    is the desync #547 describes (spans land outside the grid and the surface stops updating).
+   * 2. It is also why routing a cell change *through* `fit()` used to be unsafe at all — the cell
+   *    can move while the grid stays identical, guaranteed once the {@link MINIMUM_COLS} /
+   *    {@link MINIMUM_ROWS} floors bind.
+   *
+   * **Validity condition, because the cell is a proxy rather than the thing itself.** What actually
+   * invalidates this memory is *any* write to the grid that bypasses this controller; the cell is
+   * merely the one such write that exists today (the #578 setters). A consumer that called
+   * `renderer.resize()` out of band with an **unchanged** cell would still leave this stale. The
+   * structural cure is to hold no memory at all and let the port dedupe against its own live state,
+   * which is what xterm.js does (`FitAddon.fit()` has no dedupe; `Terminal.resize` compares against
+   * `this.cols`/`this.rows`) — rejected here because {@link ResizePort} is write-only and published,
+   * so it would hand every consumer a new idempotency obligation over `Engine::resize` + SIGWINCH.
+   * Revisit the day `ResizePort` can be read, or a second out-of-band writer appears.
+   *
+   * **Named prior art for the shape actually taken: alacritty**, which coalesces both input families
+   * and then runs *two* dedupes over the result — a grid-keyed one that drives the PTY and the
+   * terminal, and a whole-`SizeInfo` one (its `PartialEq` covers `cell_width`/`cell_height`) that
+   * drives the renderer. Its memory is a live-updated snapshot, exactly like this field, not state
+   * read back from a sink. ghostty splits the two obligations instead: it dedupes the *box* path and
+   * leaves its cell path (`setCellSize`) undeduped entirely. So the three references do not agree on
+   * one shape, and this is the one whose constraints match ours.
+   *
+   * **Two known holes this key does not close** — both recorded rather than papered over:
+   * 1. `cols`/`rows` here is what was *proposed*, and the renderer may adopt **less** (the #339
+   *    drawing-buffer clamp; `terminalSize()` is the documented truth). A clamped resize leaves this
+   *    describing a grid nobody holds — the same defect one axis over.
+   * 2. {@link FitController.latest} is a **snapshot** taken when the observer fired, so a cell change
+   *    landing inside the debounce window makes the flush propose against the *pre-change* cell and
+   *    store it. It self-heals on the next observer fire, and there may not be one. The cure is to
+   *    read the geometry at flush time rather than replay a snapshot, which is what xterm's `fit()`
+   *    does — a change to this class's shape, not to this key.
+   */
+  private last: { cols: number; rows: number; cellWidth: number; cellHeight: number } | undefined;
 
   constructor(opts: {
     port: ResizePort;
@@ -148,9 +199,19 @@ export class FitController {
     if (!this.latest) return;
     const dims = proposeDimensions(this.latest);
     if (!dims) return;
-    if (dims.cols === this.lastCols && dims.rows === this.lastRows) return; // unchanged → skip
-    this.lastCols = dims.cols;
-    this.lastRows = dims.rows;
+    const { cellWidth, cellHeight } = this.latest;
+    const prev = this.last;
+    // Redundant only if BOTH the proposal and the cell it came from are unchanged (#632).
+    if (
+      prev !== undefined &&
+      dims.cols === prev.cols &&
+      dims.rows === prev.rows &&
+      cellWidth === prev.cellWidth &&
+      cellHeight === prev.cellHeight
+    ) {
+      return;
+    }
+    this.last = { cols: dims.cols, rows: dims.rows, cellWidth, cellHeight };
     this.port.resize(dims.cols, dims.rows);
   }
 }

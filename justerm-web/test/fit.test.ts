@@ -149,3 +149,76 @@ describe("FitController (#114 debounced resize intent)", () => {
     expect(port.calls).toEqual([]);
   });
 });
+
+/**
+ * #632 — the dedupe was keyed on `cols`/`rows` alone, which is only HALF of what
+ * `proposeDimensions` derives from: the same pair can come from different cells. So after a
+ * cell-size change the remembered pair described a grid nobody held any more, and a later
+ * genuine container resize that happened to propose it was dropped in silence.
+ */
+describe("FitController dedupes on the cell too, not just the grid (#632)", () => {
+  function make() {
+    const port = new StubResizePort();
+    const sched = new ManualScheduler();
+    const ctrl = new FitController({ port, setTimer: sched.setTimer, clearTimer: sched.clearTimer });
+    return { ctrl, port, flush: () => sched.flush() };
+  }
+
+  // THE FILED DEFECT. 800x600 / 8x16 → 100x37. The cell then heightens to 24 out of band (the
+  // #578 contract has the consumer call `renderer.resize()` directly), and a real container
+  // resize to 800x900 proposes floor(900/24) = 37 rows — the very pair the controller
+  // remembers. Under the old key that resize never reached the port, so the engine kept a grid
+  // the box no longer wanted: the silent desync #547 describes.
+  it("lets a real resize through when it proposes the pre-change pair under a new cell", () => {
+    const { ctrl, port, flush } = make();
+    ctrl.fit(base()); // 100x37 at cell 8x16
+    flush();
+    ctrl.fit({ ...base(), parentHeight: 900, cellHeight: 24 }); // 100x37 again, at cell 8x24
+    flush();
+    expect(port.calls).toEqual([
+      { cols: 100, rows: 37 },
+      { cols: 100, rows: 37 },
+    ]);
+  });
+
+  // The other half of #632: a cell change can move the cell while leaving the grid IDENTICAL —
+  // guaranteed once the MINIMUM_COLS/MINIMUM_ROWS floors bind (#547), and common whenever the
+  // new cell divides the same box into the same count. floor(600/16.2) is still 37.
+  it("flushes a cell change that leaves the grid identical", () => {
+    const { ctrl, port, flush } = make();
+    ctrl.fit(base());
+    flush();
+    ctrl.fit({ ...base(), cellHeight: 16.2 }); // same 100x37, taller cell
+    flush();
+    expect(port.calls).toHaveLength(2);
+  });
+
+  // A width-only cell move counts too — the key must carry BOTH cell axes, not just the one
+  // the height case happens to exercise. floor(800/8.05) is still 99... so assert the pair.
+  it("flushes a cell WIDTH change that leaves the grid identical", () => {
+    const { ctrl, port, flush } = make();
+    ctrl.fit({ ...base(), cellWidth: 8.05 }); // floor(800/8.05) = 99 cols
+    flush();
+    ctrl.fit({ ...base(), cellWidth: 8.06 }); // floor(800/8.06) = 99 cols, wider cell
+    flush();
+    expect(port.calls).toEqual([
+      { cols: 99, rows: 37 },
+      { cols: 99, rows: 37 },
+    ]);
+  });
+
+  // THE SIDE CONDITION — the optimisation this dedupe exists for must survive, and it must
+  // survive *after* a cell change too: the new key has to be STORED, not merely compared.
+  // Without the store, every later fit would compare against the pre-change cell and re-issue
+  // for ever, which is a redundant backend reflow per ResizeObserver burst.
+  it("still skips a pixel wobble at an unchanged cell, including after a cell change", () => {
+    const { ctrl, port, flush } = make();
+    ctrl.fit(base());
+    flush();
+    ctrl.fit({ ...base(), cellHeight: 16.2 }); // a real cell change → flushes (2nd call)
+    flush();
+    ctrl.fit({ ...base(), parentWidth: 803, cellHeight: 16.2 }); // wobble, same cell → skipped
+    flush();
+    expect(port.calls).toHaveLength(2);
+  });
+});

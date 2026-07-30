@@ -1204,6 +1204,8 @@ declare global {
     __bgAlphaProbe?: () => Promise<BgAlphaProbe>;
     __spacingProbe?: () => SpacingProbe;
     __imeAnchorProbe?: () => ImeAnchorProbe;
+    __fitProbe?: () => FitProbe;
+    __setLineHeight?: (lh: number) => void;
   }
 }
 
@@ -1816,6 +1818,60 @@ window.__imeAnchorProbe = (): ImeAnchorProbe => {
   apply(savedLh);
   demoLineHeight = savedLh;
   return { cursorRow: CURSOR_ROW, cursorCol: CURSOR_COL, base, afterCellMove, afterCompositionStart };
+};
+
+/**
+ * #632 — everything an e2e needs to compute what `FitController` will propose, WITHOUT perturbing
+ * anything. The arithmetic has to happen in the browser because the cell derives from the font's
+ * `█` ink box (ADR-0022), so no absolute cell dimension is portable across machines — CI's Linux
+ * fonts measure differently from a local one.
+ *
+ * Mirrors what `readFitInput` above actually feeds the controller: zero padding, zero scrollbar
+ * width, so the proposal is just `floor(inner / cssCell)` under the `MINIMUM_*` floors.
+ */
+interface FitProbe {
+  dpr: number;
+  /** The cell in CSS px — `cellSize()` (device px) ÷ dpr, exactly as `readFitInput` computes it. */
+  cssCellW: number;
+  cssCellH: number;
+  innerWidth: number;
+  innerHeight: number;
+  /** The grid the RENDERER currently holds, and the one the demo drives its engine at. */
+  cols: number;
+  rows: number;
+  demoCols: number;
+  demoRows: number;
+}
+
+window.__fitProbe = (): FitProbe => {
+  const dpr = window.devicePixelRatio || 1;
+  const cell = renderer.cellSize();
+  const ts = renderer.terminalSize();
+  return {
+    dpr,
+    cssCellW: cell.width / dpr,
+    cssCellH: cell.height / dpr,
+    innerWidth: window.innerWidth,
+    innerHeight: window.innerHeight,
+    cols: ts.cols,
+    rows: ts.rows,
+    demoCols: COLS,
+    demoRows: ROWS,
+  };
+};
+
+/**
+ * #632 — move the cell to an absolute line height, following the consumer contract (setter, then
+ * `fit()`, then `render()`). Absolute rather than a toggle, so an e2e does not depend on the state
+ * `?lineHeight=` happened to boot this page in — the same reason `__spacingProbe` spells the
+ * obligation out instead of clicking the buttons.
+ */
+window.__setLineHeight = (lh: number): void => {
+  demoLineHeight = lh;
+  renderer.setLineHeight(lh);
+  fit();
+  render();
+  lineHeightBtn.textContent = `Line height: ${demoLineHeight}`;
 };
 
 window.__disposeProbe = async (): Promise<DisposeProbe> => {

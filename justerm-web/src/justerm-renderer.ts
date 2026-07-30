@@ -609,13 +609,17 @@ export class JustermRenderer implements Renderer {
    * re-sizes its own drawing buffer to the new cell, so the canvas display box the adapter set from
    * `cssWidth()`/`cssHeight()` immediately describes a buffer that no longer exists.
    *
-   * **Call this {@link resize} directly — not `FitController.fit()`**, even if you hold one. That
-   * controller skips its flush when the proposed `cols`/`rows` match the last ones it saw, which is
-   * the right behaviour for a container resize and the wrong one here: a spacing change can move the
-   * cell while leaving the grid identical (guaranteed once the `MINIMUM_COLS`/`MINIMUM_ROWS` floors
-   * bind), and then the deduped flush never reaches {@link resize}, so the canvas box keeps
-   * describing the replaced buffer and the browser scales it. A grid-keyed dedupe structurally cannot
-   * express "the cell moved but the grid did not".
+   * **Call this {@link resize} directly — not `FitController.fit()`**, even if you hold one. The
+   * reason is a *signature*, not a bug: `ResizePort.resize(cols, rows)` carries a **grid**, and the
+   * canvas display box is set only here, from a **box**. So a flush reaches the consumer's port and
+   * stops there; nothing in that chain touches `canvas.style.width/height`. Secondarily, the flush is
+   * debounced (100 ms by default), which is 100 ms of displaying a buffer that no longer exists.
+   *
+   * Until #632 there was a third reason and it was the one written here: the controller deduped on
+   * `cols`/`rows` alone, so a cell change that left the grid identical was dropped outright.
+   * **That one is fixed** — the key now carries the cell too, so `FitController` is safe to keep
+   * using for container resizes across a spacing change. It still is not the thing that re-sizes
+   * this canvas.
    *
    * xterm.js draws the same line, which is why this is a shape rather than a preference: an option
    * change there re-lays out at the *current* grid (`RenderService.ts` `handleResize(cols, rows)`) and
@@ -625,8 +629,12 @@ export class JustermRenderer implements Renderer {
    * **Read the cell back rather than deriving it from what you passed.** `adopt_spacing` can hand you
    * something other than what you asked for in three separate ways, and none of them reports an error:
    * a `lineHeight` whose cell the atlas cannot hold is *shrunk* (#359); a failed atlas re-bake rolls
-   * the whole change back to the previous spacing; and while the GL context is lost the policy is
-   * stored but the cell does not move at all until `webglcontextrestored`. {@link cellSize} and
+   * the whole change back to the previous spacing; and while the GL context is lost the **cell moves
+   * immediately but the buffer does not** — `adopt_spacing` runs `recompute_cell()` *before* its
+   * lost-context guard (`webgl.rs`), so {@link cellSize} reports the new cell while the atlas re-bake
+   * and the drawing-buffer resize wait for `webglcontextrestored`. (This sentence used to say the cell
+   * "does not move at all", which was false against that ordering — corrected in #632, whose own
+   * reasoning depended on it.) {@link cellSize} and
    * {@link terminalSize} are the truth afterwards — and `terminalSize` matters as much as the cell,
    * because the renderer's internal re-size adopts what the drawing buffer will actually grant (#339),
    * so a large enough cell shrinks the *grid* as well.

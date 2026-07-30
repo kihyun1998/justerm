@@ -1447,3 +1447,57 @@ test("a cell-size change re-anchors the IME textarea at composition start (#631)
   // `_syncTextArea` either. Pinning the staleness would freeze that choice and fail the day a push
   // signal (#630's third shape) replaces it, while the claim above stays the requirement either way.
 });
+
+// #632: `FitController`'s dedupe remembered only `cols`/`rows`, which a cell-size change leaves
+// identical while making them describe a grid nobody holds. A later real container resize that
+// proposed exactly that pair was then dropped in silence. Only provable live: the defect needs a
+// real ResizeObserver, the real 100ms debounce and the real cell, and every number below is
+// computed in the browser because the cell derives from the font's `█` ink box (ADR-0022) — no
+// absolute cell dimension is portable (#578).
+test("a real resize proposing the pre-change grid still reaches the port (#632)", async ({
+  page,
+}) => {
+  const fits: string[] = [];
+  page.on("console", (m) => {
+    const t = m.text();
+    if (t.includes("[fit] resize")) fits.push(t);
+  });
+  const gridOf = (line: string): { cols: number; rows: number } => {
+    const m = line.match(/resize (\d+)x(\d+)/);
+    if (!m) throw new Error(`unparseable fit log: ${line}`);
+    return { cols: Number(m[1]), rows: Number(m[2]) };
+  };
+
+  await page.setViewportSize({ width: 800, height: 600 });
+  await page.goto("/");
+  // The observer fires once on mount; that flush is what loads the controller's memory.
+  await expect.poll(() => fits.length).toBeGreaterThan(0);
+  const remembered = gridOf(fits.at(-1)!);
+  const before = await page.evaluate(() => window.__fitProbe!());
+
+  // A cell change, taken through the consumer contract (setter → fit → render). It does NOT go
+  // through the controller, and — measured, not assumed — it does not fire the ResizeObserver
+  // either, so the controller's memory is left describing the pre-change grid.
+  await page.evaluate(() => window.__setLineHeight!(1.6));
+  await page.waitForTimeout(400); // well past the debounce: prove no flush happened
+  expect(fits).toHaveLength(1);
+  const after = await page.evaluate(() => window.__fitProbe!());
+
+  // THE CONTROLS, in the same run. Direction only for the cell height — a line-height delta is
+  // multiplicative on a font-dependent cell, so no absolute value is portable.
+  expect(after.cssCellH).toBeGreaterThan(before.cssCellH);
+  expect(after.cssCellW).toBeCloseTo(before.cssCellW, 3); // a row knob, not a column one
+  // …and the renderer's grid really moved, so the remembered pair really is stale now.
+  expect(after.rows).not.toBe(remembered.rows);
+
+  // Now a genuine container resize that proposes EXACTLY the remembered pair under the NEW cell:
+  // pick the height whose floor(height / newCell) lands back on the remembered row count.
+  const targetHeight = Math.floor((remembered.rows + 0.5) * after.cssCellH);
+  expect(Math.floor(targetHeight / after.cssCellH)).toBe(remembered.rows); // the construction holds
+  await page.setViewportSize({ width: before.innerWidth, height: targetHeight });
+
+  // THE CLAIM: it reaches the port. Under the `cols`/`rows`-only key this was deduped away and the
+  // engine kept a grid the box no longer wanted — the silent desync #547 describes.
+  await expect.poll(() => fits.length, { timeout: 4000 }).toBeGreaterThan(1);
+  expect(gridOf(fits.at(-1)!)).toEqual(remembered);
+});
