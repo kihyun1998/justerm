@@ -601,11 +601,22 @@ noted, since a row nobody can fail is a row nobody can trust.
 | ⚠ **The id-lookup map is a second map, and it is reclaimed, not weak.** `_entriesWithId` is deleted alongside `_dataByLinkId` when the entry's last line marker is disposed — so grouping does **not** cost xterm a permanent registry either. justerm has no disposal hook by design and expresses the same lifetime with `Weak` | xterm.js | `src/common/services/OscLinkService.ts:98-100` |
 | Its own doc states the user-visible contract: *"Cells that share the same ID and URI share hover feedback"* — the symptom, not the mechanism | xterm.js | `src/common/InputHandler.ts:3101-3102` |
 
-**Also read here and deliberately not ported:** xterm.js splits OSC 8's own arguments on the **first
-`;` only** (`setHyperlink`, `InputHandler.ts:3106-3112`), explicitly *"to support unencoded
-semi-colons in the URIs"*. justerm takes `params[2]` from vte's `;`-split, so a URI containing a raw
-`;` is truncated at it. Out of scope for #635 — recorded so the next reader of this section does not
-have to re-derive that it is a separate question.
+**Also read here and deliberately not ported, and the divergence is measured rather than reasoned:**
+xterm.js splits OSC 8's own arguments on the **first `;` only** (`setHyperlink`,
+`InputHandler.ts:3106-3112`) — `data.indexOf(';')`, then `slice(idx + 1)` takes *all* the rest as the
+URI — explicitly *"to support unencoded semi-colons in the URIs"*. justerm takes `params[2]` from
+vte's `;`-split, so it keeps only the first segment. Throwaway probe, 2026-07-30, deleted after
+reading:
+
+| Fed | `Engine::link_at` returns |
+|---|---|
+| `OSC 8 ; ; https://example.com/a;b=c BEL` | `https://example.com/a` — truncated at the `;`, silently |
+| the same with `id=q` in `params` | `https://example.com/a` — the `id=` path is no different |
+| control: `https://example.com/a%3Bb=c` | `https://example.com/a%3Bb=c` — intact |
+
+The control is what pins the cause to the **raw** `;` rather than to anything else in the sequence.
+Out of scope for #635 (which is about `params[1]`, not `params[2..]`) — recorded here with its
+numbers so the next reader neither re-derives that it is a separate question nor has to re-measure it.
 
 **The trap this section exists to stop.** Reading only the first row of each reference gives *"they
 all keep a registry"* — which is how #46 arrived at a global pool and stopped. The reclamation is the
