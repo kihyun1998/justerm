@@ -97,6 +97,11 @@ In `docs/agents/reference-facts.md` — **linked, never restated**.
   (composition start, focus). So the cached decision still outlives its geometry between those
   moments **by design**; what changed is that nothing reads it while it is stale.
 
+- [an IME composition is browser-owned state the engine never sees](../invariant/composition-is-browser-owned-state.md)
+  — the anchor's point-of-use re-read (#631) sits in a `compositionstart` handler because that is the
+  moment the OS reads it, and the widget can only learn of it from a browser event. The same fact is why
+  the frame-driven path has no composition gate to key on (#637).
+
 **No invariant originates here — checked, not assumed (#606).** The rule this territory gained ("what a layer is handed
 across a port, that layer ends") was tested for reach before being left here, because a fact that
 holds in N territories belongs in `invariant/` and is invisible from the other N-1 if it is not.

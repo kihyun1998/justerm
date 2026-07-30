@@ -62,6 +62,13 @@ application misbehaves.
 - [the cell size is derived state](../invariant/cell-size-is-derived-state.md)
   — `CellGeometry` is a cell divisor with a lifetime and a unit, and nothing type-checks either
   (#578)
+- [an IME composition is browser-owned state the engine never sees](../invariant/composition-is-browser-owned-state.md)
+  — **this territory owns the mechanism the invariant is about**: `composition.ts`, the hidden textarea
+  as the real input target, and the decision that a confirmation is a raw `text` intent. The fact has
+  been true since #116 and was recorded nowhere, so the behaviours downstream of it (#592 the caret,
+  #631 the anchor) each derived it locally. The consequence that reaches other territories is the one
+  worth carrying out of here: a composition has **no frame to key on**, and the frame stream keeps
+  describing a cursor that knows nothing about it
 
 ## Blast radius
 
@@ -84,4 +91,11 @@ application misbehaves.
 - **Two mode sets have to agree across a crate boundary.** The web mirrors `input.rs`'s intent types
   by hand, the same ungated mirroring `types.ts` does for the frame.
 - **In-progress IME composition is not rendered inline in the grid**, so what the user is typing is
-  invisible until confirmation. Tracked: #249.
+  invisible until confirmation. Tracked: #249 — now one member of spine **#640**, which holds the
+  question both it and #637 need answered.
+- **Nothing gates the frame stream during a composition.** `Terminal.positionTextarea` runs from the
+  frame subscription with no composition check, so an output frame moves the IME anchor while the user
+  is composing. Reachable from unsolicited application output and from the async echo of a previous
+  commit, which `composition.ts` already handles as a real case. Tracked: #637 — and graded
+  *unadjudicated* rather than defect, because xterm.js contradicts itself on whether the move is
+  harmful (see the invariant note).

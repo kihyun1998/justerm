@@ -51,7 +51,16 @@ unverifiable.
 
 ## Cross-cutting invariants
 
-*(none identified yet)*
+- [an IME composition is browser-owned state the engine never sees](../invariant/composition-is-browser-owned-state.md)
+  — the caret stops blinking while composing (#592), and the only place that can know is a browser
+  event handler: there is no VT sequence for a preedit and no frame field carrying one, so this rule
+  cannot be derived from the five caret scalars this territory otherwise runs on. It arrived as a
+  `setComposing` notification from the widget rather than as frame state, which is why it reads like an
+  exception here and is a consequence of the invariant there.
+
+This section said *"(none identified yet)"* until 2026-07-30, while #592 had already shipped exactly
+such a behaviour into this territory. That silence is cited in the invariant note as the evidence for
+its own existence — the fact held here and was invisible from here.
 
 ## Blast radius
 
