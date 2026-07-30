@@ -41,19 +41,39 @@ progress: the same shape as an absolute-index walk being rediscovered three time
 **Always silent, and never in the layer that would notice.** The engine cannot be wrong about a
 composition it never saw, so nothing throws and no test on the core side can fail.
 
-- **A frame-driven surface acting on a superseded cursor.** `Terminal.positionTextarea` runs from the
-  frame subscription with no composition gate, so an output frame moves the IME anchor out from under
-  the candidate window while the user is mid-composition (#637). The engine is behaving correctly; the
-  consumer is answering a question the frame cannot answer.
+- **A frame-driven surface acting on a superseded cursor.** `Terminal.positionTextarea` ran from the
+  frame subscription with no composition gate, so an output frame moved the IME anchor out from under the
+  candidate window while the user was mid-composition (#637, now guarded in `textareaMove`'s unforced
+  path). The engine was behaving correctly; the consumer was answering a question the frame cannot
+  answer. **Measured, not inferred** — with the Windows Korean IME the Hanja candidate window followed
+  the anchor down the screen as unsolicited output moved the cursor.
 - **A rule inferred from engine state where no engine state exists.** A composition has no
   representation to consult, so *"what should happen during one"* can only be decided, never derived
   from a frame. Writing such a rule as if it followed from the frame is how it ends up decided once per
   site.
-- **A reference read as authoritative where it contradicts itself.** xterm.js is the only reference with
-  the same architecture here, and on the open question — may the anchor move mid-composition — its
-  `_syncTextArea` bails while composing while `CompositionHelper.updateCompositionElements` rewrites the
-  textarea's position on every render *while composing*. Both cannot be load-bearing, so an appeal to
-  "the reference does X" is not an answer in this area.
+- **A reference read as authoritative before its contradiction is resolved.** xterm.js is the only
+  reference with the same architecture here, and on the question *may the anchor move mid-composition*
+  it looked self-contradictory: `_syncTextArea` bails while composing, yet
+  `CompositionHelper.updateCompositionElements` rewrites the textarea's position on every render *while
+  composing*. **#637's measurement resolved it, and the resolution is the reusable part**: because the OS
+  re-reads the anchor, whoever writes the position owns the candidate window — so xterm suppresses the
+  *involuntary* writer and keeps the *voluntary* one. Two writers with different intents, not two rules.
+  The general lesson stands: in this area a reference disagreeing with itself means a measurement is
+  owed, not that one site should be picked.
+- **One reference generalised into a rule.** The shared rule across all three references is *the anchor
+  tracks where the user's composition is, never where the output cursor went* — and **two of the three
+  satisfy it by re-aiming mid-composition with no gate at all** (ghostty folds preedit width into the
+  rect it pushes per key; alacritty picks the point from the preedit when one exists). justerm-web
+  freezes instead, and only because **this invariant is why it must**: the preedit never reaches this
+  side, so *"where the composition is"* has no representation beyond *"where it started"*. Reading
+  xterm's suppression as the rule rather than as one codebase's expression of it is the mistake this
+  bullet exists to name — it was made and corrected inside #637 itself. **#249 landing makes freezing
+  wrong**, not merely conservative, because it would supply the missing representation.
+- **A measurement destroyed by the act of observing it.** Screen-capturing a live composition moves
+  focus, which commits it and clears the textarea — so the artifact under observation disappears exactly
+  when it is recorded. #637 drew a wrong conclusion from such a capture once (*"Hanja conversion happens
+  after the composition ends"*) before the maintainer corrected it from live observation. Anything in
+  this territory that needs a real IME has to be watched, not screenshotted.
 
 ## What is **not** part of this fact
 
@@ -91,4 +111,9 @@ this fact locally, and none of them recorded it.**
   the OS reads it at composition start. It was found by a completeness pass asking a question about the
   *cell*, not about compositions.
 - **#637** is where the absence started costing: whether a frame may move the anchor mid-composition
-  cannot be answered from any of the three sites above, because each recorded only its own case.
+  could not be answered from any of the three sites above, because each recorded only its own case. It
+  was settled by measuring a real IME, and the cost of *not* having this note was paid twice over —
+  the demo could not even produce the precondition (its cursor is a constant, and `positionTextarea`'s
+  cache is keyed on the cursor cell, so appended output moved the anchor zero times), which is the same
+  property that makes the page able to reproduce **#631**. One page, two defects, and the property that
+  enables one blinds the other.

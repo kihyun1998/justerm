@@ -187,6 +187,22 @@ let cursorShown = true;
 const CURSOR_ROW = 5;
 const CURSOR_COL = 2;
 
+/**
+ * #637 — unsolicited output that MOVES the cursor while an IME composition is open.
+ *
+ * Opt-in and off by default, because a *stationary* cursor is load-bearing everywhere else on this
+ * page: every pixel probe assumes the cursor never leaves `CURSOR_ROW` (see its note), and #631's
+ * `__imeAnchorProbe` reproduces its defect precisely *because* the cursor does not move. #637 is the
+ * opposite condition, and this page could not produce it at all — `positionTextarea`'s cache is keyed
+ * on the cursor *cell*, so 300ms of appended rows moved the anchor exactly zero times. That is why
+ * "type Korean while output scrolls" observes nothing here without this flag.
+ *
+ * The advance rides `appendTick`, the same timer that appends output, which is what makes the motion
+ * *unsolicited* — the composing user is not the one moving it. That is reachable mover #1 on #637.
+ */
+let cursorDrift = false;
+let driftRow = CURSOR_ROW;
+
 // #576: SGR 5 (blink) text. Split into the two halves the design splits it into — the APPLICATION
 // asks for blinking cells (`sgr5Text`, which core would report as the cell flag), and the CONSUMER
 // decides whether and how fast they blink (`setTextBlinkInterval`, off by default). Both start off,
@@ -529,6 +545,97 @@ function toggleSgr5Text(): void {
 
 // #576, the consumer's half: the interval is the policy, and `0` (the default) means the text is
 // shown steadily. This is the knob a consumer sets; nothing the application sends can turn it on.
+/**
+ * #637 — make the anchor and the input seam VISIBLE, so a human can perform the observation.
+ *
+ * Without this the page is unobservable for this question: the textarea is `opacity: 0` so the anchor
+ * has no on-screen position, the demo has no backend so typing never echoes, and a Korean IME draws no
+ * candidate window until Hanja conversion is requested. "Nothing happened" and "it worked and nothing
+ * shows it" are the same picture — which is why the observation kept failing.
+ *
+ * **Does not touch the textarea.** It is the measurand: its `left`/`top` are what #637 is about, and its
+ * width decides where the caret rect sits inside the box, which is what the OS reads to place the
+ * candidate window. So the marker is a SEPARATE overlay that mirrors `getBoundingClientRect()`, and the
+ * textarea keeps every style `makeHiddenTextarea` gave it. A revealed textarea would have been the
+ * easier build and would have perturbed the thing under test.
+ */
+let imeHud: { box: HTMLDivElement; readout: HTMLDivElement; raf: number } | undefined;
+
+function toggleImeHud(): void {
+  if (imeHud) {
+    cancelAnimationFrame(imeHud.raf);
+    imeHud.box.remove();
+    imeHud.readout.remove();
+    imeHud = undefined;
+    imeHudBtn.textContent = "IME HUD: OFF";
+    return;
+  }
+  const ta = document.querySelector("textarea")!;
+  ta.addEventListener(
+    "keydown",
+    (e) => {
+      lastKeyCode = `${e.keyCode} (key=${JSON.stringify(e.key)} code=${e.code}) isComposing=${e.isComposing}`;
+    },
+    { capture: true },
+  );
+  const box = document.createElement("div");
+  Object.assign(box.style, {
+    position: "fixed",
+    border: "2px solid #f38ba8",
+    background: "rgba(243,139,168,0.25)",
+    pointerEvents: "none",
+    zIndex: "300",
+  } satisfies Partial<CSSStyleDeclaration>);
+  const readout = document.createElement("div");
+  Object.assign(readout.style, {
+    position: "fixed",
+    top: "8px",
+    left: "8px",
+    padding: "6px 10px",
+    background: "rgba(30,30,46,0.92)",
+    color: "#cdd6f4",
+    font: "12px ui-monospace, monospace",
+    whiteSpace: "pre",
+    border: "1px solid #45475a",
+    borderRadius: "4px",
+    pointerEvents: "none",
+    zIndex: "300",
+  } satisfies Partial<CSSStyleDeclaration>);
+  document.body.append(box, readout);
+
+  const tick = (): void => {
+    const r = ta.getBoundingClientRect();
+    // Minimum 8px wide so a 1px anchor is actually findable on screen; the box is an overlay, so
+    // padding it out cannot move the textarea it is reporting on.
+    Object.assign(box.style, {
+      left: `${r.left}px`,
+      top: `${r.top}px`,
+      width: `${Math.max(r.width, 8)}px`,
+      height: `${r.height}px`,
+    });
+    readout.textContent =
+      `IME anchor  left=${ta.style.left} top=${ta.style.top}\n` +
+      `focused     ${document.activeElement === ta ? "YES (typing reaches the widget)" : "NO — click the terminal"}\n` +
+      `drift       ${cursorDrift ? "ON (output is moving the cursor)" : "OFF"}\n` +
+      `last intent ${lastIntentLabel}\n` +
+      `last keyCode ${lastKeyCode}\n` +
+      `textarea    ${JSON.stringify(ta.value)}`;
+    imeHud!.raf = requestAnimationFrame(tick);
+  };
+  imeHud = { box, readout, raf: requestAnimationFrame(tick) };
+  imeHudBtn.textContent = "IME HUD: ON";
+}
+
+// #637: turn the unsolicited cursor motion on so a REAL IME can be observed against it. Resets the
+// drift row to the parked cell on the way off, so the pixel probes get their constant back.
+function toggleCursorDrift(): void {
+  cursorDrift = !cursorDrift;
+  if (!cursorDrift) driftRow = CURSOR_ROW;
+  render();
+  cursorDriftBtn.textContent = `Cursor drift: ${cursorDrift ? "ON" : "OFF"}`;
+  console.log(`[demo] cursor drift ${cursorDrift ? "ON" : "OFF"} (#637: unsolicited anchor mover)`);
+}
+
 function toggleTextBlink(): void {
   textBlinkOn = !textBlinkOn;
   const ms = textBlinkOn ? DEMO_TEXT_BLINK_INTERVAL : 0;
@@ -647,6 +754,8 @@ const appMouseBtn = demoButton("App mouse: OFF", toggleAppMouse);
 const cursorBlinkBtn = demoButton("Cursor blink: OFF", toggleCursorBlink); // #575
 const sgr5TextBtn = demoButton("SGR 5 text: OFF", toggleSgr5Text); // #576 (application half)
 const textBlinkBtn = demoButton("Text blink: OFF", toggleTextBlink); // #576 (consumer half)
+const cursorDriftBtn = demoButton("Cursor drift: OFF", toggleCursorDrift); // #637
+const imeHudBtn = demoButton("IME HUD: OFF", toggleImeHud); // #637
 // Label derived, not hardcoded: `?bgAlpha=` may have booted this page translucent, and a button that
 // said OPAQUE then would be a false report of the state it is about to toggle.
 const bgAlphaBtn = demoButton(
@@ -675,6 +784,8 @@ controls.append(
   cursorBlinkBtn,
   sgr5TextBtn,
   textBlinkBtn,
+  cursorDriftBtn,
+  imeHudBtn,
   bgAlphaBtn,
   titleBtn,
   bellBtn,
@@ -794,7 +905,7 @@ function viewportFrame(out?: { scrollCount: number }): DecodedFrame {
     ],
     // #575: the cursor rides every frame, like core emits it. `cursorBlink` is the application's
     // half of the blink decision; the widget resolves it against its consumer override.
-    cursorRow: CURSOR_ROW,
+    cursorRow: cursorDrift ? driftRow : CURSOR_ROW, // #637: drift is opt-in, see `cursorDrift`
     cursorCol: CURSOR_COL,
     cursorVisible: cursorShown,
     cursorShape: 0, // block
@@ -856,18 +967,41 @@ const getGeometry = (): CellGeometry => {
 // backend, so it logs them — proving keys/paste/focus (and a wheel notch when
 // "App mouse" is ON) reach the seam. The wheel's LOCAL branch scrolls scrollback
 // via onScroll — the SAME shape the scrollbar drag uses (one coherent request).
+/** #637: how many KEY intents have reached the seam. Read by `__imeDriftProbe` as its evidence that
+ * a composition is genuinely open — a `CompositionController` in composing state swallows CapsLock
+ * (keyCode 20) and an idle one passes it through, so the counter not moving IS the composing state.
+ * Without that, the probe would assert its own premise (#337). */
+let keyIntentCount = 0;
+/** #637: the last intent that reached the seam, as text. The demo has no backend, so typing is
+ * invisible on the grid and "nothing happened" and "it worked but nothing echoes" look identical —
+ * which is exactly what made a human IME observation unperformable. The HUD below shows this. */
+let lastIntentLabel = "(none yet)";
+/**
+ * #637 — the raw `keyCode` of the last keydown that reached the textarea, recorded so a key's identity
+ * is a MEASUREMENT rather than an inference from a Windows VK constant. It decides behaviour: the
+ * composition gate whitelists 229 (IME-consumed) and 16/17/18/20, and finalizes the composition on
+ * anything else — so whether the Hanja key arrives as 229 or as 25 is the difference between "the IME
+ * keeps composing" and "our gate ended it first".
+ *
+ * Passive by construction: capture phase, no `preventDefault`, no `stopPropagation`. It observes the
+ * same event `captureInput` is about to handle and changes nothing about it.
+ */
+let lastKeyCode = "(none yet)";
 const inputSink: InputSink = {
   send: (intent) => {
     if (intent.kind === "key") {
+      keyIntentCount++;
       console.log(`[input] key ${JSON.stringify(intent.event.key)} mods=${intent.event.mods}`);
       // Feed printable typed chars to the a11y echo-dedup (#119).
       if (intent.event.key.type === "char") a11y.onKey(intent.event.key.char);
+      lastIntentLabel = `key ${JSON.stringify(intent.event.key)}`;
     } else if (intent.kind === "mouse")
       console.log(`[input] mouse ${intent.event.button} @${intent.event.col},${intent.event.row}`);
     else if (intent.kind === "paste") console.log(`[input] paste ${JSON.stringify(intent.text)}`);
     else if (intent.kind === "text") {
       console.log(`[input] text ${JSON.stringify(intent.text)}`); // #116 IME commit
       a11y.onKey(intent.text); // dedup the committed run so its echo isn't re-announced
+      lastIntentLabel = `text ${JSON.stringify(intent.text)} ← IME COMMIT`;
     } else console.log(`[input] focus ${intent.focused}`);
   },
 };
@@ -1204,6 +1338,7 @@ declare global {
     __bgAlphaProbe?: () => Promise<BgAlphaProbe>;
     __spacingProbe?: () => SpacingProbe;
     __imeAnchorProbe?: () => ImeAnchorProbe;
+    __imeDriftProbe?: () => ImeDriftProbe;
     __fitProbe?: () => FitProbe;
     __setLineHeight?: (lh: number) => void;
   }
@@ -1821,6 +1956,98 @@ window.__imeAnchorProbe = (): ImeAnchorProbe => {
 };
 
 /**
+ * #637 — does an output frame move the IME anchor while a composition is OPEN?
+ *
+ * This probe answers the *mechanism* half only, and the distinction is the whole point of the issue's
+ * `UNADJUDICATED` grade: it can show that `positionTextarea` writes `ta.style.left/top` mid-composition,
+ * because that is a DOM fact. It cannot show whether the OS IME re-reads the anchor and moves its
+ * candidate window, because a dispatched `CompositionEvent` runs our listeners and not the OS's query
+ * path. The second half needs a real IME and a human — the `Cursor drift` button is there for that.
+ *
+ * Deliberately NOT asserting a defect: if `duringComposition` differs from `atCompositionStart`, the
+ * frame stream moved the anchor under an open composition. Whether that is harm is the open question.
+ */
+interface ImeDriftProbe {
+  /** Anchor right after a real `compositionstart` — #631's point-of-use re-sync. */
+  atCompositionStart: { left: number; top: number; row: number };
+  /** Anchor after an output frame carrying a MOVED cursor, composition still open. */
+  duringComposition: { left: number; top: number; row: number };
+  /** Anchor after the same unsolicited cursor move with NO composition open — the in-run control.
+   * The frame stream is *supposed* to drive the anchor normally; the claim is only that it keeps
+   * doing so when it should not. Equal deltas here and above = `positionTextarea` is composition-blind. */
+  noComposition: { left: number; top: number; row: number };
+  /** Evidence the composition was genuinely open at the second read, not assumed: a CapsLock keydown
+   * is swallowed by a composing controller and passed through by an idle one, so `false` here means
+   * the controller really was composing. Reads the KEY-intent counter, not our own flag. */
+  capsLockSwallowedWhileComposing: boolean;
+  /** The cell height the widget anchors with, so a row delta can be checked against a px delta
+   * instead of asserting an absolute px value (no absolute cell dimension is portable, ADR-0022). */
+  cellHeight: number;
+}
+
+window.__imeDriftProbe = (): ImeDriftProbe => {
+  const ta = document.querySelector("textarea")!;
+  const savedDrift = cursorDrift;
+  const savedRow = driftRow;
+
+  /** A keydown the composing controller swallows and an idle one forwards. `keyCode` is not a
+   * `KeyboardEventInit` member, so it has to be defined onto the instance. */
+  const capsLockReaches = (): boolean => {
+    const e = new KeyboardEvent("keydown", { key: "CapsLock", bubbles: true, cancelable: true });
+    Object.defineProperty(e, "keyCode", { get: () => 20 });
+    const before = keyIntentCount;
+    ta.dispatchEvent(e);
+    return keyIntentCount > before;
+  };
+
+  cursorDrift = true;
+  driftRow = CURSOR_ROW;
+  render();
+
+  // CONTROL: no composition open, cursor moves — the anchor is expected to follow.
+  driftRow = (driftRow + 3) % ROWS;
+  render();
+  const noComposition = {
+    left: parseFloat(ta.style.left || "0"),
+    top: parseFloat(ta.style.top || "0"),
+    row: driftRow,
+  };
+
+  // A REAL compositionstart on the real textarea, so the widget's own `onStart` runs (#631 re-sync,
+  // then the controller is told). Same shape as `__imeAnchorProbe`.
+  ta.dispatchEvent(new CompositionEvent("compositionstart"));
+  const atCompositionStart = {
+    left: parseFloat(ta.style.left || "0"),
+    top: parseFloat(ta.style.top || "0"),
+    row: driftRow,
+  };
+
+  // Unsolicited output moves the cursor. The composing user did nothing.
+  driftRow = (driftRow + 3) % ROWS;
+  render();
+  const duringComposition = {
+    left: parseFloat(ta.style.left || "0"),
+    top: parseFloat(ta.style.top || "0"),
+    row: driftRow,
+  };
+  const capsLockSwallowedWhileComposing = !capsLockReaches();
+
+  ta.value = "";
+  ta.dispatchEvent(new CompositionEvent("compositionend", { data: "" })); // empty ⇒ no intent
+  cursorDrift = savedDrift;
+  driftRow = savedDrift ? savedRow : CURSOR_ROW;
+  render();
+
+  return {
+    atCompositionStart,
+    duringComposition,
+    noComposition,
+    capsLockSwallowedWhileComposing,
+    cellHeight: getGeometry().cellHeight,
+  };
+};
+
+/**
  * #632 — everything an e2e needs to compute what `FitController` will propose, WITHOUT perturbing
  * anything. The arithmetic has to happen in the browser because the cell derives from the font's
  * `█` ink box (ADR-0022), so no absolute cell dimension is portable across machines — CI's Linux
@@ -2273,6 +2500,9 @@ canvas.addEventListener("click", (e) => {
 let next = 0;
 function appendTick(): void {
   log.push(`row ${next++} — select · find=Ctrl-F · link: https://github.com/kihyun1998/justerm`);
+  // #637: when drift is on, the SAME unsolicited tick that appends output also moves the cursor, so
+  // the widget's cell cache is invalidated and `positionTextarea` writes the anchor mid-composition.
+  if (cursorDrift) driftRow = (driftRow + 1) % ROWS;
   search.onFrame();
   updateCount();
   // Real scroll amount: 0 while the screen is still filling, 1 once full (the top
