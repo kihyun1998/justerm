@@ -29,7 +29,7 @@
   const spans = new Uint32Array([0, 0, COLS - 1, 0, N]);
   const spaces = new Uint32Array(N).fill(SPACE);
   const zeros = new Uint32Array(N);
-  const applyDamage = () => r.apply_damage(header, spans, spaces, zeros, new Uint32Array(N), new Uint16Array(N), new Uint16Array(N), []);
+  const applyDamage = () => r.apply_damage(header, spans, spaces, zeros, new Uint32Array(N), new Uint16Array(N), new Uint32Array(N), []);
 
   // Baseline: one frame through the retained-grid path, presented.
   r.resize(COLS, ROWS);

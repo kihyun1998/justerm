@@ -400,7 +400,7 @@
     const n = codepoints.length;
     // one span: header=[cols,rows,kind,has_scroll,...], span dir = [row, col0, col1, cp_off, cp_len]
     r.apply_damage(dmgHeader, new Uint32Array(spans), codepoints, new Uint32Array(n),
-                   new Uint32Array(n), dmgFlags, new Uint16Array(n), []);
+                   new Uint32Array(n), dmgFlags, new Uint32Array(n), []);
     r.render();
     return grab();
   };

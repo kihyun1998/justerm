@@ -188,7 +188,7 @@
   const header = new Uint32Array([COLS, ROWS, 0 /* Full */, 0, 0, 0, 0, 1 /* blink_on */]);
   const spans = new Uint32Array([0, 0, COLS - 1, 0, N]); // one span, whole row
   r.resize(COLS, ROWS);
-  r.apply_damage(header, spans, spaces, zeroFg, new Uint32Array(N), new Uint16Array(N), new Uint16Array(N), []);
+  r.apply_damage(header, spans, spaces, zeroFg, new Uint32Array(N), new Uint16Array(N), new Uint32Array(N), []);
   r.render();
   const beforeOverlay = grab();
   checks.theDamageGridStartsWithoutAHighlight = cellIs(beforeOverlay, 0, DEF_BG);

@@ -41,7 +41,13 @@ pub struct DamageFrame<'a> {
     /// codepoint), else a 1-based index into `side_table` for this cell's trailing combining
     /// marks. Frame-local — resolved to text at scatter time so a later frame's differing
     /// `side_table` can't invalidate a stored index.
-    pub extra: &'a [u16],
+    ///
+    /// `u32`, matching what justerm-core emits (#621/#627). It was `u16`, and the web seam
+    /// bridged the gap by truncating: the table holds one entry per combining cell of the
+    /// viewport, and the frame header admits a viewport far wider than `u16::MAX` cells, so
+    /// index 65536 read back as "no cluster" and 65537 as the *wrong* one — silently, and
+    /// with an unconditional per-frame copy where the column used to pass through untouched.
+    pub extra: &'a [u32],
     /// This frame's combining-mark clusters, referenced by a cell's `extra - 1`. Each entry is
     /// only the trailing width-0 **marks** (e.g. `"\u{0301}"`) — justerm-core stores the base
     /// glyph in `codepoints`, and never unifies ZWJ / skin-tone / flag sequences (each of those
@@ -800,6 +806,45 @@ mod tests {
             g.clusters(),
             &["".to_string(), "".to_string()],
             "Full wipes clusters"
+        );
+    }
+
+    /// #627 — a cluster index above `u16::MAX` resolves to its own cluster, not another's.
+    ///
+    /// The column is a **frame-local index into `side_table`**, and that table holds one entry
+    /// per combining cell of the viewport. justerm-core widened it to `u32` in #621 because the
+    /// frame header stores `cols` and `rows` as `u16` *each*, so a legal viewport holds far more
+    /// cells than a `u16` can number. This crate stayed narrow, and the web seam bridged the two
+    /// by truncating — measured on the JS side, index 65536 became `0` ("no cluster", the marks
+    /// silently dropped) and 65537 became `1`, i.e. **the wrong cluster**, with no error anywhere.
+    ///
+    /// Reachability is low — it needs more than 65 535 combining cells in one viewport — but the
+    /// failure is silent, and the truncation was also an unconditional per-frame copy where the
+    /// column used to pass through untouched. The numbering itself is unchanged.
+    #[test]
+    fn a_cluster_index_above_u16_resolves_to_its_own_cluster() {
+        let big = u16::MAX as u32 + 2; // 65537 — truncates to 1, i.e. the *first* entry
+        let mut side = vec![String::new(); big as usize];
+        side[0] = "\u{0301}".to_string(); // what a truncating chain would land on
+        side[(big - 1) as usize] = "\u{0308}".to_string(); // what the index actually names
+
+        let mut g = FrameGrid::try_new(1, 1).unwrap();
+        g.apply(&DamageFrame {
+            kind: 1,
+            spans: &[0, 0, 0, 0, 1],
+            codepoints: &[0x65], // 'e'
+            fg: &[0],
+            bg: &[0],
+            flags: &[0],
+            extra: &[big],
+            side_table: &side,
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(
+            g.clusters()[0],
+            "e\u{0308}",
+            "the index names the last entry; truncating to u16 would have resolved the first",
         );
     }
 }

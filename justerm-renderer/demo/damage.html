@@ -35,7 +35,7 @@
   const cps = (a) => new Uint32Array(a);
   const zerosN = (n) => new Uint32Array(n);
   const flagsN = (n) => new Uint16Array(n);
-  const extraN = (n) => new Uint16Array(n); // no clusters (all zero)
+  const extraN = (n) => new Uint32Array(n); // no clusters (all zero) — u32 since #627
 
   // Frame 1 — Full: row 0 = "ABCD" (one span, cols 0..=3). Rows 1,2 blank.
   r.apply_damage(hdr(0), new Uint32Array([0, 0, 3, 0, 4]), cps([0x41, 0x42, 0x43, 0x44]), zerosN(4), zerosN(4), flagsN(4), extraN(4), []);
@@ -66,7 +66,7 @@
   // assembles base + mark, NFC-keys it to U+00E9 (e-acute), which has MORE ink than the plain e
   // at cell 1 -- proof the whole grapheme (not the base alone, nor the bare mark) rendered.
   r.apply_damage(hdr(0), new Uint32Array([0, 0, 1, 0, 2]), cps([0x65, 0x65]), zerosN(2), zerosN(2), flagsN(2),
-    new Uint16Array([1, 0]), ["́"]); // combining acute only (marks); base is in codepoints
+    new Uint32Array([1, 0]), ["́"]); // combining acute only (marks); base is in codepoints
   r.render();
   const cluster = { accented: cellLit(0, 0), plain: cellLit(1, 0) };
 
