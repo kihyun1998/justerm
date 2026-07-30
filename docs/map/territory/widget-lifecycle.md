@@ -34,8 +34,10 @@ obligation. The rest depend on a consumer remembering, and the measurement below
   worked this way through the `Unsubscribe` it returns. See
   [reference behaviour](#reference-behaviour).
 - **`Terminal.dispose()` is end of life, not unmount.** `mount()` after it throws. Declared rather
-  than left open because the alternative was already broken: `textareaCell` survives disposal (a
-  remounted widget parks the IME candidate window at the canvas origin until the cursor moves), and a
+  than left open because the alternative was already broken: `textareaCell` and `cursorAnchor`
+  survive disposal (a remounted widget parks the IME candidate window at the previous mount's anchor;
+  since #631 only until the next focus or composition start re-syncs it, which shortens that window
+  rather than closing it), and a
   re-mounted renderer would have lost its `prefers-reduced-motion` listener permanently — its only
   registration is in a private constructor.
 - **It stops work, not memory.** The renderer's wasm instance, GL context, glyph atlas and the
@@ -88,8 +90,12 @@ In `docs/agents/reference-facts.md` — **linked, never restated**.
 
 - [the cell size is derived state](../invariant/cell-size-is-derived-state.md)
   — `textareaCell` is a cached *decision* that outlives the geometry it was computed from, so a cell
-  change with a stationary cursor leaves the IME anchor stale (#578). It is a lifecycle fact rather
-  than a geometry one: the cache has no invalidation path.
+  change with a stationary cursor left the IME anchor stale (#578, fixed by #631). It is a lifecycle
+  fact rather than a geometry one: the cache still has no invalidation path, and #631's answer was
+  not to give it one — the widget cannot observe a cell change, because `getGeometry` is a
+  consumer-supplied *pull* callback. Instead the anchor is re-read at the moments something reads it
+  (composition start, focus). So the cached decision still outlives its geometry between those
+  moments **by design**; what changed is that nothing reads it while it is stale.
 
 **No invariant originates here — checked, not assumed (#606).** The rule this territory gained ("what a layer is handed
 across a port, that layer ends") was tested for reach before being left here, because a fact that

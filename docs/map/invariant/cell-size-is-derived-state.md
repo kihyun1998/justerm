@@ -55,9 +55,11 @@ renderer keeps drawing correctly — it is the consumer's arithmetic that is wro
 - **Stale divisor.** Clicks and drags resolve to the wrong cell; the further from the origin, the
   larger the error. Selection appears to "drift".
 - **Stale cached decision.** `Terminal.positionTextarea` returns early when the cursor *cell* is
-  unchanged (`terminal.ts`), so a cell change with a stationary cursor leaves the IME anchor at
-  `row * oldCellHeight`. The candidate window opens in the wrong place until the cursor moves. The
-  cache key is the cell coordinate; the thing that went stale is the geometry.
+  unchanged (`terminal.ts`), so a cell change with a stationary cursor left the IME anchor at
+  `row * oldCellHeight`. The candidate window opened in the wrong place until the cursor moved. The
+  cache key is the cell coordinate; the thing that went stale is the geometry. Fixed by **#631**, and
+  the shape it chose is in the next section — measured before the fix: at row 5, an anchor of 95px
+  against a correct 150px.
 - **Deduped flush.** `FitController` returns early when the proposed `cols`/`rows` match the last
   pair, so a cell change that leaves the grid identical never reaches `resize()` — and `resize()` is
   the only place the canvas CSS box is set. The browser then scales a drawing buffer that no longer
@@ -65,6 +67,42 @@ renderer keeps drawing correctly — it is the consumer's arithmetic that is wro
 - **Wrong unit.** The published README built `CellGeometry` from `renderer.cellSize()` (device px) and
   fed it CSS-px `clientX`/`clientY`, so every click was off by the device pixel ratio on a Retina
   display (#578). This one is not even time-dependent — it was wrong from the first click.
+
+## How a reader discharges the obligation
+
+Three shapes are available, and **which one is right depends on how often the value is read, not on
+how badly it can be wrong** (#631, 2026-07-30):
+
+- **Re-read per use.** What `input.ts`, `selection.ts`, `Terminal.onWheel`, `proposeDimensions` and
+  `JustermRenderer.resize` already do — a per-event `getGeometry()` / live `cssCellWidth()`. Seven of
+  the nine readers in `justerm-web` are this shape, and it is what all three references do
+  (xterm.js `_syncTextArea`, ghostty `imePoint`, alacritty `update_ime_position` — **none of them
+  caches**). Correct whenever the read is event-rate rather than frame-rate.
+- **Re-read at the point of use.** For a value that is *written* per frame but *read* at a few
+  discrete moments, keep the per-frame cache and re-read where the read happens. #631's answer for
+  the IME anchor: the OS reads it at composition start, and the browser's focus steps read it at
+  `focus()`, so those two are the only places that must be fresh. **Note what this does not do** —
+  the cache is still stale between those moments, deliberately; the claim is that nothing reads it
+  there. That makes the claim falsifiable by a *new reader*, which is the thing to check before
+  adding one.
+- **Key the cache on authoritative live state.** The reference's executed dedupe prior art
+  (xterm.js `CoreBrowserTerminal.resize` compares against `this.cols`/`this.rows`, never a shadow
+  copy). Open for `FitController`, whose `lastCols`/`lastRows` *are* a shadow copy — see the spine.
+
+**Why "just drop the cache" is not universally right here, even though every reference does it.**
+Their cell is a **stored field they push to** (`dimensions.css.cell`, `size.cell`, `size_info`);
+justerm-web's arrives through a consumer-supplied `getGeometry` callback whose cost the widget does
+not control, and both the demo's and the README's do a `getBoundingClientRect()`. Per-frame is free
+for them and a forced layout read per output flush for us. That is a **validity condition, not a
+preference**: the day the widget holds a pushed cell, the reference's no-cache shape becomes the
+right one.
+
+**A push signal from the renderer was rejected**, not on cost but on ownership: it would be the first
+renderer→consumer push channel, i.e. new ambient work in a layer that has no lifecycle owner
+([widget lifecycle](../territory/widget-lifecycle.md), spine #605). A `ResizeObserver` on the canvas
+was rejected on arithmetic — `resize()` sets the CSS box to `cols × cell`, and a cell change can
+leave that product byte-identical (box 80px, cell 8→10, cols 10→8), so it is incomplete for the same
+reason a grid-keyed dedupe is.
 
 ## The roster lives in the spine, not here
 

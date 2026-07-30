@@ -1409,3 +1409,41 @@ test("a disposed widget stops the renderer it was handed (#606)", async ({ page 
   // not have stopped it even if it wanted to — `dispose` was not on the `Renderer` port.
   expect(p.afterDispose).toBe(0);
 });
+
+test("a cell-size change re-anchors the IME textarea at composition start (#631)", async ({
+  page,
+}) => {
+  // The anchor is a DOM side effect (`ta.style.top`), so a synthetic unit cannot see it — and the
+  // widget's per-frame cache is keyed on the cursor CELL, which a spacing change leaves identical.
+  // The demo's cursor is a constant, so this reproduces the defect exactly: stationary cursor,
+  // moved cell.
+  await page.goto("/");
+  await expect(page.getByRole("button", { name: "Line height: 1" })).toBeVisible();
+  const p = await page.evaluate(() => window.__imeAnchorProbe!());
+
+  // THE CONTROL, in the same run: the cell really moved. Direction only — a line-height delta is
+  // multiplicative on a font-dependent cell, so no absolute height is portable across machines.
+  expect(p.afterCellMove.cellH).toBeGreaterThan(p.base.cellH);
+  expect(p.afterCellMove.cellW).toBeCloseTo(p.base.cellW, 3); // a ROW knob, not a column one
+
+  // THE CLAIM: after a real `compositionstart`, the anchor matches the geometry in force NOW —
+  // which is where the OS opens its candidate window. Asserted as a relation between two numbers
+  // read in the same snapshot, so it holds whatever the font measured.
+  expect(p.afterCompositionStart.top).toBeCloseTo(
+    p.cursorRow * p.afterCompositionStart.cellH,
+    3,
+  );
+  expect(p.afterCompositionStart.left).toBeCloseTo(
+    p.cursorCol * p.afterCompositionStart.cellW,
+    3,
+  );
+
+  // …and it actually MOVED to get there. Without this the assertion above could pass on a page
+  // where the cell never changed, which is the tautology `theflow` Step 4 warns about.
+  expect(p.afterCompositionStart.top).not.toBeCloseTo(p.base.top, 3);
+
+  // Deliberately NOT asserted: that `afterCellMove.top` is stale. It is, today — the re-sync is at
+  // the point of use, following xterm.js, whose own option-change path cannot reach its
+  // `_syncTextArea` either. Pinning the staleness would freeze that choice and fail the day a push
+  // signal (#630's third shape) replaces it, while the claim above stays the requirement either way.
+});
