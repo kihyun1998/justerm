@@ -1562,3 +1562,55 @@ test("a pointer-down mid-composition leaves the IME anchor frozen (#649)", async
   // would still be green.
   expect(p.afterPointerDownPostEnd.top).toBeCloseTo(p.driftedCell.top, 3);
 });
+
+// #675 — an unmeasured cell used to kill the wheel *permanently*. The wheel listener is on the
+// container (`terminal.ts` attaches to `element`) while `getGeometry` reads the canvas, so
+// "container laid out, canvas not" is a structural state: a collapsed panel, a hidden tab, or the
+// window before the first fit. A pixel-mode notch then divided by 0, the sub-line accumulator kept
+// the result (`Infinity % 1` is `NaN`), and the widget handed the consumer a non-finite offset that
+// came back on the next frame — so recovering the geometry did not recover the wheel.
+//
+// PIXEL mode on purpose: the LINE branch never divides by the cell and was never affected, which is
+// also why the fix guards outputs per branch rather than refusing the whole context.
+//
+// The node suite cannot reach this: `vitest.config.ts` runs `environment: "node"`, so the
+// `getGeometry` → `onWheel` → `onScroll` → frame → `track()` loop that *latched* it has no unit
+// form. The decisions inside it are unit-tested; this is the loop.
+test("a wheel survives an unmeasured cell instead of latching NaN (#675)", async ({ page }) => {
+  const offsets: string[] = [];
+  page.on("console", (m) => {
+    const n = m.text().match(/\[wheel\] scroll → displayOffset (\S+)/);
+    if (n?.[1] !== undefined) offsets.push(n[1]);
+  });
+  const notch = () =>
+    page.evaluate(() => {
+      const c = document.querySelector("#term") as HTMLElement;
+      c.parentElement!.dispatchEvent(
+        new WheelEvent("wheel", { deltaY: -600, deltaMode: 0, bubbles: true, cancelable: true }),
+      );
+    });
+  const hideCanvas = (hidden: boolean) =>
+    page.evaluate((h) => {
+      (document.querySelector("#term") as HTMLElement).style.display = h ? "none" : "";
+    }, hidden);
+
+  // Control: a healthy notch scrolls, and the offset is a number.
+  await notch();
+  expect(offsets.length).toBeGreaterThan(0);
+  const healthyCount = offsets.length;
+
+  // The canvas loses its box; the container keeps its listener.
+  await hideCanvas(true);
+  await notch();
+  await notch();
+  await hideCanvas(false);
+
+  // The gesture that used to be dead forever.
+  await notch();
+  await notch();
+
+  // Two assertions, and the second is the one that fails without the fix: no offset was ever
+  // non-finite, AND scrolling still happens after the geometry comes back.
+  expect(offsets.filter((o) => !Number.isFinite(Number(o)))).toEqual([]);
+  expect(offsets.length).toBeGreaterThan(healthyCount);
+});

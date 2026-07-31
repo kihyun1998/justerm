@@ -189,6 +189,18 @@ describe("wheelScrollTarget", () => {
   it("returns null for a zero-line notch (nothing to request)", () => {
     expect(wheelScrollTarget(0, 10, 100)).toBeNull();
   });
+
+  // #675 — the clamp here is the same `Math.max(0, Math.min(len, x))` shape #672
+  // fixed one file over: it passes `NaN` straight through. This function is
+  // exported, so it owes its own totality rather than trusting its one in-repo
+  // caller — and the offset it is *given* can already be poisoned, which is how
+  // the widget stayed broken after the scroller itself had recovered.
+  it("returns null rather than a non-finite target (#675)", () => {
+    expect(wheelScrollTarget(NaN, 10, 100)).toBeNull();
+    expect(wheelScrollTarget(Infinity, 10, 100)).toBeNull();
+    expect(wheelScrollTarget(3, NaN, 100)).toBeNull(); // a poisoned offset coming back in
+    expect(wheelScrollTarget(3, 10, NaN)).toBeNull();
+  });
 });
 
 // --- S16 (#133): routeWheel — the whole app/alt/scrollback decision (adversarial
@@ -204,6 +216,25 @@ describe("routeWheel", () => {
   it("routes to the app when it tracks the wheel — direction only, by line sign", () => {
     expect(routeWheel(MouseEvents.Wheel, 3, false, 10, 100)).toEqual({ kind: "app", direction: "down" });
     expect(routeWheel(MouseEvents.Wheel, -2, false, 10, 100)).toEqual({ kind: "app", direction: "up" });
+  });
+
+  // #675 — `lines === 0` is the existing gate and `NaN === 0` is false, so a
+  // non-finite count reaches every branch below it. The app branch is the one
+  // that fails *quietly*: direction comes from `lines < 0`, which is false for
+  // NaN, so a poisoned scroller reports a **fabricated `down`** to the
+  // application rather than reporting nothing. The local branch is the loud one
+  // — it hands the consumer a non-finite offset, which is what latched.
+  it("a non-finite line count is `none` on every branch, not a fabricated direction (#675)", () => {
+    expect(routeWheel(MouseEvents.Wheel, NaN, false, 10, 100)).toEqual({ kind: "none" }); // app
+    expect(routeWheel(0, NaN, true, 10, 100)).toEqual({ kind: "none" }); // altKeys
+    expect(routeWheel(0, NaN, false, 10, 100)).toEqual({ kind: "none" }); // local scroll
+    expect(routeWheel(0, Infinity, false, 10, 100)).toEqual({ kind: "none" });
+  });
+
+  // A poisoned offset arriving from a frame must not become a scroll request
+  // either — the same reason, one argument over.
+  it("a non-finite display offset is `none` rather than a non-finite request (#675)", () => {
+    expect(routeWheel(0, 3, false, NaN, 100)).toEqual({ kind: "none" });
   });
 
   it("the app path wins over the alt-buffer path (a wheel-tracking TUI on alt)", () => {

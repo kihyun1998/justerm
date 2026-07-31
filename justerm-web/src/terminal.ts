@@ -36,8 +36,21 @@ export function wheelScrollTarget(
   scrollbackLen: number,
 ): number | null {
   if (lines === 0) return null;
-  const target = displayOffset - lines;
-  return Math.max(0, Math.min(scrollbackLen, target));
+  // `Math.max(0, Math.min(len, NaN))` is `NaN` — the same propagation `clampTo`
+  // had at the pointer seam (#672), here at the scroll seam. A non-finite result
+  // is "no request", not a request for a nonsense offset: this function is
+  // exported, so it owes its own totality rather than trusting its one in-repo
+  // caller, and any of the three arguments can arrive poisoned (#675).
+  //
+  // Checked on the **inputs**, and a result check is not a substitute for it —
+  // the clamp *rescues* an infinite request into a finite, wrong one:
+  // `Math.max(0, Math.min(100, 10 - Infinity))` is `0`, a silent jump to the
+  // live edge. Only `NaN` survives to the output, so guarding there would fix
+  // half the cases and read as if it had fixed all of them.
+  if (!Number.isFinite(lines) || !Number.isFinite(displayOffset) || !Number.isFinite(scrollbackLen)) {
+    return null;
+  }
+  return Math.max(0, Math.min(scrollbackLen, displayOffset - lines));
 }
 
 /**
@@ -68,11 +81,20 @@ export function routeWheel(
   displayOffset: number,
   scrollbackLen: number,
 ): WheelAction {
-  if (lines === 0) return { kind: "none" };
+  // `NaN === 0` is false, so a non-finite count reaches every branch below. The
+  // app branch is the one that fails *quietly*: `direction` comes from
+  // `lines < 0`, which is false for `NaN`, so a poisoned scroller would report a
+  // fabricated `down` to the application instead of reporting nothing (#675).
+  if (lines === 0 || !Number.isFinite(lines)) return { kind: "none" };
   const direction = lines < 0 ? "up" : "down";
   if (wheelGoesToApp(mouseWantedEvents)) return { kind: "app", direction };
   if (altScreen) return { kind: "altKeys", direction };
-  return { kind: "scroll", displayOffset: wheelScrollTarget(lines, displayOffset, scrollbackLen)! };
+  // No `!`: the target really can be null now (a poisoned `displayOffset` coming
+  // back from a frame), and asserting it away is how a non-finite offset reached
+  // the consumer's `onScroll` in the first place.
+  const target = wheelScrollTarget(lines, displayOffset, scrollbackLen);
+  if (target === null) return { kind: "none" };
+  return { kind: "scroll", displayOffset: target };
 }
 
 /** Where the hidden textarea is anchored, in cells — the cursor cell a frame reported. */

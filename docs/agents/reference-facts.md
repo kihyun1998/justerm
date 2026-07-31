@@ -832,6 +832,31 @@ closed for a recorded reason: the CSS cell is a **float on purpose** (ADR-0022, 
 cssCellWidth()` scales back exactly). The dedupe on the warn is justerm's own, not xterm's: the reach
 here is every event at pointer rate, where xterm's warn sites are selection-change.
 
+## Who guards a wheel accumulator (#675, verified 2026-07-31)
+
+The odd one out among the rows above: **here the references do not arbitrate, because they share the
+divergence.** justerm's `WheelScroller` mirrors xterm's wheel handling by design (its module doc says
+so), and it inherited the shape rather than drifting from it — so theflow's Step 5 direction rule puts
+this on *our own grounds*, not on parity.
+
+| Fact | Reference | Site |
+|---|---|---|
+| The **byte-identical accumulator, with no non-finite guard** — `this._wheelPartialScroll += amount` then `%= 1`, where `Infinity % 1` is `NaN` and nothing clears it but `reset()` | xterm.js | `src/browser/services/MouseService.ts:478` |
+| Its **only** bail is on an *absent* measurement — `if (cellHeight === undefined || dpr === undefined) return 0` — which does not catch a cell of `0`, the state a hidden or unlaid-out terminal is actually in | xterm.js | `src/browser/services/MouseService.ts:463` |
+| alacritty and ghostty have **no equivalent**: neither turns a wheel delta into lines through a consumer-supplied cell, so there is nothing to compare | — | — |
+
+**The ground justerm decided on, since the reference could not supply one.** xterm is an application
+that owns and can re-measure its cell (see the `hasValidSize` rows above); `justerm-web` is a
+published library whose failure here was silent *and* unrecoverable — measured, an unmeasured cell
+killed the wheel until an alt-screen switch, and the widget then handed the consumer a non-finite
+offset that came back on the next frame. So every producer on that path was made total instead:
+`consumeWheelEvent`, `wheelScrollTarget`, `routeWheel`, `dragScrollSpeed`.
+
+**A detail worth keeping, because a plausible fix hides it.** Guarding the *output* is not equivalent
+to guarding the *input* where a clamp sits between them: `Math.max(0, Math.min(100, 10 - Infinity))`
+is `0` — finite, and a silent jump to the live edge. Only `NaN` survives to the output, so an
+output-side check fixes half the cases while reading as if it fixed all of them.
+
 ## What the engine does with a column it was handed anyway (#671, verified 2026-07-31)
 
 The read-side half of the section above. Once a selection anchor **is** out of range — because the

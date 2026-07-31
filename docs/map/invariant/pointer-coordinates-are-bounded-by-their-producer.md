@@ -110,11 +110,21 @@ fix mentions a shared rule.
   violation rather than refusing — xterm's `hasValidCharSize` → `undefined` guard is half of a repair
   loop whose other half (re-measure) this widget cannot have, since the geometry is the consumer's by
   ADR-0017. Both converters check, because both share `clampTo` and therefore shared the gap.
-  **What that leaves open is the rest of the geometry's readers**, which take the same callback and
-  were never in this note's scope: `WheelScroller` accumulates a non-finite delta into
-  `wheelPartialScroll` and *latches* it — measured, it stays `NaN` after the geometry recovers and
-  only `reset()` (an alt-screen switch) clears it. That is a state defect, not a bound, so a signal
-  does not fix it.
+  **The rest of the geometry's readers were never in this note's scope, and #675 closed the scroll
+  half of them.** Two of them consumed the same callback and handed the *consumer* a non-finite
+  number: `WheelScroller` accumulated a non-finite delta into `wheelPartialScroll` and **latched**
+  it (`Infinity % 1` is `NaN`, and only `reset()` cleared it), while `dragScrollSpeed` emitted `NaN`
+  at exactly `py === 0`. Neither was a bound, so neither could be signalled away — they are fixed by
+  making each producer total. The rule that generalises out of it is the sibling of this note's own,
+  one layer out: **a producer owes its consumer a value the consumer's type can mean.** Where this
+  note is about a coordinate that must be in range, that one is about a number that must be a
+  number — and `Math.max`/`Math.min` no more produce it than they produce a bound.
+  Two things stayed deliberately open, both recorded where they belong rather than here: the
+  *staleness* of the retained fraction across a cell change (#630's third instance, a different
+  axis of the same field), and what a **zero** viewport height should mean to `dragScrollSpeed`
+  (**#680**) — where #667 pinned "every pointer is outside" for a legitimately 0-row viewport, an
+  unmeasured cell is indistinguishable from it at that signature, and the measured consequence is a
+  drag that yanks the viewport to the live edge at maximum speed when a panel collapses mid-drag.
 - **A side-from-raw-pixel refactor.** The clamp currently doubles as the overshoot rule for `Side`;
   computing the side from the unclamped pixel (alacritty's shape) would need alacritty's explicit
   `end_of_grid → Right` arm restored alongside it.

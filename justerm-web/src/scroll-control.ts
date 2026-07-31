@@ -55,6 +55,13 @@ export class WheelScroller {
 
     if (ev.deltaMode === DOM_DELTA_PIXEL) {
       amount /= ctx.cellHeight / ctx.dpr;
+      // An unmeasured cell (`cellHeight` 0) or a non-finite `deltaY` makes this
+      // non-finite, and the accumulator below would *keep* it: `Infinity % 1` is
+      // `NaN`, so every later notch is `NaN` too — including after the geometry
+      // recovers, since nothing but `reset()` clears it. Measured in a real
+      // browser, that killed the wheel outright rather than mis-scrolling it
+      // (#675). Bail before the accumulator, so the instance stays usable.
+      if (!Number.isFinite(amount)) return 0;
       // A small delta is a trackpad swipe — damp it so it doesn't fly.
       if (Math.abs(ev.deltaY) < 50) {
         amount *= 0.3;
@@ -66,7 +73,13 @@ export class WheelScroller {
     } else if (ev.deltaMode === DOM_DELTA_PAGE) {
       amount *= ctx.rows;
     }
-    return amount;
+    // The second guard, for the branches that never reach the accumulator: LINE
+    // and PAGE can still emit a non-finite count (a non-finite `deltaY`, or a
+    // `rows` that is not a number), and this method's contract is a line count.
+    // Deliberately NOT hoisted into one check on `ctx` at entry: LINE mode never
+    // divides by the cell, so refusing the whole context because `cellHeight` is
+    // 0 would break a scroll that works today (pinned in the tests).
+    return Number.isFinite(amount) ? amount : 0;
   }
 
   /** Drop the carried remainder — call on a buffer switch (alt-screen). */

@@ -158,6 +158,40 @@ describe("dragScrollSpeed — distance → scroll lines", () => {
     expect(dragScrollSpeed(-50, H)).toBe(-15);
     expect(dragScrollSpeed(-1000, H)).toBe(-15);
   });
+
+  // #675 — the sibling of the wheel latch, same trigger (an unmeasured cell) at the same seam
+  // (a scroll amount handed to the consumer's `onScroll`). `SelectionController.mouseMove`
+  // computes the height as `getRows() * geom.cellHeight`, so a canvas with no box makes it 0.
+  //
+  // Measured before the guard: the `py <= height` test is false for every pointer, so `offset`
+  // became the pointer's *absolute* y rather than its distance out of the viewport.
+  it("does not auto-scroll against a non-finite viewport height (#675)", () => {
+    // Was 15 — the maximum downward speed, for a pointer sitting *inside* the terminal.
+    expect(dragScrollSpeed(100, NaN)).toBe(0);
+    expect(dragScrollSpeed(10, NaN)).toBe(0);
+    // Was NaN: `offset / Math.abs(offset)` at exactly the origin. This is the one that leaked a
+    // non-finite value into `onScroll`, the same way the wheel path did.
+    expect(dragScrollSpeed(0, NaN)).toBe(0);
+  });
+
+  // A **zero** height is deliberately left as it was, and pinned here as measured so the choice is
+  // visible rather than implied. It has two causes that this signature cannot tell apart: an
+  // unmeasured cell (where max-speed auto-scroll is plainly wrong) and a legitimately 0-row
+  // viewport, where #667 pinned the opposite reading to reach `tick()`'s floor — see
+  // "does not produce a negative edge row when the consumer reports no rows" below, which fails if
+  // this returns 0. Deciding between them is a re-decision, not the totality fix #675 is about —
+  // tracked as #680, which measures the reachability (a drag in progress outlives the canvas's box).
+  it("still treats a zero height as 'every pointer is outside' (#667's reading, unchanged)", () => {
+    expect(dragScrollSpeed(100, 0)).toBe(15);
+  });
+
+  // Discriminating control: `Infinity` is the documented "no row count supplied" case and must
+  // keep its behaviour — inert below, but still scrolling for a pointer above the top. A guard
+  // written as `!Number.isFinite(height)` would silently retire that.
+  it("keeps the infinite-viewport semantics intact", () => {
+    expect(dragScrollSpeed(100, Infinity)).toBe(0); // inside, however far down
+    expect(dragScrollSpeed(-25, Infinity)).toBe(-8); // above the top is still out of bounds
+  });
 });
 
 describe("SelectionController — drag-scroll via tick()", () => {
