@@ -69,6 +69,10 @@ application misbehaves.
 - [the cell size is derived state](../invariant/cell-size-is-derived-state.md)
   — `CellGeometry` is a cell divisor with a lifetime and a unit, and nothing type-checks either
   (#578)
+- [a pointer coordinate is bounded by the converter that produces it](../invariant/pointer-coordinates-are-bounded-by-their-producer.md)
+  — **this territory is where the rule was first discovered** (#266, against `encode_mouse`'s
+  `usize` wrap) and where it read as a mouse-reporting fact rather than a shared one, which is how
+  the sibling converter went four issues without it (#667)
 - [an IME composition is browser-owned state the engine never sees](../invariant/composition-is-browser-owned-state.md)
   — **this territory owns the mechanism the invariant is about**: `composition.ts`, the hidden textarea
   as the real input target, and the decision that a confirmation is a raw `text` intent. The fact has

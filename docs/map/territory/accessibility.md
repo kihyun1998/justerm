@@ -66,6 +66,10 @@ an editor rather than a terminal.
   walks the concatenated `[scrollback ++ grid]` buffer by absolute index, so on the alt screen it
   must floor at `scrollback.len()`. The failure is silent: the AT reads *plausible* text that is not
   on screen
+- [a pointer coordinate is bounded by the converter that produces it](../invariant/pointer-coordinates-are-bounded-by-their-producer.md)
+  — `a11y-selection.ts` converts DOM text offsets rather than pixels, so the arithmetic differs and
+  the obligation does not: an out-of-tree endpoint resolves to the tree's edge. Already discharged;
+  listed so it is not read as exempt (#667)
 - [a decoded frame's columns are getters](../invariant/decoded-columns-are-getters.md) — the cell
   mirror that feeds the accessible text walks every damaged cell, which makes it the one reader
   where a per-cell getter read costs the most; it is where the invariant was found (#657)

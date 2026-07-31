@@ -64,6 +64,10 @@ names as its model — exactly the kind of detail that diverges quietly.
   not"* (#578) until #632 widened the key to carry the cell alongside the proposal. The residual is
   recorded there: the cell is a **proxy** for "a grid write bypassed this controller", so the key is
   only as complete as that set of writers
+- [a pointer coordinate is bounded by the converter that produces it](../invariant/pointer-coordinates-are-bounded-by-their-producer.md)
+  — not a converter, but the *source* of the out-of-range coordinate: `proposeDimensions` floors the
+  grid, so a container that is not an exact multiple of the cell keeps a remainder strip outside the
+  canvas, and a pointer there resolves one past the end (#667)
 
 ## Blast radius
 
