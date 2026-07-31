@@ -166,6 +166,29 @@ on. Both #535 (PR #546) and #533 (PR #548) were worked this way against ADR-0025
 rather than out of their own bodies, and #546 wrote back: its "gate uniformly" amendment
 records that D4 answered a combination the draft had not anticipated.
 
+**And the third ledger is the map — `docs/map/` (hub `docs/map/README.md`), read here,
+at the start.** `reference-facts.md` holds the *code* side and the spine holds the
+*decision* side; the map holds the side neither can: **what else moves when you touch
+this** (`## Blast radius`) and **which facts hold beyond this territory**
+(`## Cross-cutting invariants`). Open the territories the change touches, and follow
+the invariants they list — those are promoted precisely *because* they are invisible
+from the territory you are standing in.
+
+This document already sends you to the map twice, at **Step 5** (the lens brief) and
+**Step 6** (coverage + promotion), and both are too late to change a design: by then
+the boundary is drawn and the tests are written. `CLAUDE.md` has always called it the
+*착수 전 배선도* — the wiring diagram you open **before** starting — and this section is
+where that lands in the flow. Worked example, #661: the wire-format territory supplied
+the problem statement (its `## Known holes` carried the defect's residue, sharper than
+the issue body), the *placement vs annotation* rule that later settled a follow-up
+candidate as "not a defect", and the *`u32` iff viewport-bounded* rule the change's new
+invariant note was built on. All three were in hand before a line was written — and none
+of them is reachable from the issue or from a reference tree.
+
+Reading it at the start is also what makes Step 6's **promotion** obligation possible:
+you cannot notice that a fact holds outside its territory if you never read the
+territories.
+
 | Change type | Real source to read |
 |---|---|
 | **Web feature (concept/UX)** | its real source — usually **xterm.js** (`repos/xtermjs/xterm.js`; e.g. drag-scroll 50px/15, highlightLimit 1000, `_charsToConsume`); for features xterm lacks, the consumer that built it (e.g. **VSCode** `microsoft/vscode` terminal a11y) |
