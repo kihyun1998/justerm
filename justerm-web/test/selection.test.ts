@@ -179,7 +179,8 @@ describe("dragScrollSpeed — distance → scroll lines", () => {
   // unmeasured cell (where max-speed auto-scroll is plainly wrong) and a legitimately 0-row
   // viewport, where #667 pinned the opposite reading to reach `tick()`'s floor — see
   // "does not produce a negative edge row when the consumer reports no rows" below, which fails if
-  // this returns 0. Deciding between them is a re-decision, not the totality fix #675 is about.
+  // this returns 0. Deciding between them is a re-decision, not the totality fix #675 is about —
+  // tracked as #680, which measures the reachability (a drag in progress outlives the canvas's box).
   it("still treats a zero height as 'every pointer is outside' (#667's reading, unchanged)", () => {
     expect(dragScrollSpeed(100, 0)).toBe(15);
   });

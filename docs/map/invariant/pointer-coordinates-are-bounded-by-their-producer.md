@@ -121,9 +121,10 @@ fix mentions a shared rule.
   number — and `Math.max`/`Math.min` no more produce it than they produce a bound.
   Two things stayed deliberately open, both recorded where they belong rather than here: the
   *staleness* of the retained fraction across a cell change (#630's third instance, a different
-  axis of the same field), and what a **zero** viewport height should mean to `dragScrollSpeed`,
-  where #667 pinned "every pointer is outside" for a legitimately 0-row viewport and an unmeasured
-  cell is indistinguishable from it at that signature.
+  axis of the same field), and what a **zero** viewport height should mean to `dragScrollSpeed`
+  (**#680**) — where #667 pinned "every pointer is outside" for a legitimately 0-row viewport, an
+  unmeasured cell is indistinguishable from it at that signature, and the measured consequence is a
+  drag that yanks the viewport to the live edge at maximum speed when a panel collapses mid-drag.
 - **A side-from-raw-pixel refactor.** The clamp currently doubles as the overshoot rule for `Side`;
   computing the side from the unclamped pixel (alacritty's shape) would need alacritty's explicit
   `end_of_grid → Right` arm restored alongside it.

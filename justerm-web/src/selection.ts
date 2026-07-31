@@ -92,7 +92,8 @@ export function dragScrollSpeed(py: number, height: number): number {
   // pinned the opposite reading — *"a 0-row viewport is 0px tall, so any pointer is below it"* —
   // to reach `tick()`'s edge-row floor. The two causes are indistinguishable at this signature, so
   // choosing a semantic for 0 is a re-decision rather than a totality fix; measured and left
-  // alone below, tracked separately.
+  // alone below, tracked as #680 (where the reachability is measured: a drag already in progress
+  // survives the canvas losing its box, because mousemove/mouseup are window-scoped).
   //
   // `Infinity` passes through for the same reason it always did: it is the documented "no row
   // count supplied → infinitely tall viewport" case, where a pointer above the top must still
