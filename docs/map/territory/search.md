@@ -65,6 +65,11 @@ comparison exists to catch.
 - [alt-screen absolute-index floor](../invariant/alt-screen-buffer-floor.md) — `search_with` walks
   logical lines by absolute index and must floor on alt (#144). Site 2 of 3 in that note's discovery
   history
+- [a wire field narrower than the value it carries](../invariant/wire-field-narrower-than-its-value.md)
+  — this territory produced that note's loudest instance: a **one-character query** over a large
+  viewport made 66 000 match spans, wrapping the group's `u16` count to 464 while `decode` returned
+  `Ok` (#621). Search is the cheapest way to generate a viewport-scaled count, so it reaches a new
+  group's ceiling before anything else does
 
 ## Blast radius
 

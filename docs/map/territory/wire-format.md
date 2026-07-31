@@ -83,6 +83,10 @@ one measured question, not the territory.
   beside and gate it with a bit" pattern the in-memory rows use. Its **rule 4 is this format's own**:
   the gating bit is not encodable, so `decode` reconstructs every presence bit from group membership,
   and a group added without a re-arm ships a value its gate hides
+- [a wire field narrower than the value it carries](../invariant/wire-field-narrower-than-its-value.md)
+  — the producer-side half of the *"`u32` iff viewport-bounded"* rule stated above. That rule picks a
+  field's **width**; the note says who is obliged to keep the value inside it, and the answer is
+  never this file — `encode` returns `Vec<u8>` and has no way to refuse
 
 ## Blast radius
 
@@ -114,12 +118,18 @@ unconditional Step 5 trigger.
   (#582), the two look alike, and a fix for one still does not reach the other.
 - **~~`decode` accepts a payload that does not fit the frame it rides on~~ — closed by #582.** Spans,
   sparse group keys and the scroll region are now read against the header's own `cols`/`rows`
-  (`BadSpan`), and `encode` drops rather than narrows an out-of-span group key. **The residue is the
-  part that is not validation**: `ScrollOp.count` is `isize` in memory and `i16` on the wire and
-  `Term::record_scroll` accumulates it without a cap, so ordinary output overflows it — measured,
-  40 000 line feeds with no intervening ack encode to `−25 536`, an up-scroll arriving as a
-  down-scroll on a `Partial` frame. A bound in `decode` cannot fix that; it would reject a frame the
-  engine produces today — **#661**.
+  (`BadSpan`), and `encode` drops rather than narrows an out-of-span group key. **The residue was
+  the part that is not validation, and it is closed by #661**: `ScrollOp.count` is `isize` in memory
+  and `i16` on the wire, and the accumulator had no cap, so a single 32 KB `feed()` of newlines
+  encoded `32768` as `−32768` — an up-scroll arriving as a down-scroll on a `Partial` frame. Fixed
+  at the producer (`Term::scroll_delta` caps at the region height and at `MAX_SCROLL_COUNT`), because
+  a bound in `decode` would have rejected a frame the engine emits. **The mirror of that is settled,
+  not open**: `decode` still accepts an over-height `count` from a *foreign* frame, and #661 measured
+  that this is harmless rather than deferred. Every count across the full `i16` range blanks the
+  region and returns `Ok`, because all three consumers bound the *source* row against `[top, bottom]`
+  before indexing — so unlike a span's `right`, an over-height count is not a write index anyone
+  walks off. It is an annotation by this territory's own rule, and rejecting it would be new
+  strictness with no defect behind it.
 - **The header's own `cols`/`rows` are unchecked, and the two ends of that are different problems.**
   Four consumer sites size themselves straight from the header — `accessibility-dom.ts` allocates a
   `cols × rows` mirror and a per-row array, `accessibility.ts` builds one DOM element per row and

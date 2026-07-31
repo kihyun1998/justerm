@@ -243,10 +243,12 @@ impl FrameGrid {
             // A Partial's scroll op precedes its spans: shift the stored region so retained
             // cells move with it; the spans then repaint the exposed line (core ships it as a
             // full-width span, with the BCE background — the shift's transient blank is
-            // overwritten). An over-height `count` (scrolls accumulate unbounded between acks,
-            // then narrow to i16) lands every row's source outside `[top, bottom]`, so
-            // `shift_region` blanks the whole region — the spans repaint it (cell-mirror.ts
-            // step 1).
+            // overwritten). An over-height `count` lands every row's source outside
+            // `[top, bottom]`, so `shift_region` blanks the whole region — the spans repaint it
+            // (cell-mirror.ts step 1). justerm-core stopped *producing* those in #661
+            // (`Term::scroll_delta` caps at the region height), but this stays load-bearing:
+            // the frame arrives from JS, `decode` does not reject an over-height count, and the
+            // tolerance is what keeps a foreign frame from over-reading.
             self.shift_region(top as usize, bottom as usize, count as isize);
         }
 
@@ -686,9 +688,11 @@ mod tests {
 
     #[test]
     fn scroll_count_exceeding_region_height_blanks_it() {
-        // Scrolls accumulate unbounded between acks (justerm-core term.rs); a count larger than
-        // the region height must blank the whole region (every row's source falls outside it),
-        // not over-read — the frame's spans then repaint it.
+        // A count larger than the region height must blank the whole region (every row's source
+        // falls outside it), not over-read — the frame's spans then repaint it. justerm-core no
+        // longer emits one (#661 caps at the region height), so this is now a guard on *foreign*
+        // input rather than a mirror of engine behaviour: the frame reaches this crate from JS,
+        // and core's `decode` does not reject an over-height count either.
         let mut g = fill_col(&[0x41, 0x42, 0x43, 0x44]);
         g.apply(&DamageFrame {
             kind: 1,

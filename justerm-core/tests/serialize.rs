@@ -980,6 +980,80 @@ fn engine_frame_round_trips_real_captures() {
     }
 }
 
+/// #661 — the same round-trip over a long run of ordinary output. `ScrollOp::count`
+/// is `isize` in memory and `i16` on the wire, and the accumulator had no cap, so
+/// the engine could build a frame that does not survive its own encode: measured
+/// before the fix, a **single 32 770-byte `feed()` of newlines** (32 768 net
+/// scrolls — no ack starvation required) encoded `32768` as `-32768`, and 40 000
+/// newlines encoded `39998` as `-25538`. A `Partial` frame, so the renderer's
+/// "a Full frame ignores `scroll`" exemption does not cover it either.
+///
+/// The three tests above are the property this broke; this one is the input class
+/// they structurally cannot reach, since each of them scrolls a handful of times.
+#[test]
+fn engine_frame_with_a_long_scroll_run_round_trips() {
+    let mut term = Engine::new(80, 24);
+    term.reset_damage();
+    term.feed(&vec![b'\n'; 40_000]);
+    let f = term.frame();
+
+    // Or the test passes for the wrong reason — a frame carrying no scroll op at
+    // all round-trips trivially.
+    let op = f.scroll.expect("the run must still report a scroll op");
+    assert_eq!((op.top, op.bottom), (0, 23));
+
+    assert_eq!(decode(&encode(&f)).expect("decode"), f);
+}
+
+/// The representational half of the same cap (#661): a count sitting exactly on the
+/// wire's `i16` bound, in a region taller than that bound, survives the round-trip.
+/// `MAX_ROWS` is `u16::MAX`, so such a region is legal and capping at its *height*
+/// alone would not have been enough.
+///
+/// Hand-built rather than engine-driven on purpose. Reaching this through `Engine`
+/// costs ~10⁹ element moves (a 40 000-row `line_damage` rotated 32 768 times —
+/// measured at 15.8 s in a debug build), and it would be testing the same clamp
+/// twice: `term.rs`'s `cap_scroll` unit tests own the bound, `tests/damage.rs` owns
+/// `scroll_delta` applying it, and this owns the byte that carries the result.
+#[test]
+fn a_scroll_count_at_the_wire_bound_round_trips() {
+    let frame = Frame {
+        cols: 4,
+        rows: 40_000,
+        kind: FrameKind::Partial,
+        cursor_row: 0,
+        cursor_col: 0,
+        cursor_visible: true,
+        cursor_shape: justerm_core::CursorShape::Block,
+        cursor_blink: false,
+        display_offset: 0,
+        scrollback_len: 0,
+        mouse_events: Default::default(),
+        alt_screen: false,
+        scroll: Some(ScrollOp {
+            top: 0,
+            bottom: 39_999,
+            count: i16::MAX as isize,
+        }),
+        spans: vec![],
+        link_table: vec![],
+        overlay: Default::default(),
+    };
+    assert_eq!(decode(&encode(&frame)).expect("decode"), frame);
+
+    // The negative bound is the half the defect actually produced — a wrapped count
+    // arrived as a *down*-scroll — so assert it rather than assuming symmetry.
+    let down = Frame {
+        scroll: Some(ScrollOp {
+            top: 0,
+            bottom: 39_999,
+            count: -(i16::MAX as isize),
+        }),
+        ..frame
+    };
+    assert_eq!(decode(&encode(&down)).expect("decode"), down);
+}
+
 /// The same round-trip over the two axes the corpus above structurally cannot
 /// contain: OSC 8 hyperlinks and combining clusters (#621,
 /// `fixtures/capture-hyperlink.sh`).

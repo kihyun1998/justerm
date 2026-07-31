@@ -29,6 +29,14 @@ pixels either way — and its job is to keep a small update from costing a full 
   content, so the flow-control primitive must not see it — but a cell-invert caret has to clear its
   old cell and ink the new one. `frame_damage` folds both cursor cells in, and only when the caret
   moved, so an idle frame stays empty.
+- **A reported scroll never exceeds its region's height.** Repeated scrolls of one region
+  accumulate into a single op, and a flood accumulates far past the region — 32 KB of newlines in
+  one `feed()`. Past the height the value stops meaning anything (every source row is already
+  outside the region) and starts being unrepresentable: `count` is `isize` here and `i16` on the
+  wire, and the overflow arrived as a scroll in the *opposite* direction (#661). The cap is applied
+  where the op is **read**, so the accumulator stays exact and a region that scrolls far and returns
+  still reports its true small net. The bound's other half is the wire's, not the region's — see
+  [a wire field narrower than the value it carries](../invariant/wire-field-narrower-than-its-value.md).
 - **The ack defines "old".** `reset_damage` advances `prev_cursor`, so what counts as the caret's
   previous cell is a function of the consumer's acknowledgement — not of wall time, and not of the
   previous call.
@@ -57,7 +65,10 @@ at a recorded SHA; a paraphrase drops the pin).
 
 ## Cross-cutting invariants
 
-*(none identified yet)*
+- [a wire field narrower than the value it carries](../invariant/wire-field-narrower-than-its-value.md)
+  — `ScrollOp::count` is `isize` here and `i16` on the wire. The accumulator that produces it lives
+  in this territory, so the bound has to as well: `encode` cannot refuse a value, and `decode`
+  cannot tell a wrapped one from a real one (#661)
 
 ## Blast radius
 

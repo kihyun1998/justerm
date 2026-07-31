@@ -296,6 +296,15 @@ impl Engine {
 
     /// The first-class scroll recorded since the last [`Engine::reset_damage`],
     /// if any — lets the renderer shift rows instead of redrawing them.
+    ///
+    /// **`count` is capped at the scroll region's own height (#661).** Repeated
+    /// scrolls of one region accumulate into a single op between acks, and a flood
+    /// accumulates far past the region: 32 KB of newlines in one [`Engine::feed`] is
+    /// enough. Shifting a region by more than its height already moves every source
+    /// row outside it, so the surplus names nothing a consumer can act on — while it
+    /// did overflow the `i16` this value rides on the wire and arrive as a scroll in
+    /// the *opposite* direction. Suppressed entirely while the viewport is scrolled
+    /// up, since a content scroll must not shift a frozen view.
     pub fn scroll_delta(&self) -> Option<ScrollOp> {
         self.term.scroll_delta()
     }

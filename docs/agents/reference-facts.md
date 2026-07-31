@@ -744,3 +744,26 @@ whole-territory rewrite, not a fix.
 gives *"a selection is cleared when you enter the alt screen, so there is never one there"* — which is
 exactly the sentence justerm's own code carried, and exactly what #660 falsified. The clear happens at
 the **swap**; it says nothing about a selection made while that screen is up.
+
+## Scrolling a region by more than its own height (#661, verified 2026-07-31)
+
+The question behind justerm's `ScrollOp::count` cap: **is a shift larger than the region equivalent
+to a shift of exactly the region?** If it is, capping the reported count is lossless and the wire's
+`i16` never overflows. Two of three references state the equivalence in their own code.
+
+| Fact | Ref | Site |
+|---|---|---|
+| The scroll amount is **clamped to the region height** before anything else happens: `lines = cmp::min(lines, (self.scroll_region.end - self.scroll_region.start).0 as usize)`. The down-relative sibling clamps twice — region height *and* the distance from `origin` (`:745`) | alacritty | `alacritty_terminal/src/term/mod.rs:773` |
+| ⚠ The equivalence stated outright, one layer down, as a fast path rather than a clamp: *"When rotating the entire region with fixed lines at the top, just reset everything"* — `if region.end - region.start <= positions && region.start != 0` resets every row and returns. **Read the guard, not just the comment**: it is `region.start != 0`, so a region anchored at the top does *not* take this path — it goes on to `increase_scroll_limit(positions)` because those rows enter scrollback. The equivalence holds for what lands on screen; it is not a statement that the operation is free | alacritty | `alacritty_terminal/src/grid/mod.rs:257` |
+| The same clamp for IL, with the reason in the comment: *"We can only insert lines up to our remaining lines in the scroll region. So we take whichever is smaller"* — `const adjusted_count = @min(count, rem)`, where `rem` is the distance from the cursor to the region bottom | ghostty | `src/terminal/Terminal.zig:2704` (comment at `:2702-2703`) |
+| **No clamp.** `insertLines` runs `while (param--)` and does one `splice` + one insert per iteration, so a `param` far past the region costs that many iterations and arrives at the same blanked region by brute force. The equivalence is true of the *result* and absent from the *code* | xterm.js | `src/common/InputHandler.ts:1357` |
+
+**Direction this settles.** 2:1 for stating the bound explicitly, and the third agrees on the
+outcome — convergence, so justerm's cap is not an arbitrary constant. What no reference supplies is
+the *other* bound: none of them serializes a scroll delta, so `i16` and `MAX_SCROLL_COUNT` are this
+repo's own question (theflow's tie-breaker table routes wire shape to this repo's precedent).
+
+**Not searched.** Whether any reference bounds an *accumulated* delta. They do not accumulate at
+all — each applies its scroll immediately — so the accumulator justerm's flow control needs
+(`Term::record_scroll`) has no prior art here, and neither does the choice to cap it on read rather
+than on write.
