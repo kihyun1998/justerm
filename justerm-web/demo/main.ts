@@ -1339,6 +1339,7 @@ declare global {
     __spacingProbe?: () => SpacingProbe;
     __imeAnchorProbe?: () => ImeAnchorProbe;
     __imeDriftProbe?: () => ImeDriftProbe;
+    __imePointerProbe?: () => ImePointerProbe;
     __fitProbe?: () => FitProbe;
     __setLineHeight?: (lh: number) => void;
   }
@@ -2044,6 +2045,105 @@ window.__imeDriftProbe = (): ImeDriftProbe => {
     noComposition,
     capsLockSwallowedWhileComposing,
     cellHeight: getGeometry().cellHeight,
+  };
+};
+
+/**
+ * #649 — the FORCED entrance to #637's harm, and the predicate the guard keys on.
+ *
+ * Two things the unit suite structurally cannot reach, both measured here because they are DOM facts:
+ *
+ * 1. **The pointer path.** `element` mousedown → `onDown` → `Terminal.focus()` → a *forced* re-sync.
+ *    `force` used to beat the composing guard, so this re-anchored to the superseded cursor cell —
+ *    #637's harm through another door, and reachable from the public `focus()` too (a consumer
+ *    restoring focus after a dialog), not only from a pointer.
+ * 2. **`composing` vs `active`.** The wiring choice is invisible to `pnpm test`: swapping the two at
+ *    the call site leaves all 398 unit tests green, because `Terminal` needs a DOM. The control below
+ *    is what discriminates them — right after `compositionend` the candidate window is gone
+ *    (`composing === false`) while the deferred commit read is still queued (`active === true`), so a
+ *    pointer-down there MUST move the anchor again. Keyed on `active` it would stay frozen.
+ *
+ * The demo can host this at all because a real pointer-down here does not blur the textarea: the
+ * canvas `preventDefault`s mousedown, which cancels the focusing steps for the whole dispatch. That
+ * is the unprotected consumer shape, and it is the page's ordinary configuration rather than a rig.
+ */
+interface ImePointerProbe {
+  /** Anchor right after a real `compositionstart` — the frozen reference point. */
+  atCompositionStart: { left: number; top: number };
+  /** After unsolicited output moved the cursor, composition open — #637's guard holds this equal. */
+  afterDrift: { left: number; top: number };
+  /** After a real `mousedown` on the widget's element, composition still open. The defect moved it. */
+  afterPointerDown: { left: number; top: number };
+  /** Evidence the composition was still open at that read, taken from behaviour rather than our own
+   * flag: a composing controller swallows CapsLock (keyCode 20), an idle one forwards it. */
+  capsLockSwallowedAtPointerDown: boolean;
+  /** CONTROL, in the same run: the same pointer-down immediately after `compositionend`, while the
+   * deferred commit read is still queued. Must have MOVED to the drifted cell — that is what proves
+   * the guard reopened on `composing` and not on `active`, and that the probe can see a move at all. */
+  afterPointerDownPostEnd: { left: number; top: number };
+  /** The drifted cursor cell the two pointer-downs were offered, so a test can say which one the
+   * anchor landed on without asserting absolute px (no absolute cell dimension is portable). */
+  driftedCell: { left: number; top: number };
+  cellHeight: number;
+}
+
+window.__imePointerProbe = (): ImePointerProbe => {
+  const ta = document.querySelector("textarea")!;
+  const savedDrift = cursorDrift;
+  const savedRow = driftRow;
+  const snap = (): { left: number; top: number } => ({
+    left: parseFloat(ta.style.left || "0"),
+    top: parseFloat(ta.style.top || "0"),
+  });
+  const capsLockReaches = (): boolean => {
+    const e = new KeyboardEvent("keydown", { key: "CapsLock", bubbles: true, cancelable: true });
+    Object.defineProperty(e, "keyCode", { get: () => 20 });
+    const before = keyIntentCount;
+    ta.dispatchEvent(e);
+    return keyIntentCount > before;
+  };
+  const pointerDown = (): void => {
+    termContainer.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+  };
+
+  cursorDrift = true;
+  driftRow = CURSOR_ROW;
+  render();
+
+  ta.dispatchEvent(new CompositionEvent("compositionstart"));
+  const atCompositionStart = snap();
+
+  // Unsolicited output moves the cursor. The guard freezes the DOM anchor, but `cursorAnchor` keeps
+  // advancing underneath — which is what a forced re-sync would then hand to the OS.
+  driftRow = (driftRow + 3) % ROWS;
+  render();
+  const afterDrift = snap();
+
+  pointerDown();
+  const afterPointerDown = snap();
+  const capsLockSwallowedAtPointerDown = !capsLockReaches();
+
+  // The cell the anchor WOULD land on if the guard let the forced move through.
+  const g = getGeometry();
+  const driftedCell = { left: CURSOR_COL * g.cellWidth, top: driftRow * g.cellHeight };
+
+  ta.value = "";
+  ta.dispatchEvent(new CompositionEvent("compositionend", { data: "" })); // empty ⇒ no intent
+  pointerDown(); // `composing` is already false here; `active` is not
+  const afterPointerDownPostEnd = snap();
+
+  cursorDrift = savedDrift;
+  driftRow = savedDrift ? savedRow : CURSOR_ROW;
+  render();
+
+  return {
+    atCompositionStart,
+    afterDrift,
+    afterPointerDown,
+    capsLockSwallowedAtPointerDown,
+    afterPointerDownPostEnd,
+    driftedCell,
+    cellHeight: g.cellHeight,
   };
 };
 

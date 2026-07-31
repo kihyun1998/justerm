@@ -1532,3 +1532,33 @@ test("a real resize proposing the pre-change grid still reaches the port (#632)"
   await expect.poll(() => fits.length, { timeout: 4000 }).toBeGreaterThan(1);
   expect(gridOf(fits.at(-1)!)).toEqual(remembered);
 });
+
+test("a pointer-down mid-composition leaves the IME anchor frozen (#649)", async ({ page }) => {
+  // #637 closed the output-frame entrance; this is the FORCED one. `element` mousedown → onDown →
+  // Terminal.focus() → a forced re-sync, which used to beat the composing guard and re-anchor onto
+  // the superseded cursor cell. The unit suite cannot reach it: `Terminal` needs a DOM and vitest
+  // runs in `environment: "node"`, which is why the issue's acceptance asks for the pin here.
+  await page.goto("/");
+  await expect(page.getByRole("button", { name: "Cursor drift: OFF" })).toBeVisible();
+  const p = await page.evaluate(() => window.__imePointerProbe!());
+
+  // The composition really was open when the pointer went down — read off behaviour (a composing
+  // controller swallows CapsLock) rather than off our own flag, so the probe cannot assert its
+  // own premise.
+  expect(p.capsLockSwallowedAtPointerDown).toBe(true);
+
+  // The setup held: an output frame did not move the anchor while composing (#637 still in force).
+  expect(p.afterDrift.top).toBeCloseTo(p.atCompositionStart.top, 3);
+
+  // THE CLAIM: the pointer-down did not move it either.
+  expect(p.afterPointerDown.top).toBeCloseTo(p.atCompositionStart.top, 3);
+  // …and it had somewhere else to go, so this is a suppressed move rather than an absent one.
+  expect(p.driftedCell.top).not.toBeCloseTo(p.atCompositionStart.top, 3);
+
+  // THE CONTROL, in the same run — and the only thing that distinguishes the two predicates:
+  // immediately after `compositionend` the candidate window is gone (`composing` false) while the
+  // deferred commit read is still queued (`active` true). The same pointer-down must now land on
+  // the drifted cell. Keyed on `active`, the anchor would still be frozen here and every unit test
+  // would still be green.
+  expect(p.afterPointerDownPostEnd.top).toBeCloseTo(p.driftedCell.top, 3);
+});

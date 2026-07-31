@@ -36,7 +36,14 @@ Nothing governs the encoding itself.
   replicate the mode tracking, which it cannot see.
 - **The input target is a hidden textarea, not the canvas** — a canvas cannot receive IME events at
   all. Focus restoration must go through the widget's own `focus()`; focusing the canvas kills typing
-  and IME together.
+  and IME together. So `element` does **not** have to be focusable and the widget never makes it so
+  (#649) — but a consumer that makes it focusable must `preventDefault` the pointer-down, because the
+  browser's focusing steps run *after* the widget's handler and would blur the textarea it just
+  focused. xterm.js has the same pairing (`preventDefault()` then focus).
+- **A composition freezes the anchor for every writer, forced or not** (#637 for the frame stream,
+  #649 for the point-of-use re-sync). The predicate is "a candidate window is open" — `isComposing`,
+  not the broader `active`, which outlives it by one deferred read and so would swallow the
+  `compositionstart` re-sync in continuous CJK.
 - **An IME confirmation is a raw text intent**, not a paste — bracketed-paste markers would tell the
   application something untrue about where the text came from.
 
@@ -93,9 +100,9 @@ application misbehaves.
 - **In-progress IME composition is not rendered inline in the grid**, so what the user is typing is
   invisible until confirmation. Tracked: #249 — now one member of spine **#640**, which holds the
   question both it and #637 need answered.
-- **Nothing gates the frame stream during a composition.** `Terminal.positionTextarea` runs from the
-  frame subscription with no composition check, so an output frame moves the IME anchor while the user
-  is composing. Reachable from unsolicited application output and from the async echo of a previous
-  commit, which `composition.ts` already handles as a real case. Tracked: #637 — and graded
-  *unadjudicated* rather than defect, because xterm.js contradicts itself on whether the move is
-  harmful (see the invariant note).
+- **The IME anchor's *other* readers are only partly known.** Measured (#649): the browser's focus
+  steps are a real second reader — focusing the textarea scrolls the nearest scrollable ancestor, and
+  the destination tracks the anchor 1:1, so a stale anchor scrolls the page proportionally wrong.
+  Whether an AT tool or magnifier is a *third* reader is still unmeasured, and it is the open question
+  on spine #640 that decides whether the focus-time re-sync can be dropped for xterm's
+  `focus({ preventScroll: true })`.
