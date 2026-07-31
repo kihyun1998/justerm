@@ -65,9 +65,13 @@ recorded SHA; a paraphrase drops the pin).
   coherent `[scrollback ++ primary]` buffer. The failure mode here is the mirror of the usual one —
   someone *adding* a floor and silently breaking command navigation on the alt screen
 - [a wire field narrower than the value it carries](../invariant/wire-field-narrower-than-its-value.md)
-  — the two marker group counts are the standing exception in that note: still `u16` after #621
+  — the two marker group counts are that note's **live, measured instance**: still `u16` after #621
   widened its siblings, and unlike them they report **every live marker** rather than a viewport
-  projection, so nothing about the viewport bounds them
+  projection, so nothing about the viewport bounds them. Past 65 535 the declared count wraps while
+  the records are all written, and `decode` reads the following group's count out of the middle of a
+  marker record — `Ok`, with every later group garbage-derived. **#490 owns this**, and it rejects
+  widening the counts on purpose: that would entrench ADR-0020's one stated R3 violation, which is
+  the thing #490 exists to remove
 
 ## Blast radius
 

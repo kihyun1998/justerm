@@ -21,6 +21,12 @@ than a preference:
   source row outside the region.
 - **Drop the item and assert in debug** when the value is a *key* that cannot be represented and
   narrowing it would land on a live cell — `#582`'s out-of-span group keys.
+- **Take the group off the frame entirely** when it should never have been per-frame state. This is
+  the one that is easy to miss, because widening always *works* — and here it is the wrong answer:
+  the two marker group counts overflow (below), and `#490` rejects widening them because doing so
+  would entrench what ADR-0020 records as its **one stated R3 violation** (*"a group must be `O(1)`
+  or `O(viewport)`"*). Ask which strategy the field's territory has already chosen before reaching
+  for the obvious one.
 
 ## Why it is cross-cutting
 
@@ -46,8 +52,14 @@ stack, which is why this class survives to be found by a completeness pass rathe
   spare).
 - [search](../territory/search.md) and [selection](../territory/selection.md) — the overlay span
   groups, whose counts wrapped at 66 000 spans on a large viewport before #621 widened them.
-- [marker](../territory/marker.md) — the two marker group counts are still `u16` and report every
-  *live* marker rather than a viewport projection, which ADR-0020 records as its own R3 violation.
+- [marker](../territory/marker.md) — **the live instance of this note, and it is measured, not
+  hypothetical.** Both marker group counts are `u16` and count every *live* marker rather than a
+  viewport projection, so 70 000 marks encode a declared count of 4 464 and then write 70 000
+  records; `decode` takes the next group's count out of the middle of marker record #4 465 and
+  returns `Ok`, so **every group after markers in that frame is garbage-derived**. Reachable without
+  an adversary — `DEFAULT_SCROLLBACK = 10_000` with OSC 133 A/B/C/D marks is already ~40 000 live
+  markers. **Owned by #490** (which holds the measurement and the fix); do not re-measure it, and do
+  not "fix" it by widening — see the fourth strategy above.
 - [decoration](../territory/decoration.md) — the underline-colour group's count, still `u16`,
   measured unreachable after #582 rather than fixed.
 
