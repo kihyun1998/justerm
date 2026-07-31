@@ -166,6 +166,29 @@ on. Both #535 (PR #546) and #533 (PR #548) were worked this way against ADR-0025
 rather than out of their own bodies, and #546 wrote back: its "gate uniformly" amendment
 records that D4 answered a combination the draft had not anticipated.
 
+**And the third ledger is the map — `docs/map/` (hub `docs/map/README.md`), read here,
+at the start.** `reference-facts.md` holds the *code* side and the spine holds the
+*decision* side; the map holds the side neither can: **what else moves when you touch
+this** (`## Blast radius`) and **which facts hold beyond this territory**
+(`## Cross-cutting invariants`). Open the territories the change touches, and follow
+the invariants they list — those are promoted precisely *because* they are invisible
+from the territory you are standing in.
+
+This document already sends you to the map twice, at **Step 5** (the lens brief) and
+**Step 6** (coverage + promotion), and both are too late to change a design: by then
+the boundary is drawn and the tests are written. `CLAUDE.md` has always called it the
+*착수 전 배선도* — the wiring diagram you open **before** starting — and this section is
+where that lands in the flow. Worked example, #661: the wire-format territory supplied
+the problem statement (its `## Known holes` carried the defect's residue, sharper than
+the issue body), the *placement vs annotation* rule that later settled a follow-up
+candidate as "not a defect", and the *`u32` iff viewport-bounded* rule the change's new
+invariant note was built on. All three were in hand before a line was written — and none
+of them is reachable from the issue or from a reference tree.
+
+Reading it at the start is also what makes Step 6's **promotion** obligation possible:
+you cannot notice that a fact holds outside its territory if you never read the
+territories.
+
 | Change type | Real source to read |
 |---|---|
 | **Web feature (concept/UX)** | its real source — usually **xterm.js** (`repos/xtermjs/xterm.js`; e.g. drag-scroll 50px/15, highlightLimit 1000, `_charsToConsume`); for features xterm lacks, the consumer that built it (e.g. **VSCode** `microsoft/vscode` terminal a11y) |
@@ -804,9 +827,13 @@ commit` always commits — a pipeline's status is `tail`'s). **Never move a
 threshold** (coverage floor / lint budget) to turn a build green.
 
 **Worktree / PR / CI:** **worktree, not a bare branch** — every substantive change
-starts with `git worktree add .claude/worktrees/<slug> -b <branch>` (the convention
-already on disk; the harness's worktree tool lands in the same place). Never edit on
-`master` in the main checkout. → `feat(<scope>): … (#issue)` (**no `Co-Authored-By`
+starts with `git worktree add ../justerm-wt-<issue> -b <branch>`, **beside** the main
+checkout. Never edit on `master` in the main checkout. The location is not cosmetic
+and it is not the default: `.claude/worktrees/<slug>` is where the harness's worktree
+tool lands and where older trees on disk still sit, and it silently breaks every
+`../` path in this document — see "What a worktree breaks" below for the failure and
+the entry check. Prefer the sibling; if something puts you under `.claude/worktrees/`
+anyway, read that section before using any `../` path here. → `feat(<scope>): … (#issue)` (**no `Co-Authored-By`
 trailer**) → squash PR (`Closes #issue`) → confirm CI jobs green:
 `test` / `wasm` / `renderer` / `renderer-proofs` / `web` / `web-e2e`. A PR touching
 `.github/workflows/**` also gets **`supply-chain`** (path-filtered, so it is absent
@@ -830,12 +857,18 @@ at the **worktree you are editing** (Step 4), and `cargo run -- scan --strict <j
 repo root>` takes the *worktree* root — pointed at nothing it reports "0 workflows
 scanned" plus a green "no violations".
 
-The cheap mitigation, taken on #649: **put the worktree beside the main checkout**
-(`git worktree add ../justerm-wt-<issue> <branch>`) rather than under
-`.claude/worktrees/`. Then every `../` in this document resolves to the same place it
-does from the main checkout, and the hazard above simply does not arise. Verify it
+**This is why the rule above puts the worktree beside the main checkout** (taken on
+#649): from `../justerm-wt-<issue>`, every `../` in this document resolves to the same
+place it does from the main checkout, and the hazard simply does not arise. Verify it
 once on entry — `git -C ../.refs/xterm.js rev-parse --short HEAD` against the pinned
 SHA in Step 1 — because the failure mode is silence, not an error.
+
+**That rule and this reason were separated by twenty-five lines, and for a while they
+disagreed**: the paragraph above still prescribed `.claude/worktrees/<slug>` while this
+one called it the thing to avoid. A reader who took the first instruction never reached
+the second, which is the exact shape of the failure it describes — a wrong answer with
+no error. Keep the prescription in one place and the reasoning here; if the location
+ever changes again, it changes in the paragraph above and this one only explains it.
 
 **The web E2E has the same shape, one layer up, and it bit on #649.**
 `playwright.config.ts` sets `reuseExistingServer: !process.env.CI`, so a `pnpm demo`
