@@ -46,6 +46,20 @@ Nothing governs the encoding itself.
   `compositionstart` re-sync in continuous CJK.
 - **An IME confirmation is a raw text intent**, not a paste — bracketed-paste markers would tell the
   application something untrue about where the text came from.
+- **The widget does not report mouse press or motion at all, and finding that out costs three probes
+  if it is not written here.** `captureInput` gates every mouse report on `mouseReporting()`, and
+  `Terminal` passes `() => false` **hardcoded** — so inside the widget that path never fires, and
+  neither does the `px`/`py` pair it would carry (the `?1016` SGR-pixel coordinates). The one live
+  in-widget producer of a mouse report is the **app-wheel route**, which builds its report directly
+  rather than through `captureInput`. Everything else is a consumer wiring the exported
+  `mouseFromDom` / `wheelMouseFromDom` itself, which is the documented way to get mouse reporting and
+  is why those converters are public at all.
+  **The consequence worth carrying:** a question of the form *"what does the widget send the
+  application when the geometry is degenerate?"* is answered on the wheel route or not at all. Asked
+  in 2026-07 it measured **zero reports** while the cell was unmeasured — not a garbage coordinate —
+  because the wheel scroller bails first (#675) and the route never reaches its report. So the
+  converters' own precondition (#672) governs a surface the *consumer* drives, not one the widget
+  does.
 
 ## Code
 
