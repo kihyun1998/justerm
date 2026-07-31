@@ -1,4 +1,4 @@
-# Cross-cutting invariant — a decoded frame's columns are getters, so read each one once
+# Cross-cutting invariant — a decoded frame's columns are getters over borrowed memory
 
 ## The fact
 
@@ -13,17 +13,27 @@
 
 So the rule is one line: **read a column into a local before the loop, never inside it.**
 
+And a second, which is the same fact seen from the other end: **a column you keep past the current
+frame must be copied, never held as the view.** The two look contradictory — one says stop
+re-reading, the other says stop holding — and they are not: a column that is forwarded and forgotten
+wants the zero-copy view, a column that outlives its frame cannot have one. The test is the
+*lifetime* of the reference, not the number of reads.
+
 Measured on a real decoded frame (#657): 10 000 reads of `frame.sideTable[0]` cost **10.3 ms**
 against **0.061 ms** through a local — ~170×, on a table with a *single* entry. The gap grows with
 the table, because the cost is the rebuild rather than the index.
 
 Two consequences that are easy to state wrong:
 
-1. **This is not the zero-copy contract, and it does not weaken it.** The decoder documents columns
-   as views into WASM memory, invalidated when that memory grows (`justerm_wasm_decode.d.ts:42-47`).
-   That is about *lifetime* across a second `decodeFrame`. This is about *allocation* per read, and
-   both are true at once: one read hands you a live view that is cheap to hold and expensive to
-   re-request.
+1. **The allocation cost and the lifetime contract are different facts, and both bite.** The decoder
+   documents columns as views into WASM memory, invalidated when that memory grows
+   (`justerm_wasm_decode.d.ts:42-47`). Per-read allocation is what the first rule is about; that
+   invalidation is what the second is about. Measured (#657): a held view survives 20 000 decodes of
+   the *same* frame — the allocator reuses the space and memory never grows — and detaches after
+   **one** decode of a 300x220 frame, or after 109 small ones held open at once. So the failure does
+   not creep in gradually; it arrives the moment a bigger frame does, which for a terminal means a
+   viewport resize. Passing the detached array on **throws** (`TypeError: … on a detached or
+   out-of-bounds ArrayBuffer`) rather than degrading.
 2. **The identity fast path still works — measured through a single read.** `asU32` returns its
    argument untouched when the width already matches, which is what makes the seam zero-copy at all
    (#627). A test that writes `expect(asU32(frame.extra)).toBe(frame.extra)` reads the getter twice
@@ -55,7 +65,9 @@ independent, they never call each other, and each one gets it right or wrong on 
 
 ## What a violation looks like
 
-**Nothing.** No wrong pixel, no wrong text, no error — the output is identical. It is a pure
+Two symptoms, one per rule, and they could not be less alike.
+
+**Rule 1 — nothing.** No wrong pixel, no wrong text, no error; the output is identical. It is a pure
 allocation cost that scales with the viewport: a per-cell read over a 200×50 grid is 10 000 view
 objects per frame per column, at frame cadence, and a `sideTable` read per cluster cell rebuilds the
 whole table each time.
@@ -63,24 +75,39 @@ whole table each time.
 Which is exactly why it survives review and testing: every fixture in the repo is a plain object,
 where the same code is free.
 
+**Rule 2 — a `TypeError` out of an event handler, long after the cause.** The retained view detaches
+when some later frame grows WASM memory, and the throw lands wherever the reference is next
+*used* — for the overlay spans that is a focus flip, which has no connection in time or in code to
+the resize that caused it. A plain-object fixture cannot exhibit this one either: it has no backing
+memory to invalidate.
+
 ## Discovery history
 
 | Event | Site | Issue |
 |---|---|---|
 | Found by the first test to drive the adapter with a real decoded frame | `src/cell-mirror.ts` read `flags`, `extra` and `codepoints` per cell, and `sideTable` per cluster cell — while destructuring `spans` once, three lines above | #657 |
+| The second rule found the same way, one probe later | `src/justerm-renderer.ts` retained the three overlay span columns as views (`lastSelectionSpans` and siblings) and re-read them from `issueOverlay`, which by design runs on a **focus flip with no new frame** — so a click away from a terminal with a live selection would throw, once the viewport had grown at any earlier point | #657 |
 
 The tell is in that last clause: the same function already had the correct pattern for `spans` and
 the wrong one for everything else, three lines apart. Nobody was careless — with a plain-object
 fixture the two are indistinguishable.
 
-Swept at the same time, and clean: `src/links.ts` destructures (`const { spans, link, linkTable } =
-frame`), `src/justerm-renderer.ts` reads each column once on the `apply_damage` path, and
-`src/markers.ts` / `src/overlay.ts` take the column as a *parameter* so the caller reads it. The
-parameter shape is the sturdiest of the three, because it makes the mistake unavailable.
+Swept at the same time: `src/links.ts` destructures (`const { spans, link, linkTable } = frame`) and
+`src/markers.ts` / `src/overlay.ts` take the column as a *parameter* so the caller reads it — the
+sturdiest of the shapes, because it makes the mistake unavailable. `src/justerm-renderer.ts` was
+clean under rule 1 and was the violator of rule 2, on the `apply_damage` path and the retention
+fields respectively, which is the clearest evidence that the two rules are worth stating separately:
+one file obeyed the one anybody would think to check.
 
 ## Where it will recur
 
-Any new reader that walks cells. Test: if a loop body mentions `frame.`, it is subject to this — and
-the fix is to move the read above the loop, not to memoise it. Taking the column as a function
+Any new reader that walks cells, and any new field that keeps one. Two tests, one per rule: if a
+loop body mentions `frame.`, move the read above the loop rather than memoising it; and if a column
+is assigned to anything that outlives the call — a field, a closure, a queue — copy it. In this
+repo the second is spelled `retainU32` next to `asU32`, so the choice is visible at the assignment;
+what is **not** guarded is that the three retention sites keep calling it, because
+`JustermRenderer` is only constructible through `create()` (canvas plus dynamic wasm imports) and no
+test can reach it behind a fake. The naming is the guard, which holds only as long as someone reads
+it. Taking the column as a function
 parameter avoids the question entirely, which is why the two modules that do have never had to think
 about it.

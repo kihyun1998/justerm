@@ -415,6 +415,26 @@ export const asU32 = (a: ArrayLike<number>): Uint32Array =>
  * validate (#467). Exported for the seam test only; not re-exported from `index.ts`. */
 export const asU16 = (a: ArrayLike<number>): Uint16Array =>
   a instanceof Uint16Array ? a : Uint16Array.from(a);
+/**
+ * Like {@link asU32}, but for a column this object **keeps past the current frame** — always a copy,
+ * never the argument.
+ *
+ * The opposite rule from {@link asU32}, and not a contradiction: a column that is forwarded and
+ * forgotten wants the zero-copy view (#627), while a column that is *retained* cannot have one. A
+ * decoded frame's columns view WASM memory directly and are invalidated when that memory grows —
+ * the decoder states it as a contract — so a retained view survives exactly until the next decode
+ * large enough to reallocate. Measured (#657): a held view detaches after **one** decode of a
+ * 300x220 frame, or 109 small ones held at once, and passing the detached array to any wasm entry
+ * point throws `TypeError: … on a detached or out-of-bounds ArrayBuffer` rather than degrading.
+ *
+ * That throw would land in {@link JustermRenderer.issueOverlay}, which by design runs on a **focus
+ * flip with no new frame** — so the visible failure is that clicking away from a terminal with a
+ * live selection raises, after the viewport has grown at some earlier point.
+ *
+ * Cheap: overlay spans are `(row, left, right)` triples for the highlighted rows only, copied once
+ * per frame — not a cell column.
+ */
+export const retainU32 = (a: ArrayLike<number>): Uint32Array => Uint32Array.from(a);
 
 /** Monotonic clock for the blink phase (ms). */
 const now = (): number => performance.now();
@@ -761,9 +781,12 @@ export class JustermRenderer implements Renderer {
     // once with it (setOverlay's re-pack is a no-op until the first apply_damage, so the first
     // frame is a single pack). The renderer composites them in wasm — no consumer-side overlay
     // walk (the beamterm adapter's composeOverlayDraws) survives the pivot.
-    this.lastSelectionSpans = asU32(frame.selectionSpans ?? new Uint32Array(0));
-    this.lastMatchSpans = asU32(frame.matchSpans ?? new Uint32Array(0));
-    this.lastActiveMatchSpans = asU32(frame.activeMatchSpans ?? new Uint32Array(0));
+    // `retainU32`, not `asU32`: these three outlive the frame (a focus flip re-issues them with no
+    // new frame), and a decoder column is a view into WASM memory that the next large decode
+    // detaches (#657).
+    this.lastSelectionSpans = retainU32(frame.selectionSpans ?? new Uint32Array(0));
+    this.lastMatchSpans = retainU32(frame.matchSpans ?? new Uint32Array(0));
+    this.lastActiveMatchSpans = retainU32(frame.activeMatchSpans ?? new Uint32Array(0));
     this.issueOverlay();
     this.backend.setDecorations(decorationWire(this.decorationSource?.(frame) ?? []));
     this.updateCursor(frame);

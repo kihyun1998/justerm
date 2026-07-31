@@ -35,7 +35,7 @@
  */
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { asU16, asU32, damageHeader } from "../src/justerm-renderer";
+import { asU16, asU32, damageHeader, retainU32 } from "../src/justerm-renderer";
 import { osc8Links } from "../src/links";
 import type { DecodedFrame } from "../src/types";
 
@@ -116,6 +116,40 @@ describe("a frame the published decoder produced", () => {
     expect(frame.spans).not.toBe(frame.spans);
     expect(frame.spans.buffer).toBe(frame.spans.buffer);
     expect(frame.spans.byteOffset).toBe(frame.spans.byteOffset);
+  });
+
+  it("copies a column it RETAINS, so nothing outlives the memory it viewed", () => {
+    const frame = decodeFixture();
+    const { spans } = frame;
+    // The contrast with the assertion above is the whole rule, and the two live together on
+    // purpose. Forwarded and forgotten -> the view (zero copy, #627). Kept past this frame -> a
+    // copy, because the view is only valid until the next decode grows WASM memory.
+    expect(asU32(spans)).toBe(spans);
+    expect(retainU32(spans)).not.toBe(spans);
+    expect(retainU32(spans).buffer).not.toBe(spans.buffer);
+    expect(Array.from(retainU32(spans))).toEqual(Array.from(spans));
+  });
+
+  it("a retained VIEW would have detached — which is why the copy exists", () => {
+    // The justification for `retainU32`, kept as a test rather than only as a comment: without it
+    // `lastSelectionSpans` holds this, and `issueOverlay` re-reads it on a focus flip that has no
+    // new frame. Passing a detached array to any wasm entry point throws rather than degrading.
+    const held = decodeFixture().spans;
+    expect(held.byteLength).toBeGreaterThan(0);
+
+    // Force WASM memory to grow by holding decoded frames instead of freeing them. Measured at
+    // ~109 on this fixture; the cap is 45x that, so a failure here means the invalidation contract
+    // changed, not that the loop was too short.
+    const holdOpen = [];
+    let detachedAfter = -1;
+    for (let i = 0; i < 5000; i++) {
+      holdOpen.push(decodeFixture());
+      if (held.byteLength === 0) {
+        detachedAfter = i;
+        break;
+      }
+    }
+    expect(detachedAfter, "a held column view never detached — the lifetime contract moved").toBeGreaterThan(-1);
   });
 
   it("reads the header scalars off getters, not off a plain object", () => {
