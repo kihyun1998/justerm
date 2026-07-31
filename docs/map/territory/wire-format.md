@@ -123,10 +123,13 @@ unconditional Step 5 trigger.
   and `i16` on the wire, and the accumulator had no cap, so a single 32 KB `feed()` of newlines
   encoded `32768` as `−32768` — an up-scroll arriving as a down-scroll on a `Partial` frame. Fixed
   at the producer (`Term::scroll_delta` caps at the region height and at `MAX_SCROLL_COUNT`), because
-  a bound in `decode` would have rejected a frame the engine emits. **What is still open is the
-  mirror of that**: `decode` accepts an over-height `count` from a *foreign* frame, which is now
-  possible to reject without rejecting our own output — left out of #661 as new strictness on a
-  published decoder, the same standalone argument as #663.
+  a bound in `decode` would have rejected a frame the engine emits. **The mirror of that is settled,
+  not open**: `decode` still accepts an over-height `count` from a *foreign* frame, and #661 measured
+  that this is harmless rather than deferred. Every count across the full `i16` range blanks the
+  region and returns `Ok`, because all three consumers bound the *source* row against `[top, bottom]`
+  before indexing — so unlike a span's `right`, an over-height count is not a write index anyone
+  walks off. It is an annotation by this territory's own rule, and rejecting it would be new
+  strictness with no defect behind it.
 - **The header's own `cols`/`rows` are unchecked, and the two ends of that are different problems.**
   Four consumer sites size themselves straight from the header — `accessibility-dom.ts` allocates a
   `cols × rows` mirror and a per-row array, `accessibility.ts` builds one DOM element per row and

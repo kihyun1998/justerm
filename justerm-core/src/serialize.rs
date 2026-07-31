@@ -601,12 +601,20 @@ pub fn decode(bytes: &[u8]) -> Result<Frame, DecodeError> {
         // fixed at the producer: `Term::scroll_delta` caps the count at the region's
         // height and at [`MAX_SCROLL_COUNT`], so nothing this crate encodes overflows.
         //
-        // What remains is a *foreign* frame carrying an over-height count, which this
-        // function still accepts. Bounding it would now be possible without rejecting
-        // our own output — it is left out because it is new strictness on a published
-        // decoder, the same standalone question #663 asks about `cols`, and because the
-        // consumers already tolerate it: an over-height count blanks the region and the
-        // spans repaint it (`frame_grid.rs`, `cell-mirror.ts`).
+        // A *foreign* frame carrying an over-height count is still accepted, and that is
+        // a decision rather than the leftover of one. Bounding it became possible once
+        // the engine stopped producing them — but there is no failure behind it, which
+        // is the same reason `top > bottom` rides through above. Measured: every count
+        // across the full `i16` range, both signs, blanks the region in the renderer
+        // and returns `Ok`; `shift_region` / `shiftRegion` / `shiftPrev` all bound the
+        // *source* row against `[top, bottom]` before indexing, so an over-height count
+        // cannot address a cell outside the region it already declared. It costs the
+        // consumer a wasted region-sized shift, and the spans repaint over it.
+        //
+        // Unlike a span's `right`, this is not a write index a consumer walks off — the
+        // distinction `docs/map/territory/wire-format.md` draws between a payload's
+        // placement and its annotations. Rejecting it would be new strictness with no
+        // defect behind it.
         if top <= bottom && bottom >= rows as usize {
             return Err(DecodeError::BadSpan);
         }
