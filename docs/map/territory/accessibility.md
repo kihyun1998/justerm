@@ -69,6 +69,14 @@ an editor rather than a terminal.
 - [a decoded frame's columns are getters](../invariant/decoded-columns-are-getters.md) — the cell
   mirror that feeds the accessible text walks every damaged cell, which makes it the one reader
   where a per-cell getter read costs the most; it is where the invariant was found (#657)
+- [an IME composition is browser-owned state the engine never sees](../invariant/composition-is-browser-owned-state.md)
+  — two facts here derive from it, and neither is about the engine. `AccessibilityController.onKey`
+  pushes a committed IME text intent **per code point**, because a commit arrives as one multi-unit
+  intent while `dedupTyped` drains one code point per echoed output char (#153 G9) — a whole
+  composition entering the echo-dedup as a single entry would mismatch and be announced twice. And the
+  hidden textarea is a *labelled accessible input* rather than `aria-hidden` (#248), so it is a real
+  focus target in the AT tree — which is what makes *"does an AT tool or magnifier read the position we
+  anchor it at?"* an open question with a11y consequences rather than an IME-only one (#640 Q4)
 
 ## Blast radius
 

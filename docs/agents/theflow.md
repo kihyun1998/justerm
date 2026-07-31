@@ -830,6 +830,26 @@ at the **worktree you are editing** (Step 4), and `cargo run -- scan --strict <j
 repo root>` takes the *worktree* root — pointed at nothing it reports "0 workflows
 scanned" plus a green "no violations".
 
+The cheap mitigation, taken on #649: **put the worktree beside the main checkout**
+(`git worktree add ../justerm-wt-<issue> <branch>`) rather than under
+`.claude/worktrees/`. Then every `../` in this document resolves to the same place it
+does from the main checkout, and the hazard above simply does not arise. Verify it
+once on entry — `git -C ../.refs/xterm.js rev-parse --short HEAD` against the pinned
+SHA in Step 1 — because the failure mode is silence, not an error.
+
+**The web E2E has the same shape, one layer up, and it bit on #649.**
+`playwright.config.ts` sets `reuseExistingServer: !process.env.CI`, so a `pnpm demo`
+already listening on **5173 from another checkout** is silently adopted: the worktree's
+specs then run against *that* checkout's `demo/` and `src/`. It reads exactly like a
+broken change — a probe the spec calls comes back `undefined`, a new assertion fails on
+old behaviour — and the code under test is fine. Two ways it gets left running: a
+`pnpm demo` in another session/worktree, and a background `pnpm demo` whose task was
+stopped (killing the `pnpm` wrapper can leave the `vite` child holding the port).
+Before trusting a red E2E from a worktree, check who owns the port —
+`netstat -ano | grep 5173` — and kill the stale listener rather than debugging the
+symptom. The same trap makes a *green* run untrustworthy when the other checkout
+happens to contain the fix.
+
 **The same shape once broke cargo itself, and the fix is the general lesson (#608).** A
 worktree does not only break `../` in prose — it breaks any fact stated as a path in a
 *parent* file, because the parent a tool finds is not the parent you meant. `justerm-renderer`

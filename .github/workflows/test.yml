@@ -61,6 +61,21 @@ jobs:
       # read by whoever picks up the next change, not by a registry visitor.
       - name: Doc links (relative paths + #anchors resolve)
         run: node .github/scripts/check-map-links.mjs docs CLAUDE.md CONTEXT.md README.md
+      # The note schema was a run-it-yourself tool, documented in docs/map/README.md as a per-note
+      # habit ("verify a note as you finish it, not the batch at the end"). The cadence argument is
+      # right and unaffected; what it cannot do is catch a note that was *edited later* by someone
+      # who never ran it. Measured: two invariant notes had been sitting incomplete
+      # (cell-size-is-derived-state, composition-is-browser-owned-state — both missing
+      # `## Where it will recur`), found only because an unrelated change happened to run the script.
+      # That is the same case the two gates around this one exist for: a rule that lives only in a
+      # README is held by whoever remembers it. Free to turn on — all 50 notes pass.
+      - name: Map note schema (sections + symbols under ## Code)
+        run: |
+          bad=0
+          for f in docs/map/territory/*.md docs/map/invariant/*.md; do
+            node .github/scripts/check-map-note.mjs "$f" || bad=1
+          done
+          exit $bad
       # The build-tool pin (#616) lives in three workflow-level `env:` blocks, and nothing else would
       # notice them drifting apart — Dependabot does not read `run:` lines. Same shape as the doc-link
       # gate above and as readme_pins.rs: a constant that appears in more than one place is held
