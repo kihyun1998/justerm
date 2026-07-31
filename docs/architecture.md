@@ -449,14 +449,26 @@ Z"`, and a search across the wrap went from 1 hit to 0). It now lives on the
   `m.line`) shift them so they track content; an anchor on a dropped line is disposed. **Hazard: on the
   alt screen the primary anchors are *retained* (that is the #118/#158 contract — a mark must survive a
   vim/less excursion), yet the alt grid occupies the *same* absolute-line range `[scrollback.len(),
-  +rows)`. So an alt-screen scroll must NOT rotate primary markers or it silently disposes them.** The
-  selection dodges this only because it is *cleared* on alt enter; markers are guarded explicitly
-  (`if !self.on_alt` around `markers_rotate_region` in `linefeed`/`reverse_index`). [#158]
+  +rows)`. So an alt-screen scroll must NOT rotate primary markers or it silently disposes them.**
+  **How each side actually satisfies that has changed twice, and this entry described the state before
+  both.** Markers are *not* guarded by `if !self.on_alt` any more — since #186/#187 the storage is
+  per-buffer and `markers_rotate_region` routes through `markers_mut`, so an alt scroll rotates *alt*
+  marks and leaves the frozen primary list alone; the code says "no guard needed" at the site. And the
+  selection does **not** "dodge this by being cleared on alt enter" — that clearing is real
+  (`enter_alt_screen` / `leave_alt_screen`) but happens only *at the swap*, so it says nothing about a
+  selection made while the alt screen is already up, which is the ordinary act of copying out of vim.
+  Reading it as a lifetime invariant is what shipped #660: `Term::resize`'s alt branch skipped
+  re-anchoring on that basis, and since the alt pane does not reflow (#567) the anchor kept an
+  absolute line the shrunk grid no longer had — `selection_range` then indexed past the end and
+  `frame()` panicked. **The rule now: an anchor the alt pane cannot re-anchor is dropped** — `resize`
+  clears the selection when the geometry actually changes on alt, which is what both references do
+  (alacritty clears on a width change, xterm.js on a height change). [#158, #187, #660]
 - **Anchor rotation: the CSI line-editing verbs move anchors too (closed by #162).** This entry was
   a gap and is kept as a *modelled* one, because it is the second half of the rule above and reads
   wrongly without it. `scroll_region_lines` (SU/SD/IL/DL) moves content via `grid.scroll_*_region` +
   `record_scroll` and now rotates both anchor sets alongside it — `selection_rotate_region` and
-  `markers_rotate_region`, under the same `!on_alt` guard `linefeed`/`reverse_index` use, and with
+  `markers_rotate_region`, unguarded exactly as `linefeed`/`reverse_index` are (the `!on_alt` guard
+  this line used to cite was retired by #186/#187's per-buffer marker storage — see the entry above), and with
   `up = !down` since "content moved up" is the non-`down` case. Before that, a primary-screen IL/DL
   (zsh/fish multi-line prompt redraw, completion menus) left marks and a live selection pointing at
   the wrong line. **Any new verb that moves rows owes the same rotation**; the tell is a call to
@@ -537,7 +549,9 @@ Z"`, and a search across the wrap went from 1 hit to 0). It now lives on the
   ghostty splits the same three ways inside its own reflow — every non-cursor pin is clamped before it
   can widen a row, the cursor pin never is. [#562, #549, #559]
 
-- **Selection coordinates are absolute-from-oldest, and only three events move them.** Anchors are
+- **Selection coordinates are absolute-from-oldest, and five events move them** (this said *three*
+  until #660; the count has been wrong twice, so treat the list as the thing to check rather than the
+  number). Anchors are
   stored as a line index into `[scrollback ++ screen]` counted from the oldest line — NOT viewport
   rows (those drift under new output). This index is *invariant* under a normal top-anchored scroll:
   the line evicted into scrollback grows `scrollback.len()` by exactly the screen shift, so existing
@@ -546,7 +560,14 @@ Z"`, and a search across the wrap went from 1 hit to 0). It now lives on the
   off-top), (b) **in-screen region/RI scroll** with `scroll_top > 0` or alt (rotate anchors within the
   region; an endpoint on the dropped line clears the selection — top-anchored scroll must NOT rotate),
   and (c) **resize reflow** (anchors reflow through `grid::reflow` alongside the cursor — it tracks N
-  points). Alt enter/leave clears the selection (it is primary-only). [#5]
+  points), plus the two this list omitted: (d) a **top-anchored sub-region scroll** growing
+  `scrollback.len()` while rows below the margin stay put, so their absolute index rises
+  (`selection_shift_below_margin`, #449), and (e) a **shrinking resize on the alt screen**, where the
+  pane does not reflow and the selection is therefore dropped rather than moved (#660).
+  Alt enter/leave clears the selection — **but that is a clear at the swap, not a claim that the
+  selection is "primary-only"**, which is how this sentence read until #660 and is what licensed
+  `resize` to skip the alt anchors entirely. A selection made *while* the alt screen is up is
+  ordinary (copying out of vim), and it is exactly what panicked. [#5, #449, #660]
 - **Selection text vs highlight need different grains.** `selection_text` joins soft-wrapped rows into
   one logical line and trims trailing blanks *only at the logical end* (spaces at a wrap boundary are
   real content), skips `WIDE_CHAR_SPACER` cells (emit the lead glyph once), and ends hard lines with

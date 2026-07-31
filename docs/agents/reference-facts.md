@@ -693,3 +693,54 @@ engine entry point — while `decode` accepts `cols: 0` and `cols: 1`. That is t
 on, and it is why the "measure what a huge geometry actually does to the tab" experiment was
 **deliberately not run**: no outcome of it changes the recommendation, because the only fix it could
 motivate is the arbitrary number this paragraph rules out.
+
+## A selection when the screen changes under it (#660, verified 2026-07-31)
+
+The occasion: on justerm's alt screen a selection outlived a resize, and `selection_range` then
+indexed past the shrunk grid and panicked. The question is not "should a selection survive a resize"
+but **what stops one from pointing at content that is no longer there**. All three references answer,
+and they answer differently — which is useful, because the three answers are the three available
+designs.
+
+| Fact | Reference | Site |
+|---|---|---|
+| Clear on a **width** change, rotate by the line delta otherwise — `if old_cols != num_cols { self.selection = None }`, else `selection.rotate(self, &range, -delta)` | alacritty | `alacritty_terminal/src/term/mod.rs:680-682`, `:686-689` |
+| Clear on a **height** change, and the comment names the bug class rather than a design: *"Clear selection when resizing vertically. This experience could be improved, this is the simple option to fix the buggy behavior"*, citing xterm.js issue 5300 | xterm.js | `src/browser/services/SelectionService.ts:156-160` |
+| **Neither — the staleness is in the type.** A selection's bounds are `tracked` or `untracked`, and the doc states the hazard directly: *"Untracked bounds are unsafe beyond the point the terminal screen may be modified, since they may point to invalid memory."* A tracked bound is a pin the pagelist updates, so it cannot go stale | ghostty | `src/terminal/Selection.zig:32-34` |
+| …and a **screen swap** clears it outright, exactly as justerm's `enter_alt_screen` / `leave_alt_screen` do | ghostty | `src/terminal/Terminal.zig:4271` `switchScreen` → `new.clearSelection()` |
+| **All three also bound at *read* time, independently of whatever they do at resize** — the anchor fixups above are not the only defence any of them has. alacritty's `Selection::to_range` opens with *"Clamp selection to within grid boundaries"*: fully-out returns `None`, otherwise both endpoints go through `grid_clamp` | alacritty | `alacritty_terminal/src/selection.rs:283-288` |
+| …xterm.js's line fetch is total by construction — `const line = this.lines.get(lineIndex); if (!line) { return ''; }` | xterm.js | `src/common/buffer/Buffer.ts:554-559` |
+| …and ghostty clamps a pin's column against its own page in both corner accessors, `p.x = @min(…, p.node.cols() - 1)`, on top of pins that keep the row valid | ghostty | `src/terminal/Selection.zig` `topLeft` / `bottomRight` |
+| **On ED, alacritty drops the selection outright** — `self.selection = None` in the clear arm. justerm deliberately does not (in-place erases *"stale in place … exactly like xterm's decorations"*, `term/search.rs`), so alacritty is the stricter outlier here and the recorded justerm rationale cites only xterm | alacritty | `alacritty_terminal/src/term/mod.rs:1803` |
+
+**Why the read-time row matters more than it looks.** It is the half a fix aimed at the *anchor* never
+reaches: justerm's `selection_range` walked its resolved range calling `abs_line` before its own
+visibility filter, while its sibling `match_spans` bounded first — so the outlier was internal, not
+against the references. 3/3 convergence on bounding at the read, and justerm had it in one projection
+and not the other.
+
+**The direction, and why justerm is only half-diverged.** justerm's *primary* pane is already
+alacritty's rotate branch and does it better — user-authored points ride `reflow_pane` and come back
+mapped. The *alt* pane is the one with no answer, and dropping there is xterm.js's answer applied to
+xterm.js's own axis; the repro was a rows shrink.
+
+⚠ **Not because the alt pane "cannot" track points — it can, and the first version of this section
+said otherwise.** `reflow: false` disables the column re-split, not the tracking: the alt branch makes
+its own `reflow_pane` call with tracked points and already uses the returned `extras` / `evicted` to
+rotate and dispose alt markers. What makes dropping the right *trade* is shape, not capability — a
+marker is one point with a binary fate, a selection is two ordered endpoints, and a shrink that
+destroys the row under one but not the other has no "dispose" answer. This correction is recorded
+because writing a false *"cannot"* as the justification for fixing a false *"cannot"* is #660's own
+failure mode, one layer up.
+
+**What the third row would cost, recorded so it is not re-proposed cheaply.** Ghostty's design removes
+the question rather than answering it, and it is the better model — but it is a *storage* change:
+justerm's anchors are `BufferPoint { line, col }` absolute indices (`docs/map/territory/selection.md`),
+and four separate fixups (eviction, region rotation, below-margin shift, reflow) exist precisely
+because the coordinate does not update itself. Adopting pins would retire all four and is a
+whole-territory rewrite, not a fix.
+
+**The trap this section exists to stop.** Reading only ghostty's `switchScreen` → `clearSelection`
+gives *"a selection is cleared when you enter the alt screen, so there is never one there"* — which is
+exactly the sentence justerm's own code carried, and exactly what #660 falsified. The clear happens at
+the **swap**; it says nothing about a selection made while that screen is up.

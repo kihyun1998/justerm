@@ -99,6 +99,20 @@ only the storage assumption, so fixing any one of them offered no path to the ot
 nothing, because whoever writes the *next* site has no reason to look for it. What prevents the fourth
 occurrence is reading this note when adding a walk.
 
+## The obligation is two-sided, and this note only ever stated one side
+
+Everything above is about the **floor**. #660 was the same shape at the **ceiling**: `selection_range`
+walked its resolved range calling `abs_line` before its own visibility filter, so a line past the last
+row indexed off the end of the grid and panicked — on **both** screens, with nothing `on_alt`-specific
+about it. That is why it does not belong in the sections above, and why it belongs on this page at all:
+the shared root is that `[scrollback ++ grid]` is addressed by a bare `usize` carrying no range, so
+every walk re-derives its own bounds and each one can forget a different end. #113 / #144 / #207 forgot
+the lower bound; #660 forgot the upper.
+
+The recurrence test below therefore has a second half: a new absolute walk needs `abs_floor` **and** a
+bound against `scrollback.len() + grid.rows()`. `Term::match_spans` (`term/search.rs`) is the site to
+copy — it bounds before it reads.
+
 ## Where it will recur
 
 Any *new* reader that walks the buffer by absolute index. Test: if a function uses

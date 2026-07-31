@@ -233,6 +233,36 @@ impl Term {
                 to,
             } => {
                 for line in start_line..=end_line {
+                    // Bound before reading, not after (#660). `abs_line` indexes the grid
+                    // unguarded, so a line past the last visible row panics here — and the
+                    // `push` closure below, which does apply the bound, never gets to run.
+                    // The sibling projection already has this ordering right:
+                    // `Term::match_spans` (`term/search.rs`) does `if row >= rows { break }`
+                    // *before* its own `abs_line`, so this loop was the local outlier.
+                    //
+                    // This is not a clamp and truncates nothing observable: the function
+                    // already drops off-screen rows silently and says so ("Empty when … the
+                    // selection is fully scrolled off-screen"), so making the existing
+                    // filter total converts a panic into the drop the contract promises.
+                    // All three references bound at read time too — alacritty's
+                    // `Selection::to_range` goes through `grid_clamp`, xterm.js's
+                    // `translateBufferLineToString` returns `''` for a missing line, and
+                    // ghostty clamps a pin's column against its own page.
+                    //
+                    // **Unreachable as this crate stands, and that is recorded rather than
+                    // enjoyed.** With the anchor clamped at `viewport_to_abs` and the alt
+                    // drop in `resize`, no path is known that reaches this loop with a line
+                    // past the last row — measured: removing this bound reds no test in the
+                    // suite. It is kept for the reason the `right - left + 1` widening in
+                    // `serialize.rs` is kept (#582): it costs nothing, it makes the function
+                    // total on its own rather than by trusting a guard two files away, and
+                    // the walk it protects is one careless edit from an out-of-bounds index.
+                    if line < top {
+                        continue;
+                    }
+                    if line - top >= rows {
+                        break;
+                    }
                     let len = self.abs_line(line).len();
                     let left = if line == start_line { from } else { 0 };
                     let right_excl = if line == end_line { to.min(len) } else { len };

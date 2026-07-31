@@ -1023,10 +1023,36 @@ impl Term {
     /// Map a viewport cell `(row, col)` to an absolute buffer point. The top
     /// visible row is `scrollback.len() - display_offset`, so viewport row `i`
     /// is that plus `i`.
+    ///
+    /// **`row` is clamped to the last visible row, and that is the anchor's whole defence
+    /// against a caller that hands it one past the end (#660).** The row arrives from a
+    /// pointer position, so it is off the end whenever a drag leaves the grid — including
+    /// the ordinary case where the container is a sub-cell remainder taller than
+    /// `rows × cell_height` and a click lands in that strip. Stored unclamped it does not
+    /// fail here: it detonates later, in whichever read walks the selection
+    /// (`selection_range`, `selection_text`, the word extents), so the stack trace accuses
+    /// the reader rather than the caller — the delay `damage_span`'s doc describes and
+    /// #536 was filed about.
+    ///
+    /// **Clamped, and deliberately *not* `debug_assert`ed** — which is where this differs
+    /// from `damage_span`, whose split it otherwise mirrors. That function is engine-
+    /// internal, so an out-of-range span there is a justerm bug and the assert names its
+    /// producer. This one is reached from `Engine::selection_begin` / `selection_extend`,
+    /// whose documented input is *"what a mouse event carries"* — and a pointer leaves the
+    /// grid whenever a drag does, so a row past the end is **ordinary input, not a defect**.
+    /// Asserting on it would panic a consumer's debug build for a legal gesture.
+    ///
+    /// Clamping is also what every producer already wants: a drag past the bottom edge
+    /// selects to the edge. justerm-web's *mouse-reporting* converter clamps for exactly
+    /// this reason (`input.ts`, #266) while its selection converter does not, which is what
+    /// makes an unclamped row reachable in the shipped stack rather than only in theory.
+    /// alacritty clamps at the same boundary (`Point::grid_clamp`); ghostty's pins cannot
+    /// express an out-of-range row at all.
     fn viewport_to_abs(&self, row: usize, col: usize) -> BufferPoint {
         let top = self.scrollback.len() - self.display_offset;
+        let last = self.grid.rows().saturating_sub(1);
         BufferPoint {
-            line: top + row,
+            line: top + row.min(last),
             col,
         }
     }
@@ -1073,12 +1099,64 @@ impl Term {
         let cols = cols.clamp(MIN_COLUMNS, MAX_COLUMNS);
         let rows = rows.clamp(1, MAX_ROWS);
         let old_cols = self.grid.cols();
+        let old_rows = self.grid.rows();
         let limit = self.scrollback_limit;
 
         // A reflow moves match coordinates (and can change the match set), so the
         // query-derived highlights are invalidated; the consumer re-searches at
         // the new width. The selection re-anchors below — it is user-authored.
         self.invalidate_search_highlights();
+
+        // ...except on the alt screen, where a *shrink* drops the selection (#660). The
+        // primary pane carries user-authored points through `reflow_pane` and gets them back
+        // mapped to the new geometry; on alt the selection is dropped instead.
+        //
+        // **This is a policy choice, not a capability limit, and the difference matters
+        // because the first version of this comment got it wrong.** It claimed the alt pane
+        // has "nothing to re-anchor through" — measurably false: the alt branch below makes
+        // its own `reflow_pane` call with tracked points and already uses the returned
+        // `extras` / `evicted` to rotate and dispose alt *markers*. `reflow: false` disables
+        // the column re-split, not the point tracking. Installing a false "cannot" as the
+        // justification for fixing a false "cannot" is precisely the failure #660 is.
+        //
+        // What actually makes rotation the wrong trade here is that a marker and a selection
+        // are different shapes. A marker is one point with a binary fate — survive, or be
+        // disposed with an event. A selection is two *ordered* endpoints, so when a shrink
+        // destroys the row under one of them and not the other, "dispose" has no meaning and
+        // the correct behaviour is the clamp-and-overtake policy `selection_rotate_region`
+        // implements for scrolls. Reusing the marker path would give a selection whose ends
+        // moved by different rules; writing the second policy is a feature, not this fix.
+        // And on a column shrink an alt anchor would additionally need the `.min(cols - 1)`
+        // the primary branch applies, which alt markers deliberately do *not* take.
+        //
+        // Both references drop rather than rotate on the axis they consider unsafe —
+        // alacritty on a width change (`term/mod.rs:680-682`), xterm.js on a height change,
+        // its comment naming this bug class outright (`SelectionService.ts:156-160`).
+        //
+        // **Any geometry change, not just a shrink — and the `!=` is load-bearing in the
+        // direction that looks wasteful.** The obvious refinement is to keep the selection on
+        // a *grow*, since the alt pane pads rather than moving content, so no anchor looks
+        // invalidated. That was tried and a randomised sweep refuted it in one run: an alt
+        // resize also reflows the **primary** pane below, and on the alt screen `scrollback`
+        // *is* that primary history — so `scrollback.len()` moves under an anchor whose
+        // absolute line was measured from the old base, even when the alt grid itself does not
+        // move at all. `selection_text` then walks off the end. The branch below already knows
+        // this and converts alt *markers* through `old_base` → new base for exactly that
+        // reason ("the primary scrollback below may rewrap and change length even when the alt
+        // grid does not move"); the selection has no such conversion, so the geometry change
+        // is the honest trigger.
+        //
+        // Rebasing instead of dropping is the better answer and is not done here: a grow has
+        // no destroyed row, so both endpoints could shift by the base delta unambiguously —
+        // but a *shrink* still needs the two-endpoint policy below, and shipping half of it
+        // would leave the two axes behaving differently for no stated reason.
+        //
+        // The exact no-op is still not a resize: nothing reflows when neither axis moves, so
+        // the base cannot shift, and a consumer that re-asserts its size every frame (a
+        // `fit()` loop) must not make selecting on the alt screen impossible.
+        if self.on_alt && (cols != old_cols || rows != old_rows) {
+            self.selection = None;
+        }
 
         // Both screens are resized. Scrollback pairs with the PRIMARY screen
         // (whichever is active) — the alt screen has no history of its own.
@@ -1118,8 +1196,14 @@ impl Term {
         };
         let scrollback = std::mem::take(&mut self.scrollback);
         if self.on_alt {
-            // Active = alt (cursor, no scrollback); inactive = primary. Selection
-            // is primary-only and cleared on alt enter, so no anchors to track.
+            // Active = alt (cursor, no scrollback); inactive = primary. No selection anchors
+            // to track here — but *because the geometry change above dropped them* (#660),
+            // not because there cannot be any. This comment used to read "selection is
+            // primary-only and cleared on alt enter": the clearing is real
+            // (`enter_alt_screen` / `leave_alt_screen`, "a selection cannot survive a screen
+            // swap") and says nothing about a selection made *while* the alt screen is up,
+            // which is the ordinary act of copying out of vim. A premise that held at one
+            // instant was read as an invariant holding for the screen's lifetime.
             // Alt markers still ride this pane, but **not because it reflows** — since #567 it does
             // not, so a marker's content no longer moves under it and the old reason here ("justerm
             // column-reflows the alt grid, so a marker must follow its content") is retracted. What
@@ -1150,7 +1234,11 @@ impl Term {
             self.cursor.set_point(r_alt.cursor, rows, cols);
 
             // Primary is inactive here, but markers anchor *primary* content, so
-            // they reflow with it (the selection is already cleared on alt enter).
+            // they reflow with it. There is no *primary* selection to carry alongside them —
+            // `switch_to_alt` nulls it before the alt screen exists, so one cannot coexist
+            // with `on_alt` — which is a different statement from the "cleared on alt enter"
+            // this comment used to make, and the difference is #660: that clearing says
+            // nothing about the *alt* selection the branch above now drops.
             // `(line, col)`, not `(line, 0)`: the column is what bounds OSC-133 command-text
             // extraction (#166), and discarding it here truncated the recorded command for any
             // resize taken while a full-screen app was up. The primary branch below has always
@@ -2848,6 +2936,16 @@ impl Term {
                     self.end_wrap(row);
                 }
             }
+            // Notably **`3` (ED 3, erase scrollback) is not implemented** and falls through
+            // here as a no-op. Recorded rather than filed, because an unimplemented verb is
+            // not a defect — but whoever implements it inherits an obligation that is invisible
+            // from this site (#660's completeness pass): it would be the first verb that
+            // shortens the buffer *from the front* by N lines, so it needs both an anchor
+            // fixup (selection and markers are absolute-from-oldest) **and** a `display_offset`
+            // clamp. Without the second, `selection_range`'s `scrollback.len() - display_offset`
+            // underflows — and so do the same expressions in `viewport_line`,
+            // `viewport_link_at` and `match_spans`. alacritty's `ClearMode::Saved` arm does
+            // both (`term/mod.rs:1806-1811`).
             _ => {}
         }
     }
@@ -3015,7 +3113,11 @@ impl Term {
             // Rotate anchors with the content, like `linefeed`/`reverse_index`
             // (#162). `up` = content moved up = the non-`down` case. Markers rotate
             // with the active buffer (#187) — alt-scoped on the alt screen, so no
-            // guard; the selection is cleared on alt enter.
+            // guard. **The selection is unguarded here for the same reason, not because
+            // "it is cleared on alt enter"** — that was this comment's claim until #660 and
+            // it is false: a selection made while the alt screen is up is ordinary, it does
+            // reach this line, and rotating it is correct, because the content really did
+            // move under it. The code was right; only its stated reason was wrong.
             self.selection_rotate_region(base + top, base + bottom, !down);
             self.markers_rotate_region(base + top, base + bottom, !down);
         }

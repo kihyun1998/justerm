@@ -40,6 +40,7 @@ status.
   | an in-screen region / RI scroll moving content | `Term::selection_rotate_region` |
   | a **top-anchored sub-region** scroll growing scrollback while rows below the margin stay put, so their absolute index rises (#449) | `Term::selection_shift_below_margin` |
   | reflow re-splitting logical lines | `grid.rs`'s `reflow`, via tracked points |
+  | a **shrinking** resize on the **alt** screen | **none — the selection is dropped** (`Term::resize`, #660). Not for want of machinery: the alt branch tracks points through its own `reflow_pane` call and already rotates *markers* with the returned `evicted`. A selection is two ordered endpoints, so a shrink that destroys the row under one and not the other has no "dispose" answer, and reusing the marker policy would move its ends by different rules. A grow moves nothing and keeps it |
 
   The third is the one a three-item list hides: nothing on screen moved and no line was evicted, yet
   every absolute index below the margin changed — because `scrollback.len()` grew and the coordinate
@@ -83,6 +84,10 @@ at a recorded SHA; a paraphrase drops the pin).
 - [Mapping a tracked point through reflow](../../agents/reference-facts.md#mapping-a-tracked-point-through-reflow-549-verified-2026-07-27)
   — how a reference carries an anchor across a re-split, which is what `reflow(points)` does with the
   selection
+- [A selection when the screen changes under it](../../agents/reference-facts.md#a-selection-when-the-screen-changes-under-it-660-verified-2026-07-31)
+  — the three available designs, one per reference: clear on a width change and rotate otherwise
+  (alacritty), clear on a height change (xterm.js), or make the anchor a tracked pin so it cannot go
+  stale (ghostty). justerm's primary pane is the first; the alt pane had none, which is #660
 
 ## Cross-cutting invariants
 
