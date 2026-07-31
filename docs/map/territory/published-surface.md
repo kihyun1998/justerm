@@ -88,6 +88,10 @@ How a version gets there is [release](release.md).
 - [workspace exclusion is gate invisibility](../invariant/workspace-exclusion-is-gate-invisibility.md)
   — the tombstone's README is published and reached by no gate at all, because the crate it belongs
   to is outside every `--workspace` command
+- [a decoded frame's columns are getters](../invariant/decoded-columns-are-getters.md) — what the
+  published decoder hands a consumer is an accessor, not a property, and the width-agnostic mirror
+  that makes the seam flexible is also what hides it: every fixture in the repo is a plain object,
+  where the same code costs nothing
 
 ## Blast radius
 

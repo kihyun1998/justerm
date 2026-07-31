@@ -66,6 +66,9 @@ an editor rather than a terminal.
   walks the concatenated `[scrollback ++ grid]` buffer by absolute index, so on the alt screen it
   must floor at `scrollback.len()`. The failure is silent: the AT reads *plausible* text that is not
   on screen
+- [a decoded frame's columns are getters](../invariant/decoded-columns-are-getters.md) — the cell
+  mirror that feeds the accessible text walks every damaged cell, which makes it the one reader
+  where a per-cell getter read costs the most; it is where the invariant was found (#657)
 
 ## Blast radius
 

@@ -268,3 +268,54 @@ describe("CellMirror.rowCells (#152 column map)", () => {
     expect(mirror.rowCells(0).text).toBe("\u{1F680}\u{200D}");
   });
 });
+
+// A frame's columns are GETTERS on the wasm class, not stored properties — every read rebuilds a
+// typed-array view, and `sideTable` rebuilds the whole `string[]` (measured with a real decoded
+// frame: 10k reads of `sideTable[0]` cost 10.3 ms through the getter against 0.061 ms through a
+// local — 170x, and it grows with the table). Plain-object fixtures hide this completely, which is
+// why nothing caught it: to every other test in this file a property read is free (#657).
+describe("column reads (#657)", () => {
+  it("reads each column getter once per frame, not once per cell", () => {
+    const mirror = new CellMirror(8, 1, F);
+    const text = [..."exxxxxx"]; // base char + six plain cells; cell 0 gains a mark below
+    const codepoints = new Uint32Array(text.map((c) => cp(c)));
+    const extra = new Uint32Array(text.length); // cell 0 carries a cluster
+    extra[0] = 1;
+    const flags = new Uint16Array(text.length);
+    const spans = new Uint32Array([0, 0, text.length - 1, 0, text.length]);
+    const sideTable = ["\u0301"];
+
+    const reads = { spans: 0, flags: 0, extra: 0, codepoints: 0, sideTable: 0 };
+    const counting = {
+      kind: 1,
+      cols: 8,
+      rows: 1,
+      get spans() {
+        reads.spans++;
+        return spans;
+      },
+      get flags() {
+        reads.flags++;
+        return flags;
+      },
+      get extra() {
+        reads.extra++;
+        return extra;
+      },
+      get codepoints() {
+        reads.codepoints++;
+        return codepoints;
+      },
+      get sideTable() {
+        reads.sideTable++;
+        return sideTable;
+      },
+    } as unknown as DecodedFrame;
+
+    mirror.applyFrame(counting);
+
+    // The mirror's output must not change — this is about how often it asks, not what it stores.
+    expect(mirror.rowCells(0).text).toBe("éxxxxxx");
+    expect(reads).toEqual({ spans: 1, flags: 1, extra: 1, codepoints: 1, sideTable: 1 });
+  });
+});

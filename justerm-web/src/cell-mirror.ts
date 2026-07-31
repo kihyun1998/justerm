@@ -47,7 +47,14 @@ export class CellMirror {
     }
 
     // 2. Spans: store each cell.
-    const { spans } = frame;
+    //
+    // Read every column ONCE, up here. On a frame from the wasm decoder these are getters, not
+    // stored properties: each read of a cell column rebuilds a typed-array view (same memory, new
+    // object) and each read of `sideTable` rebuilds the whole `string[]`. Reading them inside the
+    // loop cost one allocation per cell — and for `sideTable`, a full table rebuild per cluster
+    // cell, measured at ~170x a local read (#657). Invisible to a plain-object fixture, where a
+    // property read is free, which is why every test here was green through it.
+    const { spans, flags: flagsCol, extra: extraCol, codepoints, sideTable } = frame;
     for (let s = 0; s < spans.length; s += SPAN_STRIDE) {
       const line = spans[s]!;
       const left = spans[s + 1]!;
@@ -56,13 +63,13 @@ export class CellMirror {
       for (let i = 0; i < count; i++) {
         const idx = cellOffset + i;
         const x = left + i;
-        const flags = frame.flags[idx]!;
-        const extra = frame.extra[idx]!;
-        const code = frame.codepoints[idx]!;
+        const flags = flagsCol[idx]!;
+        const extra = extraCol[idx]!;
+        const code = codepoints[idx]!;
         // The side table holds ONLY the trailing width-0 combining marks (justerm-core convention,
         // #294); the base glyph stays in `code`. Prepend the base to the marks so "é" (e + U+0301)
         // and "🚀‍" (emoji + trailing ZWJ) keep their base instead of rendering a bare mark.
-        const marks = extra !== 0 ? frame.sideTable[extra - 1]! : "";
+        const marks = extra !== 0 ? sideTable[extra - 1]! : "";
         const symbol = code === 0 ? " " : String.fromCodePoint(code) + marks;
         this.cells[line * this.cols + x] = { symbol, flags };
       }

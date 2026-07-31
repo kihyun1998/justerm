@@ -120,7 +120,8 @@ owns no detail of its own.
   [alt-screen absolute-index floor](invariant/alt-screen-buffer-floor.md) ·
   [row-keyed side maps](invariant/row-keyed-side-maps.md) ·
   [an IME composition is browser-owned state the engine never sees](invariant/composition-is-browser-owned-state.md) ·
-  [workspace exclusion is gate invisibility](invariant/workspace-exclusion-is-gate-invisibility.md)
+  [workspace exclusion is gate invisibility](invariant/workspace-exclusion-is-gate-invisibility.md) ·
+  [a decoded frame's columns are getters](invariant/decoded-columns-are-getters.md)
 
 Ask the questions instead of copying the answers (run from `docs/map/`):
 

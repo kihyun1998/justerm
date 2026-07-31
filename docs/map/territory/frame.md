@@ -60,7 +60,9 @@ against a pinned tree.
 
 ## Cross-cutting invariants
 
-*(none identified yet)*
+- [a decoded frame's columns are getters](../invariant/decoded-columns-are-getters.md) — on the JS
+  side the payload is reached through accessors that rebuild a view (or, for the string tables, the
+  whole array) on every read, so a reader walks cells from a local and never from `frame.`
 
 ## Blast radius
 

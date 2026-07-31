@@ -68,6 +68,10 @@ than a comparison against what the references do when the mode is enabled.
 - [row-keyed side maps](../invariant/row-keyed-side-maps.md) — the combining map is the first of the
   three, and the pattern the other two follow: read only through the presence bit, ride with the row,
   and clearing the bit is what retires the fact
+- [a decoded frame's columns are getters](../invariant/decoded-columns-are-getters.md) — `sideTable`
+  is the worst case of it: the JS getter rebuilds the whole `string[]` per read, and it is read
+  behind a per-cell condition, so a mirror that indexed it in the loop rebuilt the table once per
+  cluster cell
 
 ## Blast radius
 
