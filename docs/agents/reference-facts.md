@@ -857,6 +857,24 @@ to guarding the *input* where a clamp sits between them: `Math.max(0, Math.min(1
 is `0` — finite, and a silent jump to the live edge. Only `NaN` survives to the output, so an
 output-side check fixes half the cases while reading as if it fixed all of them.
 
+## Where a drag-scroll amount gets its viewport height (#680, verified 2026-07-31)
+
+`dragScrollSpeed` is a port of xterm's `_getMouseEventScrollAmount`, down to the sign term, so the
+interesting difference is not the algorithm — it is the **input**.
+
+| Fact | Reference | Site |
+|---|---|---|
+| The height is read as **one number with one meaning**: `this._renderService.dimensions.css.canvas.height`, the measured canvas box | xterm.js | `src/browser/services/SelectionService.ts:419` |
+| The ramp is otherwise identical to justerm's, sign term included — `(offset / Math.abs(offset)) + Math.round(offset * (DRAG_SCROLL_MAX_SPEED - 1))`, and equally unguarded | xterm.js | `src/browser/services/SelectionService.ts:429` |
+
+**The ambiguity was justerm's own, and naming it is what solved #680.** `SelectionController` does not
+have a canvas height; it reconstructs one as `getRows() * geom.cellHeight`, and a product loses
+*which factor* was zero. That is why guarding the product would have re-decided #667 (whose reading
+of a 0-row viewport is load-bearing for `tick()`'s edge-row floor) rather than fixing a defect. The
+factors carry different contracts — `cellHeight` has a documented precondition since #672, `getRows()`
+does not — so the guard belongs at the caller that still holds them separately, and the published
+`dragScrollSpeed` keeps both its signature and xterm's semantics.
+
 ## What the engine does with a column it was handed anyway (#671, verified 2026-07-31)
 
 The read-side half of the section above. Once a selection anchor **is** out of range — because the

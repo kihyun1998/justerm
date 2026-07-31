@@ -1614,3 +1614,85 @@ test("a wheel survives an unmeasured cell instead of latching NaN (#675)", async
   expect(offsets.filter((o) => !Number.isFinite(Number(o)))).toEqual([]);
   expect(offsets.length).toBeGreaterThan(healthyCount);
 });
+
+// #680 — a drag that outlives the canvas's box used to auto-scroll at DRAG_SCROLL_MAX_SPEED.
+// `mousedown` is on the canvas, so a hidden canvas cannot be pressed — but `mousemove`/`mouseup`
+// are window-scoped and the tick timer is already running, so a drag ALREADY IN PROGRESS survives
+// the canvas losing its box. That is a collapsing panel or a tab switch mid-selection.
+//
+// Observed through the scrollbar thumb, which is passive: reading it does not scroll, unlike the
+// wheel-log read-out that an earlier probe used and that reported its own effect. At displayOffset
+// 0 the thumb sits at its maximum and scrolling into history lowers it, so the defect (≈120 lines
+// "toward newer" over 8 ticks) slams it back to the top of its range.
+//
+// Judged on the delta against a same-duration control, not an absolute: the demo appends a line
+// every 300ms, which raises the thumb on its own, and the maximum itself moves as scrollback grows.
+test("a drag does not auto-scroll when the canvas loses its box (#680)", async ({ page }) => {
+  const thumbTop = () =>
+    page.evaluate(() => {
+      const track = [...document.querySelectorAll("div")].find(
+        (d) =>
+          d.style.position === "absolute" &&
+          d.style.right === "0px" &&
+          d.style.height === "100%" &&
+          d.querySelector("div"),
+      );
+      const t = track?.querySelector("div") as HTMLElement | undefined;
+      return t ? parseFloat(t.style.top) : null;
+    });
+  const wheel = (dy: number) =>
+    page.evaluate((d) => {
+      document
+        .querySelector("#term")!
+        .parentElement!.dispatchEvent(
+          new WheelEvent("wheel", { deltaY: d, deltaMode: 1, bubbles: true, cancelable: true }),
+        );
+    }, dy);
+  const mouse = (type: string, clientY: number, held: boolean) =>
+    page.evaluate(
+      ([t, y, h]) => {
+        const c = document.querySelector("#term") as HTMLElement;
+        (t === "mousedown" ? c : window).dispatchEvent(
+          new MouseEvent(t as string, {
+            clientX: 200,
+            clientY: y as number,
+            button: 0,
+            buttons: h ? 1 : 0,
+            detail: 1,
+            bubbles: true,
+            cancelable: true,
+          }),
+        );
+      },
+      [type, clientY, held] as [string, number, boolean],
+    );
+  const hideCanvas = (h: boolean) =>
+    page.evaluate((x) => {
+      (document.querySelector("#term") as HTMLElement).style.display = x ? "none" : "";
+    }, h);
+
+  // Enough history that wheeling up cannot clamp against the top (same poll the #133 wheel test uses).
+  await expect
+    .poll(async () => (await thumbTop()) ?? 0, { timeout: 25_000, intervals: [400] })
+    .toBeGreaterThanOrEqual(50);
+  await wheel(-6);
+  await wheel(-6);
+  await page.waitForTimeout(150);
+
+  // A drag begins normally, pointer well inside the terminal.
+  await mouse("mousedown", 300, false);
+  await mouse("mousemove", 300, true);
+  await page.waitForTimeout(400);
+  const control = (await thumbTop())!;
+
+  // The panel collapses mid-drag, for the same duration.
+  await hideCanvas(true);
+  await mouse("mousemove", 300, true);
+  await page.waitForTimeout(400);
+  await hideCanvas(false);
+  const after = (await thumbTop())!;
+  await mouse("mouseup", 300, false);
+
+  // Measured before the fix: control drifted +1.7 (line appends) while this arm jumped +18.8.
+  expect(after - control).toBeLessThan(6);
+});

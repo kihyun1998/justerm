@@ -91,9 +91,12 @@ export function dragScrollSpeed(py: number, height: number): number {
   // legitimately empty viewport (`getRows() * cellHeight` with `getRows() === 0`), where #667
   // pinned the opposite reading — *"a 0-row viewport is 0px tall, so any pointer is below it"* —
   // to reach `tick()`'s edge-row floor. The two causes are indistinguishable at this signature, so
-  // choosing a semantic for 0 is a re-decision rather than a totality fix; measured and left
-  // alone below, tracked as #680 (where the reachability is measured: a drag already in progress
-  // survives the canvas losing its box, because mousemove/mouseup are window-scoped).
+  // choosing a semantic for 0 is a re-decision rather than a totality fix.
+  //
+  // **#680 settled the real defect without touching this**, which is why the sentence above still
+  // stands: the unmeasured-cell case is caught by {@link SelectionController.mouseMove}, one level
+  // up, where the two factors are still separate and only one of them (`cellHeight`) has a
+  // documented precondition. A caller passing a genuine 0 height still gets #667's reading.
   //
   // `Infinity` passes through for the same reason it always did: it is the documented "no row
   // count supplied → infinitely tall viewport" case, where a pointer above the top must still
@@ -246,7 +249,24 @@ export class SelectionController {
     const { row, col, side } = cellAndSide(ev, geom);
     this.lastCol = col;
     this.lastSide = side;
-    this.dragScrollAmount = dragScrollSpeed(ev.clientY - geom.originY, this.getRows() * geom.cellHeight);
+    // The viewport height is a *product*, and that is what made this ambiguous (#680): at
+    // `rows * cellHeight === 0` the pointer reads as outside the viewport by its own absolute y,
+    // so a drag that outlives the canvas's box auto-scrolls at the maximum speed. The two factors
+    // do not have the same contract, which is what resolves it without re-deciding anything:
+    // `cellHeight` is a {@link CellGeometry} field whose precondition is documented (positive and
+    // finite, #672), so a 0 there is a violated contract and there is nothing to compute from;
+    // `getRows()` is a separate callback where 0 is legitimate and #667 fixed its meaning ("a
+    // 0-row viewport is 0px tall, so any pointer is below it") to reach {@link
+    // SelectionController.tick}'s edge-row floor. So the guard is here, on the factor that has the
+    // contract, and `dragScrollSpeed` keeps its signature and its published behaviour.
+    //
+    // `> 0` rejects 0, negatives and `NaN` in one test — the same predicate `CellGeometry`
+    // documents and the one xterm uses for the same question (`hasValidSize`). `Infinity` passes
+    // and stays inert, as it already did.
+    this.dragScrollAmount =
+      geom.cellHeight > 0
+        ? dragScrollSpeed(ev.clientY - geom.originY, this.getRows() * geom.cellHeight)
+        : 0;
     if (this.dragScrollAmount === 0) {
       this.port.extend(row, col, side);
     }

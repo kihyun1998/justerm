@@ -180,7 +180,8 @@ describe("dragScrollSpeed — distance → scroll lines", () => {
   // viewport, where #667 pinned the opposite reading to reach `tick()`'s floor — see
   // "does not produce a negative edge row when the consumer reports no rows" below, which fails if
   // this returns 0. Deciding between them is a re-decision, not the totality fix #675 is about —
-  // tracked as #680, which measures the reachability (a drag in progress outlives the canvas's box).
+  // #680 settled the real defect one level up instead, in `SelectionController.mouseMove`, where
+  // the two factors are still separate — so this reading survived rather than being overturned.
   it("still treats a zero height as 'every pointer is outside' (#667's reading, unchanged)", () => {
     expect(dragScrollSpeed(100, 0)).toBe(15);
   });
@@ -650,5 +651,78 @@ describe("SelectionController — the geometry precondition is signalled (#672)"
     new SelectionController(port, () => bad).mouseDown(leftHalf(5, 3), 1);
 
     expect(port.calls).toEqual([{ kind: "begin", row: 3, col: NaN, side: "left", ty: "char" }]);
+  });
+});
+
+// #680 — the sibling of #675 at the same seam, and the half that issue deliberately left.
+// `mouseMove` builds the viewport height as `getRows() * geom.cellHeight`, so a canvas that has
+// lost its box makes it 0 — and at 0 the inside test `py >= 0 && py <= height` is false for every
+// pointer, so `dragScrollSpeed` reads the pointer's ABSOLUTE y as its distance out and saturates
+// at DRAG_SCROLL_MAX_SPEED. Measured in a real browser: a drag already in progress outlives the
+// canvas's box (mousemove/mouseup are window-scoped, the tick timer is already running), and a
+// panel collapsing mid-selection yanked the viewport to the live edge at maximum speed.
+//
+// The guard is at the CALLER, not in `dragScrollSpeed`, because the ambiguity is created by the
+// product: the two factors have different contracts. `cellHeight` is a `CellGeometry` field with a
+// documented precondition since #672 (positive and finite), so a 0 there is a violated contract;
+// `getRows()` is a separate callback where 0 is legitimate and #667 decided what it means ("a
+// 0-row viewport is 0px tall, so any pointer is below it"). Guarding the product would have
+// re-decided #667 — its test is the one that caught the attempt in #675.
+describe("SelectionController — an unmeasured cell does not auto-scroll the drag (#680)", () => {
+  it("records no scroll when the canvas loses its box mid-drag", () => {
+    const port = new StubSelectionPort();
+    const scrolls: number[] = [];
+    let geom: CellGeometry = GEOM;
+    const ctrl = new SelectionController(port, () => geom, {
+      onScroll: (n) => scrolls.push(n),
+      getRows: () => 24,
+    });
+
+    ctrl.mouseDown(leftHalf(5, 3), 1); // drag begins while everything is measured
+    geom = { ...GEOM, cellHeight: 0 }; // the panel collapses; the drag survives it
+    ctrl.mouseMove(ev(52, 300, { buttons: 1 }));
+    ctrl.tick();
+
+    expect(scrolls).toEqual([]);
+  });
+
+  it("keeps tracking the drag rather than going inert", () => {
+    const port = new StubSelectionPort();
+    let geom: CellGeometry = GEOM;
+    const ctrl = new SelectionController(port, () => geom, { getRows: () => 24 });
+
+    ctrl.mouseDown(leftHalf(5, 3), 1);
+    geom = { ...GEOM, cellHeight: 0 };
+    ctrl.mouseMove(ev(52, 300, { buttons: 1 }));
+
+    // The in-bounds branch runs, so the selection still follows the pointer. Where it lands is
+    // #672's business, not this one's, and is pinned as measured: only `cellHeight` is unmeasured
+    // here, so the COLUMN still resolves normally (52px / 10 = col 5, left half) while the ROW
+    // divides by zero and clamps to the last row (`clampTo(Infinity, rows - 1)`) — which #672
+    // signals rather than corrects.
+    expect(port.calls.at(-1)).toEqual({ kind: "extend", row: 23, col: 5, side: "left" });
+  });
+
+  // Discriminating control: with a measured cell the auto-scroll must still work, or the two
+  // assertions above would pass against a controller that simply never scrolls.
+  it("still auto-scrolls when the cell is measured and the pointer is below the viewport", () => {
+    const port = new StubSelectionPort();
+    const scrolls: number[] = [];
+    const ctrl = new SelectionController(port, () => GEOM, {
+      onScroll: (n) => scrolls.push(n),
+      getRows: () => 24,
+    });
+
+    ctrl.mouseDown(leftHalf(5, 3), 1);
+    ctrl.mouseMove(ev(72, 24 * 20 + 30, { buttons: 1 })); // 30px below the bottom
+    ctrl.tick();
+
+    expect(scrolls).toEqual([9]);
+  });
+
+  // And the published pure function is untouched — #667's reading of a 0 height stands, because
+  // this fix never asks `dragScrollSpeed` what a 0 means.
+  it("leaves dragScrollSpeed's own contract alone", () => {
+    expect(dragScrollSpeed(100, 0)).toBe(15);
   });
 });

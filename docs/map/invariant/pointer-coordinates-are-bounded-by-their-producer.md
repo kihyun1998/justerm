@@ -42,6 +42,13 @@ than a matter of how much the engine currently bounds:
    path the engine is not on. **The rule is unchanged.** Had it rested on this reason, closing #671
    would have retired an invariant that is still true.
 
+[ADR-0026](../../adr/0026-outside-coordinates-are-bounded-once.md) now governs the *engine* side of the
+same question — where a coordinate arriving from outside gets bounded, derived from whether the engine
+owns a producer for it. It **explicitly leaves this rule alone**, on reason 1 above, and this note is
+where it sends the reader for the consumer half. So the two are complements and neither subsumes the
+other: read that record before changing where `justerm-core` bounds something, and this note before
+changing what `justerm-web` hands it.
+
 ## Territories it holds in
 
 - [selection](../territory/selection.md) — `cellAndSide` turns a press/drag into an anchor and a
@@ -119,12 +126,19 @@ fix mentions a shared rule.
   one layer out: **a producer owes its consumer a value the consumer's type can mean.** Where this
   note is about a coordinate that must be in range, that one is about a number that must be a
   number — and `Math.max`/`Math.min` no more produce it than they produce a bound.
-  Two things stayed deliberately open, both recorded where they belong rather than here: the
-  *staleness* of the retained fraction across a cell change (#630's third instance, a different
-  axis of the same field), and what a **zero** viewport height should mean to `dragScrollSpeed`
-  (**#680**) — where #667 pinned "every pointer is outside" for a legitimately 0-row viewport, an
-  unmeasured cell is indistinguishable from it at that signature, and the measured consequence is a
-  drag that yanks the viewport to the live edge at maximum speed when a panel collapses mid-drag.
+  **#680 then closed the drag half, and how it closed is the part worth carrying.** A drag that
+  outlives the canvas's box auto-scrolled at the maximum speed, because `SelectionController` builds
+  its viewport height as `getRows() * geom.cellHeight` and a **product loses which factor was zero**.
+  Guarding the product would have re-decided #667, whose reading of a 0-row viewport is load-bearing
+  for `tick()`'s edge-row floor — its test caught exactly that attempt. The resolution was to notice
+  that the factors carry *different contracts*: `cellHeight` has a documented precondition (#672),
+  `getRows()` does not. So the guard sits at the caller that still holds them apart, and the
+  published `dragScrollSpeed` keeps its signature and xterm's semantics. Generalised: **when a
+  derived value is ambiguous, the fix is usually upstream of the multiplication, not a rule about
+  the result.**
+  One thing stays deliberately open, recorded where it belongs rather than here: the *staleness* of
+  the wheel scroller's retained fraction across a cell change — #630's third instance, a different
+  axis of the same field.
 - **A side-from-raw-pixel refactor.** The clamp currently doubles as the overshoot rule for `Side`;
   computing the side from the unclamped pixel (alacritty's shape) would need alacritty's explicit
   `end_of_grid → Right` arm restored alongside it.
