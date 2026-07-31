@@ -3,8 +3,8 @@
 //! `Term::match_spans` bounds one end of a match and not the other:
 //! `right` goes through `.min(last)` while `left` takes `m.start_col` raw, so
 //! `if right >= left` fails on the start row and that row is silently dropped from
-//! `frame().overlay.matches` and `overlay.active_match`. It is the same asymmetry
-//! #671 removed from `selection_range`, and until #671 the two shared it.
+//! `frame().overlay.matches` and `overlay.active_match` — a multi-row match losing only
+//! its *first* row, which is why it reads as "the highlight is fine" at a glance.
 //!
 //! **The column is consumer-supplied by design.** `Match` has four public fields, and
 //! `Engine::set_active_search_match` is documented as taking one the consumer assembled
@@ -12,20 +12,19 @@
 //! these coordinates" does not hold. `set_active_search_highlight(index)` is the safe
 //! sibling: it resolves through the held set and cannot introduce a new coordinate.
 //!
-//! **No reference arbitrates, and one of them is worse here.** No reference has this
-//! intake at all (xterm's search addon takes a *term*, alacritty's `Match` is built by
-//! `regex_search_*`, ghostty's by its `PageList` iterator), so the routing is this repo's
-//! own precedent — #660 and #671, which bound a coordinate arriving from outside at the
-//! place that first resolves it. The *mechanism* does converge: xterm's
-//! `_createResultDecorations` splits a wrapped match per row with justerm's exact shape,
-//! continuation rows starting at column 0. What it does **not** have is a bound —
-//! `Math.min(cols - currentCol, remainingSize)` goes negative for an out-of-range column
-//! and its `while (remainingSize > 0)` loop then never terminates. Recorded in
-//! `docs/agents/reference-facts.md`; the reference is silent on the guard, not against it.
+//! **#671 is the sibling but not the same shape.** It did not touch `selection_range`,
+//! whose `left` is still unbounded today; it clamped selection's *producer*
+//! (`Term::viewport_to_abs`), which made that read-site asymmetry unreachable. Search has
+//! no producer to clamp — the coordinate **is** the consumer's — which is why the same
+//! asymmetry stayed live here and why the bound sits at the read.
 //!
-//! Bounded at the **read** site, unlike #671's write-site clamp: `right` is already
-//! bounded in the same expression, so this restores a symmetry rather than adding a rule,
-//! and the write side is three entry points (one taking a `Vec`) instead of one.
+//! **The references split 1–1 on the guard.** alacritty clamps a column unconditionally
+//! (`Point::grid_clamp`, on both endpoints before any per-type arithmetic); xterm
+//! **hides**, with a commented arm for exactly this input (*"exceeded the container width,
+//! so hide"*) — which is justerm's *old* outcome. The tie breaks on the old outcome being
+//! neither: it dropped one row and painted the rest. Recorded with its cost in
+//! `docs/agents/reference-facts.md`, including the wide-pair spacer a clamp can land on
+//! and a hide could not.
 
 use justerm_core::{Engine, Match, SelectionSpan};
 

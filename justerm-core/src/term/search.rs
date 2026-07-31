@@ -196,22 +196,29 @@ impl Term {
     ///
     /// Left unbounded, a start column past the last one made `right >= left` fail on the
     /// match's **own** row and dropped it, so a multi-row match lost its first row while
-    /// the rest painted — the shape that reads as "the highlight is fine" at a glance.
-    /// #671 removed the identical asymmetry from `selection_range`; until then the two
-    /// projections shared it, which is why neither looked like the outlier.
+    /// the rest painted — the shape that reads as "the highlight is fine" at a glance,
+    /// and the reason this was not a visible defect for as long as it existed.
     ///
-    /// Bounded **here** rather than at the three intakes, unlike #671's write-site clamp:
-    /// `right` is already bounded in this same expression, so this restores a symmetry
-    /// instead of adding a rule, and one of the intakes takes a whole `Vec`. The bound is
-    /// the row's own extent, which is the *grid* width — every row is resized to
-    /// `grid.cols()` by both row producers — so a short line does not shrink a match that
-    /// reaches past its text.
+    /// Bounded **here** rather than at the three storing intakes. #671 is the sibling but
+    /// **not** the same shape: it did not touch `selection_range`, whose `left` is still
+    /// unbounded — it clamped selection's *producer* (`Term::viewport_to_abs`), which made
+    /// the read-site asymmetry unreachable. Search has no producer to clamp, because the
+    /// coordinate **is** the consumer's, which is exactly why the same asymmetry stayed
+    /// live here. `right` is already bounded in this expression, so the bound restores a
+    /// symmetry rather than adding a rule, and the write side is three intakes, one taking
+    /// a whole `Vec`. The bound is the row's extent, which is the *grid* width — both row
+    /// producers resize every row to `grid.cols()` — so a short line does not shrink a
+    /// match reaching past its text.
     ///
-    /// No reference arbitrates the guard: none of the three has this intake, and xterm's
-    /// otherwise byte-identical per-row split (`_createResultDecorations`, continuation
-    /// rows starting at column 0) would not merely drop a row — its
-    /// `Math.min(cols - currentCol, remainingSize)` goes negative and the loop stops
-    /// terminating. The model converges; the bound is this repo's own (`reference-facts`).
+    /// **The references split 1–1 on the guard, and clamping is the chosen side, not the
+    /// obvious one.** alacritty clamps a column unconditionally (`Point::grid_clamp`, run
+    /// on both endpoints before any per-type arithmetic); xterm **hides** — its decoration
+    /// renderer carries a commented arm for precisely this input (*"exceeded the container
+    /// width, so hide"*), which is justerm's *old* outcome. What breaks the tie is that the
+    /// old outcome was neither: it dropped one row and painted the rest. The cost of
+    /// clamping is recorded with it in `reference-facts.md` — on a grid ending in a wide
+    /// glyph the clamped column can be the pair's trailing spacer, so a span can cover half
+    /// a glyph (the #454 class), which hiding would not have produced.
     pub fn match_spans(&self, m: &Match) -> Vec<SelectionSpan> {
         let rows = self.grid.rows();
         let top = self.scrollback.len() - self.display_offset;

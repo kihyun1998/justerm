@@ -56,12 +56,14 @@ Nothing decides the match model, the smart-case rule, or the regex dialect.
 ## Reference behaviour
 
 - [Who may hand the engine a match, and what happens to its columns](../../agents/reference-facts.md#search-who-may-hand-the-engine-a-match-and-what-happens-to-its-columns-678-verified-2026-07-31)
-  — the first entry for this territory (#678). Two questions that had to be split: **no reference has
-  the intake at all** (xterm's addon takes a *term*, alacritty's and ghostty's matches are built
-  internally), so the guard is unarbitrated and routes to this repo's own precedent; while the
-  **projection converges exactly** — xterm's per-row split is `match_spans`'s model, continuation rows
-  and all, and carries *no* column bound, so an out-of-range column would not drop a row there but
-  stop its loop terminating. The reference is silent on the guard, not against it
+  — the first entry for this territory (#678). Three separable questions. **Nobody else lets a
+  consumer supply a match** (xterm's addon takes a *term*; alacritty's and ghostty's are built
+  internally). **The guard is arbitrated and splits 1–1** — alacritty clamps, xterm hides with a
+  commented arm for exactly this input, ghostty cannot represent it; justerm took alacritty's side
+  because its own prior behaviour was *neither* (it dropped the start row and painted the rest), and
+  the section records what clamping costs that hiding would not. **The projection converges exactly**
+  — xterm's per-row split is `match_spans`'s model — and is itself unguarded there, emitting spurious
+  full-width rows for an out-of-range column
 
 **Still open — the dialect.** `SearchOptions` is described as mirroring xterm.js's `ISearchOptions`,
 but that is unverified prose in a doc comment while the two grammars genuinely differ (`regex` crate

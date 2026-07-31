@@ -909,55 +909,71 @@ against `abs_line(..).len()` today.
 ## Search: who may hand the engine a match, and what happens to its columns (#678, verified 2026-07-31)
 
 The first entry for this territory — `docs/map/territory/search.md` recorded `## Reference behaviour`
-as **None**, and the gap mattered: justerm's search *intake* has no counterpart to compare against,
-while its *projection* has an exact one. Splitting those two questions is what this section is for.
+as **None**. Two questions had to be separated, and separating them is what makes the answer legible:
+who may *supply* a match, and what the projection does with a column that is out of range.
 
-**Nobody else lets a consumer hand the engine a match.** justerm's does not exist by oversight —
-ADR-0017 puts the query policy in the consumer, so the consumer owning `Vec<Match>` and handing it
-back **is** the frame-mode design. The consequence is that the guard question is unarbitrated:
+> **This section was rewritten once, on 2026-07-31, and the first version was wrong in the direction
+> that flatters the change.** It claimed no reference arbitrates and that xterm's loop stops
+> terminating. Both were false, both were pinned `file:line` claims, and the correction is below —
+> the class of error this file exists to prevent, produced by reading a loop instead of running it.
 
-| Fact | Reference | Site |
-|---|---|---|
-| The search addon's public surface takes a **term**, not a match — `findNext(term, searchOptions)` / `findPrevious(...)`; the addon runs the search itself | xterm.js | `addons/addon-search/src/SearchAddon.ts:101` |
-| `Match` is a `RangeInclusive<Point>` produced by `regex_search_left` / `regex_search_right` and consumed in the *app* layer; `alacritty_terminal` exposes no public method that takes one | alacritty | `alacritty_terminal/src/term/search.rs:21` |
-| Matches come from the `PageList` search iterator, same story | ghostty | `src/terminal/search.zig` |
-
-**The projection mechanism, by contrast, converges exactly — and the reference is the *less* guarded
-of the two.** xterm splits a wrapped match into per-row ranges with justerm's shape, continuation rows
-starting at column 0:
-
-```ts
-let currentCol = result.col;
-while (remainingSize > 0) {
-  const amountThisRow = Math.min(this._terminal.cols - currentCol, remainingSize);
-  decorationRanges.push([markerOffset, currentCol, amountThisRow]);
-  currentCol = 0;
-  remainingSize -= amountThisRow;
-}
-```
+**Nobody else lets a consumer hand the engine a match.** justerm's intake is not an oversight —
+ADR-0017 puts query policy in the consumer, so the consumer owning `Vec<Match>` and handing it back
+**is** the frame-mode design.
 
 | Fact | Reference | Site |
 |---|---|---|
-| The per-row split above — same model as `Term::match_spans`'s `left = if line == start_line { start_col } else { 0 }` | xterm.js | `addons/addon-search/src/DecorationManager.ts:123` |
-| …and **no bound on the column**: for `currentCol > cols` the width goes negative, `remainingSize` *grows*, and `while (remainingSize > 0)` stops terminating. The precondition is implicit, held only by the producer being the engine's own search | xterm.js | same |
-| Neither does the layer beneath it — `registerDecoration` checks only `marker.isDisposed`, not `x`/`width` | xterm.js | `src/common/services/DecorationService.ts:54` |
-| Its cell lookup inverts the loop instead: `forEachDecorationAtCell` walks **real cells** and tests membership (`x >= xmin && x < xmax`), so an out-of-range `x` matches no cell rather than indexing one | xterm.js | `src/common/services/DecorationService.ts:100` |
+| The search addon's public surface takes a **term**, not a match — `findNext(term, searchOptions)`; the addon runs the search itself | xterm.js | `addons/addon-search/src/SearchAddon.ts:101` |
+| `Match` is a `RangeInclusive<Point>` produced by `regex_search_left` / `regex_search_right` and consumed in the *app* layer; `alacritty_terminal` exposes no public method taking one | alacritty | `alacritty_terminal/src/term/search.rs:21` |
+| Matches come from the `PageList` search iterator | ghostty | `src/terminal/search.zig` |
 
-**Direction, and why "move toward the reference" is empty here.** On the guard the reference is not a
-target: justerm degrades to a dropped row where xterm would hang, and it is protected only by not
-having the API. So the routing is theflow's tie-breaker for *API shape* — **this repo's own
-precedent**, which #660 and #671 established: a coordinate arriving from outside is bounded where it
-is first resolved. The reference still earns its place as a **negative result**: the model converged
-independently, and the silence on the bound is evidence that nobody has had to answer this, not that
+**But the *guard* question is arbitrated, and the answers split 1–1.** The comparable surface is
+xterm's `registerDecoration({x, width})` — a public intake for a consumer-supplied span with the same
+column semantics:
+
+| Fact | Reference | Site |
+|---|---|---|
+| **Hide.** An explicit, commented arm for exactly this input: `const x = decoration.options.x ?? 0; if (x && x > cols) { /* exceeded the container width, so hide */ element.style.display = 'none'; }` | xterm.js | `src/browser/decorations/BufferDecorationRenderer.ts:83` |
+| …and its public intake validates *shape* but not *range* — `_verifyPositiveIntegers` throws on a negative, fractional or `NaN` x, and imposes no upper bound. Reject malformed, accept out-of-range, be total downstream | xterm.js | `src/browser/public/Terminal.ts:173` |
+| …the colour path reaches the same outcome by inverting the loop: `forEachDecorationAtCell` walks **real cells** and tests membership, so an out-of-range `x` matches none | xterm.js | `src/common/services/DecorationService.ts:100` |
+| **Clamp.** `Point::grid_clamp` clamps the column unconditionally — `self.column = min(self.column, last_column)` — and `Selection::to_range` runs it on *both* endpoints before any per-type arithmetic. `to_range` returns `None` on the **line** axis only; an off-grid column is clamped, never dropped | alacritty | `alacritty_terminal/src/index.rs:97` |
+| **Cannot represent it** — a pin holds no out-of-range position | ghostty | `src/terminal/Selection.zig:152` |
+
+**justerm's pre-#678 behaviour was neither answer**, and that is the argument the split does not
+weaken: it dropped the match's *start row* and painted the continuation rows, because `left` was
+unbounded while `right` was not. xterm hides the whole decoration; alacritty clamps the whole range;
+justerm did half of one. The choice was therefore between two coherent answers and a third nobody
+holds — and it went to **alacritty's**, on theflow's tie-breaker for API shape (this repo's own
+precedent: #660 and #671 both bound a coordinate arriving from outside).
+
+**The cost of that choice, recorded rather than discovered later.** Clamping paints wrong content
+*visibly* where hiding paints nothing; on a grid ending in a wide glyph the clamped column can be the
+pair's **trailing spacer**, so the span covers half a glyph — a bisection the dropped row could not
+produce (the #454 class, with `match_spans` as a producer that issue does not name). Hiding would
+have avoided that and lost the "visible so the consumer can notice" property instead.
+
+**The projection mechanism converges exactly, and there the reference is unguarded.** xterm splits a
+wrapped match into per-row ranges with justerm's shape, continuation rows starting at column 0:
+
+| Fact | Reference | Site |
+|---|---|---|
+| The per-row split — the same model as `Term::match_spans`'s `left = if line == start_line { start_col } else { 0 }` | xterm.js | `addons/addon-search/src/DecorationManager.ts:123` |
+| …with **no column bound**, and the degradation traced by running it rather than reading it: for `cols = 4, col = 80, size = 2` it emits `[[80, -76], [0, 4] × 19, [0, 2]]` — one negative-width range (which the hide arm above catches) followed by **nineteen spurious full-width highlight rows** (which it does not, their `x` being 0). It terminates; `currentCol = 0` is reset inside the loop | xterm.js | same |
+
+So on its *own* search path xterm is worse than either deliberate answer — an accident nobody guarded,
+because the producer is always its own engine. That is a negative result worth pinning: the model
+converged independently, and the missing guard is evidence nobody has had to answer this, not that
 the answer is "leave it".
 
 **Where justerm bounds it, and why not where #671 did.** `match_spans`, the read site — `right` is
 already bounded in the same expression, so this restores a symmetry rather than adding a rule, and
-the write side is three intakes, one of which takes a whole `Vec`. #671's write-site argument (five
-`Side`-dependent `+ 1`s in one function) has no counterpart here: a `Match` is inclusive on both ends
-and gets no `+ 1` at all.
+the write side is three storing intakes, one taking a whole `Vec`. #671 is **not** the same shape and
+the first version of this section said it was: it did not touch `selection_range`, whose `left` is
+still unbounded (`term/selection.rs`). What #671 did was clamp selection's *producer*
+(`viewport_to_abs`), making the read-site asymmetry unreachable. Search has no producer to clamp —
+the coordinate **is** the consumer's — which is exactly why the same asymmetry stayed live here and
+why the bound has to sit at the read.
 
-**A cleared concern, with its condition.** The bound is `abs_line(line).len() - 1`, which is the
-**grid** width rather than the printed text, because both row producers resize every row to
-`grid.cols()`. Same condition as the selection clearance above: it holds while `len == cols` is an
-invariant of those producers, not merely while no caller happens to notice.
+**A cleared concern, with its condition.** The bound is `abs_line(line).len() - 1`, the **grid** width
+rather than the printed text, because both row producers resize every row to `grid.cols()`. It holds
+while `len == cols` is an invariant of those producers.
