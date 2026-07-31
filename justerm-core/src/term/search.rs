@@ -185,6 +185,40 @@ impl Term {
     /// Project a match onto the current viewport as inclusive-column spans, one
     /// per visible row (off-screen parts dropped) — for the renderer to
     /// highlight, like `selection_range`.
+    ///
+    /// **Both column ends are bounded here, and the `left` half is not an accident of
+    /// symmetry (#678).** A [`Match`]'s columns are *consumer-supplied* by design:
+    /// [`Term::set_active_search_match`] documents taking one the caller assembled
+    /// outside the engine's own result set (the past-cap path, #436), and `Match`'s
+    /// fields are public. So the usual guarantee — "the engine found it, therefore it is
+    /// in range" — does not hold on this path, and only the *index* form
+    /// ([`Term::set_active_search_highlight`]) keeps it by construction.
+    ///
+    /// Left unbounded, a start column past the last one made `right >= left` fail on the
+    /// match's **own** row and dropped it, so a multi-row match lost its first row while
+    /// the rest painted — the shape that reads as "the highlight is fine" at a glance,
+    /// and the reason this was not a visible defect for as long as it existed.
+    ///
+    /// Bounded **here** rather than at the three storing intakes. #671 is the sibling but
+    /// **not** the same shape: it did not touch `selection_range`, whose `left` is still
+    /// unbounded — it clamped selection's *producer* (`Term::viewport_to_abs`), which made
+    /// the read-site asymmetry unreachable. Search has no producer to clamp, because the
+    /// coordinate **is** the consumer's, which is exactly why the same asymmetry stayed
+    /// live here. `right` is already bounded in this expression, so the bound restores a
+    /// symmetry rather than adding a rule, and the write side is three intakes, one taking
+    /// a whole `Vec`. The bound is the row's extent, which is the *grid* width — both row
+    /// producers resize every row to `grid.cols()` — so a short line does not shrink a
+    /// match reaching past its text.
+    ///
+    /// **The references split 1–1 on the guard, and clamping is the chosen side, not the
+    /// obvious one.** alacritty clamps a column unconditionally (`Point::grid_clamp`, run
+    /// on both endpoints before any per-type arithmetic); xterm **hides** — its decoration
+    /// renderer carries a commented arm for precisely this input (*"exceeded the container
+    /// width, so hide"*), which is justerm's *old* outcome. What breaks the tie is that the
+    /// old outcome was neither: it dropped one row and painted the rest. The cost of
+    /// clamping is recorded with it in `reference-facts.md` — on a grid ending in a wide
+    /// glyph the clamped column can be the pair's trailing spacer, so a span can cover half
+    /// a glyph (the #454 class), which hiding would not have produced.
     pub fn match_spans(&self, m: &Match) -> Vec<SelectionSpan> {
         let rows = self.grid.rows();
         let top = self.scrollback.len() - self.display_offset;
@@ -198,7 +232,11 @@ impl Term {
                 break;
             }
             let last = self.abs_line(line).len().saturating_sub(1);
-            let left = if line == m.start_line { m.start_col } else { 0 };
+            let left = if line == m.start_line {
+                m.start_col.min(last)
+            } else {
+                0
+            };
             let right = if line == m.end_line {
                 m.end_col.min(last)
             } else {

@@ -264,7 +264,17 @@ impl Term {
                         break;
                     }
                     let len = self.abs_line(line).len();
-                    let left = if line == start_line { from } else { 0 };
+                    // Both ends, not one (ADR-0026 D3). `right_excl` was bounded and `left`
+                    // was not, which is not half a guard: the raw end survives into the
+                    // `right_excl > left` test below and drops the row instead of shortening
+                    // it — silently, and only ever the *start* row, so a multi-row selection
+                    // looks intact. Unreachable as this crate stands (#671 clamps the
+                    // producer, `resize` re-clamps reflowed points, alt drops the selection),
+                    // and kept for the reason the bound above it is kept: it makes the
+                    // function total on its own rather than by trusting a guard two files
+                    // away. `match_spans` is the same expression in `term/search.rs`, where
+                    // the coordinate IS the consumer's and this is the only guard there is.
+                    let left = if line == start_line { from.min(len) } else { 0 };
                     let right_excl = if line == end_line { to.min(len) } else { len };
                     if right_excl > left {
                         push(line, left, right_excl - 1);
@@ -277,6 +287,12 @@ impl Term {
                 from,
                 to,
             } => {
+                // The Block arm bounds against the grid rather than each line, because a
+                // rectangle is the same columns on every row by definition — `resolve`
+                // already clipped `to` with `.min(cols)`, so only `from` was open
+                // (ADR-0026 D3/D4). Same reachability as the Linear arm above.
+                let cols = self.grid.cols();
+                let from = from.min(cols);
                 if to > from {
                     for line in line0..=line1 {
                         push(line, from, to - 1);

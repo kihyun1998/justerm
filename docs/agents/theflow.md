@@ -823,6 +823,7 @@ different `wasm-opt` than the ones that will judge the PR. This is not hypotheti
 `cargo install wasm-pack --locked --version <pinned>` aligns them.
 
 **Gate hygiene:** run each gate **bare, never piped** (`test … | tail -1 &&
+| **An out-of-range coordinate handed in from outside** (which surface bounds it, where, and that a reader may not bound one end of a pair) | **ADR-0026** (proposed) | **Promoted 2026-07-31** over #660 → #671 → #678 — three combinations of {axis, surface, bound-site} decided one at a time, each reinterpreting the last. Two triggers carried it: the references **split 1–1** on the guard (alacritty clamps, xterm hides) *and* xterm contradicts itself across its own call sites; and the third issue re-decided a pair the second had already settled, in a different combination. Its first finding is a conformance fix in the same change (`selection_range` bounded one end of two arms). A new question about an out-of-range coordinate in `justerm-core` is a conformance item against D1–D4, not a fresh decision — but the *consumer* side has its own rule with its own reason, the `docs/map/invariant/` pointer-coordinate note, which this does not subsume |
 commit` always commits — a pipeline's status is `tail`'s). **Never move a
 threshold** (coverage floor / lint budget) to turn a build green.
 
