@@ -46,7 +46,8 @@ const palette = {
 const F = flags(); // bit constants, read once
 
 // --- per frame (e.g. an IPC message) ---
-const frame = decodeFrame(wireBytes); // throws on a malformed buffer
+// Throws on a malformed buffer: a real `Error`, `message` = the DecodeError variant.
+const frame = decodeFrame(wireBytes);
 // Structure-of-arrays columns (zero-copy views) + the span directory.
 const { codepoints, fg, bg, extra, link, spans } = frame;
 const flagBits = frame.flags; // note: the column; `flags()` above is the constants

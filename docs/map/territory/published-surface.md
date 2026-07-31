@@ -92,6 +92,10 @@ How a version gets there is [release](release.md).
   published decoder hands a consumer is an accessor, not a property, and the width-agnostic mirror
   that makes the seam flexible is also what hides it: every fixture in the repo is a plain object,
   where the same code costs nothing
+- [a wasm `Err` payload is thrown verbatim](../invariant/wasm-err-payload-is-thrown-verbatim.md) —
+  the other half of what a stranger consumes: not the values a call returns but the value it
+  *throws*, decided in Rust, stated in no README and typed in no `.d.ts`, and frozen at publish
+  like the prose above it
 
 ## Blast radius
 

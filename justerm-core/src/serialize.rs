@@ -260,9 +260,10 @@ pub enum DecodeError {
     /// cost is borne only by an external matcher nobody has seen. For it: this variant is
     /// now the whole diagnostic for six distinct malformations, and the JS side has no
     /// more to work with (`justerm-wasm-decode` formats the variant name into the thrown
-    /// value). The distinction is real but belongs to the next release that is breaking
-    /// anyway — a version bump spent on a diagnostic label, on a crate published in
-    /// lockstep with an npm package, is the more expensive half of this trade today.
+    /// `Error`'s `message`, #662). The distinction is real but belongs to the next
+    /// release that is breaking anyway — a version bump spent on a diagnostic label, on
+    /// a crate published in lockstep with an npm package, is the more expensive half of
+    /// this trade today.
     BadSpan,
 }
 

@@ -44,7 +44,11 @@ comparison set for this territory is smaller than for the rest of the crate.
 
 ## Cross-cutting invariants
 
-*(none identified yet)*
+- [a wasm `Err` payload is thrown verbatim](../invariant/wasm-err-payload-is-thrown-verbatim.md) —
+  every failure this territory reports (no document, no canvas, no WebGL2 context) crosses into JS
+  as a **string primitive**, so a consumer's `catch` sees no `.message`, no `.stack` and
+  `instanceof Error === false`. Unchanged by #662, which fixed the decoder's single site because
+  ADR-0008 obliged that shape there; nothing obliges it here yet
 
 ## Blast radius
 
