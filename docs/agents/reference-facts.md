@@ -640,3 +640,53 @@ further down in the same file.
 | The strikethrough draws in the **glyph foreground**, never in the SGR 58 underline colour — confirming #525's premise | xterm.js | `addons/addon-webgl/src/TextureAtlas.ts:758-762` |
 | ⚠ **The mechanism is a `save`/`restore` bracket, and the obvious grep hit says the opposite.** The underline block opens with `save()` (`:565`), sets `strokeStyle` from `getUnderlineColor()` (`:576-583`), then assigns `fillStyle = strokeStyle` (`:585`) — read alone, that says the SGR 58 colour becomes the fill for everything after it. `restore()` at `:688` undoes it, so the glyph `fillText` (`:735`) and the strikethrough's `strokeStyle = fillStyle` (`:762`) both get the foreground back | xterm.js | `TextureAtlas.ts:565`, `:585`, `:688`, `:735`, `:762` |
 | ⚠ Path note: `TextureAtlas.ts` lives under `addons/addon-webgl/src/`, **not** `src/browser/renderer/shared/` as #525 cites | xterm.js | `addons/addon-webgl/src/TextureAtlas.ts` |
+
+## Validating a decoded payload against its own declared geometry (#582, verified 2026-07-31)
+
+The occasion: justerm's `decode` accepted a frame whose parts did not fit the `cols`/`rows` the same
+frame declared. The question routes oddly — `docs/map/territory/wire-format.md` records that **no
+reference serializes terminal state this way**, so there is no format to compare against. What *can*
+be compared is the posture: when a coordinate cannot exist in the buffer it names, does the
+implementation reject, clamp, drop, or index it anyway? Every row grepped at the pinned SHAs.
+
+| Fact | Reference | Site |
+|---|---|---|
+| A coordinate computed **from the VT stream** is clamped, never refused — `grid_clamp` with an explicit `Boundary`, and `goto` clamps the line into `[0, bottommost]` | alacritty | `alacritty_terminal/src/index.rs:92`, `term/mod.rs:1168` |
+| Same posture at the same layer: the cursor setter writes, then `_restrictCursor()` pulls it back inside | xterm.js | `common/InputHandler.ts:900-910` |
+| A point that **cannot exist** is answered with absence, never a manufactured in-range one — *"Never manufacture an out-of-bounds pin for that page"*, and the doc leaves clamping to the caller | ghostty | `terminal/PageList.zig:4930-4943` |
+| A **structured payload declaring its own dimensions** is cross-checked against them and rejected whole: `DimensionsRequired`, `DimensionsTooLarge`, and `expected_len != actual_len → InvalidData` | ghostty (kitty graphics) | `terminal/kitty/graphics_image.zig:419-431` |
+| ⚠ **The closest analogue of all, and it lands on the other side of the reject/assert line.** `verifyIntegrity` checks exactly justerm's class — a sparse side-map entry must pair with a cell carrying the bit (`UnmarkedGraphemeCell`, `MissingHyperlinkData`) — and its doc names the use case: *"useful for assertions, deserialization, etc."* | ghostty | `terminal/page.zig:377`, `:334`, `:450` |
+| ⚠ **…but every caller is debug-gated**, `if (comptime build_options.slow_runtime_safety …)`, so none of it runs in a shipped build | ghostty | `terminal/page.zig:365` |
+| ⚠ **alacritty *does* have a decode boundary and validates nothing at it.** `Grid`, `Row` and `Storage` all derive `Deserialize` under the `serde` feature; `Storage`'s private `len`/`zero` are taken verbatim and indexing is unguarded | alacritty | `grid/mod.rs:109`, `grid/row.rs:16`, `grid/storage.rs:32` |
+| Interior access is unguarded **as policy**, not by omission — *"for performance reasons there is no bounds checking here"* | xterm.js | `common/CircularList.ts:105-108` |
+| **A grid has a floor and no ceiling.** `MINIMUM_COLS = 2` — *"Less than 2 can mess with wide chars"* — and `MINIMUM_ROWS = 1`, applied with `Math.max` on every resize. There is no maximum anywhere | xterm.js | `common/services/BufferService.ts:13`, `common/CoreTerminal.ts:192` |
+| ⚠ **…and the one layer that could pick a ceiling refuses to.** justerm's own renderer does not choose a number: it asks the GL implementation and adopts what it gets, documenting *"Do not try to predict the limit"* — Chromium clamps each axis to `min(max_texture_size, max_renderbuffer_size, max_viewport_dims)` and *then* applies a hard-coded `5760×5760` area budget derivable from no `getParameter` | justerm-renderer (sibling, not a reference) | `justerm-renderer/src/webgl.rs` `resize` |
+
+**The direction, and it is not the simple one.** The convergent rule is *validate where the
+coordinate is computed, index freely inside* — which is the rule justerm's own `Term::damage_span`
+(clamp + `debug_assert`) and `justerm-renderer`'s `FrameGrid::validate` (reject at the boundary)
+already follow, and which `decode` alone did not. That much supports #582.
+
+**What it does not support is reading the last four rows as a mandate for a hard production reject.**
+The one reference that validates the *same* structure justerm does treats it as a debug assertion,
+and its production restore path validates nothing. The distinction that survives is **who produced
+the payload**: ghostty deserializes its own snapshot in its own process, so an integrity failure is a
+ghostty bug and belongs in an assert. justerm's `decode` reads bytes a consumer hands back over its
+own transport (ADR-0008, `tests/robustness.rs` names them attacker-influenced), so the same failure
+is *input*, and input is rejected rather than asserted. **The validity condition to re-check if it
+ever changes: the day justerm decodes something it produced in-process, ghostty's answer is the
+better one.** That split is why #582 rejects on the decode side and only `debug_assert!`s on the
+encode side — encode's input is a `Span` justerm built, which is exactly ghostty's case.
+
+**The geometry rows resolve a second question and they resolve it asymmetrically.** A frame's own
+`cols`/`rows` cannot be validated against anything inside the frame, and the temptation is to pick a
+"sane" ceiling in the consumer, since `justerm-web`'s a11y mirror allocates `cols × rows` objects
+straight from the header and its row tree makes one DOM element per row. **Do not**: nobody in the
+family or the references picks such a number, and the only layer that knows the real limit — the
+renderer — deliberately asks the device instead of predicting it. A ceiling in the widget would be
+the single arbitrary constant in the whole stack. The **floor** is the opposite: 2 columns is
+non-arbitrary, agreed by xterm.js and by justerm's own `MIN_COLUMNS` (#547), and enforced at every
+engine entry point — while `decode` accepts `cols: 0` and `cols: 1`. That is the half worth acting
+on, and it is why the "measure what a huge geometry actually does to the tab" experiment was
+**deliberately not run**: no outcome of it changes the recommendation, because the only fix it could
+motivate is the arbitrary number this paragraph rules out.

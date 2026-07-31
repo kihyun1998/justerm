@@ -111,6 +111,25 @@ proptest! {
     /// `cut` is a **percentage** of the stream rather than an absolute offset: drawn absolutely
     /// from the same range as the stream length, roughly half of all cut points land at or past
     /// the end, which degenerates the lane into the feed-only one above.
+    ///
+    /// **Since #582 each frame is also driven through its own wire, and that is a second
+    /// assertion, not decoration.** `decode` now rejects a span, a group key or a scroll region
+    /// that does not fit the frame's declared `cols`/`rows`, which is only safe because
+    /// `Term::frame` cannot emit one. Nothing tested that: this lane called `frame()` and dropped
+    /// it, and `decoded_frames_round_trip_through_encode` above starts from *decoded* bytes, so it
+    /// is blind by construction to what the engine produces. The claim is exactly the shape a
+    /// random lane can falsify and a fixed vector cannot — resize is what manufactures the odd
+    /// geometry, and this lane already interleaves it.
+    ///
+    /// **The assertion is `is_ok()`, not equality, and the difference was measured here.** The
+    /// first version asserted `decode(encode(f)) == f` and this lane refuted it within one run:
+    /// `C_LEADING_SPACER` is engine-internal by design — `cell.rs` says it *"stays in the content
+    /// word and never reaches `flags()` / the wire"* — so a frame holding one is decodable but not
+    /// a fixed point, and asserting equality would have pinned a contract the engine deliberately
+    /// does not hold (the ADR-0005 wording that omits the caveat was already raised in #531/PR #618
+    /// and settled as no-issue). What this change promises is that no engine frame is *rejected*;
+    /// that is what is asserted. The fixed-point property, on a frame with no leading spacer, is
+    /// pinned in `span_bounds.rs`.
     #[test]
     fn feed_resize_and_frame_never_panic(
         cols in 1usize..=40,
@@ -124,14 +143,17 @@ proptest! {
             let end = (stream.len() * pct / 100).max(at);
             engine.feed(&stream[at..end]);
             at = end;
-            let _ = engine.frame();
+            let frame = engine.frame();
+            prop_assert!(decode(&encode(&frame)).is_ok(), "engine frame rejected by its own decoder");
             engine.reset_damage();
             engine.resize(c, r);
-            let _ = engine.frame();
+            let frame = engine.frame();
+            prop_assert!(decode(&encode(&frame)).is_ok(), "engine frame rejected after resize");
             engine.reset_damage();
         }
         engine.feed(&stream[at..]);
-        let _ = engine.frame();
+        let frame = engine.frame();
+        prop_assert!(decode(&encode(&frame)).is_ok(), "engine frame rejected at the tail");
     }
 }
 

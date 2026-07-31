@@ -312,38 +312,47 @@ fn the_re_arm_indexes_the_span_relatively_not_absolutely() {
 }
 
 #[test]
-fn a_ucolor_column_past_the_end_of_its_span_does_not_panic_the_decoder() {
-    // #531 hazard, measured: the group's `col` key is NOT bounded against the span's
-    // width — a patched frame decodes `Ok` with `ucolors={9999: …}` over a 2-cell span.
-    // So re-arming via `span.cells[col]` is an out-of-bounds panic on attacker-influenced
-    // input (`tests/robustness.rs` names `decode`'s input exactly that), which ADR-0008
-    // forbids. Encoding a hand-edited `Frame` produces that buffer with no byte patching:
-    // `encode` writes whatever the map holds.
+fn every_decoded_underline_colour_key_indexes_a_cell_of_its_span() {
+    // Was `a_ucolor_column_past_the_end_of_its_span_does_not_panic_the_decoder`, and the
+    // rename is the point. #531 made the re-arm safe against an out-of-range key by
+    // *skipping* it and leaving the entry in the map, and deferred to #582 the question of
+    // whether such an entry should exist at all. #582 answered no, so this file no longer
+    // has a lenient case to guard — it has the stronger property that answer creates, and
+    // it is the property `Row::ucolor_at` and every `span.cells[col]` reader stand on:
+    // a decoded frame's group keys are a subset of its own cell indices.
     //
-    // Scope: the re-arm is skipped for an out-of-range column and the entry is left in
-    // the map — deliberately NOT rejected. Whether a group key outside its frame should
-    // be a `DecodeError` is the same question as #582 (a span outside the frame it rides
-    // on), and answering half of it here would pre-empt that decision.
-    let mut t = Engine::new(4, 2);
-    t.feed(b"\x1b[4m\x1b[58:5:1mA");
-    let mut frame = t.frame();
-    let span = &mut frame.spans[0];
-    let width = span.cells.len();
-    span.ucolors.clear();
-    span.ucolors.insert(9999, Color::Indexed(1));
+    // The rejection itself — all three sparse groups, both wire directions, and both build
+    // profiles — is `tests/span_bounds.rs`. What is asserted here is the invariant that
+    // survives downstream of it.
+    let mut t = Engine::new(6, 2);
+    t.feed(b"\x1b[4m\x1b[58:5:1mAB\x1b[58:2::7:7:7mCD");
+    let frame = t.frame();
+    let decoded = decode(&encode(&frame)).expect("an engine frame decodes");
 
-    let decoded = decode(&encode(&frame)).expect("decodes without panicking");
-    let dspan = &decoded.spans[0];
-    assert_eq!(dspan.ucolors.get(&9999), Some(&Color::Indexed(1)));
-    assert_eq!(
-        dspan.cells.len(),
-        width,
-        "the span is still its declared width"
-    );
-    assert!(
-        !dspan.cells.iter().any(|c| c.is_ucolored()),
-        "an out-of-range key arms no cell"
-    );
+    for span in &decoded.spans {
+        assert!(
+            !span.ucolors.is_empty(),
+            "fixture: the span must carry colours for this to assert anything"
+        );
+        let armed: Vec<usize> = span
+            .cells
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| c.is_ucolored())
+            .map(|(i, _)| i)
+            .collect();
+        let keys: Vec<usize> = span.ucolors.keys().copied().collect();
+        assert!(
+            keys.iter().all(|&k| k < span.cells.len()),
+            "every key indexes a cell this span has: {keys:?} over {} cells",
+            span.cells.len()
+        );
+        assert_eq!(
+            armed, keys,
+            "and the armed cells are exactly those keys — no entry without a bit, no bit \
+             without an entry"
+        );
+    }
 }
 
 #[test]

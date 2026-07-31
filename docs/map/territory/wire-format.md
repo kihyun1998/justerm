@@ -44,6 +44,13 @@ IPC by identity.
   consumer — the format is a *contract*, and a contract only one side can execute is untested.
 - **`WIRE_VERSION` is a single `u8`** and a decoder rejects a mismatch outright (`DecodeError`).
   There is no negotiation and no backward compatibility: version and payload move together.
+- **Payload placement is validated against the frame's own header; annotations are not (#582).** A
+  span, a sparse group key and the scroll region name cells a consumer *writes to*, so a value
+  outside the declared `cols`/`rows` is `BadSpan` — it is malformed input, not a repairable one.
+  Overlay spans, marker rows and the cursor name positions a consumer *scans*, so they ride
+  unchecked and clamping them is consumer policy (ADR-0017). The rule is one-directional by
+  construction: `encode` returns `Vec<u8>` and has no channel to refuse, so it drops an
+  unrepresentable group key rather than narrowing it onto a live column, and asserts in debug.
 
 ## Code
 
@@ -105,3 +112,35 @@ unconditional Step 5 trigger.
   could not be widened without inflating every record were removed from it instead. Kept as a hole
   only in this sense: it was *not* the "is this input malformed" question the span-bounds work asks
   (#582), the two look alike, and a fix for one still does not reach the other.
+- **~~`decode` accepts a payload that does not fit the frame it rides on~~ — closed by #582.** Spans,
+  sparse group keys and the scroll region are now read against the header's own `cols`/`rows`
+  (`BadSpan`), and `encode` drops rather than narrows an out-of-span group key. **The residue is the
+  part that is not validation**: `ScrollOp.count` is `isize` in memory and `i16` on the wire and
+  `Term::record_scroll` accumulates it without a cap, so ordinary output overflows it — measured,
+  40 000 line feeds with no intervening ack encode to `−25 536`, an up-scroll arriving as a
+  down-scroll on a `Partial` frame. A bound in `decode` cannot fix that; it would reject a frame the
+  engine produces today — **#661**.
+- **The header's own `cols`/`rows` are unchecked, and the two ends of that are different problems.**
+  Four consumer sites size themselves straight from the header — `accessibility-dom.ts` allocates a
+  `cols × rows` mirror and a per-row array, `accessibility.ts` builds one DOM element per row and
+  loops rows twice — so the widget has no stated stance on a hostile or corrupt frame while `decode`
+  explicitly has one.
+  **The ceiling is not fixable and the map should stop anyone trying.** No reference bounds a grid's
+  upper end (xterm.js has `MINIMUM_COLS`/`MINIMUM_ROWS` and no maximum), and the one layer that
+  *could* know the limit — `justerm-renderer` — refuses to guess it, asking the GL implementation and
+  adopting what it grants. A "sane" cap in the widget would be the only arbitrary constant in the
+  stack. Rows in
+  [reference-facts § validating a decoded payload](../../agents/reference-facts.md#validating-a-decoded-payload-against-its-own-declared-geometry-582-verified-2026-07-31).
+  **The floor is fixable and non-arbitrary**: 2 columns is agreed by xterm.js (*"Less than 2 can mess
+  with wide chars"*) and by justerm's own `MIN_COLUMNS` (#547), enforced at every engine entry point,
+  while `decode` accepts `cols: 0` and `cols: 1` — **#663**, kept out of #582 because the two rest on
+  different arguments (a write index a consumer walks off, vs a geometry the engine calls impossible).
+- **The `ucolors` group count is still `u16`** while its two sibling per-span groups went `u32` in
+  #621 — a standing exception to the *"`u32` iff viewport-bounded"* rule stated above. **Measured
+  after #582: not reachable.** Rejecting `right >= cols` caps a decodable span at 65 535 cells, one
+  short of the 65 536 in-range keys the count needs to wrap, and the frame that would carry them
+  (`right = 65535`) is now `BadSpan`. A `Span` that *lies* about its own width (`cells` longer than
+  `right - left + 1`; nothing in the type ties them) can still make `encode` write a wrapped count,
+  but the instance measured decoded as `Truncated`, not as a silent `Ok`. **Not searched**: whether a
+  tuned inconsistent span lands on a silent `Ok`. Left as an inconsistency with no reachable
+  consequence rather than a defect.
