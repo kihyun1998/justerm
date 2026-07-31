@@ -20,8 +20,12 @@
 //! None of that is malformed input. The engine parsed it correctly and stores it
 //! correctly; the fields were simply too small for values it legitimately holds. That is
 //! why the fix is capacity (widen what is rare, delete what is per-cell) and not
-//! validation — whether `decode` should *reject* an out-of-range group key stays #582's
-//! question, and nothing here answers it.
+//! validation. **The validation half was #582's, and it is now answered** in
+//! `tests/span_bounds.rs`: a group key outside its span is rejected on decode and dropped
+//! on encode. The split still holds — a capacity defect makes the engine unable to
+//! *describe* what it holds, a validation defect makes the decoder accept what no frame
+//! could contain — and #582's own residue is on this file's side of it, not that one:
+//! `ScrollOp.count` still narrows to `i16` from an uncapped accumulation.
 
 use justerm_core::{Engine, decode, encode};
 

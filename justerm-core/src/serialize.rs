@@ -234,7 +234,24 @@ pub enum DecodeError {
     BadVersion(u8),
     /// A tag/kind byte held a value outside its defined set.
     BadTag,
-    /// A span's `left` was past its `right` (would underflow the cell count).
+    /// A part of the frame does not fit the geometry the frame itself declares: a span
+    /// whose `left` is past its `right` (which would underflow the cell count), a span
+    /// reaching past `cols` or sitting past `rows`, a sparse group entry keyed outside
+    /// its own span, or a scroll region whose `bottom` is past the last row (#582).
+    ///
+    /// One rule, one error: a coordinate describing a cell the frame says does not exist
+    /// is malformed input, and the consumer must not be handed it.
+    ///
+    /// A dedicated `BadScroll` was considered and **not** taken, and the trade is worth
+    /// stating honestly rather than as a slogan. Against it: this enum is `pub` and not
+    /// `#[non_exhaustive]`, so a new variant is a breaking change for any downstream
+    /// exhaustive match — of which there are, measured, **none in this workspace**; the
+    /// cost is borne only by an external matcher nobody has seen. For it: this variant is
+    /// now the whole diagnostic for six distinct malformations, and the JS side has no
+    /// more to work with (`justerm-wasm-decode` formats the variant name into the thrown
+    /// value). The distinction is real but belongs to the next release that is breaking
+    /// anyway — a version bump spent on a diagnostic label, on a crate published in
+    /// lockstep with an npm package, is the more expensive half of this trade today.
     BadSpan,
 }
 
@@ -295,9 +312,43 @@ pub fn encode(frame: &Frame) -> Vec<u8> {
     // uses below. Each entry is `(col u16, len u32, len * char u32)`, the cluster
     // inline. There is no side-table and no index: nothing interned them, so the
     // indirection only bought a second count to overflow (#621).
+    //
+    // **An entry keyed outside its span is dropped, not narrowed (#582).** `Span`'s maps
+    // are `pub` and keyed by `usize` while the wire key is a `u16`, so `col as u16` did
+    // not lose an out-of-range entry — it *moved* it onto a different, live column
+    // (measured: 65539 encoded as 3 and armed the cell 'D'; 65540 in this group armed
+    // 'E'). Dropping is the only answer that fails in the harmless direction, the same
+    // asymmetry [`Term::damage_span`] records from ghostty — "may have false positives
+    // but should never have false negatives".
+    //
+    // The `debug_assert` is the detector and the drop is the release backstop, again as
+    // `damage_span`: `Term::frame` cannot build such a key (it inserts `col - left` for
+    // `col` in `left..=right`), so one arriving here is a justerm bug and should name its
+    // producer at the site — but justerm is a library, and a panic crosses into the
+    // consumer's process.
+    //
+    // The keys are sorted, so the writable entries are a prefix and the *last* key decides
+    // whether any were dropped: when none were — every frame the engine produces — the
+    // count is still `len()`, O(1), and only the write loop walks the map. Counting the
+    // range unconditionally would have replaced an O(1) read with a walk per span per
+    // group on the encode hot path, to describe a case that cannot occur.
     for span in &frame.spans {
-        out.extend_from_slice(&(span.combining.len() as u32).to_le_bytes());
-        for (&col, cluster) in &span.combining {
+        debug_assert!(
+            span.combining.keys().all(|&c| c < span.cells.len()),
+            "combining key past the end of its {}-cell span",
+            span.cells.len()
+        );
+        let n = if span
+            .combining
+            .last_key_value()
+            .is_none_or(|(&k, _)| k < span.cells.len())
+        {
+            span.combining.len()
+        } else {
+            span.combining.range(..span.cells.len()).count()
+        };
+        out.extend_from_slice(&(n as u32).to_le_bytes());
+        for (&col, cluster) in span.combining.range(..span.cells.len()) {
             out.extend_from_slice(&(col as u16).to_le_bytes());
             out.extend_from_slice(&(cluster.len() as u32).to_le_bytes());
             for &ch in cluster {
@@ -308,9 +359,25 @@ pub fn encode(frame: &Frame) -> Vec<u8> {
     // Hyperlink reference group (#46, v14): same positional shape, but the value is a
     // 1-based index into `link_table` rather than the URI — see `Span`'s doc for why
     // this half stays interned where the one above does not.
+    // Out-of-span keys are dropped here for the reason written out at the combining group
+    // above; every group answers the question the same way or the rule is not a rule.
     for span in &frame.spans {
-        out.extend_from_slice(&(span.links.len() as u32).to_le_bytes());
-        for (&col, &idx) in &span.links {
+        debug_assert!(
+            span.links.keys().all(|&c| c < span.cells.len()),
+            "link key past the end of its {}-cell span",
+            span.cells.len()
+        );
+        let n = if span
+            .links
+            .last_key_value()
+            .is_none_or(|(&k, _)| k < span.cells.len())
+        {
+            span.links.len()
+        } else {
+            span.links.range(..span.cells.len()).count()
+        };
+        out.extend_from_slice(&(n as u32).to_le_bytes());
+        for (&col, &idx) in span.links.range(..span.cells.len()) {
             out.extend_from_slice(&(col as u16).to_le_bytes());
             out.extend_from_slice(&idx.get().to_le_bytes());
         }
@@ -320,9 +387,24 @@ pub fn encode(frame: &Frame) -> Vec<u8> {
     // `span_count` maps and attaches each to its span. Each entry is `(col u16,
     // colour u32)`, the colour packed by the same `encode_color` as fg/bg. A frame
     // with no coloured underlines pays 2 bytes per span (the zero count).
+    // Out-of-span keys are dropped here too — see the combining group above for why.
     for span in &frame.spans {
-        out.extend_from_slice(&(span.ucolors.len() as u16).to_le_bytes());
-        for (&col, &color) in &span.ucolors {
+        debug_assert!(
+            span.ucolors.keys().all(|&c| c < span.cells.len()),
+            "underline-colour key past the end of its {}-cell span",
+            span.cells.len()
+        );
+        let n = if span
+            .ucolors
+            .last_key_value()
+            .is_none_or(|(&k, _)| k < span.cells.len())
+        {
+            span.ucolors.len()
+        } else {
+            span.ucolors.range(..span.cells.len()).count()
+        };
+        out.extend_from_slice(&(n as u16).to_le_bytes());
+        for (&col, &color) in span.ucolors.range(..span.cells.len()) {
             out.extend_from_slice(&(col as u16).to_le_bytes());
             out.extend_from_slice(&encode_color(color).to_le_bytes());
         }
@@ -480,6 +562,35 @@ pub fn decode(bytes: &[u8]) -> Result<Frame, DecodeError> {
         let top = r.u16()? as usize;
         let bottom = r.u16()? as usize;
         let count = (r.u16()? as i16) as isize;
+        // A scroll region is a write index in a consumer, not an annotation (#582):
+        // `justerm-web`'s `cell-mirror.ts` assigns `cells[y * cols + x]` for every `y` in
+        // `top..=bottom` with nothing bounding it against `rows`. The renderer already
+        // rejects the same value (`FrameGrid::validate` → `ScrollOutsideGrid`) after a
+        // `line == rows` off-by-one trapped the wasm module and left it poisoned (#355).
+        //
+        // **This is deliberately one notch stricter than the renderer, and the difference
+        // is not an oversight.** `FrameGrid::validate` gates its check on `kind != Full`,
+        // because a Full frame repaints everything and its own `shift_region` is skipped.
+        // The web mirror does not have that exemption: it blanks the grid on a Full frame
+        // and *then* still runs `shiftRegion` if the frame carries a scroll op. So the two
+        // consumers disagree about whether a Full frame's scroll op is live, and the wire
+        // is the wrong place to encode either answer — it rejects a region that cannot be
+        // applied to the frame it rides on, whatever the consumer then does with it.
+        //
+        // `top > bottom` is an empty region, not an error — no consumer iterates it, and
+        // the renderer says so explicitly. Rejecting it would be new strictness with no
+        // failure behind it.
+        //
+        // Not checked here: `count`. It is `isize` in memory and `i16` on the wire, and
+        // ordinary output overflows it — measured, 40 000 line feeds at the bottom of a
+        // 3-row screen with no intervening `reset_damage` encode to **−25 536**, turning an
+        // up-scroll into a down-scroll on a `Partial` frame. That is an *encode*-side
+        // capacity defect in `Term::record_scroll`'s unbounded accumulation, not a
+        // validation gap: rejecting it here would reject a frame this engine produces
+        // today, which is exactly what this change promises not to do.
+        if top <= bottom && bottom >= rows as usize {
+            return Err(DecodeError::BadSpan);
+        }
         Some(ScrollOp { top, bottom, count })
     } else {
         None
@@ -490,13 +601,28 @@ pub fn decode(bytes: &[u8]) -> Result<Frame, DecodeError> {
         let line = r.u16()?;
         let left = r.u16()?;
         let right = r.u16()?;
-        if right < left {
+        // A span is read against the frame's own header, not just against itself (#582).
+        // Before this, a frame could declare a 4×2 grid and carry a span claiming column 8
+        // of line 99 and still decode `Ok` — and the consumer that writes those cells does
+        // not fail on it either: `cell-mirror.ts` keeps the viewport as one flat array, so
+        // a column past `cols` lands in the *next row's* slot and silently overwrites it.
+        // A screen reader then announces, and a copy produces, characters that are not on
+        // that line. `decode`'s own input is attacker-influenced (`tests/robustness.rs`),
+        // and rejecting malformed input rather than repairing it is what ADR-0008 makes
+        // this boundary for.
+        if right < left || right >= cols || line >= rows {
             return Err(DecodeError::BadSpan);
         }
-        // Widen before the arithmetic: `right - left + 1` in `u16` overflows
-        // when `right == u16::MAX` (e.g. left=0, right=65535), panicking under
-        // overflow checks. `right >= left` is enforced just above, so the
+        // Widen before the arithmetic: `right - left + 1` in `u16` overflows when
+        // `right == u16::MAX` (e.g. left=0, right=65535), panicking under overflow checks
+        // (#33, found by `cargo fuzz`). `right >= left` is enforced just above, so the
         // subtraction in `usize` cannot underflow.
+        //
+        // Since #582 this can no longer be *reached*: `right < cols` and `cols` is a u16,
+        // so `right <= 65534` and the sum fits. Kept anyway, and deliberately — it is the
+        // cheaper of the two guarantees and it does not depend on the check above keeping
+        // its position. Deleting it would make a reordering of this function silently
+        // reintroduce a panic that a fuzz run had to find once already.
         let n = right as usize - left as usize + 1;
         let mut cells = Vec::with_capacity(n);
         for _ in 0..n {
@@ -537,10 +663,11 @@ pub fn decode(bytes: &[u8]) -> Result<Frame, DecodeError> {
     // not, this loop inherits that duty — the same reconstruction `ucolors` has always
     // done, and the defect #531 was filed for when it was missing.
     //
-    // Bounds-gated on the same terms as `ucolors`: `col` is attacker-influenced and
-    // nothing on the wire bounds it against the span's width, so an out-of-range key
-    // arms no cell and is left in the map. Whether it should be *rejected* is #582's
-    // question, and answering half of it here would pre-empt that decision.
+    // A key outside its span is rejected, not tolerated (#582, answering the question this
+    // comment used to defer): `col` is attacker-influenced and nothing on the wire bounds
+    // it against the span's width, and an entry addressing a cell the span does not have
+    // describes nothing the frame contains. It used to arm no cell and stay in the map,
+    // which handed the consumer a coordinate it is free to index with.
     for span in &mut spans {
         let count = r.u32()?;
         for _ in 0..count {
@@ -550,9 +677,10 @@ pub fn decode(bytes: &[u8]) -> Result<Frame, DecodeError> {
             for _ in 0..len {
                 cluster.push(char::from_u32(r.u32()?).ok_or(DecodeError::BadTag)?);
             }
-            if let Some(cell) = span.cells.get_mut(col) {
-                cell.set_combined(true);
-            }
+            let Some(cell) = span.cells.get_mut(col) else {
+                return Err(DecodeError::BadSpan);
+            };
+            cell.set_combined(true);
             span.combining.insert(col, cluster);
         }
     }
@@ -563,9 +691,10 @@ pub fn decode(bytes: &[u8]) -> Result<Frame, DecodeError> {
         for _ in 0..count {
             let col = r.u16()? as usize;
             let idx = NonZeroU32::new(r.u32()?).ok_or(DecodeError::BadTag)?;
-            if let Some(cell) = span.cells.get_mut(col) {
-                cell.set_linked(true);
-            }
+            let Some(cell) = span.cells.get_mut(col) else {
+                return Err(DecodeError::BadSpan);
+            };
+            cell.set_linked(true);
             span.links.insert(col, idx);
         }
     }
@@ -587,16 +716,16 @@ pub fn decode(bytes: &[u8]) -> Result<Frame, DecodeError> {
             // read on this bit, so without the re-arm `Cell::is_ucolored()` returns
             // false on a decoded cell whose column *does* carry a colour.
             //
-            // Bounds-gated on purpose: `col` is attacker-influenced (see
-            // `tests/robustness.rs`) and nothing on the wire bounds it against the
-            // span's width, so an unchecked `span.cells[col]` would panic where
-            // ADR-0008 owes a typed error. An out-of-range key arms no cell and is
-            // left in the map — whether it should instead be *rejected* is #582's
-            // question (a group riding a frame it does not fit), and answering half
-            // of it here would pre-empt that decision.
-            if let Some(cell) = span.cells.get_mut(col) {
-                cell.set_ucolored(true);
-            }
+            // `col` is attacker-influenced (see `tests/robustness.rs`) and nothing on
+            // the wire bounds it against the span's width, so an unchecked
+            // `span.cells[col]` would panic where ADR-0008 owes a typed error. #531
+            // bought the safety with a gate that kept the entry; #582 answers the
+            // question that gate deferred — the entry is rejected, because a colour for
+            // a cell this span does not have is not a colour the frame carries.
+            let Some(cell) = span.cells.get_mut(col) else {
+                return Err(DecodeError::BadSpan);
+            };
+            cell.set_ucolored(true);
             span.ucolors.insert(col, color);
         }
     }

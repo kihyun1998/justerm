@@ -1036,44 +1036,103 @@ fn engine_frame_round_trips_hyperlink_and_combining_captures() {
     assert_eq!(decode(&encode(&f)).expect("decode"), f);
 }
 
+/// A `cols`×`rows` v14 header with no scroll op, followed by a one-span count and that
+/// span's `(line, left, right)` triple — the shortest buffer that reaches the span
+/// validation. Nothing follows it: every case below is rejected at the triple, before a
+/// single cell record is read, so the absent payload is never reached.
+///
+/// **Both fixtures that used to build this by hand had rotted twice over**, and the two
+/// rots hid each other. The version byte was a literal `1`, so from v2 onward `decode`
+/// bailed at `BadVersion`; and the field list stopped after `rows`, so even with the
+/// version fixed the reader ran out of bytes 15 header bytes early and answered
+/// `Truncated`. Both were invisible because the assertion was `is_err()`. Written once,
+/// here, and asserted against an *exact* error at each call site — a header field added
+/// later fails these loudly instead of quietly re-pointing them at a different guard.
+fn header_with_one_span(cols: u16, rows: u16, line: u16, left: u16, right: u16) -> Vec<u8> {
+    let mut b = Vec::new();
+    b.extend_from_slice(b"JT"); // magic
+    b.push(justerm_core::WIRE_VERSION); // version — never a literal
+    b.push(0); // has_scroll
+    b.push(1); // kind = Partial
+    b.extend_from_slice(&cols.to_le_bytes());
+    b.extend_from_slice(&rows.to_le_bytes());
+    b.extend_from_slice(&0u16.to_le_bytes()); // cursor_row
+    b.extend_from_slice(&0u16.to_le_bytes()); // cursor_col
+    b.push(1); // cursor_visible
+    b.push(0); // cursor_shape = Block
+    b.push(0); // cursor_blink
+    b.extend_from_slice(&0u32.to_le_bytes()); // display_offset
+    b.extend_from_slice(&0u32.to_le_bytes()); // scrollback_len
+    b.push(0); // mouse_events
+    b.push(0); // alt_screen
+    b.extend_from_slice(&1u16.to_le_bytes()); // span count
+    b.extend_from_slice(&line.to_le_bytes());
+    b.extend_from_slice(&left.to_le_bytes());
+    b.extend_from_slice(&right.to_le_bytes());
+    b
+}
+
 /// A crafted frame whose span has left > right must be a clean error, not a
 /// u16-underflow panic — decode consumes untrusted bytes off a transport.
 #[test]
 fn decode_rejects_span_with_left_past_right() {
-    let mut b = Vec::new();
-    b.extend_from_slice(b"JT"); // magic
-    b.push(1); // version
-    b.push(0); // scroll flag
-    b.push(1); // kind = Partial
-    b.extend_from_slice(&80u16.to_le_bytes()); // cols
-    b.extend_from_slice(&24u16.to_le_bytes()); // rows
-    b.extend_from_slice(&1u16.to_le_bytes()); // span count
-    b.extend_from_slice(&0u16.to_le_bytes()); // line
-    b.extend_from_slice(&5u16.to_le_bytes()); // left = 5
-    b.extend_from_slice(&0u16.to_le_bytes()); // right = 0  (< left!)
-    assert!(decode(&b).is_err(), "left>right must error, not panic");
+    let b = header_with_one_span(80, 24, 0, 5, 0); // left = 5, right = 0
+    assert_eq!(
+        decode(&b),
+        Err(justerm_core::DecodeError::BadSpan),
+        "left>right must error, not panic"
+    );
 }
 
-/// A span with `left=0, right=65535` is a valid `right >= left`, but the run
-/// length `right - left + 1` overflows `u16` (65535 + 1). decode must widen
-/// before the arithmetic and return a typed error (the truncated buffer can't
-/// supply 65536 cells), never panic. Found by `cargo fuzz run serialize` (#33).
+/// The two axes #582 added, on the same shortest buffer: a span reaching past the
+/// declared width, and a span sitting past the declared height. Neither carries a cell
+/// payload, which is the point — the frame is rejected on its own header, not on length.
+#[test]
+fn decode_rejects_a_span_outside_the_declared_geometry() {
+    assert_eq!(
+        decode(&header_with_one_span(4, 2, 0, 0, 8)),
+        Err(justerm_core::DecodeError::BadSpan),
+        "right = 8 past cols = 4"
+    );
+    assert_eq!(
+        decode(&header_with_one_span(80, 2, 99, 0, 3)),
+        Err(justerm_core::DecodeError::BadSpan),
+        "line = 99 past rows = 2"
+    );
+    // The boundary on both axes is exclusive, and a valid span must still get past it —
+    // otherwise the two asserts above would also pass with an off-by-one that rejects
+    // everything.
+    assert_eq!(
+        decode(&header_with_one_span(4, 2, 1, 0, 3)),
+        Err(justerm_core::DecodeError::Truncated),
+        "the last legal span of the frame is accepted, then runs out of cells"
+    );
+}
+
+/// A span with `left=0, right=65535` is a valid `right >= left`, but the run length
+/// `right - left + 1` overflows `u16` (65535 + 1) — a panic under overflow checks, found
+/// by `cargo fuzz run serialize` (#33).
+///
+/// **The version byte must be `WIRE_VERSION`, not a literal, and this test is why.** It
+/// pushed a literal `1`, so from the first bump onward `decode` bailed at
+/// `BadVersion` and the span parser was never reached: the assertion was `is_err()`, which
+/// a header rejection satisfies just as well as the defect it was written for. It had been
+/// vacuous for twelve wire versions. `robustness.rs` records the identical rot in its
+/// generator, caught at v10 by #159; this is the same failure in a hand-built fixture, and
+/// the same repair.
+///
+/// Restored, it now pins the *ordering* rather than the overflow: since #582 the bounds
+/// check runs first, so `right = 65535` against `cols = 80` is `BadSpan` and the widening
+/// below it is unreachable — kept as the cheaper of the two guarantees, not as the live
+/// one. Asserting the exact error is what makes the difference visible; `is_err()` is what
+/// let this test rot in the first place.
 #[test]
 fn decode_rejects_span_length_u16_overflow() {
-    let mut b = Vec::new();
-    b.extend_from_slice(b"JT"); // magic
-    b.push(1); // version
-    b.push(0); // scroll flag
-    b.push(1); // kind = Partial
-    b.extend_from_slice(&80u16.to_le_bytes()); // cols
-    b.extend_from_slice(&24u16.to_le_bytes()); // rows
-    b.extend_from_slice(&1u16.to_le_bytes()); // span count
-    b.extend_from_slice(&0u16.to_le_bytes()); // line
-    b.extend_from_slice(&0u16.to_le_bytes()); // left = 0
-    b.extend_from_slice(&65535u16.to_le_bytes()); // right = 65535 -> len overflows u16
-    assert!(
-        decode(&b).is_err(),
-        "u16-overflowing span length must error, not panic"
+    let b = header_with_one_span(80, 24, 0, 0, 65535); // right = 65535 -> len overflows u16
+    assert_eq!(
+        decode(&b),
+        Err(justerm_core::DecodeError::BadSpan),
+        "a span past the frame's own width is rejected before its length is computed"
     );
 }
 

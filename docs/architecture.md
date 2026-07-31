@@ -160,8 +160,10 @@ A **frame** serializes one damage cycle (`damage()` + `scroll_delta()`):
   frame-local table of the URIs referenced *this* frame. This half stays interned because cells
   genuinely share a URI, and every reference does the same.
 - **overlay** (v6, #108/ADR-0014; v7, #118/ADR-0015) — interaction state as *viewport* coordinates, five
-  groups: a selection-span group then a search-match-span group (each a `u16` count + `(row, left, right)`
-  `u16` triples), then a marker group (`u16` count + `(marker_id u32, row u16)` pairs; v10, #159, appends a
+  groups: a selection-span group then a search-match-span group (each a **`u32`** count + `(row, left, right)`
+  `u16` triples — the count was widened in v14/#621 because these three groups are viewport-bounded and the
+  header admits a viewport larger than `u16::MAX` cells; the *marker* counts below deliberately stayed `u16`,
+  which is the asymmetry to read as intentional), then a marker group (`u16` count + `(marker_id u32, row u16)` pairs; v10, #159, appends a
   kind discriminant `u8` and — for `CommandFinished` — a presence byte + `i32` exit), then a marker-lines
   group (`u16` count + `(marker_id u32, line u32)` pairs — v11, #120 S3, every live marker's *absolute*
   buffer line for the overview ruler), then an active-match-span group (same count + triple shape — v12,
@@ -174,6 +176,18 @@ A **frame** serializes one damage cycle (`damage()` + `scroll_delta()`):
   past-cap path); markers are persistent line anchors re-anchored like the
   selection — their *disposal* rides the event queue (`TermEvent::MarkerDisposed`), not the frame, so
   absence here means off-screen, not gone.
+
+**What `decode` validates, and the line it draws (#582).** A frame's *payload placement* is read
+against the geometry the same frame declares: a span reaching past `cols` or sitting past `rows`, a
+sparse group entry keyed outside its own span, and a scroll region whose `bottom` is past the last
+row are all `DecodeError::BadSpan`. The reason is that each of those is a **write index** in a
+consumer — `justerm-web`'s `cell-mirror.ts` keeps the viewport as one flat array, so a column past
+`cols` does not throw, it overwrites the next row — and `decode`'s input is attacker-influenced
+(ADR-0008). The frame's *annotations* — overlay spans, marker rows, the cursor — are **not** checked:
+consumers resolve them by scan rather than by index, so clamping them is consumer policy under
+ADR-0017 and core has nothing to reject. `encode` mirrors the rule in the direction it can: it drops
+a group entry keyed outside its span rather than narrowing it onto a different live column, with a
+`debug_assert!` naming the producer, since only justerm itself can build one.
 
 The **cell record** (little-endian): `c` (u32 Unicode scalar — *not* the renderer's atlas glyph
 id), `fg`/`bg` (u32 each = tag byte `Default|Indexed|Rgb` + 24-bit payload; the tag is mandatory so
