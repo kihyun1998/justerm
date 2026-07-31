@@ -28,13 +28,19 @@ them: they do not share a call graph, a type, or a test. A grep for the fix at o
 (`clampTo`, `min`, `clamp`) cannot find the site that never heard of it, which is the same reason
 [the alt-screen absolute-index floor](alt-screen-buffer-floor.md) needed a note rather than a helper.
 
-The engine is **not** the backstop that makes this unnecessary, and two measurements say so:
+The engine is **not** the backstop that makes this unnecessary, and the reason is structural rather
+than a matter of how much the engine currently bounds:
 
-1. `Term::viewport_to_abs` bounds the row and its own doc calls that a backstop; it does **not** bound
-   the column at all.
-2. Some pointer coordinates never reach the engine. `SelectionController`'s alt-click cursor move
-   leaves through the consumer's `onMoveCursor` callback, so no core guard — present or future —
-   is on that path.
+1. **Some pointer coordinates never reach the engine at all.** `SelectionController`'s alt-click
+   cursor move leaves through the consumer's `onMoveCursor` callback, so no core guard — present or
+   future — is on that path. This is the transitive reason, and it is the one that carries the rule.
+2. ~~`Term::viewport_to_abs` bounds the row and not the column.~~ **Retracted (#671): it now bounds
+   both.** Recorded rather than deleted, because the *shape* of the retraction is the useful part —
+   this was cited as a second, independent measurement, and it was really a statement about how
+   complete the engine's clamp happened to be on the day it was written. A reason that expires when
+   the other layer improves was never load-bearing; reason 1 does not expire, because it is about a
+   path the engine is not on. **The rule is unchanged.** Had it rested on this reason, closing #671
+   would have retired an invariant that is still true.
 
 ## Territories it holds in
 
@@ -113,8 +119,8 @@ fix mentions a shared rule.
 - `justerm-web/src/input.ts` — `clampTo` (shared by both converters since #667), `cellEvent`
 - `justerm-web/src/a11y-selection.ts` — `clamp`, the DOM-offset form of the same obligation
 - `justerm-web/src/fit.ts` — `proposeDimensions`, which floors the grid and so creates the strip
-- `justerm-core/src/term.rs` — `viewport_to_abs`, the engine-side row backstop that is explicitly
-  not a substitute
+- `justerm-core/src/term.rs` — `viewport_to_abs`, the engine-side backstop (both axes since #671)
+  that is explicitly not a substitute
 
 ## Reference behaviour
 
