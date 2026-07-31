@@ -767,3 +767,50 @@ repo's own question (theflow's tie-breaker table routes wire shape to this repo'
 all — each applies its scroll immediately — so the accumulator justerm's flow control needs
 (`Term::record_scroll`) has no prior art here, and neither does the choice to cap it on read rather
 than on write.
+## Who bounds a pointer coordinate — the producer, not the engine (#667, verified 2026-07-31)
+
+The sibling question to the one above, on the **write** side. #660 made justerm's engine total against
+an out-of-grid *row*, and its own doc calls that a **backstop**; what this answers is whether a
+consumer may lean on such a backstop or owes the bound itself. A pointer leaves the grid whenever a
+drag does, so this is ordinary input rather than an edge case — and `Math.floor` on a negative offset
+yields a *negative* cell, a different failure from overshooting the far edge.
+
+**3/3, and unanimous in a way the read-time rows above are not**: all three bound *both* axes at
+*both* ends in the consumer-side converter, before anything reaches their engine — including alacritty
+and ghostty, whose engines clamp again at read time anyway.
+
+| Fact | Reference | Site |
+|---|---|---|
+| **One converter serves mouse reporting, selection *and* linkification**, and it clamps both axes: `Math.min(Math.max(coords[0], 1), colCount + (isSelection ? 1 : 0))` / `…, rowCount)`. The `isSelection` flag widens only the *column* bound — a selection endpoint must be able to name the boundary after the last cell | xterm.js | `src/browser/input/Mouse.ts:46` |
+| …and it refuses to answer at all when the cell has not been measured — `if (!hasValidCharSize) return undefined` | xterm.js | `src/browser/input/Mouse.ts:35` |
+| `saturating_sub` for the padding (so the negative end cannot exist in the type), then `min(Column(col), size.last_column())` and `min(line, size.bottommost_line())` — *before* `viewport_to_point` | alacritty | `alacritty/src/event.rs:1812` |
+| `@max(0, term.x)` / `@max(0, term.y)`, then `@min(col, grid.columns - 1)` / `@min(row, grid.rows - 1)`, under a comment stating the obligation outright: *"We need our grid to clamp"* | ghostty | `src/renderer/size.zig:136` |
+| **Which cell *edge* the pointer is nearest is a separate computation, and alacritty needs an explicit extra rule for the overshoot** — its side comes from the **raw** x (`x.saturating_sub(padding) % cell_width`), so leaving the window needs its own arm — a second disjunct `x as f32 >= end_of_grid` yielding `Side::Right`, where `end_of_grid` subtracts the remainder strip | alacritty | `alacritty/src/input/mod.rs:534` |
+
+**What justerm takes from this, and where it deliberately differs.** `justerm-web`'s three converters
+disagreed: `input.ts` clamped (#266), `a11y-selection.ts` clamps its own DOM-tree endpoints, and the
+selection converter did neither — this layer alone diverged, so the direction was *toward* the
+references (#667). Two details did **not** transfer:
+
+- **xterm's `colCount + 1` would be off by one here.** That extra column is how a converter with no
+  `side` expresses "the boundary after the last cell"; justerm's `Side` already does, and
+  `(cols - 1, Right)` **is** that boundary. Checked against xterm's own consumers, which convert to
+  0-based immediately (`src/browser/services/SelectionService.ts:404-405`) and pass
+  `isSelection: false` from the alt-click caller (`:729-735`) — the same path justerm's alt-click
+  takes off its shared converter.
+- **justerm gets alacritty's `end_of_grid` arm for free** by deriving the side from the *clamped*
+  column: past the right edge the within-cell offset is `>= cellWidth`, hence `Right`; left of the
+  origin it is negative, hence `Left`. Same two answers, one fewer rule — and the reason the clamp
+  belongs *before* the side, not after.
+
+**A cleared concern, with its condition.** The clamp is saturation in boundary space, so it changes no
+selection that was previously correct: `px ∈ [-cellWidth/2, 0)` used to yield `(-1, Right)` and now
+yields `(0, Left)` — the same boundary. This holds as long as the side stays a function of the
+within-cell offset; a side derived from the raw pixel (alacritty's shape) would need the explicit
+overshoot arm back.
+
+**What none of them settles: `NaN`.** xterm's `hasValidCharSize` guard is the only one of the three
+that addresses an *unmeasured* cell, and it returns "no coordinate" rather than a clamped one — a
+third answer justerm has in `fit.ts` (`cellWidth === 0` → `undefined`) and in neither converter, where
+`0/0` reaches the port as `NaN`. Recorded as unadjudicated rather than copied: xterm's guard sits in
+the converter it shares with reporting, and justerm's two converters would have to move together.

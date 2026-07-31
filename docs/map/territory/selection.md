@@ -100,6 +100,10 @@ at a recorded SHA; a paraphrase drops the pin).
   — the selection overlay group shares its record shape *and* its count prefix with search's, so it
   inherits the `u32` widening #621 made there. A selection cannot practically reach the ceiling the
   way a query can, which is why the fix arrived from the other territory
+- [a pointer coordinate is bounded by the converter that produces it](../invariant/pointer-coordinates-are-bounded-by-their-producer.md)
+  — `cellAndSide` owes the bound on both axes; the engine's row clamp is a backstop and there is no
+  column clamp at all. The alt-click cursor move leaves through the consumer's callback, so no core
+  guard is even on that path (#667)
 
 ## Blast radius
 

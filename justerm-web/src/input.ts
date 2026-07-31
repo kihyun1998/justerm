@@ -208,8 +208,10 @@ export interface CellGeometry {
   rows: number;
 }
 
-/** Clamp `n` to `[0, max]` (with `max` floored to 0 for a degenerate 0-dimension grid). */
-const clampTo = (n: number, max: number): number => Math.max(0, Math.min(Math.max(0, max), n));
+/** Clamp `n` to `[0, max]` (with `max` floored to 0 for a degenerate 0-dimension grid).
+ * Shared with the selection converter (`selection.ts`) so the two agree by
+ * construction rather than by each remembering to bound its own axes (#667). */
+export const clampTo = (n: number, max: number): number => Math.max(0, Math.min(Math.max(0, max), n));
 
 const DOM_BUTTON: Readonly<Record<number, MouseButton>> = { 0: "left", 1: "middle", 2: "right" };
 

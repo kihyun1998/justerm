@@ -1062,11 +1062,23 @@ impl Term {
     /// Asserting on it would panic a consumer's debug build for a legal gesture.
     ///
     /// Clamping is also what every producer already wants: a drag past the bottom edge
-    /// selects to the edge. justerm-web's *mouse-reporting* converter clamps for exactly
-    /// this reason (`input.ts`, #266) while its selection converter does not, which is what
-    /// makes an unclamped row reachable in the shipped stack rather than only in theory.
-    /// alacritty clamps at the same boundary (`Point::grid_clamp`); ghostty's pins cannot
-    /// express an out-of-range row at all.
+    /// selects to the edge. alacritty clamps at the same boundary (`Point::grid_clamp`);
+    /// ghostty's pins cannot express an out-of-range row at all.
+    ///
+    /// **This is a backstop, and since #667 nothing in the family relies on it.** The
+    /// sentence here used to read that justerm-web's selection converter did *not* clamp,
+    /// which was what made an unclamped row reachable in the shipped stack rather than
+    /// only in theory; that converter now bounds both axes at its own seam, as all three
+    /// references do at theirs. The claim is retracted rather than deleted because it was
+    /// the record of why this clamp was worth adding.
+    ///
+    /// **The column is deliberately not bounded here, and that is a gap rather than a
+    /// decision.** #660 reasoned about the row alone. `col` passes through untouched, so
+    /// the readers below absorb an out-of-range column by clipping (an over-large one
+    /// yields an empty selection) — except at `usize::MAX`, where `resolve`'s
+    /// `Side::Right` arms overflow. Nothing reaches that today: no wasm binding exposes
+    /// this call, so a JS `-1` has no path here. Recorded so the asymmetry is not read as
+    /// intent.
     fn viewport_to_abs(&self, row: usize, col: usize) -> BufferPoint {
         let top = self.scrollback.len() - self.display_offset;
         let last = self.grid.rows().saturating_sub(1);
