@@ -85,6 +85,12 @@ at a recorded SHA; a paraphrase drops the pin).
   — how a reference carries an anchor across a re-split, which is what `reflow(points)` does with the
   selection
 - [A selection when the screen changes under it](../../agents/reference-facts.md#a-selection-when-the-screen-changes-under-it-660-verified-2026-07-31)
+- [What the engine does with a column it was handed anyway](../../agents/reference-facts.md#what-the-engine-does-with-a-column-it-was-handed-anyway-671-verified-2026-07-31)
+  — the read-side half. The three references converge on *"an out-of-range column is not
+  observable"* and reach it three different ways (clamp / a guaranteed producer plus a total reader /
+  a type that cannot express it). justerm now clamps, at the write site, and the section records what
+  that choice does **not** buy — no equivalent of alacritty's wrap-to-next-line arm, which it does not
+  need (#671)
   — the three available designs, one per reference: clear on a width change and rotate otherwise
   (alacritty), clear on a height change (xterm.js), or make the anchor a tracked pin so it cannot go
   stale (ghostty). justerm's primary pane is the first; the alt pane had none, which is #660
@@ -101,9 +107,9 @@ at a recorded SHA; a paraphrase drops the pin).
   inherits the `u32` widening #621 made there. A selection cannot practically reach the ceiling the
   way a query can, which is why the fix arrived from the other territory
 - [a pointer coordinate is bounded by the converter that produces it](../invariant/pointer-coordinates-are-bounded-by-their-producer.md)
-  — `cellAndSide` owes the bound on both axes; the engine's row clamp is a backstop and there is no
-  column clamp at all. The alt-click cursor move leaves through the consumer's callback, so no core
-  guard is even on that path (#667)
+  — `cellAndSide` owes the bound on both axes, and the engine's own clamp (both axes since #671) is a
+  backstop rather than a substitute: the alt-click cursor move leaves through the consumer's callback,
+  so no core guard is on that path at all (#667)
 
 ## Blast radius
 

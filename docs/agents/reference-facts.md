@@ -814,3 +814,52 @@ that addresses an *unmeasured* cell, and it returns "no coordinate" rather than 
 third answer justerm has in `fit.ts` (`cellWidth === 0` → `undefined`) and in neither converter, where
 `0/0` reaches the port as `NaN`. Recorded as unadjudicated rather than copied: xterm's guard sits in
 the converter it shares with reporting, and justerm's two converters would have to move together.
+
+## What the engine does with a column it was handed anyway (#671, verified 2026-07-31)
+
+The read-side half of the section above. Once a selection anchor **is** out of range — because the
+producer did not bound it, or because a caller reached the engine API directly — the question is
+whether the engine can be made to *observe* the difference. All three references answer "no", by
+three different mechanisms, which is why the property converges while the code does not.
+
+| Fact | Reference | Site |
+|---|---|---|
+| **Clamps both endpoints, and does it before any side arithmetic** — `Selection::to_range` opens with *"Clamp selection to within grid boundaries"* and runs `grid_clamp` on `start.point` **and** `end.point`, then dispatches to the per-type range builders | alacritty | `alacritty_terminal/src/selection.rs:283` |
+| …so its own `+ 1` cannot overflow, and it pairs that `+ 1` with an explicit rule for the boundary it lands on: *"Wrap to next line when selection starts to the right of last column"* → `column = 0; line += 1` | alacritty | `alacritty_terminal/src/selection.rs:351` |
+| **Does not clamp — the reader is simply total.** `translateToString` runs `while (startCol < endCol)`, so a `startCol` past the end yields `''` rather than an index error, and the only producer is the already-clamped `_getMouseBufferCoords` | xterm.js | `src/common/buffer/BufferLine.ts:559` |
+| **Does not clamp on the general path either** — `topLeft`/`bottomRight` apply `@min(…, cols - 1)` only in the `mirrored_*` (rectangle) arms; `forward`/`reverse` return the pins unchanged, because a pin cannot hold an out-of-range position in the first place | ghostty | `src/terminal/Selection.zig:152` |
+
+**The property converges; the mechanism does not.** Clamp (alacritty), a guaranteed producer plus a
+total reader (xterm.js), or a type that cannot express it (ghostty). justerm was the only one where
+the value was both *representable* and *observable* — and the observable difference was not uniform,
+which is what made it hard to see:
+
+| justerm before #671, 4-column grid `abcd` | result |
+|---|---|
+| `begin(0, 80, Left)` | the **anchor row disappears** from `selection_range` *and* the copy |
+| `extend(2, 80, Left)` | selects **one cell more** than asked |
+| either endpoint with `Side::Right` | unchanged — correct by accident |
+| `usize::MAX` with `Side::Right` | **panics** on the `+ 1` |
+
+**`Side`, not the endpoint, is the axis.** `Side::Right` adds one and the readers' `to.min(len)` /
+`right_excl > left` clip the result to the same place the clamp would; `Side::Left` has no `+ 1` to
+clip, so the raw column survives into a `left` that **no reader bounds**. Both an earlier lens report
+("it yields an empty selection") and the first correction to it ("it already resolves correctly")
+were single points in that 2×2 read as the whole table.
+
+**What justerm kept rather than copied.** The bound is at the **write** site (`viewport_to_abs`,
+beside #660's row clamp) rather than alacritty's read site: one function answers "what does a
+viewport coordinate mean", and the alternative is five clamps for one rule — `resolve` has five
+`Side`-dependent `+ 1`s. The consequence is that justerm has no equivalent of alacritty's
+wrap-to-next-line arm and does not need one: an in-range `Side::Right` on the last column resolves to
+`from == cols`, and the reader's `right_excl > left` drops that row — the same outcome alacritty
+reaches by moving the start to `(line + 1, 0)`. Pinned as unchanged in
+`tests/selection_column_bound.rs`.
+
+**A cleared concern, with its condition — and the condition is stronger than the obvious one.** The
+bound is the **grid width**, not the line length, because `SelectionType::Line` already resolves `to`
+as `grid.cols()`. The completeness pass sharpened why that is safe: every row *is* exactly
+`grid.cols()` wide, because both row producers resize it there (`grid.rs`, `set_screen` and `reflow`),
+so the readers' `to.min(len)` is identically `to.min(cols)`. The clearance therefore rests on
+`len == cols` being an invariant of those two producers, not merely on no type happening to resolve
+against `abs_line(..).len()` today.

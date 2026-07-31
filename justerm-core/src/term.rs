@@ -1072,19 +1072,46 @@ impl Term {
     /// references do at theirs. The claim is retracted rather than deleted because it was
     /// the record of why this clamp was worth adding.
     ///
-    /// **The column is deliberately not bounded here, and that is a gap rather than a
-    /// decision.** #660 reasoned about the row alone. `col` passes through untouched, so
-    /// the readers below absorb an out-of-range column by clipping (an over-large one
-    /// yields an empty selection) — except at `usize::MAX`, where `resolve`'s
-    /// `Side::Right` arms overflow. Nothing reaches that today: no wasm binding exposes
-    /// this call, so a JS `-1` has no path here. Recorded so the asymmetry is not read as
-    /// intent.
+    /// **`col` is bounded the same way, and against the grid rather than the line
+    /// (#671).** #660 reasoned about the row alone and this function passed the column
+    /// through, which was not a smaller version of the same gap — it was a *different*
+    /// one, because the two axes are consumed differently downstream. A column reaches
+    /// `resolve`, where the `Side` decides whether it gets a `+ 1`, and the two readers
+    /// then bound only one end each: `selection_range`'s Linear arm clips `right_excl`
+    /// and not `left`, `selection_text`'s Block arm clips `hi` and not `from`. So
+    /// `Side::Right` was already safe by accident (its `+ 1` lands past the end and the
+    /// clip catches it) while **`Side::Left` had no `+ 1` to clip**, and the raw column
+    /// survived into `left` — silently deleting the anchor's own row from both the
+    /// projection and the copy. `usize::MAX` was the one value that panicked instead,
+    /// on the `+ 1`.
+    ///
+    /// Bounding here rather than in `resolve` keeps one site answering "what does a
+    /// viewport coordinate mean", and makes both axes total for the same reason; the
+    /// alternative — clamping at each `+ 1` — is five sites for one rule. alacritty
+    /// bounds both endpoints' columns in `Selection::to_range` *before* its own side
+    /// arithmetic and pairs the `+ 1` with an explicit *"column == columns → wrap to the
+    /// next line"*; justerm reaches that same outcome through the reader's
+    /// `right_excl > left`, which is why an **in-range** `Side::Right` on the last column
+    /// still starts the selection on the following row and is pinned as unchanged.
+    ///
+    /// The grid, not `abs_line(..).len()`, is the bound: `SelectionType::Line` already
+    /// resolves `to` as `grid.cols()`, so the whole type works in grid coordinates and a
+    /// short line must not shrink a selection that reaches past it.
+    ///
+    /// **`resolve`'s five `+ 1`s stay unguarded, and that is sound only while every stored
+    /// anchor arrives through here.** The completeness pass enumerated the writers: the
+    /// three coordinate fixups move `.line` or write columns that are in range by
+    /// construction, `resize`'s primary branch re-clamps the reflowed points (#562) and its
+    /// alt branch drops the selection outright (#660), and `Term::resize` is the only writer
+    /// of `grid.cols()`. So no path strands a column that was clamped here. The condition is
+    /// **a fourth writer of `self.selection`** — one that builds an `Anchor` without this
+    /// function would put `resolve` back in reach of its own arithmetic.
     fn viewport_to_abs(&self, row: usize, col: usize) -> BufferPoint {
         let top = self.scrollback.len() - self.display_offset;
         let last = self.grid.rows().saturating_sub(1);
         BufferPoint {
             line: top + row.min(last),
-            col,
+            col: col.min(self.grid.cols().saturating_sub(1)),
         }
     }
 
