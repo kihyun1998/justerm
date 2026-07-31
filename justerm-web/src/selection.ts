@@ -1,3 +1,4 @@
+import { clampTo } from "./input";
 import type { CellGeometry, MouseEventLike } from "./input";
 
 /** Which half of a cell an anchor sits on (mirrors core `Side`). Left = the
@@ -104,12 +105,39 @@ function modeForClick(detail: number): SelType {
   return "char";
 }
 
-/** Resolve a pointer event to its viewport cell + nearest cell edge. */
+/**
+ * Resolve a pointer event to its viewport cell + nearest cell edge.
+ *
+ * Clamped to the grid on both axes, like the sibling mouse-reporting converter
+ * (`input.ts`, #266) and all three references — xterm.js `getCoords`
+ * (`Mouse.ts:40-47`, one shared converter for reporting *and* selection),
+ * alacritty `Mouse::point` (`event.rs:1811-1815`), ghostty `Coordinate.convert`
+ * (`renderer/size.zig:142-147`). Out-of-grid input is ordinary here: a drag
+ * leaves the grid whenever the pointer does — the reachable case measured in a
+ * real browser, since `mousemove`/`mouseup` are window-scoped in every wiring
+ * we ship. `fit.ts` floors `rows`/`cols` as well, so a container that is not an
+ * exact multiple of the cell keeps a remainder strip outside the canvas; whether
+ * a *press* there arrives depends on which element the consumer listens on, and
+ * this controller does not own that choice.
+ *
+ * The clamp is deliberately *not* left to the engine. `Term::viewport_to_abs`
+ * bounds the row (#660) and calls itself a backstop; it does not bound the
+ * column at all. And for the alt-click cursor move below the engine is not on
+ * the path in the first place — that cell leaves through `onMoveCursor`, so no
+ * core guard, present or future, could cover it.
+ *
+ * `side` is computed from the **clamped** column on purpose, which is what makes
+ * a single bound express both endpoints: overshooting right lands on the last
+ * column's `right` (the end of the row), overshooting left on column 0's `left`.
+ * xterm needs an extra column (`colCount + 1` when `isSelection`) to say the
+ * same thing because it has no `Side` — copying that constant here would be off
+ * by one.
+ */
 function cellAndSide(ev: MouseEventLike, geom: CellGeometry): { row: number; col: number; side: Side } {
   const px = ev.clientX - geom.originX;
   const py = ev.clientY - geom.originY;
-  const col = Math.floor(px / geom.cellWidth);
-  const row = Math.floor(py / geom.cellHeight);
+  const col = clampTo(Math.floor(px / geom.cellWidth), geom.cols - 1);
+  const row = clampTo(Math.floor(py / geom.cellHeight), geom.rows - 1);
   const within = px - col * geom.cellWidth;
   return { row, col, side: within >= geom.cellWidth / 2 ? "right" : "left" };
 }
@@ -205,11 +233,19 @@ export class SelectionController {
 
   /** One auto-scroll step — the consumer calls this on a timer while the button
    * is down. Scrolls the viewport by the pending amount and pins the focus to
-   * the edge row toward the pointer (xterm `_dragScroll`). No-op in bounds. */
+   * the edge row toward the pointer (xterm `_dragScroll`). No-op in bounds.
+   *
+   * The bottom edge is floored at 0: this is the file's one row-producer that
+   * does not go through {@link cellAndSide}, so `getRows()` — a consumer
+   * callback, not `geom` — is the value that has to be sound here. A widget
+   * that fits its own grid cannot report 0 (`fit.ts` `MINIMUM_ROWS`), but this
+   * controller is published and takes the count from whoever constructs it.
+   * xterm bounds both branches of `_dragScroll` the same way
+   * (`SelectionService.ts:707,711`). */
   tick(): void {
     if (!this.dragging || this.dragScrollAmount === 0) return;
     this.onScroll(this.dragScrollAmount);
-    const edgeRow = this.dragScrollAmount > 0 ? this.getRows() - 1 : 0;
+    const edgeRow = this.dragScrollAmount > 0 ? Math.max(0, this.getRows() - 1) : 0;
     this.port.extend(edgeRow, this.lastCol, this.lastSide);
   }
 

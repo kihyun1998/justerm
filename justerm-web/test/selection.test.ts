@@ -412,3 +412,164 @@ describe("SelectionController — primary selection on drag complete", () => {
     expect(primary).toEqual([]);
   });
 });
+
+// A pointer leaves the grid whenever a drag does, and `fit.ts`'s `Math.floor`
+// guarantees a remainder strip below the last row on any container whose height
+// is not an exact multiple of the cell — so an out-of-grid coordinate is
+// ordinary input here, not an edge case. All three references clamp it in this
+// converter rather than relying on the engine: xterm.js `getCoords`
+// (`Mouse.ts:40-47`, one shared converter for mouse reporting *and* selection),
+// alacritty `Mouse::point` (`event.rs:1811-1815`), ghostty `Coordinate.convert`
+// (`renderer/size.zig:142-147`, "We need our grid to clamp"). justerm's own
+// mouse-reporting converter already does (`input.ts:253-256`, #266); this is the
+// sibling that did not. (#667)
+describe("SelectionController — the pointer is clamped to the grid", () => {
+  // Below the last row: `fit.ts` floors `rows`, so the leftover strip is a
+  // structural part of every non-exact container, not an exotic drag.
+  it("clamps a press in the remainder strip below the last row", () => {
+    const port = new StubSelectionPort();
+
+    controller(port).mouseDown(ev(5 * 10 + 2, 24 * 20 + 3), 1); // row 24 of 24
+
+    expect(port.calls).toEqual([{ kind: "begin", row: 23, col: 5, side: "left", ty: "char" }]);
+  });
+
+  // Above / left of the canvas the raw arithmetic is *negative*, which is the
+  // half core does not clamp: `viewport_to_abs` bounds the row (#660) and passes
+  // `col` through untouched.
+  it("clamps a press above and to the left of the canvas to (0, 0)", () => {
+    const port = new StubSelectionPort();
+
+    controller(port).mouseDown(ev(-3, -7), 1);
+
+    expect(port.calls).toEqual([{ kind: "begin", row: 0, col: 0, side: "left", ty: "char" }]);
+  });
+
+  // Past the right edge the clamp must land on the last column's RIGHT side —
+  // that boundary is the end of the row, and losing it would silently shorten
+  // every drag that overshoots. xterm buys the same endpoint with an extra
+  // column (`colCount + 1` when `isSelection`); justerm's `Side` already
+  // expresses it, so `cols - 1` is the right bound here and copying xterm's
+  // constant would be off by one.
+  it("clamps a press past the right edge to the last column's right side", () => {
+    const port = new StubSelectionPort();
+
+    controller(port).mouseDown(ev(80 * 10 + 5, 3 * 20 + 5), 1); // col 80 of 80
+
+    expect(port.calls).toEqual([{ kind: "begin", row: 3, col: 79, side: "right", ty: "char" }]);
+  });
+
+  // The drag path's vertical axis is already covered — but by `dragScrollSpeed`,
+  // not by the converter, and that gate reads `clientY` only. A drag that leaves
+  // the canvas sideways while staying vertically inside reaches `extend` with a
+  // negative column.
+  it("clamps a sideways drag that stays vertically inside the viewport", () => {
+    const port = new StubSelectionPort();
+    const ctrl = controller(port);
+
+    ctrl.mouseDown(leftHalf(5, 3), 1);
+    ctrl.mouseMove(ev(-12, 3 * 20 + 5, { buttons: 1 }));
+
+    expect(port.calls).toEqual([
+      { kind: "begin", row: 3, col: 5, side: "left", ty: "char" },
+      { kind: "extend", row: 3, col: 0, side: "left" },
+    ]);
+  });
+
+  // `tick()` re-anchors the focus at `lastCol`, recorded by the *move*. An
+  // unclamped column therefore survives the edge-row pin and is replayed on
+  // every tick of the auto-scroll.
+  it("does not carry an out-of-grid column into the auto-scroll tick", () => {
+    const port = new StubSelectionPort();
+    const ctrl = new SelectionController(port, () => GEOM, {
+      onScroll: () => {},
+      getRows: () => 24,
+    });
+
+    ctrl.mouseDown(leftHalf(5, 3), 1);
+    ctrl.mouseMove(ev(80 * 10 + 40, 24 * 20 + 30, { buttons: 1 })); // out on both axes
+    ctrl.tick();
+
+    expect(port.calls).toEqual([
+      { kind: "begin", row: 3, col: 5, side: "left", ty: "char" },
+      { kind: "extend", row: 23, col: 79, side: "right" },
+    ]);
+  });
+
+  // The alt-click cursor move leaves through `onMoveCursor`, not `SelectionPort`
+  // — so the engine's own clamp cannot cover it at all, whatever core does. This
+  // is the call site that makes "leave it, core clamps" false rather than merely
+  // fragile.
+  it("clamps the alt-click cursor-move cell, which never reaches the engine", () => {
+    const port = new StubSelectionPort();
+    const moves: { row: number; col: number }[] = [];
+    const ctrl = new SelectionController(port, () => GEOM, {
+      onMoveCursor: (c) => moves.push(c),
+    });
+    const out = (t: number) => ev(-20, 24 * 20 + 40, { altKey: true, timeStamp: t });
+
+    ctrl.mouseDown(out(1000), 1);
+    ctrl.mouseUp(out(1200));
+
+    expect(moves).toEqual([{ row: 23, col: 0 }]);
+  });
+
+  // `tick()` is the one row-producer in the file that does not go through
+  // `cellAndSide`, so the converter's clamp cannot cover it — the count comes
+  // from the consumer's `getRows`, not from `geom`. A widget that fits its own
+  // grid cannot report 0 (`fit.ts` MINIMUM_ROWS), but `SelectionController` is
+  // published and takes whatever its constructor is handed. xterm bounds both
+  // branches of `_dragScroll` (`SelectionService.ts:707,711`). (#667, found by
+  // the completeness pass.)
+  it("does not produce a negative edge row when the consumer reports no rows", () => {
+    const port = new StubSelectionPort();
+    const ctrl = new SelectionController(port, () => GEOM, {
+      onScroll: () => {},
+      getRows: () => 0, // a 0-row viewport is 0px tall, so any pointer is "below" it
+    });
+
+    ctrl.mouseDown(leftHalf(5, 3), 1);
+    ctrl.mouseMove(ev(5 * 10 + 2, 40, { buttons: 1 }));
+    ctrl.tick();
+
+    expect(port.calls.at(-1)).toEqual({ kind: "extend", row: 0, col: 5, side: "left" });
+  });
+
+  // A degenerate grid (nothing measured yet) must not produce a negative cell
+  // from `cols - 1` / `rows - 1`. `input.ts`'s `clampTo` floors its own bound for
+  // exactly this reason; the selection converter must agree.
+  //
+  // `side` comes out `right`, and that is the general rule holding rather than a
+  // special case: with no columns the pointer is past the (empty) grid's right
+  // edge, which is the same situation as the overshoot test above. Pinned as
+  // measured — forcing `left` here would need a degenerate-grid branch that
+  // contradicts the rule everywhere else.
+  it("resolves a zero-sized grid to (0, 0) rather than a negative cell", () => {
+    const port = new StubSelectionPort();
+    const zero: CellGeometry = { ...GEOM, cols: 0, rows: 0 };
+
+    new SelectionController(port, () => zero).mouseDown(ev(30, 60), 1);
+
+    expect(port.calls).toEqual([{ kind: "begin", row: 0, col: 0, side: "right", ty: "char" }]);
+  });
+});
+
+// The vertical half of the drag path is guarded today, but by `dragScrollSpeed`
+// rather than by the converter — an accidental coupling worth pinning, since a
+// change to the auto-scroll policy would silently remove it. (#667)
+describe("SelectionController — the drag-scroll gate owns the vertical drag bound", () => {
+  it("routes a drag below the last row to the tick, never to a bare extend", () => {
+    const port = new StubSelectionPort();
+    const scrolls: number[] = [];
+    const ctrl = new SelectionController(port, () => GEOM, {
+      onScroll: (n) => scrolls.push(n),
+      getRows: () => 24,
+    });
+
+    ctrl.mouseDown(leftHalf(5, 3), 1);
+    ctrl.mouseMove(ev(7 * 10 + 2, 24 * 20 + 5, { buttons: 1 })); // 5px into the strip
+
+    expect(port.calls.map((c) => c.kind)).toEqual(["begin"]); // no extend from the move
+    expect(scrolls).toEqual([]); // and nothing scrolled until a tick runs
+  });
+});
