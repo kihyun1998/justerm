@@ -183,29 +183,120 @@ export interface MouseEventLike {
   timeStamp?: number;
 }
 
-/** Canvas origin + cell size + grid dimensions, to map pixels to cells. `cols`/`rows` bound the
- * result so a pointer outside the grid clamps to the edge cell instead of a negative / past-the-end
- * coordinate — which would wrap to a huge value in core's `MouseEvent.col: usize` (#266). */
 /**
- * The geometry a pointer event is resolved against. **Every length here is in CSS pixels**, because
- * that is the space `clientX`/`clientY` arrive in and this struct is subtracted from and divided into
- * them directly (see `pointerCell` below).
+ * The geometry a pointer event is resolved against. `cols`/`rows` bound the result, so a pointer
+ * outside the grid clamps to the edge cell instead of a negative / past-the-end coordinate — which
+ * would wrap to a huge value in core's `MouseEvent.col: usize` (#266).
+ *
+ * **Every length here is in CSS pixels**, because that is the space `clientX`/`clientY` arrive in
+ * and this struct is subtracted from and divided into them directly (see {@link cellEvent} below).
  *
  * The unit is stated because it went undocumented and the published README's example then drifted:
  * it built `cellWidth`/`cellHeight` from `renderer.cellSize()`, which is **device** px, so on any
  * display with `devicePixelRatio !== 1` every click resolved to the wrong cell (#578). The renderer
  * offers `cssCellWidth()`/`cssCellHeight()`, or divide `cellSize()` by `devicePixelRatio` as the demo
  * does. Nothing type-checks a unit, so it has to be written down.
+ *
+ * **Nothing type-checks a range either, and that is the other half (#672).** `number` admits `0` and
+ * `NaN`; `NaN` in *any* one of these six fields propagates through {@link clampTo} and poisons every
+ * pointer event for as long as it is there — silently, since the result downstream is an empty
+ * selection or a `null` over JSON rather than an error. The preconditions are therefore stated here
+ * and *signalled* at the converters ({@link geometryViolations}), not enforced: see that function for
+ * why refusing is not a free upgrade in this widget.
+ *
+ * Every field must be finite. Beyond that:
  */
 export interface CellGeometry {
-  /** The canvas's top-left in CSS px, viewport-relative — typically `getBoundingClientRect()`. */
+  /** The canvas's top-left in CSS px, viewport-relative — typically `getBoundingClientRect()`.
+   * A *position*, so negative is ordinary: a canvas scrolled above the viewport has a negative top. */
   originX: number;
   originY: number;
-  /** One cell, in **CSS** px. Not `renderer.cellSize()`, which is device px. */
+  /** One cell, in **CSS** px, and **strictly positive** — `0` is how an unmeasured cell arrives
+   * (`fit.ts` refuses to fit on it, and it is xterm's own tell: `hasValidSize` is
+   * `width > 0 && height > 0`). Not `renderer.cellSize()`, which is device px. */
   cellWidth: number;
   cellHeight: number;
+  /** Grid dimensions — **non-negative integers**. `0` is deliberately legal: a zero-sized grid
+   * resolves to cell (0, 0) rather than a negative one (#667), which is the state a consumer is in
+   * before it has fitted anything. */
   cols: number;
   rows: number;
+}
+
+/** A violated {@link CellGeometry} precondition. */
+export interface GeometryViolation {
+  field: keyof CellGeometry;
+  /** Names the field, what it must be, and the value that arrived. */
+  message: string;
+}
+
+/**
+ * Check a {@link CellGeometry} against the preconditions its fields document — **all** of them, so a
+ * second bad field cannot hide behind the first (the signal below warns once per field, so a masked
+ * one would never be reported at all).
+ *
+ * **Why this reports rather than refuses.** The obvious move is xterm's, which returns `undefined`
+ * from its converter when the cell is unmeasured (`getCoords`, `Mouse.ts:35`). That guard is half of
+ * a *repair loop* — xterm owns the measurement, so the same predicate that drops the gesture also
+ * triggers a re-measure (`CoreBrowserTerminal.ts:1058`, `RenderService.ts:145`, both calling
+ * `measure()`). This widget deliberately does not measure: `CellGeometry` arrives per event from the
+ * consumer's `getGeometry()` callback (#578, and ADR-0017's routing — pixel→cell is the consumer's by
+ * definition). Copying the guard would buy the drop without the recovery, and all three outcomes
+ * (drop / clamp / propagate) are equally invisible — which is what makes *diagnosis*, not
+ * correction, the thing worth adding. The other two references are total for reasons that do not
+ * transfer: alacritty's float→int casts saturate, and ghostty's cell is an integer type, so a zero
+ * cell is unrepresentable there rather than handled (`size.zig:139`).
+ */
+export function geometryViolations(geom: CellGeometry): GeometryViolation[] {
+  const out: GeometryViolation[] = [];
+  const violated = (field: keyof CellGeometry, must: string): void => {
+    out.push({ field, message: `CellGeometry.${field} must be ${must} (got ${geom[field]})` });
+  };
+  for (const field of ["originX", "originY"] as const) {
+    if (!Number.isFinite(geom[field])) violated(field, "a finite number");
+  }
+  for (const field of ["cellWidth", "cellHeight"] as const) {
+    // `> 0` rejects NaN by itself (`NaN > 0` is false) — the same predicate xterm's `hasValidSize`
+    // uses. `Number.isFinite` adds Infinity, on `fit.ts`'s grounds: a non-finite box means "not
+    // measured", exactly when we must not compute from it.
+    if (!(Number.isFinite(geom[field]) && geom[field] > 0)) violated(field, "a positive finite number");
+  }
+  for (const field of ["cols", "rows"] as const) {
+    if (!(Number.isInteger(geom[field]) && geom[field] >= 0)) violated(field, "a non-negative integer");
+  }
+  return out;
+}
+
+/** Fields already warned about — at most six entries, so it cannot grow with the event stream. */
+const warnedGeometryFields = new Set<string>();
+
+/**
+ * Signal a violated precondition to whoever is feeding the geometry, then answer anyway.
+ *
+ * `console.warn` and not a configurable logger: xterm has one (`LogService`) and does **not** route
+ * this class of thing through it — its own converter warns directly when it meets a `NaN` coordinate
+ * (`AccessibilityManager.ts:332`), because a logger that defaults to off is silent exactly when a
+ * defect needs to be seen.
+ *
+ * Deduped per field, which is the deliberate divergence from xterm: the reach here is *every* pointer
+ * event for as long as the field is bad and `mousemove` fires at pointer rate, so an undeduped warn
+ * would bury its own first line. xterm does not need this — its warn sites are selection-change, not
+ * per-motion.
+ */
+export function checkGeometry(geom: CellGeometry): void {
+  for (const { field, message } of geometryViolations(geom)) {
+    if (warnedGeometryFields.has(field)) continue;
+    warnedGeometryFields.add(field);
+    console.warn(
+      `justerm-web: ${message} — every pointer event resolves to a garbage cell until getGeometry() returns a measured value.`,
+    );
+  }
+}
+
+/** Forget which fields have been warned about. Test-only — deliberately absent from the package
+ * entry point, like {@link clampTo}, since a consumer has no use for it. */
+export function resetGeometryWarnings(): void {
+  warnedGeometryFields.clear();
 }
 
 /** Clamp `n` to `[0, max]` (with `max` floored to 0 for a degenerate 0-dimension grid).
@@ -244,6 +335,7 @@ function cellEvent(
   action: MouseAction,
   geom: CellGeometry,
 ): MouseEvent {
+  checkGeometry(geom); // #672 — the clamps below propagate a NaN field rather than catching it
   const px = ev.clientX - geom.originX;
   const py = ev.clientY - geom.originY;
   // Clamp to the grid: a pointer outside it (a drag past the edge) reports the edge cell, never a

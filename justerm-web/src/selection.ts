@@ -1,4 +1,4 @@
-import { clampTo } from "./input";
+import { checkGeometry, clampTo } from "./input";
 import type { CellGeometry, MouseEventLike } from "./input";
 
 /** Which half of a cell an anchor sits on (mirrors core `Side`). Left = the
@@ -137,6 +137,7 @@ function modeForClick(detail: number): SelType {
  * by one.
  */
 function cellAndSide(ev: MouseEventLike, geom: CellGeometry): { row: number; col: number; side: Side } {
+  checkGeometry(geom); // #672 — shared with the sibling converter, like the clamp itself
   const px = ev.clientX - geom.originX;
   const py = ev.clientY - geom.originY;
   const col = clampTo(Math.floor(px / geom.cellWidth), geom.cols - 1);

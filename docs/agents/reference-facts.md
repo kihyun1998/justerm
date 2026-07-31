@@ -809,11 +809,28 @@ yields `(0, Left)` — the same boundary. This holds as long as the side stays a
 within-cell offset; a side derived from the raw pixel (alacritty's shape) would need the explicit
 overshoot arm back.
 
-**What none of them settles: `NaN`.** xterm's `hasValidCharSize` guard is the only one of the three
-that addresses an *unmeasured* cell, and it returns "no coordinate" rather than a clamped one — a
-third answer justerm has in `fit.ts` (`cellWidth === 0` → `undefined`) and in neither converter, where
-`0/0` reaches the port as `NaN`. Recorded as unadjudicated rather than copied: xterm's guard sits in
-the converter it shares with reporting, and justerm's two converters would have to move together.
+**What none of them settles: `NaN` — adjudicated (#672, verified 2026-07-31).** The row above recorded
+this as unadjudicated on the strength of one line (`hasValidCharSize` → `undefined`). Reading the rest
+of that predicate's call graph changes the answer, so the retraction is the useful part: **xterm's
+guard is not a converter guard, it is half of a repair loop**, and the half justerm can copy is the
+half that does nothing on its own.
+
+| Fact | Reference | Site |
+|---|---|---|
+| The validity predicate is `width > 0 && height > 0` — which **rejects `NaN` for free**, since `NaN > 0` is false. Positivity and non-NaN are one check, not two | xterm.js | `src/browser/services/CharSizeService.ts:18` |
+| The *same predicate* triggers a **re-measure** when a resize is otherwise a no-op — so dropping the gesture is "defer until measurable", not "give up" | xterm.js | `src/browser/CoreBrowserTerminal.ts:1058` |
+| …and again when a terminal that was hidden at `open()` becomes visible (comment: *"Terminal was hidden on open"*) — the second half of the loop | xterm.js | `src/browser/services/RenderService.ts:145` |
+| A converter that meets a `NaN` coordinate **warns on the bare console and returns null** — not through xterm's own `LogService`, which defaults to `OFF` and would be silent exactly when a defect needs seeing | xterm.js | `src/browser/AccessibilityManager.ts:332` |
+| ghostty's cell is an **integer type** at the conversion (`@floatFromInt(size.cell.width)`), so a zero/NaN cell is unrepresentable rather than guarded — total by typing, one rung below alacritty's total-by-saturating-cast | ghostty | `src/renderer/size.zig:140` |
+
+**What justerm took, and the one thing it deliberately did not.** `CellGeometry` states its
+preconditions and the converters *signal* a violation; they still answer. The refusal did not
+transfer because its recovery half cannot: xterm owns the measurement (`CharSizeService`), while
+`justerm-web` is handed the geometry per event by the consumer's `getGeometry()` (#578, ADR-0017), so
+a dropped gesture would not come back on its own. ghostty's route — make it unrepresentable — is
+closed for a recorded reason: the CSS cell is a **float on purpose** (ADR-0022, so `cols *
+cssCellWidth()` scales back exactly). The dedupe on the warn is justerm's own, not xterm's: the reach
+here is every event at pointer rate, where xterm's warn sites are selection-change.
 
 ## What the engine does with a column it was handed anyway (#671, verified 2026-07-31)
 

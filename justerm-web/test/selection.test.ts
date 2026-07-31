@@ -1,10 +1,11 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   copySelection,
   dragScrollSpeed,
   SelectionController,
   StubSelectionPort,
 } from "../src/selection";
+import { resetGeometryWarnings } from "../src/input";
 import type { CellGeometry, MouseEventLike } from "../src/input";
 
 // 10×20 px cells at the canvas origin — a cell column is [col*10, col*10+10).
@@ -573,5 +574,47 @@ describe("SelectionController — the drag-scroll gate owns the vertical drag bo
 
     expect(port.calls.map((c) => c.kind)).toEqual(["begin"]); // no extend from the move
     expect(scrolls).toEqual([]); // and nothing scrolled until a tick runs
+  });
+});
+
+// #672 — the two converters share `clampTo` (#667), so they shared its `NaN`
+// propagation too; whatever is decided about the precondition applies to both by
+// construction. The unit tests for the predicate itself live beside it in
+// `input.test.ts`; what belongs here is that the *selection* entry point is
+// wired to the signal, since a gesture is where a consumer would notice nothing.
+describe("SelectionController — the geometry precondition is signalled (#672)", () => {
+  let warn: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    resetGeometryWarnings();
+    warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+  });
+  afterEach(() => warn.mockRestore());
+
+  it("warns once when the consumer's geometry is unmeasurable, over a whole drag", () => {
+    const port = new StubSelectionPort();
+    const bad: CellGeometry = { ...GEOM, cellWidth: NaN };
+    const ctrl = new SelectionController(port, () => bad, { getRows: () => 24 });
+
+    ctrl.mouseDown(leftHalf(5, 3), 1);
+    for (let x = 0; x < 20; x++) ctrl.mouseMove(ev(x, 40, { buttons: 1 }));
+    ctrl.mouseUp(ev(20, 40));
+
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0]?.[0])).toContain("cellWidth");
+  });
+
+  // The deliberate half, pinned so it cannot change by accident: the controller
+  // still drives the port exactly as it did before the signal existed. See the
+  // note in `input.test.ts` for why refusing is not a free upgrade here — this
+  // widget cannot re-measure, so a dropped gesture would not come back on its
+  // own the way xterm's does.
+  it("still drives the port, unchanged", () => {
+    const port = new StubSelectionPort();
+    const bad: CellGeometry = { ...GEOM, cellWidth: NaN };
+
+    new SelectionController(port, () => bad).mouseDown(leftHalf(5, 3), 1);
+
+    expect(port.calls).toEqual([{ kind: "begin", row: 3, col: NaN, side: "left", ty: "char" }]);
   });
 });
