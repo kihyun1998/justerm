@@ -164,6 +164,13 @@ defects that pass found were **the same class**, spread across notes written hou
 after the third would have ended it there. Batching happens when checking is expensive, so the script
 exists to make it cheap rather than to be remembered.
 
+**It is also gated now, and the two are not the same job.** The `test` job runs it over every note on
+every PR, because the cadence rule above only reaches the person *writing* a note — it cannot reach the
+one who edits an existing one months later without knowing the script exists. That gap was not
+hypothetical: two invariant notes sat incomplete (both missing `## Where it will recur`) and were found
+only because an unrelated change happened to run the script by hand. Keep verifying as you write; the
+gate is the backstop, not the workflow.
+
 ## Current coverage
 
 **The scope is everything in this repository**, not `justerm-core`. That includes the crates a

@@ -19,22 +19,38 @@ Two consequences follow, and the second is the one that gets missed:
 
 ## Why it is cross-cutting
 
-Three territories already hold behaviour derived from this, each having derived it locally, and none of
-them can see the others:
-
-- [input encoding](../territory/input-encoding.md) — owns the mechanism: `composition.ts`, the hidden
-  textarea as the real input target (a canvas cannot receive composition events), and the decision that
-  a confirmation is a raw `text` intent rather than a paste
-- [caret drawing](../territory/caret-drawing.md) — the caret stops blinking while composing (#592),
-  driven by a `setComposing` notification off a browser event. **That note does not mention composition
-  anywhere**, which is the evidence this layer is needed rather than an argument for it
-- [widget lifecycle](../territory/widget-lifecycle.md) — the hidden textarea's anchor is re-read at
-  composition start, because that is the moment the OS reads it (#631)
+**Four behaviours, no shared call path, and every one of them derived this fact locally.** The caret's
+blink policy, the anchor's placement, the shape of the committed text and the granularity of the a11y
+echo have nothing to do with each other — they arrived issue by issue, out of different features — and
+they share only that a composition is a browser fact with no representation on this side of the
+boundary.
 
 The criterion the map uses is *a fact that holds in N territories is invisible from the other N-1 if it
-is not written here*. This one is already at three, and the caret territory's silence is the failure in
-progress: the same shape as an absolute-index walk being rediscovered three times before
+is not written here*. This one is at four, and the count is doing work: **[caret
+drawing](../territory/caret-drawing.md) said "(none identified yet)" until 2026-07-30 — while #592 had
+already shipped exactly such a behaviour into it** — and [accessibility](../territory/accessibility.md)
+was silent in the same way until this note reached four. Each was found by writing this note, not by
+reading that one. The same shape as an absolute-index walk being rediscovered three times before
 [its floor](alt-screen-buffer-floor.md) got a home.
+
+## Territories it holds in
+
+- [input encoding](../territory/input-encoding.md) — **owns the mechanism**: `composition.ts`, the
+  hidden textarea as the real input target (a canvas cannot receive composition events), and the
+  decision that a confirmation is a raw `text` intent rather than a paste
+- [caret drawing](../territory/caret-drawing.md) — the caret stops blinking while composing (#592),
+  driven by a `setComposing` notification off a browser event, because there is no frame field to key
+  on. The rejected half is recorded below under *what is not part of this fact*
+- [widget lifecycle](../territory/widget-lifecycle.md) — the anchor is re-read at the moments something
+  reads it (composition start #631, focus), and frozen for **every** writer while a composition is open
+  (#637 the frame stream, #649 the forced re-sync). `Terminal.focus`, `syncTextareaAnchor`,
+  `positionTextarea`, `textareaMove` in `justerm-web/src/terminal.ts`
+- [accessibility](../territory/accessibility.md) — `AccessibilityController.onKey` must push a
+  committed IME text intent **per code point**, because one commit arrives as a single multi-unit
+  intent while `dedupTyped` drains one code point per echoed output char (#153 G9). And the textarea is
+  a *labelled accessible input* rather than `aria-hidden` (#248), which is what puts the anchor's
+  position inside the accessibility tree — the reason *"does an AT tool read the anchor?"* is a live
+  question rather than an idle one (#640 Q4)
 
 ## What a violation looks like
 
@@ -130,3 +146,25 @@ this fact locally, and none of them recorded it.**
   cache is keyed on the cursor cell, so appended output moved the anchor zero times), which is the same
   property that makes the page able to reproduce **#631**. One page, two defects, and the property that
   enables one blinds the other.
+
+## Where it will recur
+
+**The next surface that has to decide what happens during a composition, and reaches for a frame field
+to decide it.** There is none, and there never will be — so the decision gets made locally again,
+correctly, and recorded nowhere. The test: if a behaviour's rule contains the words *"while composing"*
+and its only possible input is a browser event, it is subject to this invariant.
+
+Three named places it is already queued to recur:
+
+- **#249 (draw the preedit inline).** It supplies the representation this fact says is absent, which
+  inverts the rule rather than extending it: the anchor would gain a second, *voluntary* writer and
+  freezing would become wrong rather than conservative. The reference already has this shape — xterm's
+  voluntary writer bypasses the involuntary one entirely rather than negotiating with it.
+- **Any new predicate on composition state.** `active` and `composing` answer different questions and
+  read identically at a call site. The wiring is invisible to `pnpm test` — the widget needs a DOM and
+  the unit suite runs in `environment: "node"` — so a wrong predicate ships green, as measured on #649.
+  A new consumer of composition state owes an e2e control, not a unit test.
+- **A second reader of the anchor's position.** The OS IME was assumed to be the only one until #649
+  measured the browser's own focus steps as a second, and an AT tool or magnifier remains an unmeasured
+  candidate for a third. Each additional reader narrows what may be done with the anchor while frozen,
+  and none of them announces itself.

@@ -152,3 +152,30 @@ far was found while doing something else, and none was found by the layer that o
 The membership test, so the list can be derived rather than remembered: **does the value reach
 `recompute_cell`?** `setCursorContrast`/`setCursorThickness` (#580) do not — they are draw-time scalars
 and are not instances, which is worth stating because they look like near neighbours.
+
+## Where it will recur
+
+**The next reader of the cell that is added without being asked which of the three shapes it is.** The
+question is never *"is this value important enough to keep fresh"* — every one of them looked
+unimportant at the time — but *"at what rate is it read, and what happens between reads"*. A reader
+that cannot answer the second half is defaulting to the cache, which is the shape that has failed here
+every time.
+
+Three named places it is already queued to recur:
+
+- **#325 (`matchMedia` → `set_device_pixel_ratio`).** The worst of the set, and it is worth saying why
+  in the same breath as the invariant: a resolution change moves the cell with **no setter call at
+  all**, so there is no point a consumer could hook a manual correction onto even if it knew to. Every
+  reader on the "re-read at the point of use" shape has to be re-checked when it lands.
+- **#249 (inline preedit).** Drawing the composition into the grid needs the cell, at frame rate,
+  beside a value (the IME anchor) that is deliberately kept on a different shape. Two readers of one
+  quantity on two refresh policies is precisely the mismatch this note exists to name.
+- **#287 (multi-viewport).** N grids under one GL context means the cell stops being a single value.
+  Every "the cell" in this note becomes "which cell", and a reader that closed over the wrong one
+  fails silently — the same failure mode, one dimension wider.
+
+The falsifier for the middle shape is stated where it is chosen and repeats here because it is the one
+that decays without anyone touching it: **"nothing reads the cache while it is stale" is a claim about
+the current set of readers, not a property of the design.** #649 tested it and it held — the browser's
+focus steps really are a reader, and they were already served — but the next reader added anywhere in
+the family retests it without meaning to.
