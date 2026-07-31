@@ -121,7 +121,8 @@ owns no detail of its own.
   [row-keyed side maps](invariant/row-keyed-side-maps.md) ·
   [an IME composition is browser-owned state the engine never sees](invariant/composition-is-browser-owned-state.md) ·
   [workspace exclusion is gate invisibility](invariant/workspace-exclusion-is-gate-invisibility.md) ·
-  [a decoded frame's columns are getters](invariant/decoded-columns-are-getters.md)
+  [a decoded frame's columns are getters](invariant/decoded-columns-are-getters.md) ·
+  [a wire field narrower than the value it carries](invariant/wire-field-narrower-than-its-value.md)
 
 Ask the questions instead of copying the answers (run from `docs/map/`):
 

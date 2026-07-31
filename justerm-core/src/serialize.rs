@@ -23,6 +23,17 @@ const VERSION: u8 = 14; // v14 moves combining clusters and hyperlink refs off t
 /// assert at load that its decoder matches the backend encoder (#34/ADR-0008).
 pub const WIRE_VERSION: u8 = VERSION;
 
+/// The largest `ScrollOp::count` magnitude this format can carry — the field rides
+/// as `i16` (#661).
+///
+/// [`crate::Term::scroll_delta`] caps against **both** this and the scroll region's
+/// own height. The height alone is not enough: [`crate::MAX_ROWS`] is `u16::MAX`, so
+/// a region can be taller than `i16::MAX` and a count legitimately below its height
+/// can still be unrepresentable. That corner truncates the magnitude; what it must
+/// never do is wrap, because a wrapped count arrives with the **opposite sign** and
+/// the consumer shifts the region the wrong way.
+pub(crate) const MAX_SCROLL_COUNT: isize = i16::MAX as isize;
+
 /// Whether a frame redraws everything or just its spans.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum FrameKind {
@@ -581,13 +592,21 @@ pub fn decode(bytes: &[u8]) -> Result<Frame, DecodeError> {
         // the renderer says so explicitly. Rejecting it would be new strictness with no
         // failure behind it.
         //
-        // Not checked here: `count`. It is `isize` in memory and `i16` on the wire, and
-        // ordinary output overflows it — measured, 40 000 line feeds at the bottom of a
-        // 3-row screen with no intervening `reset_damage` encode to **−25 536**, turning an
-        // up-scroll into a down-scroll on a `Partial` frame. That is an *encode*-side
-        // capacity defect in `Term::record_scroll`'s unbounded accumulation, not a
-        // validation gap: rejecting it here would reject a frame this engine produces
-        // today, which is exactly what this change promises not to do.
+        // Still not checked here: `count` — but the reason changed with #661, and the
+        // difference matters to anyone extending this guard. It *was* that the engine
+        // legitimately produced counts this field cannot hold (`Term::record_scroll`
+        // accumulated without a cap, and a single 32 770-byte `feed()` of newlines
+        // encoded 32 768 as **−32 768**), so rejecting them here would have rejected
+        // frames the encoder emits — exactly what #582 promised not to do. That is
+        // fixed at the producer: `Term::scroll_delta` caps the count at the region's
+        // height and at [`MAX_SCROLL_COUNT`], so nothing this crate encodes overflows.
+        //
+        // What remains is a *foreign* frame carrying an over-height count, which this
+        // function still accepts. Bounding it would now be possible without rejecting
+        // our own output — it is left out because it is new strictness on a published
+        // decoder, the same standalone question #663 asks about `cols`, and because the
+        // consumers already tolerate it: an over-height count blanks the region and the
+        // spans repaint it (`frame_grid.rs`, `cell-mirror.ts`).
         if top <= bottom && bottom >= rows as usize {
             return Err(DecodeError::BadSpan);
         }

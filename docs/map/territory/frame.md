@@ -63,6 +63,10 @@ against a pinned tree.
 - [a decoded frame's columns are getters](../invariant/decoded-columns-are-getters.md) — on the JS
   side the payload is reached through accessors that rebuild a view (or, for the string tables, the
   whole array) on every read, so a reader walks cells from a local and never from `frame.`
+- [a wire field narrower than the value it carries](../invariant/wire-field-narrower-than-its-value.md)
+  — the span count is `u16`, and one span is emitted per damaged line, so it is bounded by
+  `MAX_ROWS`. That is exactly `u16::MAX`: it fits with nothing to spare, which is a coincidence
+  rather than a design and is worth re-checking if either number moves
 
 ## Blast radius
 

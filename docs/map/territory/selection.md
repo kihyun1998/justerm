@@ -96,6 +96,10 @@ at a recorded SHA; a paraphrase drops the pin).
   renderer does not report (#578)
 - [alt-screen absolute-index floor](../invariant/alt-screen-buffer-floor.md) — `Term::prev_pos` must
   not join down into the primary scrollback while on alt (#207)
+- [a wire field narrower than the value it carries](../invariant/wire-field-narrower-than-its-value.md)
+  — the selection overlay group shares its record shape *and* its count prefix with search's, so it
+  inherits the `u32` widening #621 made there. A selection cannot practically reach the ceiling the
+  way a query can, which is why the fix arrived from the other territory
 
 ## Blast radius
 

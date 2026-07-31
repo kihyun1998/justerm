@@ -152,6 +152,9 @@ A **frame** serializes one damage cycle (`damage()` + `scroll_delta()`):
   alt-screen flag (`alt_screen` u8 — v9, #149, whether the alternate screen is active; the a11y announce
   policy #119 suppresses output reads on it), kind (`Full` | `Partial`).
 - **scroll op** (optional) — `{top, bottom, count}` (ADR-0003); the decoder applies it *before* the spans.
+  `count` rides as `i16` and is **capped at the region height** by `scroll_delta` before it is
+  encoded (#661) — repeated scrolls of one region accumulate between acks, and past the region the
+  value stops meaning anything while it starts wrapping into a shift in the opposite direction.
 - **spans** — for `Partial`, each `{line, left, right}` then `(right−left+1)` cell records; `Full` = all rows.
 - **combining group** (v14, #621) — one sparse `(col, cluster)` map per span, in span order, the
   cluster inline. No side-table and no per-cell index: nothing interned the clusters, so the

@@ -64,6 +64,10 @@ recorded SHA; a paraphrase drops the pin).
   get a floor, because `command_lines` threads `primary_grid()` through them so all three run in one
   coherent `[scrollback ++ primary]` buffer. The failure mode here is the mirror of the usual one —
   someone *adding* a floor and silently breaking command navigation on the alt screen
+- [a wire field narrower than the value it carries](../invariant/wire-field-narrower-than-its-value.md)
+  — the two marker group counts are the standing exception in that note: still `u16` after #621
+  widened its siblings, and unlike them they report **every live marker** rather than a viewport
+  projection, so nothing about the viewport bounds them
 
 ## Blast radius
 

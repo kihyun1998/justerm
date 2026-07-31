@@ -163,6 +163,62 @@ fn repeated_scroll_accumulates_count() {
     assert_eq!((op.top, op.bottom, op.count), (0, 2, 2));
 }
 
+/// #661 — the *reported* count never exceeds the region's own height. Shifting a
+/// region by more than its height moves every source row outside it, so the extra
+/// magnitude carries nothing a consumer can act on — while it does overflow the
+/// wire's `i16` and flip an up-scroll into a down-scroll. Both references that
+/// state a quantity here clamp it the same way: alacritty
+/// `term/mod.rs:773` (`cmp::min(lines, region height)`) and ghostty
+/// `Terminal.zig:2703` (`@min(count, rem)`), SHAs pinned in theflow.md.
+#[test]
+fn reported_scroll_count_is_capped_at_the_region_height() {
+    let mut term = Engine::new(4, 3);
+    term.feed(b"a\r\nb\r\nc"); // fill 3 rows, cursor on the last one
+    term.reset_damage();
+    term.feed(&vec![b'\n'; 40_000]); // 39 998 full-region up-scrolls
+
+    let op = term.scroll_delta().expect("scroll op");
+    assert_eq!((op.top, op.bottom), (0, 2), "still one full-screen region");
+    assert_eq!(op.count, 3, "capped at the 3-row region's height");
+}
+
+/// The same cap downward — a reverse-index flood is the mirror, and the sign has
+/// to survive it (the wire defect *was* a sign flip, so a cap that only guarded
+/// the positive direction would look right in the test above and still ship the
+/// bug).
+#[test]
+fn the_cap_applies_to_a_down_scroll_too() {
+    let mut term = Engine::new(4, 3);
+    term.feed(b"a\r\nb\r\nc");
+    term.reset_damage();
+    let mut down = b"\x1b[H".to_vec(); // home; RI at the top row scrolls down
+    down.extend(std::iter::repeat_n(*b"\x1bM", 40_000).flatten());
+    term.feed(&down);
+
+    let op = term.scroll_delta().expect("scroll op");
+    assert_eq!(op.count, -3, "capped at -height, not saturated to +height");
+}
+
+/// The cap is on what is *reported*, not on what is accumulated — so a region
+/// that scrolls far up and then all the way back down reports the true small net,
+/// not a saturated one. Clamping the accumulator instead would answer `-3` here:
+/// it would have already forgotten 39 998 of the up-scrolls by the time the
+/// down-scrolls arrived, and each subsequent one would walk the saturated value
+/// down through zero.
+#[test]
+fn a_scroll_that_returns_to_its_start_reports_no_net_shift() {
+    let mut term = Engine::new(4, 3);
+    term.feed(b"a\r\nb\r\nc");
+    term.reset_damage();
+    term.feed(&vec![b'\n'; 40_000]); // +40 000 (the fill left the cursor on the last row)
+    let mut down = b"\x1b[H".to_vec();
+    down.extend(std::iter::repeat_n(*b"\x1bM", 40_000).flatten()); // -40 000
+    term.feed(&down);
+
+    let op = term.scroll_delta().expect("scroll op");
+    assert_eq!(op.count, 0, "the net is zero and small enough to say so");
+}
+
 /// Scrolls of *different* regions in one frame cannot be expressed as a single
 /// op, so they degrade to full damage rather than silently dropping one.
 #[test]

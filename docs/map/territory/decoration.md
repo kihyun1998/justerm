@@ -60,7 +60,10 @@ inside a record rather than a pinned row that survives an upstream move.
 
 ## Cross-cutting invariants
 
-*(none identified yet)*
+- [a wire field narrower than the value it carries](../invariant/wire-field-narrower-than-its-value.md)
+  — the underline-colour group's count is still `u16` while its two sibling per-span groups went
+  `u32` in #621. Measured unreachable after #582 rather than fixed, which is a different state from
+  bounded
 
 ## Blast radius
 

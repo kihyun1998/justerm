@@ -19,7 +19,7 @@ use crate::input::{
 };
 use crate::search::Match;
 use crate::selection::{BufferPoint, Selection};
-use crate::serialize::{Frame, FrameKind, MarkerId, MarkerKind, Overlay, Span};
+use crate::serialize::{Frame, FrameKind, MAX_SCROLL_COUNT, MarkerId, MarkerKind, Overlay, Span};
 
 /// Buffer-walk primitives shared by every read surface (#585). A child module, so
 /// it reaches `Term`'s private fields directly — no field is widened for it.
@@ -691,11 +691,30 @@ impl Term {
     /// The first-class scroll recorded since the last `reset_damage`, if any.
     /// Suppressed while scrolled up — a content scroll must not shift the frozen
     /// viewport.
+    ///
+    /// **The count is capped at the region's own height (#661).** Shifting a region
+    /// by more than its height moves every source row outside it, so the surplus
+    /// names nothing a consumer can act on — while it does overflow the wire's
+    /// `i16` and turn an up-scroll into a down-scroll: measured, a single
+    /// 32 770-byte `feed()` of newlines, no slow consumer required. Both references
+    /// that state a quantity at their own scroll sites clamp it to the same bound
+    /// (alacritty `term/mod.rs:773`, ghostty `Terminal.zig:2703`).
+    ///
+    /// The cap is here, on the **read**, and not on the accumulator in
+    /// `record_scroll`: a region that scrolls far and comes back then still reports
+    /// its true small net, instead of one walked down from a saturated value.
+    ///
+    /// A second, crate-internal bound backs it up, and it is representational rather
+    /// than semantic: [`MAX_ROWS`] is `u16::MAX` while the wire field is `i16`, so a
+    /// region can legally be taller than any count that field can hold. In that
+    /// corner the magnitude truncates. What it never does is wrap — a wrapped count
+    /// arrives with the opposite sign and the consumer shifts the wrong way, which is
+    /// the whole of #661.
     pub fn scroll_delta(&self) -> Option<ScrollOp> {
         if self.display_offset > 0 {
             return None;
         }
-        self.scroll
+        self.scroll.map(cap_scroll)
     }
 
     /// Build a serializable [`Frame`] from the current damage + grid + grapheme
@@ -3227,6 +3246,25 @@ impl Term {
     }
 }
 
+/// Cap a recorded scroll to what a consumer can act on **and** what the wire can
+/// carry (#661) — two bounds for two different reasons, see [`Term::scroll_delta`].
+///
+/// A free function so the second bound is provable without building the grid that
+/// reaches it: a region taller than `i16::MAX` means a screen taller than 32 767
+/// rows, and every scroll of it rotates a `line_damage` of that length, so driving
+/// the engine to that corner costs ~10⁹ element moves (measured: 16 s in a debug
+/// build, for one assertion). The engine-level tests in `tests/damage.rs` prove
+/// `scroll_delta` applies this at ordinary sizes; the wire-level one in
+/// `tests/serialize.rs` proves a count at the bound survives `encode`.
+fn cap_scroll(op: ScrollOp) -> ScrollOp {
+    let height = op.bottom.saturating_sub(op.top).saturating_add(1) as isize;
+    let bound = height.min(MAX_SCROLL_COUNT);
+    ScrollOp {
+        count: op.count.clamp(-bound, bound),
+        ..op
+    }
+}
+
 /// Parse `38`/`48`/`58` extended colour (foreground / background / underline colour, #520), in
 /// either form:
 /// - sub-parameter (colon) form inline in `param`: `38:5:n`, `38:2:r:g:b`
@@ -3934,7 +3972,48 @@ impl Perform for Term {
 
 #[cfg(test)]
 mod tests {
+    use super::cap_scroll;
     use crate::Engine;
+    use crate::damage::ScrollOp;
+    use crate::serialize::MAX_SCROLL_COUNT;
+
+    /// #661 — the wire's `i16` bound, not the region-height one.
+    ///
+    /// In-crate on purpose, and the reason is cost rather than visibility: reaching
+    /// this through `Engine` needs a screen taller than 32 767 rows *and* 32 768
+    /// scrolls of it, each rotating a `line_damage` of that length. Measured at
+    /// 15.8 s in a debug build for a single assertion — the whole `serialize` suite
+    /// is 0.2 s without it. See `cap_scroll`'s note for how the coverage is split.
+    #[test]
+    fn a_region_taller_than_the_wire_field_truncates_rather_than_wraps() {
+        // 40 000 rows: over i16::MAX, under MAX_ROWS (u16::MAX), so the region
+        // height alone would let 35 000 through — and 35 000 as i16 is -30 536.
+        let up = cap_scroll(ScrollOp {
+            top: 0,
+            bottom: 40_000,
+            count: 35_000,
+        });
+        assert_eq!(up.count, MAX_SCROLL_COUNT, "capped, and still an up-scroll");
+
+        let down = cap_scroll(ScrollOp {
+            top: 0,
+            bottom: 40_000,
+            count: -35_000,
+        });
+        assert_eq!(down.count, -MAX_SCROLL_COUNT, "sign survives the cap");
+    }
+
+    /// The cap is a ceiling, not a rewrite: a count inside both bounds is reported
+    /// exactly, and the region it names is untouched.
+    #[test]
+    fn a_scroll_inside_both_bounds_passes_through_unchanged() {
+        let op = ScrollOp {
+            top: 4,
+            bottom: 9,
+            count: -2,
+        };
+        assert_eq!(cap_scroll(op), op);
+    }
 
     /// #628 — a hyperlink's storage is released once no live row references it.
     ///
