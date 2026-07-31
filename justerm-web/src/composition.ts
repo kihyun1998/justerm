@@ -38,9 +38,25 @@ export class CompositionController {
   ) {}
 
   /** Whether a composition is in progress or its committed text is still pending —
-   * the glue reads it to know when it's safe to clear the textarea. */
+   * the glue reads it to know when it's safe to clear the textarea.
+   *
+   * Not the same question as {@link CompositionController.composing}, and the difference is
+   * load-bearing: this stays true across the deferred commit read, which is the window a
+   * continuous-CJK `compositionstart` lands in. */
   get active(): boolean {
     return this.isComposing || this.isSendingComposition;
+  }
+
+  /** Whether the OS currently owns a candidate window over the textarea — true from
+   * `compositionstart` until `compositionend`, and no longer.
+   *
+   * This is the predicate the IME anchor is frozen on (#637/#649): the OS re-reads the anchor
+   * while a composition is open, so moving it walks the candidate window away from the text
+   * being composed. {@link CompositionController.active} is deliberately NOT that predicate —
+   * it outlives the candidate window by one deferred read, and gating the anchor on it would
+   * swallow #631's `compositionstart` re-sync in ordinary Korean/Japanese typing. */
+  get composing(): boolean {
+    return this.isComposing;
   }
 
   /** A composition began — anchor the start at the caret (selection, not length,

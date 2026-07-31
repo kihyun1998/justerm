@@ -100,13 +100,23 @@ export interface TextareaAnchor {
  * read per output flush for us. Valid only as long as `getGeometry` stays a pull-based consumer
  * callback; if the widget ever holds a pushed cell, prefer the reference's no-cache shape.
  *
- * `composing` suppresses the UNFORCED path only (#637). While a composition is open the OS re-reads
- * the anchor to keep its candidate window placed — measured with a real Korean IME: the Hanja window
- * follows the anchor down as unsolicited output moves the cursor, walking away from the text being
- * composed. So an output frame must not move it, while a `force`d move must still get through: that is
- * a caller sitting at a moment something reads the anchor, and #631's `compositionstart` re-sync runs
- * before the controller is told a composition began — gating it here would silently disable #631, the
- * failure its own comment warns about from the other direction.
+ * `composing` suppresses **every** path, forced or not (#637 established the rule, #649 closed the
+ * `force` exemption). While a composition is open the OS re-reads the anchor to keep its candidate
+ * window placed — measured with a real Korean IME: the Hanja window follows the anchor down as
+ * unsolicited output moves the cursor, walking away from the text being composed.
+ *
+ * `force` originally won over `composing` so that #631's `compositionstart` re-sync could not be
+ * gated by its own guard. It never needed that: `onStart` re-anchors *before* telling the controller,
+ * so it sees `composing === false` either way. What the exemption actually bought was a second
+ * entrance to the same harm — `element` mousedown → `onDown` → `Terminal.focus()` → a forced re-sync
+ * onto the superseded cursor cell, reachable through the public `focus()` from any consumer, not only
+ * a pointer (#649). So `force` now means one thing and one thing only: *override the coordinate
+ * cache*. It says nothing about the composition rule.
+ *
+ * **`composing` is `isComposing`, never `active`.** `active` stays true through the deferred commit
+ * read, and a continuous-CJK `compositionstart` lands inside exactly that window — so keying this on
+ * `active` would swallow #631's re-sync in the ordinary Korean/Japanese typing pattern, while looking
+ * equivalent at the call site. `composition.test.ts` pins the two diverging there.
  *
  * Suppression returns `undefined`, which the caller treats as a decided no-op that leaves the cache
  * alone — so the move is not recorded as applied and the anchor catches up on the first frame after
@@ -139,7 +149,7 @@ export function textareaMove(
 ): { col: number; row: number; key: string } | undefined {
   if (!cursor) return undefined;
   const key = `${cursor.col},${cursor.row}`;
-  if (!force && (composing || key === lastKey)) return undefined;
+  if (composing || (!force && key === lastKey)) return undefined;
   return { col: cursor.col, row: cursor.row, key };
 }
 
@@ -169,11 +179,20 @@ export function rendererNotifyingSink(sink: InputSink, renderer: Renderer): Inpu
  * cursor blink on typing, tracks focus, and routes the wheel (S16 #133).
  */
 export interface TerminalOptions {
-  /** The element input listeners attach to (the canvas or a wrapper). The widget
-   * makes it focusable and focuses it on pointer-down so keystrokes are captured
-   * (a canvas is not focusable by default). Provide it WITH `input` + `getGeometry`
-   * to wire keyboard/IME/wheel; omit the group for an output-only widget (e.g. one
-   * that only wants {@link events}). */
+  /** The element input listeners attach to (the canvas or a wrapper). Provide it WITH `input` +
+   * `getGeometry` to wire keyboard/IME/wheel; omit the group for an output-only widget (e.g. one
+   * that only wants {@link events}).
+   *
+   * **It does not need to be focusable, and the widget does not make it so** (#649 — this used to
+   * claim otherwise, and no `tabIndex` was ever written). The real keyboard/IME target is a hidden
+   * textarea the widget mounts inside it, and a pointer-down here focuses *that* through
+   * {@link Terminal.focus}. A canvas being unfocusable is therefore not a problem to solve.
+   *
+   * **If you do make it (or a child) focusable, cancel the pointer-down's default action.** The
+   * browser's focusing steps run after our `mousedown` handler, so an un-cancelled default moves
+   * focus to your element and blurs the textarea — typing and IME both stop. `preventDefault()` on
+   * `mousedown` is the fix, and it is what the demo and xterm.js both do
+   * (`browser/services/MouseService.ts:224-226` — `preventDefault()` then focus). */
   element?: HTMLElement;
   /** Where normalised input intents go — keys/paste/focus, a wheel notch when the
    * app tracks the wheel, and cursor keys from a wheel on the alt screen. The
@@ -407,7 +426,7 @@ export class Terminal {
     if (frame.cursorRow === undefined || frame.cursorVisible === false) return;
     const cursor = { col: frame.cursorCol ?? 0, row: frame.cursorRow };
     this.cursorAnchor = cursor;
-    this.applyTextareaAnchor(textareaMove(cursor, this.textareaCell, false, this.composition?.active ?? false));
+    this.applyTextareaAnchor(textareaMove(cursor, this.textareaCell, false, this.composition?.composing ?? false));
   }
 
   /**
@@ -420,14 +439,20 @@ export class Terminal {
    * candidate window) and focus (the browser's focus steps scroll the nearest scrollable ancestor
    * to the focused element). One geometry read per IME session and per focus, not per frame.
    *
-   * **KNOWN HOLE (#649): `force: true` beats #637's `composing` guard here, on purpose and wrongly.**
-   * The `compositionstart` caller needs the override (it runs *before* the controller is told, so a
-   * composing check would gate the very re-sync it exists to perform), but the `focus()` caller gets it
-   * too — and `cursorAnchor` keeps advancing on every frame during a composition, so a pointer-down
-   * mid-composition re-anchors to the superseded cursor cell that #637 exists to stop using. Measured;
-   * reachable only when the consumer left `element` non-focusable, which is why the demo is immune and
-   * why the fix is a contract decision rather than a one-line change. Do not "fix" it by gating `force`
-   * without reading #649 — three shapes are in play and one of them is documenting the requirement.
+   * **That focus read is measured, not assumed (#649).** In real Chrome, focusing the textarea from
+   * `scrollY: 2000` scrolled the page back to it, and the destination tracked the anchor exactly —
+   * a 1020px anchor difference moved the landing point by 1020px. So a stale anchor here does not
+   * merely sit wrong, it scrolls the page to the wrong place, by an amount proportional to the
+   * cursor's row (a `lineHeight` 1 → 1.6 change moved row 5 by 47px, i.e. ~9px per row).
+   *
+   * **`composing` outranks `force` (#649).** A composition freezes the anchor for *every* caller,
+   * including this one: `Terminal.focus()` is public, so a pointer-down — or a consumer restoring
+   * focus after a dialog — used to re-anchor to the superseded cursor cell mid-composition, which is
+   * #637's harm through another entrance. #631's `compositionstart` re-sync is unaffected because it
+   * runs *before* the controller is told, and therefore sees `composing === false`; that ordering in
+   * {@link Terminal.attach}'s `onStart` is the contract this depends on. The predicate is
+   * {@link CompositionController.composing}, never `active` — `active` outlives the candidate window
+   * by one deferred read, which is exactly the window a continuous-CJK `compositionstart` lands in.
    *
    * xterm.js reaches the same conclusion for the same reason: an option change there never reaches
    * `_syncTextArea` either (`RenderService.handleResize` forwards to the renderer without touching
@@ -436,7 +461,7 @@ export class Terminal {
    * this exact symptom. ghostty goes further and pushes the IME rect on every key event.
    */
   private syncTextareaAnchor(): void {
-    this.applyTextareaAnchor(textareaMove(this.cursorAnchor, this.textareaCell, true, this.composition?.active ?? false));
+    this.applyTextareaAnchor(textareaMove(this.cursorAnchor, this.textareaCell, true, this.composition?.composing ?? false));
   }
 
   /** Write a decided move to the DOM. Both callers funnel here so the cache and the two style

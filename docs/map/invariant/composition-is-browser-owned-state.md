@@ -43,10 +43,23 @@ composition it never saw, so nothing throws and no test on the core side can fai
 
 - **A frame-driven surface acting on a superseded cursor.** `Terminal.positionTextarea` ran from the
   frame subscription with no composition gate, so an output frame moved the IME anchor out from under the
-  candidate window while the user was mid-composition (#637, now guarded in `textareaMove`'s unforced
-  path). The engine was behaving correctly; the consumer was answering a question the frame cannot
-  answer. **Measured, not inferred** — with the Windows Korean IME the Hanja candidate window followed
-  the anchor down the screen as unsolicited output moved the cursor.
+  candidate window while the user was mid-composition (#637). The engine was behaving correctly; the
+  consumer was answering a question the frame cannot answer. **Measured, not inferred** — with the
+  Windows Korean IME the Hanja candidate window followed the anchor down the screen as unsolicited
+  output moved the cursor.
+- **Gating the *frame* and calling the surface closed.** #637's guard covered only the unforced path,
+  and the retained cursor cell went on advancing behind it — so any caller that overrode the cache
+  (`element` mousedown → `Terminal.focus()`, and `focus()` is public, so also a consumer restoring
+  focus after a dialog) delivered exactly the superseded cell the guard existed to withhold (#649).
+  The lesson generalises past this anchor: **a guard placed on one writer is not a rule about the
+  state.** Both entrances are now closed at the single seam they share.
+- **Reading a two-question predicate as one question.** The guard is keyed on
+  `CompositionController.composing` (`isComposing`), *not* `active` (`isComposing ||
+  isSendingComposition`). `active` outlives the candidate window by one deferred commit read, and a
+  continuous-CJK `compositionstart` lands inside precisely that window — so the broader predicate
+  would swallow the re-sync that exists to place the candidate window, in ordinary Korean/Japanese
+  typing. Measured cost of the confusion: swapping the two leaves **all 398 unit tests green**,
+  because the wiring needs a DOM; only the e2e control discriminates them.
 - **A rule inferred from engine state where no engine state exists.** A composition has no
   representation to consult, so *"what should happen during one"* can only be decided, never derived
   from a frame. Writing such a rule as if it followed from the frame is how it ends up decided once per

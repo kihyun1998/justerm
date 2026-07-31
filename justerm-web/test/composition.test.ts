@@ -205,3 +205,58 @@ describe("CompositionController", () => {
     ]);
   });
 });
+
+/**
+ * `composing` and `active` answer different questions, and #649 turns on the difference.
+ *
+ * `active` is "composition work is still in flight" — it stays true through the deferred
+ * commit read, because that is what the textarea-clearing glue needs. `composing` is "the OS
+ * owns the candidate window right now", which is the only state in which the anchor must not
+ * move. Feeding the anchor guard `active` looks equivalent and is not: it holds the guard shut
+ * across the window a continuous-CJK `compositionstart` lands in, which is exactly where #631's
+ * re-sync runs.
+ */
+describe("composing vs active — the window the anchor guard must key on (#649)", () => {
+  it("drops at compositionend while active stays up until the commit read runs", () => {
+    const ta = fakeTextarea("");
+    const sink = new StubInputSink();
+    const { defer, flush } = manualDefer();
+    const c = new CompositionController(ta, sink, defer);
+
+    c.compositionStart();
+    ta.value = "가";
+    ta.selectionEnd = 1;
+    expect(c.composing).toBe(true);
+    expect(c.active).toBe(true);
+
+    c.compositionEnd(); // the candidate window is gone; the commit read is still queued
+    expect(c.composing).toBe(false);
+    expect(c.active).toBe(true);
+
+    flush();
+    expect(c.composing).toBe(false);
+    expect(c.active).toBe(false);
+  });
+
+  it("is false at the instant a continuous-CJK compositionstart is handled", () => {
+    // The forcing case. `Terminal.attach`'s onStart re-anchors BEFORE calling compositionStart(),
+    // so what that re-sync reads is this state — and in continuous CJK the previous commit's read
+    // has not run, so `active` is still true. A guard keyed on `active` would swallow the re-sync
+    // in the normal Korean/Japanese typing pattern; one keyed on `composing` lets it through.
+    const ta = fakeTextarea("");
+    const sink = new StubInputSink();
+    const { defer } = manualDefer(); // deliberately never flushed — the read stays queued
+    const c = new CompositionController(ta, sink, defer);
+
+    c.compositionStart(); // A
+    ta.value = "가";
+    ta.selectionEnd = 1;
+    c.compositionEnd(); // A's read is queued; B is about to start
+
+    expect(c.active).toBe(true); // work in flight...
+    expect(c.composing).toBe(false); // ...but no candidate window: the re-sync must pass here
+
+    c.compositionStart(); // B
+    expect(c.composing).toBe(true);
+  });
+});

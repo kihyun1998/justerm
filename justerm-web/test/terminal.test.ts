@@ -334,11 +334,20 @@ describe("textareaMove (#631)", () => {
  * (the frame stream) and keeps the VOLUNTARY one (tracking its own preedit view). #249 would give this
  * widget that second writer.
  *
- * The rule lives here rather than in `positionTextarea` because `force` already separates the two
- * callers: the output-frame path passes `false`, and the point-of-use re-sync passes `true`. A forced
- * move must still get through — `focus()` re-anchors mid-composition on purpose, and #631's
- * `compositionstart` re-sync runs BEFORE the controller is told, so it would be gated by its own guard
- * if `force` did not win.
+ * The rule lives here rather than in `positionTextarea` because the callers funnel through one seam.
+ *
+ * **#649 narrowed it: `composing` now outranks `force`, and `composing` means `isComposing` alone.**
+ * `force` originally won so that #631's `compositionstart` re-sync could not be gated by its own guard
+ * — but that re-sync does not need the override, because it runs BEFORE the controller is told and so
+ * sees `composing === false`. What the override actually bought was a second, unwanted entrance: a
+ * pointer-down (or any consumer `Terminal.focus()`) re-anchored to the superseded cursor cell
+ * mid-composition, the same harm through a different trigger. So `force` now carries one meaning,
+ * "override the coordinate cache", and none of "override the composition rule".
+ *
+ * The predicate is `isComposing`, never `active`: `active` stays true through the deferred commit read,
+ * which is precisely the window a continuous-CJK `compositionstart` lands in. Pinned on both sides —
+ * `composition.test.ts` proves the two diverge there, and the callers below prove which one this seam
+ * is asking about.
  */
 describe("textareaMove — the mid-composition guard (#637)", () => {
   it("refuses an output-frame move while a composition is open", () => {
@@ -353,8 +362,18 @@ describe("textareaMove — the mid-composition guard (#637)", () => {
     });
   });
 
-  it("lets a forced point-of-use re-sync through even while composing (#631's order)", () => {
-    expect(textareaMove({ col: 2, row: 5 }, "2,5", true, true)).toEqual({
+  it("refuses a FORCED re-sync too, so a pointer-down cannot re-anchor mid-composition (#649)", () => {
+    // `element` mousedown → onDown → Terminal.focus() → syncTextareaAnchor(force: true). The retained
+    // cursor cell keeps advancing during a composition (positionTextarea latches it before the guard),
+    // so a forced move here lands on exactly the superseded cell #637 exists to stop using.
+    expect(textareaMove({ col: 2, row: 8 }, "2,5", true, true)).toBeUndefined();
+  });
+
+  it("still lets #631's compositionstart re-sync through — it runs before `composing` flips", () => {
+    // The side condition that makes #649's fix safe rather than a regression: onStart re-anchors
+    // BEFORE composition.compositionStart(), so this caller sees composing === false and the forced
+    // override of the coordinate cache — force's one remaining job — still works.
+    expect(textareaMove({ col: 2, row: 5 }, "2,5", true, false)).toEqual({
       col: 2,
       row: 5,
       key: "2,5",
