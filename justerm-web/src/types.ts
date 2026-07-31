@@ -12,6 +12,13 @@
  * Cells are addressed through the span directory, not row-major: walk `spans` in
  * stride-5 chunks and index the columns at each span's `cell_offset`. See
  * {@link import("./render-core").frameToDrawOps}.
+ *
+ * **Read each column once, into a local, before any loop.** On a plain object these are properties
+ * and it makes no difference; on the wasm `DecodedFrame` they are *getters*, and every read builds
+ * a fresh typed-array view — or, for `sideTable` / `linkTable`, rebuilds the whole array. The
+ * declaration below cannot express the difference, and no fixture in this package exhibits it, so
+ * the cost only appears in production (#657). Taking a column as a function parameter, the way
+ * `readMarkers` and `readOverlay` do, sidesteps the question entirely.
  */
 export interface DecodedFrame {
   readonly cols: number;

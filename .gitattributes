@@ -4,6 +4,13 @@
 # v0.6.0 rename relocated these from tests/ to justerm-core/tests/ (#100, ADR-0010).
 *.raw binary
 
+# Encoded wire frames are binary for the same reason, one layer out: these are
+# `justerm_core::encode` output, so a line-ending conversion would rewrite bytes
+# inside a length-prefixed record and the frame would decode as garbage or not at
+# all. Until #657 every `.jt` was generated in CI and thrown away, so nothing had
+# to say this; `justerm-web/test/fixtures/` is the first one committed.
+*.jt binary
+
 # Screen-dump goldens are compared against dump() output, which always uses LF.
 # Force LF on every platform so a CRLF checkout cannot fail the comparison.
 *.golden text eol=lf

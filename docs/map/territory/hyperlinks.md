@@ -104,6 +104,9 @@ claim about another implementation's bit layout, in a comment, with no row.
 - [row-keyed side maps](../invariant/row-keyed-side-maps.md) — the link map is one of the three, under
   the same presence-bit discipline: read only through the gate, ride with the row, and a write that
   clears the cell owes the bit rather than the map
+- [a decoded frame's columns are getters](../invariant/decoded-columns-are-getters.md) — `link` and
+  `linkTable` meet a consumer as accessors, so `osc8Links` destructures them once before walking
+  the span directory. That is load-bearing, not style
 
 ## Blast radius
 
