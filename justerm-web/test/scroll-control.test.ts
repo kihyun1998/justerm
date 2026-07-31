@@ -117,3 +117,66 @@ describe("WheelScroller.consumeWheelEvent", () => {
     expect(s.consumeWheelEvent(ev, ctx)).toBe(0); // .45, not 1
   });
 });
+
+// #675 — a non-finite intermediate does not merely produce one wrong answer here,
+// it *latches*: `wheelPartialScroll` keeps it (`Infinity % 1` is `NaN`), so every
+// later notch is `NaN` too, including after the geometry recovers. Measured in a
+// real browser: an unmeasured cell killed the wheel until an alt-screen switch.
+//
+// The guard is on the **output**, not on the context at entry, and the LINE-mode
+// case below is why: `deltaMode: LINE` never divides by the cell, so refusing a
+// whole context because `cellHeight` is 0 would break a scroll that works today.
+// Each guard is placed where it protects something: one before the accumulator,
+// one before the return.
+describe("WheelScroller — a degenerate context cannot poison the scroller (#675)", () => {
+  const bad = { cellHeight: 0, dpr: 1, rows: 24 };
+
+  it("returns no scroll instead of NaN when the cell is unmeasured", () => {
+    const s = new WheelScroller();
+
+    expect(s.consumeWheelEvent(wheel({ deltaY: 100, deltaMode: PIXEL }), bad)).toBe(0);
+    expect(s.consumeWheelEvent(wheel({ deltaY: 100, deltaMode: PIXEL }), { ...ctx, cellHeight: NaN })).toBe(0);
+  });
+
+  // The half that matters. Returning 0 once is worth nothing if the instance is
+  // already ruined — this is the assertion that pins "recovers", and it is the
+  // one the browser measurement showed failing.
+  it("still scrolls correctly once a real cell arrives", () => {
+    const s = new WheelScroller();
+
+    s.consumeWheelEvent(wheel({ deltaY: 100, deltaMode: PIXEL }), bad);
+    s.consumeWheelEvent(wheel({ deltaY: 100, deltaMode: PIXEL }), bad);
+
+    // 100px / (20/1) = 5 whole lines, exactly as if the bad events never happened.
+    expect(s.consumeWheelEvent(wheel({ deltaY: 100, deltaMode: PIXEL }), ctx)).toBe(5);
+  });
+
+  // `ev.deltaY === 0` is the existing bail and `NaN === 0` is false, so a
+  // non-finite delta reaches the arithmetic on every branch.
+  it("refuses a non-finite deltaY without poisoning the remainder", () => {
+    const s = new WheelScroller();
+
+    expect(s.consumeWheelEvent(wheel({ deltaY: NaN, deltaMode: PIXEL }), ctx)).toBe(0);
+    expect(s.consumeWheelEvent(wheel({ deltaY: Infinity, deltaMode: PIXEL }), ctx)).toBe(0);
+    expect(s.consumeWheelEvent(wheel({ deltaY: 100, deltaMode: PIXEL }), ctx)).toBe(5);
+  });
+
+  // The PAGE branch never touches the accumulator, so it needs the *other* guard:
+  // it emits a non-finite count directly. Without a return-side check this case
+  // stays broken while the pixel one is fixed.
+  it("refuses a page scroll against a non-finite row count", () => {
+    const s = new WheelScroller();
+
+    expect(s.consumeWheelEvent(wheel({ deltaY: 1, deltaMode: PAGE }), { ...ctx, rows: NaN })).toBe(0);
+    expect(s.consumeWheelEvent(wheel({ deltaY: 1, deltaMode: PAGE }), ctx)).toBe(24);
+  });
+
+  // Discriminating control: LINE mode does not read the cell at all, so an
+  // unmeasured cell must NOT stop it. An entry-level context guard would fail
+  // here — which is why the guards sit on the output instead.
+  it("still scrolls in line mode when the cell is unmeasured, because it never divides by it", () => {
+    const s = new WheelScroller();
+
+    expect(s.consumeWheelEvent(wheel({ deltaY: 3, deltaMode: LINE }), bad)).toBe(3);
+  });
+});

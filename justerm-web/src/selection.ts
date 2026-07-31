@@ -82,6 +82,22 @@ function normalizeForCopy(text: string): string {
  * viewport top, viewport `height` px tall. 0 while inside; outside, scrolls
  * toward the pointer. (xterm `_getMouseEventScrollAmount`.) */
 export function dragScrollSpeed(py: number, height: number): number {
+  // `NaN` fails every comparison below, so without this `offset` becomes the pointer's *absolute*
+  // y rather than its distance out of the viewport, and at exactly `py === 0` the sign term
+  // (`offset / Math.abs(offset)`) emits `NaN` into the consumer's `onScroll` — the same
+  // hand-a-consumer-a-non-finite-number defect as the wheel path (#675).
+  //
+  // **`height <= 0` is deliberately NOT part of this guard.** A zero height also arises from a
+  // legitimately empty viewport (`getRows() * cellHeight` with `getRows() === 0`), where #667
+  // pinned the opposite reading — *"a 0-row viewport is 0px tall, so any pointer is below it"* —
+  // to reach `tick()`'s edge-row floor. The two causes are indistinguishable at this signature, so
+  // choosing a semantic for 0 is a re-decision rather than a totality fix; measured and left
+  // alone below, tracked separately.
+  //
+  // `Infinity` passes through for the same reason it always did: it is the documented "no row
+  // count supplied → infinitely tall viewport" case, where a pointer above the top must still
+  // scroll up.
+  if (Number.isNaN(height)) return 0;
   if (py >= 0 && py <= height) return 0;
   // Distance out of the viewport: below the bottom subtracts the height, above
   // the top stays negative.
