@@ -56,6 +56,9 @@ const term = new Terminal(source, renderer, {
   // Pixel -> cell is host policy too, so the widget asks for the geometry it needs.
   // Every length is CSS px, because that is what `clientX`/`clientY` are — `renderer.cellSize()`
   // is DEVICE px, so divide it by the ratio or the pointer lands on the wrong cell at dpr != 1.
+  // Return measured values: the cell must be positive and finite, the counts non-negative
+  // integers. A `0` or `NaN` cell (an unlaid-out or hidden container) makes every pointer event
+  // resolve to a garbage cell; the widget warns once per field rather than failing.
   getGeometry: () => {
     const r = canvas.getBoundingClientRect();
     const cell = renderer.cellSize(); // device px

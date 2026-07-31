@@ -103,11 +103,18 @@ fix mentions a shared rule.
   re-derive that.
 - **#287 multi-viewport** — one context serving N grids means N sets of bounds, and a pointer that
   is inside the canvas but outside *this* viewport becomes an ordinary case rather than an edge one.
-- **`NaN`, which no bound in this repo currently catches.** An unmeasured cell makes `cellWidth` zero,
-  and `0/0` passes through `Math.max`/`Math.min` unchanged. `fit.ts` already refuses to answer in
-  that state and xterm.js guards its converter the same way (`hasValidCharSize` → `undefined`);
-  neither justerm converter does, and because *both* share the gap it is a family decision rather
-  than a defect in either one.
+- **`NaN`, which no *bound* catches — settled as a precondition instead (#672).** A bound cannot
+  reach it: `clampTo` propagates `NaN` through both `Math.max` and `Math.min`, so the converter is
+  answering a question its input never posed. `CellGeometry` now states what its six fields may be
+  (finite; a positive finite cell; non-negative integer counts) and the converters *signal* a
+  violation rather than refusing — xterm's `hasValidCharSize` → `undefined` guard is half of a repair
+  loop whose other half (re-measure) this widget cannot have, since the geometry is the consumer's by
+  ADR-0017. Both converters check, because both share `clampTo` and therefore shared the gap.
+  **What that leaves open is the rest of the geometry's readers**, which take the same callback and
+  were never in this note's scope: `WheelScroller` accumulates a non-finite delta into
+  `wheelPartialScroll` and *latches* it — measured, it stays `NaN` after the geometry recovers and
+  only `reset()` (an alt-screen switch) clears it. That is a state defect, not a bound, so a signal
+  does not fix it.
 - **A side-from-raw-pixel refactor.** The clamp currently doubles as the overshoot rule for `Side`;
   computing the side from the unclamped pixel (alacritty's shape) would need alacritty's explicit
   `end_of_grid → Right` arm restored alongside it.
@@ -116,7 +123,9 @@ fix mentions a shared rule.
 
 - `justerm-web/src/selection.ts` — `cellAndSide`, and `SelectionController.tick`, the one row
   producer that does not go through it
-- `justerm-web/src/input.ts` — `clampTo` (shared by both converters since #667), `cellEvent`
+- `justerm-web/src/input.ts` — `clampTo` (shared by both converters since #667), `cellEvent`,
+  `CellGeometry` (whose field docs carry the preconditions), `geometryViolations` / `checkGeometry`
+  (the #672 signal, shared the same way the clamp is)
 - `justerm-web/src/a11y-selection.ts` — `clamp`, the DOM-offset form of the same obligation
 - `justerm-web/src/fit.ts` — `proposeDimensions`, which floors the grid and so creates the strip
 - `justerm-core/src/term.rs` — `viewport_to_abs`, the engine-side backstop (both axes since #671)

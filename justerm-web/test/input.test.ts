@@ -1,6 +1,14 @@
-import { describe, expect, it } from "vitest";
-import { keyFromDom, Mod, mouseFromDom, StubInputSink, wheelMouseFromDom } from "../src/input";
-import type { KeyboardEventLike, MouseEventLike } from "../src/input";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  geometryViolations,
+  keyFromDom,
+  Mod,
+  mouseFromDom,
+  resetGeometryWarnings,
+  StubInputSink,
+  wheelMouseFromDom,
+} from "../src/input";
+import type { CellGeometry, KeyboardEventLike, MouseEventLike } from "../src/input";
 
 function key(over: Partial<KeyboardEventLike> & { key: string }): KeyboardEventLike {
   return { shiftKey: false, altKey: false, ctrlKey: false, metaKey: false, ...over };
@@ -131,5 +139,139 @@ describe("InputSink", () => {
       { kind: "paste", text: "hi" },
       { kind: "focus", focused: true },
     ]);
+  });
+});
+
+// #672 — `CellGeometry` documented its *unit* meticulously (#578) and its *value
+// range* not at all, so one `NaN` field silently poisoned every pointer event:
+// `clampTo` propagates it (`Math.max(0, Math.min(Math.max(0, max), NaN))` is
+// `NaN`), and downstream that is an empty selection (`[1,2,3].slice(0, NaN)` is
+// `[]`) or a `null` over JSON — never an error anyone can see. The reach is the
+// whole event stream, not one pixel.
+//
+// Only the *first* of the three fields pairs is measurable as a unit; the second
+// is the reason this is a precondition and not a bound, so read them together:
+// `cols: 0` stays legal (#667 pinned a zero-sized grid resolving to (0,0)) while
+// `cols: NaN` does not.
+const okGeom: CellGeometry = { originX: 0, originY: 0, cellWidth: 10, cellHeight: 20, cols: 40, rows: 24 };
+const fields = (g: Partial<CellGeometry>): string[] =>
+  geometryViolations({ ...okGeom, ...g }).map((v) => v.field);
+
+describe("geometryViolations — the CellGeometry precondition (#672)", () => {
+  // The control: without it a checker that returns every field always would pass
+  // every case below. (Step 3, "right reason".)
+  it("reports nothing for a measured geometry", () => {
+    expect(geometryViolations(okGeom)).toEqual([]);
+  });
+
+  // The measured defect. All six fields, because all six arrive from the
+  // consumer's `getGeometry()` — a wider surface than xterm's, whose converter
+  // takes only the cell from a measurement it owns and `colCount`/`rowCount`
+  // from its own BufferService (`Mouse.ts:33`).
+  it("reports NaN in any of the six fields", () => {
+    expect(fields({ originX: NaN })).toEqual(["originX"]);
+    expect(fields({ originY: NaN })).toEqual(["originY"]);
+    expect(fields({ cellWidth: NaN })).toEqual(["cellWidth"]);
+    expect(fields({ cellHeight: NaN })).toEqual(["cellHeight"]);
+    expect(fields({ cols: NaN })).toEqual(["cols"]);
+    expect(fields({ rows: NaN })).toEqual(["rows"]);
+  });
+
+  // A cell is a positive finite length. `0` is xterm's own unmeasured-cell tell
+  // (`hasValidSize` = `width > 0 && height > 0`, `CharSizeService.ts:18`), which
+  // catches NaN by the same predicate since `NaN > 0` is false. `Infinity` is
+  // added on `fit.ts`'s grounds one file over: a non-finite box means "not
+  // measured", exactly when we must not compute from it.
+  it("reports a cell that is not a positive finite length", () => {
+    expect(fields({ cellWidth: 0 })).toEqual(["cellWidth"]);
+    expect(fields({ cellHeight: 0 })).toEqual(["cellHeight"]);
+    expect(fields({ cellWidth: -10 })).toEqual(["cellWidth"]);
+    expect(fields({ cellWidth: Infinity })).toEqual(["cellWidth"]);
+  });
+
+  // A count is a non-negative integer. **`0` is deliberately legal** — #667 pins
+  // a zero-sized grid resolving to (0, 0) rather than a negative cell, and
+  // `clampTo` floors its own bound for exactly that case. Tightening this to
+  // `>= 1` would falsify that pin, which is why the precondition is stated at
+  // the value the code already keeps rather than at the one that reads tidier.
+  it("accepts a zero-sized grid but reports a fractional or negative count", () => {
+    expect(fields({ cols: 0, rows: 0 })).toEqual([]);
+    expect(fields({ cols: -1 })).toEqual(["cols"]);
+    expect(fields({ rows: 23.5 })).toEqual(["rows"]);
+    expect(fields({ cols: Infinity })).toEqual(["cols"]);
+  });
+
+  // The origin is a position, not a length: a canvas scrolled above the viewport
+  // has a negative `top`, which is ordinary. Only non-finite is a violation.
+  it("accepts a negative origin", () => {
+    expect(fields({ originX: -300, originY: -12.5 })).toEqual([]);
+  });
+
+  // Reporting only the first violation would let a second bad field hide behind
+  // it for as long as the first is unfixed — and the signal below warns once per
+  // field, so a masked field would never be reported at all.
+  it("reports every violated field, not just the first", () => {
+    expect(fields({ cellWidth: NaN, cols: NaN })).toEqual(["cellWidth", "cols"]);
+  });
+});
+
+describe("the geometry signal (#672)", () => {
+  let warn: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    resetGeometryWarnings();
+    warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+  });
+  afterEach(() => warn.mockRestore());
+
+  // What the measurement actually asked for: a consumer feeding garbage finds
+  // out. `console.warn` and not a configurable logger, because xterm's own
+  // LogService defaults to OFF and its *defect* warns bypass it — a converter
+  // that meets a NaN coordinate warns directly (`AccessibilityManager.ts:332`,
+  // `'row is invalid. Race condition?'`).
+  it("names the offending field and its value on a poisoned event", () => {
+    mouseFromDom({ clientX: 5, clientY: 5, button: 0, buttons: 0, shiftKey: false, altKey: false, ctrlKey: false, metaKey: false }, "press", { ...okGeom, cellWidth: NaN });
+
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0]?.[0])).toContain("cellWidth");
+    expect(String(warn.mock.calls[0]?.[0])).toContain("NaN");
+  });
+
+  // **Behaviour is unchanged, and that is the decision, not an oversight.**
+  // Refusing (xterm's `getCoords` → `undefined`) imports an ownership model this
+  // widget does not have: xterm guards because it *measures* the cell and can
+  // re-measure to recover (`CoreBrowserTerminal.ts:1058` and
+  // `RenderService.ts:145` both call `measure()` on an invalid size), while
+  // `getGeometry()` is the consumer's callback, read per event (#578,
+  // ADR-0017). Dropping the gesture would buy the drop without the recovery.
+  //
+  // This assertion is also the tripwire: an implementation that starts refusing
+  // reds here and has to make that decision deliberately.
+  it("still answers, with the same value as before the signal existed", () => {
+    const ev = mouseFromDom({ clientX: 105, clientY: 45, button: 0, buttons: 0, shiftKey: false, altKey: false, ctrlKey: false, metaKey: false }, "press", { ...okGeom, cols: NaN });
+
+    expect(ev.col).toBeNaN();
+    expect(ev.row).toBe(2); // the unpoisoned axis is untouched
+  });
+
+  // The reach measured in #672 is *every* pointer event for as long as the field
+  // is bad, and `mousemove` fires at pointer rate — so an undeduped warn would
+  // bury its own first line. This is a deliberate divergence from xterm, which
+  // does not dedupe because its warn sites are selection-change, not per-motion.
+  it("warns once per field, however many events arrive", () => {
+    const geom = { ...okGeom, cellHeight: 0 };
+    for (let i = 0; i < 50; i++) {
+      mouseFromDom({ clientX: i, clientY: i, button: 0, buttons: 0, shiftKey: false, altKey: false, ctrlKey: false, metaKey: false }, "motion", geom);
+    }
+
+    expect(warn).toHaveBeenCalledTimes(1);
+  });
+
+  // Discriminating power: the signal must be silent on the ordinary path, or the
+  // three assertions above would pass against a converter that always warns.
+  it("says nothing for a measured geometry", () => {
+    wheelMouseFromDom({ clientX: 5, clientY: 25, button: 0, buttons: 0, shiftKey: false, altKey: false, ctrlKey: false, metaKey: false }, -1, okGeom);
+
+    expect(warn).not.toHaveBeenCalled();
   });
 });
