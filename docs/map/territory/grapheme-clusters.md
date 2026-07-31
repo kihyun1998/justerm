@@ -20,8 +20,13 @@ the decision has to be made per scalar, with no lookahead, against a cluster tha
 
 - **Opt-in, and the opt-in is the interesting part.** Clustering is DECSET mode **2027**, off by
   default, because turning it on *changes cell widths* — a family emoji that occupied six cells
-  becomes one — and that desynchronises an application's own `wcwidth` arithmetic. With the mode off,
-  input is stored per character, verbatim.
+  becomes one — and that desynchronises an application's own `wcwidth` arithmetic.
+- **What the mode gates is the *width-changing* half, not the combining map.** The distinction is
+  easy to lose, and losing it reads as "mode off ⇒ no cluster anywhere". Measured with the mode at
+  its default (#657, `examples/gen_engine_frame.rs`): feeding `e` + U+0301 to a fresh `Engine`
+  produces `combining = {1: ['\u{301}']}` on the span. A zero-width mark does not change the cell's
+  width, so it attaches to the base cell either way; what 2027 decides is whether a ZWJ / skin-tone /
+  flag / VS16 *sequence* collapses into one cell (`term.rs:91-94`).
 - **The break decision is delegated to `unicode-segmentation`**, the full UAX #29 rule set, rather
   than reimplemented. What is bespoke is the *incremental* framing around it.
 - **Storage is the row's combining map, gated by `COMBINED_PRESENT`.** The primary code point stays
@@ -33,6 +38,15 @@ the decision has to be made per scalar, with no lookahead, against a cluster tha
   #621 — it was a frame-local index into a side table until then, and the table is gone because
   nothing ever interned it). The same
   arrangement hyperlinks use, for the same fixed-stride reason.
+- **The JS side still presents a side table, and it is not the one that was removed.** The decoder
+  rebuilds a per-frame `sideTable` out of the inlined groups, so `DecodedFrame.sideTable` is alive
+  and populated at v14 — a reader who takes "the table is gone" as the whole story will look for a
+  dead getter and find a live one. What it holds is the part that decides whether a consumer draws
+  the right thing: **the trailing marks only**, with the base character left in `codepoints`.
+  Measured end to end (#657) — `e` + U+0301 decodes to `codepoints[1] == 'e'` and
+  `sideTable == ["́"]`, never `"é"`. `justerm-renderer/src/frame_grid.rs:41` composes the two
+  and says so; a consumer that renders `sideTable[extra - 1]` as the cell's text would draw a bare
+  accent, and no type on that seam distinguishes the two readings (#646).
 
 ## Code
 
