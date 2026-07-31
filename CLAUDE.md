@@ -35,7 +35,11 @@ VT 바이트 스트림을 터미널 화면 상태(그리드 + 스크롤백)로 �
   거기서 파생(셀=등록순서, ruler=클래스 먼저; ADR-0019 가 out of scope 로 밀어낸 축),
   **0025** row/wide-pair 상태는 주인 하나 + 생명주기 하나이지 verb 마다의 규칙이 아님(`Cell` 은
   셀 단위로 쓰이는데 wrap 링크는 *행*, spacer 마커는 *pair* 의 사실이라 생기는 어긋남 — 이 영역의
-  새 질문은 D1–D4 에 대한 conformance 로 다룬다; 로스터는 spine #552).
+  새 질문은 D1–D4 에 대한 conformance 로 다룬다; 로스터는 spine #552),
+  **0026** 밖에서 들어온 좌표는 *한 번* 잡히고 리더가 짝의 한쪽만 잡지 않는다 — 어느 표면이 잡느냐는
+  엔진이 그 좌표의 producer 를 가졌는지에서 파생된다(포인터는 write-site, 소비처가 저술한 `Match` 는
+  projection). 레퍼런스가 clamp/hide 로 1–1 갈려서, 타이는 "justerm 의 옛 동작이 둘 중 어느 것도
+  아니었다"로 깨졌다(#660→#671→#678).
   큰 그림·빌드플랜은 GitHub **Epic #1**(엔진, closed) + 슬라이스
   #2–#12, 이후 **#103**(web)·**#258**(renderer). *이 repo 안에서 전부 참조 가능* — penterm 안 봐도 됨.
 - **설계 출처(역사)**: penterm 의 `.scratch/rust-terminal-engine/PRD.md` — 이 계약이 grill 로

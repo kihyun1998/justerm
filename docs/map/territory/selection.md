@@ -8,9 +8,14 @@ pixel→cell conversion and clipboard transport.
 
 ## Governing decisions
 
-**None.**
+- [ADR-0026 — a coordinate that arrives from outside is bounded once](../../adr/0026-outside-coordinates-are-bounded-once.md)
+  governs **one axis only**: what happens to an out-of-range coordinate handed in through
+  `selection_begin` / `selection_extend`, where the bound goes (the producer, here), and that a reader
+  may not bound one end of a pair. It says nothing about the selection *model* below — the blank that
+  follows is still the state for everything else
 
-This blank is the actual state. Two decisions sit adjacent, and neither governs the selection *model*:
+The rest of this section is the actual state. Two more decisions sit adjacent, and neither governs the
+selection *model* either:
 
 - [ADR-0014 — carry interaction overlays in the frame](../../adr/0014-carry-interaction-overlays-in-the-frame.md)
   decides that the selection **highlight rides the frame** → *delivery* only, not the model

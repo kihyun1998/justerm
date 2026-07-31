@@ -10,7 +10,10 @@ the `Vec<Match>` and drives next/prev; the engine only scrolls to a match it is 
 
 ## Governing decisions
 
-**None.**
+- [ADR-0026 — a coordinate that arrives from outside is bounded once](../../adr/0026-outside-coordinates-are-bounded-once.md)
+  governs **one axis only**: a `Match`'s columns are authored by the consumer, so the bound sits at the
+  projection (`match_spans`) rather than at a producer the engine does not have. Nothing about the
+  match model, smart-case or the dialect — those are still unrecorded, below
 
 - [ADR-0017 — mechanism vs policy](../../adr/0017-core-consumer-boundary-mechanism-vs-policy.md)
   supplies *why search is in core* — it needs the whole buffer, which a frame-mode consumer
