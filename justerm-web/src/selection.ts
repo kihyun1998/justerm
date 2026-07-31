@@ -120,11 +120,14 @@ function modeForClick(detail: number): SelType {
  * a *press* there arrives depends on which element the consumer listens on, and
  * this controller does not own that choice.
  *
- * The clamp is deliberately *not* left to the engine. `Term::viewport_to_abs`
- * bounds the row (#660) and calls itself a backstop; it does not bound the
- * column at all. And for the alt-click cursor move below the engine is not on
- * the path in the first place — that cell leaves through `onMoveCursor`, so no
- * core guard, present or future, could cover it.
+ * The clamp is deliberately *not* left to the engine, and the reason is
+ * structural rather than a matter of how much the engine currently bounds. For
+ * the alt-click cursor move below the engine **is not on the path at all** — that
+ * cell leaves through `onMoveCursor`, so no core guard, present or future, could
+ * cover it. `Term::viewport_to_abs` does clamp (the row since #660, the column
+ * since #671) and its own doc calls that a backstop; this comment used to cite
+ * the missing column clamp as a second reason, which #671 retired. A reason that
+ * expires when the other layer improves was never the load-bearing one.
  *
  * `side` is computed from the **clamped** column on purpose, which is what makes
  * a single bound express both endpoints: overshooting right lands on the last

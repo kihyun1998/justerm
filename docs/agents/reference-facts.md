@@ -856,7 +856,10 @@ wrap-to-next-line arm and does not need one: an in-range `Side::Right` on the la
 reaches by moving the start to `(line + 1, 0)`. Pinned as unchanged in
 `tests/selection_column_bound.rs`.
 
-**A cleared concern, with its condition.** The bound is the **grid width**, not the line length,
-because `SelectionType::Line` already resolves `to` as `grid.cols()` — the type works in grid
-coordinates throughout. This holds as long as no selection type starts resolving against
-`abs_line(..).len()`; one that did would need its own bound rather than this one.
+**A cleared concern, with its condition — and the condition is stronger than the obvious one.** The
+bound is the **grid width**, not the line length, because `SelectionType::Line` already resolves `to`
+as `grid.cols()`. The completeness pass sharpened why that is safe: every row *is* exactly
+`grid.cols()` wide, because both row producers resize it there (`grid.rs`, `set_screen` and `reflow`),
+so the readers' `to.min(len)` is identically `to.min(cols)`. The clearance therefore rests on
+`len == cols` being an invariant of those two producers, not merely on no type happening to resolve
+against `abs_line(..).len()` today.

@@ -130,8 +130,10 @@ fn a_selection_starting_past_a_full_row_skips_to_the_next_line() {
     // The `from` normalisation above is reached by `selection_text` too, and the change is
     // deliberate rather than collateral: alacritty does the same thing in `selection.rs`
     // (`range_simple` — *"Wrap to next line when selection starts to the right of last column"* —
-    // sets `start.point.column = Column(0); start.point.line += 1`). Pinned because nothing else
-    // covers this path and the comment at the seam only talks about OSC-133.
+    // sets `start.point.column = Column(0); start.point.line += 1`). Pinned here because the comment at
+    // the seam only talks about OSC-133; since #671 `selection_column_bound.rs`
+    // (`an_in_range_right_edge_anchor_still_starts_on_the_next_row`) covers the same path from the
+    // other direction, as the control proving the column clamp does *not* disturb the in-range case.
     let mut t = Engine::with_scrollback(6, 3, 100);
     t.feed(b"abcdef\r\nghijkl\r\n");
     t.selection_begin(0, 5, Side::Right, SelectionType::Char);

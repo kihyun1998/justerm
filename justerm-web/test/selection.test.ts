@@ -434,9 +434,11 @@ describe("SelectionController — the pointer is clamped to the grid", () => {
     expect(port.calls).toEqual([{ kind: "begin", row: 23, col: 5, side: "left", ty: "char" }]);
   });
 
-  // Above / left of the canvas the raw arithmetic is *negative*, which is the
-  // half core does not clamp: `viewport_to_abs` bounds the row (#660) and passes
-  // `col` through untouched.
+  // Above / left of the canvas the raw arithmetic is *negative* — a different
+  // failure from overshooting the far edge, because `Math.floor(-3 / 10)` is `-1`.
+  // The engine clamps both axes as a backstop (#660 row, #671 column), but a
+  // negative crossing an unsigned seam is not something a clamp downstream can
+  // undo, and the alt-click path never reaches the engine at all.
   it("clamps a press above and to the left of the canvas to (0, 0)", () => {
     const port = new StubSelectionPort();
 

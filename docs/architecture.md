@@ -571,6 +571,15 @@ Z"`, and a search across the wrap went from 1 hit to 0). It now lives on the
   selection is "primary-only"**, which is how this sentence read until #660 and is what licensed
   `resize` to skip the alt anchors entirely. A selection made *while* the alt screen is up is
   ordinary (copying out of vim), and it is exactly what panicked. [#5, #449, #660]
+- **A selection anchor is bounded once, at the write site, on both axes.** `Term::viewport_to_abs`
+  clamps `row` to the last visible row (#660) and `col` to the last column (#671), because the
+  documented input of `selection_begin` / `selection_extend` is *"what a mouse event carries"* and a
+  pointer leaves the grid whenever a drag does. The column is bounded against the **grid**, not the
+  line — `SelectionType::Line` already resolves its exclusive end as `grid.cols()`, so the type works
+  in grid coordinates. This is a backstop, not a substitute for the producer's own bound (the map's
+  *pointer coordinates are bounded by their producer*): the readers each clip only one end, so before
+  #671 a `Side::Left` column past the last one silently deleted its own row from `selection_range`
+  *and* the copy, while `Side::Right` was correct by accident. [#660, #671]
 - **Selection text vs highlight need different grains.** `selection_text` joins soft-wrapped rows into
   one logical line and trims trailing blanks *only at the logical end* (spaces at a wrap boundary are
   real content), skips `WIDE_CHAR_SPACER` cells (emit the lead glyph once), and ends hard lines with

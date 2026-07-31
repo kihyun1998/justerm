@@ -1097,6 +1097,15 @@ impl Term {
     /// The grid, not `abs_line(..).len()`, is the bound: `SelectionType::Line` already
     /// resolves `to` as `grid.cols()`, so the whole type works in grid coordinates and a
     /// short line must not shrink a selection that reaches past it.
+    ///
+    /// **`resolve`'s five `+ 1`s stay unguarded, and that is sound only while every stored
+    /// anchor arrives through here.** The completeness pass enumerated the writers: the
+    /// three coordinate fixups move `.line` or write columns that are in range by
+    /// construction, `resize`'s primary branch re-clamps the reflowed points (#562) and its
+    /// alt branch drops the selection outright (#660), and `Term::resize` is the only writer
+    /// of `grid.cols()`. So no path strands a column that was clamped here. The condition is
+    /// **a fourth writer of `self.selection`** — one that builds an `Anchor` without this
+    /// function would put `resolve` back in reach of its own arithmetic.
     fn viewport_to_abs(&self, row: usize, col: usize) -> BufferPoint {
         let top = self.scrollback.len() - self.display_offset;
         let last = self.grid.rows().saturating_sub(1);
