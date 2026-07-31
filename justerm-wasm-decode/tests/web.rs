@@ -422,6 +422,45 @@ fn decode_frame_throws_on_truncated() {
     assert!(decode_frame(&bytes).is_err());
 }
 
+/// The two tests above assert only that decoding *fails*; what a JS consumer
+/// receives is a different question, and it went unasserted until #662.
+/// ADR-0008 decides it — *"`DecodeError` maps to a thrown JS `Error` (variant
+/// name in the message)"* — so `catch (e) { e.message }`, the shape every JS
+/// caller writes, must read the variant. A string primitive satisfies neither
+/// half: it fails `instanceof Error` and its `.message` is `undefined`.
+#[wasm_bindgen_test]
+fn a_thrown_decode_error_is_a_js_error_carrying_the_variant_name() {
+    // `err()` rather than `unwrap_err()`: `DecodedFrame` is not `Debug`.
+    let thrown = decode_frame(b"\x00\x00\x00")
+        .err()
+        .expect("a bad magic must fail to decode");
+
+    assert!(
+        !thrown.is_string(),
+        "thrown as a string primitive: no .message, no .stack, `instanceof Error` false"
+    );
+    let err: js_sys::Error = thrown
+        .dyn_into()
+        .expect("the thrown value is an `instanceof Error`");
+    assert_eq!(String::from(err.message()), "BadMagic");
+    assert_eq!(String::from(err.name()), "Error");
+}
+
+/// The message is the variant's `Debug` form, so a variant that carries a
+/// payload keeps it — the one diagnostic a JS consumer gets for a version
+/// mismatch is the version it actually saw.
+#[wasm_bindgen_test]
+fn a_thrown_decode_error_keeps_its_variant_payload_in_the_message() {
+    let thrown = decode_frame(b"JT\x00")
+        .err()
+        .expect("wire version 0 must fail to decode");
+
+    let err: js_sys::Error = thrown
+        .dyn_into()
+        .expect("the thrown value is an `instanceof Error`");
+    assert_eq!(String::from(err.message()), "BadVersion(0)");
+}
+
 // --- #36: colour-helper parity (Rust encode_color = source of truth) ---
 
 #[wasm_bindgen_test]

@@ -66,6 +66,11 @@ grounds as unverified, which is unusual enough to be worth knowing before buildi
 - [workspace exclusion is gate invisibility](../invariant/workspace-exclusion-is-gate-invisibility.md)
   — this crate is outside the root workspace, so no `--workspace` or `--all` command reaches it;
   every gate it has is named for it by `--manifest-path`
+- [a wasm `Err` payload is thrown verbatim](../invariant/wasm-err-payload-is-thrown-verbatim.md) —
+  the two ways measurement can fail here (no 2d context, a `█` that rasterizes to no ink) are
+  reported to JS as **string primitives**, so a consumer catching them gets no `.message` and no
+  `.stack` — on the one failure whose whole value is the diagnostic, since there is nothing to
+  retry and nothing to fall back to
 
 ## Blast radius
 

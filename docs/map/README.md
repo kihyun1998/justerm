@@ -123,7 +123,8 @@ owns no detail of its own.
   [workspace exclusion is gate invisibility](invariant/workspace-exclusion-is-gate-invisibility.md) ·
   [a decoded frame's columns are getters](invariant/decoded-columns-are-getters.md) ·
   [a wire field narrower than the value it carries](invariant/wire-field-narrower-than-its-value.md) ·
-  [a pointer coordinate is bounded by the converter that produces it](invariant/pointer-coordinates-are-bounded-by-their-producer.md)
+  [a pointer coordinate is bounded by the converter that produces it](invariant/pointer-coordinates-are-bounded-by-their-producer.md) ·
+  [a wasm `Err` payload is thrown verbatim](invariant/wasm-err-payload-is-thrown-verbatim.md)
 
 Ask the questions instead of copying the answers (run from `docs/map/`):
 

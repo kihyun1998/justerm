@@ -83,6 +83,10 @@ one measured question, not the territory.
   beside and gate it with a bit" pattern the in-memory rows use. Its **rule 4 is this format's own**:
   the gating bit is not encodable, so `decode` reconstructs every presence bit from group membership,
   and a group added without a re-arm ships a value its gate hides
+- [a wasm `Err` payload is thrown verbatim](../invariant/wasm-err-payload-is-thrown-verbatim.md) —
+  `DecodeError`'s variant name is the entire diagnostic a JS consumer gets, so *how* it is thrown is
+  the whole channel and not a presentation detail. ADR-0008 decided it (a JS `Error`, variant name
+  in the message); the binding shipped a string primitive for eleven releases (#662)
 - [a wire field narrower than the value it carries](../invariant/wire-field-narrower-than-its-value.md)
   — the producer-side half of the *"`u32` iff viewport-bounded"* rule stated above. That rule picks a
   field's **width**; the note says who is obliged to keep the value inside it, and the answer is

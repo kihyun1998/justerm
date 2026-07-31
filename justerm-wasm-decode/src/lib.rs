@@ -599,13 +599,19 @@ pub fn build_palette(ansi: &[u32]) -> Vec<u32> {
 
 /// Decode a justerm wire buffer (ADR-0005) into a [`DecodedFrame`].
 ///
-/// On a malformed buffer this throws a JS `Error` carrying the `DecodeError`
-/// variant name — the validation a hand-written TS decoder would otherwise have
-/// to re-implement (and fuzz). Identical bytes yield a frame identical to the
-/// native `justerm_core::decode` (the build-parity test, #34 AC2).
+/// On a malformed buffer this throws a JS `Error` whose `message` is the
+/// `DecodeError` variant name (ADR-0008) — the validation a hand-written TS
+/// decoder would otherwise have to re-implement (and fuzz). A real `Error`, not
+/// a string primitive: a consumer's `catch (e) { e.message }` reads the variant
+/// rather than `undefined`, and the throw carries a stack (#662). Identical
+/// bytes yield a frame identical to the native `justerm_core::decode` (the
+/// build-parity test, #34 AC2).
 #[wasm_bindgen(js_name = decodeFrame)]
 pub fn decode_frame(bytes: &[u8]) -> Result<DecodedFrame, JsValue> {
-    let frame = decode(bytes).map_err(|e| JsValue::from_str(&format!("{e:?}")))?;
+    // `JsValue::from_str` would throw the *string* — `wasm_bindgen` throws an
+    // `Err` payload verbatim, so a string primitive arrives with no `.message`,
+    // no `.stack`, and `instanceof Error === false` (#662, measured).
+    let frame = decode(bytes).map_err(|e| js_sys::Error::new(&format!("{e:?}")))?;
     Ok(DecodedFrame {
         flat: flatten(&frame),
     })
