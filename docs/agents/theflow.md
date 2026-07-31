@@ -804,9 +804,13 @@ commit` always commits — a pipeline's status is `tail`'s). **Never move a
 threshold** (coverage floor / lint budget) to turn a build green.
 
 **Worktree / PR / CI:** **worktree, not a bare branch** — every substantive change
-starts with `git worktree add .claude/worktrees/<slug> -b <branch>` (the convention
-already on disk; the harness's worktree tool lands in the same place). Never edit on
-`master` in the main checkout. → `feat(<scope>): … (#issue)` (**no `Co-Authored-By`
+starts with `git worktree add ../justerm-wt-<issue> -b <branch>`, **beside** the main
+checkout. Never edit on `master` in the main checkout. The location is not cosmetic
+and it is not the default: `.claude/worktrees/<slug>` is where the harness's worktree
+tool lands and where older trees on disk still sit, and it silently breaks every
+`../` path in this document — see "What a worktree breaks" below for the failure and
+the entry check. Prefer the sibling; if something puts you under `.claude/worktrees/`
+anyway, read that section before using any `../` path here. → `feat(<scope>): … (#issue)` (**no `Co-Authored-By`
 trailer**) → squash PR (`Closes #issue`) → confirm CI jobs green:
 `test` / `wasm` / `renderer` / `renderer-proofs` / `web` / `web-e2e`. A PR touching
 `.github/workflows/**` also gets **`supply-chain`** (path-filtered, so it is absent
@@ -830,12 +834,18 @@ at the **worktree you are editing** (Step 4), and `cargo run -- scan --strict <j
 repo root>` takes the *worktree* root — pointed at nothing it reports "0 workflows
 scanned" plus a green "no violations".
 
-The cheap mitigation, taken on #649: **put the worktree beside the main checkout**
-(`git worktree add ../justerm-wt-<issue> <branch>`) rather than under
-`.claude/worktrees/`. Then every `../` in this document resolves to the same place it
-does from the main checkout, and the hazard above simply does not arise. Verify it
+**This is why the rule above puts the worktree beside the main checkout** (taken on
+#649): from `../justerm-wt-<issue>`, every `../` in this document resolves to the same
+place it does from the main checkout, and the hazard simply does not arise. Verify it
 once on entry — `git -C ../.refs/xterm.js rev-parse --short HEAD` against the pinned
 SHA in Step 1 — because the failure mode is silence, not an error.
+
+**That rule and this reason were separated by twenty-five lines, and for a while they
+disagreed**: the paragraph above still prescribed `.claude/worktrees/<slug>` while this
+one called it the thing to avoid. A reader who took the first instruction never reached
+the second, which is the exact shape of the failure it describes — a wrong answer with
+no error. Keep the prescription in one place and the reasoning here; if the location
+ever changes again, it changes in the paragraph above and this one only explains it.
 
 **The web E2E has the same shape, one layer up, and it bit on #649.**
 `playwright.config.ts` sets `reuseExistingServer: !process.env.CI`, so a `pnpm demo`
