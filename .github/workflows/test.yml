@@ -245,3 +245,14 @@ jobs:
           node justerm-wasm-decode/scripts/finish-pkg.mjs justerm-wasm-decode/pkg-node
           cargo run -q -p justerm-wasm-decode --example gen_smoke_frame -- justerm-wasm-decode/pkg-node/golden.jt
           node justerm-wasm-decode/scripts/smoke-decode.mjs justerm-wasm-decode/pkg-node justerm-wasm-decode/pkg-node/golden.jt
+      # The same path, but starting one layer earlier: the bytes come out of a real
+      # `Engine` rather than a hand-built `Frame`, so `feed -> frame -> encode ->
+      # decodeFrame` is observed as one composition (#657). The step above cannot see a
+      # group the engine stopped populating, because its fixture decides the contents.
+      # Carries the two columns nothing else proves end to end — a grapheme cluster and
+      # an OSC 8 hyperlink — and pins the span directory's stride-5 meaning, which no
+      # type can carry.
+      - name: Smoke (engine-produced frame)
+        run: |
+          cargo run -q -p justerm-wasm-decode --example gen_engine_frame -- justerm-wasm-decode/pkg-node/engine.jt
+          node justerm-wasm-decode/scripts/smoke-engine-frame.mjs justerm-wasm-decode/pkg-node justerm-wasm-decode/pkg-node/engine.jt
