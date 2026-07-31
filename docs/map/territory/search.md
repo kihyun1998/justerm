@@ -55,10 +55,18 @@ Nothing decides the match model, the smart-case rule, or the regex dialect.
 
 ## Reference behaviour
 
-**None.** `docs/agents/reference-facts.md` has no entry for search. The dialect is the sharp gap:
-`SearchOptions` is described as mirroring xterm.js's `ISearchOptions`, but that is unverified prose
-in a doc comment while the two grammars genuinely differ — exactly the shape of difference a pinned
-comparison exists to catch.
+- [Who may hand the engine a match, and what happens to its columns](../../agents/reference-facts.md#search-who-may-hand-the-engine-a-match-and-what-happens-to-its-columns-678-verified-2026-07-31)
+  — the first entry for this territory (#678). Two questions that had to be split: **no reference has
+  the intake at all** (xterm's addon takes a *term*, alacritty's and ghostty's matches are built
+  internally), so the guard is unarbitrated and routes to this repo's own precedent; while the
+  **projection converges exactly** — xterm's per-row split is `match_spans`'s model, continuation rows
+  and all, and carries *no* column bound, so an out-of-range column would not drop a row there but
+  stop its loop terminating. The reference is silent on the guard, not against it
+
+**Still open — the dialect.** `SearchOptions` is described as mirroring xterm.js's `ISearchOptions`,
+but that is unverified prose in a doc comment while the two grammars genuinely differ (`regex` crate
+vs JS `RegExp`) — exactly the shape of difference a pinned comparison exists to catch, and the entry
+above does not touch it.
 
 ## Cross-cutting invariants
 
@@ -91,3 +99,11 @@ comparison exists to catch.
   consumer must know exactly and can currently learn only from doc comments.
 - **The invalidate-vs-re-anchor rule is unrecorded.** It decides the coordinate-drift question for
   every future piece of pushed state and exists only as a comment inside `Term::resize`.
+- **…and it leaves a gap on the way back in, which #678 measured.** Invalidation drops what the
+  engine holds; it says nothing about what the consumer hands back *after*. A consumer that
+  re-designates by **position** (the shape #437 proposes, and the one `set_active_search_match`
+  exists for) can return a coordinate from before a resize, and nothing upstream re-clamps it —
+  invalidation is not a bound, because the value re-enters through a public intake rather than
+  surviving inside the engine. `match_spans` now bounds it at the projection (#678); what stays
+  unrecorded is whether an intake should *reject* such a match instead, which is #663's question
+  one seam over.

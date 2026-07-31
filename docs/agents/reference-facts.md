@@ -905,3 +905,59 @@ as `grid.cols()`. The completeness pass sharpened why that is safe: every row *i
 so the readers' `to.min(len)` is identically `to.min(cols)`. The clearance therefore rests on
 `len == cols` being an invariant of those two producers, not merely on no type happening to resolve
 against `abs_line(..).len()` today.
+
+## Search: who may hand the engine a match, and what happens to its columns (#678, verified 2026-07-31)
+
+The first entry for this territory — `docs/map/territory/search.md` recorded `## Reference behaviour`
+as **None**, and the gap mattered: justerm's search *intake* has no counterpart to compare against,
+while its *projection* has an exact one. Splitting those two questions is what this section is for.
+
+**Nobody else lets a consumer hand the engine a match.** justerm's does not exist by oversight —
+ADR-0017 puts the query policy in the consumer, so the consumer owning `Vec<Match>` and handing it
+back **is** the frame-mode design. The consequence is that the guard question is unarbitrated:
+
+| Fact | Reference | Site |
+|---|---|---|
+| The search addon's public surface takes a **term**, not a match — `findNext(term, searchOptions)` / `findPrevious(...)`; the addon runs the search itself | xterm.js | `addons/addon-search/src/SearchAddon.ts:101` |
+| `Match` is a `RangeInclusive<Point>` produced by `regex_search_left` / `regex_search_right` and consumed in the *app* layer; `alacritty_terminal` exposes no public method that takes one | alacritty | `alacritty_terminal/src/term/search.rs:21` |
+| Matches come from the `PageList` search iterator, same story | ghostty | `src/terminal/search.zig` |
+
+**The projection mechanism, by contrast, converges exactly — and the reference is the *less* guarded
+of the two.** xterm splits a wrapped match into per-row ranges with justerm's shape, continuation rows
+starting at column 0:
+
+```ts
+let currentCol = result.col;
+while (remainingSize > 0) {
+  const amountThisRow = Math.min(this._terminal.cols - currentCol, remainingSize);
+  decorationRanges.push([markerOffset, currentCol, amountThisRow]);
+  currentCol = 0;
+  remainingSize -= amountThisRow;
+}
+```
+
+| Fact | Reference | Site |
+|---|---|---|
+| The per-row split above — same model as `Term::match_spans`'s `left = if line == start_line { start_col } else { 0 }` | xterm.js | `addons/addon-search/src/DecorationManager.ts:123` |
+| …and **no bound on the column**: for `currentCol > cols` the width goes negative, `remainingSize` *grows*, and `while (remainingSize > 0)` stops terminating. The precondition is implicit, held only by the producer being the engine's own search | xterm.js | same |
+| Neither does the layer beneath it — `registerDecoration` checks only `marker.isDisposed`, not `x`/`width` | xterm.js | `src/common/services/DecorationService.ts:54` |
+| Its cell lookup inverts the loop instead: `forEachDecorationAtCell` walks **real cells** and tests membership (`x >= xmin && x < xmax`), so an out-of-range `x` matches no cell rather than indexing one | xterm.js | `src/common/services/DecorationService.ts:100` |
+
+**Direction, and why "move toward the reference" is empty here.** On the guard the reference is not a
+target: justerm degrades to a dropped row where xterm would hang, and it is protected only by not
+having the API. So the routing is theflow's tie-breaker for *API shape* — **this repo's own
+precedent**, which #660 and #671 established: a coordinate arriving from outside is bounded where it
+is first resolved. The reference still earns its place as a **negative result**: the model converged
+independently, and the silence on the bound is evidence that nobody has had to answer this, not that
+the answer is "leave it".
+
+**Where justerm bounds it, and why not where #671 did.** `match_spans`, the read site — `right` is
+already bounded in the same expression, so this restores a symmetry rather than adding a rule, and
+the write side is three intakes, one of which takes a whole `Vec`. #671's write-site argument (five
+`Side`-dependent `+ 1`s in one function) has no counterpart here: a `Match` is inclusive on both ends
+and gets no `+ 1` at all.
+
+**A cleared concern, with its condition.** The bound is `abs_line(line).len() - 1`, which is the
+**grid** width rather than the printed text, because both row producers resize every row to
+`grid.cols()`. Same condition as the selection clearance above: it holds while `len == cols` is an
+invariant of those producers, not merely while no caller happens to notice.

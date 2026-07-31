@@ -185,6 +185,33 @@ impl Term {
     /// Project a match onto the current viewport as inclusive-column spans, one
     /// per visible row (off-screen parts dropped) — for the renderer to
     /// highlight, like `selection_range`.
+    ///
+    /// **Both column ends are bounded here, and the `left` half is not an accident of
+    /// symmetry (#678).** A [`Match`]'s columns are *consumer-supplied* by design:
+    /// [`Term::set_active_search_match`] documents taking one the caller assembled
+    /// outside the engine's own result set (the past-cap path, #436), and `Match`'s
+    /// fields are public. So the usual guarantee — "the engine found it, therefore it is
+    /// in range" — does not hold on this path, and only the *index* form
+    /// ([`Term::set_active_search_highlight`]) keeps it by construction.
+    ///
+    /// Left unbounded, a start column past the last one made `right >= left` fail on the
+    /// match's **own** row and dropped it, so a multi-row match lost its first row while
+    /// the rest painted — the shape that reads as "the highlight is fine" at a glance.
+    /// #671 removed the identical asymmetry from `selection_range`; until then the two
+    /// projections shared it, which is why neither looked like the outlier.
+    ///
+    /// Bounded **here** rather than at the three intakes, unlike #671's write-site clamp:
+    /// `right` is already bounded in this same expression, so this restores a symmetry
+    /// instead of adding a rule, and one of the intakes takes a whole `Vec`. The bound is
+    /// the row's own extent, which is the *grid* width — every row is resized to
+    /// `grid.cols()` by both row producers — so a short line does not shrink a match that
+    /// reaches past its text.
+    ///
+    /// No reference arbitrates the guard: none of the three has this intake, and xterm's
+    /// otherwise byte-identical per-row split (`_createResultDecorations`, continuation
+    /// rows starting at column 0) would not merely drop a row — its
+    /// `Math.min(cols - currentCol, remainingSize)` goes negative and the loop stops
+    /// terminating. The model converges; the bound is this repo's own (`reference-facts`).
     pub fn match_spans(&self, m: &Match) -> Vec<SelectionSpan> {
         let rows = self.grid.rows();
         let top = self.scrollback.len() - self.display_offset;
@@ -198,7 +225,11 @@ impl Term {
                 break;
             }
             let last = self.abs_line(line).len().saturating_sub(1);
-            let left = if line == m.start_line { m.start_col } else { 0 };
+            let left = if line == m.start_line {
+                m.start_col.min(last)
+            } else {
+                0
+            };
             let right = if line == m.end_line {
                 m.end_col.min(last)
             } else {
