@@ -48,9 +48,18 @@ machine that decides what the renderer does in between.
 
 ## Reference behaviour
 
-**None** in `docs/agents/reference-facts.md`. Whether either reference handles context loss, and how,
-has never been checked — and one of them (alacritty) is not a browser renderer at all, so the
-comparison set for this territory is smaller than for the rest of the crate.
+One question has been checked; the rest of the territory has not. alacritty and ghostty are not
+browser renderers at all, so the comparison set here is smaller than for the rest of the crate — that
+part is unchanged.
+
+- [Resizing while the GL context is lost](../../agents/reference-facts.md#resizing-while-the-gl-context-is-lost--the-reference-never-asks-the-question-639-verified-2026-08-03)
+  — a **negative** result, and the useful kind: xterm's resize handler runs unguarded through a loss,
+  which reads as permission until you see *why* it can. It never asks the driver what it granted, so
+  the read that a dead context answers with 0 does not exist there. Absence of a guard is not
+  evidence about the guard
+
+Still unchecked: whether either reference notifies on a never-restored context beyond xterm's timeout
+(the #327 comparison), and what any of them does with GPU resources it cannot rebuild.
 
 ## Cross-cutting invariants
 
