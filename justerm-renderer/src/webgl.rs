@@ -1209,11 +1209,15 @@ impl JustermRenderer {
         self.line_height = line_height;
         self.recompute_cell();
 
-        // `resize` reads `drawingBufferWidth` back (#339). On a lost context that is 0, so the
-        // adopt-what-fits loop shrinks the grid to 1x1 — and `restore` then rebuilds the buffer from
-        // that clobbered grid, so the terminal comes back one cell wide. Keep the policy, defer both
-        // the re-bake and the resize: `restore` re-derives everything from the stored grid (#269).
-        // `set_device_pixel_ratio` has had this guard all along; the asymmetry was the tell.
+        // Keep the policy, defer the re-bake: an atlas built on a dead context comes back
+        // invalidated, so the work would be burned and then committed empty. `restore` re-derives
+        // everything — cell, atlas and buffer — from the surviving policy and the stored grid (#269).
+        // Note that `recompute_cell` above has already run, so the *cell* moves immediately while
+        // the atlas and the buffer wait; that ordering is a contract the consumer's docs describe.
+        //
+        // This used to be the resize's guard too, and said so: `resize` reads `drawingBufferWidth`
+        // back (#339), which is 0 while lost, so the adopt-what-fits loop shrank the grid to 1x1.
+        // `resize` guards itself as of #639, so returning here is now about the re-bake alone.
         if self.ctx_loss.state.borrow().is_lost() {
             return;
         }
@@ -1393,6 +1397,9 @@ impl JustermRenderer {
 
         // 4. The loss reset the drawing-buffer size and the viewport; re-derive them from the grid at
         //    the (possibly new) DPR, then refill the buffer so `render` draws the pre-loss frame.
+        //    This is also where a `resize` that arrived *during* the loss gets its adopt-what-fits
+        //    pass: it committed the grid and skipped the read-back, leaving that to this call (#639).
+        //    Nothing extra is stored for it — the grid it committed IS `grid_size`.
         let (cols, rows) = self.grid_size;
         self.resize(cols, rows);
         self.upload_instances();
@@ -1454,6 +1461,15 @@ impl JustermRenderer {
     /// is displayed at device px — twice its intended size on a Retina display.
     ///
     /// The atlas survives; a DPR change re-derives the buffer from this grid.
+    ///
+    /// **While the GL context is lost, the grid is adopted but not verified** (#639). A resize can
+    /// land at any moment in a loss window, and a consumer has no obligation to notice — so this
+    /// takes the grid, sizes the canvas and reports it back through [`cols`](Self::cols) /
+    /// [`cssWidth`](Self::css_width) as usual, and defers only the one step that needs a live
+    /// context: reading the drawing buffer back to adopt what actually fits. `restore` re-derives
+    /// the buffer from the stored grid, which is where that check happens instead. The consequence
+    /// worth knowing: a clamp is normally visible in `cols`/`rows` the instant this returns, but a
+    /// resize deferred this way can still be clamped at restore time, with no signal.
     pub fn resize(&mut self, cols: u32, rows: u32) {
         // A grid must have at least one cell: `grid_px` floors the *buffer* to 1, and letting
         // `grid_size` keep a 0 would break `size == grid_px(grid_size, cell_size)`.
@@ -1497,6 +1513,29 @@ impl JustermRenderer {
             self.canvas.set_width(dw as u32);
             self.canvas.set_height(dh as u32);
 
+            // A lost context reports a 0x0 drawing buffer, so the read-back below would "adopt"
+            // `cells_that_fit(0, cell)` — 1 — on both axes, and `restore` would then rebuild from
+            // that 1x1 grid, leaving the terminal one cell wide for good. Measured before this
+            // guard, at dpr 2: `resize(10, 3)` while lost gave `[1, 1]`, still `[1, 1]` after the
+            // restore, and a CSS box of a single cell (#639). Nothing throws, and until #579 a web
+            // consumer cannot even see the loss, so it has no way to suppress its own re-fit.
+            //
+            // So commit the grid the caller asked for and defer only the part that needs a live
+            // context — *adopting what fits*. There is no target to remember: `restore` already
+            // re-derives the buffer from `grid_size` (#269), which runs this loop again on a live
+            // context and clamps then, if the browser still will not grant it. The one thing that
+            // buys is worth stating, because it is the deferral's price: a clamp discovered at
+            // restore time moves `grid_size`/`size` with no signal to the consumer, where a clamp
+            // on a live context is visible in `cols`/`rows` the moment `resize` returns.
+            //
+            // The four other entry points that resize something — `set_device_pixel_ratio`,
+            // `set_font_size`, `set_font_family`, `adopt_spacing` — each defer in the same shape,
+            // and they reach this function only from behind their own guards, so a lost context
+            // here always means the *consumer* called `resize`.
+            if self.ctx_loss.state.borrow().is_lost() {
+                break;
+            }
+
             let (bw, bh) = (
                 self.raw_gl.drawing_buffer_width(),
                 self.raw_gl.drawing_buffer_height(),
@@ -1538,6 +1577,10 @@ impl JustermRenderer {
     /// later DPR drop would shrink the cell enough for the original to fit. That is deliberate — the
     /// consumer owns the grid (ADR-0017) and recomputes it from its own box, as xterm's `FitAddon`
     /// does — but it is not obvious from the field alone.
+    ///
+    /// One case reports a grid that has **not** been checked against the buffer yet: a
+    /// [`resize`](Self::resize) that arrived while the context was lost (#639). It is the grid that
+    /// was asked for, and the restore may still clamp it.
     #[wasm_bindgen(js_name = cols)]
     pub fn cols(&self) -> u32 {
         self.grid_size.0

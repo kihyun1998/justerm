@@ -29,6 +29,16 @@ machine that decides what the renderer does in between.
 - **Loss destroys GPU state, not the CPU-side model.** The persistent dense grid in the
   [frame adapter](frame-adapter.md) survives, which is what makes a restore a re-upload rather than a
   re-send from the engine.
+- **Every entry point that changes the geometry takes the request and defers the GPU work.** Five of
+  them can arrive mid-loss — the DPR, the font size, the font family, the spacing policy and the
+  resize — and none may reject the call, because a consumer cannot see the loss to hold it back
+  (that surface is unwired, #579). So each stores what it was given and lets `restore` re-derive
+  from it; nothing is queued, because the stored value *is* the queue. The four setters skip an
+  atlas re-bake that a dead context would return invalidated; `resize` skips reading the drawing
+  buffer back, which on a dead context answers 0 and would floor the grid to one cell (#639).
+- **What "defer" costs, stated once because each site pays it.** A value the consumer normally reads
+  back synchronously — a clamped grid, an atlas-shrunk cell — is settled at restore instead, and the
+  consumer is not told. That is the same missing signal as #579, reached from the other side.
 
 ## Code
 
@@ -58,6 +68,8 @@ comparison set for this territory is smaller than for the rest of the crate.
   be rebuilt, not merely re-bound
 - [GPU upload](gpu-upload.md) — the "last uploaded" state it diffs against is invalidated by a loss,
   so a restore has to force a full upload rather than a diff
+- [cell geometry](cell-geometry.md) — every deferring entry point above is one of its setters or the
+  resize, so a change to what derives the cell changes what a loss window has to hold
 - [widget lifecycle](widget-lifecycle.md) — the consumer sets the timeout and reacts to the callback
 
 ## Known holes / open
