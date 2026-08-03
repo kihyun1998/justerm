@@ -361,6 +361,32 @@ describe("SearchController — invalid regex clears the stale paint", () => {
     expect(cleared).toBe(1);
     expect(ctrl.isInvalidRegex()).toBe(true);
   });
+
+  // The window the capability check must actually be about. A backend that
+  // adopted #437/#441 and not yet #687 has `anchoredIndex` and no
+  // `clearHighlights` — which is EVERY existing consumer the moment this ships,
+  // not a hypothetical. Gating on the anchor ("only an anchoring backend has an
+  // anchor to lose") is the plausible wrong predicate: it correlates everywhere
+  // except here, where it calls a method that is not there. The test above
+  // cannot see it — its port has neither method, so both predicates agree.
+  it("does not mistake having an anchor for having the narrower verb", async () => {
+    let cleared = 0;
+    const port = {
+      search: () => Promise.resolve(3),
+      showMatch: () => Promise.resolve(),
+      anchoredIndex: () => Promise.resolve(undefined),
+      clear: () => {
+        cleared++;
+      },
+    };
+    const ctrl = new SearchController(port, { isValidRegex: validatorRejecting("foo(") });
+    await ctrl.search("foo", { regex: true });
+
+    await expect(ctrl.search("foo(", { regex: true })).resolves.toBeUndefined(); // must not throw
+
+    expect(cleared).toBe(1);
+    expect(ctrl.isInvalidRegex()).toBe(true);
+  });
 });
 
 describe("SearchController — debounce contracts", () => {
