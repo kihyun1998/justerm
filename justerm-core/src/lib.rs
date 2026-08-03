@@ -39,6 +39,7 @@ pub use serialize::{
 
 pub use term::{
     CommandLine, DEFAULT_WORD_SEPARATORS, Hyperlink, MAX_COLUMNS, MAX_ROWS, MIN_COLUMNS, Term,
+    TrackedId,
 };
 
 use vte::Parser;
@@ -467,6 +468,40 @@ impl Engine {
     /// for an unknown or already-disposed id.
     pub fn remove_marker(&mut self, id: MarkerId) {
         self.term.remove_marker(id);
+    }
+
+    /// Track absolute buffer `(line, col)`, returning a stable id (#691): the
+    /// engine keeps the position on the content that is there now, through
+    /// scrollback eviction, region scrolls and reflow.
+    ///
+    /// This is what an absolute coordinate held *outside* the engine needs to stay
+    /// meaningful — a search anchor carrying an emphasis across a re-search is the
+    /// case it exists for. The engine renumbers this space (evicting the oldest
+    /// history line shifts every index down by one), and it renumbers it in the
+    /// consumer's absence, so a remembered `Match` silently comes to name
+    /// different text.
+    ///
+    /// Mechanism only: which position is worth remembering, and what to do once it
+    /// is gone, stay with the consumer (ADR-0017). Release it with
+    /// [`Engine::untrack_point`] — the engine cannot know when you are done.
+    pub fn track_point(&mut self, line: usize, col: usize) -> TrackedId {
+        self.term.track_point(line, col)
+    }
+
+    /// Where the point registered as `id` sits now, or `None` once its content has
+    /// left the buffer (also `None` for an unknown or released id) (#691).
+    ///
+    /// An out-of-range coordinate is clamped rather than rejected, at both ends
+    /// (ADR-0026 D2/D3): the line into the buffer's range, the column to the grid
+    /// width.
+    pub fn tracked_point(&self, id: TrackedId) -> Option<(usize, usize)> {
+        self.term.tracked_point(id)
+    }
+
+    /// Release a tracked point (#691). A no-op for an unknown or already-released
+    /// id.
+    pub fn untrack_point(&mut self, id: TrackedId) {
+        self.term.untrack_point(id);
     }
 
     /// The OSC 133 shell-integration command marks in buffer order — `(id,

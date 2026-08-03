@@ -42,6 +42,10 @@ mod markers;
 /// detection and the a11y mirror. The last read surface to leave this file under #584.
 mod logical;
 
+/// Tracked points (#691) — absolute positions the engine keeps on their content for a
+/// holder that lives outside it, and the anchor fixups the write path drives.
+mod tracked;
+
 /// Owns the authoritative screen state and applies VT actions to it.
 pub struct Term {
     grid: Grid,
@@ -236,6 +240,13 @@ pub struct Term {
     normal_markers: Vec<Marker>,
     alt_markers: Vec<Marker>,
     next_marker_id: u32,
+    /// Positions the engine keeps on their content for a holder that lives
+    /// *outside* it (#691). Split per buffer and re-anchored by the same fixups as
+    /// the markers beside them; the difference is that nothing here reaches a
+    /// frame — a tracked point is answered on request, never projected.
+    normal_tracked: Vec<TrackedPoint>,
+    alt_tracked: Vec<TrackedPoint>,
+    next_tracked_id: u32,
     /// Cursor state saved by DECSC (ESC 7), restored by DECRC (ESC 8). A slot
     /// separate from `saved_cursor` (which is the alt-screen save). Defaults to
     /// home/default so a DECRC with no prior DECSC restores a sane state.
@@ -506,6 +517,23 @@ struct Marker {
     kind: MarkerKind,
 }
 
+/// A stable handle to a tracked buffer position (#691), handed out by
+/// [`Term::track_point`].
+///
+/// It is deliberately **not** a [`MarkerId`]: a marker is a decoration anchor and
+/// rides two frame groups, so every marker a consumer registers is something the
+/// renderer paints. A tracked point is private to whoever asked for it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct TrackedId(pub(crate) u32);
+
+/// One tracked position: an absolute buffer `(line, col)` the write path keeps on
+/// its content (#691). The element type of `normal_tracked` / `alt_tracked`.
+struct TrackedPoint {
+    id: TrackedId,
+    line: usize,
+    col: usize,
+}
+
 /// One executed shell command recovered from OSC-133 marks (#166), for
 /// screen-reader command navigation. The consumer jumps prompt-to-prompt over
 /// these and announces `command` + a success/fail signal from `exit`.
@@ -606,6 +634,9 @@ impl Term {
             normal_markers: Vec::new(),
             alt_markers: Vec::new(),
             next_marker_id: 0,
+            normal_tracked: Vec::new(),
+            alt_tracked: Vec::new(),
+            next_tracked_id: 0,
             decsc: SavedCursor::default(),
             charsets: [Charset::Ascii; 4],
             gl: 0,
@@ -1342,11 +1373,20 @@ impl Term {
             // and re-anchor on the new base afterward — the primary scrollback below may rewrap and
             // change length even when the alt grid does not move at all.
             let old_base = scrollback.len();
-            let alt_pts: Vec<(usize, usize)> = self
+            let mut alt_pts: Vec<(usize, usize)> = self
                 .alt_markers
                 .iter()
                 .map(|m| (m.line - old_base, m.col))
                 .collect();
+            // Alt-scoped tracked points are stored on the same `base + alt_row`
+            // frame as the alt markers, so they convert and come back the same way
+            // (#691).
+            let alt_tracked_off = alt_pts.len();
+            alt_pts.extend(
+                self.alt_tracked
+                    .iter()
+                    .map(|p| (p.line.saturating_sub(old_base), p.col)),
+            );
             let alt = self.grid.take_lines();
             let r_alt = reflow_pane(
                 alt,
@@ -1372,11 +1412,16 @@ impl Term {
             // extraction (#166), and discarding it here truncated the recorded command for any
             // resize taken while a full-screen app was up. The primary branch below has always
             // passed and restored both; this one is the sibling that did not.
-            let marker_pts: Vec<(usize, usize)> = self
+            let mut marker_pts: Vec<(usize, usize)> = self
                 .normal_markers
                 .iter()
                 .map(|m| (m.line, m.col))
                 .collect();
+            // Primary-scoped tracked points anchor primary content too, so they
+            // reflow with this pane even though the alt screen is the active one
+            // (#691) — the same reason the markers above do.
+            let tracked_off = marker_pts.len();
+            marker_pts.extend(self.normal_tracked.iter().map(|p| (p.line, p.col)));
             let primary = self.alt_grid.take_lines();
             let r = reflow_pane(
                 primary,
@@ -1392,6 +1437,23 @@ impl Term {
                 m.line = r.extras[i].0.saturating_sub(r.evicted);
                 m.col = r.extras[i].1;
             }
+            // Released rather than clamped when the reflow evicted its line — see
+            // the primary-active branch for why the two loops differ (#691).
+            let mut ti = 0;
+            let evicted = r.evicted;
+            let extras = &r.extras;
+            self.normal_tracked.retain_mut(|p| {
+                let (line, col) = extras[tracked_off + ti];
+                ti += 1;
+                match line.checked_sub(evicted) {
+                    Some(line) => {
+                        p.line = line;
+                        p.col = col;
+                        true
+                    }
+                    None => false,
+                }
+            });
             // The alt half lives in a different frame from the primary one above, and adding the
             // two was the defect: `extras` count from the top of the alt pane's own history, and
             // the alt screen **has** no history — every row the shrink pushed off the top is gone,
@@ -1432,6 +1494,24 @@ impl Term {
             for id in alt_disposed {
                 self.events.push(TermEvent::MarkerDisposed(id));
             }
+            // The alt half's tracked points, on the alt marker's rule: a row the
+            // shrink pushed off an unarchived screen is gone, so the point is
+            // released rather than relocated (#691).
+            let mut ai = 0;
+            let alt_extras = &r_alt.extras;
+            let alt_evicted = r_alt.evicted;
+            self.alt_tracked.retain_mut(|p| {
+                let (line, col) = alt_extras[alt_tracked_off + ai];
+                ai += 1;
+                match line.checked_sub(alt_evicted) {
+                    Some(row) if row < rows => {
+                        p.line = new_base + row;
+                        p.col = col;
+                        true
+                    }
+                    _ => false,
+                }
+            });
         } else {
             // Active = primary (cursor, scrollback); inactive = alt. The selection
             // anchors (absolute) reflow alongside the cursor so they keep their
@@ -1452,6 +1532,10 @@ impl Term {
             // reads its own reflowed slot back from `extras` (#118).
             let mut pts = sel_pts.clone();
             pts.extend(self.normal_markers.iter().map(|m| (m.line, m.col)));
+            // Tracked points ride after the markers, reading their own slots back
+            // by the same offset idiom (#691).
+            let tracked_off = pts.len();
+            pts.extend(self.normal_tracked.iter().map(|p| (p.line, p.col)));
 
             let primary = self.grid.take_lines();
             let r = reflow_pane(primary, scrollback, self.cursor.point(), &pts, dims);
@@ -1479,6 +1563,28 @@ impl Term {
                 m.line = r.extras[marker_off + i].0.saturating_sub(r.evicted);
                 m.col = r.extras[marker_off + i].1;
             }
+            // A point whose reflowed line fell inside the evicted prefix has left
+            // the buffer, so it is released rather than clamped to line 0 (#691) —
+            // deliberately unlike the marker loop above, which saturates. A marker
+            // that lands on the wrong line still paints something the consumer can
+            // see and correct; a tracked point is *asked* for a position, and
+            // answering with content the caller never anchored to is the exact
+            // failure this whole module exists to remove.
+            let mut i = 0;
+            let evicted = r.evicted;
+            let extras = &r.extras;
+            self.normal_tracked.retain_mut(|p| {
+                let (line, col) = extras[tracked_off + i];
+                i += 1;
+                match line.checked_sub(evicted) {
+                    Some(line) => {
+                        p.line = line;
+                        p.col = col;
+                        true
+                    }
+                    None => false,
+                }
+            });
 
             let alt = self.alt_grid.take_lines();
             let r = reflow_pane(
@@ -1759,6 +1865,7 @@ impl Term {
                     let below = self.scrollback.len() + self.scroll_bottom + 1;
                     self.selection_shift_below_margin(below);
                     self.markers_shift_below_margin(below);
+                    self.tracked_shift_below_margin(below);
                     self.invalidate_search_highlights();
                     let evicted = self.grid.row_owned(0);
                     self.shift_region(
@@ -1792,6 +1899,9 @@ impl Term {
                     // Markers are persistent anchors: shift them down with the
                     // index, disposing any whose line was the evicted one (#118).
                     self.markers_evict_oldest();
+                    // Same obligation for a position held outside the engine — the
+                    // one holder in this space that had no fixup at all (#691).
+                    self.tracked_evict_oldest();
                     if self.display_offset > 0 {
                         // Scrolled up: evicting the oldest line advanced the
                         // viewport, so it must be repainted (the "frozen while
@@ -1816,6 +1926,7 @@ impl Term {
                 // *alt* marks and leaves the frozen primary list untouched — no
                 // guard needed. `markers_rotate_region` routes via `markers_mut`.
                 self.markers_rotate_region(base + self.scroll_top, base + self.scroll_bottom, true);
+                self.tracked_rotate_region(base + self.scroll_top, base + self.scroll_bottom, true);
                 self.invalidate_search_highlights();
                 self.shift_region(
                     self.scroll_top,
@@ -1888,6 +1999,10 @@ impl Term {
         for m in self.alt_markers.drain(..) {
             self.events.push(TermEvent::MarkerDisposed(m.id));
         }
+        // Same fate for alt-scoped tracked points, and for the same reason: the alt
+        // buffer is not archived, so leaving it destroys what they named (#691).
+        // No announcement — `tracked_point` answers `None` on the next ask.
+        self.alt_tracked.clear();
         std::mem::swap(&mut self.grid, &mut self.alt_grid);
         self.on_alt = false;
         self.display_offset = 0; // return to the primary at its bottom
@@ -1925,6 +2040,7 @@ impl Term {
             // Rotate the active buffer's markers (#187) — alt-scoped on the alt
             // screen, so no guard (see `linefeed`).
             self.markers_rotate_region(base + self.scroll_top, base + self.scroll_bottom, false);
+            self.tracked_rotate_region(base + self.scroll_top, base + self.scroll_bottom, false);
             self.invalidate_search_highlights();
             self.shift_region(self.scroll_top, self.scroll_bottom, true, false, false);
         } else if self.cursor.row > 0 {
@@ -1988,10 +2104,18 @@ impl Term {
         // this reset rebuilds `Term` wholesale; the references never face the question,
         // holding the equivalent outside the object RIS clears (#545).
         let word_separators = std::mem::take(&mut self.word_separators);
+        // Tracked points die here with everything else, but their *id counter*
+        // rides across (#691). They have no disposal event — a holder learns its
+        // point is gone by being told `None` — so a reissued id would answer a
+        // stale ask with a *different* point's position, silently. The markers
+        // above take the other route and announce; the counter is what a pull-only
+        // handle has instead.
+        let next_tracked_id = self.next_tracked_id;
         *self = Term::with_scrollback(cols, rows, self.scrollback_limit);
         self.replies = replies;
         self.events = events;
         self.word_separators = word_separators;
+        self.next_tracked_id = next_tracked_id;
         self.mark_fully_damaged();
     }
 
@@ -3256,6 +3380,7 @@ impl Term {
             // move under it. The code was right; only its stated reason was wrong.
             self.selection_rotate_region(base + top, base + bottom, !down);
             self.markers_rotate_region(base + top, base + bottom, !down);
+            self.tracked_rotate_region(base + top, base + bottom, !down);
         }
         self.invalidate_search_highlights();
         // BCE-fill the n exposed lines (the primitives blank to default).
