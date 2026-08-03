@@ -113,7 +113,11 @@ impl Term {
             // Trim trailing blank padding (only a logical line's tail can be blank), so a regex `$`
             // anchor or a greedy `.*` doesn't run into the grid's blank cells — mirrors
             // `viewport_logical_lines`'s trim (#314 Lens 1). Keeps hay/pos in lockstep.
-            while hay.last().is_some_and(|c| c.is_whitespace()) {
+            // The predicate is `' '` and not `is_whitespace()` (#685): this decides where the
+            // haystack *ends*, so a property test moved `$` onto the wrong column as well as
+            // making a written U+00A0 unfindable. See
+            // `docs/map/invariant/only-u0020-can-be-padding.md`.
+            while hay.last().is_some_and(|c| *c == ' ') {
                 hay.pop();
                 pos.pop();
             }

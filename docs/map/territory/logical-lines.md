@@ -28,10 +28,11 @@ context contract is.
 - **`text` does *not* match xterm's `translateToString(true)`** — the claim was checked against the
   pinned tree in #601 and only the spacer skip survives. The **wrap join** is absent there
   (`translateToString` spans one `BufferLine`; xterm pairs it with `Buffer.getWrappedRangeForLine`),
-  and the **trim differs**: xterm's `getTrimmedLength` scans for content, so a *printed* trailing
-  space is kept, while `text.trim_end()` cannot tell one from a blank cell and drops both. A
-  consumer's URL regex is still tuned against this shape — the shape was just never the one the
-  sentence named.
+  and the **trim differs** — though on a narrower case since #685. xterm's `getTrimmedLength` scans
+  for content, so any *printed* trailing space is kept; justerm's trim used to be the Unicode
+  `White_Space` property and now removes `' '` only, so the two still disagree on a printed **ASCII**
+  space and no longer on a printed U+00A0 / U+3000. A consumer's URL regex is still tuned against
+  this shape — the shape was just never the one the sentence named.
 - **`row` is `i32`, and out-of-range is deliberate.** A row outside `0..rows` is off-screen wrapped
   context — a line that wraps in from above the top, or out past the bottom. It is *present* so that a
   URL spanning the viewport edge still matches; the consumer highlights only the in-range cells.
@@ -73,6 +74,8 @@ recorded SHA; a paraphrase drops the pin).
 
 - [alt-screen absolute-index floor](../invariant/alt-screen-buffer-floor.md) — the wrap-run walk must
   floor on alt. **This was site 1 of 3** (#113): the first place the fact was ever found
+- [only U+0020 can be a row's padding](../invariant/only-u0020-can-be-padding.md) — the trailing trim
+  here is its own implementation, and it owes the `text`/`cells` 1:1 property through the trim
 
 ## Blast radius
 
@@ -88,8 +91,11 @@ recorded SHA; a paraphrase drops the pin).
 ## Known holes / open
 
 - **Two joiners, one rule.** `viewport_logical_lines` and `selection_text` both join wrapped rows and
-  both drop the wide-wrap artefact, independently. Nothing states they must agree, and nothing tests
-  that they do.
+  both drop the wide-wrap artefact, independently. Nothing states they must agree. **Partly closed
+  by #685** — `justerm-core/tests/written_whitespace.rs` now asserts every joiner against the same
+  rule, but only for the *trim*; the wrap join and the artefact drop are still untested for agreement,
+  and the count was in fact **four**, not two (search's haystack and the block arm each join their
+  own way).
 - **The off-screen-context contract is undocumented outside the field's doc comment.** That a `row`
   may be negative or ≥ `rows` is a sharp edge on a public type with no record behind it.
 - **The soft-wrap run walk is intentionally unbounded** — scrollback-bounded rather than capped, so a

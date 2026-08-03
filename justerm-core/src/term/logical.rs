@@ -79,7 +79,7 @@ impl Term {
             }
             // Trim trailing blanks (only the last row can have them), keeping
             // `text` and `cells` in lockstep.
-            let trimmed = text.trim_end();
+            let trimmed = text.trim_end_matches(' ');
             map.truncate(trimmed.chars().count());
             text.truncate(trimmed.len());
             if !text.is_empty() {

@@ -125,7 +125,8 @@ owns no detail of its own.
   [a wire field narrower than the value it carries](invariant/wire-field-narrower-than-its-value.md) ·
   [a pointer coordinate is bounded by the converter that produces it](invariant/pointer-coordinates-are-bounded-by-their-producer.md) ·
   [a wasm `Err` payload is thrown verbatim](invariant/wasm-err-payload-is-thrown-verbatim.md) ·
-  [RIS keeps configuration and drops coordinates](invariant/ris-keeps-configuration-drops-coordinates.md)
+  [RIS keeps configuration and drops coordinates](invariant/ris-keeps-configuration-drops-coordinates.md) ·
+  [only U+0020 can be a row's padding](invariant/only-u0020-can-be-padding.md)
 
 Ask the questions instead of copying the answers (run from `docs/map/`):
 

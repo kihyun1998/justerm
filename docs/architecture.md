@@ -126,7 +126,7 @@ translation layer here is re-solving a solved problem.
 
 Engine-owned. Type = char / word / line / **block**; anchor = point + **side (left/right)**.
 `selection_range()` → highlight; `selection_text()` → copy text (respects type, wide chars,
-wrapped-line joining, trailing-whitespace trim, **across scrollback** — the engine holds all cells).
+wrapped-line joining, trailing-**padding** trim, **across scrollback** — the engine holds all cells).
 **Which characters separate words is the consumer's, not the engine's** (`set_word_separators`,
 default `DEFAULT_WORD_SEPARATORS`) — the walk is buffer-wide mechanism, the set is policy, per
 ADR-0017. Two properties of that seam are contract rather than detail: `' '` is forced into any
@@ -589,7 +589,11 @@ Z"`, and a search across the wrap went from 1 hit to 0). It now lives on the
 - **Selection text vs highlight need different grains.** `selection_text` joins soft-wrapped rows into
   one logical line and trims trailing blanks *only at the logical end* (spaces at a wrap boundary are
   real content), skips `WIDE_CHAR_SPACER` cells (emit the lead glyph once), and ends hard lines with
-  `\n`; Block extracts each row independently. `selection_range` instead projects onto *viewport* rows
+  `\n`; Block extracts each row independently. **"Blank" there means the codepoint `' '` and nothing
+  else** — a blank cell packs U+0020, so that is the whole of what can be padding; a Unicode
+  `White_Space` predicate additionally deletes a space the application printed, which is what it did
+  until #685 (see `docs/map/invariant/only-u0020-can-be-padding.md`). The Block arm trims separately
+  and is bound by the same rule. `selection_range` instead projects onto *viewport* rows
   (clipping off-screen parts) as inclusive column spans for the renderer. [#5]
 - **The soft-wrap run walk is intentionally unbounded (scrollback-bounded), not capped.** `search`,
   `viewport_logical_lines`, and word-selection assemble a `WRAPLINE` run into one logical line with **no

@@ -396,7 +396,7 @@ impl Term {
                     for col in from..hi {
                         self.append_cell(&self.grid, &mut seg, line, col);
                     }
-                    out.push_str(seg.trim_end());
+                    out.push_str(seg.trim_end_matches(' '));
                     if line != line1 {
                         out.push('\n');
                     }

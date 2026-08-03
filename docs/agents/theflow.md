@@ -378,9 +378,20 @@ scp justerm-vm:/tmp/capout/'*.raw' "$SCRATCH/"
   appears under the box locale and vanishes under `LC_ALL=C`. So "just pin it to
   C" is the wrong repair: it would strip precisely the Unicode material this
   engine exists to get right. Pin `LC_ALL=C.UTF-8` next to `TERM`.
-- **`expect` is absent** (installable — `expect.x86_64` sits in
-  `rhel-9-for-x86_64-appstream-rpms`, no EPEL needed). Without it
-  `capture-softwrap.sh`'s real-`less` half silently writes a 0-byte file.
+- ~~**`expect` is absent**~~ — **installed since, verified 2026-08-03** (`/usr/bin/expect`, alongside
+  `/usr/bin/script` and `/usr/bin/less`). It came from `expect.x86_64` in
+  `rhel-9-for-x86_64-appstream-rpms`, no EPEL needed. The consequence is what the entry was for and
+  still applies to a *fresh* box: without it `capture-softwrap.sh`'s real-`less` half silently writes
+  a 0-byte file. Check `command -v script expect less` on entry rather than trusting this line — the
+  box is mutable and this sentence is not.
+- **A capture proves nothing unless its golden can fail, and which golden that is takes deciding.**
+  `check_capture` pins two surfaces, and for a given fix usually only *one* of them can move. #685's
+  trim lives in text extraction, so the char grid was green in both states by construction — and the
+  logical-lines golden was too, until `logical_lines`'s own `trim_end()` normalisation was narrowed
+  to match the rule under test. **The harness had the same defect as the engine**, so the capture
+  would have been checked in green, unable to fail, while reading as new coverage. Before recording,
+  ask which golden can observe the change; after recording, turn the fix off and confirm that golden
+  goes red and the other does not.
 
 ## Step 5 — adversarial completeness pass (one lens, both corpora)
 

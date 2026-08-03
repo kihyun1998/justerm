@@ -117,6 +117,9 @@ at a recorded SHA; a paraphrase drops the pin).
 - [RIS keeps configuration and drops coordinates](../invariant/ris-keeps-configuration-drops-coordinates.md)
   — this territory holds **both** halves: the injected `word_separators` must survive `ESC c` (#545)
   while the `selection` anchors beside it must die with the buffer they index
+- [only U+0020 can be a row's padding](../invariant/only-u0020-can-be-padding.md) — this territory
+  holds **two** of the five implementations: `extract_lines` for the linear arms and the block arm's
+  own loop. #685 measured them returning different text for the same cells when only one was fixed
 - [a pointer coordinate is bounded by the converter that produces it](../invariant/pointer-coordinates-are-bounded-by-their-producer.md)
   — `cellAndSide` owes the bound on both axes, and the engine's own clamp (both axes since #671) is a
   backstop rather than a substitute: the alt-click cursor move leaves through the consumer's callback,
@@ -153,10 +156,13 @@ Check these after changing this territory:
 - ~~**Word-selection boundaries** — the set is hardcoded in core.~~ **Closed by #545**: the set is
   consumer policy now (`Term::set_word_separators`, default `DEFAULT_WORD_SEPARATORS`), so the
   routing conforms to ADR-0017. Two things it left behind, both narrower than the hole was:
-  - the **trailing trim** is still `char::is_whitespace()`-based (`extract_lines`' `trim_end`), so
-    a word ending in a non-breaking space now has a highlight one cell wider than the text it
-    copies — the same trim/content divergence `logical.rs`'s `LogicalLine::text` already records
-    against xterm. Tracked separately;
+  - ~~the **trailing trim** is still `char::is_whitespace()`-based~~ **closed by #685**: the trim
+    removes `' '` only, at both of this territory's sites — `extract_lines` *and* the block arm's
+    own per-row loop, which is a second implementation nothing had noticed. The rule is now
+    [only U+0020 can be a row's padding](../invariant/only-u0020-can-be-padding.md). What it did
+    **not** close: a *written* trailing ASCII space is still dropped, because `Cell` cannot
+    distinguish one from a blank — the references split 2–1 there against 3–0 on the property, so
+    it is a separate decision, not a leftover;
   - `' '` is **forced into every injected set** at the setter, because a blank cell packs `' '` and
     the walk uses that both to stop at a row's padding and to backstop the wide-pair rule. That is
     ghostty's shape (it prepends its own blank codepoint at the config intake), and it is the one

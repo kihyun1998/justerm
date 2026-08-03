@@ -55,6 +55,9 @@ once, in prose, about upstream code that moves.
 - [alt-screen absolute-index floor](../invariant/alt-screen-buffer-floor.md) — the whole reason that
   invariant exists is the storage decision above: one concatenated coordinate space over two logical
   buffers
+- [only U+0020 can be a row's padding](../invariant/only-u0020-can-be-padding.md) — this territory is
+  the *source* of that constraint rather than a site of it: `Cell::default` packing `' '` is what
+  makes U+0020 the padding codepoint and what makes a written one indistinguishable from a blank
 - [RIS keeps configuration and drops coordinates](../invariant/ris-keeps-configuration-drops-coordinates.md)
   — `scrollback_limit` survives `ESC c` while every cell does not, and it is the one surviving field
   that never appears in `full_reset`'s copy-back list (it rides the constructor argument instead), so
