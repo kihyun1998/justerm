@@ -65,29 +65,28 @@ machine that decides what the renderer does in between.
   red as a mutation on `context-loss-construct.html`).
   This is the territory's most expensive shape so far: #639's first fix guarded on the flag, went
   green, and left the defect it was written for reachable verbatim.
-- **`render` asks the flag too — and gets away with it, for a reason that lives in another
-  function.** It branches on `ContextState::action()`, so in the pre-dispatch window it takes the
-  `Draw` path on a context that is already dead. Measured (2026-08-03, a throwaway probe during
-  #688): `packs()` goes up by one, so it really does pack — and since the pack *is* the resolve
-  (`repack_from_grid` → `resolve_frame` → upload, one synchronous chain), the frame's two
-  never-before-seen glyphs took cache slots and were uploaded into a dead atlas. That last step is
-  read off the call chain, not separately observed; the counter and the pixels are the measurements.
-  Nothing throws, and after the restore `render()` **alone** repaints that exact frame,
-  pixel-identical to the same frame submitted to a live context (`[24,33,22,8,17,32]` both ways).
-  **The validity condition — this is a cleared concern, not a safe design.** It holds only because
-  `restore` does two separate things: `invalidate_baseline`, so the #263 diff cannot skip the
-  re-upload of instances the GPU never received, and `bake_all_glyphs` over `cache.entries()`, so a
-  slot marked resident but never uploaded is re-rasterised. Remove or narrow either and this site
-  becomes a silent defect — a frame the consumer submitted, acknowledged, and never sees.
-  **And that condition carries far more than `render`.** `apply_frame` and `apply_damage` reach the
-  same pack → rasterise → `upload_glyph` → `upload_instances` chain with **no liveness guard at
-  all**, so they run it for the *whole* loss rather than for one race window — a consumer streaming
-  output through a multi-second GPU recovery pumps every frame through it. Nothing is corrupted,
-  for exactly the two reasons above and for no others. Stating the clearance as a property of
-  `render` understates what is resting on `restore`. It is
-  deliberately **not** on #689's roster for that reason: the site does consult a proxy, but it is
-  covered from behind rather than asking the right question, and counting it as a failure would
-  pad the evidence for a rule nothing there tested.
+- **`render` asks both sources, and the pure module is *given* the one it cannot fetch** (#695,
+  ADR-0027 D3/D4). `ContextState::action` takes a `ContextLiveness` the wasm layer reads off the
+  context and composes it with the flag it owns. Both arms of that decision used to run on a dead
+  context in the pre-dispatch window: the `Rebuild` arm rebuilt and **threw** (an empty
+  shader-compile log, `"justerm-renderer: "`), and the `Draw` arm packed — `packs()` +1, measured —
+  resolving glyphs into a dead atlas. Both now skip; `demo/context-loss-race.html` asserts the
+  no-throw and the `packs()` delta of **0**, in a window whose existence it checks first.
+  **Why the argument rather than a guard at the caller**: `webgl.rs` is wasm32-only, so a guard
+  there is invisible to `cargo test` — the composition lives in the pure module precisely so both
+  windows have a host test. The cost taken with it is that the argument is a place to lie, which no
+  host test can catch; that is what the browser section covers, and a mutation confirms the split
+  (call site pinned to `Usable` → 326 host tests green, proof red).
+- **What still runs the pack on a dead context: `apply_frame` and `apply_damage`.** They reach the
+  pack → rasterise → `upload_glyph` → `upload_instances` chain from their own call with **no
+  liveness predicate at all**, for the *whole* loss rather than one window — a consumer streaming
+  output through a multi-second GPU recovery pumps every frame through it. **A cleared concern, not
+  a safe design**, and the clearance is conditional: it holds only because `restore` does two
+  separate things — `invalidate_baseline`, so the #263 diff cannot skip the re-upload of instances
+  the GPU never received, and `bake_all_glyphs` over `cache.entries()`, so a slot marked resident
+  but never uploaded is re-rasterised. Remove or narrow either and this becomes a silent defect: a
+  frame the consumer submitted, saw acknowledged, and never sees. It is the one row of ADR-0027's
+  conformance map still resolving as ✗.
 - **What "defer" costs, stated once because each site pays it.** A value the consumer normally reads
   back synchronously — a clamped grid, an atlas-shrunk cell — is settled at restore instead, and the
   consumer is not told. That is the same missing signal as #579, reached from the other side.
@@ -151,9 +150,11 @@ Still unchecked: whether either reference notifies on a never-restored context b
   and closed. Kept here rather than deleted because the *shape* is the reusable part: this territory
   went from zero records to one by opening a cheap hypothesis at the second rhyming issue instead of
   waiting for the archaeology that produced the repo's other two records at cluster sizes of 20 and 9.
-- **Two sites still resolve against ADR-0027 as defects**, not as open questions: `render`/`action()`
-  (#695) and the unguarded `apply_frame` / `apply_damage` chain. The second is safe *only* by the
-  validity condition stated in the design model above.
+- **One site still resolves against ADR-0027 as a defect**, not as an open question: the unguarded
+  `apply_frame` / `apply_damage` chain, safe *only* by the validity condition stated in the design
+  model above. (`render`/`action()` was the other; #695 closed it.) Nobody has been asked whether it
+  is worth fixing — the answer turns on whether the clearance is a design or an accident, and that
+  is a judgement, not a measurement.
 - **No reference comparison at all**, and the usual comparison set does not apply cleanly — see
   ADR-0027's *Named prior art* for why the absence is itself the finding.
 - **The interaction with the upload planner is stated here and nowhere else.** That a restore must
