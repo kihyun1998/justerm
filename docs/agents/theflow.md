@@ -282,6 +282,37 @@ precedent: **#355** — a mutation test needs a *fresh baseline* re-run in the s
 pass (both RED = you broke the proof); remove guards one at a time and check a new
 guard fires before the old one.
 
+**A third bar, because the two above were all met and the fix was still wrong:
+mutate the PREDICATE, not only the placement (#639).** Moving a guard between
+neighbouring statements, or deleting it, shakes *where* it runs. It says nothing
+about whether it asks the right question — and a predicate swapped for a
+**differently-wrong** one is invisible unless some assertion lives in the window
+where the two disagree.
+
+What that cost here: `resize`'s lost-context guard asked the state machine's
+event-driven flag when the question was *"is the drawing buffer readable"*. A
+browser destroys a WebGL context **synchronously** and only **queues**
+`webglcontextlost`, so in that window `gl.isContextLost()` is already `true`,
+`drawingBufferWidth` already `0`, and the flag still `false`. The proof did
+`await once("webglcontextlost")` before the call under test, so it never entered
+that window; guard and test were written against the same wrong model of *when* a
+context dies and therefore confirmed each other. Placement was mutation-tested and
+green. The defect the fix was written for survived it verbatim, measured
+end-to-end.
+
+So: ask what else the predicate could plausibly have been, swap it for that, and
+require red. Staying green means the assertions never reach the state where the two
+differ — add that assertion *before* fixing anything. Two habits fall out, both
+cheap:
+
+- **Assert the window exists before asserting behaviour inside it.** #639's proof
+  now checks `glSaysLost && !rendererSaysLost` first, so if a browser ever
+  dispatches synchronously the section *reports* that instead of passing vacuously.
+- **Suspect any condition that is a proxy** — a flag for a state, an event for a
+  transition, a successful return for liveness. The same pass found
+  `getContext("webgl2")` succeeding being read as "the context is live" when it
+  hands back the *same lost object* (#688). That cluster is spine **#689**.
+
 ## Step 4 — proof method per layer (real round-trip, not a fake)
 
 | Layer | Real proof |
@@ -952,7 +983,7 @@ release.md):
   fires after the cost, not before it.
 - **Real round-trip / visual side effects** — #166 (reveal-focus headless miss), #172 (live MCP path), #223 (browser verify skipped).
 - **Probe a runtime fact / readPixels≠screenshot** — #328/#331 (dpr≠1 coord bug green on dpr-1), #352, #337 (tautology); #369 (a throwaway `rustc` probe pinned that an unclamped `+inf` fraction saturates `cursor_thickness`'s `u32` cast to `u32::MAX` — correcting a PR rationale that had credited `frac.max(0.0)`; the setter's `[0,1]` clamp is the load-bearing defence, `frac.max(0.0)` only neutralises `NaN`).
-- **Test-trust gate** — #355 (both RED = you broke the proof; re-run baseline GREEN, remove guards one at a time).
+- **Test-trust gate** — #355 (both RED = you broke the proof; re-run baseline GREEN, remove guards one at a time). **#639 is the third bar's evidence and the more uncomfortable case**: RED→GREEN, side conditions, and a placement mutation were *all* done and green, and the fix was still wrong — its guard asked an event-driven flag about a synchronous state, and the proof awaited that very event before testing, so it never entered the window where the two candidate predicates differ. A guard and a test written against the same wrong model agree with each other; only mutating the *predicate* separates them. Found by the Step 5 lens, not by the gate.
 - **Defer / negative results = the issue is the durable record** — #317 (deferral left in PR body only, caught); seed measured numbers + rejected alternatives + cleared-concern validity conditions up front.
 - **Out-of-workspace / formatter / typecheck blind spots** — #333 (renderer unformatted + proofs CI), #341 (web CI + e2e tsconfig), #343/#344 (typecheck vs build).
 - **Behavior-surface drift** — #129/#135 (`mouseWantedEvents` reached `types.ts` only at S16 — grep the wire mirror).
