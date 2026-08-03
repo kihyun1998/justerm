@@ -22,8 +22,9 @@ no compiler diagnostic, says which side of the line a field is on.
 | Kind | RIS | Why | Instances |
 |---|---|---|---|
 | **Configuration** — chosen by the embedder, meaningful with no buffer | **survives** | RIS resets the *terminal*; the embedder's configuration is not the terminal | `scrollback_limit`, `word_separators` (#545), and the `cols`/`rows` geometry |
-| **A coordinate into the buffer** — or anything derived from cell contents | **dies** | RIS wipes every cell, so the coordinate now names nothing. Carrying it would point live state at a buffer that no longer exists | `selection`, `search_highlights`, `active_search_highlight`, the marker sets |
+| **A coordinate into the buffer** — or anything derived from cell contents | **dies** | RIS wipes every cell, so the coordinate now names nothing. Carrying it would point live state at a buffer that no longer exists | `selection`, `search_highlights`, `active_search_highlight`, the marker sets, the tracked-point sets (#691) |
 | **A pending obligation to the consumer** | **survives** | it describes bytes the consumer still has to write, not screen state — and RIS *adds* to it | `replies`, `events` |
+| **The id counter behind a handle the consumer still holds** | **survives iff the handle's death is not announced** | the coordinate dies with the buffer (row above) — but the *id* naming it is out in the consumer's hands, and a rebuilt counter reissues it. Then a stale ask is answered with a **different** object's state, silently. An announced death makes the question moot, because the holder has already been told | `next_tracked_id` survives (#691, no disposal event — the holder learns by being told `None`); `next_marker_id` does **not**, and reissues freely, because every marker's disposal is announced before the rebuild |
 
 ## Why it is cross-cutting
 
@@ -70,6 +71,13 @@ Written at the **first** site rather than the third, deliberately: the two earli
 were never *decided*, so a later reader had nothing to find. The alt-screen floor is the
 counter-example this repo already paid for — the same fact was rediscovered three times over months
 before anyone wrote it down.
+
+**The fourth row arrived with #691**, and it arrived as a *gap in this table* rather than as a bug
+report: the new field was neither configuration, nor a coordinate, nor a pending obligation, and the
+table's three kinds all pointed the wrong way. It was found by asking why the RIS test **passed** —
+the wholesale rebuild drops the tracked points for free, so the test was green while the id counter
+underneath it silently reissued `TrackedId(0)`. A green test over a rebuilt counter is exactly the
+shape this note warns about at the top: the default is invisible at the definition site.
 
 ## Where it will recur
 

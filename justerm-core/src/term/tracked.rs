@@ -64,19 +64,46 @@ impl Term {
     /// Where the point registered as `id` sits now, or `None` if it has left the
     /// buffer (or the id was never issued / already released).
     ///
-    /// Bounded here, both ends, per ADR-0026 D2/D3: the line to the buffer's own
-    /// range — floored by `abs_floor` so an alt-screen point cannot name primary
-    /// history — and the column to the grid width rather than the line's text
-    /// (D4). The column's domain is `[0, cols]` like a marker's: one past the last
-    /// cell is a legal *bound*, which is what a caller pairing this with text
-    /// extraction needs.
+    /// Bounded here, both ends, per ADR-0026 D2/D3: the line into the range of the
+    /// buffer the point **belongs to**, and the column to the grid width rather
+    /// than the line's text (D4). The column's domain is `[0, cols]` like a
+    /// marker's: one past the last cell is a legal *bound*, which is what a caller
+    /// pairing this with text extraction needs.
+    ///
+    /// **The frame is the point's own, not the active screen's.** The two absolute
+    /// spaces differ by `abs_floor` — an alt line starts at `scrollback.len()`,
+    /// a primary one at 0 — so bounding every point by the *active* screen's floor
+    /// answered a primary point, while an app held the alt screen, with an alt-grid
+    /// coordinate: not the position, not `None`, but a plausible number naming
+    /// content the caller never anchored to. That is this module's own stated
+    /// failure mode arriving through the read. The sibling does not have it because
+    /// its two read surfaces route through `markers()`, so a primary marker is
+    /// simply absent from an alt frame; the references cannot have it at all
+    /// (xterm's markers hang off a `Buffer`, ghostty's pins off a per-screen
+    /// `PageList`).
     pub fn tracked_point(&self, id: TrackedId) -> Option<(usize, usize)> {
-        let p = self
+        let (p, on_alt_buffer) = self
             .normal_tracked
             .iter()
-            .chain(&self.alt_tracked)
-            .find(|p| p.id == id)?;
-        let floor = self.abs_floor();
+            .map(|p| (p, false))
+            .chain(self.alt_tracked.iter().map(|p| (p, true)))
+            .find(|(p, _)| p.id == id)?;
+        // Only the FLOOR differs by buffer. The ceiling does not: the two panes are
+        // only ever sized together — at construction and at every `set_screen` in
+        // `resize` — so `alt_grid.rows() == grid.rows()` holds by construction, and
+        // writing the distinction out would state a difference that cannot exist.
+        // (Mutating the ceiling to the other pane's row count changes nothing,
+        // which is how that was established rather than assumed.)
+        //
+        // An alt point can only exist while the alt screen is up — `track_point`
+        // routes by `on_alt` and leaving clears the list — so its floor is
+        // `abs_floor()`, spelled out here so the arms read as one rule about the
+        // point rather than a question about the active screen.
+        let floor = if on_alt_buffer {
+            self.scrollback.len()
+        } else {
+            0
+        };
         let last = (self.scrollback.len() + self.grid.rows()).saturating_sub(1);
         Some((
             p.line.clamp(floor, last.max(floor)),

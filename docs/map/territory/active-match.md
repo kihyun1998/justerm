@@ -99,6 +99,13 @@ against a pinned tree, and it is the one that decides pixels. The entry above do
   its occurrence, but the rule lives in a port doc-comment on the consumer side; the engine still
   accepts any `Match`, including one authored before a resize
   ([search](search.md) § Known holes, [ADR-0026](../../adr/0026-outside-coordinates-are-bounded-once.md)).
+  **Half-answered by #691, and the half that is left is the reachable one.** The anchor a consumer
+  remembers between two searches was measured drifting *forward one occurrence per evicted line*,
+  because the engine renumbers that space in the consumer's absence — the selection and markers each
+  carry a fixup per mover and the anchor carried none. `Engine::track_point` now gives that holder the
+  same maintenance (see [marker](marker.md) § Blast radius). What is **not** answered: no backend in
+  this repo uses it, since the only in-repo search backend is a browser-side fake that does not run
+  the engine at all, so the consumer half is a documented obligation rather than a wired path.
 - **The per-channel intersection with selection is pinned in an issue (#430), not in a record.**
   Where two highlights meet, "which wins" has to be answered per channel — background, foreground,
   ink — and only one of those answers is written down.

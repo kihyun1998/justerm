@@ -92,11 +92,27 @@ export interface SearchPort {
    * - `undefined` when there is no anchor — no search has been navigated since
    *   the last {@link clear}, so land on 0.
    *
-   * **A geometry change ends an anchor's meaning.** A `Match` is in absolute
-   * buffer coordinates, so after a reflow, or across an alt-screen switch, a
-   * remembered position names different text; a backend drops the anchor there
-   * rather than resolving it. Nothing in the engine re-clamps it for you — that
-   * asymmetry is `docs/map/territory/search.md` § Known holes.
+   * **A remembered position is not stable, and the engine renumbers it in your
+   * absence.** A `Match` is in absolute buffer coordinates, and the engine moves
+   * that space at four separate sites: evicting the oldest line past the
+   * scrollback cap shifts every index **down** by one, a top-anchored sub-region
+   * scroll shifts the lines below the margin **up** by one (#449), an in-screen
+   * region scroll moves only what is inside the region, and a reflow rewrites all
+   * of them. A reflow and an alt-screen switch additionally end the anchor's
+   * *meaning*, since a remembered position then names different text.
+   *
+   * Only the first of those was measured, and its effect is the reason this
+   * paragraph is not merely advisory: at the cap the emphasis walks forward one
+   * occurrence per evicted line, with the count label unchanged and no user input
+   * at all (#691).
+   *
+   * **A backend that runs `justerm-core` should not hold the coordinate itself.**
+   * `Engine::track_point` returns a stable id whose position the engine maintains
+   * across all four movers and answers `None` for once its content has left the
+   * buffer — the same treatment the selection and decoration markers get.
+   * Register the point when you designate a match, resolve it here, release it on
+   * `clear()`. A backend that keeps a raw `Match` instead is the case this
+   * paragraph warns about, and nothing upstream re-clamps it for you.
    *
    * Optional (additive): a backend without it degrades to the previous
    * behaviour — the clamped ordinal on output, the first match while typing.

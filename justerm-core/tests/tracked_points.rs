@@ -334,3 +334,41 @@ fn an_alt_read_floors_at_the_alt_grid() {
         "an alt read floors at the alt grid, never at primary history"
     );
 }
+
+/// A point belongs to the buffer it was registered on, and reading it must not
+/// re-frame it into whichever screen happens to be active. The alt screen's
+/// absolute space starts at `scrollback.len()`; clamping a *primary* point into
+/// that space answers with alt-grid content the caller never anchored to — the
+/// exact failure this module exists to remove, arriving through the read.
+#[test]
+fn a_primary_point_is_not_reframed_by_the_alt_screen() {
+    let mut t = Engine::new(20, 4);
+    write_lines(&mut t, "tag", 6);
+
+    let at = find(&t, "tag02");
+    let id = t.track_point(at.0, at.1);
+    assert_eq!(
+        t.tracked_point(id),
+        Some(at),
+        "premise: correct on the primary screen"
+    );
+
+    t.feed(b"\x1b[?1049h");
+    assert!(
+        t.scrollback_len() > at.0,
+        "premise: the alt floor must sit ABOVE the point, or nothing re-frames"
+    );
+
+    assert_eq!(
+        t.tracked_point(id),
+        Some(at),
+        "a primary point keeps its own frame while an app holds the alt screen"
+    );
+
+    t.feed(b"\x1b[?1049l");
+    assert_eq!(
+        t.tracked_point(id),
+        Some(at),
+        "and is unchanged on the way back"
+    );
+}

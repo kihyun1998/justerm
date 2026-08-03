@@ -3201,7 +3201,8 @@ impl Term {
             // not a defect — but whoever implements it inherits an obligation that is invisible
             // from this site (#660's completeness pass): it would be the first verb that
             // shortens the buffer *from the front* by N lines, so it needs both an anchor
-            // fixup (selection and markers are absolute-from-oldest) **and** a `display_offset`
+            // fixup (selection, markers **and** tracked points are absolute-from-oldest — three
+            // holders since #691, and the third has no frame to make its drift visible) and a `display_offset`
             // clamp. Without the second, `selection_range`'s `scrollback.len() - display_offset`
             // underflows — and so do the same expressions in `viewport_line`,
             // `viewport_link_at` and `match_spans`. alacritty's `ClearMode::Saved` arm does

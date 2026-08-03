@@ -65,6 +65,21 @@ legitimate way to hold the invariant, and it is permanently invisible to the gre
 these the two entries most likely to be read as a *missing* floor and "fixed" into a redundant call.
 Update them by hand when the write path moves; never expect a tool to notice.
 
+A fourth entry is a different *shape* of the rule, added by #691, and it is the one that shows the
+grep's limit twice over. `Term::tracked_point` holds a **stored** coordinate rather than walking one,
+and the floor it needs is not "am I on the alt screen" but **"which buffer does this point belong
+to"** — the two lists are `normal_tracked` / `alt_tracked`, and a primary point read while an
+application holds the alt screen must keep the primary frame. The first implementation used
+`abs_floor()` there and was wrong for exactly that case: it answered a primary point with alt-grid
+row 0 — not the position, not `None`, but a plausible number naming content the caller never anchored
+to. So the site now spells the floor out per list and **does not call the helper**, which means the
+derivable grep above reports it as a *hit* (the comment names `abs_floor()`) while no call exists.
+Read that entry as a false friend. It belongs to [search](../territory/search.md) and
+[marker](../territory/marker.md) jointly — the mechanism is the marker's, the holder is search's.
+**Validity condition:** the per-list floor is right only while `alt_tracked` cannot outlive the alt
+screen (`track_point` routes by `on_alt`; `switch_to_primary` clears the list). Break either and the
+alt arm's floor becomes a guess.
+
 A third satisfies it by **construction** rather than by argument, found by #601's pass: `Term::viewport_link_at`
 reaches cells through `abs_row` — so the recurrence test below flags it — but its index is
 `scrollback.len() - display_offset + row`, and `display_offset` is pinned to 0 on the alt screen
