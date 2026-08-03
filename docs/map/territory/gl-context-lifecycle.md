@@ -9,10 +9,13 @@ machine that decides what the renderer does in between.
 
 ## Governing decisions
 
-**None.**
-
+- [ADR-0027 — a liveness question is answered by the source that owns the answer](../../adr/0027-liveness-is-answered-by-the-source-that-owns-it.md)
+  — **when GPU work may be attempted, and which predicate each site asks.** Its conformance map
+  resolves every entry point in this territory, and it *derives* the two that are still wrong rather
+  than listing them. Promoted from spine #689 (closed) after the rule produced a site — #695 — that
+  nobody had reported
 - [ADR-0018 — build justerm-renderer](../../adr/0018-justerm-renderer.md) — owning a GL context at
-  all is this crate's premise; nothing decides the loss behaviour
+  all is this crate's premise; it decides nothing about the loss behaviour
 
 ## Design model
 
@@ -141,12 +144,18 @@ Still unchecked: whether either reference notifies on a never-restored context b
 
 ## Known holes / open
 
-- **Zero governing records** for a recovery path whose failure mode is a permanently blank terminal.
-  The open cluster is anchored at spine `#689` (*this crate keeps asking a proxy whether the GPU is
-  usable*) rather than at a record — the rule it would promote derives three sites so far, two of
-  them found inside one change, and the anchor exists to see whether it derives a fourth. The roster
-  lives there and deliberately not here.
-- **No reference comparison at all**, and the usual comparison set does not apply cleanly.
+- ~~**Zero governing records**~~ — **closed 2026-08-03 by ADR-0027.** The anchor was spine `#689`,
+  opened on an explicit falsifier: *derive a fourth site nobody had to be told about, or settle a
+  question before it is asked*. Both halves fired — #695 was found by asking the rule of every entry
+  point, and the same pass classified two further sites without being asked — so the spine promoted
+  and closed. Kept here rather than deleted because the *shape* is the reusable part: this territory
+  went from zero records to one by opening a cheap hypothesis at the second rhyming issue instead of
+  waiting for the archaeology that produced the repo's other two records at cluster sizes of 20 and 9.
+- **Two sites still resolve against ADR-0027 as defects**, not as open questions: `render`/`action()`
+  (#695) and the unguarded `apply_frame` / `apply_damage` chain. The second is safe *only* by the
+  validity condition stated in the design model above.
+- **No reference comparison at all**, and the usual comparison set does not apply cleanly — see
+  ADR-0027's *Named prior art* for why the absence is itself the finding.
 - **The interaction with the upload planner is stated here and nowhere else.** That a restore must
   invalidate the diff baseline is exactly the kind of cross-territory rule this map exists to hold,
   and it currently has no test naming it.
