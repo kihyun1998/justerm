@@ -20,6 +20,11 @@ verb that writes, moves, erases or frees a cell has to know the pair exists.
 
 ADR-0025 is authoritative; this is routing. **If they disagree, the ADR is right.**
 
+- **A writer that lands on half a pair owes the other half — including a writer outside the engine.**
+  The IME preedit pass (#249) writes viewport cells directly, so a run landing on an existing spacer
+  would leave its lead drawing *"its left half only"* — legal when core's resize produces it, not
+  something a preedit may create. The pass blanks the cell it orphans on either side. Same D1/D2
+  obligation as an engine verb, reached from the consumer's side of the boundary.
 - **D3 — a pair property is meaningful only at its defining position.** The leading-spacer marker
   means "wide-wrap artefact" *only* at the last column of a soft-wrapped row. A row-shift verb
   (ICH/DCH) that carries it inward has produced a marker describing nothing and must drop it (#528).

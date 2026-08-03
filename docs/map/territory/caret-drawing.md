@@ -8,7 +8,11 @@ about *how the caret looks* is decided here.
 
 ## Governing decisions
 
-**None.**
+- [ADR-0028 — each surface a composition touches has one writer](../../adr/0028-composition-surfaces-have-one-writer-each.md)
+  — **D5 decides this territory's column**: while a composition is open the caret's *position* is the
+  composition's end, re-asserted on every frame (a frame carries the engine's cursor, which cannot know
+  about a preedit). Position only — `DECTCEM` still decides whether a caret is drawn at all, which is
+  the boundary #592 set and this record carries forward rather than reopens
 
 - [ADR-0019 — the cell composition model](../../adr/0019-cell-composition-model.md) — the caret is
   drawn as an **overlay**, so it sits outside the per-cell resolution rather than inverting a cell

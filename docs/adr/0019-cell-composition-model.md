@@ -1,6 +1,8 @@
 # ADR-0019: The cell composition model — a layered, per-channel, total resolution
 
-Status: accepted (2026-07-21) — **amended 2026-07-22**: the three pins this ADR left for adjudication
+Status: accepted (2026-07-21) — **amended 2026-08-03** (#249/#640, ADR-0028): Totality's first gap that
+no layer can close — an IME preedit supplies a *glyph*, and nothing in this stack can. Resolved as a
+**pass**, not a layer; see the Consequences. — **amended 2026-07-22**: the three pins this ADR left for adjudication
 were adjudicated *for* the pins. R1 is scoped by who declared the layer (rule 5 below), the pins stand,
 and nothing in the renderer changes. An earlier amendment the same day said the opposite and is retracted
 in place — see rule 5 and the Consequences for what was tried and why it failed. Scoped to
@@ -239,6 +241,19 @@ decoration); it is rejected here because it drops a highlight the user explicitl
 - **A new combination is a lookup, not an issue.** Two-lens output in this area is phrased as "does the
   model answer this?" — a combination it answers needs no issue even when the answer is surprising, and
   one it cannot answer is an ADR amendment. This is the cost the case-by-case default was charging.
+- **Totality's first unclosable gap: a preedit supplies a glyph, and no layer can (#249, ADR-0028).** Every
+  layer here recolours a channel or blanks a slot; `I_glyph`'s identity belongs to `L0` alone, and rule 5's
+  authorship axis — a declared decoration may take the cell's ink, a user's interaction highlight may not —
+  has no value for an IME preedit, which is neither. The application did not declare it and the user did not
+  pass over it; the *browser* owns it, and the engine never sees it at all. So this is not a combination the
+  stack answers badly, it is one it cannot express, which is what Totality says to amend rather than decide
+  pairwise. **Resolution: a preedit is a pass, not a layer.** It removes its cells from the stack and
+  re-supplies bg, fg and glyph together; nothing underneath shows through, which is also the only way a
+  selection tint under a preedit stops reading as *selected text*. Both grid-drawing references reached the
+  same structure independently — ghostty excludes the range during row rebuild and emits `addPreeditCell`
+  after (`renderer/generic.zig` @ `e6e26e1`), alacritty draws the run with its own `draw_string` pass after
+  the grid (`display/mod.rs` @ `852e971`) — so the shape is prior-art-convergent rather than invented here.
+  The rules are unchanged for every cell the pass does not cover, and this ADR keeps governing those.
 - **The implementation does not yet have the model's shape.** `pack_instances` computes the ink channel as
   a seven-step conditional overwrite chain that *satisfies* the model without *being* it, which is why new
   combinations read as open questions in the code. Restructuring it to resolve ink over the same stack as

@@ -167,9 +167,13 @@ Three named places it is already queued to recur:
   in the same breath as the invariant: a resolution change moves the cell with **no setter call at
   all**, so there is no point a consumer could hook a manual correction onto even if it knew to. Every
   reader on the "re-read at the point of use" shape has to be re-checked when it lands.
-- **#249 (inline preedit).** Drawing the composition into the grid needs the cell, at frame rate,
-  beside a value (the IME anchor) that is deliberately kept on a different shape. Two readers of one
-  quantity on two refresh policies is precisely the mismatch this note exists to name.
+- ~~**#249 (inline preedit).**~~ **Landed 2026-08-03 (ADR-0028) and it did not recur, for a reason
+  worth keeping.** The predicted mismatch was two readers of the cell on two refresh policies — the
+  drawing at frame rate, the IME anchor at points of use. It did not arise because the *drawing* never
+  reads the cell at all: it is expressed in cell **coordinates** and the renderer owns the conversion,
+  so the only consumer-side reader added was the anchor writer, which calls `getGeometry()` afresh on
+  every write. The general form: a feature stated in cells rather than pixels is not a reader of this
+  quantity, however visual it looks.
 - **#287 (multi-viewport).** N grids under one GL context means the cell stops being a single value.
   Every "the cell" in this note becomes "which cell", and a reader that closed over the wrong one
   fails silently — the same failure mode, one dimension wider.

@@ -115,9 +115,12 @@ application misbehaves.
   record and no issue-level commitment.
 - **Two mode sets have to agree across a crate boundary.** The web mirrors `input.rs`'s intent types
   by hand, the same ungated mirroring `types.ts` does for the frame.
-- **In-progress IME composition is not rendered inline in the grid**, so what the user is typing is
-  invisible until confirmation. Tracked: #249 — now one member of spine **#640**, which holds the
-  question both it and #637 need answered.
+- ~~**In-progress IME composition is not rendered inline in the grid**~~ — **closed by #249**
+  (2026-08-03, ADR-0028). The composition is drawn by `justerm-renderer` as a pass over the composed
+  cells; the widget pushes it from `compositionupdate.data` (never the textarea value, which lags it
+  by one event) and re-aims the anchor at the run's end. The hole this leaves is smaller and named:
+  the drawn run and the eventual commit can disagree for Korean, because `data` is what the IME is
+  showing and `value` is what will be committed — that is the IME's behaviour, not a defect to fix.
 - **The IME anchor's *other* readers are only partly known.** Measured (#649): the browser's focus
   steps are a real second reader — focusing the textarea scrolls the nearest scrollable ancestor, and
   the destination tracks the anchor 1:1, so a stale anchor scrolls the page proportionally wrong.
