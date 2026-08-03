@@ -849,6 +849,59 @@ test.describe("active search match rides its own channel, not the selection (#42
     // …and it is a real match, not a stuck label: the active channel still paints.
     expect((await probe(page)).active).toBe(ACTIVE);
   });
+
+  // #687: the same anchor, through the one path that used to end the session on
+  // ordinary typing. In regex mode a group is typed one character at a time, so
+  // the query is INVALID for exactly as long as it takes to type the closing
+  // paren — and the #316 D2 path has to drop the engine paint meanwhile, or the
+  // box says "invalid" over a screen still painting the previous query. Dropping
+  // it through `clear()` took the anchor too, so the `)` re-landed on match 0:
+  // #441's symptom, reached without ever leaving the search box.
+  //
+  // `e` → `e(` → `e()` is chosen so the match SET is identical before and after
+  // (an empty group matches the empty string), leaving the ordinal as the only
+  // thing that can move. Discriminating by construction: the pre-#687 code
+  // reached this line at `1/N`.
+  test("a regex typed through its invalid intermediate keeps the emphasis (#687)", async ({
+    page,
+  }) => {
+    await page.locator("#term").click({ position: { x: 50, y: 50 } });
+    await page.keyboard.press("Control+f");
+    await page.locator("#search-regex").check();
+    await page.locator('input[placeholder="search"]').fill("e");
+    await expect(page.locator("#search-count")).toHaveText(/^1\/\d+/);
+    for (let i = 0; i < 8; i++) await page.keyboard.press("Enter");
+    await expect(page.locator("#search-count")).toHaveText(/^9\/\d+/);
+
+    // Typing an open paren — the state every group passes through.
+    await page.locator('input[placeholder="search"]').pressSequentially("(");
+    await expect(page.locator("#search-count")).toHaveText("invalid");
+
+    // …and closing it. Same matches, so the emphasis must still be the ninth.
+    await page.locator('input[placeholder="search"]').pressSequentially(")");
+    await expect(page.locator("#search-count")).toHaveText(/^9\/\d+/);
+    expect((await probe(page)).active).toBe(ACTIVE);
+  });
+
+  // The other side of the split, in the browser: Escape really does end the
+  // session, so a fresh query starts at its first match instead of resuming near
+  // an abandoned search. Without this, "keep the anchor" could be satisfied by
+  // never dropping it.
+  test("Escape ends the session, so the next query starts at its first match (#687)", async ({
+    page,
+  }) => {
+    await page.locator("#term").click({ position: { x: 50, y: 50 } });
+    await page.keyboard.press("Control+f");
+    await page.locator('input[placeholder="search"]').fill("e");
+    for (let i = 0; i < 8; i++) await page.keyboard.press("Enter");
+    await expect(page.locator("#search-count")).toHaveText(/^9\/\d+/);
+
+    await page.keyboard.press("Escape");
+    await page.keyboard.press("Control+f");
+    await page.locator('input[placeholder="search"]').fill("e");
+
+    await expect(page.locator("#search-count")).toHaveText(/^1\/\d+/);
+  });
 });
 
 // #439: search navigation announces "x of y" — VS Code's SimpleFindWidget wording verbatim
