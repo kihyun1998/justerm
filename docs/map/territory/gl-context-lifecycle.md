@@ -62,6 +62,23 @@ machine that decides what the renderer does in between.
   red as a mutation on `context-loss-construct.html`).
   This is the territory's most expensive shape so far: #639's first fix guarded on the flag, went
   green, and left the defect it was written for reachable verbatim.
+- **`render` asks the flag too — and gets away with it, for a reason that lives in another
+  function.** It branches on `ContextState::action()`, so in the pre-dispatch window it takes the
+  `Draw` path on a context that is already dead. Measured (2026-08-03, a throwaway probe during
+  #688): `packs()` goes up by one, so it really does pack — and since the pack *is* the resolve
+  (`repack_from_grid` → `resolve_frame` → upload, one synchronous chain), the frame's two
+  never-before-seen glyphs took cache slots and were uploaded into a dead atlas. That last step is
+  read off the call chain, not separately observed; the counter and the pixels are the measurements.
+  Nothing throws, and after the restore `render()` **alone** repaints that exact frame,
+  pixel-identical to the same frame submitted to a live context (`[24,33,22,8,17,32]` both ways).
+  **The validity condition — this is a cleared concern, not a safe design.** It holds only because
+  `restore` does two separate things: `invalidate_baseline`, so the #263 diff cannot skip the
+  re-upload of instances the GPU never received, and `bake_all_glyphs` over `cache.entries()`, so a
+  slot marked resident but never uploaded is re-rasterised. Remove or narrow either and this site
+  becomes a silent defect — a frame the consumer submitted, acknowledged, and never sees. It is
+  deliberately **not** on #689's roster for that reason: the site does consult a proxy, but it is
+  covered from behind rather than asking the right question, and counting it as a failure would
+  pad the evidence for a rule nothing there tested.
 - **What "defer" costs, stated once because each site pays it.** A value the consumer normally reads
   back synchronously — a clamped grid, an atlas-shrunk cell — is settled at restore instead, and the
   consumer is not told. That is the same missing signal as #579, reached from the other side.
