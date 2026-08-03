@@ -580,6 +580,21 @@ only half of what the reference says.
 | **Why it survives there and not here — the binding, not the design.** JS receives `null` and carries on; `glow` unwraps. `Context::from_webgl2_context` does `get_supported_extensions().unwrap()` and panics *before* the parameter read is reached, and `get_parameter_i32` itself answers `0` for a `null` (`.as_f64().map(…).unwrap_or(0)`) rather than failing | glow 0.18.0 | `glow-0.18.0/src/web_sys.rs:237-239` (the panic), `:3590` (the harmless read) |
 | **Every other glow call this crate makes fails cleanly on a lost context**, so the panic surface is one call, not a class: `create_*` → `Result`, `get_uniform_location` → `Option`, `get_*_status` → `.as_bool().unwrap_or(false)`, `get_*_info_log` → `unwrap_or_else(String::new)` | glow 0.18.0 | `web_sys.rs:1730/1757/1890/2446/2588`, `:3823`, `:1846`, `:1997`, `:2036`, `:1856` |
 
+### A second loss *during* the restore — the reference is strictly weaker, so it grants nothing (#688 lens, verified 2026-08-03)
+
+Recorded because the reference's shape here is the one a reader is most likely to cite as
+permission, and it is the outlier. justerm's `restore` builds every replacement into locals and
+commits only after the re-bake succeeds; its in-repo siblings (`rebake_atlas`, `rebake_for_cell`,
+`adopt_spacing`'s rollback) do the same. **Direction: this layer *and* its siblings agree against
+the reference — a family position, held, and xterm must not be read as licence to half-commit.**
+
+| Fact | Reference | Site |
+|---|---|---|
+| The `webglcontextrestored` handler calls `_initializeWebGLState()` **unguarded and without `try`/`catch`**, straight from the event listener | xterm.js | `addons/addon-webgl/src/WebglRenderer.ts:137-146` |
+| That method assigns the rectangle renderer, **then** the glyph renderer — two sequential commits with no rollback between them | xterm.js | `addons/addon-webgl/src/WebglRenderer.ts:279-287` |
+| …and `GlyphRenderer`'s constructor throws on a lost context (`throwIfFalsy(gl.getParameter(...))`). So a second loss mid-restore leaves it **half-committed** — new rectangle renderer, stale/disposed glyph renderer — with no retry latch, and the exception escapes into the listener | xterm.js | `addons/addon-webgl/src/GlyphRenderer.ts:128`, `:130` |
+| justerm cannot reach that state by construction: `restore` deletes the half-built replacements and returns `Err` on a re-bake failure, leaving the live objects in place, and the state machine keeps `pending_rebuild` set so the next frame retries | justerm-renderer | `justerm-renderer/src/webgl.rs` `restore` (the `rebake` error path), `context_loss.rs` `a_failed_rebuild_is_retried_on_the_next_frame` |
+
 ## Background transparency — the shape of the knob (#577, verified 2026-07-29)
 
 The file had **zero** rows on transparency before this, though `set_bg_alpha` has existed since #298

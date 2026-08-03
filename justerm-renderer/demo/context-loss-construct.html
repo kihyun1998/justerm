@@ -128,12 +128,14 @@
         preDispatch.glSaysLost === true && preDispatch.eventSeen === false,
       andTheEventDoesArriveLater: postDispatch.eventSeen === true,
       getContextHandsBackTheSameLostObject: sameObject === true,
-      // The evidence for WHICH call panics: glow's first unwrap target is already null here, so
-      // nothing downstream of it — including this crate's own read — is ever reached.
-      everyValueGlowUnwrapsIsNull:
-        glowUnwrapTargets.supportedExtensions === null &&
-        glowUnwrapTargets.version === null &&
-        glowUnwrapTargets.maxTextureSize === null,
+      // The evidence for WHICH call panics. Only the FIRST unwrap target is asserted, because only
+      // it is load-bearing: `get_supported_extensions().unwrap()` is what glow reaches first, so
+      // nothing downstream of it — including this crate's own `MAX_TEXTURE_SIZE` read — is ever
+      // reached. The other two are published above as evidence and deliberately NOT gated: a
+      // browser that answered `0` rather than `null` for a parameter on a dead context would turn
+      // this page red without anything being broken, and a false red is a check that has to be
+      // argued with rather than believed.
+      theFirstValueGlowUnwrapsIsNull: glowUnwrapTargets.supportedExtensions === null,
 
       // THE assertions. Before the fix both were `RuntimeError: unreachable` (a panic inside
       // `from_webgl2_context`); the type check is what tells the two apart, since both throw.

@@ -643,10 +643,15 @@ impl JustermRenderer {
         // panic crosses into JS as a `RuntimeError`, not as this crate's `Err`, so a consumer's
         // `catch` gets something no other failure here produces.
         //
-        // One check covers the whole constructor because a context cannot die *inside* it: loss is
-        // observed at a task boundary, and everything from here to the final `resize` is
-        // synchronous. That is the condition this single guard rests on — an `await` introduced
-        // below would break it, not the guard.
+        // One check covers the whole constructor, and NOT because a context cannot die inside it —
+        // it can; what cannot arrive inside it is the *report*, since `webglcontextlost` dispatches
+        // at a task boundary and everything from here to the final `resize` is synchronous. The
+        // guard is sufficient for a different reason, and this is the load-bearing half: every
+        // remaining glow call on this path fails **cleanly**. `create_*` return `Result`,
+        // `get_uniform_location` an `Option`, the status getters `.as_bool().unwrap_or(false)` —
+        // so a context dying mid-construction yields this crate's bare-string `Err`, never the
+        // `RuntimeError` a panic produces. The check above exists to cover the one call that does
+        // NOT have that shape.
         //
         // It asks the CONTEXT, not this crate's own state machine. The machine's flag is fresh
         // here and therefore always `false` — spine #689's proxy ①, and not a weaker predicate but
@@ -658,10 +663,14 @@ impl JustermRenderer {
             ));
         }
 
-        // Attach before ANY GL work, so a loss during construction is observed rather than missed
-        // (the pipeline/atlas built below would then be silently invalidated) (#269). "Any" now
-        // includes glow's constructor below, which reads the context to parse its version — the
-        // line this comment used to sit seven lines beneath (#688).
+        // Attached before any GL work, including glow's constructor below — but read what that
+        // does and does not buy (#688). It cannot *catch* a loss during construction: listeners
+        // fire at a task boundary and there is none between here and the end of this function, so
+        // this site and the old one (seven lines below, under the first GL call) observe exactly
+        // the same set of events — none. What it buys is that the promise this comment makes is
+        // now true, and that the handler is in place before the first thing that could need it.
+        // The original wording claimed the stronger property; a reader deriving from it would
+        // conclude a mid-construction loss is reported, and it is not (#269).
         let ctx_loss = ContextLossHandler::new(&canvas)?;
 
         let raw_gl = webgl2.clone();

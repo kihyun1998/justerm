@@ -75,7 +75,13 @@ machine that decides what the renderer does in between.
   `restore` does two separate things: `invalidate_baseline`, so the #263 diff cannot skip the
   re-upload of instances the GPU never received, and `bake_all_glyphs` over `cache.entries()`, so a
   slot marked resident but never uploaded is re-rasterised. Remove or narrow either and this site
-  becomes a silent defect — a frame the consumer submitted, acknowledged, and never sees. It is
+  becomes a silent defect — a frame the consumer submitted, acknowledged, and never sees.
+  **And that condition carries far more than `render`.** `apply_frame` and `apply_damage` reach the
+  same pack → rasterise → `upload_glyph` → `upload_instances` chain with **no liveness guard at
+  all**, so they run it for the *whole* loss rather than for one race window — a consumer streaming
+  output through a multi-second GPU recovery pumps every frame through it. Nothing is corrupted,
+  for exactly the two reasons above and for no others. Stating the clearance as a property of
+  `render` understates what is resting on `restore`. It is
   deliberately **not** on #689's roster for that reason: the site does consult a proxy, but it is
   covered from behind rather than asking the right question, and counting it as a failure would
   pad the evidence for a rule nothing there tested.
