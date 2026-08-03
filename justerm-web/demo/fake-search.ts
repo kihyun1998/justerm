@@ -48,7 +48,21 @@ export class FakeSearchEngine {
    * streaming terminal produces constantly. This is alacritty's shape (`origin`
    * is a `Point` in `SearchState`, cleared by neither `search_reset_state` nor
    * the match set) rather than xterm's (whose anchor IS the selection, so it
-   * dies with it). Dropped by {@link clear}. */
+   * dies with it). Dropped by {@link clear}.
+   *
+   * **A REAL backend must not store the position like this (#691).** A `Match` is
+   * in absolute buffer coordinates, and the engine renumbers that space while the
+   * consumer is not looking — evicting the oldest line at the scrollback cap
+   * shifts every index down by one, so a remembered position walks forward one
+   * occurrence per evicted line, silently. A backend that runs `justerm-core`
+   * registers the position instead — `Engine::track_point` returns a stable id the
+   * engine keeps on its content and answers `None` for once that content is gone —
+   * and resolves *that* here.
+   *
+   * This fake gets away with the raw coordinate for one reason, and it is a
+   * property of the demo rather than of the design: its log is an array that is
+   * only ever appended to, so nothing it holds can be renumbered. Copying this
+   * class as a starting point for a real backend copies the defect. */
   private anchor: Match | undefined;
 
   /** Find every occurrence of `query` in `lines`, honouring `options` (regex,
