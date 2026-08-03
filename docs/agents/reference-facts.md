@@ -757,6 +757,28 @@ on, and it is why the "measure what a huge geometry actually does to the tab" ex
 **deliberately not run**: no outcome of it changes the recommendation, because the only fix it could
 motivate is the arbitrary number this paragraph rules out.
 
+**Acted on as #663, and the reject-vs-clamp row is the one it adds — including a derivation that
+looked right and is not.** `decode` rejects `cols < MIN_COLUMNS` and `rows == 0` as `BadGeometry`; no
+ceiling was added, and the recommendation above is why. On the floor's *value* there is no divergence
+at all — justerm and xterm.js agree exactly. On its *form* the references **split, 2–1**, and the
+split does not fall where the obvious rule predicts:
+
+| Fact | Reference | Site |
+|---|---|---|
+| Clamps a sub-floor geometry at its own resize — `Math.max(MINIMUM_COLS, …)` | xterm.js | `common/services/BufferService.ts:13`, `common/CoreTerminal.ts:192` |
+| Clamps likewise; publishes `MIN_COLUMNS` / `MIN_SCREEN_LINES` because its app reads them | alacritty | `alacritty_terminal/src/term/mod.rs:36`, `:39` |
+| ⚠ **Rejects, at a site it owns** — *"Screen and scrolling-region invariants require non-zero dimensions. Validate before changing any terminal state."* `if (opts.cols == 0 or opts.rows == 0) return error.InvalidValue` | ghostty | `src/terminal/Terminal.zig:3719-3721` |
+
+**So "clamp if you own the number, reject if you are reading it" is not the rule, and #663's first
+draft said it was** (in four places, until the completeness pass found the third reference — one this
+repo already cited, at `justerm-core/tests/min_rows.rs:19`). Ghostty owns its resize and refuses
+anyway. Two facts stand once that leg is removed. First, **this boundary cannot repair**: the payload
+behind the header was laid out for the width it declares, so widening `cols` re-indexes a frame rather
+than fixing one, leaving reject and hand-back-wrong-cells as the only total answers. Second, **no
+reference arbitrates the site**, because none of them decodes a serialized grid — the tie-breaker
+table's *"wire / frame / API shape → this repo's own precedent"* row, not a divergence. What ghostty
+does contribute is that refusing an impossible geometry outright is ordinary, not an invention.
+
 ## A selection when the screen changes under it (#660, verified 2026-07-31)
 
 The occasion: on justerm's alt screen a selection outlived a resize, and `selection_range` then

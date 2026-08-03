@@ -114,7 +114,10 @@ above does not touch it.
   coordinate from before a resize, and nothing upstream re-clamps it — invalidation is not a bound,
   because the value re-enters through a public intake rather than surviving inside the engine.
   `match_spans` now bounds it at the projection (#678); what stays unrecorded is whether an intake
-  should *reject* such a match instead, which is #663's question one seam over.
+  should *reject* such a match instead, which is #663's question one seam over. **#663 answered its
+  own seam with "reject" and that does not settle this one**: it rejects a *geometry*, which has no
+  range to be clamped into, while a stale match column does — so ADR-0026 D1/D2 still govern here and
+  this stays open.
   **A cleared concern, with its condition:** the web widget's own re-designation (#437/#441) does
   **not** reach that intake with a stale coordinate — it resolves the remembered position against
   the *fresh* match list backend-side and sends an index into that set, so the coordinate that

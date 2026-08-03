@@ -12,6 +12,7 @@ use crate::cursor::CursorShape;
 use crate::damage::ScrollOp;
 use crate::input::MouseEvents;
 use crate::selection::SelectionSpan;
+use crate::term::MIN_COLUMNS;
 use core::num::NonZeroU32;
 use std::collections::BTreeMap;
 
@@ -245,6 +246,30 @@ pub enum DecodeError {
     BadVersion(u8),
     /// A tag/kind byte held a value outside its defined set.
     BadTag,
+    /// The frame's **own** declared geometry is one no terminal can have: fewer than
+    /// [`MIN_COLUMNS`](crate::MIN_COLUMNS) columns, or no rows at all (#663).
+    ///
+    /// Distinct from [`BadSpan`](Self::BadSpan), and the distinction is the *direction of
+    /// the comparison* rather than a shade of severity. `BadSpan` means a part of the
+    /// frame does not fit the geometry the header declares; this means the header itself
+    /// declares a geometry the engine defines as impossible and clamps away at every entry
+    /// point (`Term::with_scrollback` and [`Term::resize`](crate::Term::resize) widen
+    /// `cols` to `MIN_COLUMNS` and `rows` to 1). Nothing this crate encodes can carry it,
+    /// so it is malformed input by the same rule `BadSpan` applies one level in.
+    ///
+    /// The floor imports no policy: xterm.js clamps to the same pair for the same reason
+    /// (`MINIMUM_COLS = 2`, *"Less than 2 can mess with wide chars"*, and
+    /// `MINIMUM_ROWS = 1`). There is deliberately **no ceiling** error — `cols`/`rows` are
+    /// `u16` on the wire and [`MAX_COLUMNS`](crate::MAX_COLUMNS) is `u16::MAX` for exactly
+    /// that reason, so the upper end is bounded by the field and needs no check.
+    ///
+    /// This variant is what `BadSpan`'s doc-comment deferred to *"the next release that is
+    /// breaking anyway"* — #663 changes what `decode` accepts, so the version that carries
+    /// it is that release, and the marginal cost of the enum growing is paid there rather
+    /// than on its own. Measured at the time: no exhaustive match on `DecodeError` exists
+    /// in this workspace, `justerm-wasm-decode` formats the variant with `{:?}` (so the
+    /// name reaches JS unaided, #662), and penterm holds no reference to the type.
+    BadGeometry,
     /// A part of the frame does not fit the geometry the frame itself declares: a span
     /// whose `left` is past its `right` (which would underflow the cell count), a span
     /// reaching past `cols` or sitting past `rows`, a sparse group entry keyed outside
@@ -264,6 +289,14 @@ pub enum DecodeError {
     /// release that is breaking anyway — a version bump spent on a diagnostic label, on
     /// a crate published in lockstep with an npm package, is the more expensive half of
     /// this trade today.
+    ///
+    /// **That condition arrived, and only for the case it names (#663).**
+    /// [`BadGeometry`](Self::BadGeometry) split off because #663 changes what `decode`
+    /// *accepts*, so its release is the breaking one this paragraph was waiting for. It is
+    /// not a precedent for splitting the six below: the new variant answers a comparison
+    /// pointing the other way (the header against the engine, not a part against the
+    /// header), whereas `BadScroll` would still be one of these six re-labelled. The trade
+    /// above is unchanged for them and they stay merged.
     BadSpan,
 }
 
@@ -556,6 +589,50 @@ pub fn decode(bytes: &[u8]) -> Result<Frame, DecodeError> {
     };
     let cols = r.u16()?;
     let rows = r.u16()?;
+    // The header is read against the engine's own floor before anything is read against
+    // the header (#663). #582 made every *part* of a frame answer to the declared
+    // geometry; this asks whether that geometry is one a terminal can have at all.
+    //
+    // `MIN_COLUMNS = 2` is not a number picked here: a width-2 glyph needs a `WIDE_CHAR`
+    // lead and its `WIDE_CHAR_SPACER`, so one column cannot hold one (ADR-0025 D4's stated
+    // precondition, #547), and `Term::with_scrollback` / `Term::resize` clamp `cols` up to
+    // it and `rows` up to 1 on every path. So nothing this crate encodes can declare
+    // either — measured, not assumed (`tests/header_geometry_floor.rs` drives the engine
+    // at every geometry from 0×0 up through the floor). xterm.js reaches the same pair
+    // from the same cause: `MINIMUM_COLS = 2` ("Less than 2 can mess with wide chars") and
+    // `MINIMUM_ROWS = 1`, applied on every resize.
+    //
+    // Rejected rather than clamped — and **the references do not decide that**, which is
+    // worth stating because the tempting derivation is wrong. They split on the form, all
+    // three at a site they own: alacritty and xterm.js clamp, ghostty *rejects*
+    // (`Terminal.zig:3721` @ `e6e26e16`, `if (opts.cols == 0 or opts.rows == 0) return
+    // error.InvalidValue`, guarding its own `resize`). So "who owns the number" separates
+    // nothing — ghostty owns it and refuses anyway.
+    //
+    // What decides it here is that this boundary cannot *repair*. `decode` reads bytes a
+    // consumer hands back over its own transport (ADR-0008; `tests/robustness.rs` names
+    // them attacker-influenced), and the payload behind this header was laid out for the
+    // width it declares — so widening `cols` does not fix a frame, it re-indexes one, and
+    // the caller gets cells in the wrong places with no error. Reject and "hand back wrong
+    // content" are the only two total answers, which is not a choice. No reference
+    // arbitrates the site because none of them decodes a serialized grid at all
+    // (`docs/map/territory/wire-format.md`); what ghostty does supply is that refusing an
+    // impossible geometry outright is ordinary terminal behaviour, not an invention here.
+    //
+    // **Deliberately no ceiling**, and this comment is where a later reader is stopped
+    // from adding the "obvious symmetric half": `cols`/`rows` are `u16` and `MAX_COLUMNS`
+    // is `u16::MAX` for exactly that representational reason (#621), so the upper end is
+    // bounded by the field's own width. xterm.js has no maximum at all, and the one layer
+    // that could know a real one — `justerm-renderer` — asks the GL implementation rather
+    // than predicting it. A number chosen here would be the only arbitrary constant in the
+    // stack.
+    //
+    // Before the span loop rather than inside it, and that ordering is asserted: a frame
+    // whose declared width is shrunk below the floor usually has an out-of-frame span too,
+    // and `BadSpan` would name the consequence instead of the cause.
+    if (cols as usize) < MIN_COLUMNS || rows == 0 {
+        return Err(DecodeError::BadGeometry);
+    }
     let cursor_row = r.u16()?;
     let cursor_col = r.u16()?;
     let cursor_visible = r.u8()? != 0;

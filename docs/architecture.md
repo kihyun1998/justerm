@@ -46,6 +46,9 @@ header (or `grid().cols()`) rather than assuming the value it passed. It also mu
 does not have. Both references a terminal *engine* compares to forbid the width for the same reason
 (alacritty `MIN_COLUMNS = 2`, xterm.js `MINIMUM_COLS = 2`); ghostty permits it and destroys the glyph.
 justerm clamps in the core, where xterm.js clamps, because justerm has no app layer to clamp in.
+**The one entry point that does not clamp is `decode`, which rejects (§Serialization, #663)** — it
+reads bytes rather than owning the number, and a widened `cols` would re-index the payload that rode
+in with it.
 
 ## Cell
 
@@ -197,6 +200,32 @@ consumers resolve them by scan rather than by index, so clamping them is consume
 ADR-0017 and core has nothing to reject. `encode` mirrors the rule in the direction it can: it drops
 a group entry keyed outside its span rather than narrowing it onto a different live column, with a
 `debug_assert!` naming the producer, since only justerm itself can build one.
+
+**And the header answers to the engine's own floor before its payload answers to the header (#663).**
+`cols < MIN_COLUMNS` or `rows == 0` is `DecodeError::BadGeometry` — a *different* comparison from the
+one above, which is why it is a different variant: `BadSpan` means a part does not fit the geometry the
+frame declares, this means the declared geometry is one no terminal can have. The floor imports no
+policy (xterm.js clamps to the identical `MINIMUM_COLS = 2` / `MINIMUM_ROWS = 1` pair, for the
+wide-glyph reason above), and nothing this crate encodes can declare it, since every engine entry
+point clamps.
+
+**Impossibility is why the check is allowed, not why it is these two fields** — and the distinction
+matters, because `display_offset > scrollback_len` and a cursor outside the grid are equally
+impossible and equally unchecked. What admits `cols`/`rows` is the rule one paragraph up: they are the
+**frame of reference every other check is made against**, not annotations about a position. The cursor
+and the offset are read by scan and comparison, so they stay consumer policy; a false `cols` is the
+denominator of the span guard itself.
+
+It is **rejected** rather than clamped, and the references do *not* decide that: they split 2–1 with
+all three at a site they own — alacritty and xterm.js clamp, ghostty refuses (`Terminal.zig:3721`,
+`error.InvalidValue`), so "who owns the number" separates nothing. What decides it is that this
+boundary cannot repair — the payload behind the header was laid out for the width it declares, so
+widening `cols` re-indexes a frame rather than fixing one, and the caller gets cells in the wrong
+places with no error. There is deliberately **no ceiling** counterpart: `cols`/`rows` are `u16` on the wire and `MAX_COLUMNS` is
+`u16::MAX` for exactly that representational reason, so the upper end is bounded by the field. No
+reference bounds a grid's upper end, and the one layer that could — `justerm-renderer` — asks the GL
+implementation rather than predicting it, so a number chosen here would be the stack's only arbitrary
+constant.
 
 The **cell record** (little-endian): `c` (u32 Unicode scalar — *not* the renderer's atlas glyph
 id), `fg`/`bg` (u32 each = tag byte `Default|Indexed|Rgb` + 24-bit payload; the tag is mandatory so
