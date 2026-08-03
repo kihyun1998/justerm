@@ -17,6 +17,27 @@ pub enum FrameAction {
     Draw,
 }
 
+/// Whether the GL context itself is usable **right now** — the one fact this module cannot fetch.
+///
+/// It is a separate question from [`ContextState::is_lost`], and the difference is the whole reason
+/// this type exists (ADR-0027). `is_lost` records what the browser has **told us**, and the browser
+/// destroys a context *synchronously* while only *queueing* `webglcontextlost` — so between those
+/// two moments the flag says "live" and every GL call is already dead. Answering that needs
+/// `WebGl2RenderingContext::is_context_lost`, which lives in the wasm layer; this module is pure and
+/// host-tested by design and can only ever see reports.
+///
+/// So the caller asks the context and hands the answer in. That is not an impurity — it is the same
+/// shape `render_policy::resolve_cell` uses for `bold_to_bright`, a fact the pure function has no
+/// business fetching but every business composing. An enum rather than a `bool` because the value is
+/// the argument's whole meaning, and `action(true)` at a call site says nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContextLiveness {
+    /// The context answered that it is alive at the moment the caller asked.
+    Usable,
+    /// The context is gone, whether or not the loss has been reported to us yet.
+    Dead,
+}
+
 /// Tracks whether the WebGL context is usable and whether its GL objects need recreating.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ContextState {
@@ -92,21 +113,36 @@ impl ContextState {
         self.pending_rebuild = false;
     }
 
-    /// Whether the context is currently lost. Exposed for observation (the consumer may want to
-    /// grey out the terminal); the renderer itself branches on [`action`](Self::action).
+    /// Whether a loss has been **reported to us**. Exposed for observation (the consumer may want
+    /// to grey out the terminal); the renderer itself branches on [`action`](Self::action), which
+    /// needs more than this — a report lags the context it describes, so `action` is given the
+    /// context's own answer too (ADR-0027 D4: a value published to a consumer is a report, never a
+    /// predicate for our own work).
     pub fn is_lost(&self) -> bool {
         self.is_lost
     }
 
-    /// What to do with the current frame.
-    pub fn action(&self) -> FrameAction {
-        // A lost context beats a pending rebuild: GL objects created on a dead context come back
-        // with their "invalidated" flag set (WebGL 1.0 spec, § Context Lost), so a rebuild there
-        // produces a pipeline that cannot link and an atlas that holds nothing — it must wait for
-        // the *next* `webglcontextrestored`. beamterm's `render_frame` checks these in the opposite
-        // order (terminal.rs:334) and rebuilds on a dead context in the lost→restored→lost window,
-        // where its `link_program` status check then fails every frame.
-        if self.is_lost {
+    /// What to do with the current frame, given what the caller asked the context and what this
+    /// machine has been told.
+    ///
+    /// **Two sources, because each covers a window the other misses** (ADR-0027 D3). `context` is
+    /// the context's own answer and catches the pre-dispatch window — dead already, nothing
+    /// reported. [`is_lost`](Self::is_lost) is our record of the report and catches the mirror
+    /// window — the context answers "live" again while the GL objects it owned are still the
+    /// destroyed ones and `restore` has not run.
+    pub fn action(&self, context: ContextLiveness) -> FrameAction {
+        // A dead context beats a pending rebuild: GL objects created on one come back with their
+        // "invalidated" flag set (WebGL 1.0 spec, § Context Lost), so a rebuild there produces a
+        // pipeline that cannot link and an atlas that holds nothing — it must wait for the *next*
+        // `webglcontextrestored`. beamterm's `render_frame` checks these in the opposite order
+        // (terminal.rs:334) and rebuilds on a dead context in the lost→restored→lost window, where
+        // its `link_program` status check then fails every frame.
+        //
+        // Ours had the order right and the *source* wrong (#695): asking the flag alone, this
+        // returned `Rebuild` for the slice of that window before the event was dispatched, and the
+        // rebuild ran on a dead context. Both sources are consulted here, and neither is redundant
+        // — dropping either one reopens one of the two windows above.
+        if context == ContextLiveness::Dead || self.is_lost {
             return FrameAction::Skip;
         }
         if self.pending_rebuild {
@@ -164,7 +200,7 @@ mod tests {
 
         state.on_restored();
         assert!(!state.restore_overdue());
-        assert_eq!(state.action(), FrameAction::Rebuild);
+        assert_eq!(state.action(ContextLiveness::Usable), FrameAction::Rebuild);
     }
 
     #[test]
@@ -173,7 +209,7 @@ mod tests {
         let mut state = ContextState::default();
         state.on_lost();
         state.on_restore_deadline(state.loss_epoch());
-        assert_eq!(state.action(), FrameAction::Skip);
+        assert_eq!(state.action(ContextLiveness::Usable), FrameAction::Skip);
     }
 
     #[test]
@@ -211,7 +247,10 @@ mod tests {
     #[test]
     fn a_live_context_draws() {
         // The default state is a healthy context: no loss has been signalled, nothing to rebuild.
-        assert_eq!(ContextState::default().action(), FrameAction::Draw);
+        assert_eq!(
+            ContextState::default().action(ContextLiveness::Usable),
+            FrameAction::Draw
+        );
     }
 
     #[test]
@@ -219,7 +258,7 @@ mod tests {
         // Every GL object died with the context; a draw call would be a no-op at best.
         let mut state = ContextState::default();
         state.on_lost();
-        assert_eq!(state.action(), FrameAction::Skip);
+        assert_eq!(state.action(ContextLiveness::Usable), FrameAction::Skip);
     }
 
     #[test]
@@ -228,7 +267,7 @@ mod tests {
         let mut state = ContextState::default();
         state.on_lost();
         state.on_restored();
-        assert_eq!(state.action(), FrameAction::Rebuild);
+        assert_eq!(state.action(ContextLiveness::Usable), FrameAction::Rebuild);
     }
 
     #[test]
@@ -237,7 +276,7 @@ mod tests {
         state.on_lost();
         state.on_restored();
         state.rebuilt();
-        assert_eq!(state.action(), FrameAction::Draw);
+        assert_eq!(state.action(ContextLiveness::Usable), FrameAction::Draw);
     }
 
     #[test]
@@ -251,11 +290,47 @@ mod tests {
         state.on_lost();
         state.on_restored();
         state.on_lost();
-        assert_eq!(state.action(), FrameAction::Skip);
+        assert_eq!(state.action(ContextLiveness::Usable), FrameAction::Skip);
 
         // ...and the deferred rebuild is not forgotten: the next restore still rebuilds.
         state.on_restored();
-        assert_eq!(state.action(), FrameAction::Rebuild);
+        assert_eq!(state.action(ContextLiveness::Usable), FrameAction::Rebuild);
+    }
+
+    #[test]
+    fn the_same_loss_before_its_event_is_dispatched_still_skips_the_rebuild() {
+        // The window the test above CANNOT reach, and the reason this function takes an argument
+        // at all (#695, ADR-0027 D3). Above, the second loss has been *reported* — `on_lost()` ran.
+        // A browser destroys a context synchronously and only QUEUES `webglcontextlost`, so there
+        // is a slice in which the context is already dead and `on_lost()` has not run yet:
+        //
+        //     is_lost == false        (nothing reported)
+        //     pending_rebuild == true (the restore did land)
+        //
+        // On the flag alone that reads as `Rebuild`, and the rebuild then runs on a dead context —
+        // measured in Chromium: `render()` throws `"justerm-renderer: "` (an empty shader-compile
+        // log), against its own doc-comment promising a silent no-op. The state machine cannot see
+        // that window; it is told.
+        let mut state = ContextState::default();
+        state.on_lost();
+        state.on_restored();
+        assert_eq!(state.action(ContextLiveness::Dead), FrameAction::Skip);
+
+        // The deferred rebuild survives the window — nothing consumed it — so the frame after the
+        // context comes back still rebuilds. This is the half that makes skipping safe rather than
+        // merely quiet.
+        assert_eq!(state.action(ContextLiveness::Usable), FrameAction::Rebuild);
+    }
+
+    #[test]
+    fn a_dead_context_skips_even_with_nothing_to_rebuild() {
+        // The plain case, kept separate so the test above is only about the rebuild latch: a frame
+        // in the pre-dispatch window of a FIRST loss has no `pending_rebuild` at all, and must
+        // still not draw. Without this, an implementation that only consulted the argument on the
+        // rebuild branch would pass everything else here.
+        let state = ContextState::default();
+        assert_eq!(state.action(ContextLiveness::Dead), FrameAction::Skip);
+        assert_eq!(state.action(ContextLiveness::Usable), FrameAction::Draw);
     }
 
     #[test]
@@ -266,8 +341,8 @@ mod tests {
         let mut state = ContextState::default();
         state.on_lost();
         state.on_restored();
-        assert_eq!(state.action(), FrameAction::Rebuild); // attempt 1 — fails, no `rebuilt()`
-        assert_eq!(state.action(), FrameAction::Rebuild); // attempt 2
+        assert_eq!(state.action(ContextLiveness::Usable), FrameAction::Rebuild); // attempt 1 — fails, no `rebuilt()`
+        assert_eq!(state.action(ContextLiveness::Usable), FrameAction::Rebuild); // attempt 2
     }
 
     #[test]
@@ -277,6 +352,6 @@ mod tests {
         // with resources that may already be dead.
         let mut state = ContextState::default();
         state.on_restored();
-        assert_eq!(state.action(), FrameAction::Rebuild);
+        assert_eq!(state.action(ContextLiveness::Usable), FrameAction::Rebuild);
     }
 }

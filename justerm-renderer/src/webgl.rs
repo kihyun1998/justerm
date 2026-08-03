@@ -25,7 +25,7 @@ use web_sys::{HtmlCanvasElement, WebGl2RenderingContext};
 
 use crate::bitmap::{PADDING, is_color_bitmap, split_wide_bitmap};
 use crate::color::gl_rgb;
-use crate::context_loss::{ContextState, DEFAULT_RESTORE_TIMEOUT_MS, FrameAction};
+use crate::context_loss::{ContextLiveness, ContextState, DEFAULT_RESTORE_TIMEOUT_MS, FrameAction};
 use crate::cursor::{
     Cursor, DEFAULT_CURSOR_CONTRAST, THICKNESS, cursor_rects, cursor_span_at, cursor_thickness,
     guarded_cursor_colors, shape_from_id, shape_id,
@@ -1375,7 +1375,10 @@ impl JustermRenderer {
 
     /// Recreate every GPU resource the lost context destroyed (#269), then refill the instance
     /// buffer so the very next `render` paints the pre-loss frame. Called by [`render`](Self::render)
-    /// when the state machine reports [`FrameAction::Rebuild`] — never on a lost context.
+    /// when the state machine reports [`FrameAction::Rebuild`] — never on a lost context, which is a
+    /// property of the predicate that reports it rather than of this function: `Rebuild` requires
+    /// the *context's own* answer as well as the flag, because the flag alone said "live" for the
+    /// slice before a re-loss was dispatched and this ran there anyway (#695, ADR-0027 D3).
     ///
     /// The context *object* survives a loss (the browser reuses it; xterm.js keeps its `_gl` and
     /// beamterm's re-`getContext` hands back the same object), so only the objects it owned —
@@ -2306,9 +2309,22 @@ impl JustermRenderer {
     /// `webglcontextrestored` it first rebuilds the destroyed resources. Recovery therefore needs
     /// no consumer cooperation beyond continuing to call `render`. A failed rebuild propagates and
     /// is retried on the next frame.
+    ///
+    /// **"While the context is lost" means either sense of lost, and it did not always** (#695).
+    /// The decision consults the context itself *and* the state machine's flag, because a browser
+    /// destroys a context synchronously and only queues the event: asking the flag alone, this
+    /// promise was false for that slice — a pending rebuild ran on a dead context and threw.
     pub fn render(&mut self) -> Result<(), JsValue> {
-        // Bind the decision to a local: the `Ref` must be released before the `&mut self` calls.
-        let action = self.ctx_loss.state.borrow().action();
+        // Ask the CONTEXT, then let the state machine compose that with the flag it owns
+        // (#695, ADR-0027 D3). Bound to locals in this order deliberately: the liveness read
+        // must not happen while the `Ref` below is alive, and the `Ref` must be released
+        // before the `&mut self` calls in the match.
+        let live = if self.raw_gl.is_context_lost() {
+            ContextLiveness::Dead
+        } else {
+            ContextLiveness::Usable
+        };
+        let action = self.ctx_loss.state.borrow().action(live);
         match action {
             FrameAction::Skip => return Ok(()),
             FrameAction::Rebuild => {

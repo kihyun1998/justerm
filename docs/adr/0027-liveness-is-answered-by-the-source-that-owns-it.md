@@ -77,19 +77,22 @@ work may be attempted cannot be a function of its state alone.
 | the constructor (#688) | `webgl2.is_context_lost()` alone | **D3** ✓ — the flag is a constant here |
 | public `isContextLost()` | flag | **D4** ✓ |
 | `on_restore_deadline`'s `!is_lost`, `restore_overdue()` | flag | **D4** ✓ — these decide a *consumer notification* |
-| `render` → `action()` (**#695**) | flag alone | **D3 ✗ — a defect**, and D4's corollary says why it was inevitable: an "ask" question was placed in a report-only module |
-| `apply_frame` / `apply_damage` | **none** | **D3 ✗ — a defect.** Currently harmless only because `restore` does `invalidate_baseline` *and* `bake_all_glyphs`; recorded with that validity condition in `docs/map/territory/gl-context-lifecycle.md` |
-| `render`'s `Draw` path in the pre-dispatch window | flag | same class as #695. Measured harmless for the same two reasons — **covered from behind, not answering correctly** |
+| `render` → `action()` | context ∧ flag, composed inside `action` | **D3 ✓ — resolved by #695.** Was the defect this record derived; D4's corollary said why it was inevitable (an "ask" question placed in a report-only module) and also how to fix it: the module is *given* the answer it cannot fetch, as `ContextLiveness` |
+| `apply_frame` / `apply_damage` | **none** | **D3 ✗ — a defect, and the one row still open.** Harmless only because `restore` does `invalidate_baseline` *and* `bake_all_glyphs`; recorded with that validity condition in `docs/map/territory/gl-context-lifecycle.md`. Untouched by #695 — it packs from its own call, not from `render` |
+| `render`'s `Draw` path in the pre-dispatch window | as above | **D3 ✓ — resolved by the same change**, since both arms are behind one predicate now. The recorded measurement inverts: `packs()` went **+1** in that window and is now **0**, asserted by `demo/context-loss-race.html` |
 
-The last three rows are what earn this record: they are **derived**, not restated. #695 was found by
-asking D3 of every entry point rather than from a symptom, and the final two rows were classified
-before anyone asked about them.
+The last three rows are what earned this record: they were **derived**, not restated. #695 was found
+by asking D3 of every entry point rather than from a symptom, and the final two rows were classified
+before anyone asked about them. Two of the three are now resolved — by #695, whose fix D4's corollary
+also shaped — which is the record doing the job it was promoted for rather than evidence going stale.
 
-**Tests it reproduces, and one whose scope it narrows.** Every test in `context_loss.rs` survives
-unchanged — none is contradicted. But `a_loss_during_a_pending_rebuild_skips_rather_than_rebuilding_on_a_dead_context`
-tests the lost→restored→lost ordering *only in its reported form*, because a pure state machine has no
-way to express the pre-dispatch window at all. Its coverage is narrower than its name, and D4's
-corollary is the reason.
+**Tests it reproduces, and one whose scope it narrowed.** No test in `context_loss.rs` was ever
+contradicted by this record. One was *narrowed* by it:
+`a_loss_during_a_pending_rebuild_skips_rather_than_rebuilding_on_a_dead_context` tested the
+lost→restored→lost ordering *only in its reported form*, because a pure state machine had no way to
+express the pre-dispatch window at all — D4's corollary is the reason. **#695 closed that gap** by
+giving the module the context's answer: `the_same_loss_before_its_event_is_dispatched_still_skips_the_rebuild`
+is the sibling that reaches the window, and it fails against the pre-#695 implementation.
 
 ## Named prior art
 
