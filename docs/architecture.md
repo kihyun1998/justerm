@@ -46,6 +46,9 @@ header (or `grid().cols()`) rather than assuming the value it passed. It also mu
 does not have. Both references a terminal *engine* compares to forbid the width for the same reason
 (alacritty `MIN_COLUMNS = 2`, xterm.js `MINIMUM_COLS = 2`); ghostty permits it and destroys the glyph.
 justerm clamps in the core, where xterm.js clamps, because justerm has no app layer to clamp in.
+**The one entry point that does not clamp is `decode`, which rejects (§Serialization, #663)** — it
+reads bytes rather than owning the number, and a widened `cols` would re-index the payload that rode
+in with it.
 
 ## Cell
 
@@ -197,6 +200,21 @@ consumers resolve them by scan rather than by index, so clamping them is consume
 ADR-0017 and core has nothing to reject. `encode` mirrors the rule in the direction it can: it drops
 a group entry keyed outside its span rather than narrowing it onto a different live column, with a
 `debug_assert!` naming the producer, since only justerm itself can build one.
+
+**And the header answers to the engine's own floor before its payload answers to the header (#663).**
+`cols < MIN_COLUMNS` or `rows == 0` is `DecodeError::BadGeometry` — a *different* comparison from the
+one above, which is why it is a different variant: `BadSpan` means a part does not fit the geometry the
+frame declares, this means the declared geometry is one no terminal can have. The floor imports no
+policy (xterm.js clamps to the identical `MINIMUM_COLS = 2` / `MINIMUM_ROWS = 1` pair, for the
+wide-glyph reason above), and nothing this crate encodes can declare it, since every engine entry
+point clamps. It is **rejected** rather than clamped — unlike the engine's own resize path, and the
+difference is who owns the value: `resize` owns the number it is widening, while `decode` is reading
+input, and widening `cols` there would re-index a payload laid out for the declared width. There is
+deliberately **no ceiling** counterpart: `cols`/`rows` are `u16` on the wire and `MAX_COLUMNS` is
+`u16::MAX` for exactly that representational reason, so the upper end is bounded by the field. No
+reference bounds a grid's upper end, and the one layer that could — `justerm-renderer` — asks the GL
+implementation rather than predicting it, so a number chosen here would be the stack's only arbitrary
+constant.
 
 The **cell record** (little-endian): `c` (u32 Unicode scalar — *not* the renderer's atlas glyph
 id), `fg`/`bg` (u32 each = tag byte `Default|Indexed|Rgb` + 24-bit payload; the tag is mandatory so

@@ -726,6 +726,15 @@ on, and it is why the "measure what a huge geometry actually does to the tab" ex
 **deliberately not run**: no outcome of it changes the recommendation, because the only fix it could
 motivate is the arbitrary number this paragraph rules out.
 
+**Acted on as #663 — and the way it split is the part to carry forward.** `decode` rejects
+`cols < MIN_COLUMNS` and `rows == 0` as `BadGeometry`; no ceiling was added, and the recommendation
+above is why. What the implementation added to the rows here is the **reject-vs-clamp** answer, which
+none of them settles on its own: both engines *clamp* this exact pair, and justerm rejects it, because
+the references clamp at a `resize` that **owns** the number while `decode` is reading input — the same
+producer-ownership split the paragraph above uses for reject-vs-assert, applied one axis over. So this
+is not a divergence from xterm.js on the floor's value (they agree, exactly) but a different site
+holding the same value, and the site follows from ADR-0008 rather than from anything a reference does.
+
 ## A selection when the screen changes under it (#660, verified 2026-07-31)
 
 The occasion: on justerm's alt screen a selection outlived a resize, and `selection_range` then

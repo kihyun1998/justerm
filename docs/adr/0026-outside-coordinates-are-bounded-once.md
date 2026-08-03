@@ -114,9 +114,15 @@ rather than by trusting a guard two files away"*.
 
 **What this does not cover**, so the scope is not read wider than it was adjudicated:
 
-- **Whether an intake should reject rather than clamp.** #663 weighs exactly that at the decode
-  boundary and reaches no conclusion; xterm does both (reject malformed, accept out-of-range). This
-  record governs what happens *once a value is accepted*, not the admission policy.
+- **Whether an intake should reject rather than clamp.** #663 weighed exactly that at the decode
+  boundary; xterm does both (reject malformed, accept out-of-range). This record governs what happens
+  *once a value is accepted*, not the admission policy.
+  **#663 has since answered its own seam, and the answer does not transfer here** (2026-08-03):
+  `decode` **rejects** a header declaring `cols < MIN_COLUMNS` or `rows == 0`. The two do not conflict
+  and the reason is D2's own — *bound where the value first becomes the engine's problem*. A geometry
+  is not a coordinate inside a grid; it is the grid, so there is no range to clamp it into and no
+  reader downstream that could assume one. Read this bullet as still open for a **coordinate** at an
+  intake, which is what it was about.
 - **Wide-pair snapping** (#454). D4 says which coordinate space the bound lives in, not whether a
   bounded span should then expand onto a pair.
 - **The row axis of `match_spans`**, which is total by a different mechanism (`if row >= rows { break }`

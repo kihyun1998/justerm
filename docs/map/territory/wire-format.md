@@ -51,6 +51,15 @@ IPC by identity.
   unchecked and clamping them is consumer policy (ADR-0017). The rule is one-directional by
   construction: `encode` returns `Vec<u8>` and has no channel to refuse, so it drops an
   unrepresentable group key rather than narrowing it onto a live column, and asserts in debug.
+- **The header answers to the engine's floor, one comparison earlier (#663).** The rule above reads a
+  payload against the declared geometry; this reads the *declared geometry* against the geometry the
+  engine can be in — `cols < MIN_COLUMNS` or `rows == 0` is `BadGeometry`, its own variant because the
+  comparison points the other way. **Rejected, not clamped, and the split is ownership**: every engine
+  entry point clamps because it owns the number it is widening, while `decode` is reading input and a
+  widened `cols` would re-index the payload that rode in with it. The floor is non-arbitrary
+  (xterm.js's `MINIMUM_COLS = 2` / `MINIMUM_ROWS = 1` from the same wide-glyph cause); the **ceiling is
+  not a check at all** — `cols`/`rows` are `u16` and `MAX_COLUMNS` is `u16::MAX` for that
+  representational reason, so the field bounds it.
 
 ## Code
 
@@ -134,7 +143,8 @@ unconditional Step 5 trigger.
   before indexing — so unlike a span's `right`, an over-height count is not a write index anyone
   walks off. It is an annotation by this territory's own rule, and rejecting it would be new
   strictness with no defect behind it.
-- **The header's own `cols`/`rows` are unchecked, and the two ends of that are different problems.**
+- **The header's own `cols`/`rows` are unchecked *upward*, and the two ends of that are different
+  problems** — the floor closed as #663, the ceiling is the one that stays open.
   Four consumer sites size themselves straight from the header — `accessibility-dom.ts` allocates a
   `cols × rows` mirror and a per-row array, `accessibility.ts` builds one DOM element per row and
   loops rows twice — so the widget has no stated stance on a hostile or corrupt frame while `decode`
@@ -145,10 +155,13 @@ unconditional Step 5 trigger.
   adopting what it grants. A "sane" cap in the widget would be the only arbitrary constant in the
   stack. Rows in
   [reference-facts § validating a decoded payload](../../agents/reference-facts.md#validating-a-decoded-payload-against-its-own-declared-geometry-582-verified-2026-07-31).
-  **The floor is fixable and non-arbitrary**: 2 columns is agreed by xterm.js (*"Less than 2 can mess
-  with wide chars"*) and by justerm's own `MIN_COLUMNS` (#547), enforced at every engine entry point,
-  while `decode` accepts `cols: 0` and `cols: 1` — **#663**, kept out of #582 because the two rest on
-  different arguments (a write index a consumer walks off, vs a geometry the engine calls impossible).
+  **~~The floor is fixable and non-arbitrary~~ — closed by #663.** 2 columns is agreed by xterm.js
+  (*"Less than 2 can mess with wide chars"*) and by justerm's own `MIN_COLUMNS` (#547); `decode` now
+  rejects `cols < 2` and `rows == 0` as `BadGeometry` rather than accepting them. It was kept out of
+  #582 because the two rest on different arguments (a write index a consumer walks off, vs a geometry
+  the engine calls impossible) and it shipped as its own change for the same reason. **What that does
+  not touch is the paragraph above it**: a floor bounds nothing upward, so the four consumer sites
+  still size themselves from an unbounded header, and no principled cap exists to give them.
 - **The `ucolors` group count is still `u16`** while its two sibling per-span groups went `u32` in
   #621 — a standing exception to the *"`u32` iff viewport-bounded"* rule stated above. **Measured
   after #582: not reachable.** Rejecting `right >= cols` caps a decodable span at 65 535 cells, one
