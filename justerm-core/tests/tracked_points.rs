@@ -143,9 +143,11 @@ fn a_tracked_point_rotates_with_an_in_screen_region_scroll() {
     let inside = find(&t, "c");
     let edge = find(&t, "b"); // the region's top row, dropped by an up-scroll
     let below = find(&t, "e"); // below the bottom margin — must not move at all
+    let above = find(&t, "a"); // ABOVE the top margin — likewise
     let inside_id = t.track_point(inside.0, inside.1);
     let edge_id = t.track_point(edge.0, edge.1);
     let below_id = t.track_point(below.0, below.1);
+    let above_id = t.track_point(above.0, above.1);
 
     t.feed(b"\x1b[1S");
 
@@ -180,6 +182,20 @@ fn a_tracked_point_rotates_with_an_in_screen_region_scroll() {
         t.tracked_point(below_id),
         Some(below),
         "a point below the region is untouched"
+    );
+    // …and the top bound is load-bearing for the same reason, in the other
+    // direction: a guard that tested only `line > bottom` would drag everything
+    // above the margin — including every point in scrollback — along with content
+    // that never moved.
+    assert_eq!(
+        find(&t, "a"),
+        above,
+        "premise: content above the margin does not move"
+    );
+    assert_eq!(
+        t.tracked_point(above_id),
+        Some(above),
+        "a point above the region is untouched"
     );
 }
 
