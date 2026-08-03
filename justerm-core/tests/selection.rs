@@ -301,6 +301,177 @@ fn word_select_stops_at_a_mid_row_wrap_marker() {
 }
 
 // ===========================================================================
+// The word-boundary set is injected policy (#545, ADR-0017)
+// ===========================================================================
+
+/// A **non-breaking** space does not end a word. The predicate used to be
+/// `char::is_whitespace()`, the Unicode `White_Space` property, which accepts every
+/// space-like codepoint — so `1<NNBSP>234`, an ordinary locale-formatted number,
+/// double-clicked as `1`. Breaking a word on a space whose entire purpose is "do not
+/// break here" is backwards, and all three references treat these as word characters
+/// because their sets are literal (alacritty `SEMANTIC_ESCAPE_CHARS` `term/mod.rs:45`,
+/// ghostty `selection_codepoints.zig:7-28`, xterm.js `OptionsService.ts:55`).
+#[test]
+fn the_default_set_does_not_break_a_word_at_a_non_breaking_space() {
+    // U+00A0 NBSP, U+2007 FIGURE SPACE, U+202F NNBSP, U+205F MEDIUM MATHEMATICAL
+    // SPACE — the four Unicode `Line_Break=GL` (glue) codepoints.
+    for sep in ['\u{00A0}', '\u{2007}', '\u{202F}', '\u{205F}'] {
+        let mut term = Engine::new(80, 24);
+        let text = format!("ab{sep}cd");
+        term.feed(text.as_bytes());
+
+        term.selection_begin(0, 0, Side::Left, SelectionType::Word);
+
+        assert_eq!(
+            term.selection_text().as_deref(),
+            Some(text.as_str()),
+            "U+{:04X} is glue, so it joins the run instead of ending it",
+            sep as u32
+        );
+    }
+}
+
+/// The ASCII space still ends a word — and it is the *control* for the test above, not a
+/// restatement of `word_select_expands_to_word_boundaries`: the two flank the one
+/// distinction the default draws inside `char::is_whitespace()`'s old set.
+#[test]
+fn the_default_set_still_breaks_a_word_at_an_ascii_space() {
+    let mut term = Engine::new(80, 24);
+    term.feed("ab cd".as_bytes());
+
+    term.selection_begin(0, 0, Side::Left, SelectionType::Word);
+
+    assert_eq!(term.selection_text().as_deref(), Some("ab"));
+}
+
+/// U+3000 IDEOGRAPHIC SPACE stays a boundary, and that is justerm's one deliberate
+/// divergence from all three references — none of their default sets carries it, so on
+/// alacritty and xterm.js `　abc` is a single word. It is the only East-Asian-Wide char
+/// `White_Space` accepts (measured over U+0000–U+10FFFF), i.e. the only one whose
+/// presence in the set is load-bearing for CJK double-click. #535 kept it *on the
+/// grounds that core had no injection point*; now that it has one, the same answer is
+/// re-stated as a default the consumer may override rather than as a property of the
+/// predicate (ADR-0025's #535 amendment asks for exactly this restatement).
+#[test]
+fn the_default_set_breaks_a_word_at_an_ideographic_space() {
+    let mut term = Engine::new(10, 3);
+    term.feed("가\u{3000}나".as_bytes());
+
+    term.selection_begin(0, 0, Side::Left, SelectionType::Word);
+
+    assert_eq!(term.selection_text().as_deref(), Some("가"));
+}
+
+/// The same fix, driven by bytes a real program really emitted — the reach #545 filed as
+/// *unmeasured*, measured. On the RHEL 9 box, `printf "%'d" 1234567` under **fr_FR.utf8,
+/// cs_CZ.utf8 and ru_RU.utf8** writes `31 e2 80 af 32 33 34 e2 80 af 35 36 37`, i.e. glibc
+/// groups thousands with **U+202F NARROW NO-BREAK SPACE**; de_DE.utf8 groups with `.` and
+/// is the control. So this is not a Unicode curiosity reachable only by a crafted feed: it
+/// is the default output of a standard formatting directive, and before this change
+/// double-clicking such a number selected the single digit `1`.
+///
+/// The literal below is that captured byte sequence, kept as bytes rather than as a
+/// `format!` over `'\u{202F}'` so the test cannot drift from what was recorded.
+#[test]
+fn a_locale_grouped_number_from_a_real_printf_selects_whole() {
+    let mut term = Engine::new(80, 24);
+    term.feed(b"\x31\xe2\x80\xaf\x32\x33\x34\xe2\x80\xaf\x35\x36\x37");
+
+    term.selection_begin(0, 0, Side::Left, SelectionType::Word);
+
+    assert_eq!(
+        term.selection_text().as_deref(),
+        Some("1\u{202F}234\u{202F}567")
+    );
+}
+
+/// The consumer replaces the set, and the walk obeys it. This is the whole point of
+/// #545 — ADR-0017 routes *which characters separate words* to the consumer (mechanism
+/// in core, policy injected), and all three references expose it as a user knob
+/// (`semantic_escape_chars` / `selection-word-chars` / `wordSeparator`).
+#[test]
+fn a_consumer_supplied_separator_set_replaces_the_default() {
+    let mut term = Engine::new(80, 24);
+    term.feed("a.b c".as_bytes());
+
+    // '.' is deliberately absent from the default (a path stays one word); a consumer
+    // that wants prose semantics adds it.
+    term.set_word_separators(". ");
+    term.selection_begin(0, 0, Side::Left, SelectionType::Word);
+
+    assert_eq!(term.selection_text().as_deref(), Some("a"));
+    assert_eq!(term.word_separators(), ". ");
+}
+
+/// **The blank cell's character is always a boundary, whatever the consumer supplies.**
+/// A row's unwritten padding packs `' '` (`Cell::default`), so `' '` does double duty
+/// that nothing else covers: it terminates the walk at the end of written text, and it
+/// is the backstop that stops the walk stepping onto the trailing spacer of a *wide*
+/// separator. Drop it and both fail at once — measured: `"　abc"` double-clicked on
+/// 'a' starts the highlight at col 1, on the ideographic space's second cell, and then
+/// runs to the row's end because the padding no longer stops it.
+///
+/// So the setter forces `' '` in rather than trusting the caller, which is ghostty's
+/// design one codepoint over: it prepends its own blank (NUL) to every parsed set at
+/// the config intake (`src/config/Config.zig:6160-6161`, *"Always include null as first
+/// boundary"*) rather than special-casing it in `selectWord`. Enforcing at intake means
+/// the walk never has to remember.
+#[test]
+fn an_injected_set_always_keeps_the_blank_cell_a_boundary() {
+    let mut term = Engine::new(10, 3);
+    term.feed("\u{3000}abc".as_bytes()); // 　 fills cols 0..=1; "abc" is cols 2..=4
+
+    // A set with no space in it at all — legal input under every reference's knob.
+    term.set_word_separators("\u{3000}");
+    term.selection_begin(0, 2, Side::Left, SelectionType::Word);
+
+    // The behaviour first, the mechanism second: the range is what the floor exists to
+    // protect, and asserting `contains(' ')` ahead of it would short-circuit the test
+    // before it ever measured the defect.
+    assert_eq!(
+        term.selection_range(),
+        vec![SelectionSpan {
+            row: 0,
+            left: 2,
+            right: 4
+        }],
+        "without the floor this starts at col 1 — on the ideographic space's second cell"
+    );
+    assert_eq!(term.selection_text().as_deref(), Some("abc"));
+    assert!(
+        term.word_separators().contains(' '),
+        "the setter forces the blank cell's char in"
+    );
+}
+
+/// RIS (`ESC c`) resets the *terminal*, not the consumer's configuration, so the
+/// injected set survives it. This is not a free property here: `full_reset` rebuilds
+/// `Term` wholesale (`*self = Term::with_scrollback(..)`) and carries only an explicit
+/// short list across, so a field added without touching it is silently reverted the
+/// first time an application runs `reset`. All three references are immune by
+/// construction instead — alacritty's `reset_state` never touches `self.config`,
+/// xterm.js keeps it in `OptionsService`, ghostty passes the set in per call — so none
+/// of them needs a test like this and justerm does.
+#[test]
+fn a_full_reset_keeps_the_consumer_supplied_separator_set() {
+    let mut term = Engine::new(80, 24);
+    term.set_word_separators(". ");
+
+    term.feed(b"\x1bc"); // RIS
+    term.feed("a.b".as_bytes());
+    term.selection_begin(0, 0, Side::Left, SelectionType::Word);
+
+    // In force first, stored second — the reverse order reports "the field was reset"
+    // where the defect is "the walk went back to the built-in set".
+    assert_eq!(
+        term.selection_text().as_deref(),
+        Some("a"),
+        "the set is still in force after RIS, not just still stored"
+    );
+    assert_eq!(term.word_separators(), ". ");
+}
+
+// ===========================================================================
 // selection_range — viewport line spans for highlight (option (a))
 // ===========================================================================
 

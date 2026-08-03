@@ -238,10 +238,17 @@ impl Term {
     /// stepped onto its second cell before breaking on the lead and started the highlight on
     /// half a glyph (`　abc`, double-click `a` → `1..=4` instead of `2..=4`); and a **lead-less**
     /// trailing spacer (#529's orphan) claimed to continue a glyph that is not there, merging
-    /// two words in the clipboard. Requiring a wide, non-boundary lead answers both. Note the
-    /// boundary clause has exactly **one** live trigger under the current fixed set — U+3000;
-    /// `│` is East-Asian-Ambiguous (width 1) and the rest of the set is ASCII — so it is a real
-    /// case, not a class.
+    /// two words in the clipboard. Requiring a wide, non-boundary lead answers both.
+    ///
+    /// This paragraph used to close by noting the boundary clause had *"exactly one live
+    /// trigger — U+3000"* under the fixed set, `│` being width 1 and the rest ASCII, and
+    /// therefore called it a real case rather than a class. **#545 made the set consumer
+    /// policy, so that count is no longer a property of anything**: the default still has
+    /// U+3000 as its only wide entry, but a consumer may put any wide character in — and
+    /// alacritty's own tests do exactly that (`vi_mode.rs:859`, `term/search.rs:1186` both
+    /// inject `"－"`, FULLWIDTH HYPHEN-MINUS). It is a class now. The clause is written to
+    /// handle one, so nothing here changes; what changed is that its coverage may no longer
+    /// be argued from the default's contents.
     ///
     /// Resolving a spacer through its lead is alacritty's idiom, in a walk:
     /// `alacritty_terminal/src/term/search.rs:457-460` (`skip_wide`; spelled in full because #586
@@ -288,7 +295,22 @@ impl Term {
         cells[col].is_wide_spacer()
             && col > 0
             && cells[col - 1].is_wide()
-            && !is_word_boundary(cells[col - 1].c())
+            && !self.is_word_boundary(cells[col - 1].c())
+    }
+
+    /// Whether `c` ends a word for Word (semantic) selection, per the separator set the
+    /// consumer injected (`Term::set_word_separators`, defaulting to
+    /// [`DEFAULT_WORD_SEPARATORS`]). Membership is the *whole* predicate: there is no
+    /// property term underneath it, which is the point of #545 — a set the consumer
+    /// cannot see past is not policy it can own.
+    ///
+    /// The set is guaranteed to contain `' '` (the setter forces it), and the two walks
+    /// below rely on that in a way that is invisible here: a blank cell packs `' '`
+    /// (`Cell::default`), so `' '` is simultaneously the terminator for a row's unwritten
+    /// padding and the backstop that stops `is_walk_transparent_spacer` above from
+    /// stepping onto a wide *separator's* trailing spacer.
+    fn is_word_boundary(&self, c: char) -> bool {
+        self.word_separators.contains(c)
     }
 
     /// Walk left to the first cell of `p`'s word (a maximal run of non-boundary
@@ -301,7 +323,7 @@ impl Term {
             // rather than stopping — else a word that wrapped only because a wide glyph did not
             // fit would be cut in half (#528).
             if !self.is_walk_transparent_spacer(pl, pc)
-                && is_word_boundary(self.abs_line(pl)[pc].c())
+                && self.is_word_boundary(self.abs_line(pl)[pc].c())
             {
                 break;
             }
@@ -318,7 +340,7 @@ impl Term {
         let (mut line, mut col) = (p.line, p.col.min(cells.len().saturating_sub(1)));
         while let Some((nl, nc)) = self.next_pos(line, col) {
             if !self.is_walk_transparent_spacer(nl, nc)
-                && is_word_boundary(self.abs_line(nl)[nc].c())
+                && self.is_word_boundary(self.abs_line(nl)[nc].c())
             {
                 break; // (see `word_start`: a glyph's spacer is transparent to the walk)
             }
@@ -327,11 +349,4 @@ impl Term {
         }
         BufferPoint { line, col }
     }
-}
-
-/// Whether `c` ends a word for Word (semantic) selection. Whitespace plus a
-/// punctuation set mirroring Alacritty's default `semantic_escape_chars`, so
-/// path/URL-ish runs (`.`, `/`, `-`) stay one word.
-fn is_word_boundary(c: char) -> bool {
-    c.is_whitespace() || ",│`|:\"'()[]{}<>".contains(c)
 }

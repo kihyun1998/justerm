@@ -54,7 +54,10 @@ the argument for the current one.
 
 ## Cross-cutting invariants
 
-*(none identified yet)*
+- [RIS keeps configuration and drops coordinates](../invariant/ris-keeps-configuration-drops-coordinates.md)
+  — both queues survive `ESC c`, and this is the only territory where the reset *adds* to one: every
+  marker's disposal is announced into `events` before the rebuild, so the consumer drops decorations
+  that now name nothing
 
 ## Blast radius
 

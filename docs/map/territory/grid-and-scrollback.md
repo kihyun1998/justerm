@@ -55,6 +55,10 @@ once, in prose, about upstream code that moves.
 - [alt-screen absolute-index floor](../invariant/alt-screen-buffer-floor.md) — the whole reason that
   invariant exists is the storage decision above: one concatenated coordinate space over two logical
   buffers
+- [RIS keeps configuration and drops coordinates](../invariant/ris-keeps-configuration-drops-coordinates.md)
+  — `scrollback_limit` survives `ESC c` while every cell does not, and it is the one surviving field
+  that never appears in `full_reset`'s copy-back list (it rides the constructor argument instead), so
+  auditing that list undercounts
 
 ## Blast radius
 

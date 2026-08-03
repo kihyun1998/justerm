@@ -151,11 +151,27 @@ space of `"ab cd"` returns `"ab cd"` — both words joined. That looked like a b
 | Whitespace **is** a semantic escape char (`",│\|:\"' ()[]{}<>\t"`, note the space) — but both semantic walkers **exclude the starting cell**, so starting *on* a space never terminates there and the selection joins the words on either side. `iter_from(point)` never yields `point`: `next()` advances *before* returning, `prev()` decrements before returning | alacritty | const `term/mod.rs:45`; `term/search.rs:541` `inline_search_left` (`iter.prev()` first), `:564` `inline_search_right`; iterator semantics `grid/mod.rs:412` `iter_from`, `:595-609` `next` |
 | The **opposite** design: an explicit branch on the start cell's own class — `if (line.charAt(startIndex) === ' ')` expands over whitespace *only*, `else` expands until whitespace. Double-clicking a space selects the whitespace run and never crosses into a word | xterm.js | `browser/services/SelectionService.ts:858-865`, inside `_getWordAt` (`:833`); the caller carries an explicit `allowWhitespaceOnlySelection` flag (`:344`, `:988`) |
 
-**Verdict recorded so it is not re-litigated: justerm converges with alacritty, and the references are
-1:1.** So "the walk crosses a separator" is not by itself evidence of a defect here — by the two-lens
-divergence-direction rule, a split reference means this is a *product* choice, not a correctness fix.
-Valid as long as justerm's word-boundary set keeps treating the start cell like alacritty does; #545
-(injecting the boundary set instead of hardcoding it) is the issue that would revisit it.
+| The **same** design as xterm.js, reached independently: `selectWord` derives `expect_boundary` from the **start cell's own** class and then walks while `this_boundary == expect_boundary` (`:3240` forward, `:3277` backward). So double-clicking a space selects the whitespace run and never crosses into a word | ghostty | `src/terminal/Screen.zig:3217` |
+
+**Verdict recorded so it is not re-litigated: justerm converges with alacritty, and the references
+split.** So "the walk crosses a separator" is not by itself evidence of a defect here — by the
+two-lens divergence-direction rule, a split reference means this is a *product* choice, not a
+correctness fix.
+
+⚠ **The split is 2:1, not 1:1 — corrected 2026-08-03 (#545).** This section shipped tabling only
+alacritty and xterm.js and concluding "the references are 1:1"; ghostty is a third data point and
+it sides with xterm.js (row 3, added above). The verdict is unaffected — 2:1 is still a split, so
+this is still a product choice — but the arithmetic was wrong, and it was wrong in the direction
+that flatters justerm's position. Recorded rather than silently fixed, because "the references are
+evenly split" and "justerm is in the minority of three" are different things to hand the next
+person deciding here.
+
+Valid as long as justerm's walk keeps *never testing the start cell's own class* — which is a
+property of `word_start` / `word_end`'s loop shape (each steps to a neighbour before applying the
+predicate), **not** of the boundary set's contents. That distinction was not visible when this was
+written, because the set was hardcoded and the two moved together; #545 made the set consumer
+policy, so it is worth being explicit: no choice of separator set can break this clearance, and
+only adopting the `expect_boundary` design would.
 
 ## What a blanked / freed cell is made of
 

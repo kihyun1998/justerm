@@ -37,7 +37,9 @@ pub use serialize::{
     MarkerPosition, Overlay, Span, WIRE_VERSION, decode, encode, encode_cell_record, encode_color,
 };
 
-pub use term::{CommandLine, Hyperlink, MAX_COLUMNS, MAX_ROWS, MIN_COLUMNS, Term};
+pub use term::{
+    CommandLine, DEFAULT_WORD_SEPARATORS, Hyperlink, MAX_COLUMNS, MAX_ROWS, MIN_COLUMNS, Term,
+};
 
 use vte::Parser;
 
@@ -338,6 +340,19 @@ impl Engine {
     /// Extend the live selection to viewport cell `(row, col)`, on `side`.
     pub fn selection_extend(&mut self, row: usize, col: usize, side: Side) {
         self.term.selection_extend(row, col, side);
+    }
+
+    /// Replace the characters that end a word for [`SelectionType::Word`] — consumer
+    /// policy injected into a core mechanism (ADR-0017). Defaults to
+    /// [`DEFAULT_WORD_SEPARATORS`]. `' '` is forced in; see [`Term::set_word_separators`]
+    /// for why that floor is load-bearing rather than defensive.
+    pub fn set_word_separators(&mut self, separators: &str) {
+        self.term.set_word_separators(separators);
+    }
+
+    /// The word-boundary set currently in force (including the forced `' '`).
+    pub fn word_separators(&self) -> &str {
+        self.term.word_separators()
     }
 
     /// Clear the selection.

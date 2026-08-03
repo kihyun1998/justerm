@@ -350,12 +350,21 @@ the fix site follows from. Whether it is still open is the tracker's answer, not
   test, so a stranded marker still merges words in the *text*. That is a read-site symptom of
   #534 and is fixed at the write site, not by widening this predicate.
 
-  **One rationale in that amendment is now pinned to #545.** Keeping U+3000 a word boundary (via
-  `char::is_whitespace()`) was argued *on the grounds that core has no injection point for the
-  boundary set* — which is exactly what #545 is filed to add. #545 is **not** a conformance item of
-  this ADR (it is policy routing, ADR-0017 — see "Adjacent" below), but when it lands, this
-  rationale must be re-stated as a **default the consumer may override** rather than as a property
-  of the predicate. Recorded so the sweep reaches it from here.
+  **One rationale in that amendment was pinned to #545, and #545 has landed — re-stated
+  2026-08-03.** Keeping U+3000 a word boundary was originally argued *on the grounds that core has
+  no injection point for the boundary set*, and that ground is gone: the set is now consumer
+  policy (`Term::set_word_separators`, defaulting to `DEFAULT_WORD_SEPARATORS`). The **outcome is
+  unchanged** — U+3000 is still a boundary — but it now holds as a *default the consumer may
+  override*, not as a property of the predicate, so a consumer wanting reference-exact behaviour
+  removes it and this record has no opinion about that. #545 remains **not** a conformance item of
+  this ADR (it is policy routing, ADR-0017 — see "Adjacent" below); what it touched here was only
+  this ground.
+
+  What did *not* survive the landing is the other half of the same sentence. The predicate no
+  longer reads `char::is_whitespace()`, so U+3000's old description — *"wide **and**
+  `is_whitespace()`"* — is now a statement about a codepoint's Unicode properties and no longer
+  about how this engine classifies it. The D4 reasoning above is untouched: it turns on the lead
+  being *a boundary*, whatever puts it in the set.
 - **#540** — the row-shift verbs are CLEAR sites for the **wrap flag** (D2), the analogue of #534's
   marker clear. **Amended by the implementation (2026-07-25).** The roster line read "end the wrap
   on the row above a shifted region"; shipping it found the rule is wider, and each widening comes
@@ -627,8 +636,10 @@ blank a cell). Recorded here only so the neighbour is not later mistaken for a f
 ADR does govern (see #535), but the *boundary set* they consult is a different axis entirely: ADR-0017
 routes it to the consumer (mechanism in core, policy injected), and all three references expose it as a
 user knob. Folding it in here would put a policy decision inside a state-ownership record and let a
-future reader think D1–D4 have an opinion about character classes; they have none. The only tie is the
-stale-rationale pin recorded under #535 above.
+future reader think D1–D4 have an opinion about character classes; they have none. The only tie was the
+stale-rationale pin recorded under #535 above, **discharged 2026-08-03 when #545 landed** — see that
+entry. This separation held under the landing, which is the useful part: injecting the set changed no
+rule here, because D4 turns on the lead *being a boundary* and never on what put it in the set.
 
 **Snapping a consumer-side span to a wide pair is projection, not ownership (#454).** That a decoration
 or selection span must not bisect a width-2 glyph is D4's *echo* one layer up, but the span lives in the
