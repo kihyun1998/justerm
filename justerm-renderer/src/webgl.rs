@@ -635,16 +635,45 @@ impl JustermRenderer {
             .ok_or_else(|| JsValue::from_str("justerm-renderer: no webgl2 context"))?
             .dyn_into()?;
 
+        // `getContext` succeeding is NOT a liveness property (#688): on a canvas whose context is
+        // already lost it hands back the SAME lost object. Everything below then runs on a dead
+        // context, and the very first thing that does is glow's own constructor — which enumerates
+        // the extensions (`get_supported_extensions().unwrap()`, glow `web_sys.rs:237-239`) and
+        // PANICS on the `null` a lost context answers with, before any code here is reached. A
+        // panic crosses into JS as a `RuntimeError`, not as this crate's `Err`, so a consumer's
+        // `catch` gets something no other failure here produces.
+        //
+        // One check covers the whole constructor because a context cannot die *inside* it: loss is
+        // observed at a task boundary, and everything from here to the final `resize` is
+        // synchronous. That is the condition this single guard rests on — an `await` introduced
+        // below would break it, not the guard.
+        //
+        // It asks the CONTEXT, not this crate's own state machine. The machine's flag is fresh
+        // here and therefore always `false` — spine #689's proxy ①, and not a weaker predicate but
+        // a constant. Measured as a mutation on `demo/context-loss-construct.html`, whose
+        // pre-dispatch section is exactly where the two answers differ.
+        if webgl2.is_context_lost() {
+            return Err(JsValue::from_str(
+                "justerm-renderer: webgl2 context is lost",
+            ));
+        }
+
+        // Attach before ANY GL work, so a loss during construction is observed rather than missed
+        // (the pipeline/atlas built below would then be silently invalidated) (#269). "Any" now
+        // includes glow's constructor below, which reads the context to parse its version — the
+        // line this comment used to sit seven lines beneath (#688).
+        let ctx_loss = ContextLossHandler::new(&canvas)?;
+
         let raw_gl = webgl2.clone();
         let gl = glow::Context::from_webgl2_context(webgl2);
         // Read once: the atlas is sized from the cell (#359), and the cell is the consumer's to grow.
+        // `.max(1)` defends glow's fallback, not the driver: `get_parameter_i32` answers `0` for a
+        // `null` rather than failing (glow `web_sys.rs:3590`), so the clamp is about the binding's
+        // shape, not about a limit any live implementation would report (#688 — and the guard above
+        // is what keeps a `null` from reaching here in the first place).
         let max_texture_size =
             unsafe { gl.get_parameter_i32(glow::MAX_TEXTURE_SIZE).max(1) as u32 };
         let size = (canvas.width() as i32, canvas.height() as i32);
-
-        // Attach before ANY GL work, so a loss during construction is observed rather than missed
-        // (the pipeline/atlas built below would then be silently invalidated) (#269).
-        let ctx_loss = ContextLossHandler::new(&canvas)?;
 
         // devicePixelRatio: rasterise the atlas at device px (FONT_SIZE * dpr) so HiDPI is sharp,
         // and size the drawing buffer in device px. The consumer speaks CSS px (#252); the renderer

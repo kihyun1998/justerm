@@ -564,6 +564,22 @@ the whole finding, and it is invisible unless the absence is recorded with the t
 | **The comparison set does not extend.** alacritty and ghostty are not browser renderers and have no context-loss concept at all — matching `gl-context-lifecycle.md`'s recorded *"No reference comparison at all"* | alacritty · ghostty | n/a by layer, not by omission |
 | **Direction: justerm decides alone.** The read-back is this repo's own #339 design — `resize`'s comment states *"No reference does this"* and names what the three references do instead — so the guard's shape came from the four sibling entry points in the same crate, not from prior art | justerm-renderer | `justerm-renderer/src/webgl.rs` `resize`, `adopt_spacing`, `set_device_pixel_ratio` |
 
+## Reading a GL parameter that a lost context answers with `null` (#688, verified 2026-08-03)
+
+The sibling of the section above, and the useful contrast: there the reference had **nothing** to
+guard, here it does the **same thing we do** and gets away with it. So this is not a divergence to
+correct — the shape is shared and the difference lives entirely in the binding. Recorded because
+"xterm reads it unguarded too" is the sentence that would otherwise close the question, and it is
+only half of what the reference says.
+
+| Fact | Reference | Site |
+|---|---|---|
+| **`MAX_TEXTURE_SIZE` is read in the constructor, unguarded**, exactly as justerm's is — no `isContextLost`, no null check | xterm.js | `addons/addon-webgl/src/WebglRenderer.ts:123` |
+| …and the **context-loss listeners are attached two lines *after* it** (`:125`, `:137`). So "attach before any GL work" is a promise justerm made to itself, not a reference practice | xterm.js | `addons/addon-webgl/src/WebglRenderer.ts:123` then `:125` |
+| ⚠ **But its other two parameter reads *are* falsy-guarded** — `throwIfFalsy(gl.getParameter(...))`, which turns a `null` into a throw rather than a value carried on. So the reference is not indifferent to the read; it is inconsistent across its own call sites, and the guarded form is the one it wrote where the value is load-bearing | xterm.js | `addons/addon-webgl/src/GlyphRenderer.ts:128`, `:130` |
+| **Why it survives there and not here — the binding, not the design.** JS receives `null` and carries on; `glow` unwraps. `Context::from_webgl2_context` does `get_supported_extensions().unwrap()` and panics *before* the parameter read is reached, and `get_parameter_i32` itself answers `0` for a `null` (`.as_f64().map(…).unwrap_or(0)`) rather than failing | glow 0.18.0 | `glow-0.18.0/src/web_sys.rs:237-239` (the panic), `:3590` (the harmless read) |
+| **Every other glow call this crate makes fails cleanly on a lost context**, so the panic surface is one call, not a class: `create_*` → `Result`, `get_uniform_location` → `Option`, `get_*_status` → `.as_bool().unwrap_or(false)`, `get_*_info_log` → `unwrap_or_else(String::new)` | glow 0.18.0 | `web_sys.rs:1730/1757/1890/2446/2588`, `:3823`, `:1846`, `:1997`, `:2036`, `:1856` |
+
 ## Background transparency — the shape of the knob (#577, verified 2026-07-29)
 
 The file had **zero** rows on transparency before this, though `set_bg_alpha` has existed since #298
