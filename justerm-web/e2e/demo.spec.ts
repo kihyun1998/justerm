@@ -822,6 +822,33 @@ test.describe("active search match rides its own channel, not the selection (#42
     expect(p.active).toBeNull();
     expect(p.selectionSpans.length).toBeGreaterThan(0);
   });
+
+  // #441: as-you-type, the emphasis stays on the occurrence the user is on — it
+  // does NOT re-land on match 0 and scroll there on every keystroke. Both
+  // references that designate while typing anchor it (xterm expands the current
+  // selection at its position, `SearchEngine.ts:108-116`; alacritty re-runs from
+  // a stored origin, `event.rs:1523` via `:1566`), and the third designates
+  // nothing at all while typing. The count label is the DOM proxy and it is discriminating
+  // by construction: the old code set the index to 0 unconditionally, so a
+  // `current` other than 1 is unreachable without the anchor.
+  test("extending the query keeps the emphasis where the user was (#441)", async ({ page }) => {
+    await page.locator("#term").click({ position: { x: 50, y: 50 } });
+    await page.keyboard.press("Control+f");
+    // "e" is frequent (several per demo row); "el" occurs once per row, inside
+    // "select" — so the extension redistributes the set and the anchored
+    // occurrence lands on a DIFFERENT ordinal than the old always-0.
+    await page.locator('input[placeholder="search"]').fill("e");
+    await expect(page.locator("#search-count")).toHaveText(/^1\/\d+/);
+    for (let i = 0; i < 8; i++) await page.keyboard.press("Enter");
+    await expect(page.locator("#search-count")).toHaveText(/^9\/\d+/);
+
+    // One real keystroke, extending "e" → "el".
+    await page.locator('input[placeholder="search"]').pressSequentially("l");
+
+    await expect(page.locator("#search-count")).not.toHaveText(/^1\/\d+/);
+    // …and it is a real match, not a stuck label: the active channel still paints.
+    expect((await probe(page)).active).toBe(ACTIVE);
+  });
 });
 
 // #439: search navigation announces "x of y" — VS Code's SimpleFindWidget wording verbatim
@@ -854,11 +881,19 @@ test.describe("search navigation announces x of y (#439)", () => {
     // Escape closes the box: the count resets with the query text still in the
     // input — the announce must NOT fire ("No results found for 'select'" here
     // would be the bug), so the region keeps its last spoken text.
+    //
+    // The ordinal here is **2**, not 1, and that is #441/#437, not drift: the
+    // emphasis was on match 2 before "zzzqq", and a query that transiently
+    // matches nothing no longer forgets where the user was (alacritty keeps its
+    // origin across exactly this; xterm loses it with its selection). This
+    // assertion pinned the old jump-to-the-first-match behaviour as expected —
+    // it is adjudicated here rather than flipped: the subject of the test is the
+    // SILENCE after Escape below, which is unchanged.
     await page.locator('input[placeholder="search"]').fill("select");
-    await expect(page.locator(searchLive)).toHaveText(/^1 of \d+ found for 'select'$/);
+    await expect(page.locator(searchLive)).toHaveText(/^2 of \d+ found for 'select'$/);
     await page.keyboard.press("Escape");
     await expect(page.locator("#search-count")).toHaveText("0/0"); // the reset happened…
-    await expect(page.locator(searchLive)).toHaveText(/^1 of \d+ found for 'select'$/); // …silently
+    await expect(page.locator(searchLive)).toHaveText(/^2 of \d+ found for 'select'$/); // …silently
   });
 
   test("with the screen reader off, search stays silent while the label still updates (#161)", async ({

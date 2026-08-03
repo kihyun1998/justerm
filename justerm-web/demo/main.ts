@@ -1111,6 +1111,12 @@ const searchPort: SearchPort = {
     searchEngine.setActive(i);
     render();
   },
+  // Where the emphasis went after the last hand-over (#437/#441): the backend
+  // owns the match positions, so only it can say which index still names the
+  // occurrence the user was on. Without this the emphasis silently jumps to a
+  // different piece of text whenever output shifts the set, and every keystroke
+  // re-lands on match 0.
+  anchoredIndex: async () => searchEngine.anchoredIndex(),
   clear: () => {
     // Search state only — a live selection is the USER's (#429; pre-#429 the
     // selection was the active-match emphasis, which is why this used to clear it).
@@ -1123,7 +1129,15 @@ const searchPort: SearchPort = {
 // an invalid regex-mode query as-you-type rather than showing a silent 0 matches.
 // JS `RegExp` can't stand in: its grammar differs from core's `regex` crate.
 const { isValidRegex } = await import("justerm-wasm-decode");
-const search = new SearchController(searchPort, { isValidRegex });
+const search = new SearchController(searchPort, {
+  isValidRegex,
+  // The debounced re-search moves the CURRENT index too, not just the total
+  // (#437) — so the label has to refresh here or it shows the ordinal from
+  // before the output while the overlay paints a different match. Label only:
+  // #439's announce cadence stays user-driven, and speaking on every 200ms
+  // re-search is exactly the spam that gate exists to prevent.
+  onResults: () => updateCountLabel(),
+});
 
 const box = document.createElement("div");
 box.style.cssText =
@@ -1205,7 +1219,9 @@ function currentOptions(): SearchOptions {
   };
 }
 
-function updateCount(): void {
+/** The VISIBLE half — safe to run on any result change, including background
+ * ones (#437). The announce half is deliberately not here. */
+function updateCountLabel(): void {
   if (search.isInvalidRegex()) {
     countLabel.textContent = "invalid";
     input.style.borderColor = "#f38ba8"; // red — regex the engine can't run
@@ -1214,7 +1230,11 @@ function updateCount(): void {
   input.style.borderColor = "#45475a";
   const r = search.result();
   countLabel.textContent = `${r.current}/${r.total}`;
-  announceSearchCount(r); // #439: same user-driven cadence as the visible label
+}
+function updateCount(): void {
+  updateCountLabel();
+  if (search.isInvalidRegex()) return;
+  announceSearchCount(search.result()); // #439: user-driven cadence only
 }
 function runSearch(): void {
   void search.search(input.value, currentOptions()).then(updateCount);

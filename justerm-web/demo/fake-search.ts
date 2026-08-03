@@ -39,6 +39,17 @@ export class FakeSearchEngine {
   /** Index of the ACTIVE (current) match (#429) — the engine-side designation
    * `set_active_search_highlight` mirrors. `undefined` = nothing designated. */
   private activeIndex: number | undefined;
+  /** The POSITION the emphasis was last designated at (#437/#441) — set by
+   * {@link setActive}, and deliberately NOT re-sampled per {@link search}: it
+   * has to outlive the set it came from, because a hand-over resets the
+   * designation and the next thing that reads the anchor is a *later* search.
+   * Sampling it per hand-over loses it whenever a superseded re-search lands
+   * first, or the query passes through zero matches — the two orderings that a
+   * streaming terminal produces constantly. This is alacritty's shape (`origin`
+   * is a `Point` in `SearchState`, cleared by neither `search_reset_state` nor
+   * the match set) rather than xterm's (whose anchor IS the selection, so it
+   * dies with it). Dropped by {@link clear}. */
+  private anchor: Match | undefined;
 
   /** Find every occurrence of `query` in `lines`, honouring `options` (regex,
    * whole-word, case). Smart-case unless `caseSensitive` is set: a query with no
@@ -111,6 +122,11 @@ export class FakeSearchEngine {
    * engine takes an index into the highlight set it holds). */
   setActive(index: number): void {
     this.activeIndex = this.matches[index] ? index : undefined;
+    // Designating is also what moves the anchor — the emphasis's position is
+    // recorded the moment it is placed, so it is already correct for whatever
+    // hand-over comes next (#437/#441). An out-of-range designation designates
+    // nothing and therefore moves nothing.
+    if (this.activeIndex !== undefined) this.anchor = this.matches[this.activeIndex];
   }
 
   /** The ACTIVE match projected onto the viewport as flat `(row, left, right)` —
@@ -124,6 +140,30 @@ export class FakeSearchEngine {
     return row >= 0 && row < rows ? [row, m.startCol, m.endCol] : [];
   }
 
+  /** Where the emphasis belongs in the set the last {@link search} produced, so
+   * it stays on the same OCCURRENCE rather than the same ordinal (#437/#441).
+   *
+   * The rule: the anchored occurrence itself if it survived, otherwise the first
+   * one at or after it, wrapping to the top. That is xterm's `findNext` rule
+   * (`SearchEngine.ts:139-148`) applied to BOTH paths, which is a deliberate
+   * choice rather than a convergence — xterm's own two paths disagree, since its
+   * debounced output re-find is `findPrevious`, whose fallback walks *backward*
+   * from the anchor (`SearchEngine.ts:201-213`). alacritty answers a different
+   * question (a fixed origin plus the user's last search direction) and ghostty
+   * refuses to guess (exact pin equality, else back to the first or last match).
+   * Nothing arbitrates the fallback direction; one rule on both paths is at
+   * least self-consistent, which the reference is not.
+   *
+   * `undefined` = no anchor at all, so land on match 0. */
+  anchoredIndex(): number | undefined {
+    const a = this.anchor;
+    if (!a || this.matches.length === 0) return undefined;
+    const at = this.matches.findIndex(
+      (m) => m.startLine > a.startLine || (m.startLine === a.startLine && m.startCol >= a.startCol),
+    );
+    return at === -1 ? 0 : at;
+  }
+
   match(index: number): Match | undefined {
     return this.matches[index];
   }
@@ -131,5 +171,6 @@ export class FakeSearchEngine {
   clear(): void {
     this.matches = [];
     this.activeIndex = undefined;
+    this.anchor = undefined;
   }
 }
