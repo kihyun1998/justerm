@@ -1497,6 +1497,15 @@ impl Term {
             // The alt half's tracked points, on the alt marker's rule: a row the
             // shrink pushed off an unarchived screen is gone, so the point is
             // released rather than relocated (#691).
+            //
+            // The `row < rows` half of that guard is **unproven, deliberately kept**.
+            // A mutation dropping it stays green, and a sweep of 324 alt resizes
+            // (rows 1..6 x cols {4,10,30}, both directions, a point on every alt row
+            // at columns 0 / 1 / cols-1 / cols plus one past the pane) never reached
+            // it — the alt fit runs with `reflow: false`, so a surviving row always
+            // maps below the new row count. That is a measured *validity condition*,
+            // not a proof of unreachability, and the marker loop above carries the
+            // same bound: parity is the reason it stays.
             let mut ai = 0;
             let alt_extras = &r_alt.extras;
             let alt_evicted = r_alt.evicted;
