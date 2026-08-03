@@ -54,10 +54,19 @@ fn dump(term: &Engine) -> String {
 /// dump takes an explicit `unwrap` option (*"Whether to unwrap soft-wrapped
 /// lines"*, `terminal/formatter.zig:88-90` @ `e6e26e1`) and its resize/reflow tests
 /// assert the wrapped and unwrapped forms of one screen.
+///
+/// The normalisation here is `trim_end_matches(' ')`, **not** `trim_end()`, and the
+/// difference is load-bearing rather than tidy (#685). A harness that normalises
+/// with the Unicode `White_Space` property deletes exactly the characters the
+/// engine's own trim is about, so `written_space.raw` — whose whole point is a
+/// written U+00A0 / U+3000 / U+2003 at a row's end — would produce an identical
+/// golden with the fix on and off. The char grid cannot cover for it either:
+/// `dump` prints the cell's codepoint, and the cell holds the space in both
+/// states. This one line is the only place the capture can fail.
 fn logical_lines(term: &Engine) -> String {
     let mut s = String::from("--- logical lines ---\n");
     for line in term.accessible_text().lines() {
-        s.push_str(&format!("{:?}\n", line.trim_end()));
+        s.push_str(&format!("{:?}\n", line.trim_end_matches(' ')));
     }
     s
 }
@@ -393,5 +402,38 @@ fn softwrap_wide_capture() {
         &term,
         include_str!("fixtures/softwrap_wide.golden"),
         include_str!("fixtures/softwrap_wide.logical.golden"),
+    );
+}
+
+// ===========================================================================
+// A written Unicode space at a row's end (#685)
+// ===========================================================================
+
+/// #685 dogfood — REAL captured `ls -1` + `less` session (80x24, RHEL 9.2; see
+/// tests/fixtures/capture-written-space.sh) whose rows **end** in a written
+/// U+00A0 / U+3000 / U+2003.
+///
+/// The corpus could not previously reach this state: measured across all 14 other
+/// captures, NBSP appears 0 times and EM SPACE 0 times, so the engine's Unicode
+/// `White_Space` trim deleted characters no golden could see. A real application
+/// is the point rather than a `printf` — the premise under test is that one *emits*
+/// such a byte at a line's end, and coreutils `ls -1` does so unquoted for a
+/// filename, as does `less` redrawing the file's own content.
+///
+/// **Only the logical-lines golden can fail here**, and only because
+/// `logical_lines` normalises with `trim_end_matches(' ')`; see its doc comment.
+/// The char grid holds the space in either state. Verified by turning the fix off:
+/// the logical golden goes red on five lines, the char golden stays green.
+///
+/// `"mid\u{a0}witness"` and `"delta mid\u{a0}run"` are the controls — a written
+/// space that is not at a trim site, which must survive in every state.
+#[test]
+fn written_space_capture() {
+    let mut term = Engine::new(80, 24);
+    term.feed(include_bytes!("fixtures/written_space.raw"));
+    check_capture(
+        &term,
+        include_str!("fixtures/written_space.golden"),
+        include_str!("fixtures/written_space.logical.golden"),
     );
 }

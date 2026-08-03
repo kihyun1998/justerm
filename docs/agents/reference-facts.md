@@ -1099,3 +1099,43 @@ the majority side by construction.
 | `origin` at search start — the **viewport edge**, picked by search direction (`Right` → viewport top, `Left` → bottom); the vi-mode branch above it uses the vi cursor instead | alacritty | `alacritty/src/event.rs:970` |
 | `origin` re-parked at the focused match, by next/prev only | alacritty | `alacritty/src/event.rs:1143` |
 | …and `update_search`, the typing path, does not touch it — it only rebuilds the DFAs and re-runs `goto_match` | alacritty | `alacritty/src/event.rs:1523` |
+
+## Trimming a line's end (#685, verified 2026-08-03)
+
+Every row grepped at the pinned SHAs that day. The question: when a reference turns cells into
+text, **what does it strip from the end, and by which predicate?** justerm used
+`str::trim_end()` — the Unicode `White_Space` *property* — and no reference does that on its
+primary path.
+
+Two things this section exists to keep straight, because a count gets both wrong:
+
+- **The predicate and the *shape* are different answers.** Two references never trim a string at
+  all: they bound the row's written extent and let the selection's own end column clip against it.
+  Only ghostty accumulates and then decides, which is justerm's shape — so ghostty is the one whose
+  mechanism transfers.
+- **Two of the three contradict themselves**, on a secondary path each. A row that said only
+  "alacritty strips `' '`" would be true of the arm justerm does *not* mirror and false of the arm
+  it does.
+
+| Fact | Reference | Site |
+|---|---|---|
+| Primary path is a **row-extent bound**, not a trim: `line_to_string` clips at `min(line_length(), cols.end + 1)` | alacritty | `alacritty_terminal/src/term/mod.rs:572` |
+| …and `line_length()` scans back while `cell.c != ' '` (plus a non-empty `zerowidth`), short-circuiting to the full row on `WRAPLINE` — so a written **NBSP is kept**, a trailing ASCII space is not distinguishable from padding | alacritty | `alacritty_terminal/src/term/cell.rs:271` |
+| ⚠ **The `SelectionType::Block` arm additionally applies Rust `.trim_end()`** on top of the already-bounded string, so alacritty drops a trailing NBSP on a *block* copy and keeps it on every other kind. These are the **only two** `trim_end` / `is_whitespace` uses in `alacritty_terminal/src/` — grepping the crate for a trim finds this arm first and the primary path not at all | alacritty | `alacritty_terminal/src/term/mod.rs:540`, `:544` |
+| **Deferred-blank accumulator** — a cell with no text, or `codepoint() == ' '`, is counted into `blank_cells` and emitted only if a non-blank follows. justerm's shape, and the only reference with **one** rule | ghostty | `src/terminal/formatter.zig:1145` |
+| …stated in the option's own doc: *"Whitespace is currently only space characters (0x20)."* `Screen.selectionString` routes through this formatter, so selection copy uses the same predicate | ghostty | `src/terminal/formatter.zig:95` |
+| ⚠ `selection_codepoints.default_line_whitespace = { 0, ' ', '\t' }` is **not** the extraction predicate — it belongs to `selectLine`, which moves the selection's *pins* past whitespace. Citing it for the trim is the mistake #685's own first correction made | ghostty | `src/terminal/selection_codepoints.zig:31` |
+| **Column clip to written extent**: `translateToString` does `endCol = min(endCol, getTrimmedLength())` | xterm.js | `src/common/buffer/BufferLine.ts:553` |
+| …and `getTrimmedLength` scans back for `HAS_CONTENT_MASK`, i.e. any *written* cell — so xterm keeps a written trailing **ASCII space** too, which the other two cannot | xterm.js | `src/common/buffer/BufferLine.ts:484` |
+| ⚠ **The string-cache-hit path returns `value.trimEnd()` instead** — JS `trimEnd()` is Unicode `White_Space`, disagreeing with the clip above on a trailing NBSP. Same line, two answers, decided by cache state. Reachable only on a *canonical* request (no `startCol`/`endCol`/`outColumns`), which selection and a11y never make; search / web-links / the character joiner do | xterm.js | `src/common/buffer/BufferLine.ts:544` |
+
+**What justerm did with this (#685).** Adopted ghostty's predicate at all four of its own trims,
+because ghostty is both the self-consistent reference and the one sharing justerm's
+accumulate-then-decide shape. The Block arm — a verbatim copy of alacritty's contradictory one — was
+settled by **intra-surface consistency** rather than by the references, since alacritty's two arms
+disagree: a Linear and a Block selection over the same cells must return the same text.
+
+**What it did not buy.** xterm's extra case — a *written* trailing ASCII space — needs a bit
+distinguishing a written `' '` from a blank, and justerm's blank cell packs `' '`
+(`justerm-core/src/cell.rs`, `Cell::default`). Recorded as the open axis, not fixed: the references
+split 2–1 there, where they are 3–0 on the property.

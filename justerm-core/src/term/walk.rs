@@ -93,6 +93,14 @@ impl Term {
     /// lines between). Soft-wrapped rows (WRAPLINE) accumulate into one *logical*
     /// line so trailing-blank trimming happens only at the logical end — spaces
     /// at a wrap boundary are real content. A hard line-end flushes with `\n`.
+    ///
+    /// **The trim removes `' '` and nothing else** (#685). It exists to drop a row's
+    /// unwritten padding, and a blank cell packs `' '`, so that codepoint is the whole
+    /// of what may be padding; a `White_Space` *property* test additionally deletes a
+    /// U+00A0 / U+3000 the application printed and the user selected. See
+    /// `docs/map/invariant/only-u0020-can-be-padding.md` — the same rule binds
+    /// `viewport_logical_lines`, `search`'s haystack and the Block arm of
+    /// `selection_text`, each of which trims independently.
     pub(super) fn extract_lines(
         &self,
         grid: &Grid,
@@ -135,7 +143,7 @@ impl Term {
             let is_last = line == end_line;
             let soft = self.row_in(grid, line).is_wrapped();
             if is_last || !soft {
-                out.push_str(current.trim_end());
+                out.push_str(current.trim_end_matches(' '));
                 current.clear();
                 if !is_last {
                     out.push('\n');

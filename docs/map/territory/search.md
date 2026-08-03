@@ -78,6 +78,10 @@ above does not touch it.
 - [alt-screen absolute-index floor](../invariant/alt-screen-buffer-floor.md) — `search_with` walks
   logical lines by absolute index and must floor on alt (#144). Site 2 of 3 in that note's discovery
   history
+- [only U+0020 can be a row's padding](../invariant/only-u0020-can-be-padding.md) — the haystack's
+  trailing loop is its own implementation of that rule, and this is the territory where breaking it
+  is worst: the character is not merely missing from a copy, it is **unfindable**, and a regex `$`
+  anchors one column early (#685)
 - [a wire field narrower than the value it carries](../invariant/wire-field-narrower-than-its-value.md)
   — this territory produced that note's loudest instance: a **one-character query** over a large
   viewport made 66 000 match spans, wrapping the group's `u16` count to 464 while `decode` returned

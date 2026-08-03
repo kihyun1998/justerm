@@ -66,6 +66,10 @@ an editor rather than a terminal.
   walks the concatenated `[scrollback ++ grid]` buffer by absolute index, so on the alt screen it
   must floor at `scrollback.len()`. The failure is silent: the AT reads *plausible* text that is not
   on screen
+- [only U+0020 can be a row's padding](../invariant/only-u0020-can-be-padding.md) — this territory
+  holds **both ends** of that note: core's `accessible_text` (via `extract_lines`) and `cell-mirror`'s
+  own row-tree trim in `justerm-web`. The web one had the rule right years before core did, and
+  nothing compared them (#153 vs #685)
 - [a pointer coordinate is bounded by the converter that produces it](../invariant/pointer-coordinates-are-bounded-by-their-producer.md)
   — `a11y-selection.ts` converts DOM text offsets rather than pixels, so the arithmetic differs and
   the obligation does not: an out-of-tree endpoint resolves to the tree's edge. Already discharged;
