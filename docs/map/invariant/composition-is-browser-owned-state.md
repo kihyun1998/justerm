@@ -93,11 +93,18 @@ composition it never saw, so nothing throws and no test on the core side can fai
   tracks where the user's composition is, never where the output cursor went* — and **two of the three
   satisfy it by re-aiming mid-composition with no gate at all** (ghostty folds preedit width into the
   rect it pushes per key; alacritty picks the point from the preedit when one exists). justerm-web
-  freezes instead, and only because **this invariant is why it must**: the preedit never reaches this
-  side, so *"where the composition is"* has no representation beyond *"where it started"*. Reading
+  froze instead, and only because **this invariant is why it had to**: the preedit did not reach this
+  side, so *"where the composition is"* had no representation beyond *"where it started"*. Reading
   xterm's suppression as the rule rather than as one codebase's expression of it is the mistake this
-  bullet exists to name — it was made and corrected inside #637 itself. **#249 landing makes freezing
-  wrong**, not merely conservative, because it would supply the missing representation.
+  bullet exists to name — it was made and corrected inside #637 itself.
+  **Updated 2026-08-03 (#249, ADR-0028): justerm-web re-aims too now, and the freeze did not have to
+  give.** This bullet predicted it would, since #249 supplies the missing representation. What
+  actually resolved it is that *writer* and *rule* are different things: the preedit writer knows
+  where the composition is, so it re-aims and never consults the guard, while the guard stays a rule
+  about the **involuntary** writers — the frame stream and the focus path — which is all #637 and
+  #649 ever measured. xterm has exactly this shape and it was visible the whole time
+  (`updateCompositionElements` never goes through `_syncTextArea`); reading it as "suppression vs
+  re-aiming" hid it.
 - **A measurement destroyed by the act of observing it.** Screen-capturing a live composition moves
   focus, which commits it and clears the textarea — so the artifact under observation disappears exactly
   when it is recorded. #637 drew a wrong conclusion from such a capture once (*"Hanja conversion happens
@@ -156,10 +163,12 @@ and its only possible input is a browser event, it is subject to this invariant.
 
 Three named places it is already queued to recur:
 
-- **#249 (draw the preedit inline).** It supplies the representation this fact says is absent, which
-  inverts the rule rather than extending it: the anchor would gain a second, *voluntary* writer and
-  freezing would become wrong rather than conservative. The reference already has this shape — xterm's
-  voluntary writer bypasses the involuntary one entirely rather than negotiating with it.
+- ~~**#249 (draw the preedit inline).**~~ **Landed 2026-08-03 under ADR-0028.** It supplied the
+  representation this fact says is absent — and the fact itself is unchanged, because the preedit
+  still reaches no frame and no wire: it goes consumer → renderer directly, which is why the renderer
+  now holds one piece of state with no engine counterpart. The predicted inversion did **not**
+  happen; see the bullet above for what happened instead. The half that was right: the anchor gained
+  a second, *voluntary* writer, and it bypasses the involuntary one exactly as xterm's does.
 - **Any new predicate on composition state.** `active` and `composing` answer different questions and
   read identically at a call site. The wiring is invisible to `pnpm test` — the widget needs a DOM and
   the unit suite runs in `environment: "node"` — so a wrong predicate ships green, as measured on #649.

@@ -43,6 +43,10 @@ use crate::mat4::Mat4;
 use crate::metrics::{device_cell, fit_cell_to_atlas, glyph_offset};
 use crate::overlay::{HighlightColors, Overlay};
 use crate::palette::Palette;
+use crate::preedit::{
+    Codepoint as PreeditCodepoint, Span as PreeditSpan, caret_col as preedit_caret_col_of,
+    is_wide as preedit_is_wide, writes as preedit_writes,
+};
 use crate::rasterizer::Rasterizer;
 use crate::render_policy::ColorPolicy;
 use crate::upload::{UploadPlan, invalidate_baseline, plan_upload};
@@ -535,6 +539,14 @@ pub struct JustermRenderer {
     /// `match_spans`, and the `highlight_at` ranking (ActiveMatch > Selection > Match) is what makes
     /// its colour win where they overlap. Empty = no active match.
     active_match_spans: Vec<u32>,
+    /// The in-progress IME composition and the cell it is anchored to (#249, ADR-0028). Empty = no
+    /// composition. Unlike every other retained state here this describes something the **engine
+    /// never sees** — the preedit reaches no frame and no wire — so it can only arrive from the
+    /// consumer's browser events, and it is a *pass* over the composed cells rather than a layer in
+    /// the stack (ADR-0019's amendment).
+    preedit_run: Vec<PreeditCodepoint>,
+    preedit_col: u32,
+    preedit_row: u32,
     /// The consumer-injected blend colours for the overlay kinds (policy #115).
     highlight_colors: HighlightColors,
     /// Draw bold text in the bright (8–15) ANSI colour (#223/#272), consumer policy (xterm's
@@ -602,6 +614,17 @@ fn upload_glyph(
             glow::PixelUnpackData::Slice(Some(rgba)),
         );
     }
+}
+
+/// Owned columns for the cells an open composition covers — see
+/// [`JustermRenderer::preedit_patch`]. Deliberately **not** `#[wasm_bindgen]`: it never crosses the
+/// boundary, it is the copy-on-write the pass makes on this side of it.
+struct PreeditPatch {
+    codepoints: Vec<u32>,
+    flags: Vec<u16>,
+    clusters: Vec<String>,
+    bg: Vec<u32>,
+    fg: Vec<u32>,
 }
 
 #[wasm_bindgen]
@@ -795,6 +818,9 @@ impl JustermRenderer {
             selection_spans: Vec::new(),
             match_spans: Vec::new(),
             active_match_spans: Vec::new(), // no active/focused match by default (#427)
+            preedit_run: Vec::new(),        // no composition open (#249)
+            preedit_col: 0,
+            preedit_row: 0,
             highlight_colors: HighlightColors::default(),
             bold_to_bright: true, // xterm's drawBoldTextInBrightColors default (#223)
             min_contrast: 1.0,    // xterm's minimumContrastRatio default: off (#225)
@@ -1745,6 +1771,88 @@ impl JustermRenderer {
     ///
     /// [`apply_frame`]: Self::apply_frame
     /// [`apply_damage`]: Self::apply_damage
+    /// The composed cells, re-supplied (#249, ADR-0028 D2).
+    ///
+    /// A preedit is a **pass**, not a layer: ADR-0019's stack can recolour a channel or blank a
+    /// slot but nothing in it can *supply* a glyph, and its rule 5 authorship axis has no value for
+    /// content the browser owns and the application never declared. So the covered cells leave the
+    /// stack entirely and come back with background, foreground and glyph together — which is also
+    /// the only way a selection tint under a composition stops reading as *selected text*.
+    ///
+    /// Returns owned columns, and only while a composition is open: a page that never composes
+    /// allocates nothing here. `0` is the `Default` colour tag (see [`palette`](crate::palette)),
+    /// so the run draws in the terminal's own default fg over its default bg — ghostty's choice
+    /// (`state.colors.foreground`, no background cell at all).
+    /// The inclusive span the open composition covers, or `None` when nothing is composing or the
+    /// anchor is off the grid. The packer takes it so the layers below glyph resolution can stand
+    /// down over those cells; `preedit_patch` writes the same cells, and both derive from
+    /// [`preedit::writes`](crate::preedit::writes) so they cannot disagree.
+    fn preedit_span(&self, cols: u32, rows: u32) -> Option<PreeditSpan> {
+        let w = preedit_writes(
+            &self.preedit_run,
+            self.preedit_col,
+            self.preedit_row,
+            cols,
+            rows,
+            &[], // no grid flags: the span is the RUN, never the repair cells beside it
+        );
+        let cols_usize = cols as usize;
+        if w.is_empty() || cols_usize == 0 {
+            return None;
+        }
+        let first = w.first()?.idx;
+        let last = w.last()?.idx;
+        Some(PreeditSpan {
+            row: (first / cols_usize) as u32,
+            start: (first % cols_usize) as u32,
+            end: (last % cols_usize) as u32,
+        })
+    }
+
+    fn preedit_patch(&self, cells: &Cells, bg: &[u32], fg: &[u32]) -> Option<PreeditPatch> {
+        if self.preedit_run.is_empty() {
+            return None;
+        }
+        let w = preedit_writes(
+            &self.preedit_run,
+            self.preedit_col,
+            self.preedit_row,
+            cells.cols,
+            cells.rows,
+            cells.flags,
+        );
+        if w.is_empty() {
+            return None; // off-grid anchor, or no room — ghostty draws nothing rather than guessing
+        }
+        let mut p = PreeditPatch {
+            codepoints: cells.codepoints.to_vec(),
+            flags: cells.flags.to_vec(),
+            clusters: cells.clusters.to_vec(),
+            bg: bg.to_vec(),
+            fg: fg.to_vec(),
+        };
+        for cw in w {
+            if let Some(slot) = p.codepoints.get_mut(cw.idx) {
+                *slot = cw.cp;
+            }
+            if let Some(slot) = p.flags.get_mut(cw.idx) {
+                *slot = cw.flags; // REPLACE, not or-in: the cell's own SGR is not the preedit's
+            }
+            if let Some(slot) = p.bg.get_mut(cw.idx) {
+                *slot = 0;
+            }
+            if let Some(slot) = p.fg.get_mut(cw.idx) {
+                *slot = 0;
+            }
+            // A grapheme override belonging to the cell underneath would otherwise be rasterised in
+            // place of the preedit's codepoint — `resolve_frame` prefers a non-empty cluster.
+            if let Some(slot) = p.clusters.get_mut(cw.idx) {
+                slot.clear();
+            }
+        }
+        Some(p)
+    }
+
     fn resolve_and_pack(
         &mut self,
         cells: &Cells,
@@ -1764,6 +1872,23 @@ impl JustermRenderer {
                 cells.cols, cells.rows
             ))
         })?;
+        // ADR-0028 D2: the preedit takes its cells out of the stack before anything resolves them,
+        // so the glyph it supplies is rasterised like any other and every later stage — contrast,
+        // overlay compositing, the cursor span — sees the composed cell rather than the one the
+        // application last wrote there.
+        let patch = self.preedit_patch(cells, bg, fg);
+        let patched = patch.as_ref().map(|p| Cells {
+            cols: cells.cols,
+            rows: cells.rows,
+            codepoints: &p.codepoints,
+            flags: &p.flags,
+            clusters: &p.clusters,
+        });
+        let (cells, bg, fg) = match (patched.as_ref(), patch.as_ref()) {
+            (Some(c), Some(p)) => (c, &p.bg[..], &p.fg[..]),
+            _ => (cells, bg, fg),
+        };
+
         // Resolve the per-cell glyph slots via the pure host-tested resolver (#280): it
         // rasterises before committing (a failure strands nothing), pins this frame's
         // working set (an over-capacity frame is surfaced, not silently corrupted), and
@@ -1839,6 +1964,10 @@ impl JustermRenderer {
         let frame = Frame {
             cols: cells.cols,
             rows: cells.rows,
+            // The same span the patch above took over — handed on so every stage after glyph
+            // resolution stands down inside it (ADR-0028 D2). Derived here rather than carried out
+            // of `preedit_patch` so that the two cannot disagree about which cells are composed.
+            preedit: self.preedit_span(cells.cols, cells.rows),
             bg,
             fg,
             slots: &slots,
@@ -2181,6 +2310,53 @@ impl JustermRenderer {
         self.active_match_spans = active_spans;
         self.highlight_colors.active_match_bg = active_match_bg;
         self.needs_repack = true; // defer the pack to render (#421), same as set_overlay
+    }
+
+    /// The in-progress IME composition to draw, anchored at `(col, row)` — the cursor cell the
+    /// consumer's current frame reported. `codepoints` is the preedit as the OS reports it
+    /// (`compositionupdate.data`); an empty array clears it.
+    ///
+    /// **This is the one piece of renderer state with no representation anywhere in the engine**
+    /// (ADR-0028): a composition is browser-owned, reaches no frame and no wire, so the consumer is
+    /// the only possible source and must re-push on every `compositionupdate`. Skipping an update
+    /// whose data is unchanged is worth doing — a real IME emits one settling update per syllable
+    /// where nothing moved (measured, #249).
+    ///
+    /// The run may extend past the anchor's row end: it shifts left to stay whole rather than
+    /// clipping (`preedit::range` — crate-private, so no link from this page). Width is per codepoint, the same
+    /// `unicode-width` answer the engine gives, so a VS16 emoji measures narrow here exactly as it
+    /// does there.
+    /// Returns the column the **caret and the IME anchor** belong at: one past the run's last cell,
+    /// clamped to the grid. The consumer cannot compute this — it has no `wcwidth` — and it is not
+    /// simply `col + len`, because the run shifts left at the right edge. Feeding it back to
+    /// `setCursor` is ADR-0028 D5's position rule (the caret rides the composition's end, while
+    /// DECTCEM still decides whether it is drawn at all), and feeding it to the hidden textarea is
+    /// D4's voluntary writer.
+    #[wasm_bindgen(js_name = setPreedit)]
+    pub fn set_preedit(&mut self, col: u32, row: u32, codepoints: Vec<u32>) -> u32 {
+        self.preedit_run = codepoints
+            .into_iter()
+            .map(|cp| PreeditCodepoint {
+                cp,
+                wide: preedit_is_wide(cp),
+            })
+            .collect();
+        self.preedit_col = col;
+        self.preedit_row = row;
+        self.needs_repack = true; // defer the pack to render (#421), same as set_overlay
+        self.preedit_caret_col()
+    }
+
+    /// One past the composition's last cell, clamped — see [`set_preedit`](Self::set_preedit).
+    /// With no composition open this is the anchor cell itself, so a consumer that always reads it
+    /// gets the cursor cell back and needs no special case for "not composing".
+    fn preedit_caret_col(&self) -> u32 {
+        let cols = self.cols();
+        let last = cols.saturating_sub(1);
+        if self.preedit_run.is_empty() || cols == 0 {
+            return self.preedit_col.min(last);
+        }
+        preedit_caret_col_of(&self.preedit_run, self.preedit_col, last)
     }
 
     /// Re-pack the instance buffer from the retained dense grid — the single pack [`render`] runs when

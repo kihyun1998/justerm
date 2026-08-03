@@ -23,6 +23,13 @@ becomes an actual colour — the engine never does that by identity.
 
 ## Design model
 
+- **An IME preedit is not a layer in this stack — it is a *pass* that removes cells from it**
+  (ADR-0019's 2026-08-03 amendment, #249/ADR-0028). Nothing here can *supply* a glyph: every layer
+  recolours a channel or blanks a slot, and rule 5's authorship axis has no value for content the
+  browser owns and the application never declared. So the composed cells leave the stack at resolve
+  time and come back with bg, fg and glyph together, and `pack_instances` stands every stage below
+  glyph resolution down inside the run. Replacing only the resolver's *inputs* is not enough and was
+  measured not to be: a selection covering the run still tinted it.
 - **Back-to-front, and decorations sit on *both* sides of the highlight:**
   `base < bottom-decoration < highlight < top-decoration`. A decoration is not simply "above" or
   "below" content — it chooses a side of the selection/search layer, which is what

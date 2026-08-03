@@ -56,6 +56,7 @@ pub(crate) mod mat4;
 pub(crate) mod metrics;
 pub(crate) mod overlay;
 pub(crate) mod palette;
+pub(crate) mod preedit;
 pub(crate) mod render_policy;
 pub(crate) mod upload;
 

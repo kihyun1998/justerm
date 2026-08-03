@@ -17,7 +17,9 @@ use crate::attrs::{
 };
 use crate::color::gl_rgb;
 use crate::contrast::ensure_contrast_ratio;
-use crate::decoration::{DecorationLayer, DecorationRect, decoration_override_at};
+use crate::decoration::{
+    DecorationLayer, DecorationOverride, DecorationRect, decoration_override_at,
+};
 use crate::glyph_class::treat_glyph_as_background_color;
 use crate::overlay::{
     HIGHLIGHT_BLEND_ALPHA, HighlightKind, Overlay, blend_over, composite_bg, should_blend_kind,
@@ -53,6 +55,11 @@ pub const INSTANCE_FLOATS: usize = 11;
 pub struct Frame<'a> {
     pub cols: u32,
     pub rows: u32,
+    /// The cells an open IME composition covers (#249, ADR-0028 D2), or `None`. Every stage below
+    /// glyph resolution stands down inside it: the pass **replaces** those cells rather than
+    /// layering over them, so a selection, a search match or a decoration covering the run must not
+    /// tint the text the user is composing.
+    pub preedit: Option<crate::preedit::Span>,
     pub bg: &'a [u32],
     pub fg: &'a [u32],
     pub slots: &'a [u16],
@@ -114,6 +121,7 @@ pub fn pack_instances(
     let Frame {
         cols,
         rows,
+        preedit,
         bg,
         fg,
         slots,
@@ -146,8 +154,16 @@ pub fn pack_instances(
             // on selection *coverage*, not on the winning kind, so they survive on a cell whose bg
             // the ACTIVE match outranks (CellColorResolver keys its selection stage on `$isSelected`
             // while the active match is a bg-only top decoration).
-            let kind = overlay.highlight_at(row, col);
-            let is_selection = overlay.is_selected(row, col);
+            // ADR-0028 D2 — inside an open composition every stage from here down stands down.
+            // The pass took these cells out of the stack at resolve time; leaving the overlay and
+            // decoration lookups live would put them straight back in, one channel at a time.
+            let composed = preedit.is_some_and(|p| p.covers(row, col));
+            let kind = if composed {
+                None
+            } else {
+                overlay.highlight_at(row, col)
+            };
+            let is_selection = !composed && overlay.is_selected(row, col);
             // #226: a Powerline / box-drawing / block glyph tiles with the bg — excluded from the
             // contrast demand and re-tinted under selection (classify the base codepoint).
             let exclude =
@@ -166,7 +182,11 @@ pub fn pack_instances(
             let mut deco_bg = false;
             // #452: bg and fg merge INDEPENDENTLY across every decoration covering the cell, so a
             // bg-only and an fg-only decoration both apply (xterm's per-property last-wins).
-            let bottom = decoration_override_at(decorations, row, col, DecorationLayer::Bottom);
+            let bottom = if composed {
+                DecorationOverride::default()
+            } else {
+                decoration_override_at(decorations, row, col, DecorationLayer::Bottom)
+            };
             if let Some(c) = bottom.bg {
                 bg_running = c;
                 deco_bg = true;
@@ -178,7 +198,11 @@ pub fn pack_instances(
             // The TOP layer is read here rather than at its composite site below, because whether it
             // takes the glyph decides what the *ink* rules downstream are even for. It is a pure
             // lookup over the rect slice, so reading it early costs nothing and moves nothing.
-            let top = decoration_override_at(decorations, row, col, DecorationLayer::Top);
+            let top = if composed {
+                DecorationOverride::default()
+            } else {
+                decoration_override_at(decorations, row, col, DecorationLayer::Top)
+            };
             // #508: a bg-only TOP decoration over a background-class glyph drops the glyph (see the
             // composite site). Once it has, the cell's ink channel carries `I_line` and nothing else,
             // and ADR-0019 rule 4 puts that on the TEXT side unconditionally — so every R1 rule below
@@ -587,6 +611,7 @@ mod tests {
     /// non-tile); the tile tests build a [`Frame`] with an explicit `codepoints` column instead.
     fn frame<'a>(bg: &'a [u32], fg: &'a [u32], slots: &'a [u16], flags: &'a [u16]) -> Frame<'a> {
         Frame {
+            preedit: None,
             cols: 1,
             rows: 1,
             bg,
@@ -652,6 +677,7 @@ mod tests {
         let p = palette(); // default_bg = 0x1E1E2E
         let default_colour = 0x1E_1E_2E;
         let f = Frame {
+            preedit: None,
             cols: 2,
             rows: 1,
             bg: &[
@@ -697,6 +723,7 @@ mod tests {
         let backdrop = |flags: u16, bg: u32, ov: Overlay, decos: &[DecorationRect]| {
             let (bgs, fgs, slots, flgs) = ([bg], [0u32], [0u16], [flags]);
             let f = Frame {
+                preedit: None,
                 cols: 1,
                 rows: 1,
                 bg: &bgs,
@@ -813,6 +840,7 @@ mod tests {
         const LINE: usize = 9; // [col,row, bg(3), fg(3), glyph, LINE, bg_default]
         let run = |uref: u32| {
             let f = Frame {
+                preedit: None,
                 cols: 1,
                 rows: 1,
                 bg: &[0],
@@ -872,6 +900,7 @@ mod tests {
                     policy: &ColorPolicy,
                     decos: &[DecorationRect]| {
             let f = Frame {
+                preedit: None,
                 cols: 1,
                 rows: 1,
                 bg: &[0],
@@ -1010,6 +1039,7 @@ mod tests {
         use crate::attrs::{WIDE_CHAR, WIDE_CHAR_SPACER};
         let p = palette();
         let f = Frame {
+            preedit: None,
             cols: 2,
             rows: 1,
             bg: &[0, 0],
@@ -1077,6 +1107,83 @@ mod tests {
                 active_match_bg: ACTIVE_BG,
             },
         }
+    }
+
+    #[test]
+    fn a_composed_cell_is_not_tinted_by_a_selection_covering_it() {
+        // ADR-0028 D2: the preedit pass REPLACES its cells, so every stage below glyph resolution
+        // stands down inside the run. Without the gate the selection composite paints straight over
+        // the text the user is typing — measured in a real browser before this test existed: a
+        // selection over the run raised each composed cell's mean channel value by ~90.
+        let p = palette();
+        let sel = selected(&[0, 0, 0], &[]);
+        let mut composed = frame(&[0], &[0], &[0], &[0]);
+        composed.preedit = Some(crate::preedit::Span {
+            row: 0,
+            start: 0,
+            end: 0,
+        });
+        let got = pack_instances(&composed, &p, true, &sel, &ColorPolicy::default(), &[]);
+        assert_eq!(
+            &got[2..5],
+            &gl_rgb(p.default_bg),
+            "the composed cell keeps the default bg the pass gave it"
+        );
+
+        // Control, same run: the identical cell WITHOUT the span still takes the selection. Without
+        // this the assertion above would pass just as happily on a selection that never applied.
+        let plain = frame(&[0], &[0], &[0], &[0]);
+        let got_plain = pack_instances(&plain, &p, true, &sel, &ColorPolicy::default(), &[]);
+        assert_eq!(
+            &got_plain[2..5],
+            &gl_rgb(SEL_BG),
+            "control: selection applies"
+        );
+    }
+
+    #[test]
+    fn a_composed_cell_is_not_repainted_by_a_decoration_covering_it() {
+        let p = palette();
+        // A bottom decoration painting row 0, cols 0..0 green. The wire carries ABSOLUTE 0xRRGGBB here,
+        // not a palette ref — the control below caught that the first time this fixture was written.
+        let rects = crate::decoration::parse_decorations(&[
+            0,
+            0,
+            0,
+            0,
+            0x00_FF_00,
+            crate::decoration::NO_REF,
+        ]);
+        let mut composed = frame(&[0], &[0], &[0], &[0]);
+        composed.preedit = Some(crate::preedit::Span {
+            row: 0,
+            start: 0,
+            end: 0,
+        });
+        let got = pack_instances(
+            &composed,
+            &p,
+            true,
+            &Overlay::default(),
+            &ColorPolicy::default(),
+            &rects,
+        );
+        assert_eq!(&got[2..5], &gl_rgb(p.default_bg), "decoration stands down");
+
+        let plain = frame(&[0], &[0], &[0], &[0]);
+        let got_plain = pack_instances(
+            &plain,
+            &p,
+            true,
+            &Overlay::default(),
+            &ColorPolicy::default(),
+            &rects,
+        );
+        assert_eq!(
+            &got_plain[2..5],
+            &gl_rgb(0x00_FF_00),
+            "control: the decoration applies"
+        );
     }
 
     #[test]
@@ -1946,6 +2053,7 @@ mod tests {
         codepoints: &'a [u32],
     ) -> Frame<'a> {
         Frame {
+            preedit: None,
             cols: 1,
             rows: 1,
             bg,

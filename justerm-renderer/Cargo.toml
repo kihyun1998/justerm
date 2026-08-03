@@ -6,7 +6,7 @@ name = "justerm-renderer"
 # `cargo build --manifest-path justerm-renderer/Cargo.toml --target wasm32-unknown-unknown`.
 # NOT `-p justerm-renderer`: a `-p` flag selects from the workspace, and this crate is in none,
 # so that form errors with "did not match any packages" (#608).
-version = "0.9.0"
+version = "0.10.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/kihyun1998/justerm"
@@ -44,6 +44,9 @@ lru = "0.18"
 # NFC-normalise grapheme-cluster keys so a decomposed cluster (e + combining acute)
 # and its precomposed form share one atlas slot (#285; glyph_cache consumer contract).
 unicode-normalization = "0.1"
+# Per-char preedit width (ADR-0028). Pinned to the SAME version `justerm-core` uses: the two answer
+# the same question in two crates and must not drift.
+unicode-width = "0.2"
 
 [dependencies.web-sys]
 version = "0.3.81"
