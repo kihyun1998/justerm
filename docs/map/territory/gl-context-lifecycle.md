@@ -36,6 +36,18 @@ machine that decides what the renderer does in between.
   from it; nothing is queued, because the stored value *is* the queue. The four setters skip an
   atlas re-bake that a dead context would return invalidated; `resize` skips reading the drawing
   buffer back, which on a dead context answers 0 and would floor the grid to one cell (#639).
+- **"Is the context lost" has two answers and they disagree for a whole window — so the predicate
+  is chosen per site, never shared out of habit** (#639). The browser destroys a context
+  *synchronously* and merely **queues** `webglcontextlost`; the mirror holds on the way back. So the
+  state machine's flag — the honest thing to report to a *consumer*, since it tracks what we have
+  been told — lags the context itself, and an internal caller guarding on it is guarding on the
+  wrong thing. Measured: in the pre-dispatch window `gl.isContextLost()` is already `true`,
+  `drawingBufferWidth` already `0`, and the flag still `false`. The rule that falls out:
+  a caller that **has** the answer in hand tests that (`resize` rejects a non-positive read-back,
+  which is also right for any other cause of one), and a caller that must **ask** consults both
+  sources, since each covers the window the other misses.
+  This is the territory's most expensive shape so far: #639's first fix guarded on the flag, went
+  green, and left the defect it was written for reachable verbatim.
 - **What "defer" costs, stated once because each site pays it.** A value the consumer normally reads
   back synchronously — a clamped grid, an atlas-shrunk cell — is settled at restore instead, and the
   consumer is not told. That is the same missing signal as #579, reached from the other side.
