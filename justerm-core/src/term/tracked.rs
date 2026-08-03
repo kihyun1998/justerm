@@ -39,6 +39,15 @@ impl Term {
         }
     }
 
+    /// Read-only [`Self::tracked_mut`].
+    fn tracked(&self) -> &Vec<TrackedPoint> {
+        if self.on_alt {
+            &self.alt_tracked
+        } else {
+            &self.normal_tracked
+        }
+    }
+
     /// Track absolute buffer `(line, col)`, returning a stable id (#691). The
     /// engine keeps the position on the content that is there now, through
     /// eviction, region scrolls and reflow, for as long as that content is in the
@@ -70,40 +79,31 @@ impl Term {
     /// marker's: one past the last cell is a legal *bound*, which is what a caller
     /// pairing this with text extraction needs.
     ///
-    /// **The frame is the point's own, not the active screen's.** The two absolute
-    /// spaces differ by `abs_floor` — an alt line starts at `scrollback.len()`,
-    /// a primary one at 0 — so bounding every point by the *active* screen's floor
-    /// answered a primary point, while an app held the alt screen, with an alt-grid
-    /// coordinate: not the position, not `None`, but a plausible number naming
-    /// content the caller never anchored to. That is this module's own stated
-    /// failure mode arriving through the read. The sibling does not have it because
-    /// its two read surfaces route through `markers()`, so a primary marker is
-    /// simply absent from an alt frame; the references cannot have it at all
-    /// (xterm's markers hang off a `Buffer`, ghostty's pins off a per-screen
-    /// `PageList`).
+    /// **Only the ACTIVE buffer's points resolve.** A point registered on the other
+    /// screen answers `None` until that screen is active again — because the number
+    /// this returns *cannot carry its own frame*: the primary grid and the alt grid
+    /// occupy the **same** absolute indices `[scrollback.len(), scrollback.len() +
+    /// rows)`, so a primary grid row and an alt row are the same integer naming
+    /// different content, and no floor or ceiling can separate them. Measured: a
+    /// point on primary line 4 and the alt screen's second row both read `4`.
+    ///
+    /// Returning the stored number regardless was the first attempt, and it hands a
+    /// consumer a plausible coordinate for the wrong screen with nothing to detect
+    /// it by — the public surface has no frame tag. That is this module's own stated
+    /// failure mode arriving through the read. The sibling routes the same way for
+    /// the same reason (`markers()`), and neither reference can have the problem:
+    /// xterm's markers hang off a `Buffer`, ghostty's pins off a per-screen
+    /// `PageList`, so a cross-screen read is unconstructible there rather than
+    /// merely wrong.
+    ///
+    /// So `None` covers three cases a caller does not need to distinguish — the
+    /// content left the buffer, the id was released or never issued, or the point
+    /// belongs to the screen that is not up. All three mean *do not move anything
+    /// on account of this point*, which is the only question the one caller shape
+    /// asks.
     pub fn tracked_point(&self, id: TrackedId) -> Option<(usize, usize)> {
-        let (p, on_alt_buffer) = self
-            .normal_tracked
-            .iter()
-            .map(|p| (p, false))
-            .chain(self.alt_tracked.iter().map(|p| (p, true)))
-            .find(|(p, _)| p.id == id)?;
-        // Only the FLOOR differs by buffer. The ceiling does not: the two panes are
-        // only ever sized together — at construction and at every `set_screen` in
-        // `resize` — so `alt_grid.rows() == grid.rows()` holds by construction, and
-        // writing the distinction out would state a difference that cannot exist.
-        // (Mutating the ceiling to the other pane's row count changes nothing,
-        // which is how that was established rather than assumed.)
-        //
-        // An alt point can only exist while the alt screen is up — `track_point`
-        // routes by `on_alt` and leaving clears the list — so its floor is
-        // `abs_floor()`, spelled out here so the arms read as one rule about the
-        // point rather than a question about the active screen.
-        let floor = if on_alt_buffer {
-            self.scrollback.len()
-        } else {
-            0
-        };
+        let p = self.tracked().iter().find(|p| p.id == id)?;
+        let floor = self.abs_floor();
         let last = (self.scrollback.len() + self.grid.rows()).saturating_sub(1);
         Some((
             p.line.clamp(floor, last.max(floor)),

@@ -65,20 +65,22 @@ legitimate way to hold the invariant, and it is permanently invisible to the gre
 these the two entries most likely to be read as a *missing* floor and "fixed" into a redundant call.
 Update them by hand when the write path moves; never expect a tool to notice.
 
-A fourth entry is a different *shape* of the rule, added by #691, and it is the one that shows the
-grep's limit twice over. `Term::tracked_point` holds a **stored** coordinate rather than walking one,
-and the floor it needs is not "am I on the alt screen" but **"which buffer does this point belong
-to"** — the two lists are `normal_tracked` / `alt_tracked`, and a primary point read while an
-application holds the alt screen must keep the primary frame. The first implementation used
-`abs_floor()` there and was wrong for exactly that case: it answered a primary point with alt-grid
-row 0 — not the position, not `None`, but a plausible number naming content the caller never anchored
-to. So the site now spells the floor out per list and **does not call the helper**, which means the
-derivable grep above reports it as a *hit* (the comment names `abs_floor()`) while no call exists.
-Read that entry as a false friend. It belongs to [search](../territory/search.md) and
-[marker](../territory/marker.md) jointly — the mechanism is the marker's, the holder is search's.
-**Validity condition:** the per-list floor is right only while `alt_tracked` cannot outlive the alt
-screen (`track_point` routes by `on_alt`; `switch_to_primary` clears the list). Break either and the
-alt arm's floor becomes a guess.
+A fourth entry, added by #691, is where the floor turned out **not to be enough**, and it is worth
+reading before anyone reaches for `abs_floor` to make a *stored* coordinate safe. `Term::tracked_point`
+hands back a position a consumer registered earlier, and two wrong answers were built on the way to the
+right one. First it bounded every point by the active screen's floor, so a point registered on the
+primary screen and read during an alt excursion came back as alt row 0. Then it bounded per owning
+buffer — which fixes the scrollback half and **cannot** fix the rest, because the primary grid and the
+alt grid occupy the *same* absolute indices `[scrollback.len(), scrollback.len() + rows)`: a primary
+grid row and an alt row are the same integer naming different content, and no floor or ceiling
+separates them. The floor is a bound, and this needed an **identity**.
+
+So the read is scoped to the active buffer (`tracked()`, the sibling of `markers()`) and a point of the
+inactive one answers `None`. `abs_floor()` is then correct again, and the site appears in the grep
+above. It belongs to [search](../territory/search.md) and [marker](../territory/marker.md) jointly —
+the mechanism is the marker's, the holder is search's. **The generalisation worth carrying:** flooring
+protects a *walk*, which starts from a row it already knows is on this screen; it cannot rescue a
+coordinate that arrived without one, because the two screens' index ranges overlap by construction.
 
 A third satisfies it by **construction** rather than by argument, found by #601's pass: `Term::viewport_link_at`
 reaches cells through `abs_row` — so the recurrence test below flags it — but its index is

@@ -488,12 +488,21 @@ impl Engine {
         self.term.track_point(line, col)
     }
 
-    /// Where the point registered as `id` sits now, or `None` once its content has
-    /// left the buffer (also `None` for an unknown or released id) (#691).
+    /// Where the point registered as `id` sits now, in the **active** screen's
+    /// coordinates — or `None` (#691).
+    ///
+    /// `None` covers three cases, and a caller does not need to tell them apart:
+    /// the content has left the buffer, the id is unknown or released, or the point
+    /// belongs to *the other screen*. The last one is not a limitation but the only
+    /// honest answer: the primary grid and the alt grid occupy the **same** absolute
+    /// indices, so a number alone cannot say which screen it means. All three say
+    /// *do not move anything on account of this point*.
     ///
     /// An out-of-range coordinate is clamped rather than rejected, at both ends
     /// (ADR-0026 D2/D3): the line into the buffer's range, the column to the grid
-    /// width.
+    /// width. That bound is applied here, at the read; a coordinate that was never
+    /// in range to begin with is also **resolved by a reflow** (it maps to the top
+    /// of the buffer), so "bounded once" holds for the site, not for the value.
     pub fn tracked_point(&self, id: TrackedId) -> Option<(usize, usize)> {
         self.term.tracked_point(id)
     }
