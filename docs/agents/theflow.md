@@ -771,12 +771,26 @@ the work sits in one of these rather than re-deriving that from scratch each pas
 ```
 cargo test --workspace
 cargo fmt --all --check
-cargo clippy --workspace --all-targets
+cargo clippy --workspace --all-targets -- -D warnings   # the `-- -D warnings` is the gate, not decoration
 cargo check --manifest-path fuzz/Cargo.toml
 cargo build -p justerm-wasm-decode --tests --target wasm32-unknown-unknown
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps   # rustdoc lints ≠ clippy, ≠ doctests
 node .github/scripts/check-map-links.mjs docs CLAUDE.md CONTEXT.md README.md
+bad=0; for f in docs/map/territory/*.md docs/map/invariant/*.md; do \
+  node .github/scripts/check-map-note.mjs "$f" || bad=1; done; exit $bad   # note SCHEMA ≠ note LINKS
+node .github/scripts/check-tool-pins.mjs
 ```
+**The last two were missing from this list until 2026-08-03 (#545), and the omission cost a red
+CI.** Both are steps of the same `test` job as everything above them, so "I ran the local matrix"
+read as complete while two gates had never executed. The one that fired checks each map note's
+**section schema** — an invariant note owes `## The fact` · `## Why it is cross-cutting` ·
+`## Territories it holds in` · `## What a violation looks like` · `## Discovery history` ·
+`## Where it will recur`, and a territory note its own six — plus resolution of every symbol named
+under `## Code` **against the source roots only**, so a test-function name cannot resolve there and
+belongs in prose. It is a different tool from `check-map-links.mjs` one line above it, which is
+exactly why having one in the list made the other look present. Read the workflow, not this list,
+when a job goes red on something absent here:
+`sed -n '/^  test:/,/^  wasm:/p' .github/workflows/test.yml`.
 (the last one is the **prose** counterpart of the rustdoc gate above it: rustdoc
 resolves links inside `///` comments, nothing resolved the ones *between* the
 markdown docs. It checks `#anchors` too — a missing file 404s loudly, a missing

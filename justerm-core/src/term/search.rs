@@ -311,7 +311,16 @@ impl Term {
 
 /// Whether the run `hay[i..i+len]` is bounded by non-word characters on both sides — the `\bword\b`
 /// sense for whole-word search (#314). A word char is alphanumeric or `_` (the regex `\w` set),
-/// deliberately distinct from `is_word_boundary`'s wider semantic-selection set.
+/// deliberately distinct from selection's semantic-selection set.
+///
+/// **#545 made that set consumer-injectable and deliberately left this one alone**, so the two
+/// now differ in kind and not only in contents: whole-word *search* is the `\b` sense of the
+/// pattern the consumer already supplied, while word *selection* is a separator list the consumer
+/// supplies separately. Both references that have a whole-word search agree — xterm.js keeps a
+/// hardcoded `NON_WORD_CHARACTERS` in its search addon (`addons/addon-search/src/SearchEngine.ts`)
+/// that is not its configurable `wordSeparator` and is not even equal to it, and alacritty has no
+/// whole-word option at all (the user writes `\b`, so `\w` decides). Threading
+/// `word_separators` in here would make one knob silently redefine `\b`.
 fn word_bounded(hay: &[char], i: usize, len: usize) -> bool {
     // A word char is alphanumeric, `_`, OR a grapheme-extending mark (width 0: combining marks,
     // ZWJ, variation selectors) — so a mark attached to a base is never read as a word boundary,

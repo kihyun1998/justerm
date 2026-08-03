@@ -58,6 +58,17 @@ pub struct Term {
     /// One flag per column: is there a tab stop here? Explicit per-column state
     /// (HTS sets, TBC clears), not a fixed modulo. Default = every 8th column.
     tabs: Vec<bool>,
+    /// Which characters end a word for Word (semantic) selection — **consumer policy**,
+    /// not engine state (ADR-0017). Defaults to [`DEFAULT_WORD_SEPARATORS`]; replaced
+    /// through `set_word_separators`, which is also where the `' '` floor is enforced.
+    ///
+    /// Being *policy* is what puts it on the short list `full_reset` carries across RIS,
+    /// beside `replies` and `events`: `ESC c` resets the terminal's state, and a
+    /// consumer's configuration is not that. All three references survive RIS here by
+    /// construction rather than by remembering to — alacritty's `reset_state` never
+    /// touches `self.config`, xterm.js holds it in `OptionsService`, and ghostty passes
+    /// the set in per call.
+    word_separators: String,
     /// Origin mode (DECOM ?6): when set, cursor addressing is relative to the
     /// scroll region's top margin (and clamped to it).
     origin_mode: bool,
@@ -329,6 +340,33 @@ const DEFAULT_SCROLLBACK: usize = 10_000;
 /// application rendering for a width the buffer does not have (#547).
 pub const MIN_COLUMNS: usize = 2;
 
+/// The built-in word-boundary set for Word (semantic) selection — the default value of
+/// [`Term::set_word_separators`], and **policy the consumer may replace** (ADR-0017:
+/// mechanism in core, policy injected).
+///
+/// It is alacritty's `SEMANTIC_ESCAPE_CHARS` (`alacritty_terminal/src/term/mod.rs:45`
+/// @ `852e971`) verbatim — space, tab and a punctuation set that deliberately omits
+/// `.`, `/` and `-` so a path or URL stays one word — **plus U+3000 IDEOGRAPHIC
+/// SPACE**, which is justerm's one divergence from every reference default.
+///
+/// Two properties of this list are load-bearing and neither is obvious:
+///
+/// - **It is a literal set, not the Unicode `White_Space` property.** The predicate was
+///   `char::is_whitespace()` until #545, so every space-like codepoint ended a word —
+///   including the four `Line_Break=GL` (glue) ones U+00A0, U+2007, U+202F and U+205F,
+///   whose whole purpose is "do not break here". A locale-formatted `1<NNBSP>234`
+///   double-clicked as `1`. All three references are literal sets for the same reason.
+/// - **U+3000 is in it, and no reference's default has it.** It is the only
+///   East-Asian-Wide codepoint `White_Space` accepts (measured over U+0000–U+10FFFF),
+///   so on alacritty and xterm.js `　abc` is one word while justerm gives the useful
+///   answer. Keeping it was argued in #535 *on the grounds that core had no injection
+///   point*; that ground is gone, so it survives here as a **default**, and a consumer
+///   who wants reference-exact behaviour removes it.
+///
+/// [`Term::set_word_separators`] additionally forces `' '` into whatever it is given —
+/// see there for why that floor is not optional.
+pub const DEFAULT_WORD_SEPARATORS: &str = ",│`|:\"' ()[]{}<>\t\u{3000}";
+
 /// A declared OSC 8 hyperlink, as handed to a consumer.
 ///
 /// **Owned, not borrowed**, and that is the point: the URI lives in a row's side map, so
@@ -551,6 +589,7 @@ impl Term {
             link_ids: std::collections::HashMap::new(),
             link_ids_sweep_at: LINK_IDS_FIRST_SWEEP,
             tabs: default_tabs(cols),
+            word_separators: DEFAULT_WORD_SEPARATORS.to_owned(),
             scroll_top: 0,
             scroll_bottom: rows - 1,
             scrollback: VecDeque::new(),
@@ -915,6 +954,38 @@ impl Term {
     }
 
     /// Number of lines currently held in scrollback history.
+    /// Replace the word-boundary set used by Word (semantic) selection — the policy half
+    /// of `selection_begin(.., SelectionType::Word)`, injected per ADR-0017 (core owns
+    /// the buffer walk, the consumer owns which characters separate words). The default
+    /// is [`DEFAULT_WORD_SEPARATORS`].
+    ///
+    /// **`' '` is forced into whatever you pass**, and that is not a convenience. A
+    /// blank cell packs `' '`, so the space terminates the walk at the end of a row's
+    /// written text *and* backstops the wide-pair rule: without it, double-clicking next
+    /// to a wide separator starts the highlight on that separator's trailing spacer,
+    /// bisecting the glyph, and the walk then runs to the row's end through the padding.
+    /// Enforcing it here rather than in the walk is ghostty's shape — it prepends its own
+    /// blank codepoint to every parsed set at the config intake (`config/Config.zig`,
+    /// *"Always include null as first boundary"*), so `selectWord` never has to.
+    ///
+    /// A consequence worth knowing before you narrow the set: this predicate is the only
+    /// thing bounding the walk, so a set that omits the separators actually present in
+    /// the buffer makes one double-click walk the whole soft-wrap run (see #206).
+    pub fn set_word_separators(&mut self, separators: &str) {
+        let mut set: String = separators.to_owned();
+        if !set.contains(' ') {
+            set.push(' ');
+        }
+        self.word_separators = set;
+    }
+
+    /// The word-boundary set currently in force — what was passed to
+    /// [`Term::set_word_separators`] plus the forced `' '`, or
+    /// [`DEFAULT_WORD_SEPARATORS`] if it was never called.
+    pub fn word_separators(&self) -> &str {
+        &self.word_separators
+    }
+
     pub fn scrollback_len(&self) -> usize {
         self.scrollback.len()
     }
@@ -1911,9 +1982,16 @@ impl Term {
                 .map(|m| TermEvent::MarkerDisposed(m.id)),
         );
         let (cols, rows) = (self.grid.cols(), self.grid.rows());
+        // The word-boundary set is consumer *policy* (ADR-0017), not terminal state, so
+        // RIS does not own it — an application printing `reset` must not silently revert
+        // a setting the embedder chose. It rides across with `replies`/`events` because
+        // this reset rebuilds `Term` wholesale; the references never face the question,
+        // holding the equivalent outside the object RIS clears (#545).
+        let word_separators = std::mem::take(&mut self.word_separators);
         *self = Term::with_scrollback(cols, rows, self.scrollback_limit);
         self.replies = replies;
         self.events = events;
+        self.word_separators = word_separators;
         self.mark_fully_damaged();
     }
 

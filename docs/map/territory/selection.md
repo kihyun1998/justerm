@@ -73,7 +73,10 @@ status.
   ambiguous
 - `justerm-core/src/term/walk.rs` — the shared buffer-walk floor the selection reaches cells through:
   `Term::abs_line` / `abs_row`, `prev_pos` / `next_pos` (the logical-line step), `word_start` /
-  `word_end`, `is_word_boundary`. Extracted from `term.rs` in #585
+  `word_end`, `is_word_boundary`. Extracted from `term.rs` in #585. Since #545 `is_word_boundary`
+  is a `Term` method reading injected policy, not a free function over a fixed set — the set itself
+  lives in `term.rs` (`DEFAULT_WORD_SEPARATORS`, `set_word_separators`, and the `full_reset` line
+  that carries it across RIS)
 - Consumers: justerm-web does pixel→cell and clipboard; justerm-renderer paints the highlight
 
 ## Reference behaviour
@@ -111,6 +114,9 @@ at a recorded SHA; a paraphrase drops the pin).
   — the selection overlay group shares its record shape *and* its count prefix with search's, so it
   inherits the `u32` widening #621 made there. A selection cannot practically reach the ceiling the
   way a query can, which is why the fix arrived from the other territory
+- [RIS keeps configuration and drops coordinates](../invariant/ris-keeps-configuration-drops-coordinates.md)
+  — this territory holds **both** halves: the injected `word_separators` must survive `ESC c` (#545)
+  while the `selection` anchors beside it must die with the buffer they index
 - [a pointer coordinate is bounded by the converter that produces it](../invariant/pointer-coordinates-are-bounded-by-their-producer.md)
   — `cellAndSide` owes the bound on both axes, and the engine's own clamp (both axes since #671) is a
   backstop rather than a substitute: the alt-click cursor move leaves through the consumer's callback,
@@ -144,8 +150,14 @@ Check these after changing this territory:
   re-decided, and their grounds exist only in code comments.
 - **Block selection over wide characters is unspecified** — no artifact states what happens when a
   rectangular range cuts a width-2 glyph in half.
-- **Word-selection boundaries** — which character classes form a word is a *policy* that under
-  ADR-0017 may belong to the consumer, yet the set is hardcoded in core. ~~No record.~~ The
-  *behaviour* is recorded and cleared (see §Reference behaviour); what is open is the **routing** —
-  moving it means injecting the boundary set instead of hardcoding it (tracked: #545), and the
-  reference verdict holds only as long as the start-cell rule stays alacritty's.
+- ~~**Word-selection boundaries** — the set is hardcoded in core.~~ **Closed by #545**: the set is
+  consumer policy now (`Term::set_word_separators`, default `DEFAULT_WORD_SEPARATORS`), so the
+  routing conforms to ADR-0017. Two things it left behind, both narrower than the hole was:
+  - the **trailing trim** is still `char::is_whitespace()`-based (`extract_lines`' `trim_end`), so
+    a word ending in a non-breaking space now has a highlight one cell wider than the text it
+    copies — the same trim/content divergence `logical.rs`'s `LogicalLine::text` already records
+    against xterm. Tracked separately;
+  - `' '` is **forced into every injected set** at the setter, because a blank cell packs `' '` and
+    the walk uses that both to stop at a row's padding and to backstop the wide-pair rule. That is
+    ghostty's shape (it prepends its own blank codepoint at the config intake), and it is the one
+    part of this policy the consumer does *not* own.

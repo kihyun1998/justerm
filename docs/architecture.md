@@ -127,6 +127,12 @@ translation layer here is re-solving a solved problem.
 Engine-owned. Type = char / word / line / **block**; anchor = point + **side (left/right)**.
 `selection_range()` → highlight; `selection_text()` → copy text (respects type, wide chars,
 wrapped-line joining, trailing-whitespace trim, **across scrollback** — the engine holds all cells).
+**Which characters separate words is the consumer's, not the engine's** (`set_word_separators`,
+default `DEFAULT_WORD_SEPARATORS`) — the walk is buffer-wide mechanism, the set is policy, per
+ADR-0017. Two properties of that seam are contract rather than detail: `' '` is forced into any
+supplied set (a blank cell packs `' '`, and the walk stops on it both at a row's padding and as the
+wide-pair backstop), and the set **survives RIS**, because `ESC c` resets the terminal and not the
+embedder's configuration.
 Cursor blink is *not* an engine concern (consumer-local animation); the engine only reports cursor
 position/style/visibility.
 
