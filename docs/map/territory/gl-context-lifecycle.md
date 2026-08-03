@@ -29,6 +29,28 @@ machine that decides what the renderer does in between.
 - **Loss destroys GPU state, not the CPU-side model.** The persistent dense grid in the
   [frame adapter](frame-adapter.md) survives, which is what makes a restore a re-upload rather than a
   re-send from the engine.
+- **Every entry point that changes the geometry takes the request and defers the GPU work.** Five of
+  them can arrive mid-loss — the DPR, the font size, the font family, the spacing policy and the
+  resize — and none may reject the call, because a consumer cannot see the loss to hold it back
+  (that surface is unwired, #579). So each stores what it was given and lets `restore` re-derive
+  from it; nothing is queued, because the stored value *is* the queue. The four setters skip an
+  atlas re-bake that a dead context would return invalidated; `resize` skips reading the drawing
+  buffer back, which on a dead context answers 0 and would floor the grid to one cell (#639).
+- **"Is the context lost" has two answers and they disagree for a whole window — so the predicate
+  is chosen per site, never shared out of habit** (#639). The browser destroys a context
+  *synchronously* and merely **queues** `webglcontextlost`; the mirror holds on the way back. So the
+  state machine's flag — the honest thing to report to a *consumer*, since it tracks what we have
+  been told — lags the context itself, and an internal caller guarding on it is guarding on the
+  wrong thing. Measured: in the pre-dispatch window `gl.isContextLost()` is already `true`,
+  `drawingBufferWidth` already `0`, and the flag still `false`. The rule that falls out:
+  a caller that **has** the answer in hand tests that (`resize` rejects a non-positive read-back,
+  which is also right for any other cause of one), and a caller that must **ask** consults both
+  sources, since each covers the window the other misses.
+  This is the territory's most expensive shape so far: #639's first fix guarded on the flag, went
+  green, and left the defect it was written for reachable verbatim.
+- **What "defer" costs, stated once because each site pays it.** A value the consumer normally reads
+  back synchronously — a clamped grid, an atlas-shrunk cell — is settled at restore instead, and the
+  consumer is not told. That is the same missing signal as #579, reached from the other side.
 
 ## Code
 
@@ -38,9 +60,18 @@ machine that decides what the renderer does in between.
 
 ## Reference behaviour
 
-**None** in `docs/agents/reference-facts.md`. Whether either reference handles context loss, and how,
-has never been checked — and one of them (alacritty) is not a browser renderer at all, so the
-comparison set for this territory is smaller than for the rest of the crate.
+One question has been checked; the rest of the territory has not. alacritty and ghostty are not
+browser renderers at all, so the comparison set here is smaller than for the rest of the crate — that
+part is unchanged.
+
+- [Resizing while the GL context is lost](../../agents/reference-facts.md#resizing-while-the-gl-context-is-lost--the-reference-never-asks-the-question-639-verified-2026-08-03)
+  — a **negative** result, and the useful kind: xterm's resize handler runs unguarded through a loss,
+  which reads as permission until you see *why* it can. It never asks the driver what it granted, so
+  the read that a dead context answers with 0 does not exist there. Absence of a guard is not
+  evidence about the guard
+
+Still unchecked: whether either reference notifies on a never-restored context beyond xterm's timeout
+(the #327 comparison), and what any of them does with GPU resources it cannot rebuild.
 
 ## Cross-cutting invariants
 
@@ -58,11 +89,17 @@ comparison set for this territory is smaller than for the rest of the crate.
   be rebuilt, not merely re-bound
 - [GPU upload](gpu-upload.md) — the "last uploaded" state it diffs against is invalidated by a loss,
   so a restore has to force a full upload rather than a diff
+- [cell geometry](cell-geometry.md) — every deferring entry point above is one of its setters or the
+  resize, so a change to what derives the cell changes what a loss window has to hold
 - [widget lifecycle](widget-lifecycle.md) — the consumer sets the timeout and reacts to the callback
 
 ## Known holes / open
 
 - **Zero governing records** for a recovery path whose failure mode is a permanently blank terminal.
+  The open cluster is anchored at spine `#689` (*this crate keeps asking a proxy whether the GPU is
+  usable*) rather than at a record — the rule it would promote derives three sites so far, two of
+  them found inside one change, and the anchor exists to see whether it derives a fourth. The roster
+  lives there and deliberately not here.
 - **No reference comparison at all**, and the usual comparison set does not apply cleanly.
 - **The interaction with the upload planner is stated here and nowhere else.** That a restore must
   invalidate the diff baseline is exactly the kind of cross-territory rule this map exists to hold,

@@ -548,6 +548,22 @@ does X" cannot settle it — each row says which constraint makes its shape avai
 | **Direction: justerm-web converges with alacritty**, not with xterm. The `(cols, rows, cellWidth, cellHeight)` key is a live-updated snapshot widened to every input whose change can require an emit — alacritty's shape one layer up. This layer does **not** diverge alone, and there is no family parity fix to track | justerm-web | `justerm-web/src/fit.ts` `FitController.last` |
 | ⚠ **In-repo, the shape xterm uses does exist** — `JustermRenderer`'s `lastFrameGrid` compares against live `backend.cols()`/`rows()`. Cite *that* as the local example of "dedupe against authoritative live state", not `FitController` | justerm-web | `justerm-web/src/justerm-renderer.ts` `lastFrameGrid` |
 
+## Resizing while the GL context is lost — the reference never asks the question (#639, verified 2026-08-03)
+
+A **negative result**, and the reason it is worth a section rather than a shrug: "xterm's `handleResize`
+has no context-loss guard" is true and reads as permission to have none. It is not — xterm has nothing
+to guard, because it never performs the read that makes a lost context dangerous. The distinction is
+the whole finding, and it is invisible unless the absence is recorded with the thing it is absent from.
+
+| Fact | Reference | Site |
+|---|---|---|
+| **`handleResize` runs unguarded during a context loss** — no `isContextLost` check, no deferral; it recomputes dimensions and assigns the canvas straight through. The context-loss listeners sit in the constructor and touch only the restore timeout and the atlas rebuild | xterm.js | `addons/addon-webgl/src/WebglRenderer.ts:192` (the handler), `:125-146` (the two listeners, which it never consults) |
+| …because **the canvas is sized from the grid, never from what the driver granted**: `_canvas.width = dimensions.device.canvas.width`, a `cols * cell` product. There is no read-back to return 0 | xterm.js | `addons/addon-webgl/src/WebglRenderer.ts:205` |
+| ⚠ **`drawingBufferWidth` / `drawingBufferHeight` appear nowhere in the project** — `rg drawingBuffer src addons` returns **0 hits** at this pin. So the failure class justerm's adopt-what-fits creates (a lost context reports a 0x0 buffer, the loop floors the grid to 1x1) is structurally unreachable there, and xterm cannot arbitrate the guard | xterm.js | absence, reproducible: `rg -n drawingBuffer ../.refs/xterm.js/{src,addons}` |
+| ⚠ **`isContextLost` appears nowhere either** — `rg isContextLost src addons` is also **0 hits**. So xterm has no position on the event-vs-state race that this territory turns on (a browser kills a context synchronously and only *queues* `webglcontextlost`); it consults neither the query nor its own listeners outside the constructor. The "cannot arbitrate" conclusion therefore reaches further than the buffer read-back — it covers the predicate too | xterm.js | absence, reproducible: `rg -n isContextLost ../.refs/xterm.js/{src,addons}` |
+| **The comparison set does not extend.** alacritty and ghostty are not browser renderers and have no context-loss concept at all — matching `gl-context-lifecycle.md`'s recorded *"No reference comparison at all"* | alacritty · ghostty | n/a by layer, not by omission |
+| **Direction: justerm decides alone.** The read-back is this repo's own #339 design — `resize`'s comment states *"No reference does this"* and names what the three references do instead — so the guard's shape came from the four sibling entry points in the same crate, not from prior art | justerm-renderer | `justerm-renderer/src/webgl.rs` `resize`, `adopt_spacing`, `set_device_pixel_ratio` |
+
 ## Background transparency — the shape of the knob (#577, verified 2026-07-29)
 
 The file had **zero** rows on transparency before this, though `set_bg_alpha` has existed since #298

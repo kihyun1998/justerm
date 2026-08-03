@@ -1011,7 +1011,7 @@ impl JustermRenderer {
         // A lost context can only hand back an invalidated atlas texture, so re-baking now would
         // burn the work and commit an empty atlas. Drop the notification: `restore` re-reads the
         // *live* DPR and bakes at that density anyway (#269).
-        if self.ctx_loss.state.borrow().is_lost() {
+        if self.gpu_work_must_wait() {
             return Ok(());
         }
         self.rebake_atlas(self.font_family.clone(), self.font_size, dpr)
@@ -1103,7 +1103,7 @@ impl JustermRenderer {
         // Unlike the DPR, the font size is not re-read from anywhere external on a context restore —
         // it lives only here. So on a lost context, still advance the field (so `restore` bakes at the
         // new size) but skip the immediate re-bake (a dead atlas would burn the work, #269).
-        if self.ctx_loss.state.borrow().is_lost() {
+        if self.gpu_work_must_wait() {
             self.font_size = css_px;
             return Ok(());
         }
@@ -1128,7 +1128,7 @@ impl JustermRenderer {
         // Like the font size (#406) and unlike the DPR, the family lives only in this field — it is not
         // re-read on a context restore. So on a lost context, advance the field (so `restore` bakes the
         // new family) but skip the immediate re-bake (a dead atlas would burn the work, #269).
-        if self.ctx_loss.state.borrow().is_lost() {
+        if self.gpu_work_must_wait() {
             self.font_family = family;
             return Ok(());
         }
@@ -1209,12 +1209,17 @@ impl JustermRenderer {
         self.line_height = line_height;
         self.recompute_cell();
 
-        // `resize` reads `drawingBufferWidth` back (#339). On a lost context that is 0, so the
-        // adopt-what-fits loop shrinks the grid to 1x1 — and `restore` then rebuilds the buffer from
-        // that clobbered grid, so the terminal comes back one cell wide. Keep the policy, defer both
-        // the re-bake and the resize: `restore` re-derives everything from the stored grid (#269).
-        // `set_device_pixel_ratio` has had this guard all along; the asymmetry was the tell.
-        if self.ctx_loss.state.borrow().is_lost() {
+        // Keep the policy, defer the re-bake: an atlas built on a dead context comes back
+        // invalidated, so the work would be burned and then committed empty. `restore` re-derives
+        // everything — cell, atlas and buffer — from the surviving policy and the stored grid (#269).
+        // Note that `recompute_cell` above has already run, so the *cell* moves immediately while
+        // the atlas and the buffer wait; that ordering is a contract the consumer's docs describe.
+        //
+        // This used to be the resize's guard too, and said so: `resize` reads `drawingBufferWidth`
+        // back (#339), which is 0 while lost, so the adopt-what-fits loop shrank the grid to 1x1.
+        // `resize` guards itself as of #639 — on the read-back rather than on this predicate, since
+        // it holds the answer — so returning here is now about the re-bake alone.
+        if self.gpu_work_must_wait() {
             return;
         }
         if self.rebake_for_cell().is_err() {
@@ -1265,9 +1270,38 @@ impl JustermRenderer {
     /// Whether the WebGL context is currently lost (#269). While lost the renderer draws nothing;
     /// it recovers by itself when the browser fires `webglcontextrestored`. Exposed so the consumer
     /// can surface the state (e.g. dim the terminal); no consumer action is required.
+    ///
+    /// This is the **event-driven** view — what the browser has told us — which is the honest thing
+    /// to report to a consumer, and deliberately *not* what the crate's own internals guard on
+    /// (`gpu_work_must_wait`, private): a context dies synchronously while its event is merely
+    /// queued, so this answers `false` for a window in which every GL call is already dead. Read it
+    /// as *"has a loss been reported"*, not *"is the GPU usable right now"* (#639).
     #[wasm_bindgen(js_name = isContextLost)]
     pub fn is_context_lost(&self) -> bool {
         self.ctx_loss.state.borrow().is_lost()
+    }
+
+    /// Whether GPU work must be deferred *right now* — the internal counterpart of
+    /// [`is_context_lost`](Self::is_context_lost), and deliberately a different question (#639).
+    ///
+    /// It asks **two** sources because each covers a window the other misses, and both are
+    /// event-vs-state races around the same pair of DOM events:
+    ///
+    /// - `raw_gl.is_context_lost()` — the context itself. The browser kills a context
+    ///   **synchronously** and only *queues* `webglcontextlost`, so between those two moments the
+    ///   state machine still says "live" while every GL call is already dead and
+    ///   `drawingBufferWidth` already reads 0. Measured in Chromium: immediately after
+    ///   `WEBGL_lose_context.loseContext()`, `gl.isContextLost()` is `true` and the flag below is
+    ///   still `false`. Guarding on the flag alone is what let #639 survive its own first fix.
+    /// - the state machine's flag — our own bookkeeping. The mirror window: a context can come back
+    ///   before we have processed `webglcontextrestored`, so the GL answers "live" while the
+    ///   program, VAO and atlas it owned are still the destroyed ones and `restore` has not run.
+    ///   Baking into those would be as wrong as baking into a dead context.
+    ///
+    /// So: defer if **either** says so. Note that `resize` does not use this — it holds the actual
+    /// answer, having just read the drawing buffer back, and guards on that instead.
+    fn gpu_work_must_wait(&self) -> bool {
+        self.raw_gl.is_context_lost() || self.ctx_loss.state.borrow().is_lost()
     }
 
     /// Register a callback invoked when a lost context has not been restored within the deadline
@@ -1393,6 +1427,9 @@ impl JustermRenderer {
 
         // 4. The loss reset the drawing-buffer size and the viewport; re-derive them from the grid at
         //    the (possibly new) DPR, then refill the buffer so `render` draws the pre-loss frame.
+        //    This is also where a `resize` that arrived *during* the loss gets its adopt-what-fits
+        //    pass: it committed the grid and skipped the read-back, leaving that to this call (#639).
+        //    Nothing extra is stored for it — the grid it committed IS `grid_size`.
         let (cols, rows) = self.grid_size;
         self.resize(cols, rows);
         self.upload_instances();
@@ -1454,6 +1491,21 @@ impl JustermRenderer {
     /// is displayed at device px — twice its intended size on a Retina display.
     ///
     /// The atlas survives; a DPR change re-derives the buffer from this grid.
+    ///
+    /// **When the drawing buffer cannot be read, the grid is adopted but not verified** (#639). A
+    /// resize can land at any moment in a context-loss window, and a consumer has no obligation to
+    /// notice — so this takes the grid, sizes the canvas, and reports it back through
+    /// [`cols`](Self::cols) / [`cssWidth`](Self::css_width) as usual, deferring only the one step
+    /// that needs a live context: reading the buffer back to adopt what actually fits. `restore`
+    /// re-derives the buffer from the stored grid, which is where that check happens instead.
+    ///
+    /// Note *"cannot be read"*, not *"the context is lost"*: the test is a non-positive read-back,
+    /// because a browser kills a context synchronously and only queues `webglcontextlost`, so
+    /// [`isContextLost`](Self::is_context_lost) still answers `false` for a window in which every
+    /// GL call is already dead. Two consequences worth knowing: a clamp is normally visible in
+    /// `cols`/`rows` the instant this returns, but one deferred this way settles at restore time
+    /// with no signal; and during the window `cssWidth` describes a buffer that does not exist yet,
+    /// so a consumer sizing its canvas from it can overshoot until the restore lands.
     pub fn resize(&mut self, cols: u32, rows: u32) {
         // A grid must have at least one cell: `grid_px` floors the *buffer* to 1, and letting
         // `grid_size` keep a 0 would break `size == grid_px(grid_size, cell_size)`.
@@ -1501,6 +1553,36 @@ impl JustermRenderer {
                 self.raw_gl.drawing_buffer_width(),
                 self.raw_gl.drawing_buffer_height(),
             );
+
+            // **A buffer of no size is not a grant, it is the absence of an answer** (#639). A lost
+            // context reports 0x0, and `cells_that_fit(0, cell)` floors to 1 — so without this the
+            // loop "adopts" a 1x1 grid, and `restore`, which re-derives the buffer from `grid_size`,
+            // then rebuilds at it: the terminal comes back one cell wide, permanently and silently.
+            // Measured, dpr 2: `resize(10, 3)` mid-loss gave `[1, 1]`, still `[1, 1]` after restore,
+            // CSS box one cell. Until #579 a web consumer cannot even see the loss to hold its
+            // re-fit back.
+            //
+            // **This guards on the read-back rather than on the context's state, and that is the
+            // load-bearing part.** The first fix for #639 asked `is_context_lost()` — the state
+            // machine's flag — and the defect survived it verbatim, because the browser kills a
+            // context *synchronously* and only queues `webglcontextlost`: in that window the flag
+            // is still clear while `drawingBufferWidth` already reads 0. Measured in Chromium,
+            // same task as `loseContext()`: `gl.isContextLost()` true, our flag false, `resize`
+            // still adopting `[1, 1]`. The other four entry points cannot phrase the question this
+            // way because they are not reading anything back, so they ask `gpu_work_must_wait()`
+            // instead; this one has the answer in its hand and must not ask anyone else for it.
+            //
+            // Zero is never a legitimate clamp, so this costs nothing on a live context. What it
+            // defers is the verification, not the grid: the caller's `cols`/`rows` are committed
+            // below either way, and `restore` re-runs this loop on a live context and clamps then
+            // (measured: `resize(4000, 8)` at `MAX_TEXTURE_SIZE` 8192 reports `[4000, 8]` during
+            // the loss and `[1024, 8]` after the restore). The price is that a clamp settled at
+            // restore time moves `grid_size`/`size` with **no signal**, where a clamp on a live
+            // context is visible in `cols`/`rows` the moment this returns.
+            if bw <= 0 || bh <= 0 {
+                break;
+            }
+
             if bw >= dw && bh >= dh {
                 break; // granted in full; a larger grant is ignored, the grid still leads (#331)
             }
@@ -1538,6 +1620,10 @@ impl JustermRenderer {
     /// later DPR drop would shrink the cell enough for the original to fit. That is deliberate — the
     /// consumer owns the grid (ADR-0017) and recomputes it from its own box, as xterm's `FitAddon`
     /// does — but it is not obvious from the field alone.
+    ///
+    /// One case reports a grid that has **not** been checked against the buffer yet: a
+    /// [`resize`](Self::resize) that arrived while the context was lost (#639). It is the grid that
+    /// was asked for, and the restore may still clamp it.
     #[wasm_bindgen(js_name = cols)]
     pub fn cols(&self) -> u32 {
         self.grid_size.0
