@@ -122,3 +122,9 @@ above does not touch it.
   `SearchPort.anchoredIndex` is the only path carrying an emphasis across a hand-over; a backend
   that instead replays a remembered `Match` into `set_active_search_match` (the past-cap path, #436)
   is squarely the case above.
+  **Re-read against #687, which added a second verb to that lifetime.** `SearchPort.clearHighlights`
+  drops the paint while *sparing* the anchor, so the anchor now survives strictly longer — across a
+  regex-mode query the engine refused. The condition still holds: `clearHighlights` carries no
+  coordinate anywhere, and the anchor it spares is still resolved backend-side against a fresh match
+  list before an index crosses the wire. What lengthened is the window in which the anchor can go
+  stale by other means, which is [active match](active-match.md) § Known holes, not this one.

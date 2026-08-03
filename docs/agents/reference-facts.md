@@ -1139,3 +1139,72 @@ disagree: a Linear and a Block selection over the same cells must return the sam
 distinguishing a written `' '` from a blank, and justerm's blank cell packs `' '`
 (`justerm-core/src/cell.rs`, `Cell::default`). Recorded as the open axis, not fixed: the references
 split 2–1 there, where they are 3–0 on the property.
+
+## Search: dropping the paint vs ending the session (#687, verified 2026-08-03)
+
+The third entry for this territory, and the one that decides how many **clear verbs** a search
+surface has. #687 was filed with *"no recorded tie-breaker for this layer"* — true of the question
+it asked (what to do about an *invalid regex*, a state only justerm has) and false of the one that
+decides the design (may a query change drop the paint without ending the session?). The concept
+layer is silent; the mechanism layer is **3–0**. Reading only the first is what the
+concept≠mechanism rule exists to prevent.
+
+**Nobody ends the search session because the query changed, and two of the three keep the anchor
+through a query the engine cannot run.**
+
+| Fact | Reference | Site |
+|---|---|---|
+| A **malformed** pattern leaves the anchor entirely alone: in `update_search` a non-empty regex takes the `else` arm, `dfas = RegexSearch::new(regex).ok()` is `None` on failure, and the `search_reset_state` call sits in the empty-regex branch *above* it, which this arm never reaches | alacritty | `alacritty/src/event.rs:1520` |
+| …and the `goto_match` that arm then calls returns before its body when `dfas` is `None`, so nothing downstream runs — `origin` is written only by `start_search` and `advance_search_origin` | alacritty | `alacritty/src/event.rs:1557` |
+| xterm's paint drop is **anchor-neutral unconditionally**: `clearDecorations` clears the selected decoration, the highlight decorations and the result list, and touches the selection — which *is* its anchor — in neither variant | xterm.js | `addons/addon-search/src/SearchAddon.ts:81` |
+| The anchor dies by a **separate call on a different path**, `this._terminal.clearSelection()`, reached on an emptied term or a find that returned nothing | xterm.js | `addons/addon-search/src/SearchAddon.ts:166` |
+| `changeNeedle` tears the whole search down and emits `total_matches = 0` + `selected_match = null` — ghostty has nothing to spare here, because it designates nothing while typing (see the #437/#441 entry) | ghostty | `src/terminal/search/Thread.zig:334` |
+
+**Read `retainCachedSearchTerm` carefully — it is not the anchor flag, and reading it as one is an
+error this file made and had to retract.** The flag gates exactly one statement,
+`this._state.clearCachedTerm()`. `_cachedSearchTerm` is a *re-highlight cache key* and a
+same-term/different-term bit that picks `prevSelectedPos.end` over `.start` on the next find; it is
+not what carries the emphasis. So xterm supports #687's split **more** strongly than the flag
+suggests: its paint drop never had the power to end a session in the first place.
+
+| Fact | Reference | Site |
+|---|---|---|
+| The flag's entire body — one call, to `clearCachedTerm` | xterm.js | `addons/addon-search/src/SearchAddon.ts:85` |
+| What the cached term is *for*: `shouldUpdateHighlighting`, i.e. whether to recompute highlights at all | xterm.js | `addons/addon-search/src/SearchState.ts:83` |
+| The anchor itself — the selection the addon puts on each result (already recorded under #437/#441) | xterm.js | `addons/addon-search/src/SearchEngine.ts:103` |
+| A separate public verb drops **only** the designation, and its doc names the occasion: *"intended to be called on the search textarea's `blur` event"* | xterm.js | `addons/addon-search/src/SearchAddon.ts:90` |
+
+**xterm's "invalid" is not justerm's, which is the row the issue's premise turned on.**
+`isValidSearchTerm` is `!!(term && term.length > 0)` — *empty*, nothing more. The one place xterm
+ends a session on a rejected term is the case where every implementation would, and it says nothing
+about a non-empty pattern the engine refuses. xterm validates no dialect at all: the addon takes a
+JS `RegExp` and the host (VS Code) validates upstream. **alacritty is the only reference that has
+justerm's situation**, and it keeps the anchor through it — which is the row that decides #687.
+
+| Fact | Reference | Site |
+|---|---|---|
+| `isValidSearchTerm(term)` = `!!(term && term.length > 0)` | xterm.js | `addons/addon-search/src/SearchState.ts:49` |
+
+**One divergence, deliberate: the designation.** alacritty's invalid branch does not call
+`search_reset_state`, so its `focused_match` marker survives a malformed pattern; justerm's
+`clearHighlights` drops the designation with the highlights. That is not drift — #316 D2 requires
+the screen to stop showing a query the box has rejected, and core's own hand-over already voids the
+designation whenever the set is replaced (`set_search_highlights`). Core, the demo backend and the
+port agree, so the family is consistent against the reference on this one axis and holds.
+
+**Where justerm's shape legitimately differs, and why it is not a divergence either.** xterm keeps
+its retain/end distinction *private* — the published `.d.ts` exposes only `clearDecorations(): void`
+— because the object holding the positions is in the same address space. justerm's is across a
+process boundary, so the same distinction has to be a **port method**
+(`SearchPort.clearHighlights`). The seam location derives the shape; the rule underneath is shared.
+
+| Fact | Reference | Site |
+|---|---|---|
+| The published API has `clearDecorations(): void`, no parameter | xterm.js | `addons/addon-search/typings/addon-search.d.ts:145` |
+
+**And the sibling corpus agrees, which is what makes this a direction rather than a difference.**
+`justerm-core` already draws the same line on its own side of the wire: highlights are
+*query-derived* state and are **invalidated**, while user-authored state is **re-anchored** — the
+rule in `justerm-core/src/term/search.rs`'s module doc, recorded in
+`docs/map/territory/search.md` § Design model. The anchor is where the user navigated to; the
+highlight set is a function of the query. `clear()` conflating them was the defect.

@@ -37,6 +37,15 @@ concept: which member is active is navigation policy, and navigation is the cons
   *occurrence*: the consumer asks its backend where that occurrence now sits
   (`SearchPort.anchoredIndex`, #437/#441) rather than reusing the number it last sent. The engine
   side of the same fact is `set_active_search_match`, which takes the match instead of an index.
+- **The anchor outlives the paint, and only one verb takes both.** Dropping the highlights is not
+  the same event as ending the search, so the consumer seam carries two verbs:
+  `SearchPort.clearHighlights` drops the match set and the designation while the session — and its
+  anchor — continues, and `SearchPort.clear` ends it (#687). The split is the consumer-side
+  restatement of the rule [search](search.md) records for the engine: the highlight set is
+  *query-derived* and is invalidated, the anchor is *user-authored* and is carried. Conflating them
+  put #441's viewport yank back on ordinary typing, because a regex is invalid for as long as it
+  takes to type a group's closing paren.
+
 - **It is the fifth overlay group** (wire v12), added after the other four — which is why its
   interaction rules are the least recorded of them.
 
@@ -57,6 +66,14 @@ concept: which member is active is navigation policy, and navigation is the cons
   puts on each result, alacritty's is a stored `Point`, ghostty's is a tracked pin beside the index
   it then shifts by hand. None of them keeps a bare ordinal. While *typing* they split 2–1 — and the
   outlier designates **nothing**, so "re-land on the first match" is nobody's answer
+
+- [Dropping the paint vs ending the session](../../agents/reference-facts.md#search-dropping-the-paint-vs-ending-the-session-687-verified-2026-08-03)
+  — the *verb count* question (#687), and the entry that shows why reading only the concept layer
+  misleads. On "what to do about an invalid regex" the references are silent, because only justerm
+  has a rejected-but-non-empty pattern. On "may a query change drop the paint without ending the
+  session" they are **3–0**, and alacritty answers justerm's exact situation: a pattern that fails to
+  compile leaves the origin untouched. One divergence held deliberately — alacritty's designation
+  survives an invalid pattern, justerm's does not, because #316 D2 and the hand-over reset agree
 
 **Still open — the overlap.** The model is described as following xterm's, but the specific question
 — what wins where an active match and a selection overlap, per channel — has never been compared
