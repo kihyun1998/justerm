@@ -6,6 +6,7 @@ import {
   textareaMove,
   wheelGoesToApp,
   wheelScrollTarget,
+  preeditIntent,
 } from "../src/terminal";
 import { StubFrameSource } from "../src/frame-source";
 import { MouseEvents, StubInputSink } from "../src/input";
@@ -362,8 +363,10 @@ describe("textareaMove (#631)", () => {
  * (`browser/CoreBrowserTerminal.ts:338`) and `CompositionHelper.updateCompositionElements` rewriting
  * `left`/`top` every render (`browser/input/CompositionHelper.ts:273-274`) are not rival rules. Since
  * the OS re-reads, whoever writes the position owns the window: xterm suppresses the INVOLUNTARY writer
- * (the frame stream) and keeps the VOLUNTARY one (tracking its own preedit view). #249 would give this
- * widget that second writer.
+ * (the frame stream) and keeps the VOLUNTARY one (tracking its own preedit view). #249 gave this
+ * widget that second writer (ADR-0028 D4) — and this guard did NOT have to give, which is what the
+ * prediction here got wrong: the preedit writer re-aims through `writeTextareaAnchor` and never
+ * consults `textareaMove`, so this stays a rule about the involuntary writers alone.
  *
  * The rule lives here rather than in `positionTextarea` because the callers funnel through one seam.
  *
@@ -418,5 +421,36 @@ describe("textareaMove — the mid-composition guard (#637)", () => {
     const suppressed = textareaMove({ col: 2, row: 8 }, "2,5", false, true);
     expect(suppressed).toBeUndefined();
     expect(textareaMove({ col: 2, row: 8 }, "2,5", false, false)?.key).toBe("2,8");
+  });
+});
+
+describe("preeditIntent — what a compositionupdate does to the drawn run (#249)", () => {
+  const origin = { col: 3, row: 4 };
+
+  it("pushes the run as code points, not UTF-16 units", () => {
+    const got = preeditIntent("한글", "", origin);
+    expect(Array.from(got!.codepoints)).toEqual([0xd55c, 0xae00]);
+    expect(got!.origin).toEqual(origin);
+    // An astral scalar is ONE cell's codepoint; splitting by UTF-16 unit would push two halves of a
+    // surrogate pair and draw two replacement boxes.
+    expect(Array.from(preeditIntent("\u{1F600}", "", origin)!.codepoints)).toEqual([0x1f600]);
+  });
+
+  it("drops an update whose data did not change", () => {
+    // A real IME emits one settling update per syllable carrying the data it already sent
+    // (measured). Each would otherwise cost a full re-pack.
+    expect(preeditIntent("한", "한", origin)).toBeUndefined();
+    expect(preeditIntent("한글", "한", origin)).toBeDefined();
+  });
+
+  it("pushes nothing without a latched origin", () => {
+    expect(preeditIntent("한", "", undefined)).toBeUndefined();
+  });
+
+  it("treats the empty run as a real change, so a composition can be cleared", () => {
+    // `compositionend` clears by pushing "" — if that were dropped as "no change" the last
+    // syllable would stay on screen for the life of the widget.
+    expect(preeditIntent("", "한", origin)).toBeDefined();
+    expect(Array.from(preeditIntent("", "한", origin)!.codepoints)).toEqual([]);
   });
 });

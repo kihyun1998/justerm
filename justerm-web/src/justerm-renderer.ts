@@ -212,6 +212,16 @@ export interface RendererBackend {
   /** Retain the ACTIVE search match's spans + colour (#427) — additive beside
    * `setOverlay`, ranked above selection; empty spans clear it. */
   setActiveMatch(activeSpans: Uint32Array, activeMatchBg: number): void;
+  /** The in-progress IME composition, or an empty run to clear it (#249). Returns the caret /
+   * anchor column — one past the run, after any right-edge shift.
+   *
+   * **Optional because the published package decides, not this file.** `justerm-web` consumes
+   * `justerm-renderer` from npm, so a binding added in the repo is absent at runtime — and from the
+   * `.d.ts` — until a `renderer-v*` tag publishes it. Required here would make the widget
+   * un-typecheckable against every renderer that predates it, and calling it unguarded would be a
+   * `TypeError` rather than a missing feature. A renderer without it is preedit-blind, which is the
+   * state every consumer was in before #249. */
+  setPreedit?(col: number, row: number, codepoints: Uint32Array): number;
   /** Retain the flat decoration directory `[row, left, right, layer, bg, fg]…` (#393). */
   setDecorations(spans: Uint32Array): void;
   /** Place the cursor: shape `0` block / `1` underline / `2` bar / `3` hollow (#270). */
@@ -466,6 +476,9 @@ export class JustermRenderer implements Renderer {
   private readonly textBlink = new TextBlink();
   /** Last cursor reported by a frame (screen coords), or `undefined` if hidden. */
   private cursor: { col: number; row: number; shape: number } | undefined;
+  /** Where the caret sits while a composition is open (ADR-0028 D5), or undefined when none is —
+   * retained because every frame re-asserts the engine's cursor, which cannot know about a preedit. */
+  private preeditCaret: { col: number; row: number } | undefined;
   private lastBlinkOn = true;
   /** The text-blink phase the renderer was last handed (its `last_blink_on`), so the loop only
    * re-issues on an actual flip. */
@@ -914,11 +927,17 @@ export class JustermRenderer implements Renderer {
       this.backend.clearCursor();
       return;
     }
+    // ADR-0028 D5 — while a composition is open the caret's POSITION is the composition's end, not
+    // the engine cursor the frame carries. Position only: `cursorCommand` above still decides
+    // whether there is a caret at all, so an application that hid it keeps it hidden (#592's
+    // boundary, which browser ownership does not reach).
+    const col = this.preeditCaret?.col ?? cmd.col;
+    const row = this.preeditCaret?.row ?? cmd.row;
     // A move (or first appearance) restarts the blink so the cursor shows at once.
-    if (!this.cursor || cmd.col !== this.cursor.col || cmd.row !== this.cursor.row) {
+    if (!this.cursor || col !== this.cursor.col || row !== this.cursor.row) {
       this.blink.restart(now());
     }
-    this.cursor = { col: cmd.col, row: cmd.row, shape: cmd.shape };
+    this.cursor = { col, row, shape: cmd.shape };
     // Draw at the CURRENT blink phase, not forced-on: the decoder emits cursor fields on every
     // frame, so a content frame streaming during blink-off must leave the cursor off (a `restart`
     // above already forces phase-on for a move). Forcing on here would pin the cursor solid and
@@ -980,6 +999,38 @@ export class JustermRenderer implements Renderer {
    * for one would leave the caret mid-phase until the next output — the same reason
    * {@link setFocused} redraws.
    */
+  /**
+   * Draw the composition into the grid and report where the caret belongs (#249, ADR-0028).
+   *
+   * Presents immediately rather than waiting for the next frame: a composition produces no frames
+   * at all — the engine never sees it — so there is nothing else to ride on. The cursor is re-pushed
+   * at the returned column, which is D5's position rule: the caret rides the composition's end,
+   * while `cursorCommand` still decides whether it is drawn (an application that hid the caret
+   * keeps it hidden, #592's boundary).
+   */
+  setPreedit(col: number, row: number, codepoints: Uint32Array): number {
+    // A renderer published before #249 has no such binding: report the anchor cell unchanged, so
+    // the widget's anchor logic still works and only the drawing is missing.
+    if (!this.backend.setPreedit) return col;
+    const caretCol = this.backend.setPreedit(col, row, codepoints);
+    // Retained, because D5 is a rule about every frame and not about this call. Frames keep arriving
+    // while a composition is open and each one describes the ENGINE's cursor, which knows nothing
+    // about the preedit — so without this the caret snaps back under the composed text on the next
+    // output frame, which is #637's harm wearing the cursor's clothes.
+    this.preeditCaret = codepoints.length > 0 ? { col: caretCol, row } : undefined;
+    if (this.cursor) {
+      this.cursor = { ...this.cursor, col: caretCol, row };
+      // The CURRENT phase, not the last one pushed. `setComposing(true)` has already told the blink
+      // to hold the caret on (#592), and `lastBlinkOn` is whatever the loop happened to push before
+      // the composition opened — so re-pushing that lands a *cleared* cursor for the whole
+      // composition whenever it began on an off phase. Caught by #592's own probe once it sampled
+      // where the caret had moved to.
+      this.pushCursor(this.blink.isVisible(now()));
+    }
+    this.render();
+    return caretCol;
+  }
+
   setComposing(composing: boolean): void {
     this.blink.setComposing(composing);
     if (this.cursor) this.redrawCursor();

@@ -222,8 +222,10 @@ describe("CursorBlink — idle timeout (#593)", () => {
 
 // #592 — while an IME composition is in progress the caret stays put. Two of the three references do
 // this (pinned trees, 2026-07-28): alacritty suppresses the blink as a term in the same expression
-// (`alacritty/src/event.rs:1633` @ 852e971), and ghostty forces a solid block during preedit
-// (`src/renderer/cursor.zig:47` @ e6e26e1, *"it shows an important editing state to the user"*).
+// (`alacritty/src/event.rs:1633` @ 852e971), and ghostty — CORRECTED 2026-08-03, #249 — draws no
+// terminal caret at all while composing. `cursor.zig:47` does return `.block` for preedit, but
+// `rebuildCells` discards the cursor before it is used (`src/renderer/generic.zig:2453` @ e6e26e1,
+// after `setCursor(null, null)`), so the block this comment used to cite is unreachable.
 // xterm.js has no rule — its only `isComposing` guard near the cursor is `_syncTextArea`.
 //
 // MEASURED before building (real browser, composition driven through the hidden textarea): with the
@@ -231,8 +233,12 @@ describe("CursorBlink — idle timeout (#593)", () => {
 // the content cells never change either. So this gate is a no-op in the common case and bites only
 // where an application explicitly asked to blink. That narrowness is the point, not a shortcoming.
 //
-// NOT adopted: ghostty's stronger form, where a preedit outranks DECTCEM and *reveals* a cursor the
-// application hid. That inverts `cursorCommand`'s contract for a rare case; recorded on #592.
+// NOT adopted: the rule that a preedit outranks DECTCEM and *reveals* a cursor the application hid.
+// That inverts `cursorCommand`'s contract for a rare case; recorded on #592, and carried forward as
+// ADR-0028 D5 (browser ownership governs position and extent, never visibility). Note what the 2026-
+// 08-03 correction above does to its GROUNDS: #592 rejected that rule believing ghostty held it, and
+// ghostty does not — so the reference reopens nothing, but the answer it DOES hold (suppress the
+// caret entirely) was never on the table, and is ADR-0028's alternative (D).
 describe("CursorBlink — IME composition (#592)", () => {
   it("stays solid while composing, even though the application asked to blink", () => {
     const blink = new CursorBlink();

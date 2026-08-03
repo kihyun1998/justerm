@@ -184,6 +184,7 @@ let cursorShown = true;
  * `(0..3, 0)` by `__aboveTopProbe`, `(DECO_ROW, 1)` by `__precedenceProbe`, and
  * `(DECO_ROW, 0)` / `(DECO_ROW, COLS-1)` by `__decorationProbe`. Row 5 is clear of all of them.
  */
+let s1SelOverride: number[] | undefined; // THROWAWAY (#249 S1)
 const CURSOR_ROW = 5;
 const CURSOR_COL = 2;
 
@@ -1365,6 +1366,7 @@ declare global {
     __rulerAnchorProbe?: () => RulerAnchorProbe;
     __bgAlphaProbe?: () => Promise<BgAlphaProbe>;
     __spacingProbe?: () => SpacingProbe;
+    __preeditProbe?: () => PreeditProbe;
     __imeAnchorProbe?: () => ImeAnchorProbe;
     __imeDriftProbe?: () => ImeDriftProbe;
     __imePointerProbe?: () => ImePointerProbe;
@@ -1533,9 +1535,20 @@ window.__composeCaretProbe = async (): Promise<ComposeCaretProbe> => {
   // and the real Terminal wiring run — this probe only samples.
   const gl = canvas.getContext('webgl2')!;
   const { width: cw, height: ch } = renderer.cellSize();
+  // Sample where the caret IS, not where it started. Since #249 a composition draws a preedit over
+  // the cursor cell and the caret rides to the run's end, so a probe pinned to `CURSOR_COL` would
+  // sample the preedit's glyph and keep passing — solid and unchanging for a reason that has
+  // nothing to do with the blink this probe exists to measure. The widget writes the caret column
+  // to the textarea's own anchor (ADR-0028 D4/D5), so reading it back is the one source that
+  // tracks the rule instead of restating it.
+  const caretCol = (): number => {
+    const left = parseFloat(document.querySelector('textarea')!.style.left || '0');
+    const cssCellW = cw / window.devicePixelRatio;
+    return cssCellW > 0 ? Math.round(left / cssCellW) : CURSOR_COL;
+  };
   const sample = (): string => {
     render();
-    const x = Math.round(CURSOR_COL * cw) + 2;
+    const x = Math.round(caretCol() * cw) + 2;
     const y = gl.drawingBufferHeight - 1 - (Math.round(CURSOR_ROW * ch) + 2);
     const px = new Uint8Array(4);
     gl.readPixels(x, y, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
@@ -2687,3 +2700,68 @@ const fitController = new FitController({ port: fitPort });
 // canvas size, so a canvas ResizeObserver would never fire on a viewport change.
 const disposeFit = observeResize(document.documentElement, readFitInput, fitController);
 void disposeFit;
+
+/** #249 — the composed run drawn into the grid, sampled at the cursor cell. */
+interface PreeditProbe {
+  /** Ink pixels per cell, eight cells from the cursor, before any composition — the reference. */
+  idle: number[];
+  /** The same eight cells with a three-syllable Korean composition open. */
+  composing: number[];
+  /** After the composition ends: back to idle, and NOT still showing the run. */
+  ended: number[];
+  /** The hidden textarea's anchor at each step — it must ride the run's end (#249 D4). */
+  anchorIdle: string;
+  anchorComposing: string;
+  anchorEnded: string;
+  /** The same cells after a settling `compositionupdate` carrying UNCHANGED data — a real IME emits
+   * one per syllable (measured, #249). Must equal `composing`. */
+  unchangedUpdate: number[];
+}
+
+window.__preeditProbe = (): PreeditProbe => {
+  // Every sample renders FIRST and reads in the same turn: the context has no
+  // `preserveDrawingBuffer`, so a read after the browser presents returns a cleared buffer and the
+  // diff reads as "everything changed" (#249 measured exactly that before this probe existed).
+  const gl = canvas.getContext("webgl2")!;
+  const { width: cw, height: ch } = renderer.cellSize();
+  const ta = document.querySelector("textarea")!;
+  // Eight cells from the cursor: three Korean syllables are six, so the sample also shows that the
+  // run STOPS — a probe that only covered the run could not tell a preedit from a repaint.
+  //
+  // Per CELL, not per row. A single scanline through the middle of a Hangul syllable can miss every
+  // stroke: sampling one row read 글 and 날 as blank while both were drawn, and the first version of
+  // this probe reported it as "only one syllable rendered" (#249). A glyph is a 2-D thing and only a
+  // 2-D sample can say whether it is there.
+  const strip = (): number[] => {
+    render();
+    const cells: number[] = [];
+    for (let c = 0; c < 8; c++) {
+      const px = new Uint8Array(4 * Math.round(cw) * Math.round(ch));
+      const y = gl.drawingBufferHeight - 1 - Math.round((CURSOR_ROW + 1) * ch) + 1;
+      gl.readPixels(Math.round((CURSOR_COL + c) * cw), y, Math.round(cw), Math.round(ch), gl.RGBA, gl.UNSIGNED_BYTE, px);
+      let ink = 0;
+      for (let i = 0; i < px.length; i += 4) {
+        const r = px[i] ?? 0;
+        const g = px[i + 1] ?? 0;
+        const b = px[i + 2] ?? 0;
+        if (r > 60 || g > 60 || b > 60) ink++;
+      }
+      cells.push(ink);
+    }
+    return cells;
+  };
+  const anchor = (): string => `${ta.style.left},${ta.style.top}`;
+
+  const idle = strip();
+  const anchorIdle = anchor();
+  ta.dispatchEvent(new CompositionEvent("compositionstart"));
+  ta.dispatchEvent(new CompositionEvent("compositionupdate", { data: "한글날" }));
+  const composing = strip();
+  const anchorComposing = anchor();
+  ta.dispatchEvent(new CompositionEvent("compositionupdate", { data: "한글날" }));
+  const unchangedUpdate = strip();
+  ta.dispatchEvent(new CompositionEvent("compositionend", { data: "한글날" }));
+  const ended = strip();
+  const anchorEnded = anchor();
+  return { idle, composing, ended, anchorIdle, anchorComposing, anchorEnded, unchangedUpdate };
+};
