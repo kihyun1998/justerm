@@ -118,12 +118,22 @@ export interface SearchPort {
    * ending the session there means the character that *completes* the pattern
    * re-lands the emphasis on match 0 and scrolls to it (#687).
    *
-   * xterm draws the same line inside its addon: `clearDecorations` takes a
-   * `retainCachedSearchTerm` flag, set on exactly the new-search path
-   * (`SearchAddon.ts:133`) and unset everywhere the session really ends. justerm
-   * needs a port method where xterm needs a boolean because the backend holding
-   * the positions is across a process boundary — the seam falls where xterm has
-   * a private call.
+   * **alacritty is the only reference that has this situation, and it keeps the
+   * anchor through it.** A non-empty pattern that fails to compile leaves
+   * `dfas = None`, so `goto_match` returns before its body and `origin` is never
+   * touched — the `search_reset_state` call lives in the *empty*-regex branch
+   * that arm never reaches (`event.rs:1520`, `:1557`). xterm has no
+   * invalid-pattern state at all (its `isValidSearchTerm` is `length > 0`), but
+   * its paint drop is anchor-neutral anyway: `clearDecorations` never touches
+   * the selection, which is what carries its emphasis. Neither ends a session
+   * because the query changed. justerm needs a port *method* where they need
+   * neither, because the side holding the positions is across a process
+   * boundary — the seam falls where xterm has a private call.
+   *
+   * One deliberate difference: alacritty's marker survives an invalid pattern,
+   * while this drops the designation with the highlights. #316 D2 requires the
+   * screen to stop showing a rejected query, and core voids the designation on
+   * every hand-over anyway (#428) — core, the backend and this port agree.
    *
    * Optional (additive): a backend without it falls back to {@link clear}, which
    * is exactly the pre-#687 behaviour — the paint still goes, at the cost of the

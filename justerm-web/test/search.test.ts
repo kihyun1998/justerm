@@ -759,9 +759,10 @@ describe("SearchController — a live search is not undone by a background one (
   // a mistake. The #316 D2 path drops the engine paint so the screen stops
   // showing a query the box has already rejected — but that is a *new-search*
   // paint drop, not the end of the session, which is why it goes through
-  // `clearHighlights` and the anchor outlives it. xterm draws the same line:
-  // its `clearDecorations(retainCachedSearchTerm)` retains on exactly the
-  // new-search path (`SearchAddon.ts:133`).
+  // `clearHighlights` and the anchor outlives it. alacritty is the only
+  // reference with this situation and answers the same way: a pattern that
+  // fails to compile leaves `dfas = None`, so `goto_match` returns before its
+  // body and `origin` is never touched (`event.rs:1520`, `:1557`).
   it("keeps the anchor through an invalid regex, and returns to the same occurrence", async () => {
     const port = new DeferredBackend(SIX_ROWS);
     const ctrl = new SearchController(port, { isValidRegex: (p) => !p.endsWith("(") });
@@ -778,6 +779,10 @@ describe("SearchController — a live search is not undone by a background one (
 
     expect(ctrl.result()).toEqual({ current: 3, total: 6 }); // the anchor survived
     expect(port.shown).toEqual([0, 1, 2, 2]);
+    // Both halves, or this cannot tell "dropped the paint, kept the session"
+    // from "did nothing at all" — and the second is the #316 D2 regression that
+    // lives one line away from the fix.
+    expect(port.clearedHighlights).toBe(1);
     expect(port.cleared).toBe(0); // the session never ended
   });
 

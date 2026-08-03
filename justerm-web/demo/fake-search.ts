@@ -169,9 +169,12 @@ export class FakeSearchEngine {
   }
 
   /** Drop the paint — the match set and the designation — but NOT the anchor
-   * (#687). Mirrors the real engine's `invalidate_search_highlights`, which
-   * drops the held set precisely because it is *query-derived*; where the user
-   * was is not, so it outlives the query that was showing when they got there.
+   * (#687). A real backend spells this `set_search_highlights(vec![])`: an empty
+   * hand-over drops the held set and resets the designation with it (#428).
+   * (NOT `invalidate_search_highlights` — that one is `pub(super)`, core's own
+   * write path, and a consumer cannot call it. Same semantics, different verb.)
+   * The anchor is not the engine's at all — it is this backend's memory of where
+   * the user was, so it outlives the query that was showing when they got there.
    * {@link clear} is the session-ending verb and takes the anchor too. */
   clearHighlights(): void {
     this.matches = [];
