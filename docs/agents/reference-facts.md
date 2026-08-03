@@ -595,6 +595,19 @@ the reference — a family position, held, and xterm must not be read as licence
 | …and `GlyphRenderer`'s constructor throws on a lost context (`throwIfFalsy(gl.getParameter(...))`). So a second loss mid-restore leaves it **half-committed** — new rectangle renderer, stale/disposed glyph renderer — with no retry latch, and the exception escapes into the listener | xterm.js | `addons/addon-webgl/src/GlyphRenderer.ts:128`, `:130` |
 | justerm cannot reach that state by construction: `restore` deletes the half-built replacements and returns `Err` on a re-bake failure, leaving the live objects in place, and the state machine keeps `pending_rebuild` set so the next frame retries | justerm-renderer | `justerm-renderer/src/webgl.rs` `restore` (the `rebake` error path), `context_loss.rs` `a_failed_rebuild_is_retried_on_the_next_frame` |
 
+## Surviving a throw from inside a rAF loop — the reference clears its handle first (#696, verified 2026-08-03)
+
+The useful kind of reference reading: the question was framed as *"catch it, or let it die?"* and
+xterm answers a **third** thing — it never catches, and never needs to, because it orders two
+assignments the other way round. Recorded because the framing is the trap, not the answer.
+
+| Fact | Reference | Site |
+|---|---|---|
+| `_innerRefresh()` sets `this._animationFrame = undefined` as its **first statement**, before it computes anything or invokes the render callback | xterm.js | `src/browser/RenderDebouncer.ts:54-55` |
+| So a throw from the callback leaves no handle behind, and the next `refresh()` schedules a fresh frame — its guard is the same `if (this._animationFrame !== undefined)` shape ours had | xterm.js | `src/browser/RenderDebouncer.ts:47-51` |
+| ⚠ **There is no `try`/`catch` anywhere in the debouncer**, so an error from rendering propagates to the browser exactly as it would from any other rAF callback. The reference does not choose between swallowing and re-raising; it removes the need to choose | xterm.js | absence, reproducible: `rg -n 'try \{' ../.refs/xterm.js/src/browser/RenderDebouncer.ts` |
+| **The shapes differ in one way that matters when copying**: xterm's loop is a *debouncer* (re-armed by whoever calls `refresh`), justerm's is *self-perpetuating* (the body re-arms itself). Clearing first therefore makes xterm's loop continue and justerm's **stop-but-restartable** — acceptable here only because `updateCursor` calls `start()` on every decoded frame, which is a justerm fact the reference cannot supply | justerm-web | `justerm-web/src/justerm-renderer.ts` `updateCursor`, `applyFrame` |
+
 ## Background transparency — the shape of the knob (#577, verified 2026-07-29)
 
 The file had **zero** rows on transparency before this, though `set_bg_alpha` has existed since #298

@@ -1,5 +1,6 @@
 import type { Palette } from "justerm-wasm-decode/colors.js";
 import { CursorBlink } from "./cursor";
+import { FrameLoop } from "./frame-loop";
 import type { DecorationRect } from "./decorations";
 import { MINIMUM_COLS, MINIMUM_ROWS } from "./fit";
 
@@ -476,7 +477,14 @@ export class JustermRenderer implements Renderer {
   /** Whether any cell the renderer holds may carry `BLINK` — the gate on the phase re-pack (#576).
    * See {@link JustermRenderer.trackBlinkCells} for why it over-approximates and why that is sound. */
   private mayHaveBlinkCells = false;
-  private rafId: number | undefined;
+  /** The blink loop. Owns its own scheduling handle so a throw from the body cannot latch it
+   * off — see `frame-loop.ts` (#696). Built lazily because `requestAnimationFrame` is read at
+   * construction time and the loop's body closes over `this`. */
+  private readonly blinkLoop = new FrameLoop(
+    (cb) => requestAnimationFrame(cb),
+    (id) => cancelAnimationFrame(id),
+    () => this.blinkTick(),
+  );
   /** Held so {@link JustermRenderer.dispose} can detach: since #576 this listener *draws* (it
    * re-packs and presents), so leaving it attached lets a disposed widget repaint its canvas. */
   private readonly motionQuery: MediaQueryList;
@@ -1069,23 +1077,30 @@ export class JustermRenderer implements Renderer {
    * than a text-blink one, and is left as it was.
    */
   private startBlinkLoop(): void {
-    if (this.rafId !== undefined) return;
-    const tick = (): void => {
-      const t = now();
-      const cursorOn = this.blink.isVisible(t);
-      const cursorFlip = cursorOn !== this.lastBlinkOn;
-      const textOn = this.textBlink.isVisible(t);
-      // Gated on there being something to conceal: the flip is a full re-pack, and running it over
-      // a grid with no BLINK cell produces a byte-identical buffer at the cost of a walk over every
-      // cell. The two orders below are interchangeable (the cursor is a shader uniform, not an
-      // instance — `webgl.rs` `set_cursor` sets no `needs_repack`), so this one is only convention.
-      const textFlip = this.mayHaveBlinkCells && textOn !== this.lastTextBlinkOn;
-      const repacked = textFlip && this.repackAtTextBlinkPhase(textOn);
-      if (cursorFlip) this.pushCursor(cursorOn);
-      if (repacked || cursorFlip) this.backend.render();
-      this.rafId = requestAnimationFrame(tick);
-    };
-    this.rafId = requestAnimationFrame(tick);
+    this.blinkLoop.start();
+  }
+
+  /**
+   * One blink iteration. Called by {@link FrameLoop}, which owns the scheduling — including the
+   * part that matters here: if this throws, the loop stops with no handle left behind, so the next
+   * `startBlinkLoop` (which `updateCursor` issues on every decoded frame) restarts it. Before #696
+   * the re-arm lived at the bottom of this body and a throw latched the loop off permanently.
+   *
+   * Must not call {@link JustermRenderer.startBlinkLoop} — see `FrameLoop`'s `run` doc.
+   */
+  private blinkTick(): void {
+    const t = now();
+    const cursorOn = this.blink.isVisible(t);
+    const cursorFlip = cursorOn !== this.lastBlinkOn;
+    const textOn = this.textBlink.isVisible(t);
+    // Gated on there being something to conceal: the flip is a full re-pack, and running it over
+    // a grid with no BLINK cell produces a byte-identical buffer at the cost of a walk over every
+    // cell. The two orders below are interchangeable (the cursor is a shader uniform, not an
+    // instance — `webgl.rs` `set_cursor` sets no `needs_repack`), so this one is only convention.
+    const textFlip = this.mayHaveBlinkCells && textOn !== this.lastTextBlinkOn;
+    const repacked = textFlip && this.repackAtTextBlinkPhase(textOn);
+    if (cursorFlip) this.pushCursor(cursorOn);
+    if (repacked || cursorFlip) this.backend.render();
   }
 
   /**
@@ -1104,10 +1119,7 @@ export class JustermRenderer implements Renderer {
    * A consumer tearing down for good should drop its own reference and let the page go.
    */
   dispose(): void {
-    if (this.rafId !== undefined) {
-      cancelAnimationFrame(this.rafId);
-      this.rafId = undefined;
-    }
+    this.blinkLoop.stop();
     this.motionQuery.removeEventListener("change", this.onMotionChange);
   }
 }

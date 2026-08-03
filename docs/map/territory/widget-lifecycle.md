@@ -26,6 +26,14 @@ obligation. The rest depend on a consumer remembering, and the measurement below
 
 **One rule is settled (#606); the rest of the inventory is still unowned.**
 
+- **Ambient work must survive its own body throwing, and that is a scheduling-order property, not an
+  error-handling one** (#696). A self-perpetuating rAF loop that re-arms *after* its body leaves a
+  stale handle behind when the body throws — and a re-entry guard reading that handle then refuses
+  every restart, so the loop is off for the life of the widget with nothing logged. Clearing the
+  handle *first* (the reference's shape, `RenderDebouncer._innerRefresh`) makes the loop restartable
+  without catching anything, so the error still reaches the browser. For this widget "restartable"
+  means "restarted by the next frame": `updateCursor` calls `start()` on every decoded frame.
+
 - **What the widget is handed, the widget ends.** `Terminal` receives exactly three things
   (`source`, `renderer`, `options`), and `dispose()` now releases all of them: both `FrameSource`
   subscriptions, its own DOM listeners, and — since #606 — the renderer, through an optional
@@ -71,8 +79,10 @@ Inventory, re-measured 2026-07-29 — the sweep #605 asked for:
 
 - `justerm-web/src/terminal.ts` — `Terminal`, `dispose`, and the listeners it owns
 - `justerm-web/src/renderer.ts` — the port, and the `dispose?()` that made the renderer reachable
-- `justerm-web/src/justerm-renderer.ts` — the rAF blink loop and the reduced-motion listener, and
+- `justerm-web/src/justerm-renderer.ts` — the blink tick and the reduced-motion listener, and
   the `dispose` `Terminal` now calls
+- `justerm-web/src/frame-loop.ts` — `FrameLoop`, which owns the rAF handle for that tick. Host-tested
+  with an injected `raf`/`caf` pair, because the widget around it has no instantiation seam (#696)
 - `justerm-web/src/scrollbar.ts` · `fit.ts` — collaborators with their own disposers
 - `justerm-web/src/accessibility-dom.ts` — the a11y timers and their teardown
 
@@ -145,4 +155,10 @@ than of any one collaborator.
 - **Neither blink loop pauses when the terminal is off-screen**, so a backgrounded tab keeps
   animating. Tracked: #607.
 - **No reference comparison** for teardown composition, which is the one thing a widget library is
-  usually judged on by its consumers.
+  usually judged on by its consumers. (Its *scheduling* half now has one — see below.)
+- **The widget still cannot be constructed in a test.** `vitest.config.ts` runs the `node`
+  environment and the constructor reads `window.matchMedia`, so there is no `RendererBackend`-fake
+  path into `JustermRenderer` and none of its behaviour is unit-covered. #696 worked *around* this
+  by extracting the one piece that had to be tested rather than by building the seam, and said so.
+  This is the same shape #579 records for the context-loss path: live code the widget's tests cannot
+  reach.
