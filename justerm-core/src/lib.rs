@@ -484,6 +484,13 @@ impl Engine {
     /// Mechanism only: which position is worth remembering, and what to do once it
     /// is gone, stay with the consumer (ADR-0017). Release it with
     /// [`Engine::untrack_point`] — the engine cannot know when you are done.
+    ///
+    /// **The line is maintained; the column is carried, not tracked.** In-row edits
+    /// (ICH / DCH) shift cells past a tracked column without moving it, so a point
+    /// on text that was pushed sideways names the wrong cell in that row. No
+    /// reference maintains a column here either — xterm's markers carry none at
+    /// all, and ghostty's pins are untouched by its `insertChars`/`deleteChars` —
+    /// so this is the convergent behaviour rather than an omission.
     pub fn track_point(&mut self, line: usize, col: usize) -> TrackedId {
         self.term.track_point(line, col)
     }
