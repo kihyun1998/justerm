@@ -326,7 +326,7 @@ describe("SearchController — a superseded search never resurrects state", () =
 describe("SearchController — invalid regex clears the stale paint", () => {
   const validatorRejecting = (bad: string) => (p: string) => p !== bad;
 
-  it("calls port.clear() when the live query turns invalid", async () => {
+  it("drops the paint without ending the session when the live query turns invalid", async () => {
     const port = new StubSearchPort();
     port.count = 3;
     const ctrl = new SearchController(port, { isValidRegex: validatorRejecting("foo(") });
@@ -335,8 +335,31 @@ describe("SearchController — invalid regex clears the stale paint", () => {
     await ctrl.search("foo(", { regex: true }); // now invalid
 
     expect(ctrl.isInvalidRegex()).toBe(true);
-    expect(port.cleared).toBe(1); // stale highlights + designation dropped
+    expect(port.clearedHighlights).toBe(1); // stale highlights + designation dropped
+    expect(port.cleared).toBe(0); // …but the session, and its anchor, survive (#687)
     expect(port.searched).toEqual(["foo"]); // the invalid query never searched
+  });
+
+  // `clearHighlights` is OPTIONAL (additive): a backend that predates #687 still
+  // has the paint dropped — through `clear()`, at the old cost of the anchor.
+  // Nothing downstream is obliged, and the screen never keeps painting a
+  // rejected query (which is the #316 D2 defect this path exists for).
+  it("falls back to clear() on a port without clearHighlights", async () => {
+    let cleared = 0;
+    const port = {
+      search: () => Promise.resolve(3),
+      showMatch: () => Promise.resolve(),
+      clear: () => {
+        cleared++;
+      },
+    };
+    const ctrl = new SearchController(port, { isValidRegex: validatorRejecting("foo(") });
+    await ctrl.search("foo", { regex: true });
+
+    await ctrl.search("foo(", { regex: true }); // now invalid
+
+    expect(cleared).toBe(1);
+    expect(ctrl.isInvalidRegex()).toBe(true);
   });
 });
 
@@ -624,8 +647,15 @@ class DeferredBackend {
   anchoredIndex(): Promise<number | undefined> {
     return Promise.resolve(this.engine.anchoredIndex());
   }
+  cleared = 0;
+  clearedHighlights = 0;
   clear(): void {
+    this.cleared++;
     this.engine.clear();
+  }
+  clearHighlights(): void {
+    this.clearedHighlights++;
+    this.engine.clearHighlights();
   }
   /** Let the oldest parked hand-over answer, then drain the microtask queue. */
   async release(): Promise<void> {
@@ -723,15 +753,16 @@ describe("SearchController — a live search is not undone by a background one (
     expect(port.shown).toEqual([0, 1, 2, 2]);
   });
 
-  // …but an invalid regex DOES cost the anchor, and this pins that honestly
-  // rather than leaving it to be discovered. The #316 D2 path calls
-  // `port.clear()` so the screen stops painting a query the box has rejected,
-  // and `clear()` ends the search session, anchor included. In regex mode every
-  // group/class passes through an invalid state (`(`, `[`, `\`), so the
-  // character that completes the pattern re-lands on match 0. Separating "drop
-  // the paint" from "end the session" would fix it — tracked as #687, where this
-  // test's expectation becomes `3/6` and it turns into the regression lock.
-  it("loses the anchor through an invalid regex, and lands on the first match", async () => {
+  // …and an invalid regex is the same event wearing a different hat (#687). In
+  // regex mode every group, class or escape passes through an invalid
+  // intermediate state (`(`, `[`, `\`), so this fires on ordinary typing, not on
+  // a mistake. The #316 D2 path drops the engine paint so the screen stops
+  // showing a query the box has already rejected — but that is a *new-search*
+  // paint drop, not the end of the session, which is why it goes through
+  // `clearHighlights` and the anchor outlives it. xterm draws the same line:
+  // its `clearDecorations(retainCachedSearchTerm)` retains on exactly the
+  // new-search path (`SearchAddon.ts:133`).
+  it("keeps the anchor through an invalid regex, and returns to the same occurrence", async () => {
     const port = new DeferredBackend(SIX_ROWS);
     const ctrl = new SearchController(port, { isValidRegex: (p) => !p.endsWith("(") });
     const first = ctrl.search("foo", { regex: true });
@@ -745,8 +776,32 @@ describe("SearchController — a live search is not undone by a background one (
     await port.release();
     await back;
 
-    expect(ctrl.result()).toEqual({ current: 1, total: 6 }); // the anchor is gone
+    expect(ctrl.result()).toEqual({ current: 3, total: 6 }); // the anchor survived
+    expect(port.shown).toEqual([0, 1, 2, 2]);
+    expect(port.cleared).toBe(0); // the session never ended
+  });
+
+  // The side condition that keeps the two verbs distinct: Escape DOES end the
+  // session, so the anchor dies with it and the next query lands on its first
+  // match. Without this, "keep the anchor" could be satisfied by never dropping
+  // it at all — which would make a fresh search resume near an abandoned one.
+  it("still forgets the occurrence when the session is ended", async () => {
+    const port = new DeferredBackend(SIX_ROWS);
+    const ctrl = new SearchController(port);
+    const first = ctrl.search("foo");
+    await port.release();
+    await first;
+    await ctrl.next();
+    await ctrl.next(); // index 2
+
+    ctrl.clear();
+    const fresh = ctrl.search("foo");
+    await port.release();
+    await fresh;
+
+    expect(ctrl.result()).toEqual({ current: 1, total: 6 });
     expect(port.shown).toEqual([0, 1, 2, 0]);
+    expect(port.cleared).toBe(1);
   });
 
   // The re-search now moves the CURRENT index, not just the total — so a UI

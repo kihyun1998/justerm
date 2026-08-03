@@ -1117,6 +1117,14 @@ const searchPort: SearchPort = {
   // different piece of text whenever output shifts the set, and every keystroke
   // re-lands on match 0.
   anchoredIndex: async () => searchEngine.anchoredIndex(),
+  // Drop the paint but keep the session (#687): the invalid-regex path (#316 D2)
+  // needs the screen to stop showing a rejected query's matches, and typing `(`
+  // in regex mode is not the user leaving the search box. The anchor survives,
+  // so the character that completes the pattern returns to where they were.
+  clearHighlights: () => {
+    searchEngine.clearHighlights();
+    render();
+  },
   clear: () => {
     // Search state only — a live selection is the USER's (#429; pre-#429 the
     // selection was the active-match emphasis, which is why this used to clear it).

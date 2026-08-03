@@ -168,9 +168,18 @@ export class FakeSearchEngine {
     return this.matches[index];
   }
 
-  clear(): void {
+  /** Drop the paint — the match set and the designation — but NOT the anchor
+   * (#687). Mirrors the real engine's `invalidate_search_highlights`, which
+   * drops the held set precisely because it is *query-derived*; where the user
+   * was is not, so it outlives the query that was showing when they got there.
+   * {@link clear} is the session-ending verb and takes the anchor too. */
+  clearHighlights(): void {
     this.matches = [];
     this.activeIndex = undefined;
+  }
+
+  clear(): void {
+    this.clearHighlights();
     this.anchor = undefined;
   }
 }

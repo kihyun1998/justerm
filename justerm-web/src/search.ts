@@ -102,17 +102,38 @@ export interface SearchPort {
    * behaviour — the clamped ordinal on output, the first match while typing.
    * Call it only after the {@link search} whose set it refers to has resolved. */
   anchoredIndex?(): Promise<number | undefined>;
+  /** Drop the engine paint — highlights **and** the active designation — while
+   * the search session continues: the anchor ({@link anchoredIndex}) survives.
+   * The narrower sibling of {@link clear}, and the split is one core already
+   * draws on its own side of the wire: highlights are *query-derived* state,
+   * which is invalidated, while the anchor is *user-authored* — where the user
+   * navigated to — and is carried instead. `clear()` ends the session and takes
+   * both.
+   *
+   * Its caller is the #316 D2 path: a regex-mode query that fails validation
+   * must stop the screen painting the previous query's matches, but that is a
+   * *new search* dropping its predecessor's paint, not a user leaving the
+   * search. The distinction is not academic — in regex mode every group, class
+   * or escape passes through an invalid intermediate state (`(`, `[`, `\`), so
+   * ending the session there means the character that *completes* the pattern
+   * re-lands the emphasis on match 0 and scrolls to it (#687).
+   *
+   * xterm draws the same line inside its addon: `clearDecorations` takes a
+   * `retainCachedSearchTerm` flag, set on exactly the new-search path
+   * (`SearchAddon.ts:133`) and unset everywhere the session really ends. justerm
+   * needs a port method where xterm needs a boolean because the backend holding
+   * the positions is across a process boundary — the seam falls where xterm has
+   * a private call.
+   *
+   * Optional (additive): a backend without it falls back to {@link clear}, which
+   * is exactly the pre-#687 behaviour — the paint still goes, at the cost of the
+   * anchor. */
+  clearHighlights?(): void;
   /** Drop the search: clear highlights, the active designation **and the anchor**
    * ({@link anchoredIndex}) — this ends the search session, so the next query
-   * lands on its first match rather than near the last one.
-   *
-   * Known consequence, stated because it is the one place the anchor dies
-   * mid-session: the controller also calls this when a regex-mode query turns
-   * invalid (#316 D2 — otherwise the box says "invalid" while the screen still
-   * paints the previous query's matches). So typing `(` or `[` in regex mode
-   * costs the anchor, and the character that completes the pattern re-lands on
-   * match 0. Separating "drop the paint" from "end the session" would fix it;
-   * tracked as #687, with the two alternatives already rejected there. */
+   * lands on its first match rather than near the last one. The user leaving the
+   * search box (Escape) is what this is for; a query merely superseding another
+   * one wants {@link clearHighlights}. */
   clear(): void;
 }
 
@@ -133,6 +154,9 @@ export class StubSearchPort implements SearchPort {
    * models a backend that cannot anchor, which is exactly the fallback path. */
   anchored: number | undefined = undefined;
   cleared = 0;
+  /** Counted separately from {@link cleared} so a test can tell "dropped the
+   * paint" from "ended the session" — the whole of #687. */
+  clearedHighlights = 0;
   search(query: string, options?: SearchOptions): Promise<number> {
     this.searched.push(query);
     this.searchedOptions.push(options);
@@ -152,6 +176,9 @@ export class StubSearchPort implements SearchPort {
   anchoredIndex(): Promise<number | undefined> {
     this.anchorCalls++;
     return Promise.resolve(this.anchored);
+  }
+  clearHighlights(): void {
+    this.clearedHighlights++;
   }
   clear(): void {
     this.cleared++;
@@ -255,11 +282,21 @@ export class SearchController {
     // previous query's engine paint too — otherwise the box says "invalid"
     // while the screen keeps highlighting matches of a query that no longer
     // exists (with its active emphasis, post-#429).
+    //
+    // The paint, not the session: this is a new search superseding its
+    // predecessor's highlights, and a user typing `(` has not left the search
+    // box. Ending the session here would take the anchor with it, so the
+    // character that completes the pattern would re-land the emphasis on match 0
+    // — #441's symptom returning through a side door, on every group, class and
+    // escape a regex contains (#687). A backend that predates the narrower verb
+    // falls back to the session-ending one: the paint still goes, which is what
+    // #316 D2 is about, and only the anchor is lost.
     if (options?.regex && this.validateRegex && !this.validateRegex(query)) {
       this.invalid = true;
       this.total = 0;
       this.index = 0;
-      this.port.clear();
+      if (this.port.clearHighlights) this.port.clearHighlights();
+      else this.port.clear();
       return;
     }
     this.invalid = false;
