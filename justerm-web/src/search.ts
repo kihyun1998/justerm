@@ -9,6 +9,11 @@
  * viewport `matchSpans` / `activeMatchSpans` do), so navigation is by **index**:
  * the controller asks for match `i`, the backend designates it active + scrolls
  * to it (it does NOT select it — the selection channel stays the user's, #429).
+ *
+ * An index is a fine *request* and a poor *memory*: the set is re-derived on
+ * every re-search, so the same ordinal can name different text. Carrying the
+ * emphasis across a re-search therefore goes back through the backend, which is
+ * the only side holding positions — {@link SearchPort.anchoredIndex} (#437/#441).
  */
 /**
  * Search modes on top of the literal + smart-case default — the TS mirror of core's
@@ -53,7 +58,61 @@ export interface SearchPort {
    * `noScroll` re-find). Optional (additive): a backend without it merely loses
    * the active emphasis across output. */
   designateMatch?(index: number): Promise<void>;
-  /** Drop the search: clear highlights and the active designation. */
+  /** Where the emphasis belongs in the result set the last {@link search}
+   * produced, so it stays on the same **occurrence** rather than on the same
+   * ordinal (#437/#441).
+   *
+   * The controller navigates by index, but an index is not a stable name for a
+   * match: scrollback eviction removes matches above the active one and a
+   * cursor-addressed write adds some, so the same ordinal silently becomes a
+   * different piece of text. All three references keep the occurrence instead,
+   * by three different mechanisms — xterm re-finds at the previous selection's
+   * exact position and derives "n of m" from it, alacritty searches from a
+   * stored origin `Point`, ghostty holds a tracked pin beside the index and
+   * shifts the index whenever the result list mutates. Only the backend can
+   * answer this: the `Vec<Match>` and its buffer coordinates are its, and a
+   * frame-mode consumer holds no positions at all (ADR-0017 — mechanism
+   * backend, policy here).
+   *
+   * **The anchor is written when the emphasis is placed, not sampled when a
+   * search hands over.** A backend implementing this records the position of
+   * every match it designates ({@link showMatch} / {@link designateMatch}) and
+   * keeps it until {@link clear} — through hand-overs, through a query that
+   * matches nothing, through a designation that never happened. Sampling it per
+   * hand-over instead is wrong in two orderings a streaming terminal produces
+   * constantly: a debounced re-search that hands over and is then superseded has
+   * already reset the designation, so the surviving search reads "nothing"; and a
+   * `next()` pressed during a round trip would be rolled back by an anchor older
+   * than the keypress. Both were measured. alacritty keeps its `origin` `Point`
+   * this way; xterm's anchor is the selection, so it does die with it.
+   *
+   * Given that anchor, this reports
+   * - the index of that same occurrence in the new set, or
+   * - the first occurrence at or after it (wrapping to 0) when it is gone, or
+   * - `undefined` when there is no anchor — no search has been navigated since
+   *   the last {@link clear}, so land on 0.
+   *
+   * **A geometry change ends an anchor's meaning.** A `Match` is in absolute
+   * buffer coordinates, so after a reflow, or across an alt-screen switch, a
+   * remembered position names different text; a backend drops the anchor there
+   * rather than resolving it. Nothing in the engine re-clamps it for you — that
+   * asymmetry is `docs/map/territory/search.md` § Known holes.
+   *
+   * Optional (additive): a backend without it degrades to the previous
+   * behaviour — the clamped ordinal on output, the first match while typing.
+   * Call it only after the {@link search} whose set it refers to has resolved. */
+  anchoredIndex?(): Promise<number | undefined>;
+  /** Drop the search: clear highlights, the active designation **and the anchor**
+   * ({@link anchoredIndex}) — this ends the search session, so the next query
+   * lands on its first match rather than near the last one.
+   *
+   * Known consequence, stated because it is the one place the anchor dies
+   * mid-session: the controller also calls this when a regex-mode query turns
+   * invalid (#316 D2 — otherwise the box says "invalid" while the screen still
+   * paints the previous query's matches). So typing `(` or `[` in regex mode
+   * costs the anchor, and the character that completes the pattern re-lands on
+   * match 0. Separating "drop the paint" from "end the session" would fix it;
+   * tracked as #687, with the two alternatives already rejected there. */
   clear(): void;
 }
 
@@ -70,6 +129,9 @@ export class StubSearchPort implements SearchPort {
    * channel, #429) — separate from {@link shown} so a test can tell navigation
    * from re-designation. */
   readonly designated: number[] = [];
+  /** What the next {@link anchoredIndex} resolves to — `undefined` (the default)
+   * models a backend that cannot anchor, which is exactly the fallback path. */
+  anchored: number | undefined = undefined;
   cleared = 0;
   search(query: string, options?: SearchOptions): Promise<number> {
     this.searched.push(query);
@@ -83,6 +145,13 @@ export class StubSearchPort implements SearchPort {
   designateMatch(index: number): Promise<void> {
     this.designated.push(index);
     return Promise.resolve();
+  }
+  /** How many times {@link anchoredIndex} was asked — a test can tell "the
+   * controller took the fallback" from "the controller never asked". */
+  anchorCalls = 0;
+  anchoredIndex(): Promise<number | undefined> {
+    this.anchorCalls++;
+    return Promise.resolve(this.anchored);
   }
   clear(): void {
     this.cleared++;
@@ -138,17 +207,33 @@ export class SearchController {
    * best-effort skipped (a consumer without the wasm helper still searches). */
   private readonly validateRegex?: (pattern: string) => boolean;
 
+  /** Told when the DEBOUNCED re-search changed the result — the one transition
+   * no caller can observe, because nothing returns to it. Every other path
+   * ({@link search} / {@link next} / {@link prev} / {@link clear}) resolves to
+   * the caller, which reads {@link result} itself. xterm's parity twin is
+   * `onDidChangeResults`, fired on this exact path (`SearchResultTracker`).
+   *
+   * It exists because the re-search now moves the *current index*, not only the
+   * total (#437): the emphasis follows its occurrence, so a UI that only
+   * refreshes its label on user input starts showing a number the paint
+   * disagrees with. Announce policy stays the consumer's (ADR-0017) and #439's
+   * cadence is deliberately user-driven — the reference implementation refreshes
+   * the visible label here and does **not** speak. */
+  private readonly onResults?: (r: SearchResult) => void;
+
   constructor(
     private readonly port: SearchPort,
     opts: {
       setTimer?: (fn: () => void, ms: number) => number;
       clearTimer?: (handle: number) => void;
       isValidRegex?: (pattern: string) => boolean;
+      onResults?: (r: SearchResult) => void;
     } = {},
   ) {
     this.setTimer = opts.setTimer ?? ((fn, ms) => setTimeout(fn, ms) as unknown as number);
     this.clearTimer = opts.clearTimer ?? ((h) => clearTimeout(h));
     this.validateRegex = opts.isValidRegex;
+    this.onResults = opts.onResults;
   }
 
   /** Whether the active regex-mode query is invalid (#316 D2) — the box red-flags
@@ -180,9 +265,36 @@ export class SearchController {
     this.invalid = false;
     const total = await this.port.search(query, options);
     if (epoch !== this.epoch) return; // superseded by clear()/a newer query
+    // Typing extends a query under a live emphasis, so landing on match 0 would
+    // yank the viewport back to the top of the buffer on every keystroke. Both
+    // references that designate while typing anchor instead — xterm re-finds at
+    // the current selection's start, alacritty from a stored origin — and the
+    // third (ghostty) designates nothing at all while typing. Nobody re-lands on
+    // the first match. So keep the occurrence the backend anchored and fall back
+    // to the first match only when there is no anchor (#441).
+    //
+    // Where this lands is xterm's, and it carries xterm's consequence: because
+    // each keystroke designates, the anchor moves with it, so the emphasis
+    // RATCHETS forward through the buffer and backspacing does not walk it back.
+    // alacritty does not ratchet — its origin is written at search start and by
+    // next/prev only (`event.rs:970`, `:1143`), never by `update_search` — so it
+    // returns to where the search began. 2-1, and the majority is the one whose
+    // anchor is a by-product of designating, which is also justerm's shape.
+    const anchored = await this.anchoredIndexWithin(total);
+    if (epoch !== this.epoch) return;
     this.total = total;
-    this.index = 0;
-    if (this.total > 0) await this.port.showMatch(0);
+    this.index = anchored ?? 0;
+    if (this.total > 0) await this.port.showMatch(this.index);
+  }
+
+  /** The backend's answer to "where did the emphasis go", validated against the
+   * set it is an index into. `undefined` = no anchor, an unanchored backend, or
+   * an answer outside the new set — all three mean *take the fallback*, so the
+   * controller stays total whatever a backend reports (#437/#441). */
+  private async anchoredIndexWithin(total: number): Promise<number | undefined> {
+    if (total === 0) return undefined; // nothing to anchor to; nothing to ask
+    const i = await this.port.anchoredIndex?.();
+    return i !== undefined && Number.isInteger(i) && i >= 0 && i < total ? i : undefined;
   }
 
   /** The buffer changed under the query — feed this EVERY frame that mutates it:
@@ -191,8 +303,9 @@ export class SearchController {
    * only wires output frames shows a stale count + no highlights after a resize
    * until the next output burst). Re-runs the active query after a debounce so
    * highlights track the buffer — count refreshes, the active match is
-   * re-designated at its (clamped) index, but *not* re-navigated (no scroll).
-   * Inert with no active query. */
+   * re-designated on the same **occurrence** (see {@link SearchPort.anchoredIndex};
+   * its clamped ordinal when the backend cannot anchor), but *not* re-navigated
+   * (no scroll). Inert with no active query. */
   onFrame(): void {
     if (!this.query) return;
     if (this.pending !== undefined) this.clearTimer(this.pending);
@@ -205,15 +318,23 @@ export class SearchController {
     const epoch = this.epoch;
     const total = await this.port.search(this.query, this.options);
     if (epoch !== this.epoch) return; // superseded by clear()/a newer query
+    // Keep the emphasis on the same OCCURRENCE. An index is not a stable name
+    // for a match — eviction removes matches above the active one and a
+    // cursor-addressed write adds some, so the old ordinal silently names
+    // different text with no user input at all (#437). Only the backend holds
+    // the positions, so it reports where the occurrence went; the clamp below
+    // is what is left when it cannot answer.
+    const anchored = await this.anchoredIndexWithin(total);
+    if (epoch !== this.epoch) return;
     this.total = total;
-    // Keep the active match where it was, clamped to the new result set.
-    this.index = this.total === 0 ? 0 : Math.min(this.index, this.total - 1);
+    this.index = anchored ?? (this.total === 0 ? 0 : Math.min(this.index, this.total - 1));
     // The hand-over reset the engine's active designation (#428), so restore it
-    // at the clamped index — scroll-free, or every burst of output would yank
-    // the viewport (xterm's `noScroll` re-find keeps the emphasis the same way).
+    // where the occurrence now sits — scroll-free, or every burst of output would
+    // yank the viewport (xterm's `noScroll` re-find keeps the emphasis the same way).
     // With no matches there is nothing to designate (the empty hand-over already
     // cleared it); without the optional port method the emphasis is just lost.
     if (this.total > 0) await this.port.designateMatch?.(this.index);
+    this.onResults?.(this.result());
   }
 
   /** Drop the search: clear engine highlights + the active designation and

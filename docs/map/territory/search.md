@@ -106,9 +106,15 @@ above does not touch it.
   every future piece of pushed state and exists only as a comment inside `Term::resize`.
 - **…and it leaves a gap on the way back in, which #678 measured.** Invalidation drops what the
   engine holds; it says nothing about what the consumer hands back *after*. A consumer that
-  re-designates by **position** (the shape #437 proposes, and the one `set_active_search_match`
-  exists for) can return a coordinate from before a resize, and nothing upstream re-clamps it —
-  invalidation is not a bound, because the value re-enters through a public intake rather than
-  surviving inside the engine. `match_spans` now bounds it at the projection (#678); what stays
-  unrecorded is whether an intake should *reject* such a match instead, which is #663's question
-  one seam over.
+  re-designates by **position** — the shape `set_active_search_match` exists for — can return a
+  coordinate from before a resize, and nothing upstream re-clamps it — invalidation is not a bound,
+  because the value re-enters through a public intake rather than surviving inside the engine.
+  `match_spans` now bounds it at the projection (#678); what stays unrecorded is whether an intake
+  should *reject* such a match instead, which is #663's question one seam over.
+  **A cleared concern, with its condition:** the web widget's own re-designation (#437/#441) does
+  **not** reach that intake with a stale coordinate — it resolves the remembered position against
+  the *fresh* match list backend-side and sends an index into that set, so the coordinate that
+  crosses into the engine was produced by the search it belongs to. This holds while
+  `SearchPort.anchoredIndex` is the only path carrying an emphasis across a hand-over; a backend
+  that instead replays a remembered `Match` into `set_active_search_match` (the past-cap path, #436)
+  is squarely the case above.

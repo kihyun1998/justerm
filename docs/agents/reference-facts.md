@@ -1011,3 +1011,75 @@ why the bound has to sit at the read.
 **A cleared concern, with its condition.** The bound is `abs_line(line).len() - 1`, the **grid** width
 rather than the printed text, because both row producers resize every row to `grid.cols()`. It holds
 while `len == cols` is an invariant of those producers.
+
+## Search: what carries the current match across a re-search (#437/#441, verified 2026-08-03)
+
+The second entry for this territory, and it is about *memory* rather than geometry: the set is
+re-derived on every re-search, so what does the emphasis hold onto in between? justerm-web held the
+**ordinal** (`min(index, total-1)` on output; `0` while typing). No reference does.
+
+**All three keep the same text occurrence — 3–0 — and they do it three different ways.** The
+mechanisms disagree; the invariant does not, which is what makes the tally usable.
+
+| Fact | Reference | Site |
+|---|---|---|
+| The anchor **is the selection**: every re-find starts from `getSelectionPosition()`, because the addon *selects* each result it lands on. The emphasis has no separate memory — the terminal's selection is it | xterm.js | `addons/addon-search/src/SearchEngine.ts:103` |
+| …and `_selectResult` is what stores it — `this._terminal.select(result.col, result.row, result.size)` | xterm.js | `addons/addon-search/src/SearchAddon.ts:238` |
+| The **"n of m" index is derived from the position, never carried**: `findResultIndex` scans the result list for a row/col/size equal to the selected decoration's match, and `fireResultsChanged` reports `-1` when it is not in the (capped) list | xterm.js | `addons/addon-search/src/SearchResultTracker.ts:85` |
+| The anchor stores a **`Point`**: `search_state.origin`, and `goto_match` searches from it (grid-clamped) every time | alacritty | `alacritty/src/event.rs:1565` |
+| …and `advance_search_origin` re-parks the origin at the focused match *after* navigating, with the reason in the comment: *"after modifications to the regex the search is started without moving the focused match around"* | alacritty | `alacritty/src/event.rs:1152` |
+| The anchor is an index **plus a tracked pin** — `selected: ?SelectedMatch` holds `{ idx, highlight }`, and `select()`'s own doc says it needs write access *"since we utilize tracked pins to ensure our selection sticks with contents changing"* | ghostty | `src/terminal/search/screen.zig:57`, `:797` |
+| …so the index is *maintained*, not trusted: prune, append and resize each shift `m.idx` with the stated intent *"Moving the idx should not change our targeted result"* | ghostty | `src/terminal/search/screen.zig:633` |
+
+**On output, xterm re-finds at the anchor and does not scroll.** `onWriteParsed` / `onResize` →
+200 ms debounce → `findPrevious(term, { …, incremental: true }, { noScroll: true })`, and because
+`_updateMatches` clears the cached term first, `findPreviousWithSelection` takes its *"Try to expand
+selection to right first"* arm — a **forward** find starting at the old selection's exact start, which
+re-lands on the same occurrence when the query is unchanged.
+
+| Fact | Reference | Site |
+|---|---|---|
+| The debounced, non-scrolling incremental re-find | xterm.js | `addons/addon-search/src/SearchAddon.ts:76` |
+| The expand-at-the-anchor arm it takes | xterm.js | `addons/addon-search/src/SearchEngine.ts:191` |
+| The active decoration is built from the **found result**, so it is a position and lives outside the highlight cap (this is the #436 fact, recorded here for the anchor's sake) | xterm.js | `addons/addon-search/src/SearchAddon.ts:240` |
+
+**While TYPING the references split 2–1, and the odd one out is not "jump to the first match".**
+
+| Fact | Reference | Site |
+|---|---|---|
+| **Anchored.** With the term changed, `findNextWithSelection` starts at the selection's *start* (unchanged term → its *end*, which is what makes `next()` advance) — so extending a query re-finds at the same place | xterm.js | `addons/addon-search/src/SearchEngine.ts:110` |
+| **Anchored.** Each keystroke runs `goto_match(MAX_SEARCH_WHILE_TYPING)` from the stored origin | alacritty | `alacritty/src/event.rs:1523` |
+| **Designates nothing.** `changeNeedle` tears the search down and emits `selected_match = null`; ghostty has no current match while typing, only highlights, and its label reads 0 until the user navigates | ghostty | `src/terminal/search/Thread.zig:312`, `:334` |
+
+**What is NOT arbitrated: where a *first* search lands.** xterm starts at `(0, 0)` with no selection
+(buffer top); alacritty's origin comes from the vi cursor / display offset (viewport). justerm lands on
+match 0, which is xterm's answer, and this entry does not settle whether that is the right one — it was
+not the question either issue asked.
+
+**The fallback direction, when the anchored occurrence is gone, is NOT arbitrated — and xterm
+disagrees with itself across its own two paths.** Recorded loudly because the first draft of this
+section claimed convergence here and was wrong, in the direction that flattered the change.
+
+| Fact | Reference | Site |
+|---|---|---|
+| The **typing** path falls forward and wraps downward: `findNextWithSelection` walks the rows below the anchor, then re-enters from row 0 | xterm.js | `addons/addon-search/src/SearchEngine.ts:139` |
+| The **output** path falls *backward*: `findPreviousWithSelection` tries forward within the anchor's own line only, and on failure runs a reverse search walking rows **upward**, then wraps from the bottom | xterm.js | `addons/addon-search/src/SearchEngine.ts:204` |
+| Neither — alacritty searches from a **fixed** origin in the user's last search direction, so its fallback is not relative to the previous match at all | alacritty | `alacritty/src/event.rs:1566` |
+| Neither — ghostty requires exact tracked-pin equality (`start.eql` **and** `end.eql`) and otherwise drops the selection and re-selects the first match: *"No match, just go back to the first match."* | ghostty | `src/terminal/search/screen.zig:759` |
+
+justerm-web's `SearchPort.anchoredIndex` takes "first occurrence at or after the anchor, wrapping to
+the top" on **both** paths — xterm's `findNext` rule applied uniformly. That is a choice, not a
+convergence; what it claims is self-consistency, which the reference does not have.
+
+**One consequence of anchoring at designation time, and the references split on it: the ratchet.**
+xterm selects each incremental result (`SearchAddon.ts:238`) and that selection is the next anchor, so
+its emphasis walks **forward** while typing and backspacing does not walk it back. alacritty's does
+come back, because `search_state.origin` is written only at search start and by next/prev — never by
+`update_search`. 2–1 for the ratchet, and a backend whose anchor is a by-product of designating is on
+the majority side by construction.
+
+| Fact | Reference | Site |
+|---|---|---|
+| `origin` at search start — the **viewport edge**, picked by search direction (`Right` → viewport top, `Left` → bottom); the vi-mode branch above it uses the vi cursor instead | alacritty | `alacritty/src/event.rs:970` |
+| `origin` re-parked at the focused match, by next/prev only | alacritty | `alacritty/src/event.rs:1143` |
+| …and `update_search`, the typing path, does not touch it — it only rebuilds the DFAs and re-runs `goto_match` | alacritty | `alacritty/src/event.rs:1523` |
