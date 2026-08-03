@@ -96,6 +96,10 @@ Still unchecked: whether either reference notifies on a never-restored context b
 ## Known holes / open
 
 - **Zero governing records** for a recovery path whose failure mode is a permanently blank terminal.
+  The open cluster is anchored at spine `#689` (*this crate keeps asking a proxy whether the GPU is
+  usable*) rather than at a record — the rule it would promote derives three sites so far, two of
+  them found inside one change, and the anchor exists to see whether it derives a fourth. The roster
+  lives there and deliberately not here.
 - **No reference comparison at all**, and the usual comparison set does not apply cleanly.
 - **The interaction with the upload planner is stated here and nowhere else.** That a restore must
   invalidate the diff baseline is exactly the kind of cross-territory rule this map exists to hold,
