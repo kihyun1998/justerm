@@ -54,12 +54,17 @@ IPC by identity.
 - **The header answers to the engine's floor, one comparison earlier (#663).** The rule above reads a
   payload against the declared geometry; this reads the *declared geometry* against the geometry the
   engine can be in — `cols < MIN_COLUMNS` or `rows == 0` is `BadGeometry`, its own variant because the
-  comparison points the other way. **Rejected, not clamped, and the split is ownership**: every engine
-  entry point clamps because it owns the number it is widening, while `decode` is reading input and a
-  widened `cols` would re-index the payload that rode in with it. The floor is non-arbitrary
-  (xterm.js's `MINIMUM_COLS = 2` / `MINIMUM_ROWS = 1` from the same wide-glyph cause); the **ceiling is
-  not a check at all** — `cols`/`rows` are `u16` and `MAX_COLUMNS` is `u16::MAX` for that
-  representational reason, so the field bounds it.
+  comparison points the other way. **Impossibility is not what selects these two fields**, and reading
+  it that way files the next three as bugs: `display_offset > scrollback_len` and an out-of-grid cursor
+  are impossible too and correctly ride through, because the rule above still governs — `cols`/`rows`
+  are the *reference frame* the payload rule measures against, where those are annotations. **Rejected,
+  not clamped, and not because of ownership** — the references split 2–1 with all three at a site they
+  own (alacritty and xterm.js clamp, ghostty refuses: `Terminal.zig:3721`, `error.InvalidValue`), so
+  ownership separates nothing. It is rejected because this boundary cannot repair: the payload was laid
+  out for the declared width, so widening `cols` re-indexes a frame instead of fixing one. The floor's
+  *value* is non-arbitrary and undisputed (xterm.js's `MINIMUM_COLS = 2` / `MINIMUM_ROWS = 1`, same
+  wide-glyph cause); the **ceiling is not a check at all** — `cols`/`rows` are `u16` and `MAX_COLUMNS`
+  is `u16::MAX` for that representational reason, so the field bounds it.
 
 ## Code
 

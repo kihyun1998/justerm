@@ -12,7 +12,18 @@
 //! it is surprising (ask for one, get two) and its reason is non-obvious (a width-2 glyph needs
 //! a lead *and* a spacer); a floor of one row is neither. alacritty publishes both
 //! (`MIN_COLUMNS`, `MIN_SCREEN_LINES`) because its *app* reads them across a crate boundary —
-//! justerm clamps internally, so nothing outside needs the value. xterm.js's `MINIMUM_ROWS = 1`
+//! justerm clamps internally, so nothing outside needs the value.
+//!
+//! **One leg of that has since gone stale, and the conclusion survives on the rest (#663).** The
+//! row floor is no longer only clamped internally: `decode` now *rejects* `rows == 0`, so half of
+//! a published rejection set is stated by a named constant (`MIN_COLUMNS`) and half by a bare
+//! literal. That is real asymmetry and it is chosen, not overlooked — publication is earned here
+//! by a consumer reading the value across a boundary, and no consumer reads either floor to
+//! *build* a frame (the only producer is `encode`, in this crate). What a consumer needs is the
+//! error, and it gets one name for both halves. Revisit the day something outside this crate
+//! constructs a `Frame` header, which is the condition that would make the literal a trap.
+//!
+//! xterm.js's `MINIMUM_ROWS = 1`
 //! is likewise internal to `common/services/BufferService.ts`, applied in its constructor
 //! (`:42`) exactly as here, and ghostty rejects a zero dimension outright
 //! (`Terminal.zig:3721`, `error.InvalidValue`). All three floor or reject; none of them panics.

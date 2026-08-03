@@ -602,11 +602,22 @@ pub fn decode(bytes: &[u8]) -> Result<Frame, DecodeError> {
     // from the same cause: `MINIMUM_COLS = 2` ("Less than 2 can mess with wide chars") and
     // `MINIMUM_ROWS = 1`, applied on every resize.
     //
-    // Rejected rather than clamped, unlike both engines above, because this boundary is
-    // the one place the value is *input*: `decode` reads bytes a consumer hands back over
-    // its own transport (ADR-0008; `tests/robustness.rs` names them attacker-influenced),
-    // and widening `cols` here would re-index a payload laid out for the declared width.
-    // The engines clamp because they own the resize that produced the number.
+    // Rejected rather than clamped — and **the references do not decide that**, which is
+    // worth stating because the tempting derivation is wrong. They split on the form, all
+    // three at a site they own: alacritty and xterm.js clamp, ghostty *rejects*
+    // (`Terminal.zig:3721` @ `e6e26e16`, `if (opts.cols == 0 or opts.rows == 0) return
+    // error.InvalidValue`, guarding its own `resize`). So "who owns the number" separates
+    // nothing — ghostty owns it and refuses anyway.
+    //
+    // What decides it here is that this boundary cannot *repair*. `decode` reads bytes a
+    // consumer hands back over its own transport (ADR-0008; `tests/robustness.rs` names
+    // them attacker-influenced), and the payload behind this header was laid out for the
+    // width it declares — so widening `cols` does not fix a frame, it re-indexes one, and
+    // the caller gets cells in the wrong places with no error. Reject and "hand back wrong
+    // content" are the only two total answers, which is not a choice. No reference
+    // arbitrates the site because none of them decodes a serialized grid at all
+    // (`docs/map/territory/wire-format.md`); what ghostty does supply is that refusing an
+    // impossible geometry outright is ordinary terminal behaviour, not an invention here.
     //
     // **Deliberately no ceiling**, and this comment is where a later reader is stopped
     // from adding the "obvious symmetric half": `cols`/`rows` are `u16` and `MAX_COLUMNS`

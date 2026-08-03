@@ -207,10 +207,21 @@ one above, which is why it is a different variant: `BadSpan` means a part does n
 frame declares, this means the declared geometry is one no terminal can have. The floor imports no
 policy (xterm.js clamps to the identical `MINIMUM_COLS = 2` / `MINIMUM_ROWS = 1` pair, for the
 wide-glyph reason above), and nothing this crate encodes can declare it, since every engine entry
-point clamps. It is **rejected** rather than clamped — unlike the engine's own resize path, and the
-difference is who owns the value: `resize` owns the number it is widening, while `decode` is reading
-input, and widening `cols` there would re-index a payload laid out for the declared width. There is
-deliberately **no ceiling** counterpart: `cols`/`rows` are `u16` on the wire and `MAX_COLUMNS` is
+point clamps.
+
+**Impossibility is why the check is allowed, not why it is these two fields** — and the distinction
+matters, because `display_offset > scrollback_len` and a cursor outside the grid are equally
+impossible and equally unchecked. What admits `cols`/`rows` is the rule one paragraph up: they are the
+**frame of reference every other check is made against**, not annotations about a position. The cursor
+and the offset are read by scan and comparison, so they stay consumer policy; a false `cols` is the
+denominator of the span guard itself.
+
+It is **rejected** rather than clamped, and the references do *not* decide that: they split 2–1 with
+all three at a site they own — alacritty and xterm.js clamp, ghostty refuses (`Terminal.zig:3721`,
+`error.InvalidValue`), so "who owns the number" separates nothing. What decides it is that this
+boundary cannot repair — the payload behind the header was laid out for the width it declares, so
+widening `cols` re-indexes a frame rather than fixing one, and the caller gets cells in the wrong
+places with no error. There is deliberately **no ceiling** counterpart: `cols`/`rows` are `u16` on the wire and `MAX_COLUMNS` is
 `u16::MAX` for exactly that representational reason, so the upper end is bounded by the field. No
 reference bounds a grid's upper end, and the one layer that could — `justerm-renderer` — asks the GL
 implementation rather than predicting it, so a number chosen here would be the stack's only arbitrary
