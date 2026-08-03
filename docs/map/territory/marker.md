@@ -81,6 +81,11 @@ recorded SHA; a paraphrase drops the pin).
 - [selection](selection.md) — the anchor-maintenance trio sits line-for-line beside selection's at
   every call site in the write path. They were deliberately **not** merged into one `anchors.rs`
   (#584); if the anchor contract ever breaks in both at once, revisit that
+- [search](search.md) — since #691 the write path calls a **third** set of fixups on those same
+  lines, for tracked points (`justerm-core/src/term/tracked.rs`), whose forcing case is a search
+  anchor. Same machinery, two deliberate differences: a tracked point carries a column, and nothing
+  about it reaches a frame — so "the anchor pair" is now a triple, and a new mover owes three calls,
+  not two
 - [viewport](viewport.md) — `MarkerLine` is absolute and the ruler divides by
   `scrollback_len + rows`, so the header scalars are part of this contract
 

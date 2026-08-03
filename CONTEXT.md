@@ -149,6 +149,16 @@ boundary the terminal reported (prompt start, command start, output start, finis
 code when the shell gives one). Markers are what **Decorations** and command-to-command navigation
 hang from.
 
+## Tracked point
+
+A stable handle to a **position** the engine keeps on its content for a holder that lives outside the
+engine. Same machinery as a **Marker** — the write path shifts it as lines scroll, evict or reflow —
+and two deliberate differences: it is a `(line, column)` rather than a line, and **nothing about it
+reaches a Frame**, so tracking a position never paints anything. It is also *asked* rather than
+announced: the holder reads it back and is told the point is gone, where a marker's death is an event.
+What it exists for is the coordinate a **Consumer** must remember between two queries — a search
+anchor carrying the emphasis across a re-search — which the engine renumbers while nobody is looking.
+
 ## Decoration
 
 Consumer-side: **colours plus a mark**, attached to a **Marker** — not an object that owns pixels. The

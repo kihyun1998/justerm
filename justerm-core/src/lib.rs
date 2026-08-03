@@ -39,6 +39,7 @@ pub use serialize::{
 
 pub use term::{
     CommandLine, DEFAULT_WORD_SEPARATORS, Hyperlink, MAX_COLUMNS, MAX_ROWS, MIN_COLUMNS, Term,
+    TrackedId,
 };
 
 use vte::Parser;
@@ -467,6 +468,56 @@ impl Engine {
     /// for an unknown or already-disposed id.
     pub fn remove_marker(&mut self, id: MarkerId) {
         self.term.remove_marker(id);
+    }
+
+    /// Track absolute buffer `(line, col)`, returning a stable id (#691): the
+    /// engine keeps the position on the content that is there now, through
+    /// scrollback eviction, region scrolls and reflow.
+    ///
+    /// This is what an absolute coordinate held *outside* the engine needs to stay
+    /// meaningful — a search anchor carrying an emphasis across a re-search is the
+    /// case it exists for. The engine renumbers this space (evicting the oldest
+    /// history line shifts every index down by one), and it renumbers it in the
+    /// consumer's absence, so a remembered `Match` silently comes to name
+    /// different text.
+    ///
+    /// Mechanism only: which position is worth remembering, and what to do once it
+    /// is gone, stay with the consumer (ADR-0017). Release it with
+    /// [`Engine::untrack_point`] — the engine cannot know when you are done.
+    ///
+    /// **The line is maintained; the column is carried, not tracked.** In-row edits
+    /// (ICH / DCH) shift cells past a tracked column without moving it, so a point
+    /// on text that was pushed sideways names the wrong cell in that row. No
+    /// reference maintains a column here either — xterm's markers carry none at
+    /// all, and ghostty's pins are untouched by its `insertChars`/`deleteChars` —
+    /// so this is the convergent behaviour rather than an omission.
+    pub fn track_point(&mut self, line: usize, col: usize) -> TrackedId {
+        self.term.track_point(line, col)
+    }
+
+    /// Where the point registered as `id` sits now, in the **active** screen's
+    /// coordinates — or `None` (#691).
+    ///
+    /// `None` covers three cases, and a caller does not need to tell them apart:
+    /// the content has left the buffer, the id is unknown or released, or the point
+    /// belongs to *the other screen*. The last one is not a limitation but the only
+    /// honest answer: the primary grid and the alt grid occupy the **same** absolute
+    /// indices, so a number alone cannot say which screen it means. All three say
+    /// *do not move anything on account of this point*.
+    ///
+    /// An out-of-range coordinate is clamped rather than rejected, at both ends
+    /// (ADR-0026 D2/D3): the line into the buffer's range, the column to the grid
+    /// width. That bound is applied here, at the read; a coordinate that was never
+    /// in range to begin with is also **resolved by a reflow** (it maps to the top
+    /// of the buffer), so "bounded once" holds for the site, not for the value.
+    pub fn tracked_point(&self, id: TrackedId) -> Option<(usize, usize)> {
+        self.term.tracked_point(id)
+    }
+
+    /// Release a tracked point (#691). A no-op for an unknown or already-released
+    /// id.
+    pub fn untrack_point(&mut self, id: TrackedId) {
+        self.term.untrack_point(id);
     }
 
     /// The OSC 133 shell-integration command marks in buffer order — `(id,
