@@ -84,6 +84,15 @@ Rust-side `is_err()` cannot tell the two constructions apart.
 - **A new consumer.** The whole family's error surface is currently unobserved, so this class costs
   nothing today and costs it all at once — the first consumer to write a `catch` inherits every site
   at whatever shape it happens to be in.
+- **A `panic!` on a path that reaches JS — which the two bullets above cannot catch, because it is
+  neither.** It crosses as a `RuntimeError` *object*: `instanceof Error === true`, a `.message` of
+  `unreachable`, and none of the diagnostic the site meant to send. So it is the one shape a
+  consumer's `catch` *can* tell apart from the rest, and it says the wrong thing. It is rarely
+  written by hand — #688's came from **a dependency unwrapping a value a browser API is allowed to
+  answer `null` with** (`glow`'s `get_supported_extensions().unwrap()` on a lost GL context), which
+  is why grepping this repo for `unwrap` would not have found it. The question that does: for each
+  external call on a path to JS, *what does this API return when the thing it names is gone*, and
+  does the crate between us and it treat that as a value or as an invariant.
 
 Ask, rather than trusting a count written here:
 

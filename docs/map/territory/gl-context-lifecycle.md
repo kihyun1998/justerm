@@ -29,6 +29,16 @@ machine that decides what the renderer does in between.
 - **Loss destroys GPU state, not the CPU-side model.** The persistent dense grid in the
   [frame adapter](frame-adapter.md) survives, which is what makes a restore a re-upload rather than a
   re-send from the engine.
+- **Construction is the one entry point that refuses instead of deferring, and it is the only one
+  where the *binding* decides the failure shape.** The five below can defer because there is a
+  renderer to defer *into*; a constructor has no state machine yet, nothing to replay at `restore`,
+  and no object to hand back — so it returns `Err` (#688). What forces the guard's exact position is
+  not this crate's code but glow's: `Context::from_webgl2_context` enumerates the extensions
+  (`get_supported_extensions().unwrap()`) and **panics** on the `null` a lost context answers with,
+  so the check sits above *that* call, not above the first parameter this crate reads. The read
+  itself is harmless — `get_parameter_i32` answers `0` for a `null`. A panic is also the one failure
+  here that leaves the family's error shape: it arrives as a `RuntimeError`, not as the bare string
+  every other fallible path throws.
 - **Every entry point that changes the geometry takes the request and defers the GPU work.** Five of
   them can arrive mid-loss — the DPR, the font size, the font family, the spacing policy and the
   resize — and none may reject the call, because a consumer cannot see the loss to hold it back
@@ -45,9 +55,36 @@ machine that decides what the renderer does in between.
   `drawingBufferWidth` already `0`, and the flag still `false`. The rule that falls out:
   a caller that **has** the answer in hand tests that (`resize` rejects a non-positive read-back,
   which is also right for any other cause of one), and a caller that must **ask** consults both
-  sources, since each covers the window the other misses.
+  sources, since each covers the window the other misses. The constructor is the third case and it
+  falls out of the same rule rather than adding one: it asks the **context alone**, because the flag
+  it would also consult does not exist yet — a freshly built state machine reports "live"
+  unconditionally, so consulting it there is not a weaker predicate but a constant (#688, measured
+  red as a mutation on `context-loss-construct.html`).
   This is the territory's most expensive shape so far: #639's first fix guarded on the flag, went
   green, and left the defect it was written for reachable verbatim.
+- **`render` asks the flag too — and gets away with it, for a reason that lives in another
+  function.** It branches on `ContextState::action()`, so in the pre-dispatch window it takes the
+  `Draw` path on a context that is already dead. Measured (2026-08-03, a throwaway probe during
+  #688): `packs()` goes up by one, so it really does pack — and since the pack *is* the resolve
+  (`repack_from_grid` → `resolve_frame` → upload, one synchronous chain), the frame's two
+  never-before-seen glyphs took cache slots and were uploaded into a dead atlas. That last step is
+  read off the call chain, not separately observed; the counter and the pixels are the measurements.
+  Nothing throws, and after the restore `render()` **alone** repaints that exact frame,
+  pixel-identical to the same frame submitted to a live context (`[24,33,22,8,17,32]` both ways).
+  **The validity condition — this is a cleared concern, not a safe design.** It holds only because
+  `restore` does two separate things: `invalidate_baseline`, so the #263 diff cannot skip the
+  re-upload of instances the GPU never received, and `bake_all_glyphs` over `cache.entries()`, so a
+  slot marked resident but never uploaded is re-rasterised. Remove or narrow either and this site
+  becomes a silent defect — a frame the consumer submitted, acknowledged, and never sees.
+  **And that condition carries far more than `render`.** `apply_frame` and `apply_damage` reach the
+  same pack → rasterise → `upload_glyph` → `upload_instances` chain with **no liveness guard at
+  all**, so they run it for the *whole* loss rather than for one race window — a consumer streaming
+  output through a multi-second GPU recovery pumps every frame through it. Nothing is corrupted,
+  for exactly the two reasons above and for no others. Stating the clearance as a property of
+  `render` understates what is resting on `restore`. It is
+  deliberately **not** on #689's roster for that reason: the site does consult a proxy, but it is
+  covered from behind rather than asking the right question, and counting it as a failure would
+  pad the evidence for a rule nothing there tested.
 - **What "defer" costs, stated once because each site pays it.** A value the consumer normally reads
   back synchronously — a clamped grid, an atlas-shrunk cell — is settled at restore instead, and the
   consumer is not told. That is the same missing signal as #579, reached from the other side.
@@ -60,7 +97,7 @@ machine that decides what the renderer does in between.
 
 ## Reference behaviour
 
-One question has been checked; the rest of the territory has not. alacritty and ghostty are not
+Two questions have been checked; the rest of the territory has not. alacritty and ghostty are not
 browser renderers at all, so the comparison set here is smaller than for the rest of the crate — that
 part is unchanged.
 
@@ -69,6 +106,11 @@ part is unchanged.
   which reads as permission until you see *why* it can. It never asks the driver what it granted, so
   the read that a dead context answers with 0 does not exist there. Absence of a guard is not
   evidence about the guard
+- [Reading a GL parameter that a lost context answers with `null`](../../agents/reference-facts.md#reading-a-gl-parameter-that-a-lost-context-answers-with-null-688-verified-2026-08-03)
+  — the reference reads the *same* parameter in its *own* constructor with no guard, so the shape is
+  shared and this layer is not the one that drifted. What differs is entirely the binding: JS carries
+  a `null` on, glow unwraps it. Not indifferent, though — xterm's other two parameter reads *are*
+  falsy-guarded, so a `null` there becomes a throw
 
 Still unchecked: whether either reference notifies on a never-restored context beyond xterm's timeout
 (the #327 comparison), and what any of them does with GPU resources it cannot rebuild.
@@ -79,7 +121,11 @@ Still unchecked: whether either reference notifies on a never-restored context b
   every failure this territory reports (no document, no canvas, no WebGL2 context) crosses into JS
   as a **string primitive**, so a consumer's `catch` sees no `.message`, no `.stack` and
   `instanceof Error === false`. Unchanged by #662, which fixed the decoder's single site because
-  ADR-0008 obliged that shape there; nothing obliges it here yet
+  ADR-0008 obliged that shape there; nothing obliges it here yet. **A panic is a third shape and
+  that note's recurrence list does not reach it** — it is neither a new fallible export nor a
+  `map_err`: it crosses as a `RuntimeError` *object*, i.e. the one thing here that a consumer's
+  `catch` could tell apart from the rest. #688 removed this territory's only site, by guarding above
+  the glow call that produced it rather than by changing what anything throws
 
 ## Blast radius
 

@@ -635,16 +635,54 @@ impl JustermRenderer {
             .ok_or_else(|| JsValue::from_str("justerm-renderer: no webgl2 context"))?
             .dyn_into()?;
 
+        // `getContext` succeeding is NOT a liveness property (#688): on a canvas whose context is
+        // already lost it hands back the SAME lost object. Everything below then runs on a dead
+        // context, and the very first thing that does is glow's own constructor — which enumerates
+        // the extensions (`get_supported_extensions().unwrap()`, glow `web_sys.rs:237-239`) and
+        // PANICS on the `null` a lost context answers with, before any code here is reached. A
+        // panic crosses into JS as a `RuntimeError`, not as this crate's `Err`, so a consumer's
+        // `catch` gets something no other failure here produces.
+        //
+        // One check covers the whole constructor, and NOT because a context cannot die inside it —
+        // it can; what cannot arrive inside it is the *report*, since `webglcontextlost` dispatches
+        // at a task boundary and everything from here to the final `resize` is synchronous. The
+        // guard is sufficient for a different reason, and this is the load-bearing half: every
+        // remaining glow call on this path fails **cleanly**. `create_*` return `Result`,
+        // `get_uniform_location` an `Option`, the status getters `.as_bool().unwrap_or(false)` —
+        // so a context dying mid-construction yields this crate's bare-string `Err`, never the
+        // `RuntimeError` a panic produces. The check above exists to cover the one call that does
+        // NOT have that shape.
+        //
+        // It asks the CONTEXT, not this crate's own state machine. The machine's flag is fresh
+        // here and therefore always `false` — spine #689's proxy ①, and not a weaker predicate but
+        // a constant. Measured as a mutation on `demo/context-loss-construct.html`, whose
+        // pre-dispatch section is exactly where the two answers differ.
+        if webgl2.is_context_lost() {
+            return Err(JsValue::from_str(
+                "justerm-renderer: webgl2 context is lost",
+            ));
+        }
+
+        // Attached before any GL work, including glow's constructor below — but read what that
+        // does and does not buy (#688). It cannot *catch* a loss during construction: listeners
+        // fire at a task boundary and there is none between here and the end of this function, so
+        // this site and the old one (seven lines below, under the first GL call) observe exactly
+        // the same set of events — none. What it buys is that the promise this comment makes is
+        // now true, and that the handler is in place before the first thing that could need it.
+        // The original wording claimed the stronger property; a reader deriving from it would
+        // conclude a mid-construction loss is reported, and it is not (#269).
+        let ctx_loss = ContextLossHandler::new(&canvas)?;
+
         let raw_gl = webgl2.clone();
         let gl = glow::Context::from_webgl2_context(webgl2);
         // Read once: the atlas is sized from the cell (#359), and the cell is the consumer's to grow.
+        // `.max(1)` defends glow's fallback, not the driver: `get_parameter_i32` answers `0` for a
+        // `null` rather than failing (glow `web_sys.rs:3590`), so the clamp is about the binding's
+        // shape, not about a limit any live implementation would report (#688 — and the guard above
+        // is what keeps a `null` from reaching here in the first place).
         let max_texture_size =
             unsafe { gl.get_parameter_i32(glow::MAX_TEXTURE_SIZE).max(1) as u32 };
         let size = (canvas.width() as i32, canvas.height() as i32);
-
-        // Attach before ANY GL work, so a loss during construction is observed rather than missed
-        // (the pipeline/atlas built below would then be silently invalidated) (#269).
-        let ctx_loss = ContextLossHandler::new(&canvas)?;
 
         // devicePixelRatio: rasterise the atlas at device px (FONT_SIZE * dpr) so HiDPI is sharp,
         // and size the drawing buffer in device px. The consumer speaks CSS px (#252); the renderer

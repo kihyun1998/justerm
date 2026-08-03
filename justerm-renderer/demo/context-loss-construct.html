@@ -1,0 +1,155 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>justerm-renderer proof — constructing on an already-lost context (#688)</title>
+<style>
+  body { margin: 0; background: #000; }
+  canvas { display: block; }
+</style>
+<!--
+  #688 proof: `getContext("webgl2")` succeeding is NOT a liveness property. On a canvas whose
+  context is already lost the browser hands back the SAME lost object, and the constructor used to
+  carry it straight into `glow::Context::from_webgl2_context`, which enumerates the extensions
+  (`get_supported_extensions().unwrap()`) and PANICS on the `null` a lost context answers with.
+
+  What separates the fix from the bug is the SHAPE of the failure, not the presence of one. Both
+  "throw". A panic arrives as a `RuntimeError` object — no `justerm-renderer:` message, and a
+  consumer's `catch` sees something no other failure in this crate produces. The guard arrives as
+  the bare string every other fallible path here uses. So every check below asserts `typeof e` and
+  the message, exactly as `frame-guard.html` does for the wasm-trap case one layer over.
+
+  Two windows, and the second is the one #639 was burnt by. A browser destroys a context
+  SYNCHRONOUSLY and merely QUEUES `webglcontextlost`, so between `loseContext()` and the dispatch
+  the context is already dead while nothing has been reported. A guard on our own state machine's
+  flag would pass this page's second section and fail its first. The precondition check runs first,
+  so if a browser ever dispatches synchronously this page REPORTS that instead of passing
+  vacuously.
+
+  Deliberately no `restoreContext()` anywhere: the constructor fails, so no `ContextLossHandler` is
+  attached, so nothing calls `preventDefault()` and the browser would never fire
+  `webglcontextrestored`. Recovery is `context-loss.html`'s subject; this page's last section uses a
+  THIRD, untouched canvas to show the wasm instance is not poisoned by the failures.
+
+  Build: wasm-pack build --target web --dev --out-dir pkg
+-->
+<canvas id="a" width="128" height="32"></canvas>
+<canvas id="b" width="128" height="32"></canvas>
+<canvas id="c" width="128" height="32"></canvas>
+<script type="module">
+  import init, { JustermRenderer } from "../pkg/justerm_renderer.js";
+  import { readCells, countLit, gridFit } from "./proof.js";
+  const FG = 0xffffff, BG = 0x1e1e2e;
+  await init();
+
+  const palette = new Uint32Array(256);
+  /** Construct on `selector` and report what came back: `null` on success, else the shape. */
+  const construct = (selector) => {
+    try {
+      return { renderer: new JustermRenderer(selector, palette, FG, BG), failure: null };
+    } catch (e) {
+      return { renderer: null, failure: { type: typeof e, text: String(e.message ?? e) } };
+    }
+  };
+
+  // --- control: a healthy canvas constructs ------------------------------------------------------
+  const a = construct("#a");
+  const controlCell = a.renderer ? [a.renderer.cell_width(), a.renderer.cell_height()] : null;
+
+  // --- canvas B: kill it, then construct in BOTH windows ------------------------------------------
+  const canvasB = document.querySelector("#b");
+  const glB = canvasB.getContext("webgl2");
+  const lose = glB.getExtension("WEBGL_lose_context");
+  if (!lose) throw new Error("WEBGL_lose_context unavailable — cannot prove #688");
+
+  let lostEventSeen = false;
+  canvasB.addEventListener("webglcontextlost", () => { lostEventSeen = true; }, { once: true });
+
+  lose.loseContext();
+  // PRECONDITION, not a result. Everything below distinguishes two windows; if the browser
+  // dispatched synchronously there would be only one, and the pre-dispatch section would silently
+  // become a duplicate of the post-dispatch one.
+  const preDispatch = { glSaysLost: glB.isContextLost(), eventSeen: lostEventSeen };
+
+  // The proxy this issue is about: `getContext` hands back the SAME object, still lost. If a
+  // browser ever returned a fresh live context here the two construct-failure checks would go red
+  // rather than passing for the wrong reason.
+  const sameObject = canvasB.getContext("webgl2") === glB;
+
+  // The three values glow unwraps, read from JS in this same window. `getSupportedExtensions()` is
+  // the one glow touches FIRST (`build_extensions!`, web_sys.rs:237-239), before it parses VERSION
+  // and long before this crate's `MAX_TEXTURE_SIZE` read — which is why the guard has to sit above
+  // `from_webgl2_context` and not above the read. Recorded as evidence for the issue's acceptance:
+  // the panic site is the first of these to be null, not the last.
+  const glowUnwrapTargets = {
+    supportedExtensions: glB.getSupportedExtensions(),
+    version: glB.getParameter(glB.VERSION),
+    maxTextureSize: glB.getParameter(glB.MAX_TEXTURE_SIZE),
+  };
+
+  // No await above this line, deliberately: this construct happens in the pre-dispatch window.
+  const inRace = construct("#b");
+
+  // --- the same construct, after the event has been dispatched ------------------------------------
+  await new Promise((res) => canvasB.addEventListener("webglcontextlost", res, { once: true }));
+  await new Promise((res) => setTimeout(res, 0));
+  const afterEvent = construct("#b");
+  const postDispatch = { eventSeen: lostEventSeen };
+
+  // --- the failures did not poison the module -----------------------------------------------------
+  const c = construct("#c");
+  let litAfter = 0, gridFitC = null;
+  if (c.renderer) {
+    const r = c.renderer;
+    r.resize(4, 1);
+    const cps = new Uint32Array([0x2588, 0x20, 0x20, 0x20]); // █ in cell 0
+    const zeros = new Uint32Array(4);
+    r.apply_frame(4, 1, zeros, zeros, cps, new Uint16Array(4), true);
+    r.render();
+    const glC = document.querySelector("#c").getContext("webgl2");
+    litAfter = countLit(readCells(glC, r, 0));
+    gridFitC = gridFit(glC, r, r.cols(), r.rows());
+  }
+
+  /** A failure is the guard's iff it is a bare string carrying this crate's message. */
+  const isGuardFailure = (f) =>
+    !!f && f.type === "string" && /^justerm-renderer: webgl2 context is lost$/.test(f.text);
+
+  window.__proof = {
+    controlCell, sameObject, preDispatch, postDispatch, glowUnwrapTargets,
+    inRace: inRace.failure, afterEvent: afterEvent.failure, litAfter,
+    gridFit: gridFitC,
+    checks: {
+      // Control: a live canvas still constructs, so a guard that rejected everything cannot pass
+      // this page.
+      aHealthyCanvasStillConstructs:
+        a.failure === null && controlCell[0] > 0 && controlCell[1] > 0,
+
+      // PRECONDITIONS. Both windows must exist, and the proxy must really be a proxy.
+      theContextIsDeadBeforeItsEventIsDispatched:
+        preDispatch.glSaysLost === true && preDispatch.eventSeen === false,
+      andTheEventDoesArriveLater: postDispatch.eventSeen === true,
+      getContextHandsBackTheSameLostObject: sameObject === true,
+      // The evidence for WHICH call panics. Only the FIRST unwrap target is asserted, because only
+      // it is load-bearing: `get_supported_extensions().unwrap()` is what glow reaches first, so
+      // nothing downstream of it — including this crate's own `MAX_TEXTURE_SIZE` read — is ever
+      // reached. The other two are published above as evidence and deliberately NOT gated: a
+      // browser that answered `0` rather than `null` for a parameter on a dead context would turn
+      // this page red without anything being broken, and a false red is a check that has to be
+      // argued with rather than believed.
+      theFirstValueGlowUnwrapsIsNull: glowUnwrapTargets.supportedExtensions === null,
+
+      // THE assertions. Before the fix both were `RuntimeError: unreachable` (a panic inside
+      // `from_webgl2_context`); the type check is what tells the two apart, since both throw.
+      constructingInThePreDispatchWindowReturnsThisCratesError: isGuardFailure(inRace.failure),
+      constructingAfterTheLossEventReturnsThisCratesError: isGuardFailure(afterEvent.failure),
+      // Named separately so a regression says WHICH half broke: still failing, but as a panic.
+      neitherFailureIsAPanic:
+        inRace.failure?.type === "string" && afterEvent.failure?.type === "string",
+
+      // The wasm instance survives both failures — the issue's measured "not poisoned" row, and
+      // the control that separates "refused" from "died" (frame-guard.html's precedent).
+      aLaterHealthyCanvasStillConstructsAndDraws: c.failure === null && litAfter > 0,
+    },
+  };
+  window.__proof.ok = Object.values(window.__proof.checks).every(Boolean);
+  window.__done = true;
+</script>
