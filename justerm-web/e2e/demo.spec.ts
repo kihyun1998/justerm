@@ -1784,3 +1784,55 @@ test("a drag does not auto-scroll when the canvas loses its box (#680)", async (
   // Measured before the fix: control drifted +1.7 (line appends) while this arm jumped +18.8.
   expect(after - control).toBeLessThan(6);
 });
+
+// #249 / ADR-0028: the in-progress composition is drawn into the grid. Two of the three references
+// do this (ghostty `renderer/generic.zig:2368`, alacritty `display/mod.rs:1189`); xterm's DOM box
+// cannot transfer, because its cell width IS a browser advance and ours is the ink box of `█`
+// (measured: −3.95 to −5.28 CSS px per Korean syllable on every real monospace font).
+//
+// Only e2e can see this. The widget needs a DOM and the unit suite runs in `environment: "node"`,
+// which is the same blind spot #649 measured — a wrong composition predicate ships green there.
+test("the in-progress composition is drawn, and the caret rides its end (#249)", async ({ page }) => {
+  await page.goto("/");
+  // Wait for the page to finish booting before reaching for a probe. `goto` resolves at the load
+  // event, but the demo instantiates its wasm behind a top-level await, so the module body — and
+  // every `window.__*Probe` assignment in it — can still be pending. Skipping this reads exactly
+  // like a missing probe (`__preeditProbe is not a function`), which is indistinguishable from
+  // having never written one.
+  await expect(page.getByRole("button", { name: "Cursor blink: OFF" })).toBeVisible();
+  await page.locator("#term").dispatchEvent("mousedown"); // focus the hidden textarea
+
+  const p = await page.evaluate(() => window.__preeditProbe!());
+
+  // 한글날 is three syllables = six cells. Every one of them carries ink while composing.
+  const run = [0, 1, 2, 3, 4, 5];
+  for (const c of run) {
+    expect(p.composing[c], `cell ${c} of the composed run, idle=${p.idle} composing=${p.composing}`)
+      .toBeGreaterThan(0);
+  }
+  // ADR-0028 D5 — the caret rides to the cell right after the run, and it is SOLID there: a
+  // composition suppresses the blink (#592), so this is deterministic rather than phase-dependent.
+  expect(p.composing[6], `the caret's cell, idle=${p.idle} composing=${p.composing}`)
+    .toBeGreaterThan(0);
+  // And everything stops there. Without this the assertions above would pass on a full-row repaint
+  // just as happily as on a preedit. Index 7, not 6 — 6 is the caret's, which is the point above.
+  expect(p.composing[7]).toEqual(p.idle[7]);
+
+  // Discriminating: the composed cells do not merely have ink, they have DIFFERENT ink. A preedit
+  // that failed to draw would leave the demo's own content here and still be "greater than 0".
+  expect(p.composing.slice(0, 6)).not.toEqual(p.idle.slice(0, 6));
+
+  // A settling `compositionupdate` carrying unchanged data changes nothing — a real IME emits one
+  // per syllable (measured on a Windows Korean IME, #249).
+  expect(p.unchangedUpdate).toEqual(p.composing);
+
+  // The composition ends and the grid is exactly as it was. Not "close to": the pass replaces the
+  // cells and must put every one of them back.
+  expect(p.ended).toEqual(p.idle);
+
+  // ADR-0028 D4 — the anchor rides the run's end while composing, and returns when it closes. The
+  // hidden textarea is what the OS reads to place its candidate window, and 한글날 is six cells, so
+  // this is a six-cell move, not a nudge.
+  expect(p.anchorComposing).not.toBe(p.anchorIdle);
+  expect(p.anchorEnded).toBe(p.anchorIdle);
+});

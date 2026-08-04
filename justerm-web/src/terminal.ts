@@ -157,11 +157,15 @@ export interface TextareaAnchor {
  *   `CompositionHelper.updateCompositionElements` deliberately rewrites `left`/`top` every render
  *   (`browser/input/CompositionHelper.ts:273-274`)
  *
- * justerm-web cannot re-aim, because the preedit never reaches it — a composition is browser-owned
- * state the engine never sees, and there is no preedit view here (#249). So "where the composition is"
- * collapses to "where it started", and freezing is the only expression of the shared rule available.
- * **If #249 lands, this guard is what has to give**: it would become the voluntary writer the other two
- * references already are, and freezing would then be wrong rather than merely conservative.
+ * **justerm-web now re-aims too, and this guard is unchanged — which is the part worth reading.**
+ * Until #249 there was no preedit view here, so *"where the composition is"* collapsed to *"where it
+ * started"* and freezing was the only available expression of the shared rule. #249 supplied the
+ * missing representation, and the prediction recorded here was that this guard *"is what has to
+ * give"*. It did not, and the reason is ADR-0028 D4: the writer that knows where the composition is
+ * does not pass through the guard that exists for the writers that do not. The preedit's re-aim goes
+ * straight to {@link Terminal.writeTextareaAnchor}, exactly as xterm's `updateCompositionElements`
+ * never goes through `_syncTextArea`. So this stays a rule about the **involuntary** writers — the
+ * frame stream (#637) and the focus path (#649) — which is what both of them actually measured.
  */
 export function textareaMove(
   cursor: TextareaAnchor | undefined,
@@ -183,6 +187,32 @@ export function textareaMove(
  * stops blinking + shows the inactive selection tint). Both renderer hooks are
  * optional; a cursorless renderer is left untouched. Other intents pass through.
  */
+/**
+ * What a `compositionupdate` should do to the drawn run: nothing, or push these codepoints (#249).
+ *
+ * Pure so the two decisions are testable at all — the widget half that acts on them needs a DOM and
+ * the unit suite runs in `environment: "node"`, which is the blind spot #649 measured.
+ *
+ * - **Unchanged text is dropped.** A real IME emits one settling `compositionupdate` per syllable
+ *   carrying the data it already sent (measured on a Windows Korean IME), and each one would
+ *   otherwise cost a full re-pack.
+ * - **No origin, no push.** The origin is latched at `compositionstart`; a composition that somehow
+ *   runs before any frame has reported a cursor has nowhere to draw, and guessing a cell is worse
+ *   than drawing nothing.
+ *
+ * The text itself is split by **code point**, not by UTF-16 unit: a preedit can carry astral
+ * scalars, and `Array.from`'s iterator is what makes `"\u{1F600}"` one cell rather than two halves
+ * of a surrogate pair.
+ */
+export function preeditIntent(
+  text: string,
+  lastText: string,
+  origin: TextareaAnchor | undefined,
+): { codepoints: Uint32Array; origin: TextareaAnchor } | undefined {
+  if (text === lastText || !origin) return undefined;
+  return { codepoints: Uint32Array.from(text, (c) => c.codePointAt(0) ?? 0), origin };
+}
+
 export function rendererNotifyingSink(sink: InputSink, renderer: Renderer): InputSink {
   return {
     send(intent) {
@@ -277,6 +307,13 @@ export class Terminal {
    * application can hide the caret and the user can still open an IME, and re-anchoring at the
    * last known cell beats leaving the anchor wherever the geometry used to put it. */
   private cursorAnchor: TextareaAnchor | undefined;
+  /** The composition text currently drawn (#249). Held to drop the settling `compositionupdate`
+   * a real IME emits once per syllable with unchanged data — see {@link Terminal.showPreedit}. */
+  private preeditText = "";
+  /** Where the open composition started (#249). Latched at `compositionstart` and held for the
+   * composition's life: the frame stream keeps reassigning {@link Terminal.cursorAnchor}, and a
+   * composition that re-read it would walk to wherever the application's output went. */
+  private preeditOrigin: TextareaAnchor | undefined;
   /** Latched by {@link Terminal.dispose} (#606): the widget's lifecycle is one-shot, so this both
    * keeps the renderer from being disposed twice and refuses a re-mount. */
   private disposed = false;
@@ -395,13 +432,25 @@ export class Terminal {
       // silently disable the re-sync. xterm.js orders its own `_syncTextArea()` before
       // `compositionHelper.compositionstart()` for exactly that reason.
       this.syncTextareaAnchor();
+      // Latch the origin here, after the re-sync above has made the cell current (#631) and while
+      // the guard still reads `composing === false`. Everything the composition draws hangs off it.
+      this.preeditOrigin = this.cursorAnchor;
       composition.compositionStart();
       this.renderer.setComposing?.(true);
     };
-    const onUpdate = (e: CompositionEvent): void => composition.compositionUpdate(e.data);
+    const onUpdate = (e: CompositionEvent): void => {
+      composition.compositionUpdate(e.data);
+      this.showPreedit(e.data);
+    };
     const onEnd = (): void => {
       composition.compositionEnd();
       this.renderer.setComposing?.(false);
+      // Clear the drawn run BEFORE the commit is anywhere near the grid. Measured (#249): the
+      // committed text leaves as an intent one deferred read later, by which time the next
+      // composition has already started — so there is no frame to hand the job over to, and
+      // waiting for one would leave the last syllable drawn twice.
+      this.showPreedit("");
+      this.preeditOrigin = undefined;
       this.clearTextareaWhenIdle();
     };
     ta.addEventListener("compositionstart", onStart);
@@ -490,13 +539,61 @@ export class Terminal {
    * writes cannot drift apart; `undefined` is a decided no-op and leaves the cache alone. */
   private applyTextareaAnchor(move: ReturnType<typeof textareaMove>): void {
     if (!move) return;
+    this.textareaCell = move.key;
+    this.writeTextareaAnchor(move.col, move.row);
+  }
+
+  /** Draw the in-progress composition and re-aim the IME anchor at its end (#249, ADR-0028).
+   *
+   * `text` is `compositionupdate.data` — **the OS's own preedit**, not the textarea's value, which
+   * measurement showed lags it by exactly one event (`data="하"` while `value="ㅎ"`). That the two
+   * disagree is not a defect to reconcile: `data` is what the IME is showing the user, and `value`
+   * is what will be committed, and #116 reads the commit from `value` for its own good reasons.
+   *
+   * Unchanged data is dropped. A real IME emits one settling update per syllable where nothing
+   * moved (measured), and each one would otherwise cost a full re-pack.
+   *
+   * Anchoring here is D4's voluntary writer: it re-aims *because* it knows where the composition
+   * is, which is exactly what the frame stream and the focus path do not (#637/#649), so their
+   * freeze stays and this bypasses it. Without the re-aim the candidate window would sit at the
+   * composition's start while the text grows away from it. */
+  private showPreedit(text: string): void {
+    const intent = preeditIntent(text, this.preeditText, this.preeditOrigin);
+    this.preeditText = text;
+    if (!intent) return;
+    // The ORIGIN is latched at `compositionstart`, never re-read here. `cursorAnchor` is reassigned
+    // by every frame (`positionTextarea`, ahead of the guard), so reading it per update would let an
+    // output frame relocate the whole run on the next keystroke — #637's harm through a new
+    // entrance, measured: with unsolicited output running, the anchor held at row 5 while the
+    // composition was open and then jumped to row 9 on the following keystroke.
+    //
+    // This is also what makes ADR-0028 D4 true rather than half-true. The preedit writer earns its
+    // bypass of `textareaMove` by knowing where the composition is — and it only knows that if it
+    // knows both halves: the EXTENT (live, from the run) and the ORIGIN (fixed, from where the user
+    // started typing). Re-asking the frame stream for the origin is asking the one source #637
+    // established cannot answer it.
+    const at = intent.origin;
+    const caretCol = this.renderer.setPreedit?.(at.col, at.row, intent.codepoints);
+    if (caretCol === undefined) return; // a preedit-blind renderer: nothing drawn, nothing to aim at
+    this.writeTextareaAnchor(caretCol, at.row);
+  }
+
+  /** Put the textarea on a cell. The write itself, with no cache and no decision — see
+   * {@link textareaMove} for the decision the *involuntary* writers go through.
+   *
+   * The preedit writer (#249) calls this directly, which is ADR-0028 D4: a writer that knows where
+   * the composition is does not pass through the guard that exists for writers that do not, and it
+   * deliberately does not touch {@link Terminal.textareaCell} — that cache describes where the
+   * frame stream last put the anchor, and a composition's own re-aim is not an answer to that
+   * question. Same structure as xterm's, where `updateCompositionElements` writes `style.left/top`
+   * itself and never goes through `_syncTextArea`. */
+  private writeTextareaAnchor(col: number, row: number): void {
     const ta = this.textarea;
     const getGeometry = this.options?.getGeometry;
     if (!ta || !getGeometry) return;
-    this.textareaCell = move.key;
     const g = getGeometry();
-    ta.style.left = `${move.col * g.cellWidth}px`;
-    ta.style.top = `${move.row * g.cellHeight}px`;
+    ta.style.left = `${col * g.cellWidth}px`;
+    ta.style.top = `${row * g.cellHeight}px`;
   }
 
   /** Route a wheel notch through the shared accumulator, then dispatch: a

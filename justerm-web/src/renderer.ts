@@ -39,6 +39,20 @@ export interface Renderer {
    */
   setComposing?(composing: boolean): void;
   /**
+   * Draw the in-progress composition at `(col, row)`, or clear it with an empty run (#249,
+   * ADR-0028). `codepoints` is the preedit **as the OS reports it** — `compositionupdate.data`,
+   * never the textarea's value, which lags it by one event (measured).
+   *
+   * Returns the column the caret and the IME anchor belong at: one past the run's last cell. The
+   * widget cannot compute that itself — it has no `wcwidth`, and the run shifts left at the right
+   * edge rather than clipping — so this return is the only source for it.
+   *
+   * Optional, and a renderer that omits it is not broken, only preedit-blind: the composition still
+   * commits, the user just cannot see it until it does, which is the state every consumer was in
+   * before this existed.
+   */
+  setPreedit?(col: number, row: number, codepoints: Uint32Array): number;
+  /**
    * Release what the renderer runs on its own behalf — its animation loop and any listener it
    * registered (#606). Called by {@link import("./terminal").Terminal.dispose}, **once**.
    *
