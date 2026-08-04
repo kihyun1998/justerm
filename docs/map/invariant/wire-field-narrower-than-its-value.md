@@ -11,8 +11,10 @@ Therefore: **whatever produces the value must bound it before it reaches `encode
 which cannot refuse; not `decode`, which cannot tell a wrapped value from a legitimate one; and not
 the consumer, which would be covering an upstream defect.
 
-Three bounding strategies are in force, and which one applies is a property of the field rather
-than a preference:
+The bounding strategies in force are below, and which one applies is a property of the field rather
+than a preference. **Deliberately not counted in this sentence** — it read "Three" while listing
+four, then five, because a count is a status claim with nothing gating it (the same failure
+`docs/map/README.md` records for roster tables, and #552 for a hand-copied roster):
 
 - **Widen the field** when the value is genuinely unbounded — `#621` moved every length prefix and
   viewport-scaled group count to `u32`.
