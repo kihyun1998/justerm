@@ -480,14 +480,24 @@ Z"`, and a search across the wrap went from 1 hit to 0). It now lives on the
   erasing first (`vim` hides this by clearing). justerm re-split the alt grid from #8 until #567 —
   never by decision, but because the fix that made both screens take the new dimensions reached for a
   helper that re-splits when the column count changes. [#567, #8]
-- **Anchor lifecycle: selection/marker anchors are absolute-line coords shifted in lockstep with
-  buffer mutation — and share the alt grid's line range.** Selection endpoints (#3) and decoration/
-  command markers (#118/#158) store `[scrollback ++ screen]`-absolute lines. Eviction
+- **Anchor lifecycle: selection / marker / tracked-point anchors are absolute-line coords shifted in
+  lockstep with buffer mutation — and share the alt grid's line range.** Selection endpoints (#3),
+  decoration/command markers (#118/#158) and tracked points (#691) store
+  `[scrollback ++ screen]`-absolute lines. **Three holders since #691, not two** — a new
+  line-shifting verb owes three calls, and the third is the one with no frame to make its drift
+  visible. Eviction
   (`markers_evict_oldest`), region scroll (`markers_rotate_region`), and reflow (`iter_mut` over
   `m.line`) shift them so they track content; an anchor on a dropped line is disposed. **Hazard: on the
   alt screen the primary anchors are *retained* (that is the #118/#158 contract — a mark must survive a
   vim/less excursion), yet the alt grid occupies the *same* absolute-line range `[scrollback.len(),
   +rows)`. So an alt-screen scroll must NOT rotate primary markers or it silently disposes them.**
+  **That same overlap decides what a *read* may answer, which #691 learned the expensive way.** A
+  marker is only ever *projected* (`marker_positions` routes through the active list), so the overlap
+  never reaches a consumer. A tracked point is *asked for a position*, and a bare `(line, col)` cannot
+  say which screen it means — so flooring at `abs_floor()` is not enough, and neither is bounding per
+  owning buffer: the ranges coincide by construction. The read is scoped to the active buffer and a
+  point of the other one answers `None`. **The sentence above stated the overlap before that fix was
+  written; two wrong versions shipped in a branch because the map was read and this file was not.**
   **How each side actually satisfies that has changed twice, and this entry described the state before
   both.** Markers are *not* guarded by `if !self.on_alt` any more — since #186/#187 the storage is
   per-buffer and `markers_rotate_region` routes through `markers_mut`, so an alt scroll rotates *alt*
@@ -504,8 +514,9 @@ Z"`, and a search across the wrap went from 1 hit to 0). It now lives on the
 - **Anchor rotation: the CSI line-editing verbs move anchors too (closed by #162).** This entry was
   a gap and is kept as a *modelled* one, because it is the second half of the rule above and reads
   wrongly without it. `scroll_region_lines` (SU/SD/IL/DL) moves content via `grid.scroll_*_region` +
-  `record_scroll` and now rotates both anchor sets alongside it — `selection_rotate_region` and
-  `markers_rotate_region`, unguarded exactly as `linefeed`/`reverse_index` are (the `!on_alt` guard
+  `record_scroll` and now rotates all three anchor sets alongside it — `selection_rotate_region`,
+  `markers_rotate_region` and `tracked_rotate_region` (#691), unguarded exactly as
+  `linefeed`/`reverse_index` are (the `!on_alt` guard
   this line used to cite was retired by #186/#187's per-buffer marker storage — see the entry above), and with
   `up = !down` since "content moved up" is the non-`down` case. Before that, a primary-screen IL/DL
   (zsh/fish multi-line prompt redraw, completion menus) left marks and a live selection pointing at
