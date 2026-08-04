@@ -57,6 +57,7 @@ Inventory, re-measured 2026-07-29 — the sweep #605 asked for:
 | Ambient work | teardown handle | who calls it |
 |---|---|---|
 | the renderer's rAF blink loop + reduced-motion listener | `dispose()` | **`Terminal`** (#606) |
+| the context-loss notification the renderer holds for the widget's life (#579) | `dispose()`, via the relay's `end()` | **`Terminal`** — and it *must* be, because the renderer's own teardown of that slot is in `Drop`, i.e. at `free()`, which nothing here calls |
 | input attachment | returns a disposer | `Terminal`, via `detach` |
 | the frame source's two subscriptions | returns `Unsubscribe` | `Terminal` |
 | the scrollbar's window listeners | `dispose()` | nobody |
@@ -83,6 +84,9 @@ Inventory, re-measured 2026-07-29 — the sweep #605 asked for:
   the `dispose` `Terminal` now calls
 - `justerm-web/src/frame-loop.ts` — `FrameLoop`, which owns the rAF handle for that tick. Host-tested
   with an injected `raf`/`caf` pair, because the widget around it has no instantiation seam (#696)
+- `justerm-web/src/context-loss.ts` — `ContextLossRelay`, the channel `dispose` closes. Extracted for
+  the same reason `FrameLoop` was, and its doc carries the two published-surface asymmetries that
+  make the indirection necessary rather than stylistic (#579)
 - `justerm-web/src/scrollbar.ts` · `fit.ts` — collaborators with their own disposers
 - `justerm-web/src/accessibility-dom.ts` — the a11y timers and their teardown
 
@@ -136,7 +140,10 @@ than of any one collaborator.
   **pause** it, so neither blink loop stops while the terminal is off-screen (#607). Ending and
   pausing turned out to be separable questions, which is why one shipped without the other
 - [GL context lifecycle](gl-context-lifecycle.md) — the consumer sets the restore timeout and reacts
-  to the callback, so context recovery is one more thing with no stated owner
+  to the callback. Since #579 that owner **is** stated: the widget registers the channel and closes
+  it on `dispose`, which is the second rule this territory has (after #606's) and the first one that
+  had to be *added* rather than merely written down — the renderer's teardown for it fires at a
+  moment the widget never reaches
 - [events & replies](events-and-replies.md) — both queues are drained on a cadence the consumer
   chooses, and a widget that is disposed but still queueing has no defined behaviour
 - [accessibility](accessibility.md) — its timers are ambient work, and `reactivate()` already carries
@@ -160,5 +167,9 @@ than of any one collaborator.
   environment and the constructor reads `window.matchMedia`, so there is no `RendererBackend`-fake
   path into `JustermRenderer` and none of its behaviour is unit-covered. #696 worked *around* this
   by extracting the one piece that had to be tested rather than by building the seam, and said so.
-  This is the same shape #579 records for the context-loss path: live code the widget's tests cannot
-  reach.
+  **#579 took the same trade a second time** (`context-loss.ts`, the relay), which is the part worth
+  recording: the workaround is the established shape now rather than one slice's expedient, and each
+  use leaves the *composition* — what `create` registers, what `dispose` closes — provable only in a
+  browser. For #579 both are asserted in `e2e/demo.spec.ts` against a real `WEBGL_lose_context` and
+  both are mutation-verified, so this is coverage by a slower gate rather than absence. The slice
+  that reaches for the extraction a third time should price building the seam against it.

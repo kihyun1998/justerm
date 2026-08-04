@@ -75,7 +75,7 @@ work may be attempted cannot be a function of its state alone.
 | `resize` | its own `drawingBuffer` read-back | **D2** ✓ |
 | `set_device_pixel_ratio`, `set_font_size`, `set_font_family`, `adopt_spacing` | `gpu_work_must_wait()` (context ∨ flag) | **D3** ✓ |
 | the constructor (#688) | `webgl2.is_context_lost()` alone | **D3** ✓ — the flag is a constant here |
-| public `isContextLost()` | flag | **D4** ✓ |
+| public `isContextLost()` | flag | **D4** ✓ — and since #579 the only row with a *measured* consumer: the widget observes the flag and the context disagreeing, so D4's "different question" is a demonstrated fact rather than a derivation |
 | `on_restore_deadline`'s `!is_lost`, `restore_overdue()` | flag | **D4** ✓ — these decide a *consumer notification* |
 | `render` → `action()` | context ∧ flag, composed inside `action` | **D3 ✓ — resolved by #695.** Was the defect this record derived; D4's corollary said why it was inevitable (an "ask" question placed in a report-only module) and also how to fix it: the module is *given* the answer it cannot fetch, as `ContextLiveness` |
 | `apply_frame` / `apply_damage` | **none** | **D3 ✗ — a defect, and the one row still open.** Harmless only because `restore` does `invalidate_baseline` *and* `bake_all_glyphs`; recorded with that validity condition in `docs/map/territory/gl-context-lifecycle.md`. Untouched by #695 — it packs from its own call, not from `render` |
@@ -135,7 +135,22 @@ is the sibling that reaches the window, and it fails against the pre-#695 implem
   belongs to #695, with its cost to the module's purity recorded there.
 - **Make `isContextLost()` report the context rather than the flag.** Rejected by D4: a consumer asking
   *"was I told"* is asking a legitimate and different question, and #579 (the unwired consumer surface)
-  means nobody has yet tested either answer against a real consumer. Revisit when it lands.
+  meant nobody had yet tested either answer against a real consumer.
+  **#579 landed on 2026-08-04 and the rejection holds — now measured rather than derived.** The widget
+  wires all four exports and its browser proof asserts the disagreement window *exists* before
+  asserting anything inside it: immediately after `WEBGL_lose_context.loseContext()`,
+  `gl.isContextLost()` is `true` while the widget's `isContextLost()` is still `false`
+  (`justerm-web/e2e/demo.spec.ts`, `raceWindow`). So the two answers are observably different facts
+  at the consumer surface, not one rounding the other — which is what D4 asserted and what nothing
+  had yet checked.
+  What the consumer half **adds** to D4 is a shape the record did not have to state while the surface
+  was unwired: **a report a consumer can read is not the same as a report it can be pushed.** The push
+  half has its own lifecycle — `set_on_context_loss` takes a `Function` with no unset and clears its
+  slot only in `Drop`, so the notification outlives any teardown short of `free()`. The widget closes
+  it from its own `dispose` (`justerm-web/src/context-loss.ts`), matching xterm.js, whose disposable
+  clears the pending restore timeout (`addons/addon-webgl/src/WebglRenderer.ts:161-163`). D4 governs
+  *what a published value means*; who stops it arriving is the consumer's lifecycle question and is
+  tracked on spine #605, not here.
 - **Leave it as a spine.** This anchor set its own falsifier — *"if this rule derives a fourth site
   nobody had to be told about, or settles a question before it is asked, it has earned ADR-0027"* —
   and both halves fired. Leaving it open past that would keep two homes for one throughline, each

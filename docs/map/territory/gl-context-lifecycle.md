@@ -29,6 +29,12 @@ machine that decides what the renderer does in between.
 - **The consumer is told, not guessed at.** `is_context_lost`, `is_restore_overdue`,
   `set_on_context_loss` and `set_context_restore_timeout_ms` are four of the crate's exports — the
   timeout is a consumer policy, and overdue-ness is a question a consumer can ask rather than infer.
+  **All four have a consumer as of #579** ([widget lifecycle](widget-lifecycle.md)), and the one thing
+  that took adapting is a shape this crate cannot change without breaking callers:
+  `set_on_context_loss` takes a `Function` and offers no unset, and it clears its own slot in `Drop`
+  — which runs at `free()`, a call the widget deliberately never makes. So the consumer registers an
+  indirection once and swaps behind it. Worth knowing before adding a fifth export of this shape: a
+  push channel whose only teardown is `Drop` pushes that teardown onto whoever holds it.
 - **Loss destroys GPU state, not the CPU-side model.** The persistent dense grid in the
   [frame adapter](frame-adapter.md) survives, which is what makes a restore a re-upload rather than a
   re-send from the engine.
@@ -44,8 +50,10 @@ machine that decides what the renderer does in between.
   every other fallible path throws.
 - **Every entry point that changes the geometry takes the request and defers the GPU work.** Five of
   them can arrive mid-loss — the DPR, the font size, the font family, the spacing policy and the
-  resize — and none may reject the call, because a consumer cannot see the loss to hold it back
-  (that surface is unwired, #579). So each stores what it was given and lets `restore` re-derive
+  resize — and none may reject the call, because a consumer has no obligation to hold it back. It can
+  now *see* the loss (#579 wired the surface), but seeing is not the same as being expected to act on
+  it: nothing in the contract says a consumer must check, and a setter that rejected would break every
+  one that does not. So each stores what it was given and lets `restore` re-derive
   from it; nothing is queued, because the stored value *is* the queue. The four setters skip an
   atlas re-bake that a dead context would return invalidated; `resize` skips reading the drawing
   buffer back, which on a dead context answers 0 and would floor the grid to one cell (#639).
@@ -89,7 +97,13 @@ machine that decides what the renderer does in between.
   conformance map still resolving as ✗.
 - **What "defer" costs, stated once because each site pays it.** A value the consumer normally reads
   back synchronously — a clamped grid, an atlas-shrunk cell — is settled at restore instead, and the
-  consumer is not told. That is the same missing signal as #579, reached from the other side.
+  consumer is not told. This used to be filed as "the same missing signal as #579, reached from the
+  other side"; **#579 has landed and it is not the same signal**, which is the more useful fact. The
+  loss half needed nothing from this crate — the four exports were already there — while a *restore*
+  edge cannot be built in the consumer at all: `restore` runs inside `render`, not in the
+  `webglcontextrestored` listener, so a consumer-side listener fires before the deferred read-back has
+  settled and would report the grid it had before. Measured while wiring #579. Whoever fixes this owns
+  a new export here, not a widget change.
 
 ## Code
 

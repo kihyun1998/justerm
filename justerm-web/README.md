@@ -91,12 +91,56 @@ throws if you try.
 term.dispose(); // also disposes `renderer`
 ```
 
+It also stops the context-loss notification below, so a disposed widget never calls back into your
+handler — the same thing xterm.js does by clearing its pending restore timeout on dispose.
+
 Two things it does **not** cover, so they are yours:
 
 - **Anything you constructed and kept** — a `Scrollbar`, the resize observer returned by
   `observeResize`, the accessibility controllers. The widget never saw them, so it cannot end them.
 - **GPU memory.** Disposing stops the renderer's work; the wasm instance, its GL context and glyph
   atlas live until you drop your own reference and let the page collect it.
+
+## Surviving a lost GL context
+
+A browser may destroy a WebGL context at any moment — GPU reset, driver eviction, a backgrounded
+tab — and every GL object goes with it. **You do not have to do anything about it.** The renderer
+rebuilds itself when the browser fires `webglcontextrestored`, keeping the terminal's content,
+because that content lives on the CPU side and never left.
+
+What has no other signal is the context that does **not** come back. It leaves a blank canvas with
+nothing to distinguish it from a quiet terminal, so the widget will tell you:
+
+```ts
+const renderer = await JustermRenderer.create({
+  canvasSelector: "#term",
+  fontFamily: "monospace",
+  fontSize: 16,
+  theme,
+  contextRestoreTimeout: 3000, // ms; this is the default, xterm.js's value
+  onContextLoss: () => showBanner("The GPU dropped this terminal. Reload to recover."),
+});
+```
+
+`onContextLoss` fires **at most once per loss**, and only if the context is still gone when the
+deadline passes. Treat it as a warning rather than a verdict: Chromium keeps re-attempting a real
+restore roughly once a second indefinitely, so the context may still come back afterwards and the
+terminal will repaint by itself. What to do meanwhile is yours — dim the terminal, show a message,
+or tear the widget down and fall back (VSCode swaps in a DOM renderer at this point).
+
+To ask instead of being told — polling a status line, or attaching after a loss already happened:
+
+```ts
+renderer.isContextLost();    // has a loss been REPORTED to us
+renderer.isRestoreOverdue(); // …and did it miss its deadline
+```
+
+`isContextLost()` answers *"was I told"*, not *"is the GPU usable right now"*, and the difference is
+real rather than pedantic: a browser destroys a context synchronously and only *queues* the event, so
+for a short window this returns `false` while every GL call is already dead. It is the honest thing
+to show a user and the wrong thing to gate drawing on — which is why the renderer guards its own work
+on a stricter predicate it does not export
+([ADR-0027](https://github.com/kihyun1998/justerm/blob/master/docs/adr/)).
 
 ## What it does and does not do
 

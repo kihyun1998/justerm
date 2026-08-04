@@ -1657,8 +1657,12 @@ impl JustermRenderer {
             // loop "adopts" a 1x1 grid, and `restore`, which re-derives the buffer from `grid_size`,
             // then rebuilds at it: the terminal comes back one cell wide, permanently and silently.
             // Measured, dpr 2: `resize(10, 3)` mid-loss gave `[1, 1]`, still `[1, 1]` after restore,
-            // CSS box one cell. Until #579 a web consumer cannot even see the loss to hold its
-            // re-fit back.
+            // CSS box one cell. This used to add that a web consumer could not even see the loss to
+            // hold its re-fit back "until #579"; that landed on 2026-08-04 and changes nothing here,
+            // which is the point worth keeping. Seeing the loss is not being obliged to check for
+            // it: a consumer re-fitting on a container resize has no reason to ask first, so the
+            // guard cannot be delegated outward and this remains the only thing standing between a
+            // mid-loss re-fit and a one-cell terminal.
             //
             // **This guards on the read-back rather than on the context's state, and that is the
             // load-bearing part.** The first fix for #639 asked `is_context_lost()` — the state
