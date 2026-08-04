@@ -1518,6 +1518,54 @@ test("a disposed widget stops the renderer it was handed (#606)", async ({ page 
   expect(p.afterDispose).toBe(0);
 });
 
+// #579: the widget's half of the renderer's context-loss surface. Nothing here is reachable from
+// vitest — `WEBGL_lose_context` is a real extension, the deadline is a real timer armed inside wasm,
+// and the notification arrives from a Rust-scheduled closure. The relay's rules are unit-tested
+// against a fake; this is the round-trip.
+test("a lost GL context reaches the consumer, once, and never after dispose (#579)", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await expect(page.getByRole("button", { name: "Cursor blink: OFF" })).toBeVisible();
+
+  const p = await page.evaluate(() => window.__contextLossProbe!());
+
+  // The window ADR-0027 D4 turns on, asserted to EXIST before anything is asserted inside it. If a
+  // browser ever destroyed a context and dispatched its event synchronously, this would report that
+  // rather than let the rest pass vacuously — the vacuity that let #639's first fix go green.
+  expect(p.raceWindow.glSaysLost).toBe(true);
+  expect(p.raceWindow.widgetSaysLost).toBe(false);
+
+  // …and once the event lands, the report agrees. Together these two are the measurement ADR-0027
+  // asked #579 for: the flag semantics it kept are observably a *different answer* to a real
+  // consumer, not a rounding of the context's own.
+  expect(p.reportedAfterEvent).toBe(true);
+  expect(p.overdueBeforeDeadline).toBe(false);
+
+  // A loss that comes back in time says nothing to the consumer, clears the report, and repaints.
+  expect(p.restoreCallbacks).toBe(0);
+  expect(p.lostAfterRestore).toBe(false);
+  expect(p.presentsAfterRestore).toBeGreaterThan(0);
+
+  // A loss that outlives its deadline notifies exactly once — and stays at once, twice as long
+  // again. The count, not merely ">0", is the assertion: xterm.js fires *twice* for a second loss
+  // that arrives with no restore between (its single timeout handle is overwritten, never cleared),
+  // and the epoch stamp is what keeps ours at one.
+  expect(p.overdueCallbacks).toBe(1);
+  expect(p.overdueCallbacksLater).toBe(1);
+  expect(p.overdueFlag).toBe(true);
+
+  // THE DISPOSE GATE. The renderer's own canvas listeners survive `Terminal.dispose()` — they belong
+  // to the wasm binding's `free()`, which the widget never calls — so a deadline still arms and
+  // still expires here. Zero deliveries is the widget's relay refusing, which is xterm.js's
+  // observable contract (its disposable clears the pending restore timeout).
+  expect(p.callbacksAfterDispose).toBe(0);
+
+  // …and the pull side still answers. Disposal ends work, not truthfulness: silencing the queries
+  // would report a live context for a dead one.
+  expect(p.reportsLostAfterDispose).toBe(true);
+});
+
 test("a cell-size change re-anchors the IME textarea at composition start (#631)", async ({
   page,
 }) => {
