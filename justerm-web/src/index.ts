@@ -15,6 +15,11 @@ export { rendererNotifyingSink, routeWheel, Terminal, wheelGoesToApp, wheelScrol
 export type { TerminalOptions, WheelAction } from "./terminal";
 export { JustermRenderer } from "./justerm-renderer";
 export type { JustermRendererOptions, Theme } from "./justerm-renderer";
+// Context loss (#579) — the consumer's never-restored-context handler, held behind an indirection
+// because the renderer's `setOnContextLoss` has no unset and its own teardown runs at `free()`,
+// which `dispose()` never reaches. Exported so the relay's contract is documented where a consumer
+// reading `JustermRenderer.setOnContextLoss` can follow it.
+export { ContextLossRelay } from "./context-loss";
 // Scroll intent — wheel events → scrollback line delta (xterm consumeWheelEvent).
 export { WheelScroller } from "./scroll-control";
 export type { ScrollOptions, WheelContext, WheelLike } from "./scroll-control";
