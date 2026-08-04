@@ -69,7 +69,10 @@ pub struct Frame<'a> {
     /// The cells an open IME composition covers (#249, ADR-0028 D2), or `None`. Every stage below
     /// glyph resolution stands down inside it: the pass **replaces** those cells rather than
     /// layering over them, so a selection, a search match or a decoration covering the run must not
-    /// tint the text the user is composing.
+    /// tint the text the user is composing — and neither may the covered cell's `SGR 58` colour the
+    /// underline the pass itself drew (#711). The stand-downs are the packer's half of D2; the other
+    /// half re-supplies the columns upstream, and a column answered by *neither* describes the cell
+    /// the composition erased.
     pub preedit: Option<crate::preedit::Span>,
     pub bg: &'a [u32],
     pub fg: &'a [u32],
@@ -101,6 +104,10 @@ pub struct Frame<'a> {
     /// stays on the follow-fg pipeline whatever the underline does. `justerm-core` arms this column
     /// only when `UNDERLINE` is set (`term.rs::pen_ext_attrs`), so a strike-only cell never carried
     /// a colour to begin with; the both-marks cell is what changed.
+    ///
+    /// **Not read at all inside an open composition** (#711, ADR-0028 D2): the preedit pass writes
+    /// its own `UNDERLINE`, so that mark's ink is the fg the pass supplied and this column still
+    /// describes the cell the composition replaced. [`preedit`](Self::preedit) is what withholds it.
     pub underline_colors: &'a [u32],
 }
 
@@ -281,7 +288,31 @@ pub fn pack_instances(
             // there is no SGR for a strikethrough's. `line_fg` below is the ink BOTH marks start from
             // — the follow-fg base — and the fork past rules 5-7 is where the declared colour reaches
             // one band and not the other.
-            let ucolor_ref = underline_colors.get(idx).copied().unwrap_or(0);
+            //
+            // #711: inside a composition the declared colour is not this run's to obey. The pass
+            // writes the `UNDERLINE` flag itself (`preedit::writes`), so the mark belongs to the
+            // composition — and both grid-drawing references give that mark the run's OWN fg:
+            // alacritty literally, as a field beside the glyph's (`renderer/mod.rs:225`,
+            // `underline: fg`), ghostty by passing one `screen_fg` into the glyph and into both
+            // `addUnderline` calls (`generic.zig:3299`, `:3335`). `SGR 58` spoke for the *covered*
+            // cell's underline, which is no longer on screen, so reading it drew the composition in
+            // the colour of the text it erased — and in a different colour per column, since the run
+            // moves on every keystroke. This is the fifth of D2's stand-downs, joining the four above.
+            //
+            // Zeroing the ref here **is** that declaration rather than a suppression of one: `0` is
+            // `Default`, which means *follow the fg*, and the fg is the one the pass supplied. So the
+            // alternative #711 left open — mirroring the column into `preedit_patch` beside bg/fg —
+            // writes the same `0` and packs byte-identically; the two shapes are one declaration in
+            // two places, not two models. The choice was therefore made on the one axis where they
+            // are not equivalent: `webgl.rs` is `#[cfg(target_arch = "wasm32")]` and 0-compiles on
+            // host, so a patch-side fix is unreachable by `cargo test --manifest-path
+            // justerm-renderer/Cargo.toml`, which is where every test of this behaviour lives. Here
+            // it also sits with the other four, so what a composition stands down reads in one place.
+            let ucolor_ref = if composed {
+                0
+            } else {
+                underline_colors.get(idx).copied().unwrap_or(0)
+            };
             let explicit_line =
                 (ucolor_ref != 0).then(|| resolve_indexed_or_rgb(ucolor_ref, palette));
             let mut line_fg = fg;
@@ -1334,6 +1365,80 @@ mod tests {
             &got_plain[2..5],
             &gl_rgb(0x00_FF_00),
             "control: the decoration applies"
+        );
+    }
+
+    #[test]
+    fn a_composed_cell_underlines_in_the_preedits_fg_not_the_covered_cells_sgr58() {
+        // #711, ADR-0028 D2. The pass authors the UNDERLINE flag itself, so the mark is the
+        // preedit's and its ink is the fg the pass supplied. `SGR 58` declared a colour for the
+        // *covered* cell's underline — a mark that is no longer on screen — so reading it draws the
+        // composition in the colour of the text it erased, and moving the run one column changes the
+        // colour again.
+        const STRIDE: usize = 12; // col,row, bg(3), fg(3), glyph, LINE, strike, bg_default
+        const LINE: usize = 9;
+        const RED: u32 = (2 << 24) | 0xFF_0000;
+        let p = palette(); // default_fg = 0xFFFFFF
+        // 3x2. The run covers (0,0) only, and the same SGR 58 sits on two cells it does NOT cover:
+        // (0,2) one column away and (1,0) one row away. Those two are the windows where "inside the
+        // run" disagrees with the plausible wrong predicates — "a composition is open at all", and
+        // one that forgets an axis — and each is asserted below rather than left to the fixture.
+        let f = |preedit| Frame {
+            preedit,
+            cols: 3,
+            rows: 2,
+            bg: &[0; 6],
+            fg: &[0; 6],
+            slots: &[33, 0, 33, 33, 0, 0],
+            flags: &[UNDERLINE, 0, UNDERLINE, UNDERLINE, 0, 0],
+            codepoints: &[],
+            underline_colors: &[RED, 0, RED, RED, 0, 0],
+        };
+        let composed = pack_instances(
+            &f(Some(crate::preedit::Span {
+                row: 0,
+                start: 0,
+                end: 0,
+            })),
+            &p,
+            true,
+            &Overlay::default(),
+            &ColorPolicy::default(),
+            &[],
+        );
+        assert_eq!(
+            composed[LINE], 0xFF_FFFF as f32,
+            "the composed cell's underline follows the fg the pass supplied, not SGR 58"
+        );
+        assert_eq!(
+            &composed[5..8],
+            &[1.0, 1.0, 1.0],
+            "and the glyph channel is untouched — the gate is the line's ink alone"
+        );
+        assert_eq!(
+            composed[2 * STRIDE + LINE],
+            0xFF_0000 as f32,
+            "a cell OUTSIDE the run keeps its declared colour while a composition is open"
+        );
+        assert_eq!(
+            composed[3 * STRIDE + LINE],
+            0xFF_0000 as f32,
+            "and so does the same column on another row — the span has two axes"
+        );
+
+        // Control, same fixture: with no span the covered cell is an ordinary SGR 58 cell, so the
+        // assertion above cannot pass on a colour that was never applied in the first place.
+        let plain = pack_instances(
+            &f(None),
+            &p,
+            true,
+            &Overlay::default(),
+            &ColorPolicy::default(),
+            &[],
+        );
+        assert_eq!(
+            plain[LINE], 0xFF_0000 as f32,
+            "control: without the span the declared colour applies"
         );
     }
 

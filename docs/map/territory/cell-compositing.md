@@ -30,6 +30,13 @@ becomes an actual colour — the engine never does that by identity.
   time and come back with bg, fg and glyph together, and `pack_instances` stands every stage below
   glyph resolution down inside the run. Replacing only the resolver's *inputs* is not enough and was
   measured not to be: a selection covering the run still tinted it.
+  **Every per-cell column owes an answer for a composed cell; which half gives it is free**
+  (ADR-0028 D2, #711). Five columns are re-supplied by the patch and `underline_colors` is stood down
+  in the packer, and that split is a gate artifact rather than a rule — `0` already means *follow the
+  fg the pass supplied*, so either half writes the same value. What bites is a column answered by
+  **neither**: `SGR 58` was, for one published release, so a composition drew its underline in the
+  colour of the text it had erased. The pass shipped *after* that column existed, so the obligation
+  is on whoever writes a pass, not only on whoever adds a column.
 - **Back-to-front, and decorations sit on *both* sides of the highlight:**
   `base < bottom-decoration < highlight < top-decoration`. A decoration is not simply "above" or
   "below" content — it chooses a side of the selection/search layer, which is what
