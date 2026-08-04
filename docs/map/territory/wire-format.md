@@ -33,9 +33,13 @@ IPC by identity.
 - **A group's count is `u32` iff the group is viewport-bounded.** The three overlay span groups and
   the two new per-span groups scale with the viewport, and the header admits a viewport far larger
   than `u16::MAX` cells, so their counts are u32. The two *marker* groups keep `u16` counts on
-  purpose: they report every live marker rather than a viewport projection, which is the one
-  ADR-0020 R3 violation the ADR records against itself, and widening them would make it cheaper to
-  keep (that is #490's, not this file's).
+  purpose: neither is viewport-bounded (`marker_lines` reports every live marker; `markers` is
+  row-filtered but several marks share a line), which is the ADR-0020 R3 violation the ADR records
+  against itself, and widening them would make it cheaper to keep (that is #490's, not this file's).
+  **What makes narrow counts safe is a bound on the producer, not on the group**: `MAX_MARKERS`
+  caps a buffer's live population at `u16::MAX` (#721), because the marks are allocated by an
+  untrusted stream. The rule stated at the top of this bullet is therefore not the only way a count
+  can be sound — a group may also be narrow because nothing can produce a wider value.
 - **Colours are references, never hex.** `Default | Indexed(u8) | Rgb(..)` encoded as a `u32`. The
   engine is theme-agnostic by identity, so palette resolution happens after decode, in the consumer.
 - **The record reserves room** for underline style/colour and a hyperlink id, so adding them later is

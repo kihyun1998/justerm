@@ -237,8 +237,8 @@ pub struct Term {
     /// `alt_markers` stays empty while the alt guards (#158/#164) are in place; it
     /// is disposed on alt-leave (xterm `clearAllMarkers`). `next_marker_id` hands
     /// out monotonic ids across both buffers so ids never alias.
-    normal_markers: Vec<Marker>,
-    alt_markers: Vec<Marker>,
+    normal_markers: VecDeque<Marker>,
+    alt_markers: VecDeque<Marker>,
     next_marker_id: u32,
     /// Positions the engine keeps on their content for a holder that lives
     /// *outside* it (#691). Split per buffer and re-anchored by the same fixups as
@@ -474,6 +474,31 @@ pub const MAX_COLUMNS: usize = u16::MAX as usize;
 /// `u16` header field, same reasoning, same silent-clamp contract.
 pub const MAX_ROWS: usize = u16::MAX as usize;
 
+/// The most live markers one buffer will hold (#721).
+///
+/// Derived from the wire the same way [`MAX_COLUMNS`] is: both marker group counts
+/// are `u16`, so a population past `u16::MAX` encodes a wrapped count while writing
+/// every record, and `decode` then reads the next group's count out of the middle of
+/// a marker record and returns `Ok`. The field bounds the value; this constant only
+/// writes that bound down where the value is produced, because `encode` returns
+/// `Vec<u8>` and has no channel to refuse.
+///
+/// **Why a bound is needed at all**, rather than a wider field: markers are allocated
+/// by the *stream*. `add_command_mark` appends per OSC 133 sequence, several marks can
+/// share one line, and scrollback eviction only drops a marker when its line reaches
+/// absolute 0 — so a stream that never emits a newline accumulates marks in a 24-row
+/// buffer without bound (measured: 70 000, #721). [`crate::Engine::feed`] is an untrusted
+/// entry point (ADR-0007), and unbounded allocation behind it is a defect class that
+/// record exists to catch.
+///
+/// **A backstop, not a policy**, on the same terms as [`MAX_COLUMNS`]. Ordinary shell
+/// integration emits at most four marks per command and a command occupies at least one
+/// line, so a default-scrollback session tops out near 40 000 — this is not reached by a
+/// consumer that is not already being fed something hostile. Overflow disposes the
+/// *oldest* marker and announces it through `TermEvent::MarkerDisposed`, which is the
+/// channel scrollback eviction already uses for the same event.
+pub const MAX_MARKERS: usize = u16::MAX as usize;
+
 /// The state DECSC (ESC 7) saves and DECRC (ESC 8) restores: position, pen/SGR,
 /// pending-wrap, and origin mode (per ADR-0004 — DECRC restores origin mode,
 /// which Alacritty omits). Cursor *visibility* is deliberately not part of this
@@ -631,8 +656,8 @@ impl Term {
             selection: None,
             search_highlights: Vec::new(),
             active_search_highlight: None,
-            normal_markers: Vec::new(),
-            alt_markers: Vec::new(),
+            normal_markers: VecDeque::new(),
+            alt_markers: VecDeque::new(),
             next_marker_id: 0,
             normal_tracked: Vec::new(),
             alt_tracked: Vec::new(),

@@ -514,11 +514,24 @@ pub fn encode(frame: &Frame) -> Vec<u8> {
 /// marker groups**, which keep their `u16` counts a few lines below. That is not an
 /// oversight and not inconsistency: `frame()` clips selection / matches /
 /// active-match to the viewport, so their counts are `O(viewport)` — ADR-0020 R3
-/// satisfied, and widening entrenches nothing. The marker groups report **every
-/// live marker**, on-screen or not; they are unbounded by the viewport and are the
-/// one R3 violation ADR-0020 records against itself. Widening those would make that
-/// violation cheaper to keep, which is precisely what #490 exists to remove — so
-/// they stay narrow and stay #490's.
+/// satisfied, and widening entrenches nothing. Neither marker group is bounded by
+/// the viewport, so widening those *would* entrench what ADR-0020 records as its one
+/// R3 violation — which is #490's to remove, not this function's.
+///
+/// **Why the two marker counts are nonetheless safe at `u16` (#721).** Not because
+/// the groups are small: the *producer* is bounded. `MAX_MARKERS` caps a buffer's
+/// live population at `u16::MAX`, so neither count can reach a value it cannot
+/// declare. That bound had to exist for its own reason — the marks are allocated by
+/// an untrusted stream — and it closes this hazard as a consequence rather than as
+/// its purpose.
+///
+/// **And the reason they are unbounded is not the one this comment used to give.**
+/// It said *"the marker groups report every live marker, on-screen or not"*. True of
+/// `marker_lines`; **false of `markers`**, which `marker_positions` filters to visible
+/// rows. `markers` is unbounded because several marks legitimately share one line and
+/// nothing dedups them — measured at 70 000 records in *both* groups on an 80x24 grid
+/// (#721). The wrong reason mattered: it made ADR-0020's "one stated violation"
+/// framing read as if only `marker_lines` were at issue.
 fn encode_overlay_spans(out: &mut Vec<u8>, spans: &[SelectionSpan]) {
     out.extend_from_slice(&(spans.len() as u32).to_le_bytes());
     for s in spans {
