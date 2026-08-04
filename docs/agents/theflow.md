@@ -31,6 +31,25 @@ model under-reaches; what it is checked *against* is:
 A layer not in this table has no recorded tie-breaker — say so and ask, rather
 than borrowing a neighbouring row.
 
+**Deliberate divergences — where justerm does *not* follow its own named prior art,
+on purpose.** The table above says who wins an argument; this says which arguments
+are already over. It is what Step 5's reference-free restatement test is checked
+against: a finding that lands here is `DELIBERATE` with the citation, never a
+defect, however confidently a lens reports it.
+
+| We do | The references do | Decided by |
+|---|---|---|
+| The consumer holds **only the current frame** — no retained terminal state | every reference consumer retains state; even Mosh's receiver keeps a full `Complete` | ADR-0020 R3's grounds (research §6.1). Its (C) *"event-source everything; let the consumer maintain the state"* is rejected **as the default**, so "make the consumer stateful" is not an open question |
+| Colours are stored as **references** (`Default`/`Indexed(u8)`/`Rgb`), never resolved | all three resolve a palette in the engine | `CLAUDE.md` identity (theme-agnostic). justerm never learns a hex colour |
+| **Per-char `UnicodeWidthChar`** width; cluster width is opt-in behind DECSET 2027 | xterm.js clusters by default | the contract in Step 2 below (#297/#300 → #301, subsumed by #295/#305). A consumer unhappy with it is standing on nothing valid |
+| A cell's bg/fg/ink is decided by **our layer model** | xterm's flat `$fg` over a blended `$bg` | ADR-0019 — xterm is a *design input*, not a validator |
+| A spacing setting is **CSS px** | both references take device px | ADR-0023 |
+| A marker is an **object with identity** — `MarkerId` + kind + exit code + column | ghostty stores OSC-133 as a 2-bit field on the row (`page.zig:1976`); alacritty has no line-mark concept at all | ADR-0015. Row-attached state cannot carry any of the four, so "put the marks on the row" is not a smaller version of a marker — it is a different primitive |
+
+Add a row when a decision *chooses against* a reference; that is cheaper than
+re-defending it, and the cost of the empty slot is measured — see the #490 entry in
+the war-story index.
+
 **Architecture prior art (routes "engine vs renderer / state-sync" questions).**
 justerm's frame-mode identity composes two independent lineages: ① a *render-free,
 reusable terminal-state engine* — **alacritty_terminal** (Rust, CLAUDE.md's named
@@ -994,6 +1013,25 @@ release.md):
   stays only as the evidence pointer — #396 vs #399, deferrals #398/#400, closed #272
   with zero silent gaps. A rule whose only home is the war-story index is a rule that
   fires after the cost, not before it.
+- **A reference cannot erect a claim about our design — #490 (2026-08-04), and the
+  failure was that every piece of the rule was already present.** Working #490, a
+  refuting lens returned `CONFIRMED` that ghostty stores OSC-133 marks as a 2-bit row
+  field (`page.zig:1976`) and that a pin serialises to an origin-relative number
+  (`PageList.zig:5066`) — both true, both verified. It then proposed *splitting the
+  marker populations* as a peer option, and I carried that to the maintainer as one.
+  It was never a candidate: ADR-0015 had already decided a marker carries identity +
+  kind + exit + column, none of which a row bit can hold, and the **Wire / frame / API
+  shape** row of the tie-breaker above gives the reference no authority on that layer
+  at all. The maintainer caught it in one sentence — *"우리가 xterm 을 안 따르기로 한
+  곳에 xterm 걸 가져오면 곤란하다"*. What makes this worth an entry is that nothing was
+  missing: the tie-breaker table existed, the `DELIBERATE` grade existed, and the
+  skill's *"classify findings against the record before reporting them"* existed. The
+  harvest simply never asked, because no step owned the question. Two repairs, at the
+  seam the skill declares: the **test** went to the skill (restate the finding without
+  naming the reference — if it cannot be removed from the sentence it is a design
+  proposal, not a defect), the **list** went to the deliberate-divergence table at the
+  top of this file. The same pass's genuine defects all survive that test with the
+  reference deleted from the argument, which is the tell to look for.
 - **Real round-trip / visual side effects** — #166 (reveal-focus headless miss), #172 (live MCP path), #223 (browser verify skipped).
 - **Probe a runtime fact / readPixels≠screenshot** — #328/#331 (dpr≠1 coord bug green on dpr-1), #352, #337 (tautology); #369 (a throwaway `rustc` probe pinned that an unclamped `+inf` fraction saturates `cursor_thickness`'s `u32` cast to `u32::MAX` — correcting a PR rationale that had credited `frac.max(0.0)`; the setter's `[0,1]` clamp is the load-bearing defence, `frac.max(0.0)` only neutralises `NaN`).
 - **Test-trust gate** — #355 (both RED = you broke the proof; re-run baseline GREEN, remove guards one at a time). **#639 is the third bar's evidence and the more uncomfortable case**: RED→GREEN, side conditions, and a placement mutation were *all* done and green, and the fix was still wrong — its guard asked an event-driven flag about a synchronous state, and the proof awaited that very event before testing, so it never entered the window where the two candidate predicates differ. A guard and a test written against the same wrong model agree with each other; only mutating the *predicate* separates them. Found by the Step 5 lens, not by the gate.
