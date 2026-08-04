@@ -71,17 +71,21 @@ layout(location = 1) in vec2 a_cell;   // instance: (col, row)
 layout(location = 2) in vec3 a_bg;     // instance: background rgb
 layout(location = 3) in vec3 a_fg;     // instance: foreground rgb
 layout(location = 4) in float a_glyph; // instance: atlas slot index
-// instance: the ink an underline / strikethrough draws in, packed 0xRRGGBB in one float (#513).
-// A colour is below 2^24 so an f32 carries it exactly; measured with a standalone WebGL2 probe.
-layout(location = 5) in float a_line_fg;
+// instance: the inks the underline and the strikethrough draw in, packed 0xRRGGBB one per float
+// (#513, split by #525 — SGR 58 declares the UNDERLINE's colour and there is no SGR for a strike's,
+// so a declared colour is authoritative over one band only). A colour is below 2^24 so an f32 carries
+// it exactly; measured with a standalone WebGL2 probe.
+layout(location = 5) in float a_underline_fg;
+layout(location = 6) in float a_strike_fg;
 // instance: 1.0 iff this cell's bg is the pristine DEFAULT backdrop — the only surface #298 makes
 // translucent (#455). Provenance, packed by the Rust side, not re-inferred from the resolved colour.
-layout(location = 6) in float a_bg_default;
+layout(location = 7) in float a_bg_default;
 uniform mat4 u_projection;
 uniform vec2 u_cell_size;   // the GRID cell in device px
 out vec3 v_bg;
 out vec3 v_fg;
-flat out vec3 v_line_fg;
+flat out vec3 v_underline_fg;
+flat out vec3 v_strike_fg;
 flat out float v_bg_default;
 flat out uint v_glyph;
 flat out vec2 v_cell;
@@ -93,8 +97,10 @@ void main() {
     v_bg = a_bg;
     v_fg = a_fg;
     // Unpack once per instance rather than per fragment.
-    uint line = uint(a_line_fg);
-    v_line_fg = vec3(float((line >> 16u) & 255u), float((line >> 8u) & 255u), float(line & 255u)) / 255.0;
+    uint ul = uint(a_underline_fg);
+    v_underline_fg = vec3(float((ul >> 16u) & 255u), float((ul >> 8u) & 255u), float(ul & 255u)) / 255.0;
+    uint st = uint(a_strike_fg);
+    v_strike_fg = vec3(float((st >> 16u) & 255u), float((st >> 8u) & 255u), float(st & 255u)) / 255.0;
     v_bg_default = a_bg_default;
     v_glyph = uint(a_glyph);
     v_cell = a_cell;
@@ -133,7 +139,8 @@ uniform vec3 u_cursor_text_color;       // the glyph colour under a block (xterm
 uniform highp float u_cursor_thickness; // stroke width in device px
 in vec3 v_bg;
 in vec3 v_fg;
-flat in vec3 v_line_fg;
+flat in vec3 v_underline_fg;
+flat in vec3 v_strike_fg;
 flat in float v_bg_default; // 1.0 = the default backdrop (#455/#298)
 flat in uint v_glyph;
 flat in vec2 v_cell;
@@ -238,22 +245,33 @@ void main() {
     // bitmap), but its decorations still do. Identical at the default, where the two spaces coincide
     // (#338).
     float gy = (v_tex.y * u_cell_size.y - u_char_offset.y) / u_char_size.y;
-    float line = max(hline(gy, 0.88, u_line_thickness, u_char_size.y) * underline,
-                     hline(gy, 0.5, u_line_thickness, u_char_size.y) * strike);
+    // #525: the two bands carry SEPARATE coverages now, because they carry separate inks. Folding
+    // them with `max()` first was free while one colour served both; it is lossy the moment SGR 58
+    // makes them differ, and the loss is total (the underline's colour would paint the strike).
+    float ul_band = hline(gy, 0.88, u_line_thickness, u_char_size.y) * underline;
+    float st_band = hline(gy, 0.5, u_line_thickness, u_char_size.y) * strike;
     // #513: the line draws in its OWN ink, which the packer resolved without the glyph-only rules
     // (ADR-0019 rule 4 — `I_line` is TEXT class). Still overridden by a block cursor, because the
-    // cursor recolours the whole cell rather than the glyph: `base_line` follows `base_fg` there.
+    // cursor recolours the whole cell rather than the glyph: the line bases follow `base_fg` there.
     // Emoji is unchanged in spirit — the line was never the texture's colour, only now it is not
     // the glyph's either.
-    vec3 base_line = block ? u_cursor_text_color : v_line_fg;
-    // Composite in two steps — glyph over background, THEN line over that. Folding the line into
+    vec3 base_ul = block ? u_cursor_text_color : v_underline_fg;
+    vec3 base_st = block ? u_cursor_text_color : v_strike_fg;
+    // Composite in steps — glyph over background, THEN each line over that. Folding a line into
     // `fg` first and compositing once applies the band's coverage twice (`mix(bg, mix(fg, line, L), L)`),
     // which leaves `L(1-L)` of the GLYPH's ink in the line — up to 25 % at half coverage. That was
     // invisible while the two inks were equal and became an error the moment #513 made them differ,
     // proportional to exactly the divergence the channel exists to create: at the default font size
     // an underline on a selected tile was never the cell's ink, only mostly it.
+    //
+    // The strike goes LAST, so where a thick band makes the two overlap the strikethrough wins. The
+    // bands are at 0.88 and 0.5 of the glyph box, so they only meet under a large `u_line_thickness`;
+    // the order is xterm's all the same (`TextureAtlas.ts` strokes the underline at :565-688 and the
+    // strikethrough at :762, after) rather than a coin toss taken here.
     vec3 cell = mix(base_bg, fg, coverage);
-    vec3 inked = mix(cell, base_line, line);
+    vec3 inked = mix(cell, base_ul, ul_band);
+    inked = mix(inked, base_st, st_band);
+    float line = max(ul_band, st_band);
 
     // Only the DEFAULT terminal background is translucent (the see-through backdrop). An explicit
     // SGR background or an inverse/selection/cursor background is *content* and stays opaque — else
@@ -855,7 +873,8 @@ impl JustermRenderer {
             gl.vertex_attrib_pointer_f32(0, 2, glow::FLOAT, false, 8, 0);
             gl.enable_vertex_attrib_array(0);
 
-            // Per-instance [col, row, bg(3), fg(3), glyph, line_fg, bg_default] → locations 1..6.
+            // Per-instance [col, row, bg(3), fg(3), glyph, underline_fg, strike_fg, bg_default]
+            // → locations 1..7.
             let instance_vbo = gl.create_buffer().map_err(js_err)?;
             gl.bind_buffer(glow::ARRAY_BUFFER, Some(instance_vbo));
             for (loc, size, offset) in [
@@ -865,6 +884,7 @@ impl JustermRenderer {
                 (4, 1, 32),
                 (5, 1, 36),
                 (6, 1, 40),
+                (7, 1, 44),
             ] {
                 gl.vertex_attrib_pointer_f32(
                     loc,
