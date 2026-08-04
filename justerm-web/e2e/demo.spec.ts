@@ -536,7 +536,12 @@ test.describe("S7 IME composition (#116)", () => {
       ta.selectionStart = 1;
       ta.selectionEnd = 1;
     });
-    await page.waitForTimeout(20); // let the compositionupdate end-tracking settle
+    // Not a settle (#710): what keeps this green is the round-trip between the two `evaluate`
+    // calls, which gives `compositionUpdate`'s deferred write its turn. Enter's finalize is
+    // SYNCHRONOUS and reads `substring(start, end)`, so that write must have moved `end` off 0 —
+    // collapse this into ONE evaluate and the commit is empty. Green without the wait at 20x CPU
+    // throttling, so it is an explicit margin for that ordering: do not grow it.
+    await page.waitForTimeout(20);
     await page.evaluate(() => {
       document
         .querySelector("textarea")!
