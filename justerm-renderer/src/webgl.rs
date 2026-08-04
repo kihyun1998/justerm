@@ -269,19 +269,30 @@ void main() {
     //
     // The strike goes LAST, so where a thick band makes the two overlap the strikethrough wins. That
     // is xterm's band order (`TextureAtlas.ts` strokes the underline at :565-688 and the strikethrough
-    // at :762) rather than a coin toss taken here — but cite it for BAND order only: xterm's glyph
-    // `fillText` sits at :735, i.e. BETWEEN the two, and ghostty does the same for a stated reason
-    // (`generic.zig:2932`, a coloured underline crossing descenders). justerm draws both bands OVER
-    // the glyph, as alacritty does (`display/mod.rs` draws cells then rects). That divergence is
-    // #513/#515's, not this fork's, and is untouched here.
+    // at :762) rather than a coin toss taken here — and all three references agree the strike goes
+    // over the glyph, so it composites after everything below.
     //
-    // Overlap is arithmetically out of reach anyway: the centres are 0.38 of the glyph box apart
-    // while `u_line_thickness / char_height` stays near 0.06 at every font size, so reaching it needs
-    // a glyph box of about three device px. That is also why `cov` below may stay on `max` while the
-    // colour path composites in sequence — the two agree everywhere the bands do not meet.
-    vec3 cell = mix(base_bg, fg, coverage);
-    vec3 inked = mix(cell, base_ul, ul_band);
-    inked = mix(inked, base_st, st_band);
+    // #712 — the UNDERLINE's place is not a band-order question but an ink-CLASS one (ADR-0019 rule
+    // 6). R1 puts a BACKGROUND-class glyph's ink on the background channel while `I_underline` is
+    // `TEXT` class always, so background-class ink cannot occlude it: the band draws OVER a tile and
+    // UNDER a letter, whose descender therefore survives. `bg_class` splits the glyph's coverage
+    // between the two sides of the band — exactly one side is ever non-zero, so this is one `mix`
+    // more than the old chain, not a branch. Blanket "underline first", which both reordering
+    // references take (ghostty `generic.zig:2932` states the descender reason; xterm's `fillText` at
+    // :735 sits between the two bands), would trade this defect for its mirror: measured on our own
+    // renderer, a red underline over `█▄▓░` goes from 66 red px per cell to 0. Neither reference has
+    // a background ink class driving occlusion, so neither faced the choice.
+    //
+    // Band-vs-band overlap is arithmetically out of reach: the centres are 0.38 of the glyph box
+    // apart while `u_line_thickness / char_height` stays near 0.06 at every font size, so reaching it
+    // needs a glyph box of about three device px. That is also why `cov` below may stay on `max`
+    // while the colour path composites in sequence — the two agree everywhere the bands do not meet,
+    // and reordering the underline does not change *whether* anything is drawn at a pixel.
+    float bg_class = float((v_glyph >> 16u) & 1u);
+    vec3 tiled = mix(base_bg, fg, coverage * bg_class);        // background-class ink joins the bg
+    vec3 under = mix(tiled, base_ul, ul_band);                 // the band, over that background
+    vec3 cell = mix(under, fg, coverage * (1.0 - bg_class));   // text-class ink, over the band
+    vec3 inked = mix(cell, base_st, st_band);
     float line = max(ul_band, st_band);
 
     // Only the DEFAULT terminal background is translucent (the see-through backdrop). An explicit
