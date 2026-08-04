@@ -1,0 +1,108 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>justerm-renderer proof — an IME preedit's underline ink (#711)</title>
+<style>
+  body { margin: 0; background: #000; }
+  #c { display: block; image-rendering: pixelated; }
+</style>
+<!--
+  #711 (ADR-0028 D2): the preedit pass authors the UNDERLINE flag on every cell it takes over, so the
+  mark is the composition's and its ink is the fg the pass supplies. The COVERED cell's `SGR 58`
+  declared a colour for an underline that is no longer on screen; reading it drew the composition in
+  the colour of the text it erased, and the run moves per keystroke, so the colour changed per column.
+
+  It is also the first GL proof of the preedit pass itself (#249 shipped none), which is why the page
+  asserts that the run is on screen at all before asserting anything about its colour.
+
+  Layout — one row, and every cell is a SPACE, so the only non-black pixels ARE underlines:
+    col 0  UNDERLINE + SGR 58 red   covered by the run  → its line must draw in the fg (white)
+    col 1  no flags, no SGR 58      covered by the run  → gets a line ONLY because the pass drew one
+    col 3  UNDERLINE + SGR 58 red   NOT covered         → keeps red in the same frame
+  Col 1 is what separates "the gate fired" from "nothing was drawn", and col 3 separates a gate on
+  *this cell is in the run* from one on *a composition is open* — the two predicates agree everywhere
+  else on this page.
+
+  ⚠ `setPreedit` before `apply_frame`, not after. `apply_frame` packs immediately, while `setPreedit`
+  only raises `needs_repack`, and the deferred `repack_from_grid` is a no-op on this path (it re-packs
+  the retained `apply_damage` grid, which the direct path never fills). A consumer on `apply_damage`
+  — which `justerm-web` is — has no such ordering constraint. So this page proves the **direct**
+  path; both paths reach the gate through the one `resolve_and_pack`, which is why that is enough,
+  and it is worth saying rather than leaving the coverage claim to look wider than it is.
+
+  Runner sweeps dpr 1 / 1.1 / 1.5 / 2.
+  Build: wasm-pack build --target web --dev --out-dir pkg
+-->
+<canvas id="c" width="128" height="32"></canvas>
+<script type="module">
+  import init, { JustermRenderer } from "../pkg/justerm_renderer.js";
+  import { readRect } from "./proof.js";
+  await init();
+
+  const UNDERLINE = 1 << 3;
+  const COLS = 6, ROWS = 1, N = COLS * ROWS;
+  const SPACE = 0x20;
+  const RGB = (c) => ((2 << 24) | c) >>> 0; // tagged Rgb ref (as encode_color)
+
+  // default fg WHITE, bg BLACK — so "follows the fg" reads as white and SGR 58 red is unmistakable.
+  const palette = new Uint32Array(256);
+  const r = new JustermRenderer("#c", palette, 0xffffff, 0x000000);
+  const gl = document.querySelector("#c").getContext("webgl2");
+
+  const grab = () => { const [w, h] = [gl.drawingBufferWidth, gl.drawingBufferHeight]; return { ...readRect(gl, { x: 0, y: 0, w, h }), w, h }; };
+  const px = (img, x, y) => { const i = ((img.h - 1 - y) * img.w + x) * 4; return [img.buf[i], img.buf[i + 1], img.buf[i + 2]]; };
+
+  const flags = new Uint16Array(N); flags[0] = UNDERLINE; flags[3] = UNDERLINE;
+  const uc = new Uint32Array(N); uc[0] = RGB(0xff0000); uc[3] = RGB(0xff0000);
+
+  /** Draw the row with `run` composing at column 0, and return the frame's pixels. */
+  const draw = (run) => {
+    r.resize(COLS, ROWS);
+    r.setPreedit(0, 0, new Uint32Array(run)); // BEFORE apply_frame — see the header note
+    // apply_frame(cols, rows, bg, fg, codepoints, flags, blink_on, underlineColors)
+    r.apply_frame(COLS, ROWS, new Uint32Array(N), new Uint32Array(N), new Uint32Array(N).fill(SPACE), flags, true, uc);
+    r.render();
+    return grab();
+  };
+
+  /** The brightest (most-ink) pixel inside cell `col` — for a SPACE cell that is its underline. */
+  const cellRGB = (img, col) => {
+    const [cw, ch] = [r.cell_width(), r.cell_height()];
+    const x0 = Math.round(col * cw), x1 = Math.min(Math.round((col + 1) * cw), img.w);
+    let best = [0, 0, 0], bestSum = -1;
+    for (let y = 0; y < Math.min(ch, img.h); y++) for (let x = x0; x < x1; x++) {
+      const p = px(img, x, y), sum = p[0] + p[1] + p[2];
+      if (sum > bestSum) { bestSum = sum; best = p; }
+    }
+    return best;
+  };
+  const ink = (c) => c[0] + c[1] + c[2];
+
+  const composing = draw([SPACE, SPACE]); // a two-cell run over columns 0 and 1
+  const [c0, c1, c3] = [cellRGB(composing, 0), cellRGB(composing, 1), cellRGB(composing, 3)];
+
+  const closed = draw([]); // the composition ends; nothing is covered any more
+  const [e0, e1] = [cellRGB(closed, 0), cellRGB(closed, 1)];
+
+  const checks = {
+    // The run is genuinely on screen: column 1 carried no underline of its own, so any ink there was
+    // drawn by the pass. Without this the colour checks could pass on a frame with no composition.
+    theRunIsDrawnIntoTheGrid: ink(c1) >= 300 && ink(e1) <= 60,
+    // The covered cell's line follows the fg the pass supplied (white), not the SGR 58 it erased.
+    aComposedCellUnderlinesInTheFg: c0[0] >= 200 && c0[1] >= 200 && c0[2] >= 200,
+    // Same frame, uncovered cell: the declared colour still applies. This is the assertion a gate on
+    // "a composition is open" fails, and the reason the page has a sixth column at all.
+    anUncoveredCellKeepsItsSgr58: c3[0] >= 200 && c3[1] <= 70 && c3[2] <= 70,
+    // The colour comes back when the composition ends — the pass took the cell, it did not consume it.
+    theColourReturnsWhenTheCompositionEnds: e0[0] >= 200 && e0[1] <= 70 && e0[2] <= 70,
+    // ...and the two states genuinely differ, so neither reading is the other's default.
+    composingAndClosedAreNotTheSamePixel: c0[1] > e0[1] + 120,
+  };
+
+  window.__proof = { ok: Object.values(checks).every(Boolean), checks, dpr: devicePixelRatio, c0, c1, c3, e0, e1 };
+  window.__done = true;
+
+  // Leave the COMPOSING state on screen: this page is also the demo someone opens to look at the
+  // behaviour, and the last frame drawn above is the closed one. Every check ran on the buffers
+  // captured before this, so it asserts nothing and changes nothing.
+  draw([SPACE, SPACE]);
+</script>

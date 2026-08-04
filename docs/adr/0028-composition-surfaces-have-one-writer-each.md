@@ -106,6 +106,28 @@ that, and it was measured: a selection covering the run raised every composed ce
 value by ~90 while an in-run control confirmed the tint was real. The span therefore travels *with*
 the frame to the packer, which stands each stage down inside it.
 
+**Every per-cell column must be answered for a composed cell; *which* half answers it is free, and
+#711 is the column that was answered by neither.** The obligation is the rule — a column the patch
+does not re-supply and the span does not stand down reaches the packer describing the cell the pass
+erased. What is *not* a rule is a taxonomy of which columns belong to which half: for a column whose
+`Default` encoding already means *what the pass supplied*, the two are the same declaration written
+in two places. `SGR 58`'s colour is exactly that — `0` means "follow the fg", and the fg is the one
+the pass declared — so zeroing it in the patch and standing it down in the packer pack byte-identically.
+The gate went into the packer because `webgl.rs` is wasm32-only and 0-compiles on host, which is a
+fact about this repo's gates and not about this model.
+
+The reference is what settles that the *value* is right, and it also refutes the tidier-sounding
+argument that a preedit "declares a mark, not a colour for one": both grid-drawing references declare
+the colour outright, and both make it the run's own fg — alacritty as a field beside the glyph's
+(`renderer/mod.rs:225`, `underline: fg`), ghostty by passing one `screen_fg` into the glyph and into
+both `addUnderline` calls (`generic.zig:3299`, `:3335`).
+
+Note the direction of the failure, because the obvious generalisation runs backwards. The column did
+not arrive after the pass and slip past it — #520 shipped twelve days *earlier* (`7735f93`,
+2026-07-23; this pass `764b316`, 2026-08-04, published as `renderer-v0.10.0` with the defect). The
+pass enumerated the columns that already existed and missed one, so the guard belongs on whoever
+writes a *pass*, not only on whoever adds a column.
+
 **And a pass that writes half a wide pair owes the other half** (ADR-0025: one pair, one owner, one
 lifecycle). A run landing on an existing spacer leaves its lead drawing *"its left half only"* — the
 resolver's own words for a state core's resize can legitimately produce, but which a preedit has no
