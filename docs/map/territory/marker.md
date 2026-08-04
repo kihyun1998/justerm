@@ -28,6 +28,14 @@ the shell emits.
 - **Death is an event, not an absence.** An off-screen marker is *omitted* from the viewport group
   while still alive, so the consumer learns of disposal through `MarkerDisposed` rather than by
   noticing a gap. Without that, "scrolled away" and "gone" would be the same observation.
+- **The population is bounded, because the *stream* allocates it.** `add_command_mark` appends per
+  OSC 133 sequence with no per-line dedup, and eviction only drops a marker whose line reached
+  absolute 0 — so marks piled on one line are unreachable by eviction and grow with the stream
+  (measured: 70 000 live in a 24-row buffer, #721). `MAX_MARKERS` caps a buffer's population at
+  `u16::MAX`, retiring the **oldest** through the ordinary disposal event. Two things follow that a
+  reader will otherwise re-derive: the marker list is a `VecDeque` *because of this* (`Vec::remove(0)`
+  would memmove the whole population per push once the cap is reached), and the cap is why both
+  `u16` wire counts are safe without being widened.
 - **Two projections, two frames of reference.** `MarkerPosition` is viewport rows and carries the
   kind; `MarkerLine` is the **absolute** buffer line for *every* live marker and carries no kind or
   exit code — because the ruler mark's colour is the consumer's, so nothing themeable rides there.
@@ -65,13 +73,16 @@ recorded SHA; a paraphrase drops the pin).
   coherent `[scrollback ++ primary]` buffer. The failure mode here is the mirror of the usual one —
   someone *adding* a floor and silently breaking command navigation on the alt screen
 - [a wire field narrower than the value it carries](../invariant/wire-field-narrower-than-its-value.md)
-  — the two marker group counts are that note's **live, measured instance**: still `u16` after #621
-  widened its siblings, and unlike them they report **every live marker** rather than a viewport
-  projection, so nothing about the viewport bounds them. Past 65 535 the declared count wraps while
-  the records are all written, and `decode` reads the following group's count out of the middle of a
-  marker record — `Ok`, with every later group garbage-derived. **#490 owns this**, and it rejects
-  widening the counts on purpose: that would entrench ADR-0020's one stated R3 violation, which is
-  the thing #490 exists to remove
+  — the two marker group counts are still `u16` after #621 widened its siblings, and **nothing about
+  the viewport bounds either of them**: `marker_lines` reports every live marker, and `markers`,
+  though `marker_positions` filters it to visible rows, is unbounded because several marks
+  legitimately share one line. Past 65 535 the declared count wrapped while every record was still
+  written, and `decode` read the following group's count out of the middle of a marker record — `Ok`,
+  with every later group garbage-derived. **Closed by #721 at the producer**: `MAX_MARKERS` bounds a
+  buffer's live population at `u16::MAX`, so the input that wraps a count can no longer exist. The
+  counts were deliberately *not* widened — that would entrench ADR-0020's stated R3 violation, which
+  is what #490 exists to remove, and #490 still owns that half (the payload is still `O(M)`; M is
+  merely bounded now)
 
 ## Blast radius
 

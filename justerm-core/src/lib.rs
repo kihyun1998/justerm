@@ -38,8 +38,8 @@ pub use serialize::{
 };
 
 pub use term::{
-    CommandLine, DEFAULT_WORD_SEPARATORS, Hyperlink, MAX_COLUMNS, MAX_ROWS, MIN_COLUMNS, Term,
-    TrackedId,
+    CommandLine, DEFAULT_WORD_SEPARATORS, Hyperlink, MAX_COLUMNS, MAX_MARKERS, MAX_ROWS,
+    MIN_COLUMNS, Term, TrackedId,
 };
 
 use vte::Parser;
@@ -460,6 +460,12 @@ impl Engine {
     /// it through scroll/eviction/reflow; [`Engine::frame`] reports its viewport
     /// position while visible. Use the id to remove it or to match the
     /// `TermEvent::MarkerDisposed` fired when its line leaves the buffer.
+    ///
+    /// A buffer holds at most [`MAX_MARKERS`] live markers (#721) — the population is
+    /// also grown by the *stream*, through OSC 133 command marks, so it is bounded.
+    /// Past the cap the **oldest** marker is retired and announced through the same
+    /// `MarkerDisposed` event, so a consumer that already handles disposal needs no new
+    /// handling; a consumer that ignores it can leave a decoration bound to a dead id.
     pub fn add_marker(&mut self, row: usize) -> MarkerId {
         self.term.add_marker(row)
     }

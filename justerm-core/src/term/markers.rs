@@ -37,12 +37,14 @@
 //! `pub fn`: an inherent impl's methods are reached through the type, not the module path,
 //! so a private child module does not hide them.
 
+use std::collections::VecDeque;
+
 use crate::cell::Cell;
 use crate::event::TermEvent;
 use crate::grid::Grid;
 use crate::serialize::{MarkerId, MarkerKind, MarkerLine, MarkerPosition};
 
-use super::{CommandLine, Marker, Term};
+use super::{CommandLine, MAX_MARKERS, Marker, Term};
 
 impl Term {
     /// The primary-screen grid, wherever it currently lives — swapped into
@@ -60,7 +62,7 @@ impl Term {
     /// else normal. Add/rotate/project operate on this; primary-scoped queries
     /// (`command_marks`/`command_lines`) and scrollback eviction read
     /// `normal_markers` directly.
-    fn markers(&self) -> &Vec<Marker> {
+    fn markers(&self) -> &VecDeque<Marker> {
         if self.on_alt {
             &self.alt_markers
         } else {
@@ -69,7 +71,7 @@ impl Term {
     }
 
     /// Mutable [`Self::markers`].
-    fn markers_mut(&mut self) -> &mut Vec<Marker> {
+    fn markers_mut(&mut self) -> &mut VecDeque<Marker> {
         if self.on_alt {
             &mut self.alt_markers
         } else {
@@ -96,12 +98,41 @@ impl Term {
     fn push_marker(&mut self, line: usize, col: usize, kind: MarkerKind) -> MarkerId {
         let id = MarkerId(self.next_marker_id);
         self.next_marker_id += 1;
-        self.markers_mut().push(Marker {
+        // #721: this population is allocated by the *stream* — `add_command_mark` appends
+        // per OSC 133 sequence, several marks share a line, and eviction only drops one
+        // whose line reached abs 0 — so a stream that never emits a newline grows it
+        // without bound. Bounded at `MAX_MARKERS`, which the wire's own `u16` group counts
+        // derive (the same argument `MAX_COLUMNS` is written from).
+        //
+        // Overflow retires the **oldest**, not the newest. Refusing the newest is cheaper
+        // but permanently kills shell integration for the session: once a pile fills the
+        // cap on a line nothing can evict, every later mark would be refused forever. The
+        // oldest is also the one already destined to die, and `MarkerDisposed` is the
+        // channel scrollback eviction announces that on — so the consumer contract is
+        // unchanged rather than extended.
+        let mut disposed = Vec::new();
+        let markers = self.markers_mut();
+        while markers.len() >= MAX_MARKERS {
+            // `VecDeque`, not `Vec`, for this line: `remove(0)` would memmove the whole
+            // population on *every* push once the cap is reached, turning a memory defect
+            // into a throughput one.
+            let Some(m) = markers.pop_front() else {
+                // Not reachable while `MAX_MARKERS > 0`, and written so that it stays
+                // unreachable rather than becoming an infinite loop if it ever is not:
+                // an empty deque satisfies `len() >= 0` forever.
+                break;
+            };
+            disposed.push(m.id);
+        }
+        markers.push_back(Marker {
             id,
             line,
             col,
             kind,
         });
+        for id in disposed {
+            self.events.push(TermEvent::MarkerDisposed(id));
+        }
         id
     }
 

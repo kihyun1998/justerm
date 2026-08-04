@@ -20,12 +20,18 @@
 //! None of that is malformed input. The engine parsed it correctly and stores it
 //! correctly; the fields were simply too small for values it legitimately holds. That is
 //! why the fix is capacity (widen what is rare, delete what is per-cell) and not
-//! validation. **The validation half was #582's, and it is now answered** in
+//! validation. **#721 adds a third capacity answer to that pair — bound the producer**:
+//! the two marker group counts stay `u16` and `MAX_MARKERS` caps the population they
+//! count, because those marks are allocated by an untrusted stream and the wire field is
+//! the only limit anyone can name. Widening was available and is the wrong answer there
+//! (it would entrench ADR-0020's R3 violation, #490's to remove). **The validation half was #582's, and it is now answered** in
 //! `tests/span_bounds.rs`: a group key outside its span is rejected on decode and dropped
 //! on encode. The split still holds — a capacity defect makes the engine unable to
 //! *describe* what it holds, a validation defect makes the decoder accept what no frame
-//! could contain — and #582's own residue is on this file's side of it, not that one:
-//! `ScrollOp.count` still narrows to `i16` from an uncapped accumulation.
+//! could contain — and #582's own residue was on this file's side of it, not that one:
+//! `ScrollOp.count` narrowing to `i16` from an uncapped accumulation, **closed by #661**
+//! (`Term::scroll_delta` caps at the region height). Corrected in passing while working
+//! #721; this sentence had outlived its own fix.
 
 use justerm_core::{Engine, decode, encode};
 

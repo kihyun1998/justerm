@@ -27,6 +27,15 @@ than a preference:
   would entrench what ADR-0020 records as its **one stated R3 violation** (*"a group must be `O(1)`
   or `O(viewport)`"*). Ask which strategy the field's territory has already chosen before reaching
   for the obvious one.
+- **Bound the producer at the field's own capacity** when the value is allocated by something
+  untrusted and no natural limit exists — `#721` caps a buffer's live marker population at
+  `MAX_MARKERS = u16::MAX`, so neither marker count can reach a value it cannot declare. Distinct
+  from the second strategy above: a scroll `count` past its region height *stops meaning anything*,
+  whereas the 70 000th marker is perfectly meaningful — it is bounded because the **wire field is
+  the only limit anyone can name**, which is the argument `MAX_COLUMNS` is already written from
+  (`serialize.rs`, `MAX_COLUMNS = u16::MAX` "for exactly that representational reason"). Reach for
+  this one only when the producer is an untrusted entry point; against a trusted caller it is a
+  silent data loss with no defect behind it.
 
 ## Why it is cross-cutting
 
@@ -52,14 +61,18 @@ stack, which is why this class survives to be found by a completeness pass rathe
   spare).
 - [search](../territory/search.md) and [selection](../territory/selection.md) — the overlay span
   groups, whose counts wrapped at 66 000 spans on a large viewport before #621 widened them.
-- [marker](../territory/marker.md) — **the live instance of this note, and it is measured, not
-  hypothetical.** Both marker group counts are `u16` and count every *live* marker rather than a
-  viewport projection, so 70 000 marks encode a declared count of 4 464 and then write 70 000
-  records; `decode` takes the next group's count out of the middle of marker record #4 465 and
-  returns `Ok`, so **every group after markers in that frame is garbage-derived**. Reachable without
-  an adversary — `DEFAULT_SCROLLBACK = 10_000` with OSC 133 A/B/C/D marks is already ~40 000 live
-  markers. **Owned by #490** (which holds the measurement and the fix); do not re-measure it, and do
-  not "fix" it by widening — see the fourth strategy above.
+- [marker](../territory/marker.md) — **was this note's live instance; closed by #721 at the producer,
+  not at the field.** Both marker group counts are `u16`, and 70 000 marks encoded a declared count
+  of 4 464 while writing 70 000 records; `decode` then took the next group's count out of the middle
+  of marker record #4 465 and returned `Ok`, so **every group after markers in that frame was
+  garbage-derived**. The counts are unchanged and still `u16` — what changed is that `MAX_MARKERS`
+  bounds a buffer's live population at `u16::MAX`, so the wrapping input can no longer exist (the
+  fifth strategy above). Two corrections worth carrying, because this entry stated both wrongly:
+  the groups do **not** both "count every live marker" — `markers` is row-filtered by
+  `marker_positions` and is unbounded for the *other* reason, that several marks share a line; and
+  it is **not** reachable without an adversary — ordinary shell integration emits ≤ 4 marks per
+  command over ≥ 1 line each, so a default-scrollback session tops out near 40 000, and the measured
+  70 000 needed a stream that never emits a newline (#721 measures both ends).
 - [decoration](../territory/decoration.md) — the underline-colour group's count, still `u16`,
   measured unreachable after #582 rather than fixed.
 

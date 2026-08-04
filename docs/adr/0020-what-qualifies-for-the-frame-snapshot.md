@@ -6,6 +6,14 @@ already deciding: #440's routing to the search port and #490's promotion from de
 *the fix for this ADR's one violation* both rest on it. Scoped to *what a frame carries*; the encoding is ADR-0005,
 the decode boundary ADR-0008, and where a mechanism lives at all is ADR-0017.
 
+**Amended 2026-08-04 (#721): the evidence table below graded one row wrong, and it is the row that
+decides R3.** `markers` (v7/v10) was recorded as `O(viewport)` because `marker_positions` filters to
+visible rows. Measured: an 80x24 grid holds **70 000** records in *that* group, because several marks
+legitimately share one line and nothing dedups them. So **R3 has two violations, not one** — the
+Decision's *"one stated violation"* wording is corrected in place below. The rule itself is unmoved,
+and so is #490's ownership of the fix: bounding the population (#721) makes the group's `u16` count
+safe without making it viewport-bounded, which is a wire-capacity answer and not an R3 one.
+
 ## Context
 
 The wire has grown from v3 to **v12**. Four ADRs cover part of it, and they were all accepted on the
@@ -49,7 +57,7 @@ Read as data rather than as design, the three-way split is already there:
 | scroll position (v5), mouse wanted-events mask (v8), alt-screen flag (v9) | `O(1)` |
 | cell columns + span directory | `O(viewport)` |
 | selection / search-match / active-match spans (v6, v12) | `O(viewport)` |
-| marker **positions**, kind, exit (v7, v10) | `O(viewport)` |
+| marker **positions**, kind, exit (v7, v10) | **`O(M)`, unbounded** (recorded as `O(viewport)` until #721 measured 70 000 in this group on 80x24 — row-filtered, but several marks share a row) |
 | marker **lines** — every live marker, on-screen or not (v11) | **`O(M)`, unbounded** |
 
 | carried **out-of-band** | why it cannot be state |
@@ -63,7 +71,8 @@ Read as data rather than as design, the three-way split is already there:
 | search matches (`Vec<Match>`) | the backend ran the query and holds the result; only their viewport spans cross |
 | query answers (text extraction, `command_lines`) | the consumer asked, and gets an answer, not a snapshot |
 
-One row breaks the pattern — `markerLines` — and it is exactly the row #482 and #490 measure.
+Two rows break the pattern — `markerLines`, and (since #721 measured it) the viewport `markers` group
+above it. `markerLines` is the one #482 and #490 measure.
 
 ## Decision
 
@@ -96,7 +105,8 @@ state … justerm's frame-mode consumer retains only the current frame's snapsho
 afford unbounded engine-side structures because its consumer resolves them by handle. justerm's cannot,
 so for justerm the bound *is* the contract.
 
-**The one stated violation.** `markerLines` (v11) fails R3 knowingly. It was admitted before this rule
+**The stated violations.** `markerLines` (v11) fails R3 knowingly, and `markers` (v7/v10) fails it
+too — unrecorded until #721, because this ADR had graded it `O(viewport)`. It was admitted before this rule
 existed, for a real need — the overview ruler must place marks the viewport cannot show. It is recorded
 here as a violation rather than grandfathered into the rule: #482 mitigated the join, #490 holds the fix
 (marker positions move to an out-of-band, incrementally-maintained index) and its trigger condition. A
