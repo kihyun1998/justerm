@@ -100,10 +100,17 @@ machine that decides what the renderer does in between.
   consumer is not told. This used to be filed as "the same missing signal as #579, reached from the
   other side"; **#579 has landed and it is not the same signal**, which is the more useful fact. The
   loss half needed nothing from this crate — the four exports were already there — while a *restore*
-  edge cannot be built in the consumer at all: `restore` runs inside `render`, not in the
+  **notification** cannot be built in the consumer at all: `restore` runs inside `render`, not in the
   `webglcontextrestored` listener, so a consumer-side listener fires before the deferred read-back has
-  settled and would report the grid it had before. Measured while wiring #579. Whoever fixes this owns
-  a new export here, not a widget change.
+  settled and would report the grid it had before. Measured while wiring #579.
+  **This bullet ended "whoever fixes this owns a new export here, not a widget change" for about an
+  hour, and #717 disproved it the same day** — kept as written because the correction is the content.
+  The notification and the *harm* are separable, and only the first one is ours. The harm is a display
+  box the consumer sized from a provisional `cssWidth`, which nothing here can rewrite; the consumer
+  repeats its fit when `isContextLost()` goes false and it is gone, with no export involved. What went
+  wrong in the original sentence is a shape worth watching for: *"the consumer cannot observe X"* was
+  turned into *"the consumer cannot fix what X causes"*, and those are different claims. The export
+  question reopens only for a consumer that cannot poll.
 
 ## Code
 
