@@ -1,0 +1,101 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>justerm-renderer proof — SGR 58 colours the underline only (#525)</title>
+<style>
+  body { margin: 0; background: #000; }
+  #c { display: block; image-rendering: pixelated; }
+</style>
+<!--
+  #525: SGR 58 is the UNDERLINE colour. Until this change both marks drew from one ink channel
+  (#513's `line_fg`), so a declared colour painted the strikethrough too. The instance record now
+  carries `underline_fg` and `strike_fg` separately and the shader composites the two bands one at a
+  time instead of `max()`-folding them into one coverage.
+
+  A SPACE cell with UNDERLINE | STRIKETHROUGH has no glyph, so every non-black pixel over it belongs
+  to one of the two bands and its colour can be read directly. The bands sit at glyph-box 0.88
+  (underline) and 0.5 (strike), so the underline is always the LOWER of the two — which is what makes
+  "the red row is below the white row" a statement about the bands rather than about a pixel.
+
+  This page would pass just as happily on the old code if it only asked "is there a red pixel": the
+  discriminating check is that a WHITE row must also exist, which the shared channel could not
+  produce. Runner sweeps dpr 1 / 1.1 / 1.5 / 2.
+
+  Build: wasm-pack build --target web --dev --out-dir pkg
+-->
+<canvas id="c" width="64" height="32"></canvas>
+<script type="module">
+  import init, { JustermRenderer } from "../pkg/justerm_renderer.js";
+  import { readRect } from "./proof.js";
+  await init();
+
+  const UNDERLINE = 1 << 3;
+  const STRIKETHROUGH = 1 << 7;
+  const COLS = 4, ROWS = 1, N = COLS * ROWS;
+  const SPACE = 0x20;
+  const RGB = (c) => ((2 << 24) | c) >>> 0;   // tagged Rgb ref (as encode_color)
+
+  // default fg WHITE, bg BLACK — so a follow-fg band is white and a declared band is not.
+  const palette = new Uint32Array(256);
+  const r = new JustermRenderer("#c", palette, 0xffffff, 0x000000);
+  const gl = document.querySelector("#c").getContext("webgl2");
+
+  const grab = () => { const [w, h] = [gl.drawingBufferWidth, gl.drawingBufferHeight]; return { ...readRect(gl, { x: 0, y: 0, w, h }), w, h }; };
+  const px = (img, x, y) => { const i = ((img.h - 1 - y) * img.w + x) * 4; return [img.buf[i], img.buf[i + 1], img.buf[i + 2]]; };
+
+  // Render one SPACE cell carrying both marks, then classify each ROW of cell 0 by the colour of its
+  // most-inked pixel. Returns the row indices that came out red and the ones that came out white,
+  // top-origin (y grows downward), so their order is the band order.
+  const bandRows = (ucolorRef) => {
+    const [cw, ch] = [r.cell_width(), r.cell_height()];
+    const flags = new Uint16Array(N); flags[0] = UNDERLINE | STRIKETHROUGH;
+    const uc = new Uint32Array(N); uc[0] = ucolorRef;
+    r.resize(COLS, ROWS);
+    // apply_frame(cols, rows, bg, fg, codepoints, flags, blink_on, underlineColors)
+    r.apply_frame(COLS, ROWS, new Uint32Array(N), new Uint32Array(N), new Uint32Array(N).fill(SPACE), flags, true, uc);
+    r.render();
+    const img = grab();
+    const red = [], white = [];
+    for (let y = 0; y < ch; y++) {
+      let best = [0, 0, 0], bestSum = -1;
+      for (let x = 0; x < cw; x++) {
+        const p = px(img, x, y), sum = p[0] + p[1] + p[2];
+        if (sum > bestSum) { bestSum = sum; best = p; }
+      }
+      const [rr, gg, bb] = best;
+      if (rr >= 150 && gg <= 90 && bb <= 90) red.push(y);
+      else if (rr >= 150 && gg >= 150 && bb >= 150) white.push(y);
+    }
+    return { red, white };
+  };
+
+  const declared = bandRows(RGB(0xff0000)); // SGR 58 Rgb(255,0,0) on a cell with BOTH marks
+  const follow = bandRows(0);               // Default — no SGR 58, both marks follow the fg
+
+  const checks = {
+    // The window this proof needs: both bands are actually on screen. Without this the two colour
+    // assertions below could both hold vacuously on a cell that drew nothing.
+    bothBandsAreDrawn: declared.red.length > 0 && declared.white.length > 0,
+    // The underline took the declared colour...
+    theUnderlineTookTheSgr58Colour: declared.red.length > 0,
+    // ...and the strikethrough did NOT. This is the #525 defect: on the shared channel every inked
+    // row over this cell was red, so `white.length` was 0.
+    theStrikeDidNotTakeTheUnderlineColour: declared.white.length > 0,
+    // Which row is which: the underline sits at glyph-box 0.88 and the strike at 0.5, so every red
+    // row must be BELOW every white one. A split that coloured the wrong band would pass the two
+    // checks above and fail this one.
+    theRedBandIsTheLowerOne:
+      declared.red.length > 0 && declared.white.length > 0 &&
+      Math.min(...declared.red) > Math.max(...declared.white),
+    // The control, and the other half of "a divergence must not be invented": with nothing declared
+    // the two bands agree again — all ink is white, none of it red (#513's behaviour, unchanged).
+    withNoSgr58BothBandsFollowTheFg: follow.white.length > 0 && follow.red.length === 0,
+    // ...and the follow-fg case really does draw two separate bands, so the control above is not
+    // passing because only one mark rendered.
+    theFollowFgCaseStillDrawsTwoBands:
+      follow.white.length > 0 &&
+      Math.max(...follow.white) - Math.min(...follow.white) >= 2,
+  };
+
+  window.__proof = { ok: Object.values(checks).every(Boolean), checks, dpr: devicePixelRatio, declared, follow };
+  window.__done = true;
+</script>

@@ -27,15 +27,26 @@ use crate::overlay::{
 use crate::palette::{Palette, resolve_indexed_or_rgb};
 use crate::render_policy::{ColorPolicy, dim_foreground, resolve_cell};
 
-/// Floats per cell instance: `col, row, bg(3), fg(3), glyph_field, line_fg, bg_default`.
+/// Floats per cell instance: `col, row, bg(3), fg(3), glyph_field, underline_fg, strike_fg,
+/// bg_default`.
 ///
-/// `line_fg` is the ink an underline / strikethrough draws in (#513), carried **packed** as a single
-/// `0xRRGGBB` rather than unpacked into three floats like `bg` and `fg`. A colour maxes at `2²⁴ − 1`
-/// and an `f32` represents every integer below `2²⁴` exactly, so the value survives the attribute and
-/// `uint()` in the shader — measured, not assumed: a standalone WebGL2 probe round-tripped ten values
-/// including `0x000000`, `0xFFFFFF`, `0x010101` and both sides of the sign-bit boundary, all exact.
-/// Packed because a line is *rare* — every cell would otherwise pay three floats for a channel almost
-/// none of them use, and ADR-0021 keeps one instance buffer resident per grid.
+/// `underline_fg` / `strike_fg` are the inks the two marks draw in (#513, split by #525), carried
+/// **packed** as a single `0xRRGGBB` each rather than unpacked into three floats like `bg` and `fg`.
+/// A colour maxes at `2²⁴ − 1` and an `f32` represents every integer below `2²⁴` exactly, so the value
+/// survives the attribute and `uint()` in the shader — measured, not assumed: a standalone WebGL2
+/// probe round-tripped ten values including `0x000000`, `0xFFFFFF`, `0x010101` and both sides of the
+/// sign-bit boundary, all exact. Packed because a line is *rare* — every cell would otherwise pay
+/// three floats per band for a channel almost none of them use, and ADR-0021 keeps one instance
+/// buffer resident per grid.
+///
+/// **Why two, when #513 shipped one.** They are one ink source (ADR-0019 rule 4's `I_line`) split by
+/// **authorship of the colour**, the same axis rules 5 and #520 already turn on: `SGR 58` declares the
+/// *underline's* colour and there is no SGR for a strikethrough's, so a declared colour is
+/// authoritative over one band and has nothing to say about the other. With no `SGR 58` the two are
+/// equal and the second float is redundant — that is the common case, and it is what
+/// `sgr58_colours_the_underline_only_and_the_strike_keeps_the_follow_fg_ink` pins from the other side.
+/// The alternative that costs nothing — draw the strike from `v_fg` — is wrong on exactly the cells
+/// #513 exists for: a glyph-only rule (the #239 re-tint) moves `fg` and must not reach `I_line`.
 ///
 /// `bg_default` is the #455 translucency-provenance flag (`1.0` / `0.0`): whether this cell's
 /// background is the pristine **default backdrop** — the only surface #298 makes translucent. It is
@@ -45,8 +56,8 @@ use crate::render_policy::{ColorPolicy, dim_foreground, resolve_cell};
 /// otherwise-opaque content. ADR-0019's totality clause forbids that — resolution follows the cell's
 /// state, not an accident of the fold — so the packer, which knows every layer that touched the bg,
 /// emits the answer and the shader stops guessing. It costs its own float because #513 already spent
-/// `line_fg`'s exact-integer budget: a colour fills all 24 f32-safe bits, leaving no spare bit to ride.
-pub const INSTANCE_FLOATS: usize = 11;
+/// the line inks' exact-integer budget: a colour fills all 24 f32-safe bits, leaving no spare bit to ride.
+pub const INSTANCE_FLOATS: usize = 12;
 
 /// A decoded frame's per-cell grid: dimensions + the four parallel column arrays the packer
 /// reads (all row-major, ideally length `cols*rows`). `bg`/`fg` are tagged-u32 colour refs,
@@ -82,17 +93,19 @@ pub struct Frame<'a> {
     /// or missing entry resolves as `Default`, i.e. the line follows the glyph ink (the
     /// #513 behaviour). It never touches the glyph — only the line's colour channel.
     ///
-    /// One shared-channel consequence (#513): `I_line` is one ink for BOTH the underline and the
-    /// strikethrough, so on a cell with underline **and** strikethrough this colour paints both.
-    /// SGR 58 is properly the *underline* colour only — but justerm-core stores it only when
-    /// `UNDERLINE` is set, so the strikethrough-**only** case never carries it (it strikes in the fg);
-    /// the sole divergence is the rare underline+strikethrough+SGR-58 cell, where the strike takes
-    /// the underline colour. Splitting the two would cost a second ink channel; deferred.
+    /// It reaches the **underline band only** (#525). `I_line` was one ink for both marks while
+    /// #513's single channel was all there was, so this colour painted the strikethrough too — and
+    /// ADR-0019 rule 4, which named `I_line` as one source, said it should. The record now carries
+    /// `underline_fg` and `strike_fg` separately and rule 4 splits them by **authorship of the
+    /// colour**: SGR 58 declares the underline's, nothing declares a strikethrough's, so the strike
+    /// stays on the follow-fg pipeline whatever the underline does. `justerm-core` arms this column
+    /// only when `UNDERLINE` is set (`term.rs::pen_ext_attrs`), so a strike-only cell never carried
+    /// a colour to begin with; the both-marks cell is what changed.
     pub underline_colors: &'a [u32],
 }
 
 /// Pack a [`Frame`] (row-major) into per-cell instance data
-/// `[col, row, bg_r, bg_g, bg_b, fg_r, fg_g, fg_b, glyph_field, line_fg, bg_default]`. Colours resolve through the injected
+/// `[col, row, bg_r, bg_g, bg_b, fg_r, fg_g, fg_b, glyph_field, underline_fg, strike_fg, bg_default]`. Colours resolve through the injected
 /// `policy`: inverse swaps the fg/bg and a bold ANSI 0–7 fg brightens to 8–15 ([`resolve_cell`], #223);
 /// a DIM cell's fg fades toward its bg (#232, [`dim_foreground`]); `minimumContrastRatio` nudges an
 /// illegible fg (#225); and a *selected* cell takes `selectionForeground` (#227) and has its DIM
@@ -257,14 +270,17 @@ pub fn pack_instances(
             // like fg/bg (a Default/Indexed/Rgb *reference*, not an absolute decoration colour). An
             // explicit colour is **authoritative**: it is drawn RAW and immune to the glyph's ink
             // treatments — top/bottom decoration fg, DIM, and minimum-contrast all leave it alone
-            // (the `line_packed` short-circuit below). This is xterm's rule (`TextureAtlas` sets the
+            // (the `underline_packed` fork below). This is xterm's rule (`TextureAtlas` sets the
             // underline `strokeStyle` from the raw `getUnderlineColor()` and disables its threshold
             // clear) and, more importantly, the only *coherent* one: the two-lens found that adjusting
             // an "explicit" colour by some rules but not others is an invented asymmetry with no basis
             // in the layer model. `Default` (0) keeps #513's behaviour — the line follows the cell ink
-            // (rules 1-3) and rides rules 5-7 with the glyph. `line_fg` holds the follow-fg value; for
-            // an explicit colour it is unused (the short-circuit wins), kept only so rules 5-7 need no
-            // guard.
+            // (rules 1-3) and rides rules 5-7 with the glyph.
+            //
+            // #525: that regime is the UNDERLINE's alone, because SGR 58 is the underline's colour and
+            // there is no SGR for a strikethrough's. `line_fg` below is the ink BOTH marks start from
+            // — the follow-fg base — and the fork past rules 5-7 is where the declared colour reaches
+            // one band and not the other.
             let ucolor_ref = underline_colors.get(idx).copied().unwrap_or(0);
             let explicit_line =
                 (ucolor_ref != 0).then(|| resolve_indexed_or_rgb(ucolor_ref, palette));
@@ -491,14 +507,18 @@ pub fn pack_instances(
             // the same inputs whether or not the attribute bits are set, so skipping it is a cost
             // win with no behaviour change — and it skips a second `ensure_contrast_ratio` luminance
             // loop on every cell in the viewport, which is the bulk of them.
-            let draws_a_line = cell_flags & (UNDERLINE | STRIKETHROUGH) != 0;
-            let line_packed = if let Some(c) = explicit_line {
-                // #520: an explicit SGR 58 colour is authoritative — drawn raw, past dim/contrast and
-                // any decoration override (rules 5-7). The whole `if` below is the follow-fg pipeline;
-                // this arm takes the line out of it entirely, which is what makes the treatment of an
-                // explicit colour uniform (the two-lens verdict) instead of adjusted-by-some-rules.
-                c
-            } else if !draws_a_line {
+            // #525: the two marks are one ink source split by AUTHORSHIP of the colour. `SGR 58`
+            // declares the *underline's* colour and there is no SGR for a strikethrough's, so the
+            // declared colour is authoritative over the underline band alone; the strike stays on the
+            // follow-fg pipeline whatever the underline does. Computing the pipeline once and forking
+            // after it is what keeps the two from drifting apart when nothing declares a colour.
+            //
+            // The gate is the union of what each band needs, so the #520 cost win survives: an
+            // explicitly coloured underline with no strikethrough still skips the contrast loop
+            // (`ensure_contrast_ratio`'s luminance work, on every cell in the viewport otherwise).
+            let needs_follow_fg = (cell_flags & UNDERLINE != 0 && explicit_line.is_none())
+                || cell_flags & STRIKETHROUGH != 0;
+            let follow_fg_line = if !needs_follow_fg {
                 line_fg
             } else if mcr > 1.0 && (!exclude || glyph_taken_by_decoration) {
                 let ratio = if dim { mcr / 2.0 } else { mcr };
@@ -512,6 +532,17 @@ pub fn pack_instances(
             } else {
                 line_fg
             };
+            // #520: an explicit SGR 58 colour is authoritative — drawn raw, past dim/contrast and any
+            // decoration override (rules 5-7). The fork takes the underline out of the follow-fg
+            // pipeline entirely, which is what makes the treatment of an explicit colour uniform (the
+            // two-lens verdict) instead of adjusted-by-some-rules.
+            let underline_packed = explicit_line.unwrap_or(follow_fg_line);
+            // The strike never has a declared colour to be authoritative — `justerm-core` arms
+            // `underline_colors` only when UNDERLINE is set (`term.rs::pen_ext_attrs`), so a
+            // strike-only cell never carried one even before this split. It is the follow-fg value
+            // unconditionally, and on a cell that draws no strike it is unread (same reasoning as the
+            // `needs_follow_fg` short-circuit above).
+            let strike_packed = follow_fg_line;
             let bg_rgb = gl_rgb(eff_bg);
             let fg_rgb = gl_rgb(fg_packed);
 
@@ -567,7 +598,8 @@ pub fn pack_instances(
                 fg_rgb[1],
                 fg_rgb[2],
                 field as f32,
-                line_packed as f32,
+                underline_packed as f32,
+                strike_packed as f32,
                 if bg_is_default_backdrop { 1.0 } else { 0.0 },
             ]);
         }
@@ -645,7 +677,10 @@ mod tests {
             1.0,
             1.0,
             33.0,
-            // #513 `line_fg`, packed: with no rule diverting it, the line's ink is the cell's own.
+            // #513 `underline_fg` / #525 `strike_fg`, packed: with no rule diverting them and no
+            // SGR 58 declaring one, both marks' ink is the cell's own — and they are EQUAL. The
+            // split is by authorship of the colour, so with no declared colour it must not show.
+            0xFF_FF_FF as f32,
             0xFF_FF_FF as f32,
             // #455 `bg_default`: this cell's bg is an explicit Rgb (E06C75), NOT the default ref, so it
             // is content — opaque, flag 0.0.
@@ -661,6 +696,11 @@ mod tests {
             assert!((a - b).abs() < 1e-6, "float {i}: got {a}, want {b}");
         }
     }
+
+    /// The instance-record indices of the two line inks (#525). Adjacent on purpose: they are one
+    /// ink source split by *authorship* of the colour, not two unrelated channels.
+    const UNDERLINE_INK: usize = 9;
+    const STRIKE_INK: usize = 10;
 
     /// The index of the #455 translucency-provenance flag: the last float of the instance record.
     const BACKDROP: usize = INSTANCE_FLOATS - 1;
@@ -957,6 +997,117 @@ mod tests {
             ),
             0xFF_0000 as f32,
             "a top-decoration fg must not override an explicit underline colour"
+        );
+    }
+
+    #[test]
+    fn sgr58_colours_the_underline_only_and_the_strike_keeps_the_follow_fg_ink() {
+        // #525: SGR 58 is the UNDERLINE colour. `I_line` was one ink for both marks (#513's single
+        // channel), so an explicit colour painted the strikethrough too — the model's own rule 4
+        // said so, which is why this is an ADR-0019 amendment and not a stray bug.
+        //
+        // The two bands now carry separate inks: the underline takes the declared colour raw
+        // (#520's authorship regime), the strike stays on the follow-fg pipeline it always had.
+        let p = palette(); // default_fg = 0xFFFFFF (white)
+        let red: u32 = (2 << 24) | 0xFF_0000;
+        let run = |flags: u16| {
+            let f = Frame {
+                preedit: None,
+                cols: 1,
+                rows: 1,
+                bg: &[0],
+                fg: &[0], // Default → the glyph, and the follow-fg line, are white
+                slots: &[33],
+                flags: &[flags],
+                codepoints: &[],
+                underline_colors: &[red],
+            };
+            pack_instances(
+                &f,
+                &p,
+                true,
+                &Overlay::default(),
+                &ColorPolicy::default(),
+                &[],
+            )
+        };
+        let both = run(UNDERLINE | STRIKETHROUGH);
+        assert_eq!(
+            both[UNDERLINE_INK], 0xFF_0000 as f32,
+            "the underline draws in the SGR 58 colour"
+        );
+        assert_eq!(
+            both[STRIKE_INK], 0xFF_FFFF as f32,
+            "the strikethrough draws in the fg — there is no SGR for a strike colour"
+        );
+        assert_eq!(
+            &both[5..8],
+            &[1.0, 1.0, 1.0],
+            "and the glyph is untouched by either"
+        );
+        // The side condition, and the reason this is not one assertion: with no SGR 58 the two
+        // inks must still AGREE, or the split has invented a divergence of its own. Only the
+        // presence of a declared colour may separate them.
+        let follow = {
+            let f = Frame {
+                preedit: None,
+                cols: 1,
+                rows: 1,
+                bg: &[0],
+                fg: &[(2 << 24) | 0x00_FF_00],
+                slots: &[33],
+                flags: &[UNDERLINE | STRIKETHROUGH],
+                codepoints: &[],
+                underline_colors: &[0], // Default — no SGR 58
+            };
+            pack_instances(
+                &f,
+                &p,
+                true,
+                &Overlay::default(),
+                &ColorPolicy::default(),
+                &[],
+            )
+        };
+        assert_eq!(
+            follow[UNDERLINE_INK], 0x00_FF_00 as f32,
+            "with no SGR 58 the underline follows the fg (#513)"
+        );
+        assert_eq!(
+            follow[STRIKE_INK], follow[UNDERLINE_INK],
+            "and both marks agree — the split must not separate them on its own"
+        );
+    }
+
+    #[test]
+    fn the_strikes_ink_is_the_lines_channel_not_the_glyphs_fg() {
+        // The predicate this fix could plausibly have been given instead: "draw the strike band
+        // from `v_fg`", which #525's own acceptance text says. It is wrong, and this is the cell
+        // where the two answers differ — the only place they can.
+        //
+        // A selected TILE glyph takes the #239 re-tint, which is a glyph-only rule (ADR-0019
+        // rule 4: `I_line` is TEXT class always). `line_fg` is initialised from `fg` ABOVE that
+        // re-tint, so the line keeps the cell's own ink while the glyph moves. Sourcing the
+        // strike from the glyph channel would re-enter #513's symptom through the new band.
+        let p = palette(); // default_fg white
+        let got = pack_instances(
+            &frame_cp(&[0], &[0], &[STRIKETHROUGH], &[BLOCK]),
+            &p,
+            true,
+            &selected(&[0, 0, 0], &[]),
+            &ColorPolicy::default(),
+            &[],
+        );
+        // Assert the window exists before asserting behaviour inside it: if the re-tint ever stops
+        // moving the glyph, the pin below would hold vacuously.
+        assert_ne!(
+            &got[5..8],
+            &gl_rgb(0xFF_FF_FF),
+            "the selection re-tint moved the tile glyph's fg (the window this test needs)"
+        );
+        assert_eq!(
+            got[STRIKE_INK], 0xFF_FF_FF as f32,
+            "the strike keeps the cell's own ink, not the re-tinted glyph fg"
         );
     }
 
