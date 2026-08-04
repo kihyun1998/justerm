@@ -32,6 +32,12 @@ about *how the caret looks* is decided here.
   become invisible, so its legibility is adjusted independently of the text contrast policy.
 - **Blink phase arrives as state, not as a timer.** The consumer resolves the policy and pushes the
   phase; nothing here animates. That is the same split as the engine's, one layer further out.
+  **The phase's origin is not the moment anything asked for it**, though: a cursor *move* re-anchors
+  it too (the phase-only `CursorBlink.restart()`, which is application output, distinct from the
+  input-path `restartFromInput`), so the origin a caller observes trails the call it made by however
+  long the frame carrying that move takes to arrive. Measured at tens of ms and drifting with
+  unrelated work on the composition path (#706, #707) — which is why anything timing the caret has to
+  observe the phase rather than compute when it should have flipped.
 
 ## Code
 

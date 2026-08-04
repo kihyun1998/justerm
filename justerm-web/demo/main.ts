@@ -1467,7 +1467,7 @@ interface CursorBlinkProbe {
   /** Application says STEADY, sampled twice across more than one blink interval. */
   steadyA: string;
   steadyB: string;
-  /** Application says BLINK: just after a phase restart, then one interval later. */
+  /** Application says BLINK: just after a phase restart, then polled until the caret goes. */
   blinkOn: string;
   blinkOff: string;
   /** Application says BLINK but the consumer forces steady — the override, one interval later. */
@@ -1505,13 +1505,13 @@ interface TextBlinkProbe {
 interface BlinkIdleProbe {
   /** Cursor hidden — the reference the samples below are read against. */
   background: string;
-  /** Blinking, sampled either side of one 600ms interval, well inside the idle window. */
+  /** Blinking: the caret drawn, then polled until it goes — all inside the idle window. */
   beforeOn: string;
   beforeOff: string;
   /** Past the idle timeout with NO input, sampled a full interval apart. */
   idleA: string;
   idleB: string;
-  /** After simulated user input restarts the idle clock, one interval later. */
+  /** After simulated user input restarts the idle clock: polled until the caret goes. */
   afterInputOff: string;
 }
 
@@ -1519,14 +1519,54 @@ interface BlinkIdleProbe {
 interface ComposeCaretProbe {
   /** Cursor hidden — the reference the samples are read against. */
   background: string;
-  /** Application asked to blink, NOT composing: sampled either side of one 600ms interval. */
+  /** Application asked to blink, NOT composing: the caret drawn, then polled until it goes. */
   idleOn: string;
   idleOff: string;
   /** Same application state, but mid-composition — sampled a full interval apart. */
   composingA: string;
   composingB: string;
-  /** After the composition ends, one interval later. */
+  /** After the composition ends: polled until the caret goes again. */
   afterEndOff: string;
+}
+
+/**
+ * How long a blink probe keeps looking for the phase it is asserting (#706) — comfortably more
+ * than one {@link BLINK_INTERVAL}, so a stalled runner shifts *when* the phase is observed rather
+ * than *whether* it is.
+ */
+const BLINK_POLL_WINDOW = 2000;
+
+/**
+ * Sample until the caret is observed in the phase the assertion is about, or until `deadlineAt`
+ * (on `performance.now()`'s clock). Returns the LAST sample either way, so the e2e assertion stays
+ * a plain colour comparison and a poll that never saw the phase still reads as the wrong colour
+ * rather than as a pass.
+ *
+ * **Why the blink probes do not sample at a fixed offset (#706).** The blink phase's origin is
+ * neither the event the probe dispatches nor the `restartCursorBlink()` it calls: it is the frame
+ * carrying the cursor's *move*, which reaches `updateCursor`'s move branch → the phase-only
+ * `CursorBlink.restart()` at the widget's own cadence. A fixed `wait(750)` therefore asserts that
+ * `750 - origin` still lands in the OFF half of a 600ms interval — a phase boundary, not a
+ * behaviour — and the margin is only what is left of 150ms once the origin has drifted. Measured
+ * on this probe: 100ms of margin before #249 put a render on the composition path, 45ms after
+ * (#707), so a runner stalled for 60ms flips it — 0/8 passes against 8/8 unstalled. Polling for
+ * the state the test is actually about survived every stall measured, out to 1000ms.
+ *
+ * The deadline is wall-clock rather than an iteration count — which is how `__textBlinkProbe`'s
+ * step (5) writes the same idea — because each iteration costs a `render()` plus a `readPixels`,
+ * so a count would shrink the real budget exactly when load makes each iteration longest.
+ */
+async function pollForCaret(
+  sample: () => string,
+  want: string,
+  deadlineAt: number,
+): Promise<string> {
+  let seen = sample();
+  while (seen !== want && performance.now() < deadlineAt) {
+    await new Promise((r) => setTimeout(r, 40));
+    seen = sample();
+  }
+  return seen;
 }
 
 window.__composeCaretProbe = async (): Promise<ComposeCaretProbe> => {
@@ -1567,8 +1607,8 @@ window.__composeCaretProbe = async (): Promise<ComposeCaretProbe> => {
   cursorBlink = true; // the application asks to blink
   renderer.restartCursorBlink();
   const idleOn = sample();
-  await wait(750);
-  const idleOff = sample(); // blinking, as a control
+  // Blinking, as a control — polled rather than sampled at a fixed offset (see {@link pollForCaret}).
+  const idleOff = await pollForCaret(sample, background, performance.now() + BLINK_POLL_WINDOW);
 
   ta.dispatchEvent(new CompositionEvent('compositionstart'));
   ta.dispatchEvent(new CompositionEvent('compositionupdate', { data: 'ㅎ' }));
@@ -1580,8 +1620,9 @@ window.__composeCaretProbe = async (): Promise<ComposeCaretProbe> => {
   ta.selectionStart = 1;
   ta.selectionEnd = 1;
   ta.dispatchEvent(new CompositionEvent('compositionend', { data: '한' }));
-  await wait(750);
-  const afterEndOff = sample(); // blinking again
+  // Blinking again. The tightest of these samples before #706: the phase origin here is downstream
+  // of the controller's deferred commit read as well, so it drifts furthest from the dispatch.
+  const afterEndOff = await pollForCaret(sample, background, performance.now() + BLINK_POLL_WINDOW);
 
   cursorBlink = savedBlink;
   cursorShown = savedShown;
@@ -1616,19 +1657,25 @@ window.__blinkIdleProbe = async (): Promise<BlinkIdleProbe> => {
   cursorBlink = true; // the application asks to blink
   renderer.setCursorBlinkTimeout(2000); // …and the consumer shortens the idle window to 2s
 
+  const inputAt = performance.now();
   renderer.restartCursorBlink(); // "the user typed" — phase and idle clock both start here
   const beforeOn = sample();
-  await wait(750);
-  const beforeOff = sample(); // still well inside the 2s window → blinking
+  // Still well inside the 2s window → blinking. Polled (#706), but on a deadline the *idle window*
+  // sets rather than the usual budget: keep looking past 2s and the caret parks solid for the
+  // reason the next section is about, and this control would go red for the wrong one.
+  const beforeOff = await pollForCaret(sample, background, inputAt + 1400);
 
-  await wait(1600); // 2.35s since the last input → idled out
+  // 2.35s since the last input → idled out. Measured from the input, not from the sample above:
+  // the poll returns as soon as it sees the phase, so the elapsed time is no longer a constant.
+  await wait(Math.max(0, inputAt + 2350 - performance.now()));
   const idleA = sample();
   await wait(650);
   const idleB = sample(); // a full interval later and still solid: the blink really stopped
 
+  const secondInputAt = performance.now();
   renderer.restartCursorBlink(); // input resets the idle clock
-  await wait(650);
-  const afterInputOff = sample(); // blinking again
+  // Blinking again — same bounded deadline as `beforeOff`, and for the same reason.
+  const afterInputOff = await pollForCaret(sample, background, secondInputAt + 1400);
 
   renderer.setCursorBlinkTimeout(BLINK_IDLE_TIMEOUT);
   cursorBlink = savedBlink;
@@ -1657,7 +1704,9 @@ window.__cursorBlinkProbe = async (): Promise<CursorBlinkProbe> => {
     return `rgb(${px[0]},${px[1]},${px[2]})`;
   };
   const wait = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
-  // One full blink interval is 600ms (`BLINK_INTERVAL`); 750 lands safely inside the OFF half.
+  // Past one full blink interval (600ms, `BLINK_INTERVAL`) — all this constant is asked to do is
+  // exceed it, since every sample taken after it asserts the caret is STILL there. A sample that
+  // asserts the caret is GONE cannot be taken at a fixed offset at all; see {@link pollForCaret}.
   const PAST_ONE_INTERVAL = 750;
 
   const savedBlink = cursorBlink;
@@ -1680,8 +1729,7 @@ window.__cursorBlinkProbe = async (): Promise<CursorBlinkProbe> => {
   cursorBlink = true;
   renderer.restartCursorBlink();
   const blinkOn = sample();
-  await wait(PAST_ONE_INTERVAL);
-  const blinkOff = sample();
+  const blinkOff = await pollForCaret(sample, background, performance.now() + BLINK_POLL_WINDOW);
 
   // (4) The consumer override beats the application (alacritty's `blinking_override`): the app is
   //     still asking to blink, and the cursor stays put.
