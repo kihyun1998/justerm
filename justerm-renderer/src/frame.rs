@@ -93,17 +93,19 @@ pub struct Frame<'a> {
     /// or missing entry resolves as `Default`, i.e. the line follows the glyph ink (the
     /// #513 behaviour). It never touches the glyph — only the line's colour channel.
     ///
-    /// One shared-channel consequence (#513): `I_line` is one ink for BOTH the underline and the
-    /// strikethrough, so on a cell with underline **and** strikethrough this colour paints both.
-    /// SGR 58 is properly the *underline* colour only — but justerm-core stores it only when
-    /// `UNDERLINE` is set, so the strikethrough-**only** case never carries it (it strikes in the fg);
-    /// the sole divergence is the rare underline+strikethrough+SGR-58 cell, where the strike takes
-    /// the underline colour. Splitting the two would cost a second ink channel; deferred.
+    /// It reaches the **underline band only** (#525). `I_line` was one ink for both marks while
+    /// #513's single channel was all there was, so this colour painted the strikethrough too — and
+    /// ADR-0019 rule 4, which named `I_line` as one source, said it should. The record now carries
+    /// `underline_fg` and `strike_fg` separately and rule 4 splits them by **authorship of the
+    /// colour**: SGR 58 declares the underline's, nothing declares a strikethrough's, so the strike
+    /// stays on the follow-fg pipeline whatever the underline does. `justerm-core` arms this column
+    /// only when `UNDERLINE` is set (`term.rs::pen_ext_attrs`), so a strike-only cell never carried
+    /// a colour to begin with; the both-marks cell is what changed.
     pub underline_colors: &'a [u32],
 }
 
 /// Pack a [`Frame`] (row-major) into per-cell instance data
-/// `[col, row, bg_r, bg_g, bg_b, fg_r, fg_g, fg_b, glyph_field, line_fg, bg_default]`. Colours resolve through the injected
+/// `[col, row, bg_r, bg_g, bg_b, fg_r, fg_g, fg_b, glyph_field, underline_fg, strike_fg, bg_default]`. Colours resolve through the injected
 /// `policy`: inverse swaps the fg/bg and a bold ANSI 0–7 fg brightens to 8–15 ([`resolve_cell`], #223);
 /// a DIM cell's fg fades toward its bg (#232, [`dim_foreground`]); `minimumContrastRatio` nudges an
 /// illegible fg (#225); and a *selected* cell takes `selectionForeground` (#227) and has its DIM
@@ -268,14 +270,17 @@ pub fn pack_instances(
             // like fg/bg (a Default/Indexed/Rgb *reference*, not an absolute decoration colour). An
             // explicit colour is **authoritative**: it is drawn RAW and immune to the glyph's ink
             // treatments — top/bottom decoration fg, DIM, and minimum-contrast all leave it alone
-            // (the `line_packed` short-circuit below). This is xterm's rule (`TextureAtlas` sets the
+            // (the `underline_packed` fork below). This is xterm's rule (`TextureAtlas` sets the
             // underline `strokeStyle` from the raw `getUnderlineColor()` and disables its threshold
             // clear) and, more importantly, the only *coherent* one: the two-lens found that adjusting
             // an "explicit" colour by some rules but not others is an invented asymmetry with no basis
             // in the layer model. `Default` (0) keeps #513's behaviour — the line follows the cell ink
-            // (rules 1-3) and rides rules 5-7 with the glyph. `line_fg` holds the follow-fg value; for
-            // an explicit colour it is unused (the short-circuit wins), kept only so rules 5-7 need no
-            // guard.
+            // (rules 1-3) and rides rules 5-7 with the glyph.
+            //
+            // #525: that regime is the UNDERLINE's alone, because SGR 58 is the underline's colour and
+            // there is no SGR for a strikethrough's. `line_fg` below is the ink BOTH marks start from
+            // — the follow-fg base — and the fork past rules 5-7 is where the declared colour reaches
+            // one band and not the other.
             let ucolor_ref = underline_colors.get(idx).copied().unwrap_or(0);
             let explicit_line =
                 (ucolor_ref != 0).then(|| resolve_indexed_or_rgb(ucolor_ref, palette));

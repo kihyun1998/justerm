@@ -62,7 +62,10 @@ const QUAD: [f32; 8] = [0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 1.0, 1.0];
 /// Byte stride of one packed instance. **Derived** from [`INSTANCE_FLOATS`] rather than written out:
 /// the two drifting apart silently mis-addresses every attribute, and nothing in the pipeline would
 /// say so — the geometry would simply be wrong. It was a literal `9 * 4` until #513 widened the
-/// record, and #455 again (the `bg_default` provenance flag).
+/// record, then #455 (the `bg_default` provenance flag) and #525 (the second line ink) widened it
+/// again — three times in one release cycle, which is the whole argument for deriving it.
+/// The per-attribute **offsets** in `build_pipeline` are still literals and are not derived; a float
+/// inserted anywhere but the end moves them, so they are edited with this constant, not after it.
 const INSTANCE_STRIDE: i32 = (INSTANCE_FLOATS * 4) as i32;
 
 const VERT_SRC: &str = r#"#version 300 es

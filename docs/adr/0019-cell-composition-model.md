@@ -1,6 +1,10 @@
 # ADR-0019: The cell composition model — a layered, per-channel, total resolution
 
-Status: accepted (2026-07-21) — **amended 2026-08-03** (#249/#640, ADR-0028): Totality's first gap that
+Status: accepted (2026-07-21) — **amended 2026-08-04** (#525): rule 4's `I_line` was one ink source
+named "underline / strikethrough", so the #520 amendment below made a declared `SGR 58` colour
+authoritative over *both* marks. Read literally the model therefore endorsed a defect: SGR 58 is the
+underline's colour and there is no SGR for a strikethrough's. `I_line` now has two bands, split by
+the same **authorship** axis rules 5 and #520 already turn on. — **amended 2026-08-03** (#249/#640, ADR-0028): Totality's first gap that
 no layer can close — an IME preedit supplies a *glyph*, and nothing in this stack can. Resolved as a
 **pass**, not a layer; see the Consequences. — **amended 2026-07-22**: the three pins this ADR left for adjudication
 were adjudicated *for* the pins. R1 is scoped by who declared the layer (rule 5 below), the pins stand,
@@ -79,7 +83,11 @@ generalises #452's per-property decoration merge to the whole stack.
 anything with a real colour beneath it, and replaces only over a bare default background.
 
 **4 — Ink sources are distinct, and one of them is background.** A cell's ink is `I_glyph` (the
-character), `I_line` (underline / strikethrough) and `I_cursor`. **R1:** when the glyph's class is
+character), `I_line` and `I_cursor`. `I_line` is **two bands** — `I_underline` and `I_strike`
+(amended 2026-08-04, #525) — which share every treatment and separate on exactly one axis: whether
+something *declared* the colour. `SGR 58` declares the underline's; nothing declares a
+strikethrough's, so it stays on the follow-fg ink whatever the underline does. **R1:** when the
+glyph's class is
 `BACKGROUND` (`treat_glyph_as_background_color` — Powerline, box / block, and since #507 whatever
 `builtin::owns` draws to the cell, asked of the drawer rather than restated), `I_glyph` belongs to the
 **background channel** and takes whatever treatment the bg fold applied. R1 reaches `I_glyph` **only**;
@@ -199,6 +207,26 @@ decoration); it is rejected here because it drops a highlight the user explicitl
   varying background breaks a run — and an underline is exactly as continuous across cells as a tile
   is. Splitting that gate re-created #513's own symptom through the contrast path; it was measured and
   reverted before merge.
+  **The authorship axis, once stated, immediately found the paragraph above under-scoped (#525).**
+  *"A declared colour is authoritative over `I_line`"* was written while `I_line` was one ink, so it
+  handed the **strikethrough** a colour nobody declared for it: `SGR 58` is the underline's, and no
+  SGR sets a strikethrough's. Rule 4 now carries two bands and the regime attaches to the one the
+  application actually spoke about. Two things about how this arrived are worth keeping, because
+  neither is visible from the fix itself:
+  - **The model did not fail to answer — it answered, and the answer was wrong.** Totality's clause
+    is written for a combination with *no* answer; this one had a derivable answer that a stale
+    premise had quietly made false. That premise was #513's single hardware channel, which was
+    perfectly true when rule 4 was written and stopped being true when #513 shipped the channel.
+    A rule that inherits a limit as a *definition* goes on returning answers after the limit is
+    lifted, and nothing in the model flags it. Amending on the premise rather than on the symptom is
+    what stops the same sentence from re-deciding the next band.
+  - **The cheap fix was the wrong one, and this model is what says so.** #525's own acceptance text
+    proposed drawing the strike *"in the fg"* — free, since `v_fg` is already in the instance record.
+    Rule 4 forbids it: `I_line` is `TEXT` class **always**, while `fg` carries glyph-only treatments
+    (the #239 re-tint moves it on a selected tile, which is the cell #513 exists for). Taking the
+    free route would have re-entered #513's symptom through the new band — the second time this area
+    has been bitten by *"reuse the channel that happens to be nearby"*, the first being the contrast
+    gate directly above.
 - **Totality reaches the alpha property too (#455).** The model names three channels — bg, fg, glyph — but
   a cell also resolves to an *alpha*: whether its background is the see-through default backdrop (#298).
   The shader decided this by arithmetic — `base_bg == u_default_bg` — so a content cell whose composite

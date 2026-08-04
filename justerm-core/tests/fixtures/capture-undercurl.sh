@@ -27,7 +27,8 @@
 #   CSI 4:3 m           curly (undercurl); 4:1 straight, 4:2 double, 4:4 dotted, 4:5 dashed
 #   CSI 4 m / CSI 24 m  legacy underline on / off
 # The colour is INDEPENDENT of the underline style and of the fg: SGR 58 sets a
-# colour that only the underline uses (renderer #513 `line_fg` is where it lands).
+# colour that only the underline uses — literally only the underline since #525, which
+# gave the strikethrough its own ink (renderer `underline_fg` / `strike_fg`, #513/#525).
 #
 set -e
 cd "$(mktemp -d)"

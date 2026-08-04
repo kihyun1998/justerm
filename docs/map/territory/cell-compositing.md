@@ -43,11 +43,15 @@ becomes an actual colour — the engine never does that by identity.
 - **Colour policies apply before compositing** — inverse, bold→bright, dim, and the minimum contrast
   ratio. They transform the *cell's own* colours; compositing then layers other things over that.
 - **Underline and strikethrough fold into the glyph field**, and their ink is a separate channel
-  (`line_fg`, #513) rather than the foreground — so a coloured underline is expressible without a
-  second draw.
-- **The instance is flat and fixed-width**: `col, row, bg(3), fg(3), glyph_field, line_fg,
-  bg_default`. One buffer, one instanced draw call — the same fixed-stride reasoning the wire format
-  uses, for the same reason.
+  from the foreground (#513) rather than the foreground itself — so a coloured underline is
+  expressible without a second draw.
+- **The two marks are one ink source split by authorship of the colour** (#525, ADR-0019 rule 4).
+  They share the follow-fg pipeline and separate only where something *declared* a colour: `SGR 58`
+  declares the underline's and there is no SGR for a strikethrough's. A cell with no `SGR 58` has
+  both inks equal, which is what keeps the split from inventing a divergence of its own.
+- **The instance is flat and fixed-width**: `col, row, bg(3), fg(3), glyph_field, underline_fg,
+  strike_fg, bg_default`. One buffer, one instanced draw call — the same fixed-stride reasoning the
+  wire format uses, for the same reason.
 - **The packer is pure and host-testable.** Glyph-slot resolution and rasterisation are stateful and
   browser-only; this function takes already-resolved slots, which is what lets the hot path be tested
   without a GPU.
