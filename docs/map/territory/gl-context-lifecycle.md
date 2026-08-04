@@ -113,9 +113,12 @@ machine that decides what the renderer does in between.
 
 ## Reference behaviour
 
-Two questions have been checked; the rest of the territory has not. alacritty and ghostty are not
-browser renderers at all, so the comparison set here is smaller than for the rest of the crate — that
-part is unchanged.
+Two questions have been checked; the rest of the territory has not. The comparison set here is smaller
+than for the rest of the crate — but **smaller is not empty, and this note said empty until 2026-08-04**
+(#579). alacritty has a context-loss concept and a recovery path, and asks the driver's reset status at
+the point of use rather than a queued-event flag: ADR-0027's D1 reached independently, outside a
+browser. What it has no analogue for is the *consumer* half — it recovers synchronously with nobody to
+tell — which is the distinction the original sentence flattened.
 
 - [Resizing while the GL context is lost](../../agents/reference-facts.md#resizing-while-the-gl-context-is-lost--the-reference-never-asks-the-question-639-verified-2026-08-03)
   — a **negative** result, and the useful kind: xterm's resize handler runs unguarded through a loss,
@@ -128,8 +131,13 @@ part is unchanged.
   a `null` on, glow unwraps it. Not indifferent, though — xterm's other two parameter reads *are*
   falsy-guarded, so a `null` there becomes a throw
 
-Still unchecked: whether either reference notifies on a never-restored context beyond xterm's timeout
-(the #327 comparison), and what any of them does with GPU resources it cannot rebuild.
+Checked since (#579, 2026-08-04): **the #327 comparison has an answer, and it is that only xterm has
+the concept.** xterm arms a 3 s timeout on `webglcontextlost` and fires an emitter if it is still lost
+(`WebglRenderer.ts:125-136`), clearing it on dispose (`:161-163`) — which is where this crate's own
+`Drop` contract came from. alacritty has nothing to compare: it recovers at the point of use with no
+deadline and nobody to notify.
+
+Still unchecked: what any of them does with GPU resources it cannot rebuild.
 
 ## Cross-cutting invariants
 

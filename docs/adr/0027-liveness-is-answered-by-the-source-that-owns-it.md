@@ -6,8 +6,16 @@ four guard decisions in one crate, two of them made inside a single change, each
 
 **This is a derivation, not a product judgement.** Every clause below follows from what the browser
 actually guarantees about a WebGL context plus the shape of this crate's own modules, so a better
-derivation retires it. Nothing here is a taste call, and the reference cannot arbitrate it: xterm.js
-has **no position** — `rg isContextLost` over `src` + `addons` returns 0 hits at pin `699f5537`.
+derivation retires it. Nothing here is a taste call, and the reference the *browser* question would go to cannot arbitrate
+it: xterm.js has **no position** — `rg isContextLost` over `src` + `addons` returns 0 hits at pin
+`699f5537`.
+
+**Amended 2026-08-04 (#579): one reference does arbitrate, and it agrees.** This paragraph, and the
+prior-art section below, both said the non-browser references had no context-loss concept at all.
+alacritty has one, and asks the driver at the point of use rather than a flag — D1 reached
+independently. It is recorded below rather than here because it changes the record's *support*, not
+its content: a derivation that a second implementation arrived at by another route is a stronger
+derivation, and this one was believed to have none.
 
 ## Context
 
@@ -105,8 +113,21 @@ is the sibling that reaches the window, and it fails against the pre-#695 implem
   it has already been told is dead. Ours is a different mistake in the same family — we rebuild on one
   that is dead but has not told us yet — which is exactly why the ordering being right did not save
   #695.
-- **alacritty · ghostty** — n/a by layer, not by omission: neither is a browser renderer and neither
-  has a context-loss concept.
+- **alacritty** — **this entry was wrong and its correction strengthens the record** (2026-08-04, found
+  by #579's completeness pass). It read *"n/a by layer, not by omission: neither is a browser renderer
+  and neither has a context-loss concept"*. alacritty has both: `make_current` asks
+  `renderer.was_context_reset()` — `glGetGraphicsResetStatus` under `GL_KHR_robustness` — or catches
+  glutin's `ErrorKind::ContextLost`, then recreates the context and the renderer in place
+  (`alacritty/src/display/mod.rs:561`, `:564`, `:576-595`; `renderer/mod.rs:281`, `:304`, pin
+  `852e971`). **It is a positive precedent for D1/D2, reached independently:** it asks *the driver, at
+  the point of use*, never a flag an earlier event set — in a codebase with no queued-event race to
+  have taught it the lesson. So the rule this record derives is not peculiar to browsers.
+  What alacritty still cannot arbitrate is D4, and the split is exact: being an application, it
+  recovers synchronously with no deadline, no notification and nobody to tell. *"No reference to lose
+  to"* holds for what to publish to a consumer and fails for which source a guard asks — and this
+  entry had collapsed the two.
+- **ghostty** — n/a, re-verified rather than inherited from the sentence above: no context-loss,
+  device-loss or graphics-reset concept anywhere in `src` at pin `e6e26e1`.
 
 ## Consequences
 

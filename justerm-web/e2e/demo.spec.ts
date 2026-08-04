@@ -1548,9 +1548,15 @@ test("a lost GL context reaches the consumer, once, and never after dispose (#57
   expect(p.presentsAfterRestore).toBeGreaterThan(0);
 
   // A loss that outlives its deadline notifies exactly once — and stays at once, twice as long
-  // again. The count, not merely ">0", is the assertion: xterm.js fires *twice* for a second loss
-  // that arrives with no restore between (its single timeout handle is overwritten, never cleared),
-  // and the epoch stamp is what keeps ours at one.
+  // again. The count rather than merely ">0", because "at most once per loss" is the contract
+  // `context_loss.rs` states and a `>0` assertion cannot see it break.
+  //
+  // An earlier version of this comment claimed the count also beats xterm.js, which overwrites its
+  // single timeout handle without clearing it on a second `webglcontextlost`. The *code* does that
+  // (`WebglRenderer.ts:131`), but this probe never drove two losses with no restore between, so
+  // whether a browser even delivers that second event on an already-lost context is unmeasured
+  // here. Removed rather than softened: a comparative claim next to a passing assertion reads as
+  // something the assertion checked.
   expect(p.overdueCallbacks).toBe(1);
   expect(p.overdueCallbacksLater).toBe(1);
   expect(p.overdueFlag).toBe(true);

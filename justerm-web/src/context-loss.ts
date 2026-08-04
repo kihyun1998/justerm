@@ -45,26 +45,33 @@ export class ContextLossRelay {
    * unsafe to rely on.
    */
   readonly notify = (): void => {
-    if (this.ended) return;
     this.handler?.();
   };
 
   /**
-   * Install the consumer's handler, or `undefined` to stop delivering to one.
+   * Install the consumer's handler, or `undefined` to stop delivering to one. **A no-op once
+   * {@link end} has run** — that gate is the one thing here that is not obvious, so it carries the
+   * reasoning.
    *
-   * **Deliberately unguarded against {@link end}**, and that is measured rather than chosen for
-   * brevity. A symmetric `if (this.ended) return;` was written here first; a mutation test showed
-   * neither guard could be made to fail, because each masks the other — with the delivery gate in
-   * place a late registration is already inert, and with `end` clearing the handler a missing gate
-   * is already silent. Exactly one of the two carries the rule, so the redundant one is removed
-   * rather than kept for symmetry (the same call `gridForBox` records in `justerm-renderer.ts`: a
-   * branch that cannot change an outcome is untestable by construction).
+   * Three mechanisms could enforce *"a widget that has ended never notifies"*: a gate here, a gate
+   * in {@link notify}, and `end`'s clearing of the handler. Only **two** of the three are needed,
+   * and a mutation test is what says which two — with all three in place, neither gate can be made
+   * to fail, because each masks the other. That is not a tidiness problem: a branch no test can fail
+   * is untestable by construction, and the same call is on record next door (`gridForBox` in
+   * `justerm-renderer.ts` removed a guard for exactly this reason).
    *
-   * The gate kept is the one in {@link notify}, because the contract is about **delivery** — *a
-   * widget that has ended never notifies* — and that holds however a handler came to be installed,
-   * including through a path added later that does not think to ask.
+   * **The gate belongs here rather than in `notify`, and the two are not interchangeable** — which
+   * took a second measurement to see, the first having kept the wrong one. They deliver identically,
+   * because `set` is the only installer; they differ on what {@link end} *promises*. Gate the
+   * delivery and a post-`end` `set(handler)` still parks the consumer's closure on an object the
+   * renderer holds until `free()` — i.e. for the life of the page — while `end`'s doc says it lets
+   * that closure go. Gate the installation and the promise is kept by construction.
+   *
+   * With this placement every mechanism is falsifiable: remove this gate, or `end`'s latch, and the
+   * revival test fails; remove `end`'s clear and the delivery test fails.
    */
   set(handler: (() => void) | undefined): void {
+    if (this.ended) return;
     this.handler = handler;
   }
 
@@ -72,8 +79,9 @@ export class ContextLossRelay {
    * Close the channel for good, and drop the consumer's closure with it (the widget has no business
    * retaining it past its own life). Idempotent, as every teardown on this port must be.
    *
-   * The `ended` latch is what makes this *closed* rather than *cleared*; the clear beside it
-   * releases the closure and decides nothing — see {@link set}.
+   * Both statements carry weight, and neither is redundant — see {@link set}: the latch is what
+   * makes this *closed* rather than *cleared*, and the clear is what stops the handler installed
+   * before it from being delivered to.
    */
   end(): void {
     this.ended = true;

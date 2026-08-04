@@ -316,8 +316,8 @@ export interface RendererBackend {
   isRestoreOverdue(): boolean;
   /** Register the single function the renderer calls when a lost context has not come back within
    * the deadline. There is **no unset** — the parameter is a `Function` — which is why the adapter
-   * registers an indirection once rather than the consumer's handler directly (see
-   * {@link ContextLossRelay}). */
+   * registers an indirection once rather than the consumer's handler directly (`context-loss.ts`;
+   * named in prose rather than linked, because that type is internal to this package). */
   setOnContextLoss(callback: () => void): void;
   /** The grace period, in ms, before the callback above fires. Consumer policy (ADR-0017): the
    * renderer times, the consumer decides how long a blank terminal is tolerable. Applies to the
