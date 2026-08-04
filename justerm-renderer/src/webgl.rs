@@ -338,10 +338,23 @@ struct ContextLossHandler {
 /// context came back, if we already notified, or if it belongs to an earlier loss. A stale deadline
 /// costs one no-op task.
 ///
-/// The `epoch` is what makes this safe, and it also makes us stricter than xterm.js, whose single
-/// `_contextRestorationTimeout` handle is overwritten without being cleared when a second
-/// `webglcontextlost` arrives with no restore between (`WebglRenderer.ts:131`) — both timers then
-/// fire and its `onContextLoss` is delivered twice. Ours notifies once per loss, whatever the order.
+/// The `epoch` is what makes this safe, and what it is safe *against* is the
+/// **lost → restored → lost** order: the first loss's timer is still pending when the second loss
+/// arms its own, and without the stamp it would land inside the second loss's grace period and cut
+/// it short. That sequence is reachable — every transition into "lost" dispatches — and
+/// `context_loss.rs`'s `a_deadline_left_over_from_a_previous_loss_never_notifies` is written on it.
+///
+/// **This used to claim more, and the extra claim was wrong** (measured 2026-08-04, #579). It said
+/// the epoch made us stricter than xterm.js, whose single `_contextRestorationTimeout` is
+/// overwritten without being cleared when a second `webglcontextlost` arrives *with no restore
+/// between* (`WebglRenderer.ts:131`) — "both timers then fire and its `onContextLoss` is delivered
+/// twice". The overwrite is real in its source; the antecedent is not reachable. A second
+/// `WEBGL_lose_context.loseContext()` on an already-lost context delivers **no** second event
+/// (headless Chromium: two `loseContext()` calls with no restore between produce exactly **1**
+/// `webglcontextlost`), because the event fires on the transition into lost and an already-lost
+/// context has none to make. So that comparison described a state neither implementation can be
+/// put into. The epoch still earns its place on the order above — a favourable comparison is just
+/// the kind nobody re-checks.
 fn arm_restore_deadline(
     state: &Rc<RefCell<ContextState>>,
     notify: &Rc<RefCell<Option<js_sys::Function>>>,
