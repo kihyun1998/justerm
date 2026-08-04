@@ -1,6 +1,11 @@
 # ADR-0019: The cell composition model — a layered, per-channel, total resolution
 
-Status: accepted (2026-07-21) — **amended 2026-08-04** (#525): rule 4's `I_line` was one ink source
+Status: accepted (2026-07-21) — **amended 2026-08-04** (#712): rule 4 enumerated the ink sources and
+gave each a class, but never said what happens where **two of them claim the same pixel**. Occlusion was
+decided by the order the shader happened to composite in — an accident of the fold, which is exactly what
+Totality forbids — and it stayed invisible until `SGR 58` (#520) let two inks differ. New **rule 6** puts
+a total order on rule 4's own enumeration, so a pair is answered by construction rather than pairwise.
+ — **amended 2026-08-04** (#525): rule 4's `I_line` was one ink source
 named "underline / strikethrough", so the #520 amendment below made a declared `SGR 58` colour
 authoritative over *both* marks. Read literally the model therefore endorsed a defect: SGR 58 is the
 underline's colour and there is no SGR for a strikethrough's. The correction is to rule 4's
@@ -69,7 +74,8 @@ being consulted for questions it never posed, and each answer it could not give 
 ## Decision
 
 The renderer composes a cell by a **total function** over a fixed layer stack, resolved **per channel**.
-Four rules; together they answer every cell state.
+Six rules; together they answer every cell state. (This read *"Four rules"* until 2026-08-04, through
+the amendment that added rule 5 — a count is a status claim with nothing gating it.)
 
 **1 — The layer stack.** Bottom to top: `L0` the cell (after inverse and bold→bright, `resolve_cell`) <
 `L1` bottom decoration < `L2` highlight < `L3` top decoration. Within `L2`, `ActiveMatch > Selection >
@@ -119,6 +125,59 @@ concept expressed as a decoration erases a tile and expressed as an active match
 real seam in the API and it is accepted deliberately — the alternative erases box-drawing and shading
 from the screen whenever a user drags across it or steps through search results, which is content loss
 in exchange for an internal symmetry no user can observe.
+
+**6 — Where two ink sources claim the same pixel, the later one in this order wins** (amended
+2026-08-04, #712):
+
+```
+background channel  <  I_glyph (BACKGROUND class, by R1)  <  I_underline  <  I_glyph (TEXT class)  <  I_strike  <  I_cursor
+```
+
+Rules 1–5 resolve a cell's channels; **none of them says what happens when two of rule 4's ink sources
+land on the same pixel**. That was left to whatever order the shader composited in, which is precisely
+the accident Totality forbids — and it was unobservable for as long as every ink was the same colour.
+`SGR 58` (#520) made two of them differ and the gap became a defect: measured on our own renderer at
+44 px, a red underline destroyed **100 %** of the descender ink of `g j p q y` crossing it (0 of 94
+glyph pixels survived inside the band; with the order corrected the surviving ink is *identical* to the
+same text drawn with no underline at all).
+
+The order is not a table of answers; it is a **total order over rule 4's enumeration**, so every pair is
+resolved by construction and a new ink source is placed once rather than compared against each existing
+one. Two things determine a source's position:
+
+- **Class first.** R1 puts a `BACKGROUND`-class glyph's ink on the **background** channel, and rule 4
+  makes `I_underline`, `I_strike` and `I_cursor` `TEXT` class always. Background-channel ink therefore
+  cannot occlude a `TEXT`-class source: an underline draws **over** a tile, exactly as it draws over the
+  cell's background. This is the clause with a real cost — see the trade below.
+- **Then, within `TEXT` class, by what each mark is for.** An underline sits **below** the glyph so a
+  coloured one does not amputate descenders; a strikethrough sits **above** it, because crossing the
+  character out *is* the mark; the cursor is last, because it recolours the whole cell.
+
+**Coherence with rule 5.** This is an ordering *within* one cell's ink resolution, not a layer. Rule 5
+still decides whether a layer may take the cell's ink at all; rule 6 only says who is on top once the
+surviving sources are known.
+
+**What is deliberately unprovable here, and why that is not a gap.** Only a *declared* colour can pull
+two ink sources apart (rule 4), and no escape declares a strikethrough's — so `I_strike`'s position
+relative to `I_glyph` is invisible in every ordinary cell: a band whose colour equals the ink beneath it
+composites the same either way. The order still has to be stated, because a cell where a glyph-only
+treatment moves `fg` away from the line inks (a selected tile, #513's own case) *can* see it. What the
+GL proof asserts is what is observable; the rest is recorded here rather than pinned by a test that
+could only confirm its own premise.
+
+**The trade, and why the references cannot arbitrate it.** Both references that draw the underline first
+do it **unconditionally**: ghostty appends the underline before the glyph and states the descender
+reason (`renderer/generic.zig:2932` @ `e6e26e16`), and xterm.js puts its glyph `fillText` between the
+underline block and the strikethrough (`addons/addon-webgl/src/TextureAtlas.ts:735` @ `699f5537`) —
+xterm even computes `treatGlyphAsBackgroundColor`, but feeds it only to `_getForegroundColor` (`:538`),
+never to draw order. Taken blanket, that trades this defect for its mirror, and the cost was measured
+here, not inferred: a red underline over `█ ▄ ▓ ░` drops from 66 surviving band pixels per cell to
+**0**. alacritty has neither behaviour for a structural reason rather than a decided one — its
+`draw_rects` pass (`alacritty/src/display/mod.rs:990` @ `852e971c`) runs after `draw_cells` (`:878`) and
+carries the visual bell and the message bar with it, so bands-over-glyphs is what batching those
+together produces, and it carries no comment defending it. **No reference has a background ink class
+driving occlusion, so none of them ever faced this choice**; the class clause above is this model's,
+taken on ADR-0018's first-party footing and on the measurement.
 
 **Coherence.** Where a channel's resolution and R1 describe the *same surface*, they must agree. A cell
 whose bg says one colour and whose background-class ink says another is not a trade-off; it is an
@@ -286,6 +345,18 @@ decoration); it is rejected here because it drops a highlight the user explicitl
   after (`renderer/generic.zig` @ `e6e26e1`), alacritty draws the run with its own `draw_string` pass after
   the grid (`display/mod.rs` @ `852e971`) — so the shape is prior-art-convergent rather than invented here.
   The rules are unchanged for every cell the pass does not cover, and this ADR keeps governing those.
+- **Rule 6 cost the packer one bit and the pins caught the one place it was wrong (#712).** The shader
+  sees an atlas slot, never a codepoint, so only `pack_instances` can know R1's answer — it was already
+  computing it for the #226 contrast exclusion and the #239 re-tint and throwing it away. It now rides
+  bit 16 of the glyph field, *above* the `u16` the rest of it fits in: the attribute is read as
+  `uint(a_glyph)` and an `f32` carries every integer below 2²⁴ exactly, so the bit was free where a
+  thirteenth instance float would not have been. The u16 looked full because it was — the **transport**
+  was not. The one judgement this needed came from the existing suite: publishing the class on a glyph a
+  top decoration had *taken* (#508) turned five pins red at once. They were right, and for the reason
+  this ADR already gives — the glyph-only treatments stand down there *because the glyph they are about
+  is gone*, and a class is a fact about a glyph. Visually the bit would have been inert (a blank slot has
+  zero coverage); it would still have asserted something false. This is what *"the pins are the
+  conformance suite for such a change"* looks like when it fires.
 - **The implementation does not yet have the model's shape.** `pack_instances` computes the ink channel as
   a seven-step conditional overwrite chain that *satisfies* the model without *being* it, which is why new
   combinations read as open questions in the code. Restructuring it to resolve ink over the same stack as

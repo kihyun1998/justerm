@@ -580,17 +580,35 @@ pub fn pack_instances(
             // A concealed cell points at the blank slot: zero coverage, no decoration bits,
             // so only the (already inverse-swapped) background shows.
             let field = if is_concealed(cell_flags, blink_on) {
-                BLANK_SLOT
+                u32::from(BLANK_SLOT)
             } else {
                 // #508: a decoration that took the glyph blanks the SLOT and keeps the attribute
                 // bits — `ESC[8m` above drops both because the application asked for the whole cell
                 // to be hidden; here only the glyph was taken, and an underline is not the glyph.
-                let slot = if glyph_taken_by_decoration {
-                    BLANK_SLOT
+                //
+                // #712: the ink CLASS goes with the glyph, so it is dropped by the same branch.
+                // `exclude` is R1's answer for this codepoint, already computed above for the #226
+                // contrast exclusion and the #239 re-tint; the shader needs it to order the ink
+                // sources, since a background-class glyph's ink joins the background (the underline
+                // draws OVER it) while a letter's is TEXT class (the underline draws UNDER it, so a
+                // descender is not cut). A taken glyph has no class for the same reason it stands
+                // the glyph-only treatments down: the glyph the class is about is gone. Leaving the
+                // bit set would be inert — a blank slot has zero coverage — but it would assert
+                // something false about the cell, and the five #508 pins say so.
+                //
+                // A **composed** cell is already right, and only because of how the pass is built:
+                // ADR-0028 D2 says every per-cell column owes an answer for one, and this class is
+                // derived from `codepoints`, which `preedit_patch` *replaces* — so it describes the
+                // preedit's glyph, not the cell underneath. That holds as long as the patch keeps
+                // mirroring the codepoint column; a column answered by NEITHER half is the failure
+                // `SGR 58` had for one release, and here it would classify a glyph that is no longer
+                // on screen — a composition over a `█` would order its underline against the tile.
+                let (slot, ink_class) = if glyph_taken_by_decoration {
+                    (BLANK_SLOT, false)
                 } else {
-                    slots.get(idx).copied().unwrap_or(0)
+                    (slots.get(idx).copied().unwrap_or(0), exclude)
                 };
-                glyph_field(slot, cell_flags)
+                glyph_field(slot, cell_flags, ink_class)
             };
 
             // #455: is this cell's background the pristine DEFAULT backdrop — the one surface #298
@@ -642,7 +660,8 @@ pub fn pack_instances(
 mod tests {
     use super::*;
     use crate::attrs::{
-        BLANK_SLOT, BLINK, GLYPH_UNDERLINE, HIDDEN, INVERSE, STRIKETHROUGH, UNDERLINE,
+        BLANK_SLOT, BLINK, GLYPH_BG_CLASS, GLYPH_UNDERLINE, HIDDEN, INVERSE, STRIKETHROUGH,
+        UNDERLINE,
     };
     use crate::decoration::{DecorationLayer, DecorationRect};
     use crate::overlay::{HIGHLIGHT_BLEND_ALPHA, HighlightColors, blend_over};
@@ -2322,6 +2341,61 @@ mod tests {
             codepoints,
             underline_colors: &[],
         }
+    }
+
+    #[test]
+    fn a_tile_glyphs_ink_is_published_as_background_class_in_the_glyph_field() {
+        // #712: occlusion between ink sources follows their CLASS, and only the packer knows it —
+        // the shader sees an atlas slot, not a codepoint. R1 puts a BACKGROUND-class glyph's ink on
+        // the background channel while `I_underline` is TEXT class always, so the band must draw
+        // OVER a tile and UNDER a letter. The classifier was already being run here for #226/#239;
+        // this publishes its answer instead of consuming it and throwing it away.
+        let p = palette();
+        let field = |cp: u32| {
+            pack_instances(
+                &frame_cp(&[0], &[0], &[UNDERLINE], &[cp]),
+                &p,
+                true,
+                &Overlay::default(),
+                &ColorPolicy::default(),
+                &[],
+            )[8] as u32
+        };
+        assert_ne!(field(BLOCK) & GLYPH_BG_CLASS, 0, "█ is BACKGROUND class");
+        assert_ne!(field(0x2500) & GLYPH_BG_CLASS, 0, "─ box-drawing too");
+        assert_eq!(
+            field('g' as u32) & GLYPH_BG_CLASS,
+            0,
+            "a letter is TEXT class — its descender is what the band must not cut"
+        );
+        // The bit sits ABOVE everything the field already carried, so neither moves.
+        assert_eq!(field(BLOCK) & 0x1FFF, 9, "the slot address survives");
+        assert_ne!(
+            field(BLOCK) & GLYPH_UNDERLINE as u32,
+            0,
+            "the decoration bits survive"
+        );
+        // A class is a fact about a GLYPH, so a glyph taken by a top decoration (#508) has none —
+        // the same reason rule 4's glyph-only treatments stand down on that cell. Setting it anyway
+        // would be visually inert (a blank slot has zero coverage) and still assert something false.
+        let taken = pack_instances(
+            &frame_cp(&[0], &[0], &[UNDERLINE], &[BLOCK]),
+            &p,
+            true,
+            &Overlay::default(),
+            &ColorPolicy::default(),
+            &[deco(DecorationLayer::Top, Some(0x80_40_00), None)],
+        )[8] as u32;
+        assert_eq!(
+            taken & GLYPH_BG_CLASS,
+            0,
+            "a taken glyph has no class to publish"
+        );
+        assert_ne!(
+            taken & GLYPH_UNDERLINE as u32,
+            0,
+            "…while the underline it must not erase is still there"
+        );
     }
 
     #[test]

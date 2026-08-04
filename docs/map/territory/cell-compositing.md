@@ -52,6 +52,13 @@ becomes an actual colour — the engine never does that by identity.
 - **Underline and strikethrough fold into the glyph field**, and their ink is a separate channel
   from the foreground (#513) rather than the foreground itself — so a coloured underline is
   expressible without a second draw.
+- **Which ink source ends up on top is a question about their CLASS, not about draw order** (#712,
+  ADR-0019 rule 6). Background-channel ink cannot occlude a `TEXT`-class source, so an underline draws
+  *over* a tile and *under* a letter — and the glyph field carries the class (bit 16) because the
+  shader sees an atlas slot, never a codepoint. Two things here are easy to miss: this is the one place
+  a background-class glyph's ink is *ordered* rather than merely recoloured, and the whole question is
+  **invisible unless something declared a colour** — with the inks equal both orders composite to the
+  same bytes, which is why it survived undetected until `SGR 58`.
 - **The two marks are one ink source split by authorship of the colour** (#525, ADR-0019 rule 4).
   They share the follow-fg pipeline and separate only where something *declared* a colour: `SGR 58`
   declares the underline's and there is no SGR for a strikethrough's. A cell with no `SGR 58` has
@@ -114,5 +121,10 @@ sites, the outlier, or demoted — so a difference from it is not by itself a de
   governs the *model* rather than the individual knobs.
 - **The record feeding the Bottom/Top layers may not be accepted yet** — ADR-0024's `Status:`
   line is the place to check, and it is not restated here.
+- **A mark's z-order is only observable where a *declared* colour splits it from the glyph's ink.**
+  A strikethrough has no declared-colour regime at all (#525), so its position relative to the glyph
+  cannot be asserted by a proof on an ordinary cell — rule 6 states it, and only a cell where a
+  glyph-only treatment moves `fg` away from the line inks (a selected tile, #513's own case) could
+  see it. Recorded because the natural next test to write here is one that cannot fail.
 - **The "every frame re-packs" property is load-bearing and unrecorded.** It is why incremental
   repaint work from the previous renderer was deliberately not ported, and it lives in no record.

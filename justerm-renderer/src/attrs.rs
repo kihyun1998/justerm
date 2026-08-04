@@ -45,6 +45,21 @@ pub fn is_wide_spacer(flags: u16) -> bool {
 pub const GLYPH_UNDERLINE: u16 = 1 << 13;
 pub const GLYPH_STRIKETHROUGH: u16 = 1 << 14;
 
+/// The glyph's ink CLASS (ADR-0019 rule 4 R1): set iff this cell's glyph is `BACKGROUND` class —
+/// a Powerline / box-drawing / block tile, whatever [`builtin::owns`](crate::builtin::owns) draws.
+///
+/// It rides bit 16, **above** the `u16` the rest of the field fits in, because the shader reads the
+/// attribute as `uint(a_glyph)` and an `f32` carries every integer below `2²⁴` exactly — so the bit
+/// is free where a thirteenth instance float would not have been. Bit 15 is the colour-emoji flag
+/// and bits 0..12 the slot address, which is why the u16 looked full: it was, and the *transport*
+/// was not.
+///
+/// The shader needs it because occlusion between ink sources follows their class (#712): R1 puts a
+/// background-class glyph's ink on the **background** channel while `I_underline` is `TEXT` class
+/// always, so the band draws **over** a tile and **under** a letter's descender. Nothing else in the
+/// field is about the glyph's class — the other bits are its address and its decorations.
+pub const GLYPH_BG_CLASS: u32 = 1 << 16;
+
 /// Font style from a cell's flags — bold + italic select the atlas variant.
 pub fn font_style(flags: u16) -> FontStyle {
     match (flags & BOLD != 0, flags & ITALIC != 0) {
@@ -55,19 +70,27 @@ pub fn font_style(flags: u16) -> FontStyle {
     }
 }
 
-/// Fold underline/strikethrough into the glyph field alongside the slot index.
+/// Fold underline/strikethrough and the glyph's ink class into the field alongside the slot index.
+///
+/// `bg_class` is [`GLYPH_BG_CLASS`] — ADR-0019 R1's answer for this cell's glyph, which the caller
+/// has already computed for the #226/#239 treatments. It is a *separate argument* rather than
+/// another `flags` bit because it is not an SGR attribute: it is derived from the **codepoint**,
+/// which this function never sees.
 ///
 /// #338 briefly carried wide-lead / wide-spacer bits here so the shader could keep a split wide
 /// glyph's halves touching. #359 made the atlas slot the padded CELL, so the halves are cut from a
 /// bitmap that was baked centred over its two-cell advance — they touch by construction, and the
 /// bits are gone.
-pub fn glyph_field(slot: u16, flags: u16) -> u16 {
-    let mut field = slot;
+pub fn glyph_field(slot: u16, flags: u16, bg_class: bool) -> u32 {
+    let mut field = u32::from(slot);
     if flags & UNDERLINE != 0 {
-        field |= GLYPH_UNDERLINE;
+        field |= u32::from(GLYPH_UNDERLINE);
     }
     if flags & STRIKETHROUGH != 0 {
-        field |= GLYPH_STRIKETHROUGH;
+        field |= u32::from(GLYPH_STRIKETHROUGH);
+    }
+    if bg_class {
+        field |= GLYPH_BG_CLASS;
     }
     field
 }
@@ -121,15 +144,31 @@ mod tests {
 
     #[test]
     fn glyph_field_sets_the_decoration_bits() {
-        assert_eq!(glyph_field(95, 0), 95);
-        assert_eq!(glyph_field(95, UNDERLINE), 95 | GLYPH_UNDERLINE);
-        assert_eq!(glyph_field(95, STRIKETHROUGH), 95 | GLYPH_STRIKETHROUGH);
+        const U: u32 = GLYPH_UNDERLINE as u32;
+        const S: u32 = GLYPH_STRIKETHROUGH as u32;
+        assert_eq!(glyph_field(95, 0, false), 95);
+        assert_eq!(glyph_field(95, UNDERLINE, false), 95 | U);
+        assert_eq!(glyph_field(95, STRIKETHROUGH, false), 95 | S);
         assert_eq!(
-            glyph_field(95, UNDERLINE | STRIKETHROUGH),
-            95 | GLYPH_UNDERLINE | GLYPH_STRIKETHROUGH
+            glyph_field(95, UNDERLINE | STRIKETHROUGH, false),
+            95 | U | S
         );
         // The slot address bits (0..12) survive; decoration is above them.
-        assert_eq!(glyph_field(95, UNDERLINE) & 0x1FFF, 95);
+        assert_eq!(glyph_field(95, UNDERLINE, false) & 0x1FFF, 95);
+    }
+
+    #[test]
+    fn glyph_field_carries_the_ink_class_without_disturbing_the_rest() {
+        // #712: the class is orthogonal to every other bit — it neither moves the slot address nor
+        // implies a decoration, and a decorated tile carries both.
+        const U: u32 = GLYPH_UNDERLINE as u32;
+        assert_eq!(glyph_field(95, 0, true), 95 | GLYPH_BG_CLASS);
+        assert_eq!(glyph_field(95, UNDERLINE, true), 95 | U | GLYPH_BG_CLASS);
+        assert_eq!(glyph_field(95, UNDERLINE, true) & 0x1FFF, 95);
+        assert_eq!(glyph_field(95, UNDERLINE, false) & GLYPH_BG_CLASS, 0);
+        // It stays inside the f32 exact-integer range the attribute relies on (< 2²⁴), so the
+        // shader's `uint(a_glyph)` reads back what the packer wrote.
+        assert!(glyph_field(0x1FFF, UNDERLINE | STRIKETHROUGH, true) < (1 << 24));
     }
 
     #[test]
