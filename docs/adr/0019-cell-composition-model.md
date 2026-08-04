@@ -3,8 +3,9 @@
 Status: accepted (2026-07-21) — **amended 2026-08-04** (#525): rule 4's `I_line` was one ink source
 named "underline / strikethrough", so the #520 amendment below made a declared `SGR 58` colour
 authoritative over *both* marks. Read literally the model therefore endorsed a defect: SGR 58 is the
-underline's colour and there is no SGR for a strikethrough's. `I_line` now has two bands, split by
-the same **authorship** axis rules 5 and #520 already turn on. — **amended 2026-08-03** (#249/#640, ADR-0028): Totality's first gap that
+underline's colour and there is no SGR for a strikethrough's. The correction is to rule 4's
+**enumeration** — the two marks were always two ink sources that coincide by default — and the
+declared-colour regime then attaches to the one the application actually spoke about. — **amended 2026-08-03** (#249/#640, ADR-0028): Totality's first gap that
 no layer can close — an IME preedit supplies a *glyph*, and nothing in this stack can. Resolved as a
 **pass**, not a layer; see the Consequences. — **amended 2026-07-22**: the three pins this ADR left for adjudication
 were adjudicated *for* the pins. R1 is scoped by who declared the layer (rule 5 below), the pins stand,
@@ -83,11 +84,12 @@ generalises #452's per-property decoration merge to the whole stack.
 anything with a real colour beneath it, and replaces only over a bare default background.
 
 **4 — Ink sources are distinct, and one of them is background.** A cell's ink is `I_glyph` (the
-character), `I_line` and `I_cursor`. `I_line` is **two bands** — `I_underline` and `I_strike`
-(amended 2026-08-04, #525) — which share every treatment and separate on exactly one axis: whether
-something *declared* the colour. `SGR 58` declares the underline's; nothing declares a
-strikethrough's, so it stays on the follow-fg ink whatever the underline does. **R1:** when the
-glyph's class is
+character), `I_underline`, `I_strike` and `I_cursor` (amended 2026-08-04, #525 — this list read
+`I_line` *"(underline / strikethrough)"*, and naming two marks as one source is what let a colour
+declared for one of them paint the other). The two line bands are **separate sources that coincide by
+default**, not one source that splits: they run the same treatments off the same follow-fg base, and
+the only thing that can pull them apart is a *declared* colour — which only the underline can have,
+since `SGR 58` is its and no escape sets a strikethrough's. **R1:** when the glyph's class is
 `BACKGROUND` (`treat_glyph_as_background_color` — Powerline, box / block, and since #507 whatever
 `builtin::owns` draws to the cell, asked of the drawer rather than restated), `I_glyph` belongs to the
 **background channel** and takes whatever treatment the bg fold applied. R1 reaches `I_glyph` **only**;
@@ -200,8 +202,10 @@ decoration); it is rejected here because it drops a highlight the user explicitl
   dim/contrast rewrite it while selection and a bottom decoration could not — is an invented asymmetry
   with no basis in the layer stack. xterm draws the explicit underline `strokeStyle` raw with its
   threshold-clear disabled, for the same reason. So the axis is **authorship**, the same one rule 5 turns
-  on: a colour the application declared for the line is the application's, and the glyph's treatments do
-  not get to rewrite it.
+  on: a colour the application declared for the ~~line~~ **underline** is the application's, and the glyph's
+  treatments do not get to rewrite it. (Struck in place, 2026-08-04 / #525: "the line" is the elision the
+  next bullet is about — the application declared it for one of two marks, and writing the broader word
+  handed the colour to both.)
   One rule is deliberately shared rather than duplicated: **#226's contrast exclusion gates both inks
   together.** It exists because `ensure_contrast_ratio` reads `eff_bg`, so per-cell correction over a
   varying background breaks a run — and an underline is exactly as continuous across cells as a tile

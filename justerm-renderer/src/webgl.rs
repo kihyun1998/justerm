@@ -267,10 +267,18 @@ void main() {
     // proportional to exactly the divergence the channel exists to create: at the default font size
     // an underline on a selected tile was never the cell's ink, only mostly it.
     //
-    // The strike goes LAST, so where a thick band makes the two overlap the strikethrough wins. The
-    // bands are at 0.88 and 0.5 of the glyph box, so they only meet under a large `u_line_thickness`;
-    // the order is xterm's all the same (`TextureAtlas.ts` strokes the underline at :565-688 and the
-    // strikethrough at :762, after) rather than a coin toss taken here.
+    // The strike goes LAST, so where a thick band makes the two overlap the strikethrough wins. That
+    // is xterm's band order (`TextureAtlas.ts` strokes the underline at :565-688 and the strikethrough
+    // at :762) rather than a coin toss taken here — but cite it for BAND order only: xterm's glyph
+    // `fillText` sits at :735, i.e. BETWEEN the two, and ghostty does the same for a stated reason
+    // (`generic.zig:2932`, a coloured underline crossing descenders). justerm draws both bands OVER
+    // the glyph, as alacritty does (`display/mod.rs` draws cells then rects). That divergence is
+    // #513/#515's, not this fork's, and is untouched here.
+    //
+    // Overlap is arithmetically out of reach anyway: the centres are 0.38 of the glyph box apart
+    // while `u_line_thickness / char_height` stays near 0.06 at every font size, so reaching it needs
+    // a glyph box of about three device px. That is also why `cov` below may stay on `max` while the
+    // colour path composites in sequence — the two agree everywhere the bands do not meet.
     vec3 cell = mix(base_bg, fg, coverage);
     vec3 inked = mix(cell, base_ul, ul_band);
     inked = mix(inked, base_st, st_band);
