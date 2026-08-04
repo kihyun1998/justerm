@@ -1,8 +1,16 @@
 # ADR-0028: What a composition puts on screen is browser-owned, and each surface it touches has exactly one writer
 
-Status: **proposed** (2026-08-03, #640). Promotes the model that accreted across #592, #631, #637,
-#649 and #249 — five decisions about what an IME composition does to the screen, made one site at a
-time, none of them written down as a rule.
+Status: **accepted** (2026-08-04, #640) — proposed 2026-08-03, accepted once #249 shipped against it
+(#703 renderer, #704 web) and the rules below had been implemented rather than only written. Promotes
+the model that accreted across #592, #631, #637, #649 and #249 — five decisions about what an IME
+composition does to the screen, made one site at a time, none of them written down as a rule.
+
+**Three of its clauses were corrected by implementing them**, and the corrections are in the text
+below rather than appended: D2's "removes its cells from the stack" turned out to be a claim about the
+whole pipeline and not about the resolver; D4's bypass is legitimate only because the *origin* is
+latched while the *extent* stays live; D5 needed an explicit answer at the right edge, where "one past
+the end" has no referent. Each was found by measurement after the first implementation passed review —
+which is the argument for accepting a record only after a member has shipped against it.
 
 **Mixed type, and the split matters for what may retire it.** D1–D4 are derivations: they follow from
 what the browser guarantees, what this family's layers are, and numbers measured here — a better
