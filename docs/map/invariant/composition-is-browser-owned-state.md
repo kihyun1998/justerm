@@ -121,8 +121,12 @@ product decision by the maintainer, not a derivation, and it is not this invaria
 
 ## The roster lives in the spine, not here
 
-**Which issues are instances is tracked on spine #640**, deliberately. This note holds the fact; the
-roster and the open questions are a different kind of thing and want a different home.
+**Which issues are instances was tracked on spine #640** until 2026-08-04, when it promoted to
+[ADR-0028](../../adr/0028-composition-surfaces-have-one-writer-each.md) and closed. New questions in
+this area are conformance items against that record's D1–D5, not siblings under an anchor that is
+still collecting. This note holds the *fact*; the record holds the *rules*, and the split is the same
+one #552 measured — a rule wants an immutable home, a roster wants a mutable one, and neither is the
+other.
 
 That split is #552's measured result, recorded in [theflow.md](../../agents/theflow.md): a hand-copied
 roster inside ADR-0025 went stale in five places within three days while the rule itself needed no
