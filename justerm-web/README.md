@@ -135,6 +135,36 @@ renderer.isContextLost();    // has a loss been REPORTED to us
 renderer.isRestoreOverdue(); // …and did it miss its deadline
 ```
 
+### If you re-fit during a loss, fit again after it
+
+The one thing you may have to *do*, and it is narrow: a `resize()` that lands while the context is
+lost is **provisional**. The renderer commits the grid you asked for but defers reading the drawing
+buffer back — a dead context answers `0`, and adopting that would shrink the terminal to one cell —
+so any clamp the browser applies settles later, inside the first `render()` after recovery.
+
+The canvas display box is written during `resize()` and nowhere else, so it keeps the pre-clamp
+numbers. Measured, asking for 4000 columns during a loss (`MAX_TEXTURE_SIZE` 8192, 9px cell):
+
+| | grid | display box |
+|---|---|---|
+| during the loss | 4000 cols | `36000px` |
+| after recovery | **910 cols** | `36000px` |
+
+The browser then stretches an 8190px buffer across a 36000px box. **Re-reading `terminalSize()` does
+not fix it** — call `resize()` again with your current CSS box:
+
+```ts
+// only needed if you re-fit while the context was down
+if (wasLostWhenIFitted && !renderer.isContextLost()) {
+  renderer.resize(el.clientWidth, el.clientHeight); // idempotent on a live context
+}
+```
+
+Most consumers never reach this: it needs a requested grid larger than the browser's buffer limits
+*and* a re-fit landing inside the loss window.
+
+### Which question `isContextLost()` answers
+
 `isContextLost()` answers *"was I told"*, not *"is the GPU usable right now"*, and the difference is
 real rather than pedantic: a browser destroys a context synchronously and only *queues* the event, so
 for a short window this returns `false` while every GL call is already dead. It is the honest thing

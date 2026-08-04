@@ -1616,7 +1616,17 @@ impl JustermRenderer {
     /// GL call is already dead. Two consequences worth knowing: a clamp is normally visible in
     /// `cols`/`rows` the instant this returns, but one deferred this way settles at restore time
     /// with no signal; and during the window `cssWidth` describes a buffer that does not exist yet,
-    /// so a consumer sizing its canvas from it can overshoot until the restore lands.
+    /// so a consumer sizing its canvas from it overshoots.
+    ///
+    /// **That overshoot does not end at the restore, and this said it did** (corrected #717, after
+    /// a consumer existed to measure it — #579). The restore fixes what *this crate* owns: `cols`,
+    /// `size` and `cssWidth` are all correct on the far side of it. The display box is not ours —
+    /// the consumer wrote it, from the provisional `cssWidth`, and nothing here can rewrite it. So
+    /// it stays overshot until that consumer fits again. Measured through `justerm-web`: 4000
+    /// columns asked for mid-loss leaves a `36000px` canvas box over the `8190px` buffer the
+    /// browser granted, still there after the restoring `render`. The consumer's remedy is to
+    /// repeat its fit once the context is back — **not** to re-read `cols`/`rows`, which by then
+    /// are already right.
     pub fn resize(&mut self, cols: u32, rows: u32) {
         // A grid must have at least one cell: `grid_px` floors the *buffer* to 1, and letting
         // `grid_size` keep a 0 would break `size == grid_px(grid_size, cell_size)`.

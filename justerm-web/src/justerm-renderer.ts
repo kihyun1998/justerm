@@ -867,6 +867,12 @@ export class JustermRenderer implements Renderer {
    * Stays truthful after {@link dispose}: disposal stops this object's *work*, and the renderer's
    * canvas listeners belong to the wasm binding, so the state machine behind this keeps tracking.
    * Only the notification is closed.
+   *
+   * **Watch it for the falling edge if you re-fit**, which is the one thing a consumer has to *do*
+   * with this rather than display (#717): a {@link resize} that landed during the loss is
+   * provisional, and repeating it once this reads `false` again is what re-syncs the canvas display
+   * box to the buffer the browser actually granted. `resize`'s doc carries the measurement and why
+   * re-reading {@link terminalSize} does not cover it.
    */
   isContextLost(): boolean {
     return this.backend.isContextLost();
@@ -916,7 +922,30 @@ export class JustermRenderer implements Renderer {
    * it. Unlike beamterm (which took CSS px and computed the grid itself), the renderer takes a
    * grid, so the adapter divides here (pixel→cell is consumer policy) and sets the canvas CSS box
    * from what the renderer reports it must be (`cssWidth`/`cssHeight`) — forget that and the
-   * device-px buffer displays at twice its size on a Retina screen. */
+   * device-px buffer displays at twice its size on a Retina screen.
+   *
+   * **A call that lands while the GL context is lost is provisional, and must be repeated once the
+   * context comes back** (#717). The renderer commits the grid you asked for but defers reading the
+   * drawing buffer back, because a dead context answers `0` and adopting that would floor the grid
+   * to one cell (#639). That read — and therefore any browser clamp (#339) — settles inside
+   * `restore()`, which runs on the next {@link render}, not when `webglcontextrestored` fires. The
+   * two lines below have already run by then with the pre-clamp numbers, and nothing rewrites them.
+   *
+   * Measured (headless Chromium, `MAX_TEXTURE_SIZE` 8192, cell 9 device px), asking for 4000
+   * columns during a loss:
+   *
+   * | | grid | `cssWidth()` | `canvas.style.width` |
+   * |---|---|---|---|
+   * | during the loss | 4000 | 36000 | `36000px` |
+   * | after the restoring `render()` | **910** | **8190** | `36000px` |
+   *
+   * So the display box describes a buffer 4.4x wider than the one that exists, and the browser
+   * stretches to fit. **Re-reading {@link terminalSize} is not the remedy** — it reports the truth,
+   * but the canvas box is written here and only here. Call this method again with your current CSS
+   * box; that is the whole fix, and it is idempotent on a live context.
+   *
+   * Reachable only when the requested grid exceeds the browser's buffer limits, so most consumers
+   * will never see it. {@link isContextLost} going `false` is the signal that the repeat is due. */
   resize(cssWidth: number, cssHeight: number): void {
     const grid = gridForBox(
       cssWidth,
