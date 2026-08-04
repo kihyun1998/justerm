@@ -29,6 +29,12 @@ machine that decides what the renderer does in between.
 - **The consumer is told, not guessed at.** `is_context_lost`, `is_restore_overdue`,
   `set_on_context_loss` and `set_context_restore_timeout_ms` are four of the crate's exports — the
   timeout is a consumer policy, and overdue-ness is a question a consumer can ask rather than infer.
+  **All four have a consumer as of #579** ([widget lifecycle](widget-lifecycle.md)), and the one thing
+  that took adapting is a shape this crate cannot change without breaking callers:
+  `set_on_context_loss` takes a `Function` and offers no unset, and it clears its own slot in `Drop`
+  — which runs at `free()`, a call the widget deliberately never makes. So the consumer registers an
+  indirection once and swaps behind it. Worth knowing before adding a fifth export of this shape: a
+  push channel whose only teardown is `Drop` pushes that teardown onto whoever holds it.
 - **Loss destroys GPU state, not the CPU-side model.** The persistent dense grid in the
   [frame adapter](frame-adapter.md) survives, which is what makes a restore a re-upload rather than a
   re-send from the engine.
@@ -44,8 +50,10 @@ machine that decides what the renderer does in between.
   every other fallible path throws.
 - **Every entry point that changes the geometry takes the request and defers the GPU work.** Five of
   them can arrive mid-loss — the DPR, the font size, the font family, the spacing policy and the
-  resize — and none may reject the call, because a consumer cannot see the loss to hold it back
-  (that surface is unwired, #579). So each stores what it was given and lets `restore` re-derive
+  resize — and none may reject the call, because a consumer has no obligation to hold it back. It can
+  now *see* the loss (#579 wired the surface), but seeing is not the same as being expected to act on
+  it: nothing in the contract says a consumer must check, and a setter that rejected would break every
+  one that does not. So each stores what it was given and lets `restore` re-derive
   from it; nothing is queued, because the stored value *is* the queue. The four setters skip an
   atlas re-bake that a dead context would return invalidated; `resize` skips reading the drawing
   buffer back, which on a dead context answers 0 and would floor the grid to one cell (#639).
@@ -89,7 +97,20 @@ machine that decides what the renderer does in between.
   conformance map still resolving as ✗.
 - **What "defer" costs, stated once because each site pays it.** A value the consumer normally reads
   back synchronously — a clamped grid, an atlas-shrunk cell — is settled at restore instead, and the
-  consumer is not told. That is the same missing signal as #579, reached from the other side.
+  consumer is not told. This used to be filed as "the same missing signal as #579, reached from the
+  other side"; **#579 has landed and it is not the same signal**, which is the more useful fact. The
+  loss half needed nothing from this crate — the four exports were already there — while a *restore*
+  **notification** cannot be built in the consumer at all: `restore` runs inside `render`, not in the
+  `webglcontextrestored` listener, so a consumer-side listener fires before the deferred read-back has
+  settled and would report the grid it had before. Measured while wiring #579.
+  **This bullet ended "whoever fixes this owns a new export here, not a widget change" for about an
+  hour, and #717 disproved it the same day** — kept as written because the correction is the content.
+  The notification and the *harm* are separable, and only the first one is ours. The harm is a display
+  box the consumer sized from a provisional `cssWidth`, which nothing here can rewrite; the consumer
+  repeats its fit when `isContextLost()` goes false and it is gone, with no export involved. What went
+  wrong in the original sentence is a shape worth watching for: *"the consumer cannot observe X"* was
+  turned into *"the consumer cannot fix what X causes"*, and those are different claims. The export
+  question reopens only for a consumer that cannot poll.
 
 ## Code
 
@@ -99,9 +120,12 @@ machine that decides what the renderer does in between.
 
 ## Reference behaviour
 
-Two questions have been checked; the rest of the territory has not. alacritty and ghostty are not
-browser renderers at all, so the comparison set here is smaller than for the rest of the crate — that
-part is unchanged.
+Two questions have been checked; the rest of the territory has not. The comparison set here is smaller
+than for the rest of the crate — but **smaller is not empty, and this note said empty until 2026-08-04**
+(#579). alacritty has a context-loss concept and a recovery path, and asks the driver's reset status at
+the point of use rather than a queued-event flag: ADR-0027's D1 reached independently, outside a
+browser. What it has no analogue for is the *consumer* half — it recovers synchronously with nobody to
+tell — which is the distinction the original sentence flattened.
 
 - [Resizing while the GL context is lost](../../agents/reference-facts.md#resizing-while-the-gl-context-is-lost--the-reference-never-asks-the-question-639-verified-2026-08-03)
   — a **negative** result, and the useful kind: xterm's resize handler runs unguarded through a loss,
@@ -114,8 +138,13 @@ part is unchanged.
   a `null` on, glow unwraps it. Not indifferent, though — xterm's other two parameter reads *are*
   falsy-guarded, so a `null` there becomes a throw
 
-Still unchecked: whether either reference notifies on a never-restored context beyond xterm's timeout
-(the #327 comparison), and what any of them does with GPU resources it cannot rebuild.
+Checked since (#579, 2026-08-04): **the #327 comparison has an answer, and it is that only xterm has
+the concept.** xterm arms a 3 s timeout on `webglcontextlost` and fires an emitter if it is still lost
+(`WebglRenderer.ts:125-136`), clearing it on dispose (`:161-163`) — which is where this crate's own
+`Drop` contract came from. alacritty has nothing to compare: it recovers at the point of use with no
+deadline and nobody to notify.
+
+Still unchecked: what any of them does with GPU resources it cannot rebuild.
 
 ## Cross-cutting invariants
 

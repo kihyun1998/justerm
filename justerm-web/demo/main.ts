@@ -1351,9 +1351,47 @@ interface RulerLayerProbe {
   marks: { background: string; left: number; right: number; top: number; bottom: number }[];
 }
 
+/**
+ * #579 — the context-loss surface driven against a real lost WebGL context.
+ *
+ * Everything here needs a context the browser actually destroys, so none of it is reachable from
+ * vitest: `WEBGL_lose_context` is a real extension, the deadline is a real `setTimeout` armed inside
+ * wasm, and the callback arrives from a Rust-scheduled closure.
+ */
+interface ContextLossProbe {
+  /** The window ADR-0027 turns on, asserted to EXIST before anything is asserted inside it: the
+   * browser kills a context synchronously and only *queues* `webglcontextlost`, so immediately
+   * after `loseContext()` the driver says lost while the widget's report does not. If a browser
+   * ever dispatches synchronously, this reports that instead of passing vacuously (#639's habit). */
+  raceWindow: { glSaysLost: boolean; widgetSaysLost: boolean };
+  /** Once the event has dispatched, the widget's report agrees. */
+  reportedAfterEvent: boolean;
+  /** …and nothing is overdue yet — the deadline has not passed. */
+  overdueBeforeDeadline: boolean;
+  /** A loss that comes back BEFORE the deadline: the consumer must hear nothing at all… */
+  restoreCallbacks: number;
+  /** …the report must clear… */
+  lostAfterRestore: boolean;
+  /** …and the surface must repaint. Counted as presenting rAF turns, per #606's probe. */
+  presentsAfterRestore: number;
+  /** A loss that stays lost PAST the deadline: exactly one notification… */
+  overdueCallbacks: number;
+  /** …still exactly one a further deadline later (at most once per loss)… */
+  overdueCallbacksLater: number;
+  /** …and the pull counterpart agrees with the push. */
+  overdueFlag: boolean;
+  /** After `Terminal.dispose()`, a fresh loss that outlives its deadline delivers NOTHING. The
+   * renderer's own canvas listeners survive disposal (they belong to `free()`), so this is the
+   * widget's gate being observed, not their absence. */
+  callbacksAfterDispose: number;
+  /** …while the queries keep answering truthfully, which is the half `dispose` must not break. */
+  reportsLostAfterDispose: boolean;
+}
+
 declare global {
   interface Window {
     __searchProbe?: () => SearchProbe;
+    __contextLossProbe?: () => Promise<ContextLossProbe>;
     __rulerLayerProbe?: () => RulerLayerProbe;
     __decorationProbe?: () => DecorationProbe;
     __precedenceProbe?: () => PrecedenceProbe;
@@ -2332,6 +2370,136 @@ window.__disposeProbe = async (): Promise<DisposeProbe> => {
   // Deliberately not restored: the widget is disposed and this page is done. Playwright navigates
   // fresh per test, so nothing leaks to the next one.
   return { beforeDispose, afterDispose };
+};
+
+window.__contextLossProbe = async (): Promise<ContextLossProbe> => {
+  // #579: the widget's half of #269/#327. The unit tests prove the relay's rules against a fake;
+  // only here is there a context the browser can actually take away, a deadline that actually
+  // elapses, and a callback that actually arrives from wasm.
+  const gl = canvas.getContext("webgl2")!;
+  const ext = gl.getExtension("WEBGL_lose_context");
+  if (!ext) throw new Error("WEBGL_lose_context unavailable — this probe cannot run");
+
+  // The demo's own timer presents frames; stop it so `presentsAfterRestore` counts repaints caused
+  // by the restore rather than by the clock (#606's probe learned this).
+  window.clearInterval(appendTimer);
+
+  let calls = 0;
+  renderer.setOnContextLoss(() => {
+    calls++;
+  });
+  // Short enough to fit in a test, long enough that the restore below wins the race. Also the only
+  // way this probe demonstrates the setter at all: at the renderer's 3000 ms default, "past the
+  // deadline" costs three seconds per phase.
+  const DEADLINE = 150;
+  renderer.setContextRestoreTimeout(DEADLINE);
+
+  // Every await here is on a browser event that is *permitted* not to arrive — `webglcontextrestored`
+  // most of all ("may later fire" is the whole difficulty this territory is about). So each one names
+  // itself on expiry: a probe that hangs tells you only that something did, and the phase it died in
+  // is the entire diagnosis.
+  const once = (event: string, budget = 5000): Promise<void> =>
+    new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error(`#579 probe: no ${event} within ${budget}ms`)), budget);
+      canvas.addEventListener(
+        event,
+        () => {
+          clearTimeout(timer);
+          resolve();
+        },
+        { once: true },
+      );
+    });
+  const wait = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+  // A macrotask yield between a loss and its `restoreContext()`. Not optional and not a settling
+  // fudge: without it Chromium never fires `webglcontextrestored` at all — measured here, the probe
+  // hung on that event until this was added. The renderer's own GL proofs do the same at every
+  // restore (`justerm-renderer/demo/context-loss-race.html`, `yieldTask`), which is where it is from.
+  const yieldTask = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
+
+  // ── the race window ────────────────────────────────────────────────────────────────────────
+  // Read BOTH answers with no `await` between the call and the reads: the point is the instant in
+  // which they disagree, and awaiting `webglcontextlost` first is exactly how #639's proof missed
+  // the window it was written for.
+  const lostEvent = once("webglcontextlost");
+  ext.loseContext();
+  const raceWindow = { glSaysLost: gl.isContextLost(), widgetSaysLost: renderer.isContextLost() };
+
+  await lostEvent;
+  const reportedAfterEvent = renderer.isContextLost();
+  const overdueBeforeDeadline = renderer.isRestoreOverdue();
+
+  // ── a loss that comes back in time ─────────────────────────────────────────────────────────
+  await yieldTask();
+  const restoredEvent = once("webglcontextrestored");
+  ext.restoreContext();
+  await restoredEvent;
+  const lostAfterRestore = renderer.isContextLost();
+
+  // Count presents the way #606's probe does: with no `preserveDrawingBuffer`, a turn in which the
+  // renderer presented reads as a real pixel and one in which it did not reads black. The first
+  // `render()` is what runs the deferred rebuild — `restore()` lives inside `render`, not in the
+  // restored listener — so the repaint is a consequence of driving it, not of the event.
+  const NO_PRESENT = "rgb(0,0,0)";
+  const { width: cw, height: ch } = renderer.cellSize();
+  let presentsAfterRestore = 0;
+  const untilDeadlinePassed = performance.now() + DEADLINE * 2;
+  while (performance.now() < untilDeadlinePassed) {
+    await new Promise<void>((r) => requestAnimationFrame(() => r()));
+    render();
+    const px = new Uint8Array(4);
+    const x = Math.round(CURSOR_COL * cw) + 2;
+    const y = gl.drawingBufferHeight - 1 - (Math.round(CURSOR_ROW * ch) + 2);
+    gl.readPixels(x, y, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    if (`rgb(${px[0]},${px[1]},${px[2]})` !== NO_PRESENT) presentsAfterRestore++;
+  }
+  // The stale deadline from the first loss has now had twice its grace period to misfire. It must
+  // not have: the renderer stamps each deadline with the loss it belongs to (`loss_epoch`).
+  const restoreCallbacks = calls;
+
+  // ── a loss that stays lost ─────────────────────────────────────────────────────────────────
+  const secondLost = once("webglcontextlost");
+  ext.loseContext();
+  await secondLost;
+  await wait(DEADLINE * 2);
+  const overdueCallbacks = calls;
+  const overdueFlag = renderer.isRestoreOverdue();
+  await wait(DEADLINE * 2);
+  const overdueCallbacksLater = calls;
+
+  // ── after the widget has ended ─────────────────────────────────────────────────────────────
+  // Restore first, so the next loss is a genuinely new episode with its own deadline rather than a
+  // continuation of one already notified (which would pass for the wrong reason — the renderer
+  // notifies at most once per loss regardless of who is listening).
+  await yieldTask();
+  const backAgain = once("webglcontextrestored");
+  ext.restoreContext();
+  await backAgain;
+  render();
+
+  const before = calls;
+  term.dispose();
+  const thirdLost = once("webglcontextlost");
+  ext.loseContext();
+  await thirdLost;
+  await wait(DEADLINE * 3);
+  const callbacksAfterDispose = calls - before;
+  const reportsLostAfterDispose = renderer.isContextLost();
+
+  // Deliberately not restored: the widget is disposed and this page is done (as `__disposeProbe`).
+  return {
+    raceWindow,
+    reportedAfterEvent,
+    overdueBeforeDeadline,
+    restoreCallbacks,
+    lostAfterRestore,
+    presentsAfterRestore,
+    overdueCallbacks,
+    overdueCallbacksLater,
+    overdueFlag,
+    callbacksAfterDispose,
+    reportsLostAfterDispose,
+  };
 };
 
 window.__aboveTopProbe = (): AboveTopProbe => {

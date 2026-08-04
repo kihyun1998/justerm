@@ -1,4 +1,5 @@
 import type { Palette } from "justerm-wasm-decode/colors.js";
+import { ContextLossRelay } from "./context-loss";
 import { CursorBlink } from "./cursor";
 import { FrameLoop } from "./frame-loop";
 import type { DecorationRect } from "./decorations";
@@ -154,6 +155,46 @@ export interface JustermRendererOptions {
    * the result back from the cell size rather than assuming it took.
    */
   lineHeight?: number;
+  /**
+   * Called when the WebGL context has been lost and has **not** come back within
+   * {@link contextRestoreTimeout} (#579, consumer half of #327). Omit to be told nothing.
+   *
+   * **This is a warning, not a verdict, and recovery does not depend on it.** The renderer rebuilds
+   * itself on `webglcontextrestored` with no consumer action at all, and Chromium keeps re-attempting
+   * a real restore once a second indefinitely — so a context may well come back *after* this fires.
+   * What it exists for is the case that has no other signal: a context that never returns leaves a
+   * blank canvas, and nothing else tells a consumer to dim the terminal, show a message, or fall back.
+   * xterm.js's consumer, VSCode, tears its WebGL renderer down and swaps in a DOM one; what to do here
+   * is likewise consumer policy (ADR-0017), so the widget forwards the signal and applies none itself.
+   *
+   * **Fires at most once per loss**, and never after {@link JustermRenderer.dispose} — matching
+   * xterm.js, whose disposable clears the pending restore timeout
+   * (`addons/addon-webgl/src/WebglRenderer.ts:161-163`). Change it at runtime with
+   * {@link JustermRenderer.setOnContextLoss}.
+   *
+   * To ask instead of being told — a consumer that attaches late, or polls — use
+   * {@link JustermRenderer.isContextLost} / {@link JustermRenderer.isRestoreOverdue}.
+   */
+  onContextLoss?: () => void;
+  /**
+   * How long a lost context is given to come back before {@link onContextLoss} fires, in ms (#579).
+   * Omit for the renderer's default — **3000**, xterm.js's `_contextRestorationTimeout` value.
+   * Negative values are clamped to `0` by the renderer. Applies to the *next* loss; a deadline
+   * already armed keeps the duration it was armed with.
+   *
+   * Exposed rather than left at the default, and that is not a judgement call: `justerm-renderer`
+   * declares this one **consumer policy** in as many words — *"only the consumer knows how long a
+   * blank terminal is tolerable against how long its GPU takes to recover"* (`context_loss.rs`,
+   * `DEFAULT_RESTORE_TIMEOUT_MS`) — and epic #583 settled that every knob the renderer declares
+   * consumer policy under ADR-0017 is reachable through the widget, because the widget *is* that
+   * consumer. (#579's own body proposed leaving it unwired "until someone needs a non-default
+   * deadline"; that predates the answer and is superseded by it.)
+   *
+   * Deliberately here rather than on {@link Theme}, with {@link cursorBlinkTimeout} and
+   * {@link textBlinkInterval}: a duration is not a colour. Change it at runtime with
+   * {@link JustermRenderer.setContextRestoreTimeout}.
+   */
+  contextRestoreTimeout?: number;
   theme: Theme;
 }
 
@@ -263,6 +304,25 @@ export interface RendererBackend {
   /** The drawing buffer's size in **CSS** pixels — what the canvas display box must be set to. */
   cssWidth(): number;
   cssHeight(): number;
+  /** Whether a WebGL context loss has been **reported** to the renderer (#269). Deliberately the
+   * event-driven view rather than `gl.isContextLost()`: a browser destroys a context synchronously
+   * and only *queues* `webglcontextlost`, so this answers `false` for a window in which every GL
+   * call is already dead. Read it as *"was I told"*, never as *"is the GPU usable"* — the renderer
+   * branches on its own internal predicate, which this is not (ADR-0027 D4). */
+  isContextLost(): boolean;
+  /** Whether a lost context has missed its restore deadline (#327) — the poll counterpart of
+   * `setOnContextLoss`, for a consumer that attaches late. Cleared by a late
+   * `webglcontextrestored`, which also heals the renderer. */
+  isRestoreOverdue(): boolean;
+  /** Register the single function the renderer calls when a lost context has not come back within
+   * the deadline. There is **no unset** — the parameter is a `Function` — which is why the adapter
+   * registers an indirection once rather than the consumer's handler directly (`context-loss.ts`;
+   * named in prose rather than linked, because that type is internal to this package). */
+  setOnContextLoss(callback: () => void): void;
+  /** The grace period, in ms, before the callback above fires. Consumer policy (ADR-0017): the
+   * renderer times, the consumer decides how long a blank terminal is tolerable. Applies to the
+   * *next* loss; a deadline already armed keeps the duration it was armed with. */
+  setContextRestoreTimeoutMs(ms: number): void;
   render(): void;
 }
 
@@ -514,6 +574,11 @@ export class JustermRenderer implements Renderer {
   private lastActiveMatchSpans: Uint32Array = new Uint32Array(0);
   /** Per-frame decoration rects (#120): consumer-side, injected via {@link setDecorationSource}. */
   private decorationSource: ((frame: DecodedFrame) => DecorationRect[]) | undefined;
+  /** The consumer's never-restored-context handler, behind an indirection the renderer holds for
+   * the life of this object (#579). See {@link ContextLossRelay} for why it is not registered
+   * directly — the renderer's setter has no unset, and its own teardown runs at `free()`, which
+   * {@link dispose} does not reach. */
+  private readonly contextLoss = new ContextLossRelay();
 
   private constructor(
     private readonly backend: RendererBackend,
@@ -623,6 +688,20 @@ export class JustermRenderer implements Renderer {
       t.activeMatchBg ?? 0x995200,
       t.selectionInactiveBg ?? 0x30313d,
     );
+    // The context-loss relay is registered UNCONDITIONALLY (#579), like `setBgAlpha` above and for
+    // the same reason: the function the renderer holds is then the one this object states, rather
+    // than one nobody wrote down. It also has to be — the renderer's `setOnContextLoss` takes a
+    // `Function` with no unset, so a later `setOnContextLoss(handler)` has nothing to register
+    // *with* unless the indirection is already in place. Cheap: an inert relay is one arrow the GC
+    // keeps, and the renderer only ever calls it on a loss that outlived its deadline.
+    backend.setOnContextLoss(instance.contextLoss.notify);
+    if (opts.onContextLoss !== undefined) instance.setOnContextLoss(opts.onContextLoss);
+    // The renderer's own default is 3000 (xterm parity), so this is a no-op unless the consumer
+    // states one — unlike `setBgAlpha`, because a duration the consumer did not choose is better
+    // left where the renderer documents it than restated here at a value this file would then own.
+    if (opts.contextRestoreTimeout !== undefined) {
+      instance.setContextRestoreTimeout(opts.contextRestoreTimeout);
+    }
     // `undefined` is the default (follow the application), so this is a no-op unless set (#575).
     instance.setCursorBlink(opts.cursorBlink);
     if (opts.cursorBlinkTimeout !== undefined) instance.setCursorBlinkTimeout(opts.cursorBlinkTimeout);
@@ -741,6 +820,77 @@ export class JustermRenderer implements Renderer {
     this.backend.render();
   }
 
+  /**
+   * Install (or clear, with `undefined`) the handler called when a lost WebGL context has not come
+   * back within {@link setContextRestoreTimeout} (#579). The live counterpart of
+   * {@link JustermRendererOptions.onContextLoss}, whose doc carries the full contract — what the
+   * signal means, what it does *not* mean, and why the widget applies no policy of its own.
+   *
+   * **Nothing is re-registered with the renderer here.** The renderer holds one relay for the life
+   * of this object (`create`), because `setOnContextLoss` takes a `Function` and offers no unset;
+   * this swaps the handler behind it. That is what makes clearing expressible at all, and it is why
+   * a swap cannot leave the renderer holding a stale closure.
+   *
+   * **No redraw**, unlike {@link setCursorBlink} / {@link setBgAlpha}: this changes who is told
+   * about a future event, not anything currently on screen.
+   */
+  setOnContextLoss(handler: (() => void) | undefined): void {
+    this.contextLoss.set(handler);
+  }
+
+  /**
+   * Change the restore grace period at runtime, in ms (#579) — the live counterpart of
+   * {@link JustermRendererOptions.contextRestoreTimeout}, whose doc carries the default and why the
+   * knob exists.
+   *
+   * Applies to the **next** loss. A deadline already armed keeps the duration it was armed with, so
+   * shortening this during a loss does not bring that loss's notification forward — the renderer
+   * stamps each deadline with the loss it belongs to and never re-arms one (`context_loss.rs`, the
+   * `loss_epoch` field).
+   */
+  setContextRestoreTimeout(ms: number): void {
+    this.backend.setContextRestoreTimeoutMs(ms);
+  }
+
+  /**
+   * Whether a context loss has been **reported** (#579). For surfacing the state — dimming the
+   * terminal, showing a badge — not for deciding whether drawing is safe.
+   *
+   * **It answers *"was I told"*, and that is deliberate rather than an approximation** (ADR-0027
+   * D4). A browser destroys a context synchronously and merely *queues* `webglcontextlost`, so for
+   * a window this reads `false` while every GL call is already dead. The renderer guards its own
+   * work on a different, stricter predicate that consults the context itself; that one is private,
+   * because a consumer branching on it would be making a decision the renderer has already made.
+   * Recovery needs nothing from you either way — the renderer rebuilds itself on
+   * `webglcontextrestored`.
+   *
+   * Stays truthful after {@link dispose}: disposal stops this object's *work*, and the renderer's
+   * canvas listeners belong to the wasm binding, so the state machine behind this keeps tracking.
+   * Only the notification is closed.
+   *
+   * **Watch it for the falling edge if you re-fit**, which is the one thing a consumer has to *do*
+   * with this rather than display (#717): a {@link resize} that landed during the loss is
+   * provisional, and repeating it once this reads `false` again is what re-syncs the canvas display
+   * box to the buffer the browser actually granted. `resize`'s doc carries the measurement and why
+   * re-reading {@link terminalSize} does not cover it.
+   */
+  isContextLost(): boolean {
+    return this.backend.isContextLost();
+  }
+
+  /**
+   * Whether a lost context has missed its restore deadline (#579) — the same fact
+   * {@link setOnContextLoss} pushes, available to pull. For a consumer that attached late, or that
+   * prefers to poll a status line rather than hold a callback.
+   *
+   * **Advisory, and it un-sets.** A late `webglcontextrestored` clears it *and* heals the renderer,
+   * so a consumer that latched a permanent "GPU lost" state off one reading will be wrong about a
+   * terminal that has since recovered. Read it each time.
+   */
+  isRestoreOverdue(): boolean {
+    return this.backend.isRestoreOverdue();
+  }
+
   /** Swap the colour scheme at runtime (#420) — rebuild the 256-colour palette from the new ANSI
    * colours and push it (+ the theme's policy colours) to the renderer, which re-resolves every
    * retained cell in wasm. No re-fit needed (the cell geometry is unchanged); it presents on the
@@ -772,7 +922,30 @@ export class JustermRenderer implements Renderer {
    * it. Unlike beamterm (which took CSS px and computed the grid itself), the renderer takes a
    * grid, so the adapter divides here (pixel→cell is consumer policy) and sets the canvas CSS box
    * from what the renderer reports it must be (`cssWidth`/`cssHeight`) — forget that and the
-   * device-px buffer displays at twice its size on a Retina screen. */
+   * device-px buffer displays at twice its size on a Retina screen.
+   *
+   * **A call that lands while the GL context is lost is provisional, and must be repeated once the
+   * context comes back** (#717). The renderer commits the grid you asked for but defers reading the
+   * drawing buffer back, because a dead context answers `0` and adopting that would floor the grid
+   * to one cell (#639). That read — and therefore any browser clamp (#339) — settles inside
+   * `restore()`, which runs on the next {@link render}, not when `webglcontextrestored` fires. The
+   * two lines below have already run by then with the pre-clamp numbers, and nothing rewrites them.
+   *
+   * Measured (headless Chromium, `MAX_TEXTURE_SIZE` 8192, cell 9 device px), asking for 4000
+   * columns during a loss:
+   *
+   * | | grid | `cssWidth()` | `canvas.style.width` |
+   * |---|---|---|---|
+   * | during the loss | 4000 | 36000 | `36000px` |
+   * | after the restoring `render()` | **910** | **8190** | `36000px` |
+   *
+   * So the display box describes a buffer 4.4x wider than the one that exists, and the browser
+   * stretches to fit. **Re-reading {@link terminalSize} is not the remedy** — it reports the truth,
+   * but the canvas box is written here and only here. Call this method again with your current CSS
+   * box; that is the whole fix, and it is idempotent on a live context.
+   *
+   * Reachable only when the requested grid exceeds the browser's buffer limits, so most consumers
+   * will never see it. {@link isContextLost} going `false` is the signal that the repeat is due. */
   resize(cssWidth: number, cssHeight: number): void {
     const grid = gridForBox(
       cssWidth,
@@ -1168,9 +1341,23 @@ export class JustermRenderer implements Renderer {
    * the GL context and the canvas context-loss listeners the Rust side owns all survive — they go
    * with the binding's `free()`, which cannot be called while the consumer still holds this object.
    * A consumer tearing down for good should drop its own reference and let the page go.
+   *
+   * **That is exactly why the context-loss channel is closed here by hand** (#579). It is the one
+   * piece of ambient work whose teardown the renderer *does* own but at the wrong end of the
+   * object's life: `ContextLossHandler`'s `Drop` clears the callback slot, and `Drop` runs at
+   * `free()`, which the sentence above says never happens. So a restore deadline armed moments
+   * before disposal would otherwise still deliver to a widget that has ended. The observable
+   * contract this restores is the reference's — xterm.js's disposable clears its pending restore
+   * timeout (`addons/addon-webgl/src/WebglRenderer.ts:161-163`) — and the renderer's own `Drop`
+   * comment names that same behaviour as what it matches.
+   *
+   * `isContextLost()` / `isRestoreOverdue()` keep answering afterwards; only the *push* stops. They
+   * read the state machine the surviving canvas listeners still feed, so silencing them would mean
+   * lying about the context rather than ending work.
    */
   dispose(): void {
     this.blinkLoop.stop();
     this.motionQuery.removeEventListener("change", this.onMotionChange);
+    this.contextLoss.end();
   }
 }

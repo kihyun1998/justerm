@@ -15,6 +15,11 @@ export { rendererNotifyingSink, routeWheel, Terminal, wheelGoesToApp, wheelScrol
 export type { TerminalOptions, WheelAction } from "./terminal";
 export { JustermRenderer } from "./justerm-renderer";
 export type { JustermRendererOptions, Theme } from "./justerm-renderer";
+// Context loss (#579) — `ContextLossRelay` is deliberately NOT exported, matching `FrameLoop`
+// (#696), the extraction it copies: both exist because `JustermRenderer` cannot be constructed under
+// vitest, and neither is injectable, so publishing one would add a semver liability a consumer has
+// no way to use. The consumer surface is `JustermRendererOptions.onContextLoss` +
+// `JustermRenderer.setOnContextLoss` / `isContextLost` / `isRestoreOverdue`.
 // Scroll intent — wheel events → scrollback line delta (xterm consumeWheelEvent).
 export { WheelScroller } from "./scroll-control";
 export type { ScrollOptions, WheelContext, WheelLike } from "./scroll-control";

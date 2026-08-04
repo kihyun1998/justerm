@@ -114,7 +114,21 @@ right one.
 
 **A push signal from the renderer was rejected**, not on cost but on ownership: it would be the first
 renderer→consumer push channel, i.e. new ambient work in a layer that has no lifecycle owner
-([widget lifecycle](../territory/widget-lifecycle.md), spine #605). A `ResizeObserver` on the canvas
+([widget lifecycle](../territory/widget-lifecycle.md), spine #605).
+
+**That ground is now partly gone, and the rejection is worth re-reading rather than re-applying**
+(#579, 2026-08-04). Wiring the renderer's context-loss surface made exactly such a channel: the
+renderer holds a JS function for the life of the widget and calls it from a timer armed in wasm. So
+"it would be the first" is no longer true, and the ownership question it deferred to has an answer at
+one site — the widget registers an indirection it can close, and `dispose()` closes it, because the
+renderer's own teardown of that slot runs at `free()` and the widget never gets there.
+**What did not change is the reason the rejection was right here.** A loss notification is a rare,
+terminal event that carries no value; a cell-change signal would fire on every spacing and DPR move
+and carries a quantity every reader has to re-derive from. The precedent settles *whether a push
+channel may exist*, not *whether this quantity should ride one* — and the invalidation question this
+note holds is still open on spine #630.
+
+A `ResizeObserver` on the canvas
 was rejected on arithmetic — `resize()` sets the CSS box to `cols × cell`, and a cell change can
 leave that product byte-identical (box 80px, cell 8→10, cols 10→8), so it is incomplete for the same
 reason a grid-keyed dedupe is.
