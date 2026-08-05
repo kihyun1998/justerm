@@ -125,14 +125,28 @@ const decorations = new DecorationRegistry();
 // the same reason: this demo hand-builds its frames and runs no engine, so there is nothing
 // real to pull from. It exercises the plumbing and the degradation path, not the round trip —
 // that proof needs a consumer that actually runs `Engine::marker_index`.
-const markerIndex = new MarkerIndexCache({
-  index: () =>
-    Promise.resolve({
-      markers: markerAnchors().map(([id, line]) => ({ id, line, kind: 1 })),
-      evictedTotal: 0,
-      epoch: markerEpoch,
-    }),
-});
+const markerIndex = new MarkerIndexCache(
+  {
+    index: () =>
+      Promise.resolve({
+        markers: markerAnchors().map(([id, line]) => ({ id, line, kind: 1 })),
+        evictedTotal: 0,
+        epoch: markerEpoch,
+      }),
+  },
+  // The index fills on a microtask, and this demo draws on demand — so without this the
+  // ruler stays empty until some unrelated event redraws (#490).
+  //
+  // **No re-entry guard**, deliberately. One was written here on the theory that this
+  // callback recurses through `render()` — `render()` drives `sync`, `sync` may pull, the
+  // pull calls back — until the page dies. The theory was wrong twice over. Structurally:
+  // `MarkerPort.index()` returns a `Promise`, so the `.then` reaching this always runs on a
+  // later microtask, by which time `sync()` has returned; a synchronous re-entry cannot be
+  // constructed. Empirically (2026-08-05): made to throw on re-entry it never fired across
+  // the six specs that drive the index, while a control throwing unconditionally reddened
+  // one of them — so the instrument could see a throw, and there was none to see.
+  () => render(),
+);
 decorations.setMarkerIndex(markerIndex);
 renderer.setDecorationSource((f) => decorations.decorationsForFrame(f));
 
@@ -862,6 +876,10 @@ const searchEngine = new FakeSearchEngine();
 // (a real backend emits the scroll op only on a real scroll). A repaint
 // (scrollbar/selection) passes nothing → a Full frame.
 function viewportFrame(out?: { scrollCount: number }): DecodedFrame {
+  // #490: settle the epoch BEFORE the literal reads it. Bumping it after the frame was
+  // built shipped a frame one epoch behind what the port answers, and the two then never
+  // agreed — which is exactly the mismatch the cache must not chase.
+  refreshMarkerEpoch();
   const top = viewTop();
   const rows = log.slice(top, top + ROWS);
   const codepoints: number[] = [];
@@ -941,13 +959,13 @@ function viewportFrame(out?: { scrollCount: number }): DecodedFrame {
     // mark stays at the buffer position as you scroll (the #480 slide is gone) and an above-top
     // anchor still resolves. Only a primary decoration on the primary screen: the ruler is a
     // scrollback navigator, suppressed on alt (rulerMarksForFrame), and alt has no scrollback.
-    // Built from `markerAnchors()` so this group and the pulled index cannot disagree
-    // while both exist. The group itself is gone on a v16 decoder (#490); this literal is
-    // what a v15 one still sends, and the demo keeps working across the pin bump because
-    // the index carries the same anchors.
-    markerLines: markerAnchors().flatMap(([id, line]) => [id, line]),
     // #490 v16: the drift check a consumer compares against its index size.
     markerCount: markerAnchors().length,
+    // #490: the basis the index rebases against, and the epoch that tells it to re-pull.
+    // A real engine derives both; this demo never evicts, so the basis is fixed and the
+    // epoch is bumped by `refreshMarkerEpoch()` whenever the anchor set changes.
+    evictedTotal: 0,
+    markerEpoch,
     // #575: the cursor rides every frame, like core emits it. `cursorBlink` is the application's
     // half of the blink decision; the widget resolves it against its consumer override.
     cursorRow: cursorDrift ? driftRow : CURSOR_ROW, // #637: drift is opt-in, see `cursorDrift`
@@ -974,7 +992,6 @@ function render(out?: { scrollCount: number }): void {
   a11y.onFrame(frame); // S14: mirror the viewport + announce new output
   cmdCtrl.onFrame(frame); // #160: announce + signal a finished command
   bar.update({ displayOffset, scrollbackLen: maxOffset(), rows: ROWS });
-  refreshMarkerEpoch();
   // #490: adopt the frame's basis before projecting — `lineOf` rebases against it, and a
   // changed epoch is what makes the index re-pull.
   markerIndex.sync(frame);
@@ -1440,7 +1457,7 @@ declare global {
   interface Window {
     __searchProbe?: () => SearchProbe;
     __contextLossProbe?: () => Promise<ContextLossProbe>;
-    __rulerLayerProbe?: () => RulerLayerProbe;
+    __rulerLayerProbe?: () => Promise<RulerLayerProbe>;
     __decorationProbe?: () => DecorationProbe;
     __precedenceProbe?: () => PrecedenceProbe;
     __cursorBlinkProbe?: () => Promise<CursorBlinkProbe>;
@@ -1448,8 +1465,8 @@ declare global {
     __textBlinkProbe?: () => Promise<TextBlinkProbe>;
     __blinkIdleProbe?: () => Promise<BlinkIdleProbe>;
     __composeCaretProbe?: () => Promise<ComposeCaretProbe>;
-    __aboveTopProbe?: () => AboveTopProbe;
-    __rulerAnchorProbe?: () => RulerAnchorProbe;
+    __aboveTopProbe?: () => Promise<AboveTopProbe>;
+    __rulerAnchorProbe?: () => Promise<RulerAnchorProbe>;
     __bgAlphaProbe?: () => Promise<BgAlphaProbe>;
     __spacingProbe?: () => SpacingProbe;
     __preeditProbe?: () => PreeditProbe;
@@ -2550,7 +2567,8 @@ window.__contextLossProbe = async (): Promise<ContextLossProbe> => {
   };
 };
 
-window.__aboveTopProbe = (): AboveTopProbe => {
+window.__aboveTopProbe = async (): Promise<AboveTopProbe> => {
+
   // #461: a multi-row decoration whose marker sits ABOVE the viewport top must paint the rows
   // of it that are still visible, not vanish. Drive it for real: shift the marker's absolute
   // line up by 2 with height 5, so it spans viewport rows -2..2 and rows 0..2 are on screen.
@@ -2582,6 +2600,15 @@ window.__aboveTopProbe = (): AboveTopProbe => {
     layer: "bottom",
     bg: 0x008f00,
   });
+  // #490 — two constraints meet here and the order is the only one that satisfies both.
+  // The marker index answers a *pull*, so the anchor this probe just moved is a microtask
+  // away: the first `render()` is what issues that pull, and drawing again after it lands
+  // is what puts the decoration on screen. But the read must stay in the SAME turn as its
+  // draw — this canvas has no `preserveDrawingBuffer`, so a sample taken in a later task
+  // reads a presented (black) buffer. Hence: draw (issues the pull), await (it lands),
+  // draw again, sample.
+  render();
+  await new Promise((r) => setTimeout(r, 0));
   render();
   const rows = [sample(0, 0), sample(1, 0), sample(2, 0), sample(3, 0)];
   lineDecoration.dispose();
@@ -2590,7 +2617,8 @@ window.__aboveTopProbe = (): AboveTopProbe => {
   render();
   return { baseline, rows };
 };
-window.__rulerAnchorProbe = (): RulerAnchorProbe => {
+window.__rulerAnchorProbe = async (): Promise<RulerAnchorProbe> => {
+
   // #480: the decoration's absolute buffer line (markerLines → ruler mark) must be invariant under
   // scroll; only its viewport row moves. The seeded demo has no scrollback, so force some, decorate
   // at the current view, and read the frame the demo emits at two scroll offsets. Demo state is
@@ -2621,13 +2649,35 @@ window.__rulerAnchorProbe = (): RulerAnchorProbe => {
     for (let i = 0; i + 5 <= mp.length; i += 5) if (mp[i] === DECO_MARKER_ID) return mp[i + 1]!;
     return Number.NaN; // omitted → off-viewport
   };
-  const read = (): { line: number; row: number } => {
-    const f = viewportFrame();
-    return { line: (f.markerLines as number[])[1]!, row: rowOf(f.markerPositions as number[]) };
+  // #490: the absolute line comes from the pulled index now — the wire group this used to
+  // read left in v16. Same property, one layer over: the mark must stay on its buffer line
+  // while the viewport moves under it.
+  //
+  // The index answers a **pull**, and `sync` is what starts one — so reading `lineOf` in the
+  // same synchronous turn as the `sync` that started it always answers `undefined`. The first
+  // version of this probe did exactly that behind one `setTimeout(0)` taken *before* the first
+  // frame, on the assumption that registering the decoration had already triggered a pull. It
+  // has not: nothing renders on `register`, so the epoch had not moved yet and there was no
+  // flight to wait for. Both reads returned `NaN`, and `expect(NaN).toBe(NaN)` is *true*
+  // (`Object.is`), so the test passed while measuring nothing.
+  //
+  // So drive the round trip explicitly: emit a frame, let the answer land, and look again.
+  const read = async (): Promise<{ line: number; row: number }> => {
+    let f = viewportFrame();
+    for (let i = 0; i < 20; i++) {
+      markerIndex.sync(f);
+      const line = markerIndex.lineOf(DECO_MARKER_ID);
+      if (line !== undefined) return { line, row: rowOf(f.markerPositions as number[]) };
+      await new Promise((r) => setTimeout(r, 0));
+      f = viewportFrame();
+    }
+    // Bounded, and it reports the failure rather than hanging — a `NaN` here means the pull
+    // never landed, which the e2e asserts against explicitly.
+    return { line: Number.NaN, row: rowOf(f.markerPositions as number[]) };
   };
-  const a = read();
+  const a = await read();
   displayOffset = scrolledBy; // scroll up by `scrolledBy` rows → the buffer line sits that much lower
-  const b = read();
+  const b = await read();
 
   lineDecoration.dispose();
   lineDecoration = undefined;
@@ -2637,7 +2687,7 @@ window.__rulerAnchorProbe = (): RulerAnchorProbe => {
   render();
   return { line0: a.line, lineScrolled: b.line, row0: a.row, rowScrolled: b.row, scrolledBy };
 };
-window.__rulerLayerProbe = (): RulerLayerProbe => {
+window.__rulerLayerProbe = async (): Promise<RulerLayerProbe> => {
   // #498: a `full`-width ruler mark must paint ABOVE the gutter ones. The registry orders the array;
   // `scrollbar.setMarks` turns that into DOM order; CSS then paints later same-z-index siblings on
   // top. A unit test can only see the array, so read the real DOM the demo built (vitest runs in a
@@ -2666,6 +2716,12 @@ window.__rulerLayerProbe = (): RulerLayerProbe => {
     overviewRulerOptions: { color: 0x00aa00, position: "left" },
   });
   render();
+  // #490: the marker index answers a *pull*, so the anchors this probe just created are
+  // one microtask away. Awaiting a macrotask lets the pull land and `onUpdated` redraw
+  // before the measurement — a synchronous read here would measure an empty ruler and
+  // call it a defect. `page.evaluate` awaits a returned promise, so the specs are
+  // unchanged.
+  await new Promise((r) => setTimeout(r, 0));
   // `track` is private to Scrollbar; the demo reaches it to observe what it built (TS `private` is
   // compile-time only). The mark elements are the ones the scrollbar paints through.
   const track = (bar as unknown as { track: HTMLDivElement }).track;
