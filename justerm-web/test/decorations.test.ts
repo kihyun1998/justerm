@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { DecorationRegistry } from "../src/decorations";
+import { MarkerIndexCache } from "../src/marker-index";
 import { MarkerKind } from "../src/markers";
 
 /** A frame stripped to what the ruler join reads: all-marker absolute lines
@@ -878,5 +879,77 @@ describe("DecorationRegistry — alt-screen decorations (#189)", () => {
     expect(reg.decorationsForFrame(altFrameGeom(10, 5, mk(7, 2)))).toEqual([
       { row: 2, left: 7, right: 9, layer: "bottom", bg: 0x008f00, fg: undefined },
     ]);
+  });
+});
+
+describe("DecorationRegistry with a pulled marker index (#490)", () => {
+  /** A cache that has actually completed a pull and been synced by a frame — the only
+   * state `lineOf` answers in. The first draft of these tests used a port that never
+   * resolved and synced once, which a real frame loop can never be in; a Step 5 pass
+   * showed all three passed only because of that. */
+  async function adoptedCache(entries: Array<[number, number]>, epoch = 1) {
+    const cache = new MarkerIndexCache({
+      index: () =>
+        Promise.resolve({
+          markers: entries.map(([id, line]) => ({ id, line, kind: 1 })),
+          evictedTotal: 0,
+          epoch,
+        }),
+    });
+    cache.sync({ evictedTotal: 0, markerEpoch: epoch });
+    await Promise.resolve();
+    await Promise.resolve();
+    cache.sync({ evictedTotal: 0, markerEpoch: epoch });
+    return cache;
+  }
+
+  it("projects from the index when the frame carries no marker groups at all", async () => {
+    const reg = new DecorationRegistry();
+    reg.register({ markerId: 4, bg: 0x00ff00 });
+
+    // v16's shape: basis + geometry in the header, no marker groups.
+    const frame = { cols: 10, rows: 5, scrollbackLen: 20, displayOffset: 0 };
+    expect(reg.decorationsForFrame(frame)).toEqual([]);
+
+    reg.setMarkerIndex(await adoptedCache([[4, 22]]));
+    const rects = reg.decorationsForFrame(frame);
+    expect(rects).toHaveLength(1);
+    expect(rects[0]!.row).toBe(2); // absolute 22, viewport top = 20
+  });
+
+  it("lets the frame's own group win while v15 still carries it", async () => {
+    const reg = new DecorationRegistry();
+    reg.register({ markerId: 4, bg: 0x00ff00 });
+    const frame = {
+      cols: 10,
+      rows: 5,
+      scrollbackLen: 20,
+      displayOffset: 0,
+      markerLines: [4, 21],
+    };
+    expect(reg.decorationsForFrame(frame)[0]!.row).toBe(1);
+
+    // The index says something else. The wire wins: in v15 it is the oracle the
+    // reconstruction is checked against, so a disagreement must be visible in a test
+    // rather than silently resolved in the reconstruction's favour.
+    reg.setMarkerIndex(await adoptedCache([[4, 23]]));
+    expect(reg.decorationsForFrame(frame)[0]!.row).toBe(1);
+  });
+
+  it("fills a marker the frame's group does not carry", async () => {
+    const reg = new DecorationRegistry();
+    reg.register({ markerId: 9, bg: 0x00ff00 });
+    reg.register({ markerId: 4, bg: 0x0000ff });
+    reg.setMarkerIndex(await adoptedCache([[4, 23]])); // holds 4 only
+
+    const rects = reg.decorationsForFrame({
+      cols: 10,
+      rows: 5,
+      scrollbackLen: 20,
+      displayOffset: 0,
+      markerLines: [9, 24], // the frame carries 9 only
+    });
+    // 9 from the frame (row 4), 4 from the index (row 3) — the two sources compose.
+    expect(rects.map((r) => r.row).sort()).toEqual([3, 4]);
   });
 });

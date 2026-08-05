@@ -23,6 +23,21 @@ The first territory in this map that lives **outside `justerm-core`**.
 
 ## Design model
 
+- **Anchors resolve from a *pulled* index, with the frame's groups as a migration fallback
+  (#490).** `DecorationRegistry.setMarkerIndex` takes a `MarkerIndexCache`: the consumer asks
+  the backend once (`MarkerPort`, sibling of `CommandNavPort`), then keeps the answer current
+  from the frame's `evictedTotal`/`markerEpoch` basis plus the marker create/dispose events.
+  Both projections read the frame's own `markerLines`/`markerPositions` **first** and the
+  index only for markers those do not carry. That ordering is the migration: while the wire
+  still ships the groups they are the ground truth the reconstruction is checked against
+  (`serialize.rs`'s v15 note), so the index winning would hide its own defects during the
+  window kept to expose them. In v16 the groups leave, the first lookup resolves to nothing,
+  and the index becomes the only answer.
+  Two consequences a reader will otherwise re-derive: the per-frame `O(M)` stride scan does
+  **not** disappear yet — until v16 this *adds* an `O(D)` pass and removes none — and an
+  **unknown** line means *do not project*, never line 0, because a decoration missing for a
+  frame is self-correcting and one painted on a line it no longer owns is not.
+
 ADR-0024 is authoritative; this is routing. **If they disagree, the ADR is right.**
 
 - **R1 — a decoration is colours + a mark, not an object.** It projects to per-cell colour overrides

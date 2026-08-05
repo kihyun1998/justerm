@@ -15,6 +15,7 @@
  */
 
 import { readMarkers } from "./markers";
+import type { MarkerIndexCache } from "./marker-index";
 
 /** Which layer a decoration paints on, mirroring xterm's `IDecorationOptions.layer`:
  * `bottom` overrides the cell background *under* the glyph, `top` paints *over* it.
@@ -175,6 +176,28 @@ export class DecorationRegistry {
    * class (#498) and is stable within each class, so it is not simply this order. */
   private readonly inRegistrationOrder = new Set<StoredDecoration>();
 
+  /** The pulled marker index (#490), when the consumer wired one. Optional on purpose:
+   * with no cache this class behaves exactly as it did, resolving anchors from the
+   * frame's own marker groups. */
+  private markerIndex: MarkerIndexCache | undefined;
+
+  /**
+   * Wire the pulled marker index (#490). An anchor resolves from the frame's own marker
+   * groups first and from the index only for markers those groups do not carry.
+   *
+   * **That ordering is the migration, and it is deliberately this way round.** While the
+   * wire still carries `markerLines` it is the ground truth and the index is the thing
+   * being brought up — letting the index win would hide its defects during the very
+   * window kept to expose them, and would change shipping behaviour for a reconstruction
+   * nothing has exercised. When the groups leave in v16 the first lookup resolves to
+   * nothing, the index becomes the only answer, and `undefined` means exactly what it
+   * says: do not project — a decoration missing for a frame beats one painted on a line
+   * it no longer owns.
+   */
+  setMarkerIndex(cache: MarkerIndexCache | undefined): void {
+    this.markerIndex = cache;
+  }
+
   /**
    * Register a decoration anchored to `options.markerId`. Returns a handle whose
    * `dispose()` removes it. Registering against a marker id that never appears in
@@ -295,6 +318,23 @@ export class DecorationRegistry {
     for (const m of readMarkers(frame.markerPositions)) {
       if (this.byMarker.has(m.id) && !anchors.has(m.id)) anchors.set(m.id, m.row);
     }
+    // The pulled index (#490) fills what the frame's own groups could not — which today
+    // is nothing, and after v16 is everything, because the groups leave.
+    //
+    // **Last, not first, and that is the point.** v15 keeps `markerLines` precisely so it
+    // can be the *oracle* the reconstruction is checked against (`serialize.rs`'s version
+    // note says so); letting the reconstruction win would hide every cache defect during
+    // the one window built to expose them, and would change shipping behaviour for a
+    // reconstruction no consumer has exercised yet. The lookup is O(D) — but the O(M)
+    // scans above still run while the groups exist, so this slice *adds* a pass and
+    // removes none. The removal is v16's, by deletion.
+    if (hasScroll && this.markerIndex) {
+      for (const id of this.byMarker.keys()) {
+        if (anchors.has(id)) continue;
+        const line = this.markerIndex.lineOf(id);
+        if (line !== undefined) anchors.set(id, line - top);
+      }
+    }
     // Walk the decorations in REGISTRATION order (#458), resolving each one's anchor row, rather
     // than walking the markers and emitting whatever hangs off each. Same work — the anchor lookup
     // is O(1) and the loop is O(D), so #482's "sized by decorations, not by the wire's marker
@@ -393,7 +433,15 @@ export class DecorationRegistry {
     // the browser drops, stacking the mark at the track default. `Number.isFinite` is the check
     // the `NaN <= 0` slip needs; it also rejects ±Infinity.
     if (!Number.isFinite(total) || total <= 0) return [];
-    const lineOf = readMarkerLines(frame.markerLines, this.byMarker); // #482: sized D, not M
+    const fromFrame = readMarkerLines(frame.markerLines, this.byMarker); // #482: sized D, not M
+    // The pulled index answers first (#490); the frame's group is the v15 fallback for a
+    // marker it does not hold. Same merge as the cell projection, and for the same reason.
+    const idx = this.markerIndex;
+    // Frame group first, index as the gap-filler — the same ordering as the cell
+    // projection above, and for the same reason: in v15 the wire is the oracle.
+    const lineOf = {
+      get: (id: number): number | undefined => fromFrame.get(id) ?? idx?.lineOf(id),
+    };
     const marks: RulerMark[] = [];
     // Two rules compose here, and they answer different questions.
     //
