@@ -159,6 +159,17 @@ interface StoredDecoration extends Decoration {
   disposed: boolean;
 }
 
+/** Whether the "no marker index on a v16 frame" warning has already been emitted.
+ * Module-scoped and deduped for the reason `checkGeometry` states: this runs once per
+ * frame, so an undeduped warn would bury its own first line. */
+let warnedNoMarkerIndex = false;
+
+/** Forget the warning. Test-only — deliberately absent from the package entry point, like
+ * `resetGeometryWarnings`. */
+export function resetMarkerIndexWarning(): void {
+  warnedNoMarkerIndex = false;
+}
+
 export class DecorationRegistry {
   /** Decorations grouped by anchor marker id, so `onMarkerDisposed` and the per-frame
    * marker-id filter (#482) are both O(decorations-on-that-marker). This is the *index*;
@@ -415,17 +426,51 @@ export class DecorationRegistry {
    * `top: NaN%` invalid CSS it used to (#463). xterm needs no clamp: its zones come from
    * in-buffer lines that are always in range.
    */
+  /** Whether any live decoration asks for a ruler mark — the only ones this warning is
+   * about, since a cell-only decoration still projects from the viewport group. */
+  private hasRulerDecoration(): boolean {
+    for (const d of this.inRegistrationOrder) {
+      if (d.overviewRulerOptions) return true;
+    }
+    return false;
+  }
+
   rulerMarksForFrame(frame: {
     markerLines?: ArrayLike<number>;
     scrollbackLen?: number;
     rows?: number;
     altScreen?: boolean;
+    markerCount?: number;
   }): RulerMark[] {
     // The overview ruler is a scrollback navigator, so it's hidden on the alt
     // screen (vim/htop) — which has no user scrollback and whose markers are alt-
     // scoped decorations, not primary anchors. Mirrors xterm hiding its ruler
     // canvas (`display:none`) on buffer-activate to the alt buffer.
     if (frame.altScreen) return [];
+    // A v16 frame carries `markerCount` and no absolute-line group (#490), so the ruler's
+    // anchors can only come from a pulled index. Without one this method returns `[]` for
+    // every frame and the overview ruler is simply blank — a failure with no exception, no
+    // red test and no gate able to see it (`published-seam.types.ts` is one-directional, so
+    // a removed getter only shrinks a union). Say so, once.
+    //
+    // Keyed on `markerCount` rather than on the absence of `markerLines`: an older decoder
+    // omits the count, and on that wire the group still answers, so warning there would be
+    // false. This is the one signal that distinguishes "the wire stopped carrying anchors"
+    // from "this frame happens to have no markers".
+    if (
+      frame.markerCount !== undefined &&
+      this.markerIndex === undefined &&
+      !warnedNoMarkerIndex &&
+      this.hasRulerDecoration()
+    ) {
+      warnedNoMarkerIndex = true;
+      console.warn(
+        "justerm-web: this frame carries no marker anchors (wire v16) and no marker index " +
+          "is wired, so the overview ruler will stay empty and decorations anchored above " +
+          "the viewport will not project. Call DecorationRegistry.setMarkerIndex() with a " +
+          "MarkerIndexCache driven by your MarkerPort and the marker events.",
+      );
+    }
     const total = (frame.scrollbackLen ?? 0) + (frame.rows ?? 0);
     // #463: reject a non-finite total, not just `<= 0`. `total <= 0` is a size comparison and
     // `NaN <= 0` is FALSE, so a NaN `scrollbackLen` (consumer-built frame) used to slip through
