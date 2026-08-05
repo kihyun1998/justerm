@@ -18,14 +18,20 @@ const live = "[data-testid='command-live']";
  * `page.on("console")` listener does not reset across navigations, so a log belonging to the page a
  * test is leaving can answer a poll about the page it is entering (#653, measured again on
  * 2026-08-05). A test that needs a different *boot* — a query string, a viewport, a device scale —
- * asks for it through `test.use()` or a URL, both of which apply to that one navigation.
+ * asks for it through `test.use()`, which applies to that one navigation.
+ *
+ * The query-string half of that sentence is why `bootUrl` is an **option** rather than the hook
+ * hard-coding `"/"`. A `baseURL` cannot carry it: `new URL("/", "http://host/?bgAlpha=0.6")` is
+ * `http://host/`, so as long as the hook navigates to a literal `"/"` a query-string boot has no way
+ * to *be* the single navigation, and the rule above would have had three standing exceptions
+ * (`?bgAlpha=0.6`, `?bgAlpha=foo`, `?letterSpacing=…`) with nothing but a comment holding them.
  *
  * The consequence that outlives the second `goto` is the **boot window**: `beforeEach` returns as
- * soon as the control bar is visible, which is *before* the mount fit's 100ms debounce fires, so a
- * body-attached listener usually — but not reliably — still catches it. Measured, not assumed: at
- * test-body entry the page had logged only vite's two lines and a canvas warning, no `[fit] resize`.
- * "Usually" is machine speed, which is exactly what made #653 read as flaky for three CI runs while
- * every local run passed.
+ * soon as the control bar is visible, which is *before* the mount fit's 100ms debounce is guaranteed
+ * to have fired, so a body-attached listener may or may not catch it — measured BOTH ways on this
+ * machine, idle (no `[fit] resize` yet at body entry) and under load (already there). Which one you
+ * get is machine speed, which is exactly what made #653 read as flaky for three CI runs while every
+ * local run passed. Do not read either observation as a property.
  *
  * So a test that watches the boot takes `consoleLines` below instead of attaching its own listener.
  * It is an `auto` fixture on purpose, and that is the whole mechanism: a fixture the test merely
@@ -33,7 +39,9 @@ const live = "[data-testid='command-live']";
  * "test"]`), which would leave the listener attached exactly as late as one written by hand. Only
  * `{ auto: true }` runs in front of the hook.
  */
-const test = base.extend<{ consoleLines: string[] }>({
+const test = base.extend<{ consoleLines: string[]; bootUrl: string }>({
+  /** What `beforeEach` navigates to. Override per describe with `test.use({ bootUrl })`. */
+  bootUrl: ["/", { option: true }],
   consoleLines: [
     async ({ page }, use) => {
       const lines: string[] = [];
@@ -48,9 +56,19 @@ const test = base.extend<{ consoleLines: string[] }>({
 const fitsIn = (consoleLines: string[]): string[] =>
   consoleLines.filter((l) => l.includes("[fit] resize"));
 
-test.beforeEach(async ({ page }) => {
-  await page.goto("/");
+test.beforeEach(async ({ page, bootUrl }) => {
+  await page.goto(bootUrl);
   // The control bar mounts synchronously; wait for it to prove the app booted.
+  //
+  // It is a PROXY, and what makes it a sound one is worth stating because nothing enforces it: the
+  // bar mounts at `demo/main.ts:859`, ~350 lines before the `window.__*Probe` assignments every
+  // test below reaches for, and there is a top-level `await import("justerm-wasm-decode")` between
+  // them. That await resolves on the MICROTASK queue — the module is already in flight from
+  // `JustermRenderer.create` — and microtasks drain before Chromium can service a CDP `evaluate`,
+  // so no test can observe the gap. Put one genuinely task-yielding `await` (a `fetch`, a
+  // `setTimeout`, an `img.decode()`) after the bar mounts and every probe-reading test in this file
+  // starts failing with `window.__xProbe is not a function`. Then this gate must move to something
+  // the probes themselves emit.
   await expect(page.getByRole("button", { name: /Finish command/ })).toBeVisible();
 });
 
@@ -1338,20 +1356,23 @@ test("the consumer can make the terminal background translucent, live (#577)", a
 // paths are separate call sites, and the option's is the one a consumer writes first and the one that
 // stays silent if it is dropped (the renderer's own default is opaque, so a missing `create` call
 // looks exactly like a correct one until somebody asks for translucency).
-test("bgAlpha given at create boots translucent, without touching the setter (#577)", async ({
-  page,
-}) => {
-  await page.goto("/?bgAlpha=0.6");
-  await expect(page.getByRole("button", { name: "Bg alpha: 0.6" })).toBeVisible();
+test.describe("bgAlpha given at create boots translucent (#577)", () => {
+  test.use({ bootUrl: "/?bgAlpha=0.6" });
 
-  const p = await page.evaluate(() => window.__bgAlphaProbe!());
+  test("bgAlpha given at create boots translucent, without touching the setter", async ({
+    page,
+  }) => {
+    await expect(page.getByRole("button", { name: "Bg alpha: 0.6" })).toBeVisible();
 
-  // `defaultBg` is read before the probe calls any setter, so this is purely what `create` applied.
-  expect(p.defaultBg[3]).toBeGreaterThan(140);
-  expect(p.defaultBg[3]).toBeLessThan(165); // 0.6 → ~153
+    const p = await page.evaluate(() => window.__bgAlphaProbe!());
 
-  // Ink is opaque here too — the option and the setter reach the same renderer state, not two.
-  expect(p.defaultInk[3]).toBe(255);
+    // `defaultBg` is read before the probe calls any setter, so this is purely what `create` applied.
+    expect(p.defaultBg[3]).toBeGreaterThan(140);
+    expect(p.defaultBg[3]).toBeLessThan(165); // 0.6 → ~153
+
+    // Ink is opaque here too — the option and the setter reach the same renderer state, not two.
+    expect(p.defaultInk[3]).toBe(255);
+  });
 });
 
 // #577 downstream: a garbage `bgAlpha` must not blank the terminal.
@@ -1367,24 +1388,28 @@ test("bgAlpha given at create boots translucent, without touching the setter (#5
 // Reachable from type-correct code — TypeScript's `number` includes `NaN`, so `Number(configValue)`
 // on a malformed config produces exactly this. The demo's `?bgAlpha=` parameter reproduces it via
 // `Number("foo")`, which is the same path a consumer would take.
-test("a non-finite bgAlpha falls back to opaque instead of blanking the terminal (#577)", async ({
-  page,
-}) => {
-  await page.goto("/?bgAlpha=foo");
-  // Wait for the probe itself rather than for a button label: the other tests here gate on
-  // `getByRole("button", { name: … })`, but this page boots with `Number("foo")`, so its button reads
-  // `Bg alpha: NaN` — a label that exists only to describe a malformed input and is a brittle thing
-  // to key a test on. The probe's existence is the actual precondition.
-  await page.waitForFunction(() => typeof window.__bgAlphaProbe === "function");
-  const p = await page.evaluate(() => window.__bgAlphaProbe!());
+test.describe("a non-finite bgAlpha falls back to opaque (#577)", () => {
+  test.use({ bootUrl: "/?bgAlpha=foo" });
 
-  // Both channels, because the background alone was the *lesser* half of the old failure.
-  expect(p.defaultBg[3]).toBe(255);
-  expect(p.defaultInk[3]).toBe(255);
+  test("a non-finite bgAlpha falls back to opaque instead of blanking the terminal", async ({
+    page,
+  }) => {
+    // Wait for the probe itself rather than for a button label: the other tests here gate on
+    // `getByRole("button", { name: … })`, but this page boots with `Number("foo")`, so its button
+    // reads `Bg alpha: NaN` — a label that exists only to describe a malformed input and is a
+    // brittle thing to key a test on. The probe's existence is the actual precondition. (The hook's
+    // own gate is the *Finish command* button, which `bgAlpha` does not touch, so it stays valid.)
+    await page.waitForFunction(() => typeof window.__bgAlphaProbe === "function");
+    const p = await page.evaluate(() => window.__bgAlphaProbe!());
 
-  // …and the terminal is genuinely drawn, not merely opaque-and-empty — otherwise a renderer that
-  // cleared to an opaque nothing would satisfy the two lines above.
-  expect(`rgb(${p.defaultInk.slice(0, 3)})`).not.toBe(`rgb(${p.defaultBg.slice(0, 3)})`);
+    // Both channels, because the background alone was the *lesser* half of the old failure.
+    expect(p.defaultBg[3]).toBe(255);
+    expect(p.defaultInk[3]).toBe(255);
+
+    // …and the terminal is genuinely drawn, not merely opaque-and-empty — otherwise a renderer that
+    // cleared to an opaque nothing would satisfy the two lines above.
+    expect(`rgb(${p.defaultInk.slice(0, 3)})`).not.toBe(`rgb(${p.defaultBg.slice(0, 3)})`);
+  });
 });
 
 // #578: the typography knobs. Unlike the other unwired-knob slices this one is not a pass-through —
@@ -1503,22 +1528,23 @@ test.describe("letterSpacing is CSS px, so its gap is density-independent (ADR-0
 // BEFORE the first fit, so the initial grid is computed at the consumer's cell rather than at the
 // renderer's default and then corrected. One `setLetterSpacing` later the two are indistinguishable,
 // which is why the probe snapshots the boot state before touching anything.
-test("letterSpacing / lineHeight given at create apply before the first fit (#578)", async ({
-  page,
-}) => {
-  await page.goto("/?letterSpacing=4&lineHeight=1.6");
-  await expect(page.getByRole("button", { name: "Letter spacing: 4px" })).toBeVisible();
-  const p = await page.evaluate(() => window.__spacingProbe!());
+test.describe("letterSpacing / lineHeight given at create apply before the first fit (#578)", () => {
+  test.use({ bootUrl: "/?letterSpacing=4&lineHeight=1.6" });
 
-  // The boot cell carries BOTH options — not the renderer's 9x19 default.
-  expect(p.boot.cellW).toBe(p.base.cellW + 4);
-  expect(p.boot.cellH).toBeGreaterThan(p.base.cellH);
+  test("the boot cell and the boot grid both carry the create-time options", async ({ page }) => {
+    await expect(page.getByRole("button", { name: "Letter spacing: 4px" })).toBeVisible();
+    const p = await page.evaluate(() => window.__spacingProbe!());
 
-  // And the grid the page has been driving since load was computed at that cell: it agrees with
-  // itself, and it is the smaller grid the bigger cell implies rather than the default one.
-  agrees(p.boot);
-  expect(p.boot.cols).toBeLessThan(p.base.cols);
-  expect(p.boot.rows).toBeLessThan(p.base.rows);
+    // The boot cell carries BOTH options — not the renderer's 9x19 default.
+    expect(p.boot.cellW).toBe(p.base.cellW + 4);
+    expect(p.boot.cellH).toBeGreaterThan(p.base.cellH);
+
+    // And the grid the page has been driving since load was computed at that cell: it agrees with
+    // itself, and it is the smaller grid the bigger cell implies rather than the default one.
+    agrees(p.boot);
+    expect(p.boot.cols).toBeLessThan(p.base.cols);
+    expect(p.boot.rows).toBeLessThan(p.base.rows);
+  });
 });
 
 // #606: `Terminal.dispose()` is end of life, and the renderer it was handed must stop with it. The
@@ -1648,7 +1674,7 @@ test("a cell-size change re-anchors the IME textarea at composition start (#631)
 test.describe("a real resize proposing the pre-change grid still reaches the port (#632)", () => {
   test.use({ viewport: { width: 800, height: 600 } });
 
-  test("a real resize proposing the pre-change grid still reaches the port", async ({
+  test("a resize computing the remembered grid under a changed cell is not deduped away", async ({
     page,
     consoleLines,
   }) => {
@@ -1663,6 +1689,13 @@ test.describe("a real resize proposing the pre-change grid still reaches the por
     await expect.poll(() => fits().length).toBeGreaterThan(0);
     const remembered = gridOf(fits().at(-1)!);
     const before = await page.evaluate(() => window.__fitProbe!());
+
+    // FIRST, that the boot really happened at the requested size. Nothing else below would notice
+    // if `test.use({ viewport })` silently did not apply: every number after this is relative to
+    // `remembered`, so the test would pass at the project's default 1280x720 just as well, and the
+    // option would be a no-op nobody could see. `<= 800` rather than `=== 800` because a page
+    // scrollbar comes out of `innerWidth`; the discriminating part is that it is not 1280.
+    expect(before.innerWidth).toBeLessThanOrEqual(800);
 
     // A cell change, taken through the consumer contract (setter → fit → render). It does NOT go
     // through the controller, and — measured, not assumed — it does not fire the ResizeObserver

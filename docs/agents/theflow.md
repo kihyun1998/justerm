@@ -129,8 +129,16 @@ cd alacritty && git sparse-checkout set alacritty_terminal alacritty/src && cd .
 git clone --depth 1 --filter=blob:none --sparse https://github.com/ghostty-org/ghostty ghostty
 cd ghostty && git sparse-checkout set src && cd ..
 git clone --depth 1 --filter=blob:none --sparse https://github.com/xtermjs/xterm.js xterm.js
-cd xterm.js && git sparse-checkout set src addons && cd ..
+cd xterm.js && git sparse-checkout set src addons test && cd ..
 ```
+
+**`test` was added to xterm.js's set on 2026-08-06 (#733), and the pin did not move.** Widening a
+sparse checkout is not a pin refresh — it exposes paths that were already at the pinned SHA, so no
+recorded line number is invalidated. It is worth doing when a change's real source lives outside
+`src`: #733 was a **test-harness** change, and with the old set the reference corpus read as absent
+(zero hits — the silent failure this file warns about two paragraphs down), when in fact xterm.js
+carries a full Playwright suite at `test/playwright/`. "The reference has nothing on this" is a
+claim about a checkout at least as often as about a project.
 
 **Recording what you found: do not type the line number.** `rg` is for *finding*; the
 number that ends up in [reference-facts.md](reference-facts.md) comes out of the tree, via
