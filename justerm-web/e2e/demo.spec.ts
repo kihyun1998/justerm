@@ -1050,11 +1050,21 @@ test("a decoration anchored above the viewport top still paints its visible rows
 test("a decoration's ruler mark stays anchored to its buffer line across scroll (#480)", async ({
   page,
 }) => {
-  await page.goto("/");
+  // No `goto` here — `beforeEach` already navigated, and the second one is the two-pages hazard
+  // this file documents (#653). It is *not* what produced the CI failure this test had on
+  // 2026-08-05, though: that reproduced with a single navigation and with zero `Page`/`Runtime`
+  // events on the wire (measured), so nothing navigated. Playwright's
+  // "Execution context was destroyed" is a catch-all rewrite — the protocol error underneath was
+  // `Promise was collected`.
   await expect(page.getByRole("button", { name: "Decorate line: OFF" })).toBeVisible();
 
   const p = await page.evaluate(() => window.__rulerAnchorProbe!());
 
+  // **First, that the probe measured anything at all.** `lineOf` answers `undefined` until the
+  // pull it triggered has landed, and the probe reports that as `NaN` — against which the
+  // invariant below is vacuously true, because `expect(NaN).toBe(NaN)` passes (`Object.is`).
+  // This test spent its whole life green on exactly that, so the non-vacuity is asserted first.
+  expect(Number.isFinite(p.line0), `the index must answer a line, got ${p.line0}`).toBe(true);
   // The absolute buffer line (→ the ruler mark) is invariant under scroll — the #480 fix. Before
   // it, `markerLines` was `viewTop + DECO_ROW`, so this differed by `scrolledBy`.
   expect(p.lineScrolled, `absolute line must not move with scroll (was ${p.line0})`).toBe(p.line0);

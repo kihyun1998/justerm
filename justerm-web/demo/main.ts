@@ -127,15 +127,24 @@ const decorations = new DecorationRegistry();
 // that proof needs a consumer that actually runs `Engine::marker_index`.
 const markerIndex = new MarkerIndexCache(
   {
-  index: () =>
-    Promise.resolve({
-      markers: markerAnchors().map(([id, line]) => ({ id, line, kind: 1 })),
-      evictedTotal: 0,
-      epoch: markerEpoch,
-    }),
+    index: () =>
+      Promise.resolve({
+        markers: markerAnchors().map(([id, line]) => ({ id, line, kind: 1 })),
+        evictedTotal: 0,
+        epoch: markerEpoch,
+      }),
   },
   // The index fills on a microtask, and this demo draws on demand — so without this the
   // ruler stays empty until some unrelated event redraws (#490).
+  //
+  // **No re-entry guard**, deliberately. One was written here on the theory that this
+  // callback recurses through `render()` — `render()` drives `sync`, `sync` may pull, the
+  // pull calls back — until the page dies. The theory was wrong twice over. Structurally:
+  // `MarkerPort.index()` returns a `Promise`, so the `.then` reaching this always runs on a
+  // later microtask, by which time `sync()` has returned; a synchronous re-entry cannot be
+  // constructed. Empirically (2026-08-05): made to throw on re-entry it never fired across
+  // the six specs that drive the index, while a control throwing unconditionally reddened
+  // one of them — so the instrument could see a throw, and there was none to see.
   () => render(),
 );
 decorations.setMarkerIndex(markerIndex);
@@ -2643,19 +2652,32 @@ window.__rulerAnchorProbe = async (): Promise<RulerAnchorProbe> => {
   // #490: the absolute line comes from the pulled index now — the wire group this used to
   // read left in v16. Same property, one layer over: the mark must stay on its buffer line
   // while the viewport moves under it.
-  const read = (): { line: number; row: number } => {
-    const f = viewportFrame();
-    markerIndex.sync(f);
-    return {
-      line: markerIndex.lineOf(DECO_MARKER_ID) ?? Number.NaN,
-      row: rowOf(f.markerPositions as number[]),
-    };
+  //
+  // The index answers a **pull**, and `sync` is what starts one — so reading `lineOf` in the
+  // same synchronous turn as the `sync` that started it always answers `undefined`. The first
+  // version of this probe did exactly that behind one `setTimeout(0)` taken *before* the first
+  // frame, on the assumption that registering the decoration had already triggered a pull. It
+  // has not: nothing renders on `register`, so the epoch had not moved yet and there was no
+  // flight to wait for. Both reads returned `NaN`, and `expect(NaN).toBe(NaN)` is *true*
+  // (`Object.is`), so the test passed while measuring nothing.
+  //
+  // So drive the round trip explicitly: emit a frame, let the answer land, and look again.
+  const read = async (): Promise<{ line: number; row: number }> => {
+    let f = viewportFrame();
+    for (let i = 0; i < 20; i++) {
+      markerIndex.sync(f);
+      const line = markerIndex.lineOf(DECO_MARKER_ID);
+      if (line !== undefined) return { line, row: rowOf(f.markerPositions as number[]) };
+      await new Promise((r) => setTimeout(r, 0));
+      f = viewportFrame();
+    }
+    // Bounded, and it reports the failure rather than hanging — a `NaN` here means the pull
+    // never landed, which the e2e asserts against explicitly.
+    return { line: Number.NaN, row: rowOf(f.markerPositions as number[]) };
   };
-  // Let the pull this decoration's registration triggered land before the first read.
-  await new Promise((r) => setTimeout(r, 0));
-  const a = read();
+  const a = await read();
   displayOffset = scrolledBy; // scroll up by `scrolledBy` rows → the buffer line sits that much lower
-  const b = read();
+  const b = await read();
 
   lineDecoration.dispose();
   lineDecoration = undefined;
