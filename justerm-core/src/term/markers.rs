@@ -44,7 +44,7 @@ use crate::event::TermEvent;
 use crate::grid::Grid;
 use crate::serialize::{MarkerId, MarkerKind, MarkerLine, MarkerPosition};
 
-use super::{CommandLine, MAX_MARKERS, Marker, Term};
+use super::{CommandLine, MAX_MARKERS, Marker, MarkerEntry, MarkerIndex, Term};
 
 impl Term {
     /// The primary-screen grid, wherever it currently lives — swapped into
@@ -133,6 +133,16 @@ impl Term {
         for id in disposed {
             self.events.push(TermEvent::MarkerDisposed(id));
         }
+        // Birth is an occurrence, so it rides the event queue (ADR-0020 R1) — the mirror
+        // of the disposal above (#490). A consumer holding a pulled index has no other
+        // way to learn of a marker the *stream* created, and without it the index can
+        // only ever shrink. Not an epoch bump: that would cost an O(M) re-pull for O(1)
+        // information, four times per shell command.
+        self.events.push(TermEvent::MarkerCreated {
+            id,
+            line: line as u32,
+            kind,
+        });
         id
     }
 
@@ -287,13 +297,52 @@ impl Term {
         }
     }
 
+    /// Every live marker of the active buffer, with the basis that keeps the answer
+    /// usable (#490). The pull half of the marker surface: a consumer asks once and
+    /// rebases per frame rather than being handed every marker in every frame.
+    ///
+    /// Ordering is the engine's own, which is the precedence a consumer joins
+    /// decorations by (#458/#461) — the same reason `marker_positions` does not sort.
+    pub fn marker_index(&self) -> MarkerIndex {
+        MarkerIndex {
+            markers: self
+                .markers()
+                .iter()
+                .map(|m| MarkerEntry {
+                    id: m.id,
+                    line: m.line as u32,
+                    kind: m.kind,
+                })
+                .collect(),
+            evicted_total: self.evicted_total,
+            epoch: self.marker_epoch,
+        }
+    }
+
+    /// Declare that a held marker line has gone stale for a reason the
+    /// `evicted_total` delta cannot express (#490).
+    ///
+    /// Every caller is a site that moves marker lines **non-uniformly** — a region
+    /// rotate touches only the markers inside the region, a reflow rewrites them
+    /// outright, an alt switch changes which buffer the answer even describes. The
+    /// bump is deliberately *not* placed on disposal: a consumer hears that on
+    /// `MarkerDisposed` and drops the entry without asking for the rest again.
+    pub(super) fn bump_marker_epoch(&mut self) {
+        self.marker_epoch = self.marker_epoch.wrapping_add(1);
+    }
+
     /// The marker analogue of `selection_shift_below_margin` (#449) — primary
     /// only, because the accrual branch that needs it is primary-only.
     pub(super) fn markers_shift_below_margin(&mut self, from: usize) {
+        let mut moved = false;
         for m in &mut self.normal_markers {
             if m.line >= from {
                 m.line += 1;
+                moved = true;
             }
+        }
+        if moved {
+            self.bump_marker_epoch();
         }
     }
 
@@ -324,6 +373,7 @@ impl Term {
     /// has left the buffer, so it is disposed and announced (#118).
     pub(super) fn markers_rotate_region(&mut self, top: usize, bottom: usize, up: bool) {
         let mut disposed = Vec::new();
+        let mut moved = false;
         self.markers_mut().retain_mut(|m| {
             if m.line < top || m.line > bottom {
                 return true; // outside the region — unchanged
@@ -334,11 +384,19 @@ impl Term {
                 false
             } else {
                 m.line = if up { m.line - 1 } else { m.line + 1 };
+                moved = true;
                 true
             }
         });
         for id in disposed {
             self.events.push(TermEvent::MarkerDisposed(id));
+        }
+        // Only a *surviving* marker that moved invalidates a held index (#490). A
+        // rotate that merely disposed the edge marker, or found none inside the
+        // region at all, leaves every held line correct — and gating on that is what
+        // keeps a TUI scrolling a region from forcing a re-pull per line.
+        if moved {
+            self.bump_marker_epoch();
         }
     }
 

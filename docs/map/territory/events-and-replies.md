@@ -23,6 +23,13 @@ nothing about it appears in the frame.
 
 ## Design model
 
+- **A marker's birth and death are both events, and the pair is load-bearing since #490.**
+  `MarkerDisposed` was enough while every live marker rode every frame — absence was observable.
+  Once the index is *pulled*, a population that only ever shrinks is silently wrong, so
+  `MarkerCreated { id, line, kind }` is the mirror. ADR-0020 R1 is why neither is a frame field: an
+  appearance and a disappearance are occurrences, not state. `line` is absolute on the same basis
+  the frame header reports, so a consumer appends the entry and rebases it exactly like a pulled one.
+
 - **Pull, not push — and the alternative is named.** The engine queues during `feed` and the consumer
   takes with `drain_events`, mirroring `damage` / `frame` / `reset_damage`. No callback crosses the
   boundary, so the engine stays decoupled from the consumer's event loop. alacritty's `EventListener`

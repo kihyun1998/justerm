@@ -48,6 +48,10 @@ struct Flat {
     /// `scrollback_len` history lines (total height = `+ rows`).
     display_offset: u32,
     scrollback_len: u32,
+    /// Marker-index basis (#490): lines evicted since RIS, and the epoch that says a
+    /// pulled marker index went stale for a reason the eviction delta cannot express.
+    evicted_total: u64,
+    marker_epoch: u32,
     /// Mouse wanted-events mask (#129) — the routing bits the active tracking
     /// mode reports (DOWN/UP/WHEEL/DRAG/MOVE). `0` = no reporting.
     mouse_events: u8,
@@ -204,6 +208,8 @@ fn flatten(frame: &Frame) -> Flat {
         cursor_blink: frame.cursor_blink,
         display_offset: frame.display_offset,
         scrollback_len: frame.scrollback_len,
+        evicted_total: frame.evicted_total,
+        marker_epoch: frame.marker_epoch,
         mouse_events: frame.mouse_events.bits(),
         alt_screen: frame.alt_screen,
         scroll: frame
@@ -335,6 +341,26 @@ impl DecodedFrame {
     #[wasm_bindgen(getter, js_name = scrollbackLen)]
     pub fn scrollback_len(&self) -> u32 {
         self.flat.scrollback_len
+    }
+
+    /// Lines evicted from the front of scrollback since RIS (#490). Rebase a marker
+    /// line pulled earlier by the delta against the value you pulled it at.
+    ///
+    /// `f64` rather than `u64`: the field is 64-bit on the wire so it cannot wrap in
+    /// a long session, and JS numbers hold it exactly up to 2^53 — which is four
+    /// orders of magnitude past any reachable eviction count, and avoids handing the
+    /// consumer a `BigInt` it would have to convert at every frame.
+    #[wasm_bindgen(getter, js_name = evictedTotal)]
+    pub fn evicted_total(&self) -> f64 {
+        self.flat.evicted_total as f64
+    }
+
+    /// Bumped when a pulled marker index went stale for a reason the eviction delta
+    /// cannot express — a reflow, a region scroll that moved a marker, an alt-screen
+    /// switch (#490). Re-pull when it differs from the epoch you pulled at.
+    #[wasm_bindgen(getter, js_name = markerEpoch)]
+    pub fn marker_epoch(&self) -> u32 {
+        self.flat.marker_epoch
     }
 
     #[wasm_bindgen(getter, js_name = hasScroll)]
@@ -653,6 +679,8 @@ mod tests {
             cursor_blink: false,
             display_offset: 0,
             scrollback_len: 0,
+            evicted_total: 0,
+            marker_epoch: 0,
             mouse_events: Default::default(),
             alt_screen: false,
             scroll: None,
@@ -1092,6 +1120,8 @@ mod tests {
             cursor_blink: false,
             display_offset: 0,
             scrollback_len: 0,
+            evicted_total: 0,
+            marker_epoch: 0,
             mouse_events: Default::default(),
             alt_screen: false,
             scroll: Some(justerm_core::ScrollOp {

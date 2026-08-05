@@ -40,6 +40,12 @@ IPC by identity.
   caps a buffer's live population at `u16::MAX` (#721), because the marks are allocated by an
   untrusted stream. The rule stated at the top of this bullet is therefore not the only way a count
   can be sound — a group may also be narrow because nothing can produce a wider value.
+- **A header scalar may exist to shrink the frame, not to describe the terminal.** v15's
+  `evicted_total`/`marker_epoch` (#490) are the basis a consumer needs to keep a *separately pulled*
+  marker index valid; they are the price of the two marker groups leaving in v16. Both pass ADR-0020
+  on their own terms (`O(1)`, state, not derivable from this frame), so the gate is not being bent —
+  but note the shape, because it is the first of its kind here: a group is removed by adding the
+  smallest thing that lets the consumer reconstruct it.
 - **Colours are references, never hex.** `Default | Indexed(u8) | Rgb(..)` encoded as a `u32`. The
   engine is theme-agnostic by identity, so palette resolution happens after decode, in the consumer.
 - **The record reserves room** for underline style/colour and a hyperlink id, so adding them later is

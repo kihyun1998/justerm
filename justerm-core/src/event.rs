@@ -11,7 +11,7 @@
 //! (which cells are links), not a point-in-time event, so it is modelled like
 //! graphemes in its own slice (#26), not here.
 
-use crate::serialize::MarkerId;
+use crate::serialize::{MarkerId, MarkerKind};
 
 /// A consumer-facing event emitted while parsing the VT stream.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -67,4 +67,22 @@ pub enum TermEvent {
     /// point-in-time fact (a marker absent from a frame may merely be scrolled
     /// off-screen), so it rides the event queue, not the frame overlay.
     MarkerDisposed(MarkerId),
+    /// A marker was created (#490) — by `add_marker`, or by the *stream* through an
+    /// OSC 133 command mark, which the consumer never called for.
+    ///
+    /// The mirror of [`TermEvent::MarkerDisposed`], and it exists for the same reason
+    /// ADR-0020 R1 gives: an appearance is an occurrence, not state, so it rides this
+    /// queue rather than a frame field. Without it a consumer that pulled a marker
+    /// index (`Engine::marker_index`) has no way to learn of a marker born after its
+    /// pull — the population would only ever shrink.
+    ///
+    /// `line` is absolute at the moment of creation, on the **same basis** the pull
+    /// reports (`Frame::evicted_total`), so a consumer appends the entry and rebases it
+    /// exactly like a pulled one. Deliberately not an epoch bump: a bump costs a whole
+    /// re-pull, and creation is `O(1)` information.
+    MarkerCreated {
+        id: MarkerId,
+        line: u32,
+        kind: MarkerKind,
+    },
 }

@@ -39,7 +39,7 @@ pub use serialize::{
 
 pub use term::{
     CommandLine, DEFAULT_WORD_SEPARATORS, Hyperlink, MAX_COLUMNS, MAX_MARKERS, MAX_ROWS,
-    MIN_COLUMNS, Term, TrackedId,
+    MIN_COLUMNS, MarkerEntry, MarkerIndex, Term, TrackedId,
 };
 
 use vte::Parser;
@@ -544,5 +544,21 @@ impl Engine {
     /// it (ADR-0017 — buffer-wide text is core's).
     pub fn command_lines(&self) -> Vec<CommandLine> {
         self.term.command_lines()
+    }
+
+    /// Every live marker of the active buffer with its **absolute** buffer line, plus
+    /// the basis that says how long the answer stays usable (#490).
+    ///
+    /// The pull half of the marker surface, and the same shape as
+    /// [`Engine::command_lines`]: the consumer asks, keeps the answer, and rebases it
+    /// per frame by the `evicted_total` delta — rather than being handed every live
+    /// marker inside every frame, which is `O(M)` payload per frame for a quantity
+    /// unrelated to what changed (ADR-0020 R3).
+    ///
+    /// Ask again when [`MarkerIndex::epoch`] differs from the one you hold. Drop an
+    /// entry when its `TermEvent::MarkerDisposed` arrives — a disposal deliberately
+    /// does *not* move the epoch, so it costs no re-pull.
+    pub fn marker_index(&self) -> MarkerIndex {
+        self.term.marker_index()
     }
 }

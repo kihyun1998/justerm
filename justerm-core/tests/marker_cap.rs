@@ -96,11 +96,15 @@ fn each_retired_marker_is_announced_exactly_once() {
 fn a_population_below_the_cap_is_untouched() {
     let mut e = Engine::new(80, 24);
     pile(&mut e, 64);
-    let before = e.drain_events().len();
+    let disposed = e
+        .drain_events()
+        .into_iter()
+        .filter(|ev| matches!(ev, TermEvent::MarkerDisposed(_)))
+        .count();
 
     assert_eq!(live_ids(&e).len(), 64, "nothing is dropped below the cap");
     assert_eq!(
-        before, 0,
-        "and nothing is announced — the cap must not fire on an ordinary population"
+        disposed, 0,
+        "and nothing is RETIRED — the cap must not fire on an ordinary population.          Filtered rather than counting every event: since #490 a creation announces          itself too, and this assertion is about the cap, not about the channel"
     );
 }

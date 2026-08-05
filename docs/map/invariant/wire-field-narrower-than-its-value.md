@@ -26,7 +26,7 @@ four, then five, because a count is a status claim with nothing gating it (the s
 - **Take the group off the frame entirely** when it should never have been per-frame state. This is
   the one that is easy to miss, because widening always *works* — and here it is the wrong answer:
   the two marker group counts overflow (below), and `#490` rejects widening them because doing so
-  would entrench what ADR-0020 records as its **one stated R3 violation** (*"a group must be `O(1)`
+  would entrench what ADR-0020 records as an R3 violation (**two** of them since its 2026-08-04 amendment) (*"a group must be `O(1)`
   or `O(viewport)`"*). Ask which strategy the field's territory has already chosen before reaching
   for the obvious one.
 - **Bound the producer at the field's own capacity** when the value is allocated by something

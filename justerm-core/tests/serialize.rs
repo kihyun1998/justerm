@@ -25,6 +25,8 @@ fn round_trip_empty_partial_frame() {
         cursor_blink: false,
         display_offset: 0,
         scrollback_len: 0,
+        evicted_total: 0,
+        marker_epoch: 0,
         mouse_events: Default::default(),
         alt_screen: false,
         scroll: None,
@@ -52,6 +54,8 @@ fn round_trip_overlay_selection_and_match_spans() {
         cursor_blink: false,
         display_offset: 0,
         scrollback_len: 0,
+        evicted_total: 0,
+        marker_epoch: 0,
         mouse_events: Default::default(),
         alt_screen: false,
         scroll: None,
@@ -102,6 +106,8 @@ fn round_trip_overlay_active_match_spans() {
         cursor_blink: false,
         display_offset: 0,
         scrollback_len: 0,
+        evicted_total: 0,
+        marker_epoch: 0,
         mouse_events: Default::default(),
         alt_screen: false,
         scroll: None,
@@ -169,6 +175,8 @@ fn round_trip_mouse_events_mask() {
         cursor_blink: false,
         display_offset: 0,
         scrollback_len: 0,
+        evicted_total: 0,
+        marker_epoch: 0,
         mouse_events: MouseEvents::empty(),
         alt_screen: false,
         scroll: None,
@@ -197,6 +205,8 @@ fn round_trip_alt_screen_flag() {
         cursor_blink: false,
         display_offset: 0,
         scrollback_len: 0,
+        evicted_total: 0,
+        marker_epoch: 0,
         mouse_events: MouseEvents::empty(),
         alt_screen: true,
         scroll: None,
@@ -224,6 +234,8 @@ fn round_trip_overlay_marker_positions() {
         cursor_blink: false,
         display_offset: 0,
         scrollback_len: 0,
+        evicted_total: 0,
+        marker_epoch: 0,
         mouse_events: Default::default(),
         alt_screen: false,
         scroll: None,
@@ -263,6 +275,8 @@ fn round_trip_overlay_marker_lines() {
         cursor_blink: false,
         display_offset: 0,
         scrollback_len: 0,
+        evicted_total: 0,
+        marker_epoch: 0,
         mouse_events: Default::default(),
         alt_screen: false,
         scroll: None,
@@ -322,6 +336,8 @@ fn round_trip_overlay_marker_kinds() {
         cursor_blink: false,
         display_offset: 0,
         scrollback_len: 0,
+        evicted_total: 0,
+        marker_epoch: 0,
         mouse_events: Default::default(),
         alt_screen: false,
         scroll: None,
@@ -382,6 +398,8 @@ fn decode_rejects_bad_marker_kind_and_truncated_exit() {
         cursor_blink: false,
         display_offset: 0,
         scrollback_len: 0,
+        evicted_total: 0,
+        marker_epoch: 0,
         mouse_events: Default::default(),
         alt_screen: false,
         scroll: None,
@@ -439,6 +457,8 @@ fn round_trip_scroll_position() {
         cursor_blink: false,
         display_offset: 7,
         scrollback_len: 250,
+        evicted_total: 0,
+        marker_epoch: 0,
         mouse_events: Default::default(),
         alt_screen: false,
         scroll: None,
@@ -468,6 +488,8 @@ fn round_trip_cursor_position_and_visibility() {
         cursor_blink: false,
         display_offset: 0,
         scrollback_len: 0,
+        evicted_total: 0,
+        marker_epoch: 0,
         mouse_events: Default::default(),
         alt_screen: false,
         scroll: None,
@@ -497,6 +519,8 @@ fn round_trip_span_of_plain_cells() {
         cursor_blink: false,
         display_offset: 0,
         scrollback_len: 0,
+        evicted_total: 0,
+        marker_epoch: 0,
         mouse_events: Default::default(),
         alt_screen: false,
         scroll: None,
@@ -536,6 +560,8 @@ fn round_trip_distinct_colour_references() {
         cursor_blink: false,
         display_offset: 0,
         scrollback_len: 0,
+        evicted_total: 0,
+        marker_epoch: 0,
         mouse_events: Default::default(),
         alt_screen: false,
         scroll: None,
@@ -593,6 +619,8 @@ fn round_trip_cell_flags_incl_layout_markers() {
         cursor_blink: false,
         display_offset: 0,
         scrollback_len: 0,
+        evicted_total: 0,
+        marker_epoch: 0,
         mouse_events: Default::default(),
         alt_screen: false,
         scroll: None,
@@ -636,6 +664,8 @@ fn decode_rejects_superseded_version() {
         cursor_blink: false,
         display_offset: 0,
         scrollback_len: 0,
+        evicted_total: 0,
+        marker_epoch: 0,
         mouse_events: Default::default(),
         alt_screen: false,
         scroll: None,
@@ -660,8 +690,8 @@ fn decode_rejects_superseded_version() {
 /// `wire_version()` mirrors in lockstep (ADR-0008), so a drift here trips before it
 /// can desync a binding.
 #[test]
-fn wire_version_is_fourteen() {
-    assert_eq!(justerm_core::WIRE_VERSION, 14);
+fn wire_version_is_fifteen() {
+    assert_eq!(justerm_core::WIRE_VERSION, 15);
     let mut term = Engine::new(1, 1);
     term.feed(b"x");
     let bytes = encode(&term.frame());
@@ -687,6 +717,8 @@ fn round_trip_grapheme_side_table() {
         cursor_blink: false,
         display_offset: 0,
         scrollback_len: 0,
+        evicted_total: 0,
+        marker_epoch: 0,
         mouse_events: Default::default(),
         alt_screen: false,
         scroll: None,
@@ -730,6 +762,8 @@ fn cell_record_is_fixed_14_bytes() {
         cursor_blink: false,
         display_offset: 0,
         scrollback_len: 0,
+        evicted_total: 0,
+        marker_epoch: 0,
         mouse_events: Default::default(),
         alt_screen: false,
         scroll: None,
@@ -772,6 +806,8 @@ fn round_trip_scroll_op() {
         cursor_blink: false,
         display_offset: 0,
         scrollback_len: 0,
+        evicted_total: 0,
+        marker_epoch: 0,
         mouse_events: Default::default(),
         alt_screen: false,
         scroll: Some(ScrollOp {
@@ -800,6 +836,8 @@ fn round_trip_full_frame_kind() {
         cursor_blink: false,
         display_offset: 0,
         scrollback_len: 0,
+        evicted_total: 0,
+        marker_epoch: 0,
         mouse_events: Default::default(),
         alt_screen: false,
         scroll: None,
@@ -1028,6 +1066,8 @@ fn a_scroll_count_at_the_wire_bound_round_trips() {
         cursor_blink: false,
         display_offset: 0,
         scrollback_len: 0,
+        evicted_total: 0,
+        marker_epoch: 0,
         mouse_events: Default::default(),
         alt_screen: false,
         scroll: Some(ScrollOp {
@@ -1110,7 +1150,7 @@ fn engine_frame_round_trips_hyperlink_and_combining_captures() {
     assert_eq!(decode(&encode(&f)).expect("decode"), f);
 }
 
-/// A `cols`×`rows` v14 header with no scroll op, followed by a one-span count and that
+/// A `cols`×`rows` v15 header with no scroll op, followed by a one-span count and that
 /// span's `(line, left, right)` triple — the shortest buffer that reaches the span
 /// validation. Nothing follows it: every case below is rejected at the triple, before a
 /// single cell record is read, so the absent payload is never reached.
@@ -1137,6 +1177,8 @@ fn header_with_one_span(cols: u16, rows: u16, line: u16, left: u16, right: u16) 
     b.push(0); // cursor_blink
     b.extend_from_slice(&0u32.to_le_bytes()); // display_offset
     b.extend_from_slice(&0u32.to_le_bytes()); // scrollback_len
+    b.extend_from_slice(&0u64.to_le_bytes()); // evicted_total (v15, #490)
+    b.extend_from_slice(&0u32.to_le_bytes()); // marker_epoch (v15, #490)
     b.push(0); // mouse_events
     b.push(0); // alt_screen
     b.extend_from_slice(&1u16.to_le_bytes()); // span count
@@ -1236,6 +1278,8 @@ fn round_trip_full_frame_with_cells() {
         cursor_blink: false,
         display_offset: 0,
         scrollback_len: 0,
+        evicted_total: 0,
+        marker_epoch: 0,
         mouse_events: Default::default(),
         alt_screen: false,
         scroll: None,
@@ -1261,6 +1305,8 @@ fn round_trip_negative_scroll_count() {
         cursor_blink: false,
         display_offset: 0,
         scrollback_len: 0,
+        evicted_total: 0,
+        marker_epoch: 0,
         mouse_events: Default::default(),
         alt_screen: false,
         scroll: Some(ScrollOp {
