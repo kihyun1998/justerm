@@ -15,7 +15,6 @@
  */
 
 import { readMarkers } from "./markers";
-import type { MarkerIndexCache } from "./marker-index";
 
 /** Which layer a decoration paints on, mirroring xterm's `IDecorationOptions.layer`:
  * `bottom` overrides the cell background *under* the glyph, `top` paints *over* it.
@@ -129,15 +128,27 @@ export interface DecorationRect {
   readonly fg?: number;
 }
 
+/**
+ * What this registry needs in order to place an anchor: one absolute buffer line per marker id.
+ *
+ * Declared as a capability rather than naming `MarkerIndexCache`, which is what a consumer
+ * actually hands over. The registry calls exactly one method on it, and the cache's own
+ * behaviour — the pull, the epoch invalidation, the basis rebase — is tested where it lives.
+ * Widening the parameter also lets a consumer that already maintains marker lines its own way
+ * feed this projection without adopting the cache, which is the boundary rule for this layer:
+ * the mechanism is ours, the source of the data is theirs (ADR-0017).
+ *
+ * `undefined` for an id means **do not project it** — a decoration missing for a frame beats one
+ * painted on a line it no longer owns.
+ */
+export interface MarkerLineSource {
+  lineOf(id: number): number | undefined;
+}
+
 /** The frame fields the registry reads. A `DecodedFrame` satisfies it structurally.
  * `cols` sizes right-anchored spans; `rows` clips a multi-row `height` (#202). */
 interface DecorationFrame {
   readonly markerPositions?: ArrayLike<number>;
-  /** Every live marker's ABSOLUTE buffer line (the v11 group), including markers scrolled off
-   * the viewport — which `markerPositions` omits. Needed to place a multi-row decoration whose
-   * anchor is above the top (#461). With `scrollbackLen`/`displayOffset` it wins per marker;
-   * a marker carried only by `markerPositions` still resolves from its viewport row. */
-  readonly markerLines?: ArrayLike<number>;
   readonly displayOffset?: number;
   readonly scrollbackLen?: number;
   readonly cols?: number;
@@ -187,26 +198,28 @@ export class DecorationRegistry {
    * class (#498) and is stable within each class, so it is not simply this order. */
   private readonly inRegistrationOrder = new Set<StoredDecoration>();
 
-  /** The pulled marker index (#490), when the consumer wired one. Optional on purpose:
-   * with no cache this class behaves exactly as it did, resolving anchors from the
-   * frame's own marker groups. */
-  private markerIndex: MarkerIndexCache | undefined;
+  /** The marker-line source (#490), when the consumer wired one. Optional on purpose — but
+   * since v16 an absent one means no ruler marks and no above-top anchors, which is why
+   * {@link rulerMarksForFrame} warns once rather than degrading in silence. */
+  private markerIndex: MarkerLineSource | undefined;
 
   /**
-   * Wire the pulled marker index (#490). An anchor resolves from the frame's own marker
-   * groups first and from the index only for markers those groups do not carry.
+   * Wire the pulled marker index (#490). Since wire v16 this is the **only** source of a
+   * marker's absolute buffer line: the frame carries `markerPositions` (viewport rows for
+   * on-screen markers) and nothing else, so an anchor above the viewport top, and every
+   * overview-ruler mark, comes from here or not at all.
    *
-   * **That ordering is the migration, and it is deliberately this way round.** While the
-   * wire still carries `markerLines` it is the ground truth and the index is the thing
-   * being brought up — letting the index win would hide its defects during the very
-   * window kept to expose them, and would change shipping behaviour for a reconstruction
-   * nothing has exercised. When the groups leave in v16 the first lookup resolves to
-   * nothing, the index becomes the only answer, and `undefined` means exactly what it
-   * says: do not project — a decoration missing for a frame beats one painted on a line
-   * it no longer owns.
+   * It also **wins** over `markerPositions` where both answer, which is #461's rule carried
+   * over from when the absolute line rode the frame: only an absolute line can express an
+   * anchor above the top, so a derived viewport row must not mask it. `undefined` from the
+   * index means exactly what it says: do not project — a decoration missing for a frame beats
+   * one painted on a line it no longer owns.
+   *
+   * Without an index wired the ruler is simply blank; {@link rulerMarksForFrame} says so
+   * once, because nothing else can (a missing anchor throws nothing and reddens nothing).
    */
-  setMarkerIndex(cache: MarkerIndexCache | undefined): void {
-    this.markerIndex = cache;
+  setMarkerIndex(source: MarkerLineSource | undefined): void {
+    this.markerIndex = source;
   }
 
   /**
@@ -270,14 +283,13 @@ export class DecorationRegistry {
    * Project the registry onto one frame: emit a {@link DecorationRect} per decoration per
    * covered viewport row, joining each decoration's marker id against the frame.
    *
-   * The join merges the two marker groups **per marker**: the absolute `markerLines` line (plus
-   * the frame's scroll position) wins where a marker has one, and a marker carried only by the
-   * viewport-relative `markerPositions` still resolves from its row.
-   * That distinction matters: `markerPositions` omits a marker scrolled ABOVE the viewport top
-   * (core drops it, `m.line.checked_sub(top)?`), so joining on it alone made a multi-row
-   * decoration whose anchor had scrolled off vanish **entirely** instead of showing the rows
-   * of it that are still on screen (#461). xterm has no such gap — it keys colour lookup to
-   * the absolute buffer line and buckets every line the height covers.
+   * The join reads two sources **per marker**: the frame's viewport-relative `markerPositions`
+   * answers for a marker it carries, and the pulled index (#490) answers for the rest.
+   * That second source is not an extra: `markerPositions` omits a marker scrolled ABOVE the
+   * viewport top (core drops it, `m.line.checked_sub(top)?`), so joining on it alone made a
+   * multi-row decoration whose anchor had scrolled off vanish **entirely** instead of showing
+   * the rows of it that are still on screen (#461). xterm has no such gap — it keys colour
+   * lookup to the absolute buffer line and buckets every line the height covers.
    *
    * Emission order is **registration order** (#458), so where two decorations cover the same
    * cell the LAST registered one wins — the renderer resolves per-property last-in-wire-order
@@ -306,45 +318,36 @@ export class DecorationRegistry {
     // markerId → the decoration's FIRST row, viewport-relative and possibly NEGATIVE (that is
     // the point; it is clamped per-row below and never sent).
     //
-    // The two groups are merged PER MARKER, not switched between: the absolute line wins where
-    // a marker has one (only it can express an anchor above the top), and a marker carried only
-    // by `markerPositions` still resolves. Core makes `markerLines` a superset — both are
-    // `self.markers()`, one filtered — but this code cannot enforce that, and a consumer that
-    // sends the groups from different sources would otherwise see decorations silently vanish.
-    // This map's ITERATION order no longer matters (#458): it is a lookup table, and the
+    // This map's ITERATION order does not matter (#458): it is a lookup table, and the
     // projection walks the decorations in registration order, resolving each anchor from here.
-    // Precedence therefore does not depend on which marker group carried a given anchor.
+    // Precedence therefore does not depend on which source carried a given anchor.
     //
-    // #482: BOTH reads keep only ids with a registered decoration (`this.byMarker`), so `anchors`
-    // and the projection loop below are sized by decorations (D), not by the wire's live-marker
-    // count (M, unbounded with scrollback — core caps nothing). The markerLines stride scan is
-    // still O(M): correlating a flat per-frame snapshot to decorations cannot go below that in
-    // frame-mode without a persistent out-of-band marker index (see #482 and
-    // docs/research/terminal-engine-renderer-architectures.md). But no per-marker Map entry lands
-    // for a marker nothing is registered against, which is the allocation the regression added.
+    // **#482's O(M) scan is gone.** It read the frame's absolute-line group, which carried
+    // every live marker (M, unbounded with scrollback — core caps nothing), so correlating it
+    // to the D registered decorations cost a stride walk of the whole group every frame. v16
+    // deleted that group (#490) and the index below answers each decoration directly, so both
+    // reads here are now sized by decorations: `markerPositions` is viewport-bounded and the
+    // index lookup is O(1) per decoration. This is the frame-mode ceiling that
+    // docs/research/terminal-engine-renderer-architectures.md said could only be escaped by
+    // taking the anchors out of the snapshot — which is what #490 did.
     const anchors = new Map<number, number>();
-    if (hasScroll) {
-      for (const [id, line] of readMarkerLines(frame.markerLines, this.byMarker)) anchors.set(id, line - top);
-    }
-    for (const m of readMarkers(frame.markerPositions)) {
-      if (this.byMarker.has(m.id) && !anchors.has(m.id)) anchors.set(m.id, m.row);
-    }
-    // The pulled index (#490) fills what the frame's own groups could not — which today
-    // is nothing, and after v16 is everything, because the groups leave.
-    //
-    // **Last, not first, and that is the point.** v15 keeps `markerLines` precisely so it
-    // can be the *oracle* the reconstruction is checked against (`serialize.rs`'s version
-    // note says so); letting the reconstruction win would hide every cache defect during
-    // the one window built to expose them, and would change shipping behaviour for a
-    // reconstruction no consumer has exercised yet. The lookup is O(D) — but the O(M)
-    // scans above still run while the groups exist, so this slice *adds* a pass and
-    // removes none. The removal is v16's, by deletion.
+    // The absolute line WINS where the index has one — #461's rule, inherited unchanged from
+    // when that line rode the frame. It is the only source that can express an anchor above the
+    // viewport top, so a derived viewport row must not mask it. An index that has fallen behind
+    // does not compete here: `lineOf` returns `undefined` while `adopted !== seen`, so a stale
+    // line is never served, only a missing one.
     if (hasScroll && this.markerIndex) {
       for (const id of this.byMarker.keys()) {
-        if (anchors.has(id)) continue;
         const line = this.markerIndex.lineOf(id);
         if (line !== undefined) anchors.set(id, line - top);
       }
+    }
+    // …and a marker the index does not hold still resolves from its viewport row. The two are
+    // merged PER MARKER, not switched between: a consumer whose index holds only its decoration
+    // markers while the frame also carries command marks must not see decorations silently
+    // vanish (#461, and the demo does exactly this).
+    for (const m of readMarkers(frame.markerPositions)) {
+      if (this.byMarker.has(m.id) && !anchors.has(m.id)) anchors.set(m.id, m.row);
     }
     // Walk the decorations in REGISTRATION order (#458), resolving each one's anchor row, rather
     // than walking the markers and emitting whatever hangs off each. Same work — the anchor lookup
@@ -409,12 +412,12 @@ export class DecorationRegistry {
 
   /**
    * Project the overview-ruler marks for one frame (#120 S3): for each decoration
-   * carrying `overviewRulerOptions`, join its marker id with the frame's
-   * `markerLines` (EVERY live marker's absolute buffer line, on-screen or not — the
-   * v11 group) and place a mark at `line / (scrollbackLen + rows)` down the track.
-   * Off-viewport anchors show here even though they're absent from
-   * {@link decorationsForFrame} — that is the whole point of a ruler. A ruler
-   * decoration whose marker isn't currently live yields no mark (inner join).
+   * carrying `overviewRulerOptions`, look its marker id up in the pulled index (#490)
+   * for an absolute buffer line and place a mark at `line / (scrollbackLen + rows)`
+   * down the track. Off-viewport anchors show here even though they're absent from
+   * {@link decorationsForFrame} — that is the whole point of a ruler, and since v16
+   * the index is the only thing that knows them. A ruler decoration whose marker the
+   * index does not hold yields no mark (inner join).
    *
    * The mark is one point per marker line, independent of the decoration's
    * `height` — matching xterm, whose `ColorZoneStore` builds a single-line zone
@@ -436,7 +439,6 @@ export class DecorationRegistry {
   }
 
   rulerMarksForFrame(frame: {
-    markerLines?: ArrayLike<number>;
     scrollbackLen?: number;
     rows?: number;
     altScreen?: boolean;
@@ -453,10 +455,10 @@ export class DecorationRegistry {
     // red test and no gate able to see it (`published-seam.types.ts` is one-directional, so
     // a removed getter only shrinks a union). Say so, once.
     //
-    // Keyed on `markerCount` rather than on the absence of `markerLines`: an older decoder
-    // omits the count, and on that wire the group still answers, so warning there would be
-    // false. This is the one signal that distinguishes "the wire stopped carrying anchors"
-    // from "this frame happens to have no markers".
+    // Keyed on `markerCount`, which every v16 frame carries, rather than on "this frame
+    // produced no marks" — that is true of any frame with no live markers, and warning there
+    // would be false. The count is the one field that says "this frame came off a wire that
+    // no longer ships anchors", which is the only case a host can be wrong about.
     if (
       frame.markerCount !== undefined &&
       this.markerIndex === undefined &&
@@ -478,14 +480,12 @@ export class DecorationRegistry {
     // the browser drops, stacking the mark at the track default. `Number.isFinite` is the check
     // the `NaN <= 0` slip needs; it also rejects ±Infinity.
     if (!Number.isFinite(total) || total <= 0) return [];
-    const fromFrame = readMarkerLines(frame.markerLines, this.byMarker); // #482: sized D, not M
-    // The pulled index answers first (#490); the frame's group is the v15 fallback for a
-    // marker it does not hold. Same merge as the cell projection, and for the same reason.
+    // One source since v16: the pulled index. The frame carries no absolute lines, so there is
+    // nothing here to merge it with — unlike the cell projection, which still has
+    // `markerPositions` for the on-screen half. The lookup is O(1) per ruler decoration.
     const idx = this.markerIndex;
-    // Frame group first, index as the gap-filler — the same ordering as the cell
-    // projection above, and for the same reason: in v15 the wire is the oracle.
     const lineOf = {
-      get: (id: number): number | undefined => fromFrame.get(id) ?? idx?.lineOf(id),
+      get: (id: number): number | undefined => idx?.lineOf(id),
     };
     const marks: RulerMark[] = [];
     // Two rules compose here, and they answer different questions.
@@ -519,13 +519,14 @@ export class DecorationRegistry {
       const line = lineOf.get(d.markerId);
       if (line === undefined) continue;
       const rawRatio = line / total;
-      // #463: a non-finite marker line (NaN/±Infinity from a consumer-built markerLines) has no
+      // #463: a non-finite marker line (NaN/±Infinity reaching the index from a consumer's port,
+      // or from a hand-built snapshot) has no
       // placeable position — skip it rather than emit `top: NaN%` / `top: Infinity%`. A clamp
       // cannot rescue this: `Math.max(0, NaN)` is `NaN`. (`total` is finite > 0 above, so a
       // non-finite ratio can only come from a non-finite line.)
       if (!Number.isFinite(rawRatio)) continue;
       // Clamp to the track: a line past the content end (`scrollbackLen + rows`) — a frame
-      // lag/mismatch between the absolute markerLines and the scroll geometry — gives ratio > 1
+      // lag/mismatch between the index's absolute lines and the scroll geometry — gives ratio > 1
       // (mark below the track, invisible); a negative line gives < 0. Pin to [0, 1].
       const topRatio = Math.min(1, Math.max(0, rawRatio));
       const position = d.overviewRulerOptions.position ?? "full";
@@ -566,25 +567,3 @@ function columns(d: StoredDecoration, cols: number): [number, number] {
   return [d.x, d.x + d.width - 1];
 }
 
-/** u32 lanes per record in a frame's `markerLines` (#120 S3, wire v11): `id`,
- * absolute `line`. See the wasm `MARKER_LINE_STRIDE`. */
-const MARKER_LINE_STRIDE = 2;
-
-/** Decode `markerLines` (flat stride-2) into a `markerId → absolute line` map, keeping ONLY ids
- * present in `keep` (#482). The wire carries every live marker (M, unbounded with scrollback), but
- * only markers with a registered decoration can project or place a ruler mark, so the returned map
- * is sized by decorations (D), not the wire (M). The stride scan stays O(M) — a flat per-frame
- * snapshot cannot be correlated to decorations below that (docs/research/…-architectures.md) — but
- * no per-marker entry is allocated for a marker nothing is registered against. */
-function readMarkerLines(
-  flat: ArrayLike<number> | undefined,
-  keep: ReadonlyMap<number, unknown>,
-): Map<number, number> {
-  const out = new Map<number, number>();
-  if (!flat) return out;
-  for (let i = 0; i + MARKER_LINE_STRIDE <= flat.length; i += MARKER_LINE_STRIDE) {
-    const id = flat[i]!;
-    if (keep.has(id)) out.set(id, flat[i + 1]!);
-  }
-  return out;
-}

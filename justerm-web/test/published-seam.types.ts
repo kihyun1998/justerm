@@ -114,7 +114,7 @@ holds<Feeds<WasmFrame["activeMatchSpans"], SetActiveMatch[0]>>(true);
  */
 export type UnpinnedByThisFile = Extract<
   FrameFields<WasmFrame>,
-  "link" | "linkTable" | "markerPositions" | "markerLines"
+  "link" | "linkTable" | "markerPositions"
 >;
 
 /**
@@ -122,9 +122,13 @@ export type UnpinnedByThisFile = Extract<
  * not read as proof of more than it is:
  *
  * - **Element semantics at an unchanged width** — 1-based vs 0-based, tagged vs raw, a stride
- *   change, or a viewport-relative index becoming absolute. `markerLines` (absolute buffer line)
- *   and `markerPositions` (viewport row) are the standing example of two identically-typed groups
- *   whose only difference is meaning.
+ *   change, or a viewport-relative index becoming absolute. The standing example is historical
+ *   and none the weaker for it: `markerLines` (absolute buffer line) and `markerPositions`
+ *   (viewport row) were two identically-typed `Uint32Array` groups whose only difference was
+ *   meaning, and nothing on this seam could have told them apart. `markerLines` left the wire in
+ *   v16 (#490) — note that its departure is itself the second class below, and this file did not
+ *   see that either: it was named in the `Extract` above, where a member that stops existing
+ *   silently resolves to nothing.
  * - **A getter whose wire group silently stopped being populated.** The `.d.ts` describes the
  *   shape wasm-bindgen generates, not what the encoder puts in it.
  *

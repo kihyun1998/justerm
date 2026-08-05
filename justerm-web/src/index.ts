@@ -112,9 +112,12 @@ export { DecorationRegistry } from "./decorations";
 // #490: the pulled marker index. `MarkerIndexCache` is what a consumer maintains and
 // hands to `DecorationRegistry.setMarkerIndex`; `MarkerPort` is the query seam it pulls
 // through (sibling of `CommandNavPort`), wired by the host over its own transport.
+// `MarkerLineSource` is all the registry actually requires, so a consumer already holding
+// marker lines can feed the projection without adopting the cache.
 export { MarkerIndexCache } from "./marker-index";
 export type { MarkerIndexEntry, MarkerIndexSnapshot, MarkerPort } from "./marker-index";
 export type {
+  MarkerLineSource,
   Decoration,
   DecorationLayer,
   DecorationOptions,
