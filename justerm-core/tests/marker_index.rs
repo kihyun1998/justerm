@@ -266,50 +266,59 @@ fn a_resize_that_changes_nothing_does_not_bump() {
     );
 }
 
-/// #490 — the reason v15 keeps the marker groups: while both exist, `marker_lines` is
-/// an oracle for the consumer's rebased index. If nothing performs the comparison the
-/// extra version bump buys nothing, so this is the test that pays for it.
-#[test]
-fn a_rebased_pull_agrees_with_the_frames_own_marker_lines() {
-    let mut e = Engine::with_scrollback(40, 6, 20);
-    for i in 0..40 {
-        if i % 7 == 0 {
-            e.feed(b"\x1b]133;A\x07");
-        }
-        e.feed(b"line\r\n");
-    }
-    let pulled = e.marker_index();
-    assert!(
-        pulled.markers.len() > 1,
-        "the oracle needs several markers to be worth comparing"
-    );
+// The v15 oracle test lived here — it rebased a pull and compared it against the frame's
+// own `marker_lines`. v16 removed that group, so the comparand is gone and the test with
+// it; what it proved (the rebase arithmetic lands on the engine's own answer) is still
+// covered by `a_marker_survives_eviction_by_the_basis_delta` above, which asks the engine
+// twice instead of asking the wire. `the_frame_reports_how_many_markers_are_live` is what
+// replaces it as a standing cross-check, one dimension weaker on purpose: a count cannot
+// verify a line, only that the consumer still holds the right number of them.
 
-    // Move the buffer under the held index without invalidating it.
-    for _ in 0..5 {
-        e.feed(b"more\r\n");
-    }
+/// #490 v16 — the two marker groups leave the frame, and a **count** takes their place.
+///
+/// The count is not a shrunken group: it is the safety net for a consumer that wired the
+/// pull but not the events. Comparing it against the size of a held index detects a
+/// desync the events would otherwise have to be trusted for, so a mis-wired host
+/// self-heals instead of painting decorations on lines it no longer owns.
+#[test]
+fn the_frame_reports_how_many_markers_are_live() {
+    let mut e = Engine::new(20, 5);
+    feed_lines(&mut e, 8, Some(2)); // several marks
 
     let f = e.frame();
-    assert_eq!(
-        f.marker_epoch, pulled.epoch,
-        "eviction alone must not have invalidated the pull"
+    let ix = e.marker_index();
+    assert!(
+        ix.markers.len() > 1,
+        "the fixture must hold several markers, or the equality below is vacuous"
     );
-    let shift = (f.evicted_total - pulled.evicted_total) as u32;
-    let rebased: Vec<(_, u32)> = pulled
-        .markers
-        .iter()
-        .filter_map(|m| m.line.checked_sub(shift).map(|l| (m.id, l)))
-        .collect();
-    let truth: Vec<(_, u32)> = f
-        .overlay
-        .marker_lines
-        .iter()
-        .map(|m| (m.id, m.line))
-        .collect();
     assert_eq!(
-        rebased, truth,
-        "a pull rebased by the basis delta must equal what the frame still reports — \
-         this is the whole justification for shipping v15 with both, and for the \
-         second bump that removes them"
+        f.marker_count as usize,
+        ix.markers.len(),
+        "the header's count must be the population the pull reports — a consumer compares \
+         the two to notice it has drifted"
+    );
+    assert_eq!(
+        decode(&encode(&f)).expect("round-trip").marker_count,
+        f.marker_count,
+        "and it survives the wire"
+    );
+}
+
+/// The count follows the *active* buffer, like the pull it is checked against — an
+/// absolute index means a different thing on each screen.
+#[test]
+fn the_count_follows_the_active_buffer() {
+    let mut e = Engine::new(20, 5);
+    feed_lines(&mut e, 4, Some(2));
+    let primary = e.frame().marker_count;
+    assert!(primary > 0);
+
+    e.feed(b"\x1b[?1049h"); // to the alt screen, which has its own (empty) population
+
+    assert_eq!(
+        e.frame().marker_count,
+        0,
+        "the alt screen reports its own population, not the primary's — otherwise a \
+         consumer on alt would read a desync that is not there"
     );
 }

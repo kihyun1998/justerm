@@ -33,10 +33,11 @@ The *shape* is here; the bytes are [wire format](wire-format.md).
   that viewport damage simply does not contain, which the a11y announce policy gates on.
 - **The basis scalars are the header's first entry that exists to make something *leave* it.** Every
   other scalar describes the terminal; these two describe how long a consumer's separately-pulled
-  answer stays valid, so that the two marker groups can stop riding every frame (ADR-0020 R3). They
-  pass the gate on their own terms — `O(1)`, state rather than occurrence, and not derivable by a
+  answer stays valid, so that the absolute-line marker group could stop riding every frame (ADR-0020
+  R3) — which it did, in v16, where a third scalar (`marker_count`) joined them as the drift check.
+  All three pass the gate on their own terms — `O(1)`, state rather than occurrence, and not derivable by a
   consumer that holds only this frame.
-- **Five overlay groups, and their *ownership* differs** — the part a reader gets wrong:
+- **Four overlay groups since v16, and their *ownership* differs** — the part a reader gets wrong:
 
   | group | owned by | lifetime |
   |---|---|---|
@@ -44,18 +45,19 @@ The *shape* is here; the bytes are [wire format](wire-format.md).
   | `matches` | **consumer** — handed back via `set_search_highlights`, engine only projects | invalidated on resize |
   | `active_match` | **consumer** designates; engine projects | voided with the set |
   | `markers` | engine | re-anchor through mutation, survive an alt excursion |
-  | `marker_lines` | engine | superset of `markers` by id, in a **different frame of reference** |
 
-- **`marker_lines` is absolute, `markers` is viewport-relative.** Two groups for one concept,
-  deliberately: the overview ruler needs anchors for lines that are off-screen, which a viewport-only
-  group cannot supply.
+- **The absolute-line group left in v16 (#490).** It carried every live marker in every frame so the
+  overview ruler could place off-screen anchors — the frame's largest payload, 37–70 % of an 80×24
+  frame at ordinary OSC-133 densities, and ADR-0020's R3 violation. Off-screen anchors now come from a
+  consumer-held index pulled once (`Engine::marker_index`) and kept current by the header basis plus
+  the marker events; `marker_count` in the header is the check that it has not drifted. What remains
+  here is viewport-relative and is what the a11y command announce consumes.
 - **`active_match` is also present in `matches`.** The overlap is resolved by the renderer's highlight
   *ranking* rather than by excluding it here — an ordering decision pushed to where the pixels are.
 
 ## Code
 
-- `justerm-core/src/serialize.rs` — `Frame`, `Overlay`, `Span`, `FrameKind`, `MarkerPosition`,
-  `MarkerLine`
+- `justerm-core/src/serialize.rs` — `Frame`, `Overlay`, `Span`, `FrameKind`, `MarkerPosition`
 - `justerm-core/src/term.rs` — `Term::frame`, `Term::frame_damage`
 
 ## Reference behaviour

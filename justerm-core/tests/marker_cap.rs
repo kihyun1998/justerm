@@ -25,12 +25,8 @@ fn pile(e: &mut Engine, n: usize) {
 
 /// Every live marker's id, in the engine's own order.
 fn live_ids(e: &Engine) -> Vec<MarkerId> {
-    e.frame()
-        .overlay
-        .marker_lines
-        .iter()
-        .map(|m| m.id)
-        .collect()
+    // Asks the engine since v16 removed the wire group this read (#490).
+    e.marker_index().markers.iter().map(|m| m.id).collect()
 }
 
 #[test]

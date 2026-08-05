@@ -52,6 +52,9 @@ struct Flat {
     /// pulled marker index went stale for a reason the eviction delta cannot express.
     evicted_total: u64,
     marker_epoch: u32,
+    /// How many markers are live in the active buffer (#490, v16) — the drift check
+    /// for a consumer maintaining a pulled index.
+    marker_count: u32,
     /// Mouse wanted-events mask (#129) — the routing bits the active tracking
     /// mode reports (DOWN/UP/WHEEL/DRAG/MOVE). `0` = no reporting.
     mouse_events: u8,
@@ -105,10 +108,6 @@ struct Flat {
     /// Marker positions (#118/#159), `MARKER_STRIDE` u32s per marker
     /// (`id`, `row`, `kind`, `exitPresent`, `exitBits`).
     marker_positions: Vec<u32>,
-    /// Every live marker's absolute buffer line (#120 S3, v11), `MARKER_LINE_STRIDE`
-    /// u32s per marker (`id`, `line`) — the off-viewport superset for the overview
-    /// ruler.
-    marker_lines: Vec<u32>,
 }
 
 /// u32s per overlay span in the `selection_spans` / `match_spans` directories:
@@ -121,10 +120,6 @@ pub const OVERLAY_STRIDE: usize = 3;
 /// (the exit as raw u32 — reinterpret as i32 on the JS side, `bits | 0`). Non-
 /// `CommandFinished` markers carry `exitPresent = 0` (#159).
 pub const MARKER_STRIDE: usize = 5;
-
-/// u32s per marker in the `marker_lines` directory (#120 S3): `id`, `line` (the
-/// absolute buffer line, in the `scrollbackLen + rows` frame the ruler divides by).
-pub const MARKER_LINE_STRIDE: usize = 2;
 
 /// Flatten a decoded [`Frame`] into renderer-friendly buffers ([`Flat`]).
 ///
@@ -210,6 +205,7 @@ fn flatten(frame: &Frame) -> Flat {
         scrollback_len: frame.scrollback_len,
         evicted_total: frame.evicted_total,
         marker_epoch: frame.marker_epoch,
+        marker_count: frame.marker_count,
         mouse_events: frame.mouse_events.bits(),
         alt_screen: frame.alt_screen,
         scroll: frame
@@ -244,12 +240,6 @@ fn flatten(frame: &Frame) -> Flat {
                 };
                 [m.id.0, m.row as u32, kind, present, exit]
             })
-            .collect(),
-        marker_lines: frame
-            .overlay
-            .marker_lines
-            .iter()
-            .flat_map(|m| [m.id.0, m.line])
             .collect(),
     }
 }
@@ -361,6 +351,17 @@ impl DecodedFrame {
     #[wasm_bindgen(getter, js_name = markerEpoch)]
     pub fn marker_epoch(&self) -> u32 {
         self.flat.marker_epoch
+    }
+
+    /// How many markers are live in the active buffer (#490, v16).
+    ///
+    /// Compare it against the size of a pulled index: a mismatch means the index has
+    /// drifted — most likely because the create/dispose events are not being forwarded —
+    /// and the answer is to pull again. It cannot see a create and a dispose inside one
+    /// frame, so it is a net under the events, not a replacement for them.
+    #[wasm_bindgen(getter, js_name = markerCount)]
+    pub fn marker_count(&self) -> u32 {
+        self.flat.marker_count
     }
 
     #[wasm_bindgen(getter, js_name = hasScroll)]
@@ -525,15 +526,6 @@ impl DecodedFrame {
     pub fn marker_positions(&self) -> js_sys::Uint32Array {
         unsafe { js_sys::Uint32Array::view(&self.flat.marker_positions) }
     }
-
-    /// Every live marker's absolute buffer line (#120 S3, v11), `MARKER_LINE_STRIDE`
-    /// u32s per marker (`id`, `line`). Unlike [`DecodedFrame::marker_positions`],
-    /// this includes OFF-viewport markers — the overview ruler places a mark at
-    /// `line / (scrollbackLen + rows)`, so it needs anchors the viewport can't show.
-    #[wasm_bindgen(getter, js_name = markerLines)]
-    pub fn marker_lines(&self) -> js_sys::Uint32Array {
-        unsafe { js_sys::Uint32Array::view(&self.flat.marker_lines) }
-    }
 }
 
 /// The wire-format version this decoder understands (the `VERSION` byte gating
@@ -681,6 +673,7 @@ mod tests {
             scrollback_len: 0,
             evicted_total: 0,
             marker_epoch: 0,
+            marker_count: 0,
             mouse_events: Default::default(),
             alt_screen: false,
             scroll: None,
@@ -987,7 +980,6 @@ mod tests {
                 },
             ],
             markers: vec![],
-            marker_lines: vec![],
             active_match: vec![],
         };
         // Through the real wire (encode→decode), then flattened — proves the
@@ -1065,26 +1057,6 @@ mod tests {
     }
 
     #[test]
-    fn flatten_carries_marker_lines_through_the_wire() {
-        use justerm_core::{MarkerId, MarkerLine};
-        let mut frame = partial(80, 24, vec![ascii_span(0, 0, "x")]);
-        frame.overlay.marker_lines = vec![
-            MarkerLine {
-                id: MarkerId(5),
-                line: 3,
-            },
-            MarkerLine {
-                id: MarkerId(99),
-                line: 100_000, // past u16 — proves the u32 line lane survives the wire
-            },
-        ];
-        let native = justerm_core::decode(&justerm_core::encode(&frame)).expect("decode");
-        let flat = flatten(&native);
-        // Stride 2 per marker: (id, line).
-        assert_eq!(flat.marker_lines, vec![5, 3, 99, 100_000]);
-    }
-
-    #[test]
     fn flatten_carries_mouse_events_mask_through_the_wire() {
         use justerm_core::MouseEvents;
         let mut frame = partial(80, 24, vec![ascii_span(0, 0, "x")]);
@@ -1122,6 +1094,7 @@ mod tests {
             scrollback_len: 0,
             evicted_total: 0,
             marker_epoch: 0,
+            marker_count: 0,
             mouse_events: Default::default(),
             alt_screen: false,
             scroll: Some(justerm_core::ScrollOp {

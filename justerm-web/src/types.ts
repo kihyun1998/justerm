@@ -145,6 +145,17 @@ export interface DecodedFrame {
   readonly evictedTotal?: number;
   readonly markerEpoch?: number;
   /**
+   * How many markers are live in the active buffer (#490, wire v16) —
+   * `justerm-wasm-decode`'s `markerCount` getter.
+   *
+   * The drift check on a pulled index: compare it against the index's size, and a
+   * mismatch means re-pull. It exists for the consumer that wired the pull but not the
+   * create/dispose events, which would otherwise drift silently. It cannot see a create
+   * and a dispose inside one frame, so it is a net under the events rather than a
+   * replacement for them.
+   */
+  readonly markerCount?: number;
+  /**
    * Whether the alternate screen (`?1049`/`?47`) is active (#149, wire v9) —
    * `justerm-wasm-decode`'s `altScreen` getter. The a11y announce policy (#119)
    * suppresses output reads when set (a TUI repaint isn't new output). Optional —

@@ -75,6 +75,9 @@ stack, which is why this class survives to be found by a completeness pass rathe
   it is **not** reachable without an adversary — ordinary shell integration emits ≤ 4 marks per
   command over ≥ 1 line each, so a default-scrollback session tops out near 40 000, and the measured
   70 000 needed a stream that never emits a newline (#721 measures both ends).
+  **And half of it is now moot**: v16 removed the absolute-line group entirely (#490), so only the
+  viewport group's `u16` count remains — still bounded by `MAX_MARKERS`, and now the *only* place this
+  note's fourth strategy is load-bearing.
 - [decoration](../territory/decoration.md) — the underline-colour group's count, still `u16`,
   measured unreachable after #582 rather than fixed.
 

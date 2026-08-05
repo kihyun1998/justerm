@@ -197,6 +197,7 @@ fn frame_with_scroll(top: usize, bottom: usize) -> Frame {
         scrollback_len: 0,
         evicted_total: 0,
         marker_epoch: 0,
+        marker_count: 0,
         mouse_events: Default::default(),
         alt_screen: false,
         scroll: Some(ScrollOp {

@@ -69,6 +69,7 @@ fn sample_frame() -> Frame {
         scrollback_len: 0,
         evicted_total: 0,
         marker_epoch: 0,
+        marker_count: 0,
         mouse_events: Default::default(),
         alt_screen: false,
         scroll: None,
@@ -148,6 +149,17 @@ fn decode_frame_exposes_the_marker_index_basis() {
     assert_eq!(df.marker_epoch(), 4_294_967_295);
 }
 
+/// #490 v16 — the drift check. Asserted in the browser because that is the only place
+/// this getter executes, and because the field exists *for* a JS consumer: a value that
+/// cannot cross is a four-byte-per-frame no-op.
+#[wasm_bindgen_test]
+fn decode_frame_exposes_the_marker_count() {
+    let mut frame = sample_frame();
+    frame.marker_count = 4_294_967_295;
+    let df = decode_frame(&justerm_core::encode(&frame)).expect("decode");
+    assert_eq!(df.marker_count(), 4_294_967_295);
+}
+
 #[wasm_bindgen_test]
 fn decode_frame_exposes_cursor_scalars() {
     let mut frame = sample_frame();
@@ -212,6 +224,7 @@ fn underline_colour_column_carries_the_tagged_reference() {
         scrollback_len: 0,
         evicted_total: 0,
         marker_epoch: 0,
+        marker_count: 0,
         mouse_events: Default::default(),
         alt_screen: false,
         scroll: None,
@@ -253,6 +266,7 @@ fn colour_and_flag_columns_carry_tagged_values() {
         scrollback_len: 0,
         evicted_total: 0,
         marker_epoch: 0,
+        marker_count: 0,
         mouse_events: Default::default(),
         alt_screen: false,
         scroll: None,
@@ -318,7 +332,6 @@ fn overlay_span_views_cross_the_boundary() {
             },
         ],
         markers: vec![],
-        marker_lines: vec![],
         active_match: vec![],
     };
     let df = decode_frame(&justerm_core::encode(&frame)).expect("decode");
@@ -406,29 +419,10 @@ fn marker_position_view_crosses_the_boundary() {
     assert_eq!(m.get_index(9), (-1i32) as u32); // exitBits: -1 reinterpreted
 }
 
-#[wasm_bindgen_test]
-fn marker_lines_view_crosses_the_boundary() {
-    use justerm_core::{MarkerId, MarkerLine};
-    let mut frame = sample_frame();
-    frame.overlay.marker_lines = vec![
-        MarkerLine {
-            id: MarkerId(5),
-            line: 3,
-        },
-        MarkerLine {
-            id: MarkerId(99),
-            line: 100_000, // past u16 — the u32 line lane survives the JS boundary
-        },
-    ];
-    let df = decode_frame(&justerm_core::encode(&frame)).expect("decode");
-
-    let m = df.marker_lines();
-    assert_eq!(m.length(), 4); // two markers × stride 2 (id, line)
-    assert_eq!(m.get_index(0), 5); // id
-    assert_eq!(m.get_index(1), 3); // line
-    assert_eq!(m.get_index(2), 99); // id
-    assert_eq!(m.get_index(3), 100_000); // line (> u16)
-}
+// `marker_lines_view_crosses_the_boundary` lived here until v16 removed the group and
+// its getter (#490). The zero-copy view it proved is still exercised by the remaining
+// directory getters; what the group carried now reaches a consumer through
+// `Engine::marker_index` on the backend side, which never crosses this boundary.
 
 #[wasm_bindgen_test]
 fn decode_frame_throws_on_bad_magic() {

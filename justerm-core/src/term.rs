@@ -495,7 +495,7 @@ pub const MAX_ROWS: usize = u16::MAX as usize;
 
 /// The most live markers one buffer will hold (#721).
 ///
-/// Derived from the wire the same way [`MAX_COLUMNS`] is: both marker group counts
+/// Derived from the wire the same way [`MAX_COLUMNS`] is: the marker group's count
 /// are `u16`, so a population past `u16::MAX` encodes a wrapped count while writing
 /// every record, and `decode` then reads the next group's count out of the middle of
 /// a marker record and returns `Ok`. The field bounds the value; this constant only
@@ -992,6 +992,9 @@ impl Term {
             scrollback_len: self.scrollback.len() as u32,
             evicted_total: self.evicted_total,
             marker_epoch: self.marker_epoch,
+            // The active buffer's population, which is what `marker_index` reports and
+            // therefore what a consumer's held index is compared against (#490).
+            marker_count: self.markers().len() as u32,
             // The mouse tracking mode as a routing mask (#129): which mouse events
             // the app wants, derived from the protocol by the single source
             // `encode_mouse` shares. The consumer routes app-vs-local on it.
@@ -1023,7 +1026,6 @@ impl Term {
                     .map(|m| self.match_spans(m))
                     .unwrap_or_default(),
                 markers: self.marker_positions(),
-                marker_lines: self.all_marker_lines(),
             },
         }
     }

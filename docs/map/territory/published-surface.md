@@ -129,7 +129,7 @@ How a version gets there is [release](release.md).
   a roster again, one language over. Neither was taken.
 - **What no type on this seam can see**, recorded because the gate's existence otherwise reads as
   more coverage than it is: a column with no consumer that declares a width (`link`, `linkTable`,
-  `markerPositions`, `markerLines` — every path here takes them as `ArrayLike<number>`), and any
+  `markerPositions` — every path here takes it as `ArrayLike<number>`), and any
   change to what the values *mean* at an unchanged width. `link` is the live instance of the first:
   it widened to u32 in the same decoder release as `extra` and arrived at the #633 pin bump with
   nothing observing it. Harmless — nothing narrows it — but it is the class, and the gate is blind

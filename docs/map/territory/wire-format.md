@@ -32,17 +32,19 @@ IPC by identity.
   cluster is not, so it is inlined and there is no table (#621, measured both ways).
 - **A group's count is `u32` iff the group is viewport-bounded.** The three overlay span groups and
   the two new per-span groups scale with the viewport, and the header admits a viewport far larger
-  than `u16::MAX` cells, so their counts are u32. The two *marker* groups keep `u16` counts on
-  purpose: neither is viewport-bounded (`marker_lines` reports every live marker; `markers` is
-  row-filtered but several marks share a line), which is the ADR-0020 R3 violation the ADR records
-  against itself, and widening them would make it cheaper to keep (that is #490's, not this file's).
-  **What makes narrow counts safe is a bound on the producer, not on the group**: `MAX_MARKERS`
+  than `u16::MAX` cells, so their counts are u32. The *marker* group keeps a `u16` count on purpose:
+  it is not viewport-bounded either (row-filtered, but several marks share a line), which is the
+  ADR-0020 R3 violation the ADR still records against it. **The other marker group — every live
+  marker's absolute line — left the frame in v16 (#490)**, which is what that deferral pointed at;
+  what remains is measured at 0–36 records where the departed one carried 2 000–8 000.
+  **What makes the narrow count safe is a bound on the producer, not on the group**: `MAX_MARKERS`
   caps a buffer's live population at `u16::MAX` (#721), because the marks are allocated by an
   untrusted stream. The rule stated at the top of this bullet is therefore not the only way a count
   can be sound — a group may also be narrow because nothing can produce a wider value.
 - **A header scalar may exist to shrink the frame, not to describe the terminal.** v15's
   `evicted_total`/`marker_epoch` (#490) are the basis a consumer needs to keep a *separately pulled*
-  marker index valid; they are the price of the two marker groups leaving in v16. Both pass ADR-0020
+  marker index valid, and v16's `marker_count` is the drift check on top of them; together they are
+  the price of the absolute-line group leaving. Both pass ADR-0020
   on their own terms (`O(1)`, state, not derivable from this frame), so the gate is not being bent —
   but note the shape, because it is the first of its kind here: a group is removed by adding the
   smallest thing that lets the consumer reconstruct it.

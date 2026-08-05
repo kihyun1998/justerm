@@ -42,7 +42,7 @@ use std::collections::VecDeque;
 use crate::cell::Cell;
 use crate::event::TermEvent;
 use crate::grid::Grid;
-use crate::serialize::{MarkerId, MarkerKind, MarkerLine, MarkerPosition};
+use crate::serialize::{MarkerId, MarkerKind, MarkerPosition};
 
 use super::{CommandLine, MAX_MARKERS, Marker, MarkerEntry, MarkerIndex, Term};
 
@@ -62,7 +62,7 @@ impl Term {
     /// else normal. Add/rotate/project operate on this; primary-scoped queries
     /// (`command_marks`/`command_lines`) and scrollback eviction read
     /// `normal_markers` directly.
-    fn markers(&self) -> &VecDeque<Marker> {
+    pub(super) fn markers(&self) -> &VecDeque<Marker> {
         if self.on_alt {
             &self.alt_markers
         } else {
@@ -416,21 +416,6 @@ impl Term {
                     row,
                     kind: m.kind,
                 })
-            })
-            .collect()
-    }
-
-    /// Every live marker's absolute buffer line (#120 S3) — the off-viewport
-    /// superset of `marker_positions`, for the overview ruler. No viewport filter:
-    /// a marker scrolled out of view is still reported (that is the ruler's job),
-    /// its `line` in the same `[0, scrollback + rows)` frame as the header's
-    /// `scrollback_len`/`display_offset`.
-    pub(super) fn all_marker_lines(&self) -> Vec<MarkerLine> {
-        self.markers()
-            .iter()
-            .map(|m| MarkerLine {
-                id: m.id,
-                line: m.line as u32,
             })
             .collect()
     }

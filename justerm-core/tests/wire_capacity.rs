@@ -171,7 +171,7 @@ fn more_highlight_spans_than_the_old_count_survives_the_wire() {
     // Named separately from the whole-frame equality below: these two were invented by
     // the desync rather than merely lost, and a bare `!=` would not say so.
     assert!(
-        decoded.overlay.marker_lines.is_empty() && decoded.overlay.active_match.is_empty(),
+        decoded.overlay.markers.is_empty() && decoded.overlay.active_match.is_empty(),
         "the engine had no markers and no active match — decoding any is the reader \
          walking out of the highlight group and into the next one",
     );

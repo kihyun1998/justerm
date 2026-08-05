@@ -30,9 +30,10 @@ use justerm_core::{Engine, TermEvent};
 
 /// Every marker line the frame publishes, in buffer coordinates.
 fn marker_lines(t: &Engine) -> Vec<usize> {
-    t.frame()
-        .overlay
-        .marker_lines
+    // Asks the engine directly since v16 removed the wire group this read (#490). Same
+    // population one hop earlier — the group was projected from exactly this.
+    t.marker_index()
+        .markers
         .iter()
         .map(|m| m.line as usize)
         .collect()

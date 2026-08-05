@@ -1056,7 +1056,7 @@ precedents index inline.)
   **0020** — what qualifies for the per-frame snapshot (state not occurrence · not derivable by the
   consumer · viewport-bounded). Read it *before* proposing a wire group: 0013–0016 each admitted one
   group on its own merits and four more versions followed with no ADR at all, which is the gap 0020
-  closes. It also names `markerLines` as its one stated violation (#482/#490).
+  closes. It also named `markerLines` as its one stated violation (#482/#490); v16 removed that group, and the amendment records what remains.
   **0021** — one WebGL2 context, N grids as viewports (`TerminalSurface`), with the tier rule that
   assigns every renderer setter: share byte-for-byte ⇒ per-config, must differ visibly per terminal ⇒
   per-grid. Its third clause — *consumer-settable ⇒ per-grid by definition* — is recorded in the ADR as
