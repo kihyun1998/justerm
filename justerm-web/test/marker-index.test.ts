@@ -136,3 +136,93 @@ describe("MarkerIndexCache", () => {
     expect(cache.lineOf(1)).toBeUndefined();
   });
 });
+
+/**
+ * The Step 5 pass reproduced three defects the first draft's tests could not see —
+ * two of them because the fixtures called `sync` once, a state the real frame loop can
+ * never be in (the host syncs every frame). These drive the loop.
+ */
+describe("MarkerIndexCache under a realistic frame loop", () => {
+  it("keeps a create-event entry across the frames that follow it", async () => {
+    const port = deferredPort();
+    const cache = new MarkerIndexCache(port);
+    cache.sync(frame(0, 0));
+    await port.resolveWith(snap([], 0, 0));
+
+    cache.onMarkerCreated(11, 40, 1);
+    // The very next frames repeat the same epoch — nothing invalidating happened.
+    for (let i = 0; i < 5; i++) cache.sync(frame(0, 0));
+
+    expect(cache.lineOf(11)).toBe(40);
+  });
+
+  it("does not lose a marker born while a pull was in flight", async () => {
+    const port = deferredPort();
+    const cache = new MarkerIndexCache(port);
+    cache.sync(frame(0, 1)); // pull out
+
+    cache.onMarkerCreated(42, 77, 1); // born mid-flight; the snapshot predates it
+    await port.resolveWith(snap([{ id: 1, line: 5 }], 0, 1));
+    cache.sync(frame(0, 1));
+
+    expect(cache.lineOf(42)).toBe(77);
+    expect(cache.lineOf(1)).toBe(5);
+  });
+
+  it("does not resurrect a marker disposed while a pull was in flight", async () => {
+    const port = deferredPort();
+    const cache = new MarkerIndexCache(port);
+    cache.sync(frame(0, 1));
+
+    cache.onMarkerDisposed(7); // the snapshot still contains it
+    await port.resolveWith(snap([{ id: 7, line: 10 }], 0, 1));
+    cache.sync(frame(0, 1));
+
+    expect(cache.lineOf(7)).toBeUndefined();
+  });
+
+  it("costs one request per epoch change when the port keeps rejecting, not one per frame", async () => {
+    let pulls = 0;
+    const cache = new MarkerIndexCache({
+      index: () => {
+        pulls++;
+        return Promise.reject(new Error("transport down"));
+      },
+    });
+
+    for (let i = 0; i < 20; i++) {
+      cache.sync(frame(0, 1));
+      await Promise.resolve();
+      await Promise.resolve();
+    }
+    expect(pulls).toBe(1);
+
+    cache.sync(frame(0, 2)); // a genuine change earns one more attempt
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(pulls).toBe(2);
+  });
+
+  it("refuses to answer while the adopted epoch is not the one the newest frame reports", async () => {
+    const port = deferredPort();
+    const cache = new MarkerIndexCache(port);
+    cache.sync(frame(0, 1));
+    // The buffer moves on while the pull is out, so the answer that lands is already old.
+    cache.sync(frame(0, 2));
+    await port.resolveWith(snap([{ id: 3, line: 9 }], 0, 1));
+
+    expect(cache.lineOf(3)).toBeUndefined();
+  });
+
+  it("reset() orphans an outstanding pull", async () => {
+    const port = deferredPort();
+    const cache = new MarkerIndexCache(port);
+    cache.sync(frame(0, 1));
+
+    cache.reset();
+    await port.resolveWith(snap([{ id: 3, line: 9 }], 0, 1));
+
+    expect(cache.size).toBe(0);
+    expect(cache.lineOf(3)).toBeUndefined();
+  });
+});

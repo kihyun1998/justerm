@@ -883,33 +883,43 @@ describe("DecorationRegistry — alt-screen decorations (#189)", () => {
 });
 
 describe("DecorationRegistry with a pulled marker index (#490)", () => {
-  /** A cache pre-loaded through the public seam, with a port that never resolves — so
-   * everything under test comes from the create events, not from a pull. */
-  function loadedCache(entries: Array<[number, number]>) {
-    const cache = new MarkerIndexCache({ index: () => new Promise(() => {}) });
-    cache.sync({ evictedTotal: 0, markerEpoch: 0 });
-    for (const [id, line] of entries) cache.onMarkerCreated(id, line, 1);
+  /** A cache that has actually completed a pull and been synced by a frame — the only
+   * state `lineOf` answers in. The first draft of these tests used a port that never
+   * resolved and synced once, which a real frame loop can never be in; a Step 5 pass
+   * showed all three passed only because of that. */
+  async function adoptedCache(entries: Array<[number, number]>, epoch = 1) {
+    const cache = new MarkerIndexCache({
+      index: () =>
+        Promise.resolve({
+          markers: entries.map(([id, line]) => ({ id, line, kind: 1 })),
+          evictedTotal: 0,
+          epoch,
+        }),
+    });
+    cache.sync({ evictedTotal: 0, markerEpoch: epoch });
+    await Promise.resolve();
+    await Promise.resolve();
+    cache.sync({ evictedTotal: 0, markerEpoch: epoch });
     return cache;
   }
 
-  it("projects from the index when the frame carries no marker groups at all", () => {
+  it("projects from the index when the frame carries no marker groups at all", async () => {
     const reg = new DecorationRegistry();
     reg.register({ markerId: 4, bg: 0x00ff00 });
 
-    // v16's shape: the frame has the basis and the geometry, and no marker groups.
+    // v16's shape: basis + geometry in the header, no marker groups.
     const frame = { cols: 10, rows: 5, scrollbackLen: 20, displayOffset: 0 };
     expect(reg.decorationsForFrame(frame)).toEqual([]);
 
-    reg.setMarkerIndex(loadedCache([[4, 22]]));
+    reg.setMarkerIndex(await adoptedCache([[4, 22]]));
     const rects = reg.decorationsForFrame(frame);
     expect(rects).toHaveLength(1);
     expect(rects[0]!.row).toBe(2); // absolute 22, viewport top = 20
   });
 
-  it("prefers the index over the frame's own group when the two disagree", () => {
+  it("lets the frame's own group win while v15 still carries it", async () => {
     const reg = new DecorationRegistry();
     reg.register({ markerId: 4, bg: 0x00ff00 });
-    // The frame still carries v15's group, saying line 21.
     const frame = {
       cols: 10,
       rows: 5,
@@ -919,22 +929,27 @@ describe("DecorationRegistry with a pulled marker index (#490)", () => {
     };
     expect(reg.decorationsForFrame(frame)[0]!.row).toBe(1);
 
-    reg.setMarkerIndex(loadedCache([[4, 23]]));
-    expect(reg.decorationsForFrame(frame)[0]!.row).toBe(3);
+    // The index says something else. The wire wins: in v15 it is the oracle the
+    // reconstruction is checked against, so a disagreement must be visible in a test
+    // rather than silently resolved in the reconstruction's favour.
+    reg.setMarkerIndex(await adoptedCache([[4, 23]]));
+    expect(reg.decorationsForFrame(frame)[0]!.row).toBe(1);
   });
 
-  it("falls back to the frame's group for a marker the index does not hold", () => {
+  it("fills a marker the frame's group does not carry", async () => {
     const reg = new DecorationRegistry();
     reg.register({ markerId: 9, bg: 0x00ff00 });
-    reg.setMarkerIndex(loadedCache([[4, 23]])); // holds 4, not 9
+    reg.register({ markerId: 4, bg: 0x0000ff });
+    reg.setMarkerIndex(await adoptedCache([[4, 23]])); // holds 4 only
 
     const rects = reg.decorationsForFrame({
       cols: 10,
       rows: 5,
       scrollbackLen: 20,
       displayOffset: 0,
-      markerLines: [9, 24],
+      markerLines: [9, 24], // the frame carries 9 only
     });
-    expect(rects[0]!.row).toBe(4);
+    // 9 from the frame (row 4), 4 from the index (row 3) — the two sources compose.
+    expect(rects.map((r) => r.row).sort()).toEqual([3, 4]);
   });
 });

@@ -49,19 +49,28 @@ export interface MarkerBasisFrame {
   readonly markerEpoch?: number;
 }
 
+type Op =
+  | { readonly add: true; readonly id: number; readonly line: number; readonly basis: number }
+  | { readonly add: false; readonly id: number };
+
 export class MarkerIndexCache {
-  /** `markerId → (absolute line, the `evictedTotal` it was absolute at)`. */
   private readonly lines = new Map<number, { line: number; basis: number }>();
   /** The newest basis a frame reported, which `lineOf` rebases against. */
   private basis = 0;
-  /** The epoch the current contents belong to; `undefined` until the first pull lands. */
-  private epoch: number | undefined;
-  /** Set while a pull is outstanding. Two jobs: it makes the index report *unknown*
-   * rather than stale, and it is the once-per-epoch-change cap. */
+  /** The epoch the current contents describe. `undefined` = the contents are unusable. */
+  private adopted: number | undefined;
+  /** The last epoch a *frame* reported — the invalidation key, deliberately distinct from
+   * `adopted`. A frame repeating an epoch we have not caught up with yet is not a new
+   * invalidation, and treating it as one wipes whatever the create events contributed. */
+  private seen: number | undefined;
+  /** Self-issued round-trip token (the `search.ts` pattern). A pull adopts only while it
+   * is still the newest; comparing the backend's own epoch across two channels compares
+   * two samples of one counter taken at different instants, which under a per-line bump
+   * never match — the index then never refills and the retry never terminates. */
+  private seq = 0;
   private inFlight = false;
-  /** The epoch that triggered the pull in flight, so a *further* change during it is
-   * still noticed rather than swallowed by the cap. */
-  private pullingFor: number | undefined;
+  /** Events that landed while a pull was out, replayed onto the snapshot it returns. */
+  private readonly pendingOps: Op[] = [];
 
   constructor(private readonly port: MarkerPort) {}
 
@@ -78,63 +87,66 @@ export class MarkerIndexCache {
   sync(frame: MarkerBasisFrame): void {
     if (frame.evictedTotal !== undefined) this.basis = frame.evictedTotal;
     const epoch = frame.markerEpoch;
-    if (epoch === undefined) return;
-    if (this.epoch === epoch) return;
-    // The contents no longer describe this buffer. Drop them *now* rather than serving
-    // them until the answer arrives: a decoration missing for a frame is visible and
-    // self-correcting, a decoration painted on a line it no longer owns is neither.
+    if (epoch === undefined || epoch === this.seen) return;
+    this.seen = epoch;
+    // What we hold describes a buffer that has moved non-uniformly. Drop it now rather
+    // than serving it: a decoration missing for a frame is visible and self-correcting,
+    // one painted on a line it no longer owns is neither.
     this.lines.clear();
-    this.epoch = undefined;
-    if (this.inFlight) {
-      // One pull at a time — the cap. A pull already out for THIS epoch needs nothing;
-      // one out for an older epoch will be stale on arrival, so record the newer epoch
-      // and let the completion handler ask again rather than adopt it. Both cases are
-      // this one assignment: re-recording the same epoch is a no-op, which is why there
-      // is no separate branch for it (an earlier draft had one, and a mutation test
-      // showed it could be deleted with every test still green — a guard nothing can
-      // fail is not a guard).
-      this.pullingFor = epoch;
-      return;
-    }
-    this.pull(epoch);
+    this.adopted = undefined;
+    this.pendingOps.length = 0;
+    // The cap. `seen` above already swallows a repeated epoch, so a rejecting transport
+    // costs one request per epoch *change*, not one per frame — an explicit "this epoch
+    // already failed" flag was tried and deleted: nothing could make a test fail with it
+    // removed, because this line and `seen` already covered every path to it.
+    if (this.inFlight) return;
+    this.pull();
   }
 
-  private pull(forEpoch: number): void {
+  private pull(): void {
     this.inFlight = true;
-    this.pullingFor = forEpoch;
-    void this.port
-      .index()
-      .then((snap) => {
+    const seq = ++this.seq;
+    void this.port.index().then(
+      (snap) => {
+        if (seq !== this.seq) return; // superseded; not ours to adopt
         this.inFlight = false;
-        // Adopt only if the world has not moved again while we were asking.
-        if (this.pullingFor !== snap.epoch) {
-          const wanted = this.pullingFor;
-          if (wanted !== undefined) this.pull(wanted);
-          return;
-        }
         this.lines.clear();
         for (const m of snap.markers) {
           this.lines.set(m.id, { line: m.line, basis: snap.evictedTotal });
         }
-        this.epoch = snap.epoch;
-      })
-      .catch(() => {
+        // The snapshot is a view from *before* these landed, so replay them onto it —
+        // otherwise a birth is lost and a death is resurrected, permanently, since
+        // neither moves the epoch (deliberately, see core's `event.rs`).
+        for (const op of this.pendingOps) {
+          if (op.add) this.lines.set(op.id, { line: op.line, basis: op.basis });
+          else this.lines.delete(op.id);
+        }
+        this.pendingOps.length = 0;
+        this.adopted = snap.epoch;
+        // The frame stream may have moved on while we were asking. `lineOf` already
+        // refuses to answer for a non-current epoch; ask again so it can resume.
+        if (this.seen !== undefined && this.seen !== snap.epoch) this.pull();
+      },
+      () => {
         // A failed transport leaves the index empty rather than stale — the same choice
-        // the in-flight window makes, for the same reason.
+        // the in-flight window makes.
         this.inFlight = false;
-      });
+      },
+    );
   }
 
   /** A marker was created (core's `TermEvent::MarkerCreated`). `line` is absolute on the
    * basis current at creation, which is why it is stored with one. */
   onMarkerCreated(id: number, line: number, _kind: number): void {
     this.lines.set(id, { line, basis: this.basis });
+    if (this.inFlight) this.pendingOps.push({ add: true, id, line, basis: this.basis });
   }
 
   /** A marker died (core's `TermEvent::MarkerDisposed`). Costs no re-pull — that is why
    * disposal deliberately does not move the epoch. */
   onMarkerDisposed(id: number): void {
     this.lines.delete(id);
+    if (this.inFlight) this.pendingOps.push({ add: false, id });
   }
 
   /**
@@ -143,9 +155,24 @@ export class MarkerIndexCache {
    * up with. A caller must treat `undefined` as "do not project", never as line 0.
    */
   lineOf(id: number): number | undefined {
+    // The contents must describe the buffer the newest frame came from.
+    if (this.adopted === undefined || this.adopted !== this.seen) return undefined;
     const held = this.lines.get(id);
     if (!held) return undefined;
     return held.line - (this.basis - held.basis);
+  }
+
+  /** Detach from a session: drops the contents and orphans any pull still out, so a
+   * response cannot repopulate the index of a widget that has moved on. The counterpart
+   * to `AccessibilityController.reactivate` for this class's async state. */
+  reset(): void {
+    this.lines.clear();
+    this.pendingOps.length = 0;
+    this.basis = 0;
+    this.adopted = undefined;
+    this.seen = undefined;
+    this.inFlight = false;
+    this.seq++;
   }
 
   /** How many markers the index currently holds — for a consumer that wants to compare

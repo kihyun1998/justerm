@@ -182,15 +182,17 @@ export class DecorationRegistry {
   private markerIndex: MarkerIndexCache | undefined;
 
   /**
-   * Wire the pulled marker index (#490). Once set, an anchor resolves from it first and
-   * from the frame's marker groups only as a fallback.
+   * Wire the pulled marker index (#490). An anchor resolves from the frame's own marker
+   * groups first and from the index only for markers those groups do not carry.
    *
-   * That fallback is the **v15 migration window**, not a permanent belt-and-braces: while
-   * the wire still carries `markerLines`, a cache that is empty (never pulled, or
-   * invalidated by an epoch it has not caught up with) still projects correctly. When the
-   * groups leave in v16 the fallback resolves to nothing and `undefined` means exactly
-   * what it says — do not project this decoration — which is the deliberate choice that a
-   * decoration missing for a frame beats one painted on a line it no longer owns.
+   * **That ordering is the migration, and it is deliberately this way round.** While the
+   * wire still carries `markerLines` it is the ground truth and the index is the thing
+   * being brought up — letting the index win would hide its defects during the very
+   * window kept to expose them, and would change shipping behaviour for a reconstruction
+   * nothing has exercised. When the groups leave in v16 the first lookup resolves to
+   * nothing, the index becomes the only answer, and `undefined` means exactly what it
+   * says: do not project — a decoration missing for a frame beats one painted on a line
+   * it no longer owns.
    */
   setMarkerIndex(cache: MarkerIndexCache | undefined): void {
     this.markerIndex = cache;
@@ -310,22 +312,28 @@ export class DecorationRegistry {
     // docs/research/terminal-engine-renderer-architectures.md). But no per-marker Map entry lands
     // for a marker nothing is registered against, which is the allocation the regression added.
     const anchors = new Map<number, number>();
-    // The pulled index first (#490): O(D) lookups, no per-frame scan of the wire's marker
-    // groups at all. It answers only for markers it holds, so the two reads below still
-    // fill the gaps while v15 carries them.
-    if (hasScroll && this.markerIndex) {
-      for (const id of this.byMarker.keys()) {
-        const line = this.markerIndex.lineOf(id);
-        if (line !== undefined) anchors.set(id, line - top);
-      }
-    }
     if (hasScroll) {
-      for (const [id, line] of readMarkerLines(frame.markerLines, this.byMarker)) {
-        if (!anchors.has(id)) anchors.set(id, line - top);
-      }
+      for (const [id, line] of readMarkerLines(frame.markerLines, this.byMarker)) anchors.set(id, line - top);
     }
     for (const m of readMarkers(frame.markerPositions)) {
       if (this.byMarker.has(m.id) && !anchors.has(m.id)) anchors.set(m.id, m.row);
+    }
+    // The pulled index (#490) fills what the frame's own groups could not — which today
+    // is nothing, and after v16 is everything, because the groups leave.
+    //
+    // **Last, not first, and that is the point.** v15 keeps `markerLines` precisely so it
+    // can be the *oracle* the reconstruction is checked against (`serialize.rs`'s version
+    // note says so); letting the reconstruction win would hide every cache defect during
+    // the one window built to expose them, and would change shipping behaviour for a
+    // reconstruction no consumer has exercised yet. The lookup is O(D) — but the O(M)
+    // scans above still run while the groups exist, so this slice *adds* a pass and
+    // removes none. The removal is v16's, by deletion.
+    if (hasScroll && this.markerIndex) {
+      for (const id of this.byMarker.keys()) {
+        if (anchors.has(id)) continue;
+        const line = this.markerIndex.lineOf(id);
+        if (line !== undefined) anchors.set(id, line - top);
+      }
     }
     // Walk the decorations in REGISTRATION order (#458), resolving each one's anchor row, rather
     // than walking the markers and emitting whatever hangs off each. Same work — the anchor lookup
@@ -429,8 +437,10 @@ export class DecorationRegistry {
     // The pulled index answers first (#490); the frame's group is the v15 fallback for a
     // marker it does not hold. Same merge as the cell projection, and for the same reason.
     const idx = this.markerIndex;
+    // Frame group first, index as the gap-filler — the same ordering as the cell
+    // projection above, and for the same reason: in v15 the wire is the oracle.
     const lineOf = {
-      get: (id: number): number | undefined => idx?.lineOf(id) ?? fromFrame.get(id),
+      get: (id: number): number | undefined => fromFrame.get(id) ?? idx?.lineOf(id),
     };
     const marks: RulerMark[] = [];
     // Two rules compose here, and they answer different questions.
