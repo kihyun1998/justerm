@@ -15,7 +15,8 @@ the shell emits.
 - [**ADR-0015 — marker primitive and the overlay marker group**](../../adr/0015-marker-primitive-and-overlay-marker-group.md)
   — the primitive itself and how it reaches the frame (wire v6→7)
 - [ADR-0020 — what qualifies for the frame snapshot](../../adr/0020-what-qualifies-for-the-frame-snapshot.md)
-  — why `marker_lines` (every live marker, absolute) is allowed alongside `markers` (viewport-only)
+  — why the absolute-line group was allowed alongside `markers` (viewport-only), and, since its
+  2026-08-05 amendment, why it left in v16 while `markers` stayed
 - [ADR-0017 — mechanism vs policy](../../adr/0017-core-consumer-boundary-mechanism-vs-policy.md) —
   anchoring needs the whole buffer, so it is core; appearance does not, so it is not
 
@@ -49,7 +50,7 @@ the shell emits.
   would memmove the whole population per push once the cap is reached), and the cap is why both
   `u16` wire counts are safe without being widened.
 - **Two projections, two frames of reference.** `MarkerPosition` is viewport rows and carries the
-  kind; `MarkerLine` is the **absolute** buffer line for *every* live marker and carries no kind or
+  kind; the absolute buffer line for *every* live marker rode its own group until v16 and carried no kind or
   exit code — because the ruler mark's colour is the consumer's, so nothing themeable rides there.
 - **Anchors are maintained through buffer motion by three verbs** — `markers_shift_below_margin`,
   `markers_evict_oldest`, `markers_rotate_region` — called from the write path beside their
@@ -65,10 +66,10 @@ the shell emits.
 
 - `justerm-core/src/term/markers.rs` — `Term::add_marker`, `remove_marker`, `command_marks`,
   `command_lines`, `add_command_mark`, `markers_shift_below_margin`, `markers_evict_oldest`,
-  `markers_rotate_region`, `marker_positions`, `all_marker_lines`, `marker_index`,
+  `markers_rotate_region`, `marker_positions`, `marker_index`,
   `bump_marker_epoch`, and the private
   `primary_grid` / `command_start` / `doc_line_of`. Extracted from `term.rs` in #588
-- `justerm-core/src/serialize.rs` — `MarkerId`, `MarkerKind`, `MarkerPosition`, `MarkerLine`
+- `justerm-core/src/serialize.rs` — `MarkerId`, `MarkerKind`, `MarkerPosition`
 - `justerm-core/src/term.rs` — `CommandLine`
 
 ## Reference behaviour
@@ -87,7 +88,7 @@ recorded SHA; a paraphrase drops the pin).
   someone *adding* a floor and silently breaking command navigation on the alt screen
 - [a wire field narrower than the value it carries](../invariant/wire-field-narrower-than-its-value.md)
   — the two marker group counts are still `u16` after #621 widened its siblings, and **nothing about
-  the viewport bounds either of them**: `marker_lines` reports every live marker, and `markers`,
+  the viewport bounded either of them**: the absolute-line group reported every live marker, and `markers`,
   though `marker_positions` filters it to visible rows, is unbounded because several marks
   legitimately share one line. Past 65 535 the declared count wrapped while every record was still
   written, and `decode` read the following group's count out of the middle of a marker record — `Ok`,
@@ -110,7 +111,7 @@ recorded SHA; a paraphrase drops the pin).
   anchor. Same machinery, two deliberate differences: a tracked point carries a column, and nothing
   about it reaches a frame — so "the anchor pair" is now a triple, and a new mover owes three calls,
   not two
-- [viewport](viewport.md) — `MarkerLine` is absolute and the ruler divides by
+- [viewport](viewport.md) — a marker line is absolute and the ruler divides by
   `scrollback_len + rows`, so the header scalars are part of this contract
 
 ## Known holes / open

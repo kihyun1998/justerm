@@ -105,10 +105,6 @@ struct Flat {
     /// Marker positions (#118/#159), `MARKER_STRIDE` u32s per marker
     /// (`id`, `row`, `kind`, `exitPresent`, `exitBits`).
     marker_positions: Vec<u32>,
-    /// Every live marker's absolute buffer line (#120 S3, v11), `MARKER_LINE_STRIDE`
-    /// u32s per marker (`id`, `line`) — the off-viewport superset for the overview
-    /// ruler.
-    marker_lines: Vec<u32>,
 }
 
 /// u32s per overlay span in the `selection_spans` / `match_spans` directories:
@@ -244,12 +240,6 @@ fn flatten(frame: &Frame) -> Flat {
                 };
                 [m.id.0, m.row as u32, kind, present, exit]
             })
-            .collect(),
-        marker_lines: frame
-            .overlay
-            .marker_lines
-            .iter()
-            .flat_map(|m| [m.id.0, m.line])
             .collect(),
     }
 }
@@ -525,15 +515,6 @@ impl DecodedFrame {
     pub fn marker_positions(&self) -> js_sys::Uint32Array {
         unsafe { js_sys::Uint32Array::view(&self.flat.marker_positions) }
     }
-
-    /// Every live marker's absolute buffer line (#120 S3, v11), `MARKER_LINE_STRIDE`
-    /// u32s per marker (`id`, `line`). Unlike [`DecodedFrame::marker_positions`],
-    /// this includes OFF-viewport markers — the overview ruler places a mark at
-    /// `line / (scrollbackLen + rows)`, so it needs anchors the viewport can't show.
-    #[wasm_bindgen(getter, js_name = markerLines)]
-    pub fn marker_lines(&self) -> js_sys::Uint32Array {
-        unsafe { js_sys::Uint32Array::view(&self.flat.marker_lines) }
-    }
 }
 
 /// The wire-format version this decoder understands (the `VERSION` byte gating
@@ -681,6 +662,7 @@ mod tests {
             scrollback_len: 0,
             evicted_total: 0,
             marker_epoch: 0,
+            marker_count: 0,
             mouse_events: Default::default(),
             alt_screen: false,
             scroll: None,
@@ -987,7 +969,6 @@ mod tests {
                 },
             ],
             markers: vec![],
-            marker_lines: vec![],
             active_match: vec![],
         };
         // Through the real wire (encode→decode), then flattened — proves the
@@ -1065,26 +1046,6 @@ mod tests {
     }
 
     #[test]
-    fn flatten_carries_marker_lines_through_the_wire() {
-        use justerm_core::{MarkerId, MarkerLine};
-        let mut frame = partial(80, 24, vec![ascii_span(0, 0, "x")]);
-        frame.overlay.marker_lines = vec![
-            MarkerLine {
-                id: MarkerId(5),
-                line: 3,
-            },
-            MarkerLine {
-                id: MarkerId(99),
-                line: 100_000, // past u16 — proves the u32 line lane survives the wire
-            },
-        ];
-        let native = justerm_core::decode(&justerm_core::encode(&frame)).expect("decode");
-        let flat = flatten(&native);
-        // Stride 2 per marker: (id, line).
-        assert_eq!(flat.marker_lines, vec![5, 3, 99, 100_000]);
-    }
-
-    #[test]
     fn flatten_carries_mouse_events_mask_through_the_wire() {
         use justerm_core::MouseEvents;
         let mut frame = partial(80, 24, vec![ascii_span(0, 0, "x")]);
@@ -1122,6 +1083,7 @@ mod tests {
             scrollback_len: 0,
             evicted_total: 0,
             marker_epoch: 0,
+            marker_count: 0,
             mouse_events: Default::default(),
             alt_screen: false,
             scroll: Some(justerm_core::ScrollOp {

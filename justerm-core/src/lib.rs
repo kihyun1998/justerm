@@ -33,8 +33,8 @@ pub use logical::LogicalLine;
 pub use search::{Match, SearchOptions, is_valid_regex};
 pub use selection::{SelectionSpan, SelectionType, Side};
 pub use serialize::{
-    CELL_RECORD_LEN, DecodeError, Frame, FrameKind, MarkerId, MarkerKind, MarkerLine,
-    MarkerPosition, Overlay, Span, WIRE_VERSION, decode, encode, encode_cell_record, encode_color,
+    CELL_RECORD_LEN, DecodeError, Frame, FrameKind, MarkerId, MarkerKind, MarkerPosition, Overlay,
+    Span, WIRE_VERSION, decode, encode, encode_cell_record, encode_color,
 };
 
 pub use term::{

@@ -18,7 +18,7 @@ use std::collections::BTreeMap;
 
 /// Wire magic ("juSTerm") + format version. A new feature bumps `VERSION`.
 const MAGIC: [u8; 2] = *b"JT";
-const VERSION: u8 = 15; // v15 adds the marker-index basis to the header — `evicted_total` (u64) and `marker_epoch` (u32) — so a consumer can pull the marker set once and keep it valid instead of being handed every live marker in every frame; the two marker groups stay for now so the still-present `marker_lines` is an oracle the consumer's index can be checked against, and they leave in v16 (#490); v14 moves combining clusters and hyperlink refs off the fixed cell record (18 B -> 14 B) into per-span sparse groups, inlining the cluster (no side-table) but keeping the URI table interned, and widens every count/length prefix they use to u32 — the engine could hold a cluster, a URI, or a viewport its own decoder then rejected or, worse, mis-read as Ok (#621); v13 adds a per-span underline-colour group: sparse (col, Color) pairs for cells drawing a coloured underline (SGR 58, #520); v12 adds a fifth overlay group: the consumer-designated active search match's spans (#428); v11 adds a fourth overlay group: every live marker's absolute buffer line for the overview ruler (#120 S3); v10 adds a marker kind discriminant + optional i32 exit to the overlay marker group (#159); v9 adds the alt-screen flag in the header (#149); v8 adds the mouse wanted-events mask in the header (#129/ADR-0016); v7 overlay marker group (#118/ADR-0015); v6 overlay selection + search-match spans (#108/ADR-0014); v5 scroll position (#112/ADR-0013); v4 cursor shape+blink (#81); v3 cursor row/col/visibility (#38)
+const VERSION: u8 = 16; // v16 removes the fourth overlay group — every live marker's absolute line — and adds `marker_count` (u32) to the header in its place: the group was measured at 37-70% of an 80x24 frame at ordinary OSC-133 densities and is the R3 violation ADR-0020 records against itself, so a consumer pulls the index once (`Engine::marker_index`, v15) and the count is its check against drift (#490). The *viewport* marker group stays: it is what command-announce consumes, it is row-filtered, and its population is bounded by MAX_MARKERS (#721) ; v15 adds the marker-index basis to the header — `evicted_total` (u64) and `marker_epoch` (u32) — so a consumer can pull the marker set once and keep it valid instead of being handed every live marker in every frame; the marker groups stayed one version as an oracle for the consumer index and the absolute-line one left in v16 (#490); v14 moves combining clusters and hyperlink refs off the fixed cell record (18 B -> 14 B) into per-span sparse groups, inlining the cluster (no side-table) but keeping the URI table interned, and widens every count/length prefix they use to u32 — the engine could hold a cluster, a URI, or a viewport its own decoder then rejected or, worse, mis-read as Ok (#621); v13 adds a per-span underline-colour group: sparse (col, Color) pairs for cells drawing a coloured underline (SGR 58, #520); v12 adds a fifth overlay group: the consumer-designated active search match's spans (#428); v11 adds a fourth overlay group: every live marker's absolute buffer line for the overview ruler (#120 S3); v10 adds a marker kind discriminant + optional i32 exit to the overlay marker group (#159); v9 adds the alt-screen flag in the header (#149); v8 adds the mouse wanted-events mask in the header (#129/ADR-0016); v7 overlay marker group (#118/ADR-0015); v6 overlay selection + search-match spans (#108/ADR-0014); v5 scroll position (#112/ADR-0013); v4 cursor shape+blink (#81); v3 cursor row/col/visibility (#38)
 
 /// The wire-format version (the gating `VERSION` byte), exposed so a binding can
 /// assert at load that its decoder matches the backend encoder (#34/ADR-0008).
@@ -139,20 +139,6 @@ pub struct MarkerPosition {
     pub kind: MarkerKind,
 }
 
-/// A marker's absolute buffer line (#120 S3, v11). Unlike [`MarkerPosition`],
-/// this is reported for EVERY live marker — on-screen or not — so a frame-mode
-/// consumer can place overview-ruler marks buffer-relatively (dividing by
-/// `scrollback + rows`), the whole point of a ruler being to show off-viewport
-/// anchors. The consumer joins `id` with its decoration registry; the ruler mark's
-/// colour is the consumer's (theme-agnostic), so no kind/exit rides here.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct MarkerLine {
-    pub id: MarkerId,
-    /// Absolute buffer line, in the same `[0, scrollback_len + rows)` frame the
-    /// header's `scrollback_len`/`display_offset` use.
-    pub line: u32,
-}
-
 /// Interaction overlays projected onto the viewport (#108): highlight spans the
 /// engine carries on the frame so a frame-mode consumer can paint them without
 /// an in-process model query. Positions only — highlight colour is the
@@ -174,11 +160,6 @@ pub struct Overlay {
     /// buffer mutation and survive an alt-screen excursion; only their viewport
     /// position rides here.
     pub markers: Vec<MarkerPosition>,
-    /// Every live marker's absolute buffer line (#120 S3, v11), on-screen or not —
-    /// the overview ruler needs off-viewport anchors, which `markers` (viewport-
-    /// only) can't supply. A superset of `markers` by id; different frame of
-    /// reference (absolute line, not viewport row).
-    pub marker_lines: Vec<MarkerLine>,
     /// The *active* (current) search match's spans (#428, v12): the member of
     /// `matches` the consumer designated via `set_active_search_highlight`
     /// (which match is active is consumer policy — next/prev navigation).
@@ -234,6 +215,18 @@ pub struct Frame {
     /// `TermEvent::MarkerDisposed`, which the consumer already handles, so it costs
     /// no re-pull.
     pub marker_epoch: u32,
+    /// How many markers are live in the **active** buffer (#490, v16).
+    ///
+    /// Not a shrunken marker group — the groups left this frame in v16, and re-adding a
+    /// bounded one would be the same R3 violation with a smaller constant. This is a
+    /// *check*: a consumer that pulled the index compares this against what it holds and
+    /// re-pulls on a mismatch. It exists for the consumer that wired the pull but not the
+    /// create/dispose events, which would otherwise drift silently — and a silently wrong
+    /// decoration is the failure this whole layer is arranged to avoid.
+    ///
+    /// It cannot catch a create and a dispose inside one frame (the count is unchanged),
+    /// which is why it is a net and not the mechanism.
+    pub marker_count: u32,
     /// The mouse tracking mode as a *wanted-events* mask (#129): which mouse
     /// event categories the app asked to receive, so the consumer routes an event
     /// to the app (bit set) or keeps it local. `empty()` = no reporting. Rides the
@@ -346,6 +339,7 @@ pub fn encode(frame: &Frame) -> Vec<u8> {
     // index valid without being handed every marker in every frame.
     out.extend_from_slice(&frame.evicted_total.to_le_bytes());
     out.extend_from_slice(&frame.marker_epoch.to_le_bytes());
+    out.extend_from_slice(&frame.marker_count.to_le_bytes());
     // Mouse wanted-events mask (#129): one byte in the header, like the cursor
     // scalars. Off = 0.
     out.push(frame.mouse_events.bits());
@@ -504,16 +498,11 @@ pub fn encode(frame: &Frame) -> Vec<u8> {
             out.extend_from_slice(&exit.unwrap_or(0).to_le_bytes());
         }
     }
-    // Fourth overlay group (#120 S3, v11): every live marker's absolute buffer
-    // line as `(id u32, line u32)` pairs — a superset of the viewport marker group
-    // above, for placing overview-ruler marks off-viewport. Count-prefixed like the
-    // others.
-    out.extend_from_slice(&(frame.overlay.marker_lines.len() as u16).to_le_bytes());
-    for m in &frame.overlay.marker_lines {
-        out.extend_from_slice(&m.id.0.to_le_bytes());
-        out.extend_from_slice(&m.line.to_le_bytes());
-    }
-    // Fifth overlay group (#428, v12): the active search match's spans, same
+    // The fourth overlay group — every live marker's absolute line (v11) — LEFT the frame
+    // in v16 (#490). It was the payload: measured at 37-70% of an 80x24 frame at ordinary
+    // OSC-133 densities, and ADR-0020's R3 violation. A consumer pulls the index once
+    // (`Engine::marker_index`) and keeps it current from the header basis plus the marker
+    // events; `marker_count` in the header is the check that it has not drifted.
     // count + `(row, left, right)` shape as the selection/match groups. Appended
     // at the tail so the section stays append-only.
     encode_overlay_spans(&mut out, &frame.overlay.active_match);
@@ -683,6 +672,7 @@ pub fn decode(bytes: &[u8]) -> Result<Frame, DecodeError> {
     let scrollback_len = r.u32()?;
     let evicted_total = r.u64()?;
     let marker_epoch = r.u32()?;
+    let marker_count = r.u32()?;
     let mouse_events = MouseEvents::from_bits_retain(r.u8()?);
     let alt_screen = r.u8()? != 0;
     let scroll = if has_scroll {
@@ -879,9 +869,9 @@ pub fn decode(bytes: &[u8]) -> Result<Frame, DecodeError> {
     // Third group (#118): marker `(id u32, row u16)` records, each followed by a
     // kind discriminant (v10, #159) and — for `CommandFinished` — a presence byte
     // + i32 exit (inverse of the marker encode loop).
-    let marker_count = r.u16()?;
-    let mut markers = Vec::with_capacity(marker_count as usize);
-    for _ in 0..marker_count {
+    let marker_group_len = r.u16()?;
+    let mut markers = Vec::with_capacity(marker_group_len as usize);
+    for _ in 0..marker_group_len {
         let id = MarkerId(r.u32()?);
         let row = r.u16()? as usize;
         let kind = match r.u8()? {
@@ -900,15 +890,6 @@ pub fn decode(bytes: &[u8]) -> Result<Frame, DecodeError> {
         };
         markers.push(MarkerPosition { id, row, kind });
     }
-    // Fourth group (#120 S3, v11): every live marker's `(id u32, line u32)` — the
-    // absolute-line superset for the overview ruler (inverse of the encode loop).
-    let marker_line_count = r.u16()?;
-    let mut marker_lines = Vec::with_capacity(marker_line_count as usize);
-    for _ in 0..marker_line_count {
-        let id = MarkerId(r.u32()?);
-        let line = r.u32()?;
-        marker_lines.push(MarkerLine { id, line });
-    }
     // Fifth group (#428, v12): the active search match's spans (inverse of the
     // tail `encode_overlay_spans` call).
     let active_match = decode_overlay_spans(&mut r)?;
@@ -916,7 +897,6 @@ pub fn decode(bytes: &[u8]) -> Result<Frame, DecodeError> {
         selection,
         matches,
         markers,
-        marker_lines,
         active_match,
     };
     Ok(Frame {
@@ -932,6 +912,7 @@ pub fn decode(bytes: &[u8]) -> Result<Frame, DecodeError> {
         scrollback_len,
         evicted_total,
         marker_epoch,
+        marker_count,
         mouse_events,
         alt_screen,
         scroll,

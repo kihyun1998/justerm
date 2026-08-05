@@ -55,7 +55,7 @@ ADR-0024 is authoritative; this is routing. **If they disagree, the ADR is right
   element to position, ignoring `anchor` would leave the option affecting nothing — a dead field.
 - **R5 — projection is per visible row, not per anchor visibility.** A decoration whose anchor sits
   above the viewport still projects the rows of it that are on screen. **This is why the frame's
-  absolute `marker_lines` group exists at all.**
+  absolute-line group existed at all (it left in v16, #490).**
 - **R6 — a projection that cannot be computed emits nothing.** A non-finite or out-of-range input
   yields no rect and no mark rather than an invalid one, because the browser silently drops
   `top: NaN%` and stacks marks at the top edge — a wrong answer that looks like a rendering choice.
@@ -64,7 +64,7 @@ ADR-0024 is authoritative; this is routing. **If they disagree, the ADR is right
 
 - `justerm-web/src/` — the decoration registry and projection (the consumer half)
 - `justerm-renderer/src/decoration.rs` — where the projected colours meet the layer stack
-- `justerm-core/src/serialize.rs` — `MarkerPosition` / `MarkerLine`, the only inputs it gets from the
+- `justerm-core/src/serialize.rs` — `MarkerPosition`, the only wire input it gets from the
   engine
 
 ## Reference behaviour

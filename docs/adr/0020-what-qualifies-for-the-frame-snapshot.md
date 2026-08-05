@@ -121,8 +121,22 @@ state … justerm's frame-mode consumer retains only the current frame's snapsho
 afford unbounded engine-side structures because its consumer resolves them by handle. justerm's cannot,
 so for justerm the bound *is* the contract.
 
-**The stated violations.** `markerLines` (v11) fails R3 knowingly, and `markers` (v7/v10) fails it
-too — unrecorded until #721, because this ADR had graded it `O(viewport)`. It was admitted before this rule
+**The stated violations — one of them resolved 2026-08-05 (#490, v16).** `markerLines` (v11) failed R3
+knowingly; **it has now left the frame**, which is what #490 held the fix for and what this ADR
+predicted would happen ("#490 acquires a home … it stops being a deferred optimisation"). A consumer
+pulls the index once (`Engine::marker_index`, v15) and keeps it current from the header basis plus the
+marker events; `marker_count` (v16) is its check against drift, and passes all three rules as an `O(1)`
+state the consumer cannot derive. What replaced an unbounded group is therefore four bytes.
+
+`markers` (v7/v10) **still fails R3** — unrecorded until #721, because this ADR had graded it
+`O(viewport)`. It stays, and the reason is recorded rather than assumed: it is what the a11y command
+announce consumes, it *is* row-filtered (so its practical size is small — measured 0–36 records against
+`markerLines`' 2 000–8 000 in the same sessions), and its population is bounded by `MAX_MARKERS` (#721)
+so its `u16` count cannot wrap. That makes it a violation of the rule's letter with none of the cost the
+rule exists to prevent — which is exactly the kind of thing this ADR would rather have written down than
+silently tolerated.
+
+The original wording, kept because the reasoning still applies to what remains: It was admitted before this rule
 existed, for a real need — the overview ruler must place marks the viewport cannot show. It is recorded
 here as a violation rather than grandfathered into the rule: #482 mitigated the join, #490 holds the fix
 (marker positions move to an out-of-band, incrementally-maintained index) and its trigger condition. A

@@ -162,8 +162,10 @@ A **frame** serializes one damage cycle (`damage()` + `scroll_delta()`):
   policy #119 suppresses output reads on it), the marker-index basis (`evicted_total` u64 +
   `marker_epoch` u32 — v15, #490: lines evicted since RIS, and a counter that moves when a *pulled*
   marker index went stale for a reason that delta cannot express; together they let a consumer ask for
-  the marker set once instead of being handed every live marker in every frame), kind
-  (`Full` | `Partial`).
+  the marker set once instead of being handed every live marker in every frame) and its check
+  (`marker_count` u32 — v16, #490: how many markers are live in the active buffer, so a consumer that
+  wired the pull but not the create/dispose events notices the drift instead of painting decorations on
+  lines it no longer owns), kind (`Full` | `Partial`).
 - **scroll op** (optional) — `{top, bottom, count}` (ADR-0003); the decoder applies it *before* the spans.
   `count` rides as `i16` and is **capped at the region height** by `scroll_delta` before it is
   encoded (#661) — repeated scrolls of one region accumulate between acks, and past the region the

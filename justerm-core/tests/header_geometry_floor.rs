@@ -60,6 +60,7 @@ fn bare(cols: u16, rows: u16) -> Frame {
         scrollback_len: 0,
         evicted_total: 0,
         marker_epoch: 0,
+        marker_count: 0,
         mouse_events: Default::default(),
         alt_screen: false,
         scroll: None,

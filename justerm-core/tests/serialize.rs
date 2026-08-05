@@ -3,10 +3,13 @@
 //! API only (no engine/PTY/transport). Format spec: `docs/architecture.md`
 //! §Serialization + ADR-0005.
 
+// `round_trip_overlay_marker_lines` and `frame_reports_off_viewport_marker_in_marker_lines`
+// lived here until v16 removed the group they covered (#490). What they asserted — that an
+// off-viewport marker is still reachable — is now `Engine::marker_index`'s, and
+// `marker_index.rs` owns it.
 use justerm_core::{
-    Cell, CellFlags, Color, Engine, Frame, FrameKind, MarkerId, MarkerKind, MarkerLine,
-    MarkerPosition, MouseEvents, Overlay, ScrollOp, SelectionSpan, SelectionType, Side, Span,
-    decode, encode,
+    Cell, CellFlags, Color, Engine, Frame, FrameKind, MarkerId, MarkerKind, MarkerPosition,
+    MouseEvents, Overlay, ScrollOp, SelectionSpan, SelectionType, Side, Span, decode, encode,
 };
 use std::collections::BTreeMap;
 
@@ -27,6 +30,7 @@ fn round_trip_empty_partial_frame() {
         scrollback_len: 0,
         evicted_total: 0,
         marker_epoch: 0,
+        marker_count: 0,
         mouse_events: Default::default(),
         alt_screen: false,
         scroll: None,
@@ -56,6 +60,7 @@ fn round_trip_overlay_selection_and_match_spans() {
         scrollback_len: 0,
         evicted_total: 0,
         marker_epoch: 0,
+        marker_count: 0,
         mouse_events: Default::default(),
         alt_screen: false,
         scroll: None,
@@ -80,7 +85,6 @@ fn round_trip_overlay_selection_and_match_spans() {
                 right: 12,
             }],
             markers: vec![],
-            marker_lines: vec![],
             active_match: vec![],
         },
     };
@@ -108,6 +112,7 @@ fn round_trip_overlay_active_match_spans() {
         scrollback_len: 0,
         evicted_total: 0,
         marker_epoch: 0,
+        marker_count: 0,
         mouse_events: Default::default(),
         alt_screen: false,
         scroll: None,
@@ -177,6 +182,7 @@ fn round_trip_mouse_events_mask() {
         scrollback_len: 0,
         evicted_total: 0,
         marker_epoch: 0,
+        marker_count: 0,
         mouse_events: MouseEvents::empty(),
         alt_screen: false,
         scroll: None,
@@ -207,6 +213,7 @@ fn round_trip_alt_screen_flag() {
         scrollback_len: 0,
         evicted_total: 0,
         marker_epoch: 0,
+        marker_count: 0,
         mouse_events: MouseEvents::empty(),
         alt_screen: true,
         scroll: None,
@@ -236,6 +243,7 @@ fn round_trip_overlay_marker_positions() {
         scrollback_len: 0,
         evicted_total: 0,
         marker_epoch: 0,
+        marker_count: 0,
         mouse_events: Default::default(),
         alt_screen: false,
         scroll: None,
@@ -259,66 +267,6 @@ fn round_trip_overlay_marker_positions() {
     assert_eq!(decode(&bytes).expect("decode"), frame);
 }
 
-/// #120 S3 (wire v11): the fourth overlay group — every live marker's ABSOLUTE
-/// buffer line — round-trips as `(id u32, line u32)` pairs, independent of the
-/// viewport marker group. `line` is u32, so a value past u16 survives intact.
-#[test]
-fn round_trip_overlay_marker_lines() {
-    let mut frame = Frame {
-        cols: 80,
-        rows: 24,
-        kind: FrameKind::Partial,
-        cursor_row: 0,
-        cursor_col: 0,
-        cursor_visible: true,
-        cursor_shape: justerm_core::CursorShape::Block,
-        cursor_blink: false,
-        display_offset: 0,
-        scrollback_len: 0,
-        evicted_total: 0,
-        marker_epoch: 0,
-        mouse_events: Default::default(),
-        alt_screen: false,
-        scroll: None,
-        spans: vec![],
-        link_table: vec![],
-        overlay: Overlay::default(),
-    };
-    frame.overlay.marker_lines = vec![
-        MarkerLine {
-            id: MarkerId(5),
-            line: 3,
-        },
-        MarkerLine {
-            id: MarkerId(99),
-            line: 100_000, // past u16 — proves the u32 lane
-        },
-    ];
-    let bytes = encode(&frame);
-    assert_eq!(decode(&bytes).expect("decode"), frame);
-}
-
-/// #120 S3: a marker scrolled OFF the top of the viewport is omitted from the
-/// viewport marker group but STILL reported in `marker_lines` at its absolute
-/// buffer line — the whole reason the ruler group exists (off-viewport anchors).
-#[test]
-fn frame_reports_off_viewport_marker_in_marker_lines() {
-    let mut t = Engine::new(10, 3); // 3 visible rows
-    let id = t.add_marker(0); // marker anchored at absolute buffer line 0
-    t.feed(b"a\r\nb\r\nc\r\nd\r\ne\r\nf\r\n"); // scroll it up into the scrollback
-
-    let frame = t.frame();
-    assert!(
-        frame.overlay.markers.iter().all(|m| m.id != id),
-        "off-viewport marker is absent from the viewport group"
-    );
-    assert_eq!(
-        frame.overlay.marker_lines,
-        vec![MarkerLine { id, line: 0 }],
-        "but present in marker_lines at its absolute line"
-    );
-}
-
 /// #159 (wire v10): a marker's kind + optional exit code (OSC 133 command marks)
 /// survive the wire. Every `MarkerKind` variant round-trips — including
 /// `CommandFinished`'s `Some`/`None` exit — extending the v7 `(id, row)` record
@@ -338,6 +286,7 @@ fn round_trip_overlay_marker_kinds() {
         scrollback_len: 0,
         evicted_total: 0,
         marker_epoch: 0,
+        marker_count: 0,
         mouse_events: Default::default(),
         alt_screen: false,
         scroll: None,
@@ -400,6 +349,7 @@ fn decode_rejects_bad_marker_kind_and_truncated_exit() {
         scrollback_len: 0,
         evicted_total: 0,
         marker_epoch: 0,
+        marker_count: 0,
         mouse_events: Default::default(),
         alt_screen: false,
         scroll: None,
@@ -413,18 +363,18 @@ fn decode_rejects_bad_marker_kind_and_truncated_exit() {
         kind: MarkerKind::CommandFinished(Some(7)),
     }];
     let bytes = encode(&frame);
-    // With every prior section empty, the tail is the marker group `marker_count(2)`
-    // + record `id(4) row(2) kind(1) present(1) exit(4)`, then the v11 marker_lines
-    // group `count(2)` (0 here), then the v12 active-match group `count(4)` (0 here).
+    // With every prior section empty, the tail is the marker group `count(2)` + record
+    // `id(4) row(2) kind(1) present(1) exit(4)`, then the v12 active-match group
+    // `count(4)` (0 here).
     //
-    // The last of those is **4 bytes, not 2, since v14** (#621): the three
-    // viewport-projected overlay groups widened their counts while the two marker
-    // groups deliberately did not, so this tail mixes both widths and the offsets
-    // below are not symmetric. Counting back: active-match count 4, marker-lines
-    // count 2, exit 4, present 1 — so the kind byte is 12 from the end and the exit
-    // occupies [len-10, len-6).
+    // Two widths meet here and the offsets are not symmetric: the viewport-projected
+    // overlay groups widened their counts to 4 bytes in v14 (#621) while the marker
+    // group deliberately did not. **v16 removed the marker-lines group that used to sit
+    // between them** (#490), so everything below moved 2 bytes closer to the end.
+    // Counting back: active-match count 4, exit 4, present 1 — the kind byte is 10 from
+    // the end and the exit occupies [len-9, len-5).
     let mut bad_kind = bytes.clone();
-    let k = bad_kind.len() - 12;
+    let k = bad_kind.len() - 10;
     bad_kind[k] = 5; // unknown discriminant (valid kinds are 0..=4)
     assert!(
         decode(&bad_kind).is_err(),
@@ -432,9 +382,10 @@ fn decode_rejects_bad_marker_kind_and_truncated_exit() {
     );
 
     let mut truncated = bytes.clone();
-    // Drop both tail group counts (2 + 4 since v14, #621) and two bytes into the i32
-    // exit — the point is to land *inside* the exit, not merely before it.
-    truncated.truncate(truncated.len() - 8);
+    // Drop the tail group count (4 since v14, #621; the 2-byte marker-lines count that
+    // also sat here is gone in v16) and two bytes into the i32 exit — the point is to
+    // land *inside* the exit, not merely before it.
+    truncated.truncate(truncated.len() - 6);
     assert!(
         decode(&truncated).is_err(),
         "a truncated exit must error, not panic"
@@ -459,6 +410,7 @@ fn round_trip_scroll_position() {
         scrollback_len: 250,
         evicted_total: 0,
         marker_epoch: 0,
+        marker_count: 0,
         mouse_events: Default::default(),
         alt_screen: false,
         scroll: None,
@@ -490,6 +442,7 @@ fn round_trip_cursor_position_and_visibility() {
         scrollback_len: 0,
         evicted_total: 0,
         marker_epoch: 0,
+        marker_count: 0,
         mouse_events: Default::default(),
         alt_screen: false,
         scroll: None,
@@ -521,6 +474,7 @@ fn round_trip_span_of_plain_cells() {
         scrollback_len: 0,
         evicted_total: 0,
         marker_epoch: 0,
+        marker_count: 0,
         mouse_events: Default::default(),
         alt_screen: false,
         scroll: None,
@@ -562,6 +516,7 @@ fn round_trip_distinct_colour_references() {
         scrollback_len: 0,
         evicted_total: 0,
         marker_epoch: 0,
+        marker_count: 0,
         mouse_events: Default::default(),
         alt_screen: false,
         scroll: None,
@@ -621,6 +576,7 @@ fn round_trip_cell_flags_incl_layout_markers() {
         scrollback_len: 0,
         evicted_total: 0,
         marker_epoch: 0,
+        marker_count: 0,
         mouse_events: Default::default(),
         alt_screen: false,
         scroll: None,
@@ -666,6 +622,7 @@ fn decode_rejects_superseded_version() {
         scrollback_len: 0,
         evicted_total: 0,
         marker_epoch: 0,
+        marker_count: 0,
         mouse_events: Default::default(),
         alt_screen: false,
         scroll: None,
@@ -690,8 +647,8 @@ fn decode_rejects_superseded_version() {
 /// `wire_version()` mirrors in lockstep (ADR-0008), so a drift here trips before it
 /// can desync a binding.
 #[test]
-fn wire_version_is_fifteen() {
-    assert_eq!(justerm_core::WIRE_VERSION, 15);
+fn wire_version_is_sixteen() {
+    assert_eq!(justerm_core::WIRE_VERSION, 16);
     let mut term = Engine::new(1, 1);
     term.feed(b"x");
     let bytes = encode(&term.frame());
@@ -719,6 +676,7 @@ fn round_trip_grapheme_side_table() {
         scrollback_len: 0,
         evicted_total: 0,
         marker_epoch: 0,
+        marker_count: 0,
         mouse_events: Default::default(),
         alt_screen: false,
         scroll: None,
@@ -764,6 +722,7 @@ fn cell_record_is_fixed_14_bytes() {
         scrollback_len: 0,
         evicted_total: 0,
         marker_epoch: 0,
+        marker_count: 0,
         mouse_events: Default::default(),
         alt_screen: false,
         scroll: None,
@@ -808,6 +767,7 @@ fn round_trip_scroll_op() {
         scrollback_len: 0,
         evicted_total: 0,
         marker_epoch: 0,
+        marker_count: 0,
         mouse_events: Default::default(),
         alt_screen: false,
         scroll: Some(ScrollOp {
@@ -838,6 +798,7 @@ fn round_trip_full_frame_kind() {
         scrollback_len: 0,
         evicted_total: 0,
         marker_epoch: 0,
+        marker_count: 0,
         mouse_events: Default::default(),
         alt_screen: false,
         scroll: None,
@@ -1068,6 +1029,7 @@ fn a_scroll_count_at_the_wire_bound_round_trips() {
         scrollback_len: 0,
         evicted_total: 0,
         marker_epoch: 0,
+        marker_count: 0,
         mouse_events: Default::default(),
         alt_screen: false,
         scroll: Some(ScrollOp {
@@ -1150,7 +1112,7 @@ fn engine_frame_round_trips_hyperlink_and_combining_captures() {
     assert_eq!(decode(&encode(&f)).expect("decode"), f);
 }
 
-/// A `cols`×`rows` v15 header with no scroll op, followed by a one-span count and that
+/// A `cols`×`rows` v16 header with no scroll op, followed by a one-span count and that
 /// span's `(line, left, right)` triple — the shortest buffer that reaches the span
 /// validation. Nothing follows it: every case below is rejected at the triple, before a
 /// single cell record is read, so the absent payload is never reached.
@@ -1179,6 +1141,7 @@ fn header_with_one_span(cols: u16, rows: u16, line: u16, left: u16, right: u16) 
     b.extend_from_slice(&0u32.to_le_bytes()); // scrollback_len
     b.extend_from_slice(&0u64.to_le_bytes()); // evicted_total (v15, #490)
     b.extend_from_slice(&0u32.to_le_bytes()); // marker_epoch (v15, #490)
+    b.extend_from_slice(&0u32.to_le_bytes()); // marker_count (v16, #490)
     b.push(0); // mouse_events
     b.push(0); // alt_screen
     b.extend_from_slice(&1u16.to_le_bytes()); // span count
@@ -1280,6 +1243,7 @@ fn round_trip_full_frame_with_cells() {
         scrollback_len: 0,
         evicted_total: 0,
         marker_epoch: 0,
+        marker_count: 0,
         mouse_events: Default::default(),
         alt_screen: false,
         scroll: None,
@@ -1307,6 +1271,7 @@ fn round_trip_negative_scroll_count() {
         scrollback_len: 0,
         evicted_total: 0,
         marker_epoch: 0,
+        marker_count: 0,
         mouse_events: Default::default(),
         alt_screen: false,
         scroll: Some(ScrollOp {
