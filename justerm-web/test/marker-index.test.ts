@@ -226,3 +226,51 @@ describe("MarkerIndexCache under a realistic frame loop", () => {
     expect(cache.lineOf(3)).toBeUndefined();
   });
 });
+
+/**
+ * #490 — what makes `marker_count` worth its four bytes on the wire. Without this the
+ * field is a header scalar nothing reads, which is what the v16 lens caught it being.
+ */
+describe("MarkerIndexCache drift detection", () => {
+  it("re-pulls when the frame's count disagrees with what it holds", async () => {
+    const port = deferredPort();
+    const cache = new MarkerIndexCache(port);
+    cache.sync({ evictedTotal: 0, markerEpoch: 1, markerCount: 2 });
+    await port.resolveWith(snap([{ id: 1, line: 10 }, { id: 2, line: 20 }], 0, 1));
+    cache.sync({ evictedTotal: 0, markerEpoch: 1, markerCount: 2 });
+    expect(port.pulls).toBe(1);
+    expect(cache.lineOf(1)).toBe(10);
+
+    // A marker was born and the host never forwarded the event: the epoch did not move
+    // (creation deliberately does not bump it), so only the count can reveal the drift.
+    cache.sync({ evictedTotal: 0, markerEpoch: 1, markerCount: 3 });
+
+    expect(port.pulls).toBe(2);
+    expect(cache.lineOf(1)).toBeUndefined();
+  });
+
+  it("does not re-pull while the count agrees", async () => {
+    const port = deferredPort();
+    const cache = new MarkerIndexCache(port);
+    cache.sync({ evictedTotal: 0, markerEpoch: 1, markerCount: 1 });
+    await port.resolveWith(snap([{ id: 1, line: 10 }], 0, 1));
+
+    for (let i = 0; i < 50; i++) {
+      cache.sync({ evictedTotal: i, markerEpoch: 1, markerCount: 1 });
+    }
+    expect(port.pulls).toBe(1);
+  });
+
+  it("ignores the count on a frame that does not carry one", async () => {
+    const port = deferredPort();
+    const cache = new MarkerIndexCache(port);
+    cache.sync({ evictedTotal: 0, markerEpoch: 1 });
+    await port.resolveWith(snap([{ id: 1, line: 10 }], 0, 1));
+
+    // A v15 decoder: no `markerCount`. An absent field must not read as "0 markers".
+    cache.sync({ evictedTotal: 0, markerEpoch: 1 });
+
+    expect(port.pulls).toBe(1);
+    expect(cache.lineOf(1)).toBe(10);
+  });
+});

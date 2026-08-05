@@ -47,6 +47,9 @@ export interface MarkerPort {
 export interface MarkerBasisFrame {
   readonly evictedTotal?: number;
   readonly markerEpoch?: number;
+  /** How many markers the engine holds (wire v16). Optional: absent on an older decoder,
+   * and absent must not read as "zero markers". */
+  readonly markerCount?: number;
 }
 
 type Op =
@@ -87,20 +90,50 @@ export class MarkerIndexCache {
   sync(frame: MarkerBasisFrame): void {
     if (frame.evictedTotal !== undefined) this.basis = frame.evictedTotal;
     const epoch = frame.markerEpoch;
-    if (epoch === undefined || epoch === this.seen) return;
+    if (epoch === undefined) return;
+
+    if (epoch === this.seen) {
+      // Same epoch, so nothing moved non-uniformly — but the population may still have
+      // changed underneath us. Creation and disposal deliberately do not move the epoch
+      // (they are `O(1)` events), so a host that wired the pull and *not* the events
+      // drifts with nothing to notice. The frame's own count is what notices, and that is
+      // the whole reason it rides the header (#490 v16).
+      //
+      // Guarded twice, and both matter. Only while the index is *usable*: mid-flight
+      // `lines` is empty by design and would mismatch every frame. And only when the
+      // frame carries a count at all: an older decoder omits it, and `undefined` must not
+      // read as "zero markers" — that would re-pull forever against a v15 backend.
+      if (
+        this.adopted !== undefined &&
+        frame.markerCount !== undefined &&
+        frame.markerCount !== this.lines.size
+      ) {
+        this.invalidate();
+        if (!this.inFlight) this.pull();
+      }
+      return;
+    }
+
     this.seen = epoch;
     // What we hold describes a buffer that has moved non-uniformly. Drop it now rather
     // than serving it: a decoration missing for a frame is visible and self-correcting,
     // one painted on a line it no longer owns is neither.
+    this.invalidate();
+    // The cap. The `epoch === this.seen` branch above swallows a repeated epoch, so a
+    // rejecting transport costs one request per epoch *change*, not one per frame — an
+    // explicit "this epoch already failed" flag was tried and deleted: nothing could make
+    // a test fail with it removed, because this line and `seen` already covered every
+    // path to it.
+    if (this.inFlight) return;
+    this.pull();
+  }
+
+  /** Drop the contents and mark them unusable, leaving the flight and the frame-side
+   * bookkeeping (`basis`, `seen`) alone. */
+  private invalidate(): void {
     this.lines.clear();
     this.adopted = undefined;
     this.pendingOps.length = 0;
-    // The cap. `seen` above already swallows a repeated epoch, so a rejecting transport
-    // costs one request per epoch *change*, not one per frame — an explicit "this epoch
-    // already failed" flag was tried and deleted: nothing could make a test fail with it
-    // removed, because this line and `seen` already covered every path to it.
-    if (this.inFlight) return;
-    this.pull();
   }
 
   private pull(): void {

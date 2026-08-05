@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { DecorationRegistry } from "../src/decorations";
+import { describe, expect, it, vi } from "vitest";
+import { DecorationRegistry, resetMarkerIndexWarning } from "../src/decorations";
 import { MarkerIndexCache } from "../src/marker-index";
 import { MarkerKind } from "../src/markers";
 
@@ -951,5 +951,53 @@ describe("DecorationRegistry with a pulled marker index (#490)", () => {
     });
     // 9 from the frame (row 4), 4 from the index (row 3) — the two sources compose.
     expect(rects.map((r) => r.row).sort()).toEqual([3, 4]);
+  });
+});
+
+describe("a v16 frame with ruler decorations and no marker index (#490)", () => {
+  it("warns once, because the ruler would otherwise empty in silence", async () => {
+    const reg = new DecorationRegistry();
+    reg.register({ markerId: 4, bg: 0x00ff00, overviewRulerOptions: { color: 0xff0000 } });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    resetMarkerIndexWarning();
+
+    // v16: the frame carries `markerCount`, so the absolute-line group is gone and the
+    // index is the only source for a ruler mark.
+    const frame = { scrollbackLen: 20, rows: 5, markerCount: 1 };
+    expect(reg.rulerMarksForFrame(frame)).toEqual([]);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0]![0]).toMatch(/setMarkerIndex/);
+
+    // Every frame after it stays quiet — the ruler runs per frame, so an undeduped warn
+    // would bury its own first line.
+    for (let i = 0; i < 10; i++) reg.rulerMarksForFrame(frame);
+    expect(warn).toHaveBeenCalledTimes(1);
+    warn.mockRestore();
+  });
+
+  it("stays quiet on a v15 frame, where the wire still carries the anchors", () => {
+    const reg = new DecorationRegistry();
+    reg.register({ markerId: 4, bg: 0x00ff00, overviewRulerOptions: { color: 0xff0000 } });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    resetMarkerIndexWarning();
+
+    // No `markerCount` = an older decoder, whose `markerLines` group still answers.
+    reg.rulerMarksForFrame({ scrollbackLen: 20, rows: 5, markerLines: [4, 21] });
+
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it("stays quiet when an index is wired", () => {
+    const reg = new DecorationRegistry();
+    reg.register({ markerId: 4, bg: 0x00ff00, overviewRulerOptions: { color: 0xff0000 } });
+    reg.setMarkerIndex(new MarkerIndexCache({ index: () => new Promise(() => {}) }));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    resetMarkerIndexWarning();
+
+    reg.rulerMarksForFrame({ scrollbackLen: 20, rows: 5, markerCount: 1 });
+
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
   });
 });

@@ -34,6 +34,13 @@ The first territory in this map that lives **outside `justerm-core`**.
   (`serialize.rs`'s v15 note), so the index winning would hide its own defects during the
   window kept to expose them. In v16 the groups leave, the first lookup resolves to nothing,
   and the index becomes the only answer.
+  Two things keep the index honest, and both exist because the events are `O(1)` and therefore do
+  **not** move the epoch: the frame's `markerCount` is compared against the index's size every frame,
+  so a host that wired the pull and not the events drifts for one frame rather than forever; and a v16
+  frame arriving with ruler decorations registered and **no** index warns once, because that
+  configuration renders an empty overview ruler with no exception, no red test and no gate able to see
+  it. Keyed on `markerCount` rather than on a missing `markerLines`, since an older decoder omits the
+  count and its group still answers.
   Two consequences a reader will otherwise re-derive: the per-frame `O(M)` stride scan over absolute
   lines is gone with the group (what remains is the viewport group, bounded by the rows on screen), and an
   **unknown** line means *do not project*, never line 0, because a decoration missing for a
