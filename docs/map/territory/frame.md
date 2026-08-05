@@ -28,8 +28,14 @@ The *shape* is here; the bytes are [wire format](wire-format.md).
   one of them or refused.
 - **Scalars ride the header because a consumer cannot derive them from cell damage** and they change
   nearly every frame: caret row/col/visible/shape/blink, `display_offset`, `scrollback_len`,
-  `mouse_events`, `alt_screen`, `scroll`. `alt_screen` is the clearest case — buffer-global state
+  `mouse_events`, `alt_screen`, `scroll`, and since v15 the marker-index basis (`evicted_total`,
+  `marker_epoch` — #490). `alt_screen` is the clearest case — buffer-global state
   that viewport damage simply does not contain, which the a11y announce policy gates on.
+- **The basis scalars are the header's first entry that exists to make something *leave* it.** Every
+  other scalar describes the terminal; these two describe how long a consumer's separately-pulled
+  answer stays valid, so that the two marker groups can stop riding every frame (ADR-0020 R3). They
+  pass the gate on their own terms — `O(1)`, state rather than occurrence, and not derivable by a
+  consumer that holds only this frame.
 - **Five overlay groups, and their *ownership* differs** — the part a reader gets wrong:
 
   | group | owned by | lifetime |

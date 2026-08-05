@@ -240,6 +240,25 @@ pub struct Term {
     normal_markers: VecDeque<Marker>,
     alt_markers: VecDeque<Marker>,
     next_marker_id: u32,
+    /// The basis that keeps a *pulled* marker index valid without re-pulling
+    /// (#490). Both are reported by [`Term::marker_index`] and — from the wire
+    /// slice on — by the frame header, so a consumer can compare what it holds
+    /// against what is current.
+    ///
+    /// `evicted_total` counts lines popped off the front of scrollback since
+    /// startup or RIS. Eviction shifts **every** live marker by the same −1, so
+    /// that whole class of movement is one number rather than M facts, and a
+    /// consumer rebases a held line by the delta.
+    ///
+    /// `marker_epoch` covers everything the delta cannot express: a mutation
+    /// after which a held line is wrong for a reason no single offset repairs.
+    /// It says *"what you pulled no longer describes this buffer"* — not *"a verb
+    /// ran"*, which is why the movers bump it only when a surviving marker's line
+    /// actually moved. Disposal is deliberately **not** a bump: a consumer learns
+    /// of that through `TermEvent::MarkerDisposed` and can drop the entry without
+    /// asking for the rest again.
+    evicted_total: u64,
+    marker_epoch: u32,
     /// Positions the engine keeps on their content for a holder that lives
     /// *outside* it (#691). Split per buffer and re-anchored by the same fixups as
     /// the markers beside them; the difference is that nothing here reaches a
@@ -559,6 +578,39 @@ struct TrackedPoint {
     col: usize,
 }
 
+/// One live marker, as the pull query reports it (#490): its stable id, its
+/// **absolute** `[scrollback ++ screen]` line, and the static facts a consumer
+/// would otherwise have to re-learn from every frame.
+///
+/// `kind` and `exit` ride here rather than on the frame because they never change
+/// after `push_marker` — re-sending them per frame is the same class of waste as
+/// re-sending the line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MarkerEntry {
+    pub id: MarkerId,
+    pub line: u32,
+    pub kind: MarkerKind,
+}
+
+/// The answer to [`Term::marker_index`] (#490) — every live marker of the *active*
+/// buffer, plus the basis that says how long the answer stays usable.
+///
+/// The consumer keeps this and rebases per frame:
+/// `current = line - (evicted_total_now - evicted_total)`, valid for exactly as long
+/// as `epoch` is unchanged. When the epoch moves, the held lines are wrong in a way
+/// no offset repairs and the consumer asks again.
+///
+/// It reports the active buffer because an absolute index means a different thing on
+/// each screen — the same reason `markers`/`markers_mut` route by `on_alt`. An
+/// alt-screen switch therefore bumps the epoch even though no line moved: what the
+/// answer *describes* changed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MarkerIndex {
+    pub markers: Vec<MarkerEntry>,
+    pub evicted_total: u64,
+    pub epoch: u32,
+}
+
 /// One executed shell command recovered from OSC-133 marks (#166), for
 /// screen-reader command navigation. The consumer jumps prompt-to-prompt over
 /// these and announces `command` + a success/fail signal from `exit`.
@@ -659,6 +711,8 @@ impl Term {
             normal_markers: VecDeque::new(),
             alt_markers: VecDeque::new(),
             next_marker_id: 0,
+            evicted_total: 0,
+            marker_epoch: 0,
             normal_tracked: Vec::new(),
             alt_tracked: Vec::new(),
             next_tracked_id: 0,
@@ -936,6 +990,8 @@ impl Term {
             // Viewport scroll position for the consumer's scrollbar (ADR-0013).
             display_offset: self.display_offset as u32,
             scrollback_len: self.scrollback.len() as u32,
+            evicted_total: self.evicted_total,
+            marker_epoch: self.marker_epoch,
             // The mouse tracking mode as a routing mask (#129): which mouse events
             // the app wants, derived from the protocol by the single source
             // `encode_mouse` shares. The consumer routes app-vs-local on it.
@@ -1286,6 +1342,22 @@ impl Term {
         let old_cols = self.grid.cols();
         let old_rows = self.grid.rows();
         let limit = self.scrollback_limit;
+
+        // A reflow rewrites marker lines outright, at three separate sites below and in
+        // two different frames of reference — so a held index goes stale in a way no
+        // offset repairs (#490). Bumped **here**, once, rather than beside each rewrite:
+        // this function is the only way any of them runs, and a per-site obligation is
+        // the shape `docs/map/territory/marker.md` already records as a known hole for
+        // the alt guard. Gated on a *dimension change* as well as on there being a marker:
+        // `resize` has no early return for unchanged geometry, and `justerm-web`'s fit
+        // loop re-asserts the size every frame (`ResizePort` states no idempotency
+        // guarantee), so an ungated bump is a full re-pull per frame — measured at 100
+        // bumps for 100 no-op resizes.
+        if (cols != old_cols || rows != old_rows)
+            && (!self.normal_markers.is_empty() || !self.alt_markers.is_empty())
+        {
+            self.bump_marker_epoch();
+        }
 
         // A reflow moves match coordinates (and can change the match set), so the
         // query-derived highlights are invalidated; the consumer re-searches at
@@ -1924,6 +1996,19 @@ impl Term {
                 // offset within `[0, len]`. The evicted row is parked for reuse.
                 if self.scrollback.len() > self.scrollback_limit {
                     self.recycled_row = self.scrollback.pop_front();
+                    // Every absolute index below just shifted by exactly one, which is
+                    // what makes this class of movement expressible as a scalar (#490).
+                    // Counted here rather than in `markers_evict_oldest` because the fact
+                    // is about the *buffer*, not about markers.
+                    //
+                    // **Scope, because the name over-promises.** This counts the
+                    // scrollback *cap* evicting one line. Reflow also drops lines off the
+                    // front (`PaneReflow::evicted`, installed by replacing the deque) and
+                    // is deliberately not counted: it moves the survivors non-uniformly,
+                    // so no delta repairs them and `marker_epoch` signals it instead. A
+                    // holder rebasing off this number *without* also watching the epoch
+                    // gets a wrong answer across every resize.
+                    self.evicted_total += 1;
                     // Every absolute index just shifted down by one; move the
                     // selection with it so its anchors keep their content.
                     self.selection_evict_oldest();
@@ -2012,6 +2097,13 @@ impl Term {
         if self.on_alt {
             return;
         }
+        // The pulled index reports the ACTIVE buffer, so a swap changes what the
+        // consumer's held answer even describes — with no line having moved (#490).
+        // Gated on a marker existing on either side, since an empty index is already
+        // correct for both buffers.
+        if !self.normal_markers.is_empty() || !self.alt_markers.is_empty() {
+            self.bump_marker_epoch();
+        }
         std::mem::swap(&mut self.grid, &mut self.alt_grid);
         self.grid.clear();
         self.on_alt = true;
@@ -2036,6 +2128,15 @@ impl Term {
         // Same fate for alt-scoped tracked points, and for the same reason: the alt
         // buffer is not archived, so leaving it destroys what they named (#691).
         // No announcement — `tracked_point` answers `None` on the next ask.
+        // The pulled index reports the ACTIVE buffer, so a swap changes what the
+        // consumer's held answer even describes — with no line having moved (#490).
+        // Only `normal_markers` is asked: the drain above just emptied `alt_markers`, so
+        // an `|| !alt_markers.is_empty()` disjunct would be dead code carrying a comment
+        // that claims it reads "either side". What was alt-scoped left through
+        // `MarkerDisposed`; what can still be stale is the primary population.
+        if !self.normal_markers.is_empty() {
+            self.bump_marker_epoch();
+        }
         self.alt_tracked.clear();
         std::mem::swap(&mut self.grid, &mut self.alt_grid);
         self.on_alt = false;
@@ -2145,11 +2246,27 @@ impl Term {
         // above take the other route and announce; the counter is what a pull-only
         // handle has instead.
         let next_tracked_id = self.next_tracked_id;
+        // The marker epoch rides across too, and then moves — for the reason one
+        // paragraph up, now that a marker index is *pulled* as well as announced (#490).
+        // A consumer re-pulls when the epoch differs; resetting it to 0 leaves it equal
+        // to the value a quiet session already holds, so the one signal it watches would
+        // not fire for the mutation that invalidates everything. `evicted_total`
+        // legitimately restarts — the buffer it counted is gone — and the epoch change is
+        // what stops the consumer rebasing against the old basis.
+        let marker_epoch = self.marker_epoch;
+        // Marker ids ride across for the *same* reason as `next_tracked_id`, which this
+        // slice makes true of markers: a pulled handle outlives the announcement that
+        // killed it, so a reissued id lets a stale `MarkerDisposed(7)` drop the live
+        // post-RIS marker 7.
+        let next_marker_id = self.next_marker_id;
         *self = Term::with_scrollback(cols, rows, self.scrollback_limit);
         self.replies = replies;
         self.events = events;
         self.word_separators = word_separators;
         self.next_tracked_id = next_tracked_id;
+        self.next_marker_id = next_marker_id;
+        self.marker_epoch = marker_epoch;
+        self.bump_marker_epoch();
         self.mark_fully_damaged();
     }
 

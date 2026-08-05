@@ -18,7 +18,7 @@ use std::collections::BTreeMap;
 
 /// Wire magic ("juSTerm") + format version. A new feature bumps `VERSION`.
 const MAGIC: [u8; 2] = *b"JT";
-const VERSION: u8 = 14; // v14 moves combining clusters and hyperlink refs off the fixed cell record (18 B -> 14 B) into per-span sparse groups, inlining the cluster (no side-table) but keeping the URI table interned, and widens every count/length prefix they use to u32 — the engine could hold a cluster, a URI, or a viewport its own decoder then rejected or, worse, mis-read as Ok (#621); v13 adds a per-span underline-colour group: sparse (col, Color) pairs for cells drawing a coloured underline (SGR 58, #520); v12 adds a fifth overlay group: the consumer-designated active search match's spans (#428); v11 adds a fourth overlay group: every live marker's absolute buffer line for the overview ruler (#120 S3); v10 adds a marker kind discriminant + optional i32 exit to the overlay marker group (#159); v9 adds the alt-screen flag in the header (#149); v8 adds the mouse wanted-events mask in the header (#129/ADR-0016); v7 overlay marker group (#118/ADR-0015); v6 overlay selection + search-match spans (#108/ADR-0014); v5 scroll position (#112/ADR-0013); v4 cursor shape+blink (#81); v3 cursor row/col/visibility (#38)
+const VERSION: u8 = 15; // v15 adds the marker-index basis to the header — `evicted_total` (u64) and `marker_epoch` (u32) — so a consumer can pull the marker set once and keep it valid instead of being handed every live marker in every frame; the two marker groups stay for now so the still-present `marker_lines` is an oracle the consumer's index can be checked against, and they leave in v16 (#490); v14 moves combining clusters and hyperlink refs off the fixed cell record (18 B -> 14 B) into per-span sparse groups, inlining the cluster (no side-table) but keeping the URI table interned, and widens every count/length prefix they use to u32 — the engine could hold a cluster, a URI, or a viewport its own decoder then rejected or, worse, mis-read as Ok (#621); v13 adds a per-span underline-colour group: sparse (col, Color) pairs for cells drawing a coloured underline (SGR 58, #520); v12 adds a fifth overlay group: the consumer-designated active search match's spans (#428); v11 adds a fourth overlay group: every live marker's absolute buffer line for the overview ruler (#120 S3); v10 adds a marker kind discriminant + optional i32 exit to the overlay marker group (#159); v9 adds the alt-screen flag in the header (#149); v8 adds the mouse wanted-events mask in the header (#129/ADR-0016); v7 overlay marker group (#118/ADR-0015); v6 overlay selection + search-match spans (#108/ADR-0014); v5 scroll position (#112/ADR-0013); v4 cursor shape+blink (#81); v3 cursor row/col/visibility (#38)
 
 /// The wire-format version (the gating `VERSION` byte), exposed so a binding can
 /// assert at load that its decoder matches the backend encoder (#34/ADR-0008).
@@ -215,6 +215,25 @@ pub struct Frame {
     /// the header like the cursor — per-frame viewport state, not cell content.
     pub display_offset: u32,
     pub scrollback_len: u32,
+    /// Lines popped off the front of scrollback since startup or RIS (#490). The
+    /// basis a consumer rebases a *pulled* marker index by: eviction shifts every
+    /// absolute line by the same amount, so the whole class is one number.
+    ///
+    /// `u64` on purpose. A `u32` wraps after 2^32 evicted lines, which is reachable
+    /// in exactly the long high-throughput session this field exists to serve — and
+    /// a wrapped basis is silent, producing a plausible line that names other
+    /// content. The narrowing invariant asks the width question per field, and four
+    /// bytes is the cheapest possible answer here.
+    pub evicted_total: u64,
+    /// Bumped whenever a held marker line went stale for a reason `evicted_total`
+    /// cannot express — a reflow, a region rotate that moved a surviving marker, an
+    /// alt-screen switch (#490). A consumer compares it against the epoch its index
+    /// was pulled at and re-pulls on a difference.
+    ///
+    /// Deliberately *not* bumped by a disposal: that arrives as
+    /// `TermEvent::MarkerDisposed`, which the consumer already handles, so it costs
+    /// no re-pull.
+    pub marker_epoch: u32,
     /// The mouse tracking mode as a *wanted-events* mask (#129): which mouse
     /// event categories the app asked to receive, so the consumer routes an event
     /// to the app (bit set) or keeps it local. `empty()` = no reporting. Rides the
@@ -323,6 +342,10 @@ pub fn encode(frame: &Frame) -> Vec<u8> {
     out.push(frame.cursor_blink as u8);
     out.extend_from_slice(&frame.display_offset.to_le_bytes());
     out.extend_from_slice(&frame.scrollback_len.to_le_bytes());
+    // Marker-index basis (#490): the two scalars a consumer needs to keep a pulled
+    // index valid without being handed every marker in every frame.
+    out.extend_from_slice(&frame.evicted_total.to_le_bytes());
+    out.extend_from_slice(&frame.marker_epoch.to_le_bytes());
     // Mouse wanted-events mask (#129): one byte in the header, like the cursor
     // scalars. Off = 0.
     out.push(frame.mouse_events.bits());
@@ -658,6 +681,8 @@ pub fn decode(bytes: &[u8]) -> Result<Frame, DecodeError> {
     let cursor_blink = r.u8()? != 0;
     let display_offset = r.u32()?;
     let scrollback_len = r.u32()?;
+    let evicted_total = r.u64()?;
+    let marker_epoch = r.u32()?;
     let mouse_events = MouseEvents::from_bits_retain(r.u8()?);
     let alt_screen = r.u8()? != 0;
     let scroll = if has_scroll {
@@ -905,6 +930,8 @@ pub fn decode(bytes: &[u8]) -> Result<Frame, DecodeError> {
         cursor_blink,
         display_offset,
         scrollback_len,
+        evicted_total,
+        marker_epoch,
         mouse_events,
         alt_screen,
         scroll,
@@ -1002,5 +1029,14 @@ impl<'a> Reader<'a> {
     fn u32(&mut self) -> Result<u32, DecodeError> {
         let b = self.take(4)?;
         Ok(u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+    }
+
+    /// Only the marker-index basis needs eight bytes (#490) — see `Frame::evicted_total`
+    /// for why that one is not a `u32` like every other header scalar.
+    fn u64(&mut self) -> Result<u64, DecodeError> {
+        let b = self.take(8)?;
+        Ok(u64::from_le_bytes([
+            b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
+        ]))
     }
 }

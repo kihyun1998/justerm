@@ -14,6 +14,22 @@ Decision's *"one stated violation"* wording is corrected in place below. The rul
 and so is #490's ownership of the fix: bounding the population (#721) makes the group's `u16` count
 safe without making it viewport-bounded, which is a wire-capacity answer and not an R3 one.
 
+**Amended 2026-08-04 (#490, wire v15): two header scalars admitted, and the check recorded rather
+than assumed.** `evicted_total` (u64) and `marker_epoch` (u32) ride the header so a consumer can pull
+the marker set **once** and keep it valid. Against the three rules: **R1** — both are current state,
+not occurrences (delivering either twice is harmless; missing a frame loses nothing, because each is
+an absolute value rather than a delta). The *occurrences* in this design go to the event channel where
+R1 puts them — `MarkerDisposed` (#160) and its new mirror `MarkerCreated`, since an appearance is no
+more a field of a thing than a disappearance is. **R2** — a consumer holding only this frame cannot
+compute either: `scrollback_len` saturates at the cap while eviction continues, and nothing observable
+distinguishes a reflow from an ordinary scroll. **R3** — both are `O(1)`.
+
+Note what this admission is *for*, because it is the first of its shape here: these two exist to let
+the two marker groups **leave** in v16. A group is being removed by admitting the smallest thing that
+lets the consumer reconstruct it — which is the same trade R3's remedy always described ("a slice of
+that statelessness, deliberately, in one place"), now with a measured price on the other side: the
+marker groups were 37–70% of an 80×24 frame at ordinary OSC-133 densities.
+
 ## Context
 
 The wire has grown from v3 to **v12**. Four ADRs cover part of it, and they were all accepted on the

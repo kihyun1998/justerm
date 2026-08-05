@@ -30,6 +30,8 @@ fn main() {
         cursor_blink: false,
         display_offset: 0,
         scrollback_len: 0,
+        evicted_total: 0,
+        marker_epoch: 0,
         mouse_events: Default::default(),
         alt_screen: false,
         scroll: None,

@@ -25,6 +25,18 @@ the shell emits.
   boundaries: `PromptStart`, `CommandStart`, `OutputStart`, `CommandFinished(Option<i32>)`. The exit
   code parses to `i32` or becomes `None` — absent, empty and non-numeric all collapse to the same
   "not reported".
+- **A marker index is *pulled*, and three things keep it valid (#490).** `Term::marker_index`
+  answers once with every live marker's absolute line; after that the consumer (a) rebases by the
+  `evicted_total` delta, (b) appends on `MarkerCreated` and drops on `MarkerDisposed`, and (c)
+  re-pulls when `marker_epoch` moves. The split is by *how the buffer moved*: eviction shifts every
+  marker identically so it is one number; birth and death are `O(1)` occurrences so they are events;
+  everything else (reflow, a region rotate that moved a survivor, an alt switch, RIS) is
+  non-uniform, so nothing but a re-pull repairs it.
+  **The known cost, measured**: a marker sitting *below* a bottom margin shifts on every output line
+  (`markers_shift_below_margin`), so it bumps the epoch per line — 1 000 bumps over 1 000 region
+  scrolls. That degrades to the pre-#490 cost (`O(M)` per frame) **only if the consumer re-pulls at
+  most once per frame**, which is therefore a stated obligation of the contract rather than an
+  assumption about how a consumer happens to be written.
 - **Death is an event, not an absence.** An off-screen marker is *omitted* from the viewport group
   while still alive, so the consumer learns of disposal through `MarkerDisposed` rather than by
   noticing a gap. Without that, "scrolled away" and "gone" would be the same observation.
@@ -53,7 +65,8 @@ the shell emits.
 
 - `justerm-core/src/term/markers.rs` — `Term::add_marker`, `remove_marker`, `command_marks`,
   `command_lines`, `add_command_mark`, `markers_shift_below_margin`, `markers_evict_oldest`,
-  `markers_rotate_region`, `marker_positions`, `all_marker_lines`, and the private
+  `markers_rotate_region`, `marker_positions`, `all_marker_lines`, `marker_index`,
+  `bump_marker_epoch`, and the private
   `primary_grid` / `command_start` / `doc_line_of`. Extracted from `term.rs` in #588
 - `justerm-core/src/serialize.rs` — `MarkerId`, `MarkerKind`, `MarkerPosition`, `MarkerLine`
 - `justerm-core/src/term.rs` — `CommandLine`

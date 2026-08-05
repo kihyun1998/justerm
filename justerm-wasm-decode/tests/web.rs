@@ -67,6 +67,8 @@ fn sample_frame() -> Frame {
         cursor_blink: false,
         display_offset: 0,
         scrollback_len: 0,
+        evicted_total: 0,
+        marker_epoch: 0,
         mouse_events: Default::default(),
         alt_screen: false,
         scroll: None,
@@ -132,6 +134,20 @@ fn decode_frame_exposes_scroll_position() {
     assert_eq!(df.scrollback_len(), 250);
 }
 
+/// #490 — the basis a consumer keeps a *pulled* marker index valid with. Asserted in
+/// the browser because that is the only place these getters execute (the host build
+/// 0-compiles this file), and because `evictedTotal` crosses as an `f64`: the value is
+/// a u64 on the wire, so the exactness of that crossing is the thing under test.
+#[wasm_bindgen_test]
+fn decode_frame_exposes_the_marker_index_basis() {
+    let mut frame = sample_frame();
+    frame.evicted_total = 9_007_199_254_740_991; // 2^53 - 1, JS's exact-integer ceiling
+    frame.marker_epoch = 4_294_967_295; // u32::MAX
+    let df = decode_frame(&justerm_core::encode(&frame)).expect("decode");
+    assert_eq!(df.evicted_total(), 9_007_199_254_740_991.0);
+    assert_eq!(df.marker_epoch(), 4_294_967_295);
+}
+
 #[wasm_bindgen_test]
 fn decode_frame_exposes_cursor_scalars() {
     let mut frame = sample_frame();
@@ -194,6 +210,8 @@ fn underline_colour_column_carries_the_tagged_reference() {
         cursor_blink: false,
         display_offset: 0,
         scrollback_len: 0,
+        evicted_total: 0,
+        marker_epoch: 0,
         mouse_events: Default::default(),
         alt_screen: false,
         scroll: None,
@@ -233,6 +251,8 @@ fn colour_and_flag_columns_carry_tagged_values() {
         cursor_blink: false,
         display_offset: 0,
         scrollback_len: 0,
+        evicted_total: 0,
+        marker_epoch: 0,
         mouse_events: Default::default(),
         alt_screen: false,
         scroll: None,

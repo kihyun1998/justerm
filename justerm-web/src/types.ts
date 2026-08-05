@@ -126,6 +126,25 @@ export interface DecodedFrame {
   readonly displayOffset?: number;
   readonly scrollbackLen?: number;
   /**
+   * Marker-index basis (#490, wire v15) — `justerm-wasm-decode`'s `evictedTotal` /
+   * `markerEpoch` getters. Together they let a consumer ask the backend **once** for
+   * every live marker's absolute line and keep that answer, instead of the frame
+   * carrying all of them every time (measured at 37–70% of an 80×24 frame at ordinary
+   * OSC-133 densities).
+   *
+   * `evictedTotal` counts lines evicted from the front of scrollback, so a held line
+   * rebases as `line - (frame.evictedTotal - basisWhenPulled)`. `markerEpoch` moves when
+   * that arithmetic cannot repair the index (a reflow, a region scroll that moved a
+   * marker, an alt switch, RIS) — re-ask then, and **at most once per frame**: a marker
+   * below a bottom margin bumps every output line, and the once-per-frame cap is what
+   * keeps that case no worse than the payload this replaces.
+   *
+   * `evictedTotal` is a `number` carrying a u64: JS is exact to 2^53, four orders of
+   * magnitude past any reachable eviction count.
+   */
+  readonly evictedTotal?: number;
+  readonly markerEpoch?: number;
+  /**
    * Whether the alternate screen (`?1049`/`?47`) is active (#149, wire v9) —
    * `justerm-wasm-decode`'s `altScreen` getter. The a11y announce policy (#119)
    * suppresses output reads when set (a TUI repaint isn't new output). Optional —
