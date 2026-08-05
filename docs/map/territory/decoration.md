@@ -23,24 +23,28 @@ The first territory in this map that lives **outside `justerm-core`**.
 
 ## Design model
 
-- **Anchors resolve from a *pulled* index, with the frame's groups as a migration fallback
-  (#490).** `DecorationRegistry.setMarkerIndex` takes a `MarkerIndexCache`: the consumer asks
-  the backend once (`MarkerPort`, sibling of `CommandNavPort`), then keeps the answer current
-  from the frame's `evictedTotal`/`markerEpoch` basis plus the marker create/dispose events.
-  Both projections read the frame's own marker groups **first** and the index only for markers those
-  do not carry. **v16 removed the absolute-line group**, so on a v16 decoder the first lookup answers
-  for on-viewport markers only and the index is the sole source for everything above the top. That ordering is the migration: while the wire
-  still ships the groups they are the ground truth the reconstruction is checked against
-  (`serialize.rs`'s v15 note), so the index winning would hide its own defects during the
-  window kept to expose them. In v16 the groups leave, the first lookup resolves to nothing,
-  and the index becomes the only answer.
+- **Absolute anchors come from a *pulled* index; the frame carries only viewport rows (#490).**
+  `DecorationRegistry.setMarkerIndex` takes a `MarkerLineSource` — one method, `lineOf(id)` — which
+  `MarkerIndexCache` satisfies: the consumer asks the backend once (`MarkerPort`, sibling of
+  `CommandNavPort`), then keeps the answer current from the frame's `evictedTotal`/`markerEpoch` basis
+  plus the marker create/dispose events. The parameter is the capability rather than the class so a
+  consumer that already tracks marker lines can feed the projection without adopting the cache.
+  **The absolute-line group left the wire in v16**, so the cell projection merges the index (absolute,
+  and the only thing that can express an anchor above the top) with the frame's `markerPositions`
+  (viewport rows for on-screen markers), and the ruler projection has the index alone. Where both
+  answer for one marker the **absolute line wins** — #461's rule, unchanged since it was the frame's
+  group that supplied it: a derived viewport row must not mask an anchor the absolute line places
+  above the top. A lagging index does not compete, because `lineOf` returns `undefined` while
+  `adopted !== seen` rather than serving a stale line. The v15 migration ordering that lived here —
+  frame group first, index as gap-filler — is gone with the group it protected.
   Two things keep the index honest, and both exist because the events are `O(1)` and therefore do
   **not** move the epoch: the frame's `markerCount` is compared against the index's size every frame,
   so a host that wired the pull and not the events drifts for one frame rather than forever; and a v16
   frame arriving with ruler decorations registered and **no** index warns once, because that
   configuration renders an empty overview ruler with no exception, no red test and no gate able to see
-  it. Keyed on `markerCount` rather than on a missing `markerLines`, since an older decoder omits the
-  count and its group still answers.
+  it. Keyed on `markerCount`, which every v16 frame carries, rather than on "this frame produced no
+  marks" — that is true of any frame with no live markers, and only the count distinguishes a wire
+  that stopped shipping anchors from a host that simply has none.
   Two consequences a reader will otherwise re-derive: the per-frame `O(M)` stride scan over absolute
   lines is gone with the group (what remains is the viewport group, bounded by the rows on screen), and an
   **unknown** line means *do not project*, never line 0, because a decoration missing for a

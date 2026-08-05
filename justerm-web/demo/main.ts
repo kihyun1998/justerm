@@ -937,8 +937,9 @@ function viewportFrame(out?: { scrollCount: number }): DecodedFrame {
     // so its viewport row is DERIVED here (`decoAbsLine - top`). markerPositions carries that row
     // only while it is on the viewport (`0 <= row < ROWS`), mirroring core's `marker_positions`
     // filter EXACTLY (term.rs: `m.line.checked_sub(top)?` drops an ABOVE-top marker, `row < rows`
-    // drops a BELOW-viewport one). markerLines below carries the absolute line unconditionally, so
-    // an off-viewport anchor (above-top, #461) still resolves from it — like core's ruler group.
+    // drops a BELOW-viewport one). The wired marker index answers with the absolute line
+    // unconditionally, so an off-viewport anchor (above-top, #461) still resolves from there —
+    // which since v16 is the only place it can (#490).
     markerPositions: [
       ...commandMarks,
       ...(decorationOnScreen() && decoAbsLine - top >= 0 && decoAbsLine - top < ROWS
@@ -1381,7 +1382,7 @@ interface SearchProbe {
  * the frame the demo emits at two scroll offsets — the absolute line must be identical, the derived
  * viewport row must track the scroll. */
 interface RulerAnchorProbe {
-  /** The decoration's absolute buffer line (markerLines → ruler mark) before / after scrolling. */
+  /** The decoration's absolute buffer line (index → ruler mark) before / after scrolling. */
   line0: number;
   lineScrolled: number;
   /** Its derived viewport row (markerPositions) at those offsets — this DOES change. */
@@ -2619,7 +2620,7 @@ window.__aboveTopProbe = async (): Promise<AboveTopProbe> => {
 };
 window.__rulerAnchorProbe = async (): Promise<RulerAnchorProbe> => {
 
-  // #480: the decoration's absolute buffer line (markerLines → ruler mark) must be invariant under
+  // #480: the decoration's absolute buffer line (index → ruler mark) must be invariant under
   // scroll; only its viewport row moves. The seeded demo has no scrollback, so force some, decorate
   // at the current view, and read the frame the demo emits at two scroll offsets. Demo state is
   // restored afterwards so the visible UI is unchanged.

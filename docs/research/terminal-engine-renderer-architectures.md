@@ -279,6 +279,12 @@ engine crate; justerm does both."*
 
 ### 6.2 The #482 cost — is there precedent for "correlate marks against serialized state"?
 
+> **Superseded 2026-08-05 (#490, wire v16) — kept as the analysis that produced the fix.** Everything
+> below describes the shape justerm had when this section was written, and its conclusion was acted on:
+> the `markerLines` group left the frame, a consumer now pulls a marker index once and maintains it
+> from the header basis plus `MarkerCreated`/`MarkerDisposed`, and `readMarkerLines` is gone with the
+> group. Read this for *why* that was the only path below O(M)/frame, not as a description of the code.
+
 justerm renders marker-anchored decorations by, each frame, decoding the frame's flat `markerLines`
 snapshot (every live marker's absolute buffer line, stride-2) into a `Map` and joining it against
 the registry (`justerm-web/src/decorations.ts`, `decorationsForFrame`, `readMarkerLines`). Because

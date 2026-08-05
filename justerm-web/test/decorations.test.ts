@@ -1,12 +1,27 @@
 import { describe, expect, it, vi } from "vitest";
 import { DecorationRegistry, resetMarkerIndexWarning } from "../src/decorations";
+import type { MarkerLineSource } from "../src/decorations";
 import { MarkerIndexCache } from "../src/marker-index";
 import { MarkerKind } from "../src/markers";
 
-/** A frame stripped to what the ruler join reads: all-marker absolute lines
- * (stride-2 `id, line`) plus the scroll geometry for the `line / total` ratio. */
-function rulerFrame(markerLines: number[], scrollbackLen: number, rows: number) {
-  return { markerLines, scrollbackLen, rows };
+/**
+ * A marker-line source holding exactly these `(id, line)` pairs, flat stride-2 so the call
+ * sites read as they did when the same pairs rode the wire's departed `markerLines` group
+ * (#490 v16). `MarkerIndexCache` is the real thing a consumer wires; the registry needs only
+ * `lineOf`, and the cache's own pull/epoch/basis behaviour is proven in `marker-index.test.ts`
+ * rather than re-proven through every projection case here.
+ */
+function lines(flat: number[]): MarkerLineSource {
+  const map = new Map<number, number>();
+  for (let i = 0; i + 2 <= flat.length; i += 2) map.set(flat[i]!, flat[i + 1]!);
+  return { lineOf: (id) => map.get(id) };
+}
+
+/** A frame stripped to what the ruler join reads — the scroll geometry for the `line / total`
+ * ratio. The lines themselves come from the wired source, not the frame (v16). */
+function rulerFrame(reg: DecorationRegistry, flat: number[], scrollbackLen: number, rows: number) {
+  reg.setMarkerIndex(lines(flat));
+  return { scrollbackLen, rows };
 }
 
 /** One stride-5 marker record `(id, row, kind, exitPresent, exitBits)`. Decorations
@@ -26,26 +41,32 @@ function frameGeom(cols: number, rows: number, ...records: number[][]) {
   return { cols, rows, markerPositions: records.flat() };
 }
 
-/** One stride-2 `markerLines` record `(id, absoluteLine)` — the v11 group, which
- * unlike `markerPositions` includes markers scrolled OFF the viewport. */
+/** One `(id, absoluteLine)` pair for the marker-line source — which, unlike `markerPositions`,
+ * answers for markers scrolled OFF the viewport. */
 function ml(id: number, line: number): number[] {
   return [id, line];
 }
-/** A frame carrying absolute marker lines + the viewport's scroll position, i.e. what
- * production always sends. Viewport row 0 is absolute line `scrollbackLen - displayOffset`.
- * `markerPositions` is passed too (the real wire sends both) but omits off-viewport markers,
- * which is the whole point of #461. */
+/**
+ * The v16 shape: the frame carries the viewport's scroll position and its on-screen markers,
+ * and the absolute lines come from a wired source. Viewport row 0 is absolute line
+ * `scrollbackLen - displayOffset`. `positions` omits off-viewport markers, which is the whole
+ * point of #461 — the source is the only thing that can place those.
+ *
+ * Takes `reg` because wiring the source is now part of building the scene: before v16 the two
+ * halves rode one frame object, and keeping them in one call keeps each test's setup in one place.
+ */
 function frameAbs(
+  reg: DecorationRegistry,
   opts: { rows: number; scrollbackLen: number; displayOffset?: number; cols?: number },
-  lines: number[][],
+  abs: number[][],
   positions: number[][] = [],
 ) {
+  reg.setMarkerIndex(lines(abs.flat()));
   return {
     cols: opts.cols ?? 80,
     rows: opts.rows,
     scrollbackLen: opts.scrollbackLen,
     displayOffset: opts.displayOffset ?? 0,
-    markerLines: lines.flat(),
     markerPositions: positions.flat(),
   };
 }
@@ -111,9 +132,9 @@ describe("DecorationRegistry (#120 S1)", () => {
   //
   // NOTE this frame carries `markerPositions` only, so it exercises the viewport-relative
   // half of the join. Do NOT read it as "a marker scrolled off the viewport yields nothing"
-  // — that WAS its rationale and #461 made it false: a real frame also carries the absolute
-  // `markerLines`, which includes markers scrolled above the top, and those now project their
-  // visible rows. See the `frameAbs` tests below for that path.
+  // — that WAS its rationale and #461 made it false: a production scene also has a wired
+  // marker-line source, which answers for markers scrolled above the top, and those project
+  // their visible rows. See the `frameAbs` tests below for that path.
   it("yields no rect for a marker absent from the frame; it reappears when present", () => {
     const reg = new DecorationRegistry();
     reg.register({ markerId: 9, x: 1 });
@@ -216,8 +237,8 @@ describe("DecorationRegistry (#120 S1)", () => {
   // #461: a multi-row decoration whose marker scrolled ABOVE the viewport top must still
   // paint the rows of it that are visible — the vertical mirror of #457's horizontal clip.
   // Core drops an above-top marker from `markerPositions` (`m.line.checked_sub(top)?`), so
-  // joining on that alone makes the whole decoration vanish; the absolute `markerLines`
-  // group carries it. xterm has no such gap: it keys colour lookup to the absolute buffer
+  // joining on that alone makes the whole decoration vanish; the wired absolute-line
+  // source carries it. xterm has no such gap: it keys colour lookup to the absolute buffer
   // line (`WebglRenderer` `row = y + buffer.ydisp`) and buckets every line the height
   // covers (`DecorationService._addToLineBuckets`).
   it("paints the visible rows of a decoration whose marker is above the viewport top", () => {
@@ -227,24 +248,24 @@ describe("DecorationRegistry (#120 S1)", () => {
     // Viewport row 0 == absolute line 13. The marker sits at 10, so the decoration spans
     // absolute 10..14 — rows -3..1 in viewport terms, of which 0 and 1 are on screen.
     const rects = reg.decorationsForFrame(
-      frameAbs({ rows: 10, scrollbackLen: 13 }, [ml(1, 10)], []),
+      frameAbs(reg, { rows: 10, scrollbackLen: 13 }, [ml(1, 10)], []),
     );
 
     expect(rects.map((r) => r.row)).toEqual([0, 1]);
     expect(rects.every((r) => r.left === 0 && r.right === 1 && r.bg === 0x00ff00)).toBe(true);
   });
 
-  // #461 (2-lens): the two marker groups are merged PER MARKER, not switched between. A
-  // consumer whose `markerLines` omits a marker that `markerPositions` carries (the demo does
-  // exactly this — its markerLines holds only the decoration marker, while markerPositions also
-  // holds command marks) must not see that decoration silently vanish.
+  // #461 (2-lens): the two sources are merged PER MARKER, not switched between. A consumer
+  // whose index omits a marker that `markerPositions` carries (the demo does exactly this — its
+  // index holds only the decoration marker, while markerPositions also holds command marks)
+  // must not see that decoration silently vanish.
   it("resolves a marker carried only by markerPositions, alongside absolute ones", () => {
     const reg = new DecorationRegistry();
     reg.register({ markerId: 1, x: 0, width: 1, bg: 0x111111 }); // absolute-only
     reg.register({ markerId: 2, x: 1, width: 1, bg: 0x222222 }); // markerPositions-only
 
     const rects = reg.decorationsForFrame(
-      frameAbs({ rows: 10, scrollbackLen: 13 }, [ml(1, 15)], [mk(2, 4)]),
+      frameAbs(reg, { rows: 10, scrollbackLen: 13 }, [ml(1, 15)], [mk(2, 4)]),
     );
 
     expect(rects).toEqual([
@@ -260,7 +281,7 @@ describe("DecorationRegistry (#120 S1)", () => {
     reg.register({ markerId: 1, x: 0, width: 1 });
 
     const rects = reg.decorationsForFrame(
-      frameAbs({ rows: 10, scrollbackLen: 13 }, [ml(1, 16)], [mk(1, 9)]),
+      frameAbs(reg, { rows: 10, scrollbackLen: 13 }, [ml(1, 16)], [mk(1, 9)]),
     );
 
     expect(rects.map((r) => r.row)).toEqual([3]); // 16 - 13, not the markerPositions row 9
@@ -285,7 +306,7 @@ describe("DecorationRegistry (#120 S1)", () => {
     // 8 live markers on the wire in core marker order (id == absolute line); only 20 and 50 are
     // decorated. top == 0, so row == line == id.
     const lines = [10, 20, 30, 40, 50, 60, 70, 80].map((id) => ml(id, id));
-    const rects = reg.decorationsForFrame(frameAbs({ rows: 100, scrollbackLen: 0 }, lines, []));
+    const rects = reg.decorationsForFrame(frameAbs(reg, { rows: 100, scrollbackLen: 0 }, lines, []));
 
     // Registration order (50 before 20 — the reverse of core's marker order, which is the point),
     // and the 6 undecorated markers contribute nothing.
@@ -309,7 +330,7 @@ describe("DecorationRegistry (#120 S1)", () => {
     reg.register({ markerId: 20, x: 0, width: 1, bg: 0x0000aa }); // registered FIRST
     reg.register({ markerId: 10, x: 0, width: 1, height: 3, bg: 0xaa0000 }); // registered SECOND
     const rects = reg.decorationsForFrame(
-      frameAbs({ rows: 10, scrollbackLen: 0 }, [ml(10, 1), ml(20, 3)], []),
+      frameAbs(reg, { rows: 10, scrollbackLen: 0 }, [ml(10, 1), ml(20, 3)], []),
     );
 
     const onTheSharedCell = rects.filter((r) => r.row === 3 && r.left <= 0 && r.right >= 0);
@@ -335,8 +356,8 @@ describe("DecorationRegistry (#120 S1)", () => {
     reg.register({ markerId: 2, x: 0, width: 1, bg: 0xaa0000 }); // registered SECOND — must win
 
     // Frame A: marker 1 above marker 2. Frame B: the buffer moved and marker 2 is now above.
-    const a = reg.decorationsForFrame(frameAbs({ rows: 10, scrollbackLen: 0 }, [ml(1, 2), ml(2, 5)]));
-    const b = reg.decorationsForFrame(frameAbs({ rows: 10, scrollbackLen: 0 }, [ml(2, 1), ml(1, 6)]));
+    const a = reg.decorationsForFrame(frameAbs(reg, { rows: 10, scrollbackLen: 0 }, [ml(1, 2), ml(2, 5)]));
+    const b = reg.decorationsForFrame(frameAbs(reg, { rows: 10, scrollbackLen: 0 }, [ml(2, 1), ml(1, 6)]));
 
     // In both frames the last-emitted (= winning) rect is marker 2's, whichever anchor sits higher.
     expect(a.at(-1)!.bg).toBe(0xaa0000);
@@ -370,7 +391,7 @@ describe("DecorationRegistry (#120 S1)", () => {
     reg.register({ markerId: 1, x: 0, width: 2, height: 2 }); // absolute 10..11
 
     expect(
-      reg.decorationsForFrame(frameAbs({ rows: 10, scrollbackLen: 13 }, [ml(1, 10)], [])),
+      reg.decorationsForFrame(frameAbs(reg, { rows: 10, scrollbackLen: 13 }, [ml(1, 10)], [])),
     ).toEqual([]);
   });
 
@@ -405,7 +426,7 @@ describe("DecorationRegistry (#120 S1)", () => {
   });
 
   // #462 (2-lens): the anchor row has TWO entry points (#461) — the viewport-relative
-  // `markerPositions` (above) and the ABSOLUTE `markerLines` (`startRow = line - top`). A
+  // `markerPositions` (above) and the ABSOLUTE line from the index (`startRow = line - top`). A
   // non-finite absolute line reaches the SAME `firstRow` guard, so it too emits nothing rather
   // than spinning. Pins the second entry point, not just the first.
   it("emits no rect for a non-finite ABSOLUTE marker line", () => {
@@ -414,7 +435,7 @@ describe("DecorationRegistry (#120 S1)", () => {
 
     expect(
       reg.decorationsForFrame(
-        frameAbs({ rows: 10, scrollbackLen: 13 }, [ml(1, Number.POSITIVE_INFINITY)], []),
+        frameAbs(reg, { rows: 10, scrollbackLen: 13 }, [ml(1, Number.POSITIVE_INFINITY)], []),
       ),
     ).toEqual([]);
   });
@@ -430,7 +451,7 @@ describe("DecorationRegistry (#120 S1)", () => {
     reg.register({ markerId: 1, x: 0, width: 1 });
 
     expect(
-      reg.decorationsForFrame(frameAbs({ rows: 10, scrollbackLen: 0 }, [ml(1, 2 ** 32 + 5)], [])),
+      reg.decorationsForFrame(frameAbs(reg, { rows: 10, scrollbackLen: 0 }, [ml(1, 2 ** 32 + 5)], [])),
     ).toEqual([]);
   });
 
@@ -520,7 +541,7 @@ describe("DecorationRegistry.rulerMarksForFrame (#120 S3)", () => {
     const reg = new DecorationRegistry();
     reg.register({ markerId: 7, overviewRulerOptions: { color: 0xff0000 } });
 
-    expect(reg.rulerMarksForFrame(rulerFrame([7, 25], 90, 10))).toEqual([
+    expect(reg.rulerMarksForFrame(rulerFrame(reg, [7, 25], 90, 10))).toEqual([
       { topRatio: 0.25, color: 0xff0000, position: "full" },
     ]);
   });
@@ -543,22 +564,22 @@ describe("DecorationRegistry.rulerMarksForFrame (#120 S3)", () => {
     reg.register({ markerId: 7, overviewRulerOptions: { color: 0x0000aa } }); // A' — back to 7
 
     // total = 90 + 10 = 100 → line 10 is 0.1, line 50 is 0.5.
-    expect(reg.rulerMarksForFrame(rulerFrame([7, 10, 25, 50], 90, 10))).toEqual([
+    expect(reg.rulerMarksForFrame(rulerFrame(reg, [7, 10, 25, 50], 90, 10))).toEqual([
       { topRatio: 0.1, color: 0xaa0000, position: "full" },
       { topRatio: 0.5, color: 0x00aa00, position: "full" },
       { topRatio: 0.1, color: 0x0000aa, position: "full" },
     ]);
   });
 
-  // The whole point of the ruler: an OFF-viewport marker (absent from the viewport
-  // marker group, present in the all-marker `markerLines`) still gets a mark, so a
-  // user sees anchors they'd have to scroll to reach.
+  // The whole point of the ruler: an OFF-viewport marker (absent from the frame's viewport
+  // group, held by the index) still gets a mark, so a user sees anchors they'd have to
+  // scroll to reach. Since v16 the index is the only thing that knows it exists.
   it("shows a mark for a marker off the current viewport", () => {
     const reg = new DecorationRegistry();
     reg.register({ markerId: 3, overviewRulerOptions: { color: 0x00ff00 } });
 
-    // marker at buffer line 4, viewport far below — markerLines still carries it.
-    expect(reg.rulerMarksForFrame(rulerFrame([3, 4], 196, 4))).toEqual([
+    // marker at buffer line 4, viewport far below — the index still holds it.
+    expect(reg.rulerMarksForFrame(rulerFrame(reg, [3, 4], 196, 4))).toEqual([
       { topRatio: 0.02, color: 0x00ff00, position: "full" },
     ]);
   });
@@ -569,16 +590,16 @@ describe("DecorationRegistry.rulerMarksForFrame (#120 S3)", () => {
     const reg = new DecorationRegistry();
     reg.register({ markerId: 7, bg: 0x111111 }); // cell decoration, no ruler
 
-    expect(reg.rulerMarksForFrame(rulerFrame([7, 25], 90, 10))).toEqual([]);
+    expect(reg.rulerMarksForFrame(rulerFrame(reg, [7, 25], 90, 10))).toEqual([]);
   });
 
-  // A ruler decoration whose marker isn't in `markerLines` (disposed, or a stale
+  // A ruler decoration whose marker the index does not hold (disposed, or a stale
   // id) yields no mark — the join is inner.
-  it("ignores a ruler decoration whose marker is absent from markerLines", () => {
+  it("ignores a ruler decoration the index has no line for", () => {
     const reg = new DecorationRegistry();
     reg.register({ markerId: 9, overviewRulerOptions: { color: 0xff0000 } });
 
-    expect(reg.rulerMarksForFrame(rulerFrame([1, 5], 90, 10))).toEqual([]);
+    expect(reg.rulerMarksForFrame(rulerFrame(reg, [1, 5], 90, 10))).toEqual([]);
   });
 
   // The position option rides through (default "full"); an explicit position is
@@ -587,7 +608,7 @@ describe("DecorationRegistry.rulerMarksForFrame (#120 S3)", () => {
     const reg = new DecorationRegistry();
     reg.register({ markerId: 2, overviewRulerOptions: { color: 0x0000ff, position: "right" } });
 
-    expect(reg.rulerMarksForFrame(rulerFrame([2, 50], 90, 10))).toEqual([
+    expect(reg.rulerMarksForFrame(rulerFrame(reg, [2, 50], 90, 10))).toEqual([
       { topRatio: 0.5, color: 0x0000ff, position: "right" },
     ]);
   });
@@ -601,7 +622,7 @@ describe("DecorationRegistry.rulerMarksForFrame (#120 S3)", () => {
     reg.register({ markerId: 1, overviewRulerOptions: { color: 0xaa0000 } }); // full (default), FIRST
     reg.register({ markerId: 2, overviewRulerOptions: { color: 0x00aa00, position: "left" } });
 
-    expect(reg.rulerMarksForFrame(rulerFrame([1, 10, 2, 50], 90, 10))).toEqual([
+    expect(reg.rulerMarksForFrame(rulerFrame(reg, [1, 10, 2, 50], 90, 10))).toEqual([
       { topRatio: 0.5, color: 0x00aa00, position: "left" }, // gutter first…
       { topRatio: 0.1, color: 0xaa0000, position: "full" }, // …full on top, though registered first
     ]);
@@ -616,7 +637,7 @@ describe("DecorationRegistry.rulerMarksForFrame (#120 S3)", () => {
     reg.register({ markerId: 3, overviewRulerOptions: { color: 0x333333, position: "center" } });
     reg.register({ markerId: 4, overviewRulerOptions: { color: 0x444444 } }); // full
 
-    const marks = reg.rulerMarksForFrame(rulerFrame([1, 10, 2, 20, 3, 30, 4, 40], 90, 10));
+    const marks = reg.rulerMarksForFrame(rulerFrame(reg, [1, 10, 2, 20, 3, 30, 4, 40], 90, 10));
     expect(marks.map((m) => m.color)).toEqual([0x111111, 0x333333, 0x222222, 0x444444]);
   });
 
@@ -625,7 +646,7 @@ describe("DecorationRegistry.rulerMarksForFrame (#120 S3)", () => {
     const reg = new DecorationRegistry();
     reg.register({ markerId: 1, overviewRulerOptions: { color: 0xff0000 } });
 
-    expect(reg.rulerMarksForFrame(rulerFrame([1, 0], 0, 0))).toEqual([]);
+    expect(reg.rulerMarksForFrame(rulerFrame(reg, [1, 0], 0, 0))).toEqual([]);
   });
 
   // #463: a non-finite `scrollbackLen` must yield NO mark, not invalid CSS. The `total <= 0`
@@ -642,11 +663,11 @@ describe("DecorationRegistry.rulerMarksForFrame (#120 S3)", () => {
     // the total guard catches: `line / Infinity` is `0` — finite — so the per-line finite guard
     // and the clamp both pass it through as a mark at the track top; only rejecting a non-finite
     // `total` drops it. Both must yield no mark.
-    expect(reg.rulerMarksForFrame(rulerFrame([7, 25], Number.NaN, 10))).toEqual([]);
-    expect(reg.rulerMarksForFrame(rulerFrame([7, 25], Number.POSITIVE_INFINITY, 10))).toEqual([]);
+    expect(reg.rulerMarksForFrame(rulerFrame(reg, [7, 25], Number.NaN, 10))).toEqual([]);
+    expect(reg.rulerMarksForFrame(rulerFrame(reg, [7, 25], Number.POSITIVE_INFINITY, 10))).toEqual([]);
   });
 
-  // #463: a non-finite marker LINE (a consumer-built markerLines carrying Infinity/NaN) makes
+  // #463: a non-finite marker LINE (Infinity/NaN reaching the index from a consumer's port) makes
   // `topRatio` non-finite even when `total` is fine — `Infinity / 100` is `Infinity`, written as
   // `top: Infinity%`. The mark has no placeable position, so it is skipped (clamping cannot
   // rescue it: `Math.max(0, NaN)` is `NaN`, so a clamp alone still emits invalid CSS).
@@ -654,11 +675,11 @@ describe("DecorationRegistry.rulerMarksForFrame (#120 S3)", () => {
     const reg = new DecorationRegistry();
     reg.register({ markerId: 7, overviewRulerOptions: { color: 0xff0000 } });
 
-    expect(reg.rulerMarksForFrame(rulerFrame([7, Number.POSITIVE_INFINITY], 90, 10))).toEqual([]);
+    expect(reg.rulerMarksForFrame(rulerFrame(reg, [7, Number.POSITIVE_INFINITY], 90, 10))).toEqual([]);
   });
 
   // #463: a marker line PAST the content end (`scrollbackLen + rows`) — a frame lag/mismatch
-  // between the absolute markerLines and the scroll geometry — gives `topRatio > 1`, placing the
+  // between the index's absolute lines and the scroll geometry — gives `topRatio > 1`, placing the
   // mark below the track where it is invisible. Clamp it to the track bottom (1) so it stays
   // visible at the nearest valid edge.
   it("clamps a mark past the content end to the track bottom", () => {
@@ -666,7 +687,7 @@ describe("DecorationRegistry.rulerMarksForFrame (#120 S3)", () => {
     reg.register({ markerId: 7, overviewRulerOptions: { color: 0xff0000 } });
 
     // total = 100, line = 150 → raw ratio 1.5, clamped to 1.
-    expect(reg.rulerMarksForFrame(rulerFrame([7, 150], 90, 10))).toEqual([
+    expect(reg.rulerMarksForFrame(rulerFrame(reg, [7, 150], 90, 10))).toEqual([
       { topRatio: 1, color: 0xff0000, position: "full" },
     ]);
   });
@@ -677,21 +698,20 @@ describe("DecorationRegistry.rulerMarksForFrame (#120 S3)", () => {
     const reg = new DecorationRegistry();
     reg.register({ markerId: 7, overviewRulerOptions: { color: 0xff0000 } });
 
-    expect(reg.rulerMarksForFrame(rulerFrame([7, -20], 90, 10))).toEqual([
+    expect(reg.rulerMarksForFrame(rulerFrame(reg, [7, -20], 90, 10))).toEqual([
       { topRatio: 0, color: 0xff0000, position: "full" },
     ]);
   });
 
   // The ruler is a scrollback navigator, so it's suppressed on the alt screen
-  // (xterm hides its ruler canvas on the alt buffer) — even when markerLines and
-  // content are present.
+  // (xterm hides its ruler canvas on the alt buffer) — even when the source holds an
+  // anchor for the decoration and the geometry would place it.
   it("yields no marks on the alt screen", () => {
     const reg = new DecorationRegistry();
     reg.register({ markerId: 7, overviewRulerOptions: { color: 0xff0000 } });
+    reg.setMarkerIndex(lines([7, 25]));
 
-    expect(
-      reg.rulerMarksForFrame({ markerLines: [7, 25], scrollbackLen: 90, rows: 10, altScreen: true }),
-    ).toEqual([]);
+    expect(reg.rulerMarksForFrame({ scrollbackLen: 90, rows: 10, altScreen: true })).toEqual([]);
   });
 
   // Completeness pass (lens 1): the registry does NOT validate x/width (mirroring
@@ -749,15 +769,20 @@ describe("DecorationRegistry.rulerMarksForFrame (#120 S3)", () => {
 // `alt_markers.rs` on the web side.
 describe("DecorationRegistry — alt-screen decorations (#189)", () => {
   // #461 (2-lens GAP): every test below sends `markerPositions` only, so they exercise the
-  // viewport-relative half of the join — but PRODUCTION alt frames also carry `markerLines`
-  // and take the absolute half. This locks #189 on the path that actually runs.
+  // viewport-relative half of the join — but a PRODUCTION alt scene also has a wired index and
+  // takes the absolute half. This locks #189 on the path that actually runs.
   //
   // No bleed is possible there either, and for a stronger reason than a gate: core's
-  // `markers()` returns `alt_markers` when `on_alt`, so a primary decoration's marker is not
-  // in an alt frame's `markerLines` AT ALL (term.rs). On alt, `set_display_offset` early-returns
-  // so `displayOffset === 0`, while `scrollbackLen` still reports the primary's length — so an
-  // alt marker's absolute line is `scrollbackLen + row` and `line - top` is exactly `row`.
-  // VALIDITY: this holds while `markers()` stays per-buffer; a change there reopens it.
+  // `marker_index()` collects `self.markers()`, which returns `alt_markers` when `on_alt`
+  // (`term/markers.rs:306`), so a primary decoration's marker is not in the index an alt scene
+  // pulls AT ALL. The swap itself calls `bump_marker_epoch()` whenever either population is
+  // non-empty (`term.rs:2106`, `:2140`), so a consumer holding the primary's answer is
+  // invalidated at the switch rather than serving it across. On alt, `set_display_offset`
+  // early-returns so `displayOffset === 0`, while `scrollbackLen` still reports the primary's
+  // length — so an alt marker's absolute line is `scrollbackLen + row` and `line - top` is
+  // exactly `row`.
+  // VALIDITY: this holds while `markers()` stays per-buffer AND the swap keeps bumping the
+  // epoch; a change to either reopens it.
   it("projects an alt-scoped decoration through the ABSOLUTE path, with no primary bleed", () => {
     const reg = new DecorationRegistry();
     reg.register({ markerId: 77, x: 2, width: 1, bg: 0x00ff00 }); // alt-scoped marker
@@ -774,10 +799,10 @@ describe("DecorationRegistry — alt-screen decorations (#189)", () => {
       rows: 10,
       scrollbackLen: 13,
       displayOffset: 0,
-      markerLines: [77, 16],
       markerPositions: [],
       altScreen: true,
     };
+    reg.setMarkerIndex(lines([77, 16]));
     const rects = reg.decorationsForFrame(altAbsFrame);
 
     expect(rects).toEqual([
@@ -917,26 +942,14 @@ describe("DecorationRegistry with a pulled marker index (#490)", () => {
     expect(rects[0]!.row).toBe(2); // absolute 22, viewport top = 20
   });
 
-  it("lets the frame's own group win while v15 still carries it", async () => {
-    const reg = new DecorationRegistry();
-    reg.register({ markerId: 4, bg: 0x00ff00 });
-    const frame = {
-      cols: 10,
-      rows: 5,
-      scrollbackLen: 20,
-      displayOffset: 0,
-      markerLines: [4, 21],
-    };
-    expect(reg.decorationsForFrame(frame)[0]!.row).toBe(1);
+  // A test that lived here — "lets the frame's own group win while v15 still carries it" — is
+  // gone with the window it guarded. It pinned the wire's absolute-line group as the oracle the
+  // reconstruction was checked against, and v16 deleted that group (#490), so the disagreement
+  // it described is no longer constructible. The precedence that survived — the absolute line
+  // beating a derived viewport row — is pinned by "prefers the absolute line when a marker is
+  // in both groups" above, now with the index on the absolute side.
 
-    // The index says something else. The wire wins: in v15 it is the oracle the
-    // reconstruction is checked against, so a disagreement must be visible in a test
-    // rather than silently resolved in the reconstruction's favour.
-    reg.setMarkerIndex(await adoptedCache([[4, 23]]));
-    expect(reg.decorationsForFrame(frame)[0]!.row).toBe(1);
-  });
-
-  it("fills a marker the frame's group does not carry", async () => {
+  it("fills a marker the frame's viewport group does not carry", async () => {
     const reg = new DecorationRegistry();
     reg.register({ markerId: 9, bg: 0x00ff00 });
     reg.register({ markerId: 4, bg: 0x0000ff });
@@ -947,9 +960,10 @@ describe("DecorationRegistry with a pulled marker index (#490)", () => {
       rows: 5,
       scrollbackLen: 20,
       displayOffset: 0,
-      markerLines: [9, 24], // the frame carries 9 only
+      markerPositions: mk(9, 4), // the frame carries 9 only, as a viewport row
     });
-    // 9 from the frame (row 4), 4 from the index (row 3) — the two sources compose.
+    // 9 from the frame (row 4), 4 from the index (absolute 23, top 20 → row 3). The two
+    // surviving sources compose: viewport rows on the wire, absolute lines out of band.
     expect(rects.map((r) => r.row).sort()).toEqual([3, 4]);
   });
 });
@@ -975,14 +989,18 @@ describe("a v16 frame with ruler decorations and no marker index (#490)", () => 
     warn.mockRestore();
   });
 
-  it("stays quiet on a v15 frame, where the wire still carries the anchors", () => {
+  it("stays quiet on a frame that carries no markerCount", () => {
     const reg = new DecorationRegistry();
     reg.register({ markerId: 4, bg: 0x00ff00, overviewRulerOptions: { color: 0xff0000 } });
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     resetMarkerIndexWarning();
 
-    // No `markerCount` = an older decoder, whose `markerLines` group still answers.
-    reg.rulerMarksForFrame({ scrollbackLen: 20, rows: 5, markerLines: [4, 21] });
+    // `markerCount` is what says "this frame came off a wire that no longer ships anchors".
+    // A frame without it was not built by the decoder — a synthetic one, or this suite's own
+    // fixtures — and its author is not the host the warning is addressed to. (Until v16 this
+    // case was an older decoder, whose departed group still answered; the guard outlived that
+    // reason, and this is the one it has now.)
+    reg.rulerMarksForFrame({ scrollbackLen: 20, rows: 5 });
 
     expect(warn).not.toHaveBeenCalled();
     warn.mockRestore();

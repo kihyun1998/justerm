@@ -49,8 +49,10 @@ span extends leftward. This is a declared divergence (see below) and follows fro
 position, ignoring `anchor` in the colour span would leave the option affecting *nothing* — a dead field.
 
 **R5 — Projection is per visible row, not per anchor visibility.** A decoration whose anchor sits above
-the viewport top still projects the rows of it that are on screen. This is what the frame's absolute
-`markerLines` group is for, and it is why that group exists at all.
+the viewport top still projects the rows of it that are on screen. This needs an absolute buffer line
+for a marker the viewport group cannot carry. *(2026-08-05, #490 v16: it is the pulled marker index that
+supplies it. The rule is unchanged; only its source moved off the frame — see the consequence below,
+which this ADR wrote when the source was the `markerLines` group.)*
 
 **R6 — A projection that cannot be computed emits nothing.** A non-finite or out-of-range input (a
 `NaN` `scrollbackLen`, a marker line past the buffer, a ratio outside `[0,1]`) yields no rect and no
@@ -81,11 +83,13 @@ ruler position is xterm's too (`DecorationService.ts:376-378`).
 
 ## Consequences
 
-- **R5 is why ADR-0020 has a violation.** Projecting rows of an above-viewport anchor needs every live
-  marker's absolute line, which is the `markerLines` group — ADR-0020's one stated breach of its own
-  `O(viewport)` rule. The two ADRs describe the same trade from opposite ends: this one wants the
-  capability, that one records its cost, and #490 holds the fix. Neither should be read without the
-  other.
+- **R5 is why ADR-0020 had a violation — and it is now paid off.** Projecting rows of an above-viewport
+  anchor needs an absolute line for a marker the viewport cannot see. Delivering that *in the frame*
+  meant shipping every live marker's line every frame (the `markerLines` group), which was ADR-0020's
+  one stated breach of its own `O(viewport)` rule. The two ADRs described the same trade from opposite
+  ends: this one wanted the capability, that one recorded its cost. **#490 (v16, 2026-08-05) resolved it
+  without giving up R5** — the capability moved to a pulled index the consumer maintains, so the
+  requirement survives and the unbounded group does not. Neither ADR should be read without the other.
 - **The open cluster becomes lookups.** #454 (should a span snap to wide-char pairs?) is an R1/R2-level
   question about what a *span* is; #500 (ruler mark fidelity — zone merging, heights, centring) is R3's
   detail; #502 (a render hook) is a proposal to relax R1. Each is now "does the model answer this?"
@@ -115,5 +119,6 @@ ruler position is xterm's too (`DecorationService.ts:376-378`).
 ## Out of scope
 
 - **What a rect composites to** — ADR-0019 (layers, channels, paint modes).
-- **Whether the frame should carry `markerLines` at all** — ADR-0020 R3 and #490.
+- **Where the absolute lines come from** — ADR-0020 R3 and #490 (the frame carried them until v16; a
+  pulled index does now). R5 states the requirement, not its delivery.
 - **Ruler mark *appearance*** — merging, heights, centring (#500). R3 fixes the ordering, not the pixels.
