@@ -125,16 +125,36 @@ so for justerm the bound *is* the contract.
 knowingly; **it has now left the frame**, which is what #490 held the fix for and what this ADR
 predicted would happen ("#490 acquires a home … it stops being a deferred optimisation"). A consumer
 pulls the index once (`Engine::marker_index`, v15) and keeps it current from the header basis plus the
-marker events; `marker_count` (v16) is its check against drift, and passes all three rules as an `O(1)`
-state the consumer cannot derive. What replaced an unbounded group is therefore four bytes.
+marker events. What replaced an unbounded group is four bytes: `marker_count` (v16).
 
-`markers` (v7/v10) **still fails R3** — unrecorded until #721, because this ADR had graded it
-`O(viewport)`. It stays, and the reason is recorded rather than assumed: it is what the a11y command
-announce consumes, it *is* row-filtered (so its practical size is small — measured 0–36 records against
-`markerLines`' 2 000–8 000 in the same sessions), and its population is bounded by `MAX_MARKERS` (#721)
-so its `u16` count cannot wrap. That makes it a violation of the rule's letter with none of the cost the
-rule exists to prevent — which is exactly the kind of thing this ADR would rather have written down than
-silently tolerated.
+**`marker_count` is admitted as a stated exception to R2, not as a pass.** A consumer that holds the
+pulled index *and* consumes `MarkerCreated`/`MarkerDisposed` can derive the count exactly, so R2's own
+test — *can the consumer compute this from what it holds?* — says no. It is admitted anyway because it
+is a **diagnostic for the consumer that did not wire the events**, whose index then drifts with nothing
+to notice it, and this family's recorded posture is that a silently wrong answer costs more than a
+loudly absent one. Recording it as an exception rather than arguing it into a pass is the point of
+having the rule; the earlier draft of this amendment claimed all three rules and was wrong.
+
+**`markers` (v7/v10) still fails R3, and it is accepted rather than resolved.** Unrecorded until #721,
+because this ADR had graded it `O(viewport)`. The honest statement of why it stays:
+
+- its ordinary-session size is small — but note the measurement's limit, because the first draft of this
+  paragraph leaned on it: the 0–36 figure comes from a probe that spread marks one command per N
+  *lines*, so a row-filtered group is bounded **by construction** in that workload. It could not have
+  come out large. The number that shows the other end is this repo's own: **70 000 records** in this
+  same group on an 80×24 grid (#721), which is what the sentence above must be read against;
+- `MAX_MARKERS` keeps its `u16` count sound — but that is a **wire-capacity answer, not an R3 one**,
+  exactly as this file's 2026-08-04 amendment says. Using it as an R3 defence is alternative **(B)**
+  ("cap each group's size instead"), which this ADR rejected on acceptance, re-entering through the
+  back door;
+- at that bound the group is ~0.5–0.8 MB per frame against 26 880 B of cells, and `Term::frame` emits
+  it on `Partial` frames too — so R3's stated harm is fully present in the worst case.
+
+So: it stays because nothing has yet needed it to go, not because it is defensible under R3. The
+justification the first draft gave — *"it is what the a11y command announce consumes"* — is a
+non-sequitur and is withdrawn: that consumer reads `id`, `kind` and `exit` and never the `row`
+(`justerm-web/src/command-announce.ts`), all three of which `MarkerCreated` already carries. #490's
+successor owns the question.
 
 The original wording, kept because the reasoning still applies to what remains: It was admitted before this rule
 existed, for a real need — the overview ruler must place marks the viewport cannot show. It is recorded

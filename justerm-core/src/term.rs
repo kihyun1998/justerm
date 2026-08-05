@@ -495,7 +495,7 @@ pub const MAX_ROWS: usize = u16::MAX as usize;
 
 /// The most live markers one buffer will hold (#721).
 ///
-/// Derived from the wire the same way [`MAX_COLUMNS`] is: both marker group counts
+/// Derived from the wire the same way [`MAX_COLUMNS`] is: the marker group's count
 /// are `u16`, so a population past `u16::MAX` encodes a wrapped count while writing
 /// every record, and `decode` then reads the next group's count out of the middle of
 /// a marker record and returns `Ok`. The field bounds the value; this constant only

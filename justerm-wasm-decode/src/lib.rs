@@ -52,6 +52,9 @@ struct Flat {
     /// pulled marker index went stale for a reason the eviction delta cannot express.
     evicted_total: u64,
     marker_epoch: u32,
+    /// How many markers are live in the active buffer (#490, v16) — the drift check
+    /// for a consumer maintaining a pulled index.
+    marker_count: u32,
     /// Mouse wanted-events mask (#129) — the routing bits the active tracking
     /// mode reports (DOWN/UP/WHEEL/DRAG/MOVE). `0` = no reporting.
     mouse_events: u8,
@@ -117,10 +120,6 @@ pub const OVERLAY_STRIDE: usize = 3;
 /// (the exit as raw u32 — reinterpret as i32 on the JS side, `bits | 0`). Non-
 /// `CommandFinished` markers carry `exitPresent = 0` (#159).
 pub const MARKER_STRIDE: usize = 5;
-
-/// u32s per marker in the `marker_lines` directory (#120 S3): `id`, `line` (the
-/// absolute buffer line, in the `scrollbackLen + rows` frame the ruler divides by).
-pub const MARKER_LINE_STRIDE: usize = 2;
 
 /// Flatten a decoded [`Frame`] into renderer-friendly buffers ([`Flat`]).
 ///
@@ -206,6 +205,7 @@ fn flatten(frame: &Frame) -> Flat {
         scrollback_len: frame.scrollback_len,
         evicted_total: frame.evicted_total,
         marker_epoch: frame.marker_epoch,
+        marker_count: frame.marker_count,
         mouse_events: frame.mouse_events.bits(),
         alt_screen: frame.alt_screen,
         scroll: frame
@@ -351,6 +351,17 @@ impl DecodedFrame {
     #[wasm_bindgen(getter, js_name = markerEpoch)]
     pub fn marker_epoch(&self) -> u32 {
         self.flat.marker_epoch
+    }
+
+    /// How many markers are live in the active buffer (#490, v16).
+    ///
+    /// Compare it against the size of a pulled index: a mismatch means the index has
+    /// drifted — most likely because the create/dispose events are not being forwarded —
+    /// and the answer is to pull again. It cannot see a create and a dispose inside one
+    /// frame, so it is a net under the events, not a replacement for them.
+    #[wasm_bindgen(getter, js_name = markerCount)]
+    pub fn marker_count(&self) -> u32 {
+        self.flat.marker_count
     }
 
     #[wasm_bindgen(getter, js_name = hasScroll)]

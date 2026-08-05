@@ -50,7 +50,7 @@ the shell emits.
   would memmove the whole population per push once the cap is reached), and the cap is why both
   `u16` wire counts are safe without being widened.
 - **Two projections, two frames of reference.** `MarkerPosition` is viewport rows and carries the
-  kind; the absolute buffer line for *every* live marker rode its own group until v16 and carried no kind or
+  kind; the absolute buffer line for *every* live marker rode its own group until v16, and carried no kind or
   exit code — because the ruler mark's colour is the consumer's, so nothing themeable rides there.
 - **Anchors are maintained through buffer motion by three verbs** — `markers_shift_below_margin`,
   `markers_evict_oldest`, `markers_rotate_region` — called from the write path beside their

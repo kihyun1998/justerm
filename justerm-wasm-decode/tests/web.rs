@@ -149,6 +149,17 @@ fn decode_frame_exposes_the_marker_index_basis() {
     assert_eq!(df.marker_epoch(), 4_294_967_295);
 }
 
+/// #490 v16 — the drift check. Asserted in the browser because that is the only place
+/// this getter executes, and because the field exists *for* a JS consumer: a value that
+/// cannot cross is a four-byte-per-frame no-op.
+#[wasm_bindgen_test]
+fn decode_frame_exposes_the_marker_count() {
+    let mut frame = sample_frame();
+    frame.marker_count = 4_294_967_295;
+    let df = decode_frame(&justerm_core::encode(&frame)).expect("decode");
+    assert_eq!(df.marker_count(), 4_294_967_295);
+}
+
 #[wasm_bindgen_test]
 fn decode_frame_exposes_cursor_scalars() {
     let mut frame = sample_frame();

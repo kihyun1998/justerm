@@ -177,14 +177,13 @@ A **frame** serializes one damage cycle (`damage()` + `scroll_delta()`):
 - **link group + `link_table`** (v14, #621) — one sparse `(col, index)` map per span, addressing a
   frame-local table of the URIs referenced *this* frame. This half stays interned because cells
   genuinely share a URI, and every reference does the same.
-- **overlay** (v6, #108/ADR-0014; v7, #118/ADR-0015) — interaction state as *viewport* coordinates, five
-  groups: a selection-span group then a search-match-span group (each a **`u32`** count + `(row, left, right)`
+- **overlay** (v6, #108/ADR-0014; v7, #118/ADR-0015) — interaction state as *viewport* coordinates, four
+  groups (five until v16, #490): a selection-span group then a search-match-span group (each a **`u32`** count + `(row, left, right)`
   `u16` triples — the count was widened in v14/#621 because these three groups are viewport-bounded and the
-  header admits a viewport larger than `u16::MAX` cells; the *marker* counts below deliberately stayed `u16`,
+  header admits a viewport larger than `u16::MAX` cells; the *marker* count below deliberately stayed `u16`,
   which is the asymmetry to read as intentional), then a marker group (`u16` count + `(marker_id u32, row u16)` pairs; v10, #159, appends a
-  kind discriminant `u8` and — for `CommandFinished` — a presence byte + `i32` exit), then a marker-lines
-  group (`u16` count + `(marker_id u32, line u32)` pairs — v11, #120 S3, every live marker's *absolute*
-  buffer line for the overview ruler), then an active-match-span group (same count + triple shape — v12,
+  kind discriminant `u8` and — for `CommandFinished` — a presence byte + `i32` exit), then an
+  active-match-span group (same count + triple shape — v12,
   #428, the consumer-designated *current* search match; usually it also stays in the match group and the
   renderer's highlight ranking resolves the overlap #424 — a span-designated past-cap match rides this
   group alone, #436). Positions only (colour is the consumer's); `frame()`

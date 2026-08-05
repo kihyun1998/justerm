@@ -372,7 +372,7 @@ fn decode_rejects_bad_marker_kind_and_truncated_exit() {
     // group deliberately did not. **v16 removed the marker-lines group that used to sit
     // between them** (#490), so everything below moved 2 bytes closer to the end.
     // Counting back: active-match count 4, exit 4, present 1 — the kind byte is 10 from
-    // the end and the exit occupies [len-9, len-5).
+    // the end and the exit occupies [len-8, len-4).
     let mut bad_kind = bytes.clone();
     let k = bad_kind.len() - 10;
     bad_kind[k] = 5; // unknown discriminant (valid kinds are 0..=4)

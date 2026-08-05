@@ -33,8 +33,9 @@ The *shape* is here; the bytes are [wire format](wire-format.md).
   that viewport damage simply does not contain, which the a11y announce policy gates on.
 - **The basis scalars are the header's first entry that exists to make something *leave* it.** Every
   other scalar describes the terminal; these two describe how long a consumer's separately-pulled
-  answer stays valid, so that the two marker groups can stop riding every frame (ADR-0020 R3). They
-  pass the gate on their own terms — `O(1)`, state rather than occurrence, and not derivable by a
+  answer stays valid, so that the absolute-line marker group could stop riding every frame (ADR-0020
+  R3) — which it did, in v16, where a third scalar (`marker_count`) joined them as the drift check.
+  All three pass the gate on their own terms — `O(1)`, state rather than occurrence, and not derivable by a
   consumer that holds only this frame.
 - **Four overlay groups since v16, and their *ownership* differs** — the part a reader gets wrong:
 
@@ -56,7 +57,7 @@ The *shape* is here; the bytes are [wire format](wire-format.md).
 
 ## Code
 
-- `justerm-core/src/serialize.rs` — `Frame`, `Overlay`, `Span`, `FrameKind`, `MarkerPosition`,
+- `justerm-core/src/serialize.rs` — `Frame`, `Overlay`, `Span`, `FrameKind`, `MarkerPosition`
 - `justerm-core/src/term.rs` — `Term::frame`, `Term::frame_damage`
 
 ## Reference behaviour

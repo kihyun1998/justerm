@@ -503,6 +503,8 @@ pub fn encode(frame: &Frame) -> Vec<u8> {
     // OSC-133 densities, and ADR-0020's R3 violation. A consumer pulls the index once
     // (`Engine::marker_index`) and keeps it current from the header basis plus the marker
     // events; `marker_count` in the header is the check that it has not drifted.
+    //
+    // Fourth (was fifth) overlay group (#428, v12): the active search match's spans, same
     // count + `(row, left, right)` shape as the selection/match groups. Appended
     // at the tail so the section stays append-only.
     encode_overlay_spans(&mut out, &frame.overlay.active_match);
@@ -522,28 +524,29 @@ pub fn encode(frame: &Frame) -> Vec<u8> {
 /// wrapped count leaves the reader mid-group, and every group after it is read from
 /// the wrong offset.
 ///
-/// **This widens the three viewport-projected groups and deliberately not the two
-/// marker groups**, which keep their `u16` counts a few lines below. That is not an
-/// oversight and not inconsistency: `frame()` clips selection / matches /
-/// active-match to the viewport, so their counts are `O(viewport)` — ADR-0020 R3
-/// satisfied, and widening entrenches nothing. Neither marker group is bounded by
-/// the viewport, so widening those *would* entrench what ADR-0020 records as its one
-/// R3 violation — which is #490's to remove, not this function's.
+/// **This widens the three viewport-projected groups and deliberately not the marker
+/// group**, which keeps its `u16` count a few lines below. `frame()` clips selection /
+/// matches / active-match to the viewport, so their counts are `O(viewport)` — ADR-0020
+/// R3 satisfied, and widening entrenches nothing. The marker group is not
+/// viewport-bounded either (several marks share a line), so widening it would entrench
+/// the R3 violation ADR-0020 still records against it — the *other* one, the
+/// absolute-line group, left the frame in v16 (#490).
 ///
-/// **Why the two marker counts are nonetheless safe at `u16` (#721).** Not because
-/// the groups are small: the *producer* is bounded. `MAX_MARKERS` caps a buffer's
-/// live population at `u16::MAX`, so neither count can reach a value it cannot
-/// declare. That bound had to exist for its own reason — the marks are allocated by
+/// **Why the marker count is nonetheless safe at `u16` (#721).** Not because the group is
+/// small: the *producer* is bounded. `MAX_MARKERS` caps a buffer's live population at
+/// `u16::MAX`, and `marker_positions` projects the **active** buffer only, so the count
+/// cannot reach a value it cannot declare. (The cap is per buffer, so the global live
+/// population can be twice that — the binding fact is which deque is projected.) That bound had to exist for its own reason — the marks are allocated by
 /// an untrusted stream — and it closes this hazard as a consequence rather than as
 /// its purpose.
 ///
-/// **And the reason they are unbounded is not the one this comment used to give.**
-/// It said *"the marker groups report every live marker, on-screen or not"*. True of
-/// `marker_lines`; **false of `markers`**, which `marker_positions` filters to visible
-/// rows. `markers` is unbounded because several marks legitimately share one line and
-/// nothing dedups them — measured at 70 000 records in *both* groups on an 80x24 grid
-/// (#721). The wrong reason mattered: it made ADR-0020's "one stated violation"
-/// framing read as if only `marker_lines` were at issue.
+/// **And the reason it is unbounded is not the one this comment used to give.** It said
+/// *"the marker groups report every live marker, on-screen or not"* — true of the
+/// absolute-line group, **false of this one**, which `marker_positions` filters to
+/// visible rows. It is unbounded because several marks legitimately share one line and
+/// nothing dedups them — measured at 70 000 records in this group on an 80x24 grid
+/// (#721). The wrong reason mattered: it made ADR-0020's "one stated violation" framing
+/// read as if only the absolute-line group were at issue.
 fn encode_overlay_spans(out: &mut Vec<u8>, spans: &[SelectionSpan]) {
     out.extend_from_slice(&(spans.len() as u32).to_le_bytes());
     for s in spans {
