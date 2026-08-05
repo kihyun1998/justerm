@@ -47,6 +47,7 @@ import type {
   SelectionPort,
 } from "../src/index";
 import type { DecodedFrame } from "../src/types";
+import { MarkerIndexCache } from "../src/marker-index";
 import { FakeSelectionEngine } from "./fake-select";
 import { FakeSearchEngine } from "./fake-search";
 
@@ -115,6 +116,24 @@ const source = new StubFrameSource();
 // and composes them into each cell's colour. The Decorate button below toggles a
 // full-row bottom decoration on the last finished command's marker.
 const decorations = new DecorationRegistry();
+// #490 v16: the wire no longer carries every live marker's absolute line, so anchors above
+// the viewport — and every overview-ruler mark — come from an index the consumer pulls and
+// maintains. Wired here so `setMarkerIndex` has a caller outside the tests: without one the
+// ruler silently empties the moment this demo's decoder pin reaches v16.
+//
+// **The port is a FAKE**, like `FakeSelectionEngine` and `FakeSearchEngine` above it, and for
+// the same reason: this demo hand-builds its frames and runs no engine, so there is nothing
+// real to pull from. It exercises the plumbing and the degradation path, not the round trip —
+// that proof needs a consumer that actually runs `Engine::marker_index`.
+const markerIndex = new MarkerIndexCache({
+  index: () =>
+    Promise.resolve({
+      markers: markerAnchors().map(([id, line]) => ({ id, line, kind: 1 })),
+      evictedTotal: 0,
+      epoch: markerEpoch,
+    }),
+});
+decorations.setMarkerIndex(markerIndex);
 renderer.setDecorationSource((f) => decorations.decorationsForFrame(f));
 
 // Seed a few lines so the accessible view has content immediately (an empty
@@ -333,6 +352,31 @@ let lineDecoration: { dispose(): void } | undefined;
 // probe sets `precedenceLine`; the seeded demo never has two decoration anchors otherwise.
 const PRECEDENCE_MARKER_IDS = [9001, 9002] as const;
 let precedenceLine: number | undefined;
+
+// #490: the anchor set this demo would have shipped in the departed `markerLines` group,
+// now the answer its fake `MarkerPort` gives. One source, read by both — so the migration
+// window's two paths cannot drift apart while both exist.
+function markerAnchors(): Array<[number, number]> {
+  const out: Array<[number, number]> = [];
+  if (decorationOnScreen() && !altScreen) out.push([DECO_MARKER_ID, decoAbsLine]);
+  if (precedenceLine !== undefined) {
+    for (const id of PRECEDENCE_MARKER_IDS) out.push([id, precedenceLine]);
+  }
+  return out;
+}
+
+// The epoch a frame reports. Bumped whenever the anchor set changes in a way no eviction
+// delta explains — which, for a demo that never evicts, is any change at all. Real engines
+// derive this; here it is hand-maintained, which is the honest shape for a fake.
+let markerEpoch = 0;
+let lastAnchorKey = "";
+function refreshMarkerEpoch(): void {
+  const key = JSON.stringify(markerAnchors());
+  if (key !== lastAnchorKey) {
+    lastAnchorKey = key;
+    markerEpoch++;
+  }
+}
 // #189: the live decoration is scoped to the buffer it was created on (mirroring
 // core's per-buffer markers, #187) — its marker only rides that buffer's frames,
 // and an alt-scoped decoration is disposed on alt-leave (core's clearAllMarkers on
@@ -897,13 +941,13 @@ function viewportFrame(out?: { scrollCount: number }): DecodedFrame {
     // mark stays at the buffer position as you scroll (the #480 slide is gone) and an above-top
     // anchor still resolves. Only a primary decoration on the primary screen: the ruler is a
     // scrollback navigator, suppressed on alt (rulerMarksForFrame), and alt has no scrollback.
-    markerLines: [
-      ...(decorationOnScreen() && !altScreen ? [DECO_MARKER_ID, decoAbsLine] : []),
-      // #458 probe: same two anchors in the absolute group, same id order.
-      ...(precedenceLine !== undefined
-        ? PRECEDENCE_MARKER_IDS.flatMap((id) => [id, precedenceLine!])
-        : []),
-    ],
+    // Built from `markerAnchors()` so this group and the pulled index cannot disagree
+    // while both exist. The group itself is gone on a v16 decoder (#490); this literal is
+    // what a v15 one still sends, and the demo keeps working across the pin bump because
+    // the index carries the same anchors.
+    markerLines: markerAnchors().flatMap(([id, line]) => [id, line]),
+    // #490 v16: the drift check a consumer compares against its index size.
+    markerCount: markerAnchors().length,
     // #575: the cursor rides every frame, like core emits it. `cursorBlink` is the application's
     // half of the blink decision; the widget resolves it against its consumer override.
     cursorRow: cursorDrift ? driftRow : CURSOR_ROW, // #637: drift is opt-in, see `cursorDrift`
@@ -930,6 +974,10 @@ function render(out?: { scrollCount: number }): void {
   a11y.onFrame(frame); // S14: mirror the viewport + announce new output
   cmdCtrl.onFrame(frame); // #160: announce + signal a finished command
   bar.update({ displayOffset, scrollbackLen: maxOffset(), rows: ROWS });
+  refreshMarkerEpoch();
+  // #490: adopt the frame's basis before projecting — `lineOf` rebases against it, and a
+  // changed epoch is what makes the index re-pull.
+  markerIndex.sync(frame);
   bar.setMarks(decorations.rulerMarksForFrame(frame)); // #120 S3: overview-ruler marks
   updateLinks();
 }
