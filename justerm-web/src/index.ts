@@ -109,6 +109,11 @@ export type { Marker } from "./markers";
 // decoration rects (positions + colour refs) from markers; colour/render is the
 // consumer's (#115). S1: model + lifecycle + auto-dispose; render is S2/S3.
 export { DecorationRegistry } from "./decorations";
+// #490: the pulled marker index. `MarkerIndexCache` is what a consumer maintains and
+// hands to `DecorationRegistry.setMarkerIndex`; `MarkerPort` is the query seam it pulls
+// through (sibling of `CommandNavPort`), wired by the host over its own transport.
+export { MarkerIndexCache } from "./marker-index";
+export type { MarkerIndexEntry, MarkerIndexSnapshot, MarkerPort } from "./marker-index";
 export type {
   Decoration,
   DecorationLayer,

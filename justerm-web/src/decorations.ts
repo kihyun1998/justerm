@@ -15,6 +15,7 @@
  */
 
 import { readMarkers } from "./markers";
+import type { MarkerIndexCache } from "./marker-index";
 
 /** Which layer a decoration paints on, mirroring xterm's `IDecorationOptions.layer`:
  * `bottom` overrides the cell background *under* the glyph, `top` paints *over* it.
@@ -175,6 +176,26 @@ export class DecorationRegistry {
    * class (#498) and is stable within each class, so it is not simply this order. */
   private readonly inRegistrationOrder = new Set<StoredDecoration>();
 
+  /** The pulled marker index (#490), when the consumer wired one. Optional on purpose:
+   * with no cache this class behaves exactly as it did, resolving anchors from the
+   * frame's own marker groups. */
+  private markerIndex: MarkerIndexCache | undefined;
+
+  /**
+   * Wire the pulled marker index (#490). Once set, an anchor resolves from it first and
+   * from the frame's marker groups only as a fallback.
+   *
+   * That fallback is the **v15 migration window**, not a permanent belt-and-braces: while
+   * the wire still carries `markerLines`, a cache that is empty (never pulled, or
+   * invalidated by an epoch it has not caught up with) still projects correctly. When the
+   * groups leave in v16 the fallback resolves to nothing and `undefined` means exactly
+   * what it says — do not project this decoration — which is the deliberate choice that a
+   * decoration missing for a frame beats one painted on a line it no longer owns.
+   */
+  setMarkerIndex(cache: MarkerIndexCache | undefined): void {
+    this.markerIndex = cache;
+  }
+
   /**
    * Register a decoration anchored to `options.markerId`. Returns a handle whose
    * `dispose()` removes it. Registering against a marker id that never appears in
@@ -289,8 +310,19 @@ export class DecorationRegistry {
     // docs/research/terminal-engine-renderer-architectures.md). But no per-marker Map entry lands
     // for a marker nothing is registered against, which is the allocation the regression added.
     const anchors = new Map<number, number>();
+    // The pulled index first (#490): O(D) lookups, no per-frame scan of the wire's marker
+    // groups at all. It answers only for markers it holds, so the two reads below still
+    // fill the gaps while v15 carries them.
+    if (hasScroll && this.markerIndex) {
+      for (const id of this.byMarker.keys()) {
+        const line = this.markerIndex.lineOf(id);
+        if (line !== undefined) anchors.set(id, line - top);
+      }
+    }
     if (hasScroll) {
-      for (const [id, line] of readMarkerLines(frame.markerLines, this.byMarker)) anchors.set(id, line - top);
+      for (const [id, line] of readMarkerLines(frame.markerLines, this.byMarker)) {
+        if (!anchors.has(id)) anchors.set(id, line - top);
+      }
     }
     for (const m of readMarkers(frame.markerPositions)) {
       if (this.byMarker.has(m.id) && !anchors.has(m.id)) anchors.set(m.id, m.row);
@@ -393,7 +425,13 @@ export class DecorationRegistry {
     // the browser drops, stacking the mark at the track default. `Number.isFinite` is the check
     // the `NaN <= 0` slip needs; it also rejects ±Infinity.
     if (!Number.isFinite(total) || total <= 0) return [];
-    const lineOf = readMarkerLines(frame.markerLines, this.byMarker); // #482: sized D, not M
+    const fromFrame = readMarkerLines(frame.markerLines, this.byMarker); // #482: sized D, not M
+    // The pulled index answers first (#490); the frame's group is the v15 fallback for a
+    // marker it does not hold. Same merge as the cell projection, and for the same reason.
+    const idx = this.markerIndex;
+    const lineOf = {
+      get: (id: number): number | undefined => idx?.lineOf(id) ?? fromFrame.get(id),
+    };
     const marks: RulerMark[] = [];
     // Two rules compose here, and they answer different questions.
     //
