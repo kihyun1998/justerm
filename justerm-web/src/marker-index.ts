@@ -75,7 +75,18 @@ export class MarkerIndexCache {
   /** Events that landed while a pull was out, replayed onto the snapshot it returns. */
   private readonly pendingOps: Op[] = [];
 
-  constructor(private readonly port: MarkerPort) {}
+  /**
+   * @param port the query seam to the backend's `Engine::marker_index()`
+   * @param onUpdated called after a pull lands, so a host that draws **on demand** can
+   *   redraw with the answer. Without it a decoration registered now shows its ruler mark
+   *   only at the next unrelated redraw — the index fills asynchronously, and nothing else
+   *   tells the host that it did. A host with its own frame loop can omit this; one that
+   *   renders in response to events cannot.
+   */
+  constructor(
+    private readonly port: MarkerPort,
+    private readonly onUpdated?: () => void,
+  ) {}
 
   /**
    * Call once per frame, before projecting. Adopts the frame's basis and, if the epoch
@@ -156,9 +167,18 @@ export class MarkerIndexCache {
         }
         this.pendingOps.length = 0;
         this.adopted = snap.epoch;
-        // The frame stream may have moved on while we were asking. `lineOf` already
-        // refuses to answer for a non-current epoch; ask again so it can resume.
-        if (this.seen !== undefined && this.seen !== snap.epoch) this.pull();
+        this.onUpdated?.();
+        // **Only the frame stream starts a pull.** A snapshot answering with an epoch the
+        // frames have not reached is normal — the query and the frames are two samples of
+        // one counter taken at different instants — and re-pulling here to chase it is an
+        // unbounded microtask chain: every answer mismatches for the same reason the last
+        // one did. Measured: it starved the demo's page until the renderer stopped
+        // responding to navigation at all.
+        //
+        // Nothing is needed instead. `lineOf` already refuses while `adopted !== seen`, and
+        // the next frame carries the newer epoch straight into `sync`, which pulls through
+        // the ordinary path. The recovery is driven by a bounded source — frames — rather
+        // than by a promise chasing its own tail.
       },
       () => {
         // A failed transport leaves the index empty rather than stale — the same choice

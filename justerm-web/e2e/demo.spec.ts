@@ -1025,7 +1025,9 @@ test("a right-anchored decoration overflowing the left edge still paints (#457)"
 test("a decoration anchored above the viewport top still paints its visible rows (#461)", async ({
   page,
 }) => {
-  await page.goto("/");
+  // No `goto` here: `beforeEach` already navigated, and a second navigation to the same URL
+  // is the two-pages hazard this file documents (#653). It bites now that the probe is
+  // async (#490) — the awaited evaluate spans the reload and its context is destroyed.
   await expect(page.getByRole("button", { name: "Decorate line: OFF" })).toBeVisible();
 
   const p = await page.evaluate(() => window.__aboveTopProbe!());

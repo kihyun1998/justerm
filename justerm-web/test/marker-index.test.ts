@@ -274,3 +274,31 @@ describe("MarkerIndexCache drift detection", () => {
     expect(cache.lineOf(1)).toBe(10);
   });
 });
+
+/**
+ * #490 — the index fills asynchronously, so a host that draws on demand has to be told.
+ * Without this a decoration registered now shows its ruler mark only at the next
+ * unrelated redraw: measured as an empty ruler in the demo's synchronous probe, which
+ * registers and reads in one turn.
+ */
+describe("MarkerIndexCache update notification", () => {
+  it("notifies the host when a pull lands", async () => {
+    const port = deferredPort();
+    const seen: number[] = [];
+    const cache = new MarkerIndexCache(port, () => seen.push(cache.size));
+
+    cache.sync(frame(0, 1));
+    expect(seen).toEqual([]); // nothing to redraw for yet
+
+    await port.resolveWith(snap([{ id: 1, line: 10 }], 0, 1));
+
+    expect(seen).toEqual([1]);
+  });
+
+  it("does not notify when there is no host callback", async () => {
+    const port = deferredPort();
+    const cache = new MarkerIndexCache(port);
+    cache.sync(frame(0, 1));
+    await expect(port.resolveWith(snap([], 0, 1))).resolves.toBeUndefined();
+  });
+});
