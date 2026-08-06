@@ -89,6 +89,15 @@ basis the frame header reports"* — and the consumer was written against it.
   non-uniformly — measured, a mark at absolute 3 reflowed to 5 is answered as 3, permanently — which
   is what the epoch is for and what the event does not yet carry.
 
+**The cluster's anchor is spine #744, and the roster is deliberately not here.** This page holds the
+*rule*; which surfaces are on the list, which are still open, and what is not yet decided all live in
+that issue, where they can be edited without touching the rule. That split is #552's measured result,
+not a preference: a hand-copied roster inside ADR-0025 went stale in five places in three days while
+the rules beside it needed no edit. The one thing worth reading there before reaching for this page:
+whether the rule is *"carry the instant"* or *"declare the answer instantaneous"* is **not settled** —
+`tracked_point` already does the second (ADR-0026 D2/D3), and it may be the right shape for a query
+nobody caches.
+
 ## Where it will recur
 
 - **Any new `TermEvent` variant carrying a position.** `MarkerCreated.line` is the only one today
