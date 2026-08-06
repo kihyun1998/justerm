@@ -17,10 +17,28 @@ Core hands coordinates out on **three channels**, and each answers the instant q
 |---|---|---|
 | the **frame** | by construction — the header carries `evicted_total`, and every scalar in a `Frame` is sampled in one `Term::frame` body, so the snapshot is internally coherent | `display_offset`, `scrollback_len`, `marker_count` |
 | an **event** | only if the variant carries it. An occurrence is a *point in time* whose payload outlives the instant that gave it meaning, and the frame's basis does **not** reach it — a `feed` that creates a marker and then evicts closes on a basis the event's line predates | `TermEvent::MarkerCreated { line, evicted_total, epoch }` |
-| a **query answer** | only if the return type carries it, and today two do not | `Engine::marker_index` does · `Engine::command_marks` and `CommandLine::line` do not |
+| a **query answer** | only if the return type carries it — **or** if the answer is declared instantaneous and a re-ask always works | `Engine::marker_index` carries it · `Engine::command_marks` is declared instantaneous (#742) · `CommandLine::line` is neither |
 
 So the rule is not *"put a basis on the frame"*. It is: **whichever channel a coordinate leaves by, the
 instant leaves with it** — and only the frame gets that for free.
+
+**The obligation has two discharges, and which one applies is derived, not chosen (#742).** Carrying
+the instant is one way to keep a receiver from guessing; the other is to make sure it never has to
+hold the answer in the first place. The second is only available when **a re-ask always answers**,
+which needs two things at once:
+
+- the receiver is consumed on a clock that *can* re-ask. The **frame** clock cannot — re-pulling per
+  frame is the `O(M)`-per-frame payload ADR-0020 R3 forbids, which is why `marker_index` must be held
+  and therefore must carry its instant. A **user-action** clock can, because the ask is the action;
+- and the answer's **frame of reference is constant**, so absence has exactly one meaning.
+  `command_marks` is primary-scoped whatever screen is up, so a re-ask always answers and an empty
+  answer can only mean disposal. `marker_index` reports the *active* buffer, so its silence is
+  ambiguous between *"disposed"* and *"you are on the other screen"* — an alt switch is one of the four
+  moves its epoch exists to announce. **The sibling's shape was forced by a property `command_marks`
+  does not have**, which is why copying it would import the machinery without the problem.
+
+An **event** has neither discharge available: its payload is already detached from its instant by the
+queue, so it can only carry.
 
 **The document space has no scalar at all, and that is a fact about the space rather than a missing
 field.** A document line indexes `accessible_text`, where soft-wrapped rows collapse into one logical
@@ -54,8 +72,10 @@ has no second source to disagree with.
   incidental. `MarkerCreated` is the worked case
 - [marker](../territory/marker.md) — where all three channels meet on one primitive: `marker_positions`
   (frame), `MarkerCreated`/`MarkerDisposed` (events), `marker_index` and `command_marks` (queries). The
-  first and third of those carry the instant; the second carried none until #737, only half of one
-  until #741, and `command_marks` still carries neither half
+  first and third of those carry the instant; the second carried none until #737 and only half of one
+  until #741. `command_marks` carries neither half **and is correct without them** (#742) — it takes
+  the other discharge, and the two queries sitting on one primitive with opposite shapes is what makes
+  the derivation above visible at all
 - [frame](../territory/frame.md) — the channel that gets coherence for free, and therefore the one
   that makes the other two look solved
 - [accessibility](../territory/accessibility.md) — `CommandLine::line` is a document line, so it is the
@@ -68,8 +88,12 @@ has no second source to disagree with.
 
 A coordinate crossing the boundary while the value that dates it stays behind. Concretely:
 
-- a type that pairs lines with nothing — `Vec<(MarkerId, usize, MarkerKind)>` where the sibling
-  returns `MarkerIndex { markers, evicted_total, epoch }`;
+- a type that pairs lines with nothing **and is meant to be held** — a bare
+  `Vec<(MarkerId, usize, MarkerKind)>` where the sibling returns
+  `MarkerIndex { markers, evicted_total, epoch }`. The undated type alone is *not* the violation, and
+  reading it as one is the mistake #742 corrected: the same signature is correct where a re-ask always
+  answers, and the tell is then whether the doc says so. What makes it a violation is an undated
+  coordinate on a surface whose receiver has no way back to the engine;
 - an event variant gaining a `line`, `row`, `col` or `index` field that carries **fewer scalars than
   its pull-side sibling** — the subset is always the axis whichever bug forced the field, and the
   axis nobody measured is the one left silent (#741 was #737's own missing half);
@@ -104,15 +128,33 @@ basis the frame header reports"* — and the consumer was written against it.
   names, compared for **equality** because `bump_marker_epoch` wraps. Gating only the queued replay
   would have left the same defect on the path where the event channel simply runs slower than the
   frame channel.
+- **#742** (2026-08-06) — the **query** channel, and the first member to discharge the obligation the
+  *other* way. It arrived shaped like #737 and #741 — an undated coordinate beside a dated sibling —
+  and the shape was a false lead: `command_marks` is consumed when a user acts, and its frame of
+  reference never flips, so a re-ask always answers and holding the answer is the caller's mistake
+  rather than the API's. Carrying the instant here was measured **sound but expensive**, and the two
+  halves want different weight. *Sound*: a differential probe over 400 seeds × 60 random ops — asking
+  whether an epoch-stable transition ever moved a surviving command mark by anything other than the
+  `evicted_total` delta — found **0 violations** over 20 529 such transitions and 63 367 per-mark
+  checks. It has teeth: disabling both `bump_marker_epoch` sites produced 7 317 violations, disabling
+  the `evicted_total` increment produced 99, and the baseline re-ran identical after each. *Expensive*:
+  an ordinary top-anchored `DECSTBM` footer with a mark inside it bumped the epoch on **200 of 200**
+  output lines, which would put a second surface on the consumer-side recovery discipline #746 had to
+  invent for the first. So the option was rejected on cost, never on correctness — worth stating
+  plainly, because a future reader who needs the consistency can take it and knows what it bills. Two premises in the issue's own body were
+  measured false on the way: `command_lines` does **not** call `command_marks` (they are independent
+  walks of `normal_markers`), and sampling the basis alongside the marks is *not* a second instant,
+  because both are `&self` on one engine and `feed`/`resize` are `&mut self`. And it measured only the
+  eviction axis; the epoch axis was found here — #741's lesson recurring one channel over.
 
 **The cluster's anchor is spine #744, and the roster is deliberately not here.** This page holds the
 *rule*; which surfaces are on the list, which are still open, and what is not yet decided all live in
 that issue, where they can be edited without touching the rule. That split is #552's measured result,
 not a preference: a hand-copied roster inside ADR-0025 went stale in five places in three days while
 the rules beside it needed no edit. The one thing worth reading there before reaching for this page:
-whether the rule is *"carry the instant"* or *"declare the answer instantaneous"* is **not settled** —
-`tracked_point` already does the second (ADR-0026 D2/D3), and it may be the right shape for a query
-nobody caches.
+that both shapes are legitimate is **settled** (#742) and *which* one a given surface owes is derived
+above — but whether the derivation covers every remaining member, `CommandLine::line` in particular,
+is the part the roster still tracks.
 
 ## Where it will recur
 
@@ -121,9 +163,13 @@ nobody caches.
   model, which is the model that does not apply. The check that does not need a forcing case: name the
   **pull** that answers the same question and carry every scalar it carries. A variant with no such
   pull is the harder case and has not happened yet.
-- **`Engine::command_marks`** — absolute lines, no basis, no epoch. Measured: over `evicted_total`
-  14 → 16 its lines went `[6, 6, 7, 8]` → `[4, 4, 5, 6]`, a uniform −2 the caller has no way to apply,
-  because the tuple has nowhere to put it.
+- **`Engine::command_marks`** — **settled (#742), and the settlement is the thing to read before
+  re-opening it.** The lines are still undated, deliberately: the contract is *re-ask*, not *rebase*.
+  What the next reader needs is that the answer moves on **both** axes, so noticing one of them is not
+  grounds to re-derive the fix. Measured: eviction takes `[7, 7, 7, 8]` → `[5, 5, 5, 6]` with the epoch
+  still, and a top-anchored `DECSTBM` footer takes `[7]` → `[10]` in one `feed` with `evicted_total`
+  still. Both are pinned in `justerm-core/tests/command_marks_instant.rs`, together with the two
+  properties the re-ask contract rests on — constant scope, and absence meaning only disposal.
 - **`CommandLine::line`** — the document coordinate above, which no scalar can rebase.
 - **Any consumer cache added beside `MarkerIndexCache`.** It is the only class in `justerm-web/src`
   holding a buffer coordinate across frames, so the second one will be written without its

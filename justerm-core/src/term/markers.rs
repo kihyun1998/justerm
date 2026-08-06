@@ -191,6 +191,17 @@ impl Term {
     /// kind)` (#158). Plain decoration markers (#118) are excluded. The consumer
     /// pairs prompt/command/finished marks and drives navigation/announce policy
     /// (#160); core only parses and anchors them.
+    ///
+    /// **Instantaneous, deliberately (#742).** The lines are undated and move on both
+    /// of `marker_index`'s axes, so the contract is *re-ask*, not *rebase* — see
+    /// `Engine::command_marks` for the derivation, which is the docs.rs surface a
+    /// consumer actually reads. Two properties keep that honest and are facts about
+    /// *this* function rather than preferences: the scope below is constant, so a
+    /// re-ask always answers and an empty answer can only mean disposal; and the lines
+    /// are primary even on alt, so they are not in the active buffer's space.
+    ///
+    /// Changing either — routing this through `markers()`, or filtering by anything
+    /// buffer-dependent — invalidates the contract above, not just this line.
     pub fn command_marks(&self) -> Vec<(MarkerId, usize, MarkerKind)> {
         // Primary-scoped: OSC-133 shell integration marks live on the normal
         // buffer, so command nav/announce read it even while on the alt screen.
