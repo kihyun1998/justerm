@@ -65,6 +65,7 @@ Inventory, re-measured 2026-07-29 — the sweep #605 asked for:
 | the a11y controller's announce timer | `dispose()` | nobody |
 | the accessible view's keydown | **none** | — |
 | the search debounce | **none** | — |
+| the marker index's in-flight pull (`MarkerIndexCache`) | `reset()` — which orphans the flight rather than cancelling it, since a `Promise` has no cancel | nobody. `terminal.ts` has **zero** references to the cache: it is consumer-constructed and never handed to `Terminal` at all. Added 2026-08-06 (#746), where the row became load-bearing: an *orphaned* pull's rejection used to clear the flag the replacing pull owned |
 
 - **The remaining rows share one cause and it is not the renderer's.** Every collaborator above is
   consumer-constructed and exported individually; the only thing with a `dispose()` a consumer is

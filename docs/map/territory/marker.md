@@ -57,10 +57,18 @@ the shell emits.
   ordinary `tmux` status line takes. That degrades to the pre-#490 cost (`O(M)` per frame) **only if the consumer re-pulls at
   most once per frame**, which is therefore a stated obligation of the contract rather than an
   assumption about how a consumer happens to be written.
-  **Two corrections measurement forced (#738).** *The cap bounds requests, not availability* — a
-  consumer holding to that obligation has every pull land stale under per-line churn, so it holds
-  no answer at all for the duration: the degradation is a blank overview ruler and absent
-  above-the-top anchors, not a bill. And *the reach is narrow*: this is the only per-line bump, and
+  **Two corrections measurement forced (#738), and a third that falsified the second (#746).**
+  *The cap bounds requests, not availability* — a consumer holding to that obligation has every
+  pull land stale under per-line churn, so it holds no answer at all for the duration: the
+  degradation is a blank overview ruler and absent above-the-top anchors, not a bill.
+  **And "the outage is bounded by the churn" was false too**: the consumer started a pull only when
+  the epoch *changed*, so a pull landing one generation behind the newest frame left the index
+  unusable after the churn had stopped — permanently, with the population unchanged so the count
+  check stayed silent. Reached by an ordinary drag-resize once the query round trip approaches the
+  resize cadence (8 of 40 drags at RTT ≈ 100 ms). Fixed consumer-side by asking a *state* — *what I
+  hold does not describe the newest frame, and nothing is in flight* — rather than an edge. Core is
+  unchanged; this is a consumer-half correction to a claim the core-side design had been credited
+  with. And *the reach is narrow*: this is the only per-line bump, and
   `markers_shift_below_margin` is primary-only, so it needs DECSTBM leaving a static footer **and**
   a marker inside it. Ordinary scrolling bumps 0 times over 1 000 lines; a marker *inside* the
   region bumps 0 times as well, because with `scroll_top == 0` the scroll accrues into scrollback

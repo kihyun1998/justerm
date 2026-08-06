@@ -48,10 +48,17 @@ The first territory in this map that lives **outside `justerm-core`**.
   Two consequences a reader will otherwise re-derive: the per-frame `O(M)` stride scan over absolute
   lines is gone with the group (what remains is the viewport group, bounded by the rows on screen), and an
   **unknown** line means *do not project*, never line 0, because a decoration that is missing is
-  self-correcting and one painted on a line it no longer owns is not. How long it stays missing is
-  set by the epoch's churn rather than by the round trip (#738): one frame for a single reflow, the
-  whole workload where the epoch moves per line — so "self-correcting" is a statement about
-  *direction*, not about *latency*.
+  self-correcting and one painted on a line it no longer owns is not. How long it stays missing was
+  recorded as being set by the epoch's churn rather than by the round trip (#738: one frame for a
+  single reflow, the whole workload where the epoch moves per line) — and **that was still too
+  generous (#746)**. The trigger that ended the outage asked whether the epoch had just *changed*,
+  so a pull landing one generation behind the newest frame ended it nowhere at all: the churn stopped
+  and the index stayed unusable, permanently. Reached by an ordinary interactive drag-resize once the
+  query round trip approaches the resize cadence — measured, at RTT ≈ 100 ms against our own 100 ms
+  `FitController` debounce, 8 drags in 40. So "self-correcting" is a statement about *direction*
+  only; the latency was bounded by the churn **after** the trigger learned to ask a state instead of
+  an edge, and even now a *refused* transport is deliberately not retried (the host's policy, not
+  this class's).
 
 ADR-0024 is authoritative; this is routing. **If they disagree, the ADR is right.**
 

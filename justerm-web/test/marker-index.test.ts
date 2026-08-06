@@ -478,3 +478,145 @@ describe("MarkerIndexCache update notification", () => {
     await expect(port.resolveWith(snap([], 0, 1))).resolves.toBeUndefined();
   });
 });
+
+/**
+ * #746 — the index could stop asking. Three defects, one class, and the first two share a
+ * shape: a piece of bookkeeping that was correct when it was written and became wrong when
+ * #741 changed what an op knows about itself.
+ */
+describe("MarkerIndexCache recovery", () => {
+  // #746 F1 — `invalidate()` used to empty `pendingOps`. Whether the outstanding pull is
+  // really stale is decided by the SNAPSHOT's epoch, and the query channel legitimately runs
+  // ahead of the frame channel — so the pull can land carrying the very generation the wipe
+  // was for, adopt, and answer from content that predates the erased ops. Nothing
+  // re-delivers them: creation and disposal deliberately do not move the epoch (#490).
+  //
+  // Both directions are asserted because they fail in opposite ways and the one guard
+  // watching this class sees neither: `lines.size` is unchanged, so `markerCount ===
+  // lines.size` still holds. Count equality is not set equality.
+  it("keeps a queued birth and a queued death when the pull adopts the generation the invalidation was for", async () => {
+    const port = deferredPort();
+    const cache = new MarkerIndexCache(port);
+    cache.sync({ evictedTotal: 0, markerEpoch: 7, markerCount: 2 });
+    await port.resolveWith(snap([{ id: 1, line: 10 }, { id: 2, line: 22 }], 0, 7));
+    expect(cache.lineOf(2)).toBe(22);
+
+    // A reflow (7 -> 8): the frame invalidates and pulls. The engine then reflows again
+    // before the backend evaluates the query, so the snapshot in flight carries epoch 9.
+    cache.sync({ evictedTotal: 0, markerEpoch: 8, markerCount: 2 });
+
+    // Only after that evaluation does the stream dispose 2 and create 3 — events, so no
+    // epoch moves — and the host drains them before syncing, which is the order the
+    // contract asks for.
+    cache.onMarkerDisposed(2);
+    cache.onMarkerCreated(3, 33, 1, 0, 9);
+
+    // Now the frame carrying epoch 9 arrives. This is the invalidation that used to erase
+    // both ops.
+    cache.sync({ evictedTotal: 0, markerEpoch: 9, markerCount: 2 });
+
+    // And the snapshot lands on that same generation, so it adopts and starts answering.
+    await port.resolveWith(snap([{ id: 1, line: 10 }, { id: 2, line: 22 }], 0, 9));
+    cache.sync({ evictedTotal: 0, markerEpoch: 9, markerCount: 2 });
+
+    expect(cache.lineOf(3)).toBe(33); // the birth survives the invalidation
+    expect(cache.lineOf(2)).toBeUndefined(); // and the death is not undone by the snapshot
+  });
+
+  // #746 Slice A — the pull trigger asked an EDGE ("the epoch just changed") and therefore
+  // could not see the state "a request is needed and none is out". Reaching it takes only a
+  // second bump while a pull is out: the cap swallows the re-pull, and the pull in flight
+  // then answers with the generation it was evaluated in.
+  it("asks again when a pull lands one generation behind the newest frame", async () => {
+    const port = deferredPort();
+    const cache = new MarkerIndexCache(port);
+    cache.sync({ evictedTotal: 0, markerEpoch: 7, markerCount: 1 });
+    await port.resolveWith(snap([{ id: 1, line: 10 }], 0, 7));
+    expect(cache.lineOf(1)).toBe(10);
+
+    cache.sync({ evictedTotal: 0, markerEpoch: 8, markerCount: 1 }); // invalidate + pull
+    cache.sync({ evictedTotal: 0, markerEpoch: 9, markerCount: 1 }); // the cap swallows this one
+    expect(port.pulls).toBe(2);
+
+    // The answer arrives for generation 8 while the frames are already at 9.
+    await port.resolveWith(snap([{ id: 1, line: 11 }], 0, 8));
+    expect(cache.lineOf(1)).toBeUndefined(); // correctly refuses: it does not describe frame 9
+
+    // Master stopped here, permanently, with the engine quiet. The level trigger asks again.
+    cache.sync({ evictedTotal: 0, markerEpoch: 9, markerCount: 1 });
+    expect(port.pulls).toBe(3);
+    await port.resolveWith(snap([{ id: 1, line: 12 }], 0, 9));
+    cache.sync({ evictedTotal: 0, markerEpoch: 9, markerCount: 1 });
+
+    expect(cache.lineOf(1)).toBe(12);
+  });
+
+  // #746 Slice A, the other half of the same predicate: a REFUSED transport is not retried,
+  // because this class cannot tell a blip from a dead session — it sees one report. The
+  // pinned "one request per epoch change" contract above is that rule; this asserts the new
+  // latch does not weaken it while the trigger is level rather than edge.
+  it("does not retry a refused transport, but still spends one attempt per epoch change", async () => {
+    let pulls = 0;
+    const cache = new MarkerIndexCache({
+      index: () => {
+        pulls++;
+        return Promise.reject(new Error("transport down"));
+      },
+    });
+
+    for (let i = 0; i < 30; i++) {
+      cache.sync({ evictedTotal: 0, markerEpoch: 1, markerCount: 1 });
+      await Promise.resolve();
+      await Promise.resolve();
+    }
+    expect(pulls).toBe(1);
+
+    cache.sync({ evictedTotal: 0, markerEpoch: 2, markerCount: 1 });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(pulls).toBe(2);
+  });
+
+  // #746 F4 — the resolve arm is guarded by the round-trip token and the rejection arm was
+  // not. `reset()` orphans a pull without waiting for it, so an orphaned rejection landing
+  // after the new session's pull went out cleared the flag that pull owns. With it wrongly
+  // false, the events stop queueing and the landing snapshot erases them — F1's shape,
+  // reached from the other side.
+  it("ignores an orphaned pull's rejection while the pull that replaced it is still out", async () => {
+    let rejectFirst: (() => void) | undefined;
+    let resolveSecond: ((s: MarkerIndexSnapshot) => void) | undefined;
+    let pulls = 0;
+    const cache = new MarkerIndexCache({
+      index() {
+        pulls++;
+        return pulls === 1
+          ? new Promise<MarkerIndexSnapshot>((_r, j) => {
+              rejectFirst = () => j(new Error("orphaned"));
+            })
+          : new Promise<MarkerIndexSnapshot>((r) => {
+              resolveSecond = r;
+            });
+      },
+    });
+
+    cache.sync(frame(0, 1)); // session 1's pull goes out
+    cache.reset(); // …and is orphaned, not awaited
+    cache.sync(frame(0, 1)); // session 2 starts its own
+    expect(pulls).toBe(2);
+
+    rejectFirst?.();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // A marker born now must be QUEUED, because a pull really is in flight.
+    cache.onMarkerCreated(7, 40, 1, 0, 1);
+
+    resolveSecond?.(snap([{ id: 1, line: 5 }], 0, 1));
+    await Promise.resolve();
+    await Promise.resolve();
+    cache.sync(frame(0, 1));
+
+    expect(cache.lineOf(7)).toBe(40); // survived the landing snapshot's clear
+    expect(cache.lineOf(1)).toBe(5);
+  });
+});
