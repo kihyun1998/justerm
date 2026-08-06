@@ -15,3 +15,11 @@ target/
 
 # Playwright MCP live-drive artifacts (snapshots/console logs — scratch, not committed).
 .playwright-mcp/
+
+# Clean-room verification of a PUBLISHED package (`npm pack` + unpack, to judge what a
+# consumer actually receives). Scratch by construction: it holds a tarball and its unpacked
+# tree at whatever version was current that day, so it goes stale the next release and is one
+# `npm pack` away from being rebuilt. Named here rather than left untracked because it was
+# not: a 0.10.0 renderer tarball, wasm binary included, sat in `git status` as `??` for two
+# days against a shipped 0.11.0, one `git add -A` away from being committed.
+/jrcheck/
