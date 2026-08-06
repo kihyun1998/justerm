@@ -33,17 +33,28 @@ the shell emits.
   marker identically so it is one number; birth and death are `O(1)` occurrences so they are events;
   everything else (reflow, a region rotate that moved a survivor, an alt switch, RIS) is
   non-uniform, so nothing but a re-pull repairs it.
-  **The birth carries its own basis, and (a) does not supply it (#737).** `MarkerCreated.line` is
-  absolute at the *instant of creation*, and the same `feed` can evict afterwards — so the frame that
-  closes the batch reports a third origin, and rebasing the event against it misplaces the mark by
-  whatever the batch evicted after the birth. Both halves of the pull's `(lines, evicted_total)`
-  pairing therefore ride the event too. Order-independence is the point: placement does not depend on
-  whether the host drains events before or after reading the frame. Only *cost* does — drain-first
-  keeps a birth `O(1)`, while frame-first leaves `marker_count` one ahead of an index that has not
-  been told yet, and a consumer comparing the two spends a re-pull reconciling it.
+  **The birth carries its own instant, and (a) does not supply it (#737, #741).**
+  `MarkerCreated.line` is absolute at the *instant of creation*, and the same `feed` can evict
+  afterwards — so the frame that closes the batch reports a third origin, and rebasing the event
+  against it misplaces the mark by whatever the batch evicted after the birth (#737). That instant is
+  not one number: (c)'s epoch dates the moves (a)'s delta cannot express, and a birth queued when the
+  epoch bumps is an answer about a buffer that no longer exists — measured, a mark at absolute 3
+  reflowed to 5 while the basis stayed 0 (#741). So the event carries the pull's whole
+  `(line, evicted_total, epoch)` triple, and the consumer adopts a birth only into the generation it
+  names, comparing for equality because `bump_marker_epoch` wraps. Order-independence is the point:
+  placement does not depend on whether the host drains events before or after reading the frame, on
+  either axis. Only *cost* does — drain-first keeps a birth `O(1)`, while frame-first leaves
+  `marker_count` one ahead of an index that has not been told yet, and a consumer comparing the two
+  spends a re-pull reconciling it.
   **The known cost, measured**: a marker sitting *below* a bottom margin shifts on every output line
   (`markers_shift_below_margin`), so it bumps the epoch per line — 1 000 bumps over 1 000 region
-  scrolls. That degrades to the pre-#490 cost (`O(M)` per frame) **only if the consumer re-pulls at
+  scrolls. **It is a correctness trigger as well as a cost, and reading it as only a cost cost a
+  premise (#741).** The same bump is what moves markers non-uniformly *inside a single `feed`*, with
+  no resize anywhere — measured, a mark in a DECSTBM footer is born at line 4 and answered at 6 two
+  accruals later, with `evicted_total` never moving. #737's completeness pass had recorded the
+  opposite (*"no non-uniform move escapes the epoch inside a `feed`"*), which is why every fixture
+  written against this area reached the epoch through `resize` and none of them covered the path an
+  ordinary `tmux` status line takes. That degrades to the pre-#490 cost (`O(M)` per frame) **only if the consumer re-pulls at
   most once per frame**, which is therefore a stated obligation of the contract rather than an
   assumption about how a consumer happens to be written.
   **Two corrections measurement forced (#738).** *The cap bounds requests, not availability* — a
@@ -105,7 +116,8 @@ recorded SHA; a paraphrase drops the pin).
 - [a coordinate carries the instant it is true at](../invariant/a-coordinate-carries-the-instant-it-is-true-at.md)
   — all three of core's outbound channels meet on this one primitive, and they answer the instant
   question differently: `marker_positions` rides the frame and gets coherence free, `MarkerCreated`
-  had to be given a basis (#737), and `command_marks` still has nowhere to put one
+  had to be given a basis (#737) and then the generation that basis cannot express (#741), and
+  `command_marks` still has nowhere to put either
 - [a wire field narrower than the value it carries](../invariant/wire-field-narrower-than-its-value.md)
   — the two marker group counts are still `u16` after #621 widened its siblings, and **nothing about
   the viewport bounded either of them**: the absolute-line group reported every live marker, and `markers`,

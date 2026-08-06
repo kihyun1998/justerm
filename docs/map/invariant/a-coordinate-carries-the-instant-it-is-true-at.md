@@ -4,15 +4,19 @@
 
 Every buffer coordinate core hands out — an absolute `[scrollback ++ grid]` line, a document line
 over `accessible_text` — is true **at one instant** and false afterwards, because the buffer's origin
-moves under it. `evicted_total` is that instant for the absolute space: it counts lines popped since
-RIS, and eviction shifts every live marker by the same −1, so one scalar expresses the whole move.
+moves under it. In the absolute space that instant takes **two** scalars, and reaching for the first
+alone is the mistake this note has now watched happen twice (#737, #741): `evicted_total` counts lines
+popped since RIS and dates a **uniform** move — eviction shifts every live marker by the same −1, so
+one number expresses the whole of it — while `marker_epoch` dates the moves that are *not* uniform
+(reflow, a region rotate that moved a survivor, an alt switch, RIS), where nothing smaller than a
+re-pull repairs anything. A coordinate carrying only the basis is dated against half its own motion.
 
 Core hands coordinates out on **three channels**, and each answers the instant question differently:
 
 | channel | how the instant reaches the receiver | example |
 |---|---|---|
 | the **frame** | by construction — the header carries `evicted_total`, and every scalar in a `Frame` is sampled in one `Term::frame` body, so the snapshot is internally coherent | `display_offset`, `scrollback_len`, `marker_count` |
-| an **event** | only if the variant carries it. An occurrence is a *point in time* whose payload outlives the instant that gave it meaning, and the frame's basis does **not** reach it — a `feed` that creates a marker and then evicts closes on a basis the event's line predates | `TermEvent::MarkerCreated { line, evicted_total }` |
+| an **event** | only if the variant carries it. An occurrence is a *point in time* whose payload outlives the instant that gave it meaning, and the frame's basis does **not** reach it — a `feed` that creates a marker and then evicts closes on a basis the event's line predates | `TermEvent::MarkerCreated { line, evicted_total, epoch }` |
 | a **query answer** | only if the return type carries it, and today two do not | `Engine::marker_index` does · `Engine::command_marks` and `CommandLine::line` do not |
 
 So the rule is not *"put a basis on the frame"*. It is: **whichever channel a coordinate leaves by, the
@@ -50,8 +54,8 @@ has no second source to disagree with.
   incidental. `MarkerCreated` is the worked case
 - [marker](../territory/marker.md) — where all three channels meet on one primitive: `marker_positions`
   (frame), `MarkerCreated`/`MarkerDisposed` (events), `marker_index` and `command_marks` (queries). The
-  first and third of those carry a basis; the second did not until #737, and `command_marks` still
-  does not
+  first and third of those carry the instant; the second carried none until #737, only half of one
+  until #741, and `command_marks` still carries neither half
 - [frame](../territory/frame.md) — the channel that gets coherence for free, and therefore the one
   that makes the other two look solved
 - [accessibility](../territory/accessibility.md) — `CommandLine::line` is a document line, so it is the
@@ -66,7 +70,9 @@ A coordinate crossing the boundary while the value that dates it stays behind. C
 
 - a type that pairs lines with nothing — `Vec<(MarkerId, usize, MarkerKind)>` where the sibling
   returns `MarkerIndex { markers, evicted_total, epoch }`;
-- an event variant gaining a `line`, `row`, `col` or `index` field with no companion scalar;
+- an event variant gaining a `line`, `row`, `col` or `index` field that carries **fewer scalars than
+  its pull-side sibling** — the subset is always the axis whichever bug forced the field, and the
+  axis nobody measured is the one left silent (#741 was #737's own missing half);
 - a doc comment that tells the reader to rebase one surface's answer by *another* surface's delta;
 - a consumer storing an answer past the frame it was asked in, with no recorded validity window.
 
@@ -87,7 +93,17 @@ basis the frame header reports"* — and the consumer was written against it.
 - The same pass established the boundary of the fix: the carried basis makes the drain orders
   equivalent on the **eviction** axis only. A reflow between a birth and its drain moves markers
   non-uniformly — measured, a mark at absolute 3 reflowed to 5 is answered as 3, permanently — which
-  is what the epoch is for and what the event does not yet carry.
+  is what the epoch is for.
+- **#741** (2026-08-06) — that boundary closed, and the shape of the miss is the durable part. #737
+  fixed the axis its forcing case moved and wrote the obligation as *"carry its own basis"*; the
+  event was still undated on the axis nothing in that fixture touched. **A subset chosen by the
+  reproducing case reads exactly like the whole rule.** The event now carries the same triple its
+  pull-side sibling returns — `MarkerIndex { markers, evicted_total, epoch }` — so the next variant
+  is checked against a *sibling*, not against a list of axes someone has to keep complete. Its
+  consumer half is one rule at two entry points: an entry is adopted only into the generation it
+  names, compared for **equality** because `bump_marker_epoch` wraps. Gating only the queued replay
+  would have left the same defect on the path where the event channel simply runs slower than the
+  frame channel.
 
 **The cluster's anchor is spine #744, and the roster is deliberately not here.** This page holds the
 *rule*; which surfaces are on the list, which are still open, and what is not yet decided all live in
@@ -102,7 +118,9 @@ nobody caches.
 
 - **Any new `TermEvent` variant carrying a position.** `MarkerCreated.line` is the only one today
   (verified by reading the enum), so the next one has no sibling to copy and will start from the frame's
-  model, which is the model that does not apply.
+  model, which is the model that does not apply. The check that does not need a forcing case: name the
+  **pull** that answers the same question and carry every scalar it carries. A variant with no such
+  pull is the harder case and has not happened yet.
 - **`Engine::command_marks`** — absolute lines, no basis, no epoch. Measured: over `evicted_total`
   14 → 16 its lines went `[6, 6, 7, 8]` → `[4, 4, 5, 6]`, a uniform −2 the caller has no way to apply,
   because the tuple has nowhere to put it.
@@ -117,3 +135,10 @@ nobody caches.
   Neither serializes a coordinate across a boundary, so neither has ever needed an instant to travel
   with one. Every claim on this page is first-party, which is what the
   **Wire / frame / API shape → this repo's own precedent** tie-breaker requires.
+  **What the reference *can* settle is a mechanism question inside the design, and #741 asked one.**
+  ghostty carries a generation internally (`PageList.zig:372`, `:392` @ `e6e26e1`) and compares it
+  with `<` — affordable only because its counter is a `u64` that is stated never to wrap (`:379`),
+  where `marker_epoch` is a `u32` moved by `wrapping_add`. So *equality, never order* is **forced**
+  here rather than chosen, and even ghostty treats order as a definitely-invalid floor rather than a
+  validity answer (`:3623-3625`). Rows in
+  [reference-facts.md](../../agents/reference-facts.md#dating-an-anchor-across-a-non-uniform-move--the-one-reference-with-a-generation-and-why-it-may-compare-with--741-verified-2026-08-06).

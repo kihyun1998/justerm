@@ -26,8 +26,8 @@ nothing about it appears in the frame.
 - **A marker's birth and death are both events, and the pair is load-bearing since #490.**
   `MarkerDisposed` was enough while every live marker rode every frame — absence was observable.
   Once the index is *pulled*, a population that only ever shrinks is silently wrong, so
-  `MarkerCreated { id, line, kind, evicted_total }` is the mirror. ADR-0020 R1 is why neither is a
-  frame field: an appearance and a disappearance are occurrences, not state.
+  `MarkerCreated { id, line, kind, evicted_total, epoch }` is the mirror. ADR-0020 R1 is why neither
+  is a frame field: an appearance and a disappearance are occurrences, not state.
 
 - **An event that carries a coordinate carries the instant it is true at, or it carries nothing
   (#737).** This entry read *"`line` is absolute on the same basis the frame header reports"* until it
@@ -39,6 +39,13 @@ nothing about it appears in the frame.
   shape is what makes this a design-model entry rather than a bug note — a frame is a *snapshot* and
   carries its own basis by construction, while an event is a *point in time* whose payload outlives
   the instant that gave it meaning.
+  **And "the instant" is not one scalar (#741).** The repair above was written as *carry the basis*,
+  which is the axis the reproducing batch happened to move; markers also move **non-uniformly**, and
+  a birth queued when `marker_epoch` bumps describes a buffer that no longer exists. The rule that
+  needs no forcing case is stated against the sibling rather than the axis: **an occurrence carries
+  every scalar the pull answering the same question carries**, here `MarkerIndex`'s full
+  `(line, evicted_total, epoch)`. This channel has now had the same fact re-derived at two
+  granularities in one day, which is why the invariant note below exists rather than a third bullet.
 
 - **Pull, not push — and the alternative is named.** The engine queues during `feed` and the consumer
   takes with `drain_events`, mirroring `damage` / `frame` / `reset_damage`. No callback crosses the

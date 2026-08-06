@@ -200,12 +200,16 @@ fn a_marker_born_after_the_pull_is_announced() {
         .drain_events()
         .into_iter()
         .filter_map(|ev| match ev {
+            // Destructured exhaustively on purpose: a new field on this variant is a new
+            // fact a consumer must be told about, so it should not be possible to add one
+            // and leave every test still compiling (#741 added the second).
             TermEvent::MarkerCreated {
                 id,
                 line,
                 kind,
                 evicted_total,
-            } => Some((id, line, kind, evicted_total)),
+                epoch,
+            } => Some((id, line, kind, evicted_total, epoch)),
             _ => None,
         })
         .collect();
@@ -226,6 +230,15 @@ fn a_marker_born_after_the_pull_is_announced() {
         (created[0].3, now.evicted_total),
         (0, 0),
         "no eviction in this fixture, so the two bases are the same zero"
+    );
+    // The same blindness one axis up (#741): nothing here moves markers non-uniformly, so
+    // the birth's generation and the pull's coincide too, and the carried epoch cannot be
+    // what makes this test pass. `a_birth_carries_the_generation_its_line_belongs_to`
+    // separates them.
+    assert_eq!(
+        (created[0].4, now.epoch),
+        (0, 0),
+        "no reflow in this fixture, so the two generations are the same zero"
     );
     assert_eq!(
         now.epoch, pulled.epoch,
@@ -435,5 +448,142 @@ fn the_count_follows_the_active_buffer() {
         0,
         "the alt screen reports its own population, not the primary's — otherwise a \
          consumer on alt would read a desync that is not there"
+    );
+}
+
+/// #741 — the basis and the epoch are one pairing, and a birth carries both or the drain
+/// order still decides the answer.
+///
+/// #737 made the two orders equivalent on the **eviction** axis, where one scalar
+/// expresses the whole move. A reflow is the other axis: it moves markers *non-uniformly*,
+/// so no delta repairs it and `epoch` is what says so. The line this event carries is
+/// therefore true in the generation it was born in and false in the next one — and until
+/// this test, nothing on the event channel said which generation that was. A consumer that
+/// synced the post-reflow frame before draining replayed the queued line over the pulled
+/// one that had already been repaired, permanently.
+#[test]
+fn a_birth_carries_the_generation_its_line_belongs_to() {
+    let mut e = Engine::with_scrollback(20, 5, 100);
+    e.feed(b"top\r\n");
+    // 35 columns of content on a 20-column grid: one soft-wrapped logical line, which is
+    // the material a reflow needs. At 10 columns it occupies two more rows, so everything
+    // below it moves by two — an amount `evicted_total` cannot express, because nothing is
+    // evicted at all.
+    e.feed(b"abcdefghijklmnopqrstuvwxyzABCDEFGHI\r\n");
+    e.drain_events();
+    let before = e.frame();
+
+    e.feed(b"\x1b]133;A\x07");
+    let born = e
+        .drain_events()
+        .into_iter()
+        .find_map(|ev| match ev {
+            TermEvent::MarkerCreated {
+                line,
+                evicted_total,
+                epoch,
+                ..
+            } => Some((line, evicted_total, epoch)),
+            _ => None,
+        })
+        .expect("the batch creates exactly one marker");
+
+    e.resize(10, 5);
+    let after = e.frame();
+    let ix = e.marker_index();
+
+    // The window exists, asserted before anything is asserted inside it. A fixture that
+    // also evicted, or whose reflow moved nothing, would pass against an engine carrying
+    // no generation at all — which is exactly how the eviction-axis fixture in
+    // `a_birth_carries_the_basis_its_line_is_absolute_at` is blind to this axis.
+    assert_eq!(
+        (before.evicted_total, after.evicted_total, born.1),
+        (0, 0, 0),
+        "nothing is evicted here, so the carried BASIS contributes nothing and cannot be \
+         what makes this test pass"
+    );
+    assert_ne!(
+        before.marker_epoch, after.marker_epoch,
+        "the reflow must move the epoch, or there is no generation to disambiguate"
+    );
+    assert_eq!(
+        ix.markers.len(),
+        1,
+        "the marker survives the reflow: this is a move, not a disposal, so no event \
+         announces it"
+    );
+    assert_eq!(
+        (born.0, ix.markers[0].line),
+        (3, 5),
+        "measured: the queued line and the engine's own answer for the same marker"
+    );
+
+    assert_eq!(
+        born.2, before.marker_epoch,
+        "the birth is true in the generation it was born in"
+    );
+    assert_ne!(
+        born.2, after.marker_epoch,
+        "which is not the generation the frame closing this batch reports — the pair \
+         (basis, epoch) is what `marker_index` carries, so the event that mirrors it \
+         incrementally carries both or neither is usable"
+    );
+}
+
+/// #741 — and the epoch does **not** need a resize to move, which the test above cannot
+/// show because it reaches the generation through `resize`.
+///
+/// #737's completeness pass recorded that *"no non-uniform move escapes the epoch inside a
+/// single `feed`"* — measured false here. `markers_shift_below_margin` bumps from the
+/// ordinary accrual path, so a DECSTBM footer (a `tmux`-style status line, `less`) with a
+/// mark inside it moves markers non-uniformly from the byte stream alone. That makes the
+/// carried generation reachable without the user touching the window, and it is the axis a
+/// resize-driven fixture is blind to — the same "a subset chosen by the reproducing case
+/// reads like the whole rule" shape this issue exists to close, one level down.
+///
+/// `marker.md` already documents this bump as the #738 *cost* (a re-pull per output line).
+/// It is also a *correctness* trigger, and nothing said so.
+#[test]
+fn a_birth_can_outlive_its_generation_with_no_resize_at_all() {
+    let mut e = Engine::with_scrollback(20, 6, 100);
+    e.feed(b"\x1b[1;3r"); // DECSTBM: rows 1..3 scroll, rows 4..6 are a static footer
+    e.drain_events();
+    let before = e.frame();
+
+    // One `feed`: mark inside the footer, then accrue inside the region above it.
+    e.feed(b"\x1b[5;1H\x1b]133;A\x07\x1b[3;1Hxx\n\n");
+
+    let born = e
+        .drain_events()
+        .into_iter()
+        .find_map(|ev| match ev {
+            TermEvent::MarkerCreated {
+                line,
+                evicted_total,
+                epoch,
+                ..
+            } => Some((line, evicted_total, epoch)),
+            _ => None,
+        })
+        .expect("the batch creates exactly one marker");
+    let after = e.frame();
+    let ix = e.marker_index();
+
+    // The window exists: no eviction, so the basis contributes nothing here either.
+    assert_eq!(
+        (before.evicted_total, after.evicted_total, born.1),
+        (0, 0, 0),
+        "nothing is evicted, so this is the epoch axis and only the epoch axis"
+    );
+    assert_eq!(
+        (born.0, ix.markers[0].line),
+        (4, 6),
+        "measured: the queued line, and the engine's own answer two accruals later"
+    );
+    assert_eq!(
+        (born.2, after.marker_epoch),
+        (0, 2),
+        "the generation moved twice inside one `feed` — one bump per accrued line — while \
+         the birth is true only in the one it names"
     );
 }

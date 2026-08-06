@@ -25,6 +25,19 @@
  * line, identical bases before and after, an identical epoch and an identical
  * `markerCount`, and true lines three apart. Nothing the consumer could observe told them
  * apart, so the basis had to start travelling with the line it belongs to.
+ *
+ * **A basis dates only a uniform move, so the birth carries its generation too (#741).**
+ * Eviction is the move one scalar can express; a reflow moves markers individually, which
+ * is what `markerEpoch` says and what no delta repairs. A birth queued before that bump
+ * describes a buffer that no longer exists — and arrival order cannot reveal it, because
+ * `invalidate()` empties `pendingOps`, so a birth queued *before* the reflow and one born
+ * *after* the pull went out reach the replay looking identical. The rule is therefore one
+ * sentence applied wherever a line enters this class: **an entry is adopted only into the
+ * generation it names**, and the re-pull the epoch already forces supplies it otherwise.
+ * The two entry points are {@link MarkerIndexCache.onMarkerCreated}'s store and the
+ * replay inside the pull — the second alone would leave a birth delivered *after* the
+ * repairing pull landed, which is reachable whenever the host's event channel runs
+ * slower than its frame channel.
  */
 
 /** One live marker as the backend's `Engine::marker_index()` reports it. */
@@ -62,7 +75,15 @@ export interface MarkerBasisFrame {
 }
 
 type Op =
-  | { readonly add: true; readonly id: number; readonly line: number; readonly basis: number }
+  | {
+      readonly add: true;
+      readonly id: number;
+      readonly line: number;
+      readonly basis: number;
+      /** The generation `line` belongs to. A death carries none deliberately: dropping an
+       * id is the same act in every generation, so it is the one op nothing dates (#741). */
+      readonly epoch: number;
+    }
   | { readonly add: false; readonly id: number };
 
 export class MarkerIndexCache {
@@ -178,9 +199,27 @@ export class MarkerIndexCache {
         // The snapshot is a view from *before* these landed, so replay them onto it —
         // otherwise a birth is lost and a death is resurrected, permanently, since
         // neither moves the epoch (deliberately, see core's `event.rs`).
+        //
+        // **Except a birth from another generation (#741).** This queue is what the pull
+        // was invalidated *around*, so it holds two kinds of birth that arrival order
+        // cannot separate — one queued before the reflow that started the pull, and one
+        // born after the pull went out. Replaying the first over the snapshot puts back a
+        // line the pull had just repaired, permanently, since nothing bumps again. The
+        // carried generation is the only thing that tells them apart, and dropping is the
+        // right repair rather than a fallback: a snapshot newer than the birth already
+        // contains that marker, at the line the reflow moved it to.
         for (const op of this.pendingOps) {
-          if (op.add) this.lines.set(op.id, { line: op.line, basis: op.basis });
-          else this.lines.delete(op.id);
+          if (!op.add) {
+            this.lines.delete(op.id);
+            continue;
+          }
+          // Equality, never order: core's counter is `wrapping_add`, so `<` is meaningless
+          // across a wrap. A birth *newer* than the snapshot is dropped too — the frame
+          // carrying its generation invalidates and re-pulls, which is the same recovery
+          // path, and until then absent beats a line dated to a buffer this index is not
+          // describing.
+          if (op.epoch !== snap.epoch) continue;
+          this.lines.set(op.id, { line: op.line, basis: op.basis });
         }
         this.pendingOps.length = 0;
         this.adopted = snap.epoch;
@@ -216,20 +255,25 @@ export class MarkerIndexCache {
    *   instead of silently placing markers on the last frame's basis, which is what this
    *   method did before.
    *
-   * **Drain the events, then sync the frame.** On the eviction axis the carried basis
-   * makes the two orders equivalent, and syncing first costs only an `O(M)` re-pull —
-   * the frame's `markerCount` runs one ahead of an index that has not been told yet, so
-   * the drift check reconciles at `O(M)` a fact this event already delivered at `O(1)`.
-   * But a basis is not the only thing a birth can outlive: anything that moves markers
-   * **non-uniformly** between the birth and this call — a reflow, a region rotate — is
-   * why {@link MarkerIndexCache.sync} invalidates on `markerEpoch`, and a queued birth
-   * arriving after that invalidation describes the buffer as it was *before* it. Measured
-   * (#737): a mark at absolute 3, a `resize` reflowing it to 5, and a frame synced ahead
-   * of the drain leaves `lineOf` answering 3 — permanently, since nothing bumps again.
-   * Draining first adopts the birth on the generation it was born in, which is the only
-   * ordering in which the epoch can do its job.
+   * @param epoch the event's own `epoch` — the marker generation `line` belongs to
+   *   (#741). A basis dates a *uniform* move; anything that moves markers individually —
+   *   a reflow, a region rotate — moves the generation instead, and a line from another
+   *   generation is not stale by a delta, it is an answer about a different buffer.
+   *   Measured: a mark at absolute 3 reflowed to 5 with the basis unmoved at 0.
+   *
+   * **Drain the events, then sync the frame.** That is now a *cost* preference rather
+   * than a correctness one, which is the whole of what #741 changed. Syncing first leaves
+   * the frame's `markerCount` one ahead of an index that has not been told yet, so the
+   * drift check reconciles at `O(M)` a fact this event already delivered at `O(1)`.
+   * Placement no longer depends on it, on either axis.
    */
-  onMarkerCreated(id: number, line: number, _kind: number, evictedTotal: number): void {
+  onMarkerCreated(
+    id: number,
+    line: number,
+    _kind: number,
+    evictedTotal: number,
+    epoch: number,
+  ): void {
     // A non-finite argument is refused rather than stored, and the refusal is the loud
     // option here rather than the quiet one: a stored `NaN` still counts toward
     // {@link MarkerIndexCache.size}, so `markerCount === lines.size` holds and the drift
@@ -239,9 +283,30 @@ export class MarkerIndexCache {
     // `evictedTotal` is a required parameter; this repo has met the same shape twice on
     // the producer side (#672, #675) and the rule is the same — a value the receiving
     // type cannot mean does not get stored.
-    if (!Number.isFinite(line) || !Number.isFinite(evictedTotal)) return;
+    if (!Number.isFinite(line) || !Number.isFinite(evictedTotal) || !Number.isFinite(epoch)) return;
+    // **A birth is adopted only into the generation it names (#741).** The queue below is
+    // not the only way a stale birth arrives: an event channel slower than the frame
+    // channel delivers one *after* the pull that repaired it has already landed, and that
+    // birth never touches `pendingOps` at all. Frame mode allows exactly that — core has
+    // no IPC (ADR-0017), so the host owns both transports and nothing couples their
+    // latencies. The same check answers both, applied at the two points a line enters:
+    // here against the generation this index describes, and in the replay against the one
+    // the landing snapshot adopts.
+    //
+    // It also refuses a birth from the generation *ahead* of this one — the host drained
+    // an event core queued after a bump the frame stream has not delivered yet. That line
+    // is right for a buffer this index is not describing, and the frame carrying that
+    // generation is one sync away. Waiting a frame is the same trade the in-flight window
+    // makes: absent beats wrong.
+    //
+    // Only while a generation is known. `adopted === undefined` means either a pull is out
+    // — in which case the push below carries the epoch and the replay decides — or the
+    // transport failed, where `lineOf` refuses anyway and the next pull clears this map.
+    // (A pull is always preceded by `invalidate()`, so `inFlight` implies `adopted ===
+    // undefined` and this return can never swallow a needed push.)
+    if (this.adopted !== undefined && epoch !== this.adopted) return;
     this.lines.set(id, { line, basis: evictedTotal });
-    if (this.inFlight) this.pendingOps.push({ add: true, id, line, basis: evictedTotal });
+    if (this.inFlight) this.pendingOps.push({ add: true, id, line, basis: evictedTotal, epoch });
   }
 
   /** A marker died (core's `TermEvent::MarkerDisposed`). Costs no re-pull — that is why

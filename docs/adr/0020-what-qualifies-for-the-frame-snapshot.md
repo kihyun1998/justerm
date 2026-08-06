@@ -37,6 +37,19 @@ the frame; an occurrence routed to the event channel must carry its own**, which
 mirrors `MarkerIndex`'s `(line, evicted_total)` pairing rather than borrowing the header's. R1 sends
 an occurrence to the event channel; it does not make the frame's basis reach it.
 
+**Amended again 2026-08-06 (#741), and the amendment above had the same defect it was diagnosing.**
+It wrote the obligation as *"must carry its own **basis**"* — the axis that happened to be measured —
+when what an occurrence outlives is the whole **instant**. A basis dates a *uniform* move; markers
+also move non-uniformly (reflow, region rotate), which is what `marker_epoch` exists to say and what
+no delta repairs. A birth still queued when the epoch moves therefore describes a buffer that no
+longer exists, and the consumer cannot tell it from a birth in the current generation: measured, a
+mark at absolute 3 reflowed to 5 with the basis unmoved at 0, replayed over the pull that had already
+repaired it. So the clause reads: **an occurrence routed to the event channel carries every scalar
+its pull-side sibling carries** — here the full `MarkerIndex` triple `(line, evicted_total, epoch)`,
+not a subset chosen by whichever axis the forcing case moved. Naming the sibling rather than the
+axis is what makes the rule checkable for the *next* variant, which by construction has no forcing
+case yet.
+
 Note what this admission is *for*, because it is the first of its shape here: these two exist to let
 the two marker groups **leave** in v16. A group is being removed by admitting the smallest thing that
 lets the consumer reconstruct it — which is the same trade R3's remedy always described ("a slice of

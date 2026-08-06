@@ -1343,3 +1343,19 @@ This section needed `test/` in the xterm.js sparse checkout; the clone recipe in
   because the `justerm-wasm-decode` import between them resolves on the microtask queue. That
   finding stands with xterm deleted from the sentence, which is why it is recorded as a validity
   condition in `e2e/demo.spec.ts`'s `beforeEach` rather than as a parity fix.
+
+## Dating an anchor across a non-uniform move — the one reference with a generation, and why it may compare with `<` (#741, verified 2026-08-06)
+
+justerm serialises a marker line to a stateless consumer, so it needs the coordinate to say *which
+buffer it is true of*. No reference has that problem — none of them serialises an anchor across a
+boundary — so this cannot be cited to justify the design (**Wire / frame / API shape → this repo's own
+precedent**). What it *can* settle is a mechanism question inside the design: **equality or order?**
+
+| Fact | Reference | Site |
+|---|---|---|
+| ghostty **does** carry a generation: a per-page `page_serial` plus a `page_serial_epoch` floor, so a pointer can be checked against the page it was taken from — *"The serial number can be used to detect whether the page is identical to the page that was originally referenced by a pointer"* | ghostty | `src/terminal/PageList.zig:372` (the doc), `:392` (the epoch field) |
+| It compares with `<` — `if (serial < self.page_serial_epoch) return false` — and it may, **because the counter is `u64` and is stated never to wrap**: *"If we created a new page every second it'd take 584 billion years to overflow. We're going to risk it."* justerm's `marker_epoch` is a `u32` moved by `wrapping_add`, so the same comparison is unavailable and equality is *forced*, not stylistic | ghostty | `src/terminal/PageList.zig:5010` (the compare), `:379` (the overflow note) |
+| ⚠ Even there, order is only a **definitely-invalid floor**, never a validity answer: *"generations are not monotonic in list order, so older live successors may have lower generations. The epoch only advances when reset invalidates the entire list."* A live pin still needs the exact check. Read this before proposing that justerm's epoch could answer "how stale" rather than "stale or not" | ghostty | `src/terminal/PageList.zig:3623-3625` |
+| ghostty's generation is **per page**, so one mangled page does not invalidate anchors elsewhere; justerm's single counter invalidates the whole index. That is the named prior art for anyone trying to shrink the #738 outage — it is a *design input*, not a defect | ghostty | `src/terminal/PageList.zig:392` |
+| xterm.js keeps an anchor valid across a non-uniform move with **no generation at all**, by decomposing the move into splices the anchor applies itself: `onTrim(amount)` → `marker.line -= amount`, `onInsert({index, amount})` → `if (marker.line >= event.index) marker.line += event.amount`, and the mirror for delete. Unavailable to frame mode for the reason ADR-0020 records — the consumer holds a *copy*, and an `O(k)` splice list is a per-move payload on a channel that has none | xterm.js | `src/common/buffer/Buffer.ts:539` (the emit), `:646` (trim), `:654` (insert), `:666` (delete) |
+| alacritty is **silent, not an outlier** — it has no anchor primitive to compare: `rg -i 'marker|epoch|generation' alacritty_terminal/src/grid/mod.rs` returns zero hits | alacritty | — |

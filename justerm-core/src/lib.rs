@@ -562,16 +562,22 @@ impl Engine {
     /// Ask again when [`MarkerIndex::epoch`] differs from the one you hold. Drop an
     /// entry when its `TermEvent::MarkerDisposed` arrives, and append one when
     /// `TermEvent::MarkerCreated` does — neither deliberately moves the epoch, so
-    /// neither costs a re-pull. **Append it on the basis the event carries, not on the
+    /// neither costs a re-pull. **Append it on the instant the event carries, not on the
     /// newest frame's**: a `feed` can create a marker and then evict, and those are two
     /// different origins (#737).
     ///
-    /// **Drain before you read the frame.** On the eviction axis the carried basis makes
-    /// the two orders equivalent and reading the frame first costs only a re-pull — its
-    /// `marker_count` runs ahead of an index that has not been told yet. On every other
-    /// axis it is not a cost but a wrong answer: a reflow or a region rotate moves markers
-    /// non-uniformly, which is what [`MarkerIndex::epoch`] is for, and a birth still
-    /// queued when that epoch moves describes the buffer as it was before it.
+    /// **Adopt a birth only into the generation it names (#741).** The event carries this
+    /// pull's whole triple — line, basis, [`MarkerIndex::epoch`] — because the basis dates
+    /// only a *uniform* move. A reflow or a region rotate moves markers individually, so a
+    /// line dated to the generation before one is not stale by a delta; it is an answer
+    /// about a different buffer, and the re-pull the epoch already forces is what supplies
+    /// the marker instead. Compare generations for **equality**: the counter wraps.
+    ///
+    /// **Draining before you read the frame is then a cost preference, not a correctness
+    /// one.** Reading the frame first leaves `marker_count` one ahead of an index that has
+    /// not been told yet, so a consumer comparing the two spends an `O(M)` re-pull
+    /// reconciling a fact this event delivered at `O(1)`. Placement does not depend on the
+    /// order, on either axis.
     pub fn marker_index(&self) -> MarkerIndex {
         self.term.marker_index()
     }
