@@ -47,8 +47,11 @@ The first territory in this map that lives **outside `justerm-core`**.
   that stopped shipping anchors from a host that simply has none.
   Two consequences a reader will otherwise re-derive: the per-frame `O(M)` stride scan over absolute
   lines is gone with the group (what remains is the viewport group, bounded by the rows on screen), and an
-  **unknown** line means *do not project*, never line 0, because a decoration missing for a
-  frame is self-correcting and one painted on a line it no longer owns is not.
+  **unknown** line means *do not project*, never line 0, because a decoration that is missing is
+  self-correcting and one painted on a line it no longer owns is not. How long it stays missing is
+  set by the epoch's churn rather than by the round trip (#738): one frame for a single reflow, the
+  whole workload where the epoch moves per line — so "self-correcting" is a statement about
+  *direction*, not about *latency*.
 
 ADR-0024 is authoritative; this is routing. **If they disagree, the ADR is right.**
 
