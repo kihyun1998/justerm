@@ -16,6 +16,15 @@
  * absolute at the basis it arrived on, and {@link MarkerIndexCache.lineOf} rebases at
  * read time against the newest frame. That is why a create event carries a line: it is
  * absolute at the moment of creation, which is a different basis from the pull's.
+ *
+ * **And the create event must carry that basis too (#737).** This class read the sentence
+ * above and then stamped a birth with the last *frame*'s basis, which is a third instant
+ * again: one `feed` can create a marker and then evict, so the frame closing that batch
+ * reports an origin the event's line predates. Measured in core — two batches with the
+ * same mark and the same three evictions in opposite orders produce an identical event
+ * line, identical bases before and after, an identical epoch and an identical
+ * `markerCount`, and true lines three apart. Nothing the consumer could observe told them
+ * apart, so the basis had to start travelling with the line it belongs to.
  */
 
 /** One live marker as the backend's `Engine::marker_index()` reports it. */
@@ -196,11 +205,27 @@ export class MarkerIndexCache {
     );
   }
 
-  /** A marker was created (core's `TermEvent::MarkerCreated`). `line` is absolute on the
-   * basis current at creation, which is why it is stored with one. */
-  onMarkerCreated(id: number, line: number, _kind: number): void {
-    this.lines.set(id, { line, basis: this.basis });
-    if (this.inFlight) this.pendingOps.push({ add: true, id, line, basis: this.basis });
+  /**
+   * A marker was created (core's `TermEvent::MarkerCreated`). `line` is absolute on the
+   * basis current at creation, which is why it is stored with one.
+   *
+   * @param evictedTotal the event's own `evicted_total` — **not** the newest frame's.
+   *   Those are different instants whenever the batch that created the marker went on to
+   *   evict, and the difference is the number of lines the mark is misplaced by (#737).
+   *   Required rather than defaulted so a host that has not wired it fails to compile
+   *   instead of silently placing markers on the last frame's basis, which is what this
+   *   method did before.
+   *
+   * **Placement does not depend on when this is called** — before or after
+   * {@link MarkerIndexCache.sync} for the same batch — because the entry now carries its
+   * own basis. The *cost* does: draining events first lets the drift check in `sync` see
+   * a population that already includes this birth, while syncing first leaves the frame's
+   * `markerCount` one ahead of the index and spends an `O(M)` re-pull to reconcile a fact
+   * this event already delivered at `O(1)`. Drain, then sync.
+   */
+  onMarkerCreated(id: number, line: number, _kind: number, evictedTotal: number): void {
+    this.lines.set(id, { line, basis: evictedTotal });
+    if (this.inFlight) this.pendingOps.push({ add: true, id, line, basis: evictedTotal });
   }
 
   /** A marker died (core's `TermEvent::MarkerDisposed`). Costs no re-pull — that is why

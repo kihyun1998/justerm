@@ -76,13 +76,29 @@ pub enum TermEvent {
     /// index (`Engine::marker_index`) has no way to learn of a marker born after its
     /// pull — the population would only ever shrink.
     ///
-    /// `line` is absolute at the moment of creation, on the **same basis** the pull
-    /// reports (`Frame::evicted_total`), so a consumer appends the entry and rebases it
-    /// exactly like a pulled one. Deliberately not an epoch bump: a bump costs a whole
-    /// re-pull, and creation is `O(1)` information.
+    /// `line` is absolute at the moment of creation and `evicted_total` is the basis it
+    /// is absolute at — the same pairing [`crate::MarkerIndex`] uses, because this event
+    /// is that pull's incremental mirror. The consumer appends the entry with the basis
+    /// it arrived on and rebases it exactly like a pulled one.
+    ///
+    /// **The two are one fact and neither is usable alone (#737).** A single `feed` can
+    /// create a marker and then evict, so by the end of the batch the buffer's origin has
+    /// moved out from under the line this event already carries. `Frame::evicted_total` is
+    /// the basis at the *end* of that batch, so reading `line` against it misplaces the
+    /// marker by however much the batch evicted after the birth — measured at three lines,
+    /// with the event line, both frame bases, the epoch and `Frame::marker_count` all
+    /// identical to the batch that evicted *first* and needs no adjustment at all.
+    ///
+    /// Deliberately not an epoch bump: a bump costs a whole re-pull, and creation is
+    /// `O(1)` information.
     MarkerCreated {
         id: MarkerId,
         line: u32,
         kind: MarkerKind,
+        /// Lines evicted since RIS at the moment of creation — the basis `line` is
+        /// absolute at. Carried rather than inferred so that placement does not depend on
+        /// whether the consumer drains this queue before or after it syncs the frame,
+        /// which nothing in the API specifies.
+        evicted_total: u64,
     },
 }

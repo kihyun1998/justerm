@@ -78,10 +78,63 @@ describe("MarkerIndexCache", () => {
 
     // The stream creates one at absolute 640, when 120 lines had been evicted.
     cache.sync(frame(120, 0));
-    cache.onMarkerCreated(9, 640, 1);
+    cache.onMarkerCreated(9, 640, 1, 120);
 
     cache.sync(frame(140, 0));
     expect(cache.lineOf(9)).toBe(620);
+  });
+
+  // #737 — the batch above hands the birth the basis of the frame it was just synced
+  // against, which is the one arrangement where the carried basis and the frame's agree.
+  // These two are the arrangement where they do not, and their numbers are core's, not
+  // invented: `a_birth_carries_the_basis_its_line_is_absolute_at` runs
+  // `Engine::with_scrollback(20, 5, 4)` over two single-`feed` batches that differ only in
+  // whether the OSC-133 mark precedes or follows three evictions. Every value below except
+  // the carried basis is identical across them, and the engine's own answer differs by 3.
+  describe.each([
+    { order: "created before the batch's evictions", carried: 22, truth: 5 },
+    { order: "created after them", carried: 25, truth: 8 },
+  ])("a marker $order (#737)", ({ carried, truth }) => {
+    const BORN = { id: 42, line: 8 };
+
+    it("is placed on the engine's own answer when the events are drained first", async () => {
+      const port = deferredPort();
+      const cache = new MarkerIndexCache(port);
+      cache.sync({ evictedTotal: 22, markerEpoch: 0, markerCount: 0 });
+      await port.resolveWith(snap([], 22, 0));
+
+      cache.onMarkerCreated(BORN.id, BORN.line, 1, carried);
+      cache.sync({ evictedTotal: 25, markerEpoch: 0, markerCount: 1 });
+
+      expect(cache.lineOf(BORN.id)).toBe(truth);
+      // And it stayed `O(1)`: the drift check sees a population that already includes the
+      // birth, so nothing re-pulls. This is the ordering the contract asks for.
+      expect(port.pulls).toBe(1);
+    });
+
+    it("is placed on the engine's own answer when the frame is synced first", async () => {
+      const port = deferredPort();
+      const cache = new MarkerIndexCache(port);
+      cache.sync({ evictedTotal: 22, markerEpoch: 0, markerCount: 0 });
+      await port.resolveWith(snap([], 22, 0));
+
+      cache.sync({ evictedTotal: 25, markerEpoch: 0, markerCount: 1 });
+      cache.onMarkerCreated(BORN.id, BORN.line, 1, carried);
+
+      // The cost this ordering pays, asserted rather than hidden: the frame's count ran
+      // one ahead of an index that had not been told yet, so the drift check spent a
+      // re-pull on a fact the event was already carrying. Correctness does not depend on
+      // the order; this does.
+      expect(port.pulls).toBe(2);
+      expect(cache.lineOf(BORN.id)).toBeUndefined();
+
+      // The replay must land on the engine's answer too — it overwrites the snapshot's
+      // own entry for this id, so a birth stamped with the wrong basis would clobber a
+      // correct pulled line with an incorrect one.
+      await port.resolveWith(snap([{ id: BORN.id, line: truth }], 25, 0));
+      cache.sync({ evictedTotal: 25, markerEpoch: 0, markerCount: 1 });
+      expect(cache.lineOf(BORN.id)).toBe(truth);
+    });
   });
 
   it("drops a disposed marker without re-pulling", async () => {
@@ -149,7 +202,7 @@ describe("MarkerIndexCache under a realistic frame loop", () => {
     cache.sync(frame(0, 0));
     await port.resolveWith(snap([], 0, 0));
 
-    cache.onMarkerCreated(11, 40, 1);
+    cache.onMarkerCreated(11, 40, 1, 0);
     // The very next frames repeat the same epoch — nothing invalidating happened.
     for (let i = 0; i < 5; i++) cache.sync(frame(0, 0));
 
@@ -161,7 +214,7 @@ describe("MarkerIndexCache under a realistic frame loop", () => {
     const cache = new MarkerIndexCache(port);
     cache.sync(frame(0, 1)); // pull out
 
-    cache.onMarkerCreated(42, 77, 1); // born mid-flight; the snapshot predates it
+    cache.onMarkerCreated(42, 77, 1, 0); // born mid-flight; the snapshot predates it
     await port.resolveWith(snap([{ id: 1, line: 5 }], 0, 1));
     cache.sync(frame(0, 1));
 
