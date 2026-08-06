@@ -1305,3 +1305,41 @@ process boundary, so the same distinction has to be a **port method**
 rule in `justerm-core/src/term/search.rs`'s module doc, recorded in
 `docs/map/territory/search.md` § Design model. The anchor is where the user navigated to; the
 highlight set is a function of the query. `clear()` conflating them was the defect.
+
+## How a comparable project structures a Playwright suite's page setup (#733, verified 2026-08-06)
+
+The first entry for a **test-harness** question, and the reason it is worth a section is that
+the harness is where the family's browser proofs live — a suite that races its own boot reports
+machine speed as a defect, which is what #653 cost three CI runs. Read it with rule 5 doubled:
+the tie-breaker table in `theflow.md` has **no row for this layer**, so nothing here can make a
+justerm shape wrong. It converged with ours independently, which is the only claim it supports.
+
+This section needed `test/` in the xterm.js sparse checkout; the clone recipe in `theflow.md`
+§ "Step 1" now sets it. The pin is unchanged.
+
+| Fact | Reference | Site |
+|---|---|---|
+| The console listener is attached **before** the navigation it is meant to observe, two lines above it, in the shared context builder | xterm.js | `test/playwright/TestUtils.ts:27` |
+| That `goto` is the **only** one in the whole Playwright suite — `rg '\.goto\(' test/playwright addons` returns exactly one hit, and it is reached from `beforeAll`, never from a test body | xterm.js | `test/playwright/TestUtils.ts:29` |
+| Per-test isolation is done **in-page**, by resetting the object under test rather than by navigating again | xterm.js | `test/playwright/TestUtils.ts:252` |
+| The boot gate waits on a node the object under test **emits** (`.xterm-rows`), not on a sibling widget that merely mounts nearby | xterm.js | `test/playwright/TestUtils.ts:515` |
+| Waiting for browser-side state is done by **re-evaluating in the page** on a poll, not by awaiting one long-lived promise across the CDP boundary | xterm.js | `test/playwright/TestUtils.ts:529` |
+| It has **no** custom fixtures at all: `rg 'test\.extend|test\.use' test addons` returns zero, so it is silent on how to make a listener precede a hook | xterm.js | — (absence, grepped 2026-08-06) |
+
+**What this does and does not settle for justerm.**
+
+- **Converges** with #733's one-navigation-per-test rule, and independently — justerm reached it
+  from #653's measured flake, xterm.js from a shared-page design. Convergence is the
+  non-arbitrariness signal, not an authority.
+- **Cannot arbitrate** the fixture question at all (zero `test.extend` in the tree). justerm's
+  `{ auto: true }` `consoleLines` is a first-principles answer to a Playwright ordering fact
+  measured locally: a fixture the *test* declares is set up **after** `beforeEach`.
+- **Is a design proposal, not a defect, where it differs.** xterm.js shares one page per test
+  *file* and resets in-page; justerm takes a fresh context per test. Reading that as a finding
+  fails the reference-free restatement test — nothing in justerm's own record asks for page reuse.
+- **Points at one hazard class worth owning**, which is the row that earns its keep: their boot
+  gate is a node the subject emits, ours is the demo's control bar — a **proxy** that mounts ~350
+  lines before the `window.__*Probe` assignments every spec reaches for. Ours is sound only
+  because the `justerm-wasm-decode` import between them resolves on the microtask queue. That
+  finding stands with xterm deleted from the sentence, which is why it is recorded as a validity
+  condition in `e2e/demo.spec.ts`'s `beforeEach` rather than as a parity fix.
