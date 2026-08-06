@@ -16,6 +16,15 @@
  * absolute at the basis it arrived on, and {@link MarkerIndexCache.lineOf} rebases at
  * read time against the newest frame. That is why a create event carries a line: it is
  * absolute at the moment of creation, which is a different basis from the pull's.
+ *
+ * **And the create event must carry that basis too (#737).** This class read the sentence
+ * above and then stamped a birth with the last *frame*'s basis, which is a third instant
+ * again: one `feed` can create a marker and then evict, so the frame closing that batch
+ * reports an origin the event's line predates. Measured in core — two batches with the
+ * same mark and the same three evictions in opposite orders produce an identical event
+ * line, identical bases before and after, an identical epoch and an identical
+ * `markerCount`, and true lines three apart. Nothing the consumer could observe told them
+ * apart, so the basis had to start travelling with the line it belongs to.
  */
 
 /** One live marker as the backend's `Engine::marker_index()` reports it. */
@@ -196,11 +205,43 @@ export class MarkerIndexCache {
     );
   }
 
-  /** A marker was created (core's `TermEvent::MarkerCreated`). `line` is absolute on the
-   * basis current at creation, which is why it is stored with one. */
-  onMarkerCreated(id: number, line: number, _kind: number): void {
-    this.lines.set(id, { line, basis: this.basis });
-    if (this.inFlight) this.pendingOps.push({ add: true, id, line, basis: this.basis });
+  /**
+   * A marker was created (core's `TermEvent::MarkerCreated`). `line` is absolute on the
+   * basis current at creation, which is why it is stored with one.
+   *
+   * @param evictedTotal the event's own `evicted_total` — **not** the newest frame's.
+   *   Those are different instants whenever the batch that created the marker went on to
+   *   evict, and the difference is the number of lines the mark is misplaced by (#737).
+   *   Required rather than defaulted so a host that has not wired it fails to compile
+   *   instead of silently placing markers on the last frame's basis, which is what this
+   *   method did before.
+   *
+   * **Drain the events, then sync the frame.** On the eviction axis the carried basis
+   * makes the two orders equivalent, and syncing first costs only an `O(M)` re-pull —
+   * the frame's `markerCount` runs one ahead of an index that has not been told yet, so
+   * the drift check reconciles at `O(M)` a fact this event already delivered at `O(1)`.
+   * But a basis is not the only thing a birth can outlive: anything that moves markers
+   * **non-uniformly** between the birth and this call — a reflow, a region rotate — is
+   * why {@link MarkerIndexCache.sync} invalidates on `markerEpoch`, and a queued birth
+   * arriving after that invalidation describes the buffer as it was *before* it. Measured
+   * (#737): a mark at absolute 3, a `resize` reflowing it to 5, and a frame synced ahead
+   * of the drain leaves `lineOf` answering 3 — permanently, since nothing bumps again.
+   * Draining first adopts the birth on the generation it was born in, which is the only
+   * ordering in which the epoch can do its job.
+   */
+  onMarkerCreated(id: number, line: number, _kind: number, evictedTotal: number): void {
+    // A non-finite argument is refused rather than stored, and the refusal is the loud
+    // option here rather than the quiet one: a stored `NaN` still counts toward
+    // {@link MarkerIndexCache.size}, so `markerCount === lines.size` holds and the drift
+    // check — the one thing watching for an index that has gone wrong — never fires
+    // again. Dropping the entry leaves the count one ahead, which is exactly the
+    // condition that re-pulls and heals. Reachable only from an untyped host, since
+    // `evictedTotal` is a required parameter; this repo has met the same shape twice on
+    // the producer side (#672, #675) and the rule is the same — a value the receiving
+    // type cannot mean does not get stored.
+    if (!Number.isFinite(line) || !Number.isFinite(evictedTotal)) return;
+    this.lines.set(id, { line, basis: evictedTotal });
+    if (this.inFlight) this.pendingOps.push({ add: true, id, line, basis: evictedTotal });
   }
 
   /** A marker died (core's `TermEvent::MarkerDisposed`). Costs no re-pull — that is why

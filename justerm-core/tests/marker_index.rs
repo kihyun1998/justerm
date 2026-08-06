@@ -200,7 +200,12 @@ fn a_marker_born_after_the_pull_is_announced() {
         .drain_events()
         .into_iter()
         .filter_map(|ev| match ev {
-            TermEvent::MarkerCreated { id, line, kind } => Some((id, line, kind)),
+            TermEvent::MarkerCreated {
+                id,
+                line,
+                kind,
+                evicted_total,
+            } => Some((id, line, kind, evicted_total)),
             _ => None,
         })
         .collect();
@@ -212,11 +217,121 @@ fn a_marker_born_after_the_pull_is_announced() {
         "and it must carry the same id and line a pull would have reported, so a \
          consumer can append instead of re-pulling"
     );
+    // This fixture never evicts, so the birth's basis and the pull's coincide — which is
+    // exactly the arrangement in which the carried basis cannot matter, and is why this
+    // test could not see #737. `a_birth_carries_the_basis_its_line_is_absolute_at` is the
+    // one that separates them; asserting the coincidence here keeps it stated rather than
+    // assumed.
+    assert_eq!(
+        (created[0].3, now.evicted_total),
+        (0, 0),
+        "no eviction in this fixture, so the two bases are the same zero"
+    );
     assert_eq!(
         now.epoch, pulled.epoch,
         "creation must NOT bump the epoch: a bump costs an O(M) re-pull for O(1) \
          information, and at 4 marks per shell command that inverts the design"
     );
+}
+
+/// #737 — the birth event's line is absolute at *creation*, and the batch it was born
+/// in can evict afterwards. The two batches below are the same three evictions and the
+/// same one mark in the opposite order: **every** value a consumer can observe is
+/// identical across them — the basis before and after, the event's line, the epoch, the
+/// header count — and the true line differs by 3. The event must therefore carry the
+/// basis it is absolute at, or the information needed to place the marker is on no
+/// channel at all.
+#[test]
+fn a_birth_carries_the_basis_its_line_is_absolute_at() {
+    /// `(basis_prev, basis_now, epoch_prev, epoch_now, event line, carried basis, truth)`
+    fn batch(bytes: &[u8]) -> (u64, u64, u32, u32, u32, u64, u32) {
+        let mut e = Engine::with_scrollback(20, 5, 4);
+        for _ in 0..30 {
+            e.feed(b"x\r\n");
+        }
+        e.drain_events();
+        let before = e.frame();
+
+        e.feed(bytes);
+
+        let born = e
+            .drain_events()
+            .into_iter()
+            .find_map(|ev| match ev {
+                TermEvent::MarkerCreated {
+                    line,
+                    evicted_total,
+                    ..
+                } => Some((line, evicted_total)),
+                _ => None,
+            })
+            .expect("the batch creates exactly one marker");
+        let after = e.frame();
+        let ix = e.marker_index();
+        assert_eq!(
+            ix.markers.len(),
+            1,
+            "one live marker, so `markers[0]` is that marker"
+        );
+        (
+            before.evicted_total,
+            after.evicted_total,
+            before.marker_epoch,
+            after.marker_epoch,
+            born.0,
+            born.1,
+            ix.markers[0].line,
+        )
+    }
+
+    // Same mark, same three evictions, opposite order.
+    let create_first = batch(b"\x1b]133;A\x07x\r\nx\r\nx\r\n");
+    let evict_first = batch(b"x\r\nx\r\nx\r\n\x1b]133;A\x07");
+
+    // The window exists, asserted before anything is asserted inside it: without a
+    // basis move there is nothing for a carried basis to disambiguate, and this test
+    // would pass against any implementation at all.
+    assert_eq!(
+        (create_first.0, create_first.1),
+        (evict_first.0, evict_first.1),
+        "both batches must evict the same amount, or they are not the same experiment"
+    );
+    assert!(
+        create_first.1 > create_first.0,
+        "the batch must evict, or the two orders cannot differ"
+    );
+    assert_eq!(
+        (create_first.2, create_first.3),
+        (evict_first.2, evict_first.3),
+        "and neither may bump the epoch — a bump would invalidate the held index and \
+         hide the defect behind a re-pull"
+    );
+    assert_eq!(
+        create_first.4, evict_first.4,
+        "the event's line is identical across the two orders — which is precisely why \
+         it cannot place the marker on its own"
+    );
+    assert_ne!(
+        create_first.6, evict_first.6,
+        "while the truth differs, so something must distinguish them"
+    );
+
+    // What distinguishes them.
+    assert_eq!(
+        (create_first.5, evict_first.5),
+        (create_first.0, evict_first.1),
+        "a mark created before the evictions is absolute at the basis the batch started \
+         from; one created after them, at the basis it ended on"
+    );
+    for (label, b) in [("create-first", create_first), ("evict-first", evict_first)] {
+        let rebased = u64::from(b.4) - (b.1 - b.5);
+        assert_eq!(
+            rebased,
+            u64::from(b.6),
+            "{label}: rebasing the event's line from the basis it carries onto the \
+             frame's must land on the engine's own answer"
+        );
+    }
 }
 
 /// #490 lens finding B — RIS is the most destructive buffer mutation there is, and

@@ -26,9 +26,19 @@ nothing about it appears in the frame.
 - **A marker's birth and death are both events, and the pair is load-bearing since #490.**
   `MarkerDisposed` was enough while every live marker rode every frame — absence was observable.
   Once the index is *pulled*, a population that only ever shrinks is silently wrong, so
-  `MarkerCreated { id, line, kind }` is the mirror. ADR-0020 R1 is why neither is a frame field: an
-  appearance and a disappearance are occurrences, not state. `line` is absolute on the same basis
-  the frame header reports, so a consumer appends the entry and rebases it exactly like a pulled one.
+  `MarkerCreated { id, line, kind, evicted_total }` is the mirror. ADR-0020 R1 is why neither is a
+  frame field: an appearance and a disappearance are occurrences, not state.
+
+- **An event that carries a coordinate carries the instant it is true at, or it carries nothing
+  (#737).** This entry read *"`line` is absolute on the same basis the frame header reports"* until it
+  was measured false. A single `feed` can create a marker and then evict, so the frame closing that
+  batch reports an origin the event's line predates; two batches with the same mark and the same three
+  evictions in opposite orders were identical on **every** channel a consumer can see — the event
+  line, both frame bases, the epoch, `marker_count` — and three lines apart in truth. The repair is
+  the pairing `MarkerIndex` already uses: the line travels with its `evicted_total`. The general
+  shape is what makes this a design-model entry rather than a bug note — a frame is a *snapshot* and
+  carries its own basis by construction, while an event is a *point in time* whose payload outlives
+  the instant that gave it meaning.
 
 - **Pull, not push — and the alternative is named.** The engine queues during `feed` and the consumer
   takes with `drain_events`, mirroring `damage` / `frame` / `reset_damage`. No callback crosses the
@@ -65,6 +75,11 @@ the argument for the current one.
   — both queues survive `ESC c`, and this is the only territory where the reset *adds* to one: every
   marker's disposal is announced into `events` before the rebuild, so the consumer drops decorations
   that now name nothing
+- [a coordinate carries the instant it is true at](../invariant/a-coordinate-carries-the-instant-it-is-true-at.md)
+  — this is the channel where it bites hardest, because an occurrence's payload outlives the instant
+  that gave it meaning and the frame's basis does not reach here. `MarkerCreated` is the worked case
+  (#737), and the note lays the three channels side by side, which is the only view that shows two of
+  them silent
 
 ## Blast radius
 

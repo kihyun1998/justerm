@@ -138,10 +138,17 @@ impl Term {
         // way to learn of a marker the *stream* created, and without it the index can
         // only ever shrink. Not an epoch bump: that would cost an O(M) re-pull for O(1)
         // information, four times per shell command.
+        //
+        // The basis rides with the line, exactly as `marker_index` pairs them (#737):
+        // `line` is absolute *now*, and the rest of this same `feed` can still evict —
+        // which moves every marker, this one included, without touching the epoch. Read
+        // against the frame's end-of-batch basis instead, the line is short by whatever
+        // the batch evicted after this point.
         self.events.push(TermEvent::MarkerCreated {
             id,
             line: line as u32,
             kind,
+            evicted_total: self.evicted_total,
         });
         id
     }

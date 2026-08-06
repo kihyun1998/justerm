@@ -549,15 +549,29 @@ impl Engine {
     /// Every live marker of the active buffer with its **absolute** buffer line, plus
     /// the basis that says how long the answer stays usable (#490).
     ///
-    /// The pull half of the marker surface, and the same shape as
-    /// [`Engine::command_lines`]: the consumer asks, keeps the answer, and rebases it
-    /// per frame by the `evicted_total` delta — rather than being handed every live
-    /// marker inside every frame, which is `O(M)` payload per frame for a quantity
-    /// unrelated to what changed (ADR-0020 R3).
+    /// The pull half of the marker surface. It shares [`Engine::command_lines`]'s
+    /// *shape* — the consumer asks once and keeps the answer, rather than being handed
+    /// every live marker inside every frame, which is `O(M)` payload per frame for a
+    /// quantity unrelated to what changed (ADR-0020 R3). It does **not** share its
+    /// coordinate: only the lines *here* are buffer-absolute and rebasable by the
+    /// `evicted_total` delta. [`CommandLine::line`] is a **document** line over
+    /// [`Engine::accessible_text`], where soft-wrapped rows collapse — eviction moves it
+    /// by an amount no scalar on this surface expresses, so it is an answer to keep only
+    /// as long as the buffer it was asked of.
     ///
     /// Ask again when [`MarkerIndex::epoch`] differs from the one you hold. Drop an
-    /// entry when its `TermEvent::MarkerDisposed` arrives — a disposal deliberately
-    /// does *not* move the epoch, so it costs no re-pull.
+    /// entry when its `TermEvent::MarkerDisposed` arrives, and append one when
+    /// `TermEvent::MarkerCreated` does — neither deliberately moves the epoch, so
+    /// neither costs a re-pull. **Append it on the basis the event carries, not on the
+    /// newest frame's**: a `feed` can create a marker and then evict, and those are two
+    /// different origins (#737).
+    ///
+    /// **Drain before you read the frame.** On the eviction axis the carried basis makes
+    /// the two orders equivalent and reading the frame first costs only a re-pull — its
+    /// `marker_count` runs ahead of an index that has not been told yet. On every other
+    /// axis it is not a cost but a wrong answer: a reflow or a region rotate moves markers
+    /// non-uniformly, which is what [`MarkerIndex::epoch`] is for, and a birth still
+    /// queued when that epoch moves describes the buffer as it was before it.
     pub fn marker_index(&self) -> MarkerIndex {
         self.term.marker_index()
     }

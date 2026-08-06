@@ -24,6 +24,19 @@ more a field of a thing than a disappearance is. **R2** — a consumer holding o
 compute either: `scrollback_len` saturates at the cap while eviction continues, and nothing observable
 distinguishes a reflow from an ordinary scroll. **R3** — both are `O(1)`.
 
+**Amended 2026-08-06 (#737): the grounds above are narrower than they read, and only measurement
+found the edge.** *"Both are current state … each is an absolute value rather than a delta"* is true
+of the two header scalars and says nothing about the channel R1 routes the occurrences to. An event's
+payload is a *point in time*, so a coordinate inside one outlives the instant that gave it meaning:
+`MarkerCreated` carried an absolute line, one `feed` went on to evict, and the frame closing that
+batch reported a basis the line predated. Two batches — same mark, same three evictions, opposite
+order — agreed on the event line, on both frame bases, on the epoch and on `marker_count`, and their
+true lines were three apart. The rule is unmoved and the routing is unmoved; what this adds is the
+obligation that comes *with* being routed here. **A group admitted to the frame gets its basis from
+the frame; an occurrence routed to the event channel must carry its own**, which is why the event now
+mirrors `MarkerIndex`'s `(line, evicted_total)` pairing rather than borrowing the header's. R1 sends
+an occurrence to the event channel; it does not make the frame's basis reach it.
+
 Note what this admission is *for*, because it is the first of its shape here: these two exist to let
 the two marker groups **leave** in v16. A group is being removed by admitting the smallest thing that
 lets the consumer reconstruct it — which is the same trade R3's remedy always described ("a slice of
