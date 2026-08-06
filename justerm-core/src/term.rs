@@ -622,6 +622,32 @@ pub struct CommandLine {
     /// one logical line). This is core's analog of VSCode's
     /// `bufferToEditorLineMapping`; the frame-mode web side has no wrap info to
     /// map it itself.
+    ///
+    /// **It is an index into a document, so it is only meaningful together with the
+    /// document it indexes** — the one [`Term::accessible_text`] returns *at the same
+    /// instant, on the primary screen*. Neither half is expressible as a number on this
+    /// struct (#743), and they are the two that recur; they are not a proof of
+    /// sufficiency, since a mark whose row is erased in place also answers about content
+    /// that is gone, on the primary screen, at one instant:
+    ///
+    /// - **the instant.** No scalar this engine publishes dates a document line, and
+    ///   the reason is not one axis but two. Eviction moves it by the number of evicted
+    ///   *line-ends*, which equals the row count except when an evicted row soft-wraps
+    ///   into the next — measured, one eviction took the absolute lines
+    ///   `[12, 12, 12, 13]` → `[11, 11, 11, 12]` while this line stayed at `11`, and the
+    ///   very next eviction moved both. And flipping a row's wrap bit, which ordinary
+    ///   output does, moves this line while the absolute lines, `evicted_total` and
+    ///   `marker_epoch` all stay put — a motion the absolute space does not have.
+    ///   Carrying the instant is therefore *buildable but expensive*: a line-end counter
+    ///   **and** a generation of its own. ADR-0029 defers it (alternative D) and takes
+    ///   the re-ask discharge, which D3 grants this surface on its own merits;
+    /// - **the screen.** The document is `[scrollback ++ primary]`, always. While the
+    ///   alt screen is up [`Term::accessible_text`] returns the *alt* document, and this
+    ///   line indexes the other one. When the alt screen is the taller of the two the
+    ///   index still **resolves**, onto unrelated content — so this is not a bounds
+    ///   problem a caller can check its way out of.
+    ///
+    /// So: ask for both together, keep them together, and re-ask rather than rebase.
     pub line: usize,
     /// The typed command text, prompt- and output-excluded (B→C columns).
     pub command: String,

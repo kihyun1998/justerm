@@ -220,6 +220,14 @@ impl Term {
     /// attaches the trailing CommandFinished(D) exit. A command still being typed
     /// (B with no C yet) is not navigable — its text has no bound — so it is
     /// omitted until output starts.
+    ///
+    /// The answer is instantaneous, and its lines are document lines into
+    /// [`Term::accessible_text`] *on the primary screen* — the contract a caller reads
+    /// is on `Engine::command_lines`, pinned by `tests/command_lines_document.rs`
+    /// (#743, ADR-0029 D6). Note the omission above is why absence here means *gone or
+    /// not yet complete* rather than the flat "disposed" that holds for
+    /// [`Self::command_marks`]; both are absences a re-ask resolves, which is what
+    /// D3.2 needs of them.
     pub fn command_lines(&self) -> Vec<CommandLine> {
         let mut out: Vec<CommandLine> = Vec::new();
         // (B line, B col) awaiting its matching C. Marks arrive in buffer order.

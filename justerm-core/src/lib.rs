@@ -403,6 +403,13 @@ impl Engine {
     /// lines. A query seam the consumer summons (frame mode: over IPC, like
     /// [`selection_text`](Self::selection_text)); no wire-format change. On the
     /// alt screen only the alt buffer is shown.
+    ///
+    /// **This is the document [`CommandLine::line`] indexes, which makes that last
+    /// sentence a pairing obligation rather than a detail (#743):** ask both in the
+    /// same breath and keep them together, because a document line is meaningless
+    /// against a document sampled at another instant — and while the alt screen is up
+    /// the two queries are about different buffers entirely. See
+    /// [`Engine::command_lines`].
     pub fn accessible_text(&self) -> String {
         self.term.accessible_text()
     }
@@ -572,6 +579,33 @@ impl Engine {
     /// This is a full-buffer query, wired to the frame-mode consumer over IPC like
     /// [`Engine::accessible_text`]; the web side has no scrollback cells to derive
     /// it (ADR-0017 — buffer-wide text is core's).
+    ///
+    /// **The answer is instantaneous — it describes the buffer it was asked of, and
+    /// nothing on it dates it (#743). Re-ask; never keep it past the document it
+    /// indexes, and never rebase it.** Same discharge as [`Engine::command_marks`] and
+    /// for the same two reasons (ADR-0029 D3): the clock is a user action, so the ask
+    /// *is* the act; and this population's frame of reference never flips, so a re-ask
+    /// always answers. Absence means the command is gone **or** that its output has not
+    /// started yet — both of which the next ask resolves. What absence never means is
+    /// *"you are on the other screen"*, which is the meaning no re-ask could undo.
+    ///
+    /// **Do not rebase by [`MarkerIndex::evicted_total`].** That dates the *absolute*
+    /// space. [`CommandLine::line`] is a **document** line, and the two spaces move
+    /// apart in both directions: an eviction that pops a soft-wrap continuation row
+    /// moves the absolute lines and not this one, and flipping a row's wrap bit — which
+    /// ordinary output does — moves this one while the absolute lines and both of
+    /// `MarkerIndex`'s scalars stay put. They agree most of the time, which is what
+    /// makes rebasing look correct right up until it silently is not.
+    ///
+    /// **Ask [`Engine::accessible_text`] in the same breath, and only on the primary
+    /// screen.** The lines index that document; while the alt screen is up it returns
+    /// the *alt* document instead, and these lines are indices into the primary one. If
+    /// the alt screen is taller than the held index — a full-screen TUI, which is the
+    /// normal case — the index still **resolves**, onto unrelated content, so a bounds
+    /// check does not save a caller here. The query keeps answering on the alt screen
+    /// deliberately: emptying it would give absence the one meaning a re-ask cannot
+    /// recover from, which is what the discharge above rests on. Pairing the two is the
+    /// caller's, and this is where it is said.
     pub fn command_lines(&self) -> Vec<CommandLine> {
         self.term.command_lines()
     }

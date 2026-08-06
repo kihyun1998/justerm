@@ -17,7 +17,7 @@ Core hands coordinates out on **three channels**, and each answers the instant q
 |---|---|---|
 | the **frame** | by construction — the header carries `evicted_total`, and every scalar in a `Frame` is sampled in one `Term::frame` body, so the snapshot is internally coherent | `display_offset`, `scrollback_len`, `marker_count` |
 | an **event** | only if the variant carries it. An occurrence is a *point in time* whose payload outlives the instant that gave it meaning, and the frame's basis does **not** reach it — a `feed` that creates a marker and then evicts closes on a basis the event's line predates | `TermEvent::MarkerCreated { line, evicted_total, epoch }` |
-| a **query answer** | only if the return type carries it — **or** if the answer is declared instantaneous and a re-ask always works | `Engine::marker_index` carries it · `Engine::command_marks` is declared instantaneous (#742) · `CommandLine::line` is neither |
+| a **query answer** | only if the return type carries it — **or** if the answer is declared instantaneous and a re-ask always works | `Engine::marker_index` carries it · `Engine::command_marks` is declared instantaneous (#742) · so is `Engine::command_lines`, whose space would need two scalars of its own to carry (#743) |
 
 So the rule is not *"put a basis on the frame"*. It is: **whichever channel a coordinate leaves by, the
 instant leaves with it** — and only the frame gets that for free.
@@ -40,12 +40,46 @@ which needs two things at once:
 An **event** has neither discharge available: its payload is already detached from its instant by the
 queue, so it can only carry.
 
-**The document space has no scalar at all, and that is a fact about the space rather than a missing
-field.** A document line indexes `accessible_text`, where soft-wrapped rows collapse into one logical
-line. Its motion under eviction therefore equals the absolute delta **except** when the evicted rows
-include a continuation row, and the receiver cannot tell the two cases apart. Measured: over one
-eviction of `evicted_total` 0 → 2, the same command's absolute line moved 17 → 15 while its document
-line moved 16 → 15. A basis scalar cannot repair this; only an explicit validity window can.
+**The document space has no scalar *on any published surface*, and it would take two rather than one
+to give it any.** This page said "no scalar at all" and "a basis scalar cannot repair this" until
+#743's refuting lens measured otherwise; the correction matters, because the overclaim was doing
+argumentative work it could not support. A document line indexes `accessible_text`, where
+soft-wrapped rows collapse into one logical line, and it moves on **two** axes:
+
+- **eviction, non-uniformly against the absolute space.** Its motion equals the absolute delta
+  **except** when an evicted row soft-wraps into the next — a continuation row is not a line-end, so
+  it moves the absolute space and not the document space. Measured twice, at two grains: over one
+  eviction of `evicted_total` 0 → 2 the same command's absolute line moved 17 → 15 while its document
+  line moved 16 → 15; and isolated to the single eviction responsible, absolute
+  `[12, 12, 12, 13]` → `[11, 11, 11, 12]` while the document line stayed at `11`, with the very next
+  eviction moving both. **A scalar could date this**: the eviction site pops exactly one row and has
+  it in hand, so a line-end counter beside `evicted_total` would be exact;
+- **a wrap bit flipped in place, which the absolute space does not have at all.** Rewriting a short
+  row with enough text to overflow it joins two document lines into one. Measured: the document line
+  went 2 → 1 while the absolute lines stayed `[2, 2, 2, 3]`, `evicted_total` stayed 0 and
+  `marker_epoch` stayed 0 — from the byte stream alone, no eviction, resize or reflow. Nothing
+  smaller than a generation dates this.
+
+So carrying the instant here is **buildable and expensive** — a counter *and* an epoch, ADR-0029 D5's
+whole apparatus duplicated for a second coordinate space — rather than impossible. It is deferred on
+that cost (ADR-0029 alternative D), and the re-ask discharge is taken because **D3 grants it**, which
+is the positive ground and the one to quote.
+
+**And a document line names a document, which is a second question the instant does not answer.**
+`accessible_text` returns the *active* buffer's document — it floors at `abs_floor()`, because the AT
+must read what is on screen — while `command_lines` reads `primary_grid()`, because OSC-133 marks are
+primary-only (#192). Both are right on their own; together, on the alt screen, they are answers about
+different buffers at the same instant, so no basis, epoch or window addresses it. Measured, and the
+reachable case is the one that **resolves** rather than the one that fails: with 17 lines of primary
+scrollback and a five-row TUI up, the held document line `1` named `"$ lsout"` on the primary screen
+and `"TUI row 1"` on the alt — in range, silently, onto unrelated content. A shorter alt document puts
+the index past the end instead, which is the benign half and the one a consumer can bounds-check.
+Since an alt excursion normally *is* a full-screen TUI, the reachable case is the one no check
+catches. The discharge is the same *kind* of thing as
+the instant's, a statement where the caller reads it, which is why the two live together here.
+**Validity condition:** `accessible_text` is today the only document core hands out and
+`CommandLine::line` the only index into one (grepped over the public `Engine` surface, #743). A second
+such pair is where this stops being one surface's contract and starts being a rule.
 
 ## Why it is cross-cutting
 
@@ -86,8 +120,10 @@ has no second source to disagree with.
 - [frame](../territory/frame.md) — the channel that gets coherence for free, and therefore the one
   that makes the other two look solved
 - [accessibility](../territory/accessibility.md) — `CommandLine::line` is a document line, so it is the
-  one coordinate on any channel that **no scalar can rebase**; the consumer holds it across a summon
-  and a jump, which are two separate round trips
+  one coordinate on any channel that **no published scalar rebases**, and the one that also has to say which
+  *document* it indexes. Settled in #743 as a re-ask: the answer is valid for exactly as long as the
+  `accessible_text` it was sampled beside, and the consumer now samples the two at one point instead
+  of lazily taking the list at a later instant and holding it for the session
 - [logical lines](../territory/logical-lines.md) — the collapse that makes the document space diverge
   from the absolute one is soft-wrap's, not accessibility's
 
@@ -153,6 +189,28 @@ basis the frame header reports"* — and the consumer was written against it.
   walks of `normal_markers`), and sampling the basis alongside the marks is *not* a second instant,
   because both are `&self` on one engine and `feed`/`resize` are `&mut self`. And it measured only the
   eviction axis; the epoch axis was found here — #741's lesson recurring one channel over.
+- **#743** (2026-08-07) — the **document** space, and the member ADR-0029 named as its own hard case.
+  D3 passed on both conditions, so re-ask is what this surface *qualifies for*, not what was left over.
+  Four things it established, and the first is a correction to the page it is written on:
+  - **"No scalar can date a document line" was false, and both lenses of its own Step 5 said so.** The
+    eviction axis is datable by a counter; the wrap-bit axis needs a generation. Carry is expensive,
+    not impossible. The claim had already propagated to six surfaces before it was checked — worth
+    noting because it was never load-bearing for the *decision*, only for the story told about it, and
+    that is exactly the kind of claim nothing re-examines.
+  - **The eviction divergence, isolated to the single eviction that causes it**, where #737's
+    aggregate `Δ2 vs Δ1` had left it looking like a general drift. The evictions either side move both
+    spaces together, which is why the wrong rule survives review.
+  - **A second motion axis, found by refutation rather than by symptom** — the wrap-bit flip, which the
+    absolute space does not have. This is #741's lesson landing a third time: a subset chosen by the
+    reproducing case reads exactly like the whole rule, and here the reproducing case was eviction.
+  - **The *which-buffer* axis the record puts out of scope turned out to be constrained by its own
+    D3.2.** Returning `[]` on the alt screen — the obvious repair, and what xterm.js does for
+    `Terminal.markers` (`typings/xterm.d.ts:962-963` @ `699f553`) — would make absence mean *wrong
+    screen*, the one meaning a re-ask can never undo. So the query keeps answering on both screens and
+    the pairing is stated instead. The measured reason this is not merely tidy: with a full-screen TUI
+    the held index **resolves in range** onto unrelated alt content (document line 1 named `"$ lsout"`
+    on the primary and `"TUI row 1"` on the alt, with 17 lines of scrollback behind it), so no bounds
+    check on the consumer side can stand in for the contract.
 
 **The cluster's anchor was spine #744, which closed on promotion to ADR-0029 (2026-08-06); the roster
 is deliberately not here either way.** This page holds the *fact*; which surfaces are on the list and
@@ -161,10 +219,12 @@ which are still open lived in that issue, and the derivation now lives in the re
 places in three days while the rules beside it needed no edit. The one thing worth reading in the
 closed anchor before reaching for this page:
 that both shapes are legitimate is **settled** (#742) and *which* one a given surface owes is derived
-by ADR-0029's D3 — but whether that derivation reaches every member is open at **#743**, which is now
-a conformance item under the record rather than a sibling under an anchor. `CommandLine::line` is the
-hard one: no scalar can date a document line, so the carry discharge is structurally unavailable to it
-and D3 is its only route.
+by ADR-0029's D3. **Whether that derivation reaches every member was the open question, and #743
+closed it** (2026-08-07): `CommandLine::line` was the hard one — no *published* scalar dates a document
+line, and giving it one would take two, so carry is the expensive discharge here rather than an
+unavailable one — and D3 granted re-ask on its own merits, without being stretched. Both of its conditions held on their own terms, and the *which-buffer* neighbour the
+record deliberately excluded turned out to be constrained by D3.2 anyway. No member of the cluster is
+now undischarged.
 
 ## Where it will recur
 
@@ -180,7 +240,20 @@ and D3 is its only route.
   still, and a top-anchored `DECSTBM` footer takes `[7]` → `[10]` in one `feed` with `evicted_total`
   still. Both are pinned in `justerm-core/tests/command_marks_instant.rs`, together with the two
   properties the re-ask contract rests on — constant scope, and absence meaning only disposal.
-- **`CommandLine::line`** — the document coordinate above, which no scalar can rebase.
+- **`CommandLine::line`** — the document coordinate above, which no published scalar rebases. **Settled
+  (#743), and like `command_marks` the settlement is what to read before re-opening it.** The line is
+  undated deliberately, and it additionally names the *primary* document while `accessible_text`
+  returns the active one. Two repairs look obvious and are both closed: rebasing by
+  `MarkerIndex::evicted_total` is wrong on exactly the evictions that pop a continuation row, and
+  emptying the answer on the alt screen fails ADR-0029 D3.2. Pinned in
+  `justerm-core/tests/command_lines_document.rs`, including the fixture conditions the pins need in
+  order to mean anything — a soft-wrapped line above the command, and real scrollback so `abs_floor()`
+  is not a no-op. Both were measured, not assumed: two earlier drafts of those tests passed against a
+  deliberately broken engine.
+- **A second document handed out beside an index into it.** `accessible_text` is the only one today,
+  which is why the pairing above is one surface's contract rather than a rule (grepped over the public
+  `Engine` surface, #743). The next one — a second whole-buffer document, or a `LogicalLine` batch a
+  consumer indexes by number — is where that stops being true.
 - **Any consumer cache added beside `MarkerIndexCache`.** It is the only class in `justerm-web/src`
   holding a buffer coordinate across frames, so the second one will be written without its
   rebase-at-read-time discipline unless someone says this out loud.

@@ -143,11 +143,20 @@ export class DomAccessibleView implements AccessibleView, NavView {
 
   /** Scroll a document line into view and move focus to it (#166) — the SR reads
    * the announced command; this moves the visual + focus cursor there so the user
-   * can read on from that command. Out-of-range lines are a no-op. */
-  reveal(line: number): void {
+   * can read on from that command.
+   *
+   * **Returns whether the line exists in the document currently held** (#743).
+   * `lineEls` is rebuilt on every `show` and emptied on `hide`, so this one check
+   * answers all three ways a document line can fail to name anything: the view is
+   * closed, the line came from a list sampled against a different instant of the
+   * document, or the document is the alt screen's while the line indexes the
+   * primary one. A silent no-op here is what let the caller announce a command it
+   * had not actually navigated to. */
+  reveal(line: number): boolean {
     const el = this.lineEls[line];
-    if (!el) return;
+    if (!el) return false;
     el.scrollIntoView({ block: "center" });
     el.focus();
+    return true;
   }
 }

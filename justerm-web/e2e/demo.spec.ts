@@ -221,6 +221,17 @@ test("command nav walks history: announces the command + fires its signal (#166)
 
   expect(signals.some((s) => s.includes("succeeded"))).toBe(true);
   expect(signals.some((s) => s.includes("failed"))).toBe(true);
+
+  // #743 — the list is only meaningful against the document it indexes. Close the
+  // view and that document is gone, so a jump must do nothing at all. Discriminating
+  // by construction: the reading cursor is on line 4, so the pre-#743 behaviour
+  // announces "false" here (the next command up) while nothing moves on screen.
+  // Anything other than the text already in the region means the nav navigated a
+  // document that is not there.
+  await page.keyboard.press("Escape");
+  await expect(page.locator("[role='document']")).toBeHidden();
+  await page.getByRole("button", { name: "Prev command" }).click();
+  await expect(page.locator(live)).toHaveText("ls -la");
 });
 
 test("row-tree churn is skipped while SR inactive, re-syncs on reactivation (#169)", async ({

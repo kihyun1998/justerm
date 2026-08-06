@@ -132,7 +132,14 @@ recorded SHA; a paraphrase drops the pin).
   `command_marks` has nowhere to put either **and does not need one** (#742) — it is declared
   instantaneous, which the note's own derivation says is available to it and not to `marker_index`,
   because its scope is primary whatever screen is up while the pull's follows the active buffer. Two
-  queries over one primitive, opposite shapes, and the difference is derived rather than chosen
+  queries over one primitive, opposite shapes, and the difference is derived rather than chosen.
+  **`command_lines` is the third, and it reached the same shape from the opposite end (#743)**: it is
+  a *document* line, so there was never a scalar it *could* have carried — dating that space would take
+  a line-end counter and a generation of its own, where `command_marks` merely declines the pair that
+  already exists. It is also the only outbound coordinate that has to name a
+  **document** as well as an instant, and on the alt screen the document it names is not the one
+  `accessible_text` returns. Both halves are stated on `Engine::command_lines` and pinned in
+  `justerm-core/tests/command_lines_document.rs`
 - [a wire field narrower than the value it carries](../invariant/wire-field-narrower-than-its-value.md)
   — the two marker group counts are still `u16` after #621 widened its siblings, and **nothing about
   the viewport bounded either of them**: the absolute-line group reported every live marker, and `markers`,
