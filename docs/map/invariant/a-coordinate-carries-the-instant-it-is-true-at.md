@@ -51,15 +51,22 @@ line moved 16 → 15. A basis scalar cannot repair this; only an explicit validi
 
 The channels belong to different territories and are decided by different records — the frame by
 ADR-0020, the query seams by ADR-0017's mechanism/policy split, the event channel by **nothing at
-all** (`events-and-replies.md` records that hole). So no single territory's rules can state this, and
-each one that meets it re-derives it: the frame half was settled in #490 by admitting two header
-scalars, and the event half was re-decided from scratch in #737 four months later, on the same
+all** (`events-and-replies.md` records that hole). So no single territory's rules could state this, and
+each one that met it re-derived the argument: the frame half was settled in #490 by admitting two
+header scalars, and the event half was re-decided from scratch in #737 four months later, on the same
 mechanism, with the frame's answer already in the same file.
+
+**Since #742 the derivation has a home — [ADR-0029](../../adr/0029-a-published-coordinate-carries-its-instant-or-is-re-asked.md)**,
+the record that spans the three channels and derives which of the *two* discharges a given surface
+owes. That record and this page do different jobs and both stay: the record derives the rule, this page
+states the **fact**, lists where it holds, and says what a violation looks like. A new question about
+an outbound coordinate's dating is a conformance item against its D1–D6, not a fresh decision.
 
 It is also invisible from inside any one territory, which is the usual reason a fact belongs here. A
 reader in `marker` sees a basis on the pull and reasonably concludes markers are handled; a reader in
 `accessibility` sees a document line and has nothing to compare it against. Only laying the three
-channels side by side shows that two of them are silent.
+channels side by side shows which of them were silent — and, since #742, that silence on a *query* can
+be the correct answer rather than a gap.
 
 **A wrong answer here is silent by construction.** A stale coordinate is a *plausible* line number:
 it decodes, it projects, it paints — on content it no longer names. Nothing errors, and the receiver
@@ -147,14 +154,17 @@ basis the frame header reports"* — and the consumer was written against it.
   because both are `&self` on one engine and `feed`/`resize` are `&mut self`. And it measured only the
   eviction axis; the epoch axis was found here — #741's lesson recurring one channel over.
 
-**The cluster's anchor is spine #744, and the roster is deliberately not here.** This page holds the
-*rule*; which surfaces are on the list, which are still open, and what is not yet decided all live in
-that issue, where they can be edited without touching the rule. That split is #552's measured result,
-not a preference: a hand-copied roster inside ADR-0025 went stale in five places in three days while
-the rules beside it needed no edit. The one thing worth reading there before reaching for this page:
+**The cluster's anchor was spine #744, which closed on promotion to ADR-0029 (2026-08-06); the roster
+is deliberately not here either way.** This page holds the *fact*; which surfaces are on the list and
+which are still open lived in that issue, and the derivation now lives in the record. That split is
+#552's measured result, not a preference: a hand-copied roster inside ADR-0025 went stale in five
+places in three days while the rules beside it needed no edit. The one thing worth reading in the
+closed anchor before reaching for this page:
 that both shapes are legitimate is **settled** (#742) and *which* one a given surface owes is derived
-above — but whether the derivation covers every remaining member, `CommandLine::line` in particular,
-is the part the roster still tracks.
+by ADR-0029's D3 — but whether that derivation reaches every member is open at **#743**, which is now
+a conformance item under the record rather than a sibling under an anchor. `CommandLine::line` is the
+hard one: no scalar can date a document line, so the carry discharge is structurally unavailable to it
+and D3 is its only route.
 
 ## Where it will recur
 

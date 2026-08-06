@@ -19,6 +19,10 @@ the shell emits.
   2026-08-05 amendment, why it left in v16 while `markers` stayed
 - [ADR-0017 — mechanism vs policy](../../adr/0017-core-consumer-boundary-mechanism-vs-policy.md) —
   anchoring needs the whole buffer, so it is core; appearance does not, so it is not
+- [**ADR-0029 — a coordinate carries its instant, or is re-asked**](../../adr/0029-a-published-coordinate-carries-its-instant-or-is-re-asked.md)
+  — promoted out of this primitive (#490 → #737 → #741 → #742), because all three outbound channels
+  meet here and they answer the dating question differently. It is why `marker_index` carries a basis
+  and an epoch while `command_marks` carries neither and is still correct
 
 ## Design model
 
