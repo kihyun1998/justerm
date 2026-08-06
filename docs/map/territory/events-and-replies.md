@@ -12,8 +12,13 @@ nothing about it appears in the frame.
 
 ## Governing decisions
 
-**None.**
+**One, and it covers a property of the payload rather than the channel itself.**
 
+- [**ADR-0029 — a coordinate carries its instant, or is re-asked**](../../adr/0029-a-published-coordinate-carries-its-instant-or-is-re-asked.md)
+  — its **D4** is this channel's clause: an event can only *carry*, because its payload is detached
+  from its instant by the queue before any consumer sees it, and what it carries is checked against
+  its pull-side sibling rather than against a list of axes. That settles what a coordinate-bearing
+  variant owes. It does **not** settle what earns a place on this channel at all — see the hole below
 - [ADR-0020 — what qualifies for the frame snapshot](../../adr/0020-what-qualifies-for-the-frame-snapshot.md)
   is the record that explains why these are *not* in the frame: its first rule is state versus event,
   and an event fails it by construction. It decides the frame's membership, not this channel's shape
@@ -100,8 +105,10 @@ the argument for the current one.
 
 ## Known holes / open
 
-- **Zero governing records** for two public channels, one of which carries a *response obligation* —
-  a dropped reply hangs the application waiting for it.
+- **Still no record for either channel's *membership*.** ADR-0029 (above) reached this territory in
+  2026-08-06, but only for what a coordinate-bearing payload owes — the channels themselves are
+  unrecorded, and one of them carries a *response obligation*: a dropped reply hangs the application
+  waiting for it.
 - **No bound on either queue.** A consumer that never drains grows memory with no signal, and no
   document states whose problem that is.
 - **The rejected push model is unpinned**, and it is the whole argument for the pull design.

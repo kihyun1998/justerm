@@ -19,6 +19,10 @@ the shell emits.
   2026-08-05 amendment, why it left in v16 while `markers` stayed
 - [ADR-0017 — mechanism vs policy](../../adr/0017-core-consumer-boundary-mechanism-vs-policy.md) —
   anchoring needs the whole buffer, so it is core; appearance does not, so it is not
+- [**ADR-0029 — a coordinate carries its instant, or is re-asked**](../../adr/0029-a-published-coordinate-carries-its-instant-or-is-re-asked.md)
+  — promoted out of this primitive (#490 → #737 → #741 → #742), because all three outbound channels
+  meet here and they answer the dating question differently. It is why `marker_index` carries a basis
+  and an epoch while `command_marks` carries neither and is still correct
 
 ## Design model
 
@@ -125,7 +129,10 @@ recorded SHA; a paraphrase drops the pin).
   — all three of core's outbound channels meet on this one primitive, and they answer the instant
   question differently: `marker_positions` rides the frame and gets coherence free, `MarkerCreated`
   had to be given a basis (#737) and then the generation that basis cannot express (#741), and
-  `command_marks` still has nowhere to put either
+  `command_marks` has nowhere to put either **and does not need one** (#742) — it is declared
+  instantaneous, which the note's own derivation says is available to it and not to `marker_index`,
+  because its scope is primary whatever screen is up while the pull's follows the active buffer. Two
+  queries over one primitive, opposite shapes, and the difference is derived rather than chosen
 - [a wire field narrower than the value it carries](../invariant/wire-field-narrower-than-its-value.md)
   — the two marker group counts are still `u16` after #621 widened its siblings, and **nothing about
   the viewport bounded either of them**: the absolute-line group reported every live marker, and `markers`,

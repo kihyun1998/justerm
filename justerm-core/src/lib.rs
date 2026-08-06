@@ -531,6 +531,36 @@ impl Engine {
     /// The consumer pairs prompt/command/finished marks to drive prompt-to-prompt
     /// navigation and command/exit announcements (#160); the engine only parses
     /// the `133;A/B/C/D` sequences and anchors the marks.
+    ///
+    /// **The answer is instantaneous — it describes the buffer it was asked of, and
+    /// nothing on it dates it (#742). Re-ask; never keep it and never rebase it.**
+    /// The lines move on *both* of the axes [`MarkerIndex`] carries a scalar for:
+    /// scrollback eviction shifts every mark by the same amount, and a top-anchored
+    /// `DECSTBM` region shifts the marks below its margin once per output line — the
+    /// second inside a single [`Engine::feed`], with no resize anywhere.
+    ///
+    /// **Why this is not shaped like its sibling.** [`Engine::marker_index`] carries a
+    /// basis and an epoch because a consumer *must* hold its answer: it feeds an
+    /// overview ruler that has to be current in every frame, and re-pulling per frame
+    /// is the `O(M)`-per-frame payload ADR-0020 R3 exists to forbid. This query is
+    /// consumed when a user acts, so re-asking **is** the natural act — and here a
+    /// re-ask always answers, because this population's frame of reference never
+    /// changes. That is the property the sibling lacks, and the reason it needed the
+    /// epoch rather than a reason this one does: an alt switch is one of the four
+    /// moves that epoch announces.
+    ///
+    /// **The lines are `[scrollback ++ primary]`, always — including while the alt
+    /// screen is up.** They do not name the *active* buffer. The two buffers occupy the
+    /// same absolute indices, so one integer from here and the same integer from
+    /// [`Engine::marker_index`] name different content, and neither tuple nor struct
+    /// says which. [`Engine::tracked_point`] meets that ambiguity and answers `None`
+    /// rather than a number (ADR-0026 D2/D3); it can, because it is asked about *one*
+    /// point of unknown origin. This query enumerates a population whose screen is
+    /// fixed by definition, so it answers — and states the screen here instead.
+    ///
+    /// Consequently an empty answer means every mark was disposed and can mean nothing
+    /// else, where `marker_index`'s silence is ambiguous between that and *"you are on
+    /// the other screen"*.
     pub fn command_marks(&self) -> Vec<(MarkerId, usize, MarkerKind)> {
         self.term.command_marks()
     }
