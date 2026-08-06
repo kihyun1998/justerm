@@ -33,6 +33,14 @@ the shell emits.
   marker identically so it is one number; birth and death are `O(1)` occurrences so they are events;
   everything else (reflow, a region rotate that moved a survivor, an alt switch, RIS) is
   non-uniform, so nothing but a re-pull repairs it.
+  **The birth carries its own basis, and (a) does not supply it (#737).** `MarkerCreated.line` is
+  absolute at the *instant of creation*, and the same `feed` can evict afterwards — so the frame that
+  closes the batch reports a third origin, and rebasing the event against it misplaces the mark by
+  whatever the batch evicted after the birth. Both halves of the pull's `(lines, evicted_total)`
+  pairing therefore ride the event too. Order-independence is the point: placement does not depend on
+  whether the host drains events before or after reading the frame. Only *cost* does — drain-first
+  keeps a birth `O(1)`, while frame-first leaves `marker_count` one ahead of an index that has not
+  been told yet, and a consumer comparing the two spends a re-pull reconciling it.
   **The known cost, measured**: a marker sitting *below* a bottom margin shifts on every output line
   (`markers_shift_below_margin`), so it bumps the epoch per line — 1 000 bumps over 1 000 region
   scrolls. That degrades to the pre-#490 cost (`O(M)` per frame) **only if the consumer re-pulls at

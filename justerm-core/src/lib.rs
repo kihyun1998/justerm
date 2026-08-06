@@ -556,8 +556,17 @@ impl Engine {
     /// unrelated to what changed (ADR-0020 R3).
     ///
     /// Ask again when [`MarkerIndex::epoch`] differs from the one you hold. Drop an
-    /// entry when its `TermEvent::MarkerDisposed` arrives — a disposal deliberately
-    /// does *not* move the epoch, so it costs no re-pull.
+    /// entry when its `TermEvent::MarkerDisposed` arrives, and append one when
+    /// `TermEvent::MarkerCreated` does — neither deliberately moves the epoch, so
+    /// neither costs a re-pull. **Append it on the basis the event carries, not on the
+    /// newest frame's**: a `feed` can create a marker and then evict, and those are two
+    /// different origins (#737).
+    ///
+    /// Correct placement does not depend on whether you drain
+    /// [`Engine::drain_events`] before or after reading [`Engine::frame`]; the cost
+    /// does. Drain first and a birth is `O(1)`; read the frame first and its
+    /// `marker_count` runs ahead of an index that has not been told yet, which a
+    /// consumer comparing the two answers with a re-pull.
     pub fn marker_index(&self) -> MarkerIndex {
         self.term.marker_index()
     }
