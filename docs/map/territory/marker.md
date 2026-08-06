@@ -48,7 +48,13 @@ the shell emits.
   spends a re-pull reconciling it.
   **The known cost, measured**: a marker sitting *below* a bottom margin shifts on every output line
   (`markers_shift_below_margin`), so it bumps the epoch per line — 1 000 bumps over 1 000 region
-  scrolls. That degrades to the pre-#490 cost (`O(M)` per frame) **only if the consumer re-pulls at
+  scrolls. **It is a correctness trigger as well as a cost, and reading it as only a cost cost a
+  premise (#741).** The same bump is what moves markers non-uniformly *inside a single `feed`*, with
+  no resize anywhere — measured, a mark in a DECSTBM footer is born at line 4 and answered at 6 two
+  accruals later, with `evicted_total` never moving. #737's completeness pass had recorded the
+  opposite (*"no non-uniform move escapes the epoch inside a `feed`"*), which is why every fixture
+  written against this area reached the epoch through `resize` and none of them covered the path an
+  ordinary `tmux` status line takes. That degrades to the pre-#490 cost (`O(M)` per frame) **only if the consumer re-pulls at
   most once per frame**, which is therefore a stated obligation of the contract rather than an
   assumption about how a consumer happens to be written.
   **Two corrections measurement forced (#738).** *The cap bounds requests, not availability* — a
