@@ -35,6 +35,45 @@ What a stranger *reads* once it has shipped is a different concept — see
 - **`justerm-renderer` does not ship on `v*`.** It has its own version track because it is
   workspace-excluded and outside the lockstep, so a `v*` release leaves it untouched. A change
   spanning both needs two tags.
+- **A change propagates by the kind of *edge*, not by the track — and the tracks above answer the
+  wrong half of the question.** They say what a tag *publishes*. What a maintainer holding a core
+  change actually needs to know is what must now be published, and where the chain stops. Three edge
+  kinds decide it, and every dependency in the family is exactly one of them:
+
+  | edge | reaches the dependent | what catches a break |
+  |---|---|---|
+  | **path** (`{ path = "../justerm-core" }`) | immediately, in the working tree | `cargo test --workspace` — a core API break is a compile error in the same PR |
+  | **version range** (`"0.6.0"`, `^0.14.0`) | only after a **publish** *and* a **pin bump**, both manual | nothing in between; the consumer is compiling against the old artifact and is correct to |
+  | **no edge** | never | n/a — and this is the one people assume wrong |
+
+  So, for a change to `justerm-core`: the `v*` tag ships core **and** `justerm-wasm-decode`, because
+  that binding is a path dependant and the lockstep makes it one release. **`justerm-renderer` needs
+  nothing — it does not depend on `justerm-core` at all**, and neither does `justerm-web` *directly*:
+  core reaches a browser only as compiled bytes **inside** the wasm-decode artifact, so `justerm-web`
+  is reached by raising its `justerm-wasm-decode` pin, and penterm by raising its own. Neither happens
+  because a tag was pushed.
+
+  **The npm version of the two wasm packages is not written down anywhere you would look.** wasm-pack
+  derives it from the crate's `Cargo.toml`, so `justerm-wasm-decode` and `justerm-renderer` have no
+  `package.json` to bump — the one in `justerm-renderer/` is `@justerm/renderer-proofs`, the headless
+  proof runner, and is not the published package.
+
+  **Do not write the consumer list here.** It is derivable and it rots the day a pin moves — the rule
+  `docs/agents/theflow.md` states for the downstream loop, and the same reason
+  [the alt-screen floor note](../invariant/alt-screen-buffer-floor.md) carries a grep instead of a
+  roster. Derive the edges instead:
+
+  ```
+  rg -n '^justerm-core\s*=' --glob '*/Cargo.toml' . ../penterm     # path vs version, in one read
+  rg -n 'justerm-' justerm-web/package.json                        # the npm pins
+  ```
+
+  **A live illustration of the middle row, measured 2026-08-06 rather than imagined:**
+  `renderer-v0.11.0` is published and `justerm-web` pins `^0.10.0`, which under npm's 0.x caret is
+  `>=0.10.0 <0.11.0` — so the installed renderer is **0.10.0** and everything in 0.11.0 is unreachable
+  from `justerm-web` until someone raises that pin. Nothing is broken and nothing reports it; that is
+  the normal, quiet state of a version-range edge, and it is why *"the family is on the latest"* is a
+  claim to check rather than assume.
 - **The tombstone has no track at all.** `justerm-facade` was published **manually, once**, after
   `justerm-core` 0.6.0 was live — it depends on it, so it could not be built inside the rename PR.
   Frozen at `0.5.1` forever; its own manifest says *"Do not re-publish; do not update."*

@@ -5,6 +5,14 @@ crates.io **and** the npm artifact, version-locked. Do **not** run `cargo publis
 by hand — the tag push does it, and a manual publish would collide (a crates.io version cannot be
 re-published).
 
+**This file answers *how to cut a release*. For *what must be released*** — you have a change in one
+crate and need to know which tags it obliges, which family members are reached automatically, and
+where the chain stops — read the **propagation** entry in
+[`docs/map/territory/release.md`](../map/territory/release.md#design-model) first. It is one place on
+purpose: the rule is that a `path` edge is automatic and gated while a version-range edge is manual
+and silent until the pin moves, and a second copy of that here would be the drift it exists to
+prevent.
+
 ## The version is one number — for the `v*` track
 
 **Each track measures semver against its own published surface**, and they differ. This section is the
