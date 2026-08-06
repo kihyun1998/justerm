@@ -102,6 +102,12 @@ export class MarkerIndexCache {
    * never match — the index then never refills and the retry never terminates. */
   private seq = 0;
   private inFlight = false;
+  /** Whether the last pull *rejected*. It separates the two ways a pull fails to leave the
+   * index usable, because only one of them is this class's to retry: a transport that
+   * answered late or stale can be asked again with a guaranteed-progressing request, while
+   * one that refused cannot be distinguished from a dead session by anything this object
+   * can see (#746). Cleared by a landing pull and by a genuine epoch change. */
+  private lastAttemptFailed = false;
   /** Events that landed while a pull was out, replayed onto the snapshot it returns. */
   private readonly pendingOps: Op[] = [];
 
@@ -128,17 +134,39 @@ export class MarkerIndexCache {
    *
    * The cap bounds the **requests, not the outage** (#738). While the epoch moves every
    * frame, each pull is stale before it lands and {@link MarkerIndexCache.lineOf} reports
-   * unknown for as long as the churn lasts — not for a round trip. The recovery is bounded
-   * by the churn, which is the honest statement; the reach of that state is narrow but the
-   * cost inside it is total (no ruler marks, no above-top anchors), and ordinary scrolling
-   * is not in it at all: 0 bumps over 1 000 lines.
+   * unknown for as long as the churn lasts — not for a round trip. The reach of that state
+   * is narrow but the cost inside it is total (no ruler marks, no above-top anchors), and
+   * ordinary scrolling is not in it at all: 0 bumps over 1 000 lines.
+   *
+   * **"Bounded by the churn" was itself too generous, and #746 is why the trigger below asks
+   * a state rather than an edge.** With the pull started only when the epoch *changed*, a
+   * pull landing one generation behind the newest frame ended the outage nowhere: the churn
+   * stopped and the index stayed unusable, permanently, with `markerCount === lines.size`
+   * holding so the drift check never fired. Measured on an ordinary interactive drag-resize
+   * (9 bumps, our own 100 ms `FitController` cadence): 0 of 40 drags at a 50 ms round trip,
+   * **8 of 40 at 100 ms**, 15 of 40 at 170 ms. Non-monotone, so "a slower transport is worse"
+   * is false — a very slow pull evaluates *after* the final bump and is fine.
    */
   sync(frame: MarkerBasisFrame): void {
     if (frame.evictedTotal !== undefined) this.basis = frame.evictedTotal;
     const epoch = frame.markerEpoch;
     if (epoch === undefined) return;
 
-    if (epoch === this.seen) {
+    if (epoch !== this.seen) {
+      this.seen = epoch;
+      // A new generation is new information, so a transport that refused the last request
+      // gets one more attempt — which is exactly the "one request per epoch change, not one
+      // per frame" contract, expressed as a latch rather than as an early return.
+      this.lastAttemptFailed = false;
+      // What we hold describes a buffer that has moved non-uniformly. Drop it now rather
+      // than serving it: a decoration that is missing is visible and self-correcting, one
+      // painted on a line it no longer owns is neither. **How long "missing" lasts is set by
+      // the churn, not by the round trip** (#738) — one frame for a single reflow, the whole
+      // workload where the epoch moves per line. Still the right trade; not the cheap one an
+      // earlier version of this comment claimed. **And not by the churn either, before #746**:
+      // a single stale landing ended the outage nowhere at all.
+      this.invalidate();
+    } else if (epoch === this.seen) {
       // Same epoch, so nothing moved non-uniformly — but the population may still have
       // changed underneath us. Creation and disposal deliberately do not move the epoch
       // (they are `O(1)` events), so a host that wired the pull and *not* the events
@@ -155,34 +183,80 @@ export class MarkerIndexCache {
         frame.markerCount !== this.lines.size
       ) {
         this.invalidate();
-        if (!this.inFlight) this.pull();
       }
-      return;
     }
 
-    this.seen = epoch;
-    // What we hold describes a buffer that has moved non-uniformly. Drop it now rather
-    // than serving it: a decoration that is missing is visible and self-correcting, one
-    // painted on a line it no longer owns is neither. **How long "missing" lasts is set by
-    // the churn, not by the round trip** (#738) — one frame for a single reflow, the whole
-    // workload where the epoch moves per line. Still the right trade; not the cheap one an
-    // earlier version of this comment claimed.
-    this.invalidate();
-    // The cap. The `epoch === this.seen` branch above swallows a repeated epoch, so a
-    // rejecting transport costs one request per epoch *change*, not one per frame — an
-    // explicit "this epoch already failed" flag was tried and deleted: nothing could make
-    // a test fail with it removed, because this line and `seen` already covered every
-    // path to it.
-    if (this.inFlight) return;
-    this.pull();
+    // **The one place a pull starts, and it asks a *state*, not an *edge* (#746).** Every
+    // caller above only decides whether what we hold still describes the newest frame; this
+    // decides whether to go and get one. Written as an edge — "the epoch just changed" — it
+    // could not see the state where a request is needed and none is out, and that state is
+    // ordinary: the cap swallows the re-pull for a second bump, and the pull already in
+    // flight then answers with the generation it was evaluated in. Measured, an interactive
+    // drag-resize reaches it once the query round trip approaches the resize cadence (our
+    // own `FitController` debounce, 100 ms): at RTT ~100 ms, 8 drags in 40 ended with the
+    // index permanently unusable while the engine was quiet — not "blank for the drag, then
+    // correct" as #738 recorded.
+    //
+    // Three conditions, each load-bearing:
+    // - `adopted !== seen` — what we hold does not describe the newest frame. In the
+    //   settled state these are equal and nothing fires;
+    // - `!inFlight` — the cap is unchanged: at most one pull is ever out. Measured at 1.00x
+    //   master's request count through per-line churn, because while churn continues this
+    //   asks exactly what the edge asked;
+    // - `!lastAttemptFailed` — a refused transport is not this class's to retry (see the
+    //   rejection arm). Only a transport that *answered* is retried, and that retry is
+    //   guaranteed to progress, so it cannot loop.
+    //
+    // `invalidate()` first, always. `inFlight` implying `adopted === undefined` is what
+    // `onMarkerCreated`'s generation gate leans on (#741): pulling without it leaves a
+    // defined, stale `adopted` for an arriving birth to be compared against, which measured
+    // as silently wrong coordinates on 8 of 60 fuzz seeds.
+    if (this.adopted !== this.seen && !this.inFlight && !this.lastAttemptFailed) {
+      this.invalidate();
+      this.pull();
+    }
   }
 
   /** Drop the contents and mark them unusable, leaving the flight and the frame-side
-   * bookkeeping (`basis`, `seen`) alone. */
+   * bookkeeping (`basis`, `seen`) alone.
+   *
+   * **It does not touch `pendingOps`, and that deletion is the point (#746).** It used to
+   * empty them, because an op could not say which buffer it described and an invalidation
+   * meant "everything I hold is about the wrong one". #741 dated every op, so the replay
+   * now decides that per entry — precisely, where the wipe decided it bluntly.
+   *
+   * Bluntly was wrong, and it was silent. Whether the outstanding pull is *actually* stale
+   * is decided by the **snapshot's** epoch, stamped when the backend evaluates it — and the
+   * query channel legitimately runs ahead of the frame channel (see `pull`). So the
+   * snapshot can arrive carrying the very generation this invalidation was for, adopt, and
+   * start answering from content that predates the ops it just erased. Neither is
+   * recoverable: creation and disposal deliberately do not move the epoch (#490), so
+   * nothing re-delivers them. A wiped death resurrects a disposed marker; a wiped birth
+   * hides a live one; and `lines.size` is unchanged either way, so the drift check below
+   * stays silent forever — **count equality is not set equality**, which is the standing
+   * limit of that guard and not something this change removes.
+   *
+   * **The concern this raises, cleared, with the conditions it is cleared under.** Ops now
+   * outlive the flight that queued them, including one that *fails* — so could a queued
+   * birth be replayed onto some much later snapshot and resurrect a marker disposed in
+   * between? No, and it rests on two facts rather than on luck:
+   * 1. after a failed flight the only route back to a pull is an **epoch change** — the
+   *    drift check needs `adopted !== undefined` and every pull is preceded by an
+   *    `invalidate()`, so it cannot fire while the index is unusable — and an epoch change
+   *    makes every queued add's generation differ from the snapshot's, so the replay drops
+   *    it (#741);
+   * 2. a replayed **disposal** carries no generation and is idempotent, because marker ids
+   *    are never reused: `next_marker_id` deliberately rides across RIS *"so a reissued id
+   *    lets a stale `MarkerDisposed(7)` drop the live post-RIS marker 7"* (`term.rs`).
+   *
+   * If either stops holding — a pull issued without an epoch change while the index is
+   * unusable, or ids that recycle — the queue needs an explicit owner again. The first
+   * attempt to test this hazard passed **vacuously** (the failure latch stopped the second
+   * pull ever happening), which is why the reasoning is written down instead of a test that
+   * could not enter its own window. */
   private invalidate(): void {
     this.lines.clear();
     this.adopted = undefined;
-    this.pendingOps.length = 0;
   }
 
   private pull(): void {
@@ -223,6 +297,7 @@ export class MarkerIndexCache {
         }
         this.pendingOps.length = 0;
         this.adopted = snap.epoch;
+        this.lastAttemptFailed = false;
         this.onUpdated?.();
         // **Only the frame stream starts a pull.** A snapshot answering with an epoch the
         // frames have not reached is normal — the query and the frames are two samples of
@@ -237,9 +312,22 @@ export class MarkerIndexCache {
         // than by a promise chasing its own tail.
       },
       () => {
+        // Guarded like the resolve arm above, and it was not (#746). A rejection belongs to
+        // the pull that made it, so an *orphaned* one — `reset()` left it running while a
+        // new session started its own pull — must not clear the flag the live pull owns.
+        // With the flag wrongly false, `onMarkerCreated`/`onMarkerDisposed` stop queueing,
+        // and the landing snapshot's `lines.clear()` erases them with nothing to replay.
+        if (seq !== this.seq) return;
         // A failed transport leaves the index empty rather than stale — the same choice
         // the in-flight window makes.
         this.inFlight = false;
+        // The transport did not answer, so `sync`'s level trigger must not treat this as
+        // "the index is behind and a pull would fix it": it would retry once per frame
+        // against a dead port. How hard to retry someone else's transport is the host's
+        // policy, not this class's — it sees one report (a rejected promise) and cannot
+        // tell a blip from a dead session. A genuine epoch change clears this, so the
+        // contract stays "one request per epoch change", unchanged since #490.
+        this.lastAttemptFailed = true;
       },
     );
   }
@@ -339,6 +427,11 @@ export class MarkerIndexCache {
     this.adopted = undefined;
     this.seen = undefined;
     this.inFlight = false;
+    // Stated rather than relied on: clearing `seen` already makes the next `sync` take the
+    // epoch-change path, which clears this too. It becomes load-bearing the day `seen`
+    // survives a reset, and a latch a reset does not clear is how a new session inherits a
+    // dead session's refusal (#746).
+    this.lastAttemptFailed = false;
     this.seq++;
   }
 
