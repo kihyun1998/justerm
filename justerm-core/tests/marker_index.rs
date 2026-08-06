@@ -271,7 +271,7 @@ fn a_birth_carries_the_basis_its_line_is_absolute_at() {
         assert_eq!(
             ix.markers.len(),
             1,
-            "one live marker, so `last` is that marker"
+            "one live marker, so `markers[0]` is that marker"
         );
         (
             before.evicted_total,

@@ -97,8 +97,14 @@ pub enum TermEvent {
         kind: MarkerKind,
         /// Lines evicted since RIS at the moment of creation — the basis `line` is
         /// absolute at. Carried rather than inferred so that placement does not depend on
-        /// whether the consumer drains this queue before or after it syncs the frame,
+        /// whether the consumer drains this queue before or after it reads the frame,
         /// which nothing in the API specifies.
+        ///
+        /// It is the same quantity `Frame::evicted_total` reports, so a consumer whose
+        /// transport crosses a language boundary owes it the same treatment: the wasm
+        /// frame getter hands its `u64` over as an `f64` deliberately (exact to 2^53),
+        /// because a `BigInt` on one side of a subtraction and a `number` on the other is
+        /// a `TypeError`, not a rounding question.
         evicted_total: u64,
     },
 }

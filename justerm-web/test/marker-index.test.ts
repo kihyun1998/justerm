@@ -137,6 +137,68 @@ describe("MarkerIndexCache", () => {
     });
   });
 
+  // #737 — the new fourth parameter is required, so this is reachable only from an
+  // untyped host; what makes it worth a test rather than a type is where a stored `NaN`
+  // ends up. It counts toward `size`, so `markerCount === lines.size` holds and the drift
+  // check stops watching — the one mechanism that would otherwise notice and heal.
+  it("refuses a non-finite basis instead of storing an entry that blinds the drift check", async () => {
+    const port = deferredPort();
+    const cache = new MarkerIndexCache(port);
+    cache.sync({ evictedTotal: 0, markerEpoch: 0, markerCount: 0 });
+    await port.resolveWith(snap([], 0, 0));
+
+    // What an untyped host calling the pre-#737 three-argument form produces.
+    (cache as unknown as { onMarkerCreated(...a: unknown[]): void }).onMarkerCreated(7, 40, 1);
+
+    expect(cache.size).toBe(0);
+    expect(cache.lineOf(7)).toBeUndefined();
+    // And the count now disagrees, which is the condition that re-pulls: the marker
+    // arrives from the engine instead of from the event that could not be understood.
+    cache.sync({ evictedTotal: 0, markerEpoch: 0, markerCount: 1 });
+    expect(port.pulls).toBe(2);
+    await port.resolveWith(snap([{ id: 7, line: 40 }], 0, 0));
+    cache.sync({ evictedTotal: 0, markerEpoch: 0, markerCount: 1 });
+    expect(cache.lineOf(7)).toBe(40);
+  });
+
+  // #737 — a KNOWN LIMITATION, pinned so it cannot be un-noticed. The carried basis makes
+  // the two drain orders equivalent on the *eviction* axis only. A reflow between the
+  // birth and the drain moves markers non-uniformly, which is what the epoch exists for —
+  // and a birth still queued when the epoch moves describes the buffer as it was before
+  // it, so syncing the post-reflow frame first replays a stale line over the correct
+  // pulled one. Numbers are core's: a mark at absolute 3, `resize(10, 5)` reflowing it to
+  // 5, basis unmoved, epoch 0 -> 1, no disposal.
+  //
+  // This is why the contract says drain-then-sync rather than "either order". A fix would
+  // have to make the birth self-describing on the epoch axis too — it must FLIP this test.
+  it("replays a pre-reflow birth over a post-reflow pull when the frame is synced first", async () => {
+    const port = deferredPort();
+    const cache = new MarkerIndexCache(port);
+    cache.sync({ evictedTotal: 0, markerEpoch: 0, markerCount: 0 });
+    await port.resolveWith(snap([], 0, 0));
+
+    cache.sync({ evictedTotal: 0, markerEpoch: 1, markerCount: 1 }); // post-reflow frame
+    cache.onMarkerCreated(1, 3, 1, 0); // the birth queued before it
+    await port.resolveWith(snap([{ id: 1, line: 5 }], 0, 1));
+    cache.sync({ evictedTotal: 0, markerEpoch: 1, markerCount: 1 });
+
+    expect(cache.lineOf(1)).toBe(3); // the engine's answer is 5
+  });
+
+  it("adopts the same birth correctly when the events are drained first", async () => {
+    const port = deferredPort();
+    const cache = new MarkerIndexCache(port);
+    cache.sync({ evictedTotal: 0, markerEpoch: 0, markerCount: 0 });
+    await port.resolveWith(snap([], 0, 0));
+
+    cache.onMarkerCreated(1, 3, 1, 0); // drained on the generation it was born in
+    cache.sync({ evictedTotal: 0, markerEpoch: 1, markerCount: 1 }); // then the reflow
+    await port.resolveWith(snap([{ id: 1, line: 5 }], 0, 1));
+    cache.sync({ evictedTotal: 0, markerEpoch: 1, markerCount: 1 });
+
+    expect(cache.lineOf(1)).toBe(5);
+  });
+
   it("drops a disposed marker without re-pulling", async () => {
     const port = deferredPort();
     const cache = new MarkerIndexCache(port);
