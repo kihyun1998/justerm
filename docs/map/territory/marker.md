@@ -102,6 +102,10 @@ recorded SHA; a paraphrase drops the pin).
   get a floor, because `command_lines` threads `primary_grid()` through them so all three run in one
   coherent `[scrollback ++ primary]` buffer. The failure mode here is the mirror of the usual one —
   someone *adding* a floor and silently breaking command navigation on the alt screen
+- [a coordinate carries the instant it is true at](../invariant/a-coordinate-carries-the-instant-it-is-true-at.md)
+  — all three of core's outbound channels meet on this one primitive, and they answer the instant
+  question differently: `marker_positions` rides the frame and gets coherence free, `MarkerCreated`
+  had to be given a basis (#737), and `command_marks` still has nowhere to put one
 - [a wire field narrower than the value it carries](../invariant/wire-field-narrower-than-its-value.md)
   — the two marker group counts are still `u16` after #621 widened its siblings, and **nothing about
   the viewport bounded either of them**: the absolute-line group reported every live marker, and `markers`,

@@ -72,6 +72,10 @@ recorded SHA; a paraphrase drops the pin).
 
 ## Cross-cutting invariants
 
+- [a coordinate carries the instant it is true at](../invariant/a-coordinate-carries-the-instant-it-is-true-at.md)
+  — the collapse defined here is *why* the document space and the absolute space move by different
+  amounts under one eviction, so a rebase scalar that is correct for absolute lines is wrong for
+  document ones. The divergence belongs to soft-wrap, not to the surface that trips over it
 - [alt-screen absolute-index floor](../invariant/alt-screen-buffer-floor.md) — the wrap-run walk must
   floor on alt. **This was site 1 of 3** (#113): the first place the fact was ever found
 - [only U+0020 can be a row's padding](../invariant/only-u0020-can-be-padding.md) — the trailing trim

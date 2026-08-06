@@ -75,6 +75,11 @@ the argument for the current one.
   — both queues survive `ESC c`, and this is the only territory where the reset *adds* to one: every
   marker's disposal is announced into `events` before the rebuild, so the consumer drops decorations
   that now name nothing
+- [a coordinate carries the instant it is true at](../invariant/a-coordinate-carries-the-instant-it-is-true-at.md)
+  — this is the channel where it bites hardest, because an occurrence's payload outlives the instant
+  that gave it meaning and the frame's basis does not reach here. `MarkerCreated` is the worked case
+  (#737), and the note lays the three channels side by side, which is the only view that shows two of
+  them silent
 
 ## Blast radius
 

@@ -62,6 +62,12 @@ an editor rather than a terminal.
 
 ## Cross-cutting invariants
 
+- [a coordinate carries the instant it is true at](../invariant/a-coordinate-carries-the-instant-it-is-true-at.md)
+  — `CommandLine::line` is a *document* line, so it is the one coordinate on any channel that **no
+  scalar can rebase**: soft-wrapped rows collapse, so its motion under eviction equals the absolute
+  delta except when a continuation row is evicted, and the receiver cannot tell the cases apart
+  (measured: abs 17 → 15 while doc went 16 → 15). `CommandNavController` holds it across a summon and
+  a jump, which are two separate round trips
 - [alt-screen absolute-index floor](../invariant/alt-screen-buffer-floor.md) — `Term::accessible_text`
   walks the concatenated `[scrollback ++ grid]` buffer by absolute index, so on the alt screen it
   must floor at `scrollback.len()`. The failure is silent: the AT reads *plausible* text that is not

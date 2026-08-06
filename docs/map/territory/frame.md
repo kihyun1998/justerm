@@ -68,6 +68,10 @@ against a pinned tree.
 
 ## Cross-cutting invariants
 
+- [a coordinate carries the instant it is true at](../invariant/a-coordinate-carries-the-instant-it-is-true-at.md)
+  — this is the channel that gets the answer **free**: every scalar here is sampled in one
+  `Term::frame` body, so a frame is internally coherent by construction. Which is exactly why it
+  makes the other two channels look solved when they are not
 - [a decoded frame's columns are getters](../invariant/decoded-columns-are-getters.md) — on the JS
   side the payload is reached through accessors that rebuild a view (or, for the string tables, the
   whole array) on every read, so a reader walks cells from a local and never from `frame.`
