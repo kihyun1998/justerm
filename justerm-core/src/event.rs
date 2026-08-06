@@ -76,10 +76,10 @@ pub enum TermEvent {
     /// index (`Engine::marker_index`) has no way to learn of a marker born after its
     /// pull — the population would only ever shrink.
     ///
-    /// `line` is absolute at the moment of creation and `evicted_total` is the basis it
-    /// is absolute at — the same pairing [`crate::MarkerIndex`] uses, because this event
-    /// is that pull's incremental mirror. The consumer appends the entry with the basis
-    /// it arrived on and rebases it exactly like a pulled one.
+    /// `line` is absolute at the moment of creation, and `evicted_total` / `epoch` are the
+    /// instant it is absolute at — the same triple [`crate::MarkerIndex`] carries, because
+    /// this event is that pull's incremental mirror. The consumer appends the entry with
+    /// the basis it arrived on and rebases it exactly like a pulled one.
     ///
     /// **The two are one fact and neither is usable alone (#737).** A single `feed` can
     /// create a marker and then evict, so by the end of the batch the buffer's origin has
@@ -88,6 +88,13 @@ pub enum TermEvent {
     /// marker by however much the batch evicted after the birth — measured at three lines,
     /// with the event line, both frame bases, the epoch and `Frame::marker_count` all
     /// identical to the batch that evicted *first* and needs no adjustment at all.
+    ///
+    /// **And a basis dates only a uniform move (#741).** Eviction shifts every marker by
+    /// the same amount, which is what one scalar can say; a reflow or a region rotate
+    /// moves them *individually*, which is what `epoch` is for. A birth still queued when
+    /// the epoch moves describes a buffer that no longer exists, and carrying only the
+    /// basis leaves that indistinguishable from a birth in the current generation —
+    /// measured, a mark at absolute 3 reflowed to 5 with the basis unmoved at 0.
     ///
     /// Deliberately not an epoch bump: a bump costs a whole re-pull, and creation is
     /// `O(1)` information.
@@ -106,5 +113,14 @@ pub enum TermEvent {
         /// because a `BigInt` on one side of a subtraction and a `number` on the other is
         /// a `TypeError`, not a rounding question.
         evicted_total: u64,
+        /// The marker generation this line belongs to — [`crate::MarkerIndex::epoch`] at
+        /// the moment of creation (#741). Two lines dated with different epochs are
+        /// answers about different buffers and nothing rebases one onto the other, so a
+        /// consumer adopts this entry only into the generation it names and lets the
+        /// re-pull that the bump already forces supply it otherwise.
+        ///
+        /// Compare it for **equality**, never for order: the counter is
+        /// `wrapping_add`, so `<` is meaningless across a wrap while `==` is exact.
+        epoch: u32,
     },
 }

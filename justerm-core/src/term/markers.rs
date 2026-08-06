@@ -144,11 +144,18 @@ impl Term {
         // which moves every marker, this one included, without touching the epoch. Read
         // against the frame's end-of-batch basis instead, the line is short by whatever
         // the batch evicted after this point.
+        //
+        // And the epoch rides with it for the same reason one axis up (#741): the basis
+        // dates a *uniform* move, and a reflow between this birth and the consumer's drain
+        // is not one. `marker_index` answers with all three, so its incremental mirror
+        // carries all three — a line whose generation is unstated is one the receiver
+        // cannot tell from a current one.
         self.events.push(TermEvent::MarkerCreated {
             id,
             line: line as u32,
             kind,
             evicted_total: self.evicted_total,
+            epoch: self.marker_epoch,
         });
         id
     }
