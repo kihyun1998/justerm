@@ -38,6 +38,14 @@ the shell emits.
   scrolls. That degrades to the pre-#490 cost (`O(M)` per frame) **only if the consumer re-pulls at
   most once per frame**, which is therefore a stated obligation of the contract rather than an
   assumption about how a consumer happens to be written.
+  **Two corrections measurement forced (#738).** *The cap bounds requests, not availability* — a
+  consumer holding to that obligation has every pull land stale under per-line churn, so it holds
+  no answer at all for the duration: the degradation is a blank overview ruler and absent
+  above-the-top anchors, not a bill. And *the reach is narrow*: this is the only per-line bump, and
+  `markers_shift_below_margin` is primary-only, so it needs DECSTBM leaving a static footer **and**
+  a marker inside it. Ordinary scrolling bumps 0 times over 1 000 lines; a marker *inside* the
+  region bumps 0 times as well, because with `scroll_top == 0` the scroll accrues into scrollback
+  and the marker's absolute line correctly does not move.
 - **Death is an event, not an absence.** An off-screen marker is *omitted* from the viewport group
   while still alive, so the consumer learns of disposal through `MarkerDisposed` rather than by
   noticing a gap. Without that, "scrolled away" and "gone" would be the same observation.

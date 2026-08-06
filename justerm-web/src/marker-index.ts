@@ -95,8 +95,13 @@ export class MarkerIndexCache {
    * **At most one pull is in flight.** A marker sitting below a bottom margin bumps the
    * epoch on every output line (measured: 1 000 bumps over 1 000 region scrolls), so an
    * uncapped re-pull would cost `O(M)` per frame — exactly the cost this design removes.
-   * With the cap the worst case is one outstanding request, and the frames in between
-   * simply report unknown.
+   *
+   * The cap bounds the **requests, not the outage** (#738). While the epoch moves every
+   * frame, each pull is stale before it lands and {@link MarkerIndexCache.lineOf} reports
+   * unknown for as long as the churn lasts — not for a round trip. The recovery is bounded
+   * by the churn, which is the honest statement; the reach of that state is narrow but the
+   * cost inside it is total (no ruler marks, no above-top anchors), and ordinary scrolling
+   * is not in it at all: 0 bumps over 1 000 lines.
    */
   sync(frame: MarkerBasisFrame): void {
     if (frame.evictedTotal !== undefined) this.basis = frame.evictedTotal;
@@ -127,8 +132,11 @@ export class MarkerIndexCache {
 
     this.seen = epoch;
     // What we hold describes a buffer that has moved non-uniformly. Drop it now rather
-    // than serving it: a decoration missing for a frame is visible and self-correcting,
-    // one painted on a line it no longer owns is neither.
+    // than serving it: a decoration that is missing is visible and self-correcting, one
+    // painted on a line it no longer owns is neither. **How long "missing" lasts is set by
+    // the churn, not by the round trip** (#738) — one frame for a single reflow, the whole
+    // workload where the epoch moves per line. Still the right trade; not the cheap one an
+    // earlier version of this comment claimed.
     this.invalidate();
     // The cap. The `epoch === this.seen` branch above swallows a repeated epoch, so a
     // rejecting transport costs one request per epoch *change*, not one per frame — an
