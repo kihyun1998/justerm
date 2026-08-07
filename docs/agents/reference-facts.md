@@ -1379,3 +1379,54 @@ justerm "just do what xterm does" — that shape is on the deliberate-divergence
 | A **re-ask declaration on the public typings** is the reference's own shape for a coordinate-bearing result that must not be held: *"Note that the result of this function should be used immediately after calling as when the terminal updates it could lead to unexpected behavior."* This is corroboration for ADR-0029 D6's *state it where the caller reads it* — a mechanism inside the design, which the tie-breaker does allow a reference to settle | xterm.js | `typings/xterm.d.ts:1670` (`getLine`), `:1741` (the same note on `IBufferLine`) |
 | ghostty makes it unaskable a second way: prompt-to-prompt navigation never crosses buffers, because it is scoped to the active screen — `self.terminal.screens.active.scroll(.{ .delta_prompt = delta })`. There is no coordinate to relate to a document, since the jump *is* the operation | ghostty | `src/termio/Termio.zig:609` (the fn), `:613` (the scoping) |
 | alacritty is **silent, not an outlier**: it has no marker or line-mark concept to compare — `rg -ci marker` over `alacritty_terminal/src/term/mod.rs` and `grid/mod.rs` returns zero in both. Consistent with the #741 row above | alacritty | — |
+
+## What retires a line-anchored mark when the line's content is destroyed in place (#750, verified 2026-08-07)
+
+The question #750 could not answer from justerm alone: three fixups repair a mark when the buffer
+*moves*, and nothing repairs it when the row's content dies where it stands. The two references
+that have a line-anchored mark at all **converge**, including on the edge that looks like an
+oversight — so the split below is a rule to port, not one to invent.
+
+| Fact | Reference | Site |
+|---|---|---|
+| `Buffer.clearMarkers(y)` disposes every marker on line `y`, firing each one's `onDispose`. Its **only** caller is `_resetBufferLine`, the whole-row reset helper | xterm.js | `src/common/buffer/Buffer.ts:619`; caller `src/common/InputHandler.ts:1200` |
+| `_resetBufferLine` is reached from `eraseInDisplay` and from nowhere else — ED 0's rows *below* (`:1238`), ED 1's rows *above* (`:1255`), ED 2's whole screen (`:1277`) | xterm.js | `src/common/InputHandler.ts:1238`, `:1255`, `:1277` |
+| ⚠ **`eraseInLine` and `eraseChars` retire nothing**, whatever they blank — both go through `_eraseInBufferLine` / `replaceCells`, which touches cells and `isWrapped` and no marker | xterm.js | `eraseInLine` `src/common/InputHandler.ts:1323`, `:1326`, `:1329`; helper `:1175` |
+| ⚠ **The rule is the helper's identity, not the erased range**, and xterm contradicts itself at one edge: ED 1's *cursor* row erases `[0, x+1)` through the partial helper, so at `x + 1 == cols` a full-width row is blanked and its markers survive | xterm.js | `src/common/InputHandler.ts:1246` (the erase) beside `:1249-1252` (the arm that *does* handle the full-width case, for `isWrapped` only) |
+| Disposal is **observable to a holder**, not merely an absence: `dispose()` sets `line = -1`, and VS Code tests `marker.line === -1`. justerm's `TermEvent::MarkerDisposed` is the equivalent channel | xterm.js | `src/common/buffer/Marker.ts:32` |
+| ghostty reaches the same split from the opposite storage. `semantic_prompt` is a field on `Row`; `Screen.clearRows` **whole-struct-resets** the row in its non-protected branch (`row.* = .{ .cells = cells_offset }`), so the prompt state goes to `.none` — and its protected branch deliberately does not, with the comment *"We need to preserve other row attributes since we only cleared unprotected cells"* | ghostty | field `src/terminal/page.zig:1976`; reset `src/terminal/Screen.zig:1656`; protected branch `:1650-1652` |
+| ⚠ `Screen.clearCells` walks graphemes, hyperlinks and styles cell-by-cell and **never touches `row.semantic_prompt`**. `eraseLine` and `eraseChars` use it; only `eraseDisplay` calls `clearRows` — and it too routes its *cursor* row through `eraseLine`, reproducing xterm's edge | ghostty | `clearCells` `src/terminal/Screen.zig:1667`; `eraseLine` `src/terminal/Terminal.zig:3255`; `eraseDisplay`'s `clearRows` `:3341`, `:3370`, `:3387` |
+| **Negative result:** alacritty has no line-mark concept — `rg -c "133"` over `alacritty_terminal/src/` is 0, and every `marker` hit is `std::marker::PhantomData`. It cannot arbitrate | alacritty | — |
+
+### The consequence for search highlights, which is not obvious from either file (#750)
+
+In xterm.js a search highlight **is** a marker: the addon registers one marker per match and hangs
+a decoration on it, and the decoration service disposes a decoration when its marker disposes. So
+the command mark and the search highlight are retired by *one* act there and cannot diverge —
+which is why justerm's split (a marker list plus a flat `Vec<Match>`) produces two independent
+staleness questions with two different answers. Recorded because the pre-#750 rationale in
+`invalidate_search_highlights` cited "xterm's decorations" for the claim that an erase leaves them
+alone, and that is **false for ED**.
+
+| Fact | Reference | Site |
+|---|---|---|
+| One `registerMarker` per match, then `registerDecoration({ marker, … })` | xterm.js | `addons/addon-search/src/DecorationManager.ts:133-134` |
+| A decoration is disposed with its marker | xterm.js | `src/common/services/DecorationService.ts:60` |
+
+### What the only system that recovers *command text* does (#750)
+
+Neither reference terminal stores it — ghostty's `semantic_prompt` is a per-row `enum(u2)` with no
+column and no `B`/`C` distinction, so it structurally cannot re-borrow. The consumer that does is
+VS Code's shell integration, read in the installed bundle (minified, so no line cite is possible):
+`resources/app/out/vs/workbench/workbench.desktop.main.js`.
+
+- `extractCommandLine()` walks `buffer.getLine(…).translateToString(…)` from
+  `commandStartMarker/commandStartX` to `commandExecutedMarker/commandExecutedX` — the same
+  algorithm as `Term::extract_lines` with its `[b_col, c_col)` clip.
+- It is called from the **OSC 133 `C` handler**, and the result is stored on the command object;
+  the promoted history entry's own `extractCommandLine()` is `{ return this.command }`, a captured
+  string that never re-reads a cell.
+- Markers are kept alongside it, for *positions* — pruned by `_clearCommandsInViewport()` and
+  checked for `marker.line === -1`.
+
+So the real consumer runs capture **and** disposal, which is what #750 landed.

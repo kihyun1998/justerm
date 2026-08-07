@@ -75,6 +75,11 @@ above does not touch it.
 
 ## Cross-cutting invariants
 
+- [the write path funnels motion and does not funnel destruction](../invariant/no-funnel-for-destruction-in-place.md)
+  — this territory takes the **heal** answer: an in-place erase or overwrite stales the held
+  highlights and deliberately does not invalidate them, because the consumer re-runs the query
+  after a debounce on output and an erase *is* output. The grounds live on
+  `invalidate_search_highlights`, and #750 is the sibling that had to answer **retire** instead
 - [alt-screen absolute-index floor](../invariant/alt-screen-buffer-floor.md) — `search_with` walks
   logical lines by absolute index and must floor on alt (#144). Site 2 of 3 in that note's discovery
   history

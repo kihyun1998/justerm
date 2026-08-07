@@ -72,6 +72,9 @@ recorded SHA; a paraphrase drops the pin).
 
 ## Cross-cutting invariants
 
+- [the write path funnels motion and does not funnel destruction](../invariant/no-funnel-for-destruction-in-place.md)
+  — the read surface where a stale position-keyed assertion becomes a wrong *string* rather than a
+  wrong colour, which is what made the marker case the severe one (#750)
 - [a coordinate carries the instant it is true at](../invariant/a-coordinate-carries-the-instant-it-is-true-at.md)
   — the collapse defined here is *why* the document space and the absolute space move by different
   amounts under one eviction, so a rebase scalar that is correct for absolute lines is wrong for

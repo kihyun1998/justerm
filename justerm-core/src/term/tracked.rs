@@ -50,9 +50,18 @@ impl Term {
 
     /// Track absolute buffer `(line, col)`, returning a stable id (#691). The
     /// engine keeps the position on the content that is there now, through
-    /// eviction, region scrolls and reflow, for as long as that content is in the
-    /// buffer; [`Self::tracked_point`] reads it back and answers `None` once it is
-    /// gone.
+    /// eviction, region scrolls and reflow, for as long as that **line** is in the
+    /// buffer; [`Self::tracked_point`] reads it back and answers `None` once the line
+    /// has left it.
+    ///
+    /// **A line, not the characters on it, and the distinction is load-bearing.**
+    /// Erasing or overwriting the cells under a tracked point leaves it `Some` —
+    /// measured. That is deliberate rather than the marker defect one file over (#750):
+    /// a tracked point is a *positional* reference whose only consumer asks "which
+    /// occurrence was I on" and resolves by nearest position, so a point over rewritten
+    /// content is still a serviceable answer, where a command mark asserts that a
+    /// command *happened* there. The sentence above said "that content" and read as the
+    /// stronger promise.
     ///
     /// The coordinate is **absolute**, not a viewport row, because the positions
     /// worth tracking are off-screen ones — a search match in scrollback is the

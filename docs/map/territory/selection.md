@@ -105,6 +105,10 @@ at a recorded SHA; a paraphrase drops the pin).
 
 ## Cross-cutting invariants
 
+- [the write path funnels motion and does not funnel destruction](../invariant/no-funnel-for-destruction-in-place.md)
+  — this territory takes the **positional** answer, and it is the discriminator that keeps the note
+  honest: a selection is a region of the screen, so showing what is now under the highlight after
+  an in-place erase or overwrite is the semantics rather than staleness (#750)
 - [the cell size is derived state](../invariant/cell-size-is-derived-state.md)
   — the pointer-to-cell conversion here divides by a cell that five setters can move, in a unit the
   renderer does not report (#578)

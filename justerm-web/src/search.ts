@@ -108,8 +108,11 @@ export interface SearchPort {
    *
    * **A backend that runs `justerm-core` should not hold the coordinate itself.**
    * `Engine::track_point` returns a stable id whose position the engine maintains
-   * across all four movers and answers `None` for once its content has left the
-   * buffer — the same treatment the selection and decoration markers get.
+   * across all four movers and answers `None` once its **line** has left the
+   * buffer — the same treatment the selection and decoration markers get. Note
+   * the scope: erasing or overwriting the cells under the point leaves it valid,
+   * because it is a positional reference and `anchoredIndex` resolves by nearest
+   * position (justerm#750 measured this and sharpened the core's wording).
    * Register the point when you designate a match, resolve it here, release it on
    * `clear()`. A backend that keeps a raw `Match` instead is the case this
    * paragraph warns about, and nothing upstream re-clamps it for you.
