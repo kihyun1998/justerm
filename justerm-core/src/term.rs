@@ -627,8 +627,10 @@ pub struct CommandLine {
     /// document it indexes** — the one [`Term::accessible_text`] returns *at the same
     /// instant, on the primary screen*. Neither half is expressible as a number on this
     /// struct (#743), and they are the two that recur; they are not a proof of
-    /// sufficiency, since a mark whose row is erased in place also answers about content
-    /// that is gone, on the primary screen, at one instant:
+    /// sufficiency. A mark whose row is erased in place also answers about content that
+    /// is gone — on the primary screen, at one instant, and a re-ask reproduces it, so
+    /// neither half below reaches it (**#750**, a separate defect in mark lifetime
+    /// rather than in dating):
     ///
     /// - **the instant.** No scalar this engine publishes dates a document line, and
     ///   the reason is not one axis but two. Eviction moves it by the number of evicted
