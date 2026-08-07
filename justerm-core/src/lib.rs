@@ -38,8 +38,8 @@ pub use serialize::{
 };
 
 pub use term::{
-    CommandLine, DEFAULT_WORD_SEPARATORS, Hyperlink, MAX_COLUMNS, MAX_MARKERS, MAX_ROWS,
-    MIN_COLUMNS, MarkerEntry, MarkerIndex, Term, TrackedId,
+    CommandLine, DEFAULT_WORD_SEPARATORS, Hyperlink, MAX_COLUMNS, MAX_COMMAND_TEXT, MAX_MARKERS,
+    MAX_ROWS, MIN_COLUMNS, MarkerEntry, MarkerIndex, Term, TrackedId,
 };
 
 use vte::Parser;
@@ -568,6 +568,16 @@ impl Engine {
     /// Consequently an empty answer means every mark was disposed and can mean nothing
     /// else, where `marker_index`'s silence is ambiguous between that and *"you are on
     /// the other screen"*.
+    ///
+    /// **A mark also dies when a whole row is blanked where it stands (#750).** Until
+    /// then the only deaths were the buffer *moving* — eviction, a region rotate, a
+    /// reflow — and a `clear` left every mark on the screen alive over blank rows. `ED`
+    /// now retires the marks on each whole row it blanks, through the same
+    /// `TermEvent::MarkerDisposed` a consumer already handles, so this query going empty
+    /// after a `clear` is the ordinary meaning above and not a new one. **`EL` and `ECH`
+    /// deliberately do not**, whatever they blank: a line editor redraws its input line
+    /// with `\r ESC[K` on every keystroke, and the `CommandStart` of the command being
+    /// typed is on that row.
     pub fn command_marks(&self) -> Vec<(MarkerId, usize, MarkerKind)> {
         self.term.command_marks()
     }
@@ -579,6 +589,18 @@ impl Engine {
     /// This is a full-buffer query, wired to the frame-mode consumer over IPC like
     /// [`Engine::accessible_text`]; the web side has no scrollback cells to derive
     /// it (ADR-0017 — buffer-wide text is core's).
+    ///
+    /// **The text and the exit are frozen when the stream reveals them; only the line
+    /// is derived (#750).** [`CommandLine::command`] is captured at the `133;C` that
+    /// closes the command — the instant it is complete and on screen — and
+    /// [`CommandLine::exit`] is written down when `133;D` is parsed. Neither is
+    /// recoverable afterwards: re-reading the text through the recorded columns names
+    /// whatever *now* occupies those cells, which a plain overwrite, `ICH`, `DCH` and an
+    /// erase all arrange, and an exit code is in no cell at any time. A capture is
+    /// bounded at [`MAX_COMMAND_TEXT`] `char`s, truncated at a `char` boundary, for the
+    /// reason [`MAX_MARKERS`] exists: the stream chooses the distance between `B` and
+    /// `C`. [`CommandLine::line`] stays derived, because it is the half the anchor
+    /// fixups already maintain.
     ///
     /// **The answer is instantaneous — it describes the buffer it was asked of, and
     /// nothing on it dates it (#743). Re-ask; never keep it past the document it

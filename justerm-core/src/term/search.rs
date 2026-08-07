@@ -297,9 +297,24 @@ impl Term {
     /// the margin, `selection_shift_below_margin`), reflow, both alt swaps.
     /// In-line *column* shifts (ICH/DCH, insert-mode print) and
     /// in-place erases (ED/EL/ECH, overwrite) deliberately do NOT funnel — the
-    /// set stales in place there exactly like the selection sibling and
-    /// xterm's decorations, healed by the consumer's debounced re-search on
-    /// output (which those mutations are). Search matches are query-derived
+    /// set stales in place there, **healed by the consumer's debounced re-search
+    /// on output** (which those mutations are; `justerm-web`'s search controller
+    /// re-runs the active query after a debounce so highlights track the buffer).
+    /// That healing is the whole of the argument, and it is the reason the
+    /// sibling defect in the *marker* surface had to be fixed in the engine
+    /// instead (#750): `command_lines` is pulled on a user action, so nothing
+    /// re-derives it and the wrong answer reproduces forever.
+    ///
+    /// **The comparison to xterm's decorations used to stand here and is now
+    /// half false (#750).** A search highlight in xterm.js is a decoration
+    /// registered on its own marker (`addons/addon-search/src/DecorationManager.ts`),
+    /// and `DecorationService` disposes a decoration with its marker — so ED,
+    /// which calls `Buffer.clearMarkers` through `_resetBufferLine`, **does**
+    /// retire xterm's search highlights. EL, ECH and an overwrite retire
+    /// nothing there, which is the half that still holds. justerm reaches a
+    /// different answer for ED because it split one reference mechanism into two
+    /// (a marker list and this flat set), and the two halves have different
+    /// consumers: only this one has a re-search behind it. Search matches are query-derived
     /// (the engine holds matches, not the query, and the *set* itself may have
     /// changed), so unlike the user-authored selection they are dropped rather
     /// than re-anchored. Clearing avoids painting wrong content for the frame

@@ -94,6 +94,32 @@ the shell emits.
 - **Anchors are maintained through buffer motion by three verbs** — `markers_shift_below_margin`,
   `markers_evict_oldest`, `markers_rotate_region` — called from the write path beside their
   selection-side counterparts.
+- **And by a fourth that is not a mover at all: `dispose_markers_on_row` (#750).** The three
+  above repair a *coordinate*, and they read as the whole job because for a long time every way a
+  mark could stop describing its content moved the buffer. An in-place erase does not — the row
+  stays where it is while everything the mark was about stops existing — so nothing fired, nothing
+  was announced, and `command_lines` reported commands that were not there, at document lines that
+  reveal onto blank rows. Worse than absent: after a `clear` the shell redraws its prompt onto the
+  dead marks' columns, so every later command was reported twice (measured, `n=4` for two real
+  commands).
+  **`ED` retires, `EL` and `ECH` do not**, and that split is not the reference's helper-identity
+  accident being copied — it has its own reason. A line editor redraws the input line with
+  `
+ ESC[K` on every keystroke, and `B` was emitted before the user began typing, so an `EL` that
+  retired marks would delete the `CommandStart` of the command being typed and no command would
+  ever be reported. The references converge on the same split anyway (see below). **The known
+  residue** is the cursor's own row: both references route it through their partial-erase helper,
+  so `ESC[H ESC[0J` leaves exactly one phantom. Followed rather than widened, because the only
+  argument for widening is symmetry — the tell ADR-0019's retracted first amendment was caught by.
+- **What is *not* in the buffer is frozen on the mark when the stream reveals it (#750).** The
+  command text is captured at `C` and the exit code written down at `D`. Re-reading text through
+  the recorded `[b_col, c_col)` clip names whatever now occupies those cells — measured for a plain
+  overwrite, `ICH`, `DCH` **and** an erase, so no lifetime rule closes it; only the erase is a verb
+  disposal could ever reach. And resolving the exit at *query* time meant pairing over survivors
+  (`out.last_mut()`), which slid a code onto the previous command the moment a disposal broke the
+  run — measured, `a0` wearing `a1`'s `Some(2)`. Only `line` stays derived, because it is the half
+  the movers above already maintain. The capture is bounded at `MAX_COMMAND_TEXT`, for the reason
+  `MAX_MARKERS` exists: the *stream* chooses the distance between `B` and `C`.
 - **Primary markers survive an alt-screen excursion.** That is the contract (#118/#158): a mark must
   outlive a `vim` session. `normal_markers` and `alt_markers` are separate populations, and an
   alt-screen scroll must **not** rotate primary markers or it silently disposes them — the alt grid
@@ -108,8 +134,10 @@ the shell emits.
   `markers_rotate_region`, `marker_positions`, `marker_index`,
   `bump_marker_epoch`, and the private
   `primary_grid` / `command_start` / `doc_line_of`. Extracted from `term.rs` in #588
+  Since #750 the same file owns `dispose_markers_on_row`, `capture_command_text`,
+  `open_command_start` and `attach_exit`
 - `justerm-core/src/serialize.rs` — `MarkerId`, `MarkerKind`, `MarkerPosition`
-- `justerm-core/src/term.rs` — `CommandLine`
+- `justerm-core/src/term.rs` — `CommandLine`, `CommandRecord`, `MAX_COMMAND_TEXT`
 
 ## Reference behaviour
 
@@ -117,6 +145,8 @@ In `docs/agents/reference-facts.md` — **linked, never restated** (each row car
 recorded SHA; a paraphrase drops the pin).
 
 - [The marker's clear discipline](../../agents/reference-facts.md#the-markers-clear-discipline-534-verified-2026-07-27)
+  — note this is the *wide-spacer* marker, a different artifact that shares the word
+- [What retires a line-anchored mark when the line's content is destroyed in place](../../agents/reference-facts.md#what-retires-a-line-anchored-mark-when-the-lines-content-is-destroyed-in-place-750-verified-2026-08-07)
 
 ## Cross-cutting invariants
 
@@ -140,6 +170,11 @@ recorded SHA; a paraphrase drops the pin).
   **document** as well as an instant, and on the alt screen the document it names is not the one
   `accessible_text` returns. Both halves are stated on `Engine::command_lines` and pinned in
   `justerm-core/tests/command_lines_document.rs`
+- [the write path funnels motion and does not funnel destruction](../invariant/no-funnel-for-destruction-in-place.md)
+  — this territory is where the gap was found and the one that answers **retire**: the three
+  movers repair a coordinate and read as the whole job, so nothing repaired a mark whose row was
+  blanked where it stood (#750). The note's value is the other two answers, which are *not* the
+  same and are not reachable from here
 - [a wire field narrower than the value it carries](../invariant/wire-field-narrower-than-its-value.md)
   — the two marker group counts are still `u16` after #621 widened its siblings, and **nothing about
   the viewport bounded either of them**: the absolute-line group reported every live marker, and `markers`,
@@ -170,6 +205,8 @@ recorded SHA; a paraphrase drops the pin).
 
 ## Known holes / open
 
+- **`ESC[H ESC[0J` leaves one phantom**, on the cursor's own row — the reference edge above,
+  pinned by `ed_0_disposes_the_rows_below_and_keeps_the_cursor_row_marks` rather than fixed.
 - **The alt-guard is a rule applied per verb.** `if !self.on_alt` around `markers_rotate_region` in
   `linefeed` / `reverse_index` is exactly the "remember the rule at each site" shape ADR-0025 D2
   rejects for row state — but markers have no equivalent record saying so.

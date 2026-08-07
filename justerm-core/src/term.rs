@@ -229,6 +229,13 @@ pub struct Term {
     /// funnel for eviction / every region scroll incl. the accrual sub-region
     /// branch (#449) / reflow / both alt swaps) — a stale span would otherwise
     /// keep painting coordinates that now hold other text.
+    ///
+    /// **That list is the *motion* funnel, and it is complete only for motion.** An
+    /// in-place erase or overwrite stales this set too, and deliberately does not
+    /// funnel — read `invalidate_search_highlights`, which owns that decision and its
+    /// grounds. Stated here because this comment enumerating the callers reads as the
+    /// whole rule, and a reader who stops at it concludes the erase verbs were
+    /// forgotten (#750).
     active_search_highlight: Option<Match>,
     /// Engine-owned decoration markers (#118), split per buffer like xterm's
     /// `BufferSet` (#177 S0): each a stable id bound to an absolute buffer line
@@ -518,6 +525,23 @@ pub const MAX_ROWS: usize = u16::MAX as usize;
 /// channel scrollback eviction already uses for the same event.
 pub const MAX_MARKERS: usize = u16::MAX as usize;
 
+/// The longest command text an OSC-133 `OutputStart` mark will freeze, in `char`s
+/// (#750). A longer command is captured truncated to this many characters.
+///
+/// **Why a bound at all** is [`MAX_MARKERS`]'s argument one field over: the *stream*
+/// decides the size. The text spans `[B, C)`, and nothing bounds how far apart those
+/// two sequences are — a stream that emits `B`, dumps a full screen and then `C` names
+/// a command as long as the buffer. Re-extracting on demand made that a transient
+/// allocation; freezing it at `C` makes it resident, for as long as the mark lives, and
+/// [`crate::Engine::feed`] is an untrusted entry point (ADR-0007).
+///
+/// **A display bound, not a semantic one.** [`CommandLine::command`]'s consumer
+/// announces it and lists it; a prefix is a usable answer and an absent one is not, so
+/// overflow truncates rather than declining to capture. The truncation is at a `char`
+/// boundary, so the answer is always valid text. No ordinary command reaches it — this
+/// is not a limit a shell user can type into.
+pub const MAX_COMMAND_TEXT: usize = 4096;
+
 /// The state DECSC (ESC 7) saves and DECRC (ESC 8) restores: position, pen/SGR,
 /// pending-wrap, and origin mode (per ADR-0004 — DECRC restores origin mode,
 /// which Alacritty omits). Cursor *visibility* is deliberately not part of this
@@ -538,7 +562,8 @@ struct SavedCursor {
 /// An engine-owned decoration marker (#118): a stable id bound to an absolute
 /// buffer line. The line shifts in lockstep with eviction/region scroll/reflow
 /// (the same coordinate moves the selection anchor tracks); the marker is
-/// dropped when its line leaves the buffer.
+/// dropped when its line leaves the buffer — **or when `ED` blanks the whole row
+/// it stands on** (#750), which is the one death that is not the buffer moving.
 struct Marker {
     id: MarkerId,
     line: usize,
@@ -559,6 +584,35 @@ struct Marker {
     /// Plain for a `add_marker` decoration; a command-boundary role for an
     /// OSC 133 mark (#158). All kinds share the anchor/eviction machinery.
     kind: MarkerKind,
+    /// What an `OutputStart` mark froze about the command it closes (#750) —
+    /// `None` on every other kind, and the reason this is one boxed pointer rather
+    /// than two inline fields: three marks in four never carry it, and the
+    /// population is bounded at [`MAX_MARKERS`].
+    ///
+    /// It dies with the marker, which is the point: a side table keyed by
+    /// [`MarkerId`] would need its own purge at every disposal site, i.e. exactly
+    /// the missing-destruction-funnel defect this issue is about (ADR-0025 D1 —
+    /// a fact lives with its owner).
+    command: Option<Box<CommandRecord>>,
+}
+
+/// The part of a command that is **not** in the buffer, frozen on its `OutputStart`
+/// mark (#750).
+///
+/// Both fields are recorded at the instant they are first true, and neither can be
+/// recovered afterwards:
+///
+/// - `text` is complete and on screen exactly when `C` arrives. Re-reading it later
+///   through the recorded `[b_col, c_col)` clip names whatever now occupies those
+///   cells — measured for a plain overwrite, ICH, DCH and an erase, and only the last
+///   of those is a verb any mark-lifetime rule could reach.
+/// - `exit` arrives with `D`, one mark later, and lives in no cell at all. Resolving it
+///   at query time meant pairing over *survivors* (`out.last_mut()`), which re-parented
+///   a code onto the previous command as soon as a disposal broke the run. Written here
+///   when `D` is parsed, a disposal can only drop an answer, never move one.
+struct CommandRecord {
+    text: Box<str>,
+    exit: Option<i32>,
 }
 
 /// A stable handle to a tracked buffer position (#691), handed out by
@@ -627,10 +681,15 @@ pub struct CommandLine {
     /// document it indexes** — the one [`Term::accessible_text`] returns *at the same
     /// instant, on the primary screen*. Neither half is expressible as a number on this
     /// struct (#743), and they are the two that recur; they are not a proof of
-    /// sufficiency. A mark whose row is erased in place also answers about content that
-    /// is gone — on the primary screen, at one instant, and a re-ask reproduces it, so
-    /// neither half below reaches it (**#750**, a separate defect in mark lifetime
-    /// rather than in dating):
+    /// sufficiency. The hedge was earned: a mark whose row is erased in place also
+    /// answers about content that is gone — on the primary screen, at one instant, and
+    /// a re-ask reproduces it, so neither half below reaches it. That was **#750**, a
+    /// defect in mark *lifetime* rather than in dating, and it is fixed at the
+    /// lifetime: `ED` now retires the marks on each whole row it blanks, and the
+    /// command's text and exit are frozen when the stream reveals them rather than
+    /// re-read from cells (see [`Term::command_lines`]). One residue is deliberate and
+    /// belongs to this field — `EL`/`ECH` retire nothing, so a mark can still name a
+    /// row they blanked, and this line then resolves onto it:
     ///
     /// - **the instant.** No scalar this engine publishes dates a document line, and
     ///   the reason is not one axis but two. Eviction moves it by the number of evicted
@@ -652,9 +711,20 @@ pub struct CommandLine {
     /// So: ask for both together, keep them together, and re-ask rather than rebase.
     pub line: usize,
     /// The typed command text, prompt- and output-excluded (B→C columns).
+    ///
+    /// **Frozen at the `133;C` that closed the command (#750)**, not re-read from the
+    /// cells when you ask. Those cells are not reserved for it: a plain overwrite,
+    /// `ICH`, `DCH` and an erase were each measured making the recorded column range
+    /// name somebody else's content, and only the last of the four is a verb any
+    /// mark-lifetime rule could reach. Bounded at [`MAX_COMMAND_TEXT`] `char`s.
     pub command: String,
     /// The CommandFinished(D) exit code, if the shell reported one and the
     /// command has finished.
+    ///
+    /// **Recorded when `133;D` is parsed (#750)**, onto the mark that closed the
+    /// command — not paired here at query time. It lives in no cell, so nothing on
+    /// screen can reconstruct it, and pairing over *survivors* re-parented a code onto
+    /// the previous command as soon as a disposal broke the run.
     pub exit: Option<i32>,
 }
 
@@ -3351,6 +3421,7 @@ impl Term {
                 for row in (cr + 1)..rows {
                     self.clear_cells(row, 0, cols);
                     self.end_wrap(row);
+                    self.dispose_markers_on_row(row);
                 }
             }
             1 => {
@@ -3359,6 +3430,7 @@ impl Term {
                 for row in 0..cr {
                     self.clear_cells(row, 0, cols);
                     self.end_wrap(row);
+                    self.dispose_markers_on_row(row);
                 }
                 self.clear_cells(cr, 0, cc + 1);
                 self.drop_artefact_if_erased(cr, 0, cc + 1);
@@ -3375,6 +3447,7 @@ impl Term {
                 for row in 0..rows {
                     self.clear_cells(row, 0, cols);
                     self.end_wrap(row);
+                    self.dispose_markers_on_row(row);
                 }
             }
             // Notably **`3` (ED 3, erase scrollback) is not implemented** and falls through
@@ -3383,11 +3456,21 @@ impl Term {
             // from this site (#660's completeness pass): it would be the first verb that
             // shortens the buffer *from the front* by N lines, so it needs both an anchor
             // fixup (selection, markers **and** tracked points are absolute-from-oldest — three
-            // holders since #691, and the third has no frame to make its drift visible) and a `display_offset`
+            // holders since #691, and the third has no frame to make its drift visible; the
+            // *fourth* is search highlights, which every list of this obligation has so far
+            // omitted — see the destruction-funnel invariant note) and a `display_offset`
             // clamp. Without the second, `selection_range`'s `scrollback.len() - display_offset`
             // underflows — and so do the same expressions in `viewport_line`,
             // `viewport_link_at` and `match_spans`. alacritty's `ClearMode::Saved` arm does
             // both (`term/mod.rs:1806-1811`).
+            //
+            // **A real `clear` emits it** — measured on the VM, `ESC[H ESC[2J ESC[3J`
+            // (`tests/fixtures/osc133_clear.raw`) — so this no-op is reached in ordinary
+            // traffic and not only by a test. Its visible consequence since #750: `ED 2`
+            // now retires the command marks on the screen while the ones that already
+            // scrolled off survive a `clear` a real terminal would have erased them with
+            // (`command_lines_capture.rs` pins that, so implementing this verb will move
+            // a test rather than silently changing an answer).
             _ => {}
         }
     }

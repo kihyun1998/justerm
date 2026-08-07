@@ -1,6 +1,16 @@
 //! The decoration-marker surface: engine-owned marks bound to absolute buffer lines,
-//! the OSC 133 semantic-command queries built on them, and the three fixups that keep a
-//! mark on its content while the buffer moves under it.
+//! the OSC 133 semantic-command queries built on them, and the fixups that keep a mark
+//! on its content — three for the buffer moving under it, and one for the content dying
+//! where it stands.
+//!
+//! **That second kind arrived late and is the shape to remember (#750).** The three
+//! movers below repair a *coordinate*, and for a long time they read as the whole job,
+//! because every way a mark could stop describing its content moved the buffer. An
+//! in-place erase does not: the row stays exactly where it is while everything the mark
+//! was about stops existing, so no verb fired, no `MarkerDisposed` was announced, and
+//! `command_lines` answered with commands that were not there. `dispose_markers_on_row`
+//! is the repair for that class, and the two are not interchangeable — a mover cannot
+//! see a destruction and a destroyer cannot see a move.
 //!
 //! A marker is the same kind of thing as a selection anchor — an absolute
 //! `[scrollback ++ screen]` line index that survives an ordinary scroll and has to be
@@ -44,7 +54,10 @@ use crate::event::TermEvent;
 use crate::grid::Grid;
 use crate::serialize::{MarkerId, MarkerKind, MarkerPosition};
 
-use super::{CommandLine, MAX_MARKERS, Marker, MarkerEntry, MarkerIndex, Term};
+use super::{
+    CommandLine, CommandRecord, MAX_COMMAND_TEXT, MAX_MARKERS, Marker, MarkerEntry, MarkerIndex,
+    Term,
+};
 
 impl Term {
     /// The primary-screen grid, wherever it currently lives — swapped into
@@ -129,6 +142,7 @@ impl Term {
             line,
             col,
             kind,
+            command: None,
         });
         for id in disposed {
             self.events.push(TermEvent::MarkerDisposed(id));
@@ -185,6 +199,132 @@ impl Term {
         // of #562 was reachable on a screen that never changed size.
         let col = self.cursor.col + usize::from(self.cursor.pending_wrap);
         self.push_marker(line, col, kind);
+        // Both halves of a command that are *not* in the buffer are resolved here, at
+        // the mark that reveals them, rather than by a query walking survivors later
+        // (#750). See `CommandRecord`.
+        match kind {
+            MarkerKind::OutputStart => self.capture_command_text(line, col),
+            MarkerKind::CommandFinished(exit) => self.attach_exit(exit),
+            _ => {}
+        }
+    }
+
+    /// Freeze the command text on the `OutputStart` mark just pushed (#750).
+    ///
+    /// `C` is the instant the text is complete and on screen, so this runs the *same*
+    /// extraction `command_lines` used to run on demand — `command_start`'s
+    /// normalisation and the `[b_col, c_col)` clip — against cells that still hold the
+    /// command. Nothing else in this crate can say what the command was: after this
+    /// returns, any verb may write those columns.
+    ///
+    /// A `C` with no open `B` captures nothing, which is the same shape as
+    /// `command_lines`'s `pending` taking `None` — a stray `C` bounds no command.
+    fn capture_command_text(&mut self, c_line: usize, c_col: usize) {
+        let Some((b_line, b_col)) = self.open_command_start() else {
+            return;
+        };
+        let grid = self.primary_grid();
+        let (b_line, b_col) = self.command_start(grid, b_line, b_col, c_line);
+        let mut text = self.extract_lines(grid, b_line, b_col, c_line, c_col);
+        // Bounded for `MAX_MARKERS`' reason: the stream chose the distance between `B`
+        // and `C`. Truncated at a `char` boundary so the answer stays valid text.
+        if text.chars().count() > MAX_COMMAND_TEXT {
+            let end = text
+                .char_indices()
+                .nth(MAX_COMMAND_TEXT)
+                .map_or(text.len(), |(i, _)| i);
+            text.truncate(end);
+        }
+        if let Some(m) = self.normal_markers.back_mut() {
+            m.command = Some(Box::new(CommandRecord {
+                text: text.into_boxed_str(),
+                exit: None,
+            }));
+        }
+    }
+
+    /// The `(line, col)` of the `CommandStart` this `OutputStart` closes, or `None` if
+    /// no command is open (#750).
+    ///
+    /// Walks back to the most recent `B` and stops at the first `C` before it — the
+    /// scanning form of `command_lines`'s forward `pending`, and it must stay that way
+    /// or the two disagree about which command a `C` bounds. The `OutputStart` just
+    /// pushed is skipped.
+    fn open_command_start(&self) -> Option<(usize, usize)> {
+        self.normal_markers
+            .iter()
+            .rev()
+            .skip(1)
+            .find_map(|m| match m.kind {
+                MarkerKind::CommandStart => Some(Some((m.line, m.col))),
+                MarkerKind::OutputStart => Some(None),
+                _ => None,
+            })
+            .flatten()
+    }
+
+    /// Write `D`'s exit code onto the `OutputStart` mark of the command it closes
+    /// (#750) — the open one, i.e. the most recent `C` with no `B` after it.
+    ///
+    /// The `is_none` guard is the one `command_lines` used to carry: a stray second `D`
+    /// must not clobber a code that is already recorded.
+    fn attach_exit(&mut self, exit: Option<i32>) {
+        let open = self
+            .normal_markers
+            .iter_mut()
+            .rev()
+            .find_map(|m| match m.kind {
+                MarkerKind::OutputStart => Some(Some(m)),
+                MarkerKind::CommandStart => Some(None),
+                _ => None,
+            })
+            .flatten();
+        if let Some(rec) = open.and_then(|m| m.command.as_mut())
+            && rec.exit.is_none()
+        {
+            rec.exit = exit;
+        }
+    }
+
+    /// Retire every marker anchored to the **screen row** `row`, announcing each
+    /// through `TermEvent::MarkerDisposed` (#750).
+    ///
+    /// Called where a verb blanks a **whole row in place**, which the three anchor
+    /// fixups beside this one cannot see: they repair a marker when the buffer *moves*,
+    /// and here the row stays exactly where it is while everything the mark was about
+    /// stops existing. Without it `command_lines` answers with commands that are not
+    /// there, at document lines that resolve onto blank rows.
+    ///
+    /// **Takes a screen row and converts it here**, once, because both halves of that
+    /// conversion are traps. A marker's `line` is `[scrollback ++ screen]`-absolute
+    /// while every erase verb speaks in grid rows; and on the alt screen the same
+    /// integers name *primary* lines, so the routing below is what keeps them apart.
+    ///
+    /// Routes through `markers_mut()`, so an alt-screen erase retires alt markers and
+    /// leaves the primary command history alone. Copying `command_marks`' deliberate
+    /// `self.normal_markers` here instead would make a `vim` starting up delete the
+    /// shell's history.
+    ///
+    /// **No epoch bump**, by the rule `bump_marker_epoch` states: the epoch dates a
+    /// *move* no offset repairs, and this moves nothing. A consumer hears disposal on
+    /// its own channel and drops the entry — the same shape as `markers_evict_oldest`.
+    pub(super) fn dispose_markers_on_row(&mut self, row: usize) {
+        // `display_offset` is deliberately absent: a write always lands in the grid,
+        // whatever the viewport is scrolled to (the same expression `add_command_mark`
+        // uses for the cursor).
+        let line = self.scrollback.len() + row;
+        let mut disposed = Vec::new();
+        self.markers_mut().retain(|m| {
+            if m.line == line {
+                disposed.push(m.id);
+                false
+            } else {
+                true
+            }
+        });
+        for id in disposed {
+            self.events.push(TermEvent::MarkerDisposed(id));
+        }
     }
 
     /// The OSC 133 command-boundary marks in buffer order — `(id, absolute line,
@@ -238,38 +378,35 @@ impl Term {
                 MarkerKind::CommandStart => pending = Some((m.line, m.col)),
                 MarkerKind::OutputStart => {
                     if let Some((b_line, b_col)) = pending.take() {
-                        // Columns bound the command precisely even though output was
-                        // written after C — `extract_lines` reads current cells but
-                        // clips to `[b_col, c_col)`, excluding both prompt and output.
-                        // Command marks anchor primary content — read the primary
-                        // grid so the text is right even while on the alt screen (#192).
-                        // Where the *typed* command begins, which is not always where B was
-                        // emitted: a prompt that ends its row leaves B past that row's content, and
-                        // the command really starts on the next line. Normalised **here** rather
-                        // than inside `extract_lines`, because the two answers differ by caller —
-                        // a selection that starts in a line's trailing blanks does contain the
-                        // break that follows, a command does not — and because `doc_line_of` needs
-                        // the same value. Feeding it the raw `b_line` reported the command one
-                        // document line early, which is the a11y "jump to previous command" target.
-                        let (b_line, b_col) =
+                        // The text and the exit are read off the mark, frozen when this
+                        // `C` and its `D` arrived (#750) — see `CommandRecord`. A `C`
+                        // with no record bounds no command (a stray one, or a mark that
+                        // predates nothing this crate can produce), so it is skipped
+                        // rather than reported empty.
+                        let Some(rec) = m.command.as_deref() else {
+                            continue;
+                        };
+                        // The *line* is still derived, and deliberately: it is the one
+                        // half a fixup does maintain, so freezing it would break the
+                        // thing that already works. Where the typed command begins is
+                        // not always where B was emitted — a prompt that ends its row
+                        // leaves B past that row's content, and the command really
+                        // starts on the next line. Command marks anchor primary
+                        // content, so this reads the primary grid even on alt (#192).
+                        let (b_line, _) =
                             self.command_start(self.primary_grid(), b_line, b_col, m.line);
-                        let command =
-                            self.extract_lines(self.primary_grid(), b_line, b_col, m.line, m.col);
                         out.push(CommandLine {
                             line: self.doc_line_of(self.primary_grid(), b_line),
-                            command,
-                            exit: None,
+                            command: rec.text.to_string(),
+                            exit: rec.exit,
                         });
                     }
                 }
-                MarkerKind::CommandFinished(exit) => {
-                    // The exit belongs to the most recent command not yet closed;
-                    // the `is_none` guard stops a stray D from clobbering a code.
-                    if let Some(last) = out.last_mut()
-                        && last.exit.is_none()
-                    {
-                        last.exit = exit;
-                    }
+                MarkerKind::CommandFinished(_) => {
+                    // Nothing: `D`'s code was written onto its `OutputStart` mark when
+                    // it arrived (#750). Pairing here meant pairing over *survivors*,
+                    // and a disposal that broke the run re-parented the next code onto
+                    // the previous command — measured, `a0` inheriting `a1`'s `Some(2)`.
                 }
                 MarkerKind::Plain | MarkerKind::PromptStart => {}
             }
