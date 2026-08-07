@@ -1,8 +1,14 @@
 # ADR-0029: A coordinate leaving core carries the instant it is true at, or it is answered by a query a re-ask always answers
 
-Status: **proposed** (2026-08-06, #744). Promotes the model that accreted across #490, #737, #741 and
-#742 — four decisions about the same pair of participants (*which channel* × *which scalar*), each
-made on its own merits, each producing the next.
+Status: **accepted** (2026-08-07, #743) — proposed 2026-08-06 (#744). Promotes the model that accreted
+across #490, #737, #741 and #742 — four decisions about the same pair of participants (*which channel*
+× *which scalar*), each made on its own merits, each producing the next.
+
+*Accepted on the condition this record wrote for itself* (see Consequences): #742 shipped in PR #748,
+merged as `8ae6900`, and #743 then discharged the member the record had named as its **hard case** —
+where D2's carry discharge would cost a second coordinate space's worth of dating apparatus. D3 granted
+re-ask on its own merits rather than by elimination, and no clause needed correcting — the bar
+ADR-0028's precedent set. One *ground* was corrected: see alternative (A).
 
 **This is a derivation, not a product judgement.** Every clause below follows from what this engine's
 own channels can and cannot deliver, plus ADR-0020's payload rule, so a better derivation retires it.
@@ -15,8 +21,15 @@ did; both are recorded under "Named prior art".
 **Scope — what this record does not cover.** It answers *when* a coordinate is true. It does **not**
 answer *which buffer* a coordinate names, which is a separate axis: primary and alt occupy the same
 absolute indices, so an integer can be undated **and** unscoped independently. That axis lives in
-ADR-0026's neighbourhood and is open at #743. Do not read the clauses below as settling it — the
-neighbour is not decided just because the same change surfaced it.
+ADR-0026's neighbourhood. Do not read the clauses below as settling it — the neighbour is not decided
+just because the same change surfaced it.
+
+*Amended 2026-08-07 (#743): the scope stands, and the one member where the two axes met is now
+discharged. The surprise worth recording is that D3.2 **constrains** the neighbour without deciding
+it — the obvious which-buffer repair for `command_lines` (answer nothing on the alt screen) is closed
+by D3.2, because it would make absence ambiguous between* disposed *and* wrong screen *and so demand
+the carry discharge, which for this surface costs a second coordinate space's dating apparatus. A rule about the instant turns out to rule some
+which-buffer answers out; it still does not rule one in.*
 
 ## Context
 
@@ -164,11 +177,23 @@ up — so neither is importable, and a finding shaped *"the reference does it an
   otherwise start from the frame's model — the model that does not apply.
 - **A new query returning coordinates** runs D3 rather than copying its neighbour. Two answers are
   legitimate and the record says which is which, so this stops being a fresh decision.
-- **#743 (`CommandLine::line`) becomes a conformance item**, and it is the interesting one: a
-  *document* coordinate over `accessible_text`, where soft-wrapped rows collapse, so no scalar can
-  date it — D2's carry discharge is structurally unavailable and D3 is the only route. Whether it
-  qualifies is exactly what that issue now decides. It also carries the **scope** defect this record
-  puts out of scope: on the alt screen its line indexes a document `accessible_text` does not return.
+- **#743 (`CommandLine::line`) was the conformance item that tested the derivation**, and it is the
+  interesting one: a *document* coordinate over `accessible_text`, where soft-wrapped rows collapse,
+  so no *published* scalar dates it and giving it one would take two — D2's carry discharge is the
+  expensive one here, and D3 was expected to be the only route. **Resolved 2026-08-07: D3 passed on both conditions without being stretched** (clock = a user
+  action; frame of reference = `[scrollback ++ primary]`, whatever screen is up), so the surface takes
+  re-ask because it *qualifies*, not merely because nothing else was left. D6 discharged as a doc
+  statement on `Engine::command_lines` plus `justerm-core/tests/command_lines_document.rs`.
+  Two things it taught this record. **The derivation reaches its own hard case** — which was the open
+  question, since a rule that only covers the members it was derived from is a filing cabinet. And
+  **the answer's fixture conditions are load-bearing in a way the rule does not mention**: a pin for a
+  document coordinate is vacuous unless the fixture actually contains a collapse, and a pin for the
+  alt-screen half is vacuous unless `scrollback.len()` is non-zero so `abs_floor()` does something.
+  Both were measured, not reasoned — two drafts of those tests passed against a deliberately broken
+  engine before the fixtures were rebuilt.
+  It also carried the **scope** defect this record puts out of scope: on the alt screen its line
+  indexes a document `accessible_text` does not return. Discharged the same way and in the same
+  breath, which is the part that was not predicted — see the amendment note under Scope.
 - **The rule and the roster stay apart.** `docs/map/invariant/a-coordinate-carries-the-instant-it-is-true-at.md`
   keeps the fact descriptively and this record keeps the derivation; the roster lived in spine #744,
   which closes pointing here. That split is #552's measured result — a hand-copied roster inside
@@ -176,16 +201,21 @@ up — so neither is importable, and a finding shaped *"the reference does it an
 - **ADR-0020's two amendments are subsumed on this axis, not retired.** Its clause *"a group admitted
   to the frame gets its basis from the frame; an occurrence routed to the event channel must carry its
   own"* is D4's special case; ADR-0020 still owns frame *membership*, which this record does not touch.
-- **One member has shipped against it and it is not merged yet** (#742, PR #748), so the status stays
-  `proposed`. ADR-0028's precedent is the bar: accept once a member has shipped against it, not when
-  it was written — three of that record's five clauses were corrected *by implementing them*.
+- ~~**One member has shipped against it and it is not merged yet** (#742, PR #748), so the status
+  stays `proposed`.~~ **Discharged 2026-08-07 (#743):** PR #748 merged as `8ae6900`, and a *second*
+  member then shipped — the hard case, which is the stronger evidence, because a record that only
+  covers the members it was derived from is a filing cabinet. ADR-0028's precedent was the bar (accept
+  once a member has shipped, not when it was written) and it is met. Where that precedent had three of
+  five clauses corrected *by implementing them*, this one had none, so what accepts it is reach rather
+  than repair — a weaker signal per clause and the reason the hard case had to be the member that
+  carried it.
 
 ## Alternatives considered
 
 **(A) One rule: always carry the instant.** The obvious reading of the invariant note before #742, and
 what a fourth issue in this shape invites. Rejected on two independent grounds, both measured: the
 cost on a re-askable surface is real (200/200 stale signals above, plus a second consumer needing
-#746's recovery discipline), and `CommandLine::line` **cannot comply at all** — a document line's
+#746's recovery discipline), and `CommandLine::line` **complies only at a disproportionate price** — a document line's
 motion under eviction equals the absolute delta *except* when the evicted rows include a continuation
 row, and no scalar distinguishes the two cases. A rule one member is structurally unable to satisfy is
 not a rule.
@@ -200,11 +230,14 @@ already in the same file, one of which shipped a subset of its own rule, and one
 two premises that measurement broke. An issue holds one decision with its rejected alternatives and a
 doc-comment pins a rule to one branch of the code; neither can hold a rule that *spans* decisions.
 
-**(D) Give the document space its own monotonic logical-line counter.** Not rejected — **deferred to
-#743**, where it is that issue's option (3). #490 weighed and withdrew a monotonic coordinate for the
-*absolute* space on the grounds that eviction is uniform there; that argument does not transfer,
-because the document space has no uniform delta. It is the expensive option and nothing yet demands
-it, which is a reason to wait rather than a reason it is wrong.
+**(D) Give the document space its own monotonic logical-line counter.** Not rejected — **deferred, and
+#743 re-confirmed the deferral rather than lifting it** (2026-08-07). #490 weighed and withdrew a
+monotonic coordinate for the *absolute* space on the grounds that eviction is uniform there; that
+argument does not transfer, because the document space has no uniform delta. What #743 established is
+that the deferral does not rest on that alone: it is the *carry* discharge, and the surface that would
+need it **passes D3**, so nothing demands it. The trigger to revisit is therefore no longer "someone
+finds the document coordinate stale" — that is answered — but a consumer that has to hold a document
+line across a buffer it *cannot* re-sample, which is a D3.1 failure and does not exist today.
 
 **(E) Make the transience compiler-enforced** — return a type bound to the `&self` borrow so a caller
 cannot stash the answer. Rejected as over-engineering at this cost: `.collect()` is one keystroke

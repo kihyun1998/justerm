@@ -146,7 +146,12 @@ through `row_in` / `line_in(grid, …)` rather than `abs_line` / `abs_row`. The 
 mirror of the other three: not a missing floor, but someone adding one and silently breaking command
 navigation on the alt screen. **Validity condition:** this holds only while command marks stay
 primary-scoped. If an alt-scoped command mark is ever introduced, these two walks need the floor after
-all.
+all — and since #743 that trigger costs more than a broken walk. `Engine::command_lines`'s published
+contract is the **re-ask** discharge, and ADR-0029 D3.2 grants that only because this population's
+scope never flips: an alt-scoped command mark would make an empty answer ambiguous between *disposed*
+and *you are on the other screen*, forfeiting re-ask and demanding a carry discharge that a document
+coordinate cannot afford. So the condition now guards a contract, not only these two call sites. It
+is pinned by `justerm-core/tests/command_lines_document.rs`, which will red before the walk does.
 
 **Do not search for `abs_floor` and conclude you are done.** #585 folded the last open-coded copies
 into calls, so `rg abs_floor` now finds every walk that *has* a floor — and that is the opposite of

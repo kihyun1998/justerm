@@ -152,8 +152,16 @@ renderer.setDecorationSource((f) => decorations.decorationsForFrame(f));
 
 // Seed a few lines so the accessible view has content immediately (an empty
 // document at summon is poor UX) and the command-nav stub's lines (0/2/4) resolve
-// to real document rows from the first frame — mirroring production, where
-// `command_lines` only ever yields document lines that exist in `accessible_text`.
+// to real document rows from the first frame.
+//
+// That is a property of *this stub*, not of production, and the comment here claimed
+// otherwise until #743. Core's `command_lines` yields document lines into the
+// `accessible_text` **it was asked beside**: an index can fall off the end of a
+// document sampled at a later instant, and on the alt screen it indexes the primary
+// document while the view is showing the alt one — where, if the TUI is tall enough,
+// it resolves *in range* onto unrelated content rather than failing. The guard in
+// `CommandNavController` catches the out-of-range half; only re-asking for the pair
+// catches the rest.
 const log: string[] = Array.from({ length: 8 }, (_, i) => `seed row ${i} — select · find=Ctrl-F`);
 let displayOffset = 0;
 

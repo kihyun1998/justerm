@@ -64,10 +64,21 @@ an editor rather than a terminal.
 
 - [a coordinate carries the instant it is true at](../invariant/a-coordinate-carries-the-instant-it-is-true-at.md)
   — `CommandLine::line` is a *document* line, so it is the one coordinate on any channel that **no
-  scalar can rebase**: soft-wrapped rows collapse, so its motion under eviction equals the absolute
+  published scalar rebases**: soft-wrapped rows collapse, so its motion under eviction equals the absolute
   delta except when a continuation row is evicted, and the receiver cannot tell the cases apart
-  (measured: abs 17 → 15 while doc went 16 → 15). `CommandNavController` holds it across a summon and
-  a jump, which are two separate round trips
+  (measured: abs 17 → 15 while doc went 16 → 15; isolated to the single eviction responsible, abs
+  12 → 11 while the document line stayed at 11). **Settled in #743 as a re-ask (ADR-0029 D3), which
+  makes this territory's own pairing the contract**: the line is valid for exactly as long as the
+  `accessible_text` sampled beside it, so `load()` is the single sampling point and `jump()` no longer
+  takes a list of its own at a later instant and holds it for the session. The second half is this
+  territory's alone — `accessible_text` floors to the *active* buffer while the line indexes the
+  *primary* document, so on the alt screen the two answers are about different buffers at the same
+  instant, and no basis, epoch or validity window addresses that. **The reachable shape resolves
+  rather than fails**: with a TUI filling the alt screen the held index is in range and names a TUI
+  row (measured, document line 1: `"$ lsout"` on the primary, `"TUI row 1"` on the alt), so the
+  reveal succeeds, the reading cursor moves onto unrelated content and the command is announced
+  beside it. `NavView.reveal` reports whether a line resolved, which catches the *short*-document
+  half and cannot catch this one
 - [alt-screen absolute-index floor](../invariant/alt-screen-buffer-floor.md) — `Term::accessible_text`
   walks the concatenated `[scrollback ++ grid]` buffer by absolute index, so on the alt screen it
   must floor at `scrollback.len()`. The failure is silent: the AT reads *plausible* text that is not
