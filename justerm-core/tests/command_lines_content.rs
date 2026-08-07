@@ -111,12 +111,46 @@ fn a_command_run_after_a_clear_is_reported_exactly_once() {
 ///
 /// **The cursor's own row is the known edge, pinned here rather than fixed.** Both
 /// references route it through the *partial* helper and so keep its marks even when the
-/// erase covers the full width — xterm.js's ED 1 arm is the starkest case, erasing
-/// `[0, x+1)` with `x+1 == cols` through `_eraseInBufferLine` and disposing nothing. So
-/// `ESC[H ESC[0J` leaves one phantom on row 0. Followed rather than widened because two
-/// independent references converge *including* the edge, and the only argument for
-/// widening is symmetry — which is the tell ADR-0019's retracted first amendment was
-/// caught by (a rule with no user-facing benefit anyone could name).
+/// erase covers the full width — xterm.js's ED 1 arm erases `[0, x+1)` with
+/// `x + 1 == cols` through `_eraseInBufferLine` and disposes nothing. Followed rather
+/// than widened because two independent references converge *including* the edge, and
+/// the only argument for widening is symmetry — the tell ADR-0019's retracted first
+/// amendment was caught by (a rule with no user-facing benefit anyone could name).
+///
+/// **The size of the residue, measured — the first version of this note understated
+/// it.** It said *"`ESC[H ESC[0J` leaves one phantom on row 0"*, which is true and is
+/// the smaller half:
+///
+/// | input | `command_lines()` | marks |
+/// |---|---|---|
+/// | `ESC[H ESC[0J` (and `ESC[H ESC[J`, the `tput ed` form) | 1 phantom | 16 → 3 |
+/// | `ESC[1;16H ESC[1J` at 16 columns | **all 4 phantoms, 0 disposals** | 16 → 16 |
+///
+/// The second is worse and is what the sentence missed: with the cursor on row 0 there
+/// is no whole row *above* it, so the disposal loop does not run at all while the row is
+/// blanked to its full width. Pinned by the sibling test below.
+///
+/// The first case's phantom also names an **empty document** — `accessible_text()` is
+/// `""` there, and `AccessibleView` builds its line elements from `text.split("\n")`,
+/// which yields one element for `""`. So `reveal(0)` succeeds, focus lands on a blank
+/// row and the nav announces the command anyway. (Code-read, not driven in a browser.)
+///
+/// **Reachability, measured three times and zero every time.** ED 1 does not appear in
+/// any of the 16 recorded captures; ED 0 appears once (htop, not from home). A
+/// purpose-built hunt — an inline `curses.filter()` program and `whiptail` run under a
+/// live OSC-133 prompt — found both going to the **alt screen** (`?1049h`), where
+/// command marks do not exist at all. The one program that does reach the verb is
+/// **`fzf --height`**, measured on the VM: it stays on the primary screen (`?1049h` 0)
+/// and emits `ESC[J` four times with five marks live — as `ESC[9A ESC[J`, cursor up then
+/// erase-to-bottom, which is why a `home + ED0` grep reports zero and is the wrong
+/// pattern to look for. Replaying that recording produces **no phantom in any engine
+/// state** (before the fix, after it, and with either half disabled): `marks` stays 33,
+/// because fzf erases the inline region it drew *below* the prompt and never covers a
+/// row carrying a mark.
+///
+/// So the shape that would reach this is narrower than "a program that clears to
+/// bottom": it has to stay on the primary screen **and** erase upward over the prompt.
+/// Nothing measured does both.
 #[test]
 fn ed_0_disposes_the_rows_below_and_keeps_the_cursor_row_marks() {
     let mut e = four_commands();
@@ -142,6 +176,44 @@ fn ed_1_disposes_the_rows_above_and_keeps_the_cursor_row_marks() {
          do NOT renumber — a blanked row is still a hard-ended row, so `doc_line_of` \
          still counts it. `line` stays derived rather than frozen precisely because it \
          is the half the anchor fixups do maintain"
+    );
+}
+
+/// The residue at its widest, pinned because the note above had described only its
+/// narrow half.
+///
+/// With the cursor on row 0 an `ED 1` erases `[0, cursor_col]` of that row and nothing
+/// above it — so at the last column the row is blanked to its full width and the
+/// disposal loop, which walks `0..cursor_row`, does not execute once. Every mark on the
+/// screen survives over a row that no longer holds what it describes.
+///
+/// This is xterm.js's own inconsistency ported deliberately, not an oversight here: its
+/// `eraseInDisplay` case 1 calls `_eraseInBufferLine(j, 0, x + 1, …)` and only then, in
+/// a separate arm, handles the `x + 1 >= cols` case — for `isWrapped` alone, never for
+/// markers. Measured reachability is zero (see the note above); if that ever changes,
+/// this test is the one to flip.
+#[test]
+fn ed_1_at_the_last_column_blanks_the_row_and_retires_nothing() {
+    let mut e = four_commands();
+    e.feed(b"\x1b[1;16H\x1b[1J"); // cursor row 0, last column of a 16-column screen
+
+    assert_eq!(e.command_marks().len(), 16, "no whole row is above row 0");
+    assert_eq!(disposed(&mut e), 0);
+    assert_eq!(
+        lines(&e),
+        vec![
+            (0, "c0".into(), Some(0)),
+            (1, "c1".into(), Some(0)),
+            (2, "c2".into(), Some(0)),
+            (3, "c3".into(), Some(0)),
+        ],
+        "all four still reported, and c0's row is blank — the widest form of the \
+         cursor-row residue"
+    );
+    assert!(
+        e.accessible_text().starts_with('\n'),
+        "row 0 really is blank: {:?}",
+        e.accessible_text()
     );
 }
 

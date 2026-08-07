@@ -109,8 +109,10 @@ the shell emits.
   retired marks would delete the `CommandStart` of the command being typed and no command would
   ever be reported. The references converge on the same split anyway (see below). **The known
   residue** is the cursor's own row: both references route it through their partial-erase helper,
-  so `ESC[H ESC[0J` leaves exactly one phantom. Followed rather than widened, because the only
-  argument for widening is symmetry — the tell ADR-0019's retracted first amendment was caught by.
+  so an erase can blank a row to its full width and leave every mark on it. Followed rather than
+  widened, because the only argument for widening is symmetry — the tell ADR-0019's retracted first
+  amendment was caught by. Its measured size is under "Known holes" below; the first version of
+  this sentence quoted only the smaller half.
 - **What is *not* in the buffer is frozen on the mark when the stream reveals it (#750).** The
   command text is captured at `C` and the exit code written down at `D`. Re-reading text through
   the recorded `[b_col, c_col)` clip names whatever now occupies those cells — measured for a plain
@@ -205,8 +207,26 @@ recorded SHA; a paraphrase drops the pin).
 
 ## Known holes / open
 
-- **`ESC[H ESC[0J` leaves one phantom**, on the cursor's own row — the reference edge above,
-  pinned by `ed_0_disposes_the_rows_below_and_keeps_the_cursor_row_marks` rather than fixed.
+- **The cursor row keeps its marks even when an erase blanks it whole** — the reference edge above,
+  pinned rather than fixed. Measured, and **wider than it was first written down**:
+  `ESC[H ESC[0J` (equally `ESC[H ESC[J`, the `tput ed` form) leaves **one** phantom over an *empty*
+  document, while `ESC[1;16H ESC[1J` at 16 columns leaves **all four with zero disposals** — with
+  the cursor on row 0 there is no whole row above it, so the loop never runs while the row is
+  blanked to its full width. Tests `ed_0_disposes_the_rows_below_and_keeps_the_cursor_row_marks` and
+  `ed_1_at_the_last_column_blanks_the_row_and_retires_nothing`.
+  The empty-document half matters to the consumer: `AccessibleView` builds line elements from
+  `text.split("
+")`, so `""` still yields one element and `reveal(0)` succeeds — focus lands on a
+  blank row and the command is announced anyway.
+  **Reachability measured three times, zero each time**, which is why this is a hole and not an
+  issue: ED 1 appears in none of the 16 recorded captures and ED 0 in one (htop, not from home); an
+  inline `curses.filter()` program and `whiptail` under a live OSC-133 prompt both went to the
+  **alt screen**, where command marks do not exist; and `fzf --height`, which does stay on the
+  primary and does emit `ESC[J` (as `ESC[9A ESC[J` — cursor up then erase-to-bottom, so a
+  `home + ED0` grep reports zero and is the wrong pattern), erases only the inline region it drew
+  *below* the prompt. Replaying that recording leaves `marks` at 33 in every engine state, before
+  the fix and after. The shape that would reach this has to stay on the primary screen **and** erase
+  upward over the prompt; nothing measured does both.
 - **The alt-guard is a rule applied per verb.** `if !self.on_alt` around `markers_rotate_region` in
   `linefeed` / `reverse_index` is exactly the "remember the rule at each site" shape ADR-0025 D2
   rejects for row state — but markers have no equivalent record saying so.
