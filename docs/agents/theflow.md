@@ -996,7 +996,12 @@ it was found in an afternoon rather than by silent absence.
 **Release tracks (tag-driven, all inert until a tag is pushed):** `v*` → `justerm-core`
 (crates.io) + `justerm-wasm-decode` (npm), lockstep; `renderer-v*` → `justerm-renderer`
 (npm); `web-v*` → `justerm-web` (npm, #466 — **published since `web-v0.7.0`**, now at
-0.7.1). Each publish workflow gates on tag-version == package-version, **and on the
+**0.9.0**; verified 2026-08-07 against `git tag -l 'web-v*'` and `npm view justerm-web
+version`, both `0.9.0`, where this line had said 0.7.1). **A version written here is a
+registry fact and rots silently** — this one understated the published surface by two
+minor versions, and a claim about *reach* was made from it during #743 ("no known
+consumer, so a breaking `NavView` change costs nothing"). Re-measure before leaning on
+it; do not re-write it from memory. Each publish workflow gates on tag-version == package-version, **and on the
 README carrying no expiring maturity claim**
 (`.github/scripts/check-published-readme.mjs` — see Step 6; it runs before the build
 so it fails fast, but it still fails *after* the tag is pushed, which is a re-tag).
