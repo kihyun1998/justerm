@@ -225,12 +225,28 @@ Reading it at the start is also what makes Step 6's **promotion** obligation pos
 you cannot notice that a fact holds outside its territory if you never read the
 territories.
 
-| Change type | Real source to read |
-|---|---|
-| **Web feature (concept/UX)** | its real source — usually **xterm.js** (`repos/xtermjs/xterm.js`; e.g. drag-scroll 50px/15, highlightLimit 1000, `_charsToConsume`); for features xterm lacks, the consumer that built it (e.g. **VSCode** `microsoft/vscode` terminal a11y) |
-| **Text / coords / VT-semantics (mechanism)** | **xterm.js buffer layer + alacritty real source** + *this repo's siblings* (`docs/architecture.md` §"Hidden VT state" + `search` / `selection` / `logical-lines` cell-walk). Enumerate the hidden state the reference tracks *first* |
-| **Wire / format / coord / API shape** | *this repo's sibling fields & precedent* — #129 `mouse_events`, #112 scroll, #108 overlay: how they touch struct→encode→decode→Flat→getter→`types.ts` — plus **ADR-0013/0014** (viewport state in the header) and **ADR-0008** (decode boundary). Mirror the most recent sibling verbatim |
-| **Renderer cell composition** (what colour a cell's bg / fg / ink ends up) | **ADR-0019 first** — its layer stack, per-channel declaration, paint modes and ink sources answer the combination *by construction*, so start by asking what the model says. Then this repo's siblings (`overlay.rs`, `frame.rs`, `decoration.rs`, `glyph_class.rs`) for the rules in force. **xterm.js is a design input here, not a validator**: read it for *what problem exists* and how it solved it, never as the tie-breaker — a difference from it is not by itself a defect, and in the four decisions before ADR-0019 it was silent, self-contradictory, the outlier, or demoted. A combination the model cannot answer is an ADR-0019 amendment, not a new decision |
+**Read the third column before you open a tree.** It is the tie-breaker table at the
+top of this file, indexed by the thing you are about to do — because the two halves
+were two hundred lines apart and only *this* one is read at Step 1. What that cost is
+the #490 entry in the war-story index: a verified, correctly-cited reference fact
+carried to the maintainer as a peer option on a layer where the table gives the
+reference no vote at all. The routing column says which tree to open; the authority
+column says what a divergence found in it is *worth*, and the second question is the
+one nobody was asking. **Neither column is a licence to skip a corpus** — Step 5's
+never-drop rule is unchanged, and no authority here makes a reference unreadable; it
+makes a divergence `DELIBERATE` instead of `CONFIRMED`.
+
+| Change type | Real source to read | What the reference's word is worth here (tie-breaker row) |
+|---|---|---|
+| **Web feature (concept/UX)** | its real source — usually **xterm.js** (`repos/xtermjs/xterm.js`; e.g. drag-scroll 50px/15, highlightLimit 1000, `_charsToConsume`); for features xterm lacks, the consumer that built it (e.g. **VSCode** `microsoft/vscode` terminal a11y) | **No recorded row** — the tie-breaker table has none for a concept/UX call, so its closing rule applies: say so and ask, do not borrow a neighbouring row. In practice the reference leads on *what the feature is* and stops at the seam where the answer becomes an API shape or a unit, which the row below governs |
+| **Text / coords / VT-semantics (mechanism)** | **xterm.js buffer layer + alacritty real source** + *this repo's siblings* (`docs/architecture.md` §"Hidden VT state" + `search` / `selection` / `logical-lines` cell-walk). Enumerate the hidden state the reference tracks *first* | **VT parsing / semantics** → the **spec** outranks every implementation including ours; a reference's omission is not a licence to omit. This is the one layer where reading the trees is load-bearing rather than corroborating — the hidden state (pending-wrap, spacer, BCE, soft-wrap join) is what only an implementation carries, and #113 → #144 → #207 is the measured cost of not enumerating it |
+| **Wire / format / coord / API shape** | *this repo's sibling fields & precedent* — #129 `mouse_events`, #112 scroll, #108 overlay: how they touch struct→encode→decode→Flat→getter→`types.ts` — plus **ADR-0013/0014** (viewport state in the header) and **ADR-0008** (decode boundary). Mirror the most recent sibling verbatim | **Wire / frame / API shape** and **Consumer-facing API shape / units** → **no vote**. No reference serialises a terminal state across a boundary, so none has ever had to answer the question; ADR-0029 and the #743 row of `reference-facts.md` record that as a *mechanism* finding (they make it unaskable) rather than an arbitration. A reference read here is a search index, never a comparand |
+| **Renderer cell composition** (what colour a cell's bg / fg / ink ends up) | **ADR-0019 first** — its layer stack, per-channel declaration, paint modes and ink sources answer the combination *by construction*, so start by asking what the model says. Then this repo's siblings (`overlay.rs`, `frame.rs`, `decoration.rs`, `glyph_class.rs`) for the rules in force. **xterm.js is a design input here, not a validator**: read it for *what problem exists* and how it solved it, never as the tie-breaker — a difference from it is not by itself a defect, and in the four decisions before ADR-0019 it was silent, self-contradictory, the outlier, or demoted. A combination the model cannot answer is an ADR-0019 amendment, not a new decision | **Renderer cell composition** → **ADR-0019 governs**; xterm is a design input. With one standing exception worth naming because it was waved off once: *a reference agreeing with another reference against you is signal* (the ADR-0019 first-amendment retraction — xterm's flat `$fg` and alacritty's inverse-text guard had both said so from the start) |
+
+Cutting across all four: **who owns a fact several sites read** is answered by our own
+producer, and *"a reference's placement is **unimportable** here"* — so a routing
+answer of the form "xterm keeps it on the row / in the marker" is out of scope on
+every row of this table, not just the one you are standing on.
 
 **Concept ≠ mechanism (the trap).** A feature has a concept layer *and* a
 mechanism layer. It can be novel at the concept layer (absent from xterm.js) yet
@@ -443,7 +459,10 @@ missing sibling set is paid for twice.
 `architecture.md` §"Hidden VT state"; ② the
 reference — xterm.js / alacritty / ghostty real source from the **local pinned
 trees** (Step 1's table; `rg`, not `gh api`). These are two *reading assignments
-for one agent*, not two agents.
+for one agent*, not two agents. Corpus ② is read on every layer, but it does not
+*count* the same on every layer — brief item 6 below carries what its word is worth
+here, and without it the lens reads three trees with no way to know it is standing
+somewhere they have no vote.
 
 The cell-walk sibling set that used to be hand-listed here is now
 [alt-screen absolute-index floor](../map/invariant/alt-screen-buffer-floor.md),
@@ -516,7 +535,7 @@ to quietly out-investigate.
 **Brief the lens with a frontier and with what is already known.** Without both, a
 pass spends most of its budget re-walking ground the last one covered — the wide-glyph
 neighbourhood was enumerated from scratch by #528, #529, #533, #534 and #535 in turn.
-The brief carries five things:
+The brief carries six things:
 
 1. **The frontier** — the functions the diff touches, plus one hop of callers and
    callees, plus the invariants `architecture.md` names for that area. This bounds how
@@ -534,11 +553,26 @@ The brief carries five things:
    (which is exactly how #535 was found).
 5. **The output contract** — the skill's four disposition grades (`CONFIRMED` /
    `UNADJUDICATED` / `INERT` / `DELIBERATE`), stated in the brief itself. The first
-   four items bound what the lens *looks at*; this one bounds what it costs to act on
-   what it returns, which is the half that lands on the main thread. #547's two lenses
+   four items bound what the lens *looks at*; this one and the next bound what it costs
+   to act on what it returns, which is the half that lands on the main thread. #547's two lenses
    volunteered "inert" and "deliberate" on two findings without being asked — and
    those two were reproduced from scratch anyway, because nothing said a graded
    dismissal is spendable evidence.
+6. **What the reference's word is worth on this layer** — the **tie-breaker row** from
+   the table at the top of this file (via Step 1's routing table, which now names it per
+   change type) *and* the **deliberate-divergence table** next to it. Without them the
+   lens is told to read the trees and then graded on a record it was never handed, so a
+   divergence on a layer the reference cannot arbitrate comes back `CONFIRMED` and reads
+   as urgent. That is #490 exactly, and it is why the repair only half landed: the skill
+   got the restatement test and this file got the divergence list, while the brief — the
+   one place that decides what the lens *knows* — was not touched, so the check could
+   only ever fire on the main thread, after the finding had already been carried. Four
+   of the six rows in that table are layers where the answer is *no vote*; a lens that
+   does not know which one it is standing on cannot grade its own findings.
+   This item does **not** shrink the reading: both corpora stay whole (never-drop, above),
+   and 20 rows of `reference-facts.md` are recorded negative results — *"cannot
+   arbitrate"*, *"never asks the question"*, *"grants nothing"* — which are worth having
+   precisely because someone read the tree on a layer the reference could not win.
 
 Anything outside the frontier that the lens notices anyway is still reported — the
 frontier is a search order, not a gag.
@@ -1055,6 +1089,18 @@ release.md):
   proposal, not a defect), the **list** went to the deliberate-divergence table at the
   top of this file. The same pass's genuine defects all survive that test with the
   reference deleted from the argument, which is the tell to look for.
+  **A third repair landed on 2026-08-08, and the gap it closed is the reason to distrust
+  a repair that reads complete.** Both of the above put the check where it could only
+  run *after* the finding arrived — the test on the main thread at harvest, the list in a
+  file the lens is not handed. So the pass still produced reference-shaped proposals at
+  full price; only their disposal got cheaper. The missing half was **entry**: Step 1's
+  routing table now carries a *"what the reference's word is worth here"* column (four of
+  its rows are *no vote*), and Step 5's brief carries that row plus the divergence table
+  as its sixth item, so the lens grades itself instead of being graded. The portable half
+  — *the brief owes the lens the list, or the test can only fire on your main thread* —
+  went back into the skill beside the restatement test. Generalise the shape, not the
+  case: **a repair that only makes a bad finding cheaper to dismiss has not stopped the
+  finding**, and the two are easy to confuse because both show up as less time spent.
 - **Real round-trip / visual side effects** — #166 (reveal-focus headless miss), #172 (live MCP path), #223 (browser verify skipped).
 - **Probe a runtime fact / readPixels≠screenshot** — #328/#331 (dpr≠1 coord bug green on dpr-1), #352, #337 (tautology); #369 (a throwaway `rustc` probe pinned that an unclamped `+inf` fraction saturates `cursor_thickness`'s `u32` cast to `u32::MAX` — correcting a PR rationale that had credited `frac.max(0.0)`; the setter's `[0,1]` clamp is the load-bearing defence, `frac.max(0.0)` only neutralises `NaN`).
 - **Test-trust gate** — #355 (both RED = you broke the proof; re-run baseline GREEN, remove guards one at a time). **#639 is the third bar's evidence and the more uncomfortable case**: RED→GREEN, side conditions, and a placement mutation were *all* done and green, and the fix was still wrong — its guard asked an event-driven flag about a synchronous state, and the proof awaited that very event before testing, so it never entered the window where the two candidate predicates differ. A guard and a test written against the same wrong model agree with each other; only mutating the *predicate* separates them. Found by the Step 5 lens, not by the gate.
