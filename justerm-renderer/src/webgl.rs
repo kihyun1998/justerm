@@ -44,8 +44,9 @@ use crate::metrics::{device_cell, fit_cell_to_atlas, glyph_offset};
 use crate::overlay::{HighlightColors, Overlay};
 use crate::palette::Palette;
 use crate::preedit::{
-    Codepoint as PreeditCodepoint, Span as PreeditSpan, caret_col as preedit_caret_col_of,
-    is_wide as preedit_is_wide, writes as preedit_writes,
+    Codepoint as PreeditCodepoint, Patch as PreeditPatch, Span as PreeditSpan,
+    caret_col as preedit_caret_col_of, is_wide as preedit_is_wide, patch as preedit_patch_of,
+    writes as preedit_writes,
 };
 use crate::rasterizer::Rasterizer;
 use crate::render_policy::ColorPolicy;
@@ -667,17 +668,6 @@ fn upload_glyph(
             glow::PixelUnpackData::Slice(Some(rgba)),
         );
     }
-}
-
-/// Owned columns for the cells an open composition covers — see
-/// [`JustermRenderer::preedit_patch`]. Deliberately **not** `#[wasm_bindgen]`: it never crosses the
-/// boundary, it is the copy-on-write the pass makes on this side of it.
-struct PreeditPatch {
-    codepoints: Vec<u32>,
-    flags: Vec<u16>,
-    clusters: Vec<String>,
-    bg: Vec<u32>,
-    fg: Vec<u32>,
 }
 
 #[wasm_bindgen]
@@ -1879,47 +1869,14 @@ impl JustermRenderer {
     }
 
     fn preedit_patch(&self, cells: &Cells, bg: &[u32], fg: &[u32]) -> Option<PreeditPatch> {
-        if self.preedit_run.is_empty() {
-            return None;
-        }
-        let w = preedit_writes(
+        preedit_patch_of(
             &self.preedit_run,
             self.preedit_col,
             self.preedit_row,
-            cells.cols,
-            cells.rows,
-            cells.flags,
-        );
-        if w.is_empty() {
-            return None; // off-grid anchor, or no room — ghostty draws nothing rather than guessing
-        }
-        let mut p = PreeditPatch {
-            codepoints: cells.codepoints.to_vec(),
-            flags: cells.flags.to_vec(),
-            clusters: cells.clusters.to_vec(),
-            bg: bg.to_vec(),
-            fg: fg.to_vec(),
-        };
-        for cw in w {
-            if let Some(slot) = p.codepoints.get_mut(cw.idx) {
-                *slot = cw.cp;
-            }
-            if let Some(slot) = p.flags.get_mut(cw.idx) {
-                *slot = cw.flags; // REPLACE, not or-in: the cell's own SGR is not the preedit's
-            }
-            if let Some(slot) = p.bg.get_mut(cw.idx) {
-                *slot = 0;
-            }
-            if let Some(slot) = p.fg.get_mut(cw.idx) {
-                *slot = 0;
-            }
-            // A grapheme override belonging to the cell underneath would otherwise be rasterised in
-            // place of the preedit's codepoint — `resolve_frame` prefers a non-empty cluster.
-            if let Some(slot) = p.clusters.get_mut(cw.idx) {
-                slot.clear();
-            }
-        }
-        Some(p)
+            cells,
+            bg,
+            fg,
+        )
     }
 
     fn resolve_and_pack(
