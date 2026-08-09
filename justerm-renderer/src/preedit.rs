@@ -585,34 +585,67 @@ mod tests {
     // screen, outside the composition — so the pass owes it exactly one thing: stop drawing half a
     // glyph. Everything else there was declared by the application and stays.
 
-    /// The `#715` fixture as measured in the browser: every cell blue, a wide pair at columns 2-3
-    /// with the lead carrying an SGR underline of its own, and a one-cell run anchored on the
-    /// pair's **spacer** — which orphans the lead at column 2.
-    fn orphaning_fixture() -> (Vec<u32>, Vec<u16>, Vec<String>, Vec<u32>, Vec<u32>) {
-        const N: usize = 6;
-        let codepoints = vec![u32::from(b'x'); N];
-        let mut flags = vec![0u16; N];
-        flags[2] = WIDE_CHAR | UNDERLINE;
-        flags[3] = WIDE_CHAR_SPACER;
-        let mut clusters = vec![String::new(); N];
-        clusters[2] = "가".to_string();
-        (codepoints, flags, clusters, vec![BLUE; N], vec![RED; N])
-    }
-
     const BLUE: u32 = 0x0000_00FF;
     const RED: u32 = 0x00FF_0000;
 
+    /// A one-row grid the tests own the columns of, so `patch`'s borrows have somewhere to point.
+    struct Grid {
+        codepoints: Vec<u32>,
+        flags: Vec<u16>,
+        clusters: Vec<String>,
+        bg: Vec<u32>,
+        fg: Vec<u32>,
+    }
+
+    impl Grid {
+        /// The `#715` fixture as measured in the browser: every cell blue, a wide pair at columns
+        /// 2-3 whose lead carries an SGR underline of its own, and a cluster override on that lead
+        /// — the one thing that would redraw the glyph a repair just blanked.
+        fn with_a_pair() -> Self {
+            const N: usize = 6;
+            let mut g = Self::plain();
+            g.flags[2] = WIDE_CHAR | UNDERLINE;
+            // The spacer carries the SGR too, because core stamps it from the same pen —
+            // `let mut spacer = self.cursor.pen.cell(' ')` then `insert_flags(WIDE_CHAR_SPACER)`
+            // (`justerm-core/src/term.rs`, `write_glyph`). A fixture giving it a bare
+            // `WIDE_CHAR_SPACER` would model an input core never produces, and the spacer-side
+            // repair would then never exercise SGR preservation at all.
+            g.flags[3] = WIDE_CHAR_SPACER | UNDERLINE;
+            g.clusters[2] = "가".to_string();
+            debug_assert_eq!(g.codepoints.len(), N);
+            g
+        }
+
+        /// The same grid with no pair in it — the control for "a run that breaks nothing".
+        fn plain() -> Self {
+            const N: usize = 6;
+            Self {
+                codepoints: vec![u32::from(b'x'); N],
+                flags: vec![0u16; N],
+                clusters: vec![String::new(); N],
+                bg: vec![BLUE; N],
+                fg: vec![RED; N],
+            }
+        }
+
+        fn cells(&self) -> crate::glyph_resolve::Cells<'_> {
+            crate::glyph_resolve::Cells {
+                cols: 6,
+                rows: 1,
+                codepoints: &self.codepoints,
+                flags: &self.flags,
+                clusters: &self.clusters,
+            }
+        }
+
+        fn patch(&self, run: &[Codepoint], col: u32) -> Patch {
+            patch(run, col, 0, &self.cells(), &self.bg, &self.fg).expect("the run is on grid")
+        }
+    }
+
     #[test]
     fn a_repair_keeps_the_background_and_foreground_the_application_painted() {
-        let (codepoints, flags, clusters, bg, fg) = orphaning_fixture();
-        let cells = crate::glyph_resolve::Cells {
-            cols: 6,
-            rows: 1,
-            codepoints: &codepoints,
-            flags: &flags,
-            clusters: &clusters,
-        };
-        let p = patch(&[narrow(b'a' as u32)], 3, 0, &cells, &bg, &fg).expect("the run is on grid");
+        let p = Grid::with_a_pair().patch(&[narrow(b'a' as u32)], 3);
 
         assert_eq!(
             p.bg[2], BLUE,
@@ -627,15 +660,7 @@ mod tests {
 
     #[test]
     fn a_repair_blanks_the_glyph_channel_and_only_that() {
-        let (codepoints, flags, clusters, bg, fg) = orphaning_fixture();
-        let cells = crate::glyph_resolve::Cells {
-            cols: 6,
-            rows: 1,
-            codepoints: &codepoints,
-            flags: &flags,
-            clusters: &clusters,
-        };
-        let p = patch(&[narrow(b'a' as u32)], 3, 0, &cells, &bg, &fg).expect("the run is on grid");
+        let p = Grid::with_a_pair().patch(&[narrow(b'a' as u32)], 3);
 
         assert_eq!(p.codepoints[2], u32::from(b' '), "no half glyph is drawn");
         assert!(
@@ -657,23 +682,7 @@ mod tests {
     #[test]
     fn the_spacer_a_run_orphans_is_repaired_the_same_way() {
         // The mirror end: the run's last cell is a wide LEAD, so its spacer at column 3 is orphaned.
-        let (codepoints, flags, clusters, bg, fg) = orphaning_fixture();
-        let cells = crate::glyph_resolve::Cells {
-            cols: 6,
-            rows: 1,
-            codepoints: &codepoints,
-            flags: &flags,
-            clusters: &clusters,
-        };
-        let p = patch(
-            &[narrow(b'a' as u32), narrow(b'b' as u32)],
-            1,
-            0,
-            &cells,
-            &bg,
-            &fg,
-        )
-        .expect("the run is on grid");
+        let p = Grid::with_a_pair().patch(&[narrow(b'a' as u32), narrow(b'b' as u32)], 1);
 
         assert_eq!(
             p.bg[3], BLUE,
@@ -681,6 +690,11 @@ mod tests {
         );
         assert_eq!(p.codepoints[3], u32::from(b' '), "and draws no stale half");
         assert_eq!(p.flags[3] & WIDE_CHAR_SPACER, 0, "it is no longer a spacer");
+        assert_eq!(
+            p.flags[3] & UNDERLINE,
+            UNDERLINE,
+            "…and keeps the SGR core stamped onto it from the pen"
+        );
         assert_eq!(p.bg[2], 0, "the cell the run took IS re-supplied");
     }
 
@@ -690,16 +704,7 @@ mod tests {
         // repair writes a space, and so does a user who types one mid-composition. Only *whose
         // cell it is* separates the two, which is why `WriteKind` exists rather than a `cp == ' '`
         // test at the point of use.
-        let (codepoints, flags, clusters, bg, fg) = orphaning_fixture();
-        let cells = crate::glyph_resolve::Cells {
-            cols: 6,
-            rows: 1,
-            codepoints: &codepoints,
-            flags: &flags,
-            clusters: &clusters,
-        };
-        let p =
-            patch(&[narrow(u32::from(b' '))], 3, 0, &cells, &bg, &fg).expect("the run is on grid");
+        let p = Grid::with_a_pair().patch(&[narrow(u32::from(b' '))], 3);
 
         assert_eq!(p.bg[3], 0, "the run took this cell, space or not");
         assert_eq!(p.bg[2], BLUE, "…and did not take the one it only repaired");
@@ -708,22 +713,12 @@ mod tests {
     #[test]
     fn a_composition_that_breaks_no_pair_leaves_every_other_cell_alone() {
         // The `None`-shaped control: without a repair, a patch touches exactly the run's own cells.
-        let codepoints = vec![u32::from(b'x'); 6];
-        let flags = vec![0u16; 6];
-        let clusters = vec![String::new(); 6];
-        let (bg, fg) = (vec![BLUE; 6], vec![RED; 6]);
-        let cells = crate::glyph_resolve::Cells {
-            cols: 6,
-            rows: 1,
-            codepoints: &codepoints,
-            flags: &flags,
-            clusters: &clusters,
-        };
-        let p = patch(&[narrow(b'a' as u32)], 3, 0, &cells, &bg, &fg).expect("the run is on grid");
+        let g = Grid::plain();
+        let p = g.patch(&[narrow(b'a' as u32)], 3);
 
         assert_eq!(p.bg, vec![BLUE, BLUE, BLUE, 0, BLUE, BLUE]);
         assert!(
-            patch(&[], 3, 0, &cells, &bg, &fg).is_none(),
+            patch(&[], 3, 0, &g.cells(), &g.bg, &g.fg).is_none(),
             "nothing composing"
         );
     }

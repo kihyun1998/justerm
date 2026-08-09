@@ -37,6 +37,12 @@ becomes an actual colour — the engine never does that by identity.
   **neither**: `SGR 58` was, for one published release, so a composition drew its underline in the
   colour of the text it had erased. The pass shipped *after* that column existed, so the obligation
   is on whoever writes a pass, not only on whoever adds a column.
+  **The mirror of that hazard is a *cell* answered by the wrong half** (#715, same release). The pass
+  also writes the pair-repair beside its run — a cell it does not take, only un-pairs — and the patch
+  re-supplied that one's colours too, so the application's background vanished for as long as the
+  composition stayed open. `preedit::Span` had drawn the line correctly the whole time; the patch had
+  not, and the two halves of one pass are what disagreed. The rule both now share: a repair blanks the
+  glyph, never the pen.
 - **Back-to-front, and decorations sit on *both* sides of the highlight:**
   `base < bottom-decoration < highlight < top-decoration`. A decoration is not simply "above" or
   "below" content — it chooses a side of the selection/search layer, which is what
@@ -75,6 +81,8 @@ becomes an actual colour — the engine never does that by identity.
 ## Code
 
 - `justerm-renderer/src/frame.rs` — `pack_instances`, the instance layout
+- `justerm-renderer/src/preedit.rs` — `patch`, `WriteKind`, `Span`: the composition's copy-on-write,
+  applied before anything here resolves, and the one place that decides which cells are the pass's
 - `justerm-renderer/src/render_policy.rs` — `ColorPolicy`, `resolve_cell`, `dim_foreground`
 - `justerm-renderer/src/overlay.rs` — `HighlightKind`, `composite_bg`, `blend_over`,
   `should_blend_kind`
