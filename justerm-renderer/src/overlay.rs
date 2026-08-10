@@ -258,8 +258,10 @@ pub fn should_blend(bg_ref: u32, flags: u16) -> bool {
 /// tile follows it. Reasoning and the declined xterm alternatives are at the `frame::pack_instances`
 /// call site.
 ///
-/// **Adjacent gap this does NOT close** (tracked, deliberately left visible): a span covering one
-/// half of a wide glyph now bisects it visibly (#454, consumer span policy).
+/// **The adjacent gap this used to leave open is closed (#454).** A span covering one half of a wide
+/// glyph bisected it visibly, and this note routed the fix to "consumer span policy" — which was
+/// wrong twice over: the spans arrive from three layers that share no consumer, and the rule ended
+/// up here, at the paint site, where all of them pass through ([`pair::partner_at`](crate::pair)).
 ///
 /// **Known consequence** (accepted, not a defect): the fg policy runs against the *effective* bg, so
 /// inside one selection band a decorated run and an undecorated run can resolve different

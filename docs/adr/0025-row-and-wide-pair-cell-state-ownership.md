@@ -641,10 +641,19 @@ stale-rationale pin recorded under #535 above, **discharged 2026-08-03 when #545
 entry. This separation held under the landing, which is the useful part: injecting the set changed no
 rule here, because D4 turns on the lead *being a boundary* and never on what put it in the set.
 
-**Snapping a consumer-side span to a wide pair is projection, not ownership (#454).** That a decoration
-or selection span must not bisect a width-2 glyph is D4's *echo* one layer up, but the span lives in the
-consumer and is resolved against the frame, so it belongs to ADR-0024 (projection/precedence) with
-ADR-0019 underneath. This record stops at the core buffer, exactly as alternative (C) below says.
+**Snapping a span to a wide pair is projection, not ownership (#454).** That a decoration or selection
+span must not bisect a width-2 glyph is D4's *echo* one layer up. This record stops at the core buffer,
+exactly as alternative (C) below says, and that half held.
+
+**Its routing half did not (corrected 2026-08-10, when #454 landed).** This paragraph read *"the span
+lives in the consumer and is resolved against the frame, so it belongs to ADR-0024"*. Both clauses were
+wrong: two of the three span producers are **core's own** (`Term::selection_range`, `Term::match_spans`),
+they never reach `decorations.ts`, and the caret is a fourth span nobody authors. ADR-0024 recorded the
+same mis-routing from its own side and now carries the amendment. Where the rule actually lives is the
+paint site (`justerm-renderer` `pair::partner_at`) plus a widening in core so `selection_text` cannot
+disagree with the highlight. **Nothing here changed** — the pair is still a buffer fact this record
+owns, and a *span over* one is still not — which is why the correction is a routing note and not a
+D-clause.
 
 ## Named prior art
 

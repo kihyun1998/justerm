@@ -88,6 +88,34 @@ here is 1:1, not 2:0.
 | ⚠ `splitCellBoundary` gates on the state **before** the mutation, and that is load-bearing rather than incidental: a post-mutation "is a wide lead standing at column 0" test also accepts a `DCH` that pulled the *next* wide glyph left, and a two-step placement (IRM's insert-then-write, a VS16 promotion) satisfies it only at the end. Both were measured diverging from ghostty before justerm's call sites moved to the pre-mutation form | ghostty | `terminal/Screen.zig:1831` (doc comment: *"call this function with `x = a` and `x = b + 1`"*) |
 | `rowWillBeShifted` clears the end cell's spacer head on **every** shifted row, gated on `scrolling_region.right == cols - 1 or scrolling_region.left < 2`. ghostty needs the blanket clear for two reasons its own comment names: it shifts cells within pages (splitting interior pairs) **and** it supports left/right margins (DECSLRM), so a partial-row shift can break an interior pair without moving its neighbour. justerm rotates whole `Row`s and implements no DECSLRM, so seam-only is sound — **conditional on justerm never gaining left/right margins**, the day which #540's seam rule and this marker rule break together | ghostty | `terminal/Terminal.zig:2589-2601`, the two-reason comment at `:2586-2594` |
 
+## A span, a highlight and a caret over a wide pair (#454, verified 2026-08-10)
+
+**Read the whole section before quoting one row.** The obvious grep gives the wrong answer twice
+here: ghostty's `terminal/Selection.zig` has no `wide`/`spacer` hit at all — its rule is in the
+*renderer* — and alacritty's `Selection` does snap, in a method whose name does not say so. A tally
+taken from either file alone comes out 1-of-3, and the real answer is that all three have a rule.
+
+| Fact | Reference | Site |
+|---|---|---|
+| Selection normalises at the **model**: a start on a wide char's second half moves right (`selectionStart[0]++`) | xterm.js | `src/browser/services/SelectionService.ts:573-577` |
+| ...and so does an end (`selectionEnd[0]++`), so neither endpoint rests inside a pair | xterm.js | `src/browser/services/SelectionService.ts:667-678` |
+| Neither fixup is inside the `_activeSelectionMode !== SelectionMode.COLUMN` guard above them, so a **rectangular** selection gets the rule too | xterm.js | `src/browser/services/SelectionService.ts:659` (the guard), `:667` (the ungated fixup) |
+| Selection normalises at the **read** site, per cell: a `WIDE_CHAR` lead counts as selected when its spacer's column is contained | alacritty | `alacritty_terminal/src/selection.rs:85-87`, reached from `alacritty/src/display/content.rs:222` |
+| **Read this too**: the `contains(indexed.point)` early return two lines above means it is one-directional — a lead-only range still leaves the spacer unpainted | alacritty | `alacritty_terminal/src/selection.rs:80-82` |
+| The wide arm sits **after** the block-cursor early return and carries no `is_block` guard, so a rectangular selection gets it too | alacritty | `alacritty_terminal/src/selection.rs:64-84` |
+| The **copy** path has its own half of the rule, spacer-direction only: `cols.start -= 1` | alacritty | `alacritty_terminal/src/term/mod.rs:583-585` |
+| Selection normalises in the **renderer**, per cell: a `.spacer_tail` asks the selection about its lead's column (`x -\| 1`) | ghostty | `src/renderer/generic.zig:2747-2753` |
+| The same `x_compare` feeds the **search-highlight** test, so one helper covers both | ghostty | `src/renderer/generic.zig:2760-2761` |
+| A **caret** on a spacer tail moves back one cell *and* sets `cursor_wide` | ghostty | `src/renderer/generic.zig:2510-2523` |
+| A caret's width is `WIDE_CHAR`-only, so on a spacer it paints the glyph's right half alone | alacritty | `alacritty/src/display/content.rs:138-142` |
+| A caret takes `cell.getWidth()` — `0` on a spacer — leaving `x >= cursorX && x <= cursorX - 1`, an empty range: **no caret is drawn at all** | xterm.js | `addons/addon-webgl/src/WebglRenderer.ts:538-549` (the model at `:541`, the range at `:547`) |
+
+**What the rows add up to.** On a *selection* all three refuse to paint exactly one half, by three
+different mechanisms and at three different layers — and the two read-site ones are opposite halves
+of the same union (ghostty closes spacer→lead, alacritty closes lead→spacer). On a *caret* they
+split three ways with no majority: whole glyph, right half, nothing. So the caret question has no
+reference answer to adopt, which is recorded here rather than re-derived.
+
 ## Minimum screen size (#547)
 
 Added 2026-07-24. Every row grepped at the pinned SHAs that day.

@@ -47,7 +47,9 @@ tree, and it is the single most consequential positional rule here.
 
 ## Cross-cutting invariants
 
-*(none identified yet)*
+- [a span covers a wide pair whole](../invariant/a-span-covers-a-wide-pair-whole.md)
+  — the caret is a span, and an application can park the cursor on a wide glyph's trailing spacer
+  with an ordinary `CUB` / `CHA`, so the position this territory owns can name half a glyph (#454)
 
 ## Blast radius
 

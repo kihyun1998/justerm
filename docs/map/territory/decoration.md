@@ -97,6 +97,10 @@ inside a record rather than a pinned row that survives an upstream move.
 
 ## Cross-cutting invariants
 
+- [a span covers a wide pair whole](../invariant/a-span-covers-a-wide-pair-whole.md)
+  — a rect arrives in the consumer's own coordinates, which cannot know where pairs are, so the rule
+  is applied where the rect meets the cells (#454). ADR-0024 carries the amendment recording why it
+  is **not** one of R1-R6
 - [a wire field narrower than the value it carries](../invariant/wire-field-narrower-than-its-value.md)
   — the underline-colour group's count is still `u16` while its two sibling per-span groups went
   `u32` in #621. Measured unreachable after #582 rather than fixed, which is a different state from

@@ -124,6 +124,9 @@ at a recorded SHA; a paraphrase drops the pin).
 - [only U+0020 can be a row's padding](../invariant/only-u0020-can-be-padding.md) — this territory
   holds **two** of the five implementations: `extract_lines` for the linear arms and the block arm's
   own loop. #685 measured them returning different text for the same cells when only one was fixed
+- [a span covers a wide pair whole](../invariant/a-span-covers-a-wide-pair-whole.md) — this territory
+  holds **both** observables of it: `selection_range` and `selection_text` widen at the same funnel
+  (`resolve`) precisely so they cannot disagree (#454)
 - [a pointer coordinate is bounded by the converter that produces it](../invariant/pointer-coordinates-are-bounded-by-their-producer.md)
   — `cellAndSide` owes the bound on both axes, and the engine's own clamp (both axes since #671) is a
   backstop rather than a substitute: the alt-click cursor move leaves through the consumer's callback,
@@ -155,8 +158,12 @@ Check these after changing this territory:
 - **Zero governing records.** The whole §Design model above is unrecorded. *"Why absolute
   coordinates"* and *"what moves the coordinate"* are the kind of thing that gets
   re-decided, and their grounds exist only in code comments.
-- **Block selection over wide characters is unspecified** — no artifact states what happens when a
-  rectangular range cuts a width-2 glyph in half.
+- ~~**Block selection over wide characters is unspecified**~~ — **closed by #454**: a rectangle
+  widens onto whole pairs **per row** (a rectangle meets a pair at a different column on each), on
+  both observables. The rule is
+  [a span covers a wide pair whole](../invariant/a-span-covers-a-wide-pair-whole.md); the visible
+  consequence is that a row where it fires is one column wider than the rectangle, which is what all
+  three references do.
 - ~~**Word-selection boundaries** — the set is hardcoded in core.~~ **Closed by #545**: the set is
   consumer policy now (`Term::set_word_separators`, default `DEFAULT_WORD_SEPARATORS`), so the
   routing conforms to ADR-0017. Two things it left behind, both narrower than the hole was:
