@@ -28,6 +28,12 @@ ADR-0025 is authoritative; this is routing. **If they disagree, the ADR is right
   to the *pair* and the cell itself is still the application's (#715: for one release it blanked the
   whole cell and took the application's background with it). Same D1/D2 obligation as an engine verb,
   reached from the consumer's side of the boundary.
+- **The engine and the renderer repair that same event differently, deliberately.** `Term::free_cell`
+  leaves the pen's background and defaults everything else; the preedit pass leaves the cell whole and
+  removes only the glyph. Both answers carry their grounds — core's in `free_cell`'s own doc-comment
+  (#530: a destroyed glyph's hyperlink, the pen's DECSCA; the renderer has neither), the renderer's in
+  [ADR-0028](../../adr/0028-composition-surfaces-have-one-writer-each.md) D2, which also names the
+  third option that was rejected and what it cost. Read both before "fixing" either into the other.
 - **D3 — a pair property is meaningful only at its defining position.** The leading-spacer marker
   means "wide-wrap artefact" *only* at the last column of a soft-wrapped row. A row-shift verb
   (ICH/DCH) that carries it inward has produced a marker describing nothing and must drop it (#528).
