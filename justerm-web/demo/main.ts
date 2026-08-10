@@ -1510,6 +1510,8 @@ declare global {
     __imeDriftProbe?: () => ImeDriftProbe;
     __imePointerProbe?: () => ImePointerProbe;
     __fitProbe?: () => FitProbe;
+    __dprProbe?: () => DprSnapshot;
+    __setDpr?: (dpr: number) => void;
     __setLineHeight?: (lh: number) => void;
   }
 }
@@ -2558,6 +2560,62 @@ interface FitProbe {
   demoCols: number;
   demoRows: number;
 }
+
+/**
+ * #325 — everything a device-pixel-ratio change moves, in one snapshot.
+ *
+ * The interesting claim is not any single number but that the canvas's **display box still describes
+ * the buffer that exists**. The renderer re-derives its drawing buffer at the new density and never
+ * touches the DOM, so `applied` and `reported` are written by different layers and drift apart the
+ * moment the widget forgets to re-apply the box — silently, as a browser-scaled (blurry) canvas
+ * rather than an error.
+ */
+interface DprSnapshot {
+  /** What the page's density actually is, read live. */
+  dpr: number;
+  /** The renderer's cell in DEVICE px — `round(metric * dpr)`, so it moves with the density. */
+  cellW: number;
+  cellH: number;
+  /** The grid the renderer holds. A DPR change must NOT move it (no re-fit — see the setter's doc). */
+  cols: number;
+  rows: number;
+  /** The CSS size actually on the element, parsed back from `canvas.style`.
+   *
+   * Checked against the DRAWING BUFFER rather than against the renderer's own `cssWidth()`: the
+   * property that matters is `applied x dpr === buffer` (a 1:1, unscaled canvas), and its three terms
+   * come from three different places — the DOM, WebGL and the browser. Comparing our report to our
+   * application would agree in exactly the case the report is wrong.
+   */
+  appliedW: number;
+  appliedH: number;
+  /** The device drawing buffer, which must stay grid x cell. */
+  bufW: number;
+  bufH: number;
+}
+
+window.__dprProbe = (): DprSnapshot => {
+  const gl = canvas.getContext("webgl2")!;
+  const cell = renderer.cellSize();
+  const grid = renderer.terminalSize();
+  return {
+    dpr: window.devicePixelRatio,
+    cellW: cell.width,
+    cellH: cell.height,
+    cols: grid.cols,
+    rows: grid.rows,
+    appliedW: parseFloat(canvas.style.width),
+    appliedH: parseFloat(canvas.style.height),
+    bufW: gl.drawingBufferWidth,
+    bufH: gl.drawingBufferHeight,
+  };
+};
+
+/** #325 — drive the DPR path directly, the way the renderer's own `demo/dpr-change.html` does. The
+ * browser's real ratio cannot be moved from inside the page, so this is how the *plumbing* is
+ * exercised where the CDP-driven test cannot run. */
+window.__setDpr = (dpr: number): void => {
+  renderer.setDevicePixelRatio(dpr);
+};
 
 window.__fitProbe = (): FitProbe => {
   const dpr = window.devicePixelRatio || 1;

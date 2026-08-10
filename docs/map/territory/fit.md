@@ -101,5 +101,10 @@ names as its model — exactly the kind of detail that diverges quietly.
   (#339) can make the renderer take less than it was asked for, and then the remembered pair describes
   a grid nobody holds — the same defect #632 fixed, one axis over. `terminalSize()` is the documented
   truth; the controller never reads it, because `ResizePort` is write-only.
-- **No `matchMedia` listener watches for resolution changes**, so moving a window between displays
-  leaves the device-pixel ratio stale until something else triggers a fit. Tracked: #325.
+- ~~**No `matchMedia` listener watches for resolution changes.**~~ **Closed by #325** (2026-08-10):
+  `JustermRenderer` now owns a resolution watcher that re-bakes at the new density and re-applies the
+  canvas display box. **It does not re-fit**, deliberately — the grid is the consumer's (#417/#578)
+  and the widget holds no container measurement — so this territory's job is unchanged and a consumer
+  that wants the grid re-derived still calls `resize()` with its own box, as it already must after a
+  font or spacing change. xterm.js draws the same line: its `handleDevicePixelRatioChange` calls no
+  resize either.

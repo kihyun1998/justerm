@@ -1423,6 +1423,120 @@ test.describe("a non-finite bgAlpha falls back to opaque (#577)", () => {
   });
 });
 
+// #325: the device-pixel-ratio change — the last of epic #583, and the only knob in that set that is
+// reached with NO consumer call at all.
+//
+// **The proof splits in two, and the split is measured rather than chosen.** A resolution `change`
+// event cannot be produced in this harness: CDP's `Emulation.setDeviceMetricsOverride` *does* move
+// `window.devicePixelRatio` and *does* re-evaluate the queries — a `screen and (resolution: 1dppx)`
+// query flips `matches` to `false` and `(min-resolution: 1.5dppx)` to `true` — but it dispatches no
+// `change` event, to a retained `MediaQueryList` or otherwise (measured 2026-08-10, three variants).
+// So the listener half — arming, re-arming at the new ratio, detaching — is proven by unit test
+// (`test/dpr-watcher.test.ts`, with the re-arm mutation-checked), and this test proves the half that
+// only a real GL context can answer: that adopting a ratio re-bakes AND re-applies the canvas box.
+//
+// Driven through the demo's `__setDpr` hook, exactly as the renderer's own `demo/dpr-change.html`
+// drives `set_device_pixel_ratio` — for the same reason, and it is the reason #322 shipped with one.
+test("adopting a new device pixel ratio re-bakes and re-applies the canvas box (#325)", async ({
+  page,
+}) => {
+  await expect(page.getByRole("button", { name: /Finish command/ })).toBeVisible();
+
+  const before = await page.evaluate(() => window.__dprProbe!());
+  // The canvas is 1:1 to start with: its CSS box times the density is the drawing buffer. Three
+  // independent sources (DOM, WebGL, the browser), so this cannot agree with itself by construction.
+  expect(before.appliedW * before.dpr).toBe(before.bufW);
+  expect(before.appliedH * before.dpr).toBe(before.bufH);
+
+  await page.evaluate(() => window.__setDpr!(2));
+  const after = await page.evaluate(() => window.__dprProbe!());
+
+  // The cell is re-derived at the new density — `round(metric * dpr)` — so the buffer grows with it.
+  expect(after.cellW).toBeGreaterThan(before.cellW);
+  expect(after.cellH).toBeGreaterThan(before.cellH);
+  expect(after.bufW).toBe(after.cols * after.cellW);
+  expect(after.bufH).toBe(after.rows * after.cellH);
+
+  // THE POINT. The renderer never touches the DOM, so the display box is this package's to re-apply;
+  // forget it and the browser scales a buffer twice the size of its box — the blur #322 removed,
+  // reintroduced one layer out. `dpr` here is the ratio we injected, not the page's.
+  expect(after.appliedW * 2).toBe(after.bufW);
+  expect(after.appliedH * 2).toBe(after.bufH);
+  // …and something genuinely moved, so the assertion above is not satisfied by nothing happening.
+  //
+  // The check is on the BUFFER, not on the CSS box. Whether the box moves at all is **font
+  // dependent**: it moves only when `round(metric * dpr)` fails to divide back to the old CSS cell,
+  // and that is a property of the metric's fractional part. Measured — this machine goes 19 -> 37
+  // device px (box 703 -> 684.5) and CI's Linux font goes 19 -> 38 (box unchanged at 703), from the
+  // *same* cell at dpr 1. An earlier revision asserted the box had moved and was red on CI for
+  // exactly that reason: equal cells at one density say nothing about the next one.
+  expect(after.bufH).toBeGreaterThan(before.bufH);
+
+  // NO RE-FIT, deliberately: the grid is the consumer's (#417/#578), and xterm.js's
+  // `handleDevicePixelRatioChange` calls no resize either. A widget that quietly re-derived the grid
+  // here would desync the engine the consumer is driving.
+  expect(after.cols).toBe(before.cols);
+  expect(after.rows).toBe(before.rows);
+});
+
+// #325 follow-up, found by measuring the slice rather than by reading it: **a GL restore is the one
+// buffer change with no consumer call behind it.**
+//
+// `restore()` re-reads the LIVE device pixel ratio and re-derives the cell at it (`webgl.rs`, #269) —
+// deliberately, because a DPR notification arriving while the context is lost is dropped rather than
+// queued. So a density that moved during a loss is adopted there, the drawing buffer moves, and until
+// this slice nothing re-applied the canvas display box.
+//
+// The setup is only expressible because of the negative result recorded above: CDP moves
+// `devicePixelRatio` without dispatching a `change` event, so the widget's watcher genuinely does not
+// see it and `restore()` is left as the only path that can adopt the new density — which is exactly
+// the real-world case (a monitor switch that also resets the GPU) with the timing made deterministic.
+test("a GL restore at a changed density re-applies the canvas box (#325)", async ({ page }) => {
+  await expect(page.getByRole("button", { name: /Finish command/ })).toBeVisible();
+
+  const boot = await page.evaluate(() => window.__dprProbe!());
+  expect(boot.appliedW * boot.dpr).toBe(boot.bufW);
+  expect(boot.appliedH * boot.dpr).toBe(boot.bufH);
+
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send("Emulation.setDeviceMetricsOverride", {
+    width: 1280,
+    height: 720,
+    deviceScaleFactor: 2,
+    mobile: false,
+  });
+  await page.waitForTimeout(300);
+
+  // The watcher cannot see a CDP override, so nothing has been adopted yet. Asserted rather than
+  // assumed: if Chromium ever starts dispatching the event, this test stops describing a restore and
+  // says so here instead of quietly passing for the wrong reason.
+  const injected = await page.evaluate(() => window.__dprProbe!());
+  expect(injected.cellW).toBe(boot.cellW);
+  expect(injected.cellH).toBe(boot.cellH);
+
+  await page.evaluate(() => {
+    const gl = document.querySelector<HTMLCanvasElement>("#term")!.getContext("webgl2")!;
+    const ext = gl.getExtension("WEBGL_lose_context")!;
+    ext.loseContext();
+    setTimeout(() => ext.restoreContext(), 50);
+  });
+  await page.waitForTimeout(1200);
+
+  const after = await page.evaluate(() => window.__dprProbe!());
+  // The restore adopted the new density — without this the assertions below are vacuous.
+  expect(after.cellH).toBeGreaterThan(boot.cellH);
+  expect(after.bufH).toBe(after.rows * after.cellH);
+
+  // THE POINT. Measured before the fix: buffer `2556x1369` under a canvas still styled `1278x703`.
+  // The WIDTH was accidentally right (the cell doubled exactly, 9 -> 18) and only the height was
+  // wrong — `703` against a correct `684.5` — so a width-only check would have passed.
+  expect(after.appliedH * 2).toBe(after.bufH);
+  expect(after.appliedW * 2).toBe(after.bufW);
+  // Anti-vacuity on the buffer rather than the box, for the reason the test above states: whether
+  // the CSS box moves across a density change is font dependent, and CI's font is not this one's.
+  expect(after.bufH).toBeGreaterThan(boot.bufH);
+});
+
 // #580: the two cursor policy knobs — the last renderer setters with no consumer call site (#583).
 //
 // Both are decided at DRAW time against the resolved cell, which is why the proof is a real browser

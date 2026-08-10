@@ -6,7 +6,7 @@
 `justerm-renderer`, from four inputs together — the glyph box, the device pixel ratio, the letter
 spacing and the line height — and re-derived through a single funnel (`webgl.rs` `recompute_cell`)
 whenever any of them moves. Five widget-exposed setters can move it: `setFontSize`, `setFontFamily`,
-`setLetterSpacing`, `setLineHeight` (#578) and `setDevicePixelRatio` (#325, still unwired).
+`setLetterSpacing`, `setLineHeight` (#578) and `setDevicePixelRatio` (#325, **wired 2026-08-10**).
 
 Everything downstream that divides by a cell dimension therefore holds a value with a **lifetime**, and
 nothing in the type system says so:
@@ -177,10 +177,20 @@ every time.
 
 Three named places it is already queued to recur:
 
-- **#325 (`matchMedia` → `set_device_pixel_ratio`).** The worst of the set, and it is worth saying why
-  in the same breath as the invariant: a resolution change moves the cell with **no setter call at
-  all**, so there is no point a consumer could hook a manual correction onto even if it knew to. Every
-  reader on the "re-read at the point of use" shape has to be re-checked when it lands.
+- ~~**#325 (`matchMedia` → `set_device_pixel_ratio`).**~~ **Landed 2026-08-10, and the re-check it
+  asked for was run: all nine readers were already safe.** Kept because the *result* is the useful
+  part, not the prediction. Seven are "re-read per use" and were never at risk; the two cache-shaped
+  ones had both been fixed generically rather than for the setter that found them — #631's anchor
+  re-reads `getGeometry()` on every write, #632's fit key carries the cell — so a cell change with
+  **no setter call at all** is discharged by the same code as one with. That is the argument for
+  fixing this class at the shape rather than per trigger, and it is the first time it has been
+  tested by a trigger that did not exist when the fixes were written.
+  One reader looked like an instance and is not: `Terminal.onWheel` passes `dpr: 1` into
+  `WheelContext`, which is a **deliberate neutral** — `getGeometry()` already reports CSS px, so
+  `cellHeight / dpr` is CSS-px-per-cell, and the reason is stated at the call site.
+  **What #325 did not settle is this note's open question.** It adopts the new ratio and re-applies
+  the canvas box; it adds no invalidation *signal*, so a consumer's own readers are still on the
+  honour system. That remains spine #630's.
 - ~~**#249 (inline preedit).**~~ **Landed 2026-08-03 (ADR-0028) and it did not recur, for a reason
   worth keeping.** The predicted mismatch was two readers of the cell on two refresh policies — the
   drawing at frame rate, the IME anchor at points of use. It did not arise because the *drawing* never

@@ -1,6 +1,7 @@
 import type { Palette } from "justerm-wasm-decode/colors.js";
 import { ContextLossRelay } from "./context-loss";
 import { CursorBlink } from "./cursor";
+import { DprWatcher } from "./dpr-watcher";
 import { FrameLoop } from "./frame-loop";
 import type { DecorationRect } from "./decorations";
 import { MINIMUM_COLS, MINIMUM_ROWS } from "./fit";
@@ -366,6 +367,14 @@ export interface RendererBackend {
    * #359). */
   setLetterSpacing(cssPx: number): void;
   setLineHeight(multiplier: number): void;
+  /** Re-bake the atlas at a new device pixel ratio (#322). Like the font and spacing setters this
+   * **moves the cell** — the device cell is `round(metric * dpr)` — so `cssWidth()`/`cssHeight()`
+   * move with it and the canvas display box has to be re-applied. Unlike them it is reached with no
+   * consumer call at all (`DprWatcher`). A no-op if the ratio is unchanged, and **dropped while the
+   * GL context is lost**, because restore re-reads the live ratio and bakes at that density anyway
+   * (`webgl.rs`, #269). The renderer touches no DOM: it re-derives the drawing buffer from the grid
+   * it is holding, and never the canvas's CSS size. */
+  setDevicePixelRatio(dpr: number): void;
   /** Swap the palette + default fg/bg for a live theme change (#405): re-resolve every retained
    * cell against the new scheme. `paletteColors` is the 256 pre-built indexed colours. */
   setPalette(paletteColors: Uint32Array, defaultFg: number, defaultBg: number): void;
@@ -642,6 +651,12 @@ export class JustermRenderer implements Renderer {
    * re-packs and presents), so leaving it attached lets a disposed widget repaint its canvas. */
   private readonly motionQuery: MediaQueryList;
   private readonly onMotionChange: (e: MediaQueryListEvent) => void;
+  /** Watches the display's density and re-bakes at it (#325). Held so {@link dispose} can stop it:
+   * like the motion listener above, this one *draws*. */
+  private readonly dprWatcher: DprWatcher;
+  /** Re-applies the canvas display box after a GL restore (#325). Held so {@link dispose} can detach
+   * it: it drives a render. */
+  private readonly onContextRestored: () => void;
   /** Focus gates the selection colour (focused → `selectionBg`, blurred → the dimmer
    * `selectionInactiveBg`) and the blink (blurred → solid). xterm's two selection colours (#115). */
   private focused = true;
@@ -690,6 +705,40 @@ export class JustermRenderer implements Renderer {
       if (this.textBlink.enabled) this.startBlinkLoop();
     };
     this.motionQuery.addEventListener("change", this.onMotionChange);
+
+    // #325 — the density can move with no call from anyone (another-density monitor, an OS scale
+    // change), at an unchanged CSS size, so no `ResizeObserver` sees it. Started unconditionally and
+    // with no opt-out: a terminal that stays rasterised at the density it was built at is blurry,
+    // which is a defect rather than a preference, and the reference likewise wires it inside the
+    // library (xterm.js's `CoreBrowserService`) rather than exposing the choice.
+    this.dprWatcher = new DprWatcher(
+      (dpr) => window.matchMedia(`screen and (resolution: ${dpr}dppx)`),
+      () => window.devicePixelRatio,
+      (dpr) => this.setDevicePixelRatio(dpr),
+    );
+    this.dprWatcher.start();
+
+    /**
+     * **A restore is the one buffer change with no consumer call behind it** (#325), which is the
+     * same shape as the density change above and was found by measuring it.
+     *
+     * `restore()` re-reads the **live** device pixel ratio and re-derives the cell at it
+     * (`webgl.rs`, #269) — deliberately, because a DPR notification arriving while the context is
+     * lost is *dropped* rather than queued. So a density that moved during a loss is adopted here,
+     * the drawing buffer moves with it, and nothing re-applies the display box. Measured before
+     * fixing: dpr 1 -> 2 across a loss left the buffer at `2556x1369` under a canvas still styled
+     * `1278x703`; the width was accidentally right (the cell doubled exactly) and the height was
+     * `703` against a correct `684.5`, so the browser stretched the terminal ~2.7% vertically.
+     *
+     * **Driving a render here is not incidental — it is what makes the box readable.** The renderer
+     * rebuilds inside its next `render()`, not when this event fires, so re-applying the box first
+     * would copy the pre-restore numbers. One extra present on a rare event is the price.
+     */
+    this.onContextRestored = (): void => {
+      this.backend.render();
+      this.applyCanvasCssBox();
+    };
+    canvas.addEventListener("webglcontextrestored", this.onContextRestored);
   }
 
   static async create(opts: JustermRendererOptions): Promise<JustermRenderer> {
@@ -934,6 +983,48 @@ export class JustermRenderer implements Renderer {
   }
 
   /**
+   * Adopt a new device pixel ratio (#325, consumer half of #322) — re-bake the atlas at the new
+   * density and re-apply the canvas display box. **Called for you** by the widget's own resolution
+   * watcher; a consumer needs this only to drive the path in a test, or to serve a density this
+   * object cannot observe (a `window` it was not built against).
+   *
+   * **Two things move and only one of them is the renderer's.** The renderer re-rasterises and
+   * re-derives its drawing buffer *from the grid it is holding* — it never touches the DOM — so the
+   * canvas's CSS box, which this package writes and only in {@link resize}, would otherwise still
+   * describe the old buffer and the browser would scale it. That is the blur #322 exists to remove,
+   * reintroduced one layer out.
+   *
+   * **The CSS box can move, which is not obvious and is why this is not just a forward.** The device
+   * cell is `round(metric * dpr)`, and dividing that back by the new ratio need not land on the old
+   * CSS cell. Measured (font 16, 25x6 grid): CSS height `96` at dpr 1 and at dpr 1.5, but `99` at
+   * dpr 2 — the cell is 33 device px there, and `33 / 2 = 16.5`.
+   *
+   * **Whether it moves is font dependent, so do not treat the numbers above as the contract.** It
+   * turns on the fractional part of the metric, which differs per font — and equal cells at one
+   * density say nothing about the next: this machine's font goes 19 -> 37 device px across dpr 1 -> 2
+   * while CI's Linux font goes 19 -> 38, from the *same* 19. An e2e assertion that the box had moved
+   * was red on CI for exactly that reason. What always holds, and is what to assert, is
+   * `canvas.style x dpr === drawing buffer`.
+   *
+   * **No re-fit, deliberately.** The grid is left alone, so a terminal in a fixed container can end
+   * up a few CSS px larger or smaller than the box that fitted it. Re-deriving the grid needs the
+   * container's measurements, which this object does not hold — the consumer owns the fit (#417,
+   * #578) — and the reference draws the same line: xterm.js's `handleDevicePixelRatioChange`
+   * re-measures the char size, tells its renderer and repaints, and calls no `resize`
+   * (`src/browser/services/RenderService.ts:279-290` @ `699f553`); its `FitAddon` stays manual. A
+   * consumer that wants the grid re-derived calls {@link resize} with its current CSS box, exactly
+   * as it already must after {@link setFontSize} or {@link setLetterSpacing}.
+   *
+   * A no-op at an unchanged ratio, and **dropped while the GL context is lost** — both inside the
+   * renderer, so this is safe to call unconditionally.
+   */
+  setDevicePixelRatio(dpr: number): void {
+    this.backend.setDevicePixelRatio(dpr);
+    this.applyCanvasCssBox();
+    this.backend.render();
+  }
+
+  /**
    * Install (or clear, with `undefined`) the handler called when a lost WebGL context has not come
    * back within {@link setContextRestoreTimeout} (#579). The live counterpart of
    * {@link JustermRendererOptions.onContextLoss}, whose doc carries the full contract — what the
@@ -1077,6 +1168,20 @@ export class JustermRenderer implements Renderer {
     if (!grid) return;
     const { cols, rows } = grid;
     this.backend.resize(cols, rows);
+    this.applyCanvasCssBox();
+  }
+
+  /**
+   * Set the canvas's **display** box to the CSS size the current drawing buffer must be shown at to
+   * be 1:1. The only two `canvas.style.width/height` writes in this package, which is why they are a
+   * named step rather than two lines: anything that moves the buffer or the cell owes this call, and
+   * whoever forgets it gets a browser-scaled — i.e. blurry — terminal rather than an error.
+   *
+   * Two callers, and the second is the reason this was extracted (#325): {@link resize}, and a
+   * device-pixel-ratio change, which moves `cssWidth()`/`cssHeight()` **without** moving the grid and
+   * so cannot go through `resize` (that one derives a grid from a CSS box this object does not hold).
+   */
+  private applyCanvasCssBox(): void {
     this.canvas.style.width = `${this.backend.cssWidth()}px`;
     this.canvas.style.height = `${this.backend.cssHeight()}px`;
   }
@@ -1476,6 +1581,8 @@ export class JustermRenderer implements Renderer {
   dispose(): void {
     this.blinkLoop.stop();
     this.motionQuery.removeEventListener("change", this.onMotionChange);
+    this.dprWatcher.stop();
+    this.canvas.removeEventListener("webglcontextrestored", this.onContextRestored);
     this.contextLoss.end();
   }
 }

@@ -111,6 +111,22 @@ machine that decides what the renderer does in between.
   wrong in the original sentence is a shape worth watching for: *"the consumer cannot observe X"* was
   turned into *"the consumer cannot fix what X causes"*, and those are different claims. The export
   question reopens only for a consumer that cannot poll.
+- **A restore is also a *density* adoption, and that half had no consumer trigger at all** (#325).
+  `restore()` re-reads the **live** device pixel ratio rather than the one the renderer was built
+  with — deliberately, because a DPR notification arriving during a loss is *dropped* rather than
+  queued — so the cell, and with it the drawing buffer, can move across a restore nobody asked for.
+  The bullet above resolves the *clamp* case by having the consumer repeat its fit when
+  `isContextLost()` goes false; this one cannot be reached that way, because with no resize in
+  flight nothing tells a consumer a repeat is due. So the widget re-applies the canvas display box
+  itself on `webglcontextrestored`, and **drives one render first** — the rebuild happens inside
+  that render, so applying the box before it copies the pre-restore numbers (mutation-checked).
+  Measured before the fix: dpr 1 → 2 across a loss left a `2556x1369` buffer under a canvas styled
+  `1278x703`. Note which half was wrong — the **width** was accidentally correct because the cell
+  doubled exactly (9 → 18), and only the height was off (`703` against `684.5`, the cell having gone
+  19 → 37). A width-only check would have reported this area clean. **And the accident is font
+  dependent, not a property of the fix**: CI's Linux font takes the same 19 to 38, so *both* axes
+  divide back evenly there and the box does not move at all. The portable statement is
+  `canvas.style x dpr === drawing buffer`, never that the box changed.
 
 ## Code
 
