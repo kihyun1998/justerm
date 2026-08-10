@@ -311,6 +311,28 @@ implies (core reports the mechanism, the consumer holds the policy) and it needs
 | **Negative result: xterm.js has no preedit rule for the caret.** Its only `isComposing` guard near the cursor is `_syncTextArea`, which stops *moving the hidden textarea* mid-composition — an IME-disturbance guard, unrelated to the caret | xterm.js | `browser/CoreBrowserTerminal.ts:337-339` |
 | ⚠ **Measured, not read (#592, real browser, 2026-07-28)**: composition driven through the hidden textarea, cursor cell and a content cell sampled 5x over 1.4s. With the application silent — the default since #575 — the caret shows **one** distinct colour (already solid) and no content cell changes; with the application asking to blink, the caret shows **two**. So justerm-web adopted alacritty's suppression as a **no-op in the common case**, biting only where an application explicitly asked to blink. ghostty's stronger form was **rejected**: revealing a DECTCEM-hidden caret would invert `cursorCommand`'s contract for a rare case | justerm-web | `justerm-web/src/cursor.ts` `setComposing`, decision recorded on #592 |
 
+### A device-pixel-ratio change — who notices, and what they do about it (#325, verified 2026-08-10)
+
+Only xterm.js has this problem: alacritty and ghostty own their OS window and are told about a scale
+change by the windowing system, so there is no media query and no consumer half. xterm.js is
+therefore the whole reference here, and it is close enough to port.
+
+| Fact | Reference | Site |
+|---|---|---|
+| The **library** owns the listener, not the consumer: `matchMedia("screen and (resolution: ${devicePixelRatio}dppx)")`, built inside the browser service | xterm.js | `src/browser/services/CoreBrowserService.ts:127` |
+| **It re-arms.** On every change it removes the listener from the old query, re-reads `devicePixelRatio`, builds a *new* query at that ratio and attaches — because a resolution query is bound to the ratio it was created with, so the obvious version works exactly once | xterm.js | `src/browser/services/CoreBrowserService.ts:118-137`, teardown at `:131-137` |
+| ⚠ **It does NOT re-fit the grid.** `handleDevicePixelRatioChange` re-measures the char size (*"DomMeasureStrategy(getBoundingClientRect) is not stable when devicePixelRatio changes"*), tells the renderer, and repaints — there is no `resize(cols, rows)` on the path, and `FitAddon` stays manual. This is what justerm's "no re-fit" follows | xterm.js | `src/browser/services/RenderService.ts:279-290`, subscription at `:84` |
+| It uses the **deprecated** `addListener`/`removeListener` pair rather than `addEventListener`; justerm uses the modern one. The only deliberate difference in the port | xterm.js | `src/browser/services/CoreBrowserService.ts:123, 129` |
+
+**Negative result, and it decides how this can be tested (measured 2026-08-10, headless Chromium).**
+CDP's `Emulation.setDeviceMetricsOverride` moves `window.devicePixelRatio` and **re-evaluates** the
+queries — `screen and (resolution: 1dppx)` flips `matches` to `false` and `(min-resolution: 1.5dppx)`
+to `true` — but dispatches **no `change` event**, to a retained `MediaQueryList` or otherwise. Three
+variants tried (an exact-ratio query, a broader one, and the widget's own watcher); all silent. So the
+listener half cannot be proven end-to-end in Playwright and is unit-tested instead, while the
+*adoption* half is driven through a test hook, the way `justerm-renderer/demo/dpr-change.html`
+already does. Holds as long as Chromium's override keeps that split.
+
 ### Cursor policy knobs — where each reference puts them (#580, verified 2026-08-10)
 
 Pins the two constants `justerm-renderer` borrowed for its cursor policy, plus where each reference

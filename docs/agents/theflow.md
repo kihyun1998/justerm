@@ -763,6 +763,23 @@ that *describes* the behavior:
   reached `types.ts` only at S16). Also the renderer `demo/*.html` headers and
   spike comments — each promises only what it can demonstrate (don't tell the
   reader to "watch it change" a constant).
+- **A producer API with zero consumer call sites is a surface, and the widget is one of its
+  readers.** After changing a *published* API — a new `wasm_bindgen` export, a new wire field, a new
+  getter — ask what call sites it has downstream, and treat *none* as the finding rather than as
+  nothing to report. This is not the wire-mirror sweep two bullets up: that one asks whether a value
+  the consumer already uses still travels correctly, this one asks whether a finished mechanism is
+  reachable at all.
+  **Added by epic #583, whose seven items are all of that one shape** — `cursorBlink`, SGR-5 blink,
+  `setBgAlpha`, `setLetterSpacing`/`setLineHeight`, the context-loss surface, cursor
+  contrast/thickness, `setDevicePixelRatio`. None was a bug in the producer, none failed a gate, and
+  the accumulation had one cause: #417 named itself *"the downstream loop for the renderer's additive
+  setters"* and scoped to the three that existed then, so every setter added afterwards needed its
+  own consumer-half issue and only one got one. Where a gap was noticed at all it went into a code
+  comment — `damageHeader`'s *"the web has no text-blink phase"* — which the backlog cannot see. The
+  derivation, so it needs no roster: **the widget is the consumer ADR-0017 names**, so a policy knob
+  the renderer declares and the widget cannot reach is a contradiction in the boundary rather than a
+  missing feature. Cheap to run: the renderer's exports are its `js_name` list and the decoder's are
+  its getters; cross them against `rg` over `justerm-web/src`.
 - **Reclaim now-false rationale.** Walk recent PR/issue/release reasoning and
   retract what the new behavior falsified (surviving reasons are usually the
   transitive ones).

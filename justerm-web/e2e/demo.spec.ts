@@ -1423,6 +1423,55 @@ test.describe("a non-finite bgAlpha falls back to opaque (#577)", () => {
   });
 });
 
+// #325: the device-pixel-ratio change — the last of epic #583, and the only knob in that set that is
+// reached with NO consumer call at all.
+//
+// **The proof splits in two, and the split is measured rather than chosen.** A resolution `change`
+// event cannot be produced in this harness: CDP's `Emulation.setDeviceMetricsOverride` *does* move
+// `window.devicePixelRatio` and *does* re-evaluate the queries — a `screen and (resolution: 1dppx)`
+// query flips `matches` to `false` and `(min-resolution: 1.5dppx)` to `true` — but it dispatches no
+// `change` event, to a retained `MediaQueryList` or otherwise (measured 2026-08-10, three variants).
+// So the listener half — arming, re-arming at the new ratio, detaching — is proven by unit test
+// (`test/dpr-watcher.test.ts`, with the re-arm mutation-checked), and this test proves the half that
+// only a real GL context can answer: that adopting a ratio re-bakes AND re-applies the canvas box.
+//
+// Driven through the demo's `__setDpr` hook, exactly as the renderer's own `demo/dpr-change.html`
+// drives `set_device_pixel_ratio` — for the same reason, and it is the reason #322 shipped with one.
+test("adopting a new device pixel ratio re-bakes and re-applies the canvas box (#325)", async ({
+  page,
+}) => {
+  await expect(page.getByRole("button", { name: /Finish command/ })).toBeVisible();
+
+  const before = await page.evaluate(() => window.__dprProbe!());
+  // The canvas is 1:1 to start with: its CSS box times the density is the drawing buffer. Three
+  // independent sources (DOM, WebGL, the browser), so this cannot agree with itself by construction.
+  expect(before.appliedW * before.dpr).toBe(before.bufW);
+  expect(before.appliedH * before.dpr).toBe(before.bufH);
+
+  await page.evaluate(() => window.__setDpr!(2));
+  const after = await page.evaluate(() => window.__dprProbe!());
+
+  // The cell is re-derived at the new density — `round(metric * dpr)` — so the buffer grows with it.
+  expect(after.cellW).toBeGreaterThan(before.cellW);
+  expect(after.cellH).toBeGreaterThan(before.cellH);
+  expect(after.bufW).toBe(after.cols * after.cellW);
+  expect(after.bufH).toBe(after.rows * after.cellH);
+
+  // THE POINT. The renderer never touches the DOM, so the display box is this package's to re-apply;
+  // forget it and the browser scales a buffer twice the size of its box — the blur #322 removed,
+  // reintroduced one layer out. `dpr` here is the ratio we injected, not the page's.
+  expect(after.appliedW * 2).toBe(after.bufW);
+  expect(after.appliedH * 2).toBe(after.bufH);
+  // …and it genuinely moved, so the assertion above is not satisfied by nothing having happened.
+  expect(after.appliedH).not.toBe(before.appliedH);
+
+  // NO RE-FIT, deliberately: the grid is the consumer's (#417/#578), and xterm.js's
+  // `handleDevicePixelRatioChange` calls no resize either. A widget that quietly re-derived the grid
+  // here would desync the engine the consumer is driving.
+  expect(after.cols).toBe(before.cols);
+  expect(after.rows).toBe(before.rows);
+});
+
 // #580: the two cursor policy knobs — the last renderer setters with no consumer call site (#583).
 //
 // Both are decided at DRAW time against the resolved cell, which is why the proof is a real browser
