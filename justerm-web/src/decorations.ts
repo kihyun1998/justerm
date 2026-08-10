@@ -47,6 +47,12 @@ export interface OverviewRulerOptions {
  * track as a `0..1` ratio (the marker's absolute line ÷ total content lines), its
  * colour, and its across-width placement. The scrollbar renders it. */
 export interface RulerMark {
+  /** Where the mark's **line** sits down the track, `0..1`.
+   *
+   * The name predates #500 §3 and now under-describes it: the scrollbar **centres** the mark's box
+   * on this ratio rather than starting the box at it, so this is the line's position and not the
+   * box's top edge. Kept as-is because `RulerMark` is a published type and the *value* did not
+   * change — only how `scrollbar.ts` reads it. Nothing here is projection-side. */
   readonly topRatio: number;
   readonly color: number;
   readonly position: RulerPosition;

@@ -1446,9 +1446,25 @@ interface PrecedenceProbe {
 
 /** #498: the ordered backgrounds of the overview-ruler mark elements the scrollbar actually built,
  * in DOM order — which is paint order for same-z-index positioned siblings. A full-width mark must
- * come after (i.e. above) a gutter one even when registered first. */
+ * come after (i.e. above) a gutter one even when registered first.
+ *
+ * #500 §2/§3 widened it, because the geometry the marks are drawn with is now load-bearing rather
+ * than uniform: a `full` mark is thinner than a gutter one, and a mark is CENTRED on its line
+ * instead of hanging below it. Neither claim can be checked against a mark rect alone — "centred"
+ * is a statement about the mark's position *within the track*, so the track's own box has to come
+ * back with them. */
 interface RulerLayerProbe {
   marks: { background: string; left: number; right: number; top: number; bottom: number }[];
+  /** The track the marks are laid out in. `overflow` is read from the computed style rather than
+   * inferred: it is the only containment a DOM ruler has, and unlike a canvas's backing store it
+   * does not show up in any rect — `getBoundingClientRect` reports an element's border box whether
+   * or not an ancestor clips it. So this is deliberately a CSS-level assertion, and it is labelled
+   * as one rather than being dressed up as a pixel measurement. */
+  track: { top: number; height: number; overflow: string };
+  /** The `topRatio` both marks were projected at — `line / (scrollbackLen + rows)`, recomputed here
+   * from the demo's own geometry rather than read back from the mark, so the e2e is comparing the
+   * DOM against the projection's *input* and not against itself. */
+  ratio: number;
 }
 
 /**
@@ -2991,13 +3007,23 @@ window.__rulerLayerProbe = async (): Promise<RulerLayerProbe> => {
     const r = el.getBoundingClientRect();
     return { background: el.style.background, left: r.left, right: r.right, top: r.top, bottom: r.bottom };
   });
+  // #500 §3: measured while the marks are still live, and from the SAME geometry the projection
+  // divided by (`maxOffset()` is this demo's `scrollbackLen`), so the expected centre is derived
+  // from the projection's input rather than from the element the assertion is about.
+  const trackRect = track.getBoundingClientRect();
+  const trackInfo = {
+    top: trackRect.top,
+    height: trackRect.height,
+    overflow: getComputedStyle(track).overflow,
+  };
+  const ratio = precedenceLine! / (maxOffset() + ROWS);
   full.dispose();
   gutter.dispose();
   precedenceLine = undefined;
   log.length = savedLen;
   displayOffset = savedOffset;
   render();
-  return { marks };
+  return { marks, track: trackInfo, ratio };
 };
 window.__precedenceProbe = (): PrecedenceProbe => {
   // #458: precedence between decorations on DIFFERENT markers is REGISTRATION order — the last

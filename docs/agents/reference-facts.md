@@ -1540,3 +1540,28 @@ VS Code's shell integration, read in the installed bundle (minified, so no line 
   checked for `marker.line === -1`.
 
 So the real consumer runs capture **and** disposal, which is what #750 landed.
+
+## The overview ruler — who has one, how a mark is merged, and how big it is (#500, verified 2026-08-10)
+
+The decoration territory had **no** rows here at all, while ADR-0024 carried a comparison made once
+inside a record. These are the pinned half, added while working #500 (ruler mark merging / heights /
+centring).
+
+**Read the first two rows before the rest.** This area is the thinnest reference corpus in this file:
+one implementation, and it is the one the tie-breaker table gives *no vote* on the questions #500
+asks (`Consumer-facing API shape / units`). Everything below is therefore a search index, not an
+arbiter — which is exactly why the negatives are recorded as rows rather than left as absences.
+
+| Fact | Reference | Site |
+|---|---|---|
+| **Negative — alacritty has no scrollbar and no ruler of any kind.** `rg -ci "overview.?ruler\|minimap\|color.?zone"` and `rg -ci "scroll_?bar"` are both **0** across the tree. It cannot arbitrate anything on this surface | alacritty | — |
+| **Negative, but not the one it looks like — ghostty HAS a scrollbar and still has no ruler.** `overview.?ruler\|minimap\|color.?zone` is 0, while `scroll_?bar` is not: the engine produces `PageList.Scrollbar { total, offset, len }` and hands it out as an apprt action, and the frontend draws a **native GTK** bar. A platform scrollbar has no per-line mark surface, so the *absence* of an overview ruler there is a consequence of that choice rather than an omission | ghostty | struct `src/terminal/PageList.zig:3347`; producer `:3396`; config `src/config/Config.zig:1422`; GTK host `src/apprt/gtk/class/surface_scrolled_window.zig:15` |
+| ⚠ **Corollary worth more than the negative**: ghostty's three scalars are justerm's `ScrollPosition` — `total` = `scrollbackLen + rows`, `offset` = the viewport's top line, `len` = `rows` — engine-produced, consumer-drawn. So on *who owns scroll geometry* the corpus is 2 of 3 with us; it is only the **marked** ruler that is xterm-only | ghostty | as above |
+| A ruler mark merges with an existing zone only when **colour AND position** both match — not "same colour" | xterm.js | `src/browser/decorations/ColorZoneStore.ts:64` |
+| The merge threshold is `floor(lines.length / (canvas.height - 1) * drawHeight[position])` — *the number of buffer lines one mark's own pixel height spans*. So a merge fires exactly when two boxes would already touch, and merging is therefore near-invisible rather than a fidelity feature. It is **per position class** (a gutter mark is 3–6× taller, so it merges far more aggressively) and recomputed on canvas resize and on any scroll that changed the buffer length | xterm.js | `src/browser/decorations/OverviewRulerRenderer.ts:134`; applied at `ColorZoneStore.ts:109` |
+| ⚠ **Upstream states its own motivation for merging, and it is cost, not appearance** — the accompanying zone pool exists *"to keep zone objects from being freed … reduce GC pressure since the color zones are accumulated on potentially every scroll event"* | xterm.js | `src/browser/decorations/ColorZoneStore.ts:35` |
+| Merging is order-independent upstream **only because its input is sorted by buffer line** — zones are accumulated from `DecorationService.decorations`, a `SortedList` keyed on `marker.line`. Coalescing the same lines in registration order is order-*dependent* | xterm.js | consumption `src/browser/decorations/OverviewRulerRenderer.ts:167`; the list `src/common/services/DecorationService.ts:45` |
+| Mark height is class-dependent: `full` is `round(2 * dpr)` **device** px; the gutter classes share `round(clamp(canvas.height / lines.length, 6, 12) * dpr)` | xterm.js | `src/browser/decorations/OverviewRulerRenderer.ts:124`, `:128` |
+| ⚠ **That formula is not dpr-invariant, and the units are a canvas artefact.** The `[6,12]` clamp is applied to an already-device-px quantity and the result multiplied by `dpr` *again*, so one CSS layout yields a 10 CSS px gutter mark at dpr 1 and 12 at dpr 2. Upstream's own **public** option for this surface is documented "in CSS pixels" — the device px never reaches the API | xterm.js | formula `src/browser/decorations/OverviewRulerRenderer.ts:128`; canvas is device-sized `:153`; public unit `typings/xterm.d.ts:753` |
+| A mark is **centred** on its line (`- drawHeight / 2`), over a track scaled by `canvas.height - 1` *"to ensure at least 2px are allowed for decoration on last line"* | xterm.js | `src/browser/decorations/OverviewRulerRenderer.ts:204`, comment `:203` |
+| ⚠ **Its containment does not transfer to a DOM ruler.** Centring puts the first line's box at a negative `y` and the last line's past `canvas.height`; both are contained only because `ctx.fillRect` is clipped by the backing store. An absolutely-positioned element gets no such clip, and `getBoundingClientRect` reports its box whether an ancestor clips it or not | xterm.js | `src/browser/decorations/OverviewRulerRenderer.ts:198`-`:212` |

@@ -54,10 +54,20 @@ for a marker the viewport group cannot carry. *(2026-08-05, #490 v16: it is the 
 supplies it. The rule is unchanged; only its source moved off the frame — see the consequence below,
 which this ADR wrote when the source was the `markerLines` group.)*
 
-**R6 — A projection that cannot be computed emits nothing.** A non-finite or out-of-range input (a
-`NaN` `scrollbackLen`, a marker line past the buffer, a ratio outside `[0,1]`) yields no rect and no
-mark rather than an invalid one — `top: NaN%` is silently dropped by the browser and stacks marks at the
-track default (#463).
+**R6 — A projection that cannot be computed emits nothing.** A non-finite input (a `NaN`
+`scrollbackLen`, a non-finite marker line) yields no rect and no mark rather than an invalid one —
+`top: NaN%` is silently dropped by the browser and stacks marks at the track default (#463).
+
+*Amended 2026-08-10 (#500): this clause used to extend that list with "a marker line past the buffer,
+a ratio outside `[0,1]`", and the code has never done it — #463 shipped a **clamp** to `[0,1]`
+(`decorations.ts`), pinned by two tests that assert a mark **is** produced. The operative word is
+**computed**. A `NaN` ratio has no value; an out-of-range one has a perfectly good value that is
+merely off the track, and where to put it is a placement policy this rule has no business deciding.
+Two of the three examples were wrong, not the principle. The clamp is unchanged and is only now
+correct on its own terms: before #500 §3 a mark clamped to `topRatio === 1` was drawn entirely below
+the track — never visible, the outcome the clamp exists to prevent — and centring makes it
+half-visible at the edge as its rationale always claimed. The same wrong sentence was restated in
+`docs/map/territory/decoration.md` and is corrected there too.*
 
 ## Named prior art — and what upstream actually *says*
 
@@ -94,6 +104,13 @@ ruler position is xterm's too (`DecorationService.ts:376-378`).
   question about what a *span* is; #500 (ruler mark fidelity — zone merging, heights, centring) is R3's
   detail; #502 (a render hook) is a proposal to relax R1. Each is now "does the model answer this?"
   rather than a fresh pairwise decision.
+  *(Scored 2026-08-10, since both resolved cases went the same way and the prediction did not.
+  **#454 escaped the axis entirely** — see the amendment below — and **#500 split across two rules**
+  rather than being R3's detail: its heights were R3's validity condition, its merging was R1's
+  cardinality clause, and only its centring was the "pixels" this bullet imagined. So the useful
+  correction is not to the classifications but to the assumption behind them — that each open issue
+  maps to **one** rule. Neither of the two did. A third, #502, is still filed against R1 alone; treat
+  that as unverified.)*
 - **#454 was asked of the model and the model did not answer it — amendment, 2026-08-10.** The
   question turned out not to be R1/R2-level at all, and the mis-classification is the useful part:
   this ADR is scoped to the *consumer's* projection, and a decoration rect is only one of three
@@ -109,10 +126,36 @@ ruler position is xterm's too (`DecorationService.ts:376-378`).
   consumer's own coordinates were never the place to fix it. A future question of the same shape
   ("does a span know something about the cells under it?") is a renderer/ADR-0019-side question,
   not one of these rules.
-- **R3's payoff is gated on mark geometry.** Class-last-wins only matters visibly once a `full` mark is
-  thinner than a gutter mark, as upstream's are (`~2 device px` vs a `6-12 px` clamp,
-  `OverviewRulerRenderer.ts:124-131`). Ours are a flat 2 px today, so #500 item 2 is the precondition for
-  R3's benefit — the validity condition, recorded rather than assumed.
+- **R3's payoff was gated on mark geometry, and the gate is now open (#500 §2, 2026-08-10).**
+  Class-last-wins only matters visibly once a `full` mark is thinner than a gutter mark, as upstream's
+  are (`~2 device px` vs a `6-12 px` clamp, `OverviewRulerRenderer.ts:124`, `:128`). Ours were a flat 2 px,
+  so this was recorded as a validity condition rather than assumed. `scrollbar.ts` now sizes by class
+  (`rulerMarkHeightPx`: `full` 2, gutter 6), so R3 decides an overlap rather than only a colour.
+  Two things the fix settled that this bullet had folded together:
+  - **the unit is CSS px, and #500's own acceptance said device px.** Upstream's `drawHeight` is device
+    px because its ruler is a *canvas*; a DOM element has no backing store, xterm's own public option
+    for this surface is documented "in CSS pixels" (`typings/xterm.d.ts:753`), and ADR-0023 governs
+    regardless. Porting the formula verbatim would have imported a defect — its `[6,12]` clamp is
+    applied to an already-device-px quantity and the result multiplied by `dpr` again.
+  - **only the gutter class ever diverged.** `round(2 * dpr)` device px *is* 2 CSS px, which is what
+    `scrollbar.ts` already wrote, and `full` is the default position — so this was one class, not four.
+  The gutter value is a constant rather than upstream's density-adaptive one, **derived, not chosen**:
+  `clamp(trackHeightPx / totalLines, 6, 12)` equals its lower bound whenever `totalLines >
+  trackHeightPx / 6` (~100 lines on a 600 px track), which is every terminal with conventional
+  scrollback. *Validity condition:* below that, upstream grows the mark toward 12 px and ours stays 6.
+- **R1's cardinality clause stands on grounds, not by default (#500 §1, decided 2026-08-10).** "At most
+  one ruler mark per covered **line**" was never argued; the alternative — merging same-colour runs into
+  one mark per *run*, as upstream's `ColorZoneStore` does — was recorded as an open fidelity question.
+  It is closed as **won't-do**, on a premise measured false: upstream's merge threshold *is* the mark's
+  own pixel height expressed in buffer lines (`OverviewRulerRenderer.ts:134` →
+  `ColorZoneStore.ts:109`), so a merge fires only when two boxes already touch, and for opaque fills
+  the union of overlapping boxes *is* the merged box. Merging is visually a near-no-op; upstream's own
+  stated motivation is GC pressure (`ColorZoneStore.ts:35`), i.e. cost. What it would cost **here** is
+  this clause plus R3's second key — coalescing in registration order is order-*dependent* (padding 5,
+  lines `0, 10, 5`: registration order yields two runs, line order one), and upstream avoids that only by
+  feeding zones from a `marker.line`-keyed `SortedList`, the very ordering R3 rejected. *Reopen
+  condition:* #440 choosing `all matches` as its cap policy, which is the only thing that makes ruler
+  density large enough for the cost to bite.
 - **A consumer porting from xterm gets one surprise, and it is `anchor`.** Everything else here either
   matches xterm's colour path or is invisible; a right-anchored decoration's *background* moving is the
   single behavioural difference, and it is the one the typings predict.
@@ -136,4 +179,11 @@ ruler position is xterm's too (`DecorationService.ts:376-378`).
 - **What a rect composites to** — ADR-0019 (layers, channels, paint modes).
 - **Where the absolute lines come from** — ADR-0020 R3 and #490 (the frame carried them until v16; a
   pulled index does now). R5 states the requirement, not its delivery.
-- **Ruler mark *appearance*** — merging, heights, centring (#500). R3 fixes the ordering, not the pixels.
+- ~~**Ruler mark *appearance*** — merging, heights, centring (#500). R3 fixes the ordering, not the
+  pixels.~~ **Partly retracted 2026-08-10 (#500).** The scoping was right about R3 — it orders marks and
+  does not size them — but wrong to put the whole of mark appearance outside this record, because two of
+  the three questions turned out to be *about* these rules rather than beside them: heights are R3's own
+  recorded validity condition, and merging is R1's cardinality clause. Both are now answered in
+  Consequences above. What genuinely stays out of scope is the pixel arithmetic itself — which CSS
+  property expresses the centring, what the track clips with — since that is `scrollbar.ts`'s business
+  and no rule here decides it.
