@@ -182,6 +182,12 @@ pub fn pack_instances(
             // pair it belongs to, so a range whose edge falls between the halves cannot paint one
             // of them. Read from the frame's flags, which are the PATCHED ones inside a preedit —
             // the pass writes its own pairs, and they exist nowhere else.
+            //
+            // The partner's OWN `composed` state is deliberately not re-checked, and the condition
+            // that makes that safe is `preedit::range`: it counts a wide codepoint as **two** cells
+            // (`end = start + (w - 1)`), so a pair the run writes lies wholly inside the span and
+            // both halves stand down together — a non-composed cell can never have a composed
+            // partner. If that counting ever changes, this lookup gains a `!partner_composed` term.
             let partner = crate::pair::partner_at(flags, cols, row, col);
             let kind = if composed {
                 None
