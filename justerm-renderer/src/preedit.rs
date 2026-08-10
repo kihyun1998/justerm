@@ -148,6 +148,23 @@ pub struct CellWrite {
     pub idx: usize,
     pub cp: u32,
     pub flags: u16,
+    pub kind: WriteKind,
+}
+
+/// Whether a write is the composition's own cell or the repair it owes a pair it cut in half.
+///
+/// The two are not interchangeable and the difference is *whose* cell it is: a [`Run`](Self::Run)
+/// cell belongs to the composition, so ADR-0028 D2 has the pass re-supply its colours; a
+/// [`Repair`](Self::Repair) cell is still the **application's**, outside the composition, and the
+/// pass touches it only because ADR-0025 forbids leaving half a glyph behind. [`Span`] excludes the
+/// repairs for exactly this reason, and until #715 the patch did not, so one half of the pass
+/// treated a repair as composed and the other did not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WriteKind {
+    /// A cell of the composition itself.
+    Run,
+    /// The other half of a pair the run cut, blanked so it stops drawing half a glyph.
+    Repair,
 }
 
 /// The cells the preedit takes over, given the cursor it is anchored to.
@@ -186,6 +203,7 @@ pub fn writes(
             idx,
             cp: c.cp,
             flags: lead | crate::attrs::UNDERLINE,
+            kind: WriteKind::Run,
         });
         if c.wide {
             if col + 1 >= cols {
@@ -196,6 +214,7 @@ pub fn writes(
                 idx: idx + 1,
                 cp: 0,
                 flags: crate::attrs::WIDE_CHAR_SPACER | crate::attrs::UNDERLINE,
+                kind: WriteKind::Run,
             });
         }
         col += if c.wide { 2 } else { 1 };
@@ -209,6 +228,11 @@ pub fn writes(
     // puts the run on arbitrary columns so it is reachable in ordinary CJK typing.
     let row_base = (cursor_row as usize) * (cols as usize);
     let flag_at = |c: u32| grid_flags.get(row_base + c as usize).copied().unwrap_or(0);
+    // A repair keeps the cell's own SGR and loses only its claim to be half of a pair — the pair is
+    // what the run destroyed, the rest is the application's (#715). Both bits, not just the one this
+    // side carries: a `WIDE_CHAR_SPACER` left in place would draw the right half of whatever the
+    // preedit put in the cell before it, which is the same artefact one column over.
+    let unpaired = |flags: u16| flags & !(crate::attrs::WIDE_CHAR | crate::attrs::WIDE_CHAR_SPACER);
     if let (Some(first), Some(last)) = (out.first().map(|w| w.idx), out.last().map(|w| w.idx)) {
         let first_col = (first - row_base) as u32;
         let last_col = (last - row_base) as u32;
@@ -217,7 +241,8 @@ pub fn writes(
             out.push(CellWrite {
                 idx: first - 1,
                 cp: u32::from(b' '),
-                flags: 0,
+                flags: unpaired(flag_at(first_col - 1)),
+                kind: WriteKind::Repair,
             });
         }
         // The run ends on a lead: its spacer sits outside the run and would draw a stale right half.
@@ -225,11 +250,95 @@ pub fn writes(
             out.push(CellWrite {
                 idx: last + 1,
                 cp: u32::from(b' '),
-                flags: 0,
+                flags: unpaired(flag_at(last_col + 1)),
+                kind: WriteKind::Repair,
             });
         }
     }
     out
+}
+
+/// The per-cell columns a composition rewrites, owned — the copy-on-write the pass makes before
+/// anything resolves the frame.
+///
+/// Five of the frame's six columns are here. The sixth, `underline_colors`, is answered in the
+/// packer instead (ADR-0028 D2, #711): `0` there already means *follow the fg the pass supplied*,
+/// so both halves write the same declaration and the split is a gate artifact rather than a rule.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Patch {
+    pub codepoints: Vec<u32>,
+    pub flags: Vec<u16>,
+    pub clusters: Vec<String>,
+    pub bg: Vec<u32>,
+    pub fg: Vec<u32>,
+}
+
+/// Apply an open composition to the frame's columns, or `None` when nothing is composing and when
+/// the anchor is off-grid (ghostty draws nothing rather than guessing).
+///
+/// **This is pure on purpose, and the reason is a gate rather than taste.** `webgl.rs` is
+/// `#[cfg(target_arch = "wasm32")]` and 0-compiles on host, so a rule written there is unreachable
+/// by `cargo test --manifest-path justerm-renderer/Cargo.toml`, where every test of this behaviour
+/// lives — the same axis #711's fix was decided on, which had a pure home already (the packer) and
+/// so did not need this move. #715 has none: the patch is where the application's background is
+/// overwritten, so by the time the packer runs the value it would have to restore is gone.
+///
+/// The two kinds of write are not treated alike, which is the whole of #715 — see [`WriteKind`].
+pub fn patch(
+    run: &[Codepoint],
+    cursor_col: u32,
+    cursor_row: u32,
+    cells: &crate::glyph_resolve::Cells<'_>,
+    bg: &[u32],
+    fg: &[u32],
+) -> Option<Patch> {
+    if run.is_empty() {
+        return None;
+    }
+    let w = writes(
+        run,
+        cursor_col,
+        cursor_row,
+        cells.cols,
+        cells.rows,
+        cells.flags,
+    );
+    if w.is_empty() {
+        return None; // off-grid anchor, or no room — ghostty draws nothing rather than guessing
+    }
+    let mut p = Patch {
+        codepoints: cells.codepoints.to_vec(),
+        flags: cells.flags.to_vec(),
+        clusters: cells.clusters.to_vec(),
+        bg: bg.to_vec(),
+        fg: fg.to_vec(),
+    };
+    for cw in w {
+        if let Some(slot) = p.codepoints.get_mut(cw.idx) {
+            *slot = cw.cp;
+        }
+        if let Some(slot) = p.flags.get_mut(cw.idx) {
+            *slot = cw.flags; // REPLACE, not or-in: the cell's own SGR is not the preedit's
+        }
+        // …but only for a cell the composition actually took. A repair is the application's cell
+        // with half a glyph removed, so re-supplying its colours would erase a background nobody
+        // asked the pass to touch (#715). `Span` already draws this line — the packer's stand-downs
+        // apply to the run and never to a repair — and this is the other half of that same line.
+        if cw.kind == WriteKind::Run {
+            if let Some(slot) = p.bg.get_mut(cw.idx) {
+                *slot = 0;
+            }
+            if let Some(slot) = p.fg.get_mut(cw.idx) {
+                *slot = 0;
+            }
+        }
+        // A grapheme override belonging to the cell underneath would otherwise be rasterised in
+        // place of the preedit's codepoint — `resolve_frame` prefers a non-empty cluster.
+        if let Some(slot) = p.clusters.get_mut(cw.idx) {
+            slot.clear();
+        }
+    }
+    Some(p)
 }
 
 #[cfg(test)]
@@ -361,12 +470,14 @@ mod tests {
                 CellWrite {
                     idx: 12,
                     cp: b'a' as u32,
-                    flags: UNDERLINE
+                    flags: UNDERLINE,
+                    kind: WriteKind::Run
                 },
                 CellWrite {
                     idx: 13,
                     cp: b'b' as u32,
-                    flags: UNDERLINE
+                    flags: UNDERLINE,
+                    kind: WriteKind::Run
                 },
             ]
         );
@@ -381,12 +492,14 @@ mod tests {
                 CellWrite {
                     idx: 2,
                     cp: GA,
-                    flags: WIDE_CHAR | UNDERLINE
+                    flags: WIDE_CHAR | UNDERLINE,
+                    kind: WriteKind::Run
                 },
                 CellWrite {
                     idx: 3,
                     cp: 0,
-                    flags: WIDE_CHAR_SPACER | UNDERLINE
+                    flags: WIDE_CHAR_SPACER | UNDERLINE,
+                    kind: WriteKind::Run
                 },
             ],
             "the trailing half draws no codepoint of its own but is still part of the run"
@@ -431,8 +544,9 @@ mod tests {
         let flags = [WIDE_CHAR, WIDE_CHAR_SPACER, 0, 0, 0, 0, 0, 0, 0, 0];
         let w = writes(&[narrow(b'a' as u32)], 1, 0, 10, 5, &flags);
         assert!(
-            w.iter()
-                .any(|c| c.idx == 0 && c.cp == u32::from(b' ') && c.flags == 0),
+            w.iter().any(|c| c.idx == 0
+                && c.cp == u32::from(b' ')
+                && c.flags & (WIDE_CHAR | WIDE_CHAR_SPACER) == 0),
             "the orphaned lead must be blanked, else it draws its left half only: {w:?}"
         );
     }
@@ -450,8 +564,9 @@ mod tests {
             &flags,
         );
         assert!(
-            w.iter()
-                .any(|c| c.idx == 3 && c.cp == u32::from(b' ') && c.flags == 0),
+            w.iter().any(|c| c.idx == 3
+                && c.cp == u32::from(b' ')
+                && c.flags & (WIDE_CHAR | WIDE_CHAR_SPACER) == 0),
             "the orphaned spacer must be blanked, else it draws a stale right half: {w:?}"
         );
     }
@@ -461,6 +576,151 @@ mod tests {
         let flags = [0u16; 10];
         let w = writes(&[narrow(b'a' as u32)], 1, 0, 10, 5, &flags);
         assert_eq!(w.len(), 1, "no repair where nothing was broken: {w:?}");
+    }
+
+    // --- what a repair may touch: the glyph, never the pen (#715, ADR-0028 D2) ---
+    //
+    // The run's own cells leave the composition stack and come back with bg, fg and glyph together
+    // (D2). A repair cell never entered it — `Span` says so, and it is the application's cell, on
+    // screen, outside the composition — so the pass owes it exactly one thing: stop drawing half a
+    // glyph. Everything else there was declared by the application and stays.
+
+    const BLUE: u32 = 0x0000_00FF;
+    const RED: u32 = 0x00FF_0000;
+
+    /// A one-row grid the tests own the columns of, so `patch`'s borrows have somewhere to point.
+    struct Grid {
+        codepoints: Vec<u32>,
+        flags: Vec<u16>,
+        clusters: Vec<String>,
+        bg: Vec<u32>,
+        fg: Vec<u32>,
+    }
+
+    impl Grid {
+        /// The `#715` fixture as measured in the browser: every cell blue, a wide pair at columns
+        /// 2-3 whose lead carries an SGR underline of its own, and a cluster override on that lead
+        /// — the one thing that would redraw the glyph a repair just blanked.
+        fn with_a_pair() -> Self {
+            const N: usize = 6;
+            let mut g = Self::plain();
+            g.flags[2] = WIDE_CHAR | UNDERLINE;
+            // The spacer carries the SGR too, because core stamps it from the same pen —
+            // `let mut spacer = self.cursor.pen.cell(' ')` then `insert_flags(WIDE_CHAR_SPACER)`
+            // (`justerm-core/src/term.rs`, `write_glyph`). A fixture giving it a bare
+            // `WIDE_CHAR_SPACER` would model an input core never produces, and the spacer-side
+            // repair would then never exercise SGR preservation at all.
+            g.flags[3] = WIDE_CHAR_SPACER | UNDERLINE;
+            g.clusters[2] = "가".to_string();
+            debug_assert_eq!(g.codepoints.len(), N);
+            g
+        }
+
+        /// The same grid with no pair in it — the control for "a run that breaks nothing".
+        fn plain() -> Self {
+            const N: usize = 6;
+            Self {
+                codepoints: vec![u32::from(b'x'); N],
+                flags: vec![0u16; N],
+                clusters: vec![String::new(); N],
+                bg: vec![BLUE; N],
+                fg: vec![RED; N],
+            }
+        }
+
+        fn cells(&self) -> crate::glyph_resolve::Cells<'_> {
+            crate::glyph_resolve::Cells {
+                cols: 6,
+                rows: 1,
+                codepoints: &self.codepoints,
+                flags: &self.flags,
+                clusters: &self.clusters,
+            }
+        }
+
+        fn patch(&self, run: &[Codepoint], col: u32) -> Patch {
+            patch(run, col, 0, &self.cells(), &self.bg, &self.fg).expect("the run is on grid")
+        }
+    }
+
+    #[test]
+    fn a_repair_keeps_the_background_and_foreground_the_application_painted() {
+        let p = Grid::with_a_pair().patch(&[narrow(b'a' as u32)], 3);
+
+        assert_eq!(
+            p.bg[2], BLUE,
+            "the orphaned lead is not the composition's cell"
+        );
+        assert_eq!(p.fg[2], RED, "…and neither is its foreground");
+        // Side conditions, so a patch that simply stopped writing anything cannot pass this:
+        assert_eq!(p.bg[3], 0, "the RUN's cell is still re-supplied (D2)");
+        assert_eq!(p.fg[3], 0, "…in both channels");
+        assert_eq!(p.bg[5], BLUE, "an untouched cell is untouched");
+    }
+
+    #[test]
+    fn a_repair_blanks_the_glyph_channel_and_only_that() {
+        let p = Grid::with_a_pair().patch(&[narrow(b'a' as u32)], 3);
+
+        assert_eq!(p.codepoints[2], u32::from(b' '), "no half glyph is drawn");
+        assert!(
+            p.clusters[2].is_empty(),
+            "a cluster override would redraw the very glyph the repair just blanked"
+        );
+        assert_eq!(
+            p.flags[2] & (WIDE_CHAR | WIDE_CHAR_SPACER),
+            0,
+            "the pair is gone, so the cell may no longer claim to be half of one"
+        );
+        assert_eq!(
+            p.flags[2] & UNDERLINE,
+            UNDERLINE,
+            "the application's own SGR is not the composition's to erase"
+        );
+    }
+
+    #[test]
+    fn the_spacer_a_run_orphans_is_repaired_the_same_way() {
+        // The mirror end: the run's last cell is a wide LEAD, so its spacer at column 3 is orphaned.
+        let p = Grid::with_a_pair().patch(&[narrow(b'a' as u32), narrow(b'b' as u32)], 1);
+
+        assert_eq!(
+            p.bg[3], BLUE,
+            "the orphaned spacer keeps the application's bg"
+        );
+        assert_eq!(p.codepoints[3], u32::from(b' '), "and draws no stale half");
+        assert_eq!(p.flags[3] & WIDE_CHAR_SPACER, 0, "it is no longer a spacer");
+        assert_eq!(
+            p.flags[3] & UNDERLINE,
+            UNDERLINE,
+            "…and keeps the SGR core stamped onto it from the pen"
+        );
+        assert_eq!(p.bg[2], 0, "the cell the run took IS re-supplied");
+    }
+
+    #[test]
+    fn a_run_cell_that_is_itself_a_space_is_still_the_compositions_cell() {
+        // The codepoint cannot be the discriminator, and a plausible fix would have made it one: a
+        // repair writes a space, and so does a user who types one mid-composition. Only *whose
+        // cell it is* separates the two, which is why `WriteKind` exists rather than a `cp == ' '`
+        // test at the point of use.
+        let p = Grid::with_a_pair().patch(&[narrow(u32::from(b' '))], 3);
+
+        assert_eq!(p.bg[3], 0, "the run took this cell, space or not");
+        assert_eq!(p.bg[2], BLUE, "…and did not take the one it only repaired");
+    }
+
+    #[test]
+    fn a_composition_that_breaks_no_pair_leaves_every_other_cell_alone() {
+        // The `None`-shaped control: without a repair, a patch touches exactly the run's own cells.
+        let g = Grid::plain();
+        let p = g.patch(&[narrow(b'a' as u32)], 3);
+
+        assert_eq!(p.bg, vec![BLUE, BLUE, BLUE, 0, BLUE, BLUE]);
+        assert!(
+            patch(&[], 3, 0, &g.cells(), &g.bg, &g.fg).is_none(),
+            "nothing composing"
+        );
     }
 
     #[test]

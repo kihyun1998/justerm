@@ -667,6 +667,109 @@ mod tests {
     use crate::overlay::{HIGHLIGHT_BLEND_ALPHA, HighlightColors, blend_over};
     use crate::render_policy::ColorPolicy;
 
+    /// #715, and the one proof of it that names no reference at all.
+    ///
+    /// A composition that orphans a wide half repairs the cell beside its run — a cell it never
+    /// took, so `preedit::Span` excludes it and every stage below glyph resolution therefore runs
+    /// on it as the *application's* cell. That is what decides the rule: if the patch also
+    /// re-supplied its colours, the cell would carry the pass's `Default` bg into the application's
+    /// stack, and `should_blend_kind` reads a `Default` backdrop as pristine — so a highlight over
+    /// it paints **solid** where every neighbour blends. The repaired cell then glows inside the
+    /// selection band it is supposed to be part of.
+    ///
+    /// Measured here rather than argued, because the alternative rule ("keep the background, but
+    /// re-supply the flags and foreground" — the shape `justerm-core`'s `free_cell` uses for the
+    /// same structural event) is defensible right up until this frame is packed. Its grounds do not
+    /// transfer: core rejects the cell's own attributes because a destroyed glyph's **hyperlink**
+    /// would stay clickable and the pen's **DECSCA** would protect a cell the app never wrote, and
+    /// this crate has neither — `attrs.rs` carries SGR presentation bits and the two `WIDE` bits.
+    #[test]
+    fn a_repaired_cell_packs_identically_to_its_untouched_neighbours_under_a_selection() {
+        use crate::preedit::{Codepoint, patch};
+
+        const N: usize = 6;
+        let app_bg = (2u32 << 24) | 0x20_40_60; // Rgb, so a highlight over it BLENDS
+        let codepoints = vec![u32::from(b'x'); N];
+        let mut flags = vec![0u16; N];
+        flags[2] = crate::attrs::WIDE_CHAR | UNDERLINE; // the pair's lead — orphaned by the run
+        flags[3] = crate::attrs::WIDE_CHAR_SPACER | UNDERLINE;
+        let clusters = vec![String::new(); N];
+        let (bg, fg) = (vec![app_bg; N], vec![0u32; N]);
+        let cells = crate::glyph_resolve::Cells {
+            cols: N as u32,
+            rows: 1,
+            codepoints: &codepoints,
+            flags: &flags,
+            clusters: &clusters,
+        };
+        // One narrow cell composing on column 3 — the pair's SPACER, which orphans the lead at 2.
+        let run = [Codepoint {
+            cp: u32::from(b'A'),
+            wide: false,
+        }];
+
+        let pack = |p: &crate::preedit::Patch| {
+            let (slots, ucol) = (vec![0u16; N], vec![0u32; N]);
+            let f = Frame {
+                cols: N as u32,
+                rows: 1,
+                preedit: Some(crate::preedit::Span {
+                    row: 0,
+                    start: 3,
+                    end: 3,
+                }),
+                bg: &p.bg,
+                fg: &p.fg,
+                slots: &slots,
+                flags: &p.flags,
+                codepoints: &p.codepoints,
+                underline_colors: &ucol,
+            };
+            let sel = [0u32, 0, (N - 1) as u32]; // the whole row is selected
+            let ov = Overlay {
+                active: &[],
+                selection: &sel,
+                matches: &[],
+                colors: HighlightColors {
+                    selection_bg: 0x30_60_C0,
+                    match_bg: 0x30_60_C0,
+                    active_match_bg: 0x30_60_C0,
+                },
+            };
+            pack_instances(&f, &palette(), true, &ov, &ColorPolicy::default(), &[])
+        };
+        let cell_bg = |v: &[f32], col: usize| {
+            let b = col * INSTANCE_FLOATS;
+            [v[b + 2], v[b + 3], v[b + 4]]
+        };
+
+        let got = pack(&patch(&run, 3, 0, &cells, &bg, &fg).expect("the run is on grid"));
+        assert_eq!(
+            cell_bg(&got, 2),
+            cell_bg(&got, 5),
+            "the repaired cell is part of the same selection band as every untouched cell"
+        );
+        // The side condition, so this cannot pass on a frame where nothing composed: the cell the
+        // run DID take stands down out of the highlight entirely (ADR-0028 D2).
+        assert_eq!(
+            cell_bg(&got, 3),
+            gl_rgb(palette().default_bg),
+            "the composed cell is the pass's, and no highlight reaches it"
+        );
+
+        // The rejected rule, packed side by side: re-supply the repair's colours like a run cell's
+        // and the Default backdrop makes the highlight paint solid — a bright notch in the band.
+        let mut resupplied = patch(&run, 3, 0, &cells, &bg, &fg).expect("the run is on grid");
+        resupplied.bg[2] = 0;
+        resupplied.fg[2] = 0;
+        let notch = pack(&resupplied);
+        assert_ne!(
+            cell_bg(&notch, 2),
+            cell_bg(&notch, 5),
+            "…and this is what makes it the rejected rule, not a matter of taste"
+        );
+    }
+
     /// A single Bottom/Top decoration rect covering (row 0, col 0).
     fn deco(layer: DecorationLayer, bg: Option<u32>, fg: Option<u32>) -> DecorationRect {
         DecorationRect {

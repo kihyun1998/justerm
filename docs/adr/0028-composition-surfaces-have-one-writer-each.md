@@ -5,12 +5,16 @@ Status: **accepted** (2026-08-04, #640) — proposed 2026-08-03, accepted once #
 the model that accreted across #592, #631, #637, #649 and #249 — five decisions about what an IME
 composition does to the screen, made one site at a time, none of them written down as a rule.
 
-**Three of its clauses were corrected by implementing them**, and the corrections are in the text
+**Four of its clauses were corrected by implementing them**, and the corrections are in the text
 below rather than appended: D2's "removes its cells from the stack" turned out to be a claim about the
-whole pipeline and not about the resolver; D4's bypass is legitimate only because the *origin* is
-latched while the *extent* stays live; D5 needed an explicit answer at the right edge, where "one past
-the end" has no referent. Each was found by measurement after the first implementation passed review —
-which is the argument for accepting a record only after a member has shipped against it.
+whole pipeline and not about the resolver; D2's pair-repair sentence said "blanks the cell" where the
+debt it derives from is owed to the *pair*, so the repair was taking the application's colours with it
+(#715); D4's bypass is legitimate only because the *origin* is latched while the *extent* stays live;
+D5 needed an explicit answer at the right edge, where "one past the end" has no referent. Each was
+found by measurement after the first implementation passed review — which is the argument for
+accepting a record only after a member has shipped against it. The fourth is the one that arrived
+*after* acceptance, and it did not weaken the case for the rule: the clause was over-broad by one
+word, and the correction is derived from the same ADR-0025 debt the clause already cited.
 
 **Mixed type, and the split matters for what may retire it.** D1–D4 are derivations: they follow from
 what the browser guarantees, what this family's layers are, and numbers measured here — a better
@@ -131,7 +135,79 @@ writes a *pass*, not only on whoever adds a column.
 **And a pass that writes half a wide pair owes the other half** (ADR-0025: one pair, one owner, one
 lifecycle). A run landing on an existing spacer leaves its lead drawing *"its left half only"* — the
 resolver's own words for a state core's resize can legitimately produce, but which a preedit has no
-business creating. The run blanks the cell it orphans, on either side.
+business creating. The run blanks the **glyph** of the cell it orphans, on either side — the
+codepoint, the cluster override and the two `WIDE` bits, and nothing else.
+
+**This sentence read "blanks the cell" for one published release, and the code implemented it
+faithfully** (#715, `renderer-v0.10.0`, the same release that shipped #711). So the composed cell's
+background rule was applied to a cell the composition never took: an orphaned lead lost the
+background, foreground and SGR the *application* had painted, for as long as the composition stayed
+open. The repair cell is not a boundary case of D2's re-supply — it is outside it, and this clause is
+the one place a reader could think otherwise.
+
+**Three grounds settle it, and none of them is a reference.** The first two are this record's own,
+and the third is the one that makes the rule falsifiable rather than merely coherent:
+
+1. **The pass already declares which cells are its own, exactly once.** `preedit::Span` — the span
+   the packer stands every later stage down inside — is built by asking `writes` for the run with
+   *no* grid flags, precisely so the repairs are excluded: *"the span is the RUN, never the repair
+   cells beside it"*, in its own words. A patch that treats a repair as composed does not add a
+   second rule, it contradicts the only one there is.
+2. **A cell the pass does not take stays in the stack** (the ADR-0019 amendment above). The pass
+   removes *its* cells and re-supplies them whole; everything else resolves through the ordinary
+   pipeline. So a repair cell's colours are the application's by construction, and re-supplying them
+   would leave that cell with the pass's colours under the application's treatments — a column
+   answered by the wrong half, which is the same defect as #711 one column over.
+3. **Measured, and it is the reason the rule is not a matter of taste.** Under a selection, a
+   re-supplied repair cell carries the pass's `Default` background into `should_blend_kind`, which
+   reads a `Default` backdrop as pristine and therefore paints the highlight **solid** where every
+   neighbour blends: the repaired cell packs `[0.188, 0.376, 0.753]` inside a band whose other cells
+   pack `[0.157, 0.314, 0.565]` — a bright notch in the middle of the user's own selection. Blanking
+   only the glyph makes it pack byte-identically to its untouched neighbours. Pinned by
+   `a_repaired_cell_packs_identically_to_its_untouched_neighbours_under_a_selection` (`frame.rs`),
+   which packs both rules side by side.
+
+**Neither reference can arbitrate this**, and recording that is what stops the next reader spending
+an afternoon on it: **neither does pair repair at all**. The repair is justerm's own ADR-0025
+obligation, reached from the consumer's side of the boundary. Transposing each reference's *own*
+repair into this pass's terms is actively misleading and was tried: alacritty's `clear_wide` keeps the
+cell's own attributes (`term/cell.rs:171` @ `852e971`) and lands on this rule, while ghostty's
+`blankCell` fill (`Screen.zig:1770`, `:1929`) and xterm.js's whole-pen stamp (`InputHandler.ts:538`,
+`:669`) both land on **the code #715 removed** — so the count runs 2–1 *against* the rule this record
+states, and it is not evidence either way. The tie-breaker for renderer cell composition is justerm's
+own model; a count here is the shape of argument the #490 war story exists to warn about. What the
+references *do* settle is the narrower fact that the exclusion is run-scoped: ghostty's `continue` for
+an in-range cell precedes its own per-cell background write (`generic.zig:2677` then `:2899`, no other
+cell loop between), so a cell outside the range keeps everything it had, background included.
+
+**Rejected alternative: widen `Span` to swallow the repair.** The two halves of the pass can also be
+reconciled the other way — declare the whole orphaned pair the composition's for the duration, keep
+the old patch, and the disagreement disappears just as completely. It is coherent and it is
+expressible (`Span` is one contiguous inclusive range, and the repairs are adjacent by construction),
+which is why it belongs here rather than being rediscovered. It is **worse than the defect it would
+replace**: with the repair inside the span every later stage stands down over it, so under a
+selection the cell packs the terminal's default background — a black hole in the selected row, where
+the re-supplied version was merely a bright notch. Recorded so *"cancel the pair and nothing more"*
+is not read as the only available reconciliation. It was the better of two.
+
+**Where core answers the same question differently, and why that is not a divergence to close.**
+`justerm-core`'s `free_cell` repairs the identical structural event — a write that lands on half a
+pair — and answers it with *the pen's background, everything else default*, a choice the maintainer
+made on 2026-07-24 (#530) after rejecting exactly the shape this clause adopts. Its grounds are what
+separate the two layers, and they are worth stating because the surface similarity is strong enough
+to invite a "fix" in either direction. Core rejects the cell's own attributes because a destroyed
+glyph's **hyperlink** would stay alive and clickable (#529) and the whole pen because **DECSCA**
+protection would land on a cell the application never wrote — this crate has neither; its per-cell
+word is SGR presentation plus the two `WIDE` bits. And core's repair is a durable buffer mutation the
+wire then carries, while this one is recomputed every frame and stored nowhere, so there is no value
+for the two rules to disagree about. What *does* transfer is core's third, affirmative ground — *"a
+blank cell carries the current background… a bare default would punch an uncoloured notch into a
+coloured run"* — and that is the half both layers agree on, and the half #715 was.
+
+The corollary generalises past this pair, and it is the mirror of the column rule two paragraphs up:
+**a pass owes an answer for every column of a cell it takes, and owes nothing for a cell it merely
+repairs.** "Which cells are the pass's" is therefore a question with one answer, not one per consumer
+of the write list.
 
 **D3 — The drawn preedit reads `compositionupdate.data`; the committed text reads `textarea.value`.
 The two sources are not interchangeable and neither is a fallback for the other.** By measurement 2,

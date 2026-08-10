@@ -1,0 +1,126 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>justerm-renderer proof — an IME preedit's pair repair (#715)</title>
+<style>
+  body { margin: 0; background: #000; }
+  #c { display: block; image-rendering: pixelated; }
+</style>
+<!--
+  #715 (ADR-0028 D2 + ADR-0025): a run landing on a wide pair's spacer orphans the lead beside it, so
+  the pass appends a REPAIR write for that lead. The repair cell is the application's — on screen,
+  outside the composition, and excluded from `preedit::Span` for exactly that reason — so the pass
+  owes it one thing only: stop drawing half a glyph. It was instead being patched like one of the
+  composition's own cells, which took the background the application had painted there.
+
+  Layout — one row, every cell's bg an explicit blue, a wide pair at columns 2-3:
+    col 2  wide LEAD + UNDERLINE (the application's own SGR)   the REPAIR cell
+    col 3  the pair's SPACER                                    the RUN's one cell
+    col 5  narrow, untouched                                    same-frame control
+  The run is anchored on column 3 — the spacer — which is what orphans the lead at column 2.
+
+  What each check separates:
+  · the repair keeping BLUE is the defect itself: before the fix it read the default bg (black here,
+    [30,30,46] in the browser measurement on the issue).
+  · the repair still showing an underline is the second half of the same rule — the application's SGR
+    is not the composition's to erase. Before the fix the repair wrote `flags: 0`, so this pixel was
+    blank. It is font-independent: the band is drawn by the shader off the flag, not by a glyph.
+  · column 3 having NO blue in the same frame is what makes the first check about the *repair* rather
+    than about the pass having stopped writing backgrounds at all (D2 still re-supplies a run cell).
+  · column 3 getting its blue back once the composition closes is what proves the composition was
+    genuinely open — without it, "the run cell is black" could pass on a frame with no preedit.
+
+  Deliberately NOT asserted here: the cluster override the repair clears. `apply_frame` is the
+  cluster-free path (`clusters: &[]`), so that column is unreachable from this page and is gated by
+  the host tests in `preedit.rs` instead.
+
+  ⚠ `setPreedit` before `apply_frame`, not after — same ordering note as `preedit-underline-color.html`:
+  `apply_frame` packs immediately while `setPreedit` only raises `needs_repack`.
+
+  Runner sweeps dpr 1 / 1.1 / 1.5 / 2.
+  Build: wasm-pack build --target web --dev --out-dir pkg
+-->
+<canvas id="c" width="128" height="32"></canvas>
+<script type="module">
+  import init, { JustermRenderer } from "../pkg/justerm_renderer.js";
+  import { readRect } from "./proof.js";
+  await init();
+
+  const UNDERLINE = 1 << 3;
+  const WIDE_CHAR = 1 << 8;
+  const WIDE_CHAR_SPACER = 1 << 9;
+  const COLS = 6, ROWS = 1, N = COLS * ROWS;
+  const GA = 0xac00; // U+AC00 HANGUL SYLLABLE GA — the pair's lead, ghostty's own fixture
+  const RGB = (c) => ((2 << 24) | c) >>> 0; // tagged Rgb ref (as encode_color)
+  const BLUE = RGB(0x0000ff);
+
+  // default fg WHITE over default bg BLACK, so the application's blue and the default it was being
+  // replaced by are as far apart as a channel can put them.
+  const palette = new Uint32Array(256);
+  const r = new JustermRenderer("#c", palette, 0xffffff, 0x000000);
+  const gl = document.querySelector("#c").getContext("webgl2");
+
+  const grab = () => { const [w, h] = [gl.drawingBufferWidth, gl.drawingBufferHeight]; return { ...readRect(gl, { x: 0, y: 0, w, h }), w, h }; };
+  const px = (img, x, y) => { const i = ((img.h - 1 - y) * img.w + x) * 4; return [img.buf[i], img.buf[i + 1], img.buf[i + 2]]; };
+
+  const codepoints = new Uint32Array(N).fill(0x78); // 'x' everywhere the pair does not sit
+  codepoints[2] = GA;
+  codepoints[3] = 0; // a spacer draws no codepoint of its own
+  const flags = new Uint16Array(N);
+  flags[2] = WIDE_CHAR | UNDERLINE; // the pair's lead, with an SGR the application declared
+  flags[3] = WIDE_CHAR_SPACER;
+  const bg = new Uint32Array(N).fill(BLUE);
+
+  /** Draw the row with `run` composing on column 3 — the pair's spacer — and read the pixels back. */
+  const draw = (run) => {
+    r.resize(COLS, ROWS);
+    r.setPreedit(3, 0, new Uint32Array(run)); // BEFORE apply_frame — see the header note
+    r.apply_frame(COLS, ROWS, bg, new Uint32Array(N), codepoints, flags, true, undefined);
+    r.render();
+    return grab();
+  };
+
+  /** Pixels strictly inside cell `col`, inset by one device px so a rounding edge cannot bleed in. */
+  const cellPixels = (img, col) => {
+    const [cw, ch] = [r.cell_width(), r.cell_height()];
+    const x0 = Math.round(col * cw) + 1, x1 = Math.min(Math.round((col + 1) * cw) - 1, img.w);
+    const out = [];
+    for (let y = 0; y < Math.min(ch, img.h); y++) for (let x = x0; x < x1; x++) out.push(px(img, x, y));
+    return out;
+  };
+  const isBlue = (p) => p[0] < 50 && p[1] < 50 && p[2] > 200;   // the application's bg, exactly
+  const isInk = (p) => p[0] > 200 && p[1] > 200 && p[2] > 200;  // white — the default fg
+  const count = (ps, f) => ps.filter(f).length;
+
+  const composing = draw([0x41]); // one narrow 'A' — the run takes column 3, the spacer
+  const [o2, o3, o5] = [2, 3, 5].map((c) => cellPixels(composing, c));
+
+  const closed = draw([]); // the composition ends; the pair is whole again
+  const c3 = cellPixels(closed, 3);
+
+  const checks = {
+    // THE DEFECT. The orphaned lead is not the composition's cell, so its background is untouched.
+    theRepairKeepsTheApplicationBackground: count(o2, isBlue) > 0,
+    // The same rule's other half: the pass blanks the glyph, never the pen the application declared.
+    theRepairKeepsTheApplicationsOwnUnderline: count(o2, isInk) > 0,
+    // Same frame: a cell the run actually took IS re-supplied (D2), so no blue survives there.
+    theRunCellIsResuppliedNotKept: count(o3, isBlue) === 0,
+    // ...and that is a statement about the pass, not about this page: the blue returns when it ends.
+    theCompositionWasGenuinelyOpen: count(c3, isBlue) > 0,
+    // Same frame, a cell neither covered nor repaired.
+    anUncoveredCellKeepsItsBackground: count(o5, isBlue) > 0,
+  };
+
+  window.__proof = {
+    ok: Object.values(checks).every(Boolean),
+    checks,
+    dpr: devicePixelRatio,
+    blue: { repair: count(o2, isBlue), run: count(o3, isBlue), closedRun: count(c3, isBlue), untouched: count(o5, isBlue) },
+    ink: { repair: count(o2, isInk) },
+  };
+  window.__done = true;
+
+  // Leave the COMPOSING state on screen — this page is also what someone opens to look at the
+  // behaviour, and the last frame drawn above is the closed one. Every check ran on the buffers
+  // captured before this, so it asserts nothing and changes nothing.
+  draw([0x41]);
+</script>
