@@ -397,6 +397,30 @@ Traps this layer must respect:
   scratch page, or #352 turns it white before you can read anything.
 - Visual/color changes still need a browser verify even when Step 5 is skipped
   for a closed surface — a synthetic-input unit is not a substitute (#223).
+- **An experiment that saturates the workstation is asked about before it is
+  spawned — every time, no exceptions.** This box is shared with the
+  maintainer's interactive work and with other concurrent agent sessions; a
+  measurement that makes it unusable is not a background cost you may absorb on
+  their behalf. #735 (2026-08-10) is the case: its harness spawns
+  `load.mjs 112` — 112 busy-loop worker threads against **28 logical cores, 4x
+  oversubscription** — and the maintainer killed it from Task Manager at 89%
+  CPU while other work stalled. **Do not answer this by lowering the load: the
+  contention *is* the experiment** (#735 measures 182ms idle vs **4024ms** at
+  4x against a 5000ms budget; at 1x cores the failure does not reproduce). So
+  the two real repairs are:
+  - **Ask first**, and say what you will pin and for how long. If nobody is
+    available to ask, the experiment waits.
+  - **Box it** — pin the load generator *and* the measured browser to a core
+    subset (`(Get-Process -Id N).ProcessorAffinity = 0xFF`) and scale the
+    spinner count to keep the same ratio *inside* the box, leaving the rest of
+    the machine to its owner. State the cost when you do: absolute
+    milliseconds are then incomparable with numbers taken on the whole host —
+    only the cold/warm *ratio* survives, so a boxed run needs its own baseline.
+  A load generator must also **self-terminate when its parent dies** (poll the
+  parent pid, exit). A `finally { taskkill … }` covers a thrown exception and
+  nothing else: the harness killed from Task Manager, or hard-killed for any
+  other reason, leaves the spinners running forever with no parent to stop
+  them — which is precisely how a crashed run becomes a machine nobody can use.
 
 ### Recording a capture on the VM
 
