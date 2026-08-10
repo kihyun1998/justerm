@@ -6,7 +6,7 @@ name = "justerm-renderer"
 # `cargo build --manifest-path justerm-renderer/Cargo.toml --target wasm32-unknown-unknown`.
 # NOT `-p justerm-renderer`: a `-p` flag selects from the workspace, and this crate is in none,
 # so that form errors with "did not match any packages" (#608).
-version = "0.12.0"
+version = "0.13.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/kihyun1998/justerm"
