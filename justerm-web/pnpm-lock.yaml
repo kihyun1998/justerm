@@ -9,8 +9,8 @@ importers:
   .:
     dependencies:
       justerm-renderer:
-        specifier: ^0.10.0
-        version: 0.10.0
+        specifier: ^0.12.0
+        version: 0.12.0
       justerm-wasm-decode:
         specifier: ^0.14.0
         version: 0.14.0
@@ -717,8 +717,8 @@ packages:
     resolution: {integrity: sha512-34wB/Y7MW7bzjKRjUKTa46I2Z7eV62Rkhva+KkopW7Qvv/OSWBqvkSY7vusOPrNuZcUG3tApvdVgNB8POj3SPw==}
     engines: {node: '>=10'}
 
-  justerm-renderer@0.10.0:
-    resolution: {integrity: sha512-LSg3IFIjogbzXYbTQ9OuTdu7pUd9ZW9gnAdOfQJQiNKVlK1aYokNZqu0bfs1mHjvWnHBVBbaznmHNcQaxBmySA==}
+  justerm-renderer@0.12.0:
+    resolution: {integrity: sha512-Y0DQHmwz+MXd9gWIvgrmlOl32rTBs5vCfG1aZZTVTSC7Kde4oJvlriW051xUXc93sugbSfNW09w54zs34Uwi1A==}
 
   justerm-wasm-decode@0.14.0:
     resolution: {integrity: sha512-0NoHgh2EIgHKVtrOKhcd/gZtZz68OKpoMQihVuYTdcLbzbpX9vDH7KqfTtnLbfacXzoeZ7ly+oSpBOtEcD6utA==}
@@ -1510,7 +1510,7 @@ snapshots:
 
   joycon@3.1.1: {}
 
-  justerm-renderer@0.10.0: {}
+  justerm-renderer@0.12.0: {}
 
   justerm-wasm-decode@0.14.0: {}
 
