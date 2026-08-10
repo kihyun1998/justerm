@@ -1369,7 +1369,8 @@ This section needed `test/` in the xterm.js sparse checkout; the clone recipe in
 | That `goto` is the **only** one in the whole Playwright suite — `rg '\.goto\(' test/playwright addons` returns exactly one hit, and it is reached from `beforeAll`, never from a test body | xterm.js | `test/playwright/TestUtils.ts:29` |
 | Per-test isolation is done **in-page**, by resetting the object under test rather than by navigating again | xterm.js | `test/playwright/TestUtils.ts:252` |
 | The boot gate waits on a node the object under test **emits** (`.xterm-rows`), not on a sibling widget that merely mounts nearby | xterm.js | `test/playwright/TestUtils.ts:515` |
-| Waiting for browser-side state is done by **re-evaluating in the page** on a poll, not by awaiting one long-lived promise across the CDP boundary | xterm.js | `test/playwright/TestUtils.ts:529` |
+| ⚠ **CORRECTED 2026-08-10 (#731).** `pollFor` waits for browser-side state by **re-evaluating in the page** on a 10ms `setTimeout` recursion (`:566`, default `maxDuration` 2000 at `:552`), not by awaiting one long-lived promise. That is true **of `pollFor`**; the row said it as a project-wide absence and that is false at the same SHA — the addon suites await in-page promises directly (`addons/addon-image/test/ImageAddon.test.ts:223`, `KittyGraphics.test.ts:203`). xterm.js does **both**, and the absence must be scoped to this helper | xterm.js | `test/playwright/TestUtils.ts:529` |
+| **`writeSync` is justerm's park-and-harvest shape verbatim** — one `evaluate` sets `window.ready = false` and kicks off `term.write(data, () => window.ready = true)` **returning nothing**, then `pollFor(page, 'window.ready', true)` harvests. The closest thing to a reference for #731's repair, and a stronger citation than the `pollFor` row above because it is the *whole* shape rather than the polling half | xterm.js | `test/playwright/TestUtils.ts:599` |
 | It has **no** custom fixtures at all: `rg 'test\.extend|test\.use' test addons` returns zero, so it is silent on how to make a listener precede a hook | xterm.js | — (absence, grepped 2026-08-06) |
 
 **What this does and does not settle for justerm.**
@@ -1383,6 +1384,26 @@ This section needed `test/` in the xterm.js sparse checkout; the clone recipe in
 - **Is a design proposal, not a defect, where it differs.** xterm.js shares one page per test
   *file* and resets in-page; justerm takes a fresh context per test. Reading that as a finding
   fails the reference-free restatement test — nothing in justerm's own record asks for page reuse.
+- **The poll row was recorded here before it was acted on, and #731 is where it landed — after being
+  corrected.** justerm-web's e2e awaited an in-page probe's promise across the CDP boundary; when
+  that promise's handler was lost on CI (2026-08-05, run `30979831545`), playwright rewrote the
+  protocol error into "Execution context was destroyed … because of a navigation" and the hunt went
+  to page lifecycle. Two things the application taught, both now in the rows above:
+  - the original row **over-claimed** — it read as *"xterm.js never awaits an in-page promise"*, and
+    its addon suites do. Only `pollFor` holds the rule;
+  - the *better* citation was one nobody had opened: `writeSync` is the whole park-and-harvest
+    shape, not just its polling half. A section can be right about every row it has and still be
+    missing the one that matters, which is what "start from the map, then go to source" is for.
+
+  The repair is **not** cited to either row. This repo's own `justerm-renderer/e2e/proofs.spec.mjs`
+  already waited on `__done` and then read `__proof` while its sibling `screen-composited.spec.mjs`
+  did not, so the finding survives the reference-free restatement (*one of our two harnesses drifted
+  from the other*). xterm.js converging is the non-arbitrariness signal and nothing more.
+  **And the rule that came out is not the obvious one:** "never await across CDP" is false —
+  `waitForFunction` is itself `awaitPromise: true` (traced, `DEBUG=pw:protocol`, 2026-08-10), as is
+  every `expect(locator).toBeVisible()`. What differs is whether playwright retains the awaited
+  promise's owner by `objectId`. A rule written from the reference's *shape* alone would have
+  forbidden the harness.
 - **Points at one hazard class worth owning**, which is the row that earns its keep: their boot
   gate is a node the subject emits, ours is the demo's control bar — a **proxy** that mounts ~350
   lines before the `window.__*Probe` assignments every spec reaches for. Ours is sound only

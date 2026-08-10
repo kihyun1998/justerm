@@ -155,8 +155,9 @@ jobs:
         working-directory: .
       - name: Install deps
         run: pnpm install --frozen-lockfile
-      # The pixel helpers all nine proofs read their evidence through. Fast, browserless.
-      - name: Unit (demo/proof.js helpers)
+      # The pixel helpers all nine proofs read their evidence through, plus the #731 harness-shape
+      # rule the specs themselves must hold. Fast, browserless.
+      - name: Unit (demo/proof.js helpers + harness shape)
         run: pnpm run test:unit
       - name: Install Playwright chromium
         run: pnpm exec playwright install --with-deps chromium
