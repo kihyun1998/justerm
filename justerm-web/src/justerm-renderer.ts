@@ -994,10 +994,17 @@ export class JustermRenderer implements Renderer {
    * describe the old buffer and the browser would scale it. That is the blur #322 exists to remove,
    * reintroduced one layer out.
    *
-   * **The CSS box really does move, which is not obvious and is why this is not just a forward.**
-   * The device cell is `round(metric * dpr)`, and dividing that back by the new ratio does not land
-   * on the old CSS cell. Measured (font 16, 25x6 grid): CSS height `96` at dpr 1 and at dpr 1.5, but
-   * `99` at dpr 2 — the cell is 33 device px there, and `33 / 2 = 16.5`.
+   * **The CSS box can move, which is not obvious and is why this is not just a forward.** The device
+   * cell is `round(metric * dpr)`, and dividing that back by the new ratio need not land on the old
+   * CSS cell. Measured (font 16, 25x6 grid): CSS height `96` at dpr 1 and at dpr 1.5, but `99` at
+   * dpr 2 — the cell is 33 device px there, and `33 / 2 = 16.5`.
+   *
+   * **Whether it moves is font dependent, so do not treat the numbers above as the contract.** It
+   * turns on the fractional part of the metric, which differs per font — and equal cells at one
+   * density say nothing about the next: this machine's font goes 19 -> 37 device px across dpr 1 -> 2
+   * while CI's Linux font goes 19 -> 38, from the *same* 19. An e2e assertion that the box had moved
+   * was red on CI for exactly that reason. What always holds, and is what to assert, is
+   * `canvas.style x dpr === drawing buffer`.
    *
    * **No re-fit, deliberately.** The grid is left alone, so a terminal in a fixed container can end
    * up a few CSS px larger or smaller than the box that fitted it. Re-deriving the grid needs the

@@ -1462,8 +1462,15 @@ test("adopting a new device pixel ratio re-bakes and re-applies the canvas box (
   // reintroduced one layer out. `dpr` here is the ratio we injected, not the page's.
   expect(after.appliedW * 2).toBe(after.bufW);
   expect(after.appliedH * 2).toBe(after.bufH);
-  // …and it genuinely moved, so the assertion above is not satisfied by nothing having happened.
-  expect(after.appliedH).not.toBe(before.appliedH);
+  // …and something genuinely moved, so the assertion above is not satisfied by nothing happening.
+  //
+  // The check is on the BUFFER, not on the CSS box. Whether the box moves at all is **font
+  // dependent**: it moves only when `round(metric * dpr)` fails to divide back to the old CSS cell,
+  // and that is a property of the metric's fractional part. Measured — this machine goes 19 -> 37
+  // device px (box 703 -> 684.5) and CI's Linux font goes 19 -> 38 (box unchanged at 703), from the
+  // *same* cell at dpr 1. An earlier revision asserted the box had moved and was red on CI for
+  // exactly that reason: equal cells at one density say nothing about the next one.
+  expect(after.bufH).toBeGreaterThan(before.bufH);
 
   // NO RE-FIT, deliberately: the grid is the consumer's (#417/#578), and xterm.js's
   // `handleDevicePixelRatioChange` calls no resize either. A widget that quietly re-derived the grid
@@ -1525,7 +1532,9 @@ test("a GL restore at a changed density re-applies the canvas box (#325)", async
   // wrong — `703` against a correct `684.5` — so a width-only check would have passed.
   expect(after.appliedH * 2).toBe(after.bufH);
   expect(after.appliedW * 2).toBe(after.bufW);
-  expect(after.appliedH).not.toBe(boot.appliedH);
+  // Anti-vacuity on the buffer rather than the box, for the reason the test above states: whether
+  // the CSS box moves across a density change is font dependent, and CI's font is not this one's.
+  expect(after.bufH).toBeGreaterThan(boot.bufH);
 });
 
 // #580: the two cursor policy knobs — the last renderer setters with no consumer call site (#583).

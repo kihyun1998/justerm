@@ -123,7 +123,10 @@ machine that decides what the renderer does in between.
   Measured before the fix: dpr 1 → 2 across a loss left a `2556x1369` buffer under a canvas styled
   `1278x703`. Note which half was wrong — the **width** was accidentally correct because the cell
   doubled exactly (9 → 18), and only the height was off (`703` against `684.5`, the cell having gone
-  19 → 37). A width-only check would have reported this area clean.
+  19 → 37). A width-only check would have reported this area clean. **And the accident is font
+  dependent, not a property of the fix**: CI's Linux font takes the same 19 to 38, so *both* axes
+  divide back evenly there and the box does not move at all. The portable statement is
+  `canvas.style x dpr === drawing buffer`, never that the box changed.
 
 ## Code
 
