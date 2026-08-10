@@ -1,5 +1,7 @@
 import { test as base, expect, type Page } from "@playwright/test";
 
+import { DEMO_URL } from "../playwright.config";
+
 /**
  * End-to-end verification of the demo's a11y features in a REAL headless browser
  * — the automated form of the F-key/HITL smoke. We can't hear the WebAudio earcon
@@ -181,6 +183,62 @@ async function readAsyncProbe<K extends AsyncProbe>(
   if (!settled.ok) throw new Error(`${name} rejected in the page: ${settled.error}`);
   return settled.value as Awaited<ReturnType<NonNullable<Window[K]>>>;
 }
+
+/**
+ * #735 — **the cold boot is paid here, where the budget can absorb it.**
+ *
+ * `beforeEach` below waits for the control bar under playwright's default **5s `expect` timeout**,
+ * and `retries: 0`. The first navigation of a browser process costs far more than every later one,
+ * because V8's compile/code cache and vite's on-demand transform cache are both empty — and the
+ * excess lands entirely on the *first test of the run*, since the browser process is shared across
+ * contexts within one worker. Measured on a 28-core host at 4x CPU oversubscription (112 spinners):
+ * first boot **4024ms** against a 5000ms budget, 79% of it, reproduced at 3934ms in a second
+ * session; warm boots ~490-909ms. Under a heavier load on the same box the split was **10947ms**
+ * (median of 3) cold against **2499ms** with this hook in place, and the excess sits in fetch +
+ * compile — wasm 1807ms and a 3175ms resource wall on the cold boot, 270ms / 704ms with it.
+ *
+ * The instrument, so the numbers are re-measurable: `addInitScript` wrapping
+ * `WebAssembly.{instantiate,compile}{,Streaming}` before any page script, a `PerformanceObserver`
+ * (or `getEntriesByType("resource")`) for the resource wall, and this same locator for the bar; run
+ * one arm per invocation against a fresh vite and a fresh chromium, load applied *after* the server
+ * is up because `webServer`'s health check gates vite's dependency optimization before test one.
+ *
+ * **A separate context is enough, and that is the counter-intuitive part** — playwright contexts are
+ * isolated and do not share an HTTP cache, so the obvious reasoning says this cannot work. It works
+ * because the expensive cache is **per-browser-process**, not per-context; the resource wall falling
+ * with it is what says so. It is *not* `retries: 1` (a retry runs against a warm cache, so it would
+ * always pass — disabling the detector rather than fixing the boot), and it is not a bigger `expect`
+ * timeout (which would stop the gate reporting the thing it exists to report).
+ *
+ * **Budget.** A `beforeAll` hook is bounded by the **test timeout** — 30s, playwright's default,
+ * which this config does not override — where `beforeEach`'s bar wait is bounded by the 5s `expect`
+ * timeout. Six times the headroom, at exactly the operation that needs it. The wait below takes
+ * two-thirds of that explicitly so a warm-up that cannot land gives the hook back rather than
+ * aborting the whole file.
+ *
+ * **Fail-soft on purpose.** This hook asserts nothing: it is an optimization, and the only thing it
+ * can prove is already proven by `beforeEach`, per test, with a better message. So a throw here is
+ * swallowed and logged — the run then simply pays the cold boot on test one, which is the behaviour
+ * that existed before this hook. What it must never do is convert a slow host into a file-level
+ * abort, since that is the same failure mode, one budget up.
+ *
+ * Cost when nothing is contended: one extra navigation per worker, ~200ms. It runs once per spec
+ * file per worker; a second spec file would warm an already-warm process for that price.
+ */
+test.beforeAll(async ({ browser }) => {
+  const context = await browser.newContext({ baseURL: DEMO_URL });
+  try {
+    const page = await context.newPage();
+    await page.goto("/");
+    await page
+      .getByRole("button", { name: /Finish command/ })
+      .waitFor({ state: "visible", timeout: 20_000 });
+  } catch (e) {
+    console.log(`[e2e] warm-up navigation did not complete (#735); test one pays the cold boot: ${e}`);
+  } finally {
+    await context.close();
+  }
+});
 
 test.beforeEach(async ({ page, bootUrl }) => {
   await page.goto(bootUrl);
