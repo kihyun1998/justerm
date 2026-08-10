@@ -103,6 +103,10 @@ In `docs/agents/reference-facts.md` — **linked, never restated**.
 
 ## Cross-cutting invariants
 
+- [an awaited in-page promise needs an anchor](../invariant/an-awaited-in-page-promise-needs-an-anchor.md)
+  — this territory's contracts (context loss, dispose, restore) are provable only in a browser, and
+  two of them are read through parked hooks. A read path that can fail for a reason it does not
+  report is a hole in the evidence for everything below, not in the behaviour itself
 - [the cell size is derived state](../invariant/cell-size-is-derived-state.md)
   — `textareaCell` is a cached *decision* that outlives the geometry it was computed from, so a cell
   change with a stationary cursor left the IME anchor stale (#578, fixed by #631). It is a lifecycle

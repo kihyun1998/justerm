@@ -78,7 +78,29 @@ for (const demo of SCREEN_PROOFS) {
         await page.waitForFunction(() => window.__done === true, null, { timeout: 30_000 });
 
         const shot = await page.screenshot({ scale: "device" });
-        const out = await page.evaluate((b64) => window.__composited(b64), shot.toString("base64"));
+
+        // #731 — start it, then harvest it. `__composited` awaits `img.decode()`, so awaiting its
+        // promise across the CDP boundary would leave `Runtime.callFunctionOn({awaitPromise:true})`
+        // holding a handler on a promise the page no longer names; when that handler is lost,
+        // playwright reports it as "Execution context was destroyed … because of a navigation" and
+        // sends the reader after a page lifecycle that never moved. Nothing is pending here when
+        // the call returns — which is the shape `proofs.spec.mjs` above already uses for `__proof`.
+        await page.evaluate((b64) => {
+          delete window.__compositedSettled;
+          void window.__composited(b64).then(
+            (value) => {
+              window.__compositedSettled = { ok: true, value };
+            },
+            (error) => {
+              window.__compositedSettled = { ok: false, error: String(error) };
+            },
+          );
+        }, shot.toString("base64"));
+        await page.waitForFunction(() => window.__compositedSettled, null, { timeout: 30_000 });
+        const settled = await page.evaluate(() => window.__compositedSettled);
+        // Rejections are parked too, or a throwing decode would time out above naming nothing.
+        if (!settled.ok) throw new Error(`__composited rejected: ${settled.error}`);
+        const out = settled.value;
         const meta = await page.evaluate(() => window.__meta);
 
         expect(errors, `${demo} @ dpr ${deviceScaleFactor}`).toEqual([]);

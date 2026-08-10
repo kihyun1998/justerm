@@ -1,4 +1,4 @@
-import { test as base, expect } from "@playwright/test";
+import { test as base, expect, type Page } from "@playwright/test";
 
 /**
  * End-to-end verification of the demo's a11y features in a REAL headless browser
@@ -55,6 +55,132 @@ const test = base.extend<{ consoleLines: string[]; bootUrl: string }>({
 /** Every `[fit] resize CxR` the demo has logged so far, in order. */
 const fitsIn = (consoleLines: string[]): string[] =>
   consoleLines.filter((l) => l.includes("[fit] resize"));
+
+/** Where {@link readAsyncProbe} parks a probe's outcome for the harvest to pick up. */
+declare global {
+  interface Window {
+    __probeSettled?: { ok: true; value: unknown } | { ok: false; error: string };
+  }
+}
+
+/**
+ * The names of the demo probes that return a **promise**. Kept explicit rather than derived from
+ * `Window`, because a structural `[K in keyof Window]` filter matches unrelated DOM methods too;
+ * what keeps this list honest is `test/e2e-async-probe-shape.test.ts`, which reads *both* files and
+ * fails if `demo/main.ts` declares an async probe this file then reads directly.
+ */
+type AsyncProbe =
+  | "__aboveTopProbe"
+  | "__bgAlphaProbe"
+  | "__blinkIdleProbe"
+  | "__composeCaretProbe"
+  | "__contextLossProbe"
+  | "__cursorBlinkProbe"
+  | "__disposeProbe"
+  | "__rulerAnchorProbe"
+  | "__rulerLayerProbe"
+  | "__textBlinkProbe";
+
+/**
+ * #731 — **start an async probe in one `evaluate`, park its outcome on `window`, harvest that.
+ * Never hand `awaitPromise` a promise nothing keeps reachable.**
+ *
+ * `await page.evaluate(() => window.__someProbe!())` asks Chromium for
+ * `Runtime.callFunctionOn({ awaitPromise: true })` on a promise the page no longer names. On
+ * 2026-08-05 that handler came back `{"code":-32000,"message":"Promise was collected"}` — and
+ * playwright rewrites *every* protocol error that is neither a JS exception nor a closed session
+ * into "Execution context was destroyed, most likely because of a navigation"
+ * (`playwright-core@1.61.1`, `rewriteError` at `coreBundle.js:35099`, thrown from
+ * `CRExecutionContext.evaluateWithArguments` at `:35176` — the Chromium path; the near-identical
+ * `rewriteError3` at `:43674` is Firefox's, which is what #731's body cited). Nothing had navigated:
+ * the trace recorded two document loads and no third, and `Page.*`/`Runtime.*` listeners across the
+ * failing call saw **zero** events. The reported cause was not the cause, which is what made it
+ * expensive — the hunt went to page lifecycle and `goto` ordering.
+ *
+ * **The obvious rule — "never await across CDP" — is wrong, and measuring it is what produced the
+ * one below.** `waitForFunction` is *also* `awaitPromise: true`: it installs a poller returning
+ * `{ result, abort }` and then awaits `(h) => h.result`. Traced with `DEBUG=pw:protocol`
+ * (2026-08-10): `Runtime.callFunctionOn` id 27, `awaitPromise: true`, outstanding for the whole
+ * 1.5s wait. So does every `expect(locator).toBeVisible()`. A rule forbidding that forbids the
+ * harness.
+ *
+ * What differs is **reachability**, and the same trace shows it: the poller is returned
+ * `returnByValue: false`, so playwright holds it by `objectId` and passes that objectId back as the
+ * argument it awaits — its `result` promise is strongly reachable from an object playwright itself
+ * retains for the duration. A probe's promise returned straight out of `evaluate` has no such
+ * anchor, and v8_inspector's handler holds it only weakly.
+ *
+ * **What is measured, and what is not.** Measured: the CI failure (run `30979831545`), the rewrite
+ * above, and the trace. *Not* measured, deliberately left unasserted: that V8 actually collected the
+ * probe's promise. A forced `HeapProfiler.collectGarbage` collects **0 of 4** promise shapes
+ * (timer-resolved, rAF-resolved, async-fn await loop, detached resolver), and the pre-fix `#480`
+ * spec passes 12/12 on a 28-core host — single- and double-navigation, idle and at 4x
+ * oversubscription. v8_inspector emits that same message when the `InjectedScript` holding a pending
+ * handler is torn down, so there are two candidate mechanisms and this repo has pinned neither.
+ * Parking the value removes both, which is why the fix does not depend on the answer.
+ *
+ * **This repo's other browser harness already does it this way** — `justerm-renderer/e2e/
+ * proofs.spec.mjs` waits for `__done` and *then* reads `__proof`. Its sibling
+ * `screen-composited.spec.mjs` did not, and is converted in the same change as this. So the finding
+ * survives the reference-free restatement (*one of our harnesses drifted from the other*), which is
+ * what it has to do: the tie-breaker table has no row for test-harness structure. xterm.js reaching
+ * the same shape — `writeSync` sets `window.ready = false`, kicks off a callback that sets it true,
+ * and polls (`test/playwright/TestUtils.ts:596-601`, pinned SHA in `reference-facts.md`) — is the
+ * non-arbitrariness signal and nothing more. Note it does **not** hold the rule globally: its addon
+ * tests still await in-page promises for one-shot writes.
+ *
+ * Rejections are parked too. Awaiting the promise used to surface a probe's own throw as a test
+ * failure; harvesting a value that never arrives would instead time out with nothing named, so the
+ * outcome carries which side it settled on.
+ *
+ * **The two paths serialize identically, and that was measured rather than assumed** — the harvest
+ * comes back through `jsonValue()` where the old shape came back through `evaluate`'s own return,
+ * and several probes report `NaN` on purpose (`#480` below asserts `Number.isFinite` precisely
+ * because a `NaN` made its invariant vacuous). A/B on one object through both paths, 2026-08-10:
+ * `NaN`, `Infinity`, `-Infinity`, `-0`, a `undefined`-valued key (the key survives), `null`,
+ * numbers past `MAX_SAFE_INTEGER`, and all of those nested and inside arrays came back
+ * byte-identical. Valid for `playwright-core@1.61.1`, which routes both through the same
+ * `parseEvaluationResultValue`; a major bump is the thing that could take it away.
+ */
+async function readAsyncProbe<K extends AsyncProbe>(
+  page: Page,
+  name: K,
+): Promise<Awaited<ReturnType<NonNullable<Window[K]>>>> {
+  await page.evaluate((n) => {
+    delete window.__probeSettled;
+    const probe = window[n] as unknown as (() => Promise<unknown>) | undefined;
+    // Throw the message the old shape threw. `window.__xProbe!()` on a missing probe said
+    // "window.__xProbe is not a function"; binding it to a local first says only "probe is not a
+    // function", which drops the one word that identifies it — and `beforeEach`'s boot-gate comment
+    // is written against the old wording, so it stays true only if this restores it.
+    if (typeof probe !== "function") throw new Error(`window.${n} is not a function`);
+    void probe().then(
+      (value) => {
+        window.__probeSettled = { ok: true, value };
+      },
+      (error) => {
+        window.__probeSettled = { ok: false, error: String(error) };
+      },
+    );
+  }, name);
+
+  // The point of an explicit budget is that a probe which never settles fails with THIS call named
+  // instead of as a bare "test timeout exceeded" — so it has to fire FIRST, and the 30s default
+  // (`playwright.config.ts` sets none) is the whole test's, already part-spent by `beforeEach` and
+  // every step before this one. Under host contention — #735's condition, where a cold boot alone
+  // measured 4s — a budget close to 30s loses that race and buys nothing. 15s is the compromise:
+  // three times the slowest probe measured here (~5s; the blink probes poll a 2s window,
+  // `BLINK_POLL_WINDOW`, and context-loss waits out three 150ms restore deadlines) and still under
+  // half the test's budget.
+  const handle = await page.waitForFunction(() => window.__probeSettled, null, { timeout: 15_000 });
+  const settled = await handle.jsonValue();
+  await handle.dispose();
+  // `waitForFunction` only resolves on a truthy value, so this cannot fire — but the slot is
+  // optional and saying so here is cheaper than an assertion that hides which half went wrong.
+  if (!settled) throw new Error(`${name} harvested an empty slot`);
+  if (!settled.ok) throw new Error(`${name} rejected in the page: ${settled.error}`);
+  return settled.value as Awaited<ReturnType<NonNullable<Window[K]>>>;
+}
 
 test.beforeEach(async ({ page, bootUrl }) => {
   await page.goto(bootUrl);
@@ -1074,7 +1200,7 @@ test("a decoration anchored above the viewport top still paints its visible rows
   // is async (#490), so the awaited `evaluate` spans the reload and its context is destroyed.
   await expect(page.getByRole("button", { name: "Decorate line: OFF" })).toBeVisible();
 
-  const p = await page.evaluate(() => window.__aboveTopProbe!());
+  const p = await readAsyncProbe(page, "__aboveTopProbe");
 
   expect(p.rows[0], `row 0: baseline ${p.baseline}`).not.toBe(p.baseline);
   expect(p.rows[1]).not.toBe(p.baseline);
@@ -1096,14 +1222,14 @@ test("a decoration's ruler mark stays anchored to its buffer line across scroll 
 }) => {
   // The second site to drop its second `goto` (#480, in #730) — and the one that proves the
   // header's rule is not the whole story. The two-pages hazard is *not* what produced the CI
-  // failure this test had on 2026-08-05: that reproduced with a single navigation and with zero
-  // `Page`/`Runtime` events on the wire (measured), so nothing navigated. Playwright's "Execution
-  // context was destroyed" is a catch-all rewrite — the protocol error underneath was `Promise was
-  // collected`, which is #731 and is still open. A single navigation does not make an awaited
-  // probe safe.
+  // failure this test had on 2026-08-05 (run 30979831545): that reproduced with a single
+  // navigation and with zero `Page`/`Runtime` events on the wire (measured), so nothing navigated.
+  // Playwright's "Execution context was destroyed" is a catch-all rewrite — the protocol error
+  // underneath was `Promise was collected`. A single navigation does not make an awaited probe
+  // safe, which is why this read goes through `readAsyncProbe` and no longer awaits one (#731).
   await expect(page.getByRole("button", { name: "Decorate line: OFF" })).toBeVisible();
 
-  const p = await page.evaluate(() => window.__rulerAnchorProbe!());
+  const p = await readAsyncProbe(page, "__rulerAnchorProbe");
 
   // **First, that the probe measured anything at all.** `lineOf` answers `undefined` until the
   // pull it triggered has landed, and the probe reports that as `NaN` — against which the
@@ -1149,7 +1275,7 @@ test("cross-marker decoration precedence follows registration order at the pixel
 test("a full-width ruler mark is layered above a gutter mark in the DOM (#498)", async ({ page }) => {
   await expect(page.getByRole("button", { name: "Decorate line: OFF" })).toBeVisible();
 
-  const p = await page.evaluate(() => window.__rulerLayerProbe!());
+  const p = await readAsyncProbe(page, "__rulerLayerProbe");
 
   // Both marks reached the scrollbar…
   expect(p.marks).toHaveLength(2);
@@ -1177,7 +1303,7 @@ test("a full-width ruler mark is layered above a gutter mark in the DOM (#498)",
 test("a steady cursor stays put and a blinking one leaves the cell (#575)", async ({ page }) => {
   await expect(page.getByRole("button", { name: "Cursor blink: OFF" })).toBeVisible();
 
-  const p = await page.evaluate(() => window.__cursorBlinkProbe!());
+  const p = await readAsyncProbe(page, "__cursorBlinkProbe");
 
   // The cursor must actually paint, or every equality below is vacuously true on an empty cell.
   expect(p.steadyA, `background ${p.background}`).not.toBe(p.background);
@@ -1206,7 +1332,7 @@ test("the cursor stops blinking after an idle period, and input revives it (#593
 }) => {
   await expect(page.getByRole("button", { name: "Cursor blink: OFF" })).toBeVisible();
 
-  const p = await page.evaluate(() => window.__blinkIdleProbe!());
+  const p = await readAsyncProbe(page, "__blinkIdleProbe");
 
   // The cursor paints and genuinely blinks inside the idle window — without this the idle
   // assertions below could pass on a cell that never changes.
@@ -1232,7 +1358,7 @@ test("the caret stops blinking while an IME composition is open (#592)", async (
   await expect(page.getByRole("button", { name: "Cursor blink: OFF" })).toBeVisible();
   await page.locator("#term").dispatchEvent("mousedown"); // focus the hidden textarea
 
-  const p = await page.evaluate(() => window.__composeCaretProbe!());
+  const p = await readAsyncProbe(page, "__composeCaretProbe");
 
   // Control: with the application asking to blink and no composition, the caret really does blink at
   // this pixel — without it the composing assertions could pass on a cell that never changes.
@@ -1259,7 +1385,7 @@ test("SGR 5 text blinks only when the consumer asks, and never by default (#576)
   await expect(page.getByRole("button", { name: "SGR 5 text: OFF" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Text blink: OFF" })).toBeVisible();
 
-  const p = await page.evaluate(() => window.__textBlinkProbe!());
+  const p = await readAsyncProbe(page, "__textBlinkProbe");
 
   // The cell must actually paint, or every equality below is vacuously true on an empty cell.
   expect(p.defaultA, `background ${p.background}`).not.toBe(p.background);
@@ -1294,7 +1420,7 @@ test("prefers-reduced-motion pins blinking text visible (#576)", async ({ page }
   await expect(page.getByRole("button", { name: "SGR 5 text: OFF" })).toBeVisible();
 
   await page.emulateMedia({ reducedMotion: "reduce" });
-  const p = await page.evaluate(() => window.__textBlinkProbe!());
+  const p = await readAsyncProbe(page, "__textBlinkProbe");
 
   // Every sample — including the ones taken with an interval set, and any the loop presented — is
   // the drawn cell. Nothing ever reaches the concealed phase. (`loopSamples` is expected to be
@@ -1319,7 +1445,7 @@ test("prefers-reduced-motion pins blinking text visible (#576)", async ({ page }
 test("the consumer can make the terminal background translucent, live (#577)", async ({ page }) => {
   await expect(page.getByRole("button", { name: "Bg alpha: OPAQUE" })).toBeVisible();
 
-  const p = await page.evaluate(() => window.__bgAlphaProbe!());
+  const p = await readAsyncProbe(page, "__bgAlphaProbe");
   const alpha = (px: number[]): number => px[3]!;
   const rgb = (px: number[]): string => `rgb(${px[0]},${px[1]},${px[2]})`;
 
@@ -1375,7 +1501,7 @@ test.describe("bgAlpha given at create boots translucent (#577)", () => {
   }) => {
     await expect(page.getByRole("button", { name: "Bg alpha: 0.6" })).toBeVisible();
 
-    const p = await page.evaluate(() => window.__bgAlphaProbe!());
+    const p = await readAsyncProbe(page, "__bgAlphaProbe");
 
     // `defaultBg` is read before the probe calls any setter, so this is purely what `create` applied.
     expect(p.defaultBg[3]).toBeGreaterThan(140);
@@ -1411,7 +1537,7 @@ test.describe("a non-finite bgAlpha falls back to opaque (#577)", () => {
     // brittle thing to key a test on. The probe's existence is the actual precondition. (The hook's
     // own gate is the *Finish command* button, which `bgAlpha` does not touch, so it stays valid.)
     await page.waitForFunction(() => typeof window.__bgAlphaProbe === "function");
-    const p = await page.evaluate(() => window.__bgAlphaProbe!());
+    const p = await readAsyncProbe(page, "__bgAlphaProbe");
 
     // Both channels, because the background alone was the *lesser* half of the old failure.
     expect(p.defaultBg[3]).toBe(255);
@@ -1791,7 +1917,7 @@ test.describe("letterSpacing / lineHeight given at create apply before the first
 test("a disposed widget stops the renderer it was handed (#606)", async ({ page }) => {
   await expect(page.getByRole("button", { name: "Cursor blink: OFF" })).toBeVisible();
 
-  const p = await page.evaluate(() => window.__disposeProbe!());
+  const p = await readAsyncProbe(page, "__disposeProbe");
 
   // Control: the loop really is presenting while the widget is alive, or the assertion below would
   // hold for a renderer that never drew anything.
@@ -1811,7 +1937,7 @@ test("a lost GL context reaches the consumer, once, and never after dispose (#57
 }) => {
   await expect(page.getByRole("button", { name: "Cursor blink: OFF" })).toBeVisible();
 
-  const p = await page.evaluate(() => window.__contextLossProbe!());
+  const p = await readAsyncProbe(page, "__contextLossProbe");
 
   // The window ADR-0027 D4 turns on, asserted to EXIST before anything is asserted inside it. If a
   // browser ever destroyed a context and dispatched its event synchronously, this would report that

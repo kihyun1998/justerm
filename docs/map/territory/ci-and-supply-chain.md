@@ -57,11 +57,19 @@ Nothing governs the gate matrix itself — which checks exist, and what each is 
 does not obviously apply — a gate matrix is a property of this project's risk surface rather than of
 terminal emulation.
 
+That stayed true when a *harness* section was added to `reference-facts.md` (#733, #731), which is
+worth saying because the two look adjacent: how a comparable project structures its Playwright suite
+is a fact about [browser proof harness](browser-proof-harness.md), the territory two of the jobs
+below run. **Which checks exist** still has no comparand.
+
 ## Cross-cutting invariants
 
 - [workspace exclusion is gate invisibility](../invariant/workspace-exclusion-is-gate-invisibility.md)
   — the defining hazard: a command whose scope silently excludes what you meant to check reports
   success having inspected nothing
+- [an awaited in-page promise needs an anchor](../invariant/an-awaited-in-page-promise-needs-an-anchor.md)
+  — the same shape one layer in: `web-e2e` and `renderer-proofs` can fail for a reason that is not
+  the one they report, which costs a gate its credibility rather than its coverage
 
 ## Blast radius
 

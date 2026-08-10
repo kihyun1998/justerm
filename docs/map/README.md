@@ -76,6 +76,7 @@ owns no detail of its own.
 
 - Territories — [accessibility](territory/accessibility.md) ·
   [active match](territory/active-match.md) ·
+  [browser proof harness](territory/browser-proof-harness.md) ·
   [built-in block glyphs](territory/builtin-block-glyphs.md) ·
   [caret drawing](territory/caret-drawing.md) ·
   [CI & supply chain](territory/ci-and-supply-chain.md) ·
@@ -121,6 +122,7 @@ owns no detail of its own.
   [row-keyed side maps](invariant/row-keyed-side-maps.md) ·
   [an IME composition is browser-owned state the engine never sees](invariant/composition-is-browser-owned-state.md) ·
   [workspace exclusion is gate invisibility](invariant/workspace-exclusion-is-gate-invisibility.md) ·
+  [an awaited in-page promise needs an anchor](invariant/an-awaited-in-page-promise-needs-an-anchor.md) ·
   [a decoded frame's columns are getters](invariant/decoded-columns-are-getters.md) ·
   [a wire field narrower than the value it carries](invariant/wire-field-narrower-than-its-value.md) ·
   [a pointer coordinate is bounded by the converter that produces it](invariant/pointer-coordinates-are-bounded-by-their-producer.md) ·

@@ -6,7 +6,7 @@
   "scripts": {
     "build:wasm": "wasm-pack build --target web --dev --out-dir pkg",
     "serve": "node scripts/serve.mjs",
-    "test:unit": "node --test e2e/proof.test.mjs",
+    "test:unit": "node --test e2e/proof.test.mjs e2e/harness-shape.test.mjs",
     "test:proofs": "pnpm build:wasm && playwright test"
   },
   "devDependencies": {

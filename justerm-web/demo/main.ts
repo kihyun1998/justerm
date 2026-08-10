@@ -2974,8 +2974,13 @@ window.__rulerLayerProbe = async (): Promise<RulerLayerProbe> => {
   // #490: the marker index answers a *pull*, so the anchors this probe just created are
   // one microtask away. Awaiting a macrotask lets the pull land and `onUpdated` redraw
   // before the measurement — a synchronous read here would measure an empty ruler and
-  // call it a defect. `page.evaluate` awaits a returned promise, so the specs are
-  // unchanged.
+  // call it a defect.
+  //
+  // The sentence that used to close this comment — *"`page.evaluate` awaits a returned promise, so
+  // the specs are unchanged"* — was true and is now a trap (#731). It reads as a licence to write
+  // an async probe and let a spec `await page.evaluate(() => probe())`, which is the shape that
+  // produced a CI failure reported as a navigation that never happened. A spec reads this through
+  // `readAsyncProbe`, and `test/e2e-async-probe-shape.test.ts` fails if one does not.
   await new Promise((r) => setTimeout(r, 0));
   // `track` is private to Scrollbar; the demo reaches it to observe what it built (TS `private` is
   // compile-time only). The mark elements are the ones the scrollbar paints through.
