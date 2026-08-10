@@ -6,23 +6,27 @@
 //! the glyph is split down the middle (#454).
 //!
 //! **The rule: a span covering either half of a pair covers both.** It is applied where the cell is
-//! painted rather than on each span's producer, because the producers cannot all reach it — four
-//! emit a half-covering span (`Term::selection_range` with an anchor on a spacer, `Term::match_spans`
-//! via the #678 clamp, a consumer-authored decoration rect, and this crate's own IME preedit pass),
-//! and the last of those writes pairs that exist only *after* [`preedit::patch`](crate::preedit),
-//! so no span policy in `justerm-web` can see them at all.
+//! painted rather than on each span's producer, because the producers do not share a layer: two are
+//! `justerm-core`'s (`Term::selection_range` with an anchor on a spacer, `Term::match_spans` via the
+//! #678 clamp — both now widened there as well, so the *copy* agrees with the paint), and one is a
+//! decoration rect the consumer authors in its own coordinates. A rule at the paint site is the only
+//! one all three pass through.
 //!
-//! The same crate already normalises one span to the pair — [`cursor_span`](crate::cursor::cursor_span),
-//! *"a wide char's cursor spans its lead and its spacer"* — so this closes the gap between the
-//! cursor's answer and every other span's, not merely a gap against prior art.
+//! **Every span this crate paints obeys it, the caret included** — [`cursor_cells_at`] resolves the
+//! caret through [`partner_at`] for the same reason, and a caret resting on a trailing spacer moves
+//! back onto the lead rather than lighting half a glyph (#454). That symmetry is load-bearing: a
+//! crate that normalised every span *except* the one drawn on top of them would be the same defect
+//! wearing the opposite sign.
 //!
-//! **Union, not one direction.** The references converge on "never paint exactly one half" and split
-//! on how: xterm.js normalises both endpoints at the selection model, alacritty pulls the lead in
-//! when its spacer is covered (one direction only), ghostty has a spacer ask its lead's column.
-//! Ghostty's shape is rejected here because justerm has a producer it does not: the #678 clamp puts
-//! a `Match` past the last column onto a trailing spacer, and "the spacer asks its lead" renders
-//! that match invisible. Union also agrees with `selection_text`, which already treats the pair as
-//! one unit, so the highlight and the copied text cannot disagree.
+//! **Union, not one direction.** The references converge on "never paint exactly one half" and each
+//! implements a different part of it: xterm.js normalises both endpoints at the selection model,
+//! ghostty has a spacer ask its lead's column (so a spacer-only span paints *nothing*), alacritty
+//! pulls the lead in when its spacer is covered but leaves a lead-only span bisecting. The two
+//! read-site shapes are opposite halves of the union and neither is the union. What picks it is not
+//! the tally but `selection_text`, which has always returned the whole glyph or none of it — so the
+//! highlight and the copy cannot disagree under union, and can under either half.
+//!
+//! [`cursor_cells_at`]: crate::cursor::cursor_cells_at
 
 use crate::attrs::{is_wide_lead, is_wide_spacer};
 
