@@ -311,6 +311,27 @@ implies (core reports the mechanism, the consumer holds the policy) and it needs
 | **Negative result: xterm.js has no preedit rule for the caret.** Its only `isComposing` guard near the cursor is `_syncTextArea`, which stops *moving the hidden textarea* mid-composition — an IME-disturbance guard, unrelated to the caret | xterm.js | `browser/CoreBrowserTerminal.ts:337-339` |
 | ⚠ **Measured, not read (#592, real browser, 2026-07-28)**: composition driven through the hidden textarea, cursor cell and a content cell sampled 5x over 1.4s. With the application silent — the default since #575 — the caret shows **one** distinct colour (already solid) and no content cell changes; with the application asking to blink, the caret shows **two**. So justerm-web adopted alacritty's suppression as a **no-op in the common case**, biting only where an application explicitly asked to blink. ghostty's stronger form was **rejected**: revealing a DECTCEM-hidden caret would invert `cursorCommand`'s contract for a rare case | justerm-web | `justerm-web/src/cursor.ts` `setComposing`, decision recorded on #592 |
 
+### Cursor policy knobs — where each reference puts them (#580, verified 2026-08-10)
+
+Pins the two constants `justerm-renderer` borrowed for its cursor policy, plus where each reference
+*exposes* them. The first was a recorded hole:
+[caret drawing](../map/territory/caret-drawing.md) named the alacritty thickness default as "a
+borrowed constant with a path and no SHA", which is exactly the class this file exists to close.
+
+The placement rows are here because they are what a consumer-facing API question is decided
+*against* — and in this case decided **away from**: justerm carries both contrast ratios on `Theme`
+where neither reference puts contrast in its colour scheme. That is a deliberate divergence on the
+"consumer-facing API shape" tie-breaker row (our own API's coherence governs), recorded in
+`theflow.md`'s divergence table; these rows are its evidence, not a defect report.
+
+| Fact | Reference | Site |
+|---|---|---|
+| Cursor thickness is a **fraction of the cell width**, defaulting to `0.15`, and lives under the `cursor` config section — not under `colors` | alacritty | `alacritty/src/config/cursor.rs:31` |
+| ⚠ The cursor contrast guard is a **compile-time constant, not a setting**: `1.5`, with no config path at all. justerm's `setCursorContrast` therefore exposes configurability the reference does not have — the *number* is borrowed, the *knob* is not | alacritty | `alacritty/src/display/content.rs:22` |
+| xterm.js's cursor width is `cursorWidth`, an **option in CSS px** — a length, not a fraction, which is why #270 took alacritty's rule instead (a fixed length gives a 32px font the same hairline caret as a 12px one) | xterm.js | `src/common/services/OptionsService.ts:19` |
+| `minimumContrastRatio` is likewise an **option**, defaulting to `1` (off) — and xterm.js has no cursor-specific contrast guard of any kind | xterm.js | `src/common/services/OptionsService.ts:43` |
+| **`ITheme` is colours only.** Every one of its ~30 members is a colour string; no policy scalar appears on it. So "contrast belongs outside the theme" is xterm.js's position by construction, not by omission | xterm.js | `typings/xterm.d.ts:372` |
+
 ### Drawing the preedit: two draw into the grid, one draws a DOM box (#249, verified 2026-08-03)
 
 Read this before touching `preedit.rs` or `Terminal.showPreedit`. The split is 2–1 and the odd one

@@ -62,6 +62,13 @@ const bootBgAlpha = bootParams.get("bgAlpha");
 // first `fit()`, which is the acceptance criterion a runtime setter cannot demonstrate.
 const bootLetterSpacing = bootParams.get("letterSpacing");
 const bootLineHeight = bootParams.get("lineHeight");
+// #580: same reason again, and it is the *whole* acceptance for these two — "settable at
+// construction" is a claim about `create`, which a runtime setter cannot stand in for. The pair also
+// boots through two different doors, which is the point of booting both: `cursorThickness` is an
+// option, `cursorContrast` rides the `theme` object below.
+const bootCursorThickness = bootParams.get("cursorThickness");
+const bootCursorContrast = bootParams.get("cursorContrast");
+const bootCursorColor = bootParams.get("cursorColor");
 
 const renderer = await JustermRenderer.create({
   canvasSelector: "#term",
@@ -70,6 +77,7 @@ const renderer = await JustermRenderer.create({
   ...(bootBgAlpha === null ? {} : { bgAlpha: Number(bootBgAlpha) }),
   ...(bootLetterSpacing === null ? {} : { letterSpacing: Number(bootLetterSpacing) }),
   ...(bootLineHeight === null ? {} : { lineHeight: Number(bootLineHeight) }),
+  ...(bootCursorThickness === null ? {} : { cursorThickness: Number(bootCursorThickness) }),
   theme: {
     ansi: [
       0x000000, 0xcd0000, 0x00cd00, 0xcdcd00, 0x0000ee, 0xcd00cd, 0x00cdcd, 0xe5e5e5, 0x7f7f7f,
@@ -78,6 +86,13 @@ const renderer = await JustermRenderer.create({
     defaultFg: 0xcdd6f4,
     defaultBg: 0x1e1e2e,
     selectionBg: 0x45475a, // demo placeholder — #115 owns the real blend
+    ...(bootCursorContrast === null ? {} : { cursorContrast: Number(bootCursorContrast) }),
+    // Not a knob this slice adds — `cursorColor` has always been on `Theme`. It is bootable because
+    // `cursorContrast` is otherwise unobservable at create: the default caret colour is `defaultFg`,
+    // which contrasts with every cell the demo draws, so the guard never fires whatever the
+    // threshold is. Booting the caret INTO the background is what gives the threshold something to
+    // decide.
+    ...(bootCursorColor === null ? {} : { cursorColor: Number(bootCursorColor) }),
   },
 });
 
@@ -228,6 +243,17 @@ let cursorShown = true;
 let s1SelOverride: number[] | undefined; // THROWAWAY (#249 S1)
 const CURSOR_ROW = 5;
 const CURSOR_COL = 2;
+
+/**
+ * #580 — the DECSCUSR shape the frame reports, mutable so `__cursorPolicyProbe` can ask for a stroke.
+ *
+ * A **block** is the default and stays so: every other pixel probe on this page was calibrated
+ * against a block filling `(CURSOR_ROW, CURSOR_COL)`, and a bar would change what they read. It is
+ * also the reason the thickness half needs this at all — a block recolours its cell and draws no
+ * stroke, so `setCursorThickness` is a visual no-op until the shape is `2` (bar). The probe restores
+ * it before returning, the same discipline `__cursorBlinkProbe` follows with `cursorBlink`.
+ */
+let cursorShape = 0;
 
 /**
  * #637 — unsolicited output that MOVES the cursor while an IME composition is open.
@@ -980,7 +1006,7 @@ function viewportFrame(out?: { scrollCount: number }): DecodedFrame {
     cursorRow: cursorDrift ? driftRow : CURSOR_ROW, // #637: drift is opt-in, see `cursorDrift`
     cursorCol: CURSOR_COL,
     cursorVisible: cursorShown,
-    cursorShape: 0, // block
+    cursorShape, // block by default; `__cursorPolicyProbe` swaps in a bar (#580)
     cursorBlink,
     ...(out && out.scrollCount > 0
       ? { hasScroll: true, scrollTop: 0, scrollBottom: ROWS - 1, scrollCount: out.scrollCount }
@@ -1477,6 +1503,7 @@ declare global {
     __aboveTopProbe?: () => Promise<AboveTopProbe>;
     __rulerAnchorProbe?: () => Promise<RulerAnchorProbe>;
     __bgAlphaProbe?: () => Promise<BgAlphaProbe>;
+    __cursorPolicyProbe?: () => CursorPolicyProbe;
     __spacingProbe?: () => SpacingProbe;
     __preeditProbe?: () => PreeditProbe;
     __imeAnchorProbe?: () => ImeAnchorProbe;
@@ -1508,6 +1535,53 @@ interface SpacingSnapshot {
   /** The device drawing buffer. Must equal grid x cell exactly (#331). */
   bufW: number;
   bufH: number;
+}
+
+/**
+ * #580 — the two cursor policy knobs, each sampled across a change and back.
+ *
+ * They are one probe because they share a subject (the caret at `CURSOR_ROW`/`CURSOR_COL`) and
+ * because sampling either one requires taking the page's cursor away from every other probe's
+ * assumptions and putting it back. They are measured by two different means, though, and the split
+ * is not cosmetic: a thickness is a *length*, so it is counted, while the contrast guard's whole
+ * output is *which colour* the caret ends up, so it is read.
+ */
+interface CursorPolicyProbe {
+  /** The cell width in DEVICE px, as the renderer reports it. The expected stroke is derived from
+   * this rather than written down: the cell is the ink box of the font's `█` (ADR-0022), so it
+   * differs between this machine and CI, and a literal pixel count is not portable (#578). */
+  cellW: number;
+  /** Bar-stroke widths in device px, counted across the cursor cell. */
+  thickness: {
+    /** The boot state — the `cursorThickness` option if the page was booted with one, otherwise the
+     * renderer's own default. The only sample that can observe the OPTION half at all. */
+    boot: number;
+    /** After `setCursorThickness(0.5)` — the runtime half. */
+    thick: number;
+    /** After `setCursorThickness(0.15)`, the renderer's default: must return to `boot` on a page
+     * booted without the option, which is what makes `thick` a change rather than a drift. */
+    back: number;
+  };
+  /** The caret's colour under a theme whose `cursorColor` is deliberately the cell's own background
+   * — the exact case the guard exists for, and invisible without it. */
+  contrast: {
+    /** **Read before this probe calls any setter** — the caret `create` left behind. The only way to
+     * observe the `Theme.cursorContrast` field's CREATE half, since every sample below it has been
+     * through `setTheme`. Only decides anything on a page booted with a caret colour that needs
+     * rescuing; see the demo's `?cursorColor=`. */
+    boot: string;
+    /** No cursor at all: what the cell reads as, and the comparand for `guardOff`. */
+    background: string;
+    /** `cursorContrast: 1` — the floor, i.e. the guard OFF. The caret is painted its stated colour,
+     * which is the cell's background, so it must be indistinguishable from `background`. */
+    guardOff: string;
+    /** `cursorContrast: 1.5` — the guard ON. The caret inverts to the theme's default fg. */
+    guardOn: string;
+    /** The same theme with `cursorContrast` **omitted**. A `Theme` is a complete description, so an
+     * unset field must RESET to the default rather than keep the `1` set two samples ago — this is
+     * `guardOn` again, and it goes red if `setTheme` pushes the field only when present. */
+    guardReset: string;
+  };
 }
 
 /** #578 — the spacing knobs, sampled across a change and back. */
@@ -1855,6 +1929,109 @@ window.__cursorBlinkProbe = async (): Promise<CursorBlinkProbe> => {
   cursorShown = savedShown;
   render();
   return { background, steadyA, steadyB, blinkOn, blinkOff, forcedSteady };
+};
+
+window.__cursorPolicyProbe = (): CursorPolicyProbe => {
+  // #580: `setCursorContrast` / `setCursorThickness` had no consumer call site, so two working
+  // renderer mechanisms were unreachable through the widget. Both are decided at DRAW time against
+  // the resolved cell, which is why this drives the real wasm renderer instead of asserting on a
+  // fake: nothing below `create` can tell you what colour the caret came out.
+  const gl = canvas.getContext("webgl2")!;
+  const { width: cw, height: ch } = renderer.cellSize(); // device px
+  const cellW = Math.round(cw);
+
+  const savedShown = cursorShown;
+  const savedShape = cursorShape;
+  // Steady, so no sample can land on the blink's off phase and read an empty cell as a thin stroke.
+  renderer.setCursorBlink(false);
+
+  // A block fills its cell, so its own corner carries the caret's colour with no glyph in it — the
+  // point `__cursorBlinkProbe` samples, for the same reason.
+  const corner = (): string => {
+    render(); // re-emit → the adapter re-pushes the cursor; read in the SAME synchronous turn
+    const x = Math.round(CURSOR_COL * cw) + 2;
+    const y = gl.drawingBufferHeight - 1 - (Math.round(CURSOR_ROW * ch) + 2);
+    const px = new Uint8Array(4);
+    gl.readPixels(x, y, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    return `rgb(${px[0]},${px[1]},${px[2]})`;
+  };
+
+  // FIRST, before any setter runs: the caret `create` produced. Everything after this line has been
+  // through `setTheme`, so this is the one sample that can speak for the option/theme half.
+  cursorShown = true;
+  const bootCaret = corner();
+
+  // ---- thickness: counted, because the answer is a length -------------------------------------
+  //
+  // A BAR (DECSCUSR 2), because a block draws no stroke. Its rect is `thickness` device px wide at
+  // the cell's left edge and the full cell tall (alacritty's `beam`), so one scanline across the
+  // cell's vertical middle contains the whole answer.
+  //
+  // Painted RED, which is neither the background (`0x1e1e2e`) nor the glyph ink (`0xcdd6f4`). The
+  // obvious alternative — diffing against a cursorless baseline — cannot tell a stroke pixel from a
+  // glyph pixel when the caret takes the theme's default fg, which is exactly the colour the ink
+  // already is. A distinct hue makes the count unambiguous instead of usually-right.
+  cursorShown = true;
+  cursorShape = 2;
+  renderer.setTheme({ ...themeDark, cursorColor: 0xff0000 });
+  const strokeWidth = (): number => {
+    render(); // re-emit → the adapter re-pushes the cursor; read in the SAME synchronous turn
+    const x0 = Math.round(CURSOR_COL * cw);
+    const y = gl.drawingBufferHeight - 1 - (Math.round(CURSOR_ROW * ch) + Math.floor(ch / 2));
+    const row = new Uint8Array(cellW * 4);
+    gl.readPixels(x0, y, cellW, 1, gl.RGBA, gl.UNSIGNED_BYTE, row);
+    let n = 0;
+    // Leading run only: the stroke starts at the cell's left edge, so a red pixel further in would
+    // be something else and must not be added to the width.
+    while (n < cellW) {
+      const r = row[n * 4]!;
+      const g = row[n * 4 + 1]!;
+      const b = row[n * 4 + 2]!;
+      if (!(r > g + 64 && r > b + 64)) break;
+      n++;
+    }
+    return n;
+  };
+  const boot = strokeWidth();
+  renderer.setCursorThickness(0.5);
+  const thick = strokeWidth();
+  renderer.setCursorThickness(0.15); // the renderer's own default, restated by the probe not the widget
+  const back = strokeWidth();
+
+  // ---- contrast: read, because the answer is a colour -----------------------------------------
+  //
+  // Back to a BLOCK, so `corner()` reads the caret's fill rather than a stroke's neighbourhood.
+  cursorShape = 0;
+  cursorShown = false;
+  const background = corner();
+  cursorShown = true;
+  // `cursorColor` set to the cell's OWN background is the degenerate case the guard exists for: the
+  // caret is painted, and invisible, unless something rescues it.
+  const invisible = { ...themeDark, cursorColor: themeDark.defaultBg };
+  renderer.setTheme({ ...invisible, cursorContrast: 1.5 });
+  const guardOn = corner();
+  renderer.setTheme({ ...invisible, cursorContrast: 1 });
+  const guardOff = corner();
+  // Field OMITTED — a complete description must reset it to the default.
+  //
+  // **The order above is load-bearing, and was wrong first.** With `guardOff` sampled LAST of the two
+  // stated thresholds, a widget that pushed the field only when present would leave `1` standing here
+  // and this sample would come back invisible — which is the failure. Sampling `guardOn` last instead
+  // leaves `1.5` standing, which is *also* the default, so the two shapes agree and the assertion
+  // passes either way. Measured: with the push made conditional, the original order stayed green.
+  renderer.setTheme(invisible);
+  const guardReset = corner();
+
+  cursorShown = savedShown;
+  cursorShape = savedShape;
+  renderer.setCursorBlink(undefined); // back to following the application
+  renderer.setTheme(themeIsLight ? themeLight : themeDark);
+  render();
+  return {
+    cellW,
+    thickness: { boot, thick, back },
+    contrast: { boot: bootCaret, background, guardOff, guardOn, guardReset },
+  };
 };
 
 window.__textBlinkProbe = async (): Promise<TextBlinkProbe> => {

@@ -11,7 +11,17 @@ import type { DecodedFrame, FlagBits } from "./types";
 
 /** Theme colours (packed `0xRRGGBB`). The engine stays ignorant of these — the
  * consumer owns them and the renderer resolves cell refs against them. Carried over
- * verbatim from the beamterm adapter (#273): the theme contract is renderer-neutral. */
+ * verbatim from the beamterm adapter (#273): the theme contract is renderer-neutral.
+ *
+ * **A theme is a complete description, not a patch**, and a field added here inherits that:
+ * {@link JustermRenderer.setTheme} pushes **every** member, so an unset one *resets* to its default
+ * rather than keeping whatever the previous theme set. Adding a field therefore means adding an
+ * unconditional push there too — which is the opposite of how the optional members of
+ * {@link JustermRendererOptions} are wired (read once at `create`, pushed only when present), and
+ * the two conventions sit close enough together to swap by accident. Nothing but a test catches it:
+ * the wrong shape type-checks, and it only misbehaves on the *second* `setTheme`. Stated here rather
+ * than at one field because it is a property of the interface. (#580 — see
+ * `DEFAULT_CURSOR_CONTRAST` for what it costs when a default is not a neutral identity.) */
 export interface Theme {
   /** The 16 ANSI colours (slots `0..15`); the decoder's `buildPalette` fills `16..255`. */
   ansi: number[];
@@ -52,10 +62,50 @@ export interface Theme {
    * background's alpha byte before computing luminance, and ghostty composites first and still uses
    * only `bg.rgb`. None of the three can know what is behind the window. */
   minimumContrastRatio?: number;
+  /** Minimum WCAG contrast between the **cursor** and the cell it sits on (#580, consumer half of
+   * #368). Below it the cursor inverts to the terminal's default fg/bg, so a {@link cursorColor}
+   * that happens to match the cell underneath never makes the caret vanish. Defaults to
+   * {@link DEFAULT_CURSOR_CONTRAST}; pass `1` — the floor of the ratio range — to switch the guard
+   * off, which is xterm.js's behaviour (it has no cursor guard at all).
+   *
+   * **A separate knob from {@link minimumContrastRatio}, deliberately.** That one corrects a cell's
+   * *text* against its background; this one rescues an *overlay* against the cell it covers. They
+   * run on different comparands and either can be set without the other.
+   *
+   * Out-of-range values are the renderer's to clamp (`[1, 21]`) and are not re-clamped here — two
+   * layers holding the same bound is how they drift apart.
+   *
+   * Deliberately here rather than on {@link JustermRendererOptions}, though **both references put
+   * their contrast knob outside the colour scheme** — xterm.js's `minimumContrastRatio` is an option
+   * (`common/services/OptionsService.ts:43`) and alacritty's `MIN_CURSOR_CONTRAST` is not
+   * configurable at all (`alacritty/src/display/content.rs:22`). What governs a consumer-facing API
+   * shape here is this API's own coherence, not theirs: the thing this defends — {@link cursorColor}
+   * — is on `Theme`, and so is the sibling policy {@link minimumContrastRatio}, so a consumer would
+   * have to remember that one contrast ratio lives with the colours and the other does not. Its
+   * runtime path is {@link JustermRenderer.setTheme}, like every other policy on this interface. */
+  cursorContrast?: number;
   /** Draw bold text in the bright (8-15) ANSI colour — xterm's
    * drawBoldTextInBrightColors (#223). Defaults to true (xterm's default). */
   boldToBright?: boolean;
 }
+
+/**
+ * The cursor-contrast threshold applied when {@link Theme.cursorContrast} is unset — the renderer's
+ * own default (alacritty's `MIN_CURSOR_CONTRAST`, `alacritty/src/display/content.rs:22`), restated
+ * here.
+ *
+ * **Restated deliberately, unlike {@link JustermRendererOptions.cursorThickness}'s default, and the
+ * asymmetry follows from where each one lives.** A `Theme` is a *complete* description rather than a
+ * patch: {@link JustermRenderer.setTheme} pushes every field it carries, so an unset one must
+ * **reset** to the default and not silently keep whatever the previous theme set. That obliges this
+ * file to name a value, where an option — read once at `create`, never re-applied — can simply not
+ * call the setter and leave the number where the renderer documents it.
+ *
+ * The cost of naming it is a second copy that can drift from the renderer's, which is why it is a
+ * named constant rather than a literal in two call sites. The renderer publishes no getter for its
+ * own default, so nothing checks the two against each other.
+ */
+export const DEFAULT_CURSOR_CONTRAST = 1.5;
 
 export interface JustermRendererOptions {
   /** CSS selector of the canvas to attach to, e.g. `"#term"`. */
@@ -86,6 +136,29 @@ export interface JustermRendererOptions {
    * {@link JustermRenderer.setCursorBlinkTimeout}.
    */
   cursorBlinkTimeout?: number;
+  /**
+   * The cursor's stroke thickness as a **fraction of the cell width** (#580, consumer half of
+   * #369) — the width of a bar, an underline, or a hollow block's outline. Omit for the renderer's
+   * default, `0.15` (alacritty's `cursor.thickness`, `alacritty/src/config/cursor.rs:31`).
+   *
+   * **A block ignores it.** A block cursor recolours its cell and draws no stroke, so this changes
+   * nothing for the default shape — set a bar/underline/hollow shape (DECSCUSR) to see it.
+   *
+   * A *fraction*, not a length, because the renderer resolves it as
+   * `(frac * cell_w).round().max(1)` device px — so it tracks dpr **and** font size. That is
+   * alacritty's rule, which #270 chose over xterm.js's `cursorWidth` in CSS px
+   * (`common/services/OptionsService.ts:19`) because a fixed length gives a 32px font the same
+   * hairline caret as a 12px one. ADR-0023 does not apply: a fraction carries no unit to get wrong.
+   * The `.max(1)` floor means even `0` leaves a one-pixel stroke rather than no cursor.
+   *
+   * Out-of-range values are the renderer's to clamp (`[0, 1]`) and are not re-clamped here.
+   *
+   * Deliberately here rather than on {@link Theme}, and **both references agree**: a thickness is
+   * geometry, not a colour, and each keeps it out of its colour scheme (alacritty under `cursor`,
+   * xterm.js as an option beside `cursorWidth`'s siblings). Change it at runtime with
+   * {@link JustermRenderer.setCursorThickness}.
+   */
+  cursorThickness?: number;
   /**
    * The half-period of the **SGR 5 (blink) text** phase, in ms (#576). Omit (or `0`) to leave
    * blinking text steadily shown, which is the default.
@@ -269,6 +342,13 @@ export interface RendererBackend {
   setCursor(col: number, row: number, shape: number, color: number, textColor: number): void;
   /** Remove the cursor — hidden (DECTCEM) or the blink's off phase. */
   clearCursor(): void;
+  /** The cursor's minimum WCAG contrast with the cell under it (#368) and its stroke thickness as a
+   * fraction of the cell width (#369). Both are read at *draw* time (a shader uniform and a
+   * comparison against the resolved cell), so neither needs a re-pack — but the cursor has to be
+   * re-issued for the change to present, which is what `redrawCursor` is for. The renderer clamps
+   * each (`[1, 21]` / `[0, 1]`). */
+  setCursorContrast(threshold: number): void;
+  setCursorThickness(frac: number): void;
   setBoldToBright(enabled: boolean): void;
   setMinimumContrastRatio(ratio: number): void;
   setSelectionForeground(color: number | undefined): void;
@@ -633,6 +713,11 @@ export class JustermRenderer implements Renderer {
     backend.setBoldToBright(t.boldToBright ?? true);
     backend.setMinimumContrastRatio(t.minimumContrastRatio ?? 1);
     backend.setSelectionForeground(t.selectionForeground);
+    // Unconditional, and with the default named (#580): a `Theme` is a complete description, so
+    // this has to push the same value `setTheme` pushes for an unset field — see
+    // `DEFAULT_CURSOR_CONTRAST` for why that obliges this file to own a number the renderer already
+    // has one of. No cursor exists yet, so there is nothing to redraw.
+    backend.setCursorContrast(t.cursorContrast ?? DEFAULT_CURSOR_CONTRAST);
     // Background opacity (#577). Set unconditionally at the renderer's own default, so the value the
     // renderer holds is the one this object states rather than one nobody wrote down. No `render`
     // here — nothing has been drawn yet, and the first frame presents it.
@@ -655,6 +740,13 @@ export class JustermRenderer implements Renderer {
     // safe.
     backend.setLetterSpacing(opts.letterSpacing ?? 0);
     backend.setLineHeight(opts.lineHeight ?? 1);
+    // Cursor stroke thickness (#580) — conditional, unlike the four pushes above, and for the same
+    // reason `contextRestoreTimeout` is: their defaults are neutral identities (`0` / `1`) this file
+    // costs nothing to restate, while `0.15` is a value borrowed from alacritty with a rationale the
+    // renderer documents. Naming it here would make this the second owner of a number nothing
+    // reconciles. An option can afford that where `cursorContrast` above cannot, because options are
+    // read once here and never re-applied — there is no reset for an unset one to get wrong.
+    if (opts.cursorThickness !== undefined) backend.setCursorThickness(opts.cursorThickness);
 
     const palette: Palette = {
       colors: paletteColors,
@@ -821,6 +913,27 @@ export class JustermRenderer implements Renderer {
   }
 
   /**
+   * Change the cursor's stroke thickness at runtime (#580) — a fraction of the cell width. The live
+   * counterpart of {@link JustermRendererOptions.cursorThickness}, whose doc carries the full
+   * contract (why a fraction, which shapes it reaches, and the renderer's clamp).
+   *
+   * **No re-fit**, unlike {@link setLetterSpacing}/{@link setLineHeight}: this reads the cell, it
+   * does not move it, so the grid the consumer drives its engine at is unaffected.
+   *
+   * **Redraws only when a cursor is on screen**, matching {@link setCursorBlink} rather than
+   * {@link setBgAlpha}: the thickness is a stroke uniform and reaches nothing else, so with the
+   * cursor hidden (DECTCEM, or the blink's off phase) there is nothing for a present to change. It
+   * is picked up by the next redraw either way.
+   *
+   * There is no `setCursorContrast` beside this. That knob is on {@link Theme}, so
+   * {@link setTheme} is its runtime path — the same as every other policy that lives there.
+   */
+  setCursorThickness(frac: number): void {
+    this.backend.setCursorThickness(frac);
+    if (this.cursor) this.redrawCursor();
+  }
+
+  /**
    * Install (or clear, with `undefined`) the handler called when a lost WebGL context has not come
    * back within {@link setContextRestoreTimeout} (#579). The live counterpart of
    * {@link JustermRendererOptions.onContextLoss}, whose doc carries the full contract — what the
@@ -914,6 +1027,11 @@ export class JustermRenderer implements Renderer {
     this.backend.setBoldToBright(theme.boldToBright ?? true);
     this.backend.setMinimumContrastRatio(theme.minimumContrastRatio ?? 1);
     this.backend.setSelectionForeground(theme.selectionForeground);
+    // The cursor guard travels with the theme (#580), and it has to: what it defends against is a
+    // `cursorColor` too close to the cell under it, and this call is the one that just moved both.
+    // Omitting it from a theme RESETS it, like every other field here — that completeness is what
+    // `DEFAULT_CURSOR_CONTRAST` exists for.
+    this.backend.setCursorContrast(theme.cursorContrast ?? DEFAULT_CURSOR_CONTRAST);
     this.issueOverlay(); // the selection/match blend colours moved
     this.redrawCursor(); // re-push the cursor with its new colour, then present (one pack, #421)
   }

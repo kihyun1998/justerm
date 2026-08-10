@@ -109,3 +109,12 @@ kind of derived work ADR-0017 keeps out of consumers.
 - **Whether the setting is per-config or per-grid** — ADR-0021's tier rule answers it (`letter_spacing`
   keys the per-config tier).
 - **`line_height`** — a multiplier; no unit question.
+- **`cursor_thickness`** — a *fraction of the cell*, so no unit question either, and added to this
+  list on **2026-08-10 (#580)** when it became consumer-facing and therefore in range of the sentence
+  above. It is worth naming rather than leaving to the `line_height` precedent, because it is the one
+  member where **the references disagree with this ADR on the more interesting axis**: xterm.js's
+  `cursorWidth` is a *length* in CSS px (`src/common/services/OptionsService.ts:19` @ `699f553`), so
+  porting it would have put a second absolute length beside `font_size` and satisfied this record
+  while giving a 32px font the same hairline caret as a 12px one. #270 took alacritty's fraction
+  instead. The lesson for the next metric setter: *unit-coherent* and *right* are different tests,
+  and this record only runs the first.
