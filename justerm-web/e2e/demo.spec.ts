@@ -1,6 +1,13 @@
-import { test as base, expect, type Page } from "@playwright/test";
+import { test as base, expect, type BrowserContext, type Page } from "@playwright/test";
 
 import { DEMO_URL } from "../playwright.config";
+
+/**
+ * The #735 warm-up's two explicit budgets. They sum to 20s so the hook stays inside its 30s slot
+ * with room for the three awaits that have no budget of their own — see the comment on the hook.
+ */
+const GOTO_BUDGET_MS = 8_000;
+const BAR_BUDGET_MS = 12_000;
 
 /**
  * End-to-end verification of the demo's a11y features in a REAL headless browser
@@ -222,33 +229,48 @@ async function readAsyncProbe<K extends AsyncProbe>(
  * fixing the boot), and it is not a bigger `expect` timeout (which would stop the gate reporting the
  * thing it exists to report).
  *
- * **Budget.** A `beforeAll` hook is bounded by the **test timeout** — 30s, playwright's default,
- * which this config does not override — where `beforeEach`'s bar wait is bounded by the 5s `expect`
- * timeout. Six times the headroom, at exactly the operation that needs it. The wait below takes
- * two-thirds of that explicitly so a warm-up that cannot land gives the hook back rather than
- * aborting the whole file.
+ * **Budget, and why the arithmetic below is the load-bearing part rather than the `catch`.** A
+ * `beforeAll` hook gets a fresh slot worth the **test timeout** — 30s, playwright's default, which
+ * this config does not override — against `beforeEach`'s 5s `expect` timeout. Six times the
+ * headroom, at exactly the operation that needs it. But the slot is enforced *outside* the hook
+ * body: `Promise.race([cb(), running.timeoutPromise])`
+ * (`playwright/lib/worker/workerProcessEntry.js:425-428`, 1.61.1), so **the `try/catch` below cannot
+ * intercept a slot timeout** — only a thrown failure. And a failed `beforeAll` is not one red test,
+ * it skips the rest of the file (`:1795`, `_skipRemainingTestsInSuite`).
+ *
+ * So every await here carries an explicit budget and they must sum under 30s. They are not optional:
+ * a context built by hand off `browser` inherits **none** of the config's defaults — not `baseURL`
+ * (above), and equally not `navigationTimeout`, so an unbudgeted `page.goto` would take playwright's
+ * own 30s and blow the slot by itself. `GOTO_BUDGET_MS + BAR_BUDGET_MS` = 20s leaves ~10s for
+ * `newContext` / `newPage` / `close`, which are the three awaits with no budget of their own.
  *
  * **Fail-soft on purpose.** This hook asserts nothing: it is an optimization, and the only thing it
- * can prove is already proven by `beforeEach`, per test, with a better message. So a throw here is
- * swallowed and logged — the run then simply pays the cold boot on test one, which is the behaviour
- * that existed before this hook. What it must never do is convert a slow host into a file-level
- * abort, since that is the same failure mode, one budget up.
+ * could prove is already proven by `beforeEach`, per test, with a better message. So a throw is
+ * swallowed and logged, and the run simply pays the cold boot on test one — the behaviour that
+ * existed before this hook. On a host so slow that the budgets above are not enough, that is the
+ * right outcome: a warm-up which cannot land inside 20s was not going to rescue the first test
+ * either.
  *
- * Cost when nothing is contended: one extra navigation per worker, ~200ms. It runs once per spec
- * file per worker; a second spec file would warm an already-warm process for that price.
+ * Cost when nothing is contended: one extra navigation, ~200ms. **It covers this spec file only.**
+ * `beforeAll` runs once per file per worker, `browser` is worker-scoped, and `workers` is unset —
+ * playwright defaults it to 50% of the logical cores (`playwright/lib/common/index.js:595`), and
+ * `fullyParallel: false` serialises tests *within* a file while still spreading files across
+ * workers. So a second spec file lands in its own worker with its own cold browser process and
+ * needs its own copy of this hook; it does not inherit this one.
  */
 test.beforeAll(async ({ browser }) => {
-  const context = await browser.newContext({ baseURL: DEMO_URL });
+  let context: BrowserContext | undefined;
   try {
+    context = await browser.newContext({ baseURL: DEMO_URL });
     const page = await context.newPage();
-    await page.goto("/");
+    await page.goto("/", { timeout: GOTO_BUDGET_MS });
     await page
       .getByRole("button", { name: /Finish command/ })
-      .waitFor({ state: "visible", timeout: 20_000 });
+      .waitFor({ state: "visible", timeout: BAR_BUDGET_MS });
   } catch (e) {
     console.log(`[e2e] warm-up navigation did not complete (#735); test one pays the cold boot: ${e}`);
   } finally {
-    await context.close();
+    await context?.close();
   }
 });
 

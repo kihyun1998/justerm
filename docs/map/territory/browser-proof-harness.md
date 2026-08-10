@@ -39,15 +39,23 @@ a justerm shape here wrong, only corroborate one.
 - **A one-off cost is charged to the widest clock that can hold it** (#735). Playwright bounds three
   different things with three different budgets: `page.goto` by the navigation timeout, an
   `expect(locator)` by the **5s expect timeout**, a `beforeAll` hook by the **30s test timeout**. The
-  first navigation of a browser process costs far more than every later one, and because the browser
-  is shared across contexts inside a worker it is always the *first test* — the one under the
-  tightest clock — that pays. So `justerm-web` warms the process in `beforeAll`, from a context it
-  discards. The two rejected repairs are the ones that make the gate stop reporting: a retry runs
-  against an already-warm process so it always passes, and a bigger `expect` timeout hides a boot
-  that is genuinely slowing.
-- **A hook that asserts nothing fails soft.** The warm-up proves nothing `beforeEach` does not prove
-  again, per test, with a better message — so a throw in it is logged and swallowed. A warm-up that
-  aborted the file would be the same failure mode it exists to remove, one budget up.
+  first navigation of a browser process costs far more than every later one — so *where a suite takes
+  its browser from decides who pays*. `justerm-web` takes the worker-scoped `browser` fixture, so one
+  process serves every test and the cost lands on the **first test**, the one under the tightest
+  clock; it therefore warms the process in `beforeAll`, from a context it discards. The renderer's
+  screen proofs launch a browser **per test** (`screen-composited.spec.mjs`) and so pay it every
+  time — which is why they already carry a `warmUp`, reached from the compositing symptom rather than
+  from a budget, and why they are not exposed: their budget is a 60s test timeout, not 5s.
+  The two rejected repairs are the ones that make the gate stop reporting: a retry runs against an
+  already-warm process so it always passes, and a bigger `expect` timeout hides a boot that is
+  genuinely slowing.
+- **A hook that asserts nothing fails soft — and its budgets, not its `catch`, are what keep it
+  soft.** The warm-up proves nothing `beforeEach` does not prove again, per test, with a better
+  message, so a throw in it is logged and swallowed. But a hook's slot timeout is raced *outside* the
+  hook body and cannot be caught, and a failed `beforeAll` skips the rest of the file — the same
+  failure mode it exists to remove, one budget up. So every await in such a hook needs an explicit
+  budget summing under the slot, the more so because a context built by hand off `browser` inherits
+  none of the config's defaults.
 - **A gate and an eyeball are different tools.** `readPixels` reads a buffer the compositor never
   touched; a headless screenshot of a fractional-CSS canvas composites to white. Neither substitutes
   for the other, and wanting to *look* at renderer output is a reason to open a real browser, not to
@@ -129,7 +137,10 @@ The section exists at all because a harness question wants `test/`, and the spar
 - **The boot gate is a proxy** whose soundness rests on an import resolving on the microtask queue.
   Nothing enforces that; the comment beside it is the whole defence.
 - **Neither guard covers a third suite**, and both derive their hook names per package. A new harness
-  starts with no check, the same way a new excluded crate starts with no gate.
+  starts with no check, the same way a new excluded crate starts with no gate. **The `#735` warm-up
+  has the same shape one level down**: it lives in `demo.spec.ts` and `browser` is worker-scoped
+  while `workers` defaults to 50% of the cores, so a *second spec file in the same package* runs in
+  its own worker against its own cold browser and needs its own copy. Nothing warns whoever adds it.
 - **`check-map-note.mjs`'s `SRC_ROOTS` does not include any `e2e/`, `test/` or `demo/` tree**, so a
   symbol this note names resolves only because it is written as a full path from the repo root.
 - **Nothing measures whether a proof still proves anything.** A probe that answers `NaN` made one

@@ -1416,8 +1416,12 @@ This section needed `test/` in the xterm.js sparse checkout; the clone recipe in
   destination, not the reason.** Both suites charge a browser process's first boot to `beforeAll`
   rather than to a per-test assertion clock. xterm.js arrives there because it reuses one page per
   file, so `beforeAll` is simply *where the page is*; justerm arrives there because a measured cold
-  boot (10084ms and a 15277ms **failure** under 112 spinners, against `beforeEach`'s 5000ms `expect`
-  budget) had to go somewhere with headroom, and its warm-up context is **discarded** immediately.
+  boot had to go somewhere with headroom, and its warm-up context is **discarded** immediately. The
+  measurement, stated so it cannot be compressed into something stronger: the suite's first test ran
+  10084ms (**passed** — a test's duration is not the `expect` budget, since `page.goto` has its own)
+  and 15277ms (**failed**, at `beforeEach`'s 5000ms `expect` budget), under 112 spinners on a box
+  also carrying other real work — nominally the same 4x oversubscription as #735's own 4024ms sweep,
+  on a noisier host, which is why the numbers do not line up with that table.
   The rows above are therefore worth exactly one thing: a shape two projects reached independently
   is not arbitrary. They license nothing about *why* — in particular, xterm.js's config says nothing
   about cold caches, and this repo's own measurement is the only evidence for that half.
