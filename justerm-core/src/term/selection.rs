@@ -310,7 +310,7 @@ impl Term {
     fn resolve(&self) -> Option<Resolved> {
         let sel = self.selection.as_ref()?;
         let (start, end) = sel.ordered();
-        Some(match sel.ty {
+        let resolved = match sel.ty {
             SelectionType::Char => {
                 // Half-open columns: each side decides if its own cell is in.
                 let from = match start.side {
@@ -370,7 +370,89 @@ impl Term {
                     to: to.min(cols).max(from),
                 }
             }
+        };
+        Some(match resolved {
+            Resolved::Linear {
+                start_line,
+                from,
+                end_line,
+                to,
+            } => {
+                let (from, to) = self.widen_to_wide_pairs(start_line, from, end_line, to);
+                Resolved::Linear {
+                    start_line,
+                    from,
+                    end_line,
+                    to,
+                }
+            }
+            block => block,
         })
+    }
+
+    /// Widen a resolved half-open column range outward so that neither end falls *inside* a
+    /// wide-glyph pair (#454). Returns the adjusted `(from, to)`.
+    ///
+    /// A width-2 glyph is one thing, and this crate's other answers already say so: a spacer
+    /// extracts as nothing, so `selection_text` can only ever return the whole glyph or none of it.
+    /// A range that stops between the halves therefore makes the *highlight* and the *copy* describe
+    /// different text — measured on `"漢ab"`, anchoring on the spacer and dragging right highlighted
+    /// two cells of the glyph plus `a` while copying `a` alone. Widening is what makes the two
+    /// agree; it is not a bound, and it never shrinks a range.
+    ///
+    /// Both ends move **outward** and each needs its partner to agree, which is what keeps the
+    /// degenerate shapes safe: `Row::resize` narrows straight through a pair and leaves a lead with
+    /// no spacer, and ADR-0025 D4's scope records that as a *legal* buffer state rather than a
+    /// repair site. A stranded lead ends the range where it sits.
+    ///
+    /// `is_wide_spacer` and not `is_spacer`: the latter also matches the wide-wrap artefact
+    /// (`C_LEADING_SPACER`), which marks a row's last column when a lead did not fit — a different
+    /// fact, and one whose neighbour is on another row.
+    ///
+    /// **Linear only.** A `Block` rectangle is one column range for *every* row, so a per-row
+    /// widening cannot be expressed in it; its highlight is made whole per cell in the renderer
+    /// instead, and its copy is the hole `docs/map/territory/selection.md` already records.
+    ///
+    /// **The two partner checks are unobservable here, and that is recorded rather than tested.**
+    /// Removing either one reds no test in the suite, measured — not because the tests are weak but
+    /// because both failure modes are out of reach on this side: the states they exclude (a lead
+    /// beside a non-spacer mid-row, a spacer with no lead) are exactly what #529 stopped the engine
+    /// from producing, and a widening that ran past the row's end is absorbed downstream, where both
+    /// consumers already clamp to `abs_line(line).len()`. They are kept because the same rule in
+    /// `justerm-renderer` (`pair::partner_at`) *is* observable — it reads consumer-authored spans and
+    /// preedit-patched flags — and one rule with two spellings is how the two drift apart. Valid
+    /// while core keeps both halves of a pair in step (ADR-0025 D4) and both consumers keep clamping.
+    fn widen_to_wide_pairs(
+        &self,
+        start_line: usize,
+        from: usize,
+        end_line: usize,
+        to: usize,
+    ) -> (usize, usize) {
+        let cell = |line: usize, col: usize| {
+            let row = self.abs_line(line);
+            row.get(col).copied()
+        };
+        // `from` is the first included column: pull it left when it is a spacer whose lead is there.
+        let from = if from > 0
+            && cell(start_line, from).is_some_and(|c| c.is_wide_spacer())
+            && cell(start_line, from - 1).is_some_and(|c| c.is_wide())
+        {
+            from - 1
+        } else {
+            from
+        };
+        // `to` is exclusive, so `to - 1` is the last included column: push it right when that cell
+        // is a lead whose spacer is the next one.
+        let to = if to > 0
+            && cell(end_line, to - 1).is_some_and(|c| c.is_wide())
+            && cell(end_line, to).is_some_and(|c| c.is_wide_spacer())
+        {
+            to + 1
+        } else {
+            to
+        };
+        (from, to)
     }
 
     /// The selected text (for copy), or `None` when nothing is selected.

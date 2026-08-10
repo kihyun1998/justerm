@@ -135,15 +135,27 @@ pub struct DecorationOverride {
 /// wrong unit of resolution. Picking one whole rect made an fg-only decoration discard an earlier
 /// decoration's background — and since #444 promoted "a bottom decoration supplied a bg" to a
 /// blend-vs-solid input, that discard flipped the *compositing mode*, not merely a colour.
+///
+/// `partner` is the other half of the wide pair this cell belongs to
+/// ([`pair::partner_at`](crate::pair::partner_at)), or `None`: a rect covering either half covers
+/// both (#454). It widens the *coverage test* and leaves the merge untouched, which is what keeps
+/// wire order intact — a rect reaching this cell only through its partner still merges in its own
+/// position in the slice, so a decoration registered later wins on a pair exactly as it does on a
+/// narrow cell.
 pub fn decoration_override_at(
     rects: &[DecorationRect],
     row: u32,
     col: u32,
+    partner: Option<u32>,
     layer: DecorationLayer,
 ) -> DecorationOverride {
     let mut out = DecorationOverride::default();
+    let covers = |r: &DecorationRect, c: u32| c >= r.left && c <= r.right;
     for r in rects {
-        if r.layer == layer && r.row == row && col >= r.left && col <= r.right {
+        if r.layer == layer
+            && r.row == row
+            && (covers(r, col) || partner.is_some_and(|p| covers(r, p)))
+        {
             // Per-property last-wins: only a rect that *sets* the property overwrites the winner.
             if r.bg.is_some() {
                 out.bg = r.bg;
@@ -216,18 +228,18 @@ mod tests {
     #[test]
     fn decoration_override_at_matches_the_inclusive_span_on_its_layer() {
         let rects = parse_decorations(&[1, 2, 4, 0, 5, NO_REF]);
-        let at = |col| decoration_override_at(&rects, 1, col, DecorationLayer::Bottom).bg;
+        let at = |col| decoration_override_at(&rects, 1, col, None, DecorationLayer::Bottom).bg;
         assert_eq!(at(1), None, "left of the span");
         assert_eq!(at(2), Some(5), "left edge inclusive");
         assert_eq!(at(4), Some(5), "right edge inclusive");
         assert_eq!(at(5), None, "right of the span");
         assert_eq!(
-            decoration_override_at(&rects, 0, 3, DecorationLayer::Bottom),
+            decoration_override_at(&rects, 0, 3, None, DecorationLayer::Bottom),
             NONE,
             "another row"
         );
         assert_eq!(
-            decoration_override_at(&rects, 1, 3, DecorationLayer::Top),
+            decoration_override_at(&rects, 1, 3, None, DecorationLayer::Top),
             NONE,
             "another layer"
         );
@@ -238,17 +250,17 @@ mod tests {
         // Two Bottom decorations both cover (0, 0..=2); the later one (bg 7) paints on top.
         let rects = parse_decorations(&[0, 0, 2, 0, 6, NO_REF, 0, 0, 2, 0, 7, NO_REF]);
         assert_eq!(
-            decoration_override_at(&rects, 0, 1, DecorationLayer::Bottom).bg,
+            decoration_override_at(&rects, 0, 1, None, DecorationLayer::Bottom).bg,
             Some(7)
         );
         // A Top decoration on the same cell is independent (resolved per layer).
         let mixed = parse_decorations(&[0, 0, 2, 0, 6, NO_REF, 0, 0, 2, 1, 8, NO_REF]);
         assert_eq!(
-            decoration_override_at(&mixed, 0, 1, DecorationLayer::Bottom).bg,
+            decoration_override_at(&mixed, 0, 1, None, DecorationLayer::Bottom).bg,
             Some(6)
         );
         assert_eq!(
-            decoration_override_at(&mixed, 0, 1, DecorationLayer::Top).bg,
+            decoration_override_at(&mixed, 0, 1, None, DecorationLayer::Top).bg,
             Some(8)
         );
     }
@@ -260,7 +272,7 @@ mod tests {
         // #444 the bg also decides blend-vs-solid, so the loss flipped the compositing mode too.
         let rects = parse_decorations(&[0, 0, 2, 0, 6, NO_REF, 0, 0, 2, 0, NO_REF, 9]);
         assert_eq!(
-            decoration_override_at(&rects, 0, 1, DecorationLayer::Bottom),
+            decoration_override_at(&rects, 0, 1, None, DecorationLayer::Bottom),
             DecorationOverride {
                 bg: Some(6),
                 fg: Some(9)
@@ -275,7 +287,7 @@ mod tests {
         // against a merge written as "overwrite both from the last rect that set either".
         let bg_last = parse_decorations(&[0, 0, 2, 0, 6, 9, 0, 0, 2, 0, 7, NO_REF]);
         assert_eq!(
-            decoration_override_at(&bg_last, 0, 1, DecorationLayer::Bottom),
+            decoration_override_at(&bg_last, 0, 1, None, DecorationLayer::Bottom),
             DecorationOverride {
                 bg: Some(7),
                 fg: Some(9)
@@ -284,7 +296,7 @@ mod tests {
         );
         let fg_last = parse_decorations(&[0, 0, 2, 0, 6, 9, 0, 0, 2, 0, NO_REF, 4]);
         assert_eq!(
-            decoration_override_at(&fg_last, 0, 1, DecorationLayer::Bottom),
+            decoration_override_at(&fg_last, 0, 1, None, DecorationLayer::Bottom),
             DecorationOverride {
                 bg: Some(6),
                 fg: Some(4)
@@ -299,7 +311,7 @@ mod tests {
         // not cover the cell contributes nothing, even though it sets both properties.
         let rects = parse_decorations(&[0, 0, 1, 0, 6, NO_REF, 0, 5, 7, 0, 7, 9]);
         assert_eq!(
-            decoration_override_at(&rects, 0, 0, DecorationLayer::Bottom),
+            decoration_override_at(&rects, 0, 0, None, DecorationLayer::Bottom),
             DecorationOverride {
                 bg: Some(6),
                 fg: None

@@ -113,12 +113,18 @@ impl Overlay<'_> {
     /// (`left..=right`). Priority is **ActiveMatch > Selection > Match** (#427): the active/focused
     /// match is xterm's `layer:'top'` decoration painted above the selection, while a plain match
     /// stays below it; the winner is by kind, not directory order (`overlay.ts` `highlightAt`).
-    pub fn highlight_at(&self, row: u32, col: u32) -> Option<HighlightKind> {
-        if covers(self.active, row, col) {
+    ///
+    /// `partner` is the other half of the wide pair this cell belongs to
+    /// ([`pair::partner_at`](crate::pair::partner_at)), or `None`. A span covering either half
+    /// covers both (#454), and the pair is resolved **inside** the ranking rather than by asking
+    /// twice at the call site: with the lead in a plain match and the spacer in the active one, the
+    /// pair is one unit and must take the active colour, which an own-first fallback would miss.
+    pub fn highlight_at(&self, row: u32, col: u32, partner: Option<u32>) -> Option<HighlightKind> {
+        if covers_pair(self.active, row, col, partner) {
             Some(HighlightKind::ActiveMatch)
-        } else if covers(self.selection, row, col) {
+        } else if covers_pair(self.selection, row, col, partner) {
             Some(HighlightKind::Selection)
-        } else if covers(self.matches, row, col) {
+        } else if covers_pair(self.matches, row, col, partner) {
             Some(HighlightKind::Match)
         } else {
             None
@@ -131,9 +137,20 @@ impl Overlay<'_> {
     /// `isCellSelected` (not on which decoration won the bg), so the selection-only fg treatments
     /// (selectionForeground #227, un-dim #224, tile re-tint #239) apply to a selected cell even
     /// when the ACTIVE match's bg outranks the selection's.
-    pub fn is_selected(&self, row: u32, col: u32) -> bool {
-        covers(self.selection, row, col)
+    ///
+    /// `partner` carries the same wide-pair rule as [`highlight_at`](Self::highlight_at): the fg
+    /// channel is independent of the winning bg kind (#430), so it needs the pair rule in its own
+    /// right — without it a half-covered pair would take the selection's *background* across both
+    /// halves and its foreground treatments on one.
+    pub fn is_selected(&self, row: u32, col: u32, partner: Option<u32>) -> bool {
+        covers_pair(self.selection, row, col, partner)
     }
+}
+
+/// [`covers`], extended to the wide pair: true when the span covers this column **or** the other
+/// half of the pair it belongs to (#454).
+fn covers_pair(flat: &[u32], row: u32, col: u32, partner: Option<u32>) -> bool {
+    covers(flat, row, col) || partner.is_some_and(|p| covers(flat, row, p))
 }
 
 /// Does any `(row, left, right)` span in `flat` cover cell `(row, col)`? A malformed tail shorter
@@ -278,19 +295,19 @@ mod tests {
             selection: &[1, 2, 4], // row 1, cols 2..=4
             ..Default::default()
         };
-        assert_eq!(ov.highlight_at(1, 1), None, "left of the span");
+        assert_eq!(ov.highlight_at(1, 1, None), None, "left of the span");
         assert_eq!(
-            ov.highlight_at(1, 2),
+            ov.highlight_at(1, 2, None),
             Some(HighlightKind::Selection),
             "left edge inclusive"
         );
         assert_eq!(
-            ov.highlight_at(1, 4),
+            ov.highlight_at(1, 4, None),
             Some(HighlightKind::Selection),
             "right edge inclusive"
         );
-        assert_eq!(ov.highlight_at(1, 5), None, "right of the span");
-        assert_eq!(ov.highlight_at(0, 3), None, "another row");
+        assert_eq!(ov.highlight_at(1, 5, None), None, "right of the span");
+        assert_eq!(ov.highlight_at(0, 3, None), None, "another row");
     }
 
     #[test]
@@ -299,9 +316,9 @@ mod tests {
             matches: &[0, 0, 3, 2, 1, 1], // two triples: (0,0..=3) and (2,1..=1)
             ..Default::default()
         };
-        assert_eq!(ov.highlight_at(0, 2), Some(HighlightKind::Match));
-        assert_eq!(ov.highlight_at(2, 1), Some(HighlightKind::Match));
-        assert_eq!(ov.highlight_at(2, 0), None);
+        assert_eq!(ov.highlight_at(0, 2, None), Some(HighlightKind::Match));
+        assert_eq!(ov.highlight_at(2, 1, None), Some(HighlightKind::Match));
+        assert_eq!(ov.highlight_at(2, 0, None), None);
     }
 
     #[test]
@@ -314,7 +331,10 @@ mod tests {
             matches: &[0, 0, 2],
             ..Default::default()
         };
-        assert_eq!(ov.highlight_at(0, 1), Some(HighlightKind::ActiveMatch));
+        assert_eq!(
+            ov.highlight_at(0, 1, None),
+            Some(HighlightKind::ActiveMatch)
+        );
     }
 
     #[test]
@@ -327,12 +347,15 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            ov.highlight_at(0, 1),
+            ov.highlight_at(0, 1, None),
             Some(HighlightKind::ActiveMatch),
             "the bg winner is the active match"
         );
-        assert!(ov.is_selected(0, 1), "…yet the cell is still selected");
-        assert!(!ov.is_selected(1, 0), "no selection elsewhere");
+        assert!(
+            ov.is_selected(0, 1, None),
+            "…yet the cell is still selected"
+        );
+        assert!(!ov.is_selected(1, 0, None), "no selection elsewhere");
     }
 
     #[test]
@@ -344,7 +367,7 @@ mod tests {
             matches: &[0, 0, 2],
             ..Default::default()
         };
-        assert_eq!(ov.highlight_at(0, 1), Some(HighlightKind::Selection));
+        assert_eq!(ov.highlight_at(0, 1, None), Some(HighlightKind::Selection));
     }
 
     #[test]
@@ -356,7 +379,7 @@ mod tests {
             matches: &[0, 0, 2],
             ..Default::default()
         };
-        assert_eq!(ov.highlight_at(0, 1), Some(HighlightKind::Selection));
+        assert_eq!(ov.highlight_at(0, 1, None), Some(HighlightKind::Selection));
     }
 
     // --- blend_over: xterm's integer channel math, matched to the byte ---
