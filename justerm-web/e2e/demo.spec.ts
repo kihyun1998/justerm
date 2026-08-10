@@ -1472,6 +1472,62 @@ test("adopting a new device pixel ratio re-bakes and re-applies the canvas box (
   expect(after.rows).toBe(before.rows);
 });
 
+// #325 follow-up, found by measuring the slice rather than by reading it: **a GL restore is the one
+// buffer change with no consumer call behind it.**
+//
+// `restore()` re-reads the LIVE device pixel ratio and re-derives the cell at it (`webgl.rs`, #269) —
+// deliberately, because a DPR notification arriving while the context is lost is dropped rather than
+// queued. So a density that moved during a loss is adopted there, the drawing buffer moves, and until
+// this slice nothing re-applied the canvas display box.
+//
+// The setup is only expressible because of the negative result recorded above: CDP moves
+// `devicePixelRatio` without dispatching a `change` event, so the widget's watcher genuinely does not
+// see it and `restore()` is left as the only path that can adopt the new density — which is exactly
+// the real-world case (a monitor switch that also resets the GPU) with the timing made deterministic.
+test("a GL restore at a changed density re-applies the canvas box (#325)", async ({ page }) => {
+  await expect(page.getByRole("button", { name: /Finish command/ })).toBeVisible();
+
+  const boot = await page.evaluate(() => window.__dprProbe!());
+  expect(boot.appliedW * boot.dpr).toBe(boot.bufW);
+  expect(boot.appliedH * boot.dpr).toBe(boot.bufH);
+
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send("Emulation.setDeviceMetricsOverride", {
+    width: 1280,
+    height: 720,
+    deviceScaleFactor: 2,
+    mobile: false,
+  });
+  await page.waitForTimeout(300);
+
+  // The watcher cannot see a CDP override, so nothing has been adopted yet. Asserted rather than
+  // assumed: if Chromium ever starts dispatching the event, this test stops describing a restore and
+  // says so here instead of quietly passing for the wrong reason.
+  const injected = await page.evaluate(() => window.__dprProbe!());
+  expect(injected.cellW).toBe(boot.cellW);
+  expect(injected.cellH).toBe(boot.cellH);
+
+  await page.evaluate(() => {
+    const gl = document.querySelector<HTMLCanvasElement>("#term")!.getContext("webgl2")!;
+    const ext = gl.getExtension("WEBGL_lose_context")!;
+    ext.loseContext();
+    setTimeout(() => ext.restoreContext(), 50);
+  });
+  await page.waitForTimeout(1200);
+
+  const after = await page.evaluate(() => window.__dprProbe!());
+  // The restore adopted the new density — without this the assertions below are vacuous.
+  expect(after.cellH).toBeGreaterThan(boot.cellH);
+  expect(after.bufH).toBe(after.rows * after.cellH);
+
+  // THE POINT. Measured before the fix: buffer `2556x1369` under a canvas still styled `1278x703`.
+  // The WIDTH was accidentally right (the cell doubled exactly, 9 -> 18) and only the height was
+  // wrong — `703` against a correct `684.5` — so a width-only check would have passed.
+  expect(after.appliedH * 2).toBe(after.bufH);
+  expect(after.appliedW * 2).toBe(after.bufW);
+  expect(after.appliedH).not.toBe(boot.appliedH);
+});
+
 // #580: the two cursor policy knobs — the last renderer setters with no consumer call site (#583).
 //
 // Both are decided at DRAW time against the resolved cell, which is why the proof is a real browser

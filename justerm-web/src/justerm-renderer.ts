@@ -654,6 +654,9 @@ export class JustermRenderer implements Renderer {
   /** Watches the display's density and re-bakes at it (#325). Held so {@link dispose} can stop it:
    * like the motion listener above, this one *draws*. */
   private readonly dprWatcher: DprWatcher;
+  /** Re-applies the canvas display box after a GL restore (#325). Held so {@link dispose} can detach
+   * it: it drives a render. */
+  private readonly onContextRestored: () => void;
   /** Focus gates the selection colour (focused → `selectionBg`, blurred → the dimmer
    * `selectionInactiveBg`) and the blink (blurred → solid). xterm's two selection colours (#115). */
   private focused = true;
@@ -714,6 +717,28 @@ export class JustermRenderer implements Renderer {
       (dpr) => this.setDevicePixelRatio(dpr),
     );
     this.dprWatcher.start();
+
+    /**
+     * **A restore is the one buffer change with no consumer call behind it** (#325), which is the
+     * same shape as the density change above and was found by measuring it.
+     *
+     * `restore()` re-reads the **live** device pixel ratio and re-derives the cell at it
+     * (`webgl.rs`, #269) — deliberately, because a DPR notification arriving while the context is
+     * lost is *dropped* rather than queued. So a density that moved during a loss is adopted here,
+     * the drawing buffer moves with it, and nothing re-applies the display box. Measured before
+     * fixing: dpr 1 -> 2 across a loss left the buffer at `2556x1369` under a canvas still styled
+     * `1278x703`; the width was accidentally right (the cell doubled exactly) and the height was
+     * `703` against a correct `684.5`, so the browser stretched the terminal ~2.7% vertically.
+     *
+     * **Driving a render here is not incidental — it is what makes the box readable.** The renderer
+     * rebuilds inside its next `render()`, not when this event fires, so re-applying the box first
+     * would copy the pre-restore numbers. One extra present on a rare event is the price.
+     */
+    this.onContextRestored = (): void => {
+      this.backend.render();
+      this.applyCanvasCssBox();
+    };
+    canvas.addEventListener("webglcontextrestored", this.onContextRestored);
   }
 
   static async create(opts: JustermRendererOptions): Promise<JustermRenderer> {
@@ -1550,6 +1575,7 @@ export class JustermRenderer implements Renderer {
     this.blinkLoop.stop();
     this.motionQuery.removeEventListener("change", this.onMotionChange);
     this.dprWatcher.stop();
+    this.canvas.removeEventListener("webglcontextrestored", this.onContextRestored);
     this.contextLoss.end();
   }
 }
