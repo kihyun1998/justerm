@@ -24,12 +24,16 @@ about *how the caret looks* is decided here.
   the engine only has to report scalars.
 - **Geometry is device pixels and pure.** Stroke thickness is `(frac * cell_w).round().max(1)` —
   alacritty's rule, with its default fraction (`0.15`) as the starting value. The consumer may
-  override per-renderer via `setCursorThickness`.
+  override per-renderer via `setCursorThickness` — **reachable through the widget since #580**, as a
+  `JustermRendererOptions` field plus a runtime setter.
 - **Shapes are rectangles, and a wide lead changes them.** A block caret over a width-2 glyph covers
   the pair, which is why the geometry module reaches for `is_wide_lead` — the caret is one of the few
   renderer concerns that has to know about pair structure.
 - **Contrast is a separate knob** (`setCursorContrast`). A caret that inverts under a theme can
-  become invisible, so its legibility is adjusted independently of the text contrast policy.
+  become invisible, so its legibility is adjusted independently of the text contrast policy. It
+  compares the **caret's own colour against the cell background**, which alacritty does not — it
+  tests the cell's `fg` against its `bg`, because its caret can take a cell reference and justerm's
+  never does. On the consumer side it rides `Theme` (#580), beside the colour it defends.
 - **Blink phase arrives as state, not as a timer.** The consumer resolves the policy and pushes the
   phase; nothing here animates. That is the same split as the engine's, one layer further out.
   **The phase's origin is not the moment anything asked for it**, though: a cursor *move* re-anchors
@@ -54,10 +58,10 @@ recorded SHA; a paraphrase drops the pin).
 
 - [Cursor blink — who decides](../../agents/reference-facts.md#cursor-blink--who-decides-575-verified-2026-07-28)
   — the policy resolution this territory receives the result of
-
-The thickness rule cites alacritty's `config/cursor.rs` by path in a doc comment. That is a **default
-value borrowed from a named source with no pinned row** — cheap to promote and currently
-unverifiable.
+- [Cursor policy knobs — where each reference puts them](../../agents/reference-facts.md#cursor-policy-knobs--where-each-reference-puts-them-580-verified-2026-08-10)
+  — the thickness and contrast constants, pinned, plus what each reference exposes. Its sharpest row
+  is a *negative* one: alacritty's contrast guard is a compile-time constant with no config path, so
+  the number this territory borrowed is prior art and the **knob** is not
 
 ## Cross-cutting invariants
 
@@ -86,7 +90,11 @@ its own existence — the fact held here and was invisible from here.
 
 - **Zero governing records** for the overlay-vs-inversion choice, which is the decision that lets the
   wire stay scalar-only.
-- **The alacritty default is unpinned** — a borrowed constant with a path and no SHA.
+- ~~**The alacritty default is unpinned**~~ — **closed by #580**, which pinned both borrowed
+  constants (thickness `0.15`, contrast `1.5`) to `file:line` at the recorded SHA while wiring the
+  consumer half. Kept struck through rather than deleted because the *shape* recurs: this territory
+  borrows numbers from a named source, and a path in a doc comment reads like a citation without
+  being one.
 - **Nothing states what happens when the caret and a selection cover the same cell.** The highlight
   ranking answers selection versus active match; the caret sits outside that stack entirely and no
   document says how the two read together.

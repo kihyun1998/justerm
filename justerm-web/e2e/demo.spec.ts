@@ -1423,6 +1423,117 @@ test.describe("a non-finite bgAlpha falls back to opaque (#577)", () => {
   });
 });
 
+// #580: the two cursor policy knobs — the last renderer setters with no consumer call site (#583).
+//
+// Both are decided at DRAW time against the resolved cell, which is why the proof is a real browser
+// and not a fake backend: the widget hands the renderer a number and the renderer decides a colour or
+// a width from it, so nothing short of the drawing buffer can say whether the number arrived.
+//
+// **The expected stroke is derived from the cell the probe reports, never written down.** The cell is
+// the ink box of the font's `█` (ADR-0022), so it differs between this machine and CI — the same trap
+// that made #578's first dpr-2 test pin `cellW === 18` and fail at 20. A *fraction* of the cell is
+// portable only once the cell is measured rather than assumed.
+const expectedStroke = (frac: number, cellW: number): number =>
+  Math.max(1, Math.round(frac * cellW)); // mirrors `cursor::cursor_thickness`
+
+/**
+ * #580 — a lost GL context reads exactly like a knob that never arrived, so say which happened.
+ *
+ * **Measured, and the first diagnosis of it was wrong.** These two tests were intermittently red
+ * with `Expected: 1, Received: 0`. `drawingBufferWidth/Height` were `0` at the failing sample, which
+ * was first read as "the canvas has not been sized yet" — it is not: a timeline sampled from page
+ * load shows the canvas at `300x150` from `t=7ms` and `1278x703` from `t≈140ms`, never `0`. Widening
+ * the dump to the whole state found `canvas=1278x703 buf=0x0 lost=1`: the **context is lost**, and a
+ * lost context zeroes the buffer dimensions while the element keeps its size.
+ *
+ * It is sporadic rather than accumulating — 2 of 6 runs in one session, 0 of 12 in the next, same
+ * command, with no test that deliberately loses a context in either. So it is headless-Chromium /
+ * SwiftShader instability, not something this widget or this page does, and it can hit any
+ * `readPixels` probe here.
+ *
+ * What it cannot be allowed to do is look like a defect. Waiting is not the answer — a lost context
+ * never gets its buffer back, so a gate on `drawingBufferWidth > 0` would convert a legible pixel
+ * mismatch into a timeout. (An earlier revision of this file did exactly that, and it appeared to
+ * work only because the runs it was measured on had not lost their context.) Asserting the
+ * precondition is: the probe reports the context's own verdict, and this names it.
+ */
+const expectContextAlive = (p: { contextLost: boolean }): void => {
+  expect(
+    p.contextLost,
+    "the WebGL context was lost during the probe — every pixel below reads 0, which is an environment failure and not a defect in the knob under test",
+  ).toBe(false);
+};
+
+test("the cursor's thickness and contrast policies reach the renderer (#580)", async ({ page }) => {
+  await expect(page.getByRole("button", { name: "Cursor blink: OFF" })).toBeVisible();
+
+  const p = await page.evaluate(() => window.__cursorPolicyProbe!());
+  expectContextAlive(p);
+
+  // --- thickness ------------------------------------------------------------------------------
+  // Unset at `create`, so this is the renderer's own default and the "byte for byte" acceptance box:
+  // wiring the knob must not move the caret for a consumer who never asks for it.
+  expect(p.thickness.boot).toBe(expectedStroke(0.15, p.cellW));
+  expect(p.thickness.thick).toBe(expectedStroke(0.5, p.cellW));
+  // The two exact assertions above agree vacuously if the cell is narrow enough that both fractions
+  // round to the same pixel — assert they actually separate, so the test cannot pass on a cell where
+  // it could no longer observe anything.
+  expect(p.thickness.thick).toBeGreaterThan(p.thickness.boot);
+  // Not a one-way door.
+  expect(p.thickness.back).toBe(p.thickness.boot);
+
+  // --- contrast -------------------------------------------------------------------------------
+  // The caret is painted the cell's own background here, so with the guard at its floor it is
+  // genuinely invisible. This assertion is what proves `cursorContrast: 1` reached the renderer at
+  // all: the default would have rescued it.
+  expect(p.contrast.guardOff).toBe(p.contrast.background);
+  // …and with the guard on, it is rescued to the theme's default fg (`0xcdd6f4`) rather than merely
+  // being "some other colour", which a wrong-but-visible fallback would also satisfy.
+  expect(p.contrast.guardOn).toBe("rgb(205,214,244)");
+  expect(p.contrast.guardOn).not.toBe(p.contrast.background);
+  // THE COMPLETENESS CLAUSE. The third `setTheme` omits `cursorContrast` entirely, so the widget must
+  // push the DEFAULT rather than leave the `1` from two samples ago standing. Goes red if the push is
+  // made conditional on the field being present — which is how the sibling *options* are wired, and
+  // therefore the plausible wrong shape rather than a hypothetical one.
+  expect(p.contrast.guardReset).toBe(p.contrast.guardOn);
+
+  // The boot caret on this page takes `defaultFg`, which contrasts with the cell, so no guard fires
+  // and it is simply visible. The control for the booted-invisible page below.
+  expect(p.contrast.boot).toBe("rgb(205,214,244)");
+});
+
+// #580, the CREATE half of both knobs. The test above drives the runtime paths (`setCursorThickness`
+// and `setTheme`); `create` runs once per page load, so the option and the theme field are only
+// reachable by booting with them set. Worth its own page for the same reason #577's is: the create
+// call site is the one a consumer writes first and the one whose omission is silent — the renderer's
+// defaults are a working caret, so a dropped `create` push looks exactly like a correct one.
+//
+// `cursorColor` is booted alongside because `cursorContrast` is otherwise undecidable at create: the
+// default caret colour contrasts with every cell the demo draws, so the threshold has nothing to
+// decide until the caret is put INTO the background.
+test.describe("the cursor policies given at create take effect (#580)", () => {
+  test.use({ bootUrl: "/?cursorThickness=0.5&cursorContrast=1&cursorColor=0x1e1e2e" });
+
+  test("a cursor thickness and contrast given at create take effect, without touching a setter", async ({
+    page,
+  }) => {
+    await expect(page.getByRole("button", { name: "Cursor blink: OFF" })).toBeVisible();
+
+    const p = await page.evaluate(() => window.__cursorPolicyProbe!());
+    expectContextAlive(p);
+
+    // The OPTION half: read before the probe calls `setCursorThickness`, so this is purely `create`.
+    expect(p.thickness.boot).toBe(expectedStroke(0.5, p.cellW));
+    expect(p.thickness.boot).toBeGreaterThan(expectedStroke(0.15, p.cellW));
+
+    // The THEME half: booted with the guard at its floor and a caret coloured like the cell, so the
+    // caret `create` produced is invisible. On the default page above the same sample is `defaultFg`
+    // — the two together are what separate "the field arrived" from "the caret happens to look
+    // like this".
+    expect(p.contrast.boot).toBe(p.contrast.background);
+  });
+});
+
 // #578: the typography knobs. Unlike the other unwired-knob slices this one is not a pass-through —
 // both setters MOVE THE CELL, and the cell is what the grid, the drawing buffer and every px->cell
 // conversion derive from. So the thing under test is the *coupling*, not the setter: a spacing change
