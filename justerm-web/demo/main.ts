@@ -1547,6 +1547,16 @@ interface SpacingSnapshot {
  * output is *which colour* the caret ends up, so it is read.
  */
 interface CursorPolicyProbe {
+  /**
+   * Whether the GL context was lost while this probe ran — **read it before any other field**.
+   *
+   * A lost context does not throw. `readPixels` fills zeroes, `drawingBufferWidth/Height` go to `0`
+   * and every sample below becomes `rgb(0,0,0)` or a stroke of width `0`, which is indistinguishable
+   * from "the knob never reached the renderer". Measured here: headless Chromium on SwiftShader drops
+   * the context sporadically — 2 of 6 runs in one session, 0 of 12 in the next, with the canvas still
+   * a healthy `1278x703`. Reporting it is what lets the test say which of the two happened.
+   */
+  contextLost: boolean;
   /** The cell width in DEVICE px, as the renderer reports it. The expected stroke is derived from
    * this rather than written down: the cell is the ink box of the font's `█` (ADR-0022), so it
    * differs between this machine and CI, and a literal pixel count is not portable (#578). */
@@ -2028,6 +2038,7 @@ window.__cursorPolicyProbe = (): CursorPolicyProbe => {
   renderer.setTheme(themeIsLight ? themeLight : themeDark);
   render();
   return {
+    contextLost: gl.isContextLost(),
     cellW,
     thickness: { boot, thick, back },
     contrast: { boot: bootCaret, background, guardOff, guardOn, guardReset },

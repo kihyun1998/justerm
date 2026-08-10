@@ -1437,31 +1437,38 @@ const expectedStroke = (frac: number, cellW: number): number =>
   Math.max(1, Math.round(frac * cellW)); // mirrors `cursor::cursor_thickness`
 
 /**
- * #580 — wait for the canvas to have a drawing buffer before reading pixels out of it.
+ * #580 — a lost GL context reads exactly like a knob that never arrived, so say which happened.
  *
- * **Not belt-and-braces: measured.** Gating on the control bar the way every other test here does
- * leaves a window — roughly the first second after boot — in which `drawingBufferWidth/Height` are
- * still `0` while the renderer already reports a fitted `142x37` grid. Reading a pixel there does
- * not error; `readPixels` returns zeroes, the y coordinate computed from the buffer height goes
- * NEGATIVE, and a stroke scan comes back `0`. Reproduced 5/5 without this gate and 5/5 with a blunt
- * 1200ms sleep, then narrowed to the buffer by dumping it out of the probe.
+ * **Measured, and the first diagnosis of it was wrong.** These two tests were intermittently red
+ * with `Expected: 1, Received: 0`. `drawingBufferWidth/Height` were `0` at the failing sample, which
+ * was first read as "the canvas has not been sized yet" — it is not: a timeline sampled from page
+ * load shows the canvas at `300x150` from `t=7ms` and `1278x703` from `t≈140ms`, never `0`. Widening
+ * the dump to the whole state found `canvas=1278x703 buf=0x0 lost=1`: the **context is lost**, and a
+ * lost context zeroes the buffer dimensions while the element keeps its size.
  *
- * The other pixel probes on this page tolerate the window by accident — they take longer to get
- * going, and their samples are cell-sized rather than the 1px this one has to resolve at the
- * default thickness. That makes this a **sharper instrument on an existing condition**, not a new
- * one, and the condition itself is recorded rather than fixed here.
+ * It is sporadic rather than accumulating — 2 of 6 runs in one session, 0 of 12 in the next, same
+ * command, with no test that deliberately loses a context in either. So it is headless-Chromium /
+ * SwiftShader instability, not something this widget or this page does, and it can hit any
+ * `readPixels` probe here.
+ *
+ * What it cannot be allowed to do is look like a defect. Waiting is not the answer — a lost context
+ * never gets its buffer back, so a gate on `drawingBufferWidth > 0` would convert a legible pixel
+ * mismatch into a timeout. (An earlier revision of this file did exactly that, and it appeared to
+ * work only because the runs it was measured on had not lost their context.) Asserting the
+ * precondition is: the probe reports the context's own verdict, and this names it.
  */
-const canvasHasBuffer = (page: import("@playwright/test").Page): Promise<unknown> =>
-  page.waitForFunction(() => {
-    const gl = document.querySelector<HTMLCanvasElement>("#term")?.getContext("webgl2");
-    return !!gl && gl.drawingBufferWidth > 0 && gl.drawingBufferHeight > 0;
-  });
+const expectContextAlive = (p: { contextLost: boolean }): void => {
+  expect(
+    p.contextLost,
+    "the WebGL context was lost during the probe — every pixel below reads 0, which is an environment failure and not a defect in the knob under test",
+  ).toBe(false);
+};
 
 test("the cursor's thickness and contrast policies reach the renderer (#580)", async ({ page }) => {
   await expect(page.getByRole("button", { name: "Cursor blink: OFF" })).toBeVisible();
-  await canvasHasBuffer(page);
 
   const p = await page.evaluate(() => window.__cursorPolicyProbe!());
+  expectContextAlive(p);
 
   // --- thickness ------------------------------------------------------------------------------
   // Unset at `create`, so this is the renderer's own default and the "byte for byte" acceptance box:
@@ -1511,9 +1518,9 @@ test.describe("the cursor policies given at create take effect (#580)", () => {
     page,
   }) => {
     await expect(page.getByRole("button", { name: "Cursor blink: OFF" })).toBeVisible();
-    await canvasHasBuffer(page);
 
     const p = await page.evaluate(() => window.__cursorPolicyProbe!());
+    expectContextAlive(p);
 
     // The OPTION half: read before the probe calls `setCursorThickness`, so this is purely `create`.
     expect(p.thickness.boot).toBe(expectedStroke(0.5, p.cellW));
