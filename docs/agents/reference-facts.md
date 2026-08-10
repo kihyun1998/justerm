@@ -1372,6 +1372,8 @@ This section needed `test/` in the xterm.js sparse checkout; the clone recipe in
 | ⚠ **CORRECTED 2026-08-10 (#731).** `pollFor` waits for browser-side state by **re-evaluating in the page** on a 10ms `setTimeout` recursion (`:566`, default `maxDuration` 2000 at `:552`), not by awaiting one long-lived promise. That is true **of `pollFor`**; the row said it as a project-wide absence and that is false at the same SHA — the addon suites await in-page promises directly (`addons/addon-image/test/ImageAddon.test.ts:223`, `KittyGraphics.test.ts:203`). xterm.js does **both**, and the absence must be scoped to this helper | xterm.js | `test/playwright/TestUtils.ts:529` |
 | **`writeSync` is justerm's park-and-harvest shape verbatim** — one `evaluate` sets `window.ready = false` and kicks off `term.write(data, () => window.ready = true)` **returning nothing**, then `pollFor(page, 'window.ready', true)` harvests. The closest thing to a reference for #731's repair, and a stronger citation than the `pollFor` row above because it is the *whole* shape rather than the polling half | xterm.js | `test/playwright/TestUtils.ts:599` |
 | It has **no** custom fixtures at all: `rg 'test\.extend|test\.use' test addons` returns zero, so it is silent on how to make a listener precede a hook | xterm.js | — (absence, grepped 2026-08-06) |
+| **The whole first boot happens inside `beforeAll`, off the `browser` fixture** — `test.beforeAll(async ({ browser }) => { ctx = await createTestContext(browser); await openTerminal(ctx); })`, where `openTerminal` (`:449`) is what waits for the emitted node. So the navigation, the bundle fetch and the terminal's first mount are all charged to the **hook**, and no per-test assertion clock ever sees them | xterm.js | `test/playwright/Terminal.test.ts:11` |
+| The budget that hook runs under is the **test timeout, `10000`** — twice the `expect` timeout it leaves at playwright's default 5000. The same asymmetry justerm's #735 warm-up trades on, reached from a different design (page reuse) rather than from a cold-cache measurement | xterm.js | `test/playwright/playwright.config.ts:5` |
 
 **What this does and does not settle for justerm.**
 
@@ -1410,6 +1412,19 @@ This section needed `test/` in the xterm.js sparse checkout; the clone recipe in
   because the `justerm-wasm-decode` import between them resolves on the microtask queue. That
   finding stands with xterm deleted from the sentence, which is why it is recorded as a validity
   condition in `e2e/demo.spec.ts`'s `beforeEach` rather than as a parity fix.
+- **Converges on the budget, and #735 is where that landed — but the convergence is on the
+  destination, not the reason.** Both suites charge a browser process's first boot to `beforeAll`
+  rather than to a per-test assertion clock. xterm.js arrives there because it reuses one page per
+  file, so `beforeAll` is simply *where the page is*; justerm arrives there because a measured cold
+  boot had to go somewhere with headroom, and its warm-up context is **discarded** immediately. The
+  measurement, stated so it cannot be compressed into something stronger: the suite's first test ran
+  10084ms (**passed** — a test's duration is not the `expect` budget, since `page.goto` has its own)
+  and 15277ms (**failed**, at `beforeEach`'s 5000ms `expect` budget), under 112 spinners on a box
+  also carrying other real work — nominally the same 4x oversubscription as #735's own 4024ms sweep,
+  on a noisier host, which is why the numbers do not line up with that table.
+  The rows above are therefore worth exactly one thing: a shape two projects reached independently
+  is not arbitrary. They license nothing about *why* — in particular, xterm.js's config says nothing
+  about cold caches, and this repo's own measurement is the only evidence for that half.
 
 ## Dating an anchor across a non-uniform move — the one reference with a generation, and why it may compare with `<` (#741, verified 2026-08-06)
 
