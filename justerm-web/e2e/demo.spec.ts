@@ -1383,8 +1383,51 @@ test("a full-width ruler mark is layered above a gutter mark in the DOM (#498)",
   expect(second!.left).toBeLessThanOrEqual(first!.left);
   expect(second!.right).toBeGreaterThanOrEqual(first!.right);
   expect(second!.right - second!.left).toBeGreaterThan(first!.right - first!.left);
-  expect(second!.top).toBe(first!.top); // same line → same track position
-  expect(second!.bottom).toBe(first!.bottom);
+
+  // This pair used to read `second.top === first.top` / `second.bottom === first.bottom`, which
+  // #500 §2 breaks by construction — a gutter mark is now taller than a full one. The equality was
+  // never the claim: the comment above it says "Order only means 'paints above' if the two actually
+  // overlap". Vertical OVERLAP is the claim, and with both marks centred on the same line the
+  // thinner full mark's band is strictly inside the fat gutter one's — a stronger statement than
+  // the equality was, and one a zero-height or displaced box still cannot satisfy vacuously.
+  expect(second!.top).toBeGreaterThan(first!.top);
+  expect(second!.bottom).toBeLessThan(first!.bottom);
+});
+
+// #500 §3: a mark is CENTRED on its line, not hung below it. This is the whole behavioural change
+// and it has no unit-level home — `rulerMarkHeightPx` is unit-tested, but "where the box ends up in
+// the track" is CSS the browser resolves (`top: X%` + `translateY(-50%)`), and vitest's `node`
+// environment has no layout.
+//
+// It is also the discriminating shape rather than an incidental one: the two marks have DIFFERENT
+// heights, so top-alignment and centring cannot both be true. Top-aligned, their tops coincide and
+// their centres differ; centred, their centres coincide and their tops differ. The previous
+// assertion pins the second half; this pins the first, against the ratio the projection was given
+// rather than against the elements themselves.
+test("a ruler mark is centred on its line and the track clips the overhang (#500 §3)", async ({ page }) => {
+  await expect(page.getByRole("button", { name: "Decorate line: OFF" })).toBeVisible();
+
+  const p = await readAsyncProbe(page, "__rulerLayerProbe");
+  expect(p.marks).toHaveLength(2);
+  const [gutter, full] = p.marks;
+
+  // The track must have a real box, or every claim below is vacuous — the same trap the probe pads
+  // scrollback to avoid.
+  expect(p.track.height).toBeGreaterThan(0);
+
+  const expected = p.track.top + p.ratio * p.track.height;
+  const centre = (m: { top: number; bottom: number }): number => (m.top + m.bottom) / 2;
+  // Sub-pixel layout, so compare to 0.1px rather than exactly.
+  expect(centre(gutter!)).toBeCloseTo(expected, 1);
+  expect(centre(full!)).toBeCloseTo(expected, 1);
+  // …and the tops do NOT coincide, which is what fails if the offset is ever dropped.
+  expect(full!.top).not.toBeCloseTo(gutter!.top, 1);
+
+  // The containment half. A rect is reported whether or not an ancestor clips it, so this is a
+  // CSS-level assertion by necessity and is stated as one: without it the first line's mark paints
+  // over the terminal canvas above the track, and the last line's below it. Centring bounds that
+  // escape to half a mark; the clip removes it.
+  expect(p.track.overflow).toBe("hidden");
 });
 
 // #575: the widget used to blink the cursor unconditionally and never read the frame's blink mode,

@@ -78,9 +78,12 @@ ADR-0024 is authoritative; this is routing. **If they disagree, the ADR is right
 - **R5 — projection is per visible row, not per anchor visibility.** A decoration whose anchor sits
   above the viewport still projects the rows of it that are on screen. **This is why the frame's
   absolute-line group existed at all (it left in v16, #490).**
-- **R6 — a projection that cannot be computed emits nothing.** A non-finite or out-of-range input
-  yields no rect and no mark rather than an invalid one, because the browser silently drops
-  `top: NaN%` and stacks marks at the top edge — a wrong answer that looks like a rendering choice.
+- **R6 — a projection that cannot be computed emits nothing.** A **non-finite** input yields no rect
+  and no mark rather than an invalid one, because the browser silently drops `top: NaN%` and stacks
+  marks at the top edge — a wrong answer that looks like a rendering choice. An **out-of-range** input
+  is a different case and is *clamped*, not dropped: it has a value, it is merely off the track. This
+  line said "non-finite or out-of-range" until #500 corrected it; the ADR carries the amendment and
+  the reasoning.
 
 ## Code
 
@@ -91,8 +94,16 @@ ADR-0024 is authoritative; this is routing. **If they disagree, the ADR is right
 
 ## Reference behaviour
 
-**None.** No entry in `docs/agents/reference-facts.md` for the decoration model itself. ADR-0024 has
-a *"Named prior art — and what upstream actually says"* section, which is a comparison made once
+- [The overview ruler — who has one, how a mark is merged, and how big it is](../../agents/reference-facts.md#the-overview-ruler--who-has-one-how-a-mark-is-merged-and-how-big-it-is-500-verified-2026-08-10)
+  — the merge key and its (density-adaptive, per-class) threshold, class-dependent heights and their
+  device-px/CSS-px split, and where a mark is drawn relative to its line. **Read its first rows before
+  the rest**: this is the thinnest corpus in that file — alacritty has no scrollbar at all, ghostty has
+  one and deliberately delegates it to a native widget that cannot carry marks, so a *marked* ruler is
+  xterm-only. The corollary is the useful part: on **who owns scroll geometry** ghostty's three scalars
+  are our `ScrollPosition`, so the corpus is 2 of 3 with us there
+
+**Still none for the decoration model itself** — the rows above cover the ruler, not R1–R6. ADR-0024
+has a *"Named prior art — and what upstream actually says"* section, which is a comparison made once
 inside a record rather than a pinned row that survives an upstream move.
 
 ## Cross-cutting invariants
@@ -121,8 +132,11 @@ inside a record rather than a pinned row that survives an upstream move.
   `Status:` line rather than trusting this sentence — but if it is still `proposed`, the
   strongest statement available about this territory is a proposal, and that is worth knowing
   before treating R1–R6 as settled.
-- **No pinned reference comparison** (§Reference behaviour) for a model that carries a *declared
-  divergence* (R4) — the divergence is argued inside the record and nothing re-checks it.
+- **No pinned reference comparison for the model itself.** #500 filled §Reference behaviour for the
+  *ruler*, not for R1–R6, so the *declared divergence* (R4, `anchor` moving the colour span) is still
+  argued only inside the record with nothing re-checking it. Worth knowing what #500 found while
+  filling the neighbouring rows: xterm is the only reference with a marked ruler at all, so a
+  divergence there is not a minority position — it is the only position.
 - **The consumer half is spread across two crates and mapped by neither.** `justerm-web` and
   `justerm-renderer` have no territories yet, so this note names files in areas the map does not
   cover.

@@ -86,6 +86,16 @@ export class Scrollbar {
       width: `${width}px`,
       height: "100%",
       display: "none",
+      // #500 §3: marks are CENTRED on their line, so the first and last ones extend past the
+      // track by half a mark. Upstream has the same overhang and never notices it, because its
+      // ruler is a canvas and `ctx.fillRect` is clipped by the backing store
+      // (`OverviewRulerRenderer.ts:198-212` @ 699f553) — a containment a DOM element does not
+      // get. Without this, a mark at ratio 0 paints ON the terminal canvas above the track and
+      // one at ratio 1 paints below it. The clip is therefore part of the centring change, not
+      // a tidy-up: shipping the offset alone makes the top edge reachable where it was not.
+      // The thumb is unaffected — `thumbTopRatio + thumbHeightRatio` is
+      // `(scrollbackLen - displayOffset + rows) / total <= 1` for any `displayOffset >= 0`.
+      overflow: "hidden",
     } satisfies Partial<CSSStyleDeclaration>);
     this.thumb = document.createElement("div");
     Object.assign(this.thumb.style, {
@@ -123,10 +133,16 @@ export class Scrollbar {
 
   /**
    * Render the overview-ruler marks (#120 S3) — xterm's `OverviewRulerRenderer`
-   * analog. Each mark is a thin coloured bar at its `topRatio` down the track, so
+   * analog. Each mark is a coloured bar **centred** on its `topRatio` down the track, so
    * off-viewport anchors are visible on the full-buffer scrollbar. Marks live on
    * the track (they show with it) and don't intercept drags (`pointer-events:
    * none`). Drive it with `registry.rulerMarksForFrame(frame)` each frame.
+   *
+   * **Geometry is class-dependent since #500 §2/§3**: the height comes from
+   * {@link rulerMarkHeightPx} (a `full` mark is thin, a gutter mark fat — the precondition
+   * ADR-0024 R3's layering needs), and the box is centred rather than hung below its line. The
+   * track clips, because centring puts half of the first and last marks outside it and a DOM
+   * element gets none of the containment upstream's canvas backing store provides.
    *
    * **Array order IS paint order.** Marks are appended in the order given and carry no `z-index`,
    * so a later mark paints over an earlier one — which is how `rulerMarksForFrame` expresses both
@@ -143,7 +159,21 @@ export class Scrollbar {
       Object.assign(el.style, {
         position: "absolute",
         top: `${m.topRatio * 100}%`,
-        height: "2px",
+        // #500 §3: `top` places the mark's LINE, and the box is centred on it — xterm's
+        // `- drawHeight / 2` (`OverviewRulerRenderer.ts:204` @ 699f553). Top-aligning put every
+        // mark half a mark low, and put the LAST line's mark partly outside the track whenever
+        // `trackHeightPx / totalLines < markHeightPx` — about any buffer over ~300 lines on a
+        // 600px track, i.e. the ordinary case rather than an edge one. It is also what makes
+        // #463's clamp mean what its comment claims: a mark clamped to `topRatio === 1` used to
+        // be drawn ENTIRELY below the track (never visible, the outcome the clamp exists to
+        // prevent), and is now half-visible at the edge.
+        //
+        // `translateY(-50%)` rather than a negative margin, deliberately: the offset must track
+        // whatever `rulerMarkHeightPx` returns for this class, and a percentage transform reads
+        // the element's own used height. A hard-coded `-1px` would be correct for `full` and
+        // wrong for every gutter mark the line below now makes taller.
+        transform: "translateY(-50%)",
+        height: `${rulerMarkHeightPx(m.position)}px`,
         background: `#${(m.color & 0xffffff).toString(16).padStart(6, "0")}`,
         pointerEvents: "none",
         ...rulerMarkX(m.position),
@@ -164,6 +194,56 @@ export class Scrollbar {
   dispose(): void {
     this.onUp();
     this.track.remove();
+  }
+}
+
+/**
+ * A ruler mark's height **in CSS px**, by position class (#500 §2).
+ *
+ * A `full` mark is thin and a gutter mark is fat, which is the geometry **ADR-0024 R3's
+ * layering needs to mean anything**: that rule paints `full` above the gutter classes, and the
+ * ADR records its own validity condition — the payoff "is gated on mark geometry", because with
+ * one flat height class-last-wins only decides which colour shows on an exact overlap. So this
+ * is not decoration: it is the precondition of a rule that already shipped.
+ *
+ * **CSS px, not device px** — and the issue's own acceptance item said device px, which was
+ * wrong. Upstream's `drawHeight` is in device px because its ruler is a canvas whose backing
+ * store is device-sized (`OverviewRulerRenderer.ts:124`, `:128`, `:153` @ 699f553); a DOM element
+ * has no backing store, so that step has no analogue here. xterm's *public* option for the same
+ * surface is documented "in CSS pixels" (`typings/xterm.d.ts:753`), and ADR-0023 governs
+ * anyway: a length in the same space as an existing one (`ScrollbarOptions.width`) uses that
+ * space. Porting the formula verbatim would also import a defect — its `[6, 12]` clamp is
+ * applied to an already-device-px quantity and the result multiplied by `dpr` **again**, so the
+ * same CSS layout yields a 10px gutter mark at dpr 1 and a 12px one at dpr 2.
+ *
+ * **Why `full` is unchanged at 2.** `round(2 * dpr)` device px *is* 2 CSS px, which is what this
+ * file already wrote. `full` is also the default position (`decorations.ts`), so the divergence
+ * this fixes was only ever the explicitly-gutter-positioned marks.
+ *
+ * **Why the gutter constant is 6, and when that stops being right.** Upstream's gutter height is
+ * `clamp(trackHeightPx / totalLines, 6, 12)`. That expression equals its lower bound whenever
+ * `totalLines > trackHeightPx / 6` — roughly 100 lines on a 600px track — so 6 is not the cheap
+ * end of a range, it is *the adaptive formula's value on the domain a terminal actually runs in*
+ * (scrollback is conventionally 1000+). **Validity condition:** below ~100 total lines upstream
+ * grows the mark toward 12px and this stays at 6, so a shallow-buffer ruler is thinner here.
+ * Making it adaptive is not blocked by the substrate — `height: clamp(6px, calc(100% /
+ * totalLines), 12px)` would let the browser resolve it against the track with no measurement —
+ * but by data: {@link Scrollbar.setMarks} is not given `totalLines`, and `pos` is written only by
+ * {@link Scrollbar.update}, whose ordering relative to `setMarks` this class does not enforce.
+ * Revisit if a shallow-scrollback consumer ever cares.
+ *
+ * Anything unrecognised is `full`, matching {@link rulerMarkX}'s own default branch — the two
+ * must not disagree about which marks are the full-width ones, or a mark would be laid out as
+ * `full` horizontally and as a gutter mark vertically.
+ */
+export function rulerMarkHeightPx(position: RulerMark["position"]): number {
+  switch (position) {
+    case "left":
+    case "center":
+    case "right":
+      return 6;
+    default:
+      return 2;
   }
 }
 
