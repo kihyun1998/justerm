@@ -189,26 +189,38 @@ async function readAsyncProbe<K extends AsyncProbe>(
  *
  * `beforeEach` below waits for the control bar under playwright's default **5s `expect` timeout**,
  * and `retries: 0`. The first navigation of a browser process costs far more than every later one,
- * because V8's compile/code cache and vite's on-demand transform cache are both empty — and the
- * excess lands entirely on the *first test of the run*, since the browser process is shared across
- * contexts within one worker. Measured on a 28-core host at 4x CPU oversubscription (112 spinners):
- * first boot **4024ms** against a 5000ms budget, 79% of it, reproduced at 3934ms in a second
- * session; warm boots ~490-909ms. Under a heavier load on the same box the split was **10947ms**
- * (median of 3) cold against **2499ms** with this hook in place, and the excess sits in fetch +
- * compile — wasm 1807ms and a 3175ms resource wall on the cold boot, 270ms / 704ms with it.
+ * and the excess lands entirely on the *first test of the run*, since the browser process is shared
+ * across contexts within one worker.
+ *
+ * **Measured at this gate**, on a 28-core host under heavy CPU contention, running only the first
+ * test with this hook toggled off and on inside one session: **off** → 10084ms (passed) and 15277ms
+ * (**failed**, `expect(locator).toBeVisible() … Timeout: 5000ms` — the exact shape of #653);
+ * **on** → 2928ms and 3338ms, both passed. The issue's own sweep put the cold boot at 4024ms against
+ * the 5000ms budget, 79% of it, with warm boots at ~490-909ms.
+ *
+ * **Where the cost lives, and where the measurement stops.** Holding the dev server warm in *both*
+ * arms — so vite's on-demand transform cache is out of the comparison — and launching a fresh
+ * chromium per arm, the in-process warm-up still won 8 of 10 paired reps, median **4865ms → 2191ms**.
+ * So the expensive state is **per-browser-process**, which is the whole reason this hook takes the
+ * `browser` fixture: warming a *different* browser process, or only the server, would not cover it.
+ * What is **not** established is *which* process-local cache. V8's compile/code cache is the obvious
+ * candidate, but the instrument's own wasm attribution did not separate the arms (median 167ms cold
+ * vs 186ms warm), so it stays a candidate. The repair does not depend on the answer.
  *
  * The instrument, so the numbers are re-measurable: `addInitScript` wrapping
- * `WebAssembly.{instantiate,compile}{,Streaming}` before any page script, a `PerformanceObserver`
- * (or `getEntriesByType("resource")`) for the resource wall, and this same locator for the bar; run
- * one arm per invocation against a fresh vite and a fresh chromium, load applied *after* the server
- * is up because `webServer`'s health check gates vite's dependency optimization before test one.
+ * `WebAssembly.{instantiate,compile}{,Streaming}` before any page script, `getEntriesByType(
+ * "resource")` for the resource wall, and this same locator for the bar. Two designs, and the second
+ * is the one that isolates: (a) one arm per invocation against a fresh vite *and* a fresh chromium,
+ * load applied after the server is up because `webServer`'s health check gates vite's dependency
+ * optimization before test one; (b) one pre-warmed vite for the whole run, arms interleaved, a fresh
+ * chromium each. Design (a) cannot tell the two caches apart — its warm-up warms both.
  *
  * **A separate context is enough, and that is the counter-intuitive part** — playwright contexts are
  * isolated and do not share an HTTP cache, so the obvious reasoning says this cannot work. It works
- * because the expensive cache is **per-browser-process**, not per-context; the resource wall falling
- * with it is what says so. It is *not* `retries: 1` (a retry runs against a warm cache, so it would
- * always pass — disabling the detector rather than fixing the boot), and it is not a bigger `expect`
- * timeout (which would stop the gate reporting the thing it exists to report).
+ * anyway, because what is shared is the process, not the context. It is *not* `retries: 1` (a retry
+ * runs against an already-warm process, so it would always pass — disabling the detector rather than
+ * fixing the boot), and it is not a bigger `expect` timeout (which would stop the gate reporting the
+ * thing it exists to report).
  *
  * **Budget.** A `beforeAll` hook is bounded by the **test timeout** — 30s, playwright's default,
  * which this config does not override — where `beforeEach`'s bar wait is bounded by the 5s `expect`
