@@ -124,7 +124,11 @@ rather than by trusting a guard two files away"*.
   reader downstream that could assume one. Read this bullet as still open for a **coordinate** at an
   intake, which is what it was about.
 - **Wide-pair snapping** (#454). D4 says which coordinate space the bound lives in, not whether a
-  bounded span should then expand onto a pair.
+  bounded span should then expand onto a pair. Still out of scope, and now *answered elsewhere*
+  (2026-08-10): the expansion happens after the bound, in `match_spans` and in `selection_range`'s
+  `resolve`, so the two rules compose in that order — bound first onto a real cell, then widen if
+  that cell turns out to be half a glyph. Recorded so the composition is not re-derived; the bound
+  itself is unchanged.
 - **The row axis of `match_spans`**, which is total by a different mechanism (`if row >= rows { break }`
   before the read) and was measured non-defective (#678). D3 is about *column pairs*; the row filter is
   not a pair.

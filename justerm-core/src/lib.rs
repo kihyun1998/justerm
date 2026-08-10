@@ -364,12 +364,25 @@ impl Engine {
     /// The selection projected onto the viewport: one inclusive-column span per
     /// visible row, for the renderer to highlight. Empty when nothing is
     /// selected or the selection is fully scrolled off-screen.
+    ///
+    /// **A span never ends inside a wide glyph** (#454). An endpoint landing on
+    /// half of a width-2 pair takes the whole pair, so a highlight cannot split
+    /// a CJK glyph down the middle — which also means a span may be one column
+    /// wider than the columns the caller's gesture named. On a `Block`
+    /// selection that widening is per row, so the rectangle's rows can differ
+    /// in width. [`selection_text`](Self::selection_text) widens identically;
+    /// the two never disagree.
     pub fn selection_range(&self) -> Vec<SelectionSpan> {
         self.term.selection_range()
     }
 
     /// The selected text for copy (respects scrollback), or `None` if no
     /// selection.
+    ///
+    /// Widened onto whole wide-glyph pairs exactly as
+    /// [`selection_range`](Self::selection_range) is (#454) — a spacer extracts
+    /// as nothing, so a range ending inside a pair would copy text the
+    /// highlight does not show.
     pub fn selection_text(&self) -> Option<String> {
         self.term.selection_text()
     }
@@ -422,6 +435,13 @@ impl Engine {
 
     /// The match projected onto the viewport as inclusive-column spans per
     /// visible row, for the renderer to highlight.
+    ///
+    /// **A span never ends inside a wide glyph** (#454), the same widening
+    /// [`selection_range`](Self::selection_range) applies. It matters more here,
+    /// because a `Match` may be one the *caller* assembled: an out-of-range
+    /// column is bounded onto the row's last cell, which is a trailing spacer
+    /// whenever the row ends in a wide glyph — so without the widening a
+    /// highlight could be that glyph's right half alone.
     pub fn match_spans(&self, m: &Match) -> Vec<SelectionSpan> {
         self.term.match_spans(m)
     }

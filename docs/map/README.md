@@ -117,7 +117,8 @@ owns no detail of its own.
   [frame & wire](territory/frame-and-wire.md) ·
   [release & published surface](territory/release-and-published-surface.md) ·
   [wide glyph & soft wrap](territory/wide-glyph-and-soft-wrap.md)
-- Cross-cutting invariants — [the cell size is derived state](invariant/cell-size-is-derived-state.md) ·
+- Cross-cutting invariants — [a span covers a wide pair whole](invariant/a-span-covers-a-wide-pair-whole.md) ·
+  [the cell size is derived state](invariant/cell-size-is-derived-state.md) ·
   [alt-screen absolute-index floor](invariant/alt-screen-buffer-floor.md) ·
   [row-keyed side maps](invariant/row-keyed-side-maps.md) ·
   [an IME composition is browser-owned state the engine never sees](invariant/composition-is-browser-owned-state.md) ·

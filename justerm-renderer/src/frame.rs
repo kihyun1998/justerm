@@ -178,12 +178,23 @@ pub fn pack_instances(
             // The pass took these cells out of the stack at resolve time; leaving the overlay and
             // decoration lookups live would put them straight back in, one channel at a time.
             let composed = preedit.is_some_and(|p| p.covers(row, col));
+            // #454: every span lookup below asks about this cell AND the other half of the wide
+            // pair it belongs to, so a range whose edge falls between the halves cannot paint one
+            // of them. Read from the frame's flags, which are the PATCHED ones inside a preedit —
+            // the pass writes its own pairs, and they exist nowhere else.
+            //
+            // The partner's OWN `composed` state is deliberately not re-checked, and the condition
+            // that makes that safe is `preedit::range`: it counts a wide codepoint as **two** cells
+            // (`end = start + (w - 1)`), so a pair the run writes lies wholly inside the span and
+            // both halves stand down together — a non-composed cell can never have a composed
+            // partner. If that counting ever changes, this lookup gains a `!partner_composed` term.
+            let partner = crate::pair::partner_at(flags, cols, row, col);
             let kind = if composed {
                 None
             } else {
-                overlay.highlight_at(row, col)
+                overlay.highlight_at(row, col, partner)
             };
-            let is_selection = !composed && overlay.is_selected(row, col);
+            let is_selection = !composed && overlay.is_selected(row, col, partner);
             // #226: a Powerline / box-drawing / block glyph tiles with the bg — excluded from the
             // contrast demand and re-tinted under selection (classify the base codepoint).
             let exclude =
@@ -205,7 +216,7 @@ pub fn pack_instances(
             let bottom = if composed {
                 DecorationOverride::default()
             } else {
-                decoration_override_at(decorations, row, col, DecorationLayer::Bottom)
+                decoration_override_at(decorations, row, col, partner, DecorationLayer::Bottom)
             };
             if let Some(c) = bottom.bg {
                 bg_running = c;
@@ -221,7 +232,7 @@ pub fn pack_instances(
             let top = if composed {
                 DecorationOverride::default()
             } else {
-                decoration_override_at(decorations, row, col, DecorationLayer::Top)
+                decoration_override_at(decorations, row, col, partner, DecorationLayer::Top)
             };
             // #508: a bg-only TOP decoration over a background-class glyph drops the glyph (see the
             // composite site). Once it has, the cell's ink channel carries `I_line` and nothing else,
@@ -3637,6 +3648,207 @@ mod tests {
             &got[2..5],
             &gl_rgb(m_bg),
             "a match stays solid over a decoration bg"
+        );
+    }
+
+    // --- #454: a span covering one half of a wide pair covers both halves ---
+
+    /// Four columns: a narrow cell, a wide pair, a narrow cell. Returns each column's packed bg.
+    fn pack_row_with_a_pair(sel: &[u32]) -> Vec<[f32; 3]> {
+        const N: usize = 4;
+        let p = palette();
+        let bg = vec![0u32; N]; // Default bg, so a highlight paints SOLID and is trivially readable
+        let fg = vec![0u32; N];
+        let slots = vec![0u16; N];
+        let flags = vec![
+            0,
+            crate::attrs::WIDE_CHAR,
+            crate::attrs::WIDE_CHAR_SPACER,
+            0,
+        ];
+        let f = Frame {
+            preedit: None,
+            cols: N as u32,
+            rows: 1,
+            bg: &bg,
+            fg: &fg,
+            slots: &slots,
+            flags: &flags,
+            codepoints: &[],
+            underline_colors: &[],
+        };
+        let ov = Overlay {
+            active: &[],
+            selection: sel,
+            matches: &[],
+            colors: HighlightColors {
+                selection_bg: SEL_BG,
+                match_bg: MATCH_BG,
+                active_match_bg: ACTIVE_BG,
+            },
+        };
+        let got = pack_instances(&f, &p, true, &ov, &ColorPolicy::default(), &[]);
+        const STRIDE: usize = 12;
+        (0..N)
+            .map(|i| {
+                [
+                    got[i * STRIDE + 2],
+                    got[i * STRIDE + 3],
+                    got[i * STRIDE + 4],
+                ]
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_selection_covering_one_half_of_a_wide_pair_covers_both() {
+        let sel_bg = gl_rgb(SEL_BG);
+        let plain = gl_rgb(palette().default_bg);
+
+        // The lead alone (a drag ending on the pair's first column).
+        let lead_only = pack_row_with_a_pair(&[0, 1, 1]);
+        assert_eq!(lead_only[1], sel_bg, "lead-only: the lead is highlighted");
+        assert_eq!(
+            lead_only[2], sel_bg,
+            "lead-only: the spacer follows its lead — the glyph is not split down the middle"
+        );
+
+        // The spacer alone. Reachable two ways: an anchor landing on the trailing half, and the
+        // #678 clamp, which puts a `Match` past the last column onto exactly this cell.
+        let spacer_only = pack_row_with_a_pair(&[0, 2, 2]);
+        assert_eq!(
+            spacer_only[1], sel_bg,
+            "spacer-only: the lead follows its spacer"
+        );
+        assert_eq!(
+            spacer_only[2], sel_bg,
+            "spacer-only: the spacer is highlighted"
+        );
+
+        // Side condition, and the one that says the rule reads the WIDE bits rather than widening
+        // every span by a column: a narrow cell drags nothing.
+        let narrow_only = pack_row_with_a_pair(&[0, 0, 0]);
+        assert_eq!(narrow_only[0], sel_bg, "narrow: the cell itself");
+        assert_eq!(
+            narrow_only[1], plain,
+            "narrow: its neighbour is untouched — this is a pair rule, not a fencepost"
+        );
+
+        // Control: the fixture can show a highlight on both halves at all.
+        let whole = pack_row_with_a_pair(&[0, 1, 2]);
+        assert_eq!(whole[1], sel_bg, "control: whole pair, lead");
+        assert_eq!(whole[2], sel_bg, "control: whole pair, spacer");
+        assert_eq!(whole[0], plain, "control: outside the span");
+        assert_eq!(whole[3], plain, "control: outside the span");
+    }
+
+    #[test]
+    fn a_wide_lead_whose_spacer_was_truncated_away_highlights_alone() {
+        // ADR-0025 D4's scope stops at reallocation: `Row::resize` narrows straight through a pair
+        // and leaves the lead standing in the last column with no spacer. That is a LEGAL buffer
+        // state, so the pair rule must have an answer for it rather than reading past the row.
+        const N: usize = 2;
+        let p = palette();
+        let bg = vec![0u32; N];
+        let fg = vec![0u32; N];
+        let slots = vec![0u16; N];
+        let flags = vec![0, crate::attrs::WIDE_CHAR]; // lead in the LAST column, no spacer
+        let f = Frame {
+            preedit: None,
+            cols: N as u32,
+            rows: 1,
+            bg: &bg,
+            fg: &fg,
+            slots: &slots,
+            flags: &flags,
+            codepoints: &[],
+            underline_colors: &[],
+        };
+        let ov = Overlay {
+            active: &[],
+            selection: &[0, 1, 1],
+            matches: &[],
+            colors: HighlightColors {
+                selection_bg: SEL_BG,
+                match_bg: MATCH_BG,
+                active_match_bg: ACTIVE_BG,
+            },
+        };
+        let got = pack_instances(&f, &p, true, &ov, &ColorPolicy::default(), &[]);
+        const STRIDE: usize = 12;
+        assert_eq!(
+            [got[STRIDE + 2], got[STRIDE + 3], got[STRIDE + 4]],
+            gl_rgb(SEL_BG),
+            "the stranded lead is highlighted"
+        );
+        assert_eq!(
+            [got[2], got[3], got[4]],
+            gl_rgb(p.default_bg),
+            "and nothing to its left is dragged in by a partner that does not exist"
+        );
+    }
+
+    #[test]
+    fn a_wide_lead_beside_a_narrow_cell_does_not_drag_it_into_the_span() {
+        // The other way a lead loses its partner, and the one a bounds check cannot catch: the
+        // preedit pass blanks the WIDE bits of a cell it orphans (#715), so a lead can sit in the
+        // middle of a row with an ordinary narrow cell where its spacer was. Added after a
+        // predicate mutation (dropping the partner-agreement test) left the frame level green --
+        // the row-end fixture above only exercises the bound.
+        const N: usize = 3;
+        let p = palette();
+        let bg = vec![0u32; N];
+        let fg = vec![0u32; N];
+        let slots = vec![0u16; N];
+        let flags = vec![0, crate::attrs::WIDE_CHAR, 0]; // lead at col 1, NARROW cell at col 2
+        let f = Frame {
+            preedit: None,
+            cols: N as u32,
+            rows: 1,
+            bg: &bg,
+            fg: &fg,
+            slots: &slots,
+            flags: &flags,
+            codepoints: &[],
+            underline_colors: &[],
+        };
+        let pack = |sel: &[u32]| {
+            let ov = Overlay {
+                active: &[],
+                selection: sel,
+                matches: &[],
+                colors: HighlightColors {
+                    selection_bg: SEL_BG,
+                    match_bg: MATCH_BG,
+                    active_match_bg: ACTIVE_BG,
+                },
+            };
+            let got = pack_instances(&f, &p, true, &ov, &ColorPolicy::default(), &[]);
+            const STRIDE: usize = 12;
+            (0..N)
+                .map(|i| {
+                    [
+                        got[i * STRIDE + 2],
+                        got[i * STRIDE + 3],
+                        got[i * STRIDE + 4],
+                    ]
+                })
+                .collect::<Vec<_>>()
+        };
+        let sel_bg = gl_rgb(SEL_BG);
+        let plain = gl_rgb(p.default_bg);
+
+        let lead = pack(&[0, 1, 1]);
+        assert_eq!(lead[1], sel_bg, "the stranded lead is highlighted");
+        assert_eq!(lead[2], plain, "and does not drag the narrow cell in");
+
+        // The direction that actually separates "both cells must agree" from "the next column is
+        // my spacer": only here does a lead that adopted its neighbour light up on its own.
+        let neighbour = pack(&[0, 2, 2]);
+        assert_eq!(neighbour[2], sel_bg, "the narrow cell is highlighted");
+        assert_eq!(
+            neighbour[1], plain,
+            "and the lead beside it is not -- pairing needs BOTH cells to agree"
         );
     }
 }

@@ -94,6 +94,21 @@ ruler position is xterm's too (`DecorationService.ts:376-378`).
   question about what a *span* is; #500 (ruler mark fidelity — zone merging, heights, centring) is R3's
   detail; #502 (a render hook) is a proposal to relax R1. Each is now "does the model answer this?"
   rather than a fresh pairwise decision.
+- **#454 was asked of the model and the model did not answer it — amendment, 2026-08-10.** The
+  question turned out not to be R1/R2-level at all, and the mis-classification is the useful part:
+  this ADR is scoped to the *consumer's* projection, and a decoration rect is only one of three
+  span producers. The other two are `justerm-core`'s (`Term::selection_range`,
+  `Term::match_spans`), they never pass through `decorations.ts`, and the caret is a fourth span
+  that no consumer authors at all. So the rule could not live on this axis: **a span covering
+  either half of a wide pair covers both**, applied where the cell is painted
+  (`justerm-renderer` `pair::partner_at`, feeding the overlay lookups, both decoration-layer
+  lookups and `cursor_cells_at`), and widened in core as well so `selection_text` cannot disagree
+  with what the highlight shows.
+  What this ADR keeps is the negative result: **R1–R6 are the consumer's span *policy*, and pair
+  geometry is not policy** — it is a property of the cells the span lands on, which is why the
+  consumer's own coordinates were never the place to fix it. A future question of the same shape
+  ("does a span know something about the cells under it?") is a renderer/ADR-0019-side question,
+  not one of these rules.
 - **R3's payoff is gated on mark geometry.** Class-last-wins only matters visibly once a `full` mark is
   thinner than a gutter mark, as upstream's are (`~2 device px` vs a `6-12 px` clamp,
   `OverviewRulerRenderer.ts:124-131`). Ours are a flat 2 px today, so #500 item 2 is the precondition for

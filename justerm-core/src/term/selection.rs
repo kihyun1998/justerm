@@ -295,7 +295,17 @@ impl Term {
                 let from = from.min(cols);
                 if to > from {
                     for line in line0..=line1 {
-                        push(line, from, to - 1);
+                        // Per row, not once for the rectangle (#454): the same column range meets a
+                        // pair at a different place on every row, so the widening cannot be hoisted
+                        // out of this loop the way the rectangle's own bound can. A row where it
+                        // fires is one column wider than the rectangle — the price of never
+                        // painting half a glyph, and what all three references pay too (each
+                        // applies its pair rule with no rectangular-selection exemption).
+                        push(
+                            line,
+                            self.pair_start(line, from),
+                            self.pair_end(line, to - 1),
+                        );
                     }
                 }
             }
@@ -310,7 +320,7 @@ impl Term {
     fn resolve(&self) -> Option<Resolved> {
         let sel = self.selection.as_ref()?;
         let (start, end) = sel.ordered();
-        Some(match sel.ty {
+        let resolved = match sel.ty {
             SelectionType::Char => {
                 // Half-open columns: each side decides if its own cell is in.
                 let from = match start.side {
@@ -370,7 +380,86 @@ impl Term {
                     to: to.min(cols).max(from),
                 }
             }
+        };
+        Some(match resolved {
+            Resolved::Linear {
+                start_line,
+                from,
+                end_line,
+                to,
+            } => {
+                // Both ends move OUTWARD, each on its own line: a Linear run's two ends can sit
+                // on different rows, and a pair never spans rows.
+                let from = self.pair_start(start_line, from);
+                let to = if to > 0 {
+                    self.pair_end(end_line, to - 1) + 1
+                } else {
+                    to
+                };
+                Resolved::Linear {
+                    start_line,
+                    from,
+                    end_line,
+                    to,
+                }
+            }
+            block => block,
         })
+    }
+
+    /// Pull a range's **first** column left when it lands on a wide glyph's trailing spacer, so a
+    /// range can never start inside a pair (#454). Returns `col` unchanged otherwise.
+    ///
+    /// A width-2 glyph is one thing, and this crate's other answers already said so before this one
+    /// existed: a spacer extracts as nothing, so `selection_text` can only ever return the whole
+    /// glyph or none of it. A range that stopped between the halves therefore made the *highlight*
+    /// and the *copy* describe different text — measured on `"漢ab"`, anchoring on the spacer and
+    /// dragging right highlighted two cells of the glyph plus `a` while copying `a` alone.
+    ///
+    /// The pair must **agree**: a spacer is only pulled onto a cell that is actually its lead. That
+    /// is what keeps the degenerate shapes safe rather than merely unlikely — `Row::resize` narrows
+    /// straight through a pair and leaves a lead with no spacer, which ADR-0025 D4's scope records as
+    /// a *legal* buffer state and not a repair site.
+    ///
+    /// `is_wide_spacer` and not `is_spacer`: the latter also matches the wide-wrap artefact
+    /// (`C_LEADING_SPACER`), which marks a row's last column when a lead did not fit — a different
+    /// fact, and one whose partner is on another row.
+    pub(super) fn pair_start(&self, line: usize, col: usize) -> usize {
+        let cell = |c: usize| self.abs_line(line).get(c).copied();
+        if col > 0
+            && cell(col).is_some_and(|c| c.is_wide_spacer())
+            && cell(col - 1).is_some_and(|c| c.is_wide())
+        {
+            col - 1
+        } else {
+            col
+        }
+    }
+
+    /// The mirror of [`pair_start`](Self::pair_start): push a range's **last** column right when it
+    /// lands on a wide glyph's lead, so a range can never end inside a pair (#454). `col` is
+    /// *inclusive*, and the same agreement rule applies — a lead whose spacer was truncated away
+    /// ends the range where it sits.
+    ///
+    /// **The agreement half of both predicates is unobservable on this side, and that is recorded
+    /// rather than tested.** Weakening either one — `pair_end` accepting any right neighbour, or
+    /// `pair_start` any left one — reds no test in the suite, measured across all four call sites
+    /// (Linear, both Block arms, `match_spans`). Not because the tests are weak: the states they
+    /// exclude are a lead beside a non-spacer mid-row and a spacer with no lead, which are exactly
+    /// what #529 stopped the engine from producing, and the row-end case is already covered by the
+    /// bound. They are kept because the same rule in `justerm-renderer` (`pair::partner_at`) *is*
+    /// observable — it reads consumer-authored decoration rects and preedit-patched flags — and one
+    /// rule with two spellings is how two layers drift apart. Valid while core keeps both halves of a
+    /// pair in step (ADR-0025 D4).
+    pub(super) fn pair_end(&self, line: usize, col: usize) -> usize {
+        let cell = |c: usize| self.abs_line(line).get(c).copied();
+        if cell(col).is_some_and(|c| c.is_wide())
+            && cell(col + 1).is_some_and(|c| c.is_wide_spacer())
+        {
+            col + 1
+        } else {
+            col
+        }
     }
 
     /// The selected text (for copy), or `None` when nothing is selected.
@@ -392,8 +481,16 @@ impl Term {
                 let mut out = String::new();
                 for line in line0..=line1 {
                     let hi = to.min(self.abs_line(line).len());
+                    // The same per-row widening `selection_range` applies, and for the same reason:
+                    // these two are the pair of observables #454 exists to keep in agreement, so a
+                    // rule applied to one of them alone would rebuild the defect on the other.
+                    let (lo, hi) = if hi > 0 {
+                        (self.pair_start(line, from), self.pair_end(line, hi - 1) + 1)
+                    } else {
+                        (from, hi)
+                    };
                     let mut seg = String::new();
-                    for col in from..hi {
+                    for col in lo..hi {
                         self.append_cell(&self.grid, &mut seg, line, col);
                     }
                     out.push_str(seg.trim_end_matches(' '));

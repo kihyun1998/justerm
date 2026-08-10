@@ -84,6 +84,9 @@ recorded SHA; a paraphrase drops the pin).
 
 ## Cross-cutting invariants
 
+- [a span covers a wide pair whole](../invariant/a-span-covers-a-wide-pair-whole.md)
+  — the obligation every *reader* of a pair owes, as opposed to D3/D4's rules for the verbs that
+  write one (#454)
 - [row-keyed side maps](../invariant/row-keyed-side-maps.md) — a wide lead's extended-attr rider is
   where the pair rule meets the presence-bit discipline (#521)
 

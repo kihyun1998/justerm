@@ -106,6 +106,9 @@ sites, the outlier, or demoted — so a difference from it is not by itself a de
 
 ## Cross-cutting invariants
 
+- [a span covers a wide pair whole](../invariant/a-span-covers-a-wide-pair-whole.md)
+  — this is where every span in the family finally meets the flags: the three overlay lookups, both
+  decoration layers and the caret all resolve their pair through one helper (#454)
 - [workspace exclusion is gate invisibility](../invariant/workspace-exclusion-is-gate-invisibility.md)
   — this crate is outside the root workspace, so no `--workspace` or `--all` command reaches it;
   every gate it has is named for it by `--manifest-path`

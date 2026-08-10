@@ -27,7 +27,7 @@ use crate::bitmap::{PADDING, is_color_bitmap, split_wide_bitmap};
 use crate::color::gl_rgb;
 use crate::context_loss::{ContextLiveness, ContextState, DEFAULT_RESTORE_TIMEOUT_MS, FrameAction};
 use crate::cursor::{
-    Cursor, DEFAULT_CURSOR_CONTRAST, THICKNESS, cursor_rects, cursor_span_at, cursor_thickness,
+    Cursor, DEFAULT_CURSOR_CONTRAST, THICKNESS, cursor_cells_at, cursor_rects, cursor_thickness,
     guarded_cursor_colors, shape_from_id, shape_id,
 };
 use crate::decoration::parse_decorations;
@@ -508,8 +508,10 @@ pub struct JustermRenderer {
     /// The cursor this frame, or `None` for hidden / blinked off (#270). Blink timing is the
     /// consumer's policy, as `blink_on` is (#282) — the renderer only draws what it is handed.
     cursor: Option<Cursor>,
-    /// How many cells the cursor covers — 2 over a wide char.
-    cursor_span: u32,
+    /// The cells the cursor covers — `(start column, span)`. The start is not always the cursor's
+    /// own column: a caret resting on a wide glyph's trailing spacer moves back onto the lead, so
+    /// the pair is lit as one thing (#454, `cursor::cursor_cells_at`).
+    cursor_cells: (u32, u32),
     /// The last frame's cell flags + width, kept so `setCursor` can resolve the span of a cursor
     /// that moves onto a wide char with no new frame. Without it a caret moved onto a CJK glyph
     /// would half-cover it until the next `applyFrame`.
@@ -828,7 +830,7 @@ impl JustermRenderer {
             u_cursor_text_color,
             u_cursor_thickness,
             cursor: None,
-            cursor_span: 1,
+            cursor_cells: (0, 1),
             last_flags: Vec::new(),
             last_cols: 0,
             bg_alpha: 1.0,                            // opaque by default (#298)
@@ -1986,7 +1988,7 @@ impl JustermRenderer {
         self.last_flags.extend_from_slice(cells.flags);
         self.last_cols = cells.cols;
         self.last_blink_on = blink_on;
-        self.resolve_cursor_span();
+        self.resolve_cursor_cells();
         let frame = Frame {
             cols: cells.cols,
             rows: cells.rows,
@@ -2484,16 +2486,16 @@ impl JustermRenderer {
             color,
             text_color,
         });
-        self.resolve_cursor_span();
+        self.resolve_cursor_cells();
         Ok(())
     }
 
-    /// Re-resolve [`Self::cursor_span`] against the last frame's flags. Called when a frame arrives
-    /// (its flags may have changed under a still cursor) *and* when the cursor moves (onto a wide
-    /// char, with no new frame).
-    fn resolve_cursor_span(&mut self) {
-        self.cursor_span = self.cursor.map_or(1, |c| {
-            cursor_span_at(&self.last_flags, self.last_cols, c.col, c.row)
+    /// Re-resolve [`Self::cursor_cells`] against the last frame's flags. Called when a frame arrives
+    /// (its flags may have changed under a still cursor) *and* when the cursor moves (onto either
+    /// half of a wide char, with no new frame).
+    fn resolve_cursor_cells(&mut self) {
+        self.cursor_cells = self.cursor.map_or((0, 1), |c| {
+            cursor_cells_at(&self.last_flags, self.last_cols, c.col, c.row)
         });
     }
 
@@ -2608,9 +2610,9 @@ impl JustermRenderer {
             // upload (#270).
             let (cx, cy, span, shape) = match self.cursor {
                 Some(c) => (
-                    c.col as f32,
+                    self.cursor_cells.0 as f32,
                     c.row as f32,
-                    self.cursor_span as f32,
+                    self.cursor_cells.1 as f32,
                     shape_id(c.shape) as f32 + 1.0,
                 ),
                 None => (0.0, 0.0, 1.0, 0.0),
@@ -2633,7 +2635,7 @@ impl JustermRenderer {
                 Some(c) => {
                     let cell_bg = (c.row as usize)
                         .checked_mul(self.last_cols as usize)
-                        .and_then(|i| i.checked_add(c.col as usize))
+                        .and_then(|i| i.checked_add(self.cursor_cells.0 as usize))
                         .and_then(|i| i.checked_mul(INSTANCE_FLOATS))
                         .and_then(|base| self.instances.get(base + 2..base + 5));
                     match cell_bg {

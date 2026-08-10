@@ -1,7 +1,5 @@
 //! Cursor geometry — pure, host-testable, device pixels.
 
-use crate::attrs::is_wide_lead;
-
 /// The default stroke fraction — alacritty's `cursor.thickness` (`config/cursor.rs:31`). The
 /// consumer may override it per-renderer via `setCursorThickness` (#369); this is the value a
 /// renderer starts with and the floor a proof compares the default stroke against.
@@ -16,28 +14,32 @@ pub fn cursor_thickness(frac: f32, cell_w: u32) -> u32 {
     (t as u32).max(1)
 }
 
-/// How many cells the cursor covers, given the flags of the cell it sits on and the room left
-/// to the right edge. A wide char's cursor spans its lead *and* its spacer — alacritty
-/// (`display/content.rs:139`) and xterm (`cell.getWidth()`) agree.
-pub fn cursor_span(flags: u16, col: u32, cols: u32) -> u32 {
-    let room = cols.saturating_sub(col);
-    if is_wide_lead(flags) { 2.min(room) } else { 1 }.max(1)
-}
-
-/// [`cursor_span`] for a cursor at `(col, row)` of a `cols`-wide flag grid.
+/// The cells a cursor at `(col, row)` covers on a `cols`-wide flag grid: `(start column, span)`.
 ///
-/// The index is widened to `u64` first: `row * cols + col` overflows a 32-bit `usize` on wasm32
-/// for values a cursor can legally hold, and that overflow is invisible to the host suite — #355
-/// was found only when the browser panicked. `dpr::grid_px` widens for the same reason. An
-/// out-of-range cursor reads no flags and spans one cell; it is made inert by the callers, which
-/// only ever visit in-range cells.
-pub fn cursor_span_at(flags: &[u16], cols: u32, col: u32, row: u32) -> u32 {
-    let idx = row as u64 * cols as u64 + col as u64;
-    let at = usize::try_from(idx)
-        .ok()
-        .and_then(|i| flags.get(i).copied())
-        .unwrap_or(0);
-    cursor_span(at, col, cols)
+/// **The caret is a span, and it obeys the same pair rule as every other span this crate paints**
+/// ([`pair::partner_at`](crate::pair::partner_at)) — a caret resting on either half of a wide glyph
+/// covers the whole glyph. It therefore returns an *origin* as well as a width: a cursor on the
+/// trailing spacer moves back onto the lead, which a span alone cannot express. That is why the
+/// answer used to be "one cell" here (#454) — not a judgement about what should be drawn, but the
+/// only thing the old signature could say.
+///
+/// The references split three ways on a caret resting on a trailing spacer, so none of them
+/// arbitrates this: ghostty moves back a cell and sets `cursor_wide`
+/// (`renderer/generic.zig:2505-2523` @ `e6e26e1`), alacritty widens on `WIDE_CHAR` only and so
+/// paints the right half alone (`display/content.rs:138-142` @ `852e971`), and xterm.js takes
+/// `cell.getWidth()` — `0` on a spacer — leaving `x >= cursorX && x <= cursorX - 1`, an empty range
+/// that draws **no caret at all** (`WebglRenderer.ts:538-549` @ `699f553`). What decides it is this
+/// crate's own rule rather than a tally.
+///
+/// An out-of-range cursor pairs with nothing and spans one cell; it is made inert by the callers,
+/// which only ever paint cells inside the grid.
+pub fn cursor_cells_at(flags: &[u16], cols: u32, col: u32, row: u32) -> (u32, u32) {
+    match crate::pair::partner_at(flags, cols, row, col) {
+        // `partner_at` already required both cells to agree and stayed on the row, so the pair is
+        // in-grid and the span always fits.
+        Some(p) => (col.min(p), 2),
+        None => (col, 1),
+    }
 }
 
 /// The cursor shapes the renderer draws. `Hidden` is not a shape — an absent cursor is
@@ -305,34 +307,56 @@ mod tests {
         );
     }
 
-    /// A wide char occupies a lead cell plus a spacer; the cursor covers both, so a CJK glyph
-    /// under a block cursor is not half-lit. alacritty `display/content.rs:139`
-    /// (`Flags::WIDE_CHAR -> NonZeroU32::new(2)`), xterm `WebglRenderer.ts:541` (`cell.getWidth()`).
+    /// `[narrow, lead, spacer, narrow]` on one row of four.
+    const ROW: [u16; 4] = [0, WIDE_CHAR, WIDE_CHAR_SPACER, 0];
+
+    /// A wide char occupies a lead cell plus a spacer; the caret covers both, so a CJK glyph under
+    /// a block cursor is not half-lit.
     #[test]
     fn the_cursor_spans_both_halves_of_a_wide_char() {
-        assert_eq!(cursor_span(WIDE_CHAR, 0, 10), 2);
-        assert_eq!(cursor_span(0, 0, 10), 1);
+        assert_eq!(cursor_cells_at(&ROW, 4, 1, 0), (1, 2), "on the lead");
+        assert_eq!(cursor_cells_at(&ROW, 4, 0, 0), (0, 1), "on a narrow cell");
         assert_eq!(
-            cursor_span(BOLD, 0, 10),
-            1,
+            cursor_cells_at(&[BOLD, 0, 0, 0], 4, 0, 0),
+            (0, 1),
             "an unrelated flag changes nothing"
         );
     }
 
-    /// A spacer is the *right* half; a cursor resting on one must not stretch a second cell to
-    /// the right. Neither reference handles this — xterm would read `getWidth() == 0` and drop
-    /// the override entirely. One cell is the honest answer.
+    /// **This test used to pin the opposite answer** (#454): a caret on the spacer covered that one
+    /// cell, lighting a CJK glyph's right half alone. Its recorded grounds were *"a cursor resting
+    /// on one must not stretch a second cell to the right"* — true, and this does not; it moves the
+    /// origin **left** onto the lead, which the old span-only signature could not express — and
+    /// *"neither reference handles this"*, which was measured false: ghostty does exactly this
+    /// (`renderer/generic.zig:2505-2523` @ `e6e26e1`).
     #[test]
-    fn a_cursor_on_the_spacer_half_covers_only_that_cell() {
-        assert_eq!(cursor_span(WIDE_CHAR_SPACER, 1, 10), 1);
+    fn a_cursor_on_the_spacer_half_covers_the_whole_glyph() {
+        assert_eq!(cursor_cells_at(&ROW, 4, 2, 0), (1, 2));
     }
 
-    /// A wide lead in the last column has no spacer to cover. The span is clamped to the grid
-    /// rather than running a rect off the right edge.
+    /// A wide lead in the last column has no spacer to cover — a legal state (ADR-0025 D4's scope),
+    /// so the caret stays one cell rather than running a rect off the right edge. The bound comes
+    /// from the pairing itself now, not from a separate `min`.
     #[test]
-    fn the_span_is_clamped_to_the_right_edge() {
-        assert_eq!(cursor_span(WIDE_CHAR, 9, 10), 1);
-        assert_eq!(cursor_span(WIDE_CHAR, 8, 10), 2);
+    fn a_lead_without_its_spacer_lights_one_cell() {
+        assert_eq!(cursor_cells_at(&[0, WIDE_CHAR], 2, 1, 0), (1, 1));
+        assert_eq!(
+            cursor_cells_at(&[WIDE_CHAR_SPACER, 0], 2, 0, 0),
+            (0, 1),
+            "and an orphaned spacer does not reach past the row's start"
+        );
+    }
+
+    /// The pairing is per row, so a caret never lights a cell on the row above or below.
+    #[test]
+    fn the_caret_never_pairs_across_a_row() {
+        let grid = [0, WIDE_CHAR, WIDE_CHAR_SPACER, 0];
+        assert_eq!(
+            cursor_cells_at(&grid, 2, 1, 0),
+            (1, 1),
+            "row 0's last column"
+        );
+        assert_eq!(cursor_cells_at(&grid, 2, 0, 1), (0, 1), "row 1's first");
     }
 
     fn at(col: u32, row: u32) -> Cursor {

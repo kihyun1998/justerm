@@ -296,9 +296,18 @@ edge because keeping the tail visible beats clipping the text the user is curren
 - `justerm-web` drives the preedit from composition events, adds nothing to the accessibility tree
   (the preedit is pixels), and creates no new `reactivate()` reset obligation.
 - A preedit whose row's cursor is not in the viewport is not drawn (ghostty's rule).
-- **#454 becomes reachable through a new path**: a preedit wide pair under a decoration covering only
+- ~~**#454 becomes reachable through a new path**: a preedit wide pair under a decoration covering only
   one of its columns. The span-snapping gap is unchanged in kind, but this record's pass is a second
-  producer of wide pairs the consumer did not author.
+  producer of wide pairs the consumer did not author.~~
+  **Measured false while working #454 (2026-08-10); kept as written, struck rather than deleted.** The
+  pass does create wide pairs the consumer never authored, but none of them is *reachable* by a span:
+  `preedit::range` counts a wide codepoint as **two** cells and sets `end = start + (w - 1)`, so a
+  pair the run writes is wholly inside `Span` — and `Span::covers` gates every overlay and decoration
+  lookup in `pack_instances` to `None`. Both halves stand down together, so there is no column for a
+  half-covering span to land on. The converse case this record *does* own is unaffected: a run that
+  orphans one of the **application's** halves is repaired by `preedit::writes`, which blanks that
+  cell's `WIDE` bits, so the orphan stops being half a pair rather than becoming a bisectable one.
+  D1–D5 are untouched; what was wrong was a consequence sentence about another issue's reach.
 - Spine **#640 closes** with a pointer here. Its falsifier — *"if #249 needs no rule to land beside
   it, the anchor retires"* — resolved against retirement: #249 could not land without D2 and D4, and
   D2 forced an amendment to another record.

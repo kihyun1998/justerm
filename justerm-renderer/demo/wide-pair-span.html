@@ -1,0 +1,146 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>justerm-renderer proof — a span covering half a wide pair covers both (#454)</title>
+<style>
+  body { margin: 0; background: #000; }
+  #c { display: block; image-rendering: pixelated; }
+</style>
+<!--
+  #454: a highlight span, a decoration rect and the caret all arrive as plain column ranges. A range
+  whose edge falls between a wide glyph's two halves used to paint one of them, splitting the glyph
+  down the middle. `pair::partner_at` now resolves every one of those lookups against the pair.
+
+  Layout — one row of eight, EVERY cell on the default background so a highlight paints SOLID and a
+  sampled pixel is the highlight colour itself rather than a blend nobody can name:
+
+    col 0   narrow    outside every span                        control
+    col 1   LEAD   A  the selection covers THIS COLUMN ONLY     lead-only direction
+    col 2   SPACER A  ... and must be painted anyway
+    col 3   narrow    immediately right of A's spacer           control — the rule is not "+1 column"
+    col 4   narrow    immediately left of B's lead              control — nor "-1 column"
+    col 5   LEAD   B  ... and must be painted anyway
+    col 6   SPACER B  the selection covers THIS COLUMN ONLY     spacer-only direction
+    col 7   narrow    outside every span                        control
+
+  Both directions ride ONE frame, deliberately: they are separate arms of `partner_at`, and a proof
+  that exercised one is green on ghostty's rule (spacer asks its lead) *and* on alacritty's (lead
+  pulled in by its spacer), neither of which is what this crate does.
+
+  The pairs are U+3000 IDEOGRAPHIC SPACE — genuinely width 2 and genuinely inkless. That is what
+  makes a whole-cell colour assertion legal: with a real CJK glyph the middle of the cell is white
+  ink, so `cellIs` could only ever be run on an inset region, and an inset region cannot see an edge
+  column being wrongly lit. It also removes the font from the proof — a fixture font missing the
+  glyph would draw tofu while `WIDE_CHAR` stayed set, and every ink-based assertion would silently
+  be measuring tofu.
+
+  What each check separates:
+  · the two `bothHalves…` checks are the defect itself.
+  · the `control…` checks are what make those about the PAIR rather than about the span having grown
+    a column in each direction: cols 3 and 4 sit against a lit pair and must stay dark.
+  · `theSpansAreActuallyFed` is the tautology guard. Without it the page is green on a renderer that
+    ignores spans entirely and paints nothing — every "is lit" check would simply be false, so the
+    no-span frame has to be measured, not assumed.
+  · the caret section is the same rule on the other span this crate draws (`cursor_cells_at`): a
+    block caret resting on a SPACER lights the whole glyph, and neither neighbour.
+
+  Runner sweeps dpr 1 / 1.1 / 1.5 / 2.
+  Build: wasm-pack build --target web --dev --out-dir pkg
+-->
+<canvas id="c" width="256" height="32"></canvas>
+<script type="module">
+  import init, { JustermRenderer } from "../pkg/justerm_renderer.js";
+  import { readRect } from "./proof.js";
+  await init();
+
+  const WIDE_CHAR = 1 << 8;
+  const WIDE_CHAR_SPACER = 1 << 9;
+  const COLS = 8, ROWS = 1, N = COLS * ROWS;
+  const IDEOGRAPHIC_SPACE = 0x3000; // width 2, no ink — see the header
+  const SPACE = 0x20;
+  const DEF_FG = 0xffffff, DEF_BG = 0x000000;
+  const SEL_BG = 0x3060c0;   // the fed selection colour
+  const CURSOR = 0x00ff00;   // green, so a caret can never be confused with the selection
+  const BLOCK = 0;           // shape id 0 — the block caret
+
+  const chans = (c) => [(c >> 16) & 0xff, (c >> 8) & 0xff, c & 0xff];
+  const palette = new Uint32Array(256);
+  const r = new JustermRenderer("#c", palette, DEF_FG, DEF_BG);
+  const gl = document.querySelector("#c").getContext("webgl2");
+
+  const grab = () => { const [w, h] = [gl.drawingBufferWidth, gl.drawingBufferHeight]; return { ...readRect(gl, { x: 0, y: 0, w, h }), w, h }; };
+  // readPixels counts rows from the bottom; flip to grid-space (origin top-left).
+  const px = (img, x, y) => { const i = ((img.h - 1 - y) * img.w + x) * 4; return [img.buf[i], img.buf[i + 1], img.buf[i + 2]]; };
+  const near = (v, t, tol = 4) => Math.abs(v - t) <= tol;
+  /** Every pixel strictly inside cell `col` matches `packed`. Inset one device px so a rounding
+   *  edge from the neighbour cannot decide the answer. */
+  const cellIs = (img, col, packed) => {
+    const [cw, ch] = [r.cell_width(), r.cell_height()];
+    const [er, eg, eb] = chans(packed);
+    const x0 = Math.round(col * cw) + 1, x1 = Math.min(Math.round((col + 1) * cw) - 1, img.w);
+    for (let y = 0; y < Math.min(ch, img.h); y++)
+      for (let x = x0; x < x1; x++) {
+        const [pr, pg, pb] = px(img, x, y);
+        if (!near(pr, er) || !near(pg, eg) || !near(pb, eb)) return false;
+      }
+    return true;
+  };
+
+  const codepoints = new Uint32Array(N).fill(SPACE);
+  codepoints[1] = IDEOGRAPHIC_SPACE; codepoints[2] = 0; // pair A — a spacer draws no codepoint
+  codepoints[5] = IDEOGRAPHIC_SPACE; codepoints[6] = 0; // pair B
+  const flags = new Uint16Array(N);
+  flags[1] = WIDE_CHAR; flags[2] = WIDE_CHAR_SPACER;
+  flags[5] = WIDE_CHAR; flags[6] = WIDE_CHAR_SPACER;
+  const bg = new Uint32Array(N); // all Default — a highlight over it paints solid
+  const fg = new Uint32Array(N);
+
+  /** One frame with `selSpans` selected and, optionally, a block caret at `cursorCol`. */
+  const draw = (selSpans, cursorCol) => {
+    r.setOverlay(new Uint32Array(selSpans), new Uint32Array([]), SEL_BG, SEL_BG);
+    if (cursorCol === undefined) r.clearCursor();
+    else r.setCursor(cursorCol, 0, BLOCK, CURSOR, DEF_BG);
+    r.resize(COLS, ROWS);
+    r.apply_frame(COLS, ROWS, bg, fg, codepoints, flags, true);
+    r.render();
+    return grab();
+  };
+
+  // --- the highlight, both directions in one frame ---
+  // col 1 = pair A's LEAD only; col 6 = pair B's SPACER only.
+  const lit = draw([0, 1, 1, 0, 6, 6]);
+  // The tautology guard: the same scene with nothing selected.
+  const bare = draw([]);
+
+  // --- the caret, resting on pair B's spacer ---
+  const caret = draw([], 6);
+
+  const checks = {
+    // THE DEFECT, lead-only direction: the span named column 1, the spacer at 2 follows it.
+    bothHalvesLitFromTheLead: cellIs(lit, 1, SEL_BG) && cellIs(lit, 2, SEL_BG),
+    // THE DEFECT, spacer-only direction: the span named column 6, the lead at 5 follows it.
+    bothHalvesLitFromTheSpacer: cellIs(lit, 5, SEL_BG) && cellIs(lit, 6, SEL_BG),
+    // Same frame, hard against a lit pair on either side: this is a pair rule, not a fencepost.
+    controlRightOfAPairIsNotLit: cellIs(lit, 3, DEF_BG),
+    controlLeftOfAPairIsNotLit: cellIs(lit, 4, DEF_BG),
+    controlsOutsideEverySpanAreNotLit: cellIs(lit, 0, DEF_BG) && cellIs(lit, 7, DEF_BG),
+    // Without this the four checks above are green on a renderer that never paints a span at all.
+    theSpansAreActuallyFed: [1, 2, 5, 6].every((c) => cellIs(bare, c, DEF_BG)),
+    // The caret is a span too (`cursor_cells_at`): resting on the SPACER it lights the whole glyph.
+    theCaretOnASpacerCoversTheWholeGlyph: cellIs(caret, 5, CURSOR) && cellIs(caret, 6, CURSOR),
+    // ...and stops there, in the same frame.
+    theCaretDoesNotReachEitherNeighbour: cellIs(caret, 4, DEF_BG) && cellIs(caret, 7, DEF_BG),
+  };
+
+  window.__proof = {
+    ok: Object.values(checks).every(Boolean),
+    checks,
+    dpr: devicePixelRatio,
+    cell: [r.cell_width(), r.cell_height()],
+  };
+  window.__done = true;
+
+  // Leave the highlighted frame on screen — this page is also what someone opens to look at the
+  // behaviour, and the last frame drawn above is the caret one. Every check ran on buffers captured
+  // before this, so it asserts nothing and changes nothing.
+  draw([0, 1, 1, 0, 6, 6]);
+</script>

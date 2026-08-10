@@ -246,6 +246,13 @@ impl Term {
             } else {
                 last
             };
+            // #454: widen onto whole wide-glyph pairs, the same rule `selection_range` applies. This
+            // surface needs it for a reason the selection does not have — a `Match` may be AUTHORED
+            // by the consumer (`set_active_search_match`, the past-cap path), and #678's clamp lands
+            // an out-of-range column on the last cell, which is a trailing spacer whenever the row
+            // ends in a wide glyph. Measured there: `start_col: 99` on a 6-column row holding
+            // `abcd한` projected to `left: 5, right: 5` — the glyph's right half alone.
+            let (left, right) = (self.pair_start(line, left), self.pair_end(line, right));
             if right >= left {
                 spans.push(SelectionSpan { row, left, right });
             }

@@ -75,6 +75,9 @@ above does not touch it.
 
 ## Cross-cutting invariants
 
+- [a span covers a wide pair whole](../invariant/a-span-covers-a-wide-pair-whole.md)
+  — `match_spans` reaches it from two directions the selection does not: a `Match` the **consumer**
+  authored, and #678's clamp landing an out-of-range column on a row's trailing spacer (#454)
 - [the write path funnels motion and does not funnel destruction](../invariant/no-funnel-for-destruction-in-place.md)
   — this territory takes the **heal** answer: an in-place erase or overwrite stales the held
   highlights and deliberately does not invalidate them, because the consumer re-runs the query
