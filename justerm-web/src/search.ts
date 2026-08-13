@@ -158,6 +158,38 @@ export interface SearchPort {
    * is exactly the pre-#687 behaviour — the paint still goes, at the cost of the
    * anchor. */
   clearHighlights?(): void;
+  /** One **absolute buffer line per match**, in the same order (and therefore at the same
+   * indices) as the set the last {@link search} counted — the overview ruler's input (#440).
+   *
+   * The ruler is a whole-buffer distribution view, so it needs every match's line and not just the
+   * viewport's: the frame's `matchSpans` are viewport-only by construction. This rides the port
+   * rather than the frame because the backend **already holds** the `Vec<Match>` in absolute
+   * coordinates — a match is query-derived state the backend owns, unlike a marker, which is
+   * engine-owned state the consumer cannot compute. So no wire group, no VERSION bump, no core
+   * change (decided 2026-07-21).
+   *
+   * **Hand over the PRE-cap set.** {@link search} caps only the *highlights*; the count it returns
+   * is the full total and navigation walks the full set, so marking the capped subset would put the
+   * scrollbar in disagreement with both — a ruler claiming the buffer's lower half holds no matches
+   * when it holds most of them.
+   *
+   * Index-aligned is the whole of the contract: the controller designates by index, so the active
+   * match's line is `lines[activeIndex]` and needs no second round trip. Report a match's **start**
+   * line; a match spanning a soft wrap is one mark, at its beginning.
+   *
+   * Optional (additive): a backend without it simply gets no ruler marks, and nothing else
+   * degrades. A backend that implements it and **rejects** loses the marks and nothing else either
+   * — the controller isolates the failure. What a present implementation does add to the primary
+   * path is its *latency*: it is awaited in parallel with `anchoredIndex` (both describe the set
+   * this hand-over produced and are installed together), so it delays the initial scroll-to-match
+   * only when it is slower than the anchor round trip. `next` / `prev` never wait on it.
+   *
+   * **What it may NOT promise, measured (#440).** These lines go stale silently: core drops its
+   * held highlights on any coordinate-shifting mutation and moves neither dating scalar the frame
+   * carries, so no signal reaches the consumer. Only matches *on screen* move; the repair is the
+   * next hand-over. Do not add dating scalars here to compensate — that is core's to decide.
+   */
+  matchLines?(): Promise<readonly number[]>;
   /** Drop the search: clear highlights, the active designation **and the anchor**
    * ({@link anchoredIndex}) — this ends the search session, so the next query
    * lands on its first match rather than near the last one. The user leaving the
@@ -206,6 +238,13 @@ export class StubSearchPort implements SearchPort {
     this.anchorCalls++;
     return Promise.resolve(this.anchored);
   }
+  /** What the next {@link matchLines} hand-over resolves to (#440) — one absolute buffer line per
+   * match, index-aligned with the set {@link search} counted. */
+  lines: readonly number[] = [];
+  /** A property rather than a method so a test can model a backend **without** the optional
+   * hand-over (`undefined`) or a **slow** one (a pending promise) — the two shapes the controller
+   * has to survive, and neither is reachable through a prototype method. */
+  matchLines: (() => Promise<readonly number[]>) | undefined = () => Promise.resolve(this.lines);
   clearHighlights(): void {
     this.clearedHighlights++;
   }
@@ -255,6 +294,10 @@ export class SearchController {
    * stale continuation would restore a non-zero total for an empty query and
    * designate AFTER `port.clear()` ran). */
   private epoch = 0;
+  /** One absolute buffer line per match for the overview ruler (#440), index-aligned with the
+   * result set — see {@link SearchPort.matchLines}. Empty against a backend without the hand-over,
+   * and dropped wherever the paint is. */
+  private lines: readonly number[] = [];
   private pending: number | undefined;
   private readonly setTimer: (fn: () => void, ms: number) => number;
   private readonly clearTimer: (handle: number) => void;
@@ -324,6 +367,7 @@ export class SearchController {
       this.invalid = true;
       this.total = 0;
       this.index = 0;
+      this.lines = []; // ruler marks are paint, and this path drops the paint (#687)
       if (this.port.clearHighlights) this.port.clearHighlights();
       else this.port.clear();
       return;
@@ -346,10 +390,20 @@ export class SearchController {
     // next/prev only (`event.rs:970`, `:1143`), never by `update_search` — so it
     // returns to where the search began. 2-1, and the majority is the one whose
     // anchor is a by-product of designating, which is also justerm's shape.
-    const anchored = await this.anchoredIndexWithin(total);
+    // Both round trips describe the SET THIS HAND-OVER PRODUCED, so they are taken together and
+    // installed together. Awaiting the ruler's lines *after* committing `index` would leave a
+    // window — one backend round trip wide, and `rulerLines()` is read every frame — in which the
+    // lines describe the previous query while the index names a member of this one. That pair is
+    // painted, not merely held: the ruler would show the old query's marks with the emphasis on a
+    // line the new query never matched.
+    const [anchored, lines] = await Promise.all([
+      this.anchoredIndexWithin(total),
+      this.fetchRulerLines(total),
+    ]);
     if (epoch !== this.epoch) return;
     this.total = total;
     this.index = anchored ?? 0;
+    this.lines = lines;
     if (this.total > 0) await this.port.showMatch(this.index);
   }
 
@@ -390,10 +444,14 @@ export class SearchController {
     // different text with no user input at all (#437). Only the backend holds
     // the positions, so it reports where the occurrence went; the clamp below
     // is what is left when it cannot answer.
-    const anchored = await this.anchoredIndexWithin(total);
+    const [anchored, lines] = await Promise.all([
+      this.anchoredIndexWithin(total),
+      this.fetchRulerLines(total),
+    ]);
     if (epoch !== this.epoch) return;
     this.total = total;
     this.index = anchored ?? (this.total === 0 ? 0 : Math.min(this.index, this.total - 1));
+    this.lines = lines; // installed with the index it is aligned to — see `search`
     // The hand-over reset the engine's active designation (#428), so restore it
     // where the occurrence now sits — scroll-free, or every burst of output would
     // yank the viewport (xterm's `noScroll` re-find keeps the emphasis the same way).
@@ -417,6 +475,7 @@ export class SearchController {
     this.query = "";
     this.options = undefined;
     this.invalid = false;
+    this.lines = [];
   }
 
   /** Advance to the next match, wrapping past the last back to the first. */
@@ -431,6 +490,38 @@ export class SearchController {
     if (this.total === 0) return;
     this.index = (this.index - 1 + this.total) % this.total;
     await this.port.showMatch(this.index);
+  }
+
+  /** The ruler's match lines for the set just handed over (#440), or `[]` when there are none to
+   * ask for and when the backend cannot answer.
+   *
+   * **A rejection costs the marks and nothing else**, which is the port's stated contract: the
+   * hand-over is additive, so a backend that implements it and fails may not take the scroll-to-
+   * match, the re-designation (#428/#429) or the count refresh (#437) down with it. The caller
+   * awaits this beside the anchor, so an unguarded rejection would escape `search` — and on the
+   * re-search path escape as an *unhandled* rejection, since nothing awaits `void this.reSearch()`.
+   *
+   * Deliberately silent rather than warning: this runs once per debounced re-search, so a warning
+   * on a persistently failing backend is unbounded, and the side that failed is the side that can
+   * log it. An empty set does not ask at all — there is nothing to mark. */
+  private async fetchRulerLines(total: number): Promise<readonly number[]> {
+    if (total === 0 || !this.port.matchLines) return [];
+    try {
+      return await this.port.matchLines();
+    } catch {
+      return [];
+    }
+  }
+
+  /** The overview ruler's view of the current result set (#440): every match's absolute buffer
+   * line, plus which of them the emphasis is on. Feed it to `searchRulerMarks`, and compose the
+   * result with the decoration marks via `composeRulerMarks` — never by concatenating, which puts
+   * ADR-0024 R3's ordering in the host.
+   *
+   * `activeIndex` is `undefined` exactly when nothing matched, so a caller cannot mistake "no
+   * results" for "the emphasis is on the first one". */
+  rulerLines(): { lines: readonly number[]; activeIndex: number | undefined } {
+    return { lines: this.lines, activeIndex: this.total === 0 ? undefined : this.index };
   }
 
   /** The count for the UI: 1-based current, `0` total when nothing matches. */

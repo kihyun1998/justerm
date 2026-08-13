@@ -514,27 +514,31 @@ export class DecorationRegistry {
     // The partition below is STABLE (one pass collecting each class in order, then concatenated), so
     // the two rules compose instead of one overriding the other.
     //
-    // Validity condition worth knowing: upstream the payoff is bigger than here, because xterm sizes
-    // a `full` mark at ~2 device px and a gutter mark 3-6x taller, so full-on-top is what keeps the
-    // thin one visible at all. `scrollbar.ts` draws every mark at a flat 2px, so today this rule only
-    // decides which COLOUR shows on an overlap. It becomes load-bearing the moment mark heights
-    // become position-dependent.
+    // This rule's payoff was gated on mark geometry, and the gate opened at #500 §2: `scrollbar.ts`
+    // sizes a `full` mark at 2 CSS px and a gutter mark at 6 (`rulerMarkHeightPx`), so full-on-top is
+    // now what keeps the thin one visible rather than merely deciding a colour on an exact overlap.
+    // ADR-0024 carries the same amendment. (This paragraph said "flat 2px … becomes load-bearing the
+    // moment heights become position-dependent" until #440; #500 made it false and missed it here.)
+    // It matters more since #440: search marks default to `center`, the FAT class, sitting under
+    // thin `full` decoration marks.
     const gutter: RulerMark[] = [];
     for (const d of this.inRegistrationOrder) {
       if (!d.overviewRulerOptions) continue;
       const line = lineOf.get(d.markerId);
       if (line === undefined) continue;
-      const rawRatio = line / total;
-      // #463: a non-finite marker line (NaN/±Infinity reaching the index from a consumer's port,
-      // or from a hand-built snapshot) has no
-      // placeable position — skip it rather than emit `top: NaN%` / `top: Infinity%`. A clamp
-      // cannot rescue this: `Math.max(0, NaN)` is `NaN`. (`total` is finite > 0 above, so a
-      // non-finite ratio can only come from a non-finite line.)
-      if (!Number.isFinite(rawRatio)) continue;
-      // Clamp to the track: a line past the content end (`scrollbackLen + rows`) — a frame
+      // Both rules live in `trackRatio` now, shared with the search source (#440) so the two
+      // cannot drift apart on them. They stay two rules and not one:
+      //
+      // #463: a non-finite marker line (NaN/±Infinity reaching the index from a consumer's port, or
+      // from a hand-built snapshot) has no placeable position — skipped rather than emitted as
+      // `top: NaN%` / `top: Infinity%`. A clamp cannot rescue this: `Math.max(0, NaN)` is `NaN`.
+      // (`total` is finite > 0 above, so a non-finite ratio can only come from a non-finite line.)
+      //
+      // Clamped to the track: a line past the content end (`scrollbackLen + rows`) — a frame
       // lag/mismatch between the index's absolute lines and the scroll geometry — gives ratio > 1
-      // (mark below the track, invisible); a negative line gives < 0. Pin to [0, 1].
-      const topRatio = Math.min(1, Math.max(0, rawRatio));
+      // (mark below the track, invisible); a negative line gives < 0. Pinned to [0, 1].
+      const topRatio = trackRatio(line, total);
+      if (topRatio === undefined) continue;
       const position = d.overviewRulerOptions.position ?? "full";
       const mark = { topRatio, color: d.overviewRulerOptions.color, position };
       // The gutter classes accumulate in `gutter`, everything else in `marks`; the concat below puts
@@ -543,8 +547,7 @@ export class DecorationRegistry {
       // `scrollbar.ts` `rulerMarkX`, whose `switch` also renders anything unrecognised full-width —
       // unreachable from typed code (the union is closed), but the two must not disagree about which
       // marks are geometrically full-width.
-      const isGutter = position === "left" || position === "center" || position === "right";
-      (isGutter ? gutter : marks).push(mark);
+      (isGutterMark(mark) ? gutter : marks).push(mark);
     }
     return gutter.concat(marks);
   }
@@ -573,3 +576,149 @@ function columns(d: StoredDecoration, cols: number): [number, number] {
   return [d.x, d.x + d.width - 1];
 }
 
+
+/**
+ * Where a buffer line sits down the overview-ruler track, or `undefined` when it has no placeable
+ * position (ADR-0024 R6). Shared by both mark sources so the two cannot drift apart on the rule.
+ *
+ * **The two branches are different rules and only look alike.** A **non-finite** ratio has no value
+ * at all — a `NaN` reaches `scrollbar.ts` as `top: NaN%`, which the browser silently drops, stacking
+ * every such mark at the track default; a clamp cannot rescue it (`Math.max(0, NaN)` is `NaN`). An
+ * **out-of-range** ratio has a perfectly good value that is merely off the track (a lag between a
+ * held line and the frame's scroll geometry), so it is pinned to `[0, 1]` rather than dropped —
+ * #463's clamp, and ADR-0024 carries the amendment that separated the two cases.
+ */
+function trackRatio(line: number, total: number): number | undefined {
+  const raw = line / total;
+  if (!Number.isFinite(raw)) return undefined;
+  return Math.min(1, Math.max(0, raw));
+}
+
+/** Whether a mark's position class is one of the gutter columns (as opposed to the full-width
+ * default). Written as "is it a gutter position?" rather than `=== "full"` so it agrees with
+ * `scrollbar.ts`'s `rulerMarkX`, whose `switch` also lays out anything unrecognised full-width. */
+function isGutterMark(m: RulerMark): boolean {
+  return m.position === "left" || m.position === "center" || m.position === "right";
+}
+
+/** The colours a search-match ruler mark is painted in (#440), plus where it sits across the
+ * track's width. Absolute packed `0xRRGGBB`, consumer-resolved like every other decoration colour —
+ * this layer stays theme-agnostic.
+ *
+ * The two colours mirror xterm's two **required** search decoration options, `matchOverviewRuler`
+ * and `activeMatchColorOverviewRuler` (`addons/addon-search/typings/addon-search.d.ts`), which is
+ * the evidence that ruler marks are core to the feature upstream rather than polish.
+ */
+export interface SearchRulerOptions {
+  /** A line carrying at least one match. */
+  readonly matchColor: number;
+  /** The line the active (current) match sits on — it outranks {@link matchColor} for that line. */
+  readonly activeMatchColor: number;
+  /** Default `center`, matching xterm, whose search marks are `position: 'center'` for the active
+   * and non-active alike. A gutter class, so ADR-0024 R3 paints any `full` mark above these. */
+  readonly position?: RulerPosition;
+}
+
+/**
+ * Project a search result set onto the overview ruler (#440) — the second mark source, beside
+ * {@link DecorationRegistry.rulerMarksForFrame}. Compose the two with {@link composeRulerMarks};
+ * do not concatenate them (see that function for why).
+ *
+ * `lines` is one **absolute buffer line per match, in the hand-over's order** — index-aligned with
+ * the set the last search counted, so `activeIndex` is the controller's own navigation index and
+ * needs no separate lookup. Core produces matches in buffer order, so the hand-over order is line
+ * order; nothing here re-sorts, because paint order within a class is the source's order
+ * (ADR-0024 R3's second key) and re-sorting would silently redefine it.
+ *
+ * **A match spanning a soft wrap is ONE mark, at its start line** — a second declared divergence,
+ * smaller than the one below. Upstream registers a marker + decoration per covered row
+ * (`_createResultDecorations`), so a wrapped match feeds a mark on every row it touches. Ours
+ * follows this repo's own model instead: `rulerMarksForFrame` emits one mark per decoration at its
+ * anchor even for `height > 1`, so a multi-row thing is one mark here whatever produced it.
+ *
+ * **One mark per LINE, not per match (ADR-0024 R1).** A line carrying ten matches is one mark. That
+ * is also upstream's rule — it suppresses the mark when the line already carries one — and it is
+ * what keeps a mark-every-match policy bounded by the buffer's height rather than by the query's
+ * hit count.
+ *
+ * **The active match's line takes the active colour and is emitted last**, so it paints above a
+ * neighbour close enough to overlap (array order is paint order — `scrollbar.ts` appends one div
+ * per mark with no `z-index`). This is a **deliberate divergence**: upstream decorates every result
+ * plain *first* and creates the active decoration *after*, so the active mark is suppressed by the
+ * plain mark already on its line and the required `activeMatchColorOverviewRuler` never paints in
+ * the normal flow. Shipping that verbatim would ship a dead option — the reasoning ADR-0024 R4
+ * already records for `anchor`.
+ *
+ * **Staleness, measured rather than assumed (#440).** These lines are held from search time while
+ * the geometry comes from the current frame, and core drops its held highlights on any
+ * coordinate-shifting mutation *without* moving either dating scalar the frame carries
+ * (`evictedTotal` / `markerEpoch`) — so a shift is not observable here. Measured: only matches **on
+ * screen** move (scrollback matches keep their absolute index exactly), the error is bounded by the
+ * screen height for one debounce window, and every mark stays on the track (#463). Keeping the
+ * marks through that window therefore shows strictly more truth than dropping them would — the
+ * engine shows none at all. Do not add a heuristic that guesses at the invalidation: an empty
+ * `matchSpans` cannot distinguish "the set was dropped" from "no match is on screen".
+ */
+export function searchRulerMarks(
+  lines: readonly number[],
+  activeIndex: number | undefined,
+  frame: { scrollbackLen?: number; rows?: number; altScreen?: boolean },
+  opts: SearchRulerOptions,
+): RulerMark[] {
+  // The ruler is a scrollback navigator, so it is hidden on the alt screen — the same rule
+  // `rulerMarksForFrame` holds. It has to be the same rule: two sources disagreeing about whether
+  // the ruler exists would paint search marks onto a track the decoration source considers absent.
+  if (frame.altScreen) return [];
+  const total = (frame.scrollbackLen ?? 0) + (frame.rows ?? 0);
+  if (!Number.isFinite(total) || total <= 0) return [];
+
+  const position = opts.position ?? "center";
+  const activeLine = activeIndex === undefined ? undefined : lines[activeIndex];
+  const marks: RulerMark[] = [];
+  const seen = new Set<number>();
+  for (const line of lines) {
+    // The active line is emitted below, in its own colour. Skipping it here rather than letting the
+    // dedupe decide is what makes the active colour win its whole line: otherwise a plain match
+    // sharing the line would claim it first and the active designation would be invisible.
+    if (line === activeLine) continue;
+    if (seen.has(line)) continue;
+    seen.add(line);
+    const topRatio = trackRatio(line, total);
+    if (topRatio === undefined) continue;
+    marks.push({ topRatio, color: opts.matchColor, position });
+  }
+  if (activeLine !== undefined) {
+    const topRatio = trackRatio(activeLine, total);
+    if (topRatio !== undefined) marks.push({ topRatio, color: opts.activeMatchColor, position });
+  }
+  return marks;
+}
+
+/**
+ * Merge the two ruler mark sources into the single paint order `scrollbar.setMarks` consumes
+ * (#440) — decorations from {@link DecorationRegistry.rulerMarksForFrame}, search matches from
+ * {@link searchRulerMarks}.
+ *
+ * **This lives in the library on purpose, and concatenating the two arrays in a host is the thing
+ * it exists to prevent.** ADR-0024 R3's total order was expressed entirely by
+ * `rulerMarksForFrame`'s emission order while there was one source; with two, an order composed in
+ * a host is re-derived per host and can disagree between them. No unit test can observe a violation
+ * — vitest runs in a `node` environment, so nothing here has a layout — and the one gate that can
+ * (`__rulerLayerProbe`) drives the demo, which would leave every other host's composition unproven.
+ *
+ * **R3 is re-applied across the join, not after it.** Every gutter mark first, then every `full`
+ * one, so a decoration's gutter mark cannot end up over a `full` mark from the other source.
+ * Within a class the order is decoration marks, then search marks: R3's second key is registration
+ * order, which has no meaning for a match, so the search source takes one fixed rank derived from
+ * the same rule — the search set is the most recent statement the consumer made.
+ */
+export function composeRulerMarks(
+  decorationMarks: readonly RulerMark[],
+  searchMarks: readonly RulerMark[],
+): RulerMark[] {
+  const gutter: RulerMark[] = [];
+  const full: RulerMark[] = [];
+  for (const m of decorationMarks) (isGutterMark(m) ? gutter : full).push(m);
+  for (const m of searchMarks) (isGutterMark(m) ? gutter : full).push(m);
+  return gutter.concat(full);
+}

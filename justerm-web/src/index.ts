@@ -125,7 +125,13 @@ export type {
   OverviewRulerOptions,
   RulerMark,
   RulerPosition,
+  SearchRulerOptions,
 } from "./decorations";
+// The overview ruler's second mark source (#440) and the join that keeps ADR-0024 R3's total order
+// in ONE place. A host composes the two sources with `composeRulerMarks` — concatenating them
+// itself would re-derive the class partition per host, and no unit test can observe a violation
+// (vitest has no layout); only the demo's `__rulerLayerProbe` e2e can.
+export { composeRulerMarks, searchRulerMarks } from "./decorations";
 // Screen-reader-active gate (#161) — the host injects SR presence (a browser
 // can't detect it); while inactive, the a11y announce/signal sinks no-op. Share
 // one instance across #119 + #160 so a single toggle governs both.

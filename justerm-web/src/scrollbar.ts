@@ -67,7 +67,11 @@ export class Scrollbar {
   private readonly track: HTMLDivElement;
   private readonly thumb: HTMLDivElement;
   private pos: ScrollPosition = { displayOffset: 0, scrollbackLen: 0, rows: 0 };
-  /** Overview-ruler mark elements (#120 S3), re-created each {@link setMarks}. */
+  /** Overview-ruler mark elements (#120 S3) — a POOL, reused across {@link setMarks} calls and
+   * trimmed to the current mark count. Re-creating them per call cost ~18 microseconds per mark
+   * (measured, Chromium): 18 ms for 1000 marks, i.e. a whole 60 Hz frame for one call, and 101 ms
+   * for 5000. Marks are per matching LINE, so a search over a deep scrollback reaches those counts
+   * routinely (#440). */
   private readonly markEls: HTMLDivElement[] = [];
   private dragging = false;
   private readonly onMove: (e: globalThis.MouseEvent) => void;
@@ -144,6 +148,12 @@ export class Scrollbar {
    * track clips, because centring puts half of the first and last marks outside it and a DOM
    * element gets none of the containment upstream's canvas backing store provides.
    *
+   * **Elements are reused, not re-created (#440).** The pool is updated in place and trimmed, which
+   * changes nothing observable — array order is still DOM order — but makes the call cost a style
+   * write per mark instead of a node allocation. Two traps it introduces, both handled below and
+   * neither reachable before: a reused element carries the previous mark's horizontal properties
+   * (the three classes set different ones), and a shorter list leaves the tail attached.
+   *
    * **Array order IS paint order.** Marks are appended in the order given and carry no `z-index`,
    * so a later mark paints over an earlier one — which is how `rulerMarksForFrame` expresses both
    * its ordering rules (registration order within a position class, #458; `full` above the gutter
@@ -152,10 +162,15 @@ export class Scrollbar {
    * `__rulerLayerProbe` e2e does.
    */
   setMarks(marks: RulerMark[]): void {
-    for (const el of this.markEls) el.remove();
-    this.markEls.length = 0;
-    for (const m of marks) {
-      const el = document.createElement("div");
+    for (let i = 0; i < marks.length; i++) {
+      const m = marks[i]!;
+      let el = this.markEls[i];
+      if (el === undefined) {
+        el = document.createElement("div");
+        el.dataset.rulerMark = ""; // stable hook for the #498 e2e probe (not a style)
+        this.track.appendChild(el);
+        this.markEls.push(el);
+      }
       Object.assign(el.style, {
         position: "absolute",
         top: `${m.topRatio * 100}%`,
@@ -176,12 +191,21 @@ export class Scrollbar {
         height: `${rulerMarkHeightPx(m.position)}px`,
         background: `#${(m.color & 0xffffff).toString(16).padStart(6, "0")}`,
         pointerEvents: "none",
+        // RESET all three horizontal properties before applying this mark's class, because a
+        // reused element carries the previous mark's. `rulerMarkX` returns a DIFFERENT key set per
+        // class (`{left,width}` / `{right,width}` / `{left,right}`), so a `full` element reused as
+        // a `left` gutter mark would keep `right: 0` and span the track. Re-creating the element
+        // hid this; reusing it does not.
+        left: "",
+        right: "",
+        width: "",
         ...rulerMarkX(m.position),
       } satisfies Partial<CSSStyleDeclaration>);
-      el.dataset.rulerMark = ""; // stable hook for the #498 e2e probe (not a style)
-      this.track.appendChild(el);
-      this.markEls.push(el);
     }
+    // Trim the surplus: a shorter mark list leaves the tail of the pool attached, which would paint
+    // the PREVIOUS frame's marks under this one's.
+    for (let i = marks.length; i < this.markEls.length; i++) this.markEls[i]!.remove();
+    this.markEls.length = marks.length;
   }
 
   private dragTo(clientY: number): void {

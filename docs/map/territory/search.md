@@ -105,6 +105,10 @@ above does not touch it.
 - [frame](frame.md) — highlights are an overlay group; adding one is an ADR-0020 question
 - [viewport](viewport.md) — matches are projected onto viewport rows, so the window decides what is
   emitted
+- [decoration](decoration.md) — since #440 a match is also projected onto the **overview ruler**, one
+  mark per line, ranked under ADR-0024 R3 beside the decoration marks. This is the first place the
+  consumer holds match *coordinates* across frames rather than reading them off the frame, which is
+  why the invalidate-vs-re-anchor rule below acquired a consumer-side residue
 
 ## Known holes / open
 

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { DecorationRegistry, resetMarkerIndexWarning } from "../src/decorations";
-import type { MarkerLineSource } from "../src/decorations";
+import type { MarkerLineSource, RulerMark } from "../src/decorations";
+import { composeRulerMarks, searchRulerMarks } from "../src/decorations";
 import { MarkerIndexCache } from "../src/marker-index";
 import { MarkerKind } from "../src/markers";
 
@@ -1017,5 +1018,114 @@ describe("a v16 frame with ruler decorations and no marker index (#490)", () => 
 
     expect(warn).not.toHaveBeenCalled();
     warn.mockRestore();
+  });
+});
+
+describe("searchRulerMarks — search matches on the overview ruler (#440)", () => {
+  const COLORS = { matchColor: 0xffd700, activeMatchColor: 0xff6a00 };
+  const geom = (scrollbackLen: number, rows: number) => ({ scrollbackLen, rows });
+
+  // The ratio is the same buffer-relative one every ruler mark uses: line / (scrollback + rows).
+  // `position` defaults to `center` — xterm's search marks are `position: 'center'` for active and
+  // non-active alike (`addon-search/src/DecorationManager.ts:142` @ 699f553).
+  it("places one mark per match line, defaulting to the center gutter", () => {
+    expect(searchRulerMarks([25, 50], undefined, geom(90, 10), COLORS)).toEqual([
+      { topRatio: 0.25, color: 0xffd700, position: "center" },
+      { topRatio: 0.5, color: 0xffd700, position: "center" },
+    ]);
+  });
+
+  // ADR-0024 R1: "at most one ruler mark per covered LINE". Ten matches on one line are one mark,
+  // which is also what upstream does — it suppresses the mark when the line already carries one
+  // (`_highlightedLines`, DecorationManager.ts:140). This is why cap policy `all` needs no
+  // amendment: the mark count is bounded by LINES that match, not by matches.
+  it("emits one mark for a line carrying several matches (R1)", () => {
+    expect(searchRulerMarks([25, 25, 25, 50], undefined, geom(90, 10), COLORS)).toEqual([
+      { topRatio: 0.25, color: 0xffd700, position: "center" },
+      { topRatio: 0.5, color: 0xffd700, position: "center" },
+    ]);
+  });
+
+  // The active match's line takes the active colour, and its mark is emitted LAST so it paints
+  // above any neighbour close enough to overlap on the track (array order is paint order —
+  // `scrollbar.ts` appends one div per mark with no z-index).
+  //
+  // Deliberate divergence from xterm, which suppresses the active mark entirely when the line
+  // already carries a plain one — its own required `activeMatchColorOverviewRuler` therefore never
+  // paints in the normal flow (highlights are created first, `DecorationManager.ts:44-56`, then the
+  // active decoration separately, `:64-70`). Following that verbatim ships a dead option, which is
+  // the reasoning ADR-0024 R4 already records for `anchor`.
+  it("gives the active match's line the active colour, emitted last (divergence from xterm)", () => {
+    expect(searchRulerMarks([10, 25, 50], 1, geom(90, 10), COLORS)).toEqual([
+      { topRatio: 0.1, color: 0xffd700, position: "center" },
+      { topRatio: 0.5, color: 0xffd700, position: "center" },
+      { topRatio: 0.25, color: 0xff6a00, position: "center" },
+    ]);
+  });
+
+  // The active line wins the whole line, not just its own occurrence: a plain match sharing it
+  // would otherwise re-emit the line in the plain colour and the dedupe above would keep whichever
+  // came first.
+  it("lets the active line outrank a plain match on the same line", () => {
+    expect(searchRulerMarks([25, 25], 1, geom(90, 10), COLORS)).toEqual([
+      { topRatio: 0.25, color: 0xff6a00, position: "center" },
+    ]);
+  });
+
+  // An index outside the handed-over set designates nothing rather than throwing or marking line 0.
+  it("emits no active mark for an out-of-range active index", () => {
+    expect(searchRulerMarks([25], 7, geom(90, 10), COLORS)).toEqual([
+      { topRatio: 0.25, color: 0xffd700, position: "center" },
+    ]);
+  });
+
+  // The overview ruler is a scrollback navigator and is hidden on the alt screen — the same rule
+  // `rulerMarksForFrame` holds, and it has to be the same or the two sources disagree about
+  // whether the ruler exists at all.
+  it("emits nothing on the alt screen", () => {
+    expect(searchRulerMarks([25], 0, { scrollbackLen: 90, rows: 10, altScreen: true }, COLORS)).toEqual([]);
+  });
+
+  // ADR-0024 R6 + #463, held identically for this source: a non-finite input has no placeable
+  // position and is dropped, while an out-of-range one has a perfectly good value that is merely
+  // off the track and is clamped.
+  it("drops a non-finite line and clamps an out-of-range one (R6, #463)", () => {
+    expect(searchRulerMarks([Number.NaN, -5, 500], undefined, geom(90, 10), COLORS)).toEqual([
+      { topRatio: 0, color: 0xffd700, position: "center" },
+      { topRatio: 1, color: 0xffd700, position: "center" },
+    ]);
+  });
+
+  it("emits nothing for an empty set or an empty buffer", () => {
+    expect(searchRulerMarks([], 0, geom(90, 10), COLORS)).toEqual([]);
+    expect(searchRulerMarks([1], 0, geom(0, 0), COLORS)).toEqual([]);
+  });
+});
+
+describe("composeRulerMarks — two sources, one total order (#440)", () => {
+  const gutter = (topRatio: number, color: number): RulerMark => ({ topRatio, color, position: "center" });
+  const full = (topRatio: number, color: number): RulerMark => ({ topRatio, color, position: "full" });
+
+  // ADR-0024 R3's class partition has to survive a second source, so the composition re-partitions
+  // rather than concatenating: every gutter mark, then every `full` one. Composing by source first
+  // would let a decoration's gutter mark paint over a `full` one from the same frame.
+  it("keeps every full-width mark above every gutter mark, across sources (R3)", () => {
+    expect(composeRulerMarks([full(0.1, 1), gutter(0.2, 2)], [gutter(0.3, 3)])).toEqual([
+      gutter(0.2, 2),
+      gutter(0.3, 3),
+      full(0.1, 1),
+    ]);
+  });
+
+  // R3's second key is registration order, which has no meaning for a match — so the search source
+  // gets one fixed rank, after the decorations, derived from the same rule: the search set is the
+  // most recent statement the consumer made.
+  it("ranks search marks after decoration marks within a class", () => {
+    expect(composeRulerMarks([gutter(0.1, 1)], [gutter(0.2, 2)])).toEqual([gutter(0.1, 1), gutter(0.2, 2)]);
+  });
+
+  it("passes either side through unchanged when the other is empty", () => {
+    expect(composeRulerMarks([full(0.1, 1)], [])).toEqual([full(0.1, 1)]);
+    expect(composeRulerMarks([], [gutter(0.2, 2)])).toEqual([gutter(0.2, 2)]);
   });
 });
