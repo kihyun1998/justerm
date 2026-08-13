@@ -120,6 +120,15 @@ export class FakeSearchEngine {
     return this.matches.length;
   }
 
+  /** One absolute buffer line per match, in match order (#440) — the overview ruler's input,
+   * mirroring a real backend's `SearchPort.matchLines`. Deliberately UNCAPPED: the ruler is a
+   * whole-buffer distribution view, and a capped hand-over would draw a ruler claiming the lower
+   * buffer holds no matches. A match spanning a soft wrap reports its START line, so it is one
+   * mark at its beginning. */
+  matchLines(): number[] {
+    return this.matches.map((m) => m.startLine);
+  }
+
   /** Visible matches projected onto the viewport as flat `(row, left, right)`
    * triples — the `matchSpans` the overlay renderer paints. */
   matchSpans(viewTop: number, rows: number): number[] {

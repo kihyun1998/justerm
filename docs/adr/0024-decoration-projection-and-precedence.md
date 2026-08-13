@@ -44,6 +44,17 @@ above a gutter mark whatever the registration order; within a class, registratio
 order is not the cell order**, deliberately: on the track a thin `full` mark and a fat gutter mark
 overlap physically, and class-last-wins is what keeps the thin one visible.
 
+**R3.1 — a second mark source takes a fixed rank within its class, after the decorations (#440).**
+R3's second key is *registration order*, which has no meaning for a search match, so the source rank
+is derived from the same rule rather than invented: the search set is the most recent statement the
+consumer made. The class partition is re-applied **across** the join, not after it, so a decoration's
+gutter mark can never end up over a `full` mark from the other source. Two consequences worth stating
+because they are consumer-visible: a decoration explicitly positioned in the *same* gutter column as
+the search marks is permanently outranked by them, and R2's "dispose + re-register to raise" cannot
+cross sources. The join lives in one library function (`composeRulerMarks`) for the reason R3 exists
+at all — an order composed in each host is re-derived per host, and no unit test can observe a
+violation because array order becomes paint order only in a browser.
+
 **R4 — `anchor` moves the colour span.** `anchor: 'right'` measures `x` in from the right edge and the
 span extends leftward. This is a declared divergence (see below) and follows from R1: with no element to
 position, ignoring `anchor` in the colour span would leave the option affecting *nothing* — a dead field.
@@ -153,9 +164,14 @@ ruler position is xterm's too (`DecorationService.ts:376-378`).
   stated motivation is GC pressure (`ColorZoneStore.ts:35`), i.e. cost. What it would cost **here** is
   this clause plus R3's second key — coalescing in registration order is order-*dependent* (padding 5,
   lines `0, 10, 5`: registration order yields two runs, line order one), and upstream avoids that only by
-  feeding zones from a `marker.line`-keyed `SortedList`, the very ordering R3 rejected. *Reopen
-  condition:* #440 choosing `all matches` as its cap policy, which is the only thing that makes ruler
-  density large enough for the cost to bite.
+  feeding zones from a `marker.line`-keyed `SortedList`, the very ordering R3 rejected. ~~*Reopen
+  condition:* #440 choosing `all matches` as its cap policy~~ — **the condition fired and did not
+  reopen it (2026-08-13, #440).** `all` was chosen, and the density it implies never arrives: upstream
+  emits **at most one ruler mark per buffer line** (it suppresses the mark when the line already
+  carries one, `addons/addon-search/src/DecorationManager.ts:140`, tracked in a set at `:33`/`:87`),
+  which is this clause verbatim. So the mark count is bounded by *lines that match*, not by matches,
+  and `all` sits inside R1 as written. Won't-do stands; what reopens it now is a mark source that can
+  put two marks on one line, which nothing does.
 - **A consumer porting from xterm gets one surprise, and it is `anchor`.** Everything else here either
   matches xterm's colour path or is invisible; a right-anchored decoration's *background* moving is the
   single behavioural difference, and it is the one the typings predict.

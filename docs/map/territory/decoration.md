@@ -125,6 +125,10 @@ inside a record rather than a pinned row that survives an upstream move.
 - [viewport](viewport.md) — the ruler is buffer-relative, dividing by `scrollback_len + rows`
 - [cell compositing](cell-compositing.md) — colour overrides enter the ADR-0019 layer stack there, and the
   precedence rules above decide what reaches it
+- [search](search.md) — **the overview ruler has a second mark source since #440.** Search matches are
+  projected to marks beside the decoration ones and joined by a single library function, so R3's total
+  order now spans two territories: a change to either projection's emission order changes what the
+  other one appears under
 
 ## Known holes / open
 

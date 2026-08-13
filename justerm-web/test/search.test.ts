@@ -940,3 +940,214 @@ describe("SearchController — typing does not re-jump to the first match (#441)
     expect(ctrl.result()).toEqual({ current: 1, total: 3 });
   });
 });
+
+describe("SearchController — ruler lines (#440)", () => {
+  // The hand-over is one absolute buffer line per match, INDEX-ALIGNED with the set `search`
+  // counted — so the controller's own navigation index names the active line and no second lookup
+  // is needed. The lines never enter the frame; they ride the port, which is why this needs no
+  // wire version (decided 2026-07-21).
+  it("keeps the handed-over lines and names the active one by index", async () => {
+    const port = new StubSearchPort();
+    port.count = 3;
+    port.lines = [4, 9, 40];
+    const c = new SearchController(port);
+
+    await c.search("x");
+
+    expect(c.rulerLines()).toEqual({ lines: [4, 9, 40], activeIndex: 0 });
+    await c.next();
+    expect(c.rulerLines()).toEqual({ lines: [4, 9, 40], activeIndex: 1 });
+  });
+
+  // Additive and optional, like `designateMatch` / `anchoredIndex` / `clearHighlights` before it: a
+  // backend that does not implement it simply gets no ruler marks, and nothing else changes.
+  it("degrades to no lines against a backend without the hand-over", async () => {
+    const port = new StubSearchPort();
+    port.count = 2;
+    port.matchLines = undefined;
+    const c = new SearchController(port);
+
+    await c.search("x");
+
+    expect(c.rulerLines()).toEqual({ lines: [], activeIndex: 0 });
+  });
+
+  // `clear` ends the session, so the marks go with the highlights and the anchor.
+  it("drops the lines when the search is cleared", async () => {
+    const port = new StubSearchPort();
+    port.count = 1;
+    port.lines = [7];
+    const c = new SearchController(port);
+    await c.search("x");
+
+    c.clear();
+
+    expect(c.rulerLines()).toEqual({ lines: [], activeIndex: undefined });
+  });
+
+  // #316 D2 / #687: a regex-mode query that fails validation drops the previous query's PAINT
+  // without ending the session. Ruler marks are paint, so they go too — otherwise the box says
+  // "invalid" while the scrollbar still advertises where the old query's hits were.
+  it("drops the lines when an invalid regex drops the paint (#687)", async () => {
+    const port = new StubSearchPort();
+    port.count = 1;
+    port.lines = [7];
+    const c = new SearchController(port, { isValidRegex: (p) => p !== "(" });
+    await c.search("x", { regex: true });
+    expect(c.rulerLines().lines).toEqual([7]);
+
+    await c.search("(", { regex: true });
+
+    expect(c.rulerLines()).toEqual({ lines: [], activeIndex: undefined });
+  });
+
+  // Nothing matched: there is no active index to report and nothing to mark.
+  it("reports no active index when nothing matched", async () => {
+    const port = new StubSearchPort();
+    port.count = 0;
+    port.lines = [];
+    const c = new SearchController(port);
+
+    await c.search("x");
+
+    expect(c.rulerLines()).toEqual({ lines: [], activeIndex: undefined });
+  });
+
+  // The same epoch guard the count and the designation already carry: a slow hand-over resolving
+  // after `clear()` must not re-install lines for a search that no longer exists. Without it the
+  // scrollbar would keep marks for a query the user has left.
+  it("does not install lines from a superseded round-trip", async () => {
+    let release!: (lines: number[]) => void;
+    const port = new StubSearchPort();
+    port.count = 1;
+    port.matchLines = () => new Promise<number[]>((r) => (release = r));
+    const c = new SearchController(port);
+
+    const pending = c.search("x");
+    // Let the hand-over reach `matchLines` before superseding it — a `clear()` issued earlier is a
+    // different (already-covered) path, where the epoch check upstream returns before the pull runs.
+    await new Promise((r) => setTimeout(r, 0));
+    c.clear();
+    release([7]);
+    await pending;
+
+    expect(c.rulerLines()).toEqual({ lines: [], activeIndex: undefined });
+  });
+
+  // The debounced re-search replaces the set, so it replaces the marks — this is the path that
+  // repairs the drift measured in #440 (core drops its held highlights on a coordinate shift and
+  // moves no dating scalar, so nothing else can repair it).
+  it("replaces the lines on a debounced re-search", async () => {
+    const sched = new ManualScheduler();
+    const port = new StubSearchPort();
+    port.count = 2;
+    port.lines = [4, 9];
+    const c = new SearchController(port, { setTimer: sched.setTimer, clearTimer: sched.clearTimer });
+    await c.search("x");
+
+    port.lines = [1, 6];
+    c.onFrame();
+    await sched.flush();
+
+    expect(c.rulerLines().lines).toEqual([1, 6]);
+  });
+});
+
+describe("SearchController — the ruler hand-over must not distort the primary path (#440)", () => {
+  // Lens finding 1. `rulerLines()` is read every frame, so a window where `lines` describes one
+  // result set and `activeIndex` indexes another is painted, not merely held: the ruler shows the
+  // previous query's marks with the emphasis on a line the new query never matched. The sibling
+  // three lines up already has the right shape — `anchoredIndex` is pulled BEFORE the commit and
+  // installed with `total`/`index` in one step.
+  it("never pairs one set's lines with another set's active index", async () => {
+    const sched = new ManualScheduler();
+    const port = new StubSearchPort();
+    port.count = 3;
+    port.lines = [10, 20, 30];
+    const c = new SearchController(port, { setTimer: sched.setTimer, clearTimer: sched.clearTimer });
+    await c.search("x");
+    await c.next(); // emphasis on index 1 of the FIRST set
+    expect(c.rulerLines()).toEqual({ lines: [10, 20, 30], activeIndex: 1 });
+
+    // A re-search whose ruler hand-over is still in flight.
+    let release!: (lines: number[]) => void;
+    port.count = 1;
+    port.matchLines = () => new Promise<readonly number[]>((r) => (release = r));
+    c.onFrame();
+    const settled = sched.flush();
+    await new Promise((r) => setTimeout(r, 0));
+
+    // Mid-flight the controller must still describe ONE set — the old one, whole.
+    expect(c.rulerLines()).toEqual({ lines: [10, 20, 30], activeIndex: 1 });
+
+    release([7]);
+    await settled;
+    // `flush()` fires the debounce and yields one macrotask; the re-search itself is launched as
+    // `void this.reSearch()`, so nothing returns its promise — settle the remaining round trips.
+    await new Promise((r) => setTimeout(r, 0));
+    expect(c.rulerLines()).toEqual({ lines: [7], activeIndex: 0 });
+  });
+
+  // The SAME defect on the new-query path, which the test above does not reach — found by mutating
+  // `search()` and watching that test stay green. Both paths commit the pair, so both need a case.
+  it("never pairs the sets on the new-query path either", async () => {
+    const port = new StubSearchPort();
+    port.count = 3;
+    port.lines = [10, 20, 30];
+    const c = new SearchController(port);
+    await c.search("x");
+    await c.next();
+
+    let release!: (lines: number[]) => void;
+    port.count = 1;
+    port.matchLines = () => new Promise<readonly number[]>((r) => (release = r));
+    const pending = c.search("y");
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(c.rulerLines()).toEqual({ lines: [10, 20, 30], activeIndex: 1 });
+
+    release([7]);
+    await pending;
+    expect(c.rulerLines()).toEqual({ lines: [7], activeIndex: 0 });
+  });
+
+  // Lens finding 2. The port doc promises that a backend which does not implement the hand-over
+  // loses nothing else; a backend that implements it and FAILS must lose no more. Before the fix
+  // the rejection propagated out of `search`, so the match was never scrolled to.
+  it("still navigates when the optional hand-over rejects", async () => {
+    const port = new StubSearchPort();
+    port.count = 2;
+    port.matchLines = () => Promise.reject(new Error("backend gone"));
+    const c = new SearchController(port);
+
+    await c.search("x");
+
+    expect(port.shown).toEqual([0]);
+    expect(c.rulerLines()).toEqual({ lines: [], activeIndex: 0 });
+  });
+
+  // Same, on the re-search path: a rejection there used to escape as an unhandled rejection
+  // through `void this.reSearch()` and take the re-designation (#428/#429) and the label refresh
+  // (#437) with it.
+  it("still re-designates and refreshes the label when the hand-over rejects on a re-search", async () => {
+    const sched = new ManualScheduler();
+    const port = new StubSearchPort();
+    port.count = 2;
+    port.lines = [1, 2];
+    let results = 0;
+    const c = new SearchController(port, {
+      setTimer: sched.setTimer,
+      clearTimer: sched.clearTimer,
+      onResults: () => results++,
+    });
+    await c.search("x");
+
+    port.matchLines = () => Promise.reject(new Error("backend gone"));
+    c.onFrame();
+    await sched.flush();
+
+    expect(port.designated).toEqual([0]);
+    expect(results).toBe(1);
+    expect(c.rulerLines().lines).toEqual([]);
+  });
+});

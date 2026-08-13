@@ -1565,3 +1565,41 @@ arbiter — which is exactly why the negatives are recorded as rows rather than 
 | ⚠ **That formula is not dpr-invariant, and the units are a canvas artefact.** The `[6,12]` clamp is applied to an already-device-px quantity and the result multiplied by `dpr` *again*, so one CSS layout yields a 10 CSS px gutter mark at dpr 1 and 12 at dpr 2. Upstream's own **public** option for this surface is documented "in CSS pixels" — the device px never reaches the API | xterm.js | formula `src/browser/decorations/OverviewRulerRenderer.ts:128`; canvas is device-sized `:153`; public unit `typings/xterm.d.ts:753` |
 | A mark is **centred** on its line (`- drawHeight / 2`), over a track scaled by `canvas.height - 1` *"to ensure at least 2px are allowed for decoration on last line"* | xterm.js | `src/browser/decorations/OverviewRulerRenderer.ts:204`, comment `:203` |
 | ⚠ **Its containment does not transfer to a DOM ruler.** Centring puts the first line's box at a negative `y` and the last line's past `canvas.height`; both are contained only because `ctx.fillRect` is clipped by the backing store. An absolutely-positioned element gets no such clip, and `getBoundingClientRect` reports its box whether an ancestor clips it or not | xterm.js | `src/browser/decorations/OverviewRulerRenderer.ts:198`-`:212` |
+
+## Search on the overview ruler, and how a match position stays valid (#440, verified 2026-08-13)
+
+Two separable questions, and the second one is the reason this section exists: #440 is the first
+feature in this family where the **consumer caches query-derived coordinates across frames**, so the
+lifetime question had to be asked of the references rather than assumed.
+
+### What a search puts on the ruler
+
+| Fact | Reference | Site |
+|---|---|---|
+| Search marks are `position: 'center'` — a **gutter** class — for the active and non-active alike; only the colour differs | xterm.js | `addons/addon-search/src/DecorationManager.ts:140`-`:143` |
+| **At most one ruler mark per buffer LINE**: the mark is suppressed when the line already carries one, tracked in a `Set` cleared with the decorations. This is the same cardinality ADR-0024 R1 already states, arrived at independently | xterm.js | set `:33`; cleared `:78`; populated `:87`; suppression `:140` |
+| ⚠ **The active match's ruler mark is therefore suppressed in the normal flow.** Every result is decorated plain *first* (`createHighlightDecorations`, which is the only caller of `_storeDecoration`), and the active decoration is created *after*, from a path that never populates the set — so by then its line is already marked. `activeMatchColorOverviewRuler` is a **required** option whose colour upstream's own flow does not paint | xterm.js | plain pass `:44`-`:56`; active pass `:64`-`:70`; required option `addons/addon-search/typings/addon-search.d.ts:75` |
+| A wrapped match registers a marker + decoration **per covered row**, so it feeds a mark on every row it touches | xterm.js | `addons/addon-search/src/DecorationManager.ts:120`-`:133` |
+| The whole search is capped at `highlightLimit` (default **1000**) by breaking the find loop, so upstream's *count* is capped too — it never has justerm's "full count, capped highlights" split, and therefore never has to decide whether the ruler marks the capped set or the full one | xterm.js | break `addons/addon-search/src/SearchAddon.ts:140`; default `:30` |
+
+### How a match position survives a buffer mutation — 3–0, and nobody holds a raw coordinate
+
+The question justerm has and no reference does. All three keep positions **live**; the mechanisms
+differ, and every one of them needs a live reference *into the buffer* — a marker object, a pin, or
+the buffer itself. A frame-mode consumer across a process boundary has none, which is ADR-0018/0020's
+deliberate trade rather than a gap. So this row set **cannot arbitrate** justerm's design; it is
+recorded because the decision it bears on was taken without it.
+
+| Fact | Reference | Site |
+|---|---|---|
+| Search decorations ride **markers the Buffer moves in place**, so a decoration's line is never stale; the result *set* is separately re-found on a **200 ms** debounce after `onWriteParsed` / `onResize` — the same interval justerm's `SearchController` uses | xterm.js | listeners `addons/addon-search/src/SearchAddon.ts:65`-`:66`; debounce `:70`-`:79` |
+| **Stores no match coordinates at all** — the regex is re-run over the *visible* region inside `RenderableContent::new`, which `draw` constructs every frame. What survives a frame is the compiled `dfas` and the focused match, not a list of positions | alacritty | `alacritty/src/display/mod.rs:775` (`draw`), `:784`; `display/content.rs:47`, `:525` |
+| **Tracked pin**, maintained by the `PageList` itself — the search iterator holds `list.trackPin(...)` and the comment states the guarantee: *"if the pagelist prunes pages, the tracked pin will be moved somewhere safe"* | ghostty | `src/terminal/search/pagelist.zig:54`-`:62` |
+
+**Measured on our side, for the same question** (probe, 2026-08-13, recorded in #440): a region scroll
+(SU/SD/IL/DL/RI) invalidates the held search highlights while **neither** `evicted_total` **nor**
+`marker_epoch` moves, so the shift is not observable by a consumer holding match lines. `marker_epoch`
+is gated on a *surviving marker* having moved (`markers.rs`, `markers_rotate_region`) — with no markers
+in the buffer it never moves at all, and with markers present the same scroll moves it. It therefore
+answers *"did a marker move"*, not *"did a coordinate shift"*, and must not be read as the latter.
+Only **on-screen** matches actually move; scrollback matches keep their absolute index exactly.

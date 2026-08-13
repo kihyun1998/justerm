@@ -88,6 +88,7 @@ type AsyncProbe =
   | "__disposeProbe"
   | "__rulerAnchorProbe"
   | "__rulerLayerProbe"
+  | "__searchRulerProbe"
   | "__textBlinkProbe";
 
 /**
@@ -1404,6 +1405,43 @@ test("a full-width ruler mark is layered above a gutter mark in the DOM (#498)",
 // their centres differ; centred, their centres coincide and their tops differ. The previous
 // assertion pins the second half; this pins the first, against the ratio the projection was given
 // rather than against the elements themselves.
+// #440: the overview ruler now has TWO mark sources, and the rule that orders them across the join
+// (`composeRulerMarks`) is exactly the kind no unit test can observe — array order becomes paint
+// order only in a browser, and vitest's `node` environment has no layout. The sibling probe above
+// proves the decoration source; this one runs a real query through the controller and the port, so
+// it proves the source that did not exist before and the join that now carries both.
+//
+// The discriminating shape: the decorations are registered BEFORE the search hands over, and the
+// `full` one is registered FIRST. Appending source-by-source would put the full mark at the front;
+// appending in registration order would put it in the middle. Only re-partitioning by class puts it
+// last, which is what ADR-0024 R3 requires and what the assertion pins.
+test("a search mark joins the ruler above the gutter decorations and below the full one (#440)", async ({
+  page,
+}) => {
+  await expect(page.getByRole("button", { name: "Decorate line: OFF" })).toBeVisible();
+
+  const p = await readAsyncProbe(page, "__searchRulerProbe");
+
+  // The query has to have matched, or every ordering claim below is vacuous — the same trap the
+  // probe pads scrollback to avoid for the track's box.
+  expect(p.searchMarkCount).toBeGreaterThan(0);
+
+  const decoCentre = p.backgrounds.indexOf(p.decorationCenter);
+  const decoFull = p.backgrounds.indexOf(p.decorationFull);
+  const firstSearch = p.backgrounds.findIndex(
+    (bg) => bg !== p.decorationCenter && bg !== p.decorationFull,
+  );
+  expect(decoCentre).toBeGreaterThanOrEqual(0);
+  expect(decoFull).toBeGreaterThanOrEqual(0);
+
+  // Within the gutter class: decoration marks, then search marks (the search set is the most recent
+  // statement the consumer made — R3's second key, which has no meaning for a match).
+  expect(decoCentre).toBeLessThan(firstSearch);
+  // Across classes: the `full` mark paints above every gutter mark, from either source.
+  expect(decoFull).toBeGreaterThan(firstSearch);
+  expect(decoFull).toBe(p.backgrounds.length - 1);
+});
+
 test("a ruler mark is centred on its line and the track clips the overhang (#500 §3)", async ({ page }) => {
   await expect(page.getByRole("button", { name: "Decorate line: OFF" })).toBeVisible();
 

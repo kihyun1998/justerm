@@ -33,7 +33,7 @@ import {
   TERSE_ANNOUNCE_TEXT,
   VERBOSE_ANNOUNCE_TEXT,
 } from "../src/index";
-import { FitController, observeResize } from "../src/index";
+import { FitController, composeRulerMarks, observeResize, searchRulerMarks } from "../src/index";
 import type { AccessiblePort, SignalSink } from "../src/index";
 import type {
   CellGeometry,
@@ -904,6 +904,15 @@ const maxOffset = (): number => Math.max(0, log.length - ROWS);
 const engine = new FakeSelectionEngine(() => log, viewTop, () => ROWS);
 const searchEngine = new FakeSearchEngine();
 
+// #440: the overview ruler's search half. The colours are the CONSUMER's (ADR-0017) — a real host
+// resolves them from its theme beside `matchBackground`; the demo picks two that read against the
+// scrollbar track. Amber for a line carrying matches, salmon for the line the emphasis is on.
+const SEARCH_RULER = { matchColor: 0xe5c07b, activeMatchColor: 0xe06c75 };
+// The controller is constructed far below (it awaits the wasm regex validator), while `render` is
+// callable before that — so the ruler reads through a holder rather than the binding, which would
+// be in its temporal dead zone on the first frames.
+let searchRulerLines: (() => { lines: readonly number[]; activeIndex: number | undefined }) | undefined;
+
 // `out` set = an incremental output frame (Partial). `scrollCount > 0` only when
 // the buffer is full and content actually scrolled off the top — sending a
 // phantom scroll while the screen is still filling shifts the mirror wrongly
@@ -1030,7 +1039,17 @@ function render(out?: { scrollCount: number }): void {
   // #490: adopt the frame's basis before projecting — `lineOf` rebases against it, and a
   // changed epoch is what makes the index re-pull.
   markerIndex.sync(frame);
-  bar.setMarks(decorations.rulerMarksForFrame(frame)); // #120 S3: overview-ruler marks
+  // #120 S3 + #440: TWO mark sources — marker-anchored decorations and search matches — joined by
+  // the library, never concatenated here. `composeRulerMarks` owns ADR-0024 R3's total order (class
+  // partition first, then source rank); a host doing that join itself re-derives the rule per host,
+  // and no unit test can see a violation because vitest has no layout — only `__rulerLayerProbe`.
+  const searchRuler = searchRulerLines?.() ?? { lines: [], activeIndex: undefined };
+  bar.setMarks(
+    composeRulerMarks(
+      decorations.rulerMarksForFrame(frame),
+      searchRulerMarks(searchRuler.lines, searchRuler.activeIndex, frame, SEARCH_RULER),
+    ),
+  );
   updateLinks();
 }
 
@@ -1218,6 +1237,10 @@ const searchPort: SearchPort = {
   // different piece of text whenever output shifts the set, and every keystroke
   // re-lands on match 0.
   anchoredIndex: async () => searchEngine.anchoredIndex(),
+  // #440: every match's absolute buffer line for the overview ruler — the PRE-cap set (this fake
+  // caps nothing, which is what the ruler wants: it is a whole-buffer distribution view, unlike
+  // the viewport-only `matchSpans` above).
+  matchLines: async () => searchEngine.matchLines(),
   // Drop the paint but keep the session (#687): the invalid-regex path (#316 D2)
   // needs the screen to stop showing a rejected query's matches, and typing `(`
   // in regex mode is not the user leaving the search box. The anchor survives,
@@ -1238,7 +1261,7 @@ const searchPort: SearchPort = {
 // an invalid regex-mode query as-you-type rather than showing a silent 0 matches.
 // JS `RegExp` can't stand in: its grammar differs from core's `regex` crate.
 const { isValidRegex } = await import("justerm-wasm-decode");
-const search = new SearchController(searchPort, {
+const search: SearchController = new SearchController(searchPort, {
   isValidRegex,
   // The debounced re-search moves the CURRENT index too, not just the total
   // (#437) — so the label has to refresh here or it shows the ordinal from
@@ -1247,6 +1270,7 @@ const search = new SearchController(searchPort, {
   // re-search is exactly the spam that gate exists to prevent.
   onResults: () => updateCountLabel(),
 });
+searchRulerLines = () => search.rulerLines(); // #440: the ruler can read the set from here on
 
 const box = document.createElement("div");
 box.style.cssText =
@@ -1453,6 +1477,17 @@ interface PrecedenceProbe {
  * instead of hanging below it. Neither claim can be checked against a mark rect alone — "centred"
  * is a statement about the mark's position *within the track*, so the track's own box has to come
  * back with them. */
+/** #440 — the two-source join, read off the real DOM. `backgrounds` is paint order (the array
+ * `setMarks` was handed, one div per mark, no `z-index`), so the whole of `composeRulerMarks`'
+ * claim is an ordering assertion over it: every gutter mark — decoration ones first, then the
+ * search ones — and every `full` mark last, whatever registration order said. */
+interface SearchRulerProbe {
+  backgrounds: string[];
+  searchMarkCount: number;
+  decorationCenter: string;
+  decorationFull: string;
+}
+
 interface RulerLayerProbe {
   marks: { background: string; left: number; right: number; top: number; bottom: number }[];
   /** The track the marks are laid out in. `overflow` is read from the computed style rather than
@@ -1509,6 +1544,7 @@ declare global {
     __searchProbe?: () => SearchProbe;
     __contextLossProbe?: () => Promise<ContextLossProbe>;
     __rulerLayerProbe?: () => Promise<RulerLayerProbe>;
+    __searchRulerProbe?: () => Promise<SearchRulerProbe>;
     __decorationProbe?: () => DecorationProbe;
     __precedenceProbe?: () => PrecedenceProbe;
     __cursorBlinkProbe?: () => Promise<CursorBlinkProbe>;
@@ -3024,6 +3060,52 @@ window.__rulerLayerProbe = async (): Promise<RulerLayerProbe> => {
   displayOffset = savedOffset;
   render();
   return { marks, track: trackInfo, ratio };
+};
+// #440: the search source reaching the real track, and the join's order surviving the trip. The
+// sibling probe above proves the DECORATION source only — it runs no query — so without this the
+// second source has array-level unit tests and no browser proof at all, which is the shape
+// `composeRulerMarks`' own doc-comment argues is unacceptable for the ordering rule.
+window.__searchRulerProbe = async (): Promise<SearchRulerProbe> => {
+  if (lineDecoration) {
+    lineDecoration.dispose();
+    lineDecoration = undefined;
+    decorationBuffer = undefined;
+    decoBtn.textContent = "Decorate line: OFF";
+  }
+  // A hidden track lays its marks out at zero size, which makes any claim about them vacuous.
+  const savedLen = log.length;
+  const savedOffset = displayOffset;
+  while (maxOffset() < 3) log.push(`search-ruler pad ${log.length}`);
+  const [a, b] = PRECEDENCE_MARKER_IDS;
+  precedenceLine = viewTop() + DECO_ROW;
+  // Registered full-FIRST, gutter-SECOND, and the search marks arrive LAST of all three sources —
+  // so DOM order can only come out right if the join re-partitions by class rather than appending.
+  const full = decorations.register({ markerId: a, overviewRulerOptions: { color: 0xaa0000 } });
+  const gutter = decorations.register({
+    markerId: b,
+    overviewRulerOptions: { color: 0x00aa00, position: "left" },
+  });
+  await search.search("select"); // a real hand-over through the port, not a synthesised set
+  render();
+  // #490: the marker index answers a pull, so the anchors just created are one microtask away.
+  await new Promise((r) => setTimeout(r, 0));
+  render();
+  const track = (bar as unknown as { track: HTMLDivElement }).track;
+  const els = [...track.querySelectorAll<HTMLElement>("[data-ruler-mark]")];
+  const decorationCenter = "rgb(0, 170, 0)";
+  const decorationFull = "rgb(170, 0, 0)";
+  const backgrounds = els.map((el) => el.style.background);
+  const searchMarkCount = backgrounds.filter(
+    (bg) => bg !== decorationCenter && bg !== decorationFull,
+  ).length;
+  search.clear();
+  full.dispose();
+  gutter.dispose();
+  precedenceLine = undefined;
+  log.length = savedLen;
+  displayOffset = savedOffset;
+  render();
+  return { backgrounds, searchMarkCount, decorationCenter, decorationFull };
 };
 window.__precedenceProbe = (): PrecedenceProbe => {
   // #458: precedence between decorations on DIFFERENT markers is REGISTRATION order — the last
