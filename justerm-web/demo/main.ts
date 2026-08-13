@@ -1486,6 +1486,14 @@ interface SearchRulerProbe {
   searchMarkCount: number;
   decorationCenter: string;
   decorationFull: string;
+  /** #440 element reuse: the horizontal properties of a `full` mark's element after the SAME
+   * element has been reused for a `left` gutter mark. The three position classes set different
+   * keys, so a stale `right` is what a reused element carries if nothing resets it — and it would
+   * make the mark span the track instead of a third of it. */
+  reusedAsLeft: { left: string; right: string; width: string };
+  /** Marks still attached after `setMarks([])` — a pool that is not trimmed keeps painting the
+   * previous frame's tail. */
+  afterEmpty: number;
 }
 
 interface RulerLayerProbe {
@@ -3098,6 +3106,19 @@ window.__searchRulerProbe = async (): Promise<SearchRulerProbe> => {
   const searchMarkCount = backgrounds.filter(
     (bg) => bg !== decorationCenter && bg !== decorationFull,
   ).length;
+  // #440: the pool is reused across calls, so drive the two transitions that reuse makes reachable
+  // and re-creation did not. Done here rather than in a unit test because vitest runs in a `node`
+  // environment and neither claim exists without a layout engine.
+  bar.setMarks([{ topRatio: 0.5, color: 0x123456, position: "full" }]);
+  bar.setMarks([{ topRatio: 0.5, color: 0x123456, position: "left" }]);
+  const reusedEl = track.querySelector<HTMLElement>("[data-ruler-mark]")!;
+  const reusedAsLeft = {
+    left: reusedEl.style.left,
+    right: reusedEl.style.right,
+    width: reusedEl.style.width,
+  };
+  bar.setMarks([]);
+  const afterEmpty = track.querySelectorAll("[data-ruler-mark]").length;
   search.clear();
   full.dispose();
   gutter.dispose();
@@ -3105,7 +3126,7 @@ window.__searchRulerProbe = async (): Promise<SearchRulerProbe> => {
   log.length = savedLen;
   displayOffset = savedOffset;
   render();
-  return { backgrounds, searchMarkCount, decorationCenter, decorationFull };
+  return { backgrounds, searchMarkCount, decorationCenter, decorationFull, reusedAsLeft, afterEmpty };
 };
 window.__precedenceProbe = (): PrecedenceProbe => {
   // #458: precedence between decorations on DIFFERENT markers is REGISTRATION order — the last

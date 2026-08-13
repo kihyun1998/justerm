@@ -1440,6 +1440,12 @@ test("a search mark joins the ruler above the gutter decorations and below the f
   // Across classes: the `full` mark paints above every gutter mark, from either source.
   expect(decoFull).toBeGreaterThan(firstSearch);
   expect(decoFull).toBe(p.backgrounds.length - 1);
+
+  // #440: `setMarks` reuses its elements (re-creating them cost ~18 us per mark — 18 ms for 1000,
+  // a whole 60 Hz frame for one call). Reuse makes two states reachable that re-creation could not:
+  // a stale horizontal property from the previous mark's position class, and an untrimmed tail.
+  expect(p.reusedAsLeft).toEqual({ left: "0px", right: "", width: "33%" });
+  expect(p.afterEmpty).toBe(0);
 });
 
 test("a ruler mark is centred on its line and the track clips the overhang (#500 §3)", async ({ page }) => {
