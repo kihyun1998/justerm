@@ -103,8 +103,13 @@ fix mentions a shared rule.
 
 ## Where it will recur
 
-- **Any new pointer affordance** — hover, link click, per-decoration hit-testing (#502), a
-  context-menu target. The demo already carries an unbounded fourth converter
+- **Any new pointer affordance** — hover, link click, a context-menu target. ~~per-decoration
+  hit-testing (#502)~~ — **retired 2026-08-18, not deleted, because the reasoning is the reusable
+  part.** Hit-testing a decoration presumes a decoration *object* to hit; ADR-0024 R1 is now
+  unconditional that there is none (#502 closed as won't-do, its alternative (F)). So this was never
+  a queued affordance — it was an affordance that depended on a model question, and the question
+  resolved the other way. The rest of the bullet is unaffected: hover and link click are live and
+  need no object. The demo already carries an unbounded fourth converter
   (`demo/main.ts` `cellFromEvent`, feeding `LinkController`); it is inert because an out-of-range
   coordinate simply misses the link map, and it is listed here so the next reader does not have to
   re-derive that.

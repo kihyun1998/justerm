@@ -383,8 +383,10 @@ pub fn pack_instances(
                 // decoration *elements* (`css/xterm.css:194-201`, z-index 6 / 7 over the screen) can
                 // cover a glyph, but xterm never styles them — a consumer does, in `onRender`, and they
                 // are registered for every renderer (`CoreBrowserTerminal.ts:617`), so they are a
-                // separate feature justerm has no equivalent of (#502), not a second xterm answer to
-                // this question. What xterm genuinely leaves undefined is only the *interaction*:
+                // separate feature justerm has no equivalent of, not a second xterm answer to
+                // this question. That is settled rather than incidental: ADR-0024 R1 states "colours
+                // + a mark, not an object" without a condition (#502, 2026-08-18), so no future
+                // slice can turn xterm's element path into an answer here. What xterm genuinely leaves undefined is only the *interaction*:
                 // `layer` is documented purely against the selection (`typings/xterm.d.ts:688-692`,
                 // whose `*` footnote has no text), never against glyphs.
                 //

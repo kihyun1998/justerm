@@ -1,6 +1,11 @@
 # ADR-0024: A decoration is colours plus a mark, and its projection rules follow from having no object
 
-Status: **proposed** (2026-07-21). Records the consumer-side decoration model implemented across
+Status: **accepted** (2026-08-18, #502; proposed 2026-07-21) — **R1 resolved on acceptance**: the
+clause that deferred "is there a declarative border?" to #502 is gone, and "colours + a mark" is now
+stated without a condition. This ADR sat at *proposed* for four weeks because it named three open
+cluster items (#454, #500, #502) and carried the third inside a rule; the first two resolved into it
+(see the amendments below) and the third is answered in *Alternatives considered* (E). Records the
+consumer-side decoration model implemented across
 #120/#198/#202/#457/#458/#459/#461/#463/#480/#498. Scoped to **span projection and precedence** — the
 axis ADR-0019 explicitly put out of its own scope ("consumer policy under ADR-0017"). What a projected
 rect then *composites to* is ADR-0019; ADR-0017 says only that this is the consumer's call, not what the
@@ -21,17 +26,19 @@ that has only one path.
 
 The decisions have accumulated one issue at a time — precedence (#458), ruler layering (#498), anchor
 semantics (#459), above-viewport anchors (#461), clamping (#463), buffer-anchored ruler marks (#480) —
-and live in `justerm-web/src/decorations.ts` doc-comments. The cluster is still open (#454 wide-char
-snapping, #500 ruler mark fidelity, #502 the render hook), which is the same shape ADR-0019 was written
-for one layer down.
+and live in `justerm-web/src/decorations.ts` doc-comments. The cluster was open at proposal (#454
+wide-char snapping, #500 ruler mark fidelity, #502 the render hook), which is the same shape ADR-0019
+was written for one layer down. **All three are closed as of acceptance**, and none of them resolved
+the way this ADR predicted — the scoring is in *Consequences*.
 
 ## Decision
 
 **R1 — A decoration is colours + a mark, not an object.** It projects to per-cell colour overrides and
 at most one ruler mark per covered line. Anything a consumer would express by styling an element
-(borders, outlines, per-decoration opacity, classes, transitions) has no expression, by construction.
-#502 holds the open question of whether to add a declarative border; until it is answered, "no object" is
-the model.
+(borders, outlines, per-decoration opacity, classes, transitions) has no expression, by construction —
+the model is not a styling system that happens to be small. A border is not a deferred field; adding
+one later is an amendment to this rule, and *Alternatives considered* (E) records what it would have
+to answer.
 
 **R2 — Cell precedence is registration order, across markers.** Where two decorations set the same
 property on the same cell, the later-registered one wins, whichever markers they anchor to. It is
@@ -122,6 +129,16 @@ ruler position is xterm's too (`DecorationService.ts:376-378`).
   correction is not to the classifications but to the assumption behind them — that each open issue
   maps to **one** rule. Neither of the two did. A third, #502, is still filed against R1 alone; treat
   that as unverified.)*
+  *(Scored again 2026-08-18 on the third and last one, and it is now **0 for 3** in the same
+  direction. #502 was not "filed against R1 alone" — it was two questions wearing one title, and only
+  one of them is on this axis at all. The half that reaches R1 is a border on a **decoration**, whose
+  producer is the consumer's `DecorationRect`; the half the issue actually argued from is a border on
+  a **search match**, whose producer is core's `match_spans` and which never enters `decorations.ts`
+  — it rides the overlay channel (`setOverlay` / `setActiveMatch`, `justerm-renderer` `overlay.rs`
+  `HighlightKind`). So the naming is now earned rather than observed three times: **every open item in
+  this cluster turned out to be sorted by its span's PRODUCER, and this ADR governs exactly one
+  producer.** #454's amendment below said it first as a negative result; #502 is its second instance,
+  which is why that sentence is promoted out of the amendment and into R1's own scope.)*
 - **#454 was asked of the model and the model did not answer it — amendment, 2026-08-10.** The
   question turned out not to be R1/R2-level at all, and the mis-classification is the useful part:
   this ADR is scoped to the *consumer's* projection, and a decoration rect is only one of three
@@ -189,6 +206,34 @@ ruler position is xterm's too (`DecorationService.ts:376-378`).
 - **(D) Leave it in doc-comments (status quo).** Rejected on the same evidence as ADR-0019: nine issues,
   one axis, three still open, and the file's own comments already carry three declared divergences whose
   grounds nobody had checked against source until this ADR was written.
+- **(E) Add a declarative border to `DecorationRect` (#502, decided 2026-08-18).** Rejected — and
+  the grounds are measured, because the reference argument this had been resting on does not survive
+  being checked:
+  - **Upstream declares the option and nobody sets it.** `matchBorder` / `activeMatchBorder` are
+    *optional* in `ISearchDecorationOptions` (only the two ruler colours are required), applied as
+    `element.style.outline = '1px solid …'` in `DecorationManager._applyStyles`. Across the whole
+    xterm.js tree at the pinned SHA (`699f553`), **zero** call sites set either — demo, tests and
+    addons included. And **penterm**, this family's one real consumer, ships `@xterm/addon-search`
+    today and passes no `decorations` options at all. So "xterm has it" cannot erect the feature: by
+    this repo's own test, delete the reference from the sentence and nothing is left standing.
+  - **The border's one irreducible job is separating adjacent same-kind spans** — two touching
+    matches share `matchBg` and read as one block. Recorded so it is not rediscovered as "borders
+    duplicate the background colours", which is the wrong summary. It is answered elsewhere: the
+    search UI carries the count, and the *active* match has its own colour, so which-one-is-current
+    is never the ambiguous part.
+  - **R2 does not extend to it.** "Later-registered wins, per property" is well-defined for a colour
+    because the winner is one value; two overlapping bordered decorations are two boxes, not one
+    winner, so (E) would force a precedence rule to be invented with no consumer to check it
+    against. That is the cost this ADR would actually pay, and it is larger than the wire field.
+  - **The cheap-now argument is real and is still not a reason.** Widening the instance record before
+    #287's hoist is a single-grid change and afterwards touches a global resource N grids depend on
+    (#287, 2026-07-22) — but free ordering prices a build, it does not motivate one. #513 and #455
+    took that ordering because each fixed a live defect; a border has none.
+
+  **(F) An overlay-element seam** (per-decoration DOM, xterm's actual mechanism) is rejected a layer
+  up: it falsifies R4's premise — `anchor` moves the colour span *because* there is no element to
+  position — so it is not a cost line but a reopening of a decided divergence. ADR-0021's shared
+  z-plane pays part of its DOM cost, which is why this is recorded rather than dismissed.
 
 ## Out of scope
 
@@ -203,3 +248,13 @@ ruler position is xterm's too (`DecorationService.ts:376-378`).
   Consequences above. What genuinely stays out of scope is the pixel arithmetic itself — which CSS
   property expresses the centring, what the track clips with — since that is `scrollbar.ts`'s business
   and no rule here decides it.
+- **A border on a span this ADR does not produce (2026-08-18, #502's other half).** Alternative (E)
+  above rejects a border on a *decoration*. It says nothing about a border on a **selection or a
+  search match**, and deliberately cannot: those spans are core's (`Term::selection_range`,
+  `Term::match_spans`), they reach the screen through the overlay channel, and their kinds are ranked
+  in `justerm-renderer` `overlay.rs` — not one of them passes through `decorations.ts` or through any
+  rule here. If that border is ever wanted it is a renderer channel scalar beside `setActiveMatch`,
+  decided on ADR-0019's axis, and the shader already carries the primitive it would need (`hline`
+  and `u_line_thickness`, the underline/strikethrough band). **No issue tracks it**, on purpose:
+  nothing asks for it today, and this paragraph exists so the next reader routes it in one step
+  instead of re-deriving the producer split that #454 and #502 each cost a pass to find.
