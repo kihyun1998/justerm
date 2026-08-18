@@ -19,7 +19,8 @@ nothing implementing it.
 
 ## Design model
 
-Everything below is **designed and not built** — read ADR-0021 for the authoritative form.
+**The tier split is built (#769); everything else below is designed and not built** — read ADR-0021
+for the authoritative form, and `## Code` for what exists today.
 
 - **One context, N viewports**, with per-grid `scissor` + `viewport` rectangles rather than per-grid
   contexts. The browser's context cap is the forcing constraint.

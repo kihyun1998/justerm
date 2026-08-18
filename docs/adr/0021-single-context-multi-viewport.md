@@ -3,8 +3,10 @@
 Status: **accepted** (2026-08-18, #768; direction accepted 2026-07-22, decided 2026-07-07 in #287,
 recorded here 2026-07-21 with its citations verified). Scoped to **renderer resource ownership** and the
 widget/canvas relationship; it does not change the core boundary (ADR-0017) or cell composition
-(ADR-0019). Implementation is Epic #287, sliced as #768–#776; **not started** and no longer gated
-(#287's blocker was the single-grid renderer #258, which shipped).
+(ADR-0019). Implementation is Epic #287, sliced as #768–#776, and **how far it has got is the
+tracker's answer, not this line's** — the sub-issue list on #287 moves on its own and a status
+restated here does not (this sentence read *"not started"* until #769 falsified it one merge later).
+No longer gated: #287's blocker was the single-grid renderer #258, which shipped.
 
 **Amended 2026-08-18 (#768), in two places, and the second is the one a later reader must not skim
 past.**
