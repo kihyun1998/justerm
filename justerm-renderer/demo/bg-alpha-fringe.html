@@ -1,0 +1,135 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>justerm-renderer proof — #317 §2 no background in a translucent cell's colour</title>
+<style>
+  body { margin: 0; background: #000; }
+  #c { display: block; image-rendering: pixelated; }
+</style>
+<!--
+  #317 §2. The sibling of `bg-alpha.html`, which asserts the ALPHA channel and only that — so the
+  COLOUR channel had no proof at all, and the defect this page pins lived there.
+
+  A cell's colour and its alpha describe the same surface, so they must agree (ADR-0019, Coherence).
+  They did not: the shader mixed the colour toward `base_bg` with weight `1 - coverage` while the
+  alpha said that background was only `u_bg_alpha` present. At `u_bg_alpha = 0` an antialiased edge
+  came out as half background — a colour the user had asked to be fully transparent.
+
+  Three regimes, because one of them alone is not a proof:
+
+    - `bg_alpha = 0` — a fully transparent background can contribute NOTHING, so every pixel with
+      any alpha is exactly the foreground. This is the check the old shader fails.
+    - `bg_alpha = 0.5` — the formula itself, per pixel, derived from that pixel's OWN alpha. This is
+      what separates a correct composite from "ignore the background": straight-alpha source-over of
+      opaque ink over a background of opacity A is `a = 1 - w(1-A)` and `rgb = (ink + bg*A*w)/a`, so
+      a glyph-only pixel with measured alpha `a` at `A = 0.5` must read `(fg*(2a-1) + bg*(1-a))/a`.
+    - `bg_alpha = 1` — the CONTROL. Edge pixels here still blend toward the background, and must.
+      Without it, a "fix" that emitted the foreground unconditionally would satisfy both checks above.
+
+  **Font size 40, and that is load-bearing.** At the default 16 this fixture has ZERO partial-coverage
+  pixels at dpr 1, 1.1 and 1.5 (measured) — every lit pixel is fully opaque, so a colour assertion
+  would pass vacuously at three of the four ratios the runner sweeps. `windowExists` asserts the
+  partial-coverage window is non-empty before anything is concluded from it.
+
+  Build: wasm-pack build --target web --dev --out-dir pkg
+-->
+<canvas id="c" width="64" height="64"></canvas>
+<script type="module">
+  import init, { JustermRenderer } from "../pkg/justerm_renderer.js";
+  import { readCells } from "./proof.js";
+  // White on blue: separated on all three channels, so a background leak cannot hide in one of them.
+  const FG = 0xffffff, BG = 0x3060a0;
+  const FG_RGB = [0xff, 0xff, 0xff], BG_RGB = [0x30, 0x60, 0xa0];
+  await init();
+
+  const r = new JustermRenderer("#c", new Uint32Array(256), FG, BG);
+  r.setFontSize(40); // see the note above — the default size has no antialiased pixels to read
+  r.resize(1, 1);
+  const gl = document.querySelector("#c").getContext("webgl2");
+
+  // One cell holding 'A' — diagonals, so the edge is antialiased in both axes. Colour refs are all
+  // Default (0), which is what makes the background the translucent backdrop rather than content.
+  const zero = new Uint32Array(1);
+  const apply = () => r.apply_frame(1, 1, zero, zero, new Uint32Array([0x41]), new Uint16Array(1), true);
+
+  /** Every pixel of the cell with a non-zero alpha, as `{ r, g, b, a }`. */
+  function inkPixels(alpha) {
+    r.setBgAlpha(alpha);
+    apply();
+    r.render();
+    const { buf } = readCells(gl, r, 0);
+    const out = [];
+    for (let i = 0; i < buf.length; i += 4) {
+      if (buf[i + 3] > 0) out.push({ r: buf[i], g: buf[i + 1], b: buf[i + 2], a: buf[i + 3] });
+    }
+    return out;
+  }
+
+  const isFg = (p) => p.r === FG_RGB[0] && p.g === FG_RGB[1] && p.b === FG_RGB[2];
+
+  /**
+   * How far a pixel sits off the straight line from the background colour to the foreground.
+   *
+   * On an OPAQUE background every correct answer is a convex combination of the two, so this is 0
+   * for all of them and non-zero for a composite that mixes in a third colour. Asserting merely
+   * "some pixel is not the foreground" is too weak to be a control: a shader that dropped the
+   * background term entirely fringes toward BLACK, which is also "not the foreground" — measured,
+   * as the mutation that first passed this check.
+   */
+  function offSegment(p) {
+    const t = (p.r - BG_RGB[0]) / (FG_RGB[0] - BG_RGB[0]); // solve on red, verify on green + blue
+    return Math.max(
+      Math.abs(p.g - (BG_RGB[1] + t * (FG_RGB[1] - BG_RGB[1]))),
+      Math.abs(p.b - (BG_RGB[2] + t * (FG_RGB[2] - BG_RGB[2]))),
+    );
+  }
+
+  const transparent = inkPixels(0);
+  const half = inkPixels(0.5);
+  const opaque = inkPixels(1);
+
+  // The window this proof reads: pixels the rasteriser only partly covered. Everything below is
+  // vacuous without it, which is exactly what happens at the default font size.
+  const partial = transparent.filter((p) => p.a < 255).length;
+
+  // At A = 0.5 a glyph-only pixel's own alpha determines its colour: a = 1 - w/2 ⇒ w = 2(1-a),
+  // ink = fg(1-w), so rgb = (fg(2a-1) + bg(1-a)) / a. Tolerance 3/255 covers byte quantisation and
+  // the shader's `mediump`.
+  const halfWorst = half.reduce((worst, p) => {
+    const a = p.a / 255;
+    const expect = [0, 1, 2].map((k) => (FG_RGB[k] * (2 * a - 1) + BG_RGB[k] * (1 - a)) / a);
+    const dev = Math.max(...[p.r, p.g, p.b].map((v, k) => Math.abs(v - expect[k])));
+    return Math.max(worst, dev);
+  }, 0);
+
+  window.__proof = {
+    dpr: window.devicePixelRatio,
+    deviceCell: [r.cell_width(), r.cell_height()],
+    counts: { transparent: transparent.length, partial, half: half.length, opaque: opaque.length },
+    halfWorst,
+    opaqueBlended: opaque.filter((p) => !isFg(p)).length,
+    opaqueOffSegment: Math.max(0, ...opaque.map(offSegment)),
+    checks: {
+      // The precondition. Without partial coverage there is no fringe to have, and every check
+      // below passes on any shader whatsoever.
+      windowExists: partial > 0,
+      // #317 §2: a fully transparent background contributes nothing to the colour. Red on the old
+      // shader, where an edge pixel read `mix(bg, fg, coverage)` — measured 35 of 174 pixels correct
+      // at dpr 2 before the fix, 174 of 174 after.
+      fullyTransparentBgLeavesOnlyInk: transparent.length > 0 && transparent.every(isFg),
+      // The formula, pinned per pixel against that pixel's own alpha.
+      halfTranslucentMatchesSourceOver: half.length > 0 && halfWorst <= 3,
+      // CONTROL. On an opaque background the edge still blends, and blends toward THE BACKGROUND —
+      // every pixel is a convex combination of the two colours. Two failures it has to separate: a
+      // shader answering `fg` everywhere (no blend at all) and one that drops the background term
+      // (blends toward black). The weaker form of this check, "some pixel is not the foreground",
+      // passed the second one — it is in this file because a mutation got through it.
+      opaqueStillBlendsTowardTheBackground:
+        opaque.some((p) => !isFg(p)) && opaque.every((p) => offSegment(p) <= 3),
+      // CONTROL. The alpha channel is untouched by this fix: the translucent case still carries a
+      // partial-alpha ramp rather than being flattened to opaque.
+      alphaRampSurvives: transparent.some((p) => p.a > 0 && p.a < 255),
+    },
+  };
+  window.__proof.ok = Object.values(window.__proof.checks).every(Boolean);
+  window.__done = true;
+</script>
