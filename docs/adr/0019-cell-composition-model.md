@@ -1,6 +1,13 @@
 # ADR-0019: The cell composition model — a layered, per-channel, total resolution
 
-Status: accepted (2026-07-21) — **amended 2026-08-04** (#712): rule 4 enumerated the ink sources and
+Status: accepted (2026-07-21) — **amended 2026-08-18** (#317 §2): **R1.1** answers whether a
+background-class glyph goes translucent with the background it joins. It does not, and the reason is
+that `u_bg_alpha` is not a layer — translucency is gated on *no* layer having touched the bg, so at
+that moment R1 has no treatment to transfer. Recorded because until now the answer lived only in a
+shader comment, while R1's own wording read the other way. Same amendment carries the Coherence
+clause's reach: a cell's colour and its **alpha** describe one surface, and the shader had them
+disagreeing on every antialiased edge of a translucent cell.
+ — **amended 2026-08-04** (#712): rule 4 enumerated the ink sources and
 gave each a class, but never said what happens where **two of them claim the same pixel**. Occlusion was
 decided by the order the shader happened to composite in — an accident of the fold, which is exactly what
 Totality forbids — and it stayed invisible until `SGR 58` (#520) let two inks differ. New **rule 6** puts
@@ -100,6 +107,27 @@ since `SGR 58` is its and no escape sets a strikethrough's. **R1:** when the gly
 `builtin::owns` draws to the cell, asked of the drawer rather than restated), `I_glyph` belongs to the
 **background channel** and takes whatever treatment the bg fold applied. R1 reaches `I_glyph` **only**;
 `I_line` and `I_cursor` are `TEXT` class always.
+
+**R1.1 — "whatever treatment the bg fold applied" means the LAYERS' treatments, not the surface's
+opacity** (added 2026-08-18, #317 §2). A background-class glyph stays **opaque** on a translucent
+terminal. The question looks open — R1 says the ink follows the background, and a translucent
+background is one — but it is closed by *when* translucency applies: the shader gates it on
+`v_bg_default`, the provenance flag meaning **no layer touched the bg at all** (#455). So at the
+moment a cell is translucent the fold has applied *nothing*, and there is no treatment for R1 to
+transfer. Translucency is a property of the surface the resolved stack is drawn onto, reached after
+rule 1's layers have all declined; `u_bg_alpha` is not a layer and never enters the stack.
+
+The answer rule 5 would give independently is the same, which is why this is a clarification rather
+than a new decision: background-class ink is *"still the only thing drawing a table border or a
+progress bar"*, and attenuating it by `u_bg_alpha` deletes every box-drawing character, block element
+and Powerline separator at `bg_alpha = 0` — the content loss rule 5 exists to refuse, arrived at from
+the other direction. #398 had already narrowed the same sentence once (R1 does not transfer the
+background's *identity*: background-class ink keeps `L0`'s resolved ink, bold→bright included).
+
+Measured on this renderer at `bg_alpha = 0`, dpr 1 — the shades keep their own coverage as alpha,
+which is what a shade means: `░` → `rgba(255,255,255,64)`, `▒` → `…,128`, `▓` → `…,192`, `█` →
+`…,255`. Before #317 §2 the same `░` read `rgba(100,136,184,64)`, three quarters of a background the
+alpha channel said was absent — the incoherence that fix removed.
 
 **5 — An interaction highlight does not remove content; a declared decoration may** (amended
 2026-07-22). Rules 2 and 4 collide on one cell: a bg-only layer above a `BACKGROUND`-class glyph. Rule 2

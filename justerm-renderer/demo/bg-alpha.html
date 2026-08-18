@@ -6,18 +6,25 @@
   #c { display: block; image-rendering: pixelated; }
 </style>
 <!--
-  #298 proof. The fragment shader emits per-pixel alpha = mix(u_bg_alpha, 1.0, coverage): an
-  uncovered (background) pixel gets the injected u_bg_alpha, a glyph pixel stays opaque (1.0). The
-  context is non-premultiplied-alpha, so readPixels reads the framebuffer alpha straight.
+  #298 proof. The fragment shader emits a per-pixel alpha carrying the injected u_bg_alpha on an
+  uncovered (background) pixel and reaching 1.0 where ink covers it. The context is
+  non-premultiplied-alpha, so readPixels reads the framebuffer alpha straight.
+
+  That alpha was spelled `mix(u_bg_alpha, 1.0, coverage)` here until #317 §2 replaced it with
+  `1.0 - w_bg*(1 - u_bg_alpha)`, w_bg being the background's surviving weight after every ink source.
+  The two agree wherever at most one ink source is partial, which is every cell this page reads — so
+  nothing below changed. This page reads the ALPHA channel only; `bg-alpha-fringe.html` is the
+  sibling that reads the COLOUR channel, and that is where #317 §2's defect lived.
 
   We render the SAME frame twice and read back the ALPHA channel:
     - default (bg_alpha = 1.0): a background cell's pixels are fully opaque (alpha 255).
     - setBgAlpha(0.5):          a background cell's pixels are ~half alpha (~127), while the
                                 glyph 'A' still has opaque strokes (max alpha 255).
     - setBgAlpha(NaN):          falls back to OPAQUE (#577). Not a cosmetic guard — a NaN uniform
-                                makes mix(u_bg_alpha, 1.0, cov) NaN for every fragment, so the glyph
-                                goes transparent too and the terminal disappears silently. The glyph
-                                cell is asserted alongside the background for that reason.
+                                reaches every fragment's alpha, so the glyph goes transparent too and
+                                the terminal disappears silently. The glyph cell is asserted alongside
+                                the background for that reason. (Still true after #317 §2: `0 * NaN`
+                                is NaN, so even a fully covered pixel goes with it.)
     - setBgAlpha(-3):           still CLAMPED to 0. The control for the line above: a setter that
                                 ignored its argument would satisfy the NaN check on its own.
   Build: wasm-pack build --target web --dev --out-dir pkg

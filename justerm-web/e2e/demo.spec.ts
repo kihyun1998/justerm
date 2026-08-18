@@ -1652,6 +1652,13 @@ test("the consumer can make the terminal background translucent, live (#577)", a
   // Glyph pixels stay fully opaque. Not a nicety: text that faded with its background would be
   // unreadable over an arbitrary desktop, which is the whole use case. alacritty holds the same line
   // (`compute_bg_alpha` returns `0.` only for the named background colour, `content.rs:388`).
+  //
+  // **What this samples is a `█`, i.e. BACKGROUND-class ink** (ADR-0019 R1, via `builtin::owns`) —
+  // `__bgAlphaProbe` borrows the SGR-5 run for its full blocks because they cover a cell under any
+  // font. So it pins the opacity of the ink class R1 is *about*, not that of an ordinary letter,
+  // which is the stronger read and is deliberate. Written down because the assertion's meaning moves
+  // if R1 is ever read as making background-class ink translucent — #317 §2 raised that question and
+  // ADR-0019 R1 now answers it here. A letter would pin only the uncontested half.
   expect(alpha(p.translucentInk)).toBe(255);
   expect(rgb(p.translucentInk)).toBe(rgb(p.defaultInk));
 
@@ -1695,7 +1702,7 @@ test.describe("bgAlpha given at create boots translucent (#577)", () => {
 //
 // **This test could not exist before `justerm-renderer@0.8.0`** and is the reason this file's pin was
 // raised. `set_bg_alpha` used to pass a non-finite value straight into the uniform, and because every
-// fragment's alpha is `mix(u_bg_alpha, 1.0, coverage)`, the glyphs went transparent with the
+// fragment's alpha is derived from that uniform, the glyphs went transparent with the
 // background — the whole terminal vanished, silently. Against the published 0.7.0 both assertions
 // below read 0. So this is the widget-level counterpart of the renderer's own `bg-alpha.html` proof:
 // that one guards the mechanism, this one guards that a *consumer* passing a bad number through the

@@ -12,6 +12,26 @@
 //! No break-state is persisted across `print` calls (cursor moves / CR-LF would corrupt it, cf.
 //! ghostty `Terminal.print`). Instead the caller reconstructs the previous cluster's text from the
 //! cell (`base scalar + side-table Vec<char>`) and asks [`grapheme_extends`] fresh each time.
+//!
+//! ## A variation selector on a non-emoji base is KEPT (#317 §1, decided 2026-08-18)
+//!
+//! `x` + VS16 is not an emoji sequence — the selector changes nothing about how `x` is drawn or how
+//! wide it is. justerm still joins it into the side-table, because UAX #29 puts it there: VS16/VS15
+//! are `Extend`, so `grapheme_extends` says yes and the scalar rides along. The only place it is
+//! observable is **text extraction** — a copy of that cell yields the extra scalar.
+//!
+//! ghostty drops it: *"the terminal does not store those selectors in the cell, so callers must also
+//! restore their grapheme break state and leave prev unchanged"* (`src/unicode/grapheme.zig:56` @
+//! `e6e26e16`). Recorded here because the divergence is **narrower than it looks, and #317's body
+//! described it wrongly** as a disagreement about UAX #29. It is not one: ghostty's own
+//! `graphemeWidth('x', 0xFE0F)` returns `len = 2` (`:315`), so both implementations agree the
+//! selector is *in the cluster*. They differ one layer down, on whether the cell **stores** what the
+//! cluster contains — and ghostty's own comment states the cost of its answer, which is that every
+//! caller now has to repair a break state the storage layer discarded.
+//!
+//! justerm keeps it, on the tie-breaker for this layer: VT semantics answer to **the spec**, above
+//! any implementation including ours (ADR-0004). Widths are identical either way, so nothing on
+//! screen distinguishes them; what a cell hands back is the cluster the spec says it is.
 
 use unicode_segmentation::UnicodeSegmentation;
 

@@ -289,31 +289,69 @@ void main() {
     // needs a glyph box of about three device px. That is also why `cov` below may stay on `max`
     // while the colour path composites in sequence — the two agree everywhere the bands do not meet,
     // and reordering the underline does not change *whether* anything is drawn at a pixel.
+    // The cursor's strokes draw last and opaque, over the glyph — both references append the
+    // cursor rects after the text pass.
+    float cur = stroke_coverage(dx);
+
+    // #317 §2 — the ink accumulates PREMULTIPLIED, starting from nothing rather than from the
+    // background. Same chain, same rule-6 order, same `mix` per source; only the seed changed.
+    //
+    // The old chain seeded with `base_bg` and computed alpha separately, which made the two channels
+    // describe different cells whenever the background was translucent: the colour had already mixed
+    // toward `base_bg` while the alpha said that background was barely there. At `u_bg_alpha = 0`,
+    // `cov = 0.5` a pixel came out `0.5*bg + 0.5*fg` at alpha `0.5` where a fully transparent
+    // background can contribute nothing at all and the answer is `fg`. Measured on this renderer
+    // before the fix (white 'A' on a Default blue, dpr 2, `bg_alpha = 0`): of 174 pixels with any
+    // alpha, **35** were the foreground and the rest carried background blue that was not there —
+    // `a = 126` read `rgb(150,175,207)`, which is `mix(blue, white, 0.494)` to the byte.
+    // ADR-0019's Coherence clause is what this violated: a channel resolution and the surface it
+    // describes must agree, and these two described the same pixel differently.
+    //
+    // It is NOT inherent to compositing in one pass — the premise #317 recorded from beamterm and
+    // that nobody had re-derived for this shader. Straight-alpha source-over of opaque ink onto a
+    // background of opacity `A` is `a = 1 - w_bg*(1-A)` and `rgb = (ink + base_bg*A*w_bg) / a`,
+    // both available here. No second pass, no premultiplied context, no GL blending (this renderer
+    // enables none — the references reach the same result with separate passes and hardware blend:
+    // alacritty `BlendFuncSeparate` at `renderer/mod.rs:252`, ghostty a whole `AlphaBlending` mode).
+    //
+    // Accumulating rather than subtracting `base_bg * w_bg` back out is a precision choice under
+    // `mediump`: every term here stays positive and numerator and denominator shrink together, so a
+    // small `a` does not amplify anything. The subtraction form cancels two near-equal quantities
+    // exactly where `a` is smallest.
     float bg_class = float((v_glyph >> 16u) & 1u);
-    vec3 tiled = mix(base_bg, fg, coverage * bg_class);        // background-class ink joins the bg
-    vec3 under = mix(tiled, base_ul, ul_band);                 // the band, over that background
-    vec3 cell = mix(under, fg, coverage * (1.0 - bg_class));   // text-class ink, over the band
-    vec3 inked = mix(cell, base_st, st_band);
-    float line = max(ul_band, st_band);
+    vec3 ink = mix(vec3(0.0), fg, coverage * bg_class);        // background-class ink joins the bg
+    ink = mix(ink, base_ul, ul_band);                          // the band, over that background
+    ink = mix(ink, fg, coverage * (1.0 - bg_class));           // text-class ink, over the band
+    ink = mix(ink, base_st, st_band);
+    ink = mix(ink, u_cursor_color, cur);
+
+    // How much of the background survives every ink source above — the same coverages, as a product.
+    // This REPLACES `max(coverage, max(ul_band, st_band))`, which was an approximation of the ink's
+    // total weight and disagreed with the colour chain wherever two sources overlapped (a descender
+    // crossing its underline is the reachable case, #712's own geometry). The two agreed only where
+    // at most one source was partial, which is why it never showed while alpha was the only consumer.
+    float w_bg = (1.0 - coverage * bg_class) * (1.0 - ul_band)
+               * (1.0 - coverage * (1.0 - bg_class)) * (1.0 - st_band) * (1.0 - cur);
 
     // Only the DEFAULT terminal background is translucent (the see-through backdrop). An explicit
     // SGR background or an inverse/selection/cursor background is *content* and stays opaque — else
-    // a highlight would vanish on a translucent terminal (#298). A glyph/line pixel is always opaque.
-    // Still the union of both inks: the alpha question is "is anything drawn here", which the split
-    // colour composite above does not change.
-    float cov = max(coverage, line);
+    // a highlight would vanish on a translucent terminal (#298). Ink is always opaque, including a
+    // BACKGROUND-class glyph's — ADR-0019 **R1.1** carries why, and it is not "a `█` is obviously
+    // ink": translucency is gated on `v_bg_default`, i.e. on no layer having touched the bg, so R1
+    // has no treatment to transfer at the moment the question arises.
+    //
     // #455: translucency keys on PROVENANCE (`v_bg_default`, packed by the Rust side that knows which
     // layers touched the bg), not on `base_bg == u_default_bg`. The colour test went translucent on any
     // content cell whose composite coincidentally landed on the default RGB (an SGR 48 set to the theme
     // bg, an Indexed slot resolving to it, a decoration painting it) — a pinhole in opaque content.
     // A block cursor is still forced opaque here, even where its colour happens to equal the default
     // background — alacritty forces `bg_alpha = 1.` for the cursor cell unconditionally
-    // (`display/content.rs:175`, "we must adjust alpha to make it visible").
-    float bg_a = (!block && v_bg_default > 0.5) ? mix(u_bg_alpha, 1.0, cov) : 1.0;
-    // The cursor's strokes draw last and opaque, over the glyph — both references append the
-    // cursor rects after the text pass.
-    float cur = stroke_coverage(dx);
-    FragColor = vec4(mix(inked, u_cursor_color, cur), max(bg_a, cur));
+    // (`display/content.rs:175`, "we must adjust alpha to make it visible"). The cursor's STROKES no
+    // longer need `max(bg_a, cur)` to stay opaque: `cur` is in `w_bg` above, so a stroked pixel has
+    // no background left to be translucent and `a` reaches 1 by construction.
+    float bg_alpha = (!block && v_bg_default > 0.5) ? u_bg_alpha : 1.0;
+    float a = 1.0 - w_bg * (1.0 - bg_alpha);
+    FragColor = vec4((ink + base_bg * (bg_alpha * w_bg)) / max(a, 1e-4), a);
 }
 "#;
 
@@ -2164,14 +2202,23 @@ impl JustermRenderer {
     /// page/desktop behind the canvas, while glyph pixels stay opaque. Clamped to `[0, 1]`; takes
     /// effect on the next [`render`](Self::render) (#298).
     ///
+    /// **A translucent background contributes to a cell's colour in proportion to how translucent
+    /// it is** (#317 §2, fixed 2026-08-18). It used to contribute in full: an antialiased glyph
+    /// edge mixed toward the background colour with the coverage as its weight while the alpha
+    /// said that background was only `alpha` present, so at `0` a half-covered pixel came out half
+    /// background — a colour the caller had asked to be absent. At `1` nothing changed and nothing
+    /// changes now; the two agree exactly there, which is why this shipped unnoticed.
+    ///
     /// **A non-finite value falls back to `1.0` (opaque), like every other float setter here.**
     /// `f32::clamp` compares with `<` / `>`, both false for `NaN`, so a bare clamp *passes NaN
     /// through* — and this was the only float setter on this type without the guard (#577). The
-    /// consequence was not a wrong background: `bg_a = mix(u_bg_alpha, 1.0, cov)` makes every
-    /// fragment's alpha `NaN`, so glyph pixels go transparent too and the whole terminal
-    /// disappears with no error anywhere. Measured, not reasoned: booting the widget at `NaN`
-    /// read `[30,30,46,0]` on a background cell **and `[205,214,244,0]` inside a glyph**, against
-    /// `[…,128]` / `[…,255]` for a valid `0.5`.
+    /// consequence was not a wrong background: a `NaN` here reaches every fragment's alpha, so
+    /// glyph pixels go transparent too and the whole terminal disappears with no error anywhere.
+    /// Measured, not reasoned: booting the widget at `NaN` read `[30,30,46,0]` on a background
+    /// cell **and `[205,214,244,0]` inside a glyph**, against `[…,128]` / `[…,255]` for a valid
+    /// `0.5`. (The measurement stands; the expression it was taken against was
+    /// `mix(u_bg_alpha, 1.0, cov)`, which #317 §2 replaced — the `NaN` now reaches the colour
+    /// through the same uniform as well, so the failure is if anything less subtle.)
     ///
     /// Reachable from type-correct consumer code, which is why the guard is here and not at the
     /// caller: TypeScript's `number` includes `NaN`, so an ordinary `Number(configValue)` arrives

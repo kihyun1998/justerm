@@ -47,6 +47,15 @@ becomes an actual colour — the engine never does that by identity.
   `base < bottom-decoration < highlight < top-decoration`. A decoration is not simply "above" or
   "below" content — it chooses a side of the selection/search layer, which is what
   `DecorationLayer::{Bottom, Top}` means.
+- **Alpha is a channel of the composite, not a postscript to it** (#317 §2). The shader emits one
+  straight-alpha RGBA per cell — this renderer enables no GL blending, so the fragment *is* the
+  composite. The ink accumulates premultiplied from nothing, the background's surviving weight is
+  the product of every ink source's complement, and the two are recombined against `u_bg_alpha`:
+  `a = 1 - w_bg(1 - A)`, `rgb = (ink + bg·A·w_bg) / a`. The failure this replaced is the one to
+  recognise if it reappears anywhere: the colour was composed against a **fully present**
+  background while the alpha declared that background mostly absent, so the two channels described
+  different cells. That is ADR-0019's Coherence clause, one axis over from where it is usually read.
+  Invisible at `A = 1`, where the two expressions agree exactly.
 - **Per-channel, not per-layer.** A layer may claim the background and leave the foreground alone.
   This is what makes "which wins" answerable for an active match over a selection without either
   layer having to win outright.
@@ -99,6 +108,7 @@ In `docs/agents/reference-facts.md` — **linked, never restated** (each row car
 recorded SHA; a paraphrase drops the pin).
 
 - [Renderer ink channels](../../agents/reference-facts.md#renderer-ink-channels)
+- [How a translucent background composites](../../agents/reference-facts.md#how-a-translucent-background-composites-317-2-verified-2026-08-18)
 
 **Read ADR-0019's own framing before comparing to xterm.js here:** it is a *design input*, not a
 validator. In the four decisions before 0019 it was silent, self-contradictory across its own call
