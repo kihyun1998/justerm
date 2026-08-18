@@ -50,11 +50,18 @@ Everything below is **designed and not built** — read ADR-0021 for the authori
 
 ## Code
 
-**None.**
+The tier split exists; nothing multi-grid does yet.
 
-No TerminalSurface, no scissor path, no per-surface resource split — the renderer draws one grid per
-context today. `justerm-renderer/src/webgl.rs` is where the single-context assumption lives, and it
-is the file a first slice would open.
+- `justerm-renderer/src/webgl.rs` — `GlobalTier`, `ConfigTier` and `GridTier`, with `JustermRenderer`
+  as the facade holding one of each (#769). The per-grid operations are inherent methods on
+  `GridTier`, so they are already written in the form a registry would multiply
+
+Still absent: no terminal-surface type, no scissor path, no grid registry, no atlas keyed by
+configuration — the renderer still draws exactly one grid, and the facade still holds exactly one of
+each tier. (Names of things that do not exist yet are left un-backticked on purpose: every symbol
+under this heading is resolved against the source, so a code-span for an unbuilt type fails the note
+gate — which is the gate doing its job.) What changed is that the three are now separable *types* rather than one struct, so the
+next slice adds a registry instead of first having to find the seams.
 
 ## Reference behaviour
 
@@ -98,14 +105,24 @@ When built, it lands squarely on:
 
 ## Known holes / open
 
-- **A record with no implementation is its own state**, and this map had no way to represent it until
-  this note: the code-first passes could not see this territory at all, because there is nothing to
-  read.
+- **This note was written as "a record with no implementation", which was its own state** — the
+  code-first passes could not see this territory at all, because there was nothing to read. #769 gave
+  it its first code, so that is no longer true; the entry is kept because the *shape* is what made
+  this note necessary, and a territory can re-enter that state.
 - **Half the design is still unverified against its own prior art.** Ghostty's half is now pinned
   (above); three.js and WezTerm have no local tree, so if either has moved nothing would notice before
   someone builds against it.
-- **The single-context assumption is not marked anywhere in the renderer.** A first slice has to find
-  it by reading, since no comment says "this assumes one grid".
+- ~~**The single-context assumption is not marked anywhere in the renderer.**~~ Closed by #769: the
+  three tier structs *are* the marking, and they mark it in the one way a comment cannot — a per-grid
+  method that reaches another tier does not compile. What #769 measured while doing it is worth
+  keeping, because it is evidence about the record rather than about the code: moving 309 field
+  accesses into three tiers produced **one** cross-tier compile error, so the split ADR-0021 asserts
+  matches the structure the code already had.
+- **Four operations genuinely span tiers, and they are the ones a registry has to thread.**
+  `apply_frame` and `repack_from_grid` reach `resolve_and_pack`; `set_letter_spacing` and
+  `set_line_height` reach `adopt_spacing`. All four need the atlas or the cell it derives, i.e. the
+  per-config tier — so packing and cell derivation are cross-tier by nature, not by accident, and a
+  grid registry must pass a configuration in rather than expecting these to become per-grid.
 - **The middle tier has a hazard the record now names but nothing yet answers.** Sharing one atlas
   across grids makes [glyph atlas](glyph-atlas.md)'s within-frame eviction corruption a *cross-grid*
   event, and the upload diff — which is the defence today — cannot see it, because a grid that is not
