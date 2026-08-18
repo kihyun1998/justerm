@@ -1652,6 +1652,13 @@ test("the consumer can make the terminal background translucent, live (#577)", a
   // Glyph pixels stay fully opaque. Not a nicety: text that faded with its background would be
   // unreadable over an arbitrary desktop, which is the whole use case. alacritty holds the same line
   // (`compute_bg_alpha` returns `0.` only for the named background colour, `content.rs:388`).
+  //
+  // **What this samples is a `█`, i.e. BACKGROUND-class ink** (ADR-0019 R1, via `builtin::owns`) —
+  // `__bgAlphaProbe` borrows the SGR-5 run for its full blocks because they cover a cell under any
+  // font. So it pins the opacity of the ink class R1 is *about*, not that of an ordinary letter,
+  // which is the stronger read and is deliberate. Written down because the assertion's meaning moves
+  // if R1 is ever read as making background-class ink translucent — #317 §2 raised that question and
+  // ADR-0019 R1 now answers it here. A letter would pin only the uncontested half.
   expect(alpha(p.translucentInk)).toBe(255);
   expect(rgb(p.translucentInk)).toBe(rgb(p.defaultInk));
 

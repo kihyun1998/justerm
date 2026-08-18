@@ -336,7 +336,9 @@ void main() {
     // Only the DEFAULT terminal background is translucent (the see-through backdrop). An explicit
     // SGR background or an inverse/selection/cursor background is *content* and stays opaque — else
     // a highlight would vanish on a translucent terminal (#298). Ink is always opaque, including a
-    // BACKGROUND-class glyph's: a `█` on a translucent terminal is something drawn, not a hole.
+    // BACKGROUND-class glyph's — ADR-0019 **R1.1** carries why, and it is not "a `█` is obviously
+    // ink": translucency is gated on `v_bg_default`, i.e. on no layer having touched the bg, so R1
+    // has no treatment to transfer at the moment the question arises.
     //
     // #455: translucency keys on PROVENANCE (`v_bg_default`, packed by the Rust side that knows which
     // layers touched the bg), not on `base_bg == u_default_bg`. The colour test went translucent on any
