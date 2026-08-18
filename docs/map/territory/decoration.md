@@ -133,11 +133,11 @@ inside a record rather than a pinned row that survives an upstream move.
 ## Known holes / open
 
 - ~~**The governing record may still be a proposal while the model ships.**~~ **Closed 2026-08-18
-  (#502)** — ADR-0024 is accepted, so R1–R6 are settled and not merely the strongest statement
-  available. Kept rather than deleted for the mechanism, which recurs: it lagged because R1 held an
-  open question *inside the rule* (`until it is answered, "no object" is the model`), and a record
-  cannot be adjudicated while one of its rules is conditional. Still read the `Status:` line rather
-  than this sentence — that instruction was right and is why this bullet never went stale.
+  (#502)** — check ADR-0024's `Status:` line, which is where the answer lives and is why this bullet
+  never went stale. Kept rather than deleted for the mechanism, which recurs: the record lagged its
+  siblings by four weeks because R1 held an open question *inside the rule* (`until it is answered,
+  "no object" is the model`), and a record cannot be adjudicated while one of its rules is
+  conditional. That is the shape to recognise, not this instance.
 - **No pinned reference comparison for the model itself.** #500 filled §Reference behaviour for the
   *ruler*, not for R1–R6, so the *declared divergence* (R4, `anchor` moving the colour span) is still
   argued only inside the record with nothing re-checking it. Worth knowing what #500 found while
