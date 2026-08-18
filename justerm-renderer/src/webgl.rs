@@ -522,6 +522,25 @@ struct Pipeline {
 /// The justerm-family WebGL2 terminal renderer.
 #[wasm_bindgen]
 pub struct JustermRenderer {
+    /// Resources one per WebGL context, invalidated only by context loss (ADR-0021 D2).
+    global: GlobalTier,
+    /// Resources one per font configuration — expensive to rebuild, so keyed rather than
+    /// duplicated (ADR-0021 D2). One grid selects into a configuration; it does not own one.
+    config: ConfigTier,
+    /// One terminal grid's own state (ADR-0021 D1/D2). Multi-viewport (#287) turns this field
+    /// into a registry — which is why the methods that touch only this tier live on it.
+    grid: GridTier,
+    /// Count of `resolve_and_pack` runs — a diagnostic the proofs read to assert render packs once
+    /// per frame, not once per setter (#421). Wraps harmlessly; only deltas are meaningful.
+    pack_count: u32,
+}
+
+/// The **global** tier — one per WebGL2 context (ADR-0021 D2: invalidated only by context loss).
+///
+/// Multi-viewport (#287) keeps exactly one of these however many grids the context draws, which is
+/// the whole point of the design: the context, the compiled program and the vertex layout are what N
+/// terminals stop paying for N times.
+struct GlobalTier {
     gl: glow::Context,
     /// The bound canvas — kept so `resize` can size its drawing buffer (device px) and CSS box.
     canvas: HtmlCanvasElement,
@@ -531,8 +550,6 @@ pub struct JustermRenderer {
     dpr: f32,
     program: glow::Program,
     vao: glow::VertexArray,
-    instance_vbo: glow::Buffer,
-    atlas: glow::Texture,
     u_projection: glow::UniformLocation,
     u_cell_size: glow::UniformLocation,
     u_char_size: glow::UniformLocation,
@@ -543,6 +560,58 @@ pub struct JustermRenderer {
     u_cursor_color: glow::UniformLocation,
     u_cursor_text_color: glow::UniformLocation,
     u_cursor_thickness: glow::UniformLocation,
+    /// `MAX_TEXTURE_SIZE`, read once. The atlas is `padded_w x padded_h * GLYPHS_PER_LAYER`, so a tall
+    /// `lineHeight` can ask for a texture the implementation refuses to allocate — silently (#359).
+    max_texture_size: u32,
+    /// The same WebGL2 context `gl` wraps, kept for the handful of questions glow does not ask:
+    /// `drawingBufferWidth`/`drawingBufferHeight`, which are the ONLY way to learn that the browser
+    /// clamped the buffer we requested (#339). Context restore reuses the context object, so this
+    /// handle survives a loss.
+    raw_gl: WebGl2RenderingContext,
+    /// Drawing-buffer size in device pixels.
+    size: (i32, i32),
+    /// Canvas context-loss listeners + the shared lost/pending-rebuild state (#269). `render`
+    /// consults it every frame: skip while lost, rebuild once restored, otherwise draw.
+    ctx_loss: ContextLossHandler,
+}
+
+/// The **per-config** tier — one per font configuration (family, size, spacing, DPR).
+///
+/// ADR-0021 D2: two grids with equal selectors can be served by **one instance**, and rebuilding this
+/// is expensive enough to repay keying it. Multi-viewport (#287) turns this field into a refcounted
+/// registry; a grid holds a *key* into it, never its own copy.
+///
+/// D4: this tier names the **owner**, not the only place a value may sit. A reader may cache
+/// `cell_size` — see `docs/map/invariant/cell-size-is-derived-state.md` for what such a copy owes.
+struct ConfigTier {
+    atlas: glow::Texture,
+    /// The glyph box in device px — the rasteriser's ink-scan of `█`. Equal to `cell_size` only
+    /// while both spacing options are at their defaults (#338).
+    char_size: (u32, u32),
+    /// Where the glyph box sits inside the cell, device px from its top-left (#338).
+    char_offset: (u32, u32),
+    rasterizer: Rasterizer,
+    cache: GlyphCache,
+    /// Physical (content) cell size in **device pixels** — the on-screen grid cell, and the exact
+    /// `u_cell_size` the shader lays it out with. Integral by construction (an ink-scan).
+    cell_size: (u32, u32),
+    /// Padded atlas cell size in device pixels (physical + `2*PADDING`) — glyph upload dims.
+    atlas_cell: (u32, u32),
+}
+
+/// The **per-grid** tier — one terminal's own state (ADR-0021 D1/D2).
+///
+/// Everything a consumer can set differently per terminal is a **selector** and lands here, including
+/// the four font/metric fields: they are per-grid *as settings*, while the machinery they key
+/// (`ConfigTier`) is not. `instance_vbo` is here rather than global because `uploaded` mirrors it —
+/// one shared buffer with N per-grid baselines would let one grid's upload silently invalidate
+/// another's.
+///
+/// Multi-viewport (#287) multiplies **this struct and nothing else**, so a method that touches only
+/// this tier is written as an inherent method here rather than on the facade. That is the split's
+/// load-bearing half: moving a field out of this struct breaks those methods at compile time.
+struct GridTier {
+    instance_vbo: glow::Buffer,
     /// The cursor this frame, or `None` for hidden / blinked off (#270). Blink timing is the
     /// consumer's policy, as `blink_on` is (#282) — the renderer only draws what it is handed.
     cursor: Option<Cursor>,
@@ -566,14 +635,6 @@ pub struct JustermRenderer {
     /// renderer's, the fraction is the consumer's. Default `0.15` (alacritty's `cursor.thickness`),
     /// clamped to `[0, 1]`; a **block** ignores it (it recolours its cell, drawing no stroke).
     cursor_thickness_frac: f32,
-    /// The glyph box in device px — the rasteriser's ink-scan of `█`. Equal to `cell_size` only
-    /// while both spacing options are at their defaults (#338).
-    char_size: (u32, u32),
-    /// Where the glyph box sits inside the cell, device px from its top-left (#338).
-    char_offset: (u32, u32),
-    /// `MAX_TEXTURE_SIZE`, read once. The atlas is `padded_w x padded_h * GLYPHS_PER_LAYER`, so a tall
-    /// `lineHeight` can ask for a texture the implementation refuses to allocate — silently (#359).
-    max_texture_size: u32,
     /// Consumer-injected policy (ADR-0017), in **CSS px** — see `metrics::device_cell` for why the
     /// references' device-px choice is not ours (#338).
     letter_spacing: f32,
@@ -589,20 +650,6 @@ pub struct JustermRenderer {
     /// font-agnostic.
     font_family: String,
     palette: Palette,
-    rasterizer: Rasterizer,
-    cache: GlyphCache,
-    /// Physical (content) cell size in **device pixels** — the on-screen grid cell, and the exact
-    /// `u_cell_size` the shader lays it out with. Integral by construction (an ink-scan).
-    cell_size: (u32, u32),
-    /// Padded atlas cell size in device pixels (physical + `2*PADDING`) — glyph upload dims.
-    atlas_cell: (u32, u32),
-    /// The same WebGL2 context `gl` wraps, kept for the handful of questions glow does not ask:
-    /// `drawingBufferWidth`/`drawingBufferHeight`, which are the ONLY way to learn that the browser
-    /// clamped the buffer we requested (#339). Context restore reuses the context object, so this
-    /// handle survives a loss.
-    raw_gl: WebGl2RenderingContext,
-    /// Drawing-buffer size in device pixels.
-    size: (i32, i32),
     /// The `cols`×`rows` grid last passed to [`resize`](Self::resize). A DPR change re-measures the
     /// cell and re-derives the buffer from this, so nothing has to be re-passed and no CSS length is
     /// rounded twice (#322/#331).
@@ -665,12 +712,6 @@ pub struct JustermRenderer {
     /// three times, one per setter (#421). The direct `apply_frame` path packs immediately (no grid
     /// to defer to) and clears it.
     needs_repack: bool,
-    /// Count of `resolve_and_pack` runs — a diagnostic the proofs read to assert render packs once
-    /// per frame, not once per setter (#421). Wraps harmlessly; only deltas are meaningful.
-    pack_count: u32,
-    /// Canvas context-loss listeners + the shared lost/pending-rebuild state (#269). `render`
-    /// consults it every frame: skip while lost, rebuild once restored, otherwise draw.
-    ctx_loss: ContextLossHandler,
 }
 
 /// Reinterpret an `f32` slice as bytes for `buffer_data` upload.
@@ -681,7 +722,7 @@ fn f32_bytes(v: &[f32]) -> &[u8] {
 
 /// Upload one glyph's RGBA bitmap to its `(layer, band)` in the atlas. A free function (not
 /// a `&self` method) so the frame resolver's upload closure can borrow only the GL fields,
-/// leaving `&mut self.cache` free for [`glyph_resolve::resolve_frame`].
+/// leaving `&mut self.config.cache` free for [`glyph_resolve::resolve_frame`].
 fn upload_glyph(
     gl: &glow::Context,
     atlas: glow::Texture,
@@ -712,6 +753,360 @@ fn upload_glyph(
 
 #[wasm_bindgen]
 impl JustermRenderer {
+    /// Consume a decoded **damage** frame directly (#277 adapter): scatter its span-ordered
+    /// cells into the persistent grid, then resolve + pack the full viewport. A Full frame wipes
+    /// the grid first, a scroll op shifts it before spans — so a Partial frame (the common case)
+    /// no longer misaligns as dense row-major. Grapheme clusters (#285) ride the `extra` column
+    /// + `side_table` and are resolved to text at scatter (the index is frame-local).
+    ///
+    /// `header` carries the frame's scalars, `[cols, rows, kind, has_scroll, scroll_top,
+    /// scroll_bottom, scroll_count, blink_on]` (kind `0` = Full / `1` = Partial; `scroll_count`
+    /// reinterpreted as `i16`; `blink_on` `0`/`1`). `spans` is the span directory
+    /// (`SPAN_STRIDE` `u32`s each);
+    /// `codepoints`/`fg`/`bg`/`flags`/`extra` are the span-ordered cell columns.
+    // 8 typed-array / vec columns at the wasm-bindgen boundary; each is a distinct JS view that
+    // can't be structurally grouped without an AoS rewrite that would break the zero-copy SoA.
+    #[allow(clippy::too_many_arguments)]
+    pub fn apply_damage(
+        &mut self,
+        header: &[u32],
+        spans: &[u32],
+        codepoints: &[u32],
+        fg: &[u32],
+        bg: &[u32],
+        flags: &[u16],
+        extra: &[u32],
+        side_table: Vec<String>,
+        // #520: the span-ordered underline colour column (SGR 58), tagged-u32 like `fg`/`bg`.
+        // Optional + TRAILING for the same reason as `apply_frame` — a caller that predates it
+        // keeps working, and the scatter reads it tolerantly (omitted ⇒ all Default).
+        underline_colors: Option<Vec<u32>>,
+    ) -> Result<(), JsValue> {
+        self.grid.apply_damage(
+            header,
+            spans,
+            codepoints,
+            fg,
+            bg,
+            flags,
+            extra,
+            side_table,
+            underline_colors,
+        )
+    }
+
+    /// The in-progress IME composition to draw, anchored at `(col, row)` — the cursor cell the
+    /// consumer's current frame reported. `codepoints` is the preedit as the OS reports it
+    /// (`compositionupdate.data`); an empty array clears it.
+    ///
+    /// **This is the one piece of renderer state with no representation anywhere in the engine**
+    /// (ADR-0028): a composition is browser-owned, reaches no frame and no wire, so the consumer is
+    /// the only possible source and must re-push on every `compositionupdate`. Skipping an update
+    /// whose data is unchanged is worth doing — a real IME emits one settling update per syllable
+    /// where nothing moved (measured, #249).
+    ///
+    /// The run may extend past the anchor's row end: it shifts left to stay whole rather than
+    /// clipping (`preedit::range` — crate-private, so no link from this page). Width is per codepoint, the same
+    /// `unicode-width` answer the engine gives, so a VS16 emoji measures narrow here exactly as it
+    /// does there.
+    /// Returns the column the **caret and the IME anchor** belong at: one past the run's last cell,
+    /// clamped to the grid. The consumer cannot compute this — it has no `wcwidth` — and it is not
+    /// simply `col + len`, because the run shifts left at the right edge. Feeding it back to
+    /// `setCursor` is ADR-0028 D5's position rule (the caret rides the composition's end, while
+    /// DECTCEM still decides whether it is drawn at all), and feeding it to the hidden textarea is
+    /// D4's voluntary writer.
+    #[wasm_bindgen(js_name = setPreedit)]
+    pub fn set_preedit(&mut self, col: u32, row: u32, codepoints: Vec<u32>) -> u32 {
+        self.grid.set_preedit(col, row, codepoints)
+    }
+
+    /// Swap the palette + default fg/bg for a **live theme change** (#405) — the renderer-side of a
+    /// theme picker or a runtime scheme swap, so a consumer need not tear down and rebuild the
+    /// renderer to recolour. `palette_colors` is the 256 pre-built indexed colours (as the
+    /// constructor takes); `default_fg`/`default_bg` the theme's defaults. Consumer policy
+    /// (ADR-0017): the palette *values* are the consumer's (theme-agnostic core), the *mechanism*
+    /// (re-resolve every retained cell against the new palette) is the renderer's.
+    ///
+    /// Marks the buffer dirty so the next [`render`](Self::render) re-packs (#421) and the change
+    /// shows with no new frame — like [`set_overlay`] (a no-op until the first `apply_damage`; the
+    /// direct `apply_frame` path reflects the new palette on its next call). The re-pack is all that
+    /// is needed: it re-resolves every cell's colour against the new palette, and the render's clear
+    /// reads `default_bg` fresh. #298 translucency no longer needs a uniform re-push here — since #455
+    /// its trigger is the packer's per-cell `bg_default` provenance flag, which is palette-independent.
+    ///
+    /// [`set_overlay`]: Self::set_overlay
+    #[wasm_bindgen(js_name = setPalette)]
+    pub fn set_palette(
+        &mut self,
+        palette_colors: Vec<u32>,
+        default_fg: u32,
+        default_bg: u32,
+    ) -> Result<(), JsValue> {
+        self.grid
+            .set_palette(palette_colors, default_fg, default_bg)
+    }
+
+    /// Set the selection / search highlight overlay (#271): the two span directories (stride-3
+    /// `(row, left, right)` viewport triples, exactly as `justerm-wasm-decode` `selectionSpans` /
+    /// `matchSpans` ship them) plus their blend colours (packed `0xRRGGBB`, consumer policy #115 —
+    /// the renderer is theme-agnostic). A covered cell blends the colour over a non-default / inverse
+    /// background so its own colour shows through, or paints it solid over the default background; a
+    /// selection wins over a match on a cell both cover.
+    ///
+    /// Marks the buffer dirty so the next [`render`](Self::render) re-packs (#421) — a selection
+    /// dragged with no new frame shows because the consumer renders after. Possible only on the
+    /// damage path, which retains the dense grid; the direct `apply_frame` path reflects the new
+    /// overlay on its next call. Pass empty span lists to clear the highlight.
+    ///
+    /// **Contract — the spans are consumer-pushed, not frame-carried (same as [`set_cursor`]).** They
+    /// are viewport-relative and the decoder RE-PROJECTS them every frame, so a scroll or resize moves
+    /// them: the consumer must re-issue `set_overlay` with the current frame's spans whenever the
+    /// viewport changes *or* the selection changes — exactly as it re-issues `set_cursor`. Stale spans
+    /// do not panic (an out-of-range span simply highlights nothing), but an in-range stale span
+    /// highlights the wrong cells until the next call. Unlike beamterm, whose spans ride each decoded
+    /// frame, this renderer cannot self-refresh — the split mirrors the cursor's, and #273 wires both.
+    ///
+    /// [`set_cursor`]: Self::set_cursor
+    #[wasm_bindgen(js_name = setOverlay)]
+    pub fn set_overlay(
+        &mut self,
+        selection_spans: Vec<u32>,
+        match_spans: Vec<u32>,
+        selection_bg: u32,
+        match_bg: u32,
+    ) -> Result<(), JsValue> {
+        self.grid
+            .set_overlay(selection_spans, match_spans, selection_bg, match_bg)
+    }
+
+    /// Set the *active* (focused/current) search-match spans + their background (#427) — the xterm
+    /// `activeMatchBackground` decoration, ranked **above the selection** (`highlight_at`). Additive
+    /// beside [`set_overlay`](Self::set_overlay): the consumer pushes the current search result here
+    /// as the search box navigates (`next`/`prev`), independent of the selection, so a user text
+    /// selection and the current match coexist. The active match is *also* pushed in `set_overlay`'s
+    /// `match_spans`; the ranking, not exclusion, makes the active colour win. Same viewport-relative,
+    /// re-issue-every-frame contract as [`set_overlay`](Self::set_overlay). Empty spans clear the active match.
+    #[wasm_bindgen(js_name = setActiveMatch)]
+    pub fn set_active_match(&mut self, active_spans: Vec<u32>, active_match_bg: u32) {
+        self.grid.set_active_match(active_spans, active_match_bg)
+    }
+
+    /// Set the marker-anchored decorations for this frame (#393/#120). `spans` is the flat
+    /// `DECORATION_STRIDE` (`row, left, right, layer, bg, fg`) directory the consumer projects
+    /// from its `DecorationRegistry` + core's markers — `layer` `0` = bottom (under the highlight) /
+    /// `1` = top (over it), `bg`/`fg` **absolute** packed `0xRRGGBB` used **verbatim** (the consumer
+    /// resolved its theme before pushing — unlike a *cell* colour, which arrives as a theme-agnostic
+    /// ref for the renderer to resolve), or the wire's `NO_REF` sentinel for "no override". Pass an
+    /// empty array to clear. Consumer-projected (the model is the consumer's; the renderer only
+    /// composites, ADR-0017). Marks the buffer dirty; the next [`render`](Self::render)
+    /// re-packs (#421).
+    #[wasm_bindgen(js_name = setDecorations)]
+    pub fn set_decorations(&mut self, spans: Vec<u32>) -> Result<(), JsValue> {
+        self.grid.set_decorations(spans)
+    }
+
+    /// Place the cursor (#270). `shape`: `0` block, `1` underline, `2` bar, `3` hollow block.
+    /// `color` is the cursor's own `0xRRGGBB`; `text_color` the glyph colour a block paints under
+    /// itself (xterm's `cursorAccent`, alacritty's `text_color`). Colours are resolved by the
+    /// consumer — the renderer stays theme-agnostic.
+    ///
+    /// **Every shape, the block included, lives in the cursor uniform** (`u_cursor` + its colours,
+    /// declared with `FRAG_SRC` in this file) and is resolved per fragment. So any cursor change —
+    /// move, blink, shape — takes effect on the next [`render`](Self::render) alone: one uniform,
+    /// no re-pack and no instance upload. Blink phase is the consumer's policy, exactly as
+    /// `blink_on` is (#282) — call `clearCursor` for the off phase.
+    ///
+    /// A block *could* have been an instance: it is a colour override on the cell, not geometry,
+    /// and both references draw it that way. It is not one because ADR-0018
+    /// (`docs/adr/0018-justerm-renderer.md`) makes that **the contract, not an
+    /// optimisation** — a blink tick produces no terminal output, so a block packed into the
+    /// instances could not blink off without the consumer re-feeding the frame (an early #270 draft
+    /// did exactly that). Two consequences follow rather than cause it: un-painting would need a
+    /// re-pack, and per-fragment resolution keeps the ordering free, since the instance colours
+    /// arrive already inverse-swapped and the glyph already concealed.
+    #[wasm_bindgen(js_name = setCursor)]
+    pub fn set_cursor(
+        &mut self,
+        col: u32,
+        row: u32,
+        shape: u8,
+        color: u32,
+        text_color: u32,
+    ) -> Result<(), JsValue> {
+        self.grid.set_cursor(col, row, shape, color, text_color)
+    }
+
+    /// Remove the cursor — hidden (`DECTCEM`), or the blink's off phase.
+    #[wasm_bindgen(js_name = clearCursor)]
+    pub fn clear_cursor(&mut self) {
+        self.grid.clear_cursor()
+    }
+
+    /// Re-resolve [`Self::cursor_cells`] against the last frame's flags. Called when a frame arrives
+    /// (its flags may have changed under a still cursor) *and* when the cursor moves (onto either
+    /// half of a wide char, with no new frame).
+    fn resolve_cursor_cells(&mut self) {
+        self.grid.resolve_cursor_cells()
+    }
+
+    /// The number of columns actually adopted by the last [`resize`](Self::resize). Usually the
+    /// `cols` that was asked for; smaller when the browser clamped the drawing buffer (#339).
+    ///
+    /// A consumer that keeps sending frames of the grid it *asked* for does not corrupt anything —
+    /// every per-cell read is bounds-checked and the surplus cells are clipped by the viewport — but
+    /// its mouse mapping and reflow will be wrong, so read this back rather than assuming.
+    ///
+    /// The requested grid is **not remembered**. `set_device_pixel_ratio` and the context-restore
+    /// path both re-derive the buffer from *this* value, so a clamped grid stays clamped even if a
+    /// later DPR drop would shrink the cell enough for the original to fit. That is deliberate — the
+    /// consumer owns the grid (ADR-0017) and recomputes it from its own box, as xterm's `FitAddon`
+    /// does — but it is not obvious from the field alone.
+    ///
+    /// One case reports a grid that has **not** been checked against the buffer yet: a
+    /// [`resize`](Self::resize) that arrived while the context was lost (#639). It is the grid that
+    /// was asked for, and the restore may still clamp it.
+    #[wasm_bindgen(js_name = cols)]
+    pub fn cols(&self) -> u32 {
+        self.grid.cols()
+    }
+
+    /// The number of rows actually adopted by the last [`resize`](Self::resize) — see
+    /// [`cols`](Self::cols).
+    #[wasm_bindgen(js_name = rows)]
+    pub fn rows(&self) -> u32 {
+        self.grid.rows()
+    }
+
+    /// Resolve each cell's glyph slot then pack the instance buffer. Shared by [`apply_frame`]
+    /// (no clusters) and [`apply_damage`] (grapheme clusters from the persistent grid, #285).
+    ///
+    /// [`apply_frame`]: Self::apply_frame
+    /// [`apply_damage`]: Self::apply_damage
+    /// The composed cells, re-supplied (#249, ADR-0028 D2).
+    ///
+    /// A preedit is a **pass**, not a layer: ADR-0019's stack can recolour a channel or blank a
+    /// slot but nothing in it can *supply* a glyph, and its rule 5 authorship axis has no value for
+    /// content the browser owns and the application never declared. So the covered cells leave the
+    /// stack entirely and come back with background, foreground and glyph together — which is also
+    /// the only way a selection tint under a composition stops reading as *selected text*.
+    ///
+    /// Returns owned columns, and only while a composition is open: a page that never composes
+    /// allocates nothing here. `0` is the `Default` colour tag (see [`palette`](crate::palette)),
+    /// so the run draws in the terminal's own default fg over its default bg — ghostty's choice
+    /// (`state.colors.foreground`, no background cell at all).
+    /// The inclusive span the open composition covers, or `None` when nothing is composing or the
+    /// anchor is off the grid. The packer takes it so the layers below glyph resolution can stand
+    /// down over those cells; `preedit_patch` writes the same cells, and both derive from
+    /// [`preedit::writes`](crate::preedit::writes) so they cannot disagree.
+    fn preedit_span(&self, cols: u32, rows: u32) -> Option<PreeditSpan> {
+        self.grid.preedit_span(cols, rows)
+    }
+
+    fn preedit_patch(&self, cells: &Cells, bg: &[u32], fg: &[u32]) -> Option<PreeditPatch> {
+        self.grid.preedit_patch(cells, bg, fg)
+    }
+
+    /// Set the background cell opacity: `0` = fully transparent, `1` = opaque (default). The
+    /// consumer injects this policy (ADR-0017) to make the terminal background see-through to the
+    /// page/desktop behind the canvas, while glyph pixels stay opaque. Clamped to `[0, 1]`; takes
+    /// effect on the next [`render`](Self::render) (#298).
+    ///
+    /// **A translucent background contributes to a cell's colour in proportion to how translucent
+    /// it is** (#317 §2, fixed 2026-08-18). It used to contribute in full: an antialiased glyph
+    /// edge mixed toward the background colour with the coverage as its weight while the alpha
+    /// said that background was only `alpha` present, so at `0` a half-covered pixel came out half
+    /// background — a colour the caller had asked to be absent. At `1` nothing changed and nothing
+    /// changes now; the two agree exactly there, which is why this shipped unnoticed.
+    ///
+    /// **A non-finite value falls back to `1.0` (opaque), like every other float setter here.**
+    /// `f32::clamp` compares with `<` / `>`, both false for `NaN`, so a bare clamp *passes NaN
+    /// through* — and this was the only float setter on this type without the guard (#577). The
+    /// consequence was not a wrong background: a `NaN` here reaches every fragment's alpha, so
+    /// glyph pixels go transparent too and the whole terminal disappears with no error anywhere.
+    /// Measured, not reasoned: booting the widget at `NaN` read `[30,30,46,0]` on a background
+    /// cell **and `[205,214,244,0]` inside a glyph**, against `[…,128]` / `[…,255]` for a valid
+    /// `0.5`. (The measurement stands; the expression it was taken against was
+    /// `mix(u_bg_alpha, 1.0, cov)`, which #317 §2 replaced — the `NaN` now reaches the colour
+    /// through the same uniform as well, so the failure is if anything less subtle.)
+    ///
+    /// Reachable from type-correct consumer code, which is why the guard is here and not at the
+    /// caller: TypeScript's `number` includes `NaN`, so an ordinary `Number(configValue)` arrives
+    /// as one. Finite out-of-range values were never the problem — the clamp already handles them
+    /// (`-3` and `9` measured as fully transparent and fully opaque respectively).
+    #[wasm_bindgen(js_name = setBgAlpha)]
+    pub fn set_bg_alpha(&mut self, alpha: f32) {
+        self.grid.set_bg_alpha(alpha)
+    }
+
+    /// Draw bold text in the bright (8–15) ANSI colour (#223/#272) — xterm's
+    /// `drawBoldTextInBrightColors`. A bold `Indexed(0..=7)` foreground resolves to its `8..=15`
+    /// bright variant; `Rgb`/`Indexed(8..=255)` foregrounds and non-bold cells are unaffected. On by
+    /// default (xterm's default). Consumer policy (ADR-0017): the mechanism (index remap at resolve)
+    /// is the renderer's, the on/off is the consumer's. Marks the buffer dirty; the next
+    /// [`render`](Self::render) re-packs (#421), so a live toggle shows without a new frame.
+    #[wasm_bindgen(js_name = setBoldToBright)]
+    pub fn set_bold_to_bright(&mut self, enabled: bool) -> Result<(), JsValue> {
+        self.grid.set_bold_to_bright(enabled)
+    }
+
+    /// Set (or clear) the selection foreground override (#227/#272) — xterm's `selectionForeground`.
+    /// A packed `0xRRGGBB` forces the fg of every **selected** cell (never a search match) to that
+    /// colour; it still flows through the minimum-contrast pass. Pass `undefined` to clear it and keep
+    /// each cell's own fg (the default). Consumer policy (#115), focus-independent. Selection is a
+    /// property of the cell, not of the bg winner (#430): on a selected cell inside the ACTIVE search
+    /// match this fg paints over the *active-match* background — pick the two colours to read on each
+    /// other, or set [`set_minimum_contrast_ratio`](Self::set_minimum_contrast_ratio) (it corrects
+    /// against the final composited bg). Marks the buffer dirty; the next [`render`](Self::render)
+    /// re-packs (#421).
+    #[wasm_bindgen(js_name = setSelectionForeground)]
+    pub fn set_selection_foreground(&mut self, color: Option<u32>) -> Result<(), JsValue> {
+        self.grid.set_selection_foreground(color)
+    }
+
+    /// Set the minimum WCAG fg/bg contrast ratio (#225/#272) — xterm's `minimumContrastRatio`. Below
+    /// it, a cell's foreground is nudged lighter or darker (in 10% luminance steps, away from the bg)
+    /// until it meets the ratio, against the colour it is actually drawn over (post-highlight). A DIM
+    /// cell uses half the ratio, so it stays visibly dim rather than being corrected to full contrast.
+    /// Consumer policy (ADR-0017): the mechanism (the WCAG adjustment on the resolved RGB) is the
+    /// renderer's, the number is the consumer's. Default `1.0` = off (xterm's default). Clamped to
+    /// `[1, 21]`; marks the buffer dirty so the next [`render`](Self::render) re-packs (#421) and a
+    /// live change shows.
+    #[wasm_bindgen(js_name = setMinimumContrastRatio)]
+    pub fn set_minimum_contrast_ratio(&mut self, ratio: f32) -> Result<(), JsValue> {
+        self.grid.set_minimum_contrast_ratio(ratio)
+    }
+
+    /// Set the minimum WCAG contrast a cursor must have with the cell it sits on (#368). Below it,
+    /// the cursor inverts to the terminal's default fg/bg so it never vanishes into a same-coloured
+    /// cell. The mechanism is the renderer's — only it has the *resolved* per-cell RGB (ADR-0017) —
+    /// but the number is the consumer's policy. Default `1.5` (alacritty's `MIN_CURSOR_CONTRAST`);
+    /// pass `1.0`, the floor of the contrast range, to disable the guard (xterm's behaviour). Clamped
+    /// to `[1, 21]`; takes effect on the next [`render`](Self::render).
+    #[wasm_bindgen(js_name = setCursorContrast)]
+    pub fn set_cursor_contrast(&mut self, threshold: f32) {
+        self.grid.set_cursor_contrast(threshold)
+    }
+
+    /// Set the cursor stroke thickness as a fraction of the cell width (#369) — the width of a
+    /// bar, an underline, or a hollow block's outline. `cursor_thickness` turns it into device
+    /// pixels as `(frac * cell_w).round().max(1)`, so it tracks both dpr and font size — alacritty's
+    /// rule (`display/cursor.rs:25`), which #270 chose over xterm's `dpr * cursorWidth` (that gives a
+    /// 32px font the same hairline as a 12px one). This adds only the configurability the mechanism
+    /// already had. A **block** ignores it — a block recolours its cell and draws no stroke.
+    ///
+    /// Default `0.15` (alacritty's `cursor.thickness`); clamped to `[0, 1]` (alacritty's
+    /// `Percentage`). The clamp is load-bearing, not hygiene: `cursor_thickness` computes
+    /// `(frac * cell_w).round() as u32`, and an unclamped `f32::INFINITY` saturates that cast to
+    /// `u32::MAX` device pixels. `NaN` is caught a layer deeper — `frac.max(0.0)` returns `0.0` for
+    /// it (`f32::max` yields the non-NaN operand) — so the floor below still gives it a 1px stroke.
+    /// The mechanism's `.max(1)` floor also means even `0` leaves a one-pixel stroke rather than an
+    /// invisible cursor. Takes effect on the next [`render`](Self::render) — like a stroke's shape,
+    /// it is a shader uniform, so changing it costs no upload.
+    #[wasm_bindgen(js_name = setCursorThickness)]
+    pub fn set_cursor_thickness(&mut self, frac: f32) {
+        self.grid.set_cursor_thickness(frac)
+    }
+
     /// Bind a renderer to the canvas matched by `canvas_selector`. `palette_colors` must be
     /// the 256 pre-built indexed colours (see `Palette::from_colors`).
     #[wasm_bindgen(constructor)]
@@ -850,75 +1245,81 @@ impl JustermRenderer {
         }
 
         let mut renderer = JustermRenderer {
-            gl,
-            canvas,
-            dpr,
-            program,
-            vao,
-            instance_vbo,
-            atlas,
-            u_projection,
-            u_cell_size,
-            u_char_size,
-            u_char_offset,
-            u_line_thickness,
-            u_bg_alpha,
-            u_cursor,
-            u_cursor_color,
-            u_cursor_text_color,
-            u_cursor_thickness,
-            cursor: None,
-            cursor_cells: (0, 1),
-            last_flags: Vec::new(),
-            last_cols: 0,
-            bg_alpha: 1.0,                            // opaque by default (#298)
-            cursor_contrast: DEFAULT_CURSOR_CONTRAST, // guard on by default (#368)
-            cursor_thickness_frac: THICKNESS,         // alacritty's 0.15 by default (#369)
-            palette,
-            rasterizer,
-            cache: GlyphCache::new(),
-            cell_size: (cell_w, cell_h),
-            char_size,
-            char_offset,
-            letter_spacing,
-            line_height,
-            font_size: FONT_SIZE,
-            font_family: "monospace".to_string(),
-            atlas_cell: (pad_w, pad_h),
-            max_texture_size,
-            raw_gl,
-            size,
-            // Whole cells that fit the canvas as authored. `resize` below snaps the buffer to
-            // exactly that grid, so `size == grid_px(grid_size, cell_size)` holds from the start.
-            grid_size: (
-                (size.0 as u32 / cell_w).max(1),
-                (size.1 as u32 / cell_h).max(1),
-            ),
-            instances: Vec::new(),
-            instance_count: 0,
-            uploaded: Vec::new(),
-            grid: None,
-            selection_spans: Vec::new(),
-            match_spans: Vec::new(),
-            active_match_spans: Vec::new(), // no active/focused match by default (#427)
-            preedit_run: Vec::new(),        // no composition open (#249)
-            preedit_col: 0,
-            preedit_row: 0,
-            highlight_colors: HighlightColors::default(),
-            bold_to_bright: true, // xterm's drawBoldTextInBrightColors default (#223)
-            min_contrast: 1.0,    // xterm's minimumContrastRatio default: off (#225)
-            selection_fg: None,   // no selectionForeground override by default (#227)
-            decoration_spans: Vec::new(), // no marker decorations by default (#393)
-            last_blink_on: true,
-            needs_repack: false,
+            global: GlobalTier {
+                gl,
+                canvas,
+                dpr,
+                program,
+                vao,
+                u_projection,
+                u_cell_size,
+                u_char_size,
+                u_char_offset,
+                u_line_thickness,
+                u_bg_alpha,
+                u_cursor,
+                u_cursor_color,
+                u_cursor_text_color,
+                u_cursor_thickness,
+                max_texture_size,
+                raw_gl,
+                size,
+                ctx_loss,
+            },
+            config: ConfigTier {
+                atlas,
+                rasterizer,
+                cache: GlyphCache::new(),
+                cell_size: (cell_w, cell_h),
+                char_size,
+                char_offset,
+                atlas_cell: (pad_w, pad_h),
+            },
+            grid: GridTier {
+                instance_vbo,
+                cursor: None,
+                cursor_cells: (0, 1),
+                last_flags: Vec::new(),
+                last_cols: 0,
+                bg_alpha: 1.0,                            // opaque by default (#298)
+                cursor_contrast: DEFAULT_CURSOR_CONTRAST, // guard on by default (#368)
+                cursor_thickness_frac: THICKNESS,         // alacritty's 0.15 by default (#369)
+                palette,
+                letter_spacing,
+                line_height,
+                font_size: FONT_SIZE,
+                font_family: "monospace".to_string(),
+                // Whole cells that fit the canvas as authored. `resize` below snaps the buffer to
+                // exactly that grid, so `size == grid_px(grid_size, cell_size)` holds from the start.
+                grid_size: (
+                    (size.0 as u32 / cell_w).max(1),
+                    (size.1 as u32 / cell_h).max(1),
+                ),
+                instances: Vec::new(),
+                instance_count: 0,
+                uploaded: Vec::new(),
+                grid: None,
+                selection_spans: Vec::new(),
+                match_spans: Vec::new(),
+                active_match_spans: Vec::new(), // no active/focused match by default (#427)
+                preedit_run: Vec::new(),        // no composition open (#249)
+                preedit_col: 0,
+                preedit_row: 0,
+                highlight_colors: HighlightColors::default(),
+                bold_to_bright: true, // xterm's drawBoldTextInBrightColors default (#223)
+                min_contrast: 1.0,    // xterm's minimumContrastRatio default: off (#225)
+                selection_fg: None,   // no selectionForeground override by default (#227)
+                decoration_spans: Vec::new(), // no marker decorations by default (#393)
+                last_blink_on: true,
+                needs_repack: false,
+            },
             pack_count: 0,
-            ctx_loss,
         };
         renderer.prebake_ascii()?;
         // Snap the drawing buffer to a whole number of cells straight away, so the invariant
         // `size == grid_px(grid_size, cell_size)` holds for the renderer's whole life and never has
         // to be re-established (beamterm's `create_with_canvas` likewise ends in a `resize`).
-        let (cols, rows) = renderer.grid_size;
+        let (cols, rows) = renderer.grid.grid_size;
         renderer.resize(cols, rows);
         Ok(renderer)
     }
@@ -1072,7 +1473,11 @@ impl JustermRenderer {
     /// Rasterise + upload the 95 normal-styled ASCII glyphs into their fixed fast-path
     /// slots (`0..=94`), so a cell using the ASCII fast path samples a real bitmap.
     fn prebake_ascii(&self) -> Result<(), JsValue> {
-        self.prebake_ascii_into(&self.rasterizer, self.atlas, self.atlas_cell)
+        self.prebake_ascii_into(
+            &self.config.rasterizer,
+            self.config.atlas,
+            self.config.atlas_cell,
+        )
     }
 
     /// Bake the 95 normal ASCII glyphs into `atlas` using `rasterizer` — parameterised so a DPR
@@ -1088,7 +1493,13 @@ impl JustermRenderer {
         for cp in 0x20u32..=0x7E {
             let ch = char::from_u32(cp).unwrap();
             let rgba = rasterizer.rasterize(&ch.to_string(), FontStyle::Normal, false)?;
-            upload_glyph(&self.gl, atlas, atlas_cell, (cp - 0x20) as u16, &rgba);
+            upload_glyph(
+                &self.global.gl,
+                atlas,
+                atlas_cell,
+                (cp - 0x20) as u16,
+                &rgba,
+            );
         }
         Ok(())
     }
@@ -1106,7 +1517,7 @@ impl JustermRenderer {
     ) -> Result<(), JsValue> {
         let (pad_w, pad_h) = atlas_cell;
         self.prebake_ascii_into(rasterizer, atlas, atlas_cell)?;
-        for (k, slot) in self.cache.entries() {
+        for (k, slot) in self.config.cache.entries() {
             // Two-cell iff the slot lives in the wide region — true for both `Wide` (CJK) and a
             // *wide* `Emoji` (2-cell colour emoji); a narrow `Emoji` (#297 EmojiNarrow) sits in
             // the normal region and is one cell. Keying off `slot_id() >= WIDE_BASE` (not
@@ -1116,10 +1527,10 @@ impl JustermRenderer {
             let base = slot.slot_id();
             if wide {
                 let (left, right) = split_wide_bitmap(&rgba, 2 * pad_w - 2 * PADDING, pad_w, pad_h);
-                upload_glyph(&self.gl, atlas, atlas_cell, base, &left);
-                upload_glyph(&self.gl, atlas, atlas_cell, base + 1, &right);
+                upload_glyph(&self.global.gl, atlas, atlas_cell, base, &left);
+                upload_glyph(&self.global.gl, atlas, atlas_cell, base + 1, &right);
             } else {
-                upload_glyph(&self.gl, atlas, atlas_cell, base, &rgba);
+                upload_glyph(&self.global.gl, atlas, atlas_cell, base, &rgba);
             }
         }
         Ok(())
@@ -1136,8 +1547,8 @@ impl JustermRenderer {
         pad_h: u32,
     ) {
         unsafe {
-            self.gl.use_program(Some(program));
-            self.gl.uniform_2_f32(
+            self.global.gl.use_program(Some(program));
+            self.global.gl.uniform_2_f32(
                 Some(u_padding_frac),
                 PADDING as f32 / pad_w as f32,
                 PADDING as f32 / pad_h as f32,
@@ -1154,7 +1565,7 @@ impl JustermRenderer {
     /// and `dpr` unadvanced, so the next notification retries (self-healing).
     #[wasm_bindgen(js_name = setDevicePixelRatio)]
     pub fn set_device_pixel_ratio(&mut self, dpr: f32) -> Result<(), JsValue> {
-        if !dpr_changed(self.dpr, dpr) {
+        if !dpr_changed(self.global.dpr, dpr) {
             return Ok(());
         }
         // A lost context can only hand back an invalidated atlas texture, so re-baking now would
@@ -1163,7 +1574,7 @@ impl JustermRenderer {
         if self.gpu_work_must_wait() {
             return Ok(());
         }
-        self.rebake_atlas(self.font_family.clone(), self.font_size, dpr)
+        self.rebake_atlas(self.grid.font_family.clone(), self.grid.font_size, dpr)
     }
 
     /// Re-bake the atlas for `font_family` at `font_size` (CSS px) × `dpr` and re-derive the buffer
@@ -1171,7 +1582,7 @@ impl JustermRenderer {
     /// font-family change (#413) — they differ only in which of the three inputs moved, so all three
     /// must re-rasterise the glyphs into a fresh atlas, re-derive the cell, and re-fit the buffer.
     /// Atomic: builds the replacement atlas + rasteriser first and commits (swapping them in +
-    /// advancing `self.font_family`/`self.font_size`/`self.dpr`) only on success, so a failure leaves
+    /// advancing `self.grid.font_family`/`self.grid.font_size`/`self.global.dpr`) only on success, so a failure leaves
     /// the old atlas / metrics untouched and the caller retries (self-healing). Assumes a **live**
     /// context — the callers skip when it is lost.
     fn rebake_atlas(
@@ -1190,43 +1601,48 @@ impl JustermRenderer {
         // cell must be re-derived from both BEFORE the atlas is sized (#322 + #338 + #359).
         let char_size = rasterizer.glyph_box();
         let cell = fit_cell_to_atlas(
-            device_cell(char_size, self.letter_spacing, self.line_height, dpr),
+            device_cell(
+                char_size,
+                self.grid.letter_spacing,
+                self.grid.line_height,
+                dpr,
+            ),
             PADDING,
             GLYPHS_PER_LAYER as u32,
-            self.max_texture_size,
+            self.global.max_texture_size,
         );
         rasterizer.set_cell(cell, glyph_offset(cell, char_size))?;
         let (pad_w, pad_h) = rasterizer.padded_size();
-        let atlas = Self::build_atlas(&self.gl, pad_w, pad_h)?;
+        let atlas = Self::build_atlas(&self.global.gl, pad_w, pad_h)?;
         let rebake = (|| -> Result<(), JsValue> {
             self.bake_all_glyphs(&rasterizer, atlas, (pad_w, pad_h))?;
             // The guard band's fraction of the (now device-sized) padded cell changed. Inside the
             // closure so a failure here is caught by the delete-on-error guard below (no leaked atlas).
-            let u_padding_frac = uniform(&self.gl, self.program, "u_padding_frac")?;
-            self.set_padding_frac(self.program, &u_padding_frac, pad_w, pad_h);
+            let u_padding_frac = uniform(&self.global.gl, self.global.program, "u_padding_frac")?;
+            self.set_padding_frac(self.global.program, &u_padding_frac, pad_w, pad_h);
             Ok(())
         })();
         if let Err(e) = rebake {
-            unsafe { self.gl.delete_texture(atlas) }; // don't leak the half-built atlas
+            unsafe { self.global.gl.delete_texture(atlas) }; // don't leak the half-built atlas
             return Err(e);
         }
         // 2. Commit atomically: swap in the new atlas + rasteriser + metrics (KEEP the cache — its
         //    slots are now valid in the new atlas — and the instances, whose slots are unchanged),
         //    drop the old atlas, and advance `font_size`/`dpr` only now that the re-bake succeeded.
-        let old_atlas = self.atlas;
-        self.rasterizer = rasterizer;
-        self.atlas = atlas;
-        self.char_size = char_size;
-        self.atlas_cell = (pad_w, pad_h);
-        self.font_family = font_family;
-        self.font_size = font_size;
-        self.dpr = dpr;
+        let old_atlas = self.config.atlas;
+        self.config.rasterizer = rasterizer;
+        self.config.atlas = atlas;
+        self.config.char_size = char_size;
+        self.config.atlas_cell = (pad_w, pad_h);
+        self.grid.font_family = font_family;
+        self.grid.font_size = font_size;
+        self.global.dpr = dpr;
         // The spacing policy survives; the cell it produces does not (#322 + #338 + #406).
         self.recompute_cell();
-        unsafe { self.gl.delete_texture(old_atlas) };
+        unsafe { self.global.gl.delete_texture(old_atlas) };
         // 3. Re-derive the buffer from the stored grid at the NEW cell size (the cells sharpen via the
         //    new atlas + the new device `cell_size` uniform on the next render).
-        let (cols, rows) = self.grid_size;
+        let (cols, rows) = self.grid.grid_size;
         self.resize(cols, rows);
         Ok(())
     }
@@ -1246,17 +1662,17 @@ impl JustermRenderer {
             return Ok(());
         }
         let css_px = css_px.max(1.0);
-        if (css_px - self.font_size).abs() < f32::EPSILON {
+        if (css_px - self.grid.font_size).abs() < f32::EPSILON {
             return Ok(());
         }
         // Unlike the DPR, the font size is not re-read from anywhere external on a context restore —
         // it lives only here. So on a lost context, still advance the field (so `restore` bakes at the
         // new size) but skip the immediate re-bake (a dead atlas would burn the work, #269).
         if self.gpu_work_must_wait() {
-            self.font_size = css_px;
+            self.grid.font_size = css_px;
             return Ok(());
         }
-        self.rebake_atlas(self.font_family.clone(), css_px, self.dpr)
+        self.rebake_atlas(self.grid.font_family.clone(), css_px, self.global.dpr)
     }
 
     /// Set the font family (#413) — a CSS `font-family` string (`"monospace"`, `"'Fira Code', monospace"`,
@@ -1271,17 +1687,17 @@ impl JustermRenderer {
     /// [`render`](Self::render).
     #[wasm_bindgen(js_name = setFontFamily)]
     pub fn set_font_family(&mut self, family: String) -> Result<(), JsValue> {
-        if family == self.font_family {
+        if family == self.grid.font_family {
             return Ok(());
         }
         // Like the font size (#406) and unlike the DPR, the family lives only in this field — it is not
         // re-read on a context restore. So on a lost context, advance the field (so `restore` bakes the
         // new family) but skip the immediate re-bake (a dead atlas would burn the work, #269).
         if self.gpu_work_must_wait() {
-            self.font_family = family;
+            self.grid.font_family = family;
             return Ok(());
         }
-        self.rebake_atlas(family, self.font_size, self.dpr)
+        self.rebake_atlas(family, self.grid.font_size, self.global.dpr)
     }
 
     /// Re-derive the grid cell and the glyph's place inside it from the current glyph box, DPR and
@@ -1291,21 +1707,21 @@ impl JustermRenderer {
     /// re-reads what WebGL granted (#339).
     fn recompute_cell(&mut self) {
         let asked = device_cell(
-            self.char_size,
-            self.letter_spacing,
-            self.line_height,
-            self.dpr,
+            self.config.char_size,
+            self.grid.letter_spacing,
+            self.grid.line_height,
+            self.global.dpr,
         );
         // Ask the implementation, do not predict it (#339's lesson, #359's bug): a cell the atlas
         // texture cannot hold leaves that texture storage-less, and a storage-less sampler answers
         // alpha 1 for every glyph. The terminal fills solid instead of failing.
-        self.cell_size = fit_cell_to_atlas(
+        self.config.cell_size = fit_cell_to_atlas(
             asked,
             PADDING,
             GLYPHS_PER_LAYER as u32,
-            self.max_texture_size,
+            self.global.max_texture_size,
         );
-        self.char_offset = glyph_offset(self.cell_size, self.char_size);
+        self.config.char_offset = glyph_offset(self.config.cell_size, self.config.char_size);
     }
 
     /// Adopt a new cell in the rasteriser and rebuild the atlas around it (#359).
@@ -1315,26 +1731,28 @@ impl JustermRenderer {
     /// is the same shape as a DPR change (#322) — build the replacement, commit only on success —
     /// and it is why `setLetterSpacing`/`setLineHeight` cost an atlas re-bake rather than a uniform.
     fn rebake_for_cell(&mut self) -> Result<(), JsValue> {
-        self.rasterizer.set_cell(self.cell_size, self.char_offset)?;
-        let (pad_w, pad_h) = self.rasterizer.padded_size();
-        if (pad_w, pad_h) == self.atlas_cell {
+        self.config
+            .rasterizer
+            .set_cell(self.config.cell_size, self.config.char_offset)?;
+        let (pad_w, pad_h) = self.config.rasterizer.padded_size();
+        if (pad_w, pad_h) == self.config.atlas_cell {
             return Ok(()); // same slot: the resident bitmaps are still right
         }
-        let atlas = Self::build_atlas(&self.gl, pad_w, pad_h)?;
+        let atlas = Self::build_atlas(&self.global.gl, pad_w, pad_h)?;
         let rebake = (|| -> Result<(), JsValue> {
-            self.bake_all_glyphs(&self.rasterizer, atlas, (pad_w, pad_h))?;
-            let u_padding_frac = uniform(&self.gl, self.program, "u_padding_frac")?;
-            self.set_padding_frac(self.program, &u_padding_frac, pad_w, pad_h);
+            self.bake_all_glyphs(&self.config.rasterizer, atlas, (pad_w, pad_h))?;
+            let u_padding_frac = uniform(&self.global.gl, self.global.program, "u_padding_frac")?;
+            self.set_padding_frac(self.global.program, &u_padding_frac, pad_w, pad_h);
             Ok(())
         })();
         if let Err(e) = rebake {
-            unsafe { self.gl.delete_texture(atlas) };
+            unsafe { self.global.gl.delete_texture(atlas) };
             return Err(e);
         }
-        let old = self.atlas;
-        self.atlas = atlas;
-        self.atlas_cell = (pad_w, pad_h);
-        unsafe { self.gl.delete_texture(old) };
+        let old = self.config.atlas;
+        self.config.atlas = atlas;
+        self.config.atlas_cell = (pad_w, pad_h);
+        unsafe { self.global.gl.delete_texture(old) };
         Ok(())
     }
 
@@ -1349,13 +1767,13 @@ impl JustermRenderer {
     /// claimed they did. Roll back instead.
     fn adopt_spacing(&mut self, letter_spacing: f32, line_height: f32) {
         let prev = (
-            self.letter_spacing,
-            self.line_height,
-            self.cell_size,
-            self.char_offset,
+            self.grid.letter_spacing,
+            self.grid.line_height,
+            self.config.cell_size,
+            self.config.char_offset,
         );
-        self.letter_spacing = letter_spacing;
-        self.line_height = line_height;
+        self.grid.letter_spacing = letter_spacing;
+        self.grid.line_height = line_height;
         self.recompute_cell();
 
         // Keep the policy, defer the re-bake: an atlas built on a dead context comes back
@@ -1373,18 +1791,18 @@ impl JustermRenderer {
         }
         if self.rebake_for_cell().is_err() {
             (
-                self.letter_spacing,
-                self.line_height,
-                self.cell_size,
-                self.char_offset,
+                self.grid.letter_spacing,
+                self.grid.line_height,
+                self.config.cell_size,
+                self.config.char_offset,
             ) = prev;
             // The rasteriser was moved to the new cell before the bake; move it back, or it keeps
             // drawing bitmaps sized for a cell nothing else believes in.
-            let _ = self.rasterizer.set_cell(prev.2, prev.3);
+            let _ = self.config.rasterizer.set_cell(prev.2, prev.3);
             return;
         }
-        debug_assert_eq!(self.atlas_cell, self.rasterizer.padded_size());
-        let (cols, rows) = self.grid_size;
+        debug_assert_eq!(self.config.atlas_cell, self.config.rasterizer.padded_size());
+        let (cols, rows) = self.grid.grid_size;
         self.resize(cols, rows);
     }
 
@@ -1398,7 +1816,7 @@ impl JustermRenderer {
     #[wasm_bindgen(js_name = setLetterSpacing)]
     pub fn set_letter_spacing(&mut self, css_px: f32) {
         let ls = if css_px.is_finite() { css_px } else { 0.0 };
-        self.adopt_spacing(ls, self.line_height);
+        self.adopt_spacing(ls, self.grid.line_height);
     }
 
     /// A multiplier on the glyph height, `>= 1` — the consumer's policy (#338). Clamped rather than
@@ -1413,7 +1831,7 @@ impl JustermRenderer {
         } else {
             1.0
         };
-        self.adopt_spacing(self.letter_spacing, lh);
+        self.adopt_spacing(self.grid.letter_spacing, lh);
     }
 
     /// Whether the WebGL context is currently lost (#269). While lost the renderer draws nothing;
@@ -1427,7 +1845,7 @@ impl JustermRenderer {
     /// as *"has a loss been reported"*, not *"is the GPU usable right now"* (#639).
     #[wasm_bindgen(js_name = isContextLost)]
     pub fn is_context_lost(&self) -> bool {
-        self.ctx_loss.state.borrow().is_lost()
+        self.global.ctx_loss.state.borrow().is_lost()
     }
 
     /// Whether GPU work must be deferred *right now* — the internal counterpart of
@@ -1450,7 +1868,7 @@ impl JustermRenderer {
     /// So: defer if **either** says so. Note that `resize` does not use this — it holds the actual
     /// answer, having just read the drawing buffer back, and guards on that instead.
     fn gpu_work_must_wait(&self) -> bool {
-        self.raw_gl.is_context_lost() || self.ctx_loss.state.borrow().is_lost()
+        self.global.raw_gl.is_context_lost() || self.global.ctx_loss.state.borrow().is_lost()
     }
 
     /// Register a callback invoked when a lost context has not been restored within the deadline
@@ -1464,7 +1882,7 @@ impl JustermRenderer {
     /// may safely destroy this renderer.
     #[wasm_bindgen(js_name = setOnContextLoss)]
     pub fn set_on_context_loss(&mut self, callback: js_sys::Function) {
-        *self.ctx_loss.notify.borrow_mut() = Some(callback);
+        *self.global.ctx_loss.notify.borrow_mut() = Some(callback);
     }
 
     /// Override how long a lost context is given to come back before
@@ -1473,7 +1891,7 @@ impl JustermRenderer {
     /// deadline already armed keeps the duration it was armed with. Negative values clamp to 0.
     #[wasm_bindgen(js_name = setContextRestoreTimeoutMs)]
     pub fn set_context_restore_timeout_ms(&mut self, ms: i32) {
-        self.ctx_loss.timeout_ms.set(ms.max(0));
+        self.global.ctx_loss.timeout_ms.set(ms.max(0));
     }
 
     /// Whether a lost context has missed its restore deadline (#327). The poll counterpart of
@@ -1481,7 +1899,7 @@ impl JustermRenderer {
     /// by a late `webglcontextrestored`, which also heals the renderer.
     #[wasm_bindgen(js_name = isRestoreOverdue)]
     pub fn is_restore_overdue(&self) -> bool {
-        self.ctx_loss.state.borrow().restore_overdue()
+        self.global.ctx_loss.state.borrow().restore_overdue()
     }
 
     /// Recreate every GPU resource the lost context destroyed (#269), then refill the instance
@@ -1505,24 +1923,29 @@ impl JustermRenderer {
     /// On any failure the old resources are left in place and `pending_rebuild` stays set, so the
     /// next frame retries (self-healing, mirroring [`set_device_pixel_ratio`](Self::set_device_pixel_ratio)).
     fn restore(&mut self) -> Result<(), JsValue> {
-        let dpr = web_sys::window().map_or(self.dpr, |w| w.device_pixel_ratio() as f32);
+        let dpr = web_sys::window().map_or(self.global.dpr, |w| w.device_pixel_ratio() as f32);
         // Bake at the consumer's font family + size (#406/#413), not the hardcoded defaults — a
         // set_font_size/set_font_family that arrived while lost advanced the field but skipped the bake.
-        let mut rasterizer = Rasterizer::new(&self.font_family, self.font_size * dpr)?;
+        let mut rasterizer = Rasterizer::new(&self.grid.font_family, self.grid.font_size * dpr)?;
         let (cell_w, cell_h) = rasterizer.glyph_box();
         // Same as the DPR path: the policy outlives the lost context, and the atlas slot is the cell.
         let cell = fit_cell_to_atlas(
-            device_cell((cell_w, cell_h), self.letter_spacing, self.line_height, dpr),
+            device_cell(
+                (cell_w, cell_h),
+                self.grid.letter_spacing,
+                self.grid.line_height,
+                dpr,
+            ),
             PADDING,
             GLYPHS_PER_LAYER as u32,
-            self.max_texture_size,
+            self.global.max_texture_size,
         );
         rasterizer.set_cell(cell, glyph_offset(cell, (cell_w, cell_h)))?;
         let (pad_w, pad_h) = rasterizer.padded_size();
 
         // 1. Build the replacements without touching any live field.
-        let pipeline = Self::build_pipeline(&self.gl)?;
-        let atlas = Self::build_atlas(&self.gl, pad_w, pad_h)?;
+        let pipeline = Self::build_pipeline(&self.global.gl)?;
+        let atlas = Self::build_atlas(&self.global.gl, pad_w, pad_h)?;
         let rebake = (|| -> Result<(), JsValue> {
             self.bake_all_glyphs(&rasterizer, atlas, (pad_w, pad_h))?;
             // The guard-band fraction is set once per program at construction, so the relinked program
@@ -1534,55 +1957,59 @@ impl JustermRenderer {
         if let Err(e) = rebake {
             // Don't leak the half-built replacements; the live ones stay in place.
             unsafe {
-                self.gl.delete_texture(atlas);
-                self.gl.delete_program(pipeline.program);
-                self.gl.delete_vertex_array(pipeline.vao);
-                self.gl.delete_buffer(pipeline.instance_vbo);
+                self.global.gl.delete_texture(atlas);
+                self.global.gl.delete_program(pipeline.program);
+                self.global.gl.delete_vertex_array(pipeline.vao);
+                self.global.gl.delete_buffer(pipeline.instance_vbo);
             }
             return Err(e);
         }
 
         // 2. Commit. The outgoing GL objects died with the context, so deleting them is a no-op on
         //    the GL side — it only frees glow's handle slots.
-        let (old_program, old_vao, old_vbo, old_atlas) =
-            (self.program, self.vao, self.instance_vbo, self.atlas);
-        self.program = pipeline.program;
-        self.vao = pipeline.vao;
-        self.instance_vbo = pipeline.instance_vbo;
-        self.atlas = atlas;
-        self.u_projection = pipeline.u_projection;
-        self.u_cell_size = pipeline.u_cell_size;
-        self.u_char_size = pipeline.u_char_size;
-        self.u_line_thickness = pipeline.u_line_thickness;
-        self.u_char_offset = pipeline.u_char_offset;
-        self.u_bg_alpha = pipeline.u_bg_alpha;
-        self.u_cursor = pipeline.u_cursor;
-        self.u_cursor_color = pipeline.u_cursor_color;
-        self.u_cursor_text_color = pipeline.u_cursor_text_color;
-        self.u_cursor_thickness = pipeline.u_cursor_thickness;
-        self.rasterizer = rasterizer;
-        self.char_size = (cell_w, cell_h);
+        let (old_program, old_vao, old_vbo, old_atlas) = (
+            self.global.program,
+            self.global.vao,
+            self.grid.instance_vbo,
+            self.config.atlas,
+        );
+        self.global.program = pipeline.program;
+        self.global.vao = pipeline.vao;
+        self.grid.instance_vbo = pipeline.instance_vbo;
+        self.config.atlas = atlas;
+        self.global.u_projection = pipeline.u_projection;
+        self.global.u_cell_size = pipeline.u_cell_size;
+        self.global.u_char_size = pipeline.u_char_size;
+        self.global.u_line_thickness = pipeline.u_line_thickness;
+        self.global.u_char_offset = pipeline.u_char_offset;
+        self.global.u_bg_alpha = pipeline.u_bg_alpha;
+        self.global.u_cursor = pipeline.u_cursor;
+        self.global.u_cursor_color = pipeline.u_cursor_color;
+        self.global.u_cursor_text_color = pipeline.u_cursor_text_color;
+        self.global.u_cursor_thickness = pipeline.u_cursor_thickness;
+        self.config.rasterizer = rasterizer;
+        self.config.char_size = (cell_w, cell_h);
         // The spacing policy outlives the lost context (#269 + #338).
         self.recompute_cell();
-        self.atlas_cell = (pad_w, pad_h);
-        self.dpr = dpr;
+        self.config.atlas_cell = (pad_w, pad_h);
+        self.global.dpr = dpr;
         unsafe {
-            self.gl.delete_texture(old_atlas);
-            self.gl.delete_program(old_program);
-            self.gl.delete_vertex_array(old_vao);
-            self.gl.delete_buffer(old_vbo);
+            self.global.gl.delete_texture(old_atlas);
+            self.global.gl.delete_program(old_program);
+            self.global.gl.delete_vertex_array(old_vao);
+            self.global.gl.delete_buffer(old_vbo);
         }
 
         // 3. The new `instance_vbo` is empty and the baseline still describes the dead one — drop it
         //    so the refill below plans a `Full` upload even when the frame is byte-identical (#263).
-        invalidate_baseline(&mut self.uploaded);
+        invalidate_baseline(&mut self.grid.uploaded);
 
         // 4. The loss reset the drawing-buffer size and the viewport; re-derive them from the grid at
         //    the (possibly new) DPR, then refill the buffer so `render` draws the pre-loss frame.
         //    This is also where a `resize` that arrived *during* the loss gets its adopt-what-fits
         //    pass: it committed the grid and skipped the read-back, leaving that to this call (#639).
         //    Nothing extra is stored for it — the grid it committed IS `grid_size`.
-        let (cols, rows) = self.grid_size;
+        let (cols, rows) = self.grid.grid_size;
         self.resize(cols, rows);
         self.upload_instances();
         Ok(())
@@ -1598,12 +2025,12 @@ impl JustermRenderer {
     /// addresses the drawing buffer — `readPixels`, GL interop, a picking rect — belongs here;
     /// [`css_cell_width`](Self::css_cell_width) is the derived view for CSS layout.
     pub fn cell_width(&self) -> u32 {
-        self.cell_size.0
+        self.config.cell_size.0
     }
 
     /// The cell height in **device pixels** (see [`cell_width`](Self::cell_width)).
     pub fn cell_height(&self) -> u32 {
-        self.cell_size.1
+        self.config.cell_size.1
     }
 
     /// The cell width in **CSS pixels**, unrounded. The consumer divides its available box by this
@@ -1615,13 +2042,13 @@ impl JustermRenderer {
     /// good — 33 device px at dpr 2 is 16.5, and 17 does not scale back to 33 (#331).
     #[wasm_bindgen(js_name = cssCellWidth)]
     pub fn css_cell_width(&self) -> f32 {
-        css_px(self.cell_size.0, self.dpr)
+        css_px(self.config.cell_size.0, self.global.dpr)
     }
 
     /// The cell height in **CSS pixels**, unrounded (see [`css_cell_width`](Self::css_cell_width)).
     #[wasm_bindgen(js_name = cssCellHeight)]
     pub fn css_cell_height(&self) -> f32 {
-        css_px(self.cell_size.1, self.dpr)
+        css_px(self.config.cell_size.1, self.global.dpr)
     }
 
     /// Size the renderer to a `cols`×`rows` **grid**. The drawing buffer becomes
@@ -1705,15 +2132,15 @@ impl JustermRenderer {
         let (mut dw, mut dh) = (1, 1);
         for _ in 0..4 {
             (dw, dh) = (
-                grid_px(cols, self.cell_size.0),
-                grid_px(rows, self.cell_size.1),
+                grid_px(cols, self.config.cell_size.0),
+                grid_px(rows, self.config.cell_size.1),
             );
-            self.canvas.set_width(dw as u32);
-            self.canvas.set_height(dh as u32);
+            self.global.canvas.set_width(dw as u32);
+            self.global.canvas.set_height(dh as u32);
 
             let (bw, bh) = (
-                self.raw_gl.drawing_buffer_width(),
-                self.raw_gl.drawing_buffer_height(),
+                self.global.raw_gl.drawing_buffer_width(),
+                self.global.raw_gl.drawing_buffer_height(),
             );
 
             // **A buffer of no size is not a grant, it is the absence of an answer** (#639). A lost
@@ -1753,53 +2180,27 @@ impl JustermRenderer {
                 break; // granted in full; a larger grant is ignored, the grid still leads (#331)
             }
             (cols, rows) = (
-                cells_that_fit(bw, self.cell_size.0),
-                cells_that_fit(bh, self.cell_size.1),
+                cells_that_fit(bw, self.config.cell_size.0),
+                cells_that_fit(bh, self.config.cell_size.1),
             );
         }
-        self.grid_size = (cols, rows);
-        self.size = (dw, dh);
+        self.grid.grid_size = (cols, rows);
+        self.global.size = (dw, dh);
 
         // `size` is a whole number of cells, always: every caller of `orthographic_from_size` and
         // `gl.viewport` below assumes it, and #331 is what happens when it stops being true.
         debug_assert_eq!(
-            self.size,
+            self.global.size,
             (
-                grid_px(self.grid_size.0, self.cell_size.0),
-                grid_px(self.grid_size.1, self.cell_size.1)
+                grid_px(self.grid.grid_size.0, self.config.cell_size.0),
+                grid_px(self.grid.grid_size.1, self.config.cell_size.1)
             ),
         );
         unsafe {
-            self.gl.viewport(0, 0, self.size.0, self.size.1);
+            self.global
+                .gl
+                .viewport(0, 0, self.global.size.0, self.global.size.1);
         }
-    }
-
-    /// The number of columns actually adopted by the last [`resize`](Self::resize). Usually the
-    /// `cols` that was asked for; smaller when the browser clamped the drawing buffer (#339).
-    ///
-    /// A consumer that keeps sending frames of the grid it *asked* for does not corrupt anything —
-    /// every per-cell read is bounds-checked and the surplus cells are clipped by the viewport — but
-    /// its mouse mapping and reflow will be wrong, so read this back rather than assuming.
-    ///
-    /// The requested grid is **not remembered**. `set_device_pixel_ratio` and the context-restore
-    /// path both re-derive the buffer from *this* value, so a clamped grid stays clamped even if a
-    /// later DPR drop would shrink the cell enough for the original to fit. That is deliberate — the
-    /// consumer owns the grid (ADR-0017) and recomputes it from its own box, as xterm's `FitAddon`
-    /// does — but it is not obvious from the field alone.
-    ///
-    /// One case reports a grid that has **not** been checked against the buffer yet: a
-    /// [`resize`](Self::resize) that arrived while the context was lost (#639). It is the grid that
-    /// was asked for, and the restore may still clamp it.
-    #[wasm_bindgen(js_name = cols)]
-    pub fn cols(&self) -> u32 {
-        self.grid_size.0
-    }
-
-    /// The number of rows actually adopted by the last [`resize`](Self::resize) — see
-    /// [`cols`](Self::cols).
-    #[wasm_bindgen(js_name = rows)]
-    pub fn rows(&self) -> u32 {
-        self.grid_size.1
     }
 
     /// The drawing buffer's width in **CSS pixels** — what the consumer should set the canvas's CSS
@@ -1813,13 +2214,13 @@ impl JustermRenderer {
     /// Round it yourself if your layout needs a whole CSS pixel; the reverse is not available.
     #[wasm_bindgen(js_name = cssWidth)]
     pub fn css_width(&self) -> f32 {
-        css_px(self.size.0 as u32, self.dpr)
+        css_px(self.global.size.0 as u32, self.global.dpr)
     }
 
     /// The drawing buffer's height in **CSS pixels** (see [`css_width`](Self::css_width)).
     #[wasm_bindgen(js_name = cssHeight)]
     pub fn css_height(&self) -> f32 {
-        css_px(self.size.1 as u32, self.dpr)
+        css_px(self.global.size.1 as u32, self.global.dpr)
     }
 
     /// Apply a `cols`×`rows` frame (dense row-major, length `cols*rows` — see #277 for the
@@ -1861,62 +2262,8 @@ impl JustermRenderer {
         // it cannot defer (#421). Clear the dirty flag: this pack IS the current state.
         let underline_colors = underline_colors.unwrap_or_default();
         let result = self.resolve_and_pack(&cells, bg, fg, &underline_colors, blink_on);
-        self.needs_repack = false;
+        self.grid.needs_repack = false;
         result
-    }
-
-    /// Resolve each cell's glyph slot then pack the instance buffer. Shared by [`apply_frame`]
-    /// (no clusters) and [`apply_damage`] (grapheme clusters from the persistent grid, #285).
-    ///
-    /// [`apply_frame`]: Self::apply_frame
-    /// [`apply_damage`]: Self::apply_damage
-    /// The composed cells, re-supplied (#249, ADR-0028 D2).
-    ///
-    /// A preedit is a **pass**, not a layer: ADR-0019's stack can recolour a channel or blank a
-    /// slot but nothing in it can *supply* a glyph, and its rule 5 authorship axis has no value for
-    /// content the browser owns and the application never declared. So the covered cells leave the
-    /// stack entirely and come back with background, foreground and glyph together — which is also
-    /// the only way a selection tint under a composition stops reading as *selected text*.
-    ///
-    /// Returns owned columns, and only while a composition is open: a page that never composes
-    /// allocates nothing here. `0` is the `Default` colour tag (see [`palette`](crate::palette)),
-    /// so the run draws in the terminal's own default fg over its default bg — ghostty's choice
-    /// (`state.colors.foreground`, no background cell at all).
-    /// The inclusive span the open composition covers, or `None` when nothing is composing or the
-    /// anchor is off the grid. The packer takes it so the layers below glyph resolution can stand
-    /// down over those cells; `preedit_patch` writes the same cells, and both derive from
-    /// [`preedit::writes`](crate::preedit::writes) so they cannot disagree.
-    fn preedit_span(&self, cols: u32, rows: u32) -> Option<PreeditSpan> {
-        let w = preedit_writes(
-            &self.preedit_run,
-            self.preedit_col,
-            self.preedit_row,
-            cols,
-            rows,
-            &[], // no grid flags: the span is the RUN, never the repair cells beside it
-        );
-        let cols_usize = cols as usize;
-        if w.is_empty() || cols_usize == 0 {
-            return None;
-        }
-        let first = w.first()?.idx;
-        let last = w.last()?.idx;
-        Some(PreeditSpan {
-            row: (first / cols_usize) as u32,
-            start: (first % cols_usize) as u32,
-            end: (last % cols_usize) as u32,
-        })
-    }
-
-    fn preedit_patch(&self, cells: &Cells, bg: &[u32], fg: &[u32]) -> Option<PreeditPatch> {
-        preedit_patch_of(
-            &self.preedit_run,
-            self.preedit_col,
-            self.preedit_row,
-            cells,
-            bg,
-            fg,
-        )
     }
 
     fn resolve_and_pack(
@@ -1960,11 +2307,11 @@ impl JustermRenderer {
         // working set (an over-capacity frame is surfaced, not silently corrupted), and
         // sanitises control codepoints to space. Field-level borrows keep `&mut cache`
         // disjoint from the GL fields the upload closure needs.
-        let cache = &mut self.cache;
-        let rasterizer = &self.rasterizer;
-        let gl = &self.gl;
-        let atlas = self.atlas;
-        let atlas_cell = self.atlas_cell; // padded (upload) dims
+        let cache = &mut self.config.cache;
+        let rasterizer = &self.config.rasterizer;
+        let gl = &self.global.gl;
+        let atlas = self.config.atlas;
+        let atlas_cell = self.config.atlas_cell; // padded (upload) dims
         let (pad_w, pad_h) = atlas_cell;
         let slots = resolve_frame(
             cells,
@@ -2022,10 +2369,10 @@ impl JustermRenderer {
         }
 
         // Keep the flags: a cursor may move onto a wide char before the next frame arrives.
-        self.last_flags.clear();
-        self.last_flags.extend_from_slice(cells.flags);
-        self.last_cols = cells.cols;
-        self.last_blink_on = blink_on;
+        self.grid.last_flags.clear();
+        self.grid.last_flags.extend_from_slice(cells.flags);
+        self.grid.last_cols = cells.cols;
+        self.grid.last_blink_on = blink_on;
         self.resolve_cursor_cells();
         let frame = Frame {
             cols: cells.cols,
@@ -2044,86 +2391,502 @@ impl JustermRenderer {
         // #271: composite the current selection / search overlay into each cell's packed bg. The
         // spans are owned by the renderer so they outlive the borrow; empty ⇒ no highlight.
         let overlay = Overlay {
-            active: &self.active_match_spans,
-            selection: &self.selection_spans,
-            matches: &self.match_spans,
-            colors: self.highlight_colors,
+            active: &self.grid.active_match_spans,
+            selection: &self.grid.selection_spans,
+            matches: &self.grid.match_spans,
+            colors: self.grid.highlight_colors,
         };
         // #272: the RGB-space colour policy (bold→bright, dim, minimum-contrast, …), assembled from
         // the renderer's fields.
         let policy = ColorPolicy {
-            bold_to_bright: self.bold_to_bright,
-            min_contrast: self.min_contrast,
-            selection_fg: self.selection_fg,
+            bold_to_bright: self.grid.bold_to_bright,
+            min_contrast: self.grid.min_contrast,
+            selection_fg: self.grid.selection_fg,
         };
         // #393: the consumer-projected marker decorations for this frame (parsed from the flat wire).
-        let decorations = parse_decorations(&self.decoration_spans);
-        self.instances = pack_instances(
+        let decorations = parse_decorations(&self.grid.decoration_spans);
+        self.grid.instances = pack_instances(
             &frame,
-            &self.palette,
+            &self.grid.palette,
             blink_on,
             &overlay,
             &policy,
             &decorations,
         );
-        self.instance_count = count as i32;
+        self.grid.instance_count = count as i32;
         self.upload_instances();
         Ok(())
     }
 
-    /// Reconcile the GPU instance buffer with the freshly packed `self.instances`, uploading
+    /// Reconcile the GPU instance buffer with the freshly packed `self.grid.instances`, uploading
     /// only the cells that changed since the last upload (#263). A size change (first frame /
     /// resize) reallocates the whole buffer; otherwise each changed contiguous range goes up via
-    /// `buffer_sub_data` and an unchanged frame does no GL work at all. `self.uploaded` mirrors
+    /// `buffer_sub_data` and an unchanged frame does no GL work at all. `self.grid.uploaded` mirrors
     /// what the GPU holds so the next frame can diff against it.
     fn upload_instances(&mut self) {
-        match plan_upload(&self.uploaded, &self.instances, INSTANCE_FLOATS) {
+        match plan_upload(&self.grid.uploaded, &self.grid.instances, INSTANCE_FLOATS) {
             UploadPlan::Full => unsafe {
-                self.gl
-                    .bind_buffer(glow::ARRAY_BUFFER, Some(self.instance_vbo));
-                self.gl.buffer_data_u8_slice(
+                self.global
+                    .gl
+                    .bind_buffer(glow::ARRAY_BUFFER, Some(self.grid.instance_vbo));
+                self.global.gl.buffer_data_u8_slice(
                     glow::ARRAY_BUFFER,
-                    f32_bytes(&self.instances),
+                    f32_bytes(&self.grid.instances),
                     glow::DYNAMIC_DRAW,
                 );
-                self.uploaded.clone_from(&self.instances);
+                self.grid.uploaded.clone_from(&self.grid.instances);
             },
             UploadPlan::Ranges(ranges) => {
                 if ranges.is_empty() {
                     return; // nothing changed — skip the bind + upload entirely
                 }
                 unsafe {
-                    self.gl
-                        .bind_buffer(glow::ARRAY_BUFFER, Some(self.instance_vbo));
+                    self.global
+                        .gl
+                        .bind_buffer(glow::ARRAY_BUFFER, Some(self.grid.instance_vbo));
                     for (start, end) in ranges {
                         let (lo, hi) = (start * INSTANCE_FLOATS, end * INSTANCE_FLOATS);
-                        self.gl.buffer_sub_data_u8_slice(
+                        self.global.gl.buffer_sub_data_u8_slice(
                             glow::ARRAY_BUFFER,
                             (lo * std::mem::size_of::<f32>()) as i32,
-                            f32_bytes(&self.instances[lo..hi]),
+                            f32_bytes(&self.grid.instances[lo..hi]),
                         );
-                        self.uploaded[lo..hi].copy_from_slice(&self.instances[lo..hi]);
+                        self.grid.uploaded[lo..hi].copy_from_slice(&self.grid.instances[lo..hi]);
                     }
                 }
             }
         }
     }
 
-    /// Consume a decoded **damage** frame directly (#277 adapter): scatter its span-ordered
-    /// cells into the persistent grid, then resolve + pack the full viewport. A Full frame wipes
-    /// the grid first, a scroll op shifts it before spans — so a Partial frame (the common case)
-    /// no longer misaligns as dense row-major. Grapheme clusters (#285) ride the `extra` column
-    /// + `side_table` and are resolved to text at scatter (the index is frame-local).
+    /// Re-pack the instance buffer from the retained dense grid — the single pack [`render`] runs when
+    /// a mutation dirtied the buffer (#421; #271 was the original overlay-only re-pack). A no-op until
+    /// the first `apply_damage` (the direct `apply_frame` path keeps no columns to re-pack from). Takes
+    /// the grid out so the `&mut self` pack does not borrow-conflict, then puts it back.
     ///
-    /// `header` carries the frame's scalars, `[cols, rows, kind, has_scroll, scroll_top,
-    /// scroll_bottom, scroll_count, blink_on]` (kind `0` = Full / `1` = Partial; `scroll_count`
-    /// reinterpreted as `i16`; `blink_on` `0`/`1`). `spans` is the span directory
-    /// (`SPAN_STRIDE` `u32`s each);
-    /// `codepoints`/`fg`/`bg`/`flags`/`extra` are the span-ordered cell columns.
-    // 8 typed-array / vec columns at the wasm-bindgen boundary; each is a distinct JS view that
-    // can't be structurally grouped without an AoS rewrite that would break the zero-copy SoA.
+    /// [`render`]: Self::render
+    fn repack_from_grid(&mut self) -> Result<(), JsValue> {
+        let Some(grid) = self.grid.grid.take() else {
+            return Ok(());
+        };
+        let cells = Cells {
+            cols: grid.cols(),
+            rows: grid.rows(),
+            codepoints: grid.codepoints(),
+            flags: grid.flags(),
+            clusters: grid.clusters(),
+        };
+        let result = self.resolve_and_pack(
+            &cells,
+            grid.bg(),
+            grid.fg(),
+            grid.underline_colors(),
+            self.grid.last_blink_on,
+        );
+        self.grid.grid = Some(grid);
+        result
+    }
+
+    /// Clear to the palette's default background, then draw every cell of the current frame
+    /// (glyph composited over background) with one instanced draw call.
+    ///
+    /// Context loss (#269) is handled here, before any GL work: while the context is lost this is a
+    /// silent no-op (a draw call on a dead context accomplishes nothing), and on the frame after
+    /// `webglcontextrestored` it first rebuilds the destroyed resources. Recovery therefore needs
+    /// no consumer cooperation beyond continuing to call `render`. A failed rebuild propagates and
+    /// is retried on the next frame.
+    ///
+    /// **"While the context is lost" means either sense of lost, and it did not always** (#695).
+    /// The decision consults the context itself *and* the state machine's flag, because a browser
+    /// destroys a context synchronously and only queues the event: asking the flag alone, this
+    /// promise was false for that slice — a pending rebuild ran on a dead context and threw.
+    pub fn render(&mut self) -> Result<(), JsValue> {
+        // Ask the CONTEXT, then let the state machine compose that with the flag it owns
+        // (#695, ADR-0027 D3). Bound to locals in this order deliberately: the liveness read
+        // must not happen while the `Ref` below is alive, and the `Ref` must be released
+        // before the `&mut self` calls in the match.
+        let live = if self.global.raw_gl.is_context_lost() {
+            ContextLiveness::Dead
+        } else {
+            ContextLiveness::Usable
+        };
+        let action = self.global.ctx_loss.state.borrow().action(live);
+        match action {
+            FrameAction::Skip => return Ok(()),
+            FrameAction::Rebuild => {
+                self.restore()?;
+                // Only now that the rebuild is committed does the retry latch clear.
+                self.global.ctx_loss.state.borrow_mut().rebuilt();
+            }
+            FrameAction::Draw => {}
+        }
+        // Pack once, here, if a mutation since the last render dirtied the buffer (#421) — the
+        // context is live past the match above (Skip returned, Rebuild restored). A frame that set
+        // overlay + decorations + `apply_damage` marked dirty three times but re-packs once. On a
+        // pack error the flag stays set, so the next render retries (self-healing).
+        if self.grid.needs_repack {
+            self.repack_from_grid()?;
+            self.grid.needs_repack = false;
+        }
+        self.draw();
+        Ok(())
+    }
+
+    /// Number of instance-buffer packs run so far (#421 diagnostic). The consumer/proofs read the
+    /// **delta** across an operation to assert `render` packs once per frame, not once per setter.
+    /// Not a stable API surface — a counter for verification, not a rendering control.
+    #[wasm_bindgen(js_name = packs)]
+    pub fn packs(&self) -> u32 {
+        self.pack_count
+    }
+
+    /// Issue the frame's GL commands. The caller has established that the context is live and its
+    /// resources are intact.
+    fn draw(&self) {
+        let [dr, dg, db] = gl_rgb(self.grid.palette.default_bg);
+        unsafe {
+            // Clear with the injected background opacity so any area not covered by a cell is
+            // see-through too; cells then write their own per-pixel alpha (#298). The buffer is now
+            // an exact multiple of the cell (#331), so the only uncovered area is a frame whose grid
+            // is smaller than the one `resize` was given.
+            self.global.gl.clear_color(dr, dg, db, self.grid.bg_alpha);
+            self.global.gl.clear(glow::COLOR_BUFFER_BIT);
+
+            if self.grid.instance_count == 0 {
+                return;
+            }
+
+            self.global.gl.use_program(Some(self.global.program));
+            self.global.gl.active_texture(glow::TEXTURE0);
+            self.global
+                .gl
+                .bind_texture(glow::TEXTURE_2D_ARRAY, Some(self.config.atlas));
+            // The instance buffer already holds the current frame — `upload_instances` (in the
+            // pack path) uploaded only the changed cells (#263), so render just binds + draws.
+            self.global.gl.bind_vertex_array(Some(self.global.vao));
+
+            let proj =
+                Mat4::orthographic_from_size(self.global.size.0 as f32, self.global.size.1 as f32);
+            self.global.gl.uniform_matrix_4_f32_slice(
+                Some(&self.global.u_projection),
+                false,
+                &proj.data,
+            );
+            self.global.gl.uniform_2_f32(
+                Some(&self.global.u_cell_size),
+                self.config.cell_size.0 as f32,
+                self.config.cell_size.1 as f32,
+            );
+            self.global.gl.uniform_2_f32(
+                Some(&self.global.u_char_size),
+                self.config.char_size.0 as f32,
+                self.config.char_size.1 as f32,
+            );
+            self.global.gl.uniform_2_f32(
+                Some(&self.global.u_char_offset),
+                self.config.char_offset.0 as f32,
+                self.config.char_offset.1 as f32,
+            );
+            self.global.gl.uniform_1_f32(
+                Some(&self.global.u_line_thickness),
+                crate::metrics::line_thickness(self.grid.font_size * self.global.dpr) as f32,
+            );
+            self.global
+                .gl
+                .uniform_1_f32(Some(&self.global.u_bg_alpha), self.grid.bg_alpha);
+            // `u_cursor.w == 0` means NO cursor; a shape is `shape_id + 1`. Every shape — block
+            // included — reaches the shader this way, so a move or a blink is a uniform, not an
+            // upload (#270).
+            let (cx, cy, span, shape) = match self.grid.cursor {
+                Some(c) => (
+                    self.grid.cursor_cells.0 as f32,
+                    c.row as f32,
+                    self.grid.cursor_cells.1 as f32,
+                    shape_id(c.shape) as f32 + 1.0,
+                ),
+                None => (0.0, 0.0, 1.0, 0.0),
+            };
+            self.global
+                .gl
+                .uniform_4_f32(Some(&self.global.u_cursor), cx, cy, span, shape);
+            // The visibility guard (#368): look up the cursor cell's RESOLVED bg in the packed
+            // instances (row-major, `bg` at float offset 2 of each `INSTANCE_FLOATS` cell) and invert
+            // the cursor to the default fg/bg if its contrast is below the injected threshold. Only the
+            // renderer has this resolved RGB, which is why the mechanism lives here (ADR-0017). If the
+            // cursor sits off the current grid (no packed cell), honour the consumer's colours as-is.
+            //
+            // The index is bounded only by `get()`, not by `col < last_cols`: a cursor with
+            // `col >= last_cols` but a small row would read a DIFFERENT row's cell here. That is
+            // harmless because the shader's `covers()` paints the cursor only where a real cell has
+            // `col ∈ [cursor.col, cursor.col + span)`, i.e. only when `col < cols` — so a mis-read
+            // guarded colour is never sampled by any fragment. Valid as long as `covers()` keeps that
+            // gate.
+            let (color, text_color) = match self.grid.cursor {
+                Some(c) => {
+                    let cell_bg = (c.row as usize)
+                        .checked_mul(self.grid.last_cols as usize)
+                        .and_then(|i| i.checked_add(self.grid.cursor_cells.0 as usize))
+                        .and_then(|i| i.checked_mul(INSTANCE_FLOATS))
+                        .and_then(|base| self.grid.instances.get(base + 2..base + 5));
+                    match cell_bg {
+                        Some(bg) => guarded_cursor_colors(
+                            c.color,
+                            c.text_color,
+                            [bg[0], bg[1], bg[2]],
+                            self.grid.palette.default_fg,
+                            self.grid.palette.default_bg,
+                            self.grid.cursor_contrast,
+                        ),
+                        None => (c.color, c.text_color),
+                    }
+                }
+                None => (0, 0),
+            };
+            let [cr, cg, cb] = gl_rgb(color);
+            self.global
+                .gl
+                .uniform_3_f32(Some(&self.global.u_cursor_color), cr, cg, cb);
+            let [tr, tg, tb] = gl_rgb(text_color);
+            self.global
+                .gl
+                .uniform_3_f32(Some(&self.global.u_cursor_text_color), tr, tg, tb);
+            self.global.gl.uniform_1_f32(
+                Some(&self.global.u_cursor_thickness),
+                cursor_thickness(self.grid.cursor_thickness_frac, self.config.cell_size.0) as f32,
+            );
+
+            self.global.gl.draw_arrays_instanced(
+                glow::TRIANGLE_STRIP,
+                0,
+                4,
+                self.grid.instance_count,
+            );
+        }
+    }
+}
+
+/// The pure cursor geometry (`cursor::cursor_rects`) as a flat `[x, y, w, h, ...]`, exposed so a
+/// proof page can hold the fragment shader's per-pixel test to the same rectangles. Two
+/// independent formulations of one spec: a drift between them is the bug this exists to catch.
+#[wasm_bindgen(js_name = cursorRects)]
+pub fn cursor_rects_js(shape: u8, cell_w: u32, cell_h: u32, span: u32, thickness: u32) -> Vec<u32> {
+    let Some(shape) = shape_from_id(shape) else {
+        return Vec::new();
+    };
+    cursor_rects(shape, (cell_w, cell_h), span, thickness)
+        .into_iter()
+        .flat_map(|r| [r.x, r.y, r.w, r.h])
+        .collect()
+}
+
+/// Fetch a required uniform location or error.
+fn uniform(
+    gl: &glow::Context,
+    program: glow::Program,
+    name: &str,
+) -> Result<glow::UniformLocation, JsValue> {
+    // Safety: live GL context.
+    unsafe {
+        gl.get_uniform_location(program, name)
+            .ok_or_else(|| JsValue::from_str(&format!("justerm-renderer: no uniform {name}")))
+    }
+}
+
+/// Wrap a GL/string error as a `JsValue`.
+fn js_err(msg: String) -> JsValue {
+    JsValue::from_str(&format!("justerm-renderer: {msg}"))
+}
+
+/// Per-grid operations (ADR-0021 D1/D2). These live here rather than on the facade because
+/// multi-viewport (#287) multiplies this struct and nothing else: a method written against
+/// `GridTier` is already the per-grid form #770 needs, and one that reached into another tier
+/// would not compile here.
+impl GridTier {
+    fn set_bg_alpha(&mut self, alpha: f32) {
+        self.bg_alpha = if alpha.is_finite() {
+            alpha.clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
+    }
+
+    fn set_bold_to_bright(&mut self, enabled: bool) -> Result<(), JsValue> {
+        self.bold_to_bright = enabled;
+        self.needs_repack = true; // defer the pack to render (#421)
+        Ok(())
+    }
+
+    fn set_selection_foreground(&mut self, color: Option<u32>) -> Result<(), JsValue> {
+        self.selection_fg = color.map(|c| c & 0xFF_FFFF);
+        self.needs_repack = true; // defer the pack to render (#421)
+        Ok(())
+    }
+
+    fn set_minimum_contrast_ratio(&mut self, ratio: f32) -> Result<(), JsValue> {
+        self.min_contrast = if ratio.is_finite() {
+            ratio.clamp(1.0, 21.0)
+        } else {
+            1.0
+        };
+        self.needs_repack = true; // defer the pack to render (#421)
+        Ok(())
+    }
+
+    fn set_cursor_contrast(&mut self, threshold: f32) {
+        self.cursor_contrast = threshold.clamp(1.0, 21.0);
+    }
+
+    fn set_cursor_thickness(&mut self, frac: f32) {
+        self.cursor_thickness_frac = frac.clamp(0.0, 1.0);
+    }
+}
+
+/// Per-grid operations (ADR-0021 D1/D2). These live here rather than on the facade because
+/// multi-viewport (#287) multiplies this struct and nothing else: a method written against
+/// `GridTier` is already the per-grid form #770 needs, and one that reached into another tier
+/// would not compile here.
+impl GridTier {
+    fn set_palette(
+        &mut self,
+        palette_colors: Vec<u32>,
+        default_fg: u32,
+        default_bg: u32,
+    ) -> Result<(), JsValue> {
+        self.palette =
+            Palette::from_colors(&palette_colors, default_fg, default_bg).map_err(|e| {
+                JsValue::from_str(&format!(
+                    "justerm-renderer: palette must be 256 colours, got {}",
+                    e.got
+                ))
+            })?;
+        // A re-pack is all a live theme swap needs: it re-resolves every cell's colour against the new
+        // palette (the render's clear reads `self.palette.default_bg` fresh). #298 translucency used to
+        // also re-push a `u_default_bg` uniform here; since #455 its trigger is the packer's per-cell
+        // `bg_default` provenance flag — palette-independent — so the re-pack alone carries it.
+        self.needs_repack = true; // defer the pack to render (#421)
+        Ok(())
+    }
+
+    fn set_overlay(
+        &mut self,
+        selection_spans: Vec<u32>,
+        match_spans: Vec<u32>,
+        selection_bg: u32,
+        match_bg: u32,
+    ) -> Result<(), JsValue> {
+        self.selection_spans = selection_spans;
+        self.match_spans = match_spans;
+        // Update the two colours this setter owns WITHOUT clobbering `active_match_bg` (#427), which
+        // `set_active_match` owns — the active channel is set independently.
+        self.highlight_colors.selection_bg = selection_bg;
+        self.highlight_colors.match_bg = match_bg;
+        self.needs_repack = true; // defer the pack to render (#421)
+        Ok(())
+    }
+
+    fn set_active_match(&mut self, active_spans: Vec<u32>, active_match_bg: u32) {
+        self.active_match_spans = active_spans;
+        self.highlight_colors.active_match_bg = active_match_bg;
+        self.needs_repack = true; // defer the pack to render (#421), same as set_overlay
+    }
+
+    fn set_decorations(&mut self, spans: Vec<u32>) -> Result<(), JsValue> {
+        self.decoration_spans = spans;
+        self.needs_repack = true; // defer the pack to render (#421)
+        Ok(())
+    }
+
+    fn set_cursor(
+        &mut self,
+        col: u32,
+        row: u32,
+        shape: u8,
+        color: u32,
+        text_color: u32,
+    ) -> Result<(), JsValue> {
+        let Some(shape) = shape_from_id(shape) else {
+            return Err(JsValue::from_str(&format!(
+                "justerm-renderer: cursor shape {shape} is not one of 0..=3"
+            )));
+        };
+        self.cursor = Some(Cursor {
+            col,
+            row,
+            shape,
+            color,
+            text_color,
+        });
+        self.resolve_cursor_cells();
+        Ok(())
+    }
+
+    fn clear_cursor(&mut self) {
+        self.cursor = None;
+    }
+
+    fn resolve_cursor_cells(&mut self) {
+        self.cursor_cells = self.cursor.map_or((0, 1), |c| {
+            cursor_cells_at(&self.last_flags, self.last_cols, c.col, c.row)
+        });
+    }
+
+    fn cols(&self) -> u32 {
+        self.grid_size.0
+    }
+
+    fn rows(&self) -> u32 {
+        self.grid_size.1
+    }
+
+    fn preedit_caret_col(&self) -> u32 {
+        let cols = self.cols();
+        let last = cols.saturating_sub(1);
+        if self.preedit_run.is_empty() || cols == 0 {
+            return self.preedit_col.min(last);
+        }
+        preedit_caret_col_of(&self.preedit_run, self.preedit_col, last)
+    }
+
+    fn preedit_span(&self, cols: u32, rows: u32) -> Option<PreeditSpan> {
+        let w = preedit_writes(
+            &self.preedit_run,
+            self.preedit_col,
+            self.preedit_row,
+            cols,
+            rows,
+            &[], // no grid flags: the span is the RUN, never the repair cells beside it
+        );
+        let cols_usize = cols as usize;
+        if w.is_empty() || cols_usize == 0 {
+            return None;
+        }
+        let first = w.first()?.idx;
+        let last = w.last()?.idx;
+        Some(PreeditSpan {
+            row: (first / cols_usize) as u32,
+            start: (first % cols_usize) as u32,
+            end: (last % cols_usize) as u32,
+        })
+    }
+
+    fn preedit_patch(&self, cells: &Cells, bg: &[u32], fg: &[u32]) -> Option<PreeditPatch> {
+        preedit_patch_of(
+            &self.preedit_run,
+            self.preedit_col,
+            self.preedit_row,
+            cells,
+            bg,
+            fg,
+        )
+    }
+}
+
+/// Per-grid operations (ADR-0021 D1/D2). These live here rather than on the facade because
+/// multi-viewport (#287) multiplies this struct and nothing else: a method written against
+/// `GridTier` is already the per-grid form #770 needs, and one that reached into another tier
+/// would not compile here.
+impl GridTier {
     #[allow(clippy::too_many_arguments)]
-    pub fn apply_damage(
+    fn apply_damage(
         &mut self,
         header: &[u32],
         spans: &[u32],
@@ -2197,218 +2960,7 @@ impl JustermRenderer {
         Ok(())
     }
 
-    /// Set the background cell opacity: `0` = fully transparent, `1` = opaque (default). The
-    /// consumer injects this policy (ADR-0017) to make the terminal background see-through to the
-    /// page/desktop behind the canvas, while glyph pixels stay opaque. Clamped to `[0, 1]`; takes
-    /// effect on the next [`render`](Self::render) (#298).
-    ///
-    /// **A translucent background contributes to a cell's colour in proportion to how translucent
-    /// it is** (#317 §2, fixed 2026-08-18). It used to contribute in full: an antialiased glyph
-    /// edge mixed toward the background colour with the coverage as its weight while the alpha
-    /// said that background was only `alpha` present, so at `0` a half-covered pixel came out half
-    /// background — a colour the caller had asked to be absent. At `1` nothing changed and nothing
-    /// changes now; the two agree exactly there, which is why this shipped unnoticed.
-    ///
-    /// **A non-finite value falls back to `1.0` (opaque), like every other float setter here.**
-    /// `f32::clamp` compares with `<` / `>`, both false for `NaN`, so a bare clamp *passes NaN
-    /// through* — and this was the only float setter on this type without the guard (#577). The
-    /// consequence was not a wrong background: a `NaN` here reaches every fragment's alpha, so
-    /// glyph pixels go transparent too and the whole terminal disappears with no error anywhere.
-    /// Measured, not reasoned: booting the widget at `NaN` read `[30,30,46,0]` on a background
-    /// cell **and `[205,214,244,0]` inside a glyph**, against `[…,128]` / `[…,255]` for a valid
-    /// `0.5`. (The measurement stands; the expression it was taken against was
-    /// `mix(u_bg_alpha, 1.0, cov)`, which #317 §2 replaced — the `NaN` now reaches the colour
-    /// through the same uniform as well, so the failure is if anything less subtle.)
-    ///
-    /// Reachable from type-correct consumer code, which is why the guard is here and not at the
-    /// caller: TypeScript's `number` includes `NaN`, so an ordinary `Number(configValue)` arrives
-    /// as one. Finite out-of-range values were never the problem — the clamp already handles them
-    /// (`-3` and `9` measured as fully transparent and fully opaque respectively).
-    #[wasm_bindgen(js_name = setBgAlpha)]
-    pub fn set_bg_alpha(&mut self, alpha: f32) {
-        self.bg_alpha = if alpha.is_finite() {
-            alpha.clamp(0.0, 1.0)
-        } else {
-            1.0
-        };
-    }
-
-    /// Draw bold text in the bright (8–15) ANSI colour (#223/#272) — xterm's
-    /// `drawBoldTextInBrightColors`. A bold `Indexed(0..=7)` foreground resolves to its `8..=15`
-    /// bright variant; `Rgb`/`Indexed(8..=255)` foregrounds and non-bold cells are unaffected. On by
-    /// default (xterm's default). Consumer policy (ADR-0017): the mechanism (index remap at resolve)
-    /// is the renderer's, the on/off is the consumer's. Marks the buffer dirty; the next
-    /// [`render`](Self::render) re-packs (#421), so a live toggle shows without a new frame.
-    #[wasm_bindgen(js_name = setBoldToBright)]
-    pub fn set_bold_to_bright(&mut self, enabled: bool) -> Result<(), JsValue> {
-        self.bold_to_bright = enabled;
-        self.needs_repack = true; // defer the pack to render (#421)
-        Ok(())
-    }
-
-    /// Set the marker-anchored decorations for this frame (#393/#120). `spans` is the flat
-    /// `DECORATION_STRIDE` (`row, left, right, layer, bg, fg`) directory the consumer projects
-    /// from its `DecorationRegistry` + core's markers — `layer` `0` = bottom (under the highlight) /
-    /// `1` = top (over it), `bg`/`fg` **absolute** packed `0xRRGGBB` used **verbatim** (the consumer
-    /// resolved its theme before pushing — unlike a *cell* colour, which arrives as a theme-agnostic
-    /// ref for the renderer to resolve), or the wire's `NO_REF` sentinel for "no override". Pass an
-    /// empty array to clear. Consumer-projected (the model is the consumer's; the renderer only
-    /// composites, ADR-0017). Marks the buffer dirty; the next [`render`](Self::render)
-    /// re-packs (#421).
-    #[wasm_bindgen(js_name = setDecorations)]
-    pub fn set_decorations(&mut self, spans: Vec<u32>) -> Result<(), JsValue> {
-        self.decoration_spans = spans;
-        self.needs_repack = true; // defer the pack to render (#421)
-        Ok(())
-    }
-
-    /// Set (or clear) the selection foreground override (#227/#272) — xterm's `selectionForeground`.
-    /// A packed `0xRRGGBB` forces the fg of every **selected** cell (never a search match) to that
-    /// colour; it still flows through the minimum-contrast pass. Pass `undefined` to clear it and keep
-    /// each cell's own fg (the default). Consumer policy (#115), focus-independent. Selection is a
-    /// property of the cell, not of the bg winner (#430): on a selected cell inside the ACTIVE search
-    /// match this fg paints over the *active-match* background — pick the two colours to read on each
-    /// other, or set [`set_minimum_contrast_ratio`](Self::set_minimum_contrast_ratio) (it corrects
-    /// against the final composited bg). Marks the buffer dirty; the next [`render`](Self::render)
-    /// re-packs (#421).
-    #[wasm_bindgen(js_name = setSelectionForeground)]
-    pub fn set_selection_foreground(&mut self, color: Option<u32>) -> Result<(), JsValue> {
-        self.selection_fg = color.map(|c| c & 0xFF_FFFF);
-        self.needs_repack = true; // defer the pack to render (#421)
-        Ok(())
-    }
-
-    /// Set the minimum WCAG fg/bg contrast ratio (#225/#272) — xterm's `minimumContrastRatio`. Below
-    /// it, a cell's foreground is nudged lighter or darker (in 10% luminance steps, away from the bg)
-    /// until it meets the ratio, against the colour it is actually drawn over (post-highlight). A DIM
-    /// cell uses half the ratio, so it stays visibly dim rather than being corrected to full contrast.
-    /// Consumer policy (ADR-0017): the mechanism (the WCAG adjustment on the resolved RGB) is the
-    /// renderer's, the number is the consumer's. Default `1.0` = off (xterm's default). Clamped to
-    /// `[1, 21]`; marks the buffer dirty so the next [`render`](Self::render) re-packs (#421) and a
-    /// live change shows.
-    #[wasm_bindgen(js_name = setMinimumContrastRatio)]
-    pub fn set_minimum_contrast_ratio(&mut self, ratio: f32) -> Result<(), JsValue> {
-        self.min_contrast = if ratio.is_finite() {
-            ratio.clamp(1.0, 21.0)
-        } else {
-            1.0
-        };
-        self.needs_repack = true; // defer the pack to render (#421)
-        Ok(())
-    }
-
-    /// Swap the palette + default fg/bg for a **live theme change** (#405) — the renderer-side of a
-    /// theme picker or a runtime scheme swap, so a consumer need not tear down and rebuild the
-    /// renderer to recolour. `palette_colors` is the 256 pre-built indexed colours (as the
-    /// constructor takes); `default_fg`/`default_bg` the theme's defaults. Consumer policy
-    /// (ADR-0017): the palette *values* are the consumer's (theme-agnostic core), the *mechanism*
-    /// (re-resolve every retained cell against the new palette) is the renderer's.
-    ///
-    /// Marks the buffer dirty so the next [`render`](Self::render) re-packs (#421) and the change
-    /// shows with no new frame — like [`set_overlay`] (a no-op until the first `apply_damage`; the
-    /// direct `apply_frame` path reflects the new palette on its next call). The re-pack is all that
-    /// is needed: it re-resolves every cell's colour against the new palette, and the render's clear
-    /// reads `default_bg` fresh. #298 translucency no longer needs a uniform re-push here — since #455
-    /// its trigger is the packer's per-cell `bg_default` provenance flag, which is palette-independent.
-    ///
-    /// [`set_overlay`]: Self::set_overlay
-    #[wasm_bindgen(js_name = setPalette)]
-    pub fn set_palette(
-        &mut self,
-        palette_colors: Vec<u32>,
-        default_fg: u32,
-        default_bg: u32,
-    ) -> Result<(), JsValue> {
-        self.palette =
-            Palette::from_colors(&palette_colors, default_fg, default_bg).map_err(|e| {
-                JsValue::from_str(&format!(
-                    "justerm-renderer: palette must be 256 colours, got {}",
-                    e.got
-                ))
-            })?;
-        // A re-pack is all a live theme swap needs: it re-resolves every cell's colour against the new
-        // palette (the render's clear reads `self.palette.default_bg` fresh). #298 translucency used to
-        // also re-push a `u_default_bg` uniform here; since #455 its trigger is the packer's per-cell
-        // `bg_default` provenance flag — palette-independent — so the re-pack alone carries it.
-        self.needs_repack = true; // defer the pack to render (#421)
-        Ok(())
-    }
-
-    /// Set the selection / search highlight overlay (#271): the two span directories (stride-3
-    /// `(row, left, right)` viewport triples, exactly as `justerm-wasm-decode` `selectionSpans` /
-    /// `matchSpans` ship them) plus their blend colours (packed `0xRRGGBB`, consumer policy #115 —
-    /// the renderer is theme-agnostic). A covered cell blends the colour over a non-default / inverse
-    /// background so its own colour shows through, or paints it solid over the default background; a
-    /// selection wins over a match on a cell both cover.
-    ///
-    /// Marks the buffer dirty so the next [`render`](Self::render) re-packs (#421) — a selection
-    /// dragged with no new frame shows because the consumer renders after. Possible only on the
-    /// damage path, which retains the dense grid; the direct `apply_frame` path reflects the new
-    /// overlay on its next call. Pass empty span lists to clear the highlight.
-    ///
-    /// **Contract — the spans are consumer-pushed, not frame-carried (same as [`set_cursor`]).** They
-    /// are viewport-relative and the decoder RE-PROJECTS them every frame, so a scroll or resize moves
-    /// them: the consumer must re-issue `set_overlay` with the current frame's spans whenever the
-    /// viewport changes *or* the selection changes — exactly as it re-issues `set_cursor`. Stale spans
-    /// do not panic (an out-of-range span simply highlights nothing), but an in-range stale span
-    /// highlights the wrong cells until the next call. Unlike beamterm, whose spans ride each decoded
-    /// frame, this renderer cannot self-refresh — the split mirrors the cursor's, and #273 wires both.
-    ///
-    /// [`set_cursor`]: Self::set_cursor
-    #[wasm_bindgen(js_name = setOverlay)]
-    pub fn set_overlay(
-        &mut self,
-        selection_spans: Vec<u32>,
-        match_spans: Vec<u32>,
-        selection_bg: u32,
-        match_bg: u32,
-    ) -> Result<(), JsValue> {
-        self.selection_spans = selection_spans;
-        self.match_spans = match_spans;
-        // Update the two colours this setter owns WITHOUT clobbering `active_match_bg` (#427), which
-        // `set_active_match` owns — the active channel is set independently.
-        self.highlight_colors.selection_bg = selection_bg;
-        self.highlight_colors.match_bg = match_bg;
-        self.needs_repack = true; // defer the pack to render (#421)
-        Ok(())
-    }
-
-    /// Set the *active* (focused/current) search-match spans + their background (#427) — the xterm
-    /// `activeMatchBackground` decoration, ranked **above the selection** (`highlight_at`). Additive
-    /// beside [`set_overlay`](Self::set_overlay): the consumer pushes the current search result here
-    /// as the search box navigates (`next`/`prev`), independent of the selection, so a user text
-    /// selection and the current match coexist. The active match is *also* pushed in `set_overlay`'s
-    /// `match_spans`; the ranking, not exclusion, makes the active colour win. Same viewport-relative,
-    /// re-issue-every-frame contract as [`set_overlay`](Self::set_overlay). Empty spans clear the active match.
-    #[wasm_bindgen(js_name = setActiveMatch)]
-    pub fn set_active_match(&mut self, active_spans: Vec<u32>, active_match_bg: u32) {
-        self.active_match_spans = active_spans;
-        self.highlight_colors.active_match_bg = active_match_bg;
-        self.needs_repack = true; // defer the pack to render (#421), same as set_overlay
-    }
-
-    /// The in-progress IME composition to draw, anchored at `(col, row)` — the cursor cell the
-    /// consumer's current frame reported. `codepoints` is the preedit as the OS reports it
-    /// (`compositionupdate.data`); an empty array clears it.
-    ///
-    /// **This is the one piece of renderer state with no representation anywhere in the engine**
-    /// (ADR-0028): a composition is browser-owned, reaches no frame and no wire, so the consumer is
-    /// the only possible source and must re-push on every `compositionupdate`. Skipping an update
-    /// whose data is unchanged is worth doing — a real IME emits one settling update per syllable
-    /// where nothing moved (measured, #249).
-    ///
-    /// The run may extend past the anchor's row end: it shifts left to stay whole rather than
-    /// clipping (`preedit::range` — crate-private, so no link from this page). Width is per codepoint, the same
-    /// `unicode-width` answer the engine gives, so a VS16 emoji measures narrow here exactly as it
-    /// does there.
-    /// Returns the column the **caret and the IME anchor** belong at: one past the run's last cell,
-    /// clamped to the grid. The consumer cannot compute this — it has no `wcwidth` — and it is not
-    /// simply `col + len`, because the run shifts left at the right edge. Feeding it back to
-    /// `setCursor` is ADR-0028 D5's position rule (the caret rides the composition's end, while
-    /// DECTCEM still decides whether it is drawn at all), and feeding it to the hidden textarea is
-    /// D4's voluntary writer.
-    #[wasm_bindgen(js_name = setPreedit)]
-    pub fn set_preedit(&mut self, col: u32, row: u32, codepoints: Vec<u32>) -> u32 {
+    fn set_preedit(&mut self, col: u32, row: u32, codepoints: Vec<u32>) -> u32 {
         self.preedit_run = codepoints
             .into_iter()
             .map(|cp| PreeditCodepoint {
@@ -2421,329 +2973,4 @@ impl JustermRenderer {
         self.needs_repack = true; // defer the pack to render (#421), same as set_overlay
         self.preedit_caret_col()
     }
-
-    /// One past the composition's last cell, clamped — see [`set_preedit`](Self::set_preedit).
-    /// With no composition open this is the anchor cell itself, so a consumer that always reads it
-    /// gets the cursor cell back and needs no special case for "not composing".
-    fn preedit_caret_col(&self) -> u32 {
-        let cols = self.cols();
-        let last = cols.saturating_sub(1);
-        if self.preedit_run.is_empty() || cols == 0 {
-            return self.preedit_col.min(last);
-        }
-        preedit_caret_col_of(&self.preedit_run, self.preedit_col, last)
-    }
-
-    /// Re-pack the instance buffer from the retained dense grid — the single pack [`render`] runs when
-    /// a mutation dirtied the buffer (#421; #271 was the original overlay-only re-pack). A no-op until
-    /// the first `apply_damage` (the direct `apply_frame` path keeps no columns to re-pack from). Takes
-    /// the grid out so the `&mut self` pack does not borrow-conflict, then puts it back.
-    ///
-    /// [`render`]: Self::render
-    fn repack_from_grid(&mut self) -> Result<(), JsValue> {
-        let Some(grid) = self.grid.take() else {
-            return Ok(());
-        };
-        let cells = Cells {
-            cols: grid.cols(),
-            rows: grid.rows(),
-            codepoints: grid.codepoints(),
-            flags: grid.flags(),
-            clusters: grid.clusters(),
-        };
-        let result = self.resolve_and_pack(
-            &cells,
-            grid.bg(),
-            grid.fg(),
-            grid.underline_colors(),
-            self.last_blink_on,
-        );
-        self.grid = Some(grid);
-        result
-    }
-
-    /// Set the minimum WCAG contrast a cursor must have with the cell it sits on (#368). Below it,
-    /// the cursor inverts to the terminal's default fg/bg so it never vanishes into a same-coloured
-    /// cell. The mechanism is the renderer's — only it has the *resolved* per-cell RGB (ADR-0017) —
-    /// but the number is the consumer's policy. Default `1.5` (alacritty's `MIN_CURSOR_CONTRAST`);
-    /// pass `1.0`, the floor of the contrast range, to disable the guard (xterm's behaviour). Clamped
-    /// to `[1, 21]`; takes effect on the next [`render`](Self::render).
-    #[wasm_bindgen(js_name = setCursorContrast)]
-    pub fn set_cursor_contrast(&mut self, threshold: f32) {
-        self.cursor_contrast = threshold.clamp(1.0, 21.0);
-    }
-
-    /// Set the cursor stroke thickness as a fraction of the cell width (#369) — the width of a
-    /// bar, an underline, or a hollow block's outline. `cursor_thickness` turns it into device
-    /// pixels as `(frac * cell_w).round().max(1)`, so it tracks both dpr and font size — alacritty's
-    /// rule (`display/cursor.rs:25`), which #270 chose over xterm's `dpr * cursorWidth` (that gives a
-    /// 32px font the same hairline as a 12px one). This adds only the configurability the mechanism
-    /// already had. A **block** ignores it — a block recolours its cell and draws no stroke.
-    ///
-    /// Default `0.15` (alacritty's `cursor.thickness`); clamped to `[0, 1]` (alacritty's
-    /// `Percentage`). The clamp is load-bearing, not hygiene: `cursor_thickness` computes
-    /// `(frac * cell_w).round() as u32`, and an unclamped `f32::INFINITY` saturates that cast to
-    /// `u32::MAX` device pixels. `NaN` is caught a layer deeper — `frac.max(0.0)` returns `0.0` for
-    /// it (`f32::max` yields the non-NaN operand) — so the floor below still gives it a 1px stroke.
-    /// The mechanism's `.max(1)` floor also means even `0` leaves a one-pixel stroke rather than an
-    /// invisible cursor. Takes effect on the next [`render`](Self::render) — like a stroke's shape,
-    /// it is a shader uniform, so changing it costs no upload.
-    #[wasm_bindgen(js_name = setCursorThickness)]
-    pub fn set_cursor_thickness(&mut self, frac: f32) {
-        self.cursor_thickness_frac = frac.clamp(0.0, 1.0);
-    }
-
-    /// Place the cursor (#270). `shape`: `0` block, `1` underline, `2` bar, `3` hollow block.
-    /// `color` is the cursor's own `0xRRGGBB`; `text_color` the glyph colour a block paints under
-    /// itself (xterm's `cursorAccent`, alacritty's `text_color`). Colours are resolved by the
-    /// consumer — the renderer stays theme-agnostic.
-    ///
-    /// **Every shape, the block included, lives in the cursor uniform** (`u_cursor` + its colours,
-    /// declared with `FRAG_SRC` in this file) and is resolved per fragment. So any cursor change —
-    /// move, blink, shape — takes effect on the next [`render`](Self::render) alone: one uniform,
-    /// no re-pack and no instance upload. Blink phase is the consumer's policy, exactly as
-    /// `blink_on` is (#282) — call `clearCursor` for the off phase.
-    ///
-    /// A block *could* have been an instance: it is a colour override on the cell, not geometry,
-    /// and both references draw it that way. It is not one because ADR-0018
-    /// (`docs/adr/0018-justerm-renderer.md`) makes that **the contract, not an
-    /// optimisation** — a blink tick produces no terminal output, so a block packed into the
-    /// instances could not blink off without the consumer re-feeding the frame (an early #270 draft
-    /// did exactly that). Two consequences follow rather than cause it: un-painting would need a
-    /// re-pack, and per-fragment resolution keeps the ordering free, since the instance colours
-    /// arrive already inverse-swapped and the glyph already concealed.
-    #[wasm_bindgen(js_name = setCursor)]
-    pub fn set_cursor(
-        &mut self,
-        col: u32,
-        row: u32,
-        shape: u8,
-        color: u32,
-        text_color: u32,
-    ) -> Result<(), JsValue> {
-        let Some(shape) = shape_from_id(shape) else {
-            return Err(JsValue::from_str(&format!(
-                "justerm-renderer: cursor shape {shape} is not one of 0..=3"
-            )));
-        };
-        self.cursor = Some(Cursor {
-            col,
-            row,
-            shape,
-            color,
-            text_color,
-        });
-        self.resolve_cursor_cells();
-        Ok(())
-    }
-
-    /// Re-resolve [`Self::cursor_cells`] against the last frame's flags. Called when a frame arrives
-    /// (its flags may have changed under a still cursor) *and* when the cursor moves (onto either
-    /// half of a wide char, with no new frame).
-    fn resolve_cursor_cells(&mut self) {
-        self.cursor_cells = self.cursor.map_or((0, 1), |c| {
-            cursor_cells_at(&self.last_flags, self.last_cols, c.col, c.row)
-        });
-    }
-
-    /// Remove the cursor — hidden (`DECTCEM`), or the blink's off phase.
-    #[wasm_bindgen(js_name = clearCursor)]
-    pub fn clear_cursor(&mut self) {
-        self.cursor = None;
-    }
-
-    /// Clear to the palette's default background, then draw every cell of the current frame
-    /// (glyph composited over background) with one instanced draw call.
-    ///
-    /// Context loss (#269) is handled here, before any GL work: while the context is lost this is a
-    /// silent no-op (a draw call on a dead context accomplishes nothing), and on the frame after
-    /// `webglcontextrestored` it first rebuilds the destroyed resources. Recovery therefore needs
-    /// no consumer cooperation beyond continuing to call `render`. A failed rebuild propagates and
-    /// is retried on the next frame.
-    ///
-    /// **"While the context is lost" means either sense of lost, and it did not always** (#695).
-    /// The decision consults the context itself *and* the state machine's flag, because a browser
-    /// destroys a context synchronously and only queues the event: asking the flag alone, this
-    /// promise was false for that slice — a pending rebuild ran on a dead context and threw.
-    pub fn render(&mut self) -> Result<(), JsValue> {
-        // Ask the CONTEXT, then let the state machine compose that with the flag it owns
-        // (#695, ADR-0027 D3). Bound to locals in this order deliberately: the liveness read
-        // must not happen while the `Ref` below is alive, and the `Ref` must be released
-        // before the `&mut self` calls in the match.
-        let live = if self.raw_gl.is_context_lost() {
-            ContextLiveness::Dead
-        } else {
-            ContextLiveness::Usable
-        };
-        let action = self.ctx_loss.state.borrow().action(live);
-        match action {
-            FrameAction::Skip => return Ok(()),
-            FrameAction::Rebuild => {
-                self.restore()?;
-                // Only now that the rebuild is committed does the retry latch clear.
-                self.ctx_loss.state.borrow_mut().rebuilt();
-            }
-            FrameAction::Draw => {}
-        }
-        // Pack once, here, if a mutation since the last render dirtied the buffer (#421) — the
-        // context is live past the match above (Skip returned, Rebuild restored). A frame that set
-        // overlay + decorations + `apply_damage` marked dirty three times but re-packs once. On a
-        // pack error the flag stays set, so the next render retries (self-healing).
-        if self.needs_repack {
-            self.repack_from_grid()?;
-            self.needs_repack = false;
-        }
-        self.draw();
-        Ok(())
-    }
-
-    /// Number of instance-buffer packs run so far (#421 diagnostic). The consumer/proofs read the
-    /// **delta** across an operation to assert `render` packs once per frame, not once per setter.
-    /// Not a stable API surface — a counter for verification, not a rendering control.
-    #[wasm_bindgen(js_name = packs)]
-    pub fn packs(&self) -> u32 {
-        self.pack_count
-    }
-
-    /// Issue the frame's GL commands. The caller has established that the context is live and its
-    /// resources are intact.
-    fn draw(&self) {
-        let [dr, dg, db] = gl_rgb(self.palette.default_bg);
-        unsafe {
-            // Clear with the injected background opacity so any area not covered by a cell is
-            // see-through too; cells then write their own per-pixel alpha (#298). The buffer is now
-            // an exact multiple of the cell (#331), so the only uncovered area is a frame whose grid
-            // is smaller than the one `resize` was given.
-            self.gl.clear_color(dr, dg, db, self.bg_alpha);
-            self.gl.clear(glow::COLOR_BUFFER_BIT);
-
-            if self.instance_count == 0 {
-                return;
-            }
-
-            self.gl.use_program(Some(self.program));
-            self.gl.active_texture(glow::TEXTURE0);
-            self.gl
-                .bind_texture(glow::TEXTURE_2D_ARRAY, Some(self.atlas));
-            // The instance buffer already holds the current frame — `upload_instances` (in the
-            // pack path) uploaded only the changed cells (#263), so render just binds + draws.
-            self.gl.bind_vertex_array(Some(self.vao));
-
-            let proj = Mat4::orthographic_from_size(self.size.0 as f32, self.size.1 as f32);
-            self.gl
-                .uniform_matrix_4_f32_slice(Some(&self.u_projection), false, &proj.data);
-            self.gl.uniform_2_f32(
-                Some(&self.u_cell_size),
-                self.cell_size.0 as f32,
-                self.cell_size.1 as f32,
-            );
-            self.gl.uniform_2_f32(
-                Some(&self.u_char_size),
-                self.char_size.0 as f32,
-                self.char_size.1 as f32,
-            );
-            self.gl.uniform_2_f32(
-                Some(&self.u_char_offset),
-                self.char_offset.0 as f32,
-                self.char_offset.1 as f32,
-            );
-            self.gl.uniform_1_f32(
-                Some(&self.u_line_thickness),
-                crate::metrics::line_thickness(self.font_size * self.dpr) as f32,
-            );
-            self.gl.uniform_1_f32(Some(&self.u_bg_alpha), self.bg_alpha);
-            // `u_cursor.w == 0` means NO cursor; a shape is `shape_id + 1`. Every shape — block
-            // included — reaches the shader this way, so a move or a blink is a uniform, not an
-            // upload (#270).
-            let (cx, cy, span, shape) = match self.cursor {
-                Some(c) => (
-                    self.cursor_cells.0 as f32,
-                    c.row as f32,
-                    self.cursor_cells.1 as f32,
-                    shape_id(c.shape) as f32 + 1.0,
-                ),
-                None => (0.0, 0.0, 1.0, 0.0),
-            };
-            self.gl
-                .uniform_4_f32(Some(&self.u_cursor), cx, cy, span, shape);
-            // The visibility guard (#368): look up the cursor cell's RESOLVED bg in the packed
-            // instances (row-major, `bg` at float offset 2 of each `INSTANCE_FLOATS` cell) and invert
-            // the cursor to the default fg/bg if its contrast is below the injected threshold. Only the
-            // renderer has this resolved RGB, which is why the mechanism lives here (ADR-0017). If the
-            // cursor sits off the current grid (no packed cell), honour the consumer's colours as-is.
-            //
-            // The index is bounded only by `get()`, not by `col < last_cols`: a cursor with
-            // `col >= last_cols` but a small row would read a DIFFERENT row's cell here. That is
-            // harmless because the shader's `covers()` paints the cursor only where a real cell has
-            // `col ∈ [cursor.col, cursor.col + span)`, i.e. only when `col < cols` — so a mis-read
-            // guarded colour is never sampled by any fragment. Valid as long as `covers()` keeps that
-            // gate.
-            let (color, text_color) = match self.cursor {
-                Some(c) => {
-                    let cell_bg = (c.row as usize)
-                        .checked_mul(self.last_cols as usize)
-                        .and_then(|i| i.checked_add(self.cursor_cells.0 as usize))
-                        .and_then(|i| i.checked_mul(INSTANCE_FLOATS))
-                        .and_then(|base| self.instances.get(base + 2..base + 5));
-                    match cell_bg {
-                        Some(bg) => guarded_cursor_colors(
-                            c.color,
-                            c.text_color,
-                            [bg[0], bg[1], bg[2]],
-                            self.palette.default_fg,
-                            self.palette.default_bg,
-                            self.cursor_contrast,
-                        ),
-                        None => (c.color, c.text_color),
-                    }
-                }
-                None => (0, 0),
-            };
-            let [cr, cg, cb] = gl_rgb(color);
-            self.gl
-                .uniform_3_f32(Some(&self.u_cursor_color), cr, cg, cb);
-            let [tr, tg, tb] = gl_rgb(text_color);
-            self.gl
-                .uniform_3_f32(Some(&self.u_cursor_text_color), tr, tg, tb);
-            self.gl.uniform_1_f32(
-                Some(&self.u_cursor_thickness),
-                cursor_thickness(self.cursor_thickness_frac, self.cell_size.0) as f32,
-            );
-
-            self.gl
-                .draw_arrays_instanced(glow::TRIANGLE_STRIP, 0, 4, self.instance_count);
-        }
-    }
-}
-
-/// The pure cursor geometry (`cursor::cursor_rects`) as a flat `[x, y, w, h, ...]`, exposed so a
-/// proof page can hold the fragment shader's per-pixel test to the same rectangles. Two
-/// independent formulations of one spec: a drift between them is the bug this exists to catch.
-#[wasm_bindgen(js_name = cursorRects)]
-pub fn cursor_rects_js(shape: u8, cell_w: u32, cell_h: u32, span: u32, thickness: u32) -> Vec<u32> {
-    let Some(shape) = shape_from_id(shape) else {
-        return Vec::new();
-    };
-    cursor_rects(shape, (cell_w, cell_h), span, thickness)
-        .into_iter()
-        .flat_map(|r| [r.x, r.y, r.w, r.h])
-        .collect()
-}
-
-/// Fetch a required uniform location or error.
-fn uniform(
-    gl: &glow::Context,
-    program: glow::Program,
-    name: &str,
-) -> Result<glow::UniformLocation, JsValue> {
-    // Safety: live GL context.
-    unsafe {
-        gl.get_uniform_location(program, name)
-            .ok_or_else(|| JsValue::from_str(&format!("justerm-renderer: no uniform {name}")))
-    }
-}
-
-/// Wrap a GL/string error as a `JsValue`.
-fn js_err(msg: String) -> JsValue {
-    JsValue::from_str(&format!("justerm-renderer: {msg}"))
 }
