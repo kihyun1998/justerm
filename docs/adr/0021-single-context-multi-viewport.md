@@ -255,6 +255,14 @@ the paragraph above is not weakened by this (it asserts that no reference holds 
 is D1–D4, which are derived rather than cited. What is affected is the arrangement's *plausibility at
 scale* argument, which rests on wezterm alone.
 
+**And that argument narrowed on the same day, which is why pinning wezterm was not worth doing to
+settle it.** The bullet above cites wezterm for a bottom tier carrying *"no GPU resources at all"*.
+D2 moved `instance_vbo` **into** the per-grid tier, so justerm's bottom tier holds a GPU buffer and is
+no longer that shape — deliberately, for a reason wezterm's arrangement never has to face (it emits
+every pane's quads through one allocator into shared layers, so there is nothing per-pane to hold). So
+wezterm still supports *"one context, N panes, split ownership, at scale"*, and no longer supports the
+narrower claim. Verifying it would confirm a description of wezterm, not a premise of this decision.
+
 ## Consequences
 
 - **Every context-global setter added since 2026-07-07 is a migration item.** The slices since have
