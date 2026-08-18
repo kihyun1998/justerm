@@ -130,8 +130,9 @@ sites, the outlier, or demoted — so a difference from it is not by itself a de
 - **The policy setters have no records.** `set_bg_alpha`, `set_minimum_contrast_ratio`,
   `set_bold_to_bright`, `set_selection_foreground` each change what a cell resolves to, and ADR-0019
   governs the *model* rather than the individual knobs.
-- **The record feeding the Bottom/Top layers may not be accepted yet** — ADR-0024's `Status:`
-  line is the place to check, and it is not restated here.
+- ~~**The record feeding the Bottom/Top layers may not be accepted yet**~~ — **accepted 2026-08-18
+  (#502)**. ADR-0024's `Status:` line remains the place to check and is still not restated here;
+  what changes is that the layers' feed is no longer governed by a proposal.
 - **A mark's z-order is only observable where a *declared* colour splits it from the glyph's ink.**
   A strikethrough has no declared-colour regime at all (#525), so its position relative to the glyph
   cannot be asserted by a proof on an ordinary cell — rule 6 states it, and only a cell where a
