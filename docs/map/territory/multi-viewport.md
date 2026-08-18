@@ -78,8 +78,9 @@ appear in any other note's checklist. It is reachable only from here and from th
 
 When built, it lands squarely on:
 
-- [glyph atlas](glyph-atlas.md) — the atlas becomes per-context and shared across grids, which is the
-  whole economy of the design
+- [glyph atlas](glyph-atlas.md) — the atlas becomes **per-config**, shared by every grid on the same
+  font configuration, which is the whole economy of the design. Not per-context: two grids in
+  different fonts hold different atlases on one context, and that difference is the tier
 - [GL context lifecycle](gl-context-lifecycle.md) — one loss would take down **every** grid at once
   rather than one, and the restore path is currently written for a single surface
 - [cell geometry](cell-geometry.md) — the cell size stops being a property of the renderer and becomes
