@@ -1621,3 +1621,37 @@ is gated on a *surviving marker* having moved (`markers.rs`, `markers_rotate_reg
 in the buffer it never moves at all, and with markers present the same scroll moves it. It therefore
 answers *"did a marker move"*, not *"did a coordinate shift"*, and must not be read as the latter.
 Only **on-screen** matches actually move; scrollback matches keep their absolute index exactly.
+
+## Multi-viewport resource tiering — how the one reference that shares font machinery splits it (#768, verified 2026-08-18)
+
+Read for ADR-0021's tier rule. **What the reference's word is worth here:** `theflow.md`'s tie-breaker
+table has no row for renderer resource tiering, and ADR-0021 itself records that *"the three-tier
+keying is justerm's own synthesis — no cited reference splits resources global / per-config /
+per-grid"*. So these rows are a **convergence check on a derived rule**, not an authority over it: the
+rule stands on what keying costs, and removing ghostty from the argument leaves it standing. Only the
+*middle* tier has direct precedent.
+
+Note the noun inversion, which is the easiest way to misread every row below: ghostty's `Surface` is
+**one per terminal** and owns a renderer, a GPU atlas texture and a render thread; ADR-0021's
+`TerminalSurface` is **one per app**. Read ghostty's "surface" as justerm's *grid*.
+
+| Fact | Reference | Site |
+|---|---|---|
+| The shared set is **keyed by font configuration**, and states its own reason — *"allows expensive font information such as the font atlas, glyph cache, font faces, etc. to be shared"*. Refcounted (`ref` / `deref`) | ghostty | `src/font/SharedGridSet.zig:1-12` |
+| A shared grid is **immutable**: it *"does NOT support resizing, font-family changes …"* because *"increasing the font size in one would increase it in all"*; a config change means a **new** grid that surfaces switch over to | ghostty | `src/font/SharedGrid.zig:1-22` |
+| A surface holds the **selector and the key side by side** — `font_grid_key`, `font_size`, `font_metrics` — so the setting is per-terminal while the machinery it selects is not | ghostty | `src/Surface.zig:75-77` |
+| `setFontSize` writes the selector **per-surface** (`self.font_size = size`) and then `ref`s the shared keyed grid — *selector per-grid, resource per-config*, implemented rather than theorised | ghostty | `src/Surface.zig:2441`, `:2444` |
+| The surface **copies the shared grid's product onto itself** (`self.size.cell = size`, `self.font_metrics = font_grid.metrics`) — a tier names the owner, not the only place a value may sit | ghostty | `src/Surface.zig:2413`, `:2469` |
+| The 256-colour **palette stays per-surface** and is read from `state.colors.palette` at draw time, although two surfaces on one theme could share it byte-for-byte — sharing is bought for expensive things only | ghostty | `src/renderer/generic.zig:2024-2026` |
+| **The atlas grows; it never evicts.** `grow` preserves *"all previously written data"*, and a full atlas raises `Error.AtlasFull` rather than repointing a slot — so a slot handed to one surface can never be reused under another | ghostty | `src/font/Atlas.zig:313-314`, `:78` (raised at `:177`) |
+
+**The last row is the one that does not transfer, and it is why ADR-0021 owes a Consequence rather
+than an import.** `justerm-renderer`'s glyph cache is LRU-**evicting**, so sharing an atlas across
+grids creates a hazard ghostty's arrangement cannot have: one grid's pack can repoint a slot another
+grid's instance buffer still refers to. Adopting the arrangement without this precondition is the
+error the row exists to prevent.
+
+**Cannot be checked from here:** ADR-0021 also cites **WezTerm** (per-window `RenderState`, per-pane
+state with no GPU resources) and **three.js** (`webgl_multiple_elements`), and neither has a pinned
+tree in `../.refs/`. WezTerm is the record's only cited precedent for a bottom tier holding no GPU
+resources — i.e. the unverifiable citation is the one carrying the load ghostty explicitly does not.
