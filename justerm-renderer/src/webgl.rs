@@ -2200,14 +2200,23 @@ impl JustermRenderer {
     /// page/desktop behind the canvas, while glyph pixels stay opaque. Clamped to `[0, 1]`; takes
     /// effect on the next [`render`](Self::render) (#298).
     ///
+    /// **A translucent background contributes to a cell's colour in proportion to how translucent
+    /// it is** (#317 §2, fixed 2026-08-18). It used to contribute in full: an antialiased glyph
+    /// edge mixed toward the background colour with the coverage as its weight while the alpha
+    /// said that background was only `alpha` present, so at `0` a half-covered pixel came out half
+    /// background — a colour the caller had asked to be absent. At `1` nothing changed and nothing
+    /// changes now; the two agree exactly there, which is why this shipped unnoticed.
+    ///
     /// **A non-finite value falls back to `1.0` (opaque), like every other float setter here.**
     /// `f32::clamp` compares with `<` / `>`, both false for `NaN`, so a bare clamp *passes NaN
     /// through* — and this was the only float setter on this type without the guard (#577). The
-    /// consequence was not a wrong background: `bg_a = mix(u_bg_alpha, 1.0, cov)` makes every
-    /// fragment's alpha `NaN`, so glyph pixels go transparent too and the whole terminal
-    /// disappears with no error anywhere. Measured, not reasoned: booting the widget at `NaN`
-    /// read `[30,30,46,0]` on a background cell **and `[205,214,244,0]` inside a glyph**, against
-    /// `[…,128]` / `[…,255]` for a valid `0.5`.
+    /// consequence was not a wrong background: a `NaN` here reaches every fragment's alpha, so
+    /// glyph pixels go transparent too and the whole terminal disappears with no error anywhere.
+    /// Measured, not reasoned: booting the widget at `NaN` read `[30,30,46,0]` on a background
+    /// cell **and `[205,214,244,0]` inside a glyph**, against `[…,128]` / `[…,255]` for a valid
+    /// `0.5`. (The measurement stands; the expression it was taken against was
+    /// `mix(u_bg_alpha, 1.0, cov)`, which #317 §2 replaced — the `NaN` now reaches the colour
+    /// through the same uniform as well, so the failure is if anything less subtle.)
     ///
     /// Reachable from type-correct consumer code, which is why the guard is here and not at the
     /// caller: TypeScript's `number` includes `NaN`, so an ordinary `Number(configValue)` arrives

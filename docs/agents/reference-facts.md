@@ -825,6 +825,22 @@ further down in the same file.
 | **alacritty's band-over-glyph is a batching artefact, not a decision** — `draw_rects` runs after `draw_cells` and carries the visual bell and message bar in the same pass, which must be on top; nothing in the file defends the underline's place, and its `descent` references are all band *position* | alacritty | `alacritty/src/display/mod.rs:878`, `:990`, `renderer/rects.rs:81-116` |
 | No reference has any strikethrough-**colour** concept: SGR 58/59 are underline-colour set/reset only, and `strike*_color` has zero hits across all three trees. Making the strike permanently follow-fg forecloses nothing that exists | ghostty | `src/terminal/sgr.zig:388` |
 
+### How a translucent background composites (#317 §2, verified 2026-08-18)
+
+**Read the tie-breaker before using these.** Renderer cell composition answers to justerm's own model
+(ADR-0019); these rows are mechanism, not authority. They exist because #317 §2 deferred a fix for
+three years' worth of readers on the premise that a correct composite *"would belong in the shared
+shader"* and needed *"premultiplied-AA / two-pass"* — a premise inherited from beamterm and never
+re-derived. What the references actually establish is narrower: **they get there with a different
+architecture**, not that this architecture cannot.
+
+| Fact | Reference | Site |
+|---|---|---|
+| Background and text are **separate passes with hardware blending**, so no fragment ever has to compose the two itself: `BlendFuncSeparate(SRC_ALPHA, ONE_MINUS_SRC_ALPHA, SRC_ALPHA, ONE)` | alacritty | `alacritty/src/renderer/mod.rs:252` |
+| Text then switches to dual-source subpixel blending — a second, different blend func on the same frame | alacritty | `alacritty/src/renderer/mod.rs:260` |
+| Translucency is a whole configurable blending *mode*, with an sRGB framebuffer for linear blending | ghostty | `src/renderer/OpenGL.zig:157`, `generic.zig` (`use_linear_blending`, `use_linear_correction`) |
+| ⚠ **Neither is precedent for justerm's shader, and the difference is structural.** justerm enables no GL blending at all and emits one fragment carrying the whole composite (`premultipliedAlpha: false`). Straight-alpha source-over is closed-form there — `a = 1 - w(1-A)`, `rgb = (ink + bg·A·w)/a` — so the arithmetic is available in one pass and was simply not being done. A finding of the form *"the references use two passes"* is a design proposal on a layer where they have no vote, not a defect | — | this repo, `justerm-renderer/src/webgl.rs` |
+
 ## Validating a decoded payload against its own declared geometry (#582, verified 2026-07-31)
 
 The occasion: justerm's `decode` accepted a frame whose parts did not fit the `cols`/`rows` the same
