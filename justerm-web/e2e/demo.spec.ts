@@ -1695,7 +1695,7 @@ test.describe("bgAlpha given at create boots translucent (#577)", () => {
 //
 // **This test could not exist before `justerm-renderer@0.8.0`** and is the reason this file's pin was
 // raised. `set_bg_alpha` used to pass a non-finite value straight into the uniform, and because every
-// fragment's alpha is `mix(u_bg_alpha, 1.0, coverage)`, the glyphs went transparent with the
+// fragment's alpha is derived from that uniform, the glyphs went transparent with the
 // background — the whole terminal vanished, silently. Against the published 0.7.0 both assertions
 // below read 0. So this is the widget-level counterpart of the renderer's own `bg-alpha.html` proof:
 // that one guards the mechanism, this one guards that a *consumer* passing a bad number through the

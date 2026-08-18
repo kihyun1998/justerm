@@ -731,7 +731,9 @@ out before any value is copied.
 **Direction.** Not a divergence to fix. On the *shape* of the knob the references split 1–1 (alacritty
 scalar, xterm boolean-plus-colour-alpha) and justerm took alacritty's in #298, so there is no majority
 to be an outlier against. On *which cells* go transparent, justerm's shader
-(`webgl.rs` `bg_a = (!block && v_bg_default > 0.5) ? mix(u_bg_alpha, 1.0, cov) : 1.0`) converges with
+(`webgl.rs`, the `(!block && v_bg_default > 0.5) ? u_bg_alpha : 1.0` gate — the expression quoted here
+until 2026-08-18 was `bg_a = … mix(u_bg_alpha, 1.0, cov) …`, which #317 §2 replaced; the *convergence*
+is unaffected, only the code it was read off) converges with
 alacritty's **default** exactly — default-bg only, glyph coverage pulled back to opaque, cursor cell
 forced opaque. The one thing justerm has no expression for is the *opt-in* both alacritty and ghostty
 carry for extending alpha to explicitly coloured cells — an absent **feature**, not a wrong

@@ -87,6 +87,34 @@
   const half = inkPixels(0.5);
   const opaque = inkPixels(1);
 
+  // The CURSOR STROKE is the one ink source whose weight matters at the DEFAULT `bgAlpha = 1`, where
+  // everything else on this page is a no-op — so without this the factor that carries it ships
+  // unpinned. A bar over a SPACE, so the stroke is the only ink in the cell and every pixel that is
+  // not the background is one. The background must be a colour (not black): `base_bg * w_bg` adds
+  // nothing when the background is 0, which is why `cursor.html` — built on `0x000000` — cannot see
+  // a missing factor here at all.
+  const CURSOR = 0xff0000, TEXT = 0x000000, BAR = 3;
+  const CURSOR_RGB = [0xff, 0x00, 0x00];
+  function cursorStroke(alpha) {
+    r.setBgAlpha(alpha);
+    r.apply_frame(1, 1, zero, zero, new Uint32Array([0x20]), new Uint16Array(1), true);
+    r.setCursor(0, 0, BAR, CURSOR, TEXT);
+    r.render();
+    const { buf } = readCells(gl, r, 0);
+    const out = [];
+    for (let i = 0; i < buf.length; i += 4) {
+      const p = { r: buf[i], g: buf[i + 1], b: buf[i + 2], a: buf[i + 3] };
+      const isBackground = p.r === BG_RGB[0] && p.g === BG_RGB[1] && p.b === BG_RGB[2];
+      if (!isBackground && p.a > 0) out.push(p);
+    }
+    return out;
+  }
+  const strokeOpaque = cursorStroke(1);
+  const strokeTranslucent = cursorStroke(0);
+  r.clearCursor();
+  const isCursorColour = (p) =>
+    p.r === CURSOR_RGB[0] && p.g === CURSOR_RGB[1] && p.b === CURSOR_RGB[2];
+
   // The window this proof reads: pixels the rasteriser only partly covered. Everything below is
   // vacuous without it, which is exactly what happens at the default font size.
   const partial = transparent.filter((p) => p.a < 255).length;
@@ -128,6 +156,16 @@
       // CONTROL. The alpha channel is untouched by this fix: the translucent case still carries a
       // partial-alpha ramp rather than being flattened to opaque.
       alphaRampSurvives: transparent.some((p) => p.a > 0 && p.a < 255),
+      // The cursor's stroke draws in its OWN colour, with no background added — at the DEFAULT
+      // opacity, where nothing else here is observable. Drop the stroke's weight out of the
+      // background's surviving fraction and this reads `cursor + background`, saturating: measured
+      // `rgb(255,96,160)` for a red bar on this blue, at every dpr.
+      cursorStrokeIsItsOwnColour: strokeOpaque.length > 0 && strokeOpaque.every(isCursorColour),
+      // …and it stays opaque and its own colour on a fully transparent terminal. Same factor, the
+      // other side of it: without the weight `a` reaches 0 here and the cursor disappears outright.
+      cursorStrokeSurvivesTransparency:
+        strokeTranslucent.length > 0 &&
+        strokeTranslucent.every((p) => isCursorColour(p) && p.a === 255),
     },
   };
   window.__proof.ok = Object.values(window.__proof.checks).every(Boolean);
