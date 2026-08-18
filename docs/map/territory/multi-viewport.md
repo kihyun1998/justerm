@@ -6,9 +6,11 @@ One WebGL2 context drawing **N terminal grids** as viewports, instead of one con
 A tabbed or split-pane host needs many grids on screen; browsers cap the number of live WebGL
 contexts, and each one carries its own glyph atlas and shader program.
 
-**This territory is a record with no code.** It is the inverse of every other note here — those
-describe behaviour that exists and hunt for the decision behind it; this one has the decision and
-nothing implementing it.
+**This territory started as a record with no code**, the inverse of every other note here: those
+describe behaviour that exists and hunt for the decision behind it, while this one had the decision
+and nothing implementing it. #769 gave it its first code, so it is now the ordinary shape — but the
+decision still reaches much further than the implementation, and `## Code` is where that gap is
+stated rather than here, so this paragraph does not need rewriting as each slice lands.
 
 ## Governing decisions
 
@@ -81,10 +83,13 @@ for the shape remains unverifiable at the moment someone builds against it.
 
 ## Blast radius
 
-Nothing today, and that is the point: a territory with no code has no blast radius, so it cannot
-appear in any other note's checklist. It is reachable only from here and from the hub.
+**Still effectively nothing**, though no longer for the original reason. This note used to say a
+territory with no code has no blast radius; #769 gave it code, and the radius is *still* empty —
+the tier split changed no behaviour and no public surface, so nothing downstream can observe it. A
+territory can hold code and touch nothing, which is what a pure structural slice looks like.
 
-When built, it lands squarely on:
+The list below is what lands **when the multi-grid work does**, and the entries above the fold in
+`## Code` say how much of that has happened:
 
 - [glyph atlas](glyph-atlas.md) — the atlas becomes **per-config**, shared by every grid on the same
   font configuration, which is the whole economy of the design. Not per-context: two grids in
