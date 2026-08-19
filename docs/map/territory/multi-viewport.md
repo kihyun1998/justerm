@@ -143,7 +143,10 @@ The list below is what lands **when the multi-grid work does**, and the entries 
 - **A registered grid that is not the default is reachable by nothing but the registry, and that is
   what makes this slice safe rather than what makes it finished.** `restore` rebuilds one grid's
   instance buffer; a DPR change, a font change and a spacing change re-key one grid's configuration;
-  `resize` sizes one grid. All of them mean the *default* grid. So a second registered grid whose GPU
+  `resize` sizes one grid. All of them mean the *default* grid — so a grid registered earlier also
+  keeps the four font/metric selectors it was born with, and they go stale the moment the default's
+  move (nothing reads them until #772 keys an atlas by them, and the window shuts at #773 when the
+  implicit exports die). So a second registered grid whose GPU
   buffer died with a lost context is never given a new one — which is exactly the failure the
   context-loss slice is written to catch, and it is unreachable until the draw loop lands, because
   nothing draws or feeds a non-default grid yet. Do not read the current green as coverage of that
@@ -158,9 +161,20 @@ The list below is what lands **when the multi-grid work does**, and the entries 
   shrinks, so it carries each frame's transient JS→wasm copy of the cell columns (~18 B/cell) as well
   as the state that stays. At that rate an 80×24 grid is ≈320 KiB and a 120×40 grid ≈800 KiB. An
   **empty** registered grid — a terminal that has produced no output yet — is ≈3 KiB, dominated by
-  its own 256-colour palette, and 64 of them cost less than one populated grid. The number that
+  its own 256-colour palette, and 64 of them cost less than one populated grid. Read that 3 KiB as
+  ±1 KiB: 64 registrations moved the heap by exactly three 64 KiB pages, so page granularity is most
+  of the signal at that scale and the figure is quantised to 1024 B. The number that
   matters for *"all grids stay resident"* is the populated one: ten hidden 120×40 terminals are on
   the order of 8 MB of wasm heap, held so that showing one is a placement rather than a rebuild.
+- **Not drawn gates the draw, and nothing yet gates the work behind it.** `Option<Viewport>` decides
+  whether a grid paints. It says nothing about whether a hidden grid still *packs and uploads* every
+  frame it is fed — and the consumer's adoption design keeps a hidden workspace's Blocks mounted and
+  feeding (penterm's `terminal-single-context-adoption` PRD: `ContentArea`'s `display:none` mount
+  policy is kept, and each mounted Block feeds decoded frames). So after the per-grid setters land,
+  a hidden terminal's per-frame CPU cost is real and nobody has budgeted it. Both references gate more
+  than the draw and **disagree on how much** (the rows under `## Reference behaviour`), so this is a
+  design decision the draw loop (#771) or the setter contract (#773) owns, not a defect here: today
+  nothing feeds a non-default grid at all.
 - **The middle tier has a hazard the record now names but nothing yet answers.** Sharing one atlas
   across grids makes [glyph atlas](glyph-atlas.md)'s within-frame eviction corruption a *cross-grid*
   event, and the upload diff — which is the defence today — cannot see it, because a grid that is not

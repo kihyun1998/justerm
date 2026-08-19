@@ -858,6 +858,9 @@ impl JustermRenderer {
     /// A placed grid is a drawn grid — the state #771's draw loop reads. The GL flip to a
     /// bottom-origin y belongs to the site that issues `gl.viewport`, not here: this is the rect
     /// the consumer measured, stored as measured.
+    ///
+    /// Errors on an unknown id, on a rect with no area, and on the implicit **default** grid, whose
+    /// rect is the drawing buffer's and is written by [`resize`](Self::resize) alone.
     #[wasm_bindgen(js_name = setViewport)]
     pub fn set_viewport(
         &mut self,
@@ -867,9 +870,14 @@ impl JustermRenderer {
         width: i32,
         height: i32,
     ) -> Result<(), JsValue> {
-        if width < 0 || height < 0 {
+        // A viewport with no area draws no pixels, so accepting one and then answering `true` to
+        // `isGridDrawn` would be the same lie the default-grid guard exists to prevent. The state
+        // for "this grid has no rect yet" already exists and is called `clearViewport` — which is
+        // the honest answer for the case that produces a zero rect in the first place, a consumer
+        // measuring a DOM box that is still `display:none`.
+        if width <= 0 || height <= 0 {
             return Err(JsValue::from_str(&format!(
-                "justerm-renderer: viewport size must not be negative, got {width}x{height}"
+                "justerm-renderer: a viewport must have area, got {width}x{height}"
             )));
         }
         self.grids
@@ -892,6 +900,9 @@ impl JustermRenderer {
     /// was released; the consumer re-supplies the rect, which it has to anyway — a hidden widget's
     /// DOM box reads back as zero, so a rect retained across the hide would be a copy that can be
     /// wrong on the way back.
+    ///
+    /// Errors on the implicit **default** grid: it draws the whole canvas whatever the registry
+    /// says, so hiding it would only make this renderer report something it does not do.
     #[wasm_bindgen(js_name = clearViewport)]
     pub fn clear_viewport(&mut self, grid: u32) -> Result<(), JsValue> {
         self.grids
@@ -2346,18 +2357,16 @@ impl JustermRenderer {
         // The default grid is drawn over the whole drawing buffer — which is what the single-grid
         // renderer already is, now said as registry state (#770). Keeping it in step here is what
         // will make "a grid with a viewport is drawn" (#771) true of the default grid without a
-        // special case in the draw loop. Infallible: the default is registered for this renderer's
-        // whole life, so a failure here would mean the registry's own invariant broke.
-        let placed = self.grids.set_viewport(
-            GridId::DEFAULT,
-            Viewport {
-                x: 0,
-                y: 0,
-                width: dw,
-                height: dh,
-            },
-        );
-        debug_assert!(placed.is_ok(), "the default grid is always registered");
+        // special case in the draw loop.
+        //
+        // Through `place_default`, not `set_viewport`: this rect's producer is the buffer, and the
+        // consumer's door is shut precisely so that nobody else can write it (`registry.rs`).
+        self.grids.place_default(Viewport {
+            x: 0,
+            y: 0,
+            width: dw,
+            height: dh,
+        });
 
         // `size` is a whole number of cells, always: every caller of `orthographic_from_size` and
         // `gl.viewport` below assumes it, and #331 is what happens when it stops being true.

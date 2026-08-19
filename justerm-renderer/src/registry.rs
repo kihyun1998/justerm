@@ -82,6 +82,9 @@ pub enum RegistryError {
     UnknownGrid(u32),
     /// The implicit default grid cannot be removed while the single-grid exports still act on it.
     DefaultNotRemovable,
+    /// The implicit default grid's viewport is the drawing buffer, written by `resize` and by
+    /// nothing else — so a consumer can neither place nor hide it.
+    DefaultViewportIsTheBuffer,
 }
 
 impl RegistryError {
@@ -93,6 +96,10 @@ impl RegistryError {
             }
             RegistryError::DefaultNotRemovable => {
                 "justerm-renderer: the default grid cannot be removed".to_string()
+            }
+            RegistryError::DefaultViewportIsTheBuffer => {
+                "justerm-renderer: the default grid's viewport is the drawing buffer — resize it                  instead of placing it"
+                    .to_string()
             }
         }
     }
@@ -173,18 +180,50 @@ impl<T> GridRegistry<T> {
     }
 
     /// Place a grid — it is drawn from now on (#771 draws it; this slice only holds the state).
+    ///
+    /// Refuses [`GridId::DEFAULT`], whose rect is not the consumer's to write: see
+    /// [`place_default`](Self::place_default).
     pub fn set_viewport(&mut self, id: GridId, viewport: Viewport) -> Result<(), RegistryError> {
-        let at = self.index_of(id)?;
+        let at = self.index_of(self.consumer_placeable(id)?)?;
         self.entries[at].viewport = Some(viewport);
         Ok(())
     }
 
     /// Stop drawing a grid **without unregistering it**: every byte of its state stays resident, so
     /// coming back is a placement rather than a rebuild.
+    ///
+    /// Refuses [`GridId::DEFAULT`] for the same reason [`set_viewport`](Self::set_viewport) does —
+    /// and it is the more important half. Letting a consumer clear the default's viewport would put
+    /// the registry into a state the renderer contradicts: the default would report itself not
+    /// drawn while still painting the whole canvas, because the single-grid draw path does not
+    /// consult a viewport at all. At #771 it becomes worse than a wrong answer — a consumer looping
+    /// over every id to hide everything would hide the one grid that must not be hidden, and stay
+    /// hidden until something happened to resize.
     pub fn clear_viewport(&mut self, id: GridId) -> Result<(), RegistryError> {
-        let at = self.index_of(id)?;
+        let at = self.index_of(self.consumer_placeable(id)?)?;
         self.entries[at].viewport = None;
         Ok(())
+    }
+
+    /// Re-place the default grid over the whole drawing buffer. The renderer's `resize` is the only
+    /// caller, and that is the point of the method existing beside
+    /// [`set_viewport`](Self::set_viewport) rather than as a special case inside it.
+    ///
+    /// **The default's rect has a different producer from every other grid's.** A registered grid is
+    /// placed where the consumer measured its DOM box; the default is placed over the drawing
+    /// buffer, which the renderer owns and derives from the grid it was sized to. A fact belongs to
+    /// the site it is first true at, so the consumer cannot write this one and `resize` does not
+    /// have to ask permission to.
+    pub fn place_default(&mut self, viewport: Viewport) {
+        self.entries[0].viewport = Some(viewport);
+    }
+
+    /// The default grid's viewport is the drawing buffer's, so the consumer may not write it.
+    fn consumer_placeable(&self, id: GridId) -> Result<GridId, RegistryError> {
+        if id == GridId::DEFAULT {
+            return Err(RegistryError::DefaultViewportIsTheBuffer);
+        }
+        Ok(id)
     }
 
     /// Whether a grid currently has a viewport, i.e. whether it draws.
@@ -368,6 +407,47 @@ mod tests {
     }
 
     #[test]
+    fn the_consumer_can_neither_place_nor_hide_the_default_grid() {
+        let mut r = registry();
+        let moved = Viewport { x: 40, ..VP };
+
+        // The default's rect is the drawing buffer's, and the buffer has one producer — `resize`.
+        assert_eq!(
+            r.set_viewport(GridId::DEFAULT, moved),
+            Err(RegistryError::DefaultViewportIsTheBuffer)
+        );
+        // The important half: a cleared default would report itself not drawn while still painting
+        // the whole canvas, because the single-grid draw path consults no viewport at all.
+        assert_eq!(
+            r.clear_viewport(GridId::DEFAULT),
+            Err(RegistryError::DefaultViewportIsTheBuffer)
+        );
+        assert_eq!(
+            r.is_drawn(GridId::DEFAULT),
+            Ok(true),
+            "and neither took effect"
+        );
+    }
+
+    #[test]
+    fn resize_re_places_the_default_through_its_own_door() {
+        let mut r = registry();
+        let grown = Viewport {
+            width: 1280,
+            height: 768,
+            ..VP
+        };
+
+        r.place_default(grown);
+
+        assert_eq!(r.is_drawn(GridId::DEFAULT), Ok(true));
+        assert_eq!(r.viewport_for_test(GridId::DEFAULT), Some(grown));
+        // …and it did not disturb anyone else's placement.
+        let id = r.register(FakeGrid::new(1));
+        assert_eq!(r.is_drawn(id), Ok(false));
+    }
+
+    #[test]
     fn an_error_says_which_grid_and_why() {
         assert_eq!(
             RegistryError::UnknownGrid(7).message(),
@@ -376,6 +456,11 @@ mod tests {
         assert_eq!(
             RegistryError::DefaultNotRemovable.message(),
             "justerm-renderer: the default grid cannot be removed"
+        );
+        assert!(
+            RegistryError::DefaultViewportIsTheBuffer
+                .message()
+                .contains("the drawing buffer")
         );
     }
 
@@ -392,6 +477,9 @@ mod tests {
         }
         fn ids_for_test(&self) -> Vec<GridId> {
             self.entries.iter().map(|e| e.id).collect()
+        }
+        fn viewport_for_test(&self, id: GridId) -> Option<Viewport> {
+            self.entries[self.index_of(id).unwrap()].viewport
         }
     }
 }

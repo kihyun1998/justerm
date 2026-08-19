@@ -1674,7 +1674,14 @@ Read ghostty's "surface" as justerm's *grid* throughout (the noun inverts — se
 | Not-drawn is an explicit **`visible: bool`** on the render thread — *"true when the view is visible … used to determine if we should be rendering or not"* — defaulting to `true` | ghostty | `src/renderer/Thread.zig:108-110` |
 | The flag gates the **draw**: *"If we're invisible, we do not draw"* | ghostty | `src/renderer/Thread.zig:526-531` |
 | …and separately gates the **CPU cell rebuild**: *"If we're not visible there's no point spending CPU rebuilding cells — we'll catch up when the `.visible` mailbox message flips us back on"* | ghostty | `src/renderer/Thread.zig:644-650` |
-| Becoming visible again **immediately rebuilds cells and draws** — *"renderCallback skips updateFrame while invisible"* — rather than rebuilding any GPU resource | ghostty | `src/renderer/Thread.zig:378-385` |
+| Becoming visible again **immediately rebuilds cells and draws** — *"renderCallback skips updateFrame while invisible"* — rather than rebuilding any GPU resource | ghostty | `src/renderer/Thread.zig:380-388` |
+| The other reference gates **less**, and the ordering is the fact: a hidden window returns from `draw` **before** `self.dirty = false`, so the frame is deferred rather than dropped and it repaints on return | alacritty | `alacritty/src/window_context.rs:365-376` |
+
+**The two references disagree about how much a hidden terminal stops doing**, which is why the last
+two rows are here rather than in an argument: ghostty skips the CPU cell rebuild as well as the
+paint, alacritty skips only the paint. justerm gates neither yet — `Option<Viewport>` decides whether
+a grid draws and says nothing about whether it packs — and choosing belongs to the slice that writes
+the draw loop, not to the one that holds the state.
 
 **What transfers and what does not.** The state transfers: an invisible surface is never
 unregistered and nothing it owns is released, which is exactly the guarantee penterm's adoption PRD

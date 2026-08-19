@@ -69,7 +69,10 @@
   checks.nRegistrationsHoldNGrids = r.gridCount() === 1 + ids.length;
   checks.everyGridHasItsOwnId = new Set(ids).size === ids.length && !ids.includes(0);
   // The per-config tier is one, whoever joins it: the cell geometry is the atlas's product, so a
-  // registration that re-baked or re-measured anything would move it.
+  // registration that re-baked or re-measured anything would move it. Note what this check can and
+  // cannot see — a re-bake at IDENTICAL parameters produces identical numbers and stays green. What
+  // actually holds "one of everything else" is the type: `JustermRenderer` has one `ConfigTier`
+  // field, so a second atlas has nowhere to live. This is the observable half, not the whole line.
   checks.registeringTouchesNoSharedGeometry =
     r.cell_width() === before.cell[0] && r.cell_height() === before.cell[1];
   // …and no pack ran: a new grid has no cells to pack, and no sibling's buffer is disturbed (#421).
@@ -100,13 +103,27 @@
   checks.anUnknownGridCannotBeQueried = threw(() => r.isGridDrawn(9999));
   checks.anUnknownGridCannotBeRemoved = threw(() => r.removeGrid(9999));
   checks.aNegativeViewportIsRefused = threw(() => r.setViewport(ids[0], 0, 0, -1, ch));
+  // A rect with no area draws nothing, so accepting one and answering "drawn" would be the same
+  // lie the default-grid guards below prevent. The state for "no rect yet" is clearViewport.
+  checks.aZeroAreaViewportIsRefused = threw(() => r.setViewport(ids[0], 0, 0, 0, 0));
   // The implicit default is what the single-grid exports act on, so it cannot be taken away while
-  // they still exist (#773 removes both together).
+  // they still exist (#773 removes both together)…
   checks.theDefaultGridCannotBeRemoved = threw(() => r.removeGrid(0));
-  checks.theDefaultSurvivedTheAttempt = r.gridCount() === 1 + ids.length && r.isGridDrawn(0);
+  // …and it cannot be hidden or re-placed either, which is the sharper of the two. The single-grid
+  // draw path consults no viewport, so a cleared default would report itself not drawn while still
+  // painting the whole canvas — and at #771 a consumer looping over every id to hide everything
+  // would hide the one grid that must never be hidden.
+  checks.theDefaultGridCannotBeHidden = threw(() => r.clearViewport(0));
+  checks.theDefaultGridCannotBePlacedByTheConsumer = threw(() => r.setViewport(0, 0, 0, cw, ch));
+  checks.theDefaultSurvivedEveryAttempt =
+    r.gridCount() === 1 + ids.length && r.isGridDrawn(0) === true;
 
   // ── Removal, and the id that is never handed out again ───────────────────────────────────────
+  // Removed while DRAWN — the case a hide-then-remove sequence would never reach, and the one where
+  // a registry that forgot to drop the placement alongside the state would still look fine.
   const gone = ids[2];
+  r.setViewport(gone, 0, 0, cw, ch);
+  checks.theGridAboutToBeRemovedIsDrawn = r.isGridDrawn(gone) === true;
   r.removeGrid(gone);
   checks.removingAGridUnregistersIt = r.gridCount() === ids.length; // default + two survivors
   checks.aRemovedGridIsUnknown = threw(() => r.isGridDrawn(gone));
