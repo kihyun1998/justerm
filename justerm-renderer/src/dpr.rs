@@ -85,6 +85,36 @@ mod tests {
     }
 
     #[test]
+    fn a_device_size_stored_as_a_css_box_comes_back_unchanged() {
+        // **`resize_surface` takes device pixels and stores the CSS box they are displayed at**
+        // (#773), because a density change must hold the physical size still while the buffer moves.
+        // That is only free if the conversion round-trips at the density it was asked at — otherwise
+        // every context restore and every no-op DPR notification would nudge the canvas by a pixel,
+        // silently and cumulatively.
+        //
+        // The awkward ratios are the ones that matter: 1.1 is browser zoom at 110 %, the density at
+        // which #331's grid used to overhang its buffer. The widths span a one-cell canvas to the
+        // largest buffer any implementation grants (MAX_TEXTURE_SIZE, 16384 on a real GPU).
+        for dpr in [1.0f32, 1.1, 1.25, 1.5, 2.0, 3.0] {
+            for w in [1u32, 9, 33, 360, 1281, 3840, 8192, 16384] {
+                assert_eq!(device_px(css_px(w, dpr), dpr), w as i32, "w={w} dpr={dpr}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_density_change_moves_the_buffer_and_holds_the_css_box() {
+        // The other half of the same rule: the stored box is what a DPR change re-derives from, so
+        // the buffer must scale with the ratio and the box must not. A 640x384 canvas at dpr 1
+        // dragged onto a Retina display is 1280x768 device px behind the same 640x384 CSS box.
+        let (w, h) = (640u32, 384u32);
+        let (css_w, css_h) = (css_px(w, 1.0), css_px(h, 1.0));
+        assert_eq!((device_px(css_w, 2.0), device_px(css_h, 2.0)), (1280, 768));
+        // …and back, with nothing accumulated.
+        assert_eq!((device_px(css_w, 1.0), device_px(css_h, 1.0)), (640, 384));
+    }
+
+    #[test]
     fn a_degenerate_or_unrepresentable_box_still_yields_a_usable_buffer() {
         // A zero box is what a `display:none` container measures as; a buffer of no size is not a
         // size at all, and `canvas.width = 0` would take the context down with it.
