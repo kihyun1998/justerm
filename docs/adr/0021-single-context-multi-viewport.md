@@ -307,7 +307,12 @@ narrower claim. Verifying it would confirm a description of wezterm, not a premi
   through `recompute_cell`. Re-keying one entry and rebuilding all of them are separate paths in the
   registry's lifetime design.
 - **Memory becomes a scale question the current shape never had.** All grids' instance buffers are
-  resident; a hidden terminal costs its buffer even when not drawn. #287's open questions list this.
+  resident; a hidden terminal costs its buffer even when not drawn. **Measured in #770, so this now
+  carries a number rather than a worry**: ≈171 B/cell as an upper bound (a wasm-heap slope, which
+  includes each frame's transient copy), i.e. ≈800 KiB for a resident 120×40 grid and ≈3 KiB for a
+  registered grid that has produced no output yet. The method and the caveats are in
+  [multi-viewport](../map/territory/multi-viewport.md) rather than here, because the number will move
+  with the instance format (#513, #455) and a record is a poor place for a value that tracks code.
 - **Per-grid preedit needs an obligation ADR-0028 does not state.** That record already places the
   preedit per-grid under D1, and the reason it gives — consumer-settable per terminal — survives this
   adjudication verbatim. What it could not anticipate is N of them: a document has one focused element,

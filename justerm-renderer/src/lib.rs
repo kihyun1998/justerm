@@ -58,6 +58,7 @@ pub(crate) mod overlay;
 pub(crate) mod pair;
 pub(crate) mod palette;
 pub(crate) mod preedit;
+pub(crate) mod registry;
 pub(crate) mod render_policy;
 pub(crate) mod upload;
 
