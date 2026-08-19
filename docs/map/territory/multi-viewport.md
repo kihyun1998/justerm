@@ -147,7 +147,11 @@ The list below is what lands **when the multi-grid work does**, and the entries 
   buffer died with a lost context is never given a new one — which is exactly the failure the
   context-loss slice is written to catch, and it is unreachable until the draw loop lands, because
   nothing draws or feeds a non-default grid yet. Do not read the current green as coverage of that
-  path; read it as the path not existing yet.
+  path; read it as the path not existing yet. Registering *during* a loss is the same gap and not a
+  second one — and it is worth knowing that it does not announce itself: Chromium's `createBuffer()`
+  hands back a **non-null** object on a lost context (measured #770, in the synchronous window and
+  after `webglcontextlost` alike), so the registration succeeds and the dead handle is indistinguishable
+  from a live one until something tries to upload through it.
 - **What one resident grid costs, measured rather than worried about** (#770, dev build, Chromium
   headless, dpr 1 — the epic's open question routed here). The wasm heap slope between an 800-cell
   and a 10 000-cell populated grid is **≈171 B/cell**, which is an *upper* bound: the heap never

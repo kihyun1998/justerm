@@ -802,8 +802,20 @@ impl JustermRenderer {
                     e.got
                 ))
             })?;
-        // Safety: live GL context. `create_buffer` answers `Err` rather than panicking on a lost
-        // one, so registering while lost fails cleanly instead of handing back a dead handle.
+        // Safety: live GL context — and "live" is not checked here, deliberately.
+        //
+        // **Measured 2026-08-19, because the obvious assumption is false**: Chromium's
+        // `createBuffer()` hands back a NON-null object on a lost context, both in the synchronous
+        // window before `webglcontextlost` dispatches and after it, so `create_buffer` returns `Ok`
+        // and a registration during a loss succeeds with a buffer that died with the context. (The
+        // `Err` arm below is glow's `null` path, which this browser does not take.)
+        //
+        // That is left alone rather than guarded, because refusing would be the wrong contract: a
+        // consumer registering a terminal while the context happens to be dead wants the grid, and
+        // #774 is written to give **every** registered grid a fresh buffer on restore — drawn and
+        // not-drawn alike. Until it lands, a non-default grid does not survive a loss at all
+        // (`restore` rebuilds the default's buffer only), which nothing can reach because nothing
+        // draws or feeds one. See the map territory's known holes.
         let instance_vbo = unsafe { self.global.gl.create_buffer().map_err(js_err)? };
         let (font_size, font_family) = (self.grid().font_size, self.grid().font_family.clone());
         let (letter_spacing, line_height) = (self.grid().letter_spacing, self.grid().line_height);
