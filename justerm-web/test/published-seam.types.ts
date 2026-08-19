@@ -73,11 +73,27 @@ holds<Equal<NotMirrored, never>>(true);
 // 2. Widths — every column the renderer takes can carry what the decoder produces
 // ---------------------------------------------------------------------------------------------
 
-type ApplyDamage = Parameters<JustermRenderer["apply_damage"]>;
-type SetOverlay = Parameters<JustermRenderer["setOverlay"]>;
-type SetActiveMatch = Parameters<JustermRenderer["setActiveMatch"]>;
+/**
+ * Drop the grid handle every per-grid export has taken since renderer 0.15.0 (#773), so the indices
+ * below stay in **wire order** — the order the decoder's columns are named in.
+ *
+ * This is not cosmetic. Shifting every index by one instead would have re-pointed each assertion at
+ * its neighbour, and the neighbours are mostly `Uint32Array` too: when the grid parameter landed,
+ * six of the twelve assertions below went red and the other six went on passing **against the wrong
+ * column**. A gate that half-fires is worse than one that does not, because the half that fires is
+ * taken as the whole signal.
+ *
+ * `never` is the deliberate failure mode: if a future leading parameter is not a `number`, every
+ * assertion below breaks at once rather than sliding one position quietly.
+ */
+type WithoutGrid<T extends unknown[]> = T extends [grid: number, ...rest: infer R] ? R : never;
 
-// `apply_damage(header, spans, codepoints, fg, bg, flags, extra, side_table, underline_colors?)`
+type ApplyDamage = WithoutGrid<Parameters<JustermRenderer["apply_damage"]>>;
+type SetOverlay = WithoutGrid<Parameters<JustermRenderer["setOverlay"]>>;
+type SetActiveMatch = WithoutGrid<Parameters<JustermRenderer["setActiveMatch"]>>;
+
+// `apply_damage(grid, header, spans, codepoints, fg, bg, flags, extra, side_table, underline_colors?)`
+// — indices below are AFTER `grid` is dropped, i.e. `header` is 0.
 holds<Feeds<WasmFrame["spans"], ApplyDamage[1]>>(true);
 holds<Feeds<WasmFrame["codepoints"], ApplyDamage[2]>>(true);
 holds<Feeds<WasmFrame["fg"], ApplyDamage[3]>>(true);

@@ -162,9 +162,14 @@ export class FitController {
    * one shape, and this is the one whose constraints match ours.
    *
    * **Two known holes this key does not close** — both recorded rather than papered over:
-   * 1. `cols`/`rows` here is what was *proposed*, and the renderer may adopt **less** (the #339
+   * 1. `cols`/`rows` here is what was *proposed*, and **less may be adopted** (the #339
    *    drawing-buffer clamp; `terminalSize()` is the documented truth). A clamped resize leaves this
    *    describing a grid nobody holds — the same defect one axis over.
+   *
+   *    *Who* adopts it moved at renderer 0.15.0 (#773): the renderer clamps the shared drawing
+   *    buffer and leaves the grid saying what it was told, so `JustermRenderer.resize` reads the
+   *    grant back and shrinks the grid itself. This hole is unchanged — the key still remembers the
+   *    proposal — but the thing it can disagree with now lives one layer nearer.
    * 2. {@link FitController.latest} is a **snapshot** taken when the observer fired, so a cell change
    *    landing inside the debounce window makes the flush propose against the *pre-change* cell and
    *    store it. It self-heals on the next observer fire, and there may not be one. The cure is to

@@ -297,9 +297,27 @@ const EMPTY_U16 = new Uint16Array(0);
  * package this widget consumes is gated separately, in `test/published-seam.types.ts` (#646),
  * which asserts that the decoder's columns can feed these parameters — the pairing #627 broke. */
 export interface RendererBackend {
+  /** Register a terminal grid and return its id — since renderer 0.15.0 the **only** way to get one:
+   * a renderer arrives holding none, and every method below that acts on a terminal names the grid
+   * it acts on (#773).
+   *
+   * The four font selectors are optional and trailing, and this package passes all four. They key
+   * the atlas, so naming them here means **one** bake: a grid born at the renderer's defaults and
+   * then moved by `setFontFamily` / `setFontSize` / the two spacing setters would bake an atlas per
+   * call and free each one again, which is up to five bakes to arrive where one gets us. */
+  addGrid(
+    paletteColors: Uint32Array,
+    defaultFg: number,
+    defaultBg: number,
+    fontFamily?: string,
+    fontSize?: number,
+    letterSpacing?: number,
+    lineHeight?: number,
+  ): number;
   /** Scatter a decoded frame's damage into the persistent grid, then re-pack. Header is
    * `[cols, rows, kind, hasScroll, scrollTop, scrollBottom, scrollCount, blinkOn]` (#285). */
   apply_damage(
+    grid: number,
     header: Uint32Array,
     spans: Uint32Array,
     codepoints: Uint32Array,
@@ -319,6 +337,7 @@ export interface RendererBackend {
   ): void;
   /** Retain the selection/match spans + blend colours; re-pack the grid (#271). */
   setOverlay(
+    grid: number,
     selectionSpans: Uint32Array,
     matchSpans: Uint32Array,
     selectionBg: number,
@@ -326,7 +345,7 @@ export interface RendererBackend {
   ): void;
   /** Retain the ACTIVE search match's spans + colour (#427) — additive beside
    * `setOverlay`, ranked above selection; empty spans clear it. */
-  setActiveMatch(activeSpans: Uint32Array, activeMatchBg: number): void;
+  setActiveMatch(grid: number, activeSpans: Uint32Array, activeMatchBg: number): void;
   /** The in-progress IME composition, or an empty run to clear it (#249). Returns the caret /
    * anchor column — one past the run, after any right-edge shift.
    *
@@ -336,60 +355,90 @@ export interface RendererBackend {
    * un-typecheckable against every renderer that predates it, and calling it unguarded would be a
    * `TypeError` rather than a missing feature. A renderer without it is preedit-blind, which is the
    * state every consumer was in before #249. */
-  setPreedit?(col: number, row: number, codepoints: Uint32Array): number;
+  setPreedit?(grid: number, col: number, row: number, codepoints: Uint32Array): number;
   /** Retain the flat decoration directory `[row, left, right, layer, bg, fg]…` (#393). */
-  setDecorations(spans: Uint32Array): void;
+  setDecorations(grid: number, spans: Uint32Array): void;
   /** Place the cursor: shape `0` block / `1` underline / `2` bar / `3` hollow (#270). */
-  setCursor(col: number, row: number, shape: number, color: number, textColor: number): void;
+  setCursor(
+    grid: number,
+    col: number,
+    row: number,
+    shape: number,
+    color: number,
+    textColor: number,
+  ): void;
   /** Remove the cursor — hidden (DECTCEM) or the blink's off phase. */
-  clearCursor(): void;
+  clearCursor(grid: number): void;
   /** The cursor's minimum WCAG contrast with the cell under it (#368) and its stroke thickness as a
    * fraction of the cell width (#369). Both are read at *draw* time (a shader uniform and a
    * comparison against the resolved cell), so neither needs a re-pack — but the cursor has to be
    * re-issued for the change to present, which is what `redrawCursor` is for. The renderer clamps
    * each (`[1, 21]` / `[0, 1]`). */
-  setCursorContrast(threshold: number): void;
-  setCursorThickness(frac: number): void;
-  setBoldToBright(enabled: boolean): void;
-  setMinimumContrastRatio(ratio: number): void;
-  setSelectionForeground(color: number | undefined): void;
+  setCursorContrast(grid: number, threshold: number): void;
+  setCursorThickness(grid: number, frac: number): void;
+  setBoldToBright(grid: number, enabled: boolean): void;
+  setMinimumContrastRatio(grid: number, ratio: number): void;
+  setSelectionForeground(grid: number, color: number | undefined): void;
   /** Background cell opacity, `0`..`1` (#298). The renderer clamps; it is read at *draw* time
    * (the clear colour and a shader uniform), not at pack time, so unlike `setBoldToBright` this
    * needs no re-pack — a bare `render` presents it. */
-  setBgAlpha(alpha: number): void;
+  setBgAlpha(grid: number, alpha: number): void;
   /** Re-bake the atlas at a new font size (CSS px) / family (#406/#413). The cell size moves, so the
    * consumer must re-fit. A no-op if unchanged; a non-finite / `<1` size is guarded by the renderer. */
-  setFontSize(cssPx: number): void;
-  setFontFamily(family: string): void;
+  setFontSize(grid: number, cssPx: number): void;
+  setFontFamily(grid: number, family: string): void;
   /** Extra space between columns in **CSS px** (ADR-0023 — the space `fontSize` already speaks), and
    * a multiplier on the glyph height (`>= 1`). Both move the cell, so the consumer must re-fit; both
    * are clamped or rolled back by the renderer, so the result is read back rather than assumed (#338,
    * #359). */
-  setLetterSpacing(cssPx: number): void;
-  setLineHeight(multiplier: number): void;
+  setLetterSpacing(grid: number, cssPx: number): void;
+  setLineHeight(grid: number, multiplier: number): void;
   /** Re-bake the atlas at a new device pixel ratio (#322). Like the font and spacing setters this
    * **moves the cell** — the device cell is `round(metric * dpr)` — so `cssWidth()`/`cssHeight()`
    * move with it and the canvas display box has to be re-applied. Unlike them it is reached with no
    * consumer call at all (`DprWatcher`). A no-op if the ratio is unchanged, and **dropped while the
    * GL context is lost**, because restore re-reads the live ratio and bakes at that density anyway
-   * (`webgl.rs`, #269). The renderer touches no DOM: it re-derives the drawing buffer from the grid
-   * it is holding, and never the canvas's CSS size. */
+   * (`webgl.rs`, #269).
+   *
+   * **It re-bakes the atlases and touches nothing else** — not the drawing buffer, not a viewport
+   * rect (renderer 0.15.0, #773). Both are device-px measurements the *consumer* made, and the
+   * renderer will not convert them through its own copy of the density, which lags: this very
+   * notification is dropped while the context is lost. Re-asking for them is therefore the
+   * consumer's, and for this package that is {@link JustermRenderer.setDevicePixelRatio} — which
+   * holds the grid and so can. It touches no DOM either way. */
   setDevicePixelRatio(dpr: number): void;
   /** Swap the palette + default fg/bg for a live theme change (#405): re-resolve every retained
    * cell against the new scheme. `paletteColors` is the 256 pre-built indexed colours. */
-  setPalette(paletteColors: Uint32Array, defaultFg: number, defaultBg: number): void;
-  /** Size the drawing buffer to a `cols`×`rows` grid (device px = grid × cell). */
-  resize(cols: number, rows: number): void;
-  /** The columns/rows the last [`resize`] actually adopted — may be fewer than requested if the
-   * browser clamped the drawing buffer (#339), so the consumer must read these back, not assume. */
-  cols(): number;
-  rows(): number;
-  /** The cell width/height in **device** pixels. */
-  cell_width(): number;
-  cell_height(): number;
+  setPalette(
+    grid: number,
+    paletteColors: Uint32Array,
+    defaultFg: number,
+    defaultBg: number,
+  ): void;
+  /** Record a grid's dimensions in cells. **It sizes nothing** — since renderer 0.15.0 the drawing
+   * buffer is the *surface's* (`resizeSurface`), because a canvas holding N grids in M font
+   * configurations has no cell it can be a multiple of (#773). */
+  resizeGrid(grid: number, cols: number, rows: number): void;
+  /** Size the shared drawing buffer, in **device px** — the same space `setViewport` takes. Asking
+   * for `cols * cell_width(grid)` is what keeps the exactness the old `resize(cols, rows)`
+   * guaranteed (#331): both numbers are integers the renderer hands back, so nothing rounds between
+   * them. The browser may still grant less (#339), which `cssWidth`/`cssHeight` report. */
+  resizeSurface(width: number, height: number): void;
+  /** Place a grid on the shared buffer, in **device px**, top-left origin. A grid draws only once
+   * placed; for a one-terminal widget the rect is the whole buffer. */
+  setViewport(grid: number, x: number, y: number, width: number, height: number): void;
+  /** The columns/rows a grid was last given by `resizeGrid` — an **echo** since 0.15.0. Nothing
+   * clamps a grid any more; a request the buffer cannot hold shows up in `cssWidth`/`cssHeight`,
+   * which report what the browser actually granted. */
+  cols(grid: number): number;
+  rows(grid: number): number;
+  /** The cell width/height in **device** pixels, for the font configuration this grid selects into.
+   * Per grid since 0.15.0 — two terminals in two fonts have two cells on one canvas. */
+  cell_width(grid: number): number;
+  cell_height(grid: number): number;
   /** The cell width/height in **CSS** pixels, unrounded (#331/#335). */
-  cssCellWidth(): number;
-  cssCellHeight(): number;
+  cssCellWidth(grid: number): number;
+  cssCellHeight(grid: number): number;
   /** The drawing buffer's size in **CSS** pixels — what the canvas display box must be set to. */
   cssWidth(): number;
   cssHeight(): number;
@@ -677,6 +726,13 @@ export class JustermRenderer implements Renderer {
 
   private constructor(
     private readonly backend: RendererBackend,
+    /** The one grid this widget owns (#773). A `justerm-web` terminal is one terminal, so this is
+     * a constant for the object's life — what changed at renderer 0.15.0 is that it has to be
+     * *said*, on every call that acts on a terminal rather than on the surface. The surface is this
+     * widget's too, exclusively, which is what lets it keep discharging the obligations the renderer
+     * handed back: re-deriving the drawing buffer after anything that moves the cell. A `Terminal`
+     * that shares a surface with siblings is Epic #287's S7 and a different object. */
+    private readonly grid: number,
     private readonly canvas: HTMLCanvasElement,
     // Retained so `setTheme` (#420) can rebuild the 256-colour table from a new ANSI scheme.
     private readonly buildPalette: (ansi: Uint32Array) => Uint32Array,
@@ -722,33 +778,39 @@ export class JustermRenderer implements Renderer {
      * **A restore is the one buffer change with no consumer call behind it** (#325), which is the
      * same shape as the density change above and was found by measuring it.
      *
-     * `restore()` re-reads the **live** device pixel ratio and re-derives the cell at it
-     * (`webgl.rs`, #269) — deliberately, because a DPR notification arriving while the context is
-     * lost is *dropped* rather than queued. So a density that moved during a loss is adopted here,
-     * the drawing buffer moves with it, and nothing re-applies the display box. Measured before
-     * fixing: dpr 1 -> 2 across a loss left the buffer at `2556x1369` under a canvas still styled
-     * `1278x703`; the width was accidentally right (the cell doubled exactly) and the height was
-     * `703` against a correct `684.5`, so the browser stretched the terminal ~2.7% vertically.
+     * `restore()` re-reads the **live** device pixel ratio and re-bakes at it (`webgl.rs`, #269) —
+     * deliberately, because a DPR notification arriving while the context is lost is *dropped*
+     * rather than queued. So a density that moved during a loss is adopted here, with no
+     * `setDevicePixelRatio` behind it and no other signal that it happened.
      *
-     * **Driving a render here is not incidental — it is what makes the box readable.** The renderer
-     * rebuilds inside its next `render()`, not when this event fires, so re-applying the box first
-     * would copy the pre-restore numbers. One extra present on a rare event is the price.
+     * **Since renderer 0.15.0 that adoption moves the CELL and not the buffer** (#773), so this
+     * handler owes the same re-derivation {@link setDevicePixelRatio} owes — and it is the only
+     * place that can pay it, because this event is the only notice the adoption gives. Caught by the
+     * #325 e2e below rather than by reading: on 0.14.0 the renderer re-derived the buffer from the
+     * grid it was holding, so this handler only had to re-read the box; on 0.15.0 the buffer belongs
+     * to no grid, and dpr 1 -> 2 across a loss left a `1369`-tall grid inside a `703`-tall buffer.
+     *
+     * Measured on the older shape, for the failure this handler originally fixed: dpr 1 -> 2 across
+     * a loss left the buffer at `2556x1369` under a canvas still styled `1278x703`; the width was
+     * accidentally right (the cell doubled exactly) and the height was `703` against a correct
+     * `684.5`, so the browser stretched the terminal ~2.7% vertically.
+     *
+     * **Driving a render first is not incidental — it is what makes the cell readable.** The
+     * renderer rebuilds inside its next `render()`, not when this event fires, so re-deriving before
+     * it would use the pre-restore cell. One extra present on a rare event is the price.
      */
-    // Order is load-bearing, and #772 is what made it so. `render()` runs the renderer's `restore`,
-    // which re-derives the drawing buffer — and now also re-selects any font configuration whose
-    // selectors moved while the context was dead, so the CELL can land here rather than at the
-    // setter that asked for it. `applyCanvasCssBox` then reads `cssWidth`/`cssHeight` back from the
-    // renderer, so it sees the post-restore numbers. Swap the two lines and the display box
-    // describes the pre-loss buffer until something else happens to re-fit.
+    // Order is load-bearing, and #772 is what made it so. The first `render()` runs the renderer's
+    // `restore`, which rebuilds the pipeline and re-selects any font configuration whose selectors
+    // moved while the context was dead — so the CELL lands here rather than at the setter that asked
+    // for it. Only then can the buffer be re-derived from it.
     //
-    // Checked rather than assumed while sweeping #772: nothing here re-fits `cols`/`rows` after a
-    // restore, and nothing needs to — `restore` re-derives the buffer from the grid it already
-    // holds, and this reads the result. The concern that a cell moving without a consumer-visible
-    // signal could strand {@link FitController}'s dedupe is closed by that, **for as long as this
-    // handler keeps rendering before it reads the box back**.
+    // The second `render()` is because `reapplySurface` re-sizes the drawing buffer, and a resized
+    // buffer is a cleared one: without it the terminal is blank until the next frame the consumer
+    // happens to drive.
     this.onContextRestored = (): void => {
       this.backend.render();
-      this.applyCanvasCssBox();
+      this.reapplySurface();
+      this.backend.render();
     };
     canvas.addEventListener("webglcontextrestored", this.onContextRestored);
   }
@@ -764,51 +826,55 @@ export class JustermRenderer implements Renderer {
     // Typed assignment (not a cast): the real class is a structural superset of RendererBackend, so
     // this compiles today AND turns a future signature drift in the published renderer into a compile
     // error here — the drift gate the injected seam exists for.
-    const backend: RendererBackend = new renderer.JustermRenderer(
-      opts.canvasSelector,
+    const backend: RendererBackend = new renderer.JustermRenderer(opts.canvasSelector);
+    // A renderer arrives holding no terminal since 0.15.0, so this widget's single grid is created
+    // here — and its font is named at birth rather than pushed by four setters afterwards. The four
+    // selectors key the atlas, so this is **one** bake where the setter route was up to five, each
+    // of the first four freed again by the next (#773).
+    //
+    // The values are the same ones the setters used, defaults included, so the initial fit is still
+    // computed at the consumer's final cell.
+    const gridId = backend.addGrid(
       paletteColors,
       t.defaultFg,
       t.defaultBg,
+      opts.fontFamily,
+      opts.fontSize,
+      opts.letterSpacing ?? 0,
+      opts.lineHeight ?? 1,
     );
     // Policy setters (consumer-injected, ADR-0017) — set once; they rarely change.
-    backend.setBoldToBright(t.boldToBright ?? true);
-    backend.setMinimumContrastRatio(t.minimumContrastRatio ?? 1);
-    backend.setSelectionForeground(t.selectionForeground);
+    backend.setBoldToBright(gridId, t.boldToBright ?? true);
+    backend.setMinimumContrastRatio(gridId, t.minimumContrastRatio ?? 1);
+    backend.setSelectionForeground(gridId, t.selectionForeground);
     // Unconditional, and with the default named (#580): a `Theme` is a complete description, so
     // this has to push the same value `setTheme` pushes for an unset field — see
     // `DEFAULT_CURSOR_CONTRAST` for why that obliges this file to own a number the renderer already
     // has one of. No cursor exists yet, so there is nothing to redraw.
-    backend.setCursorContrast(t.cursorContrast ?? DEFAULT_CURSOR_CONTRAST);
+    backend.setCursorContrast(gridId, t.cursorContrast ?? DEFAULT_CURSOR_CONTRAST);
     // Background opacity (#577). Set unconditionally at the renderer's own default, so the value the
     // renderer holds is the one this object states rather than one nobody wrote down. No `render`
     // here — nothing has been drawn yet, and the first frame presents it.
-    backend.setBgAlpha(opts.bgAlpha ?? 1);
-    // Font family + size (#406/#413, wired #417). Applied before the first fit, so the initial grid
-    // is computed at the consumer's cell. Each is a no-op at the renderer's default (monospace/16).
-    backend.setFontFamily(opts.fontFamily);
-    backend.setFontSize(opts.fontSize);
-    // Spacing (#578) — before the first fit, so the initial grid is computed at the consumer's final
-    // cell. Each is a no-op at the renderer's default (0 / 1.0), and unlike the runtime setters below
-    // there is nothing to re-fit here: `create` returns before the consumer has fitted once.
+    backend.setBgAlpha(gridId, opts.bgAlpha ?? 1);
+    // Font family, size and both spacing options (#406/#413/#578) went into `addGrid` above.
     //
-    // **Order relative to the font calls above does not matter**, and this comment used to claim it
-    // did ("both derive the cell from the glyph metrics those establish") — a dependency the renderer
-    // deliberately removed. Every path that changes the glyph box, the DPR or either spacing value
-    // funnels through one function that reads all four together — `recompute_cell` up to renderer
-    // 0.14.x, `bake_config` after it, which builds a whole font *configuration* rather than a cell
-    // (#772) — and the font path re-derives from the *surviving* spacing policy either way. So
-    // font-then-spacing and spacing-then-font land on the same cell. Stated because a comment asserting a constraint that
-    // does not exist is one someone later "fixes" by reordering, and then has to re-derive why it was
-    // safe.
-    backend.setLetterSpacing(opts.letterSpacing ?? 0);
-    backend.setLineHeight(opts.lineHeight ?? 1);
+    // **The ordering question this block used to answer is gone with the four calls**, and the
+    // answer is worth keeping because it is why moving them was safe. It once claimed font had to
+    // precede spacing ("both derive the cell from the glyph metrics those establish") — a dependency
+    // the renderer had already removed: every path that changes the glyph box, the DPR or either
+    // spacing value funnels through one function reading all four together (`recompute_cell` up to
+    // renderer 0.14.x, `bake_config` after, which builds a whole font *configuration* rather than a
+    // cell, #772). Since 0.15.0 those four are simply the key that function is called with, so there
+    // is no order left to get wrong — they arrive together or not at all.
     // Cursor stroke thickness (#580) — conditional, unlike the four pushes above, and for the same
     // reason `contextRestoreTimeout` is: their defaults are neutral identities (`0` / `1`) this file
     // costs nothing to restate, while `0.15` is a value borrowed from alacritty with a rationale the
     // renderer documents. Naming it here would make this the second owner of a number nothing
     // reconciles. An option can afford that where `cursorContrast` above cannot, because options are
     // read once here and never re-applied — there is no reset for an unset one to get wrong.
-    if (opts.cursorThickness !== undefined) backend.setCursorThickness(opts.cursorThickness);
+    if (opts.cursorThickness !== undefined) {
+      backend.setCursorThickness(gridId, opts.cursorThickness);
+    }
 
     const palette: Palette = {
       colors: paletteColors,
@@ -831,6 +897,7 @@ export class JustermRenderer implements Renderer {
     if (!canvas) throw new Error(`justerm-renderer: canvas ${opts.canvasSelector} not found`);
     const instance = new JustermRenderer(
       backend,
+      gridId,
       canvas,
       (ansi) => decoder.buildPalette(ansi),
       palette,
@@ -883,21 +950,23 @@ export class JustermRenderer implements Renderer {
   /** The renderer's cell size in **device** pixels — the consumer divides by `devicePixelRatio`
    * to map pointer coordinates to cells (matches the beamterm adapter's `cellSize`). */
   cellSize(): { width: number; height: number } {
-    return { width: this.backend.cell_width(), height: this.backend.cell_height() };
+    return { width: this.backend.cell_width(this.grid), height: this.backend.cell_height(this.grid) };
   }
 
   /** Change the font size (CSS px) at runtime (#406/#417) — re-bakes the atlas. The cell size moves,
    * so **the consumer must re-fit** (recompute its grid + `resize`) after calling. A no-op at the
    * current size. */
   setFontSize(cssPx: number): void {
-    this.backend.setFontSize(cssPx);
+    this.backend.setFontSize(this.grid, cssPx);
+    this.reapplySurface();
   }
 
   /** Change the font family at runtime (#413/#417) — a CSS `font-family` string, re-bakes the atlas.
    * As with {@link setFontSize}, the cell size can move, so **the consumer must re-fit** after. Load
    * a webfont before an unfamiliar family (the browser silently falls back otherwise). */
   setFontFamily(family: string): void {
-    this.backend.setFontFamily(family);
+    this.backend.setFontFamily(this.grid, family);
+    this.reapplySurface();
   }
 
   /**
@@ -908,9 +977,11 @@ export class JustermRenderer implements Renderer {
    * **The consumer must re-fit afterwards**, exactly as for {@link setFontSize}/{@link
    * setFontFamily}: call {@link resize} with the CSS box. These do not do it for you, because this
    * object has no reference to the fit — the widget and the consumer own that (the demo's
-   * `setFontSize(); fit(); render();` is the shape, #417). Skipping it is not cosmetic: the renderer
-   * re-sizes its own drawing buffer to the new cell, so the canvas display box the adapter set from
-   * `cssWidth()`/`cssHeight()` immediately describes a buffer that no longer exists.
+   * `setFontSize(); fit(); render();` is the shape, #417). Skipping it is not cosmetic: the **grid**
+   * is then a column count derived from the old cell, so the terminal is fitted to a box it no
+   * longer occupies. (The *buffer* half is handled — since renderer 0.15.0 these setters re-derive
+   * it here, because the renderer stopped doing it; what they cannot derive is the grid, which needs
+   * a container measurement this object does not hold.)
    *
    * **Call this {@link resize} directly — not `FitController.fit()`**, even if you hold one. The
    * reason is a *signature*, not a bug: `ResizePort.resize(cols, rows)` carries a **grid**, and the
@@ -956,12 +1027,14 @@ export class JustermRenderer implements Renderer {
    * so a large enough cell shrinks the *grid* as well.
    */
   setLetterSpacing(cssPx: number): void {
-    this.backend.setLetterSpacing(cssPx);
+    this.backend.setLetterSpacing(this.grid, cssPx);
+    this.reapplySurface();
   }
 
   /** See {@link setLetterSpacing} — same cell-moving contract, same re-fit and read-back obligation. */
   setLineHeight(multiplier: number): void {
-    this.backend.setLineHeight(multiplier);
+    this.backend.setLineHeight(this.grid, multiplier);
+    this.reapplySurface();
   }
 
   /**
@@ -983,7 +1056,7 @@ export class JustermRenderer implements Renderer {
    * not re-clamped here — two layers holding the same bound is how they drift apart.
    */
   setBgAlpha(alpha: number): void {
-    this.backend.setBgAlpha(alpha);
+    this.backend.setBgAlpha(this.grid, alpha);
     this.backend.render();
   }
 
@@ -1004,7 +1077,7 @@ export class JustermRenderer implements Renderer {
    * {@link setTheme} is its runtime path — the same as every other policy that lives there.
    */
   setCursorThickness(frac: number): void {
-    this.backend.setCursorThickness(frac);
+    this.backend.setCursorThickness(this.grid, frac);
     if (this.cursor) this.redrawCursor();
   }
 
@@ -1014,11 +1087,13 @@ export class JustermRenderer implements Renderer {
    * watcher; a consumer needs this only to drive the path in a test, or to serve a density this
    * object cannot observe (a `window` it was not built against).
    *
-   * **Two things move and only one of them is the renderer's.** The renderer re-rasterises and
-   * re-derives its drawing buffer *from the grid it is holding* — it never touches the DOM — so the
-   * canvas's CSS box, which this package writes and only in {@link resize}, would otherwise still
-   * describe the old buffer and the browser would scale it. That is the blur #322 exists to remove,
-   * reintroduced one layer out.
+   * **Two things move and neither of them is the renderer's to finish.** The renderer re-rasterises
+   * at the new density and stops: since 0.15.0 it leaves the drawing buffer exactly as it was asked
+   * for (a buffer holding N grids belongs to none of them, so it will not re-derive one), and it
+   * never touches the DOM. So this method re-derives the buffer from the grid it is holding *and*
+   * re-writes the canvas's CSS box from it — without the first the terminal would shrink by the
+   * density ratio, and without the second the browser would scale a stale box. The latter is the
+   * blur #322 exists to remove, reintroduced one layer out.
    *
    * **The CSS box can move, which is not obvious and is why this is not just a forward.** The device
    * cell is `round(metric * dpr)`, and dividing that back by the new ratio need not land on the old
@@ -1046,7 +1121,15 @@ export class JustermRenderer implements Renderer {
    */
   setDevicePixelRatio(dpr: number): void {
     this.backend.setDevicePixelRatio(dpr);
-    this.applyCanvasCssBox();
+    // Since renderer 0.15.0 this is the whole of what the renderer did NOT do: it re-bakes the
+    // atlases and leaves the drawing buffer exactly as it was asked for, because the buffer is a
+    // device-px measurement the consumer made and the renderer will not convert it through its own
+    // copy of the density — a copy that lags, since this very notification is dropped while the
+    // context is lost (#773). Re-asking is therefore ours, and we can: we hold the grid.
+    //
+    // Without this the buffer would stay put while `cssWidth()` divided it by the new ratio, so a
+    // move to a denser monitor would *halve* the displayed terminal.
+    this.reapplySurface();
     this.backend.render();
   }
 
@@ -1140,15 +1223,15 @@ export class JustermRenderer implements Renderer {
     this.activeMatchBg = theme.activeMatchBg ?? 0x995200;
     this.selectionInactiveBg = theme.selectionInactiveBg ?? 0x30313d;
     // Push the palette + the policy colours a theme can carry; each marks the buffer dirty (#421).
-    this.backend.setPalette(colors, theme.defaultFg, theme.defaultBg);
-    this.backend.setBoldToBright(theme.boldToBright ?? true);
-    this.backend.setMinimumContrastRatio(theme.minimumContrastRatio ?? 1);
-    this.backend.setSelectionForeground(theme.selectionForeground);
+    this.backend.setPalette(this.grid, colors, theme.defaultFg, theme.defaultBg);
+    this.backend.setBoldToBright(this.grid, theme.boldToBright ?? true);
+    this.backend.setMinimumContrastRatio(this.grid, theme.minimumContrastRatio ?? 1);
+    this.backend.setSelectionForeground(this.grid, theme.selectionForeground);
     // The cursor guard travels with the theme (#580), and it has to: what it defends against is a
     // `cursorColor` too close to the cell under it, and this call is the one that just moved both.
     // Omitting it from a theme RESETS it, like every other field here — that completeness is what
     // `DEFAULT_CURSOR_CONTRAST` exists for.
-    this.backend.setCursorContrast(theme.cursorContrast ?? DEFAULT_CURSOR_CONTRAST);
+    this.backend.setCursorContrast(this.grid, theme.cursorContrast ?? DEFAULT_CURSOR_CONTRAST);
     this.issueOverlay(); // the selection/match blend colours moved
     this.redrawCursor(); // re-push the cursor with its new colour, then present (one pack, #421)
   }
@@ -1159,42 +1242,123 @@ export class JustermRenderer implements Renderer {
    * from what the renderer reports it must be (`cssWidth`/`cssHeight`) — forget that and the
    * device-px buffer displays at twice its size on a Retina screen.
    *
-   * **A call that lands while the GL context is lost is provisional, and must be repeated once the
-   * context comes back** (#717). The renderer commits the grid you asked for but defers reading the
-   * drawing buffer back, because a dead context answers `0` and adopting that would floor the grid
-   * to one cell (#639). That read — and therefore any browser clamp (#339) — settles inside
-   * `restore()`, which runs on the next {@link render}, not when `webglcontextrestored` fires. The
-   * two lines below have already run by then with the pre-clamp numbers, and nothing rewrites them.
+   * **A call that lands while the GL context is lost is provisional** (#717). The renderer commits
+   * the buffer you asked for but defers reading it back, because a dead context answers `0` and
+   * adopting that would floor the surface to one pixel (#639). That read — and therefore any browser
+   * clamp (#339) — settles inside `restore()`, which runs on the next {@link render}, not when
+   * `webglcontextrestored` fires.
    *
-   * Measured (headless Chromium, `MAX_TEXTURE_SIZE` 8192, cell 9 device px), asking for 4000
-   * columns during a loss:
+   * **It no longer has to be repeated, and that changed in this package rather than in the
+   * renderer.** The `webglcontextrestored` handler now renders (which runs `restore` and settles the
+   * clamp), then re-derives the buffer and re-writes the display box from what was actually granted.
+   * So the provisional numbers are replaced without a consumer call.
+   *
+   * Measured on **renderer 0.14.x**, where nothing did that (headless Chromium, `MAX_TEXTURE_SIZE`
+   * 8192, cell 9 device px), asking for 4000 columns during a loss — kept because it is the shape of
+   * the failure, and because the middle column is still what happens:
    *
    * | | grid | `cssWidth()` | `canvas.style.width` |
    * |---|---|---|---|
    * | during the loss | 4000 | 36000 | `36000px` |
-   * | after the restoring `render()` | **910** | **8190** | `36000px` |
+   * | after the restoring `render()` | **910** | **8190** | `36000px` ← now `8190px` |
    *
-   * So the display box describes a buffer 4.4x wider than the one that exists, and the browser
-   * stretches to fit. **Re-reading {@link terminalSize} is not the remedy** — it reports the truth,
-   * but the canvas box is written here and only here. Call this method again with your current CSS
-   * box; that is the whole fix, and it is idempotent on a live context.
-   *
-   * Reachable only when the requested grid exceeds the browser's buffer limits, so most consumers
-   * will never see it. {@link isContextLost} going `false` is the signal that the repeat is due. */
+   * The display box described a buffer 4.4x wider than the one that existed and the browser
+   * stretched to fit. Reachable only when the requested grid exceeds the browser's buffer limits, so
+   * most consumers will never see either version. */
   resize(cssWidth: number, cssHeight: number): void {
     const grid = gridForBox(
       cssWidth,
       cssHeight,
-      this.backend.cssCellWidth(),
-      this.backend.cssCellHeight(),
+      this.backend.cssCellWidth(this.grid),
+      this.backend.cssCellHeight(this.grid),
     );
     // Nothing to propose — an unmeasured cell or a non-finite box (#632). Leave the renderer and the
     // canvas box exactly as they are: resizing to a guess is how an unlaid-out container turned into
     // a 1x1 terminal, and the CSS box below must not describe a buffer we did not ask for.
     if (!grid) return;
-    const { cols, rows } = grid;
-    this.backend.resize(cols, rows);
+    this.applyGrid(grid.cols, grid.rows);
+  }
+
+  /**
+   * Give the renderer a `cols`×`rows` grid **and** the surface to draw it on, then re-apply the
+   * canvas display box.
+   *
+   * **This is what `backend.resize(cols, rows)` was until renderer 0.15.0**, assembled here because
+   * the renderer stopped being able to do it. A drawing buffer shared by N grids in M font
+   * configurations has no cell it can be a multiple of, so it is sized in device px by whoever knows
+   * which grid it is holding (#773). This widget holds exactly one, so it can — and every obligation
+   * the renderer handed back is discharged in this one method rather than at each of its callers.
+   *
+   * **It asks for `cols * cell_width(grid)` rather than scaling a CSS box by the ratio**, and that
+   * is #331's exactness kept rather than re-derived: both are integers the renderer hands back, so
+   * nothing rounds between the grid the shader lays out and the buffer that has to hold it. The
+   * browser may still grant less (#339), which is why the display box is written from `cssWidth()`
+   * afterwards rather than from the numbers asked for.
+   */
+  private applyGrid(cols: number, rows: number): void {
+    this.backend.resizeGrid(this.grid, cols, rows);
+    this.backend.resizeSurface(
+      cols * this.backend.cell_width(this.grid),
+      rows * this.backend.cell_height(this.grid),
+    );
+
+    // **Read the grant back and adopt it** (#339). WebGL is free to give a smaller drawing buffer
+    // than asked for, and until renderer 0.15.0 the renderer read that back itself and shrank the
+    // grid — which is what made {@link terminalSize} "the grid actually adopted". It cannot now: a
+    // buffer belongs to no grid, so it clamps the *surface* and leaves the grid saying what it was
+    // told. This widget is the one place holding both the grant (`cssWidth`) and the grid, so the
+    // read-back lands here, and `justerm-web`'s contract is unchanged across the renderer break.
+    //
+    // Without it the failure is silent in the way this repo treats as worst: nothing errors, the
+    // grid keeps the columns it asked for, and the cells past the buffer's edge are clipped by the
+    // scissor — drawn nowhere, with `terminalSize()` still reporting them.
+    //
+    // `cssWidth()` is the granted buffer, in CSS px, which is the space `gridForBox` divides in. On
+    // a lost context it reports the *committed* request rather than a grant (the read-back is
+    // deferred to the restore, #639), so this shrinks nothing then — which is right, and the restore
+    // path re-runs this whole method.
+    const granted = gridForBox(
+      this.backend.cssWidth(),
+      this.backend.cssHeight(),
+      this.backend.cssCellWidth(this.grid),
+      this.backend.cssCellHeight(this.grid),
+    );
+    if (granted !== undefined && (granted.cols < cols || granted.rows < rows)) {
+      this.backend.resizeGrid(this.grid, granted.cols, granted.rows);
+    }
+
+    // A grid draws only where it is placed, and for a one-terminal widget that is the whole buffer.
+    // Re-issued on every call because a rect is device px: the cell may have just moved under it,
+    // and the grid may have just been shrunk to the grant.
+    const { cols: fitted, rows: fittedRows } = granted ?? { cols, rows };
+    this.backend.setViewport(
+      this.grid,
+      0,
+      0,
+      Math.min(cols, fitted) * this.backend.cell_width(this.grid),
+      Math.min(rows, fittedRows) * this.backend.cell_height(this.grid),
+    );
     this.applyCanvasCssBox();
+  }
+
+  /**
+   * Re-derive the drawing buffer from the grid this widget is already holding, at whatever the cell
+   * has just become — the response to anything that moves the cell without moving the grid.
+   *
+   * Until renderer 0.15.0 the renderer did this itself: every font, spacing and density path ended
+   * by re-deriving the buffer from the grid it was holding. It cannot any more — a surface belongs
+   * to no grid — so the obligation came back to the consumer, and this widget *is* the consumer.
+   * What stays the renderer's is the cell; what stays the application's is the **grid**, which is
+   * why {@link setFontSize} and friends still say "re-fit" and still mean the column count.
+   *
+   * A no-op before the first {@link resize}: a grid is born `0`x`0`, and `resizeGrid` would floor
+   * that to one cell — turning a density change that arrives between `create` and the first fit into
+   * a one-cell canvas. (The old renderer had no such window: it seeded its implicit grid from the
+   * canvas attributes.)
+   */
+  private reapplySurface(): void {
+    const { cols, rows } = this.terminalSize();
+    if (cols > 0 && rows > 0) this.applyGrid(cols, rows);
   }
 
   /**
@@ -1203,20 +1367,27 @@ export class JustermRenderer implements Renderer {
    * named step rather than two lines: anything that moves the buffer or the cell owes this call, and
    * whoever forgets it gets a browser-scaled — i.e. blurry — terminal rather than an error.
    *
-   * Two callers, and the second is the reason this was extracted (#325): {@link resize}, and a
-   * device-pixel-ratio change, which moves `cssWidth()`/`cssHeight()` **without** moving the grid and
-   * so cannot go through `resize` (that one derives a grid from a CSS box this object does not hold).
+   * **One caller now**: {@link applyGrid}, which every path that moves the buffer or the cell goes
+   * through — a fit, a density change, a font or spacing change. It was extracted at #325 because
+   * there were two and the second could not reuse the first (a density change moves the CSS box
+   * without moving the grid, and `resize` derives a grid from a box this object does not hold);
+   * renderer 0.15.0 merged them by making *every* one of those paths re-ask for the buffer.
    */
   private applyCanvasCssBox(): void {
     this.canvas.style.width = `${this.backend.cssWidth()}px`;
     this.canvas.style.height = `${this.backend.cssHeight()}px`;
   }
 
-  /** The terminal grid the renderer ACTUALLY adopted after the last {@link resize} — read back from
-   * the renderer (not the requested `cols`/`rows`), so a browser drawing-buffer clamp (#339) can't
-   * desync the grid the consumer drives its engine + frames at from the grid the buffer holds. */
+  /** The terminal grid ACTUALLY adopted after the last {@link resize} — not the requested
+   * `cols`/`rows`, so a browser drawing-buffer clamp (#339) cannot desync the grid the consumer
+   * drives its engine and frames at from the grid the buffer can hold.
+   *
+   * **Who adopts it moved at renderer 0.15.0, and this contract did not** (#773). The renderer used
+   * to shrink the grid to what the buffer granted; it clamps only the shared *surface* now, because
+   * a buffer holding N grids belongs to none of them. So {@link resize} reads the grant back and
+   * shrinks the grid here instead — which is why this still answers what it always did. */
   terminalSize(): { cols: number; rows: number } {
-    return { cols: this.backend.cols(), rows: this.backend.rows() };
+    return { cols: this.backend.cols(this.grid), rows: this.backend.rows(this.grid) };
   }
 
   applyFrame(frame: DecodedFrame): void {
@@ -1231,14 +1402,14 @@ export class JustermRenderer implements Renderer {
     this.lastMatchSpans = retainU32(frame.matchSpans ?? new Uint32Array(0));
     this.lastActiveMatchSpans = retainU32(frame.activeMatchSpans ?? new Uint32Array(0));
     this.issueOverlay();
-    this.backend.setDecorations(decorationWire(this.decorationSource?.(frame) ?? []));
+    this.backend.setDecorations(this.grid, decorationWire(this.decorationSource?.(frame) ?? []));
     this.updateCursor(frame);
     // Pack at the CURRENT text-blink phase, not forced-on — same reason `updateCursor` draws at
     // the cursor's current phase: a content frame arriving during the off phase must not flash the
     // blinking cells back on until the loop's next flip. `apply_damage` stores this as the
     // renderer's `last_blink_on`, so the two stay in step by construction.
     const textBlinkOn = this.textBlink.isVisible(now());
-    this.backend.apply_damage(
+    this.backend.apply_damage(this.grid,
       damageHeader(frame, textBlinkOn),
       asU32(frame.spans),
       asU32(frame.codepoints),
@@ -1323,13 +1494,13 @@ export class JustermRenderer implements Renderer {
    * theme swap re-colours it too. Its tint is NOT focus-gated — xterm has no inactive variant
    * for match colours (only the selection dims on blur). */
   private issueOverlay(): void {
-    this.backend.setOverlay(
+    this.backend.setOverlay(this.grid,
       this.lastSelectionSpans,
       this.lastMatchSpans,
       this.activeSelectionBg(),
       this.matchBg,
     );
-    this.backend.setActiveMatch(this.lastActiveMatchSpans, this.activeMatchBg);
+    this.backend.setActiveMatch(this.grid, this.lastActiveMatchSpans, this.activeMatchBg);
   }
 
   /** Push the frame's cursor to the renderer (native cursor — #270), or clear it when hidden.
@@ -1346,7 +1517,7 @@ export class JustermRenderer implements Renderer {
     if (cmd.kind === "none") return;
     if (cmd.kind === "clear") {
       this.cursor = undefined;
-      this.backend.clearCursor();
+      this.backend.clearCursor(this.grid);
       return;
     }
     // ADR-0028 D5 — while a composition is open the caret's POSITION is the composition's end, not
@@ -1372,7 +1543,7 @@ export class JustermRenderer implements Renderer {
   private pushCursor(on: boolean): void {
     this.lastBlinkOn = on;
     if (on && this.cursor) {
-      this.backend.setCursor(
+      this.backend.setCursor(this.grid,
         this.cursor.col,
         this.cursor.row,
         this.cursor.shape,
@@ -1380,7 +1551,7 @@ export class JustermRenderer implements Renderer {
         this.cursorTextColor,
       );
     } else {
-      this.backend.clearCursor();
+      this.backend.clearCursor(this.grid);
     }
   }
 
@@ -1434,7 +1605,7 @@ export class JustermRenderer implements Renderer {
     // A renderer published before #249 has no such binding: report the anchor cell unchanged, so
     // the widget's anchor logic still works and only the drawing is missing.
     if (!this.backend.setPreedit) return col;
-    const caretCol = this.backend.setPreedit(col, row, codepoints);
+    const caretCol = this.backend.setPreedit(this.grid, col, row, codepoints);
     // Retained, because D5 is a rule about every frame and not about this call. Frames keep arriving
     // while a composition is open and each one describes the ENGINE's cursor, which knows nothing
     // about the preedit — so without this the caret snaps back under the composed text on the next
@@ -1506,10 +1677,10 @@ export class JustermRenderer implements Renderer {
    */
   private repackAtTextBlinkPhase(on: boolean): boolean {
     const grid = this.lastFrameGrid;
-    if (!grid || grid.cols !== this.backend.cols() || grid.rows !== this.backend.rows()) {
+    if (!grid || grid.cols !== this.backend.cols(this.grid) || grid.rows !== this.backend.rows(this.grid)) {
       return false;
     }
-    this.backend.apply_damage(
+    this.backend.apply_damage(this.grid,
       blinkPhaseHeader(grid.cols, grid.rows, on),
       EMPTY_U32,
       EMPTY_U32,

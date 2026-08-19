@@ -1570,6 +1570,7 @@ declare global {
     __imeDriftProbe?: () => ImeDriftProbe;
     __imePointerProbe?: () => ImePointerProbe;
     __fitProbe?: () => FitProbe;
+    __oversizeProbe?: (cssWidth: number) => OversizeProbe;
     __dprProbe?: () => DprSnapshot;
     __setDpr?: (dpr: number) => void;
     __setLineHeight?: (lh: number) => void;
@@ -2607,6 +2608,18 @@ window.__imePointerProbe = (): ImePointerProbe => {
  * Mirrors what `readFitInput` above actually feeds the controller: zero padding, zero scrollbar
  * width, so the proposal is just `floor(inner / cssCell)` under the `MINIMUM_*` floors.
  */
+/** What an oversized fit came back with (#339, re-homed by #773) — see `window.__oversizeProbe`. */
+interface OversizeProbe {
+  askedCols: number;
+  cols: number;
+  rows: number;
+  cellW: number;
+  bufW: number;
+  appliedW: number;
+  dpr: number;
+  maxTexture: number;
+}
+
 interface FitProbe {
   dpr: number;
   /** The cell in CSS px — `cellSize()` (device px) ÷ dpr, exactly as `readFitInput` computes it. */
@@ -2675,6 +2688,40 @@ window.__dprProbe = (): DprSnapshot => {
  * exercised where the CDP-driven test cannot run. */
 window.__setDpr = (dpr: number): void => {
   renderer.setDevicePixelRatio(dpr);
+};
+
+/**
+ * #339, re-homed by #773 — ask for a grid the drawing buffer provably cannot hold and report what
+ * the widget adopted.
+ *
+ * WebGL is free to grant a smaller buffer than asked for. Until renderer 0.15.0 the renderer read
+ * that back and shrank the *grid*, so `terminalSize()` was "the grid actually adopted". It clamps
+ * only the **surface** now — a buffer belongs to no grid — so the read-back moved into the widget's
+ * own fit path, and this is the only thing that exercises it. Without the read-back nothing errors:
+ * the grid keeps the columns it asked for and the cells past the buffer's edge are clipped by the
+ * scissor, drawn nowhere, while `terminalSize()` still counts them.
+ *
+ * Restores the page's real fit before returning, so the tests after this one are unaffected.
+ */
+window.__oversizeProbe = (cssWidth: number): OversizeProbe => {
+  const gl = canvas.getContext("webgl2")!;
+  const dpr = window.devicePixelRatio || 1;
+  const askedCols = Math.floor(cssWidth / (renderer.cellSize().width / dpr));
+  renderer.resize(cssWidth, window.innerHeight);
+  const ts = renderer.terminalSize();
+  const out: OversizeProbe = {
+    askedCols,
+    cols: ts.cols,
+    rows: ts.rows,
+    cellW: renderer.cellSize().width,
+    bufW: gl.drawingBufferWidth,
+    appliedW: parseFloat(canvas.style.width),
+    dpr,
+    maxTexture: gl.getParameter(gl.MAX_TEXTURE_SIZE) as number,
+  };
+  fit();
+  render();
+  return out;
 };
 
 window.__fitProbe = (): FitProbe => {

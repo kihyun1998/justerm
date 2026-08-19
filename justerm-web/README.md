@@ -142,22 +142,25 @@ lost is **provisional**. The renderer commits the grid you asked for but defers 
 buffer back — a dead context answers `0`, and adopting that would shrink the terminal to one cell —
 so any clamp the browser applies settles later, inside the first `render()` after recovery.
 
-The canvas display box is written during `resize()` and nowhere else, so it keeps the pre-clamp
-numbers. Measured, asking for 4000 columns during a loss (`MAX_TEXTURE_SIZE` 8192, 9px cell):
+**You no longer have to do anything about it.** The widget listens for `webglcontextrestored`, and
+on that event it renders (which is what settles the clamp), re-derives the drawing buffer from the
+grid it is holding, and re-writes the display box from what was actually granted. Both the grid and
+the box heal without a call from you.
+
+Measured on the older shape, where nothing did that — asking for 4000 columns during a loss
+(`MAX_TEXTURE_SIZE` 8192, 9px cell):
 
 | | grid | display box |
 |---|---|---|
 | during the loss | 4000 cols | `36000px` |
-| after recovery | **910 cols** | `36000px` |
+| after recovery | **910 cols** | `36000px` ← now `8190px` |
 
-The browser then stretches an 8190px buffer across a 36000px box. **Re-reading `terminalSize()` does
-not fix it** — call `resize()` again with your current CSS box:
+The browser stretched an 8190px buffer across a 36000px box. `terminalSize()` reports the truth
+throughout, and is the value to drive your engine from:
 
 ```ts
-// only needed if you re-fit while the context was down
-if (wasLostWhenIFitted && !renderer.isContextLost()) {
-  renderer.resize(el.clientWidth, el.clientHeight); // idempotent on a live context
-}
+// after any resize, drive the engine from what was adopted rather than what you asked for
+const { cols, rows } = renderer.terminalSize();
 ```
 
 Most consumers never reach this: it needs a requested grid larger than the browser's buffer limits
