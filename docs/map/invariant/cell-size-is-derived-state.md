@@ -4,9 +4,20 @@
 
 **The grid cell is not a constant and not owned by anyone who reads it.** It is derived, inside
 `justerm-renderer`, from four inputs together — the glyph box, the device pixel ratio, the letter
-spacing and the line height — and re-derived through a single funnel (`webgl.rs` `recompute_cell`)
+spacing and the line height — and re-derived through a single funnel (`webgl.rs` `bake_config`)
 whenever any of them moves. Five widget-exposed setters can move it: `setFontSize`, `setFontFamily`,
 `setLetterSpacing`, `setLineHeight` (#578) and `setDevicePixelRatio` (#325, **wired 2026-08-10**).
+
+> **The funnel was called `recompute_cell` until 2026-08-19 (#772)**, which replaced it with
+> `bake_config` — the function that builds one *font configuration's* resources, cell included. The
+> fact above is unchanged and the derivation is the same four inputs; what moved is where the result
+> lives. **And one thing did change: there can now be more than one cell at a time.** A cell belongs
+> to a configuration, and a renderer holds one configuration per distinct set of selectors, so two
+> terminals in two fonts have two cells on one canvas. Every widget-facing reader below still gets the
+> *default* grid's — `cellWidth`/`cellHeight`/`cssCellWidth`/`cssCellHeight` report the configuration
+> that grid selects into, and no export reports any other — so the one-cell model below is still
+> correct for a consumer, and stops being correct the moment a consumer can address a second grid's
+> geometry (the per-grid setters slice).
 
 Everything downstream that divides by a cell dimension therefore holds a value with a **lifetime**, and
 nothing in the type system says so:
@@ -164,8 +175,10 @@ far was found while doing something else, and none was found by the layer that o
   pointer coordinates by a device-px cell.
 
 The membership test, so the list can be derived rather than remembered: **does the value reach
-`recompute_cell`?** `setCursorContrast`/`setCursorThickness` (#580) do not — they are draw-time scalars
-and are not instances, which is worth stating because they look like near neighbours.
+`bake_config`?** — i.e. is it one of the four selectors a configuration is keyed by, or the density
+every configuration is baked at. `setCursorContrast`/`setCursorThickness` (#580) do not — they are
+draw-time scalars and are not instances, which is worth stating because they look like near
+neighbours. (The test named `recompute_cell` until #772 deleted it; same question, live name.)
 
 ## Where it will recur
 

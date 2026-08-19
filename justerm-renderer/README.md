@@ -21,9 +21,20 @@ overlays, decorations, and live palette / font / metric setters. `justerm-web` r
 **One context can now hold and draw more than one grid** (Epic #287, in progress). `addGrid` registers
 a terminal grid, `setViewport` places it on the shared drawing buffer in device pixels, `clearViewport`
 hides it while keeping every byte of its state, and `render` draws each placed grid into its own rect.
+
+**Terminals in the same font share one glyph atlas.** Resources are keyed by font configuration —
+family, size, letter-spacing and line-height together — and refcounted, so six terminals in one font
+hold one atlas, rasteriser and glyph cache between them, and the last one to leave a configuration
+releases it. Changing one terminal's font moves it to a different entry rather than editing the one
+its neighbours are drawing through, which is also what makes two terminals in two different fonts —
+and therefore two different cell geometries — drawable side by side on the same canvas. `atlasCount()`
+reports how many configurations are live and `bakes()` counts atlas builds, so the sharing is
+something you can measure rather than assume.
+
 The addition is strictly additive so far: apart from `applyDamageTo`, which addresses a frame to a
 registered grid, every other export still acts on an implicit default grid that covers the whole
-buffer — so a single-grid consumer is unaffected and needs to change nothing.
+buffer — so a single-grid consumer is unaffected and needs to change nothing. `cellWidth`/`cellHeight`
+report that grid's configuration, which is the only one a single-grid consumer has.
 
 Published to npm as **`justerm-renderer`** on its own **`renderer-v*`** tag track. That track is
 deliberately separate from the workspace `v*` tags (which publish `justerm-core` +

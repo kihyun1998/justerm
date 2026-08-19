@@ -21,9 +21,9 @@ stated rather than here, so this paragraph does not need rewriting as each slice
 
 ## Design model
 
-**The tier split (#769), the grid registry (#770) and the viewport draw loop (#771) are built;
-everything else below is designed and not built** — read ADR-0021 for the authoritative form, and
-`## Code` for what exists today.
+**The tier split (#769), the grid registry (#770), the viewport draw loop (#771) and the per-config
+atlas registry (#772) are built; everything else below is designed and not built** — read ADR-0021
+for the authoritative form, and `## Code` for what exists today.
 
 - **One context, N viewports**, with per-grid `scissor` + `viewport` rectangles rather than per-grid
   contexts. The browser's context cap is the forcing constraint. Built in #771, in the shape three.js
@@ -40,6 +40,14 @@ everything else below is designed and not built** — read ADR-0021 for the auth
   *selector* (whose state decides this — per-grid whenever a consumer can set it per terminal) and the
   *resource* (where the selected thing lives — per-config only when one instance can serve two grids
   *and* rebuilding it is expensive enough to repay keying). Read ADR-0021's D1–D5, not this summary.
+- **The middle tier is keyed by the four consumer selectors and *not* by the DPR** (#772), although
+  ADR-0021's prose said otherwise and the one reference that shares font machinery does hash its
+  density. One canvas means one drawing buffer and one `devicePixelRatio`, so the DPR is globally
+  constant across the registry — a component every key shares cannot separate two keys, and putting
+  it in would only make every key wrong the moment it changed. A density change is therefore the
+  *rebuild-all* path rather than a mass re-key, and it is the one case where editing a shared entry
+  in place is right: nobody is being moved into a configuration they did not ask for. ADR-0021's own
+  bullet is sharpened rather than contradicted; the ghostty divergence is recorded there.
 
   > **This bullet used to name the tiers "per-context / per-surface / per-frame", which is not what the
   > record says.** Two of the three differed, and the middle one differed in kind: the sharing axis is a
@@ -73,13 +81,25 @@ The renderer **holds** N grids and **draws** every one that has been placed.
   remove
 - `justerm-renderer/demo/grid-registry.html` — the browser proof for the registry's observable
   behaviour, and where the resident-memory number below was measured
+- `justerm-renderer/src/config_registry.rs` — `ConfigRegistry`, `ConfigKey`, `ConfigId` (#772): the
+  refcounted map from a font configuration to the resources serving it. Pure and host-tested for the
+  same reason the grid registry is — the payload is a type parameter, so the registry never learns
+  that a configuration owns a GPU texture
 - `justerm-renderer/demo/multi-viewport.html` — the browser proof for the draw loop: three grids in
   three rects on one canvas, the y-flip asserted by placing two of them at opposite ends of the
   buffer, and the single-grid output compared against a control captured in the same run (#771)
+- `justerm-renderer/demo/per-config-atlas.html` — the browser proof for the atlas registry (#772):
+  sharing and release read as counts (`atlasCount`, and `bakes` as a delta, the `packs` precedent),
+  the immutability of a shared entry read as *pixels* — a sibling's rect is compared byte-for-byte
+  across another grid's font change — and two configurations drawn side by side, each `█` run
+  measuring its own grid's cell width. It also loses and restores a context with two grids drawn
 
-Still absent: no terminal-surface type, no atlas keyed by configuration — every grid still selects
-into the single per-config tier, and every export except addGrid/removeGrid/setViewport/
-clearViewport/gridCount/isGridDrawn/applyDamageTo still acts on the implicit default grid. (Names of
+Still absent: no terminal-surface type, and every export except addGrid/removeGrid/setViewport/
+clearViewport/gridCount/isGridDrawn/applyDamageTo/atlasCount/bakes still acts on the implicit default
+grid — including the four font/metric setters, so a *registered* grid has no way to ask for a
+configuration of its own and keeps the one it was born into until the per-grid setters land. There is
+also no export that reports a non-default grid's cell, so a consumer holding two configurations
+cannot fit the second one. (Names of
 things that do not exist yet are left un-backticked on purpose: every symbol under this heading is
 resolved against the source, so a code-span for an unbuilt type fails the note gate — which is the
 gate doing its job.)
@@ -92,6 +112,7 @@ recorded SHA; a paraphrase drops the pin).
 - [Multi-viewport resource tiering](../../agents/reference-facts.md#multi-viewport-resource-tiering--how-the-one-reference-that-shares-font-machinery-splits-it-768-verified-2026-08-18)
 - [A terminal registry, and what "registered but not drawn" is made of](../../agents/reference-facts.md#a-terminal-registry-and-what-registered-but-not-drawn-is-made-of-770-verified-2026-08-19)
 - [Drawing N views on one canvas — the mechanism reference, and the two places it does not reach](../../agents/reference-facts.md#drawing-n-views-on-one-canvas--the-mechanism-reference-and-the-two-places-it-does-not-reach-771-verified-2026-08-19)
+- [Sharing font machinery between terminals — how the one reference that does it refcounts, keys and invalidates](../../agents/reference-facts.md#sharing-font-machinery-between-terminals--how-the-one-reference-that-does-it-refcounts-keys-and-invalidates-772-verified-2026-08-19)
 
 **three.js is now pinned** (#771 needed a fact from it, which is the condition #768 set for pinning
 one). **WezTerm still is not**, so a quarter of ADR-0021's prior art remains unverifiable at the
@@ -109,7 +130,9 @@ territory with no code has no blast radius; #769 gave it code and the radius sta
 tier split changes nothing anyone can see. #770 added *reach*: six new wasm exports
 (`addGrid` / `removeGrid` / `setViewport` / `clearViewport` / `gridCount` / `isGridDrawn`) ship on the
 `renderer-v*` track, so [published surface](published-surface.md) has something to carry; #771 adds a
-seventh (`applyDamageTo`) and makes the set *do* something — a placed grid paints.
+seventh (`applyDamageTo`) and makes the set *do* something — a placed grid paints; #772 adds an
+eighth and ninth, `atlasCount` and `bakes`, which carry no behaviour and exist so that *sharing* is
+something a consumer or a proof can measure rather than assume.
 
 The addition is still strictly additive and a single-grid consumer is unaffected: every export
 predating the per-grid setters acts on the implicit default grid, whose rect is the whole drawing
@@ -123,11 +146,19 @@ the reference behaves the same way for the same reason.
 The list below is what lands **when the multi-grid work does**, and the entries above the fold in
 `## Code` say how much of that has happened:
 
-- [glyph atlas](glyph-atlas.md) — the atlas becomes **per-config**, shared by every grid on the same
-  font configuration, which is the whole economy of the design. Not per-context: two grids in
-  different fonts hold different atlases on one context, and that difference is the tier
-- [GL context lifecycle](gl-context-lifecycle.md) — one loss takes down **every** grid at once rather
-  than one. #771 made `restore` rebuild *every* registered grid's VAO and instance buffer and drop
+- [glyph atlas](glyph-atlas.md) — **landed in #772**: the atlas, rasteriser, glyph cache and the cell
+  geometry derived from them are keyed per font configuration and refcounted, so every grid on the
+  same configuration shares one set and the last to leave releases it. That is the whole economy of
+  the design. Not per-context: two grids in different fonts hold different atlases on one context,
+  and that difference is the tier. What came with it: a shared cache means one grid's pack can
+  **repoint a slot another grid's instances still address**, which the upload diff cannot see — so a
+  grid re-packs when its configuration's eviction count moves
+- [GL context lifecycle](gl-context-lifecycle.md) — one loss takes down **every** grid and **every
+  configuration** at once rather than one. #772 added the second half: `restore` re-bakes every live
+  configuration's atlas at the live density, keeping each one's glyph slots, and then reconciles any
+  grid whose selectors moved while the context was dead — a setter in that window writes the selector
+  and defers, so the grid names a configuration it no longer matches. #771 made `restore` rebuild
+  *every* registered grid's VAO and instance buffer and drop
   every upload baseline, because it had to: with a draw loop, a grid still holding an object from the
   dead context binds a VAO that raises `INVALID_OPERATION` and leaves the *previous* grid's bound, so
   grid B would silently draw grid A's cells. What is still the context-loss slice's is the half above
@@ -179,10 +210,27 @@ The list below is what lands **when the multi-grid work does**, and the entries 
     N-grid restore path ships on reasoning. Asserting it **per grid**, through the real listener
     path, is the context-loss slice's real remaining work — and a pass that only checks the drawn
     grid cannot tell "all recovered" from "the visible one recovered".
-  - **Still open:** a DPR change, a font change and a spacing change re-key *one* grid's
-    configuration — the default's — and a registered grid keeps the four font/metric selectors it
-    was born with, which go stale the moment the default's move. Nothing reads them until the atlas
-    slice keys an atlas by them, and the window shuts when the implicit exports die.
+    **Half of that arrived incidentally in #772**, which is worth knowing before the context-loss
+    slice re-derives it: `demo/per-config-atlas.html` loses and restores a context through the real
+    listener path with **two grids registered and both drawn**, and asserts the whole drawing buffer
+    repaints byte-for-byte plus one atlas bake per live configuration. So the *drawn* half is
+    observed rather than reasoned. What is still owed is exactly the distinction the paragraph above
+    names: nothing anywhere loses a context with a grid that is registered and **not** drawn, and
+    that is the case a pass looking at pixels structurally cannot see.
+  - ~~**Still open:** a registered grid keeps the four font/metric selectors it was born with, which
+    go stale the moment the default's move.~~ **Closed by #772, by making them true rather than by
+    keeping them in step.** A font, spacing or family change moves the *default* to a different
+    configuration and leaves every other grid on the one it selected — so a registered grid's
+    selectors and the entry it draws through agree by construction, and `GridTier::new` now unpacks
+    the selectors *from* the key so the two cannot even be born disagreeing. There is one window in
+    which they do drift, deliberately: a setter arriving while the context is lost writes the
+    selector and defers the move, because an atlas cannot be baked on a dead context. `restore`
+    reconciles it. Nothing reads a grid's selectors in that window — `render` skips a lost frame
+    entirely — and a grid *registered* inside it is born at the configuration actually in force
+    rather than the one the default has asked for and not yet got, which is the only answer available
+    and is recorded at `add_grid`.
+  - **A DPR change is a different path from all of that, and stayed one:** it rebuilds every entry in
+    place rather than re-keying anything, because one canvas has one density (see `## Design model`).
   - **Still true, and worth not re-deriving:** registering during a loss does not announce itself.
     Chromium's `createBuffer()` hands back a **non-null** object on a lost context (measured #770, in
     the synchronous window and after `webglcontextlost` alike), so the registration succeeds and the
@@ -230,7 +278,21 @@ The list below is what lands **when the multi-grid work does**, and the entries 
   re-pack loop mean a second grid now evicts from the same LRU. Concretely: grid A goes idle holding
   instances that address atlas slots; grid B keeps packing different glyphs; once the combined live
   set crosses a region's capacity (2048 normal / 2048 wide — CJK- or emoji-heavy content, not ASCII),
-  B's pack repoints slots A still addresses, and A never re-packs so nothing self-heals. **Not
-  measured** — bounding it needs a probe that packs two grids past the capacity — and no consumer
-  reaches it yet, since nothing outside a proof page registers a second grid. Recorded here so the
-  atlas slice inherits a live hazard rather than a future one.
+  B's pack repoints slots A still addresses, and A never re-packs so nothing self-heals.
+  **Discharged in part by #772, and the residue is a different question from the one ADR-0021 asked.**
+  A grid now re-packs when its configuration's eviction count moves — the cheapest form of the
+  record's second candidate guarantee — and `demo/per-config-atlas.html` drives it: 4 glyphs from one
+  grid, then 1953 from a sibling (exactly the normal region's dynamic capacity), then the sibling's
+  live set shrinks and the first grid repairs itself with no new frame from the consumer. Turning the
+  comparison off makes those four cells draw the sibling's glyphs, which is the corruption made
+  visible: ink over the four cells goes 207 → 421.
+  **What choosing between the three candidates revealed** is that none of them is complete, for an
+  arithmetic reason: an eviction happens *only once a region is full*, so wherever this hazard exists
+  the grids' historical set has already overflowed. The re-pack converges exactly when their **live**
+  sets fit a region together (the reachable case, now fixed — the re-pack makes that grid's glyphs
+  most-recently-used, so the next eviction takes a dead slot). Where the live sets do not fit,
+  re-packing oscillates and nothing can be right; the single-grid form of that impossibility is
+  *refused* rather than drawn, so the shape of the remaining answer is a **render-scoped pin** over
+  the union of the drawn grids' working sets. That is open, and it is left open on purpose — it
+  carries a product decision (one terminal with a huge glyph set would make `render` throw for every
+  terminal on the surface) rather than only an implementation.

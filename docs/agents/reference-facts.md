@@ -683,8 +683,10 @@ only half of what the reference says.
 
 Recorded because the reference's shape here is the one a reader is most likely to cite as
 permission, and it is the outlier. justerm's `restore` builds every replacement into locals and
-commits only after the re-bake succeeds; its in-repo siblings (`rebake_atlas`, `rebake_for_cell`,
-`adopt_spacing`'s rollback) do the same. **Direction: this layer *and* its siblings agree against
+commits only after the re-bake succeeds; its in-repo siblings (`bake_config`,
+`rebuild_all_configs`, `adopt_selectors`' rollback) do the same. (Those three were named
+`rebake_atlas` / `rebake_for_cell` / `adopt_spacing`'s rollback until #772 replaced the
+single-configuration bake path with a keyed one — the family position is unchanged.) **Direction: this layer *and* its siblings agree against
 the reference — a family position, held, and xterm must not be read as licence to half-commit.**
 
 | Fact | Reference | Site |
@@ -1733,3 +1735,47 @@ the whole buffer.
   `cell_width()`'s contract already puts *"anything that addresses the drawing buffer — `readPixels`,
   GL interop, a picking rect"* in device px. Taking CSS px would also import three.js's rounding step,
   which #337 is the local record of not wanting.
+
+## Sharing font machinery between terminals — how the one reference that does it refcounts, keys and invalidates (#772, verified 2026-08-19)
+
+Read for #772's atlas registry (Epic #287 S4). This is the **one tier of ADR-0021's three that has
+direct precedent**, so unlike the two sections above it these rows are read for *mechanism* rather
+than only for convergence — but the tie-breaker is unchanged: `theflow.md` gives renderer resource
+ownership justerm's own model, so a difference below is `DELIBERATE` unless the defect stands with
+ghostty deleted from the sentence. The #768 section above carries the rows about *what* is shared;
+these are about the **lifetime** — how an entry is joined, left and rebuilt.
+
+Read ghostty's "surface" as justerm's *grid* throughout (the noun inverts — see the #768 section).
+
+| Fact | Reference | Site |
+|---|---|---|
+| `ref` is **find-or-build**: an absent configuration *"will be initialized with a ref count of 1"*, a present one has its count incremented — one call, and the caller cannot tell which happened | ghostty | `src/font/SharedGridSet.zig:89` |
+| The set **owns** what it hands back — *"the returned data (key and grid) should never be freed … the memory is owned by the set and will be freed when the ref count reaches zero"* | ghostty | `src/font/SharedGridSet.zig:94` |
+| `deref` destroys **immediately** at zero — *"we are at a zero ref count so deinit the group and remove"* — with no free pool, no deferred reap and no grace period | ghostty | `src/font/SharedGridSet.zig:408` |
+| The set exposes its **entry count** — *"returns the number of cached grids"* — so sharing is observable rather than inferred | ghostty | `src/font/SharedGridSet.zig:81` |
+| The key hashes the **font size**, which carries the screen density: `DesiredSize` is `{ points, xdpi, ydpi }`, *"the DPI of the screen so we can convert points to pixels"* | ghostty | `src/font/SharedGridSet.zig:564`, `src/font/face.zig:50` |
+| Switching a terminal to a different shared grid **forces a full cell rebuild** — *"force a full rebuild, because cached rows may still reference an outdated atlas from the old grid and this can cause garbage to be rendered"* — and separately resets the texture-sync watermarks so the whole atlas re-uploads | ghostty | `src/renderer/generic.zig:1110`, `:1081` |
+
+**What transfers, and it is most of it.** find-or-build behind one call, ownership by the set,
+destruction at zero with no pool, a countable entry set, and a forced re-pack on the way into a new
+entry: `acquire_config` / `release_config` / `atlasCount` / `select_config`'s `needs_repack` are each
+the same shape, arrived at from the same pressure. The last row is the one that would have been a
+silent bug: justerm's packed instances address slots in the entry a grid is *leaving*, and the entry
+it joins has a cache of its own, so a grid that does not re-pack draws whatever happens to sit at
+those slot indices in the new atlas.
+
+**What does not, and it is the density.** ghostty puts the DPI **inside the key**; justerm keys only
+the four consumer selectors and treats the density as a global input every entry is baked at. The
+reason is in the architecture rather than in a preference, and it is the same one
+`docs/map/territory/multi-viewport.md` already records for the cell: a ghostty `Surface` is an OS
+window that can be dragged onto a monitor of its own density, so its DPI genuinely is per-surface,
+while N viewports on one canvas share one drawing buffer and therefore one `devicePixelRatio`. A key
+component that is globally constant cannot separate two keys — it can only make every key wrong the
+moment it changes. That is why a DPR change is the *rebuild-all* path ADR-0021 names as separate from
+re-keying, rather than a mass re-key.
+
+**And one hazard ghostty's arrangement cannot have**, restated here because it is the reason this
+section is not simply an import: its atlas **grows and never evicts** (row in the #768 section), so a
+slot handed to one surface can never be reused under another. justerm's glyph cache is LRU-evicting,
+so the guarantee ghostty gets for free is one this design still owes — see ADR-0021's *Consequences*
+and the multi-viewport territory's known holes.
