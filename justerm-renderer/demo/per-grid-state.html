@@ -212,8 +212,11 @@
   notes.refusedCount = refused.filter(Boolean).length;
   checks.everyPerGridExportRefusesAnUnknownGrid = refused.every(Boolean);
 
-  // …and the refusals changed nothing: an export that threw after half-applying would leave the two
-  // grids in a state this page has just spent every other check describing.
+  // …and the refusals changed nothing. **The `render()` is what gives this teeth**: half-applied
+  // state reaches the framebuffer only when something draws, so reading pixels straight after the
+  // refusals would re-read the frame painted BEFORE them and assert nothing but that `readPixels`
+  // is deterministic.
+  r.render();
   checks.andARefusedCallChangedNothing =
     isColour(cellCentre(a, 0, 1), DECO_BG) && isColour(cellCentre(b, 0, 1), CURSOR_B);
 

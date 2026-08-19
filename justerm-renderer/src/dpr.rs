@@ -2,9 +2,10 @@
 //!
 //! **Device pixels are the source of truth.** The cell is measured in them (the rasteriser ink-scans
 //! `█` at `FONT_SIZE * dpr`), the shader lays the grid out in them (`u_cell_size`), and the drawing
-//! buffer is an exact multiple of them ([`grid_px`]). The CSS view ([`css_px`]) is *derived*, and is
-//! a float precisely so that the derivation can be undone — a consumer's `cols * cssCellWidth()`
-//! box scales back to `cols * cell` device px.
+//! buffer is sized in them (`resize_surface` takes them as given). The CSS view ([`css_px`]) is
+//! *derived*, and is a float precisely so that the derivation can be undone — a consumer's
+//! `cols * cssCellWidth()` box scales back to `cols * cell` device px, which is how it sizes a
+//! surface and places a rect since the buffer stopped being any one grid's cells (#773).
 //!
 //! "Scales back" is arithmetic, not physics (#337). A CSS length snaps to the browser's layout grid
 //! before it reaches the compositor — 1/64 px in Blink (`layout_unit.h`, `FixedPoint<6, int32_t>`);
@@ -45,26 +46,6 @@ pub fn css_px(device: u32, dpr: f32) -> f32 {
     device as f32 / dpr
 }
 
-/// The device-pixel extent of a CSS length at `dpr` — the inverse of [`css_px`], and what re-derives
-/// the shared drawing buffer at a new density since the surface stopped being one grid's cells (#773).
-///
-/// **Rounded, where the buffer used to be exact.** While the buffer was `cols * cell` it was an
-/// integral multiple of the cell by construction (#331); a surface holding N grids in M cells has no
-/// such multiple to be, so it is simply the consumer's box in device pixels and the rounding error
-/// is the same sub-pixel one every CSS length carries. What #331 was protecting — a column falling
-/// outside the buffer that holds it — is not reachable this way: a grid draws inside its own rect
-/// under `gl.scissor`, not inside the buffer.
-///
-/// Floored to 1 and saturated at `i32::MAX` for the same reason [`grid_px`] is: a zero or negative
-/// `canvas.width` is not a size, and a browser clamps a too-large one anyway.
-pub fn device_px(css: f32, dpr: f32) -> i32 {
-    let px = css * dpr;
-    if !px.is_finite() {
-        return 1;
-    }
-    (px.round() as i64).clamp(1, i32::MAX as i64) as i32
-}
-
 /// Whether the DPR changed enough to re-bake the atlas at the new device size (#322). A tiny
 /// float delta is not a change — a re-notification at the same ratio is a no-op.
 pub fn dpr_changed(old: f32, new: f32) -> bool {
@@ -76,61 +57,33 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_css_box_becomes_the_device_buffer_it_is_displayed_at() {
-        assert_eq!(device_px(640.0, 1.0), 640);
-        assert_eq!(device_px(640.0, 2.0), 1280);
-        // Fractional ratios round rather than truncate: 704.0 would lose most of a device pixel.
-        assert_eq!(device_px(640.0, 1.1), 704);
-        assert_eq!(device_px(100.5, 1.5), 151);
-    }
-
-    #[test]
-    fn a_device_size_stored_as_a_css_box_comes_back_unchanged() {
-        // **`resize_surface` takes device pixels and stores the CSS box they are displayed at**
-        // (#773), because a density change must hold the physical size still while the buffer moves.
-        // That is only free if the conversion round-trips at the density it was asked at — otherwise
-        // every context restore and every no-op DPR notification would nudge the canvas by a pixel,
-        // silently and cumulatively.
+    fn a_css_box_built_from_the_float_cell_scales_back_to_the_device_grid() {
+        // **The property #331 broke, and whose arithmetic it is moved twice.** A consumer lays out
+        // in CSS: it sizes a box as `cols * cssCellWidth()` and the browser scales that by the DPR.
+        // That must land exactly on the grid the shader draws — `cols * cell` device px — or the
+        // last column is clipped.
         //
-        // The awkward ratios are the ones that matter: 1.1 is browser zoom at 110 %, the density at
-        // which #331's grid used to overhang its buffer. The widths span a one-cell canvas to the
-        // largest buffer any implementation grants (MAX_TEXTURE_SIZE, 16384 on a real GPU).
-        for dpr in [1.0f32, 1.1, 1.25, 1.5, 2.0, 3.0] {
-            for w in [1u32, 9, 33, 360, 1281, 3840, 8192, 16384] {
-                assert_eq!(device_px(css_px(w, dpr), dpr), w as i32, "w={w} dpr={dpr}");
-            }
+        // It only holds because the CSS cell is a **float**, which is the whole reason `css_px`
+        // returns one. Rounding it to a whole CSS pixel first is what used to make `10 -> 7 -> 11`
+        // out of a 10-device-px cell.
+        //
+        // Until #331 this was the renderer's to keep, and it kept it by sizing the buffer from the
+        // grid. Until #773 it was `grid_px`'s. It is now the *consumer's*: it asks
+        // `resizeSurface` for `cols * cellWidth(grid)` device px directly, so the scaling below is
+        // what a browser does to the style box the consumer sets from `cssWidth()`. This module's
+        // remaining share of it is the one thing asserted here — that `css_px`'s float survives the
+        // round trip.
+        //
+        // Two cases the old code got wrong. `cell = 33 @ dpr 2` is the real measured cell (#328);
+        // `dpr 1.1` is browser zoom at 110 %, where every demo's grid overhung its buffer.
+        for (cols, cell, dpr) in [(3u32, 33u32, 2.0f32), (8, 9, 1.1), (4, 12, 1.5)] {
+            let css_box = css_px(cell, dpr) * cols as f32;
+            assert_eq!(
+                (css_box * dpr).round() as u32,
+                cols * cell,
+                "cols={cols} cell={cell} dpr={dpr}"
+            );
         }
-    }
-
-    #[test]
-    fn a_density_change_moves_the_buffer_and_holds_the_css_box() {
-        // The other half of the same rule: the stored box is what a DPR change re-derives from, so
-        // the buffer must scale with the ratio and the box must not. A 640x384 canvas at dpr 1
-        // dragged onto a Retina display is 1280x768 device px behind the same 640x384 CSS box.
-        let (w, h) = (640u32, 384u32);
-        let (css_w, css_h) = (css_px(w, 1.0), css_px(h, 1.0));
-        assert_eq!((device_px(css_w, 2.0), device_px(css_h, 2.0)), (1280, 768));
-        // …and back, with nothing accumulated.
-        assert_eq!((device_px(css_w, 1.0), device_px(css_h, 1.0)), (640, 384));
-    }
-
-    #[test]
-    fn a_degenerate_or_unrepresentable_box_still_yields_a_usable_buffer() {
-        // A zero box is what a `display:none` container measures as; a buffer of no size is not a
-        // size at all, and `canvas.width = 0` would take the context down with it.
-        assert_eq!(device_px(0.0, 2.0), 1);
-        assert_eq!(device_px(-10.0, 2.0), 1);
-        assert_eq!(device_px(f32::NAN, 2.0), 1);
-        assert_eq!(device_px(f32::INFINITY, 2.0), 1);
-        // Saturating, not wrapping (#339): `as i32` on a huge float would hand `canvas.width` a
-        // NEGATIVE width. This is where that guard lives now — it used to sit on `grid_px`, whose
-        // `cols * cell` overflowed a u32 well below the grids a caller can ask for. Saturating is
-        // the honest answer either way, because no buffer that large can be allocated: Chromium
-        // clamps a 16385-px request to MAX_TEXTURE_SIZE (16384 on a real GPU, 8192 under
-        // SwiftShader) and leaves `canvas.width` at the request, so `apply_surface_size` reads the
-        // grant back rather than predicting it.
-        assert_eq!(device_px(1e30, 2.0), i32::MAX);
-        assert_eq!(device_px(i32::MAX as f32, 2.0), i32::MAX);
     }
 
     #[test]
@@ -147,33 +100,6 @@ mod tests {
     fn a_device_length_converts_back_to_css() {
         // A 200-device-px cell on a dpr-2 display is 100 CSS px.
         assert_eq!(css_px(200, 2.0), 100.0);
-    }
-
-    #[test]
-    fn a_css_box_built_from_the_float_cell_recovers_the_device_grid() {
-        // The property #331 broke and this restores. A consumer lays out in CSS: it sizes its box as
-        // `cols * cssCellWidth()` and the browser scales that by the DPR. That must land exactly on
-        // the grid the shader draws — `cols * cell` device px — or the last column is clipped.
-        //
-        // It only holds because the CSS cell is a float. Rounding it to a whole CSS pixel first is
-        // what used to make `10 -> 7 -> 11` out of a 10-device-px cell.
-        //
-        // Two cases the old code got wrong. `cell = 33 @ dpr 2` is the real measured cell (#328);
-        // `dpr 1.1` is browser zoom at 110 %, where every demo's grid overhung its buffer.
-        //
-        // **Whose property this is moved at #773, and the numbers did not.** While the renderer
-        // sized the buffer from the grid, this held between `css_px` and the (now retired)
-        // `grid_px`. The surface is no longer any grid's cells, so the consumer keeps it: it places
-        // a rect of `cols * cellWidth(grid)` device px, and it is `device_px` that has to land on
-        // the same integer when the browser scales the CSS box it laid out in.
-        for (cols, cell, dpr) in [(3u32, 33u32, 2.0f32), (8, 9, 1.1), (4, 12, 1.5)] {
-            let css_box = css_px(cell, dpr) * cols as f32;
-            assert_eq!(
-                device_px(css_box, dpr),
-                (cols * cell) as i32,
-                "cols={cols} cell={cell} dpr={dpr}"
-            );
-        }
     }
 
     #[test]

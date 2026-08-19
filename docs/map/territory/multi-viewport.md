@@ -150,8 +150,11 @@ parameter and throws on an id it does not know; `resize(cols, rows)` split into 
 one space; `add_grid` gained the four font selectors, optional and trailing, so a grid joins a
 sibling's atlas instead of baking one it abandons a line later. Two consequences reach a consumer
 beyond the signatures: the single-grid arrangement is now three calls it makes rather than one the
-renderer made, and a **density change invalidates every rect**, because a rect is device pixels the
-consumer measured and only it can re-measure them.
+renderer made, and a **density change invalidates every device-pixel quantity the consumer gave** —
+the surface's size as well as every rect — because only the consumer can re-measure them. The
+renderer holds none of them across it: converting would mean converting through its own copy of the
+density, which lags by construction, so what it does instead is re-bake the atlases and leave the
+measurements alone.
 
 What #771 changed for anyone holding more than one
 grid is that the renderer now has a **draw order** (registration order) and a **z-order** — a later

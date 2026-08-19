@@ -143,9 +143,8 @@ export function hasColourEmojiFont() {
  * `attr` is what makes this falsifiable again (#339). `canvas.width` is what we *asked* the browser
  * for; `drawingBufferWidth` is what it *gave* us, and WebGL is free to give less. Measured in
  * Chromium: `canvas.width = 16385` leaves the attribute at 16385 while the buffer comes back at
- * MAX_TEXTURE_SIZE. So `clamped` is the only observable that separates "we sized the grid" from
- * "the browser overruled us", and the caller should pass `r.cols()`/`r.rows()` — the grid actually
- * adopted — rather than the numbers it hoped for.
+ * MAX_TEXTURE_SIZE. So `clamped` is the only observable that separates "we asked for this buffer"
+ * from "the browser overruled us".
  *
  * Since #773 nothing clamps `cols`/`rows` to anything: they report what `resizeGrid` was told, and
  * it is the SURFACE that adopts what the browser actually granted. So a caller proving a clamp

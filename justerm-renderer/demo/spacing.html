@@ -331,26 +331,34 @@
   const letterCoverage = huge.letter.litCols * huge.letter.litRows / (huge.letter.w * huge.letter.h);
   r.setLineHeight(g, 1);
 
-  // --- a setter called WHILE the context is lost must not destroy the grid (#338/#339).
+  // --- a spacing setter called WHILE the context is lost DEFERS, and the restore applies it -----
+  // This used to assert that the grid survived the loss (#338/#339). Since #773 `cols()`/`rows()`
+  // echo `resize_grid`'s argument and nothing clamps them, so that comparison is an identity —
+  // it would stay green with the lost-context guard removed entirely.
+  //
+  // The property is still there; it moved to the CELL. An atlas cannot be baked on a dead context,
+  // so `adopt_selectors` advances the selector fields and defers the configuration move; the cell
+  // therefore does NOT move while lost, and the restore's reconcile pass is what lands it. Both
+  // halves are asserted, because the first alone would also pass if the setter had been dropped.
   fitGrid(r, g, 20, 6);
-  const gridBefore = [r.cols(g), r.rows(g)];
+  const cellBeforeLoss = [r.cell_width(g), r.cell_height(g)];
   const lost2 = once("webglcontextlost");
   lose.loseContext();
   await lost2;
   r.setLineHeight(g, 2);
   r.setLetterSpacing(g, 1);
-  const gridWhileLost = [r.cols(g), r.rows(g)];
+  const cellWhileLost = [r.cell_width(g), r.cell_height(g)];
   await new Promise((res) => setTimeout(res, 0));
   const restored2 = once("webglcontextrestored");
   lose.restoreContext();
   await restored2;
   r.render();
-  const gridAfter = [r.cols(g), r.rows(g)];
+  const cellAfterRestore = [r.cell_width(g), r.cell_height(g)];
 
   window.__proof = {
     dpr, charW, charH, dx, dy, cellH, charH2, afterDpr,
     blockBase, blockSpaced, blockTall, letterBase, letterSpaced, letterTall,
-    wideBase, wideSpaced, afterRestore, gridBefore, gridWhileLost, gridAfter,
+    wideBase, wideSpaced, afterRestore, cellBeforeLoss, cellWhileLost, cellAfterRestore,
     maxTex, huge, letterCoverage, sextantBase, sextantSpaced, frameBase, frameSpaced, diagBase, diagSpaced,
     doubleBase, doubleSpaced, wedgePair, checker, shade,
     checks: {
@@ -419,10 +427,14 @@
       lineHeightSurvivesAContextRestore:
         afterRestore.h === cellH && afterRestore.litRows === cellH,
 
-      // Measured: without the lost-context guard this reads `[1,1]` while lost AND after restore.
-      aSetterOnALostContextKeepsTheGrid:
-        gridWhileLost[0] === gridBefore[0] && gridWhileLost[1] === gridBefore[1] &&
-        gridAfter[0] === gridBefore[0] && gridAfter[1] === gridBefore[1],
+      // The deferral: an atlas cannot be baked on a dead context, so the cell has not moved yet.
+      aSpacingSetterOnALostContextDefersItsBake:
+        cellWhileLost[0] === cellBeforeLoss[0] && cellWhileLost[1] === cellBeforeLoss[1],
+      // …and the restore's reconcile pass applies it: lineHeight 2 and letterSpacing 1 both widen
+      // and heighten the cell, so BOTH axes must have grown. Direction only — the cell is a font
+      // ink-scan and differs between this machine and CI's software GL.
+      andTheRestoreAppliesIt:
+        cellAfterRestore[0] > cellBeforeLoss[0] && cellAfterRestore[1] > cellBeforeLoss[1],
       contextSurvived: !gl.isContextLost(),
 
       // #365: box drawing is drawn to the CELL, like the blocks, so a frame's corners meet across the

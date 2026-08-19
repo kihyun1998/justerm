@@ -50,9 +50,12 @@ Two consequences worth knowing before upgrading:
   `setViewport(grid, 0, 0, …)` over the whole buffer — and asking for `cols * cellWidth` keeps the
   exactness the old call guaranteed. `cssWidth`/`cssHeight` still report the CSS box to display the
   buffer at.
-- **A rect belongs to the consumer, so a density change invalidates it.** `setDevicePixelRatio`
-  re-bakes every atlas and holds the canvas's CSS box still, but a viewport is device pixels the
-  consumer measured at the old density: re-place and re-fit every grid after one.
+- **Device pixels belong to the consumer, so a density change invalidates all of them.**
+  `setDevicePixelRatio` re-bakes every atlas and touches nothing else: the drawing buffer stays the
+  size it was asked for and every viewport rect stays where it was placed, because both are
+  measurements the consumer made at the old density and only the consumer can re-make them. Re-issue
+  `resizeSurface`, `resizeGrid` and `setViewport` after one — which you are doing anyway, the cell
+  having just moved.
 
 `addGrid(palette, defaultFg, defaultBg, fontFamily?, fontSize?, letterSpacing?, lineHeight?)` takes
 the grid's font up front, so a grid joins a sibling's atlas instead of baking one it would abandon a

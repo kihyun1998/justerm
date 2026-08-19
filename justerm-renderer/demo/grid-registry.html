@@ -14,10 +14,10 @@
   behaviour through the real wasm boundary, plus the two claims the state alone cannot make:
 
     · registering N grids costs N of the per-grid tier and ONE of everything else — asserted through
-      the shared tiers' own observables (the cell geometry, the pack counter, the default grid), not
-      inferred from "it looks right";
-    · the single-grid path is untouched WITH siblings registered — the same pixels the pre-#770
-      renderer drew, read back from the drawing buffer.
+      the shared tiers' own observables (the cell geometry, the pack counter, the first grid's own
+      dimensions), not inferred from "it looks right";
+    · one grid's output is untouched WITH siblings registered — the same pixels a renderer holding
+      one grid draws, read back from the drawing buffer.
 
   The memory section produces a NUMBER for "all grids stay resident" (an epic open question routed
   here) rather than restating the worry. It is measured, not computed: the wasm heap is read at two
@@ -28,8 +28,8 @@
 
   Read in device px (cell_width()/cell_height() ARE u_cell_size, #331). The runner sweeps dpr
   1 / 1.1 / 1.5 / 2; every assertion here is dpr-independent, and the grid the memory section
-  measures is read back from cols()/rows() rather than assumed, because a large grid may be clamped
-  to what the drawing buffer was granted (#339).
+  measures is read back from cols()/rows() rather than assumed — which since #773 is an echo of what
+  resizeGrid was told, nothing having clamped it.
 
   Build: wasm-pack build --target web --dev --out-dir pkg
 -->

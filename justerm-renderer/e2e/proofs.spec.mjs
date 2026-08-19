@@ -62,21 +62,17 @@ for (const deviceScaleFactor of RATIOS) {
         // this is the tripwire for a page that sized its surface from something other than its own
         // grid's cells — which is what made every demo's grid overhang its buffer at dpr 1.1.
         //
-        // `mayUnderfill` is the one opt-out, and it is named rather than inferred: `oversized.html`
-        // deliberately re-fits a grid into a buffer the browser clamped, so its grid is the largest
-        // one that FITS rather than one that fills. It still has to fit.
+        // It stayed unconditional, and `oversized.html` is why that is worth saying: it is the one
+        // page that exercises a clamp, so it was the obvious candidate for an opt-out — and it does
+        // not need one. It re-fits the SURFACE alongside the grid, exactly as a consumer would, so
+        // the two agree again on the far side of the clamp. An opt-out would have swapped equality
+        // for containment on precisely the page where "the buffer came back larger than the grid"
+        // most needs to be visible.
         if (proof.gridFit) {
-          if (proof.gridFit.mayUnderfill) {
-            expect(
-              proof.gridFit.fits,
-              `${demo} @ dpr ${deviceScaleFactor}: a grid must fit the surface holding it (#331)`,
-            ).toBe(true);
-          } else {
-            expect(
-              proof.gridFit.grid,
-              `${demo} @ dpr ${deviceScaleFactor}: grid must equal the drawing buffer (#331)`,
-            ).toEqual(proof.gridFit.buffer);
-          }
+          expect(
+            proof.gridFit.grid,
+            `${demo} @ dpr ${deviceScaleFactor}: grid must equal the drawing buffer (#331)`,
+          ).toEqual(proof.gridFit.buffer);
           // #339: this one CAN fail. `canvas.width` is the size we asked for; `drawingBufferWidth`
           // is the size WebGL granted. If they diverge the renderer is drawing a grid the viewport
           // cannot hold, and nothing else in the harness would notice.

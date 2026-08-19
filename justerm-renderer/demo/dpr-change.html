@@ -69,10 +69,13 @@
 
   // Inject a mid-session DPR change (the consumer would do this from a matchMedia listener).
   r.setDevicePixelRatio(DPR1);
-  // What the renderer does on its own: hold the CSS box still and re-derive the device buffer at
-  // the new density. That is the ONE thing a density change must not move — the canvas is the same
-  // physical size on the user's screen — and it is why the surface stores a CSS box rather than the
-  // device size it was asked for (#773).
+  // What the renderer does on its own: **nothing, to the surface.** It re-bakes every atlas at the
+  // new density and leaves the drawing buffer exactly as it was asked for. The buffer is the
+  // consumer's own device-px measurement, and converting it here would mean converting through the
+  // renderer's copy of the density — a copy that lags by construction, since a notification
+  // arriving during a context loss is dropped outright. A device-px quantity the consumer measured
+  // is re-issued by the consumer, never adjusted here; that is already the rule for a viewport
+  // rect, and #773 made it the rule for the surface too.
   const held = { bufferW: canvas.width, bufferH: canvas.height };
   // What the CONSUMER must do, and this page is where that obligation is written down: the cell was
   // re-measured, and a grid's rect is DEVICE px measured at the old density, so both the grid and
@@ -90,11 +93,11 @@
     nonAsciiSurvivesRebake: after.box > 0,
     // the WIDE glyph's 2-slot re-rasterise (slot_id >= WIDE_BASE branch) survives too.
     wideSurvivesRebake: after.wide > 0,
-    // (b1) the renderer held the CSS box across the density change: the device buffer scaled with
-    //      the ratio and nothing else. Within a pixel each way, since the box is a rounded float.
-    surfaceHeldItsCssBoxAcrossTheDensityChange:
-      Math.abs(held.bufferW - before.bufferW * (DPR1 / dpr0)) <= 1 &&
-      Math.abs(held.bufferH - before.bufferH * (DPR1 / dpr0)) <= 1,
+    // (b1) the renderer left the drawing buffer exactly where the consumer put it. Exactly — not
+    //      within a pixel — because nothing converted it: the density change touched the atlases
+    //      and not the surface.
+    theDensityChangeLeftTheSurfaceExactlyAsAsked:
+      held.bufferW === before.bufferW && held.bufferH === before.bufferH,
     // (b2) and after the consumer's re-fit the buffer is the grid times the NEWLY measured cell,
     //      with no CSS length rounded twice (#331). Exact, at any starting density.
     bufferIsGridTimesNewCell:

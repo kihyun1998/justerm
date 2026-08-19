@@ -58,9 +58,11 @@ See [multi-viewport](multi-viewport.md) for the tier and its lifetime.
 
 - `justerm-renderer/src/rasterizer.rs` — the ink scan of `█` (browser-only)
 - `justerm-renderer/src/metrics.rs` — the cell box / glyph box nesting
-- `justerm-renderer/src/dpr.rs` — `css_px`, `device_px`, the device↔CSS derivation in both
-  directions (grid_px / cells_that_fit were retired with the grid-derived buffer, #773 — un-backticked
-  because this heading resolves every code-span against the source)
+- `justerm-renderer/src/dpr.rs` — `css_px`, the device→CSS derivation. It is the only direction
+  left: grid_px, cells_that_fit and device_px were all retired with the grid-derived buffer (#773),
+  because the surface is now asked for in device px and kept as asked, so nothing in this crate
+  converts *into* device px any more. (Retired names un-backticked on purpose — this heading
+  resolves every code-span against the source.)
 - `justerm-renderer/src/webgl.rs` — `css_cell_width`, `css_cell_height`, `css_width`, `css_height`,
   `cols`, `rows`, `set_font_size`, `set_font_family`, `set_line_height`, `set_letter_spacing`,
   `set_device_pixel_ratio` — the largest single share of the crate's wasm exports

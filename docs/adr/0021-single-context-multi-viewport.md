@@ -149,8 +149,14 @@ be a multiple of. So `resize_surface` takes **device pixels** — the space `set
 takes, so one canvas is addressed in one space — and the exactness became the consumer's to keep by
 asking for `cols * cellWidth(grid)`. Two consumer obligations follow and are stated here because they
 are consequences of this record rather than of any one function: a font or spacing change no longer
-re-derives the buffer, and a **density change invalidates every viewport rect**, since a rect is
-device pixels the consumer measured and only it can re-measure them.
+re-derives the buffer, and a **density change invalidates every device-pixel quantity the consumer
+gave** — the surface's size as well as every viewport rect — since only the consumer can re-measure
+them. The renderer deliberately does not convert them to hold them: the only density available to it
+is its own copy of the consumer's, and that copy lags by construction (a density notification
+arriving while the context is lost is dropped outright), so a quantity stored through it comes back
+wrong by the ratio between two densities. **A fact is kept at the site it is first true at**, which
+for both of these is the consumer's measurement — the same rule this file's D4 states for a cached
+cell, reached from the opposite direction.
 
 **D4 — A tier assigns *ownership*, not residency.** The tier names the site a value is authoritative
 at. It does **not** forbid a reader from holding a copy, and for a hot value a copy is expected —
