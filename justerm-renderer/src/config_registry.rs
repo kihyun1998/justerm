@@ -22,7 +22,7 @@
 //! — *"re-keying one entry and rebuilding all of them are separate paths"* — so the DPR lives on the
 //! global tier and the registry is rebuilt in place against it.
 //!
-//! Ghostty **does** hash the DPI, in `DesiredSize.xdpi`/`ydpi` (`src/font/face.zig:46-52`, keyed at
+//! Ghostty **does** hash the DPI, in `DesiredSize.xdpi`/`ydpi` (`src/font/face.zig:45-52`, keyed at
 //! `SharedGridSet.zig:566`), and that does not transfer for a reason already recorded in
 //! `docs/map/territory/multi-viewport.md`: a ghostty `Surface` is an OS window that can be dragged
 //! onto a monitor of its own density, so its DPI genuinely *is* per-surface. N viewports on one
@@ -32,7 +32,7 @@
 //!
 //! A shared entry is **never mutated in place** to serve one grid's changed setting — ghostty states
 //! the reason in one line: *"increasing the font size in one would increase it in all"*
-//! (`src/font/SharedGrid.zig:1-22`). A configuration change means *joining a different entry*, which
+//! (`src/font/SharedGrid.zig:13-18`). A configuration change means *joining a different entry*, which
 //! is what [`ConfigRegistry::find`] + [`ConfigRegistry::insert`] + [`ConfigRegistry::release`] are
 //! for. In-place mutation is reserved for changes that are true of every entry at once — a DPR
 //! change, a context restore — where "it would change in all" is the correct outcome rather than the
@@ -104,7 +104,7 @@ struct Entry<T> {
     id: ConfigId,
     key: ConfigKey,
     /// How many grids select into this entry. Reaching zero destroys it — immediately, as ghostty's
-    /// `deref` does (`src/font/SharedGridSet.zig:395-413`), rather than parking it in a free pool: a
+    /// `deref` does (`src/font/SharedGridSet.zig:393-413`), rather than parking it in a free pool: a
     /// terminal that closes should not hold an atlas open against the next font change.
     refs: u32,
     value: T,
@@ -193,7 +193,7 @@ impl<T> ConfigRegistry<T> {
     }
 
     /// How many distinct configurations are live — i.e. how many atlases exist. Ghostty exposes the
-    /// same number for the same reason (`SharedGridSet.count`, `src/font/SharedGridSet.zig:80-84`):
+    /// same number for the same reason (`SharedGridSet.count`, `src/font/SharedGridSet.zig:81-87`):
     /// sharing is only a claim until something can count it.
     pub fn len(&self) -> usize {
         self.entries.len()
@@ -215,6 +215,18 @@ impl<T> ConfigRegistry<T> {
         self.entries.iter().map(|e| e.id).collect()
     }
 
+    /// The entry an id addresses.
+    ///
+    /// The `expect` cannot fire, and it rests on three properties of the *caller* rather than of this
+    /// type — stated because breaking any one of them turns a refcount bug into a panic across the
+    /// wasm boundary, which is a worse failure than the `Err` this crate hands back everywhere else:
+    ///
+    /// 1. a configuration change **acquires before it releases**, so re-selecting the same key cannot
+    ///    free the entry in between;
+    /// 2. the only site that drops a grid releases its configuration unconditionally on the success
+    ///    arm;
+    /// 3. nothing fallible sits between registering a grid and the `retain` that pays for its
+    ///    reference.
     fn slot(&self, id: ConfigId) -> usize {
         self.entries
             .iter()

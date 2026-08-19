@@ -136,6 +136,13 @@
   checks.aFontChangeMovesTheGridToASecondEntry = r.atlasCount() === 2;
   checks.andBakesExactlyOneNewAtlas = r.bakes() === bakesBeforeFont + 1;
   checks.theTwoConfigurationsHaveDifferentCells = cwB !== cwS || chB !== chS;
+  // …and the sibling that did not move is not dirtied by the move. Without this, a `select_config`
+  // that marked every grid would pass every count above while costing a re-pack per grid per font
+  // change — the cost this tier exists to remove, reintroduced one layer up. Read before any
+  // re-feed, so the only thing that can be packed is what the font change itself dirtied.
+  const packsBeforeMove = r.packs();
+  r.render();
+  checks.onlyTheGridThatMovedRepacks = r.packs() === packsBeforeMove + 1;
 
   // Re-feed the default at the new cell (the consumer's obligation after a font change) and redraw.
   // The registered grid is NOT re-fed, re-placed or re-packed — nothing about it was asked to move.
@@ -214,6 +221,7 @@
   r.render();
   const beforeLoss = rectBytes(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
   const entriesBeforeLoss = r.atlasCount();
+  const bakesBeforeLoss = r.bakes();
 
   const lose = gl.getExtension("WEBGL_lose_context");
   const once = (event) => new Promise((res) => canvas.addEventListener(event, res, { once: true }));
@@ -228,6 +236,10 @@
   await restored;
   r.render();   // the frame after `webglcontextrestored` rebuilds pipeline, buffers and atlases
   checks.aRestoreKeepsEveryConfiguration = r.atlasCount() === entriesBeforeLoss;
+  // Exactly one bake per live configuration — not one (which would leave the others sampling a dead
+  // texture) and not two (a rebuild that also re-keyed, or baked before deciding what to keep).
+  checks.andBakesExactlyOneAtlasPerConfiguration =
+    r.bakes() === bakesBeforeLoss + entriesBeforeLoss;
   checks.andRepaintsBothGridsFromTheirOwnAtlas =
     sameBytes(beforeLoss, rectBytes(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight));
 
@@ -269,6 +281,53 @@
   notes.repack = { cwBefore, runBefore, cwAfter: r.cell_width(), runAfter };
   checks.aConfigurationChangeRepacksWithoutANewFrame =
     runBefore === cwBefore && runAfter === r.cell_width() && runAfter > 0;
+
+  // ── A sibling's pack can repoint this grid's slots — and the grid repairs itself ─────────────
+  // The hazard ADR-0021 records as the middle tier's real cost, and the only one of its three named
+  // guarantees that is implementable without deciding a failure-mode policy: a grid compares the
+  // configuration's eviction count against the one it packed at, and re-packs the difference away.
+  //
+  // Reaching it at all requires FILLING a region — `get_or_insert` evicts only once the fresh-slot
+  // watermark has run to capacity — so the setup below is the cheapest state in which the hazard
+  // exists at all: 4 glyphs from one grid, then 1953 from the other, which is exactly the normal
+  // region's dynamic capacity (2048 minus the 95 fixed ASCII slots). The sibling then shrinks to a
+  // 20-glyph frame, so the two grids' LIVE sets fit together and the repair has a fixed point to
+  // converge to; where they do not fit, nothing can be right and ADR-0021 leaves that open.
+  r.setFontSize(SMALL);                 // the default rejoins `d`'s configuration — one cache, two grids
+  r.resize(20, 6);
+  const [cw, ch] = [r.cell_width(), r.cell_height()];
+  const distinct = (n, from) => Array.from({ length: n }, (_, i) => from + i);
+  const glyphRow = (cols, rows, cps) =>
+    frame(cols, rows, (col, row) => cps[row * cols + col] ?? 0x20, () => DARK, () => 0xf0f0f0);
+
+  // Four non-ASCII glyphs — ASCII takes fixed fast-path slots and is never evicted, so it could not
+  // show this if it tried.
+  const MINE = distinct(4, 0x2200);
+  r.apply_damage(...glyphRow(20, 6, MINE));
+  r.render();
+  const mineBefore = rectBytes(0, 0, 4 * cw, ch);
+  const inkOf = (bytes) => bytes.filter((v, i) => i % 4 !== 3 && v > 100).length;
+  checks.theEvictionSetupDrewRealGlyphs = inkOf(mineBefore) > 0;
+
+  // The sibling fills the region, evicting the four above (least recently used, never re-touched).
+  const THEIRS = distinct(1953, 0x0250);
+  r.setViewport(d, 0, 3 * ch, 10 * cw, 2 * ch);
+  r.applyDamageTo(d, ...glyphRow(51, 39, THEIRS));
+  r.render();
+  // …then shrinks its live set, so the repair's re-insertions land on dead slots rather than on the
+  // sibling's own. Without this the two live sets do not fit and neither grid can be right.
+  r.applyDamageTo(d, ...glyphRow(10, 2, THEIRS.slice(0, 20)));
+  r.render();
+  const evictions = r.bakes();  // unchanged by evictions; read only to keep the note honest below
+  notes.eviction = { atlases: r.atlasCount(), inkBefore: inkOf(mineBefore), bakes: evictions };
+  // One more frame, and NO new content for the grid that was evicted: the repair has to come from
+  // the renderer noticing its atlas moved, not from the consumer re-feeding it.
+  r.render();
+  const mineAfter = rectBytes(0, 0, 4 * cw, ch);
+  notes.eviction.inkAfter = inkOf(mineAfter);
+  checks.aGridWhoseSlotsWereRepointedRepairsItself = sameBytes(mineBefore, mineAfter);
+  // …and it did so while still sharing one atlas with the grid that evicted it.
+  checks.andTheTwoWereSharingOneAtlasThroughout = r.atlasCount() === 1;
 
   const failed = Object.entries(checks).filter(([, ok]) => !ok).map(([k]) => k);
   window.__proof = { checks, notes, ok: failed.length === 0, failed };

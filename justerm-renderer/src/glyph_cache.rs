@@ -132,6 +132,8 @@ pub struct GlyphCache {
     wide: LruCache<GlyphKey, GlyphSlot>,
     normal_next: u16,
     wide_next: u16,
+    /// How many glyphs this cache has evicted, ever (#772). See [`evictions`](Self::evictions).
+    evictions: u32,
 }
 
 impl GlyphCache {
@@ -141,7 +143,21 @@ impl GlyphCache {
             wide: LruCache::unbounded(),
             normal_next: ASCII_SLOTS,
             wide_next: WIDE_BASE,
+            evictions: 0,
         }
+    }
+
+    /// How many glyphs this cache has evicted, ever — monotonic, and only equality across an
+    /// operation is ever asked of it, so wrapping is harmless.
+    ///
+    /// An eviction **repoints a slot**: the glyph that lived there is gone and a different one is
+    /// drawn from that index. Whoever packed instances addressing it is now wrong, and the upload
+    /// diff cannot see it — the instance floats did not change, only what the atlas holds at the
+    /// index they name. While one grid owned its cache the pack that evicted *was* the pack that
+    /// re-resolved, so the two could never disagree; sharing a cache per configuration (#772) is
+    /// what separates them, and this counter is what lets a grid notice.
+    pub fn evictions(&self) -> u32 {
+        self.evictions
     }
 
     /// Peek a glyph's slot **without allocating**: returns `Some` for a fast-path ASCII
@@ -234,6 +250,7 @@ impl GlyphCache {
                 .normal
                 .pop_lru()
                 .expect("normal region non-empty when full");
+            self.evictions = self.evictions.wrapping_add(1);
             (es.slot_id(), Some(ek))
         };
         let slot = if is_emoji {
@@ -267,6 +284,7 @@ impl GlyphCache {
                 .wide
                 .pop_lru()
                 .expect("wide region non-empty when full");
+            self.evictions = self.evictions.wrapping_add(1);
             (es.slot_id(), Some(ek))
         };
         let slot = if is_emoji {
@@ -486,6 +504,57 @@ mod tests {
             "reachable via a Normal-kind touch — same region"
         );
         assert_eq!(c.len(), 1, "one cached glyph");
+    }
+
+    #[test]
+    fn the_eviction_counter_moves_only_when_a_slot_is_repointed() {
+        // The signal a shared cache gives a grid that its packed slots may no longer mean what they
+        // meant (#772). It must be silent for everything that does NOT repoint a slot, or every grid
+        // re-packs every frame; and it must fire on the one thing that does.
+        let mut c = GlyphCache::new();
+        assert_eq!(c.evictions(), 0);
+
+        // ASCII takes a fixed fast-path slot — nothing is allocated, nothing can be repointed.
+        c.get_or_insert(key("A", FontStyle::Normal), GlyphKind::Normal);
+        assert_eq!(c.evictions(), 0, "the ASCII fast path allocates nothing");
+
+        // Fresh slots in a region with room: allocations, but no glyph lost its slot.
+        let fill = NORMAL_CAPACITY - ASCII_SLOTS; // 1953
+        for i in 0..fill {
+            let ch = char::from_u32(0x2200 + i as u32).unwrap();
+            c.get_or_insert(key(&ch.to_string(), FontStyle::Normal), GlyphKind::Normal);
+        }
+        assert_eq!(c.evictions(), 0, "filling a region repoints nothing");
+
+        // A hit on a resident glyph, with the region now full: still nothing repointed.
+        c.get_or_insert(key("\u{2200}", FontStyle::Normal), GlyphKind::Normal);
+        assert_eq!(c.evictions(), 0, "a cache hit repoints nothing");
+
+        // The one case that does: a miss with no free slot left.
+        let overflow = char::from_u32(0x2200 + fill as u32).unwrap();
+        c.get_or_insert(
+            key(&overflow.to_string(), FontStyle::Normal),
+            GlyphKind::Normal,
+        );
+        assert_eq!(c.evictions(), 1, "an eviction repoints exactly one slot");
+
+        // The wide region counts into the same total: a grid holds instances addressing both, so one
+        // counter is what it has to compare against, not one per region.
+        for i in 0..WIDE_CAPACITY {
+            let ch = char::from_u32(0x4E00 + i as u32).unwrap();
+            c.get_or_insert(key(&ch.to_string(), FontStyle::Normal), GlyphKind::Wide);
+        }
+        assert_eq!(c.evictions(), 1, "filling the wide region repoints nothing");
+        let wide_overflow = char::from_u32(0x4E00 + WIDE_CAPACITY as u32).unwrap();
+        c.get_or_insert(
+            key(&wide_overflow.to_string(), FontStyle::Normal),
+            GlyphKind::Wide,
+        );
+        assert_eq!(
+            c.evictions(),
+            2,
+            "a wide eviction counts into the same total"
+        );
     }
 
     #[test]

@@ -795,6 +795,20 @@ struct GridTier {
     /// The last blink phase packed, so a [`set_overlay`](Self::set_overlay) re-pack (no new frame)
     /// keeps the cursor/blink cells in the phase the render loop last drove.
     last_blink_on: bool,
+    /// The eviction count of this grid's configuration at its last successful pack (#772).
+    ///
+    /// Sharing a glyph cache means another grid's pack can **repoint** a slot this grid's instances
+    /// still address, and the upload diff — the defence against a slot changing under an undamaged
+    /// cell — cannot see it, because the instance floats did not change. [`render`](Self::render)
+    /// compares this against the configuration's live count and re-packs the difference away.
+    ///
+    /// **It converges wherever the drawn grids' *live* glyph sets fit a region together**, which is
+    /// the regime that matters: an eviction only happens once a region has been filled, and the
+    /// re-pack marks this grid's glyphs most-recently-used, so the next eviction takes one of the
+    /// dead slots instead. Where the live sets do **not** fit together, nothing can be right —
+    /// ADR-0021 leaves that open, and the single-grid form of the same impossibility is refused
+    /// outright rather than drawn (`ResolveError::FrameExceedsCapacity`).
+    packed_at_evictions: u32,
     /// Set by every state mutation that changes the packed instance buffer (overlay, decorations,
     /// colour policy, palette, `apply_damage`); cleared by the re-pack in [`render`](Self::render).
     /// Lets a frame that sets overlay + decorations + damage re-pack **once** at render instead of
@@ -923,7 +937,7 @@ impl JustermRenderer {
     /// Move the grid in slot `at` onto the configuration its selectors now ask for.
     ///
     /// **The shared entry is never edited to follow it.** Ghostty states the reason in one line —
-    /// *"increasing the font size in one would increase it in all"* (`src/font/SharedGrid.zig:1-22`)
+    /// *"increasing the font size in one would increase it in all"* (`src/font/SharedGrid.zig:13-18`)
     /// — so a configuration change is a *move*: acquire the new entry, then release the old. Doing
     /// it in that order is what lets a grid re-select the same key without the entry being freed in
     /// between, and it is also the failure order: a build that fails leaves the grid exactly where
@@ -932,11 +946,17 @@ impl JustermRenderer {
     /// The grid must then re-pack. Its packed instances address slots in the *old* entry's cache, and
     /// the new entry's are its own — ghostty ends `setFontGrid` with the same call for the same
     /// reason, *"cached rows may still reference an outdated atlas from the old grid and this can
-    /// cause garbage to be rendered"* (`src/renderer/generic.zig:1110-1113`). The retained-grid path
-    /// (`apply_damage`, which is what `justerm-web` drives) re-packs inside the same `render`, so
-    /// nothing blanks. The direct `apply_frame` path retains no columns to re-pack from, so its
-    /// instances are dropped instead: a grid that draws only its background until the consumer's
-    /// next frame is honest, and drawing another configuration's glyphs would not be.
+    /// cause garbage to be rendered"* (`src/renderer/generic.zig:1112-1114`).
+    ///
+    /// **The instance count is dropped unconditionally, and the unconditional part is the point.**
+    /// The retained-grid path (`apply_damage`, which is what `justerm-web` drives) re-packs inside
+    /// the same `render`, so dropping it there is invisible — until the re-pack *fails*, which
+    /// `render` deliberately survives rather than blanking the frame. Without this, that survival
+    /// would draw the old entry's slot ids through the new entry's atlas: a wrong glyph rather than
+    /// a stale one, which is the failure class this repo treats as sacred. The direct `apply_frame`
+    /// path has no columns to re-pack from at all, so for it this is the whole repair. A grid that
+    /// draws only its background until the consumer's next frame is honest; one that draws another
+    /// configuration's glyphs is not.
     fn select_config(&mut self, at: usize, key: ConfigKey) -> Result<(), JsValue> {
         let old = self.grid_at(at).config;
         if *self.configs.key(old) == key {
@@ -947,9 +967,7 @@ impl JustermRenderer {
         self.release_config(old);
         let grid = self.grids.grid_at_mut(at);
         grid.needs_repack = true;
-        if grid.grid.is_none() {
-            grid.instance_count = 0;
-        }
+        grid.instance_count = 0;
         Ok(())
     }
 
@@ -1001,10 +1019,19 @@ impl JustermRenderer {
         // more than one grid registered: no proof loses a context with siblings, so the N-grid
         // recovery rests on reasoning until #774 asserts it per grid. See the map territory.
         let buffers = Self::build_grid_buffers(&self.global.gl, self.global.quad_vbo)?;
-        // The new grid is born into the default's configuration — the same four selectors, so by
-        // construction the same key — and therefore **shares its atlas** rather than baking one
-        // (#772 AC 4). This is the whole economy of the middle tier, and it is a `retain` rather
-        // than a lookup because a grid that copies its parent's selectors cannot key anything else.
+        // The new grid is born into the default's **configuration**, and therefore shares its atlas
+        // rather than baking one (#772 AC 4) — the whole economy of the middle tier.
+        //
+        // It takes the *entry's* key rather than the default grid's selector fields, and the two are
+        // the same value except in one window: while the context is lost, a `setFontSize` advances
+        // the selectors and defers the move (`adopt_selectors`), so a grid registered in that window
+        // is born at the configuration that is actually **in force**, not at the one the default has
+        // asked for and not yet got. That is the only answer available — the size it asked for has
+        // no atlas yet and cannot get one on a dead context — and it is deliberate rather than
+        // incidental. Its consequence, until the per-grid font setter lands (#773): such a grid stays
+        // on the older configuration with no way back, while `restore` moves the default to the newer
+        // one. Registering a terminal during a context loss is already the edge `add_grid` documents
+        // above; this is what it costs.
         let config = self.grid().config;
         self.configs.retain(config);
         let key = self.configs.key(config).clone();
@@ -1133,8 +1160,12 @@ impl JustermRenderer {
     /// The consumer/proofs read the **delta** across an operation, as they do with
     /// [`packs`](Self::packs): a grid *joining* an existing configuration must move this by zero,
     /// which is the claim the middle tier exists to make and the one a memory figure cannot settle.
-    /// A bake that is later discarded by a failed atomic rebuild still counts — the work was done.
-    /// Not a stable API surface; a counter for verification. Wraps harmlessly.
+    ///
+    /// It counts **committed** bakes. A rebuild that fails part-way discards every replacement it
+    /// built and leaves this where it was, so the number tracks configurations this renderer is
+    /// drawing through rather than rasterising work it performed — which is what a delta is read
+    /// for, and what keeps the delta deterministic. Not a stable API surface; a counter for
+    /// verification. Wraps harmlessly.
     #[wasm_bindgen(js_name = bakes)]
     pub fn bakes(&self) -> u32 {
         self.bake_count
@@ -2094,7 +2125,7 @@ impl JustermRenderer {
     ///   has always landed (#269/#406). What changed at #772 is that the *cell* no longer moves
     ///   ahead of the atlas either: the cell belongs to a configuration, and no configuration moved.
     /// - **It never edits the entry it is leaving.** That is the immutability rule the middle tier
-    ///   is built on (ghostty `src/font/SharedGrid.zig:1-22`); `select_config` carries it out.
+    ///   is built on (ghostty `src/font/SharedGrid.zig:13-18`); `select_config` carries it out.
     fn adopt_selectors(&mut self, edit: impl FnOnce(&mut GridTier)) -> Result<(), JsValue> {
         let prev = {
             let g = self.grid();
@@ -2880,6 +2911,10 @@ impl JustermRenderer {
         );
         self.grid_at_mut(at).instance_count = count as i32;
         self.upload_instances(at);
+        // Record the atlas state these instances were packed against, AFTER the resolve that may
+        // itself have evicted (#772). Last, so a frame that failed above records nothing.
+        let evictions = self.config_at(at).cache.evictions();
+        self.grids.grid_at_mut(at).packed_at_evictions = evictions;
         Ok(())
     }
 
@@ -3013,7 +3048,14 @@ impl JustermRenderer {
             if self.grids.viewport_at(at).is_none() {
                 continue;
             }
-            if self.grid_at(at).needs_repack {
+            // …and a grid whose atlas moved under it re-packs too, even though nothing it owns
+            // changed (#772). A sibling on the same configuration can evict a slot this grid's
+            // instances still address; the upload diff cannot notice, because the floats are the
+            // same and only the atlas behind them moved. Comparing counters costs a `u32` per grid
+            // per frame and is the whole of the guarantee ADR-0021 asked this tier for.
+            let stale =
+                self.grid_at(at).packed_at_evictions != self.config_at(at).cache.evictions();
+            if self.grid_at(at).needs_repack || stale {
                 match self.repack_from_grid(at) {
                     Ok(()) => self.grid_at_mut(at).needs_repack = false,
                     Err(e) => pack_error = pack_error.or(Some(e)),
@@ -3314,6 +3356,10 @@ impl GridTier {
             selection_fg: None,   // no selectionForeground override by default (#227)
             decoration_spans: Vec::new(), // no marker decorations by default (#393)
             last_blink_on: true,
+            // Nothing packed yet, and the fresh configuration has evicted nothing — so a grid born
+            // into an OLD configuration whose cache has already evicted reads as stale on its first
+            // render and packs, which is the answer that costs nothing and cannot be wrong.
+            packed_at_evictions: 0,
             needs_repack: false,
         }
     }
