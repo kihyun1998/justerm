@@ -115,7 +115,10 @@ The addition is still strictly additive and a single-grid consumer is unaffected
 predating the per-grid setters acts on the implicit default grid, whose rect is the whole drawing
 buffer, so its frame is the same frame it was. What #771 does change for anyone holding more than one
 grid is that the renderer now has a **draw order** (registration order) and a **z-order** — a later
-grid paints over an earlier one where their rects overlap.
+grid paints over an earlier one where their rects overlap — and it *replaces* rather than blends,
+because each grid's pass opens with a `clear` and a clear writes. So a translucent grid shows the
+page behind the canvas and never the grid it overlaps. Tiling panes never produce an overlap, and
+the reference behaves the same way for the same reason.
 
 The list below is what lands **when the multi-grid work does**, and the entries above the fold in
 `## Code` say how much of that has happened:

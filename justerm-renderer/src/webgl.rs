@@ -2928,6 +2928,12 @@ impl JustermRenderer {
     /// three.js's multiple-views example does no full clear at all
     /// (`examples/webgl_multiple_views.html:252-278`) — its views tile the canvas, so it has no
     /// uncovered area to answer for. That is a silence rather than a divergence.
+    ///
+    /// **Grids are painted in registration order and are not composited with each other.** A later
+    /// grid's rect *replaces* what is under it rather than blending with it, because each grid opens
+    /// with a `clear` and a clear writes. So a translucent grid (`setBgAlpha`) shows the page behind
+    /// the canvas, never the grid it overlaps. Overlapping rects are the consumer's business —
+    /// tiling panes do not produce one — and the same is true of the reference's per-view clear.
     fn draw(&self) {
         unsafe {
             self.global.gl.disable(glow::SCISSOR_TEST);
