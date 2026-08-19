@@ -41,6 +41,7 @@ pub(crate) mod attrs;
 pub(crate) mod bitmap;
 pub(crate) mod builtin;
 pub(crate) mod color;
+pub(crate) mod config_registry;
 pub(crate) mod context_loss;
 pub(crate) mod contrast;
 pub(crate) mod cursor;
