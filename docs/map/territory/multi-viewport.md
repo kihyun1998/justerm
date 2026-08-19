@@ -170,11 +170,15 @@ The list below is what lands **when the multi-grid work does**, and the entries 
   hypothetical.** #770 could record "nothing draws or feeds a non-default grid" as what made it safe;
   #771 draws them and `applyDamageTo` feeds them, so each remaining gap has to be read as live.
   - **Closed by #771 because the draw loop made it unsafe to leave open:** `restore` rebuilt one
-    grid's instance buffer. It now rebuilds **every** registered grid's VAO and buffer and drops
-    every upload baseline — with a draw loop the old behaviour is not a blank grid but a *wrong*
-    one, since binding a VAO from the dead context raises `INVALID_OPERATION` and leaves the
-    previous grid's bound. What the context-loss slice still owns is refilling a not-drawn grid's
-    buffer and proving the recovery **per grid** through the real listener path.
+    grid's instance buffer. It now rebuilds **every** registered grid's VAO and buffer, drops every
+    upload baseline, and refills every buffer — with a draw loop the old behaviour is not a blank
+    grid but a *wrong* one, since binding a VAO from the dead context raises `INVALID_OPERATION` and
+    leaves the previous grid's bound. **What is owed is the evidence, not the code**: no proof
+    anywhere loses a context with more than one grid registered
+    (`demo/context-loss*.html` are single-grid; `demo/multi-viewport.html` never loses one), so the
+    N-grid restore path ships on reasoning. Asserting it **per grid**, through the real listener
+    path, is the context-loss slice's real remaining work — and a pass that only checks the drawn
+    grid cannot tell "all recovered" from "the visible one recovered".
   - **Still open:** a DPR change, a font change and a spacing change re-key *one* grid's
     configuration — the default's — and a registered grid keeps the four font/metric selectors it
     was born with, which go stale the moment the default's move. Nothing reads them until the atlas
@@ -216,8 +220,17 @@ The list below is what lands **when the multi-grid work does**, and the entries 
   only the paint. #771 took ghostty's amount — not by deferring to it, but because the gate falls out
   of the draw loop for free and self-heals, and 0.4 ms per hidden terminal per frame is not a price
   worth paying for a `continue` that was already being written.
-- **The middle tier has a hazard the record now names but nothing yet answers.** Sharing one atlas
-  across grids makes [glyph atlas](glyph-atlas.md)'s within-frame eviction corruption a *cross-grid*
-  event, and the upload diff — which is the defence today — cannot see it, because a grid that is not
-  re-packing never re-diffs. ADR-0021 records the hazard and names three candidate guarantees; picking
-  one is the atlas-registry slice's job.
+- **The middle tier's hazard went LIVE at #771, one slice ahead of the guarantee meant to cover it.**
+  Sharing one atlas across grids makes [glyph atlas](glyph-atlas.md)'s within-frame eviction
+  corruption a *cross-grid* event, and the upload diff — the defence today — cannot see it, because a
+  grid that is not re-packing never re-diffs. ADR-0021 records the hazard, names three candidate
+  guarantees, and assigns the choice to the atlas-registry slice. **What changed is the reachability,
+  not the assignment**: there has only ever been one `ConfigTier`, so the glyph cache was always
+  shared — but until #771 only the default grid could pack into it. `applyDamageTo` plus the per-slot
+  re-pack loop mean a second grid now evicts from the same LRU. Concretely: grid A goes idle holding
+  instances that address atlas slots; grid B keeps packing different glyphs; once the combined live
+  set crosses a region's capacity (2048 normal / 2048 wide — CJK- or emoji-heavy content, not ASCII),
+  B's pack repoints slots A still addresses, and A never re-packs so nothing self-heals. **Not
+  measured** — bounding it needs a probe that packs two grids past the capacity — and no consumer
+  reaches it yet, since nothing outside a proof page registers a second grid. Recorded here so the
+  atlas slice inherits a live hazard rather than a future one.

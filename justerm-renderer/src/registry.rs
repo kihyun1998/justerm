@@ -77,17 +77,20 @@ impl Viewport {
     /// The same rect as `gl.viewport` / `gl.scissor` take it: y measured from the drawing buffer's
     /// **bottom** edge instead of its top (#771).
     ///
-    /// The flip lives here rather than at the consumer, and that is a producer question rather than
-    /// a convenience one. The rect is produced by a DOM measurement, and the DOM's origin is
-    /// top-left; GL's is bottom-left. Whoever crosses between the two spaces has to know the
-    /// buffer's height, and the consumer's copy of that is a `canvas.height` it does not own — this
-    /// renderer sizes the buffer, and may be granted less than it asked for (#339). So the only site
-    /// that can flip a rect correctly is the one holding the granted height.
+    /// The flip lives here because the *space* does. This renderer's rect API is device px with a
+    /// top-left origin — the space a consumer measures a DOM box in, and the space `cell_width()`
+    /// already declares for anything addressing the drawing buffer — so converting to GL's is a
+    /// derivation on a value this crate produced, and a derivation belongs with its producer.
     ///
-    /// Note that three.js pushes this outward: `renderer.setViewport(x, y, w, h)` passes straight to
+    /// **It is not because the consumer could not do it.** `resize` re-sets `canvas.width`/`height`
+    /// down to the granted buffer (#337 couples the CSS box to them), so `canvas.height` and this
+    /// crate's `size.1` never disagree and a consumer-side flip would compute the same number. The
+    /// reason to keep it here is that a second site computing it is a second site to keep true.
+    ///
+    /// Note that three.js pushes it outward: `renderer.setViewport(x, y, w, h)` passes straight to
     /// `gl.viewport` and its multiple-views example computes `bottom` itself
-    /// (`examples/webgl_multiple_views.html:265`). It can, because its caller supplies fractions of
-    /// a canvas it also owns; ours supplies a measured box.
+    /// (`examples/webgl_multiple_views.html:264`). It can, because its caller supplies fractions of
+    /// a canvas the renderer itself scales; ours supplies a measured box.
     pub fn gl_rect(&self, buffer_height: i32) -> (i32, i32, i32, i32) {
         (
             self.x,

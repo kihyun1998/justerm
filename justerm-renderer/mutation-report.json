@@ -1,0 +1,68 @@
+{
+  "baseline-before": [],
+  "M1a no y-flip at all": [
+    "aFrameWiderThanItsRectIsClippedToIt",
+    "aGridPlacedAfterBeingFedShowsWhatItWasFed",
+    "aHiddenGridComesBackWithoutBeingRefed",
+    "hidingAGridStopsItsPixels",
+    "hidingOneGridLeavesTheOtherDrawing",
+    "theBottomRectIsNotAtTheTop",
+    "theTopRectIsNotAtTheBottom",
+    "threeGridsDrawAtOnce",
+    "twoGridsDrawDifferentContentAtOnce"
+  ],
+  "M1b flip forgets the rect's height": [
+    "aFrameWiderThanItsRectIsClippedToIt",
+    "aGridPlacedAfterBeingFedShowsWhatItWasFed",
+    "aHiddenGridComesBackWithoutBeingRefed",
+    "everyCellNoGridWasPlacedOverIsUnchanged",
+    "hidingAGridStopsItsPixels",
+    "hidingOneGridLeavesTheOtherDrawing",
+    "nothingBleedsDownwardsOutOfARect",
+    "nothingBleedsSidewaysOutOfARect",
+    "removingADrawnGridStopsItsPixels",
+    "resizeKeepsTheDefaultOverTheWholeBuffer",
+    "theBiggerFontDrawsAThickerUnderline",
+    "theSingleGridPathStillDrawsItsOwnFrame",
+    "threeGridsDrawAtOnce",
+    "twoGridsDrawDifferentContentAtOnce"
+  ],
+  "M2 scissor the whole buffer instead of the rect": [
+    "aFrameWiderThanItsRectIsClippedToIt",
+    "aRegisteredGridFollowsTheFontConfigurationItSelectsInto",
+    "everyCellNoGridWasPlacedOverIsUnchanged",
+    "hidingAGridStopsItsPixels",
+    "nothingBleedsDownwardsOutOfARect",
+    "nothingBleedsSidewaysOutOfARect",
+    "removingADrawnGridStopsItsPixels",
+    "resizeKeepsTheDefaultOverTheWholeBuffer",
+    "theBiggerFontDrawsAThickerUnderline",
+    "threeGridsDrawAtOnce",
+    "twoGridsDrawDifferentContentAtOnce"
+  ],
+  "M3 project from the buffer instead of the rect": [
+    "aFrameWiderThanItsRectIsClippedToIt",
+    "aGridPlacedAfterBeingFedShowsWhatItWasFed",
+    "aHiddenGridComesBackWithoutBeingRefed",
+    "aRegisteredGridFollowsTheFontConfigurationItSelectsInto",
+    "hidingOneGridLeavesTheOtherDrawing",
+    "threeGridsDrawAtOnce",
+    "twoGridsDrawDifferentContentAtOnce"
+  ],
+  "M4 bind the default grid's VAO for every grid": [
+    "aFrameWiderThanItsRectIsClippedToIt",
+    "aGridDrawsItsOwnCellsAndNotAnotherGrids",
+    "aGridPlacedAfterBeingFedShowsWhatItWasFed",
+    "aHiddenGridComesBackWithoutBeingRefed",
+    "hidingOneGridLeavesTheOtherDrawing",
+    "threeGridsDrawAtOnce",
+    "twoGridsDrawDifferentContentAtOnce"
+  ],
+  "M5 pack hidden grids too": [
+    "aHiddenGridIsFedWithoutBeingPacked"
+  ],
+  "M6 write the font selectors to the default grid only": [
+    "aRegisteredGridFollowsTheFontConfigurationItSelectsInto"
+  ],
+  "baseline-after": []
+}

@@ -190,8 +190,11 @@ Still unchecked: what any of them does with GPU resources it cannot rebuild.
   rebuilds every registered grid's VAO and instance buffer and drops every upload baseline. It had
   to, because a draw loop turns a stale per-grid GPU object from *nothing draws it* into *the wrong
   grid's cells are drawn* — binding a VAO from the dead context raises `INVALID_OPERATION` and leaves
-  the previously bound one in place. The half still owed is above the objects: refilling a
-  **not-drawn** grid's buffer, and asserting the recovery per grid rather than once for the surface
+  the previously bound one in place. The refill came with it (`restore` ends in an
+  `upload_instances` per slot, against a baseline invalidated for every grid), so what is owed is not
+  more *code* but the **evidence**: no proof anywhere loses a context with more than one grid
+  registered, so the N-grid restore path ships on reasoning. Asserting the recovery **per grid**,
+  through the real listener path, is the context-loss slice's real remaining work
 
 ## Known holes / open
 

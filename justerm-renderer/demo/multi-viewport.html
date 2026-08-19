@@ -236,6 +236,63 @@
     r.isGridDrawn(0) === true &&
     isColor(snapshot(), (COLS - 1) * cw, (ROWS - 1) * ch, cw, ch, defaultBgOf(COLS - 1, ROWS - 1));
 
+  // ── A registered grid follows the font configuration it selects into ─────────────────────────
+  // The four font/metric fields are per-grid *as settings* (ADR-0021 D1) while the atlas, rasteriser
+  // and cell they key are per-config (D2) — and until #772 there is exactly ONE config, so every
+  // grid selects into it. `draw_grid` derives the underline thickness from the drawing grid's own
+  // `font_size`, so a grid keeping its birth value after a `setFontSize` would draw a *different
+  // underline weight in the same font* and never come back. Measured rather than reasoned about:
+  // an underlined SPACE has no glyph ink, so every lit row in its cell is the underline.
+  const underlineRows = (px, x0, y0) => {
+    let rows = 0;
+    for (let y = y0; y < y0 + ch; y++) {
+      let lit = false;
+      for (let x = x0; x < x0 + cw && !lit; x++) lit = px(x, y)[0] > 100 || px(x, y)[1] > 100;
+      if (lit) rows++;
+    }
+    return rows;
+  };
+  const UNDERLINE = 1 << 3;
+  const underlined = (cols, rows) => {
+    const f = frame(cols, rows, () => 0x000000);
+    f[5] = new Uint16Array(cols * rows).fill(UNDERLINE);
+    f[3] = new Uint32Array(cols * rows).fill(RGB(0xffffff));   // fg: the underline's colour
+    return f;
+  };
+  // Only the default and this one grid draw from here, so a sampled cell is unambiguous.
+  [a, b].forEach((id) => r.clearViewport(id));
+  const u = r.addGrid(palette, DEF_FG, DEF_BG);
+  r.applyDamageTo(u, ...underlined(2, 1));
+
+  // A font size far from the default's, so `max(1, round(px/15))` lands on a different integer.
+  r.setFontSize(45);
+  const [cw2, ch2] = [r.cell_width(), r.cell_height()];
+  r.resize(COLS, ROWS);
+  r.apply_damage(...underlined(COLS, ROWS));
+  r.setViewport(u, 0, 2 * ch2, 2 * cw2, ch2);
+  r.render();
+  const afterFont = readRect(gl, { x: 0, y: 0, w: gl.drawingBufferWidth, h: gl.drawingBufferHeight });
+  const px2 = (x, y) => {
+    const i = ((gl.drawingBufferHeight - 1 - y) * gl.drawingBufferWidth + x) * 4;
+    return [afterFont.buf[i], afterFont.buf[i + 1], afterFont.buf[i + 2]];
+  };
+  const rowsIn = (x0, y0) => {
+    let n = 0;
+    for (let y = y0; y < y0 + ch2; y++) {
+      let lit = false;
+      for (let x = x0; x < x0 + cw2 && !lit; x++) lit = px2(x, y)[0] > 100;
+      if (lit) n++;
+    }
+    return n;
+  };
+  const defaultRows = rowsIn(4 * cw2, 2 * ch2);   // a cell no grid was placed over
+  const registeredRows = rowsIn(0, 2 * ch2);
+  // The control first: assert the window this check needs actually exists. At the default font the
+  // thickness is 1, so if the bigger size did not move it there is nothing here to measure.
+  checks.theBiggerFontDrawsAThickerUnderline = defaultRows > 1;
+  checks.aRegisteredGridFollowsTheFontConfigurationItSelectsInto =
+    registeredRows === defaultRows;
+
   // ── Errors still throw rather than being absorbed ────────────────────────────────────────────
   checks.anUnknownGridCannotBeFed = threw(() => feedGrid(9999, 2, 1, () => A_BG));
 

@@ -21,8 +21,9 @@ overlays, decorations, and live palette / font / metric setters. `justerm-web` r
 **One context can now hold and draw more than one grid** (Epic #287, in progress). `addGrid` registers
 a terminal grid, `setViewport` places it on the shared drawing buffer in device pixels, `clearViewport`
 hides it while keeping every byte of its state, and `render` draws each placed grid into its own rect.
-The addition is strictly additive so far: every other export still acts on an implicit default grid
-that covers the whole buffer, so a single-grid consumer is unaffected and needs to change nothing.
+The addition is strictly additive so far: apart from `applyDamageTo`, which addresses a frame to a
+registered grid, every other export still acts on an implicit default grid that covers the whole
+buffer — so a single-grid consumer is unaffected and needs to change nothing.
 
 Published to npm as **`justerm-renderer`** on its own **`renderer-v*`** tag track. That track is
 deliberately separate from the workspace `v*` tags (which publish `justerm-core` +

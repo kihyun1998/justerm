@@ -803,6 +803,38 @@ impl JustermRenderer {
         self.grids.grid_at_mut(at)
     }
 
+    /// Write the font selectors to **every** registered grid, because the configuration they select
+    /// into has just moved and there is only one of it.
+    ///
+    /// ADR-0021 D1 makes the four font/metric fields per-grid *as settings*; D2 keeps the machinery
+    /// they key (atlas, rasteriser, cell) per-config. Until S4 (#772) there is exactly **one** config
+    /// tier, so every grid selects into it — and a grid whose selector says 14 while the atlas it
+    /// draws through was baked at 28 is not per-grid state, it is bookkeeping disagreeing with the
+    /// configuration it names.
+    ///
+    /// That disagreement is **visible**, which is why this exists rather than being left tidy:
+    /// [`draw_grid`](Self::draw_grid) derives `u_line_thickness` from the drawing grid's own
+    /// `font_size`, so a registered grid would keep its birth thickness after a `setFontSize` — two
+    /// terminals in one font with different underline weights, and no path back, since only the
+    /// default was ever written. #772 is what makes these selectors genuinely independent, by giving
+    /// each grid a configuration of its own to select.
+    fn broadcast_font(&mut self, font_size: f32, font_family: &str) {
+        for at in 0..self.grids.len() {
+            let grid = self.grid_at_mut(at);
+            grid.font_size = font_size;
+            grid.font_family = font_family.to_string();
+        }
+    }
+
+    /// The spacing half of [`broadcast_font`](Self::broadcast_font), for the same reason.
+    fn broadcast_spacing(&mut self, letter_spacing: f32, line_height: f32) {
+        for at in 0..self.grids.len() {
+            let grid = self.grid_at_mut(at);
+            grid.letter_spacing = letter_spacing;
+            grid.line_height = line_height;
+        }
+    }
+
     /// Register a terminal grid and return its id (#770).
     ///
     /// The new grid is **registered but not drawn** — it holds its own per-grid state from this
@@ -845,10 +877,11 @@ impl JustermRenderer {
         //
         // That is left alone rather than guarded, because refusing would be the wrong contract: a
         // consumer registering a terminal while the context happens to be dead wants the grid, and
-        // #774 is written to give **every** registered grid a fresh buffer on restore — drawn and
-        // not-drawn alike. Until it lands, a non-default grid does not survive a loss at all
-        // (`restore` rebuilds the default's buffer only), which nothing can reach because nothing
-        // draws or feeds one. See the map territory's known holes.
+        // `restore` gives **every** registered grid a fresh VAO and buffer and refills it — drawn
+        // and not-drawn alike (#771 had to, since a stale per-grid VAO draws the *wrong* grid once
+        // there is a draw loop). What is not yet true is that anyone has *watched* it happen with
+        // more than one grid registered: no proof loses a context with siblings, so the N-grid
+        // recovery rests on reasoning until #774 asserts it per grid. See the map territory.
         let buffers = Self::build_grid_buffers(&self.global.gl, self.global.quad_vbo)?;
         let (font_size, font_family) = (self.grid().font_size, self.grid().font_family.clone());
         let (letter_spacing, line_height) = (self.grid().letter_spacing, self.grid().line_height);
@@ -881,8 +914,8 @@ impl JustermRenderer {
             .grids
             .remove(GridId::from_raw(grid))
             .map_err(|e| JsValue::from_str(&e.message()))?;
-        // Safety: live GL context; an object destroyed by a context loss deletes as a no-op —
-        // it raises `INVALID_OPERATION` and changes nothing (measured, #770).
+        // Safety: live GL context. Deleting an object that died with a lost context raises
+        // `INVALID_OPERATION` and changes nothing (measured, #770) — an error flag, not a no-op.
         unsafe {
             self.global.gl.delete_vertex_array(removed.vao);
             self.global.gl.delete_buffer(removed.instance_vbo);
@@ -1019,7 +1052,11 @@ impl JustermRenderer {
     /// it is fed. It is **not** sized by [`resize`](Self::resize), which sizes the shared drawing
     /// buffer and belongs to the surface rather than to any one terminal.
     ///
-    /// Errors on an unknown id, and otherwise exactly as `applyDamage` does.
+    /// Errors on an unknown id, and otherwise exactly as `applyDamage` does. It is the one member
+    /// of the multi-grid export set that **accepts** the implicit default grid (id `0`), and that is the
+    /// honest answer rather than an omission: `setViewport` / `clearViewport` / `removeGrid` refuse the
+    /// default because its rect and its lifetime have a different producer, while its *content* has
+    /// the same one every other grid's does. `applyDamageTo(0, …)` is `applyDamage`.
     #[allow(clippy::too_many_arguments)]
     #[wasm_bindgen(js_name = applyDamageTo)]
     pub fn apply_damage_to(
@@ -1906,8 +1943,7 @@ impl JustermRenderer {
         self.config.atlas = atlas;
         self.config.char_size = char_size;
         self.config.atlas_cell = (pad_w, pad_h);
-        self.grid_mut().font_family = font_family;
-        self.grid_mut().font_size = font_size;
+        self.broadcast_font(font_size, &font_family);
         self.global.dpr = dpr;
         // The spacing policy survives; the cell it produces does not (#322 + #338 + #406).
         self.recompute_cell();
@@ -2044,8 +2080,7 @@ impl JustermRenderer {
             self.config.cell_size,
             self.config.char_offset,
         );
-        self.grid_mut().letter_spacing = letter_spacing;
-        self.grid_mut().line_height = line_height;
+        self.broadcast_spacing(letter_spacing, line_height);
         self.recompute_cell();
 
         // Keep the policy, defer the re-bake: an atlas built on a dead context comes back
@@ -2062,12 +2097,8 @@ impl JustermRenderer {
             return;
         }
         if self.rebake_for_cell().is_err() {
-            (
-                self.grid_mut().letter_spacing,
-                self.grid_mut().line_height,
-                self.config.cell_size,
-                self.config.char_offset,
-            ) = prev;
+            self.broadcast_spacing(prev.0, prev.1);
+            (self.config.cell_size, self.config.char_offset) = (prev.2, prev.3);
             // The rasteriser was moved to the new cell before the bake; move it back, or it keeps
             // drawing bitmaps sized for a cell nothing else believes in.
             let _ = self.config.rasterizer.set_cell(prev.2, prev.3);
@@ -2220,8 +2251,15 @@ impl JustermRenderer {
         //    the VAO and the instance buffer are per-grid (#771), and both died with the context.
         //    Rebuilding only the default's would leave a registered grid binding a VAO that belongs
         //    to a dead context: the bind raises `INVALID_OPERATION` and leaves the *previous*
-        //    grid's VAO in place, so grid B would silently draw grid A's cells. Refilling those
-        //    buffers, and the not-drawn case, are #774's.
+        //    grid's VAO in place, so grid B would silently draw grid A's cells. The refill comes
+        //    with it — step 4 uploads every slot against a baseline invalidated for every grid — so
+        //    what #774 still owes is the *evidence*, per grid and through the real listener path,
+        //    not more of this.
+        //
+        //    Order matters for the error paths: the atlas is built FIRST, because its `?` has no
+        //    cleanup arm and everything built before it would leak. Master leaked one pipeline that
+        //    way; N grid buffers behind the same `?` would have made it N+1.
+        let atlas = Self::build_atlas(&self.global.gl, pad_w, pad_h)?;
         let pipeline = Self::build_pipeline(&self.global.gl)?;
         let mut grid_buffers = Vec::with_capacity(self.grids.len());
         for _ in 0..self.grids.len() {
@@ -2235,12 +2273,12 @@ impl JustermRenderer {
                         }
                         self.global.gl.delete_program(pipeline.program);
                         self.global.gl.delete_buffer(pipeline.quad_vbo);
+                        self.global.gl.delete_texture(atlas);
                     }
                     return Err(e);
                 }
             }
         }
-        let atlas = Self::build_atlas(&self.global.gl, pad_w, pad_h)?;
         let rebake = (|| -> Result<(), JsValue> {
             self.bake_all_glyphs(&rasterizer, atlas, (pad_w, pad_h))?;
             // The guard-band fraction is set once per program at construction, so the relinked program
@@ -2906,7 +2944,8 @@ impl JustermRenderer {
     }
 
     /// Number of instance-buffer packs run so far (#421 diagnostic). The consumer/proofs read the
-    /// **delta** across an operation to assert `render` packs once per frame, not once per setter.
+    /// **delta** across an operation to assert `render` packs once per *dirty drawn grid* per frame
+    /// — not once per setter, and not at all for a grid with no viewport (#771).
     /// Not a stable API surface — a counter for verification, not a rendering control.
     #[wasm_bindgen(js_name = packs)]
     pub fn packs(&self) -> u32 {
