@@ -87,7 +87,7 @@ impl Viewport {
     /// already declares for anything addressing the drawing buffer — so converting to GL's is a
     /// derivation on a value this crate produced, and a derivation belongs with its producer.
     ///
-    /// **It is not because the consumer could not do it.** `resize` re-sets `canvas.width`/`height`
+    /// **It is not because the consumer could not do it.** `resize_surface` re-sets `canvas.width`/`height`
     /// down to the granted buffer (#337 couples the CSS box to them), so `canvas.height` and this
     /// crate's `size.1` never disagree and a consumer-side flip would compute the same number. The
     /// reason to keep it here is that a second site computing it is a second site to keep true.

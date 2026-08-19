@@ -139,6 +139,19 @@ per-config resource**, and the geometry setters do both in one call: `set_font_s
 keys the per-config tier"* reproduces the original category error one level up. Tier the **fields**;
 describe a setter by which fields it writes.
 
+**D3 in practice, recorded because the first application of a rule is where it is tested (#773).**
+The first setter D3 actually split was `resize(cols, rows)`. It wrote a per-grid field (`grid_size`)
+and a global one (the drawing buffer), and D3's instruction — tier the *fields*, describe a setter by
+which fields it writes — is what says those are two exports rather than one. What the split then
+forced is the part no rule here predicted: the drawing buffer had been `cols * cell`, an exact
+multiple of one grid's cell (#331), and a surface drawing N grids in M configurations has no cell to
+be a multiple of. So `resize_surface` takes **device pixels** — the space `set_viewport` already
+takes, so one canvas is addressed in one space — and the exactness became the consumer's to keep by
+asking for `cols * cellWidth(grid)`. Two consumer obligations follow and are stated here because they
+are consequences of this record rather than of any one function: a font or spacing change no longer
+re-derives the buffer, and a **density change invalidates every viewport rect**, since a rect is
+device pixels the consumer measured and only it can re-measure them.
+
 **D4 — A tier assigns *ownership*, not residency.** The tier names the site a value is authoritative
 at. It does **not** forbid a reader from holding a copy, and for a hot value a copy is expected —
 `cell_size` is owned per-config (the ink scan that produces it is expensive) while every grid may cache

@@ -5,7 +5,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { alphaStats, cellRect, countLit, gridFit, inkCoverage, isUniform, litAt, spacingForThickBar, tonalSplit } from "../demo/proof.js";
+import { alphaStats, cellRect, countLit, fitGrid, gridFit, inkCoverage, isUniform, litAt, spacingForThickBar, tonalSplit } from "../demo/proof.js";
+
+/** The grid handle every helper takes since #773. A stand-in renderer ignores it; the point is that
+ *  the helpers thread it, because a page that passed the wrong one would read a sibling's cell. */
+const G = 7;
 
 /**
  * Build an RGBA rect from a picture: `#` is a lit pixel (red 255), `.` is background (red 0).
@@ -62,12 +66,12 @@ test("the row index is flipped, because readPixels counts from the bottom", () =
   const r = { cell_width: () => 10, cell_height: () => 10 };
 
   // Row 0 is drawn at the top of a 30-px-tall buffer, so it occupies GL rows 20..29.
-  assert.deepEqual(cellRect(gl, r, 0, 0), { x: 0, y: 20, w: 10, h: 10 });
+  assert.deepEqual(cellRect(gl, r, G, 0, 0), { x: 0, y: 20, w: 10, h: 10 });
   // The bottom row sits at the GL origin.
-  assert.deepEqual(cellRect(gl, r, 0, 2), { x: 0, y: 0, w: 10, h: 10 });
+  assert.deepEqual(cellRect(gl, r, G, 0, 2), { x: 0, y: 0, w: 10, h: 10 });
   // Columns advance left-to-right in both spaces, and `cols` widens the rect without moving it.
-  assert.deepEqual(cellRect(gl, r, 3, 1), { x: 30, y: 10, w: 10, h: 10 });
-  assert.deepEqual(cellRect(gl, r, 1, 1, 2), { x: 10, y: 10, w: 20, h: 10 });
+  assert.deepEqual(cellRect(gl, r, G, 3, 1), { x: 30, y: 10, w: 10, h: 10 });
+  assert.deepEqual(cellRect(gl, r, G, 1, 1, 2), { x: 10, y: 10, w: 20, h: 10 });
 });
 
 test("a pixel is lit by its red channel, strictly above the threshold", () => {
@@ -174,7 +178,7 @@ const fakeRenderer = (cw, ch) => ({ cell_width: () => cw, cell_height: () => ch 
 test("gridFit reports no clamp when WebGL granted the buffer that was asked for", () => {
   // #339: the ordinary case. `canvas.width` and `drawingBufferWidth` agree, so the grid the renderer
   // adopted is the grid it drew.
-  const fit = gridFit(fakeGl(360, 144), fakeRenderer(9, 18), 40, 8);
+  const fit = gridFit(fakeGl(360, 144), fakeRenderer(9, 18), G, 40, 8);
   assert.deepEqual(fit.grid, [360, 144]);
   assert.deepEqual(fit.buffer, [360, 144]);
   assert.deepEqual(fit.attr, [360, 144]);
@@ -187,7 +191,7 @@ test("gridFit sees the clamp that `grid === buffer` cannot", () => {
   // buffer comes back at MAX_TEXTURE_SIZE. Pre-#339 the renderer kept the oversized grid, so
   // `grid === buffer` compared 16385*1 against... 16385, and reported a clean fit for a viewport
   // that could not hold it. Only `attr` vs `buffer` can tell.
-  const fit = gridFit(fakeGl(16384, 144, 16385, 144), fakeRenderer(1, 18), 16384, 8);
+  const fit = gridFit(fakeGl(16384, 144, 16385, 144), fakeRenderer(1, 18), G, 16384, 8);
   assert.equal(fit.clamped, true, "a buffer smaller than the canvas attribute is a clamp");
   assert.deepEqual(fit.buffer, [16384, 144]);
   assert.deepEqual(fit.attr, [16385, 144]);
@@ -195,13 +199,58 @@ test("gridFit sees the clamp that `grid === buffer` cannot", () => {
 
 test("gridFit's `fits` is about the grid, `clamped` is about the browser — they are independent", () => {
   // A grid that overhangs a buffer the browser granted in full: `fits` false, `clamped` false.
-  const overhang = gridFit(fakeGl(360, 144), fakeRenderer(9, 18), 41, 8);
+  const overhang = gridFit(fakeGl(360, 144), fakeRenderer(9, 18), G, 41, 8);
   assert.equal(overhang.fits, false);
   assert.equal(overhang.clamped, false);
   // And a grid that fits a buffer the browser shrank: `fits` true, `clamped` true.
-  const shrunk = gridFit(fakeGl(360, 144, 400, 144), fakeRenderer(9, 18), 40, 8);
+  const shrunk = gridFit(fakeGl(360, 144, 400, 144), fakeRenderer(9, 18), G, 40, 8);
   assert.equal(shrunk.fits, true);
   assert.equal(shrunk.clamped, true);
+});
+
+// --- #773: `fitGrid` is the single-grid arrangement `resize(cols, rows)` used to be ---
+
+/** Records what a renderer was asked for, so the assembly can be asserted rather than eyeballed. */
+const recordingRenderer = (cw, ch) => {
+  const calls = [];
+  return {
+    calls,
+    cell_width: (g) => { calls.push(["cell_width", g]); return cw; },
+    cell_height: (g) => { calls.push(["cell_height", g]); return ch; },
+    resizeGrid: (...a) => calls.push(["resizeGrid", ...a]),
+    resizeSurface: (...a) => calls.push(["resizeSurface", ...a]),
+    setViewport: (...a) => calls.push(["setViewport", ...a]),
+  };
+};
+
+test("fitGrid asks for a surface that is exactly the grid, and places the grid over all of it", () => {
+  // The property #331 guaranteed while the renderer sized the buffer itself, and which #773 made
+  // the consumer's to keep: the surface is `cols * cellWidth` device px EXACTLY — never a CSS box
+  // scaled by a ratio, which is what used to leave the last column outside its own buffer at
+  // fractional device pixel ratios. A cell of 9x18 is a real measured shape (dpr 1.1, #328).
+  const r = recordingRenderer(9, 18);
+  const [w, h] = fitGrid(r, G, 40, 8);
+
+  assert.deepEqual([w, h], [360, 144]);
+  assert.deepEqual(r.calls.filter(([m]) => m === "resizeGrid"), [["resizeGrid", G, 40, 8]]);
+  assert.deepEqual(r.calls.filter(([m]) => m === "resizeSurface"), [["resizeSurface", 360, 144]]);
+  // Over ALL of it, from the origin: the arrangement is one terminal filling the canvas.
+  assert.deepEqual(r.calls.filter(([m]) => m === "setViewport"), [["setViewport", G, 0, 0, 360, 144]]);
+  // …and every cell it read, it read for the grid it was given — not for a sibling's.
+  assert.ok(r.calls.filter(([m]) => m.startsWith("cell_")).every(([, g]) => g === G));
+});
+
+test("fitGrid re-reads the cell every time, because a font change is what moves it", () => {
+  // The pages call this again after `setFontSize` / `setLineHeight` / either spacing setter, exactly
+  // as they used to re-`resize`. A helper that cached the cell would silently keep the old surface.
+  let cw = 9;
+  const r = {
+    cell_width: () => cw, cell_height: () => 18,
+    resizeGrid: () => {}, resizeSurface: () => {}, setViewport: () => {},
+  };
+  assert.deepEqual(fitGrid(r, G, 10, 2), [90, 36]);
+  cw = 18;
+  assert.deepEqual(fitGrid(r, G, 10, 2), [180, 36]);
 });
 
 // --- #352: a composited screenshot needs a guard `readPixels` never did ---

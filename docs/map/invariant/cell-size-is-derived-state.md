@@ -6,18 +6,25 @@
 `justerm-renderer`, from four inputs together — the glyph box, the device pixel ratio, the letter
 spacing and the line height — and re-derived through a single funnel (`webgl.rs` `bake_config`)
 whenever any of them moves. Five widget-exposed setters can move it: `setFontSize`, `setFontFamily`,
-`setLetterSpacing`, `setLineHeight` (#578) and `setDevicePixelRatio` (#325, **wired 2026-08-10**).
+`setLetterSpacing`, `setLineHeight` (#578) and `setDevicePixelRatio` (#325, **wired 2026-08-10**) —
+and since #773 the first four **name the grid they move**, while the fifth moves every cell at once.
 
 > **The funnel was called `recompute_cell` until 2026-08-19 (#772)**, which replaced it with
 > `bake_config` — the function that builds one *font configuration's* resources, cell included. The
 > fact above is unchanged and the derivation is the same four inputs; what moved is where the result
-> lives. **And one thing did change: there can now be more than one cell at a time.** A cell belongs
-> to a configuration, and a renderer holds one configuration per distinct set of selectors, so two
-> terminals in two fonts have two cells on one canvas. Every widget-facing reader below still gets the
-> *default* grid's — `cellWidth`/`cellHeight`/`cssCellWidth`/`cssCellHeight` report the configuration
-> that grid selects into, and no export reports any other — so the one-cell model below is still
-> correct for a consumer, and stops being correct the moment a consumer can address a second grid's
-> geometry (the per-grid setters slice).
+> lives.
+>
+> **And a third axis opened, on the slice #772 said would open it (#773).** A cell belongs to a font
+> configuration, a renderer holds one configuration per distinct set of selectors, and every cell
+> reader now takes a grid: `cellWidth(grid)` / `cssCellWidth(grid)`. So a reader of a cell holds a
+> value with a lifetime, a unit **and a subject** — *whose* cell — and the third is the one with no
+> symptom of its own: a value read for the wrong grid is not stale and not mis-scaled, it is simply
+> another terminal's, and it will look entirely plausible.
+>
+> **`justerm-web` is a one-grid consumer today**, so every reader below still divides by one cell and
+> nothing in it is wrong. The axis arrives there when the surface does (#775): the moment a widget
+> holds two grids, each of the five readers needs to say which grid it is asking about, and each of
+> them reaches the renderer through a different module.
 
 Everything downstream that divides by a cell dimension therefore holds a value with a **lifetime**, and
 nothing in the type system says so:

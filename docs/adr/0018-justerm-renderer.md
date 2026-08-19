@@ -72,6 +72,17 @@ The cell is *measured* in device pixels — the rasteriser ink-scans `█` at `F
 - `resize(cols, rows)` → the drawing buffer becomes `cols * cell_width()` × `rows * cell_height()`, an
   exact multiple of the cell. xterm.js sizes its canvas the same way
   (`device.canvas.width = cols * device.cell.width`).
+
+  > **Split in two on 2026-08-19 (#773, renderer 0.15.0), and the exactness moved rather than
+  > going.** This one call wrote two tiers — a grid's dimensions and the shared drawing buffer —
+  > which is one number only while one grid owns the canvas. Multi-viewport (ADR-0021) ends that:
+  > N grids in M font configurations share one buffer, and there is no cell it can be a multiple
+  > of. So `resize_grid(grid, cols, rows)` records a grid's dimensions and
+  > `resize_surface(width, height)` sizes the buffer in **device px** — the space `set_viewport`
+  > already takes, so one canvas is addressed in one space. The exact-multiple property is still
+  > reachable and is now the consumer's to keep: it asks for `cols * cellWidth(grid)`, both
+  > integers this crate hands it. The xterm.js citation is unaffected — it sizes a canvas that
+  > holds exactly one terminal, which is the case this renderer no longer assumes.
 - `cssWidth()` / `cssHeight()` → the CSS display box for that buffer, **unrounded** (#337). The canvas's
   CSS box stays the consumer's to set (as with beamterm's `auto_resize_canvas_css = false`).
 
