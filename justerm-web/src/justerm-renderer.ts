@@ -415,6 +415,11 @@ export interface RendererBackend {
     defaultFg: number,
     defaultBg: number,
   ): void;
+  /** Unregister a grid and release what it owned: its VAO, its instance buffer, and — if it was the
+   * last grid standing on its font configuration — that configuration's glyph atlas, rasteriser and
+   * cache. This is the only way to give GPU memory back without dropping the whole wasm instance,
+   * which a consumer holding this object cannot do. */
+  removeGrid(grid: number): void;
   /** Record a grid's dimensions in cells. **It sizes nothing** — since renderer 0.15.0 the drawing
    * buffer is the *surface's* (`resizeSurface`), because a canvas holding N grids in M font
    * configurations has no cell it can be a multiple of (#773). */
@@ -703,6 +708,9 @@ export class JustermRenderer implements Renderer {
   /** Watches the display's density and re-bakes at it (#325). Held so {@link dispose} can stop it:
    * like the motion listener above, this one *draws*. */
   private readonly dprWatcher: DprWatcher;
+  /** Whether {@link dispose} has already handed this widget's grid back. See its guard. */
+  private gridReleased = false;
+
   /** Re-applies the canvas display box after a GL restore (#325). Held so {@link dispose} can detach
    * it: it drives a render. */
   private readonly onContextRestored: () => void;
@@ -1757,10 +1765,26 @@ export class JustermRenderer implements Renderer {
    * port requires: `cancelAnimationFrame` is guarded and `removeEventListener` is a no-op the
    * second time, so a consumer that also calls it is not punished.
    *
-   * **Stops work, does not release memory.** The wasm instance, its retained grid and glyph atlas,
-   * the GL context and the canvas context-loss listeners the Rust side owns all survive — they go
-   * with the binding's `free()`, which cannot be called while the consumer still holds this object.
-   * A consumer tearing down for good should drop its own reference and let the page go.
+   * **It releases this widget's grid, and with it the GPU memory that grid was holding.** The wasm
+   * instance itself, the GL context and the canvas context-loss listeners the Rust side owns still
+   * survive — those go with the binding's `free()`, which cannot be called while the consumer holds
+   * this object.
+   *
+   * This paragraph said *"stops work, does not release memory"* until #773's follow-up, and its
+   * stated reason — that `free()` is the only release and is unreachable — **stopped being true at
+   * #770**, which added `removeGrid`. A promise whose grounds have gone is a thing to fix rather
+   * than to keep. What it costs to keep it is measured: the glyph atlas is a fixed
+   * `tex_storage_3d(RGBA8, paddedW, paddedH * 32, 192)` allocation whose size does not depend on how
+   * many glyphs were ever used — **4.2 MiB** at a 8x16 cell and **12.8 MiB** at the 15x30 cell
+   * measured at dpr 2 — plus a VAO, an instance buffer, and the rasteriser and glyph cache on the
+   * wasm heap. A tabbed application that closes terminals while the page lives (which is the first
+   * consumer's shape) held all of it, per closed terminal, until the tab went away.
+   *
+   * **So a disposed widget has no grid, and every method that acts on one throws afterwards** —
+   * `cellSize`, `terminalSize`, `resize`, the font and spacing setters, the frame and cursor paths.
+   * That is the honest answer rather than a regression: they would otherwise report or mutate a
+   * terminal that has ended. The surface-level readers below keep answering, because the surface is
+   * still there.
    *
    * **That is exactly why the context-loss channel is closed here by hand** (#579). It is the one
    * piece of ambient work whose teardown the renderer *does* own but at the wrong end of the
@@ -1781,5 +1805,13 @@ export class JustermRenderer implements Renderer {
     this.dprWatcher.stop();
     this.canvas.removeEventListener("webglcontextrestored", this.onContextRestored);
     this.contextLoss.end();
+    // Guarded rather than repeated, because this one is not naturally idempotent as the four above
+    // are: `removeGrid` throws on an id it does not know, so a second `dispose()` would throw where
+    // the `Renderer` port requires silence. A flag rather than a `try`/`catch` — swallowing here
+    // would also swallow a genuine failure on the first call.
+    if (!this.gridReleased) {
+      this.gridReleased = true;
+      this.backend.removeGrid(this.grid);
+    }
   }
 }

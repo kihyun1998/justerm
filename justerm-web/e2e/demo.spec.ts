@@ -2143,6 +2143,24 @@ test("a disposed widget stops the renderer it was handed (#606)", async ({ page 
   // THE FIX: nothing the widget started reaches the renderer any more. Before #606 the widget could
   // not have stopped it even if it wanted to — `dispose` was not on the `Renderer` port.
   expect(p.afterDispose).toBe(0);
+
+  // #773 follow-up — dispose also hands the **grid** back, which is the only way GPU memory is
+  // returned without dropping the whole wasm instance (a consumer holding the object cannot).
+  // Measured motivation: the glyph atlas is a fixed `tex_storage_3d(RGBA8, pw, ph * 32, 192)`
+  // allocation whose size does not depend on how many glyphs were used — 4.2 MiB at an 8x16 cell,
+  // 12.8 MiB at the 15x30 cell measured at dpr 2 — held per closed terminal, for as long as the
+  // page lived.
+  //
+  // Asserted through geometry because **WebGL exposes no memory query**: a widget with no grid
+  // throws from every per-grid path. That the release then happens is the renderer's own gate
+  // (`per-config-atlas.html`: the last grid to leave a configuration deletes its atlas), not this
+  // one's — this proves the call, that one proves the consequence.
+  expect(p.geometryBeforeDispose).toBe(true); // control: it answered while alive
+  expect(p.geometryAfterDispose).toBe(false);
+
+  // …and `dispose` stays idempotent, which `removeGrid` is not on its own: it throws on an id it
+  // does not know, so a second call would throw where the `Renderer` port requires silence.
+  expect(p.secondDisposeThrew).toBe(false);
 });
 
 // #579: the widget's half of the renderer's context-loss surface. Nothing here is reachable from

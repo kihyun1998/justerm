@@ -1735,6 +1735,12 @@ interface CursorBlinkProbe {
 
 /** #606 — how many rAF turns the renderer presented in, before and after the widget was disposed. */
 interface DisposeProbe {
+  /** Whether `cellSize()` answered BEFORE dispose — the control for `geometryAfterDispose`. */
+  geometryBeforeDispose: boolean;
+  /** Whether it still answered AFTER, i.e. whether the grid survived (#773 follow-up). */
+  geometryAfterDispose: boolean;
+  /** Whether a second `dispose()` threw. The `Renderer` port requires it not to. */
+  secondDisposeThrew: boolean;
   /** Presents while the widget is live and the caret is blinking — must be > 0, or the check below
    * is vacuous. */
   beforeDispose: number;
@@ -2791,12 +2797,33 @@ window.__disposeProbe = async (): Promise<DisposeProbe> => {
   renderer.restartCursorBlink();
 
   const beforeDispose = await countPresents(1500);
+  // Geometry answers while the widget is alive — the control for the check below, so "it threw"
+  // cannot be satisfied by a widget that was already broken.
+  const geometryBeforeDispose = (() => {
+    try { return renderer.cellSize().width > 0; } catch { return false; }
+  })();
   term.dispose();
   const afterDispose = await countPresents(1500);
+  // #773 follow-up: dispose hands the grid back, so every per-grid path throws afterwards. This is
+  // the only thing observable from outside that says the grid was released — WebGL exposes no
+  // memory query — and the renderer's own `per-config-atlas.html` is what proves that releasing
+  // the last grid on a configuration deletes its atlas.
+  const geometryAfterDispose = (() => {
+    try { renderer.cellSize(); return true; } catch { return false; }
+  })();
+  // …and dispose stays idempotent, which `removeGrid` is not on its own.
+  let secondDisposeThrew = false;
+  try { term.dispose(); } catch { secondDisposeThrew = true; }
 
   // Deliberately not restored: the widget is disposed and this page is done. Playwright navigates
   // fresh per test, so nothing leaks to the next one.
-  return { beforeDispose, afterDispose };
+  return {
+    beforeDispose,
+    afterDispose,
+    geometryBeforeDispose,
+    geometryAfterDispose,
+    secondDisposeThrew,
+  };
 };
 
 window.__contextLossProbe = async (): Promise<ContextLossProbe> => {
