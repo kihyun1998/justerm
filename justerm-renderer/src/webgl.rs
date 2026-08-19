@@ -2058,9 +2058,12 @@ impl JustermRenderer {
     /// drives this from a resolution `matchMedia` listener — a DPR change at the *same* CSS size
     /// (dragging to another-density monitor) does not fire a resize, so it must be signalled
     /// explicitly. **Every** configuration is re-baked at the new device size, each keeping its own
-    /// glyph slots (so nothing has to re-pack), and the drawing buffer is re-derived from the stored
-    /// grid at the new cell size. A no-op if the ratio is unchanged; on error every old atlas is
-    /// left intact and `dpr` unadvanced, so the next notification retries (self-healing).
+    /// glyph slots (so nothing has to re-pack). **The drawing buffer is deliberately left alone** —
+    /// see the paragraph below the next one, which is where that decision is stated; this sentence
+    /// said the opposite until 2026-08-19 (#773 sweep miss), describing the pre-0.15.0 behaviour
+    /// fifteen lines above the paragraph that retired it. A no-op if the ratio is unchanged; on
+    /// error every old atlas is left intact and `dpr` unadvanced, so the next notification retries
+    /// (self-healing).
     ///
     /// **This is the "rebuild all of them" path, not the "re-key one" path** (#772, ADR-0021). One
     /// canvas means one drawing buffer and one DPR, so a density change is true of every entry at
@@ -2528,9 +2531,10 @@ impl JustermRenderer {
             self.select_config(at, key)?;
         }
 
-        // 4. The loss reset the drawing-buffer size and the viewport; re-derive them from the CSS
-        //    box at the (possibly new) DPR, then refill every grid's buffer so `render` draws the
-        //    pre-loss frame. This is also where a `resizeSurface` that arrived *during* the loss
+        // 4. The loss reset the drawing-buffer size and the viewport; re-ask for the buffer the
+        //    consumer last requested — in device px, as given — then refill every grid's buffer so
+        //    `render` draws the pre-loss frame. (This said "from the CSS box" until 2026-08-19: the
+        //    surface stored a CSS box for part of #773 and stopped, and the comment outlived it.) This is also where a `resizeSurface` that arrived *during* the loss
         //    gets its adopt-what-fits pass: it committed the request and skipped the read-back,
         //    leaving that to this call (#639). Nothing extra is stored for it — the buffer it asked
         //    for IS `requested`.
