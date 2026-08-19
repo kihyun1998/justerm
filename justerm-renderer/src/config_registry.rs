@@ -116,23 +116,22 @@ pub struct ConfigRegistry<T> {
     next_id: u32,
 }
 
+impl<T> Default for ConfigRegistry<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<T> ConfigRegistry<T> {
-    /// Start a registry holding one entry — the configuration the implicit default grid is born
-    /// into — with a single reference, which is that grid's.
-    pub fn new(key: ConfigKey, value: T) -> (Self, ConfigId) {
-        let id = ConfigId(0);
-        (
-            ConfigRegistry {
-                entries: vec![Entry {
-                    id,
-                    key,
-                    refs: 1,
-                    value,
-                }],
-                next_id: 1,
-            },
-            id,
-        )
+    /// Start an **empty** registry — a renderer holds no configuration until a grid asks for one
+    /// (#773). Until S5 this started with one entry, because construction registered an implicit
+    /// grid that had to be born somewhere; with no grid there is nothing to key an atlas by, and
+    /// baking one on the chance that a grid arrives would be a bake charged to nobody.
+    pub fn new() -> Self {
+        ConfigRegistry {
+            entries: Vec::new(),
+            next_id: 1,
+        }
     }
 
     /// The entry serving `key`, if one already exists. `None` means the caller must build one —
@@ -248,7 +247,20 @@ mod tests {
     }
 
     fn start() -> (ConfigRegistry<FakeAtlas>, ConfigId) {
-        ConfigRegistry::new(key("monospace", 15.0), FakeAtlas(1))
+        let mut reg = ConfigRegistry::new();
+        let id = reg.insert(key("monospace", 15.0), FakeAtlas(1));
+        (reg, id)
+    }
+
+    #[test]
+    fn a_new_registry_holds_no_configuration() {
+        let reg: ConfigRegistry<FakeAtlas> = ConfigRegistry::new();
+        assert_eq!(reg.len(), 0);
+        assert_eq!(
+            reg.find(&key("monospace", 15.0)),
+            None,
+            "nothing to join until a grid asks"
+        );
     }
 
     #[test]

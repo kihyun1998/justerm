@@ -25,24 +25,25 @@
 <canvas id="c" width="64" height="64"></canvas>
 <script type="module">
   import init, { JustermRenderer } from "../pkg/justerm_renderer.js";
-  import { deviceCell, readCells, countLit, gridFit } from "./proof.js";
+  import { deviceCell, readCells, countLit, gridFit, fitGrid } from "./proof.js";
   const FG = 0xffffff, BG = 0x1e1e2e;
   await init();
 
   const palette = new Uint32Array(256);
-  const r = new JustermRenderer("#c", palette, FG, BG);
+  const r = new JustermRenderer("#c");
+  const g = r.addGrid(palette, FG, BG);
   const dpr = window.devicePixelRatio;
 
   // cell_width/height are DEVICE px (#331/#335); the CSS view is the unrounded quotient.
-  const cellW = r.cell_width(), cellH = r.cell_height();
-  const cellCssW = r.cssCellWidth(), cellCssH = r.cssCellHeight();
+  const cellW = r.cell_width(g), cellH = r.cell_height(g);
+  const cellCssW = r.cssCellWidth(g), cellCssH = r.cssCellHeight(g);
   const COLS = 4, ROWS = 1;
-  r.resize(COLS, ROWS); // a GRID, not a pixel box — the buffer is COLS*cellW x ROWS*cellH exactly
+  fitGrid(r, g, COLS, ROWS); // a GRID, not a pixel box — the buffer is COLS*cellW x ROWS*cellH exactly
 
   // Draw "A" in cell 0 (rest blank) and render.
   const zeros = new Uint32Array(COLS);
   const cps = new Uint32Array([0x41, 0x20, 0x20, 0x20]);
-  r.apply_frame(COLS, ROWS, zeros, zeros, cps, new Uint16Array(COLS), true);
+  r.apply_frame(g, COLS, ROWS, zeros, zeros, cps, new Uint16Array(COLS), true);
   r.render();
 
   // Count lit pixels of "A" over its DEVICE cell (readPixels is on the device-px buffer).
@@ -54,8 +55,8 @@
   // composite, and neither does one `await requestAnimationFrame` (the callback runs before the
   // frame is presented) — but TWO of them redden `glyphRenders` at every density. So this ordering
   // buys the margin, and an `await` above this line is what would spend it.
-  const [dcw, dch] = deviceCell(r);
-  const litA = countLit(readCells(gl, r, 0));
+  const [dcw, dch] = deviceCell(r, g);
+  const litA = countLit(readCells(gl, r, g, 0));
 
   // Do what a consumer does with cssWidth()/cssHeight(): put them on the element. Check (d) then
   // asks the BROWSER where the box landed, instead of asking our own arithmetic (#337).
@@ -73,7 +74,7 @@
     cellCssW, cellCssH, cssBox: [r.cssWidth(), r.cssHeight()],
     rect: [rect.width, rect.height], usedDevice: [rect.width * dpr, rect.height * dpr],
     deviceCell: [dcw, dch], litA,
-    gridFit: gridFit(gl, r, COLS, ROWS),
+    gridFit: gridFit(gl, r, g, COLS, ROWS),
     checks: {
       // (a) the buffer is the GRID, exactly — never a rounded pixel box (#331). At dpr 1.1 the old
       //     `round(cols * cssCell * dpr)` sizing came up 1-2 device px short and clipped a column.

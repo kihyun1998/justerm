@@ -42,14 +42,27 @@ See [multi-viewport](multi-viewport.md) for the tier and its lifetime.
   glyphs, which exists entirely because of this.
 - **Spacing settings are CSS px** even though the geometry is device px, because they belong to the
   same description as `font_size`. The conversion happens on the way in, once.
-- **The grid dimensions are outputs, not inputs.** A consumer sets a CSS box and reads `cols` / `rows`
-  back — the resize contract runs in that direction.
+- **The grid dimensions were outputs, and since #773 they are inputs reported back.** A consumer
+  still measures a CSS box and divides it by the CSS cell to get `cols` / `rows`; what changed is
+  what happens next. While the renderer sized the drawing buffer from the grid it could refuse one
+  it could not draw, and `cols()` reported the grid actually adopted (#339). The buffer is the
+  *surface's* now — one canvas holds N grids in M cell sizes, so there is no cell it can be a
+  multiple of — and `resize_surface` adopts the browser's grant while `resize_grid` records what it
+  was told. So `cols()` is an echo, and a consumer that asks for more than fits learns it from
+  `cssWidth` rather than from `cols`.
+- **The cell is per font configuration, so a surface can hold several at once** (#772/#773). Every
+  cell reader takes a grid: `cellWidth(grid)`, `cssCellWidth(grid)`. See the cross-cutting invariant
+  below for what a *reader* of one owes.
 
 ## Code
 
 - `justerm-renderer/src/rasterizer.rs` — the ink scan of `█` (browser-only)
 - `justerm-renderer/src/metrics.rs` — the cell box / glyph box nesting
-- `justerm-renderer/src/dpr.rs` — `css_px`, `grid_px`, the device↔CSS derivation
+- `justerm-renderer/src/dpr.rs` — `css_px`, the device→CSS derivation. It is the only direction
+  left: grid_px, cells_that_fit and device_px were all retired with the grid-derived buffer (#773),
+  because the surface is now asked for in device px and kept as asked, so nothing in this crate
+  converts *into* device px any more. (Retired names un-backticked on purpose — this heading
+  resolves every code-span against the source.)
 - `justerm-renderer/src/webgl.rs` — `css_cell_width`, `css_cell_height`, `css_width`, `css_height`,
   `cols`, `rows`, `set_font_size`, `set_font_family`, `set_line_height`, `set_letter_spacing`,
   `set_device_pixel_ratio` — the largest single share of the crate's wasm exports
@@ -101,5 +114,8 @@ grounds as unverified, which is unusual enough to be worth knowing before buildi
 - **Headless proofs cannot be trusted naively here.** A fractional CSS canvas composites white under
   SwiftShader, and a sharpness metric will read that as *the sharpest* result — so a geometry proof
   needs to state what it is actually measuring.
-- **No record for the resize direction.** "Consumer sets the CSS box, renderer reports the grid" is a
-  contract inversion relative to a grid-first API, and it is documented only by its parameters.
+- **No record for the resize direction**, and #773 made the question sharper rather than answering
+  it. "Consumer sets the CSS box, renderer reports the grid" was already a contract inversion
+  relative to a grid-first API, documented only by its parameters; now the surface and the grid are
+  sized by two different calls in two different units, and *which* of them a consumer is obliged to
+  re-issue after a font or density change is likewise documented only by the doc-comments on them.

@@ -25,6 +25,12 @@ stated rather than here, so this paragraph does not need rewriting as each slice
 atlas registry (#772) are built; everything else below is designed and not built** — read ADR-0021
 for the authoritative form, and `## Code` for what exists today.
 
+- **A renderer holds no terminal until the consumer registers one** (#773). Until S5 it arrived
+  holding an implicit grid drawn over the whole buffer, so that the exports predating the per-grid
+  setters had something to act on; a surface holding two terminals would then hold three grids, and
+  the third would paint under both. Every per-grid export names its grid now and the implicit one is
+  gone, which also removed the last place where a *rect* had a producer other than the consumer's
+  measured box.
 - **One context, N viewports**, with per-grid `scissor` + `viewport` rectangles rather than per-grid
   contexts. The browser's context cap is the forcing constraint. Built in #771, in the shape three.js
   uses: one clear, then per rect a viewport + scissor + that rect's own clear + its own draw, with the
@@ -94,12 +100,15 @@ The renderer **holds** N grids and **draws** every one that has been placed.
   across another grid's font change — and two configurations drawn side by side, each `█` run
   measuring its own grid's cell width. It also loses and restores a context with two grids drawn
 
-Still absent: no terminal-surface type, and every export except addGrid/removeGrid/setViewport/
-clearViewport/gridCount/isGridDrawn/applyDamageTo/atlasCount/bakes still acts on the implicit default
-grid — including the four font/metric setters, so a *registered* grid has no way to ask for a
-configuration of its own and keeps the one it was born into until the per-grid setters land. There is
-also no export that reports a non-default grid's cell, so a consumer holding two configurations
-cannot fit the second one. (Names of
+- `justerm-renderer/demo/per-grid-state.html` — the browser proof for the per-grid setters (#773):
+  two grids on one configuration side by side, each holding its own palette, selection, active
+  match, decorations and cursor. Deliberately **differential** — every check sets one grid and
+  compares the other's whole rect byte-for-byte against a capture taken before the call, so it
+  asserts *reach* rather than the blend formula it would otherwise have to encode
+
+Still absent: **no terminal-surface type.** That is the whole of what this territory's design has
+that its code does not — the tier split (#769), the grid registry (#770), the draw loop (#771), the
+per-config atlas registry (#772) and the per-grid contract (#773) are all built. (Names of
 things that do not exist yet are left un-backticked on purpose: every symbol under this heading is
 resolved against the source, so a code-span for an unbuilt type fails the note gate — which is the
 gate doing its job.)
@@ -134,9 +143,20 @@ seventh (`applyDamageTo`) and makes the set *do* something — a placed grid pai
 eighth and ninth, `atlasCount` and `bakes`, which carry no behaviour and exist so that *sharing* is
 something a consumer or a proof can measure rather than assume.
 
-The addition is still strictly additive and a single-grid consumer is unaffected: every export
-predating the per-grid setters acts on the implicit default grid, whose rect is the whole drawing
-buffer, so its frame is the same frame it was. What #771 does change for anyone holding more than one
+**#773 ends the additive phase** — it is the contract step of the expand–contract sequence, and the
+break is deliberately concentrated in one release (0.15.0). Every per-grid export gained a grid
+parameter and throws on an id it does not know; `resize(cols, rows)` split into `resize_grid` and
+`resize_surface`, the latter taking device pixels so the surface and the rects placed on it are in
+one space; `add_grid` gained the four font selectors, optional and trailing, so a grid joins a
+sibling's atlas instead of baking one it abandons a line later. Two consequences reach a consumer
+beyond the signatures: the single-grid arrangement is now three calls it makes rather than one the
+renderer made, and a **density change invalidates every device-pixel quantity the consumer gave** —
+the surface's size as well as every rect — because only the consumer can re-measure them. The
+renderer holds none of them across it: converting would mean converting through its own copy of the
+density, which lags by construction, so what it does instead is re-bake the atlases and leave the
+measurements alone.
+
+What #771 changed for anyone holding more than one
 grid is that the renderer now has a **draw order** (registration order) and a **z-order** — a later
 grid paints over an earlier one where their rects overlap — and it *replaces* rather than blends,
 because each grid's pass opens with a `clear` and a clear writes. So a translucent grid shows the
@@ -254,8 +274,8 @@ The list below is what lands **when the multi-grid work does**, and the entries 
   whether a grid paints. It said nothing about whether a hidden grid still *packs and uploads* every
   frame it is fed — and the consumer's adoption design keeps a hidden workspace's Blocks mounted and
   feeding (penterm's `terminal-single-context-adoption` PRD: `ContentArea`'s `display:none` mount
-  policy is kept, and each mounted Block feeds decoded frames). So after the per-grid setters land,
-  a hidden terminal's per-frame CPU cost is real. **Measured, so the decision has a number** (#770,
+  policy is kept, and each mounted Block feeds decoded frames). So a hidden terminal's per-frame
+  CPU cost is real, and has been since the per-grid setters landed (#773). **Measured, so the decision has a number** (#770,
   120×40, release wasm, two environments agreeing within ~10 % — headless SwiftShader and a real
   NVIDIA/D3D11 browser): scattering a frame costs ≈**0.04 ms**, and the pack + upload behind it
   ≈**0.33 ms**, against ≈0.003 ms to draw. So an ungated hidden grid costs ≈**0.4 ms per frame**, of

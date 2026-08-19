@@ -36,7 +36,7 @@
 <canvas id="c" width="48" height="16"></canvas>
 <script type="module">
   import init, { JustermRenderer } from "../pkg/justerm_renderer.js";
-  import { readRect } from "./proof.js";
+  import { readRect, fitGrid } from "./proof.js";
   await init();
 
   const COLS = 8, ROWS = 4, N = COLS * ROWS;
@@ -46,14 +46,15 @@
   const A_BG = 0xcc2020, B_BG = 0x20cc20, C_BG = 0x2020cc;
 
   const palette = new Uint32Array(256);
-  const r = new JustermRenderer("#c", palette, DEF_FG, DEF_BG);
+  const r = new JustermRenderer("#c");
+  const g = r.addGrid(palette, DEF_FG, DEF_BG);
   const gl = document.querySelector("#c").getContext("webgl2");
 
   const checks = {};
   const threw = (fn) => { try { fn(); return false; } catch { return true; } };
 
-  r.resize(COLS, ROWS);
-  const [cw, ch] = [r.cell_width(), r.cell_height()];
+  fitGrid(r, g, COLS, ROWS);
+  const [cw, ch] = [r.cell_width(g), r.cell_height(g)];
   const [bw, bh] = [gl.drawingBufferWidth, gl.drawingBufferHeight];
 
   // ── Frame helpers ────────────────────────────────────────────────────────────────────────────
@@ -73,12 +74,12 @@
       new Uint16Array(cells), new Uint32Array(cells), [],
     ];
   };
-  const feedDefault = (cols, rows, bgOf) => r.apply_damage(...frame(cols, rows, bgOf));
-  const feedGrid = (id, cols, rows, bgOf) => r.applyDamageTo(id, ...frame(cols, rows, bgOf));
+  const feedBase = (cols, rows, bgOf) => r.apply_damage(g, ...frame(cols, rows, bgOf));
+  const feedGrid = (id, cols, rows, bgOf) => r.apply_damage(id, ...frame(cols, rows, bgOf));
 
-  // The default grid's frame: every cell a different, deterministic colour, so a region that moved
+  // The base grid's frame: every cell a different, deterministic colour, so a region that moved
   // by one cell is as visible as one that changed colour.
-  const defaultBgOf = (col, row) => 0x400000 + col * 0x000010 + row * 0x001000;
+  const baseBgOf = (col, row) => 0x400000 + col * 0x000010 + row * 0x001000;
 
   // ── Pixel helpers ────────────────────────────────────────────────────────────────────────────
   const snapshot = () => {
@@ -88,10 +89,10 @@
     return (x, y) => { const i = ((bh - 1 - y) * bw + x) * 4; return [img.buf[i], img.buf[i + 1], img.buf[i + 2]]; };
   };
   const near = (v, t) => Math.abs(v - t) <= 4;
-  /** Whether the cells of the default grid's own frame show through at `[col, col+cols)`, `row`. */
-  const defaultShowsThrough = (px, col, row, cols) =>
+  /** Whether the cells of the base grid's own frame show through at `[col, col+cols)`, `row`. */
+  const baseShowsThrough = (px, col, row, cols) =>
     Array.from({ length: cols }, (_, i) =>
-      isColor(px, (col + i) * cw, row * ch, cw, ch, defaultBgOf(col + i, row))).every(Boolean);
+      isColor(px, (col + i) * cw, row * ch, cw, ch, baseBgOf(col + i, row))).every(Boolean);
   const isColor = (px, x0, y0, w, h, packed) => {
     const [er, eg, eb] = [(packed >> 16) & 0xff, (packed >> 8) & 0xff, packed & 0xff];
     for (let y = y0; y < y0 + h; y++)
@@ -106,13 +107,13 @@
   // Captured in THIS run at THIS dpr, so the comparison below is against a measurement rather than
   // against a number someone wrote down. This is also the AC "a single-grid consumer's output is
   // unchanged": everything after this point adds grids and must not move these pixels.
-  feedDefault(COLS, ROWS, defaultBgOf);
+  feedBase(COLS, ROWS, baseBgOf);
   r.render();
   const solo = readRect(gl, { x: 0, y: 0, w: bw, h: bh }).buf.slice();
   const soloPx = snapshot();
-  checks.theSingleGridPathStillDrawsItsOwnFrame =
-    isColor(soloPx, 0, 0, cw, ch, defaultBgOf(0, 0)) &&
-    isColor(soloPx, (COLS - 1) * cw, (ROWS - 1) * ch, cw, ch, defaultBgOf(COLS - 1, ROWS - 1));
+  checks.theBaseGridDrawsItsOwnFrame =
+    isColor(soloPx, 0, 0, cw, ch, baseBgOf(0, 0)) &&
+    isColor(soloPx, (COLS - 1) * cw, (ROWS - 1) * ch, cw, ch, baseBgOf(COLS - 1, ROWS - 1));
 
   // ── Two grids, at opposite ends of the buffer ────────────────────────────────────────────────
   // A: the TOP-left two cells. B: the BOTTOM-left two cells. Placed in device px, top-left origin.
@@ -150,21 +151,21 @@
   // buffer was pointed at last. That failure is silent — a full, plausible terminal, belonging to
   // someone else — so it gets its own assertion rather than being folded into "A drew A".
   checks.aGridDrawsItsOwnCellsAndNotAnotherGrids =
-    !isColor(px, A_RECT.x, A_RECT.y, cw, ch, defaultBgOf(0, 0));
+    !isColor(px, A_RECT.x, A_RECT.y, cw, ch, baseBgOf(0, 0));
 
   checks.theTopRectIsNotAtTheBottom = !isColor(px, B_RECT.x, B_RECT.y, B_RECT.w, B_RECT.h, A_BG);
   checks.theBottomRectIsNotAtTheTop = !isColor(px, A_RECT.x, A_RECT.y, A_RECT.w, A_RECT.h, B_BG);
 
   // Nothing bleeds: the cell immediately right of A's rect, and the one immediately below it, are
   // still the default grid's — so neither A's clear nor A's cells left its rect.
-  checks.nothingBleedsSidewaysOutOfARect = isColor(px, RECT_W, 0, cw, ch, defaultBgOf(2, 0));
-  checks.nothingBleedsDownwardsOutOfARect = isColor(px, 0, ch, cw, ch, defaultBgOf(0, 1));
+  checks.nothingBleedsSidewaysOutOfARect = isColor(px, RECT_W, 0, cw, ch, baseBgOf(2, 0));
+  checks.nothingBleedsDownwardsOutOfARect = isColor(px, 0, ch, cw, ch, baseBgOf(0, 1));
   // …and the whole middle of the buffer — every cell no grid was placed over — is byte-identical to
   // the single-grid capture. This is the check that fails if a per-grid clear escapes its scissor.
   let untouched = true;
   for (let row = 1; row < ROWS - 1 && untouched; row++)
     for (let col = 0; col < COLS && untouched; col++)
-      untouched = isColor(px, col * cw, row * ch, cw, ch, defaultBgOf(col, row));
+      untouched = isColor(px, col * cw, row * ch, cw, ch, baseBgOf(col, row));
   checks.everyCellNoGridWasPlacedOverIsUnchanged = untouched;
 
   // A frame WIDER than the rect it is drawn into is clipped, not spilled: 6 cells of content in a
@@ -174,7 +175,7 @@
   const wide = snapshot();
   checks.aFrameWiderThanItsRectIsClippedToIt =
     isColor(wide, A_RECT.x, A_RECT.y, A_RECT.w, A_RECT.h, A_BG) &&
-    isColor(wide, RECT_W, 0, cw, ch, defaultBgOf(2, 0));
+    isColor(wide, RECT_W, 0, cw, ch, baseBgOf(2, 0));
   feedGrid(a, 2, 1, () => A_BG);
   r.render();
 
@@ -182,7 +183,7 @@
   r.clearViewport(b);
   r.render();
   const hidden = snapshot();
-  checks.hidingAGridStopsItsPixels = defaultShowsThrough(hidden, 0, ROWS - 1, 2);
+  checks.hidingAGridStopsItsPixels = baseShowsThrough(hidden, 0, ROWS - 1, 2);
   checks.hidingOneGridLeavesTheOtherDrawing =
     isColor(hidden, A_RECT.x, A_RECT.y, A_RECT.w, A_RECT.h, A_BG);
 
@@ -223,18 +224,21 @@
 
   r.removeGrid(c);
   r.render();
-  checks.removingADrawnGridStopsItsPixels = defaultShowsThrough(snapshot(), COLS - 2, 0, 2);
+  checks.removingADrawnGridStopsItsPixels = baseShowsThrough(snapshot(), COLS - 2, 0, 2);
 
   // ── The buffer is the surface's, not one grid's ──────────────────────────────────────────────
-  // `resize` re-places the default over the whole (new) buffer; a placed grid keeps the rect the
-  // consumer gave it, in device px, and is the consumer's to re-place. Assert the default followed
-  // the buffer rather than that the others did not move — the latter is the same statement twice.
-  r.resize(COLS, ROWS);
-  feedDefault(COLS, ROWS, defaultBgOf);
+  // **And since #773 nothing in the renderer places a grid over it.** `resize(cols, rows)` used to
+  // size the buffer AND re-place the implicit default across it in one call; `resizeSurface` sizes
+  // the buffer and stops there, because every rect on it now has one producer — the consumer's
+  // measured box (`fitGrid` is that consumer, assembling what `resize` used to do). Assert the base
+  // grid reaches the far corner rather than that the others did not move: the latter is the same
+  // statement twice.
+  fitGrid(r, g, COLS, ROWS);
+  feedBase(COLS, ROWS, baseBgOf);
   r.render();
-  checks.resizeKeepsTheDefaultOverTheWholeBuffer =
-    r.isGridDrawn(0) === true &&
-    isColor(snapshot(), (COLS - 1) * cw, (ROWS - 1) * ch, cw, ch, defaultBgOf(COLS - 1, ROWS - 1));
+  checks.theConsumerCanPlaceOneGridOverTheWholeSurface =
+    r.isGridDrawn(g) === true &&
+    isColor(snapshot(), (COLS - 1) * cw, (ROWS - 1) * ch, cw, ch, baseBgOf(COLS - 1, ROWS - 1));
 
   // ── A registered grid keeps the configuration it was born into ───────────────────────────────
   // **This check inverted at #772, and the inversion is the slice.** The four font/metric fields are
@@ -242,9 +246,15 @@
   // (D2). While there was exactly ONE config, every grid selected into it, so the honest bookkeeping
   // was to write a `setFontSize` to every grid — and this check asserted that it was
   // (`aRegisteredGridFollowsTheFontConfigurationItSelectsInto`, #771). Now each grid has a
-  // configuration of its own to select, so `setFontSize` moves the DEFAULT grid to a different entry
-  // and leaves this one exactly where it was. Same rule, opposite pixels, because the thing the rule
-  // is about finally exists.
+  // configuration of its own to select, so `setFontSize` moves the grid it is GIVEN to a different
+  // entry and leaves every sibling exactly where it was. Same rule, opposite pixels, because the
+  // thing the rule is about finally exists.
+  //
+  // #773 is what makes "the grid it is given" literal rather than a way of speaking: until S5 the
+  // setter had no grid parameter at all and always moved the implicit default, so this check could
+  // observe the rule only from the sibling's side. It now names its grid, and the sibling `u` below
+  // could ask for a font of its own — which is #773's own proof (`per-grid-state.html`), not this
+  // page's.
   //
   // `draw_grid` derives the underline thickness from the drawing grid's own `font_size`, which is
   // what makes the difference visible at all. Measured rather than reasoned about: an underlined
@@ -268,13 +278,13 @@
   // Only the default and this one grid draw from here, so a sampled cell is unambiguous.
   [a, b].forEach((id) => r.clearViewport(id));
   const u = r.addGrid(palette, DEF_FG, DEF_BG);
-  r.applyDamageTo(u, ...underlined(2, 1));
+  r.apply_damage(u, ...underlined(2, 1));
 
   // A font size far from the default's, so `max(1, round(px/15))` lands on a different integer.
-  r.setFontSize(45);
-  const [cw2, ch2] = [r.cell_width(), r.cell_height()];
-  r.resize(COLS, ROWS);
-  r.apply_damage(...underlined(COLS, ROWS));
+  r.setFontSize(g, 45);
+  const [cw2, ch2] = [r.cell_width(g), r.cell_height(g)];
+  fitGrid(r, g, COLS, ROWS);
+  r.apply_damage(g, ...underlined(COLS, ROWS));
   r.setViewport(u, 0, 2 * ch2, 2 * cw2, ch2);
   r.render();
   const afterFont = readRect(gl, { x: 0, y: 0, w: gl.drawingBufferWidth, h: gl.drawingBufferHeight });

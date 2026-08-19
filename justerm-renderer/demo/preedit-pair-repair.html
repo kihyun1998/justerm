@@ -42,7 +42,7 @@
 <canvas id="c" width="128" height="32"></canvas>
 <script type="module">
   import init, { JustermRenderer } from "../pkg/justerm_renderer.js";
-  import { readRect } from "./proof.js";
+  import { readRect, fitGrid } from "./proof.js";
   await init();
 
   const UNDERLINE = 1 << 3;
@@ -56,7 +56,8 @@
   // default fg WHITE over default bg BLACK, so the application's blue and the default it was being
   // replaced by are as far apart as a channel can put them.
   const palette = new Uint32Array(256);
-  const r = new JustermRenderer("#c", palette, 0xffffff, 0x000000);
+  const r = new JustermRenderer("#c");
+  const g = r.addGrid(palette, 0xffffff, 0x000000);
   const gl = document.querySelector("#c").getContext("webgl2");
 
   const grab = () => { const [w, h] = [gl.drawingBufferWidth, gl.drawingBufferHeight]; return { ...readRect(gl, { x: 0, y: 0, w, h }), w, h }; };
@@ -72,16 +73,16 @@
 
   /** Draw the row with `run` composing on column 3 — the pair's spacer — and read the pixels back. */
   const draw = (run) => {
-    r.resize(COLS, ROWS);
-    r.setPreedit(3, 0, new Uint32Array(run)); // BEFORE apply_frame — see the header note
-    r.apply_frame(COLS, ROWS, bg, new Uint32Array(N), codepoints, flags, true, undefined);
+    fitGrid(r, g, COLS, ROWS);
+    r.setPreedit(g, 3, 0, new Uint32Array(run)); // BEFORE apply_frame — see the header note
+    r.apply_frame(g, COLS, ROWS, bg, new Uint32Array(N), codepoints, flags, true, undefined);
     r.render();
     return grab();
   };
 
   /** Pixels strictly inside cell `col`, inset by one device px so a rounding edge cannot bleed in. */
   const cellPixels = (img, col) => {
-    const [cw, ch] = [r.cell_width(), r.cell_height()];
+    const [cw, ch] = [r.cell_width(g), r.cell_height(g)];
     const x0 = Math.round(col * cw) + 1, x1 = Math.min(Math.round((col + 1) * cw) - 1, img.w);
     const out = [];
     for (let y = 0; y < Math.min(ch, img.h); y++) for (let x = x0; x < x1; x++) out.push(px(img, x, y));

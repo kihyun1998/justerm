@@ -24,7 +24,7 @@
 <canvas id="c" width="64" height="16"></canvas>
 <script type="module">
   import init, { JustermRenderer } from "../pkg/justerm_renderer.js";
-  import { readRect } from "./proof.js";
+  import { readRect, fitGrid } from "./proof.js";
   await init();
 
   const COLS = 4, ROWS = 1, N = COLS * ROWS;
@@ -39,9 +39,10 @@
   const palette = new Uint32Array(256);
   palette[1] = BASE;
   palette[9] = BRIGHT;
-  const r = new JustermRenderer("#c", palette, WHITE, BLACK);
+  const r = new JustermRenderer("#c");
+  const g = r.addGrid(palette, WHITE, BLACK);
   const gl = document.querySelector("#c").getContext("webgl2");
-  const [cw, ch] = [r.cell_width(), r.cell_height()];
+  const [cw, ch] = [r.cell_width(g), r.cell_height(g)];
 
   const grab = () => {
     const [w, h] = [gl.drawingBufferWidth, gl.drawingBufferHeight];
@@ -65,8 +66,8 @@
   const fg = new Uint32Array([IDX(1), IDX(1), 0, 0]);
   const flags = new Uint16Array([BOLD, 0, DIM, 0]);
   const draw = () => {
-    r.resize(COLS, ROWS);
-    r.apply_frame(COLS, ROWS, new Uint32Array(N), fg, codepoints, flags, true);
+    fitGrid(r, g, COLS, ROWS);
+    r.apply_frame(g, COLS, ROWS, new Uint32Array(N), fg, codepoints, flags, true);
     r.render();
     return grab();
   };
@@ -83,13 +84,13 @@
   // Toggle the policy OFF — the SAME bold cell must revert to the base index (the discriminating
   // proof the resolve is policy-driven, not a baked-in remap). Dim is not a policy, so col2 is
   // unchanged; the toggle isolates bold→bright.
-  r.setBoldToBright(false);
+  r.setBoldToBright(g, false);
   const off = draw();
   checks.boldToBrightOffRevertsTheCellToBase = cellIs(off, 0, BASE) && !cellIs(off, 0, BRIGHT);
   checks.turningBoldToBrightOffLeavesDimUntouched = cellIs(off, 2, DIM_WHITE);
 
   // Restore the default so nothing above is retroactively disturbed.
-  r.setBoldToBright(true);
+  r.setBoldToBright(g, true);
   const back = draw();
   checks.restoringBoldToBrightBrightensAgain = cellIs(back, 0, BRIGHT);
 
@@ -125,9 +126,9 @@
   const lowFg = new Uint32Array(N).fill(RGB(LOW));
   const lowR = (LOW >> 16) & 0xff;
   const drawMcr = (cps, ratio) => {
-    r.setMinimumContrastRatio(ratio);
-    r.resize(COLS, ROWS);
-    r.apply_frame(COLS, ROWS, new Uint32Array(N), lowFg, cps, plainFlags, true);
+    r.setMinimumContrastRatio(g, ratio);
+    fitGrid(r, g, COLS, ROWS);
+    r.apply_frame(g, COLS, ROWS, new Uint32Array(N), lowFg, cps, plainFlags, true);
     r.render();
     return grab();
   };
@@ -138,23 +139,23 @@
   // #226: the SAME low-contrast fg on a █ (tile) is EXCLUDED — the whole cell stays LOW even with mcr on.
   const tileMcr = drawMcr(codepoints, 7.0);
   checks.aTileGlyphIsExcludedFromContrast = cellIs(tileMcr, 0, LOW);
-  r.setMinimumContrastRatio(1.0);
+  r.setMinimumContrastRatio(g, 1.0);
 
   // --- selectionForeground (#227) + selection un-dim (#224), on a NON-TILE glyph ---
   const GREEN = 0x00ff00;
   const drawSel = (cps, flags, selBg, matchBg) => {
-    r.setOverlay(new Uint32Array([0, 0, 0]), new Uint32Array([0, 1, 1]), selBg, matchBg);
-    r.resize(COLS, ROWS);
-    r.apply_frame(COLS, ROWS, new Uint32Array(N), new Uint32Array(N), cps, flags, true);
+    r.setOverlay(g, new Uint32Array([0, 0, 0]), new Uint32Array([0, 1, 1]), selBg, matchBg);
+    fitGrid(r, g, COLS, ROWS);
+    r.apply_frame(g, COLS, ROWS, new Uint32Array(N), new Uint32Array(N), cps, flags, true);
     r.render();
     return grab();
   };
   // Dark highlight bgs so the fg ink is clearly the brightest pixel. col0 selected, col1 a match.
-  r.setSelectionForeground(GREEN);
+  r.setSelectionForeground(g, GREEN);
   const sfgOn = drawSel(letters, plainFlags, 0x1a1a2e, 0x2a2a1a);
   checks.selectionForegroundOverridesTheSelectedCell = inkIs(sfgOn, 0, GREEN);
   checks.selectionForegroundDoesNotTouchASearchMatch = inkIs(sfgOn, 1, WHITE);
-  r.setSelectionForeground(undefined);
+  r.setSelectionForeground(g, undefined);
   const sfgOff = drawSel(letters, plainFlags, 0x1a1a2e, 0x2a2a1a);
   checks.clearingSelectionForegroundRestoresTheCellFg = inkIs(sfgOff, 0, WHITE);
 
@@ -171,13 +172,13 @@
   const retint = blendOver(WHITE, SEL);
   checks.aTileGlyphUnderSelectionIsRetinted = cellIs(tileSel, 0, retint) && !cellIs(tileSel, 0, WHITE);
   // A tile discards selectionForeground (re-tints from the cell fg, not the override).
-  r.setSelectionForeground(GREEN);
+  r.setSelectionForeground(g, GREEN);
   const tileSfg = drawSel(codepoints, plainFlags, SEL, 0x000000);
   checks.aTileGlyphDiscardsSelectionForeground = cellIs(tileSfg, 0, retint) && !cellIs(tileSfg, 0, GREEN);
-  r.setSelectionForeground(undefined);
+  r.setSelectionForeground(g, undefined);
 
   // Restore default overlay state so nothing leaks.
-  r.setOverlay(new Uint32Array([]), new Uint32Array([]), 0, 0);
+  r.setOverlay(g, new Uint32Array([]), new Uint32Array([]), 0, 0);
 
   window.__proof = {
     ok: Object.values(checks).every(Boolean), checks,

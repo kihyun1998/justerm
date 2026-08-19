@@ -35,28 +35,29 @@
 <canvas id="c" width="64" height="64"></canvas>
 <script type="module">
   import init, { JustermRenderer } from "../pkg/justerm_renderer.js";
-  import { readCells } from "./proof.js";
+  import { readCells, fitGrid } from "./proof.js";
   // White on blue: separated on all three channels, so a background leak cannot hide in one of them.
   const FG = 0xffffff, BG = 0x3060a0;
   const FG_RGB = [0xff, 0xff, 0xff], BG_RGB = [0x30, 0x60, 0xa0];
   await init();
 
-  const r = new JustermRenderer("#c", new Uint32Array(256), FG, BG);
-  r.setFontSize(40); // see the note above — the default size has no antialiased pixels to read
-  r.resize(1, 1);
+  const r = new JustermRenderer("#c");
+  const g = r.addGrid(new Uint32Array(256), FG, BG);
+  r.setFontSize(g, 40); // see the note above — the default size has no antialiased pixels to read
+  fitGrid(r, g, 1, 1);
   const gl = document.querySelector("#c").getContext("webgl2");
 
   // One cell holding 'A' — diagonals, so the edge is antialiased in both axes. Colour refs are all
   // Default (0), which is what makes the background the translucent backdrop rather than content.
   const zero = new Uint32Array(1);
-  const apply = () => r.apply_frame(1, 1, zero, zero, new Uint32Array([0x41]), new Uint16Array(1), true);
+  const apply = () => r.apply_frame(g, 1, 1, zero, zero, new Uint32Array([0x41]), new Uint16Array(1), true);
 
   /** Every pixel of the cell with a non-zero alpha, as `{ r, g, b, a }`. */
   function inkPixels(alpha) {
-    r.setBgAlpha(alpha);
+    r.setBgAlpha(g, alpha);
     apply();
     r.render();
-    const { buf } = readCells(gl, r, 0);
+    const { buf } = readCells(gl, r, g, 0);
     const out = [];
     for (let i = 0; i < buf.length; i += 4) {
       if (buf[i + 3] > 0) out.push({ r: buf[i], g: buf[i + 1], b: buf[i + 2], a: buf[i + 3] });
@@ -96,11 +97,11 @@
   const CURSOR = 0xff0000, TEXT = 0x000000, BAR = 3;
   const CURSOR_RGB = [0xff, 0x00, 0x00];
   function cursorStroke(alpha) {
-    r.setBgAlpha(alpha);
-    r.apply_frame(1, 1, zero, zero, new Uint32Array([0x20]), new Uint16Array(1), true);
-    r.setCursor(0, 0, BAR, CURSOR, TEXT);
+    r.setBgAlpha(g, alpha);
+    r.apply_frame(g, 1, 1, zero, zero, new Uint32Array([0x20]), new Uint16Array(1), true);
+    r.setCursor(g, 0, 0, BAR, CURSOR, TEXT);
     r.render();
-    const { buf } = readCells(gl, r, 0);
+    const { buf } = readCells(gl, r, g, 0);
     const out = [];
     for (let i = 0; i < buf.length; i += 4) {
       const p = { r: buf[i], g: buf[i + 1], b: buf[i + 2], a: buf[i + 3] };
@@ -111,7 +112,7 @@
   }
   const strokeOpaque = cursorStroke(1);
   const strokeTranslucent = cursorStroke(0);
-  r.clearCursor();
+  r.clearCursor(g);
   const isCursorColour = (p) =>
     p.r === CURSOR_RGB[0] && p.g === CURSOR_RGB[1] && p.b === CURSOR_RGB[2];
 
@@ -131,7 +132,7 @@
 
   window.__proof = {
     dpr: window.devicePixelRatio,
-    deviceCell: [r.cell_width(), r.cell_height()],
+    deviceCell: [r.cell_width(g), r.cell_height(g)],
     counts: { transparent: transparent.length, partial, half: half.length, opaque: opaque.length },
     halfWorst,
     opaqueBlended: opaque.filter((p) => !isFg(p)).length,

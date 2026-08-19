@@ -32,16 +32,17 @@
 <canvas id="c" width="128" height="32"></canvas>
 <script type="module">
   import init, { JustermRenderer } from "../pkg/justerm_renderer.js";
-  import { readCells, alphaStats, gridFit } from "./proof.js";
+  import { readCells, alphaStats, gridFit, fitGrid } from "./proof.js";
   const FG = 0xffffff, BG = 0x3060a0; // white text on a blue-ish background
   const RGB = (c) => ((2 << 24) | c) >>> 0; // absolute Rgb colour ref (tag 2); Default = 0 (tag 0)
   await init();
 
   const palette = new Uint32Array(256);
-  const r = new JustermRenderer("#c", palette, FG, BG);
-  const CW = r.cell_width(), CH = r.cell_height();
+  const r = new JustermRenderer("#c");
+  const g = r.addGrid(palette, FG, BG);
+  const CW = r.cell_width(g), CH = r.cell_height(g);
   const COLS = 5;
-  r.resize(COLS, 1); // cols x rows — the buffer is COLS*CW x CH device px, exactly (#331)
+  fitGrid(r, g, COLS, 1); // cols x rows — the buffer is COLS*CW x CH device px, exactly (#331)
 
   // Row: ['A'][default-bg space][INVERSE space][space][explicit-Rgb-EQUAL-to-default space].
   // Cell 0 has a glyph; cell 1 is the pure default background; cell 2 is an INVERSE space — its
@@ -55,11 +56,11 @@
   const flags = new Uint16Array([0, 0, INVERSE, 0, 0]);
   const zeros = new Uint32Array(COLS); // fg refs (all Default)
   const bg = new Uint32Array([0, 0, 0, 0, RGB(BG)]); // cell 4: explicit Rgb == the default colour
-  const apply = () => r.apply_frame(COLS, 1, bg, zeros, cps, flags, true);
+  const apply = () => r.apply_frame(g, COLS, 1, bg, zeros, cps, flags, true);
 
   const gl = document.querySelector("#c").getContext("webgl2");
   // Alpha stats for cell `col`: min/max of the alpha channel over the cell's DEVICE-px pixels.
-  const cellAlpha = (col) => alphaStats(readCells(gl, r, col));
+  const cellAlpha = (col) => alphaStats(readCells(gl, r, g, col));
 
   // 1) Default (opaque): background cell fully opaque.
   apply();
@@ -67,7 +68,7 @@
   const opaqueBg = cellAlpha(1); // a pure-background cell
 
   // 2) Translucent: half background opacity.
-  r.setBgAlpha(0.5);
+  r.setBgAlpha(g, 0.5);
   apply();
   r.render();
   const transBg = cellAlpha(1);      // default-bg cell now ~half alpha
@@ -83,20 +84,20 @@
   // the background would let the worse half of the failure through.
   // Reachable from type-correct consumer code — TypeScript's `number` includes NaN, so an ordinary
   // `Number(configValue)` arrives as one.
-  r.setBgAlpha(NaN);
+  r.setBgAlpha(g, NaN);
   apply();
   r.render();
   const nanBg = cellAlpha(1);
   const nanGlyph = cellAlpha(0);
   // …and a finite out-of-range value was never the problem: the clamp already handled it. Kept as
   // the control, so `nanFallsBackToOpaque` cannot pass by the setter simply ignoring its argument.
-  r.setBgAlpha(-3);
+  r.setBgAlpha(g, -3);
   apply();
   r.render();
   const negBg = cellAlpha(1);
 
   window.__proof = {
-    dpr: window.devicePixelRatio, deviceCell: [CW, CH], gridFit: gridFit(gl, r, COLS, 1),
+    dpr: window.devicePixelRatio, deviceCell: [CW, CH], gridFit: gridFit(gl, r, g, COLS, 1),
     opaqueBg, transBg, transGlyph, transInverse, transExplicit, nanBg, nanGlyph, negBg,
     checks: {
       // Default: an uncovered cell is fully opaque.

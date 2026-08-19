@@ -25,7 +25,7 @@
 <canvas id="c" width="320" height="120"></canvas>
 <script type="module">
   import init, { JustermRenderer } from "../pkg/justerm_renderer.js";
-  import { deviceCell, readCells, countLit, litAt, gridFit } from "./proof.js";
+  import { deviceCell, readCells, countLit, litAt, gridFit, fitGrid } from "./proof.js";
 
   const WIDE_CHAR = 1 << 8, WIDE_SPACER = 1 << 9;
   const BLINK = 1 << 4, HIDDEN = 1 << 6;
@@ -33,23 +33,24 @@
   await init();
 
   const palette = new Uint32Array(256);
-  const r = new JustermRenderer("#c", palette, FG, BG);
-  const CW = r.cell_width(), CH = r.cell_height();
+  const r = new JustermRenderer("#c");
+  const g = r.addGrid(palette, FG, BG);
+  const CW = r.cell_width(g), CH = r.cell_height(g);
 
   // 8 cells, 1 row: [─][─][A][中(lead)][spacer][space][A+HIDDEN][A+BLINK]
   const COLS = 8;
-  r.resize(COLS, 1);
+  fitGrid(r, g, COLS, 1);
   const cps   = new Uint32Array([0x2500, 0x2500, 0x41, 0x4e2d, 0x20,        0x20, 0x41,   0x41]);
   const flags = new Uint16Array([0,      0,      0,    WIDE_CHAR, WIDE_SPACER, 0,   HIDDEN, BLINK]);
   const zeros = new Uint32Array(COLS).fill(0);
   // Frame 1: blink phase ON — the blink cell's glyph is drawn.
-  r.apply_frame(COLS, 1, zeros, zeros, cps, flags, true);
+  r.apply_frame(g, COLS, 1, zeros, zeros, cps, flags, true);
   r.render();
 
   const gl = document.querySelector("#c").getContext("webgl2");
   // Everything below addresses the DEVICE-px buffer via the renderer's own cell (#328).
-  const [dcw, dch] = deviceCell(r);
-  const cell = (col) => readCells(gl, r, col);
+  const [dcw, dch] = deviceCell(r, g);
+  const cell = (col) => readCells(gl, r, g, col);
   const leadHalf = countLit(cell(3));   // 中 left half
   const spacerHalf = countLit(cell(4)); // 中 right half (the spacer cell)
   const letterA = countLit(cell(2));
@@ -61,7 +62,7 @@
 
   // Frame 2: flip the blink phase OFF and redraw. The blink cell's glyph is now suppressed;
   // the plain 'A' and the hidden 'A' are unchanged (phase never touches non-blink cells).
-  r.apply_frame(COLS, 1, zeros, zeros, cps, flags, false);
+  r.apply_frame(g, COLS, 1, zeros, zeros, cps, flags, false);
   r.render();
   const blinkOffLit = countLit(cell(7));
   const hiddenOffLit = countLit(cell(6));
@@ -69,7 +70,7 @@
 
   // Box connection: read the two '─' cells as one 2-cell strip; find the horizontal-line row
   // (most lit), then require the seam columns (dcw-1 and dcw) both lit → the line bridges cells.
-  const box = readCells(gl, r, 0, 0, 2);
+  const box = readCells(gl, r, g, 0, 0, 2);
   let lineRow = 0, best = -1;
   for (let y = 0; y < dch; y++) {
     let n = 0;
@@ -79,8 +80,8 @@
   const seamBridged = litAt(box, dcw - 1, lineRow) && litAt(box, dcw, lineRow);
 
   window.__proof = {
-    dpr: window.devicePixelRatio, deviceCell: [dcw, dch], cssCell: [r.cssCellWidth(), r.cssCellHeight()],
-    gridFit: gridFit(gl, r, COLS, 1),
+    dpr: window.devicePixelRatio, deviceCell: [dcw, dch], cssCell: [r.cssCellWidth(g), r.cssCellHeight(g)],
+    gridFit: gridFit(gl, r, g, COLS, 1),
     leadHalf, spacerHalf, letterA, blank, lineRow, seamBridged,
     hiddenLit, blinkOnLit, blinkOffLit, plainOnLit, plainOffLit, hiddenOffLit,
     checks: {

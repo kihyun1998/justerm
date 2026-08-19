@@ -24,13 +24,14 @@
 <canvas id="c" width="64" height="64"></canvas>
 <script type="module">
   import init, { JustermRenderer } from "../pkg/justerm_renderer.js";
-  import { isUniform, tonalSplit } from "./proof.js";
+  import { isUniform, tonalSplit, fitGrid } from "./proof.js";
   await init();
 
   const COLS = 16, ROWS = 4;
-  const r = new JustermRenderer("#c", new Uint32Array(256), 0xffffff, 0x000000);
+  const r = new JustermRenderer("#c");
+  const g = r.addGrid(new Uint32Array(256), 0xffffff, 0x000000);
   const dpr = window.devicePixelRatio;
-  r.resize(COLS, ROWS);
+  fitGrid(r, g, COLS, ROWS);
 
   // Alternating FULL BLOCK / space: ~50/50, with a hard vertical edge at every cell boundary. No
   // tone can dominate, so a dropped canvas is unmistakable — and the per-column alternation survives
@@ -38,13 +39,13 @@
   const n = COLS * ROWS;
   const cps = new Uint32Array(n);
   for (let i = 0; i < n; i++) cps[i] = i % 2 === 0 ? 0x2588 : 0x20;
-  r.apply_frame(COLS, ROWS, new Uint32Array(n), new Uint32Array(n), cps, new Uint16Array(n), true);
+  r.apply_frame(g, COLS, ROWS, new Uint32Array(n), new Uint32Array(n), cps, new Uint16Array(n), true);
   r.render();
 
   const canvas = document.querySelector("#c");
   const gl = canvas.getContext("webgl2");
   const [bw, bh] = [gl.drawingBufferWidth, gl.drawingBufferHeight];
-  const [cw, ch] = [r.cell_width(), r.cell_height()]; // DEVICE px (#331) — never re-derived (#328)
+  const [cw, ch] = [r.cell_width(g), r.cell_height(g)]; // DEVICE px (#331) — never re-derived (#328)
 
   // The buffer, in the same task as render() (it is cleared on composite).
   const px = new Uint8Array(bw * bh * 4);
@@ -69,8 +70,8 @@
     img.src = "data:image/png;base64," + b64;
     await img.decode();
     const c = new OffscreenCanvas(img.width, img.height);
-    const g = c.getContext("2d", { willReadFrequently: true });
-    g.drawImage(img, 0, 0);
+    const ctx2d = c.getContext("2d", { willReadFrequently: true });
+    ctx2d.drawImage(img, 0, 0);
 
     // Page device px are canvas device px only if the canvas sits at the origin with a real box.
     // Asserted rather than assumed: a stylesheet change would otherwise sample the page background
@@ -86,7 +87,7 @@
     const [usedW, usedH] = [rect.width * dpr, rect.height * dpr];
     const w = Math.min(img.width, Math.floor(usedW));
     const h = Math.min(img.height, Math.floor(usedH));
-    const { data } = g.getImageData(0, 0, w, h);
+    const { data } = ctx2d.getImageData(0, 0, w, h);
     const composited = tonalSplit(data);
     const lum = (x, y) => data[(y * w + x) * 4 + 1];
 

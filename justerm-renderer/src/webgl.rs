@@ -32,7 +32,7 @@ use crate::cursor::{
     guarded_cursor_colors, shape_from_id, shape_id,
 };
 use crate::decoration::parse_decorations;
-use crate::dpr::{cells_that_fit, css_px, dpr_changed, grid_px};
+use crate::dpr::{css_px, dpr_changed};
 use crate::emoji::is_emoji_text;
 use crate::frame::{Frame, INSTANCE_FLOATS, pack_instances};
 use crate::frame_grid::{DamageFrame, FrameGrid, cell_count};
@@ -50,7 +50,7 @@ use crate::preedit::{
     writes as preedit_writes,
 };
 use crate::rasterizer::Rasterizer;
-use crate::registry::{DEFAULT_SLOT, GridId, GridRegistry, Viewport};
+use crate::registry::{GridId, GridRegistry, Viewport};
 use crate::render_policy::ColorPolicy;
 use crate::upload::{UploadPlan, invalidate_baseline, plan_upload};
 
@@ -59,6 +59,12 @@ use crate::upload::{UploadPlan, invalidate_baseline, plan_upload};
 const TOTAL_LAYERS: i32 = ((WIDE_BASE + WIDE_CAPACITY * 2) / GLYPHS_PER_LAYER) as i32;
 /// Default font size (CSS px) for the atlas rasteriser.
 const FONT_SIZE: f32 = 16.0;
+
+/// The CSS `font-family` a grid is born with (#773). A grid arrives on the configuration these
+/// defaults key, and moves off it with `setFontFamily` / `setFontSize` / the spacing setters — so a
+/// consumer whose terminals all share one non-default font pays exactly **one** bake for this
+/// configuration, and it is released the moment the last grid leaves it.
+const DEFAULT_FONT_FAMILY: &str = "monospace";
 
 /// Unit-quad corners (triangle strip): geometry + per-cell glyph texture coordinate.
 const QUAD: [f32; 8] = [0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 1.0, 1.0];
@@ -547,8 +553,9 @@ pub struct JustermRenderer {
     /// This is the field multi-viewport (#287) multiplies; the other two tiers stay one each, which
     /// the types above say by being singular rather than by being asserted anywhere.
     ///
-    /// Every export predating #773 acts on [`GridId::DEFAULT`] via [`grid`](Self::grid) /
-    /// [`grid_mut`](Self::grid_mut), so a single-grid consumer sees no change at all.
+    /// **Empty until the consumer registers one** (#773). Every per-grid export names the grid it
+    /// acts on, so there is nothing left for an implicit grid to serve — and one would be a third
+    /// terminal painting under the two a surface actually holds.
     grids: GridRegistry<GridTier>,
     /// Count of `resolve_and_pack` runs — a diagnostic the proofs read to assert render packs once
     /// per frame, not once per setter (#421). Wraps harmlessly; only deltas are meaningful.
@@ -578,7 +585,7 @@ pub struct JustermRenderer {
 /// terminals stop paying for N times.
 struct GlobalTier {
     gl: glow::Context,
-    /// The bound canvas — kept so `resize` can size its drawing buffer (device px) and CSS box.
+    /// The bound canvas — kept so `resize_surface` can size its drawing buffer (device px).
     canvas: HtmlCanvasElement,
     /// devicePixelRatio the atlas + drawing buffer are currently sized for (#265). The atlas is
     /// rasterised at `font_size * dpr` (device px) so HiDPI stays sharp; a DPR change — or a
@@ -611,8 +618,24 @@ struct GlobalTier {
     /// clamped the buffer we requested (#339). Context restore reuses the context object, so this
     /// handle survives a loss.
     raw_gl: WebGl2RenderingContext,
-    /// Drawing-buffer size in device pixels.
+    /// Drawing-buffer size in device pixels — what the browser actually granted, which is not
+    /// always what was asked for (#339).
     size: (i32, i32),
+    /// The drawing buffer the consumer last **asked** for, in device px — as given, unconverted
+    /// (#773). `size` above is what the browser granted; this is what to re-ask for when the buffer
+    /// has to be rebuilt (a restore) and nobody is going to re-ask.
+    ///
+    /// **Stored verbatim, and that is the whole point.** Until S5 this role was played by the
+    /// implicit default grid's `grid_size` — the buffer was `cols * cell`, a density-*independent*
+    /// quantity — which stops being derivable the moment two grids in two cells share one canvas.
+    /// The obvious replacement, a CSS box, is not one: converting device px to CSS px needs a
+    /// density, the only density available here is *our copy* of the consumer's, and that copy lags
+    /// by construction — `set_device_pixel_ratio` drops the notification outright while the context
+    /// is lost. A box stored through a lagging basis comes back wrong by the ratio between the two
+    /// densities, which is exactly what the old cell-count storage could not do. The fact belongs to
+    /// the site it is first true at (`theflow.md`, "who owns a fact that several sites read"), and
+    /// that site is the consumer's measurement — so it is kept as measured.
+    requested: (i32, i32),
     /// Canvas context-loss listeners + the shared lost/pending-rebuild state (#269). `render`
     /// consults it every frame: skip while lost, rebuild once restored, otherwise draw.
     ctx_loss: ContextLossHandler,
@@ -747,9 +770,13 @@ struct GridTier {
     /// font-agnostic.
     font_family: String,
     palette: Palette,
-    /// The `cols`×`rows` grid last passed to [`resize`](Self::resize). A DPR change re-measures the
-    /// cell and re-derives the buffer from this, so nothing has to be re-passed and no CSS length is
-    /// rounded twice (#322/#331).
+    /// The `cols`×`rows` grid last passed to [`resize_grid`](Self::resize_grid) — what this grid
+    /// reports and what the frames fed to it are expected to carry.
+    ///
+    /// **Nothing derives the drawing buffer from it any more** (#773). While one grid owned the
+    /// canvas the buffer was `cols * cell`, so a DPR change could re-derive it from here; a surface
+    /// drawing N grids in M cell sizes has no such multiple to be, so the buffer is asked for
+    /// directly and kept as asked (`GlobalTier::requested`).
     grid_size: (u32, u32),
     instances: Vec<f32>,
     instance_count: i32,
@@ -864,25 +891,17 @@ fn upload_glyph(
 
 #[wasm_bindgen]
 impl JustermRenderer {
-    /// The implicit grid every export predating #773 acts on.
+    /// The registry slot a consumer's grid handle addresses, or the error the wasm boundary throws
+    /// (#773).
     ///
-    /// Infallible by construction: [`GridId::DEFAULT`] is registered by [`new`](Self::new) and
-    /// `GridRegistry::remove` refuses it, so the single-grid path can never be left without a grid
-    /// to act on. S5 (#773) gives these exports an explicit grid and this accessor goes with them.
-    fn grid(&self) -> &GridTier {
-        self.grids.default_grid()
-    }
-
-    /// Mutable form of [`grid`](Self::grid).
-    fn grid_mut(&mut self) -> &mut GridTier {
-        self.grids.default_grid_mut()
-    }
-
-    /// The configuration the implicit default grid draws through (#772). Every export predating
-    /// #773 reads the cell, the atlas and the rasteriser through here, because they all act on that
-    /// one grid — so a second configuration existing changes nothing they say.
-    fn config(&self) -> &ConfigTier {
-        self.configs.get(self.grid().config)
+    /// **Every per-grid export starts here**, which is the whole of what S5 changed at this layer:
+    /// the state was already per-grid (#769) and the draw loop already walked all of it (#771);
+    /// what was missing was the consumer being able to say *which*. An unknown or removed id is a
+    /// caller error arriving from JS, so it throws rather than silently addressing something.
+    fn slot(&self, grid: u32) -> Result<usize, JsValue> {
+        self.grids
+            .index_of(GridId::from_raw(grid))
+            .map_err(|e| JsValue::from_str(&e.message()))
     }
 
     /// The configuration a registry slot's grid draws through — the pack path's and the draw loop's
@@ -990,19 +1009,36 @@ impl JustermRenderer {
     /// **and the VAO that points at it** (ADR-0021 D2 — no selector, not shareable, cheap to create;
     /// a VAO's whole content is *which* buffer feeds the draw, so it cannot be shared byte-for-byte
     /// and follows the buffer, #771). No atlas, rasteriser, glyph cache, program or shared quad
-    /// buffer — those stay one per context / per configuration. The grid joins the renderer's
-    /// current font configuration by taking its selectors; S4 (#772) is what turns those selectors
-    /// into a shared, refcounted atlas key.
+    /// buffer — those stay one per context / per configuration.
+    ///
+    /// **The four selectors are this grid's font, and they are optional and trailing** (#773):
+    /// `addGrid(palette, fg, bg)` takes the defaults (`"monospace"`, 16 CSS px, no letter spacing,
+    /// line height 1), and any of the four may be given instead. They are what the grid's atlas is
+    /// keyed by (#772), so a grid whose selectors match a sibling's **joins that sibling's atlas and
+    /// bakes nothing** — the whole economy of the middle tier, and the reason they belong here
+    /// rather than in a setter called a line later: a grid born at the defaults and moved
+    /// immediately would bake an atlas nobody asked for, once per registration.
+    ///
+    /// A non-finite selector is ignored in favour of the default, and size / line height are floored
+    /// exactly as their setters floor them, so a grid cannot be born on a configuration
+    /// [`set_font_size`](Self::set_font_size) could not have produced.
     ///
     /// It is **not drawn** until [`set_viewport`](Self::set_viewport) places it, and until then it is
     /// not packed either: `render` skips a grid with no viewport before the pack, so feeding a hidden
     /// grid costs the scatter and nothing after it (#771).
+    // Three palette columns plus the four font/metric selectors; the selectors are optional and
+    // TRAILING, the `apply_frame` precedent, so `addGrid(palette, fg, bg)` still reads as a call.
+    #[allow(clippy::too_many_arguments)]
     #[wasm_bindgen(js_name = addGrid)]
     pub fn add_grid(
         &mut self,
         palette_colors: Vec<u32>,
         default_fg: u32,
         default_bg: u32,
+        font_family: Option<String>,
+        font_size: Option<f32>,
+        letter_spacing: Option<f32>,
+        line_height: Option<f32>,
     ) -> Result<u32, JsValue> {
         let palette =
             Palette::from_colors(&palette_colors, default_fg, default_bg).map_err(|e| {
@@ -1026,23 +1062,40 @@ impl JustermRenderer {
         // there is a draw loop). What is not yet true is that anyone has *watched* it happen with
         // more than one grid registered: no proof loses a context with siblings, so the N-grid
         // recovery rests on reasoning until #774 asserts it per grid. See the map territory.
-        let buffers = Self::build_grid_buffers(&self.global.gl, self.global.quad_vbo)?;
-        // The new grid is born into the default's **configuration**, and therefore shares its atlas
-        // rather than baking one (#772 AC 4) — the whole economy of the middle tier.
+        // **A grid says which font it is born into, and that is what keeps the middle tier's
+        // economy real** (#772 AC 4, #773). It joins rather than bakes whenever a sibling already
+        // stands on the same configuration: six terminals in one font hold one atlas between them.
         //
-        // It takes the *entry's* key rather than the default grid's selector fields, and the two are
-        // the same value except in one window: while the context is lost, a `setFontSize` advances
-        // the selectors and defers the move (`adopt_selectors`), so a grid registered in that window
-        // is born at the configuration that is actually **in force**, not at the one the default has
-        // asked for and not yet got. That is the only answer available — the size it asked for has
-        // no atlas yet and cannot get one on a dead context — and it is deliberate rather than
-        // incidental. Its consequence, until the per-grid font setter lands (#773): such a grid stays
-        // on the older configuration with no way back, while `restore` moves the default to the newer
-        // one. Registering a terminal during a context loss is already the edge `add_grid` documents
-        // above; this is what it costs.
-        let config = self.grid().config;
-        self.configs.retain(config);
-        let key = self.configs.key(config).clone();
+        // Until S5 a new grid was born onto whichever configuration the implicit *default* grid
+        // stood on, because it had no way to ask for its own. Taking the selectors here rather than
+        // hardcoding the defaults is not a convenience on top of that: a grid born at the defaults
+        // and moved a line later would **bake an atlas nobody asked for**, once per registration,
+        // and free it again the moment the move released it — a bake per terminal, in the slice
+        // whose whole point is one atlas per font.
+        //
+        // It also retires the mid-loss edge the inheritance carried: a grid registered while a
+        // `setFontSize` was deferred used to be born at the configuration in force rather than the
+        // one asked for, with no way back. It names its own font now, and `restore` reconciles it.
+        let key = ConfigKey::new(
+            font_family.as_deref().unwrap_or(DEFAULT_FONT_FAMILY),
+            font_size
+                .filter(|v| v.is_finite())
+                .map_or(FONT_SIZE, |v| v.max(1.0)),
+            letter_spacing.filter(|v| v.is_finite()).unwrap_or(0.0),
+            line_height
+                .filter(|v| v.is_finite())
+                .map_or(1.0, |v| v.max(1.0)),
+        );
+        let config = self.acquire_config(key.clone())?;
+        let buffers = match Self::build_grid_buffers(&self.global.gl, self.global.quad_vbo) {
+            Ok(b) => b,
+            // Hand back the reference just taken, or a failed registration would hold an atlas open
+            // for the renderer's whole life.
+            Err(e) => {
+                self.release_config(config);
+                return Err(e);
+            }
+        };
         let id = self.grids.register(GridTier::new(
             buffers,
             config,
@@ -1062,8 +1115,8 @@ impl JustermRenderer {
     /// a placement rather than a rebuild. Removing and re-adding a grid to hide it would
     /// reintroduce exactly the re-attach cost Epic #287 exists to remove.
     ///
-    /// Errors on an unknown id, and on the implicit default grid — which the single-grid exports
-    /// still act on until S5 (#773).
+    /// Errors on an unknown id. Since #773 **every** grid is removable, the first one included:
+    /// there is no longer a grid whose lifetime someone other than the consumer owns.
     #[wasm_bindgen(js_name = removeGrid)]
     pub fn remove_grid(&mut self, grid: u32) -> Result<(), JsValue> {
         let removed = self
@@ -1089,8 +1142,9 @@ impl JustermRenderer {
     /// bottom-origin y belongs to the site that issues `gl.viewport`, not here: this is the rect
     /// the consumer measured, stored as measured.
     ///
-    /// Errors on an unknown id, on a rect with no area, and on the implicit **default** grid, whose
-    /// rect is the drawing buffer's and is written by [`resize`](Self::resize) alone.
+    /// Errors on an unknown id and on a rect with no area. It errors on **no grid in particular**:
+    /// since #773 every rect has one producer — the consumer's measured box — so there is no grid
+    /// whose placement someone else owns.
     #[wasm_bindgen(js_name = setViewport)]
     pub fn set_viewport(
         &mut self,
@@ -1101,10 +1155,10 @@ impl JustermRenderer {
         height: i32,
     ) -> Result<(), JsValue> {
         // A viewport with no area draws no pixels, so accepting one and then answering `true` to
-        // `isGridDrawn` would be the same lie the default-grid guard exists to prevent. The state
-        // for "this grid has no rect yet" already exists and is called `clearViewport` — which is
-        // the honest answer for the case that produces a zero rect in the first place, a consumer
-        // measuring a DOM box that is still `display:none`.
+        // `isGridDrawn` would be a lie about what this renderer does. The state for "this grid has
+        // no rect yet" already exists and is called `clearViewport` — which is the honest answer
+        // for the case that produces a zero rect in the first place, a consumer measuring a DOM box
+        // that is still `display:none`.
         if width <= 0 || height <= 0 {
             return Err(JsValue::from_str(&format!(
                 "justerm-renderer: a viewport must have area, got {width}x{height}"
@@ -1131,8 +1185,8 @@ impl JustermRenderer {
     /// DOM box reads back as zero, so a rect retained across the hide would be a copy that can be
     /// wrong on the way back.
     ///
-    /// Errors on the implicit **default** grid: it draws the whole canvas whatever the registry
-    /// says, so hiding it would only make this renderer report something it does not do.
+    /// Every grid is hideable, the first one included (#773) — a rect has one producer now, the
+    /// consumer's measured box, so there is no grid that would go on painting after being hidden.
     #[wasm_bindgen(js_name = clearViewport)]
     pub fn clear_viewport(&mut self, grid: u32) -> Result<(), JsValue> {
         self.grids
@@ -1140,7 +1194,7 @@ impl JustermRenderer {
             .map_err(|e| JsValue::from_str(&e.message()))
     }
 
-    /// How many grids are registered, drawn or not — the implicit default included (#770).
+    /// How many grids are registered, drawn or not (#770). Zero on a fresh renderer (#773).
     ///
     /// Registry *state*, not a diagnostic counter: it answers what this renderer holds, which the
     /// consumer put there. (ADR-0021 D5 leaves where diagnostics like `packs` live to whoever adds
@@ -1204,6 +1258,7 @@ impl JustermRenderer {
     #[allow(clippy::too_many_arguments)]
     pub fn apply_damage(
         &mut self,
+        grid: u32,
         header: &[u32],
         spans: &[u32],
         codepoints: &[u32],
@@ -1217,54 +1272,7 @@ impl JustermRenderer {
         // keeps working, and the scatter reads it tolerantly (omitted ⇒ all Default).
         underline_colors: Option<Vec<u32>>,
     ) -> Result<(), JsValue> {
-        self.grid_mut().apply_damage(
-            header,
-            spans,
-            codepoints,
-            fg,
-            bg,
-            flags,
-            extra,
-            side_table,
-            underline_colors,
-        )
-    }
-
-    /// [`apply_damage`](Self::apply_damage), addressed to a **registered** grid (#771).
-    ///
-    /// Expand-phase scaffolding, retired by S5 (#773) when `applyDamage` itself takes the grid it
-    /// acts on. It exists now because the draw loop this slice adds is otherwise unreachable: a
-    /// registered grid has its own cells, its own instance buffer and its own VAO, and without a
-    /// way to put content in one, "two grids draw at once" cannot be shown — or tested.
-    ///
-    /// The frame's `header` carries the grid's `cols`/`rows`, so a registered grid is sized by what
-    /// it is fed. It is **not** sized by [`resize`](Self::resize), which sizes the shared drawing
-    /// buffer and belongs to the surface rather than to any one terminal.
-    ///
-    /// Errors on an unknown id, and otherwise exactly as `applyDamage` does. It is the one member
-    /// of the multi-grid export set that **accepts** the implicit default grid (id `0`), and that is the
-    /// honest answer rather than an omission: `setViewport` / `clearViewport` / `removeGrid` refuse the
-    /// default because its rect and its lifetime have a different producer, while its *content* has
-    /// the same one every other grid's does. `applyDamageTo(0, …)` is `applyDamage`.
-    #[allow(clippy::too_many_arguments)]
-    #[wasm_bindgen(js_name = applyDamageTo)]
-    pub fn apply_damage_to(
-        &mut self,
-        grid: u32,
-        header: &[u32],
-        spans: &[u32],
-        codepoints: &[u32],
-        fg: &[u32],
-        bg: &[u32],
-        flags: &[u16],
-        extra: &[u32],
-        side_table: Vec<String>,
-        underline_colors: Option<Vec<u32>>,
-    ) -> Result<(), JsValue> {
-        let at = self
-            .grids
-            .index_of(GridId::from_raw(grid))
-            .map_err(|e| JsValue::from_str(&e.message()))?;
+        let at = self.slot(grid)?;
         self.grid_at_mut(at).apply_damage(
             header,
             spans,
@@ -1299,8 +1307,15 @@ impl JustermRenderer {
     /// DECTCEM still decides whether it is drawn at all), and feeding it to the hidden textarea is
     /// D4's voluntary writer.
     #[wasm_bindgen(js_name = setPreedit)]
-    pub fn set_preedit(&mut self, col: u32, row: u32, codepoints: Vec<u32>) -> u32 {
-        self.grid_mut().set_preedit(col, row, codepoints)
+    pub fn set_preedit(
+        &mut self,
+        grid: u32,
+        col: u32,
+        row: u32,
+        codepoints: Vec<u32>,
+    ) -> Result<u32, JsValue> {
+        let at = self.slot(grid)?;
+        Ok(self.grid_at_mut(at).set_preedit(col, row, codepoints))
     }
 
     /// Swap the palette + default fg/bg for a **live theme change** (#405) — the renderer-side of a
@@ -1321,11 +1336,13 @@ impl JustermRenderer {
     #[wasm_bindgen(js_name = setPalette)]
     pub fn set_palette(
         &mut self,
+        grid: u32,
         palette_colors: Vec<u32>,
         default_fg: u32,
         default_bg: u32,
     ) -> Result<(), JsValue> {
-        self.grid_mut()
+        let at = self.slot(grid)?;
+        self.grid_at_mut(at)
             .set_palette(palette_colors, default_fg, default_bg)
     }
 
@@ -1353,12 +1370,14 @@ impl JustermRenderer {
     #[wasm_bindgen(js_name = setOverlay)]
     pub fn set_overlay(
         &mut self,
+        grid: u32,
         selection_spans: Vec<u32>,
         match_spans: Vec<u32>,
         selection_bg: u32,
         match_bg: u32,
     ) -> Result<(), JsValue> {
-        self.grid_mut()
+        let at = self.slot(grid)?;
+        self.grid_at_mut(at)
             .set_overlay(selection_spans, match_spans, selection_bg, match_bg)
     }
 
@@ -1370,9 +1389,16 @@ impl JustermRenderer {
     /// `match_spans`; the ranking, not exclusion, makes the active colour win. Same viewport-relative,
     /// re-issue-every-frame contract as [`set_overlay`](Self::set_overlay). Empty spans clear the active match.
     #[wasm_bindgen(js_name = setActiveMatch)]
-    pub fn set_active_match(&mut self, active_spans: Vec<u32>, active_match_bg: u32) {
-        self.grid_mut()
-            .set_active_match(active_spans, active_match_bg)
+    pub fn set_active_match(
+        &mut self,
+        grid: u32,
+        active_spans: Vec<u32>,
+        active_match_bg: u32,
+    ) -> Result<(), JsValue> {
+        let at = self.slot(grid)?;
+        self.grid_at_mut(at)
+            .set_active_match(active_spans, active_match_bg);
+        Ok(())
     }
 
     /// Set the marker-anchored decorations for this frame (#393/#120). `spans` is the flat
@@ -1385,8 +1411,9 @@ impl JustermRenderer {
     /// composites, ADR-0017). Marks the buffer dirty; the next [`render`](Self::render)
     /// re-packs (#421).
     #[wasm_bindgen(js_name = setDecorations)]
-    pub fn set_decorations(&mut self, spans: Vec<u32>) -> Result<(), JsValue> {
-        self.grid_mut().set_decorations(spans)
+    pub fn set_decorations(&mut self, grid: u32, spans: Vec<u32>) -> Result<(), JsValue> {
+        let at = self.slot(grid)?;
+        self.grid_at_mut(at).set_decorations(spans)
     }
 
     /// Place the cursor (#270). `shape`: `0` block, `1` underline, `2` bar, `3` hollow block.
@@ -1411,20 +1438,24 @@ impl JustermRenderer {
     #[wasm_bindgen(js_name = setCursor)]
     pub fn set_cursor(
         &mut self,
+        grid: u32,
         col: u32,
         row: u32,
         shape: u8,
         color: u32,
         text_color: u32,
     ) -> Result<(), JsValue> {
-        self.grid_mut()
+        let at = self.slot(grid)?;
+        self.grid_at_mut(at)
             .set_cursor(col, row, shape, color, text_color)
     }
 
     /// Remove the cursor — hidden (`DECTCEM`), or the blink's off phase.
     #[wasm_bindgen(js_name = clearCursor)]
-    pub fn clear_cursor(&mut self) {
-        self.grid_mut().clear_cursor()
+    pub fn clear_cursor(&mut self, grid: u32) -> Result<(), JsValue> {
+        let at = self.slot(grid)?;
+        self.grid_at_mut(at).clear_cursor();
+        Ok(())
     }
 
     /// Re-resolve [`Self::cursor_cells`] against the last frame's flags. Called when a frame arrives
@@ -1434,32 +1465,32 @@ impl JustermRenderer {
         self.grid_at_mut(at).resolve_cursor_cells()
     }
 
-    /// The number of columns actually adopted by the last [`resize`](Self::resize). Usually the
-    /// `cols` that was asked for; smaller when the browser clamped the drawing buffer (#339).
+    /// The number of columns this grid was last sized to by [`resize_grid`](Self::resize_grid) —
+    /// exactly that, and nothing else reads it.
     ///
-    /// A consumer that keeps sending frames of the grid it *asked* for does not corrupt anything —
-    /// every per-cell read is bounds-checked and the surplus cells are clipped by the viewport — but
-    /// its mouse mapping and reflow will be wrong, so read this back rather than assuming.
+    /// **It is an echo, and until #773 it was not.** While the renderer sized the drawing buffer
+    /// from the grid it could refuse one it could not draw, so this reported the grid actually
+    /// adopted and a clamp was visible here (#339). The buffer belongs to the *surface* now — N
+    /// grids in M cell sizes share it — so [`resize_surface`](Self::resize_surface) adopts what the
+    /// browser granted and a consumer that asked for more than fits learns it from
+    /// [`css_width`](Self::css_width), never from this.
     ///
-    /// The requested grid is **not remembered**. `set_device_pixel_ratio` and the context-restore
-    /// path both re-derive the buffer from *this* value, so a clamped grid stays clamped even if a
-    /// later DPR drop would shrink the cell enough for the original to fit. That is deliberate — the
-    /// consumer owns the grid (ADR-0017) and recomputes it from its own box, as xterm's `FitAddon`
-    /// does — but it is not obvious from the field alone.
-    ///
-    /// One case reports a grid that has **not** been checked against the buffer yet: a
-    /// [`resize`](Self::resize) that arrived while the context was lost (#639). It is the grid that
-    /// was asked for, and the restore may still clamp it.
+    /// A consumer that keeps sending frames of a grid larger than its rect does not corrupt
+    /// anything — every per-cell read is bounds-checked and the surplus cells are clipped by the
+    /// grid's own scissor — but its mouse mapping and reflow will be wrong. The grid is the
+    /// consumer's to compute from its own box (ADR-0017), as xterm's `FitAddon` computes it.
     #[wasm_bindgen(js_name = cols)]
-    pub fn cols(&self) -> u32 {
-        self.grid().cols()
+    pub fn cols(&self, grid: u32) -> Result<u32, JsValue> {
+        let at = self.slot(grid)?;
+        Ok(self.grid_at(at).cols())
     }
 
-    /// The number of rows actually adopted by the last [`resize`](Self::resize) — see
+    /// The number of rows this grid was last sized to by [`resize_grid`](Self::resize_grid) — see
     /// [`cols`](Self::cols).
     #[wasm_bindgen(js_name = rows)]
-    pub fn rows(&self) -> u32 {
-        self.grid().rows()
+    pub fn rows(&self, grid: u32) -> Result<u32, JsValue> {
+        let at = self.slot(grid)?;
+        Ok(self.grid_at(at).rows())
     }
 
     /// Resolve each cell's glyph slot then pack the instance buffer. Shared by [`apply_frame`]
@@ -1525,8 +1556,10 @@ impl JustermRenderer {
     /// as one. Finite out-of-range values were never the problem — the clamp already handles them
     /// (`-3` and `9` measured as fully transparent and fully opaque respectively).
     #[wasm_bindgen(js_name = setBgAlpha)]
-    pub fn set_bg_alpha(&mut self, alpha: f32) {
-        self.grid_mut().set_bg_alpha(alpha)
+    pub fn set_bg_alpha(&mut self, grid: u32, alpha: f32) -> Result<(), JsValue> {
+        let at = self.slot(grid)?;
+        self.grid_at_mut(at).set_bg_alpha(alpha);
+        Ok(())
     }
 
     /// Draw bold text in the bright (8–15) ANSI colour (#223/#272) — xterm's
@@ -1536,8 +1569,9 @@ impl JustermRenderer {
     /// is the renderer's, the on/off is the consumer's. Marks the buffer dirty; the next
     /// [`render`](Self::render) re-packs (#421), so a live toggle shows without a new frame.
     #[wasm_bindgen(js_name = setBoldToBright)]
-    pub fn set_bold_to_bright(&mut self, enabled: bool) -> Result<(), JsValue> {
-        self.grid_mut().set_bold_to_bright(enabled)
+    pub fn set_bold_to_bright(&mut self, grid: u32, enabled: bool) -> Result<(), JsValue> {
+        let at = self.slot(grid)?;
+        self.grid_at_mut(at).set_bold_to_bright(enabled)
     }
 
     /// Set (or clear) the selection foreground override (#227/#272) — xterm's `selectionForeground`.
@@ -1550,8 +1584,13 @@ impl JustermRenderer {
     /// against the final composited bg). Marks the buffer dirty; the next [`render`](Self::render)
     /// re-packs (#421).
     #[wasm_bindgen(js_name = setSelectionForeground)]
-    pub fn set_selection_foreground(&mut self, color: Option<u32>) -> Result<(), JsValue> {
-        self.grid_mut().set_selection_foreground(color)
+    pub fn set_selection_foreground(
+        &mut self,
+        grid: u32,
+        color: Option<u32>,
+    ) -> Result<(), JsValue> {
+        let at = self.slot(grid)?;
+        self.grid_at_mut(at).set_selection_foreground(color)
     }
 
     /// Set the minimum WCAG fg/bg contrast ratio (#225/#272) — xterm's `minimumContrastRatio`. Below
@@ -1563,8 +1602,9 @@ impl JustermRenderer {
     /// `[1, 21]`; marks the buffer dirty so the next [`render`](Self::render) re-packs (#421) and a
     /// live change shows.
     #[wasm_bindgen(js_name = setMinimumContrastRatio)]
-    pub fn set_minimum_contrast_ratio(&mut self, ratio: f32) -> Result<(), JsValue> {
-        self.grid_mut().set_minimum_contrast_ratio(ratio)
+    pub fn set_minimum_contrast_ratio(&mut self, grid: u32, ratio: f32) -> Result<(), JsValue> {
+        let at = self.slot(grid)?;
+        self.grid_at_mut(at).set_minimum_contrast_ratio(ratio)
     }
 
     /// Set the minimum WCAG contrast a cursor must have with the cell it sits on (#368). Below it,
@@ -1574,8 +1614,10 @@ impl JustermRenderer {
     /// pass `1.0`, the floor of the contrast range, to disable the guard (xterm's behaviour). Clamped
     /// to `[1, 21]`; takes effect on the next [`render`](Self::render).
     #[wasm_bindgen(js_name = setCursorContrast)]
-    pub fn set_cursor_contrast(&mut self, threshold: f32) {
-        self.grid_mut().set_cursor_contrast(threshold)
+    pub fn set_cursor_contrast(&mut self, grid: u32, threshold: f32) -> Result<(), JsValue> {
+        let at = self.slot(grid)?;
+        self.grid_at_mut(at).set_cursor_contrast(threshold);
+        Ok(())
     }
 
     /// Set the cursor stroke thickness as a fraction of the cell width (#369) — the width of a
@@ -1594,19 +1636,20 @@ impl JustermRenderer {
     /// invisible cursor. Takes effect on the next [`render`](Self::render) — like a stroke's shape,
     /// it is a shader uniform, so changing it costs no upload.
     #[wasm_bindgen(js_name = setCursorThickness)]
-    pub fn set_cursor_thickness(&mut self, frac: f32) {
-        self.grid_mut().set_cursor_thickness(frac)
+    pub fn set_cursor_thickness(&mut self, grid: u32, frac: f32) -> Result<(), JsValue> {
+        let at = self.slot(grid)?;
+        self.grid_at_mut(at).set_cursor_thickness(frac);
+        Ok(())
     }
 
-    /// Bind a renderer to the canvas matched by `canvas_selector`. `palette_colors` must be
-    /// the 256 pre-built indexed colours (see `Palette::from_colors`).
+    /// Bind a renderer to the canvas matched by `canvas_selector`.
+    ///
+    /// It arrives holding **no terminal and no font configuration** (#773): the palette and the four
+    /// font selectors belong to a grid, and [`add_grid`](Self::add_grid) is what creates one. So the
+    /// first two calls a consumer makes are `new` then `addGrid`, and nothing is baked in between —
+    /// there is nothing yet to key an atlas by.
     #[wasm_bindgen(constructor)]
-    pub fn new(
-        canvas_selector: &str,
-        palette_colors: Vec<u32>,
-        default_fg: u32,
-        default_bg: u32,
-    ) -> Result<JustermRenderer, JsValue> {
+    pub fn new(canvas_selector: &str) -> Result<JustermRenderer, JsValue> {
         console_error_panic_hook::set_once();
 
         let document = web_sys::window()
@@ -1637,7 +1680,8 @@ impl JustermRenderer {
         //
         // One check covers the whole constructor, and NOT because a context cannot die inside it —
         // it can; what cannot arrive inside it is the *report*, since `webglcontextlost` dispatches
-        // at a task boundary and everything from here to the final `resize` is synchronous. The
+        // at a task boundary and everything from here to the final `apply_surface_size` is
+        // synchronous. The
         // guard is sufficient for a different reason, and this is the load-bearing half: every
         // remaining glow call on this path fails **cleanly**. `create_*` return `Result`,
         // `get_uniform_location` an `Option`, the status getters `.as_bool().unwrap_or(false)` —
@@ -1681,16 +1725,6 @@ impl JustermRenderer {
         // owns the DPR (beamterm `device_pixel_ratio`). Fallback 1.0 off the main thread / in tests.
         let dpr = web_sys::window().map_or(1.0, |w| w.device_pixel_ratio() as f32);
 
-        let palette =
-            Palette::from_colors(&palette_colors, default_fg, default_bg).map_err(|e| {
-                JsValue::from_str(&format!(
-                    "justerm-renderer: palette must be 256 colours, got {}",
-                    e.got
-                ))
-            })?;
-
-        let (letter_spacing, line_height) = (0.0f32, 1.0f32);
-
         let Pipeline {
             program,
             quad_vbo,
@@ -1706,14 +1740,6 @@ impl JustermRenderer {
             u_cursor_text_color,
             u_cursor_thickness,
         } = Self::build_pipeline(&gl)?;
-        let default_buffers = Self::build_grid_buffers(&gl, quad_vbo)?;
-        // The configuration the implicit default grid is born into, and — until a `setFontSize` or
-        // an `addGrid` says otherwise — the only one (#772). Its atlas stores padded cells; the
-        // glyph is drawn inset by PADDING.
-        let key = ConfigKey::new("monospace", FONT_SIZE, letter_spacing, line_height);
-        let baked = Self::bake_config(&gl, max_texture_size, &key, None, dpr)?;
-        let (cell_w, cell_h) = baked.cell_size;
-        let (configs, config) = ConfigRegistry::new(key.clone(), ConfigTier::fresh(baked));
 
         let renderer = JustermRenderer {
             global: GlobalTier {
@@ -1736,43 +1762,27 @@ impl JustermRenderer {
                 max_texture_size,
                 raw_gl,
                 size,
+                // The canvas as authored. The consumer normally overwrites this immediately with
+                // `resizeSurface`; what it is for is that a context restore — which reaches
+                // `apply_surface_size` with no consumer in the loop — always has a request to
+                // re-ask for.
+                requested: size,
                 ctx_loss,
             },
-            configs,
-            // The implicit default grid, drawn over the whole drawing buffer — which is exactly
-            // what the single-grid renderer already was. `resize` below keeps that viewport in
-            // step with the buffer it snaps. A grid registered *later* arrives NOT drawn (#770).
-            grids: GridRegistry::new(
-                GridTier::new(
-                    default_buffers,
-                    config,
-                    &key,
-                    palette,
-                    // Whole cells that fit the canvas as authored. `resize` below snaps the buffer
-                    // to exactly that grid, so `size == grid_px(grid_size, cell_size)` holds from
-                    // the start.
-                    (
-                        (size.0 as u32 / cell_w).max(1),
-                        (size.1 as u32 / cell_h).max(1),
-                    ),
-                ),
-                Viewport {
-                    x: 0,
-                    y: 0,
-                    width: size.0,
-                    height: size.1,
-                },
-            ),
+            // Both registries start **empty** (#773): a renderer holds no terminal until the
+            // consumer registers one, and therefore no font configuration either — there would be
+            // nothing to key an atlas by, and baking one against the chance that a grid arrives is
+            // a bake charged to nobody.
+            configs: ConfigRegistry::new(),
+            grids: GridRegistry::new(),
             pack_count: 0,
             pins: FramePins::new(),
-            bake_count: 1, // the configuration built above
+            bake_count: 0,
         };
         let mut renderer = renderer;
-        // Snap the drawing buffer to a whole number of cells straight away, so the invariant
-        // `size == grid_px(grid_size, cell_size)` holds for the renderer's whole life and never has
-        // to be re-established (beamterm's `create_with_canvas` likewise ends in a `resize`).
-        let (cols, rows) = renderer.grid().grid_size;
-        renderer.resize(cols, rows);
+        // End in a resize, as beamterm's `create_with_canvas` does: it sets the GL viewport and
+        // adopts whatever buffer the browser actually granted for the canvas as authored.
+        renderer.apply_surface_size();
         Ok(renderer)
     }
 
@@ -2069,10 +2079,12 @@ impl JustermRenderer {
         }
         self.rebuild_all_configs(dpr)?;
         self.global.dpr = dpr;
-        // Re-derive the buffer from the stored grid at the NEW cell size (the cells sharpen via the
-        // new atlases + the new device `cell_size` uniform on the next render).
-        let (cols, rows) = self.grid().grid_size;
-        self.resize(cols, rows);
+        // **The drawing buffer is deliberately left alone** (#773). Until S5 this re-derived it from
+        // the implicit grid's `cols`/`rows` — a density-independent quantity that stayed meaningful
+        // across the change. A surface has no such quantity: it is the consumer's device-px
+        // measurement, and re-deriving it would mean converting through our copy of the density,
+        // which is stale in exactly this window. So the buffer holds and the consumer re-issues it,
+        // as it re-issues every viewport rect — which it must anyway, the cell having just moved.
         Ok(())
     }
 
@@ -2118,8 +2130,11 @@ impl JustermRenderer {
         Ok(())
     }
 
-    /// Write the default grid's font/metric selectors through `edit`, move it onto the configuration
-    /// they now name, and re-derive the drawing buffer from that configuration's cell (#772).
+    /// Write one grid's font/metric selectors through `edit` and move that grid onto the
+    /// configuration they now name (#772, per-grid since #773).
+    ///
+    /// It does **not** touch the drawing buffer, which it did until #773: the buffer is the
+    /// surface's, and a surface drawing N grids belongs to none of them. The consumer re-fits.
     ///
     /// The single site every one of the four setters goes through, so none of them can decide any of
     /// this differently. Three properties it owes, and each one is a bug that has been paid for
@@ -2135,9 +2150,13 @@ impl JustermRenderer {
     ///   ahead of the atlas either: the cell belongs to a configuration, and no configuration moved.
     /// - **It never edits the entry it is leaving.** That is the immutability rule the middle tier
     ///   is built on (ghostty `src/font/SharedGrid.zig:13-18`); `select_config` carries it out.
-    fn adopt_selectors(&mut self, edit: impl FnOnce(&mut GridTier)) -> Result<(), JsValue> {
+    fn adopt_selectors(
+        &mut self,
+        at: usize,
+        edit: impl FnOnce(&mut GridTier),
+    ) -> Result<(), JsValue> {
         let prev = {
-            let g = self.grid();
+            let g = self.grid_at(at);
             (
                 g.font_size,
                 g.font_family.clone(),
@@ -2145,68 +2164,67 @@ impl JustermRenderer {
                 g.line_height,
             )
         };
-        edit(self.grid_mut());
+        edit(self.grid_at_mut(at));
         if self.gpu_work_must_wait() {
             return Ok(());
         }
-        let key = self.key_of(DEFAULT_SLOT);
-        if let Err(e) = self.select_config(DEFAULT_SLOT, key) {
-            let g = self.grid_mut();
+        let key = self.key_of(at);
+        if let Err(e) = self.select_config(at, key) {
+            let g = self.grid_at_mut(at);
             (g.font_size, g.font_family, g.letter_spacing, g.line_height) = prev;
             return Err(e);
         }
-        // The cell may have moved, so re-derive the buffer from the stored grid. `resize` also
-        // re-reads what WebGL granted (#339), which is why this is not folded into the selection.
-        let (cols, rows) = self.grid().grid_size;
-        self.resize(cols, rows);
         Ok(())
     }
 
-    /// Set the font size in **CSS px** (#406) — the default grid joins the configuration keyed by the
+    /// Set **one grid's** font size in **CSS px** (#406) — it joins the configuration keyed by the
     /// new size, baking one only if no grid already stands on it (#772). Consumer policy (ADR-0017):
     /// the size is the consumer's, the atlas mechanism the renderer's. A non-finite size is ignored;
     /// a smaller-than-`1.0` one is clamped (a zero/negative size would rasterise a degenerate
     /// atlas). A no-op if unchanged.
     ///
-    /// **It moves this grid only.** A grid registered with [`add_grid`](Self::add_grid) was born
-    /// into the configuration the default had *then*, and stays on it — which is what ADR-0021's D1
-    /// means by a selector being per-grid, and what makes two terminals in two fonts drawable side
-    /// by side. Giving another grid a font of its own is S5 (#773).
+    /// **It moves that grid only**, which is what ADR-0021's D1 means by a selector being per-grid,
+    /// and what makes two terminals in two fonts drawable side by side. A sibling on the
+    /// configuration this grid is leaving keeps it, untouched — the entry is never edited to follow
+    /// a grid out of it (ghostty `src/font/SharedGrid.zig:13-18`).
     ///
     /// The cell size changes, so [`css_cell_width`](Self::css_cell_width)/`css_cell_height` move and
-    /// **the consumer must re-fit** its column/row count and re-`resize`. Takes effect on the next
-    /// [`render`](Self::render).
+    /// **the consumer must re-fit**: re-divide its box, [`resize_grid`](Self::resize_grid), and
+    /// re-place the grid — nothing here resizes the surface for it, because a surface drawing N
+    /// grids belongs to none of them (#773). Takes effect on the next [`render`](Self::render).
     #[wasm_bindgen(js_name = setFontSize)]
-    pub fn set_font_size(&mut self, css_px: f32) -> Result<(), JsValue> {
+    pub fn set_font_size(&mut self, grid: u32, css_px: f32) -> Result<(), JsValue> {
+        let at = self.slot(grid)?;
         if !css_px.is_finite() {
             return Ok(());
         }
         let css_px = css_px.max(1.0);
-        if (css_px - self.grid().font_size).abs() < f32::EPSILON {
+        if (css_px - self.grid_at(at).font_size).abs() < f32::EPSILON {
             return Ok(());
         }
-        self.adopt_selectors(|g| g.font_size = css_px)
+        self.adopt_selectors(at, |g| g.font_size = css_px)
     }
 
-    /// Set the font family (#413) — a CSS `font-family` string (`"monospace"`, `"'Fira Code', monospace"`,
-    /// …) the browser's text engine resolves, with its own fallback. The default grid joins the
-    /// configuration keyed by the new family, exactly as a size change does (#772). Consumer policy
+    /// Set **one grid's** font family (#413) — a CSS `font-family` string (`"monospace"`,
+    /// `"'Fira Code', monospace"`, …) the browser's text engine resolves, with its own fallback. It
+    /// joins the configuration keyed by the new family, exactly as a size change does (#772). Consumer policy
     /// (ADR-0017) — the renderer stays font-agnostic; loading a webfont (`@font-face` / `FontFace`)
     /// before calling is the consumer's job (an unloaded family silently falls back). A no-op if
     /// unchanged, and like a size change it moves **this grid only**.
     ///
     /// The cell size may change, so [`css_cell_width`](Self::css_cell_width)/`css_cell_height` can move
-    /// and **the consumer must re-fit** its column/row count and re-`resize`. Takes effect on the next
-    /// [`render`](Self::render).
+    /// and **the consumer must re-fit**, exactly as after a size change (#773). Takes effect on the
+    /// next [`render`](Self::render).
     #[wasm_bindgen(js_name = setFontFamily)]
-    pub fn set_font_family(&mut self, family: String) -> Result<(), JsValue> {
-        if family == self.grid().font_family {
+    pub fn set_font_family(&mut self, grid: u32, family: String) -> Result<(), JsValue> {
+        let at = self.slot(grid)?;
+        if family == self.grid_at(at).font_family {
             return Ok(());
         }
-        self.adopt_selectors(|g| g.font_family = family)
+        self.adopt_selectors(at, |g| g.font_family = family)
     }
 
-    /// Adopt a spacing policy on the default grid (#338/#359), or leave every field as it was.
+    /// Adopt a spacing policy on one grid (#338/#359), or leave every field as it was.
     ///
     /// The atlas slot is the padded CELL, so a spacing change is a different *configuration* rather
     /// than an edit to the current one — which is why `setLetterSpacing`/`setLineHeight` cost an
@@ -2216,8 +2234,8 @@ impl JustermRenderer {
     ///
     /// The error is dropped rather than returned because both public setters return `()`; a failed
     /// bake leaves the policy unchanged, so the next call retries (self-healing).
-    fn adopt_spacing(&mut self, letter_spacing: f32, line_height: f32) {
-        let _ = self.adopt_selectors(|g| {
+    fn adopt_spacing(&mut self, at: usize, letter_spacing: f32, line_height: f32) {
+        let _ = self.adopt_selectors(at, |g| {
             g.letter_spacing = letter_spacing;
             g.line_height = line_height;
         });
@@ -2231,9 +2249,11 @@ impl JustermRenderer {
     /// `config/font.rs:20`), so the same setting is a different gap on a Retina display. Ours is
     /// the unit `FONT_SIZE` already speaks.
     #[wasm_bindgen(js_name = setLetterSpacing)]
-    pub fn set_letter_spacing(&mut self, css_px: f32) {
+    pub fn set_letter_spacing(&mut self, grid: u32, css_px: f32) -> Result<(), JsValue> {
+        let at = self.slot(grid)?;
         let ls = if css_px.is_finite() { css_px } else { 0.0 };
-        self.adopt_spacing(ls, self.grid().line_height);
+        self.adopt_spacing(at, ls, self.grid_at(at).line_height);
+        Ok(())
     }
 
     /// A multiplier on the glyph height, `>= 1` — the consumer's policy (#338). Clamped rather than
@@ -2242,13 +2262,15 @@ impl JustermRenderer {
     /// Read the result back with [`cell_height`](Self::cell_height) — it may be smaller than asked,
     /// because a cell the atlas texture cannot hold is shrunk to one it can (#359).
     #[wasm_bindgen(js_name = setLineHeight)]
-    pub fn set_line_height(&mut self, multiplier: f32) {
+    pub fn set_line_height(&mut self, grid: u32, multiplier: f32) -> Result<(), JsValue> {
+        let at = self.slot(grid)?;
         let lh = if multiplier.is_finite() {
             multiplier.max(1.0)
         } else {
             1.0
         };
-        self.adopt_spacing(self.grid().letter_spacing, lh);
+        self.adopt_spacing(at, self.grid_at(at).letter_spacing, lh);
+        Ok(())
     }
 
     /// Whether the WebGL context is currently lost (#269). While lost the renderer draws nothing;
@@ -2288,7 +2310,7 @@ impl JustermRenderer {
     /// answered "fine" and a setter went ahead and baked into resources `restore` replaced on the
     /// next frame. The composition now lives on the state machine (`must_defer`), beside `action`,
     /// which is where ADR-0027 D1 puts it: the source that owns the flags answers the question about
-    /// them. Note that `resize` does not use this — it holds the actual answer, having just read the
+    /// them. Note that `apply_surface_size` does not use this — it holds the actual answer, having just read the
     /// drawing buffer back, and guards on that instead.
     fn gpu_work_must_wait(&self) -> bool {
         let live = if self.global.raw_gl.is_context_lost() {
@@ -2506,13 +2528,13 @@ impl JustermRenderer {
             self.select_config(at, key)?;
         }
 
-        // 4. The loss reset the drawing-buffer size and the viewport; re-derive them from the grid at
-        //    the (possibly new) DPR, then refill the buffer so `render` draws the pre-loss frame.
-        //    This is also where a `resize` that arrived *during* the loss gets its adopt-what-fits
-        //    pass: it committed the grid and skipped the read-back, leaving that to this call (#639).
-        //    Nothing extra is stored for it — the grid it committed IS `grid_size`.
-        let (cols, rows) = self.grid().grid_size;
-        self.resize(cols, rows);
+        // 4. The loss reset the drawing-buffer size and the viewport; re-derive them from the CSS
+        //    box at the (possibly new) DPR, then refill every grid's buffer so `render` draws the
+        //    pre-loss frame. This is also where a `resizeSurface` that arrived *during* the loss
+        //    gets its adopt-what-fits pass: it committed the request and skipped the read-back,
+        //    leaving that to this call (#639). Nothing extra is stored for it — the buffer it asked
+        //    for IS `requested`.
+        self.apply_surface_size();
         for at in 0..self.grids.len() {
             self.upload_instances(at);
         }
@@ -2528,13 +2550,15 @@ impl JustermRenderer {
     /// one, as in xterm.js's `dimensions.device.cell` and beamterm's `cell_size()`. Anything that
     /// addresses the drawing buffer — `readPixels`, GL interop, a picking rect — belongs here;
     /// [`css_cell_width`](Self::css_cell_width) is the derived view for CSS layout.
-    pub fn cell_width(&self) -> u32 {
-        self.config().cell_size.0
+    pub fn cell_width(&self, grid: u32) -> Result<u32, JsValue> {
+        let at = self.slot(grid)?;
+        Ok(self.config_at(at).cell_size.0)
     }
 
     /// The cell height in **device pixels** (see [`cell_width`](Self::cell_width)).
-    pub fn cell_height(&self) -> u32 {
-        self.config().cell_size.1
+    pub fn cell_height(&self, grid: u32) -> Result<u32, JsValue> {
+        let at = self.slot(grid)?;
+        Ok(self.config_at(at).cell_size.1)
     }
 
     /// The cell width in **CSS pixels**, unrounded. The consumer divides its available box by this
@@ -2545,101 +2569,122 @@ impl JustermRenderer {
     /// It is a **float on purpose**. Rounding it to a whole CSS pixel loses the device cell for
     /// good — 33 device px at dpr 2 is 16.5, and 17 does not scale back to 33 (#331).
     #[wasm_bindgen(js_name = cssCellWidth)]
-    pub fn css_cell_width(&self) -> f32 {
-        css_px(self.config().cell_size.0, self.global.dpr)
+    pub fn css_cell_width(&self, grid: u32) -> Result<f32, JsValue> {
+        let at = self.slot(grid)?;
+        Ok(css_px(self.config_at(at).cell_size.0, self.global.dpr))
     }
 
     /// The cell height in **CSS pixels**, unrounded (see [`css_cell_width`](Self::css_cell_width)).
     #[wasm_bindgen(js_name = cssCellHeight)]
-    pub fn css_cell_height(&self) -> f32 {
-        css_px(self.config().cell_size.1, self.global.dpr)
+    pub fn css_cell_height(&self, grid: u32) -> Result<f32, JsValue> {
+        let at = self.slot(grid)?;
+        Ok(css_px(self.config_at(at).cell_size.1, self.global.dpr))
     }
 
-    /// Size the renderer to a `cols`×`rows` **grid**. The drawing buffer becomes
-    /// `cols * cell_width()` × `rows * cell_height()` device pixels — an exact multiple of the cell,
-    /// so no column or row can be clipped by the buffer that holds it.
+    /// Size **one grid** to `cols`×`rows` cells (#773).
     ///
-    /// This takes a grid, not a pixel box, deliberately (#331). Sizing the buffer from a pixel box
-    /// while laying cells out as `cols * cell` computes the two from different quantities, and they
-    /// stopped agreeing at fractional device pixel ratios — the last column fell outside its own
-    /// buffer. xterm.js sizes its canvas from the grid the same way
-    /// (`device.canvas.width = cols * device.cell.width`); beamterm instead derives the grid from the
-    /// buffer and letterboxes the remainder with a padding colour. Both are sound; this one makes the
-    /// overhang unrepresentable. The consumer already knows `cols`/`rows` — it computed them by
-    /// dividing its box by [`css_cell_width`](Self::css_cell_width).
+    /// Until S5 this was `resize(cols, rows)` and it wrote two tiers at once: the implicit grid's
+    /// dimensions *and* the drawing buffer, which it snapped to `cols * cell` device px. ADR-0021
+    /// D3 is the rule that separates them — tier the **fields**, and describe a setter by which
+    /// fields it writes — and multi-viewport is what makes the separation load-bearing: with two
+    /// grids in two cells on one canvas there is no cell the *buffer* can be a multiple of. The
+    /// buffer half became [`resize_surface`](Self::resize_surface); this is the per-grid half.
     ///
-    /// **The consumer must size the canvas's CSS display box itself** (as with beamterm's
-    /// `auto_resize_canvas_css = false`): [`css_width`](Self::css_width) and
-    /// [`css_height`](Self::css_height) report what to set it to. Forget that and the device-px buffer
-    /// is displayed at device px — twice its intended size on a Retina display.
+    /// This is what [`cols`](Self::cols) / [`rows`](Self::rows) report back, and what the frames
+    /// fed to this grid are expected to carry. At least one cell each way.
     ///
-    /// The atlas survives; a DPR change re-derives the buffer from this grid.
-    ///
-    /// **When the drawing buffer cannot be read, the grid is adopted but not verified** (#639). A
-    /// resize can land at any moment in a context-loss window, and a consumer has no obligation to
-    /// notice — so this takes the grid, sizes the canvas, and reports it back through
-    /// [`cols`](Self::cols) / [`cssWidth`](Self::css_width) as usual, deferring only the one step
-    /// that needs a live context: reading the buffer back to adopt what actually fits. `restore`
-    /// re-derives the buffer from the stored grid, which is where that check happens instead.
-    ///
-    /// Note *"cannot be read"*, not *"the context is lost"*: the test is a non-positive read-back,
-    /// because a browser kills a context synchronously and only queues `webglcontextlost`, so
-    /// [`isContextLost`](Self::is_context_lost) still answers `false` for a window in which every
-    /// GL call is already dead. Two consequences worth knowing: a clamp is normally visible in
-    /// `cols`/`rows` the instant this returns, but one deferred this way settles at restore time
-    /// with no signal; and during the window `cssWidth` describes a buffer that does not exist yet,
-    /// so a consumer sizing its canvas from it overshoots.
-    ///
-    /// **That overshoot does not end at the restore, and this said it did** (corrected #717, after
-    /// a consumer existed to measure it — #579). The restore fixes what *this crate* owns: `cols`,
-    /// `size` and `cssWidth` are all correct on the far side of it. The display box is not ours —
-    /// the consumer wrote it, from the provisional `cssWidth`, and nothing here can rewrite it. So
-    /// it stays overshot until that consumer fits again. Measured through `justerm-web`: 4000
-    /// columns asked for mid-loss leaves a `36000px` canvas box over the `8190px` buffer the
-    /// browser granted, still there after the restoring `render`. The consumer's remedy is to
-    /// repeat its fit once the context is back — **not** to re-read `cols`/`rows`, which by then
-    /// are already right.
-    pub fn resize(&mut self, cols: u32, rows: u32) {
-        // A grid must have at least one cell: `grid_px` floors the *buffer* to 1, and letting
-        // `grid_size` keep a 0 would break `size == grid_px(grid_size, cell_size)`.
-        let (mut cols, mut rows) = (cols.max(1), rows.max(1));
-        // The drawing buffer is the DEFAULT grid's, so it is sized by the configuration that grid
-        // selects into (#772). Bound once: nothing inside the loop can move a configuration, and a
-        // re-read per pass would only invite a future caller to believe otherwise.
-        let cell = self.config().cell_size;
+    /// **Nothing clamps it to the grid's rect, and that is a decision.** #331's guarantee — a
+    /// column cannot fall outside the buffer holding it — was the renderer's to keep while the
+    /// buffer was derived from the grid. The rect is now the consumer's own measured box, so
+    /// keeping it is the consumer's: place a rect a whole number of cells wide, which it can,
+    /// having divided that box by [`css_cell_width`](Self::css_cell_width) to get `cols` in the
+    /// first place. What this renderer still guarantees is that an overhang cannot reach a
+    /// **neighbour** — every grid draws under its own `gl.scissor`, so a cell past the rect is
+    /// clipped rather than painted over the terminal next door (#771).
+    #[wasm_bindgen(js_name = resizeGrid)]
+    pub fn resize_grid(&mut self, grid: u32, cols: u32, rows: u32) -> Result<(), JsValue> {
+        let at = self.slot(grid)?;
+        // A grid must have at least one cell: a zero would make `cols`/`rows` describe something
+        // that cannot be fed a frame.
+        self.grid_at_mut(at).grid_size = (cols.max(1), rows.max(1));
+        Ok(())
+    }
 
-        // WebGL is not obliged to give us the buffer we ask for (#339). The spec: "If the requested
-        // width or height cannot be satisfied … a drawing buffer with smaller dimensions shall be
-        // created. The dimensions actually used are implementation dependent and there is no
-        // guarantee that a buffer with the same aspect ratio will be created." No exception, no lost
-        // context (`webglcontextcreationerror` fires only at `getContext`), and `canvas.width` keeps
-        // the value we asked for while `drawingBufferWidth` reports what we got.
-        //
-        // **Do not try to predict the limit.** Chromium's `WebGLRenderingContextBase::Reshape` first
-        // clamps each axis to `min(max_texture_size, max_renderbuffer_size, max_viewport_dims[axis])`
-        // and *then* applies a hard-coded `5760 * 5760` area budget, scaling both axes by
-        // `sqrt(kMaxArea / area)`. Neither stage is derivable from a single `getParameter`, the area
-        // constant is derivable from none of them, and the spec promises no rule at all. Measured:
-        // 16385 wide comes back 16384 on a GPU / 8192 headless (texture size wins the `min` there),
-        // and a square 8192x8192 comes back 5760x5760 on both. So: ask, then adopt what fits.
-        //
-        // No reference does this. xterm, beamterm and three.js all set `canvas.width` to the request
-        // and draw into the granted buffer with `viewport(0, 0, drawingBufferWidth, …)`, leaving the
-        // attribute oversized — their grids then overhang a clamped buffer, silently. We re-set the
-        // canvas down instead, because #337 couples the CSS display box to `canvas.width`: a lying
-        // attribute would make `cssWidth()` describe a buffer that does not exist. The extra
-        // allocation is the price of that coupling; do not "simplify" it away.
-        //
-        // Two passes suffice, and the loop bound is only a backstop against a browser that clamps
-        // non-monotonically. Pass 2 asks for a buffer the browser already granted (per-axis and by
-        // area), so it cannot be clamped again; each pass shrinks at least one axis, so it ends.
-        //
-        // A pass that exhausts the bound without adopting anything would leave `canvas.width` at the
-        // last request while `size`/`grid_size` still held the *previous* grid — three values
-        // disagreeing. So the adoption is unconditional: the loop only refines what to adopt.
-        let (mut dw, mut dh) = (1, 1);
-        for _ in 0..4 {
-            (dw, dh) = (grid_px(cols, cell.0), grid_px(rows, cell.1));
+    /// Size the **surface** — the one canvas every grid draws into — to a drawing buffer of
+    /// `width`×`height` **device pixels** (#773).
+    ///
+    /// The consumer sets the canvas's CSS display box itself from [`css_width`](Self::css_width) /
+    /// [`css_height`](Self::css_height), exactly as it did when the buffer came from a grid (#337
+    /// couples the two; beamterm's `auto_resize_canvas_css = false` is the same split). Forget it
+    /// and the device-px buffer is displayed at device px — twice its intended size on a Retina
+    /// display.
+    ///
+    /// **Device pixels, in the same space as [`set_viewport`](Self::set_viewport).** The cell count
+    /// this replaced is gone because the surface no longer belongs to a grid (see
+    /// [`resize_grid`](Self::resize_grid)), and the obvious substitute — a CSS box, as three.js's
+    /// `setSize` takes — would make this the one canvas-addressing export in CSS px while every
+    /// rect placed on that canvas is in device px. One canvas, one space. It also keeps #331
+    /// *reachable*: a single-grid consumer wanting the exact guarantee that made the old
+    /// `resize(cols, rows)` safe asks for `cols * cellWidth(grid)`, and both numbers are integers
+    /// this crate handed it. A CSS box would put a rounding step between them.
+    ///
+    /// A non-finite or non-positive size is refused rather than clamped: it is a caller error, and
+    /// the honest zero case — a container that is still `display:none` — has an answer already
+    /// (leave the grid unplaced, or [`clear_viewport`](Self::clear_viewport) it).
+    ///
+    /// **A clamp moves every placed rect**, because a rect's GL y is measured from the buffer's
+    /// bottom edge (`Viewport::gl_rect`). A consumer that shrinks the surface must re-place the
+    /// grids on it — which it is doing anyway, since its own layout is what shrank.
+    ///
+    /// **A density change does not move it either.** `set_device_pixel_ratio` re-bakes every atlas
+    /// and leaves the buffer exactly as asked, so `css_width` reports a different CSS box for the
+    /// same buffer and the canvas is displayed at a different size until the consumer re-issues
+    /// this call. That is the same rule a viewport rect already follows, applied to the surface: a
+    /// device-px quantity the consumer measured is re-issued by the consumer, never adjusted here.
+    /// A consumer has to re-fit after a density change regardless — the cell moved, so its column
+    /// count and every rect moved with it — so this costs it nothing and removes the one thing that
+    /// could go wrong silently.
+    ///
+    /// **WebGL is not obliged to grant the buffer** (#339), so this asks and then adopts what it
+    /// got; [`css_width`](Self::css_width) reports the *granted* box, which is what the consumer
+    /// should size its display box to.
+    ///
+    /// **When the drawing buffer cannot be read, the box is adopted but not verified** (#639). A
+    /// resize can land at any moment in a context-loss window and a consumer has no obligation to
+    /// notice, so this commits the box and defers only the read-back;
+    /// the restore path re-derives the buffer from it on a live context, which is where
+    /// the clamp settles instead. During that window `cssWidth` describes a buffer that does not
+    /// exist yet, so a consumer sizing its canvas from it overshoots — and the overshoot outlives
+    /// the restore, because the display box is the consumer's and nothing here can rewrite it
+    /// (measured through `justerm-web`, #717/#579). Its remedy is to repeat its fit once the
+    /// context is back.
+    #[wasm_bindgen(js_name = resizeSurface)]
+    pub fn resize_surface(&mut self, width: i32, height: i32) -> Result<(), JsValue> {
+        if width <= 0 || height <= 0 {
+            return Err(JsValue::from_str(&format!(
+                "justerm-renderer: a surface needs a positive drawing buffer, got {width}x{height}"
+            )));
+        }
+        self.global.requested = (width, height);
+        self.apply_surface_size();
+        Ok(())
+    }
+
+    /// Re-ask for the stored drawing buffer and adopt whatever the browser actually grants.
+    ///
+    /// Two callers, and the second is why the request is *stored* rather than passed: a consumer's
+    /// `resizeSurface`, and a context restore (the loss reset the buffer, and nobody is going to
+    /// re-ask). A density change does **not** call this — the buffer is the consumer's device-px
+    /// measurement and only the consumer re-measures it.
+    ///
+    /// Two passes suffice, and the bound is a backstop against a browser that clamps
+    /// non-monotonically: pass 2 asks for a buffer the browser has already granted, so it cannot be
+    /// clamped again. `canvas.width` is re-set *down* to the grant rather than left oversized as
+    /// xterm, beamterm and three.js all leave it, because #337 couples the CSS display box to it —
+    /// a lying attribute would make `cssWidth()` describe a buffer that does not exist.
+    fn apply_surface_size(&mut self) {
+        let (mut dw, mut dh) = self.global.requested;
+        for _ in 0..2 {
             self.global.canvas.set_width(dw as u32);
             self.global.canvas.set_height(dh as u32);
 
@@ -2647,75 +2692,29 @@ impl JustermRenderer {
                 self.global.raw_gl.drawing_buffer_width(),
                 self.global.raw_gl.drawing_buffer_height(),
             );
-
             // **A buffer of no size is not a grant, it is the absence of an answer** (#639). A lost
-            // context reports 0x0, and `cells_that_fit(0, cell)` floors to 1 — so without this the
-            // loop "adopts" a 1x1 grid, and `restore`, which re-derives the buffer from `grid_size`,
-            // then rebuilds at it: the terminal comes back one cell wide, permanently and silently.
-            // Measured, dpr 2: `resize(10, 3)` mid-loss gave `[1, 1]`, still `[1, 1]` after restore,
-            // CSS box one cell. This used to add that a web consumer could not even see the loss to
-            // hold its re-fit back "until #579"; that landed on 2026-08-04 and changes nothing here,
-            // which is the point worth keeping. Seeing the loss is not being obliged to check for
-            // it: a consumer re-fitting on a container resize has no reason to ask first, so the
-            // guard cannot be delegated outward and this remains the only thing standing between a
-            // mid-loss re-fit and a one-cell terminal.
+            // context reports 0x0; adopting it would commit a 1x1 surface that `restore` then
+            // rebuilds at, leaving the canvas one pixel wide permanently and silently. The
+            // requested box stays committed and the verification is what defers.
             //
-            // **This guards on the read-back rather than on the context's state, and that is the
-            // load-bearing part.** The first fix for #639 asked `is_context_lost()` — the state
-            // machine's flag — and the defect survived it verbatim, because the browser kills a
-            // context *synchronously* and only queues `webglcontextlost`: in that window the flag
-            // is still clear while `drawingBufferWidth` already reads 0. Measured in Chromium,
-            // same task as `loseContext()`: `gl.isContextLost()` true, our flag false, `resize`
-            // still adopting `[1, 1]`. The other four entry points cannot phrase the question this
-            // way because they are not reading anything back, so they ask `gpu_work_must_wait()`
-            // instead; this one has the answer in its hand and must not ask anyone else for it.
-            //
-            // Zero is never a legitimate clamp, so this costs nothing on a live context. What it
-            // defers is the verification, not the grid: the caller's `cols`/`rows` are committed
-            // below either way, and `restore` re-runs this loop on a live context and clamps then
-            // (measured: `resize(4000, 8)` at `MAX_TEXTURE_SIZE` 8192 reports `[4000, 8]` during
-            // the loss and `[1024, 8]` after the restore). The price is that a clamp settled at
-            // restore time moves `grid_size`/`size` with **no signal**, where a clamp on a live
-            // context is visible in `cols`/`rows` the moment this returns.
+            // This guards on the READ-BACK rather than on the context's state, and that is the
+            // load-bearing part: a browser kills a context synchronously and only queues
+            // `webglcontextlost`, so in that window the state machine's flag is still clear while
+            // `drawingBufferWidth` already reads 0 (measured in Chromium, same task as
+            // `loseContext()`). The other entry points cannot phrase the question this way because
+            // they read nothing back; this one has the answer in its hand.
             if bw <= 0 || bh <= 0 {
                 break;
             }
-
             if bw >= dw && bh >= dh {
-                break; // granted in full; a larger grant is ignored, the grid still leads (#331)
+                break; // granted in full; a larger grant is ignored — the request leads
             }
-            (cols, rows) = (cells_that_fit(bw, cell.0), cells_that_fit(bh, cell.1));
+            (dw, dh) = (dw.min(bw), dh.min(bh));
         }
-        self.grid_mut().grid_size = (cols, rows);
         self.global.size = (dw, dh);
-
-        // The default grid is drawn over the whole drawing buffer — which is what the single-grid
-        // renderer already is, now said as registry state (#770). Keeping it in step here is what
-        // will make "a grid with a viewport is drawn" (#771) true of the default grid without a
-        // special case in the draw loop.
-        //
-        // Through `place_default`, not `set_viewport`: this rect's producer is the buffer, and the
-        // consumer's door is shut precisely so that nobody else can write it (`registry.rs`).
-        self.grids.place_default(Viewport {
-            x: 0,
-            y: 0,
-            width: dw,
-            height: dh,
-        });
-
-        // `size` is a whole number of cells, always: every caller of `orthographic_from_size` and
-        // `gl.viewport` below assumes it, and #331 is what happens when it stops being true.
-        debug_assert_eq!(
-            self.global.size,
-            (
-                grid_px(self.grid().grid_size.0, cell.0),
-                grid_px(self.grid().grid_size.1, cell.1)
-            ),
-        );
+        // Safety: live GL context (or a dead one, where this is a no-op with an error flag).
         unsafe {
-            self.global
-                .gl
-                .viewport(0, 0, self.global.size.0, self.global.size.1);
+            self.global.gl.viewport(0, 0, dw, dh);
         }
     }
 
@@ -2753,6 +2752,7 @@ impl JustermRenderer {
     #[allow(clippy::too_many_arguments)]
     pub fn apply_frame(
         &mut self,
+        grid: u32,
         cols: u32,
         rows: u32,
         bg: &[u32],
@@ -2776,11 +2776,11 @@ impl JustermRenderer {
         };
         // The direct path packs immediately — it retains no grid for `render` to re-pack from, so
         // it cannot defer (#421). Clear the dirty flag: this pack IS the current state.
+        let at = self.slot(grid)?;
         let underline_colors = underline_colors.unwrap_or_default();
         self.pins.clear(); // this pack's scope is itself — see the field's doc
-        let result =
-            self.resolve_and_pack(DEFAULT_SLOT, &cells, bg, fg, &underline_colors, blink_on);
-        self.grid_mut().needs_repack = false;
+        let result = self.resolve_and_pack(at, &cells, bg, fg, &underline_colors, blink_on);
+        self.grid_at_mut(at).needs_repack = false;
         result
     }
 
@@ -3124,8 +3124,7 @@ impl JustermRenderer {
                         // every frame, for as long as the overflow lasts — so the earlier ones pin
                         // their glyphs first and stay correct, and the same grid is refused each
                         // time. Registration order decides who wins, which is the order everything
-                        // else in this loop already uses (#771) and puts the implicit default grid
-                        // first. The extra packing costs what a re-pack costs, in a state that is
+                        // else in this loop already uses (#771): the grid registered first wins. The extra packing costs what a re-pack costs, in a state that is
                         // already reporting an error every frame; it is bounded by the overflow.
                         let config = self.grid_at(at).config;
                         for other in 0..self.grids.len() {
@@ -3165,8 +3164,10 @@ impl JustermRenderer {
     /// have to tile (ADR-0021's z-order constraint: every terminal is an overlay on it), so the
     /// area between two rects belongs to the page behind the canvas — painting a terminal's colour
     /// there would be this renderer deciding a background it was never given. A single-grid
-    /// consumer sees no difference: the default grid's rect **is** the whole buffer (`resize` then
-    /// `place_default`), so its own clear covers every pixel this one touched.
+    /// consumer sees no difference *if it places its grid over the whole buffer*, which is what the
+    /// single-grid arrangement is since #773 — its own clear then covers every pixel this one
+    /// touched. It is the consumer's arrangement now rather than something `resize` guaranteed, so
+    /// a consumer that places a smaller rect gets a transparent margin, honestly.
     ///
     /// three.js's multiple-views example does no full clear at all
     /// (`examples/webgl_multiple_views.html:252-278`) — its views tile the canvas, so it has no
@@ -3220,9 +3221,9 @@ impl JustermRenderer {
             self.global.gl.scissor(vx, vy, vw, vh);
             // Clear with the injected background opacity so any area of this grid's rect not
             // covered by a cell is see-through too; cells then write their own per-pixel alpha
-            // (#298). For the default grid the buffer is an exact multiple of the cell (#331), so
-            // the only uncovered area is a frame whose grid is smaller than the one `resize` was
-            // given; a placed grid's rect is the consumer's box and may be any size.
+            // (#298). A rect is the consumer's box and may be any size, so the uncovered area is
+            // whatever its cells do not reach — asking for `cols * cell_width(grid)` device px is
+            // what makes it none, and since #773 that is the consumer's arithmetic (#331).
             self.global.gl.clear_color(dr, dg, db, grid.bg_alpha);
             self.global.gl.clear(glow::COLOR_BUFFER_BIT);
 
@@ -3243,7 +3244,8 @@ impl JustermRenderer {
 
             // The projection is sized to the RECT, not to the buffer: `gl.viewport` above already
             // maps clip space onto the rect, so a buffer-sized projection would scale every grid
-            // by `buffer / rect`. Identical for the default grid, whose rect is the buffer.
+            // by `buffer / rect`. Identical for a grid placed over the whole buffer, which is
+            // what the single-grid arrangement is.
             let proj = Mat4::orthographic_from_size(vw as f32, vh as f32);
             self.global.gl.uniform_matrix_4_f32_slice(
                 Some(&self.global.u_projection),
@@ -3391,9 +3393,10 @@ impl GridTier {
     /// grid's fields and the entry its handle names cannot be born disagreeing. `select_config` is
     /// the only thing that moves either afterwards, and it moves both.
     ///
-    /// One constructor for both the implicit default grid and every grid `add_grid` registers, so
-    /// a field added to this tier cannot be initialised in one path and forgotten in the other —
-    /// which is the mistake a second literal would invite the moment there were two of them.
+    /// **One constructor, and since #773 exactly one caller** (`add_grid`): the second path, which
+    /// built the implicit default grid inside `new`, is gone with the grid it built. What that
+    /// sentence used to buy — a field added to this tier cannot be initialised in one path and
+    /// forgotten in the other — is now true by there being nowhere else to forget it.
     fn new(
         buffers: GridBuffers,
         config: ConfigId,

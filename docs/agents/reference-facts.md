@@ -603,7 +603,18 @@ and the **consumer** re-derives the grid — were recorded in no artifact before
 **Direction — not a drift, and the two references are not in conflict.** justerm's renderer already
 performs xterm's half automatically: `adopt_spacing` ends with `self.resize(cols, rows)` at the stored
 grid, which *is* `handleResize(bufferService.cols, bufferService.rows)`. What is left to the consumer is
-precisely what xterm leaves to `FitAddon`. alacritty differs because it **owns its OS window** and can
+precisely what xterm leaves to `FitAddon`.
+
+> ⚠ **The first sentence stopped being true on 2026-08-19 (#773, renderer 0.15.0).** `adopt_selectors`
+> no longer resizes anything: a spacing or font change moves *that grid* to another configuration and
+> stops. It cannot do xterm's half any more, and not by choice — the drawing buffer is a **surface**
+> holding N grids, so "re-lay out at the current grid" has no single grid to mean. **So justerm now
+> leaves the consumer both halves where xterm leaves it one**, and that is a real divergence rather
+> than a drift: it follows from a structure xterm does not have (one canvas, many terminals), and
+> xterm's own `RenderService` is per-terminal precisely because its canvas is. The rows above are
+> unchanged and still describe xterm correctly; what changed is which of them justerm can match.
+> Recorded here rather than only in the setter doc-comments because this paragraph is where a later
+> reader comes to ask whether we drifted. alacritty differs because it **owns its OS window** and can
 rebuild `SizeInfo` from a box it controls; an embeddable widget does not own its box — justerm's adapter
 pins the canvas to a grid-exact size, so the consumer measures the *viewport* instead. So the applicable
 analogue is xterm, and #578's own Sketch (*"drive a re-fit through the existing FitController path"*) was

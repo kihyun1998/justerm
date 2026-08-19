@@ -28,17 +28,18 @@
 <canvas id="c" width="256" height="32"></canvas>
 <script type="module">
   import init, { JustermRenderer } from "../pkg/justerm_renderer.js";
-  import { deviceCell, readCells, countLit, gridFit } from "./proof.js";
+  import { deviceCell, readCells, countLit, gridFit, fitGrid } from "./proof.js";
   const FG = 0xffffff, BG = 0x1e1e2e;
   await init();
 
   const WIDE_CHAR = 1 << 8, WIDE_SPACER = 1 << 9;
 
   const palette = new Uint32Array(256);
-  const r = new JustermRenderer("#c", palette, FG, BG);
-  const CW = r.cell_width(), CH = r.cell_height();
+  const r = new JustermRenderer("#c");
+  const g = r.addGrid(palette, FG, BG);
+  const CW = r.cell_width(g), CH = r.cell_height(g);
   const COLS = 6;
-  r.resize(COLS, 1);
+  fitGrid(r, g, COLS, 1);
 
   const canvas = document.querySelector("#c");
   const gl = canvas.getContext("webgl2"); // the SAME context the renderer holds
@@ -47,12 +48,12 @@
 
   // Lit-pixel count of cell `col`, over the renderer's exact device cell. Re-read every call: the
   // restore re-reads the live DPR and can re-measure the cell (#328).
-  const cellLit = (col) => countLit(readCells(gl, r, col));
+  const cellLit = (col) => countLit(readCells(gl, r, g, col));
   const row = () => Array.from({ length: COLS }, (_, i) => cellLit(i));
   // #370: cursor-red pixels of cell `col` — red high, green/blue low, to tell the bar from the white
   // glyphs whose red channel also clears the `countLit` threshold.
   const cursorLit = (col) => {
-    const { buf } = readCells(gl, r, col);
+    const { buf } = readCells(gl, r, g, col);
     let n = 0;
     for (let i = 0; i < buf.length; i += 4) if (buf[i] > 150 && buf[i + 1] < 100 && buf[i + 2] < 100) n++;
     return n;
@@ -79,10 +80,10 @@
   // re-sets them on the next `render()`. If it forgot any of them, the bar would not come back. The
   // #368 guard is off so the red stays predictable — this proves recovery, not contrast.
   const CURSOR_RED = 0xff0000, BAR = 2, CURSOR_COL = 5;
-  r.setCursorContrast(1.0);
-  r.setCursor(CURSOR_COL, 0, BAR, CURSOR_RED, 0x000000);
+  r.setCursorContrast(g, 1.0);
+  r.setCursor(g, CURSOR_COL, 0, BAR, CURSOR_RED, 0x000000);
 
-  r.apply_frame(COLS, 1, zeros, zeros, cps, flags, true);
+  r.apply_frame(g, COLS, 1, zeros, zeros, cps, flags, true);
   r.render();
   const baseline = row();
   const cursorBaseline = cursorLit(CURSOR_COL);
@@ -120,26 +121,29 @@
 
   // A subsequent identical frame still costs zero GPU work (the #263 diff is live again, with a
   // baseline that now describes the REAL buffer contents rather than the destroyed one).
-  r.apply_frame(COLS, 1, zeros, zeros, cps, flags, true);
+  r.apply_frame(g, COLS, 1, zeros, zeros, cps, flags, true);
   r.render();
   const steady = row();
 
   // --- #639: a resize that lands INSIDE the loss window ----------------------------------------
-  // `resize` reads `drawingBufferWidth` back to adopt what the browser actually granted (#339). On a
-  // lost context that read returns 0, so `cells_that_fit` floors both axes and the grid becomes 1x1
-  // — and `restore()` re-derives the buffer from that clobbered grid, so the terminal comes back one
-  // cell wide, permanently. Nothing throws, and until #579 a web consumer cannot even see that the
-  // context is lost, so it has no way to suppress its own re-fit. The other four entry points that
-  // resize something have guarded this all along; `resize` was the fifth and the asymmetry was the
-  // tell (`adopt_spacing`'s comment named this exact consequence while fixing the sibling).
+  // `resizeSurface` reads `drawingBufferWidth` back to adopt what the browser actually granted
+  // (#339). On a lost context that read returns 0, and adopting it would commit a 1x1 canvas that
+  // `restore` then rebuilds at — the terminal comes back one pixel wide, permanently. Nothing
+  // throws, and until #579 a web consumer cannot even see that the context is lost, so it has no
+  // way to suppress its own re-fit.
+  //
+  // **What is observable here moved at #773.** The defect used to collapse the *grid*
+  // (`cells_that_fit(0, cell)` floored both axes), so `cols()`/`rows()` were the witness. Nothing
+  // clamps a grid now — `resize_grid` is storage — so the witness is the SURFACE: `canvas.width`,
+  // `cssWidth()` and the buffer after the restore.
   const RE_COLS = 10, RE_ROWS = 3;
   const lostEvent2 = once("webglcontextlost");
   lose.loseContext();
   await lostEvent2;
   // A consumer's re-fit — a `ResizeObserver` fire, a font change, a window drag — arriving while the
   // context is dead. This is the whole reachability story: a loss can start at any moment.
-  r.resize(RE_COLS, RE_ROWS);
-  const gridWhileLost = [r.cols(), r.rows()];
+  fitGrid(r, g, RE_COLS, RE_ROWS);
+  const gridWhileLost = [r.cols(g), r.rows(g)];
   // Read the CSS box too, because the consumer sets `canvas.style.width/height` from these
   // immediately after `resize` (justerm-web's `JustermRenderer.resize`). A clobbered grid therefore
   // collapses the *visible* box as well, not merely internal state — the half that reaches a user.
@@ -148,7 +152,7 @@
   // comparand read in the `checks` block would describe a different cell than the box beside it.
   // (Caught by this check going red when that section was added — the cell is derived state and a
   // reader of it holds a value with a lifetime, exactly as the map's invariant note says.)
-  const cssCellAtLoss = [r.cssCellWidth(), r.cssCellHeight()];
+  const cssCellAtLoss = [r.cssCellWidth(g), r.cssCellHeight(g)];
   // The canvas ATTRIBUTE too, and it is a separate assertion on purpose. `resize` requires
   // `canvas.width`, `size` and `grid_size` to agree — "three values disagreeing" is the state its
   // own comment forbids — and that agreement is the only thing broken by writing the attribute
@@ -161,7 +165,8 @@
   lose.restoreContext();
   await restoredEvent2;
   r.render();
-  const gridAfterRestore = [r.cols(), r.rows()];
+  const bufferAfterRestore = [gl.drawingBufferWidth, gl.drawingBufferHeight];
+  const attrAfterRestore = [canvas.width, canvas.height];
 
   // --- #639, the window the section above SKIPS: before the event is dispatched -----------------
   // The section above awaits `webglcontextlost` and only then resizes, so it drives the state the
@@ -169,23 +174,23 @@
   // passes while the defect survives: the browser kills a context **synchronously** and merely
   // QUEUES the event, so between `loseContext()` and the dispatch, `gl.isContextLost()` is already
   // true and `drawingBufferWidth` already reads 0 while our state machine still says "live".
-  // Measured in that window against a build guarding on the flag: `resize(10, 3)` -> `[1, 1]`,
-  // still `[1, 1]` after the restore. Hence the guard is on the read-back, not on the flag.
+  // Measured in that window against a build guarding on the flag: a 10x3 request came back as a
+  // 1x1 buffer, still 1x1 after the restore. Hence the guard is on the read-back, not on the flag.
   //
   // Everything here runs with NO await between `loseContext()` and the calls, deliberately. Do not
   // "tidy" an await into it — that is precisely the edit that would make this section prove the
   // section above again.
-  const cellBeforeRace = [r.cell_width(), r.cell_height()];
+  const cellBeforeRace = [r.cell_width(g), r.cell_height(g)];
   const RACE_COLS = 12, RACE_ROWS = 4, RACE_FONT = 30;
   lose.loseContext();
   const raceFlags = { rendererSaysLost: r.isContextLost(), glSaysLost: gl.isContextLost() };
-  r.resize(RACE_COLS, RACE_ROWS);
-  const gridInRace = [r.cols(), r.rows()];
+  fitGrid(r, g, RACE_COLS, RACE_ROWS);
+  const attrInRace = [canvas.width, canvas.height];
   // A sibling setter in the same window. It must neither throw nor silently drop the request: with
   // the flag-only predicate `set_font_size` threw `no uniform u_padding_frac`, because it took the
   // live path and re-baked into a dead context.
   let raceSetterThrew = false;
-  try { r.setFontSize(RACE_FONT); } catch { raceSetterThrew = true; }
+  try { r.setFontSize(g, RACE_FONT); } catch { raceSetterThrew = true; }
   const lostEvent3 = once("webglcontextlost");
   await lostEvent3;
   await new Promise((res) => setTimeout(res, 0));
@@ -193,43 +198,57 @@
   lose.restoreContext();
   await restoredEvent3;
   r.render();
-  const gridAfterRace = [r.cols(), r.rows()];
-  const cellAfterRace = [r.cell_width(), r.cell_height()];
+  const bufferAfterRace = [gl.drawingBufferWidth, gl.drawingBufferHeight];
+  const cellAfterRace = [r.cell_width(g), r.cell_height(g)];
 
   // --- #639: the deferred adopt-what-fits pass actually runs, and clamps -------------------------
-  // The whole rationale for committing the grid and deferring the check is that `restore` re-runs
+  // The whole rationale for committing the request and deferring the check is that `restore` re-runs
   // the loop on a live context. Nothing above asserts it, because 10x3 and 12x4 are granted in
   // full — so a mutation that skips the deferred pass entirely passes every other check here.
-  // Ask for a grid the drawing buffer provably cannot hold, and require the restore to shrink it.
+  // Ask for a buffer the implementation provably cannot allocate, and require the restore to shrink
+  // it.
+  //
+  // **What gets clamped moved at #773**, and this is the section where that is visible: the SURFACE
+  // adopts the grant now, not the grid. `resize(cols, rows)` used to be both, so `cols()` was the
+  // observable; the surface is no longer any grid's cells, so `canvas.width` is. The deferral
+  // itself is unchanged, and it is the deferral this section exists for.
   //
   // Direction only, never absolute numbers: `MAX_TEXTURE_SIZE` and the cell both differ between
   // this machine and CI's software GL, and an absolute expectation would encode one of them.
   const maxTex = gl.getParameter(gl.MAX_TEXTURE_SIZE);
-  const HUGE_COLS = Math.ceil((maxTex * 2) / r.cell_width()), HUGE_ROWS = 2;
+  const HUGE_COLS = Math.ceil((maxTex * 2) / r.cell_width(g)), HUGE_ROWS = 2;
+  const HUGE_W = HUGE_COLS * r.cell_width(g);
   const lostEvent4 = once("webglcontextlost");
   lose.loseContext();
   await lostEvent4;
-  r.resize(HUGE_COLS, HUGE_ROWS);
-  const hugeWhileLost = [r.cols(), r.rows()];
+  fitGrid(r, g, HUGE_COLS, HUGE_ROWS);
+  // Committed but unverified: the canvas carries the request, and the buffer behind a dead context
+  // reads 0 — which is exactly the read-back `resizeSurface` refuses to adopt (#639).
+  const hugeWhileLost = [canvas.width, gl.drawingBufferWidth, r.cols(g)];
   await new Promise((res) => setTimeout(res, 0));
   const restoredEvent4 = once("webglcontextrestored");
   lose.restoreContext();
   await restoredEvent4;
   r.render();
-  const hugeAfterRestore = [r.cols(), r.rows()];
+  const hugeAfterRestore = [canvas.width, gl.drawingBufferWidth];
+  // The consumer's move once the surface has settled — the same re-fit `oversized.html` makes, and
+  // what leaves the tripwire below with a grid that fills the buffer holding it.
+  const refitCols = Math.floor(gl.drawingBufferWidth / r.cell_width(g));
+  fitGrid(r, g, refitCols, HUGE_ROWS);
+  r.render();
   const hugeBuffer = [gl.drawingBufferWidth, gl.drawingBufferHeight];
 
   window.__proof = {
-    deviceCell: deviceCell(r), cssCell: [r.cssCellWidth(), r.cssCellHeight()], dpr: window.devicePixelRatio,
+    deviceCell: deviceCell(r, g), cssCell: [r.cssCellWidth(g), r.cssCellHeight(g)], dpr: window.devicePixelRatio,
     // The LIVE grid, not a literal: the #639 sections leave the renderer wherever the last deferred
     // adopt pass put it, and the final one is deliberately clamped by an amount that differs per
     // machine. Feeding the tripwire the live pair keeps it doing its own job — the grid must equal
     // the drawing buffer — on a grid this change chose, which is the device-pixel half of the proof
     // that `cols()`/`rows()` alone cannot show.
-    gridFit: gridFit(gl, r, r.cols(), r.rows()),
+    gridFit: gridFit(gl, r, g, r.cols(g), r.rows(g)),
     baseline, recovered, steady, lostFlag, restoredFlag, cursorBaseline, cursorRecovered,
-    gridWhileLost, gridAfterRestore, cssWhileLost, attrWhileLost,
-    raceFlags, gridInRace, gridAfterRace, raceSetterThrew, cellBeforeRace, cellAfterRace,
+    gridWhileLost, bufferAfterRestore, cssWhileLost, attrWhileLost,
+    raceFlags, attrInRace, bufferAfterRace, attrAfterRestore, raceSetterThrew, cellBeforeRace, cellAfterRace,
     maxTex, HUGE_COLS, hugeWhileLost, hugeAfterRestore, hugeBuffer,
     checks: {
       // Sanity: every cell — ASCII, dynamic narrow, and both halves of the wide pair — has ink
@@ -260,14 +279,21 @@
       cursorLitBeforeLoss: cursorBaseline > 0,
       cursorRecoveredAfterRestore: cursorRecovered > 0 && cursorRecovered === cursorBaseline,
 
-      // #639: the grid a consumer asks for while the context is dead is the grid it keeps. Measured
-      // before the fix: `[1, 1]` — `cells_that_fit(0, cell)` floors both axes.
-      aResizeWhileLostKeepsTheGridItWasGiven:
-        gridWhileLost[0] === RE_COLS && gridWhileLost[1] === RE_ROWS,
-      // ...and the restore rebuilds at THAT grid, because `restore()` re-derives the buffer from
-      // `grid_size` (#269). This is what makes the deferral free: there is no target to remember.
-      andTheRestoreRebuildsAtThatGrid:
-        gridAfterRestore[0] === RE_COLS && gridAfterRestore[1] === RE_ROWS,
+      // #639: the surface a consumer asks for while the context is dead is the surface it keeps.
+      // Measured before the fix: a 1x1 buffer, still 1x1 after the restore.
+      //
+      // Read against the ATTRIBUTE and the buffer rather than against `cols()`, which since #773
+      // echoes `resize_grid`'s argument and would be an identity here (the grid is recorded, not
+      // adopted — `resize_grid` has no read-back to defer).
+      aResizeWhileLostCommitsTheSurfaceItWasGiven:
+        attrWhileLost[0] === RE_COLS * CW && attrWhileLost[1] === RE_ROWS * CH,
+      // ...and the restore re-derives that same buffer from the stored CSS box (#269/#773). This is
+      // what makes the deferral free: the box it committed IS the target, so nothing extra is
+      // remembered for it.
+      andTheRestoreRebuildsAtThatSurface:
+        bufferAfterRestore[0] === RE_COLS * CW && bufferAfterRestore[1] === RE_ROWS * CH &&
+        attrAfterRestore[0] === bufferAfterRestore[0] &&
+        attrAfterRestore[1] === bufferAfterRestore[1],
       // The CSS box the consumer would set from this resize still describes that grid. A tolerance,
       // not equality: `cssWidth()` divides `cols * cell` by the dpr while this multiplies the
       // already-divided cell, and the two orders differ in the last f32 bit at fractional ratios.
@@ -285,9 +311,24 @@
       // exists before asserting anything about behaviour inside it.
       theRaceWindowIsRealAndTheFlagLagsTheContext:
         raceFlags.glSaysLost === true && raceFlags.rendererSaysLost === false,
-      aResizeBeforeTheLossEventIsDispatchedStillKeepsItsGrid:
-        gridInRace[0] === RACE_COLS && gridInRace[1] === RACE_ROWS &&
-        gridAfterRace[0] === RACE_COLS && gridAfterRace[1] === RACE_ROWS,
+      // The surface again, not the grid — same reason as above. The request is committed on the
+      // attribute while `drawingBufferWidth` already reads 0, and the restore re-derives it.
+      //
+      // **Against the cell it was asked at, not the cell the restore baked** — and that is the new
+      // contract rather than an accident (#773). A `setFontSize` lands in this same window and the
+      // restore applies it, so the cell grows (8x16 -> 15x30, measured); the surface does NOT grow
+      // with it, because it holds the CSS box the consumer committed and a surface drawing N grids
+      // has no grid's cell to follow. Re-fitting after a font change is the consumer's, and this is
+      // the assertion that says so. `andASiblingSetterInThatWindowNeitherThrowsNorIsDropped` below
+      // is the other half: the font change really did land.
+      aResizeBeforeTheLossEventIsDispatchedStillCommitsItsSurface:
+        attrInRace[0] === RACE_COLS * cellBeforeRace[0] &&
+        attrInRace[1] === RACE_ROWS * cellBeforeRace[1] &&
+        bufferAfterRace[0] === attrInRace[0] && bufferAfterRace[1] === attrInRace[1],
+      // …and the cell moved underneath it, so the two really are independent.
+      andTheSurfaceDidNotFollowTheCellTheRestoreBaked:
+        cellAfterRace[0] > cellBeforeRace[0] &&
+        bufferAfterRace[0] !== RACE_COLS * cellAfterRace[0],
       // A sibling setter in that same window neither throws nor drops the request: the font size it
       // was given is the one the restore bakes at, so the cell must have grown.
       andASiblingSetterInThatWindowNeitherThrowsNorIsDropped:
@@ -295,11 +336,14 @@
 
       // #639: the deferred adopt-what-fits pass runs at restore and really does clamp. Direction
       // only — `maxTex` and the cell differ between this machine and CI's software GL.
-      theDeferredGridIsReportedUnverifiedWhileLost:
-        hugeWhileLost[0] === HUGE_COLS,
+      // The request is committed while lost — `canvas.width` carries it — and the grid keeps the
+      // dimensions it was told, which since #773 nothing clamps at all.
+      theDeferredSurfaceIsReportedUnverifiedWhileLost:
+        hugeWhileLost[0] === HUGE_W && hugeWhileLost[1] === 0 && hugeWhileLost[2] === HUGE_COLS,
       andTheRestoreRunsTheDeferredAdoptPassAndShrinksIt:
-        hugeAfterRestore[0] < HUGE_COLS && hugeAfterRestore[0] >= 1 &&
-        hugeAfterRestore[0] * r.cell_width() <= hugeBuffer[0],
+        hugeAfterRestore[0] < HUGE_W && hugeAfterRestore[0] >= 1 &&
+        // …and it adopted the grant rather than leaving a lying attribute (#339).
+        hugeAfterRestore[0] === hugeAfterRestore[1],
     },
   };
   window.__proof.ok = Object.values(window.__proof.checks).every(Boolean);

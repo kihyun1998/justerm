@@ -19,7 +19,7 @@
 <canvas id="c" width="64" height="32"></canvas>
 <script type="module">
   import init, { JustermRenderer } from "../pkg/justerm_renderer.js";
-  import { readRect } from "./proof.js";
+  import { readRect, fitGrid } from "./proof.js";
   await init();
 
   const UNDERLINE = 1 << 3;
@@ -30,7 +30,8 @@
 
   // default fg WHITE, bg BLACK; palette[2] = green so an indexed underline is checkable.
   const palette = new Uint32Array(256); palette[2] = 0x00ff00;
-  const r = new JustermRenderer("#c", palette, 0xffffff, 0x000000);
+  const r = new JustermRenderer("#c");
+  const g = r.addGrid(palette, 0xffffff, 0x000000);
   const gl = document.querySelector("#c").getContext("webgl2");
 
   const grab = () => { const [w, h] = [gl.drawingBufferWidth, gl.drawingBufferHeight]; return { ...readRect(gl, { x: 0, y: 0, w, h }), w, h }; };
@@ -39,12 +40,12 @@
   // Render a SPACE + UNDERLINE with the given SGR 58 colour ref (0 = Default → follow fg), and return
   // the underline's colour: the RGB of the brightest (most-ink) pixel over cell 0.
   const underlineRGB = (ucolorRef) => {
-    const [cw, ch] = [r.cell_width(), r.cell_height()];
+    const [cw, ch] = [r.cell_width(g), r.cell_height(g)];
     const flags = new Uint16Array(N); flags[0] = UNDERLINE;
     const uc = new Uint32Array(N); uc[0] = ucolorRef;
-    r.resize(COLS, ROWS);
+    fitGrid(r, g, COLS, ROWS);
     // apply_frame(cols, rows, bg, fg, codepoints, flags, blink_on, underlineColors)
-    r.apply_frame(COLS, ROWS, new Uint32Array(N), new Uint32Array(N), new Uint32Array(N).fill(SPACE), flags, true, uc);
+    r.apply_frame(g, COLS, ROWS, new Uint32Array(N), new Uint32Array(N), new Uint32Array(N).fill(SPACE), flags, true, uc);
     r.render();
     const img = grab();
     let best = [0, 0, 0], bestSum = -1;

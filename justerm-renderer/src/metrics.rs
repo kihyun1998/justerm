@@ -49,7 +49,7 @@ pub const MAX_CELL_PX: u32 = 4096;
 /// The terminal fills solid with the foreground colour, and a proof drawn with `█` cannot see it.
 /// Measured: at `lineHeight = 16` an `M` came back with every pixel lit.
 ///
-/// So ask, then adopt — as `resize` does with the drawing buffer (#339). The caller reports the cell
+/// So ask, then adopt — as `resize_surface` does with the drawing buffer (#339). The caller reports the cell
 /// it actually got through `cell_height()`.
 pub fn fit_cell_to_atlas(
     cell: (u32, u32),

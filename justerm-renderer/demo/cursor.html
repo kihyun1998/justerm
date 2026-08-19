@@ -35,7 +35,7 @@
 <canvas id="c" width="64" height="64"></canvas>
 <script type="module">
   import init, { JustermRenderer, cursorRects } from "../pkg/justerm_renderer.js";
-  import { readRect, spacingForThickBar } from "./proof.js";
+  import { readRect, spacingForThickBar, fitGrid } from "./proof.js";
   await init();
 
   const BLOCK = 0, UNDERLINE = 1, BAR = 2, HOLLOW = 3;
@@ -45,9 +45,10 @@
   const SPACE = 0x20, WIDE = 0x4e00; // 一 — core reports it wide, so its cursor spans two cells
 
   const palette = new Uint32Array(256);
-  const r = new JustermRenderer("#c", palette, 0xffffff, 0x000000);
+  const r = new JustermRenderer("#c");
+  const g = r.addGrid(palette, 0xffffff, 0x000000);
   const gl = document.querySelector("#c").getContext("webgl2");
-  const [cw, ch] = [r.cell_width(), r.cell_height()];
+  const [cw, ch] = [r.cell_width(g), r.cell_height(g)];
 
   /** Read the whole drawing buffer back. */
   const grab = () => {
@@ -57,8 +58,8 @@
 
   /** Draw the grid with `codepoints`/`flags`, then read it back. */
   const draw = (codepoints = new Uint32Array(COLS * ROWS).fill(SPACE), flags = new Uint16Array(COLS * ROWS)) => {
-    r.resize(COLS, ROWS);
-    r.apply_frame(COLS, ROWS, new Uint32Array(COLS * ROWS), new Uint32Array(COLS * ROWS), codepoints, flags, true);
+    fitGrid(r, g, COLS, ROWS);
+    r.apply_frame(g, COLS, ROWS, new Uint32Array(COLS * ROWS), new Uint32Array(COLS * ROWS), codepoints, flags, true);
     r.render();
     return grab();
   };
@@ -111,7 +112,7 @@
 
   // --- the strokes: the shader's per-pixel test must equal the pure rects, exactly ---
   for (const [name, shape] of [["bar", BAR], ["underline", UNDERLINE], ["hollow", HOLLOW]]) {
-    r.setCursor(1, 0, shape, CURSOR, TEXT);
+    r.setCursor(g, 1, 0, shape, CURSOR, TEXT);
     const img = draw();
     checks[`${name}MatchesTheRustRects`] = sameSet(litSet(img, 1, 0, 1), rectSet(shape, 1, thickness));
     checks[`${name}StaysInsideItsCell`] = redOutside(img, 1, 0, 1) === 0;
@@ -119,15 +120,15 @@
 
   // A bar is thin and tall; an underline is wide and thin. If the shader mixed the two axes the
   // set-equality above would still hold under a square cell, so pin the asymmetry directly.
-  r.setCursor(1, 0, BAR, CURSOR, TEXT);
+  r.setCursor(g, 1, 0, BAR, CURSOR, TEXT);
   const bar = litSet(draw(), 1, 0, 1);
-  r.setCursor(1, 0, UNDERLINE, CURSOR, TEXT);
+  r.setCursor(g, 1, 0, UNDERLINE, CURSOR, TEXT);
   const underline = litSet(draw(), 1, 0, 1);
   checks.aBarIsTallAndAnUnderlineIsWide =
     cw !== ch && bar.size === thickness * ch && underline.size === cw * thickness && !sameSet(bar, underline);
 
   // --- block: a colour override, NOT a stroke ---
-  r.setCursor(1, 0, BLOCK, CURSOR, TEXT);
+  r.setCursor(g, 1, 0, BLOCK, CURSOR, TEXT);
   const blockImg = draw();
   let blockLit = 0;
   for (let y = 0; y < ch; y++) for (let x = 0; x < cw; x++) if (isCursor(blockImg, cw + x, y)) blockLit++;
@@ -142,7 +143,7 @@
   // in a browser rather than only in the host suite.
   const filled = new Uint32Array(COLS * ROWS).fill(SPACE);
   filled[1] = 0x2588; // █ — a builtin, drawn edge to edge at cell size (#359)
-  r.setCursor(1, 0, BLOCK, CURSOR, TEXT);
+  r.setCursor(g, 1, 0, BLOCK, CURSOR, TEXT);
   const glyphImg = draw(filled);
   let green = 0, redUnderGlyph = 0;
   for (let y = 0; y < ch; y++)
@@ -160,15 +161,15 @@
   const wideFlags = new Uint16Array(COLS * ROWS);
   wideFlags[1] = 1 << 8;  // WIDE_CHAR
   wideFlags[2] = 1 << 9;  // WIDE_CHAR_SPACER
-  r.setCursor(1, 0, HOLLOW, CURSOR, TEXT);
+  r.setCursor(g, 1, 0, HOLLOW, CURSOR, TEXT);
   const wideImg = draw(wideCps, wideFlags);
   checks.aWideCharGetsATwoCellOutline = sameSet(litSet(wideImg, 1, 0, 2), rectSet(HOLLOW, 2, thickness));
   checks.theWideOutlineDoesNotSpillPastThePair = redOutside(wideImg, 1, 0, 2) === 0;
 
   // --- moving the cursor leaves no residue (AC 3) ---
-  r.setCursor(1, 0, BAR, CURSOR, TEXT);
+  r.setCursor(g, 1, 0, BAR, CURSOR, TEXT);
   draw();
-  r.setCursor(2, 1, BAR, CURSOR, TEXT);
+  r.setCursor(g, 2, 1, BAR, CURSOR, TEXT);
   const moved = draw();
   checks.aMovedCursorLeavesNoResidue = redOutside(moved, 2, 1, 1) === 0;
   checks.aMovedCursorArrives = litSet(moved, 2, 1, 1).size > 0;
@@ -178,24 +179,24 @@
   // This is the check that a `draw()`-only proof cannot make. While the block cursor lived in the
   // instance buffer, `clearCursor(); render();` left the cell painted — a block cursor that could
   // never blink off — and every check above still passed, because `draw()` re-packs each time.
-  r.setCursor(1, 0, BLOCK, CURSOR, TEXT);
+  r.setCursor(g, 1, 0, BLOCK, CURSOR, TEXT);
   draw();
-  r.clearCursor();
+  r.clearCursor(g);
   const blinkedOff = present();
   let stillLit = 0;
   for (let y = 0; y < ROWS * ch; y++) for (let x = 0; x < COLS * cw; x++) if (isCursor(blinkedOff, x, y)) stillLit++;
   checks.aBlockBlinksOffWithoutReapplyingTheFrame = stillLit === 0;
 
-  r.setCursor(1, 0, BLOCK, CURSOR, TEXT);
+  r.setCursor(g, 1, 0, BLOCK, CURSOR, TEXT);
   draw();
-  r.setCursor(2, 1, BLOCK, CURSOR, TEXT);
+  r.setCursor(g, 2, 1, BLOCK, CURSOR, TEXT);
   const blockMoved = present();
   checks.aBlockMovesWithoutReapplyingTheFrame =
     redOutside(blockMoved, 2, 1, 1) === 0 && litSet(blockMoved, 2, 1, 1).size === cw * ch;
 
-  r.setCursor(1, 0, BAR, CURSOR, TEXT);
+  r.setCursor(g, 1, 0, BAR, CURSOR, TEXT);
   draw();
-  r.setCursor(3, 1, BAR, CURSOR, TEXT);
+  r.setCursor(g, 3, 1, BAR, CURSOR, TEXT);
   const barMoved = present();
   checks.aStrokeMovesWithoutReapplyingTheFrame =
     redOutside(barMoved, 3, 1, 1) === 0 && litSet(barMoved, 3, 1, 1).size > 0;
@@ -203,7 +204,7 @@
   // --- a block wins over inverse, and covers a wide char's two halves ---
   const invFlags = new Uint16Array(COLS * ROWS);
   invFlags[1] = 1 << 5; // INVERSE — swaps fg/bg in the packer, before the cursor lands
-  r.setCursor(1, 0, BLOCK, CURSOR, TEXT);
+  r.setCursor(g, 1, 0, BLOCK, CURSOR, TEXT);
   const inv = draw(new Uint32Array(COLS * ROWS).fill(SPACE), invFlags);
   checks.aBlockOverridesAnInverseCell = litSet(inv, 1, 0, 1).size === cw * ch;
 
@@ -211,7 +212,7 @@
   // guarantees is that the DEFAULT BACKGROUND is gone from both halves — every pixel is either the
   // cursor's red or the glyph's green. Counting red would have needed a wide flag over a blank
   // glyph, i.e. an input the core never produces.
-  r.setCursor(1, 0, BLOCK, CURSOR, TEXT);
+  r.setCursor(g, 1, 0, BLOCK, CURSOR, TEXT);
   const wideBlock = draw(wideCps, wideFlags);
   const isBackground = (img, x, y) => {
     const i = ((img.h - 1 - y) * img.w + x) * 4;
@@ -229,23 +230,23 @@
   checks.aWideBlockDoesNotSpillPastThePair = redOutside(wideBlock, 1, 0, 2) === 0;
 
   // --- the blink's off phase erases it entirely (AC 2: phase is the consumer's) ---
-  r.clearCursor();
+  r.clearCursor(g);
   const off = draw();
   let anyRed = 0;
   for (let y = 0; y < ROWS * ch; y++) for (let x = 0; x < COLS * cw; x++) if (isCursor(off, x, y)) anyRed++;
   checks.clearCursorRemovesEveryCursorPixel = anyRed === 0;
 
   // A block's off phase must clear the INSTANCE colours too, not just the uniforms.
-  r.setCursor(1, 0, BLOCK, CURSOR, TEXT);
+  r.setCursor(g, 1, 0, BLOCK, CURSOR, TEXT);
   draw();
-  r.clearCursor();
+  r.clearCursor(g);
   const blockOff = draw();
   let blockRed = 0;
   for (let y = 0; y < ROWS * ch; y++) for (let x = 0; x < COLS * cw; x++) if (isCursor(blockOff, x, y)) blockRed++;
   checks.clearCursorAlsoUnpaintsABlock = blockRed === 0;
 
   // An out-of-grid cursor is inert, and must not panic the instance (#355).
-  r.setCursor(999, 999, BLOCK, CURSOR, TEXT);
+  r.setCursor(g, 999, 999, BLOCK, CURSOR, TEXT);
   const off_grid = draw();
   let strayRed = 0;
   for (let y = 0; y < ROWS * ch; y++) for (let x = 0; x < COLS * cw; x++) if (isCursor(off_grid, x, y)) strayRed++;
@@ -253,7 +254,7 @@
 
   // An unknown shape id is refused, not silently drawn as a block.
   let refused = false;
-  try { r.setCursor(0, 0, 9, CURSOR, TEXT); } catch { refused = true; }
+  try { r.setCursor(g, 0, 0, 9, CURSOR, TEXT); } catch { refused = true; }
   checks.anUnknownShapeIsRefused = refused;
 
   // --- a cell far wider than it is tall: the only place the bar's clamp is observable ---
@@ -267,14 +268,14 @@
   // fractional dpr flipped it — red at dpr 1.1/1.5 on CI, green at 1 and 2 and everywhere local
   // (#374). `spacingForThickBar` sizes the cell from the one just measured so the thickness lands at
   // ~2x the height on any font, restoring the coverage instead of gambling on the ink-scan.
-  r.setLetterSpacing(0);
-  r.resize(COLS, ROWS);
-  r.setLetterSpacing(spacingForThickBar(r.cell_width(), r.cell_height(), devicePixelRatio));
-  const wideCellW = r.cell_width(), wideCellH = r.cell_height();
+  r.setLetterSpacing(g, 0);
+  fitGrid(r, g, COLS, ROWS);
+  r.setLetterSpacing(g, spacingForThickBar(r.cell_width(g), r.cell_height(g), devicePixelRatio));
+  const wideCellW = r.cell_width(g), wideCellH = r.cell_height(g);
   const wideT = Math.max(1, Math.round(0.15 * wideCellW));
-  r.setCursor(1, 0, BAR, CURSOR, TEXT);
-  r.resize(COLS, ROWS);
-  r.apply_frame(COLS, ROWS, new Uint32Array(COLS * ROWS), new Uint32Array(COLS * ROWS),
+  r.setCursor(g, 1, 0, BAR, CURSOR, TEXT);
+  fitGrid(r, g, COLS, ROWS);
+  r.apply_frame(g, COLS, ROWS, new Uint32Array(COLS * ROWS), new Uint32Array(COLS * ROWS),
                 new Uint32Array(COLS * ROWS).fill(SPACE), new Uint16Array(COLS * ROWS), true);
   r.render();
   const wideCellImg = grab();
@@ -289,7 +290,7 @@
       for (let x = wideFlat[i]; x < wideFlat[i] + wideFlat[i + 2]; x++) wideRects.add(`${x},${y}`);
   checks.theThicknessClampIsObservableOnlyOnAVeryWideCell = wideT > wideCellH;
   checks.aBarOnAVeryWideCellMatchesTheRustRects = sameSet(wideLit, wideRects);
-  r.setLetterSpacing(0);
+  r.setLetterSpacing(g, 0);
 
   // --- #368: the contrast guard rescues an invisible cursor ---
   //
@@ -298,7 +299,7 @@
   // default fg/bg below the injected threshold (default 1.5). Only the renderer has that resolved RGB,
   // which the pure `guarded_cursor_colors` host suite cannot exercise end-to-end: this pins the WIRING
   // (the packed-instance bg lookup) through the real GL round-trip.
-  r.setLetterSpacing(0);
+  r.setLetterSpacing(g, 0);
   const RGB = (c) => ((2 << 24) | c) >>> 0;                    // tagged Rgb colour reference (tag 2)
   const GREY = 0x808080;
   const greyBg = new Uint32Array(COLS * ROWS).fill(RGB(GREY));
@@ -309,16 +310,16 @@
     return true;
   };
   const drawGrey = (col, row, shape, color, text) => {
-    r.setCursor(col, row, shape, color, text);
-    r.resize(COLS, ROWS);
-    r.apply_frame(COLS, ROWS, greyBg, new Uint32Array(COLS * ROWS), new Uint32Array(COLS * ROWS).fill(SPACE), new Uint16Array(COLS * ROWS), true);
+    r.setCursor(g, col, row, shape, color, text);
+    fitGrid(r, g, COLS, ROWS);
+    r.apply_frame(g, COLS, ROWS, greyBg, new Uint32Array(COLS * ROWS), new Uint32Array(COLS * ROWS).fill(SPACE), new Uint16Array(COLS * ROWS), true);
     r.render();
     return grab();
   };
 
   // Guard ON (default 1.5): a grey block on a grey cell (contrast 1.0) inverts to the default fg —
   // white — so the whole cell reads white, not grey. Without the guard it would vanish.
-  r.setCursorContrast(1.5);
+  r.setCursorContrast(g, 1.5);
   const rescued = drawGrey(1, 0, BLOCK, GREY, GREY);
   checks.anInvisibleCursorIsInvertedToStayVisible =
     cellAll(rescued, 1, 0, ([r_, g_, b_]) => near(r_, 255) && near(g_, 255) && near(b_, 255));
@@ -326,7 +327,7 @@
   // Guard OFF (threshold 1.0, the floor of the range): the SAME grey cursor now stays grey —
   // invisible, blended into the cell. This is xterm's injected opt-out, and it proves the guard is
   // what produced the rescue above (turn it off, the rescue disappears).
-  r.setCursorContrast(1.0);
+  r.setCursorContrast(g, 1.0);
   const unguarded = drawGrey(1, 0, BLOCK, GREY, GREY);
   checks.theContrastGuardIsOffAtThresholdOne =
     cellAll(unguarded, 1, 0, ([r_, g_, b_]) => near(r_, GREY >> 16) && near(g_, (GREY >> 8) & 0xff) && near(b_, GREY & 0xff));
@@ -335,7 +336,7 @@
   // ~3.1 (> 1.5) and cyan is neither the default fg (white) nor bg (black), so a cyan cell proves the
   // guard passed it through rather than inverting. (Red — the page's usual cursor — would be the wrong
   // probe: red on grey is only ~1.0 and WOULD invert.)
-  r.setCursorContrast(1.5);
+  r.setCursorContrast(g, 1.5);
   const CYAN = 0x00ffff;
   const visible = drawGrey(1, 0, BLOCK, CYAN, TEXT);
   checks.aVisibleCursorIsLeftExactlyAsSet =
@@ -360,21 +361,21 @@
   // thicknesses differ (asserted first): were the wiring dead, the shader would still draw the 0.15
   // stroke and the comparison against the 0.5 rects would fail. Both `cursorRects` and the shader apply
   // the same `min(t, w, h)` clamp, so equality holds iff the fraction actually reached the uniform.
-  r.setLetterSpacing(0);
-  r.setCursorContrast(1.5);
+  r.setLetterSpacing(g, 0);
+  r.setCursorContrast(g, 1.5);
   const BIG_FRAC = 0.5;
   const bigT = Math.max(1, Math.round(BIG_FRAC * cw)); // alacritty `display/cursor.rs:25`, non-default
   checks.aNonDefaultFractionDiffersFromTheDefault = bigT !== thickness;
-  r.setCursorThickness(BIG_FRAC);
-  r.setCursor(1, 0, UNDERLINE, CURSOR, TEXT);
+  r.setCursorThickness(g, BIG_FRAC);
+  r.setCursor(g, 1, 0, UNDERLINE, CURSOR, TEXT);
   const thickImg = draw();
   checks.anInjectedThicknessScalesTheStroke = sameSet(litSet(thickImg, 1, 0, 1), rectSet(UNDERLINE, 1, bigT));
   checks.anInjectedThicknessStaysInsideItsCell = redOutside(thickImg, 1, 0, 1) === 0;
 
   // Setting it back to the default restores the default stroke — the seam is live in both directions,
   // and it returns the page to its default state so nothing above is retroactively disturbed (AC 3).
-  r.setCursorThickness(0.15);
-  r.setCursor(1, 0, UNDERLINE, CURSOR, TEXT);
+  r.setCursorThickness(g, 0.15);
+  r.setCursor(g, 1, 0, UNDERLINE, CURSOR, TEXT);
   const backToDefault = draw();
   checks.resettingTheFractionRestoresTheDefaultStroke =
     sameSet(litSet(backToDefault, 1, 0, 1), rectSet(UNDERLINE, 1, thickness));
@@ -391,20 +392,20 @@
   // If `apply_damage` re-resolves the span (it routes through `resolve_and_pack`, which refreshes
   // `last_flags` and calls `resolve_cursor_span`), the block now covers BOTH halves. If it did not,
   // the block would half-light the CJK glyph — exactly the bug this exercises.
-  r.setLetterSpacing(0);
-  r.setCursorContrast(1.5);
-  r.setCursorThickness(0.15);
+  r.setLetterSpacing(g, 0);
+  r.setCursorContrast(g, 1.5);
+  r.setCursorThickness(g, 0.15);
   const dmgHeader = new Uint32Array([COLS, ROWS, 0 /* Full */, 0, 0, 0, 0, 1 /* blink_on */]);
   const drawDamage = (codepoints, dmgFlags, spans) => {
-    r.resize(COLS, ROWS);
+    fitGrid(r, g, COLS, ROWS);
     const n = codepoints.length;
     // one span: header=[cols,rows,kind,has_scroll,...], span dir = [row, col0, col1, cp_off, cp_len]
-    r.apply_damage(dmgHeader, new Uint32Array(spans), codepoints, new Uint32Array(n),
+    r.apply_damage(g, dmgHeader, new Uint32Array(spans), codepoints, new Uint32Array(n),
                    new Uint32Array(n), dmgFlags, new Uint32Array(n), []);
     r.render();
     return grab();
   };
-  r.setCursor(1, 0, BLOCK, CURSOR, TEXT); // set while grid is still empty → span 1
+  r.setCursor(g, 1, 0, BLOCK, CURSOR, TEXT); // set while grid is still empty → span 1
   const dmgWide = drawDamage(
     new Uint32Array([SPACE, WIDE, WIDE, SPACE]),
     new Uint16Array([0, 1 << 8 /* WIDE_CHAR */, 1 << 9 /* WIDE_CHAR_SPACER */, 0]),
@@ -432,12 +433,12 @@
   // so a shader that used the glyph-box height would draw the underline in the cell's MIDDLE. Re-read
   // the cell after the rebake and demand the lit stroke equal `cursorRects` at the taller cell, and
   // that every lit pixel lie in the cell's bottom `thickness` rows.
-  r.setLineHeight(2.0);
-  r.resize(COLS, ROWS);
-  const tallCw = r.cell_width(), tallCh = r.cell_height();
+  r.setLineHeight(g, 2.0);
+  fitGrid(r, g, COLS, ROWS);
+  const tallCw = r.cell_width(g), tallCh = r.cell_height(g);
   const tallT = Math.max(1, Math.round(0.15 * tallCw));
-  r.setCursor(1, 0, UNDERLINE, CURSOR, TEXT);
-  r.apply_frame(COLS, ROWS, new Uint32Array(COLS * ROWS), new Uint32Array(COLS * ROWS),
+  r.setCursor(g, 1, 0, UNDERLINE, CURSOR, TEXT);
+  r.apply_frame(g, COLS, ROWS, new Uint32Array(COLS * ROWS), new Uint32Array(COLS * ROWS),
                 new Uint32Array(COLS * ROWS).fill(SPACE), new Uint16Array(COLS * ROWS), true);
   r.render();
   const tallImg = grab();
@@ -455,8 +456,8 @@
   checks.aTallCellIsTallerThanTheGlyphBox = tallCh > ch; // the premise the check rests on
   checks.anUnderlineUnderLineHeightMatchesTheRustRects = sameSet(tallLit, tallRects);
   checks.theUnderlineSitsOnTheCellBottomNotTheGlyphBox = tallLit.size > 0 && tallMinY >= tallCh - tallT;
-  r.setLineHeight(1.0);
-  r.resize(COLS, ROWS);
+  r.setLineHeight(g, 1.0);
+  fitGrid(r, g, COLS, ROWS);
 
 
   // #513: under a BLOCK cursor the whole cell flips to the cursor's colour scheme — bg becomes the
@@ -475,9 +476,9 @@
   // core from the red cursor fill at dpr 1. #515 snaps the line to a solid device-pixel box, so the
   // default cell is enough — the enlargement is removed as the downstream flip of that workaround.)
   const bigCh = ch, bigCw = cw;
-  r.clearCursor();
+  r.clearCursor(g);
   const noCursor = draw(new Uint32Array(COLS * ROWS).fill(SPACE), ulFlags);
-  r.setCursor(0, 0, BLOCK, CURSOR, TEXT);
+  r.setCursor(g, 0, 0, BLOCK, CURSOR, TEXT);
   const withCursor = present();
 
   // The line is a thin antialiased band, so no pixel is pure white or pure green — the peak of a
@@ -508,7 +509,7 @@
   // Under the block cursor the underline is the cursor's TEXT colour (green), not the white it was —
   // green clearly dominant, and not the red cursor fill either.
   checks.aBlockCursorFlipsTheUnderlineToItsTextColour = cg > 120 && cg > cr + 80 && cg > cb + 80;
-  r.clearCursor();
+  r.clearCursor(g);
 
   window.__proof = {
     ok: Object.values(checks).every(Boolean), checks,

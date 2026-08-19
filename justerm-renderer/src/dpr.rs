@@ -2,9 +2,10 @@
 //!
 //! **Device pixels are the source of truth.** The cell is measured in them (the rasteriser ink-scans
 //! `█` at `FONT_SIZE * dpr`), the shader lays the grid out in them (`u_cell_size`), and the drawing
-//! buffer is an exact multiple of them ([`grid_px`]). The CSS view ([`css_px`]) is *derived*, and is
-//! a float precisely so that the derivation can be undone — a consumer's `cols * cssCellWidth()`
-//! box scales back to `cols * cell` device px.
+//! buffer is sized in them (`resize_surface` takes them as given). The CSS view ([`css_px`]) is
+//! *derived*, and is a float precisely so that the derivation can be undone — a consumer's
+//! `cols * cssCellWidth()` box scales back to `cols * cell` device px, which is how it sizes a
+//! surface and places a rect since the buffer stopped being any one grid's cells (#773).
 //!
 //! "Scales back" is arithmetic, not physics (#337). A CSS length snaps to the browser's layout grid
 //! before it reaches the compositor — 1/64 px in Blink (`layout_unit.h`, `FixedPoint<6, int32_t>`);
@@ -45,31 +46,6 @@ pub fn css_px(device: u32, dpr: f32) -> f32 {
     device as f32 / dpr
 }
 
-/// The device-pixel extent of `count` cells of `cell` device px each — the drawing-buffer size, by
-/// definition an exact multiple of the cell. Floored to 1 so a degenerate grid never yields a
-/// zero-dimension buffer/viewport. xterm.js sizes its canvas the same way
-/// (`device.canvas.width = cols * device.cell.width`).
-///
-/// Saturating, in `u64`, at `i32::MAX` (#339): `cols * cell` overflows a `u32` well below the grid
-/// sizes a caller can ask for, and `as i32` would then hand a *negative* width to `canvas.width`.
-/// Saturating is the honest answer because no buffer that large can be allocated anyway — the
-/// browser clamps, [`cells_that_fit`] reads back what it actually gave, and the caller learns the
-/// grid it really got.
-pub fn grid_px(count: u32, cell: u32) -> i32 {
-    (count as u64 * cell as u64).clamp(1, i32::MAX as u64) as i32
-}
-
-/// How many whole `cell`-wide cells fit in `buffer_px` device pixels — the inverse of [`grid_px`],
-/// used only when the browser did not give us the buffer we asked for (#339). Floored to 1: a
-/// renderer with a zero-column grid has no state a caller could describe.
-///
-/// This is the `grid <- buffer` direction beamterm takes by default (`cols = screen_size.0 /
-/// cell_size.width`, `terminal_grid.rs:240`). Here it is the *fallback*: the grid leads (#331), and
-/// this recovers when `drawingBufferWidth` comes back smaller than `canvas.width`.
-pub fn cells_that_fit(buffer_px: i32, cell: u32) -> u32 {
-    (buffer_px.max(0) as u32 / cell.max(1)).max(1)
-}
-
 /// Whether the DPR changed enough to re-bake the atlas at the new device size (#322). A tiny
 /// float delta is not a change — a re-notification at the same ratio is a no-op.
 pub fn dpr_changed(old: f32, new: f32) -> bool {
@@ -79,6 +55,36 @@ pub fn dpr_changed(old: f32, new: f32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_css_box_built_from_the_float_cell_scales_back_to_the_device_grid() {
+        // **The property #331 broke, and whose arithmetic it is moved twice.** A consumer lays out
+        // in CSS: it sizes a box as `cols * cssCellWidth()` and the browser scales that by the DPR.
+        // That must land exactly on the grid the shader draws — `cols * cell` device px — or the
+        // last column is clipped.
+        //
+        // It only holds because the CSS cell is a **float**, which is the whole reason `css_px`
+        // returns one. Rounding it to a whole CSS pixel first is what used to make `10 -> 7 -> 11`
+        // out of a 10-device-px cell.
+        //
+        // Until #331 this was the renderer's to keep, and it kept it by sizing the buffer from the
+        // grid. Until #773 it was `grid_px`'s. It is now the *consumer's*: it asks
+        // `resizeSurface` for `cols * cellWidth(grid)` device px directly, so the scaling below is
+        // what a browser does to the style box the consumer sets from `cssWidth()`. This module's
+        // remaining share of it is the one thing asserted here — that `css_px`'s float survives the
+        // round trip.
+        //
+        // Two cases the old code got wrong. `cell = 33 @ dpr 2` is the real measured cell (#328);
+        // `dpr 1.1` is browser zoom at 110 %, where every demo's grid overhung its buffer.
+        for (cols, cell, dpr) in [(3u32, 33u32, 2.0f32), (8, 9, 1.1), (4, 12, 1.5)] {
+            let css_box = css_px(cell, dpr) * cols as f32;
+            assert_eq!(
+                (css_box * dpr).round() as u32,
+                cols * cell,
+                "cols={cols} cell={cell} dpr={dpr}"
+            );
+        }
+    }
 
     #[test]
     fn the_css_view_of_a_device_length_is_not_rounded() {
@@ -94,41 +100,6 @@ mod tests {
     fn a_device_length_converts_back_to_css() {
         // A 200-device-px cell on a dpr-2 display is 100 CSS px.
         assert_eq!(css_px(200, 2.0), 100.0);
-    }
-
-    #[test]
-    fn the_buffer_is_an_exact_multiple_of_the_device_cell() {
-        // The drawing buffer is sized from the grid, not from a pixel box the consumer guessed at
-        // (#331). 4 columns of a 12-device-px cell is 48 device px, exactly — never 47, never 49.
-        assert_eq!(grid_px(4, 12), 48);
-    }
-
-    #[test]
-    fn a_degenerate_grid_still_yields_a_drawable_buffer() {
-        // A zero-column grid must never produce a zero-dimension buffer/viewport.
-        assert_eq!(grid_px(0, 12), 1);
-    }
-
-    #[test]
-    fn a_css_box_built_from_the_float_cell_recovers_the_device_grid() {
-        // The property #331 broke and this restores. A consumer lays out in CSS: it sizes its box as
-        // `cols * cssCellWidth()` and the browser scales that by the DPR. That must land exactly on
-        // the grid the shader draws — `cols * cell` device px — or the last column is clipped.
-        //
-        // It only holds because the CSS cell is a float. Rounding it to a whole CSS pixel first is
-        // what used to make `10 -> 7 -> 11` out of a 10-device-px cell.
-        //
-        // Two cases the old code got wrong. `cell = 33 @ dpr 2` is the real measured cell (#328);
-        // `dpr 1.1` is browser zoom at 110 %, where every demo's grid overhung its buffer.
-        for (cols, cell, dpr) in [(3u32, 33u32, 2.0f32), (8, 9, 1.1), (4, 12, 1.5)] {
-            let css_box = css_px(cell, dpr) * cols as f32;
-            let device_box = (css_box * dpr).round() as i32;
-            assert_eq!(
-                device_box,
-                grid_px(cols, cell),
-                "cols={cols} cell={cell} dpr={dpr}"
-            );
-        }
     }
 
     #[test]
@@ -158,32 +129,6 @@ mod tests {
                 err(exact.round(), dpr, device),
             );
         }
-    }
-
-    #[test]
-    fn a_grid_too_large_to_multiply_does_not_wrap_or_go_negative() {
-        // #339. `1_000_000 * 10_000` is 10^10: it overflows a u32 (panic in debug, wrap in release),
-        // and the wrapped value `as i32` is negative — a negative `canvas.width`. Saturate instead.
-        assert_eq!(grid_px(1_000_000, 10_000), i32::MAX);
-        // The last product that still fits, and the first that does not.
-        assert_eq!(grid_px(u32::MAX, 1), i32::MAX);
-        assert_eq!(grid_px(i32::MAX as u32, 1), i32::MAX);
-        assert_eq!(grid_px(i32::MAX as u32 - 1, 1), i32::MAX - 1);
-    }
-
-    #[test]
-    fn the_grid_that_fits_a_buffer_is_the_inverse_of_the_buffer_a_grid_needs() {
-        // #339: when the browser hands back a smaller drawing buffer than we asked for, the grid we
-        // actually drew is whatever fits it. Measured: Chromium clamps a 16385-px request to
-        // MAX_TEXTURE_SIZE (16384 on a real GPU, 8192 under SwiftShader) and leaves `canvas.width`
-        // at the request, so this is the only way to learn the truth.
-        assert_eq!(cells_that_fit(grid_px(40, 9), 9), 40);
-        assert_eq!(cells_that_fit(8192, 9), 910); // 910 * 9 = 8190 <= 8192
-        // A buffer narrower than one cell still leaves a describable grid.
-        assert_eq!(cells_that_fit(5, 9), 1);
-        assert_eq!(cells_that_fit(0, 9), 1);
-        // And a degenerate cell cannot divide by zero.
-        assert_eq!(cells_that_fit(100, 0), 100);
     }
 
     #[test]

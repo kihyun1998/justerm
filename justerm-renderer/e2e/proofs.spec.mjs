@@ -56,9 +56,18 @@ for (const deviceScaleFactor of RATIOS) {
         expect(failing, `failing checks in ${demo}`).toEqual([]);
         expect(proof.ok, `${demo} reported not-ok`).toBe(true);
 
-        // #331: the drawing buffer IS the grid. Since resize() derives one from the other this can
-        // no longer fail on its own (#353) — it stays as a tripwire against re-deriving the buffer
-        // from a CSS box, which is what made every demo's grid overhang its buffer at dpr 1.1.
+        // #331: the drawing buffer IS the grid — for a page that mounted one grid over the whole
+        // surface, which is what `fitGrid` does and what almost every page here wants. Since #773
+        // that is an arrangement the PAGE establishes rather than something `resize` guaranteed, so
+        // this is the tripwire for a page that sized its surface from something other than its own
+        // grid's cells — which is what made every demo's grid overhang its buffer at dpr 1.1.
+        //
+        // It stayed unconditional, and `oversized.html` is why that is worth saying: it is the one
+        // page that exercises a clamp, so it was the obvious candidate for an opt-out — and it does
+        // not need one. It re-fits the SURFACE alongside the grid, exactly as a consumer would, so
+        // the two agree again on the far side of the clamp. An opt-out would have swapped equality
+        // for containment on precisely the page where "the buffer came back larger than the grid"
+        // most needs to be visible.
         if (proof.gridFit) {
           expect(
             proof.gridFit.grid,
@@ -70,7 +79,7 @@ for (const deviceScaleFactor of RATIOS) {
           expect(
             proof.gridFit.attr,
             `${demo} @ dpr ${deviceScaleFactor}: the browser clamped the drawing buffer below ` +
-              `canvas.width and resize() did not adopt the grid that fits (#339)`,
+              `canvas.width and resizeSurface() did not adopt the buffer it was granted (#339)`,
           ).toEqual(proof.gridFit.buffer);
         }
       });

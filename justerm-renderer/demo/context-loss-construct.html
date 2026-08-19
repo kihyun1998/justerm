@@ -36,7 +36,7 @@
 <canvas id="c" width="128" height="32"></canvas>
 <script type="module">
   import init, { JustermRenderer } from "../pkg/justerm_renderer.js";
-  import { readCells, countLit, gridFit } from "./proof.js";
+  import { readCells, countLit, gridFit, fitGrid } from "./proof.js";
   const FG = 0xffffff, BG = 0x1e1e2e;
   await init();
 
@@ -44,7 +44,12 @@
   /** Construct on `selector` and report what came back: `null` on success, else the shape. */
   const construct = (selector) => {
     try {
-      return { renderer: new JustermRenderer(selector, palette, FG, BG), failure: null };
+      // The grid is added by the caller, not here: the guard this page is about lives in the
+      // CONSTRUCTOR, and folding a second fallible call in would let an `addGrid` failure be read
+      // as the guard firing. Since #773 the constructor builds no atlas at all — it holds the
+      // context, the program and two empty registries — which narrows what a mid-loss construct
+      // can even touch, and leaves the `getSupportedExtensions` panic (below) as the whole of it.
+      return { renderer: new JustermRenderer(selector), failure: null };
     } catch (e) {
       return { renderer: null, failure: { type: typeof e, text: String(e.message ?? e) } };
     }
@@ -52,7 +57,10 @@
 
   // --- control: a healthy canvas constructs ------------------------------------------------------
   const a = construct("#a");
-  const controlCell = a.renderer ? [a.renderer.cell_width(), a.renderer.cell_height()] : null;
+  const controlGrid = a.renderer ? a.renderer.addGrid(palette, FG, BG) : null;
+  const controlCell = a.renderer
+    ? [a.renderer.cell_width(controlGrid), a.renderer.cell_height(controlGrid)]
+    : null;
 
   // --- canvas B: kill it, then construct in BOTH windows ------------------------------------------
   const canvasB = document.querySelector("#b");
@@ -99,14 +107,15 @@
   let litAfter = 0, gridFitC = null;
   if (c.renderer) {
     const r = c.renderer;
-    r.resize(4, 1);
+    const g = r.addGrid(palette, FG, BG);
+    fitGrid(r, g, 4, 1);
     const cps = new Uint32Array([0x2588, 0x20, 0x20, 0x20]); // █ in cell 0
     const zeros = new Uint32Array(4);
-    r.apply_frame(4, 1, zeros, zeros, cps, new Uint16Array(4), true);
+    r.apply_frame(g, 4, 1, zeros, zeros, cps, new Uint16Array(4), true);
     r.render();
     const glC = document.querySelector("#c").getContext("webgl2");
-    litAfter = countLit(readCells(glC, r, 0));
-    gridFitC = gridFit(glC, r, r.cols(), r.rows());
+    litAfter = countLit(readCells(glC, r, g, 0));
+    gridFitC = gridFit(glC, r, g, r.cols(g), r.rows(g));
   }
 
   /** A failure is the guard's iff it is a bare string carrying this crate's message. */

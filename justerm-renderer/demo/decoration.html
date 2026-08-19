@@ -26,7 +26,7 @@
 <canvas id="c" width="64" height="16"></canvas>
 <script type="module">
   import init, { JustermRenderer } from "../pkg/justerm_renderer.js";
-  import { readRect } from "./proof.js";
+  import { readRect, fitGrid } from "./proof.js";
   await init();
 
   const COLS = 4, ROWS = 1, N = COLS * ROWS;
@@ -48,9 +48,10 @@
   };
 
   const palette = new Uint32Array(256);
-  const r = new JustermRenderer("#c", palette, WHITE, 0x000000);
+  const r = new JustermRenderer("#c");
+  const g = r.addGrid(palette, WHITE, 0x000000);
   const gl = document.querySelector("#c").getContext("webgl2");
-  const [cw, ch] = [r.cell_width(), r.cell_height()];
+  const [cw, ch] = [r.cell_width(g), r.cell_height(g)];
 
   const grab = () => {
     const [w, h] = [gl.drawingBufferWidth, gl.drawingBufferHeight];
@@ -72,10 +73,10 @@
 
   // Order: policy/overlay/decorations first, then apply_frame packs with them (apply_frame keeps no grid).
   const drawWith = (glyph, selectionSpans, matchSpans, decoWire) => {
-    r.setOverlay(new Uint32Array(selectionSpans), new Uint32Array(matchSpans), SEL_BG, MATCH_BG);
-    r.setDecorations(new Uint32Array(decoWire));
-    r.resize(COLS, ROWS);
-    r.apply_frame(COLS, ROWS, new Uint32Array(N), new Uint32Array(N), new Uint32Array(N).fill(glyph), new Uint16Array(N), true);
+    r.setOverlay(g, new Uint32Array(selectionSpans), new Uint32Array(matchSpans), SEL_BG, MATCH_BG);
+    r.setDecorations(g, new Uint32Array(decoWire));
+    fitGrid(r, g, COLS, ROWS);
+    r.apply_frame(g, COLS, ROWS, new Uint32Array(N), new Uint32Array(N), new Uint32Array(N).fill(glyph), new Uint16Array(N), true);
     r.render();
     return grab();
   };
@@ -159,10 +160,10 @@
   // than a claim that some pixel is bright.
   const UNDERLINE = 1 << 3;
   const drawUnderlinedTile = (decoWire) => {
-    r.setOverlay(new Uint32Array([]), new Uint32Array([]), SEL_BG, MATCH_BG);
-    r.setDecorations(new Uint32Array(decoWire));
-    r.resize(COLS, ROWS);
-    r.apply_frame(
+    r.setOverlay(g, new Uint32Array([]), new Uint32Array([]), SEL_BG, MATCH_BG);
+    r.setDecorations(g, new Uint32Array(decoWire));
+    fitGrid(r, g, COLS, ROWS);
+    r.apply_frame(g,
       COLS, ROWS,
       new Uint32Array(N), new Uint32Array(N),
       new Uint32Array(N).fill(BLOCK),
@@ -177,10 +178,10 @@
   // first version of the check below asserted pure WHITE and failed everywhere, including here: the
   // line is an antialiased band, so its peak sits between bg and ink.
   const probeUnderlineOnly = (() => {
-    r.setOverlay(new Uint32Array([]), new Uint32Array([]), SEL_BG, MATCH_BG);
-    r.setDecorations(new Uint32Array([]));
-    r.resize(COLS, ROWS);
-    r.apply_frame(COLS, ROWS, new Uint32Array(N), new Uint32Array(N),
+    r.setOverlay(g, new Uint32Array([]), new Uint32Array([]), SEL_BG, MATCH_BG);
+    r.setDecorations(g, new Uint32Array([]));
+    fitGrid(r, g, COLS, ROWS);
+    r.apply_frame(g, COLS, ROWS, new Uint32Array(N), new Uint32Array(N),
       new Uint32Array(N).fill(SPACE), new Uint16Array(N).fill(1 << 3), true);
     r.render();
     return grab();
@@ -208,10 +209,10 @@
   // absolute one is not — and it states the claim directly: the selection must make no difference to
   // this line, because the rule it would apply is about a glyph that is no longer there.
   const takenUnderlined = (selected) => {
-    r.setOverlay(new Uint32Array(selected ? [0, 0, COLS - 1] : []), new Uint32Array([]), SEL_BG, MATCH_BG);
-    r.setDecorations(new Uint32Array([0, 0, COLS - 1, 1, TOP_BG, NO_REF]));
-    r.resize(COLS, ROWS);
-    r.apply_frame(COLS, ROWS, new Uint32Array(N), new Uint32Array(N),
+    r.setOverlay(g, new Uint32Array(selected ? [0, 0, COLS - 1] : []), new Uint32Array([]), SEL_BG, MATCH_BG);
+    r.setDecorations(g, new Uint32Array([0, 0, COLS - 1, 1, TOP_BG, NO_REF]));
+    fitGrid(r, g, COLS, ROWS);
+    r.apply_frame(g, COLS, ROWS, new Uint32Array(N), new Uint32Array(N),
       new Uint32Array(N).fill(BLOCK), new Uint16Array(N).fill(UNDERLINE), true);
     r.render();
     return inkColour(grab(), 0);
@@ -230,15 +231,15 @@
   // chosen a hair off the decoration's bg: uncorrected the cell reads uniform, corrected it does not.
   const NEAR = 0x016181; // ~TOP_BG (0x006080) — contrast ratio about 1
   const nearInkTaken = (() => {
-    r.setOverlay(new Uint32Array([]), new Uint32Array([]), SEL_BG, MATCH_BG);
-    r.setMinimumContrastRatio(7);
-    r.setDecorations(new Uint32Array([0, 0, COLS - 1, 1, TOP_BG, NO_REF]));
-    r.resize(COLS, ROWS);
-    r.apply_frame(COLS, ROWS, new Uint32Array(N), new Uint32Array(N).fill((2 << 24 | NEAR) >>> 0),
+    r.setOverlay(g, new Uint32Array([]), new Uint32Array([]), SEL_BG, MATCH_BG);
+    r.setMinimumContrastRatio(g, 7);
+    r.setDecorations(g, new Uint32Array([0, 0, COLS - 1, 1, TOP_BG, NO_REF]));
+    fitGrid(r, g, COLS, ROWS);
+    r.apply_frame(g, COLS, ROWS, new Uint32Array(N), new Uint32Array(N).fill((2 << 24 | NEAR) >>> 0),
       new Uint32Array(N).fill(BLOCK), new Uint16Array(N).fill(UNDERLINE), true);
     r.render();
     const img = grab();
-    r.setMinimumContrastRatio(1); // leave the renderer as the other checks expect it
+    r.setMinimumContrastRatio(g, 1); // leave the renderer as the other checks expect it
     return img;
   })();
   checks.minimumContrastReachesTheLineOnATakenTile = !inkIs(nearInkTaken, 0, TOP_BG);

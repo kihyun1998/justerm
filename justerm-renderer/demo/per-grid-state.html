@@ -1,0 +1,239 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>justerm-renderer proof — two grids hold their own palette, selection, cursor and decorations (#773)</title>
+<style>
+  body { margin: 0; background: #000; }
+  #c { display: block; image-rendering: pixelated; }
+</style>
+<!--
+  #773 (Epic #287 S5): every per-grid export names the grid it acts on, and the implicit default
+  grid is gone. The state was already per-grid at #769 and the draw loop already walked all of it at
+  #771 — what was missing was the consumer being able to say *which*, so nothing could observe two
+  terminals disagreeing.
+
+  This page is that observation, and it is deliberately DIFFERENTIAL rather than absolute: for every
+  piece of state it sets one grid and compares the OTHER grid's rect byte-for-byte against a capture
+  taken before the call. An absolute expectation would encode the blend formula for a selection or
+  the contrast rule for a cursor; what this page is about is neither. It is that a setter reaches
+  exactly one terminal.
+
+  Two grids side by side on one canvas, both on the SAME font configuration so their cells are
+  equal and the pixel arithmetic is one number. That is the harder case for this proof, not the
+  easier one: two grids in two fonts are visibly different whatever the setters do, while two grids
+  in one font are distinguishable only by the state under test.
+
+  Build: wasm-pack build --target web --dev --out-dir pkg
+-->
+<canvas id="c" width="64" height="32"></canvas>
+<script type="module">
+  import init, { JustermRenderer } from "../pkg/justerm_renderer.js";
+  import { readRect } from "./proof.js";
+  await init();
+
+  const COLS = 4, ROWS = 2, N = COLS * ROWS;
+  const SPACE = 0x20;
+  const IDX = (i) => ((1 << 24) | i) >>> 0;   // Indexed colour ref (tag 1)
+  const RGB = (c) => ((2 << 24) | c) >>> 0;   // absolute Rgb colour ref (tag 2); Default = 0 (tag 0)
+  const NO_REF = 0xffffffff >>> 0;
+  const BLOCK_CURSOR = 0;
+
+  const DEF_FG = 0xffffff, DEF_BG = 0x101018;
+  const RED = 0xcc2020, GREEN = 0x20cc20, BLUE = 0x3050d0;  // palette[1] in three schemes
+  const FIXED = 0x808040;                                    // an absolute bg — the row-1 control
+  const SEL_BG = 0x3060c0, MATCH_BG = 0x6e5c00, ACTIVE_BG = 0xc06010;
+  const DECO_BG = 0x00a0a0;
+  const CURSOR_A = 0xff0000, CURSOR_B = 0x00ffff;
+
+  const scheme = (c) => { const p = new Uint32Array(256); p[1] = c; return p; };
+
+  const r = new JustermRenderer("#c");
+  // Same font for both, so a difference in the pixels can only be the state under test. The
+  // selectors are explicit rather than defaulted to say that this sameness is chosen, not inherited
+  // — a grid has no sibling to inherit from since #773.
+  const a = r.addGrid(scheme(RED), DEF_FG, DEF_BG, "monospace", 16);
+  const b = r.addGrid(scheme(GREEN), DEF_FG, DEF_BG, "monospace", 16);
+  const gl = document.querySelector("#c").getContext("webgl2");
+
+  const checks = {};
+  const notes = {};
+  const threw = (fn) => { try { fn(); return false; } catch { return true; } };
+
+  // ── Layout: two rects of the same size, side by side ─────────────────────────────────────────
+  const [cw, ch] = [r.cell_width(a), r.cell_height(a)];
+  checks.bothGridsShareOneConfiguration =
+    r.atlasCount() === 1 && r.cell_width(b) === cw && r.cell_height(b) === ch;
+
+  const W = COLS * cw, H = ROWS * ch;
+  r.resizeSurface(2 * W, H);
+  r.resizeGrid(a, COLS, ROWS);
+  r.resizeGrid(b, COLS, ROWS);
+  const ORIGIN = { [a]: 0, [b]: W };
+  r.setViewport(a, 0, 0, W, H);
+  r.setViewport(b, W, 0, W, H);
+
+  // ── Content: row 0 is palette-indexed, row 1 is an absolute colour (the control) ──────────────
+  const frame = () => {
+    const bg = new Uint32Array(N);
+    for (let i = 0; i < N; i++) bg[i] = i < COLS ? IDX(1) : RGB(FIXED);
+    return [
+      new Uint32Array([COLS, ROWS, 0 /* Full */, 0, 0, 0, 0, 1 /* blink_on */]),
+      new Uint32Array([0, 0, COLS - 1, 0, COLS, 1, 0, COLS - 1, COLS, COLS]),  // one span per row
+      new Uint32Array(N).fill(SPACE),
+      new Uint32Array(N),                 // fg: Default — a SPACE has no ink, so bg IS the pixel
+      bg,
+      new Uint16Array(N), new Uint32Array(N), [],
+    ];
+  };
+  r.apply_damage(a, ...frame());
+  r.apply_damage(b, ...frame());
+  r.render();
+
+  // ── Pixel helpers ────────────────────────────────────────────────────────────────────────────
+  /** Every byte of one grid's whole rect, so "untouched" is asserted rather than sampled. */
+  const rectOf = (grid) =>
+    Array.from(readRect(gl, { x: ORIGIN[grid], y: gl.drawingBufferHeight - H, w: W, h: H }).buf);
+  const same = (x, y) => x.length === y.length && x.every((v, i) => v === y[i]);
+  /** The RGB at the centre of one grid's cell — the centre, so a cell's edges cannot antialias in. */
+  const cellCentre = (grid, col, row) => {
+    const x = ORIGIN[grid] + col * cw + (cw >> 1);
+    const y = row * ch + (ch >> 1);
+    const { buf } = readRect(gl, { x, y: gl.drawingBufferHeight - 1 - y, w: 1, h: 1 });
+    return [buf[0], buf[1], buf[2]];
+  };
+  const near = (v, t) => Math.abs(v - t) <= 4;
+  const isColour = (rgb, packed) =>
+    near(rgb[0], (packed >> 16) & 0xff) && near(rgb[1], (packed >> 8) & 0xff) && near(rgb[2], packed & 0xff);
+
+  // ── The baseline both halves of every check below are measured against ───────────────────────
+  // The control first: assert the two grids actually drew, and drew DIFFERENTLY, before anything
+  // claims a setter changed one of them. Two blank rects would satisfy every "unchanged" check on
+  // this page.
+  checks.eachGridResolvesItsOwnPalette =
+    isColour(cellCentre(a, 0, 0), RED) && isColour(cellCentre(b, 0, 0), GREEN);
+  checks.andBothShareTheAbsoluteColourThatNoPaletteTouches =
+    isColour(cellCentre(a, 0, 1), FIXED) && isColour(cellCentre(b, 0, 1), FIXED);
+  notes.baseline = { a: cellCentre(a, 0, 0), b: cellCentre(b, 0, 0), cw, ch };
+
+  // ── setPalette reaches one grid ──────────────────────────────────────────────────────────────
+  let bBefore = rectOf(b);
+  r.setPalette(a, scheme(BLUE), DEF_FG, DEF_BG);
+  r.render();
+  checks.aPaletteChangeRecoloursTheGridItNames = isColour(cellCentre(a, 0, 0), BLUE);
+  checks.andLeavesItsSiblingByteForByte = same(rectOf(b), bBefore);
+
+  // ── setOverlay: two selections at once, each on its own grid ─────────────────────────────────
+  const plainA = cellCentre(a, 2, 0);   // an unselected cell of A, for the differential below
+  bBefore = rectOf(b);
+  r.setOverlay(a, new Uint32Array([0, 0, 1]), new Uint32Array([]), SEL_BG, MATCH_BG);
+  r.render();
+  checks.aSelectionCoversTheCellsItNames =
+    !isColour(cellCentre(a, 0, 0), BLUE) && isColour(cellCentre(a, 2, 0), plainA[0] << 16 | plainA[1] << 8 | plainA[2]);
+  checks.andASelectionOnOneGridLeavesTheOtherByteForByte = same(rectOf(b), bBefore);
+
+  // …and now the other grid gets a DIFFERENT selection, so both hold one at the same time.
+  const aSelected = rectOf(a);
+  r.setOverlay(b, new Uint32Array([1, 2, 3]), new Uint32Array([]), SEL_BG, MATCH_BG);
+  r.render();
+  checks.theSecondGridsSelectionCoversItsOwnCells =
+    !isColour(cellCentre(b, 2, 1), FIXED) && isColour(cellCentre(b, 0, 1), FIXED);
+  checks.andTheFirstGridsSelectionSurvivedIt = same(rectOf(a), aSelected);
+
+  // ── setActiveMatch: the fifth overlay group, per grid ────────────────────────────────────────
+  bBefore = rectOf(b);
+  r.setActiveMatch(a, new Uint32Array([0, 3, 3]), ACTIVE_BG);
+  r.render();
+  checks.anActiveMatchCoversTheCellItNames = !isColour(cellCentre(a, 3, 0), BLUE);
+  checks.andReachesNoOtherGrid = same(rectOf(b), bBefore);
+
+  // ── setDecorations: per grid, and the sibling's identical cell is untouched ──────────────────
+  bBefore = rectOf(b);
+  r.setDecorations(a, new Uint32Array([1, 0, 0, 0 /* layer: bottom */, DECO_BG, NO_REF]));
+  r.render();
+  checks.aDecorationPaintsOnlyItsOwnGrid =
+    isColour(cellCentre(a, 0, 1), DECO_BG) && isColour(cellCentre(b, 0, 1), FIXED);
+  checks.andLeavesTheSiblingRectByteForByte = same(rectOf(b), bBefore);
+
+  // ── setCursor / clearCursor: two cursors, two colours, one frame ─────────────────────────────
+  // The contrast guard is off (#368) so the colour asked for is the colour drawn — this is about
+  // which grid the cursor lands on, not about contrast.
+  r.setCursorContrast(a, 1.0);
+  r.setCursorContrast(b, 1.0);
+  r.setCursor(a, 3, 1, BLOCK_CURSOR, CURSOR_A, 0x000000);
+  r.setCursor(b, 0, 1, BLOCK_CURSOR, CURSOR_B, 0x000000);
+  r.render();
+  checks.twoGridsHoldTwoCursorsAtOnce =
+    isColour(cellCentre(a, 3, 1), CURSOR_A) && isColour(cellCentre(b, 0, 1), CURSOR_B);
+  // …and no cursor landed on the sibling's matching cell, which is the half a single-cursor
+  // renderer would also pass if the check above only looked at the cells it set.
+  checks.andNeitherCursorAppearsOnTheOtherGrid =
+    !isColour(cellCentre(b, 3, 1), CURSOR_A) && !isColour(cellCentre(a, 0, 1), CURSOR_B);
+
+  const bWithCursor = rectOf(b);
+  r.clearCursor(a);
+  r.render();
+  checks.clearingOneCursorLeavesTheOtherStanding =
+    !isColour(cellCentre(a, 3, 1), CURSOR_A) && same(rectOf(b), bWithCursor);
+
+  // ── The per-grid colour policy scalars are per grid too ──────────────────────────────────────
+  // `setBoldToBright` / `setMinimumContrastRatio` / `setSelectionForeground` need glyph ink to show,
+  // which this page deliberately has none of. What it CAN assert without inventing a second content
+  // model is that each names a grid and refuses an id that is not one — the boundary every export
+  // in this slice gained.
+  const perGridSetters = [
+    () => r.apply_damage(9999, ...frame()),
+    () => r.apply_frame(9999, 1, 1, new Uint32Array(1), new Uint32Array(1), new Uint32Array(1), new Uint16Array(1), true),
+    () => r.setPalette(9999, scheme(RED), DEF_FG, DEF_BG),
+    () => r.setOverlay(9999, new Uint32Array([]), new Uint32Array([]), SEL_BG, MATCH_BG),
+    () => r.setActiveMatch(9999, new Uint32Array([]), ACTIVE_BG),
+    () => r.setDecorations(9999, new Uint32Array([])),
+    () => r.setCursor(9999, 0, 0, BLOCK_CURSOR, CURSOR_A, 0),
+    () => r.clearCursor(9999),
+    () => r.setPreedit(9999, 0, 0, new Uint32Array([0x41])),
+    () => r.resizeGrid(9999, 4, 2),
+    () => r.cols(9999),
+    () => r.rows(9999),
+    () => r.cell_width(9999),
+    () => r.cell_height(9999),
+    () => r.cssCellWidth(9999),
+    () => r.cssCellHeight(9999),
+    () => r.setBgAlpha(9999, 1),
+    () => r.setBoldToBright(9999, true),
+    () => r.setSelectionForeground(9999, 0xffffff),
+    () => r.setMinimumContrastRatio(9999, 1),
+    () => r.setCursorContrast(9999, 1),
+    () => r.setCursorThickness(9999, 0.15),
+    () => r.setFontSize(9999, 20),
+    () => r.setFontFamily(9999, "serif"),
+    () => r.setLetterSpacing(9999, 1),
+    () => r.setLineHeight(9999, 1.2),
+  ];
+  const refused = perGridSetters.map((fn) => threw(fn));
+  notes.perGridSetterCount = refused.length;
+  notes.refusedCount = refused.filter(Boolean).length;
+  checks.everyPerGridExportRefusesAnUnknownGrid = refused.every(Boolean);
+
+  // …and the refusals changed nothing. **The `render()` is what gives this teeth**: half-applied
+  // state reaches the framebuffer only when something draws, so reading pixels straight after the
+  // refusals would re-read the frame painted BEFORE them and assert nothing but that `readPixels`
+  // is deterministic.
+  r.render();
+  checks.andARefusedCallChangedNothing =
+    isColour(cellCentre(a, 0, 1), DECO_BG) && isColour(cellCentre(b, 0, 1), CURSOR_B);
+
+  // ── The surface still holds exactly what the consumer registered ─────────────────────────────
+  checks.theSurfaceHoldsTwoGridsAndOneAtlas = r.gridCount() === 2 && r.atlasCount() === 1;
+
+  window.__proof = {
+    ok: Object.values(checks).every(Boolean), checks, notes,
+    dpr: devicePixelRatio,
+    // Both grids fill the surface between them, so the harness tripwire reads the pair.
+    gridFit: {
+      grid: [2 * W, H],
+      buffer: [gl.drawingBufferWidth, gl.drawingBufferHeight],
+      attr: [gl.canvas.width, gl.canvas.height],
+      fits: 2 * W <= gl.drawingBufferWidth && H <= gl.drawingBufferHeight,
+      clamped: gl.canvas.width !== gl.drawingBufferWidth || gl.canvas.height !== gl.drawingBufferHeight,
+    },
+  };
+  window.__done = true;
+</script>
