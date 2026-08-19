@@ -3,8 +3,16 @@
 ## What it is
 
 How big a cell is, where the glyph sits inside it, and how those numbers survive the trip between
-device pixels and CSS pixels. Everything geometric in the renderer derives from **one measurement**:
-an ink scan of the font's `█`.
+device pixels and CSS pixels. Everything geometric derives from **one measurement**: an ink scan of
+the font's `█`.
+
+One measurement *per font configuration*, since #772 — the renderer keys the ink scan, the cell and
+the glyph box by (family, size, letter-spacing, line-height) and refcounts them, so two terminals in
+two fonts have two cell geometries on one canvas. Nothing in the derivation changed; what changed is
+that "the renderer's cell" is no longer a phrase with one referent. Every export here still reports
+the **implicit default grid's** — `cellWidth`, `cellHeight`, `cssCellWidth`, `cssCellHeight`, `cols`,
+`rows` — and no export reports another grid's, so a single-grid consumer sees exactly what it did.
+See [multi-viewport](multi-viewport.md) for the tier and its lifetime.
 
 ## Governing decisions
 

@@ -21,6 +21,13 @@ contiguous ranges that actually changed.
   a dirty bitmask from frame damage. This planner compares packed instances instead, which catches
   something a mark cannot: **a glyph-slot change on an *undamaged* cell**, caused by atlas LRU
   eviction. A mark keyed off frame damage would miss it and leave the wrong glyph on screen.
+  **Valid within one grid, and only within one** (bounded #772). The diff sees a slot change because
+  the *packed instance* changed — this grid re-packed, and the new slot is a different float. Once a
+  glyph cache is shared by every grid on one font configuration, a **sibling's** pack can repoint a
+  slot while this grid's floats stay byte-identical, and there is nothing for the diff to find. That
+  half is answered outside this planner: the cache counts its evictions and the render loop re-packs
+  any grid whose configuration has moved on ([glyph atlas](glyph-atlas.md)). Worth knowing before
+  reading the sentence above as a complete defence, which it was until a second writer existed.
 - **Whole-grid re-pack is the premise, not a cost to be optimised away.** Because packing is cheap
   and pure, the expensive resource is the GPU transfer — so the design pushes all cleverness into
   *what to upload* rather than *what to pack*.

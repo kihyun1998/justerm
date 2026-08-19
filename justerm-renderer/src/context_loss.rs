@@ -130,6 +130,23 @@ impl ContextState {
     /// reported. [`is_lost`](Self::is_lost) is our record of the report and catches the mirror
     /// window — the context answers "live" again while the GL objects it owned are still the
     /// destroyed ones and `restore` has not run.
+    /// Whether GPU work must be deferred right now — the **setter** side of
+    /// [`action`](Self::action), composed from the same two sources for the same reason
+    /// (ADR-0027 D1: liveness is answered by the source that owns it, and this machine owns half of
+    /// it).
+    ///
+    /// Three windows, and the third is the one a caller consulting `is_lost` alone gets wrong:
+    /// the context is dead already but its event has not dispatched (`context`); a loss has been
+    /// reported and not yet undone (`is_lost`); and — **added 2026-08-19 (#772)** —
+    /// `webglcontextrestored` has arrived but the rebuild has not run, so the context answers
+    /// *live* while the program, VAO and atlas it owned are still the destroyed ones. Building into
+    /// those is as wasted as building into a dead context: `restore` replaces them on the very next
+    /// frame. `webgl.rs`'s `gpu_work_must_wait` documented this third window as covered when it was
+    /// not — the code asked `is_lost` alone, which `on_restored` has already cleared.
+    pub fn must_defer(&self, context: ContextLiveness) -> bool {
+        matches!(context, ContextLiveness::Dead) || self.is_lost || self.pending_rebuild
+    }
+
     pub fn action(&self, context: ContextLiveness) -> FrameAction {
         // A dead context beats a pending rebuild: GL objects created on one come back with their
         // "invalidated" flag set (WebGL 1.0 spec, § Context Lost), so a rebuild there produces a
@@ -149,6 +166,49 @@ impl ContextState {
             return FrameAction::Rebuild;
         }
         FrameAction::Draw
+    }
+}
+
+#[cfg(test)]
+mod defer_tests {
+    use super::*;
+
+    #[test]
+    fn gpu_work_defers_in_all_three_windows_including_the_one_is_lost_cannot_see() {
+        let mut s = ContextState::default();
+
+        // Nothing has happened: a live context, nothing pending.
+        assert!(!s.must_defer(ContextLiveness::Usable));
+
+        // Window 1 — dead already, its event not dispatched. The flag is still clear, so this is
+        // the window a caller asking only the machine gets wrong in the other direction (#639).
+        assert!(s.must_defer(ContextLiveness::Dead));
+        assert!(
+            !s.is_lost(),
+            "the flag has not been told yet — that is the point"
+        );
+
+        // Window 2 — the loss has been reported.
+        s.on_lost();
+        assert!(s.must_defer(ContextLiveness::Dead));
+        assert!(s.must_defer(ContextLiveness::Usable));
+
+        // Window 3 — restored, rebuild not yet run. The context answers LIVE and `is_lost` is
+        // already false, so this is the window `gpu_work_must_wait` claimed to cover and did not
+        // (#772): the program, VAO and atlas are still the destroyed ones.
+        s.on_restored();
+        assert!(
+            !s.is_lost(),
+            "on_restored clears the very flag the old guard asked"
+        );
+        assert!(
+            s.must_defer(ContextLiveness::Usable),
+            "a rebuild is still pending, so building anything now is work restore throws away"
+        );
+
+        // …and it stops deferring once the rebuild has actually run.
+        s.rebuilt();
+        assert!(!s.must_defer(ContextLiveness::Usable));
     }
 }
 

@@ -185,9 +185,26 @@ Still unchecked: what any of them does with GPU resources it cannot rebuild.
 - [cell geometry](cell-geometry.md) — every deferring entry point above is one of its setters or the
   resize, so a change to what derives the cell changes what a loss window has to hold
 - [widget lifecycle](widget-lifecycle.md) — the consumer sets the timeout and reacts to the callback
-- [multi-viewport rendering](multi-viewport.md) — one context means **one loss for every grid at
-  once**, so `restore` walks the grid registry rather than acting on a single grid: since #771 it
-  rebuilds every registered grid's VAO and instance buffer and drops every upload baseline. It had
+- [multi-viewport rendering](multi-viewport.md) — one context means **one loss for every grid and
+  every font configuration at once**, so `restore` walks two registries rather than acting on a
+  single grid: since #771 it rebuilds every registered grid's VAO and instance buffer and drops every
+  upload baseline, and since #772 it also re-bakes every live configuration's atlas at the live
+  density — keeping each one's glyph slots, so no grid has to re-pack — and then runs a **reconcile**
+  pass over the grids. That last step exists because a font or spacing setter arriving while the
+  context is dead writes its selector and defers the rest (an atlas cannot be baked on a dead
+  context), leaving that grid naming a configuration whose key it no longer matches. The reconcile
+  runs *after* the commit and propagates its error, so a failure leaves a self-consistent restore,
+  the retry latch set, and the whole function re-run on the next frame — idempotent by construction.
+  It also skips re-baking a configuration that the reconcile is about to release, which is the whole
+  glyph set of a font nobody is on any more.
+- **The setters' deferral guard was missing a third window, and it is the one this territory is
+  named for** (#772). `gpu_work_must_wait` asked the context and the `is_lost` flag; `on_restored`
+  clears `is_lost` and sets `pending_rebuild`, so between `webglcontextrestored` and the rebuild both
+  sources answered *"fine"* while the program, VAO and atlas were still the destroyed ones. Its own
+  doc-comment claimed that window was covered. The composition now lives on the state machine beside
+  `action` (`ContextState::must_defer`), which is where ADR-0027 D1 puts it — the source that owns
+  the flags answers the question about them — and a setter in that window defers instead of building
+  into resources `restore` replaces one frame later. It had
   to, because a draw loop turns a stale per-grid GPU object from *nothing draws it* into *the wrong
   grid's cells are drawn* — binding a VAO from the dead context raises `INVALID_OPERATION` and leaves
   the previously bound one in place. The refill came with it (`restore` ends in an

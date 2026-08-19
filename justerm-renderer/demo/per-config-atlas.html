@@ -1,0 +1,382 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>justerm-renderer proof — one glyph atlas per font configuration, refcounted (#772)</title>
+<style>
+  body { margin: 0; background: #000; }
+  #c { display: block; image-rendering: pixelated; }
+</style>
+<!--
+  #772 (Epic #287 S4): six terminals in the same font hold ONE glyph atlas rather than six. That is
+  the recurring cost this epic is justified on — paid at any terminal count, independent of the
+  browser's context ceiling — and until this slice it was a claim about a design.
+
+  Sharing is the kind of property that is easy to believe and hard to see, so every check here reads
+  a **count or a pixel**, never a memory figure:
+
+    · `atlasCount()` is registry state — how many configurations hold resources right now. Two grids
+      in one font answer 1; the moment one of them changes font, 2.
+    · `bakes()` is a counter, read as a DELTA across an operation exactly as `packs()` is (#421). It
+      is what separates "shares an atlas" from "quietly baked a second identical one": a grid joining
+      an existing configuration must move it by ZERO. A count of entries alone cannot say that,
+      because a bake that is thrown away leaves no entry behind.
+    · pixels are what say the entry was not *edited* underneath its other users. The immutability
+      rule the middle tier is built on is ghostty's one-liner — "increasing the font size in one
+      would increase it in all" (src/font/SharedGrid.zig) — and a renderer that mutated the shared
+      entry would pass every count above while silently resizing a terminal nobody touched.
+
+  The two grids here are deliberately at DIFFERENT font sizes for the last third of the run, which
+  is also the first point at which heterogeneous cell geometry is reachable at all: `u_cell_size`,
+  `u_char_size`, `u_char_offset` and `u_padding_frac` are per-draw uniforms now, and a renderer that
+  left any of them per-program draws one grid through the other's geometry.
+
+  Read in device px (cell_width()/cell_height() ARE u_cell_size, #331). Note that `cell_width()`
+  reports the DEFAULT grid's configuration — every export predating #773 acts on that grid — so it
+  is sampled before and after a font change rather than assumed constant.
+
+  Build: wasm-pack build --target web --dev --out-dir pkg
+-->
+<canvas id="c" width="64" height="32"></canvas>
+<script type="module">
+  import init, { JustermRenderer } from "../pkg/justerm_renderer.js";
+  import { readRect } from "./proof.js";
+  await init();
+
+  const SPACE = 0x20, BLOCK = 0x2588;                 // █ fills its whole cell, whatever the cell is
+  const RGB = (c) => ((2 << 24) | c) >>> 0;           // absolute Rgb colour ref (tag 2)
+  const DEF_FG = 0xffffff, DEF_BG = 0x101018;
+  const DARK = 0x101820;                              // every non-ink channel well under the lit threshold
+  // The default font size is a constant of the renderer, not of this page, so the base configuration
+  // is **pinned** rather than assumed: every later "rejoin the entry the other grid is holding" check
+  // needs a size it can name, and naming the wrong one silently keys a third entry instead of finding
+  // the second. (It did, on the first run: the default is 16, and asking for 15 "back" made a new one.)
+  const SMALL = 15, BIG = 30;
+
+  const palette = new Uint32Array(256);
+  const r = new JustermRenderer("#c", palette, DEF_FG, DEF_BG);
+  const gl = document.querySelector("#c").getContext("webgl2");
+  const canvas = document.querySelector("#c");
+
+  const checks = {};
+  const notes = {};
+
+  // ── Frame helpers ────────────────────────────────────────────────────────────────────────────
+  // A Full damage frame is one span per LINE, span-ordered — not one covering span.
+  const frame = (cols, rows, cpOf, bgOf, fgOf) => {
+    const cells = cols * rows;
+    const spans = new Uint32Array(rows * 5);
+    for (let row = 0; row < rows; row++) spans.set([row, 0, cols - 1, row * cols, cols], row * 5);
+    const cps = new Uint32Array(cells), bg = new Uint32Array(cells), fg = new Uint32Array(cells);
+    for (let i = 0; i < cells; i++) {
+      const [col, row] = [i % cols, (i / cols) | 0];
+      cps[i] = cpOf(col, row);
+      bg[i] = RGB(bgOf(col, row));
+      fg[i] = RGB(fgOf(col, row));
+    }
+    return [
+      new Uint32Array([cols, rows, 0 /* Full */, 0, 0, 0, 0, 1 /* blink_on */]),
+      spans, cps, fg, bg, new Uint16Array(cells), new Uint32Array(cells), [],
+    ];
+  };
+  /**
+   * `█` in even columns, a space in odd ones. The stripe is what makes a lit RUN measure one CELL:
+   * a row of solid blocks is lit from edge to edge, so it reports the width of the grid rather than
+   * of its cell — which is the difference the heterogeneous-geometry check is entirely about.
+   */
+  const stripes = (cols, rows, ink) =>
+    frame(cols, rows, (col) => (col % 2 === 0 ? BLOCK : SPACE), () => DARK, () => ink);
+
+  // ── Pixel helpers ────────────────────────────────────────────────────────────────────────────
+  /** Read the whole buffer as a top-left-origin sampler (readPixels counts rows from the bottom). */
+  const snapshot = () => {
+    const [bw, bh] = [gl.drawingBufferWidth, gl.drawingBufferHeight];
+    const img = readRect(gl, { x: 0, y: 0, w: bw, h: bh });
+    const at = (x, y) => { const i = ((bh - 1 - y) * bw + x) * 4; return [img.buf[i], img.buf[i + 1], img.buf[i + 2]]; };
+    at.w = bw; at.h = bh;
+    return at;
+  };
+  /** The width in device px of the lit run starting at `(x0, y)` — a `█` cell's ink is its cell. */
+  const litRun = (px, x0, y) => {
+    let n = 0;
+    while (x0 + n < px.w && px(x0 + n, y)[0] > 100) n++;
+    return n;
+  };
+  /** Every byte of a top-left rect, so "untouched" can be asserted rather than sampled. */
+  const rectBytes = (x, y, w, h) => {
+    const img = readRect(gl, { x, y: gl.drawingBufferHeight - (y + h), w, h });
+    return Array.from(img.buf);
+  };
+  const sameBytes = (a, b) => a.length === b.length && a.every((v, i) => v === b[i]);
+
+  // ── AC 2 + AC 4: a grid joining an existing configuration shares its atlas and bakes nothing ──
+  const COLS = 8, ROWS = 4;
+  r.setFontSize(SMALL);
+  r.resize(COLS, ROWS);
+  const cwS = r.cell_width(), chS = r.cell_height();
+  checks.oneGridHoldsOneAtlas = r.atlasCount() === 1;
+
+  const bakesBeforeAdd = r.bakes();
+  const b = r.addGrid(palette, DEF_FG, DEF_BG);
+  checks.aRegisteredGridSharesTheDefaultsAtlas = r.atlasCount() === 1;
+  checks.andBakesNothingToJoinIt = r.bakes() === bakesBeforeAdd;
+
+  // Give it content and a rect, at the top-left so its device coordinates do not move when the
+  // buffer is resized by the default grid's font change below. Draw order is registration order,
+  // so this grid paints OVER the default wherever they overlap (#771).
+  r.applyDamageTo(b, ...stripes(2, 1, 0xf0d030));
+  r.setViewport(b, 0, 0, 2 * cwS, chS);
+  r.apply_damage(...stripes(COLS, ROWS, 0xf05030));
+  r.render();
+  const bBefore = rectBytes(0, 0, 2 * cwS, chS);
+  checks.theSharedGridActuallyDrewSomething = bBefore.some((v, i) => i % 4 !== 3 && v > 40);
+
+  // ── AC 1 + AC 3: one grid's font change moves IT, and leaves the other's atlas untouched ─────
+  const bakesBeforeFont = r.bakes();
+  r.setFontSize(BIG);
+  const cwB = r.cell_width(), chB = r.cell_height();
+  checks.aFontChangeMovesTheGridToASecondEntry = r.atlasCount() === 2;
+  checks.andBakesExactlyOneNewAtlas = r.bakes() === bakesBeforeFont + 1;
+  checks.theTwoConfigurationsHaveDifferentCells = cwB !== cwS || chB !== chS;
+  // …and the sibling that did not move is not dirtied by the move. Without this, a `select_config`
+  // that marked every grid would pass every count above while costing a re-pack per grid per font
+  // change — the cost this tier exists to remove, reintroduced one layer up. Read before any
+  // re-feed, so the only thing that can be packed is what the font change itself dirtied.
+  const packsBeforeMove = r.packs();
+  r.render();
+  checks.onlyTheGridThatMovedRepacks = r.packs() === packsBeforeMove + 1;
+
+  // Re-feed the default at the new cell (the consumer's obligation after a font change) and redraw.
+  // The registered grid is NOT re-fed, re-placed or re-packed — nothing about it was asked to move.
+  r.resize(COLS, ROWS);
+  r.apply_damage(...stripes(COLS, ROWS, 0xf05030));
+  r.render();
+  const bAfter = rectBytes(0, 0, 2 * cwS, chS);
+  // The load-bearing check of AC 3: had `setFontSize` edited the shared entry in place — the thing
+  // ghostty's immutability rule forbids — this grid would have been resized without asking.
+  checks.theOtherGridsPixelsAreUnchangedByTheFontChange = sameBytes(bBefore, bAfter);
+
+  // ── AC 5: two configurations draw side by side, each with its own cell geometry ──────────────
+  // The default grid (30) fills the buffer; the registered one (15) is a rect over its top-left. A
+  // `█` covers exactly one cell, so the lit run starting at each grid's origin IS that grid's cell
+  // width — two different numbers in one frame, from one draw loop, through two atlases.
+  r.apply_damage(...stripes(COLS, ROWS, 0xf0a030));
+  r.render();
+  const px = snapshot();
+  // The first EVEN column of the default grid that starts past the registered grid's rect — even, so
+  // it is a `█` rather than a space, and past the rect so the sample is the default's own pixels.
+  const col = 2 * Math.ceil((2 * cwS) / (2 * cwB));
+  const runDefault = litRun(px, col * cwB, 0);
+  const runShared = litRun(px, 0, 0);           // the registered grid's own first cell
+  notes.runs = { col, runDefault, runShared, cwS, cwB };
+  checks.eachGridDrawsItsOwnCellWidth = runShared === cwS && runDefault === cwB;
+  checks.andTheTwoAreNotTheSameWidth = runShared !== runDefault;
+
+  // ── AC 4 again, and this is the sharper half: REJOINING an existing entry bakes nothing ──────
+  // A third grid is born into the default's (30) configuration, so three grids stand on two entries.
+  const c = r.addGrid(palette, DEF_FG, DEF_BG);
+  checks.aThirdGridJoinsWithoutASecondEntry = r.atlasCount() === 2;
+  const bakesBeforeRejoin = r.bakes();
+  r.setFontSize(SMALL);   // the default goes BACK to the configuration the registered grid held open
+  checks.rejoiningAnExistingConfigurationBakesNothing = r.bakes() === bakesBeforeRejoin;
+  checks.andDoesNotAddAnEntry = r.atlasCount() === 2;
+
+  // ── AC 1: the LAST grid to leave releases the entry, and no earlier one does ─────────────────
+  // Only `c` stands on the 30 entry now. Removing it must free that entry and nothing else.
+  r.removeGrid(c);
+  checks.theLastGridToLeaveReleasesItsEntry = r.atlasCount() === 1;
+  // …while `b` and the default share the 15 entry, so removing `b` releases a buffer, not an atlas.
+  r.removeGrid(b);
+  checks.aSharedEntrySurvivesOneOfItsGridsLeaving = r.atlasCount() === 1;
+  r.resize(COLS, ROWS);
+  r.apply_damage(...stripes(COLS, ROWS, 0xf0a030));
+  r.render();
+  checks.andTheSurvivingGridStillDraws = litRun(snapshot(), 0, 0) === r.cell_width();
+
+  // ── A no-op setter is a no-op, which is what makes the deltas above mean anything ────────────
+  const bakesBeforeNoop = r.bakes(), entriesBeforeNoop = r.atlasCount();
+  r.setFontSize(SMALL);
+  r.setLetterSpacing(0);
+  r.setLineHeight(1);
+  checks.settingTheSameConfigurationBakesNothing =
+    r.bakes() === bakesBeforeNoop && r.atlasCount() === entriesBeforeNoop;
+
+  // ── The "rebuild all of them" path: a DPR change re-bakes EVERY entry, and re-keys none ──────
+  // ADR-0021 names this as a separate path from re-keying one entry, because the DPR is global: one
+  // canvas, one drawing buffer, one density. Two live entries must both move.
+  const d = r.addGrid(palette, DEF_FG, DEF_BG);
+  r.setFontSize(BIG);                      // default on its own entry again; `d` holds the small one
+  checks.twoEntriesAreLiveBeforeTheDprChange = r.atlasCount() === 2;
+  const bakesBeforeDpr = r.bakes();
+  r.setDevicePixelRatio(2 * window.devicePixelRatio);
+  checks.aDprChangeRebakesEveryEntry = r.bakes() === bakesBeforeDpr + 2;
+  checks.andRekeysNone = r.atlasCount() === 2;
+  r.setDevicePixelRatio(window.devicePixelRatio);
+
+  // ── A context loss takes every configuration down, and the restore brings every one back ─────
+  // #771 made `restore` walk every GRID; this slice makes it walk every CONFIGURATION too. Baking
+  // one atlas there would restore one grid's font and leave the others sampling a dead texture.
+  r.resize(COLS, ROWS);
+  r.apply_damage(...stripes(COLS, ROWS, 0xf0a030));
+  r.setViewport(d, 0, 0, 2 * cwS, chS);
+  r.applyDamageTo(d, ...stripes(2, 1, 0xf0d030));
+  r.render();
+  const beforeLoss = rectBytes(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+  const entriesBeforeLoss = r.atlasCount();
+  const bakesBeforeLoss = r.bakes();
+
+  const lose = gl.getExtension("WEBGL_lose_context");
+  const once = (event) => new Promise((res) => canvas.addEventListener(event, res, { once: true }));
+  const lost = once("webglcontextlost");
+  lose.loseContext();
+  await lost;
+  // Chrome only permits `restoreContext()` once the `webglcontextlost` dispatch has fully unwound —
+  // awaiting the event is a microtask and is NOT enough (as `context-loss.html` documents).
+  await new Promise((res) => setTimeout(res, 0));
+  const restored = once("webglcontextrestored");
+  lose.restoreContext();
+  await restored;
+  r.render();   // the frame after `webglcontextrestored` rebuilds pipeline, buffers and atlases
+  checks.aRestoreKeepsEveryConfiguration = r.atlasCount() === entriesBeforeLoss;
+  // Exactly one bake per live configuration — not one (which would leave the others sampling a dead
+  // texture) and not two (a rebuild that also re-keyed, or baked before deciding what to keep).
+  checks.andBakesExactlyOneAtlasPerConfiguration =
+    r.bakes() === bakesBeforeLoss + entriesBeforeLoss;
+  checks.andRepaintsBothGridsFromTheirOwnAtlas =
+    sameBytes(beforeLoss, rectBytes(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight));
+
+  // ── A selector that moved WHILE the context was dead is reconciled on the way back ───────────
+  // The setter cannot bake on a dead context, so it advances the selector and defers; `restore`'s
+  // reconcile pass is what actually moves the grid between entries. Without it the default would
+  // come back drawing through an atlas keyed by the size it no longer asks for.
+  const bakesBeforeMidLoss = r.bakes();
+  const lost2 = once("webglcontextlost");
+  lose.loseContext();
+  await lost2;
+  r.setFontSize(45);   // a size no live entry holds, so the reconcile must build one
+  await new Promise((res) => setTimeout(res, 0));
+  const restored2 = once("webglcontextrestored");
+  lose.restoreContext();
+  await restored2;
+  r.render();
+  const cw45 = r.cell_width();
+  notes.afterMidLossFontChange = { cw45, cwB, cwS, atlases: r.atlasCount() };
+  checks.aMidLossFontChangeLandsOnTheRestore = cw45 !== cwB && cw45 !== cwS;
+  // …and the restore does not bake the configuration it is about to leave. Two entries were live
+  // before the loss; one of them is the default's, whose selectors drifted, so after the reconcile
+  // it has no holder and is released. A restore that re-baked it first would rasterise a whole glyph
+  // set into a texture deleted a few lines later — one full re-bake thrown away on every restore
+  // that follows a mid-loss font change. So: one bake for the configuration that survives, one for
+  // the configuration the default moves to, and none for the one it leaves.
+  notes.afterMidLossFontChange.bakes = r.bakes() - bakesBeforeMidLoss;
+  checks.aRestoreDoesNotBakeTheConfigurationItIsLeaving =
+    r.bakes() === bakesBeforeMidLoss + 2 && r.atlasCount() === 2;
+  // `d` never moved, so its entry is still there beside the freshly built 45 one.
+  checks.andTheGridThatDidNotMoveKeepsItsOwn = r.atlasCount() === 2;
+
+  // ── A grid that changes configuration re-packs itself, with no new frame from the consumer ───
+  // The packed instances address slots in the entry the grid is LEAVING; the entry it joins has a
+  // cache of its own, and `█` is a builtin rather than a prebaked ASCII glyph, so its old slot in the
+  // new atlas is empty storage. Ghostty ends its own `setFontGrid` with a forced rebuild for exactly
+  // this — "cached rows may still reference an outdated atlas from the old grid and this can cause
+  // garbage to be rendered" (src/renderer/generic.zig). Deliberately NO `apply_damage` between the
+  // two renders: a consumer that re-feeds hides the defect, and `justerm-web` re-feeds every frame.
+  r.clearViewport(d);   // one grid drawing, so the sampled run is unambiguous
+  r.resize(COLS, ROWS);
+  r.apply_damage(...stripes(COLS, ROWS, 0xf0a030));
+  r.render();
+  const cwBefore = r.cell_width();
+  const runBefore = litRun(snapshot(), 0, 0);
+  r.setFontSize(BIG);
+  r.render();
+  const runAfter = litRun(snapshot(), 0, 0);
+  notes.repack = { cwBefore, runBefore, cwAfter: r.cell_width(), runAfter };
+  checks.aConfigurationChangeRepacksWithoutANewFrame =
+    runBefore === cwBefore && runAfter === r.cell_width() && runAfter > 0;
+
+  // ── A sibling's pack can repoint this grid's slots — and the grid repairs itself ─────────────
+  // The hazard ADR-0021 records as the middle tier's real cost, and the only one of its three named
+  // guarantees that is implementable without deciding a failure-mode policy: a grid compares the
+  // configuration's eviction count against the one it packed at, and re-packs the difference away.
+  //
+  // Reaching it at all requires FILLING a region — `get_or_insert` evicts only once the fresh-slot
+  // watermark has run to capacity — so the setup below is the cheapest state in which the hazard
+  // exists at all: 4 glyphs from one grid, then 1953 from the other, which is exactly the normal
+  // region's dynamic capacity (2048 minus the 95 fixed ASCII slots). The sibling then shrinks to a
+  // 20-glyph frame, so the two grids' LIVE sets fit together and the repair has a fixed point to
+  // converge to; where they do not fit, nothing can be right and ADR-0021 leaves that open.
+  r.setFontSize(SMALL);                 // the default rejoins `d`'s configuration — one cache, two grids
+  r.resize(20, 6);
+  const [cw, ch] = [r.cell_width(), r.cell_height()];
+  const distinct = (n, from) => Array.from({ length: n }, (_, i) => from + i);
+  const glyphRow = (cols, rows, cps) =>
+    frame(cols, rows, (col, row) => cps[row * cols + col] ?? 0x20, () => DARK, () => 0xf0f0f0);
+
+  // Four non-ASCII glyphs — ASCII takes fixed fast-path slots and is never evicted, so it could not
+  // show this if it tried.
+  const MINE = distinct(4, 0x2200);
+  r.apply_damage(...glyphRow(20, 6, MINE));
+  r.render();
+  const mineBefore = rectBytes(0, 0, 4 * cw, ch);
+  const inkOf = (bytes) => bytes.filter((v, i) => i % 4 !== 3 && v > 100).length;
+  checks.theEvictionSetupDrewRealGlyphs = inkOf(mineBefore) > 0;
+
+  // The sibling fills the region, evicting the four above (least recently used, never re-touched).
+  const THEIRS = distinct(1953, 0x0250);
+  r.setViewport(d, 0, 3 * ch, 10 * cw, 2 * ch);
+  r.applyDamageTo(d, ...glyphRow(51, 39, THEIRS));
+  r.render();
+  // …then shrinks its live set, so the repair's re-insertions land on dead slots rather than on the
+  // sibling's own. Without this the two live sets do not fit and neither grid can be right.
+  r.applyDamageTo(d, ...glyphRow(10, 2, THEIRS.slice(0, 20)));
+  r.render();
+  const evictions = r.bakes();  // unchanged by evictions; read only to keep the note honest below
+  notes.eviction = { atlases: r.atlasCount(), inkBefore: inkOf(mineBefore), bakes: evictions };
+  // One more frame, and NO new content for the grid that was evicted: the repair has to come from
+  // the renderer noticing its atlas moved, not from the consumer re-feeding it.
+  r.render();
+  const mineAfter = rectBytes(0, 0, 4 * cw, ch);
+  notes.eviction.inkAfter = inkOf(mineAfter);
+  checks.aGridWhoseSlotsWereRepointedRepairsItself = sameBytes(mineBefore, mineAfter);
+  // …and it did so while still sharing one atlas with the grid that evicted it.
+  checks.andTheTwoWereSharingOneAtlasThroughout = r.atlasCount() === 1;
+
+  // ── When two grids' live sets cannot both fit, the loser is REFUSED rather than drawn wrong ──
+  // The other half of the same hazard, and the half a pixel check cannot see without a control. An
+  // over-capacity *single* frame has always been refused rather than corrupted; two grids whose
+  // union overflows are the cross-grid form of the same impossibility, and until the render loop
+  // shared one pin set across its packs they were silently, stably wrong instead — measured, before
+  // the fix: this grid drew 911 lit subpixels beside its sibling and 891 alone, every frame, forever,
+  // with no error anywhere. Green pixels and a green suite; only the control tells them apart.
+  //
+  // A refused pack also has to leave a FIXED POINT. The pin covers grids that packed this frame, and
+  // a clean grid does not pack — so a refusal must dirty everyone sharing the configuration, or the
+  // frames alternate between "correct and reported" and "wrong and silent".
+  r.clearViewport(d);
+  r.setFontSize(SMALL);
+  r.resize(30, 8);
+  const [ocw, och] = [r.cell_width(), r.cell_height()];
+  const MINE_BIG = distinct(1000, 0x1000);
+  const THEIRS_BIG = distinct(1000, 0x2400);
+  r.apply_damage(...glyphRow(40, 25, MINE_BIG));
+  r.applyDamageTo(d, ...glyphRow(40, 25, THEIRS_BIG));
+  r.setViewport(d, 0, 4 * och, 30 * ocw, 4 * och);
+  const over = [];
+  for (let i = 0; i < 4; i++) {
+    let threw = false;
+    try { r.render(); } catch { threw = true; }
+    over.push({ threw, ink: inkOf(rectBytes(0, 0, 8 * ocw, och)) });
+  }
+  // The control, in the same run and after the same frames: the same grid with no sibling sharing
+  // its cache. This is the number the four above have to equal.
+  r.clearViewport(d);
+  r.render();
+  r.render();
+  const aloneInk = inkOf(rectBytes(0, 0, 8 * ocw, och));
+  notes.overCapacity = { over, aloneInk };
+  checks.anOverCapacityUnionIsReportedEveryFrame = over.every((f) => f.threw);
+  checks.andTheGridThatPacksFirstStaysCorrect =
+    aloneInk > 0 && over.every((f) => f.ink === aloneInk);
+
+  const failed = Object.entries(checks).filter(([, ok]) => !ok).map(([k]) => k);
+  window.__proof = { checks, notes, ok: failed.length === 0, failed };
+  window.__done = true;
+</script>

@@ -702,7 +702,7 @@ that *describes* the behavior:
   updating a doc-comment and never rendering it is how 12 public docs ended up
   linking *private* items. That is the failure mode peculiar to this surface: you
   write the comment with the source open, where `store_flags` / `Flat` /
-  `rebake_atlas` are all in scope, and it publishes to a page built from public
+  `bake_config` are all in scope, and it publishes to a page built from public
   items only, where every one of those links is dead. `cargo test` does **not**
   cover this — it runs doctests (the code examples), not link resolution — and
   clippy is a different tool that does not carry rustdoc's lints.

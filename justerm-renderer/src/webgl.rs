@@ -25,6 +25,7 @@ use web_sys::{HtmlCanvasElement, WebGl2RenderingContext};
 
 use crate::bitmap::{PADDING, is_color_bitmap, split_wide_bitmap};
 use crate::color::gl_rgb;
+use crate::config_registry::{ConfigId, ConfigKey, ConfigRegistry};
 use crate::context_loss::{ContextLiveness, ContextState, DEFAULT_RESTORE_TIMEOUT_MS, FrameAction};
 use crate::cursor::{
     Cursor, DEFAULT_CURSOR_CONTRAST, THICKNESS, cursor_cells_at, cursor_rects, cursor_thickness,
@@ -38,7 +39,7 @@ use crate::frame_grid::{DamageFrame, FrameGrid, cell_count};
 use crate::glyph_cache::{
     FontStyle, GLYPHS_PER_LAYER, GlyphCache, WIDE_BASE, WIDE_CAPACITY, slot_texcoord,
 };
-use crate::glyph_resolve::{Cells, ResolveError, resolve_frame};
+use crate::glyph_resolve::{Cells, FramePins, ResolveError, resolve_frame};
 use crate::mat4::Mat4;
 use crate::metrics::{device_cell, fit_cell_to_atlas, glyph_offset};
 use crate::overlay::{HighlightColors, Overlay};
@@ -538,9 +539,10 @@ struct Pipeline {
 pub struct JustermRenderer {
     /// Resources one per WebGL context, invalidated only by context loss (ADR-0021 D2).
     global: GlobalTier,
-    /// Resources one per font configuration — expensive to rebuild, so keyed rather than
-    /// duplicated (ADR-0021 D2). One grid selects into a configuration; it does not own one.
-    config: ConfigTier,
+    /// Resources keyed **per font configuration** — expensive to rebuild, so shared rather than
+    /// duplicated (ADR-0021 D2, #772). One grid selects into a configuration; it does not own one,
+    /// and six terminals in one font hold one atlas between them.
+    configs: ConfigRegistry<ConfigTier>,
     /// Every terminal grid this renderer holds, and which of them are drawn (#770, ADR-0021 D1/D2).
     /// This is the field multi-viewport (#287) multiplies; the other two tiers stay one each, which
     /// the types above say by being singular rather than by being asserted anywhere.
@@ -551,6 +553,22 @@ pub struct JustermRenderer {
     /// Count of `resolve_and_pack` runs — a diagnostic the proofs read to assert render packs once
     /// per frame, not once per setter (#421). Wraps harmlessly; only deltas are meaningful.
     pack_count: u32,
+    /// The glyphs the current pack scope may not evict (#772).
+    ///
+    /// A field rather than a threaded parameter because the thing it models is a **scope**, and a
+    /// scope with one owner is clearer as state than as an argument every layer forwards: `render`
+    /// clears it once and every grid it packs shares it, so a grid cannot evict a slot a sibling
+    /// committed to in the same frame; `apply_frame` clears it for its own immediate pack, which is
+    /// the only scope that pack actually has.
+    pins: FramePins,
+    /// Count of atlas bakes — every construction of a `ConfigTier`, plus every in-place rebuild of
+    /// one (a DPR change, a context restore). The diagnostic that makes *sharing* observable rather
+    /// than inferred (#772): a grid joining an existing configuration must move this by zero.
+    ///
+    /// ADR-0021 D5 leaves where such counters live to whoever adds the second one; this is that
+    /// one, and it lands beside `pack_count` because the question is the same shape — a proof
+    /// reading a **delta** across an operation, not a rendering control. Wraps harmlessly.
+    bake_count: u32,
 }
 
 /// The **global** tier — one per WebGL2 context (ADR-0021 D2: invalidated only by context loss).
@@ -575,6 +593,11 @@ struct GlobalTier {
     u_char_size: glow::UniformLocation,
     u_char_offset: glow::UniformLocation,
     u_line_thickness: glow::UniformLocation,
+    /// The guard band's fraction of a padded atlas cell. Held here — rather than being set once
+    /// per program as it was until #772 — because the padded cell is a **per-config** dimension:
+    /// two grids in different fonts sample atlases with different guard fractions, so this became
+    /// a per-draw uniform the moment a second configuration was reachable.
+    u_padding_frac: glow::UniformLocation,
     u_bg_alpha: glow::UniformLocation,
     u_cursor: glow::UniformLocation,
     u_cursor_color: glow::UniformLocation,
@@ -597,9 +620,9 @@ struct GlobalTier {
 
 /// The **per-config** tier — one per font configuration (family, size, spacing, DPR).
 ///
-/// ADR-0021 D2: two grids with equal selectors can be served by **one instance**, and rebuilding this
-/// is expensive enough to repay keying it. Multi-viewport (#287) turns this field into a refcounted
-/// registry; a grid holds a *key* into it, never its own copy.
+/// ADR-0021 D2: two grids with equal selectors are served by **one instance**, and rebuilding this
+/// is expensive enough to repay keying it. #772 made that real: the facade holds a refcounted
+/// [`ConfigRegistry`] of these and a grid holds a [`ConfigId`] into it, never its own copy.
 ///
 /// D4: this tier names the **owner**, not the only place a value may sit. A reader may cache
 /// `cell_size` — see `docs/map/invariant/cell-size-is-derived-state.md` for what such a copy owes.
@@ -619,6 +642,51 @@ struct ConfigTier {
     atlas_cell: (u32, u32),
 }
 
+/// A configuration's resources, built and not yet committed (#772).
+///
+/// Every path that produces a `ConfigTier`'s GPU state goes through one function, because all three
+/// need the same thing built the same way and only differ in what they do with it: a *new* entry
+/// (`fresh`), and an in-place rebuild of an existing one at a new density (`adopt`) — a DPR change
+/// or a context restore. Keeping the build separate from the commit is what makes those two atomic.
+struct BakedConfig {
+    atlas: glow::Texture,
+    rasterizer: Rasterizer,
+    cell_size: (u32, u32),
+    char_size: (u32, u32),
+    char_offset: (u32, u32),
+    atlas_cell: (u32, u32),
+}
+
+impl ConfigTier {
+    /// A brand-new configuration: the baked resources plus an empty glyph cache.
+    fn fresh(baked: BakedConfig) -> Self {
+        ConfigTier {
+            atlas: baked.atlas,
+            rasterizer: baked.rasterizer,
+            cache: GlyphCache::new(),
+            cell_size: baked.cell_size,
+            char_size: baked.char_size,
+            char_offset: baked.char_offset,
+            atlas_cell: baked.atlas_cell,
+        }
+    }
+
+    /// Swap in a rebuild of *this* configuration, **keeping the glyph cache**, and hand back the
+    /// outgoing atlas for the caller to delete. The cache survives because the rebuild re-baked
+    /// every resident glyph into the same slot, so the packed instances that address them stay
+    /// valid — which is why a DPR change costs no re-pack.
+    fn adopt(&mut self, baked: BakedConfig) -> glow::Texture {
+        let old = self.atlas;
+        self.atlas = baked.atlas;
+        self.rasterizer = baked.rasterizer;
+        self.cell_size = baked.cell_size;
+        self.char_size = baked.char_size;
+        self.char_offset = baked.char_offset;
+        self.atlas_cell = baked.atlas_cell;
+        old
+    }
+}
+
 /// The **per-grid** tier — one terminal's own state (ADR-0021 D1/D2).
 ///
 /// Everything a consumer can set differently per terminal is a **selector** and lands here, including
@@ -631,6 +699,11 @@ struct ConfigTier {
 /// this tier is written as an inherent method here rather than on the facade. That is the split's
 /// load-bearing half: moving a field out of this struct breaks those methods at compile time.
 struct GridTier {
+    /// The configuration this grid draws through — the atlas, rasteriser, glyph cache and cell it
+    /// selects into (#772). A **handle, not a copy**: the four selector fields below say what this
+    /// grid asked for, and this says which shared entry serves it. The two are kept in step by
+    /// `select_config`, the only writer of either.
+    config: ConfigId,
     instance_vbo: glow::Buffer,
     /// The VAO that points at this grid's `instance_vbo`. Per-grid for the same reason the buffer
     /// is: an attribute pointer captures the buffer bound when it was set, so a VAO's content *is*
@@ -730,6 +803,20 @@ struct GridTier {
     /// The last blink phase packed, so a [`set_overlay`](Self::set_overlay) re-pack (no new frame)
     /// keeps the cursor/blink cells in the phase the render loop last drove.
     last_blink_on: bool,
+    /// The eviction count of this grid's configuration at its last successful pack (#772).
+    ///
+    /// Sharing a glyph cache means another grid's pack can **repoint** a slot this grid's instances
+    /// still address, and the upload diff — the defence against a slot changing under an undamaged
+    /// cell — cannot see it, because the instance floats did not change. [`render`](Self::render)
+    /// compares this against the configuration's live count and re-packs the difference away.
+    ///
+    /// **It converges wherever the drawn grids' *live* glyph sets fit a region together**, which is
+    /// the regime that matters: an eviction only happens once a region has been filled, and the
+    /// re-pack marks this grid's glyphs most-recently-used, so the next eviction takes one of the
+    /// dead slots instead. Where the live sets do **not** fit together, nothing can be right —
+    /// ADR-0021 leaves that open, and the single-grid form of the same impossibility is refused
+    /// outright rather than drawn (`ResolveError::FrameExceedsCapacity`).
+    packed_at_evictions: u32,
     /// Set by every state mutation that changes the packed instance buffer (overlay, decorations,
     /// colour policy, palette, `apply_damage`); cleared by the re-pack in [`render`](Self::render).
     /// Lets a frame that sets overlay + decorations + damage re-pack **once** at render instead of
@@ -746,7 +833,7 @@ fn f32_bytes(v: &[f32]) -> &[u8] {
 
 /// Upload one glyph's RGBA bitmap to its `(layer, band)` in the atlas. A free function (not
 /// a `&self` method) so the frame resolver's upload closure can borrow only the GL fields,
-/// leaving `&mut self.config.cache` free for [`glyph_resolve::resolve_frame`].
+/// leaving the drawing configuration's `&mut cache` free for [`glyph_resolve::resolve_frame`].
 fn upload_glyph(
     gl: &glow::Context,
     atlas: glow::Texture,
@@ -791,6 +878,19 @@ impl JustermRenderer {
         self.grids.default_grid_mut()
     }
 
+    /// The configuration the implicit default grid draws through (#772). Every export predating
+    /// #773 reads the cell, the atlas and the rasteriser through here, because they all act on that
+    /// one grid — so a second configuration existing changes nothing they say.
+    fn config(&self) -> &ConfigTier {
+        self.configs.get(self.grid().config)
+    }
+
+    /// The configuration a registry slot's grid draws through — the pack path's and the draw loop's
+    /// form, addressed by slot for the same reason `grid_at` is.
+    fn config_at(&self, at: usize) -> &ConfigTier {
+        self.configs.get(self.grid_at(at).config)
+    }
+
     /// The grid in a registry slot — how the draw loop and the pack path address a grid (#771).
     /// See `GridRegistry::viewport_at` for why those two walk slots while every consumer-facing
     /// export takes an id.
@@ -803,36 +903,80 @@ impl JustermRenderer {
         self.grids.grid_at_mut(at)
     }
 
-    /// Write the font selectors to **every** registered grid, because the configuration they select
-    /// into has just moved and there is only one of it.
-    ///
-    /// ADR-0021 D1 makes the four font/metric fields per-grid *as settings*; D2 keeps the machinery
-    /// they key (atlas, rasteriser, cell) per-config. Until S4 (#772) there is exactly **one** config
-    /// tier, so every grid selects into it — and a grid whose selector says 14 while the atlas it
-    /// draws through was baked at 28 is not per-grid state, it is bookkeeping disagreeing with the
-    /// configuration it names.
-    ///
-    /// That disagreement is **visible**, which is why this exists rather than being left tidy:
-    /// [`draw_grid`](Self::draw_grid) derives `u_line_thickness` from the drawing grid's own
-    /// `font_size`, so a registered grid would keep its birth thickness after a `setFontSize` — two
-    /// terminals in one font with different underline weights, and no path back, since only the
-    /// default was ever written. #772 is what makes these selectors genuinely independent, by giving
-    /// each grid a configuration of its own to select.
-    fn broadcast_font(&mut self, font_size: f32, font_family: &str) {
-        for at in 0..self.grids.len() {
-            let grid = self.grid_at_mut(at);
-            grid.font_size = font_size;
-            grid.font_family = font_family.to_string();
+    /// The configuration a grid's four selectors ask for (#772).
+    fn key_of(&self, at: usize) -> ConfigKey {
+        let grid = self.grid_at(at);
+        ConfigKey::new(
+            &grid.font_family,
+            grid.font_size,
+            grid.letter_spacing,
+            grid.line_height,
+        )
+    }
+
+    /// The entry serving `key`, joining an existing one or building a new one — and **only**
+    /// building when nothing already serves it (#772 AC 4). The returned id carries one reference,
+    /// which the caller owes to a grid or to a `release`.
+    fn acquire_config(&mut self, key: ConfigKey) -> Result<ConfigId, JsValue> {
+        if let Some(id) = self.configs.find(&key) {
+            self.configs.retain(id);
+            return Ok(id);
+        }
+        let baked = Self::bake_config(
+            &self.global.gl,
+            self.global.max_texture_size,
+            &key,
+            None,
+            self.global.dpr,
+        )?;
+        self.bake_count = self.bake_count.wrapping_add(1);
+        Ok(self.configs.insert(key, ConfigTier::fresh(baked)))
+    }
+
+    /// Drop one grid's reference to a configuration, deleting the atlas when the last grid leaves.
+    fn release_config(&mut self, id: ConfigId) {
+        if let Some(tier) = self.configs.release(id) {
+            // Safety: live GL context. A texture that died with a lost context deletes as an error
+            // flag with no state effect (measured, #770).
+            unsafe { self.global.gl.delete_texture(tier.atlas) };
         }
     }
 
-    /// The spacing half of [`broadcast_font`](Self::broadcast_font), for the same reason.
-    fn broadcast_spacing(&mut self, letter_spacing: f32, line_height: f32) {
-        for at in 0..self.grids.len() {
-            let grid = self.grid_at_mut(at);
-            grid.letter_spacing = letter_spacing;
-            grid.line_height = line_height;
+    /// Move the grid in slot `at` onto the configuration its selectors now ask for.
+    ///
+    /// **The shared entry is never edited to follow it.** Ghostty states the reason in one line —
+    /// *"increasing the font size in one would increase it in all"* (`src/font/SharedGrid.zig:13-18`)
+    /// — so a configuration change is a *move*: acquire the new entry, then release the old. Doing
+    /// it in that order is what lets a grid re-select the same key without the entry being freed in
+    /// between, and it is also the failure order: a build that fails leaves the grid exactly where
+    /// it was, with nothing half-applied to roll back.
+    ///
+    /// The grid must then re-pack. Its packed instances address slots in the *old* entry's cache, and
+    /// the new entry's are its own — ghostty ends `setFontGrid` with the same call for the same
+    /// reason, *"cached rows may still reference an outdated atlas from the old grid and this can
+    /// cause garbage to be rendered"* (`src/renderer/generic.zig:1112-1114`).
+    ///
+    /// **The instance count is dropped unconditionally, and the unconditional part is the point.**
+    /// The retained-grid path (`apply_damage`, which is what `justerm-web` drives) re-packs inside
+    /// the same `render`, so dropping it there is invisible — until the re-pack *fails*, which
+    /// `render` deliberately survives rather than blanking the frame. Without this, that survival
+    /// would draw the old entry's slot ids through the new entry's atlas: a wrong glyph rather than
+    /// a stale one, which is the failure class this repo treats as sacred. The direct `apply_frame`
+    /// path has no columns to re-pack from at all, so for it this is the whole repair. A grid that
+    /// draws only its background until the consumer's next frame is honest; one that draws another
+    /// configuration's glyphs is not.
+    fn select_config(&mut self, at: usize, key: ConfigKey) -> Result<(), JsValue> {
+        let old = self.grid_at(at).config;
+        if *self.configs.key(old) == key {
+            return Ok(());
         }
+        let new = self.acquire_config(key)?;
+        self.grids.grid_at_mut(at).config = new;
+        self.release_config(old);
+        let grid = self.grids.grid_at_mut(at);
+        grid.needs_repack = true;
+        grid.instance_count = 0;
+        Ok(())
     }
 
     /// Register a terminal grid and return its id (#770).
@@ -883,15 +1027,27 @@ impl JustermRenderer {
         // more than one grid registered: no proof loses a context with siblings, so the N-grid
         // recovery rests on reasoning until #774 asserts it per grid. See the map territory.
         let buffers = Self::build_grid_buffers(&self.global.gl, self.global.quad_vbo)?;
-        let (font_size, font_family) = (self.grid().font_size, self.grid().font_family.clone());
-        let (letter_spacing, line_height) = (self.grid().letter_spacing, self.grid().line_height);
+        // The new grid is born into the default's **configuration**, and therefore shares its atlas
+        // rather than baking one (#772 AC 4) — the whole economy of the middle tier.
+        //
+        // It takes the *entry's* key rather than the default grid's selector fields, and the two are
+        // the same value except in one window: while the context is lost, a `setFontSize` advances
+        // the selectors and defers the move (`adopt_selectors`), so a grid registered in that window
+        // is born at the configuration that is actually **in force**, not at the one the default has
+        // asked for and not yet got. That is the only answer available — the size it asked for has
+        // no atlas yet and cannot get one on a dead context — and it is deliberate rather than
+        // incidental. Its consequence, until the per-grid font setter lands (#773): such a grid stays
+        // on the older configuration with no way back, while `restore` moves the default to the newer
+        // one. Registering a terminal during a context loss is already the edge `add_grid` documents
+        // above; this is what it costs.
+        let config = self.grid().config;
+        self.configs.retain(config);
+        let key = self.configs.key(config).clone();
         let id = self.grids.register(GridTier::new(
             buffers,
+            config,
+            &key,
             palette,
-            font_size,
-            font_family,
-            letter_spacing,
-            line_height,
             // No cells until this grid is sized. `cols`/`rows` answer 0 honestly rather than
             // inheriting a sibling's dimensions, which would be a size nobody asked for.
             (0, 0),
@@ -920,6 +1076,10 @@ impl JustermRenderer {
             self.global.gl.delete_vertex_array(removed.vao);
             self.global.gl.delete_buffer(removed.instance_vbo);
         }
+        // …and give up its share of the configuration. The atlas goes only if this was the last
+        // grid standing on it (#772) — closing one of six terminals in one font frees a buffer and
+        // a VAO, not the font machinery the other five are still drawing through.
+        self.release_config(removed.config);
         Ok(())
     }
 
@@ -988,6 +1148,35 @@ impl JustermRenderer {
     #[wasm_bindgen(js_name = gridCount)]
     pub fn grid_count(&self) -> usize {
         self.grids.len()
+    }
+
+    /// How many distinct font configurations this renderer holds resources for — i.e. how many
+    /// glyph atlases exist (#772).
+    ///
+    /// This is what makes sharing **observable** rather than asserted: six terminals in one font
+    /// answer `1`, and a seventh that changes its font answers `2`. Ghostty exposes the same number
+    /// for the same reason (`SharedGridSet.count`). Registry *state*, like
+    /// [`grid_count`](Self::grid_count) — not a diagnostic counter.
+    #[wasm_bindgen(js_name = atlasCount)]
+    pub fn atlas_count(&self) -> usize {
+        self.configs.len()
+    }
+
+    /// Number of atlas bakes run so far (#772 diagnostic) — every configuration built from nothing,
+    /// plus every in-place rebuild of one (a DPR change, a context restore).
+    ///
+    /// The consumer/proofs read the **delta** across an operation, as they do with
+    /// [`packs`](Self::packs): a grid *joining* an existing configuration must move this by zero,
+    /// which is the claim the middle tier exists to make and the one a memory figure cannot settle.
+    ///
+    /// It counts **committed** bakes. A rebuild that fails part-way discards every replacement it
+    /// built and leaves this where it was, so the number tracks configurations this renderer is
+    /// drawing through rather than rasterising work it performed — which is what a delta is read
+    /// for, and what keeps the delta deterministic. Not a stable API surface; a counter for
+    /// verification. Wraps harmlessly.
+    #[wasm_bindgen(js_name = bakes)]
+    pub fn bakes(&self) -> u32 {
+        self.bake_count
     }
 
     /// Whether a grid currently has a viewport, i.e. whether it draws (#770). Errors on an unknown
@@ -1500,22 +1689,7 @@ impl JustermRenderer {
                 ))
             })?;
 
-        let rasterizer = Rasterizer::new("monospace", FONT_SIZE * dpr)?;
-        // The rasteriser measures the GLYPH box; the grid cell is that box plus the consumer's
-        // spacing policy, which starts at its identity (#338). The atlas slot is the padded CELL
-        // (#359), so the rasteriser must know it before anything is sized from `padded_size()`.
-        let char_size = rasterizer.glyph_box();
         let (letter_spacing, line_height) = (0.0f32, 1.0f32);
-        let (cell_w, cell_h) = fit_cell_to_atlas(
-            device_cell(char_size, letter_spacing, line_height, dpr),
-            PADDING,
-            GLYPHS_PER_LAYER as u32,
-            max_texture_size,
-        );
-        let char_offset = glyph_offset((cell_w, cell_h), char_size);
-        let mut rasterizer = rasterizer;
-        rasterizer.set_cell((cell_w, cell_h), char_offset)?;
-        let (pad_w, pad_h) = rasterizer.padded_size(); // padded atlas cell
 
         let Pipeline {
             program,
@@ -1533,20 +1707,15 @@ impl JustermRenderer {
             u_cursor_thickness,
         } = Self::build_pipeline(&gl)?;
         let default_buffers = Self::build_grid_buffers(&gl, quad_vbo)?;
-        // The atlas stores padded cells; the glyph is drawn inset by PADDING.
-        let atlas = Self::build_atlas(&gl, pad_w, pad_h)?;
-        // Tell the shader how much of each padded atlas cell is guard band, so it insets the
-        // texcoord to the content region (see FRAG_SRC).
-        unsafe {
-            gl.use_program(Some(program));
-            gl.uniform_2_f32(
-                Some(&u_padding_frac),
-                PADDING as f32 / pad_w as f32,
-                PADDING as f32 / pad_h as f32,
-            );
-        }
+        // The configuration the implicit default grid is born into, and — until a `setFontSize` or
+        // an `addGrid` says otherwise — the only one (#772). Its atlas stores padded cells; the
+        // glyph is drawn inset by PADDING.
+        let key = ConfigKey::new("monospace", FONT_SIZE, letter_spacing, line_height);
+        let baked = Self::bake_config(&gl, max_texture_size, &key, None, dpr)?;
+        let (cell_w, cell_h) = baked.cell_size;
+        let (configs, config) = ConfigRegistry::new(key.clone(), ConfigTier::fresh(baked));
 
-        let mut renderer = JustermRenderer {
+        let renderer = JustermRenderer {
             global: GlobalTier {
                 gl,
                 canvas,
@@ -1558,6 +1727,7 @@ impl JustermRenderer {
                 u_char_size,
                 u_char_offset,
                 u_line_thickness,
+                u_padding_frac,
                 u_bg_alpha,
                 u_cursor,
                 u_cursor_color,
@@ -1568,26 +1738,16 @@ impl JustermRenderer {
                 size,
                 ctx_loss,
             },
-            config: ConfigTier {
-                atlas,
-                rasterizer,
-                cache: GlyphCache::new(),
-                cell_size: (cell_w, cell_h),
-                char_size,
-                char_offset,
-                atlas_cell: (pad_w, pad_h),
-            },
+            configs,
             // The implicit default grid, drawn over the whole drawing buffer — which is exactly
             // what the single-grid renderer already was. `resize` below keeps that viewport in
             // step with the buffer it snaps. A grid registered *later* arrives NOT drawn (#770).
             grids: GridRegistry::new(
                 GridTier::new(
                     default_buffers,
+                    config,
+                    &key,
                     palette,
-                    FONT_SIZE,
-                    "monospace".to_string(),
-                    letter_spacing,
-                    line_height,
                     // Whole cells that fit the canvas as authored. `resize` below snaps the buffer
                     // to exactly that grid, so `size == grid_px(grid_size, cell_size)` holds from
                     // the start.
@@ -1604,8 +1764,10 @@ impl JustermRenderer {
                 },
             ),
             pack_count: 0,
+            pins: FramePins::new(),
+            bake_count: 1, // the configuration built above
         };
-        renderer.prebake_ascii()?;
+        let mut renderer = renderer;
         // Snap the drawing buffer to a whole number of cells straight away, so the invariant
         // `size == grid_px(grid_size, cell_size)` holds for the renderer's whole life and never has
         // to be re-established (beamterm's `create_with_canvas` likewise ends in a `resize`).
@@ -1781,20 +1943,62 @@ impl JustermRenderer {
 
     /// Rasterise + upload the 95 normal-styled ASCII glyphs into their fixed fast-path
     /// slots (`0..=94`), so a cell using the ASCII fast path samples a real bitmap.
-    fn prebake_ascii(&self) -> Result<(), JsValue> {
-        self.prebake_ascii_into(
-            &self.config.rasterizer,
-            self.config.atlas,
-            self.config.atlas_cell,
-        )
+    /// Build one configuration's resources: rasteriser, cell geometry, atlas texture, and the
+    /// glyphs baked into it (#772). Nothing here touches a live field, so every caller commits it
+    /// atomically or throws it away.
+    ///
+    /// `resident` decides what gets baked, and that is the only difference between the two callers:
+    /// `None` builds a **new** configuration and primes it with the 95 ASCII fast-path glyphs;
+    /// `Some(cache)` rebuilds an **existing** one and re-bakes every resident glyph into the SAME
+    /// slot it already occupies, so the instances that address them survive the rebuild.
+    ///
+    /// An associated function rather than a method because the constructor has no `self` yet, and
+    /// because it must not be able to read a live tier by accident.
+    fn bake_config(
+        gl: &glow::Context,
+        max_texture_size: u32,
+        key: &ConfigKey,
+        resident: Option<&GlyphCache>,
+        dpr: f32,
+    ) -> Result<BakedConfig, JsValue> {
+        let mut rasterizer = Rasterizer::new(key.font_family(), key.font_size() * dpr)?;
+        // The rasteriser measures the GLYPH box; the grid cell is that box plus the consumer's
+        // spacing policy (#338). The atlas slot is the padded CELL (#359), so the rasteriser must
+        // know the cell before anything is sized from `padded_size()`. And ask the implementation
+        // rather than predicting it: a cell the atlas texture cannot hold leaves that texture
+        // storage-less, and a storage-less sampler answers alpha 1 for every glyph (#339/#359).
+        let char_size = rasterizer.glyph_box();
+        let cell_size = fit_cell_to_atlas(
+            device_cell(char_size, key.letter_spacing(), key.line_height(), dpr),
+            PADDING,
+            GLYPHS_PER_LAYER as u32,
+            max_texture_size,
+        );
+        let char_offset = glyph_offset(cell_size, char_size);
+        rasterizer.set_cell(cell_size, char_offset)?;
+        let atlas_cell = rasterizer.padded_size();
+        let atlas = Self::build_atlas(gl, atlas_cell.0, atlas_cell.1)?;
+        let baked = match resident {
+            Some(cache) => Self::bake_all_glyphs(gl, cache, &rasterizer, atlas, atlas_cell),
+            None => Self::prebake_ascii_into(gl, &rasterizer, atlas, atlas_cell),
+        };
+        if let Err(e) = baked {
+            unsafe { gl.delete_texture(atlas) }; // don't leak the half-built atlas
+            return Err(e);
+        }
+        Ok(BakedConfig {
+            atlas,
+            rasterizer,
+            cell_size,
+            char_size,
+            char_offset,
+            atlas_cell,
+        })
     }
 
-    /// Bake the 95 normal ASCII glyphs into `atlas` using `rasterizer` — parameterised so a DPR
-    /// re-bake (#322) can prime a *new* atlas before committing it (see [`set_device_pixel_ratio`]).
-    ///
-    /// [`set_device_pixel_ratio`]: Self::set_device_pixel_ratio
+    /// Bake the 95 normal ASCII glyphs into `atlas` using `rasterizer`.
     fn prebake_ascii_into(
-        &self,
+        gl: &glow::Context,
         rasterizer: &Rasterizer,
         atlas: glow::Texture,
         atlas_cell: (u32, u32),
@@ -1802,31 +2006,26 @@ impl JustermRenderer {
         for cp in 0x20u32..=0x7E {
             let ch = char::from_u32(cp).unwrap();
             let rgba = rasterizer.rasterize(&ch.to_string(), FontStyle::Normal, false)?;
-            upload_glyph(
-                &self.global.gl,
-                atlas,
-                atlas_cell,
-                (cp - 0x20) as u16,
-                &rgba,
-            );
+            upload_glyph(gl, atlas, atlas_cell, (cp - 0x20) as u16, &rgba);
         }
         Ok(())
     }
 
-    /// Bake the renderer's ENTIRE current glyph set — the 95 prebaked ASCII plus every resident
-    /// dynamic glyph — into `atlas`, each into the SAME slot it already occupies. Preserving the
-    /// slots is what lets the packed `instances` stay valid across the re-bake (no re-pack, no
+    /// Bake one configuration's ENTIRE glyph set — the 95 prebaked ASCII plus every glyph resident
+    /// in `cache` — into `atlas`, each into the SAME slot it already occupies. Preserving the slots
+    /// is what lets the packed `instances` stay valid across the re-bake (no re-pack, no
     /// re-resolve). Shared by the DPR re-bake (#322) and the context-loss restore (#269), which
     /// both need "a fresh, correctly-sized atlas holding what the old one held".
     fn bake_all_glyphs(
-        &self,
+        gl: &glow::Context,
+        cache: &GlyphCache,
         rasterizer: &Rasterizer,
         atlas: glow::Texture,
         atlas_cell: (u32, u32),
     ) -> Result<(), JsValue> {
         let (pad_w, pad_h) = atlas_cell;
-        self.prebake_ascii_into(rasterizer, atlas, atlas_cell)?;
-        for (k, slot) in self.config.cache.entries() {
+        Self::prebake_ascii_into(gl, rasterizer, atlas, atlas_cell)?;
+        for (k, slot) in cache.entries() {
             // Two-cell iff the slot lives in the wide region — true for both `Wide` (CJK) and a
             // *wide* `Emoji` (2-cell colour emoji); a narrow `Emoji` (#297 EmojiNarrow) sits in
             // the normal region and is one cell. Keying off `slot_id() >= WIDE_BASE` (not
@@ -1836,130 +2035,143 @@ impl JustermRenderer {
             let base = slot.slot_id();
             if wide {
                 let (left, right) = split_wide_bitmap(&rgba, 2 * pad_w - 2 * PADDING, pad_w, pad_h);
-                upload_glyph(&self.global.gl, atlas, atlas_cell, base, &left);
-                upload_glyph(&self.global.gl, atlas, atlas_cell, base + 1, &right);
+                upload_glyph(gl, atlas, atlas_cell, base, &left);
+                upload_glyph(gl, atlas, atlas_cell, base + 1, &right);
             } else {
-                upload_glyph(&self.global.gl, atlas, atlas_cell, base, &rgba);
+                upload_glyph(gl, atlas, atlas_cell, base, &rgba);
             }
         }
         Ok(())
     }
 
-    /// Point the shader at the guard-band fraction of a `pad_w`×`pad_h` atlas cell. The band is a
-    /// fixed pixel count, so its *fraction* shifts whenever the padded cell is resized (#288/#322)
-    /// — and the location belongs to `program`, so a relinked program (#269 restore) must re-set it.
-    fn set_padding_frac(
-        &self,
-        program: glow::Program,
-        u_padding_frac: &glow::UniformLocation,
-        pad_w: u32,
-        pad_h: u32,
-    ) {
-        unsafe {
-            self.global.gl.use_program(Some(program));
-            self.global.gl.uniform_2_f32(
-                Some(u_padding_frac),
-                PADDING as f32 / pad_w as f32,
-                PADDING as f32 / pad_h as f32,
-            );
-        }
-    }
-
     /// Notify the renderer that `window.devicePixelRatio` changed to `dpr` (#322). The consumer
     /// drives this from a resolution `matchMedia` listener — a DPR change at the *same* CSS size
     /// (dragging to another-density monitor) does not fire a resize, so it must be signalled
-    /// explicitly. The atlas is re-baked at the new device size, the current grid re-resolved into
-    /// it (so glyphs stay present and sharpen), and the drawing buffer re-derived from the stored
-    /// grid at the new cell size. A no-op if the ratio is unchanged; on error the old atlas is left intact
-    /// and `dpr` unadvanced, so the next notification retries (self-healing).
+    /// explicitly. **Every** configuration is re-baked at the new device size, each keeping its own
+    /// glyph slots (so nothing has to re-pack), and the drawing buffer is re-derived from the stored
+    /// grid at the new cell size. A no-op if the ratio is unchanged; on error every old atlas is
+    /// left intact and `dpr` unadvanced, so the next notification retries (self-healing).
+    ///
+    /// **This is the "rebuild all of them" path, not the "re-key one" path** (#772, ADR-0021). One
+    /// canvas means one drawing buffer and one DPR, so a density change is true of every entry at
+    /// once — which is exactly the case where mutating a shared entry in place is right rather than
+    /// wrong: nobody is being moved into a configuration they did not ask for.
     #[wasm_bindgen(js_name = setDevicePixelRatio)]
     pub fn set_device_pixel_ratio(&mut self, dpr: f32) -> Result<(), JsValue> {
         if !dpr_changed(self.global.dpr, dpr) {
             return Ok(());
         }
-        // A lost context can only hand back an invalidated atlas texture, so re-baking now would
-        // burn the work and commit an empty atlas. Drop the notification: `restore` re-reads the
+        // A lost context can only hand back invalidated atlas textures, so re-baking now would
+        // burn the work and commit empty atlases. Drop the notification: `restore` re-reads the
         // *live* DPR and bakes at that density anyway (#269).
         if self.gpu_work_must_wait() {
             return Ok(());
         }
-        self.rebake_atlas(self.grid().font_family.clone(), self.grid().font_size, dpr)
-    }
-
-    /// Re-bake the atlas for `font_family` at `font_size` (CSS px) × `dpr` and re-derive the buffer
-    /// from the stored grid. The shared body of a DPR change (#322), a font-size change (#406), and a
-    /// font-family change (#413) — they differ only in which of the three inputs moved, so all three
-    /// must re-rasterise the glyphs into a fresh atlas, re-derive the cell, and re-fit the buffer.
-    /// Atomic: builds the replacement atlas + rasteriser first and commits (swapping them in +
-    /// advancing `self.grid().font_family`/`self.grid().font_size`/`self.global.dpr`) only on success, so a failure leaves
-    /// the old atlas / metrics untouched and the caller retries (self-healing). Assumes a **live**
-    /// context — the callers skip when it is lost.
-    fn rebake_atlas(
-        &mut self,
-        font_family: String,
-        font_size: f32,
-        dpr: f32,
-    ) -> Result<(), JsValue> {
-        // 1. Build a new atlas at the new device size and re-rasterise the CURRENT glyphs into it —
-        //    ASCII fast path + every resident dynamic glyph, each into its SAME slot — all before
-        //    committing. A failure leaves the old atlas / rasteriser / size / dpr untouched, and the
-        //    glyph *slots* are preserved, so the existing instances stay valid (no re-pack / re-upload).
-        //    The ~tens-of-µs cost (#321) is fine for a rare DPR / font-size / font-family change.
-        let mut rasterizer = Rasterizer::new(&font_family, font_size * dpr)?;
-        // The glyph box is re-measured at the new device size; the spacing policy survives, so the
-        // cell must be re-derived from both BEFORE the atlas is sized (#322 + #338 + #359).
-        let char_size = rasterizer.glyph_box();
-        let cell = fit_cell_to_atlas(
-            device_cell(
-                char_size,
-                self.grid().letter_spacing,
-                self.grid().line_height,
-                dpr,
-            ),
-            PADDING,
-            GLYPHS_PER_LAYER as u32,
-            self.global.max_texture_size,
-        );
-        rasterizer.set_cell(cell, glyph_offset(cell, char_size))?;
-        let (pad_w, pad_h) = rasterizer.padded_size();
-        let atlas = Self::build_atlas(&self.global.gl, pad_w, pad_h)?;
-        let rebake = (|| -> Result<(), JsValue> {
-            self.bake_all_glyphs(&rasterizer, atlas, (pad_w, pad_h))?;
-            // The guard band's fraction of the (now device-sized) padded cell changed. Inside the
-            // closure so a failure here is caught by the delete-on-error guard below (no leaked atlas).
-            let u_padding_frac = uniform(&self.global.gl, self.global.program, "u_padding_frac")?;
-            self.set_padding_frac(self.global.program, &u_padding_frac, pad_w, pad_h);
-            Ok(())
-        })();
-        if let Err(e) = rebake {
-            unsafe { self.global.gl.delete_texture(atlas) }; // don't leak the half-built atlas
-            return Err(e);
-        }
-        // 2. Commit atomically: swap in the new atlas + rasteriser + metrics (KEEP the cache — its
-        //    slots are now valid in the new atlas — and the instances, whose slots are unchanged),
-        //    drop the old atlas, and advance `font_size`/`dpr` only now that the re-bake succeeded.
-        let old_atlas = self.config.atlas;
-        self.config.rasterizer = rasterizer;
-        self.config.atlas = atlas;
-        self.config.char_size = char_size;
-        self.config.atlas_cell = (pad_w, pad_h);
-        self.broadcast_font(font_size, &font_family);
+        self.rebuild_all_configs(dpr)?;
         self.global.dpr = dpr;
-        // The spacing policy survives; the cell it produces does not (#322 + #338 + #406).
-        self.recompute_cell();
-        unsafe { self.global.gl.delete_texture(old_atlas) };
-        // 3. Re-derive the buffer from the stored grid at the NEW cell size (the cells sharpen via the
-        //    new atlas + the new device `cell_size` uniform on the next render).
+        // Re-derive the buffer from the stored grid at the NEW cell size (the cells sharpen via the
+        // new atlases + the new device `cell_size` uniform on the next render).
         let (cols, rows) = self.grid().grid_size;
         self.resize(cols, rows);
         Ok(())
     }
 
-    /// Set the font size in **CSS px** (#406) — re-bakes the atlas at `css_px * dpr`, exactly as a DPR
-    /// change does (shared `rebake_atlas`), so glyphs stay sharp and the grid
-    /// cell re-derives from the new size. Consumer policy (ADR-0017): the size is the consumer's, the
-    /// atlas mechanism the renderer's. A non-finite size is ignored; a smaller-than-`1.0` one is
-    /// clamped (a zero/negative size would rasterise a degenerate atlas). A no-op if unchanged.
+    /// Re-bake **every** live configuration at `dpr`, each keeping its own glyph slots (#772).
+    ///
+    /// Atomic across the whole registry: every replacement is built before any is committed, so a
+    /// failure part-way leaves every entry exactly as it was and the caller retries. That matters
+    /// more here than it did with one entry — a half-applied density would leave two grids drawing
+    /// through atlases baked at different densities with one shared `dpr` describing both.
+    ///
+    /// Does **not** advance `self.global.dpr`; the caller commits that once this returns.
+    fn rebuild_all_configs(&mut self, dpr: f32) -> Result<(), JsValue> {
+        let ids = self.configs.ids();
+        let mut baked = Vec::with_capacity(ids.len());
+        for &id in &ids {
+            let key = self.configs.key(id).clone();
+            let built = Self::bake_config(
+                &self.global.gl,
+                self.global.max_texture_size,
+                &key,
+                Some(&self.configs.get(id).cache),
+                dpr,
+            );
+            match built {
+                Ok(b) => baked.push(b),
+                Err(e) => {
+                    // Safety: live GL context; these textures are this function's own and unpublished.
+                    unsafe {
+                        for b in &baked {
+                            self.global.gl.delete_texture(b.atlas);
+                        }
+                    }
+                    return Err(e);
+                }
+            }
+        }
+        for (id, b) in ids.into_iter().zip(baked) {
+            let old = self.configs.get_mut(id).adopt(b);
+            // Safety: live GL context; the outgoing texture is no longer referenced.
+            unsafe { self.global.gl.delete_texture(old) };
+            self.bake_count = self.bake_count.wrapping_add(1);
+        }
+        Ok(())
+    }
+
+    /// Write the default grid's font/metric selectors through `edit`, move it onto the configuration
+    /// they now name, and re-derive the drawing buffer from that configuration's cell (#772).
+    ///
+    /// The single site every one of the four setters goes through, so none of them can decide any of
+    /// this differently. Three properties it owes, and each one is a bug that has been paid for
+    /// here before:
+    ///
+    /// - **Atomic.** A rasterise can fail (it draws through the browser's 2D engine), and a
+    ///   half-applied change is worse than a rejected one. On failure the selectors are put back, so
+    ///   the grid and the entry it names still agree and the consumer can retry (#338/#359).
+    /// - **Deferred while the context is dead.** An atlas built on a lost context comes back
+    ///   invalidated. The selectors still advance — they are CPU state and outlive the loss — and
+    ///   [`restore`](Self::restore) re-selects from them, which is where a mid-loss `setFontSize`
+    ///   has always landed (#269/#406). What changed at #772 is that the *cell* no longer moves
+    ///   ahead of the atlas either: the cell belongs to a configuration, and no configuration moved.
+    /// - **It never edits the entry it is leaving.** That is the immutability rule the middle tier
+    ///   is built on (ghostty `src/font/SharedGrid.zig:13-18`); `select_config` carries it out.
+    fn adopt_selectors(&mut self, edit: impl FnOnce(&mut GridTier)) -> Result<(), JsValue> {
+        let prev = {
+            let g = self.grid();
+            (
+                g.font_size,
+                g.font_family.clone(),
+                g.letter_spacing,
+                g.line_height,
+            )
+        };
+        edit(self.grid_mut());
+        if self.gpu_work_must_wait() {
+            return Ok(());
+        }
+        let key = self.key_of(DEFAULT_SLOT);
+        if let Err(e) = self.select_config(DEFAULT_SLOT, key) {
+            let g = self.grid_mut();
+            (g.font_size, g.font_family, g.letter_spacing, g.line_height) = prev;
+            return Err(e);
+        }
+        // The cell may have moved, so re-derive the buffer from the stored grid. `resize` also
+        // re-reads what WebGL granted (#339), which is why this is not folded into the selection.
+        let (cols, rows) = self.grid().grid_size;
+        self.resize(cols, rows);
+        Ok(())
+    }
+
+    /// Set the font size in **CSS px** (#406) — the default grid joins the configuration keyed by the
+    /// new size, baking one only if no grid already stands on it (#772). Consumer policy (ADR-0017):
+    /// the size is the consumer's, the atlas mechanism the renderer's. A non-finite size is ignored;
+    /// a smaller-than-`1.0` one is clamped (a zero/negative size would rasterise a degenerate
+    /// atlas). A no-op if unchanged.
+    ///
+    /// **It moves this grid only.** A grid registered with [`add_grid`](Self::add_grid) was born
+    /// into the configuration the default had *then*, and stays on it — which is what ADR-0021's D1
+    /// means by a selector being per-grid, and what makes two terminals in two fonts drawable side
+    /// by side. Giving another grid a font of its own is S5 (#773).
     ///
     /// The cell size changes, so [`css_cell_width`](Self::css_cell_width)/`css_cell_height` move and
     /// **the consumer must re-fit** its column/row count and re-`resize`. Takes effect on the next
@@ -1973,22 +2185,15 @@ impl JustermRenderer {
         if (css_px - self.grid().font_size).abs() < f32::EPSILON {
             return Ok(());
         }
-        // Unlike the DPR, the font size is not re-read from anywhere external on a context restore —
-        // it lives only here. So on a lost context, still advance the field (so `restore` bakes at the
-        // new size) but skip the immediate re-bake (a dead atlas would burn the work, #269).
-        if self.gpu_work_must_wait() {
-            self.grid_mut().font_size = css_px;
-            return Ok(());
-        }
-        self.rebake_atlas(self.grid().font_family.clone(), css_px, self.global.dpr)
+        self.adopt_selectors(|g| g.font_size = css_px)
     }
 
     /// Set the font family (#413) — a CSS `font-family` string (`"monospace"`, `"'Fira Code', monospace"`,
-    /// …) the browser's text engine resolves, with its own fallback. Re-bakes the atlas for the new
-    /// family, exactly as a size change does (shared `rebake_atlas`): the glyph
-    /// box is re-measured, so the grid cell re-derives. Consumer policy (ADR-0017) — the renderer stays
-    /// font-agnostic; loading a webfont (`@font-face` / `FontFace`) before calling is the consumer's
-    /// job (an unloaded family silently falls back). A no-op if unchanged.
+    /// …) the browser's text engine resolves, with its own fallback. The default grid joins the
+    /// configuration keyed by the new family, exactly as a size change does (#772). Consumer policy
+    /// (ADR-0017) — the renderer stays font-agnostic; loading a webfont (`@font-face` / `FontFace`)
+    /// before calling is the consumer's job (an unloaded family silently falls back). A no-op if
+    /// unchanged, and like a size change it moves **this grid only**.
     ///
     /// The cell size may change, so [`css_cell_width`](Self::css_cell_width)/`css_cell_height` can move
     /// and **the consumer must re-fit** its column/row count and re-`resize`. Takes effect on the next
@@ -1998,115 +2203,24 @@ impl JustermRenderer {
         if family == self.grid().font_family {
             return Ok(());
         }
-        // Like the font size (#406) and unlike the DPR, the family lives only in this field — it is not
-        // re-read on a context restore. So on a lost context, advance the field (so `restore` bakes the
-        // new family) but skip the immediate re-bake (a dead atlas would burn the work, #269).
-        if self.gpu_work_must_wait() {
-            self.grid_mut().font_family = family;
-            return Ok(());
-        }
-        self.rebake_atlas(family, self.grid().font_size, self.global.dpr)
+        self.adopt_selectors(|g| g.font_family = family)
     }
 
-    /// Re-derive the grid cell and the glyph's place inside it from the current glyph box, DPR and
-    /// spacing policy (#338). Every path that can change any of those four — construction, a DPR
-    /// change (#322), a context restore (#269), and the font-size/family (#406/#413) + letter-spacing/
-    /// line-height setters — goes through here, so they cannot drift apart. It does NOT resize the buffer; the caller does, because `resize` also
-    /// re-reads what WebGL granted (#339).
-    fn recompute_cell(&mut self) {
-        let asked = device_cell(
-            self.config.char_size,
-            self.grid().letter_spacing,
-            self.grid().line_height,
-            self.global.dpr,
-        );
-        // Ask the implementation, do not predict it (#339's lesson, #359's bug): a cell the atlas
-        // texture cannot hold leaves that texture storage-less, and a storage-less sampler answers
-        // alpha 1 for every glyph. The terminal fills solid instead of failing.
-        self.config.cell_size = fit_cell_to_atlas(
-            asked,
-            PADDING,
-            GLYPHS_PER_LAYER as u32,
-            self.global.max_texture_size,
-        );
-        self.config.char_offset = glyph_offset(self.config.cell_size, self.config.char_size);
-    }
-
-    /// Adopt a new cell in the rasteriser and rebuild the atlas around it (#359).
+    /// Adopt a spacing policy on the default grid (#338/#359), or leave every field as it was.
     ///
-    /// The atlas slot is the padded CELL, so a spacing change resizes every slot and every baked
-    /// bitmap: block elements must be redrawn at the new cell, and every other glyph re-inset. This
-    /// is the same shape as a DPR change (#322) — build the replacement, commit only on success —
-    /// and it is why `setLetterSpacing`/`setLineHeight` cost an atlas re-bake rather than a uniform.
-    fn rebake_for_cell(&mut self) -> Result<(), JsValue> {
-        self.config
-            .rasterizer
-            .set_cell(self.config.cell_size, self.config.char_offset)?;
-        let (pad_w, pad_h) = self.config.rasterizer.padded_size();
-        if (pad_w, pad_h) == self.config.atlas_cell {
-            return Ok(()); // same slot: the resident bitmaps are still right
-        }
-        let atlas = Self::build_atlas(&self.global.gl, pad_w, pad_h)?;
-        let rebake = (|| -> Result<(), JsValue> {
-            self.bake_all_glyphs(&self.config.rasterizer, atlas, (pad_w, pad_h))?;
-            let u_padding_frac = uniform(&self.global.gl, self.global.program, "u_padding_frac")?;
-            self.set_padding_frac(self.global.program, &u_padding_frac, pad_w, pad_h);
-            Ok(())
-        })();
-        if let Err(e) = rebake {
-            unsafe { self.global.gl.delete_texture(atlas) };
-            return Err(e);
-        }
-        let old = self.config.atlas;
-        self.config.atlas = atlas;
-        self.config.atlas_cell = (pad_w, pad_h);
-        unsafe { self.global.gl.delete_texture(old) };
-        Ok(())
-    }
-
-    /// Adopt a spacing policy, or leave every field exactly as it was (#338/#359).
+    /// The atlas slot is the padded CELL, so a spacing change is a different *configuration* rather
+    /// than an edit to the current one — which is why `setLetterSpacing`/`setLineHeight` cost an
+    /// atlas bake rather than a uniform, and why two grids can now hold two spacings at once.
+    /// [`adopt_selectors`](Self::adopt_selectors) owns the atomicity and the lost-context deferral;
+    /// this only decides which fields move.
     ///
-    /// The atlas slot is the padded CELL, so a policy change re-bakes it. That can fail — the
-    /// rasteriser draws through the browser's 2D engine — and a half-applied change is worse than a
-    /// rejected one: `cell_size` would describe a cell the atlas does not hold, `draw` would send a
-    /// `u_cell_size` the viewport was not sized for, and the next `apply_frame` would upload bitmaps
-    /// of the wrong size into slots of the old one. `set_device_pixel_ratio` has always built its
-    /// replacement in a local and committed only on success; these setters did not, and their comment
-    /// claimed they did. Roll back instead.
+    /// The error is dropped rather than returned because both public setters return `()`; a failed
+    /// bake leaves the policy unchanged, so the next call retries (self-healing).
     fn adopt_spacing(&mut self, letter_spacing: f32, line_height: f32) {
-        let prev = (
-            self.grid().letter_spacing,
-            self.grid().line_height,
-            self.config.cell_size,
-            self.config.char_offset,
-        );
-        self.broadcast_spacing(letter_spacing, line_height);
-        self.recompute_cell();
-
-        // Keep the policy, defer the re-bake: an atlas built on a dead context comes back
-        // invalidated, so the work would be burned and then committed empty. `restore` re-derives
-        // everything — cell, atlas and buffer — from the surviving policy and the stored grid (#269).
-        // Note that `recompute_cell` above has already run, so the *cell* moves immediately while
-        // the atlas and the buffer wait; that ordering is a contract the consumer's docs describe.
-        //
-        // This used to be the resize's guard too, and said so: `resize` reads `drawingBufferWidth`
-        // back (#339), which is 0 while lost, so the adopt-what-fits loop shrank the grid to 1x1.
-        // `resize` guards itself as of #639 — on the read-back rather than on this predicate, since
-        // it holds the answer — so returning here is now about the re-bake alone.
-        if self.gpu_work_must_wait() {
-            return;
-        }
-        if self.rebake_for_cell().is_err() {
-            self.broadcast_spacing(prev.0, prev.1);
-            (self.config.cell_size, self.config.char_offset) = (prev.2, prev.3);
-            // The rasteriser was moved to the new cell before the bake; move it back, or it keeps
-            // drawing bitmaps sized for a cell nothing else believes in.
-            let _ = self.config.rasterizer.set_cell(prev.2, prev.3);
-            return;
-        }
-        debug_assert_eq!(self.config.atlas_cell, self.config.rasterizer.padded_size());
-        let (cols, rows) = self.grid().grid_size;
-        self.resize(cols, rows);
+        let _ = self.adopt_selectors(|g| {
+            g.letter_spacing = letter_spacing;
+            g.line_height = line_height;
+        });
     }
 
     /// Extra space between columns, in **CSS pixels** — the consumer's policy (ADR-0017), applied
@@ -2163,15 +2277,26 @@ impl JustermRenderer {
     ///   `drawingBufferWidth` already reads 0. Measured in Chromium: immediately after
     ///   `WEBGL_lose_context.loseContext()`, `gl.isContextLost()` is `true` and the flag below is
     ///   still `false`. Guarding on the flag alone is what let #639 survive its own first fix.
-    /// - the state machine's flag — our own bookkeeping. The mirror window: a context can come back
+    /// - the state machine's flags — our own bookkeeping. The mirror window: a context can come back
     ///   before we have processed `webglcontextrestored`, so the GL answers "live" while the
     ///   program, VAO and atlas it owned are still the destroyed ones and `restore` has not run.
-    ///   Baking into those would be as wrong as baking into a dead context.
+    ///   Baking into those would be as wasted as baking into a dead context.
     ///
-    /// So: defer if **either** says so. Note that `resize` does not use this — it holds the actual
-    /// answer, having just read the drawing buffer back, and guards on that instead.
+    /// **The second bullet described a window this function did not actually cover, until #772.**
+    /// It asked `is_lost()`, and `on_restored` clears exactly that flag while setting
+    /// `pending_rebuild` — so in the post-`webglcontextrestored`, pre-rebuild window both sources
+    /// answered "fine" and a setter went ahead and baked into resources `restore` replaced on the
+    /// next frame. The composition now lives on the state machine (`must_defer`), beside `action`,
+    /// which is where ADR-0027 D1 puts it: the source that owns the flags answers the question about
+    /// them. Note that `resize` does not use this — it holds the actual answer, having just read the
+    /// drawing buffer back, and guards on that instead.
     fn gpu_work_must_wait(&self) -> bool {
-        self.global.raw_gl.is_context_lost() || self.global.ctx_loss.state.borrow().is_lost()
+        let live = if self.global.raw_gl.is_context_lost() {
+            ContextLiveness::Dead
+        } else {
+            ContextLiveness::Usable
+        };
+        self.global.ctx_loss.state.borrow().must_defer(live)
     }
 
     /// Register a callback invoked when a lost context has not been restored within the deadline
@@ -2227,78 +2352,77 @@ impl JustermRenderer {
     /// next frame retries (self-healing, mirroring [`set_device_pixel_ratio`](Self::set_device_pixel_ratio)).
     fn restore(&mut self) -> Result<(), JsValue> {
         let dpr = web_sys::window().map_or(self.global.dpr, |w| w.device_pixel_ratio() as f32);
-        // Bake at the consumer's font family + size (#406/#413), not the hardcoded defaults — a
-        // set_font_size/set_font_family that arrived while lost advanced the field but skipped the bake.
-        let mut rasterizer =
-            Rasterizer::new(&self.grid().font_family, self.grid().font_size * dpr)?;
-        let (cell_w, cell_h) = rasterizer.glyph_box();
-        // Same as the DPR path: the policy outlives the lost context, and the atlas slot is the cell.
-        let cell = fit_cell_to_atlas(
-            device_cell(
-                (cell_w, cell_h),
-                self.grid().letter_spacing,
-                self.grid().line_height,
-                dpr,
-            ),
-            PADDING,
-            GLYPHS_PER_LAYER as u32,
-            self.global.max_texture_size,
-        );
-        rasterizer.set_cell(cell, glyph_offset(cell, (cell_w, cell_h)))?;
-        let (pad_w, pad_h) = rasterizer.padded_size();
 
-        // 1. Build the replacements without touching any live field. Every grid gets its own —
-        //    the VAO and the instance buffer are per-grid (#771), and both died with the context.
-        //    Rebuilding only the default's would leave a registered grid binding a VAO that belongs
-        //    to a dead context: the bind raises `INVALID_OPERATION` and leaves the *previous*
-        //    grid's VAO in place, so grid B would silently draw grid A's cells. The refill comes
-        //    with it — step 4 uploads every slot against a baseline invalidated for every grid — so
-        //    what #774 still owes is the *evidence*, per grid and through the real listener path,
-        //    not more of this.
+        // 1. Build every replacement without touching a live field.
         //
-        //    Order matters for the error paths: the atlas is built FIRST, because its `?` has no
-        //    cleanup arm and everything built before it would leak. Master leaked one pipeline that
-        //    way; N grid buffers behind the same `?` would have made it N+1.
-        let atlas = Self::build_atlas(&self.global.gl, pad_w, pad_h)?;
+        //    Every grid gets its own buffers — the VAO and the instance buffer are per-grid (#771),
+        //    and both died with the context. Rebuilding only the default's would leave a registered
+        //    grid binding a VAO that belongs to a dead context: the bind raises `INVALID_OPERATION`
+        //    and leaves the *previous* grid's VAO in place, so grid B would silently draw grid A's
+        //    cells. The refill comes with it — step 4 uploads every slot against a baseline
+        //    invalidated for every grid — so what #774 still owes is the *evidence*, per grid and
+        //    through the real listener path, not more of this.
+        //
+        //    And every **configuration** gets its own atlas, at the live DPR, keeping its own glyph
+        //    slots (#772). Baking one atlas here would have restored one grid's font and left the
+        //    others sampling a dead texture. Each `?`/`Err` arm below deletes what it built, so the
+        //    order of the three is free rather than load-bearing.
         let pipeline = Self::build_pipeline(&self.global.gl)?;
         let mut grid_buffers = Vec::with_capacity(self.grids.len());
+        let mut baked: Vec<BakedConfig> = Vec::new();
+        // Safety: live GL context; everything deleted here is this function's own and unpublished.
+        let discard = |gl: &glow::Context, bufs: &[GridBuffers], baked: &[BakedConfig]| unsafe {
+            for b in bufs {
+                gl.delete_vertex_array(b.vao);
+                gl.delete_buffer(b.instance_vbo);
+            }
+            for b in baked {
+                gl.delete_texture(b.atlas);
+            }
+            gl.delete_program(pipeline.program);
+            gl.delete_buffer(pipeline.quad_vbo);
+        };
         for _ in 0..self.grids.len() {
             match Self::build_grid_buffers(&self.global.gl, pipeline.quad_vbo) {
                 Ok(b) => grid_buffers.push(b),
                 Err(e) => {
-                    unsafe {
-                        for b in &grid_buffers {
-                            self.global.gl.delete_vertex_array(b.vao);
-                            self.global.gl.delete_buffer(b.instance_vbo);
-                        }
-                        self.global.gl.delete_program(pipeline.program);
-                        self.global.gl.delete_buffer(pipeline.quad_vbo);
-                        self.global.gl.delete_texture(atlas);
-                    }
+                    discard(&self.global.gl, &grid_buffers, &baked);
                     return Err(e);
                 }
             }
         }
-        let rebake = (|| -> Result<(), JsValue> {
-            self.bake_all_glyphs(&rasterizer, atlas, (pad_w, pad_h))?;
-            // The guard-band fraction is set once per program at construction, so the relinked program
-            // needs it again. (#298 translucency no longer needs a default-bg uniform — since #455 the
-            // packer emits a per-cell `bg_default` provenance flag instead of the shader inferring it.)
-            self.set_padding_frac(pipeline.program, &pipeline.u_padding_frac, pad_w, pad_h);
-            Ok(())
-        })();
-        if let Err(e) = rebake {
-            // Don't leak the half-built replacements; the live ones stay in place.
-            unsafe {
-                self.global.gl.delete_texture(atlas);
-                self.global.gl.delete_program(pipeline.program);
-                self.global.gl.delete_buffer(pipeline.quad_vbo);
-                for b in &grid_buffers {
-                    self.global.gl.delete_vertex_array(b.vao);
-                    self.global.gl.delete_buffer(b.instance_vbo);
+        // Only the configurations that will still have a holder once step 3 has run. An entry whose
+        // every grid has drifted off its key — a mid-loss `setFontSize` writes the selector and
+        // defers — is released by the reconcile, so baking it here would rasterise a whole glyph set
+        // into a texture deleted a few lines later. That is one full re-bake thrown away on every
+        // restore that follows a mid-loss font change: exactly the operation this epic exists to
+        // stop paying for.
+        let config_ids: Vec<_> = self
+            .configs
+            .ids()
+            .into_iter()
+            .filter(|&id| {
+                (0..self.grids.len()).any(|at| {
+                    self.grid_at(at).config == id && self.key_of(at) == *self.configs.key(id)
+                })
+            })
+            .collect();
+        for &id in &config_ids {
+            let key = self.configs.key(id).clone();
+            let built = Self::bake_config(
+                &self.global.gl,
+                self.global.max_texture_size,
+                &key,
+                Some(&self.configs.get(id).cache),
+                dpr,
+            );
+            match built {
+                Ok(b) => baked.push(b),
+                Err(e) => {
+                    discard(&self.global.gl, &grid_buffers, &baked);
+                    return Err(e);
                 }
             }
-            return Err(e);
         }
 
         // 2. Commit. Deleting the outgoing GL objects frees glow's handle slots, which is the whole
@@ -2316,8 +2440,7 @@ impl JustermRenderer {
         //    Harmless, and stated so nobody re-derives it: it is an error *flag*, with no state
         //    effect, and the next frame reads clean. What it costs is a consumer polling `getError`
         //    around a restore, which would see a failure that is not one.
-        let (old_program, old_quad_vbo, old_atlas) =
-            (self.global.program, self.global.quad_vbo, self.config.atlas);
+        let (old_program, old_quad_vbo) = (self.global.program, self.global.quad_vbo);
         let old_grid_buffers: Vec<GridBuffers> = grid_buffers
             .into_iter()
             .enumerate()
@@ -2336,33 +2459,51 @@ impl JustermRenderer {
                 old
             })
             .collect();
+        let old_atlases: Vec<glow::Texture> = config_ids
+            .into_iter()
+            .zip(baked)
+            .map(|(id, b)| {
+                self.bake_count = self.bake_count.wrapping_add(1);
+                self.configs.get_mut(id).adopt(b)
+            })
+            .collect();
         self.global.program = pipeline.program;
         self.global.quad_vbo = pipeline.quad_vbo;
-        self.config.atlas = atlas;
         self.global.u_projection = pipeline.u_projection;
         self.global.u_cell_size = pipeline.u_cell_size;
         self.global.u_char_size = pipeline.u_char_size;
         self.global.u_line_thickness = pipeline.u_line_thickness;
         self.global.u_char_offset = pipeline.u_char_offset;
+        self.global.u_padding_frac = pipeline.u_padding_frac;
         self.global.u_bg_alpha = pipeline.u_bg_alpha;
         self.global.u_cursor = pipeline.u_cursor;
         self.global.u_cursor_color = pipeline.u_cursor_color;
         self.global.u_cursor_text_color = pipeline.u_cursor_text_color;
         self.global.u_cursor_thickness = pipeline.u_cursor_thickness;
-        self.config.rasterizer = rasterizer;
-        self.config.char_size = (cell_w, cell_h);
-        // The spacing policy outlives the lost context (#269 + #338).
-        self.recompute_cell();
-        self.config.atlas_cell = (pad_w, pad_h);
         self.global.dpr = dpr;
         unsafe {
-            self.global.gl.delete_texture(old_atlas);
+            for atlas in old_atlases {
+                self.global.gl.delete_texture(atlas);
+            }
             self.global.gl.delete_program(old_program);
             self.global.gl.delete_buffer(old_quad_vbo);
             for b in &old_grid_buffers {
                 self.global.gl.delete_vertex_array(b.vao);
                 self.global.gl.delete_buffer(b.instance_vbo);
             }
+        }
+
+        // 3. Reconcile any grid whose **selectors** moved while the context was dead (#772). A
+        //    `setFontSize` / `setLetterSpacing` arriving mid-loss writes the selector and defers the
+        //    rest, so that grid now names a configuration whose key it no longer matches. Step 2
+        //    rebuilt the entries that exist; this is what moves a grid between them, and it runs
+        //    after the commit because the context has to be live for it — which it is, since this
+        //    whole function is only reached on a `Rebuild`. A failure here leaves a committed,
+        //    self-consistent restore and returns `Err`, so the retry latch stays set and the next
+        //    frame runs the whole thing again (idempotent, self-healing).
+        for at in 0..self.grids.len() {
+            let key = self.key_of(at);
+            self.select_config(at, key)?;
         }
 
         // 4. The loss reset the drawing-buffer size and the viewport; re-derive them from the grid at
@@ -2388,12 +2529,12 @@ impl JustermRenderer {
     /// addresses the drawing buffer — `readPixels`, GL interop, a picking rect — belongs here;
     /// [`css_cell_width`](Self::css_cell_width) is the derived view for CSS layout.
     pub fn cell_width(&self) -> u32 {
-        self.config.cell_size.0
+        self.config().cell_size.0
     }
 
     /// The cell height in **device pixels** (see [`cell_width`](Self::cell_width)).
     pub fn cell_height(&self) -> u32 {
-        self.config.cell_size.1
+        self.config().cell_size.1
     }
 
     /// The cell width in **CSS pixels**, unrounded. The consumer divides its available box by this
@@ -2405,13 +2546,13 @@ impl JustermRenderer {
     /// good — 33 device px at dpr 2 is 16.5, and 17 does not scale back to 33 (#331).
     #[wasm_bindgen(js_name = cssCellWidth)]
     pub fn css_cell_width(&self) -> f32 {
-        css_px(self.config.cell_size.0, self.global.dpr)
+        css_px(self.config().cell_size.0, self.global.dpr)
     }
 
     /// The cell height in **CSS pixels**, unrounded (see [`css_cell_width`](Self::css_cell_width)).
     #[wasm_bindgen(js_name = cssCellHeight)]
     pub fn css_cell_height(&self) -> f32 {
-        css_px(self.config.cell_size.1, self.global.dpr)
+        css_px(self.config().cell_size.1, self.global.dpr)
     }
 
     /// Size the renderer to a `cols`×`rows` **grid**. The drawing buffer becomes
@@ -2462,6 +2603,10 @@ impl JustermRenderer {
         // A grid must have at least one cell: `grid_px` floors the *buffer* to 1, and letting
         // `grid_size` keep a 0 would break `size == grid_px(grid_size, cell_size)`.
         let (mut cols, mut rows) = (cols.max(1), rows.max(1));
+        // The drawing buffer is the DEFAULT grid's, so it is sized by the configuration that grid
+        // selects into (#772). Bound once: nothing inside the loop can move a configuration, and a
+        // re-read per pass would only invite a future caller to believe otherwise.
+        let cell = self.config().cell_size;
 
         // WebGL is not obliged to give us the buffer we ask for (#339). The spec: "If the requested
         // width or height cannot be satisfied … a drawing buffer with smaller dimensions shall be
@@ -2494,10 +2639,7 @@ impl JustermRenderer {
         // disagreeing. So the adoption is unconditional: the loop only refines what to adopt.
         let (mut dw, mut dh) = (1, 1);
         for _ in 0..4 {
-            (dw, dh) = (
-                grid_px(cols, self.config.cell_size.0),
-                grid_px(rows, self.config.cell_size.1),
-            );
+            (dw, dh) = (grid_px(cols, cell.0), grid_px(rows, cell.1));
             self.global.canvas.set_width(dw as u32);
             self.global.canvas.set_height(dh as u32);
 
@@ -2542,10 +2684,7 @@ impl JustermRenderer {
             if bw >= dw && bh >= dh {
                 break; // granted in full; a larger grant is ignored, the grid still leads (#331)
             }
-            (cols, rows) = (
-                cells_that_fit(bw, self.config.cell_size.0),
-                cells_that_fit(bh, self.config.cell_size.1),
-            );
+            (cols, rows) = (cells_that_fit(bw, cell.0), cells_that_fit(bh, cell.1));
         }
         self.grid_mut().grid_size = (cols, rows);
         self.global.size = (dw, dh);
@@ -2569,8 +2708,8 @@ impl JustermRenderer {
         debug_assert_eq!(
             self.global.size,
             (
-                grid_px(self.grid().grid_size.0, self.config.cell_size.0),
-                grid_px(self.grid().grid_size.1, self.config.cell_size.1)
+                grid_px(self.grid().grid_size.0, cell.0),
+                grid_px(self.grid().grid_size.1, cell.1)
             ),
         );
         unsafe {
@@ -2638,6 +2777,7 @@ impl JustermRenderer {
         // The direct path packs immediately — it retains no grid for `render` to re-pack from, so
         // it cannot defer (#421). Clear the dirty flag: this pack IS the current state.
         let underline_colors = underline_colors.unwrap_or_default();
+        self.pins.clear(); // this pack's scope is itself — see the field's doc
         let result =
             self.resolve_and_pack(DEFAULT_SLOT, &cells, bg, fg, &underline_colors, blink_on);
         self.grid_mut().needs_repack = false;
@@ -2686,15 +2826,28 @@ impl JustermRenderer {
         // working set (an over-capacity frame is surfaced, not silently corrupted), and
         // sanitises control codepoints to space. Field-level borrows keep `&mut cache`
         // disjoint from the GL fields the upload closure needs.
-        let cache = &mut self.config.cache;
-        let rasterizer = &self.config.rasterizer;
+        //
+        // Which cache is the one this GRID selects into (#772) — not "the" cache, of which there is
+        // no longer one. The field-level split is what keeps `&mut configs` (the cache) disjoint
+        // from `&global` (the GL the upload closure needs); they are separate fields of the facade,
+        // so this borrows neither through the other.
         let gl = &self.global.gl;
-        let atlas = self.config.atlas;
-        let atlas_cell = self.config.atlas_cell; // padded (upload) dims
+        let pins = &mut self.pins;
+        let config = self.configs.get_mut(self.grids.grid_at(at).config);
+        let ConfigTier {
+            cache,
+            rasterizer,
+            atlas,
+            atlas_cell,
+            ..
+        } = config;
+        let (atlas, atlas_cell) = (*atlas, *atlas_cell);
+        let rasterizer = &*rasterizer;
         let (pad_w, pad_h) = atlas_cell;
         let slots = resolve_frame(
             cells,
             cache,
+            pins,
             |text, style, wide| {
                 // Rasterise, then classify with the hybrid signal (#297): a colour emoji comes
                 // back in its own palette (COLR/CBDT/SVG) → is_color_bitmap; an emoji the font
@@ -2721,7 +2874,13 @@ impl JustermRenderer {
         .map_err(|e| match e {
             ResolveError::Rasterize(js) => js,
             ResolveError::FrameExceedsCapacity => JsValue::from_str(
-                "justerm-renderer: frame references more distinct glyphs than the atlas can hold",
+                // Two causes since #772, and a consumer cannot tell them apart from the outside, so
+                // the message names both: this frame alone, or this frame together with the other
+                // grids drawn beside it through the same font configuration. Either way the pack is
+                // refused rather than drawn wrong — the grid keeps its last frame and this reaches
+                // the consumer as a thrown error.
+                "justerm-renderer: more distinct glyphs than the atlas can hold — this frame, or \
+                 this frame together with the other grids sharing its font configuration",
             ),
             ResolveError::GridOverflows { cols, rows } => JsValue::from_str(&format!(
                 "justerm-renderer: grid {cols}x{rows} has more cells than a u32 can count"
@@ -2796,6 +2955,10 @@ impl JustermRenderer {
         );
         self.grid_at_mut(at).instance_count = count as i32;
         self.upload_instances(at);
+        // Record the atlas state these instances were packed against, AFTER the resolve that may
+        // itself have evicted (#772). Last, so a frame that failed above records nothing.
+        let evictions = self.config_at(at).cache.evictions();
+        self.grids.grid_at_mut(at).packed_at_evictions = evictions;
         Ok(())
     }
 
@@ -2924,15 +3087,56 @@ impl JustermRenderer {
         // One grid's bad frame must not blank its neighbours, so a pack error is held and the
         // frame still draws. It surfaces after the draw, and the flag it left set means the next
         // render retries exactly as the single-grid path did.
+        // One pin set for the whole loop, so a grid cannot evict a slot a sibling packed earlier in
+        // the SAME frame (#772). Without it the second grid's pack repoints the first's committed
+        // slots, the first is not re-diffed because its instance floats did not change, and it draws
+        // **stably wrong** — measured, and invisible to a pixel check without a control: a grid drew
+        // 911 lit subpixels beside a sibling and 891 alone, every frame, with no error anywhere.
+        // With the pin the second pack is refused instead, which is exactly what an over-capacity
+        // *single* frame has always got (`FrameExceedsCapacity`), extended to the union.
+        self.pins.clear();
         let mut pack_error = None;
         for at in 0..self.grids.len() {
             if self.grids.viewport_at(at).is_none() {
                 continue;
             }
-            if self.grid_at(at).needs_repack {
+            // …and a grid whose atlas moved under it re-packs too, even though nothing it owns
+            // changed (#772). A sibling on the same configuration can evict a slot this grid's
+            // instances still address; the upload diff cannot notice, because the floats are the
+            // same and only the atlas behind them moved. Comparing counters costs a `u32` per grid
+            // per frame and is the whole of the guarantee ADR-0021 asked this tier for.
+            let stale =
+                self.grid_at(at).packed_at_evictions != self.config_at(at).cache.evictions();
+            if self.grid_at(at).needs_repack || stale {
                 match self.repack_from_grid(at) {
                     Ok(()) => self.grid_at_mut(at).needs_repack = false,
-                    Err(e) => pack_error = pack_error.or(Some(e)),
+                    Err(e) => {
+                        // A refused pack has to leave a **fixed point**, or the frames alternate.
+                        //
+                        // The pin only covers grids that actually packed this frame, and a clean
+                        // grid does not pack — so without this the cycle is: this grid is refused
+                        // and its sibling stays correct; next frame the sibling is clean, packs
+                        // nothing, leaves the pins empty, and *this* grid succeeds by repointing
+                        // the sibling's slots. Measured: `a` alternating 891 (right) / 911 (wrong)
+                        // with the error appearing only on alternate frames.
+                        //
+                        // Dirtying every grid that shares this configuration makes them all pack,
+                        // every frame, for as long as the overflow lasts — so the earlier ones pin
+                        // their glyphs first and stay correct, and the same grid is refused each
+                        // time. Registration order decides who wins, which is the order everything
+                        // else in this loop already uses (#771) and puts the implicit default grid
+                        // first. The extra packing costs what a re-pack costs, in a state that is
+                        // already reporting an error every frame; it is bounded by the overflow.
+                        let config = self.grid_at(at).config;
+                        for other in 0..self.grids.len() {
+                            if self.grids.viewport_at(other).is_some()
+                                && self.grid_at(other).config == config
+                            {
+                                self.grid_at_mut(other).needs_repack = true;
+                            }
+                        }
+                        pack_error = pack_error.or(Some(e));
+                    }
                 }
             }
         }
@@ -3004,6 +3208,11 @@ impl JustermRenderer {
     /// Live context with intact resources, as [`draw`](Self::draw) establishes.
     unsafe fn draw_grid(&self, at: usize, viewport: Viewport) {
         let grid = self.grid_at(at);
+        // The configuration THIS grid selects into (#772). Two grids in two fonts draw through two
+        // atlases with two cell geometries in the same frame, which is why every one of these is a
+        // per-draw uniform rather than a per-program one — `u_padding_frac` included, since the
+        // guard band is a fixed pixel count and its *fraction* differs with the padded cell.
+        let config = self.config_at(at);
         let (vx, vy, vw, vh) = viewport.gl_rect(self.global.size.1);
         let [dr, dg, db] = gl_rgb(grid.palette.default_bg);
         unsafe {
@@ -3025,7 +3234,7 @@ impl JustermRenderer {
             self.global.gl.active_texture(glow::TEXTURE0);
             self.global
                 .gl
-                .bind_texture(glow::TEXTURE_2D_ARRAY, Some(self.config.atlas));
+                .bind_texture(glow::TEXTURE_2D_ARRAY, Some(config.atlas));
             // The instance buffer already holds the current frame — `upload_instances` (in the
             // pack path) uploaded only the changed cells (#263), so render just binds + draws.
             // Binding THIS grid's VAO is what points the attributes at THIS grid's buffer: the
@@ -3043,18 +3252,26 @@ impl JustermRenderer {
             );
             self.global.gl.uniform_2_f32(
                 Some(&self.global.u_cell_size),
-                self.config.cell_size.0 as f32,
-                self.config.cell_size.1 as f32,
+                config.cell_size.0 as f32,
+                config.cell_size.1 as f32,
             );
             self.global.gl.uniform_2_f32(
                 Some(&self.global.u_char_size),
-                self.config.char_size.0 as f32,
-                self.config.char_size.1 as f32,
+                config.char_size.0 as f32,
+                config.char_size.1 as f32,
             );
             self.global.gl.uniform_2_f32(
                 Some(&self.global.u_char_offset),
-                self.config.char_offset.0 as f32,
-                self.config.char_offset.1 as f32,
+                config.char_offset.0 as f32,
+                config.char_offset.1 as f32,
+            );
+            // How much of each padded atlas cell is guard band, so the shader insets the texcoord
+            // to the content region (see FRAG_SRC). Set once per program until #772; per draw now,
+            // because the padded cell belongs to the configuration rather than to the context.
+            self.global.gl.uniform_2_f32(
+                Some(&self.global.u_padding_frac),
+                PADDING as f32 / config.atlas_cell.0 as f32,
+                PADDING as f32 / config.atlas_cell.1 as f32,
             );
             self.global.gl.uniform_1_f32(
                 Some(&self.global.u_line_thickness),
@@ -3121,7 +3338,7 @@ impl JustermRenderer {
                 .uniform_3_f32(Some(&self.global.u_cursor_text_color), tr, tg, tb);
             self.global.gl.uniform_1_f32(
                 Some(&self.global.u_cursor_thickness),
-                cursor_thickness(grid.cursor_thickness_frac, self.config.cell_size.0) as f32,
+                cursor_thickness(grid.cursor_thickness_frac, config.cell_size.0) as f32,
             );
 
             self.global
@@ -3166,22 +3383,26 @@ fn js_err(msg: String) -> JsValue {
 impl GridTier {
     /// One terminal's state at rest: no cells, no cursor, no overlays, every consumer policy at
     /// its default. The caller supplies what a grid cannot default — its own GPU buffers
-    /// (ADR-0021 D2), its palette, the four font/metric **selectors** (D1: per-grid settings, even
-    /// though the machinery they key is per-config), and the grid it is sized to.
+    /// (ADR-0021 D2), the configuration it selects into and the key that names it — which carries
+    /// the four font/metric **selectors** (D1: per-grid settings, even though the machinery they
+    /// key is per-config) — its palette, and the grid it is sized to.
+    ///
+    /// The four selectors are **unpacked from the key itself** rather than passed beside it, so the
+    /// grid's fields and the entry its handle names cannot be born disagreeing. `select_config` is
+    /// the only thing that moves either afterwards, and it moves both.
     ///
     /// One constructor for both the implicit default grid and every grid `add_grid` registers, so
     /// a field added to this tier cannot be initialised in one path and forgotten in the other —
     /// which is the mistake a second literal would invite the moment there were two of them.
     fn new(
         buffers: GridBuffers,
+        config: ConfigId,
+        key: &ConfigKey,
         palette: Palette,
-        font_size: f32,
-        font_family: String,
-        letter_spacing: f32,
-        line_height: f32,
         grid_size: (u32, u32),
     ) -> Self {
         GridTier {
+            config,
             instance_vbo: buffers.instance_vbo,
             vao: buffers.vao,
             cursor: None,
@@ -3192,10 +3413,10 @@ impl GridTier {
             cursor_contrast: DEFAULT_CURSOR_CONTRAST, // guard on by default (#368)
             cursor_thickness_frac: THICKNESS,         // alacritty's 0.15 by default (#369)
             palette,
-            letter_spacing,
-            line_height,
-            font_size,
-            font_family,
+            letter_spacing: key.letter_spacing(),
+            line_height: key.line_height(),
+            font_size: key.font_size(),
+            font_family: key.font_family().to_string(),
             grid_size,
             instances: Vec::new(),
             instance_count: 0,
@@ -3213,6 +3434,10 @@ impl GridTier {
             selection_fg: None,   // no selectionForeground override by default (#227)
             decoration_spans: Vec::new(), // no marker decorations by default (#393)
             last_blink_on: true,
+            // Nothing packed yet, and the fresh configuration has evicted nothing — so a grid born
+            // into an OLD configuration whose cache has already evicted reads as stale on its first
+            // render and packs, which is the answer that costs nothing and cannot be wrong.
+            packed_at_evictions: 0,
             needs_repack: false,
         }
     }

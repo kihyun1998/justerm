@@ -9,10 +9,18 @@ it.
 
 ## Governing decisions
 
-**None.**
-
+- [**ADR-0021 — one WebGL2 context draws N terminal grids as viewports**](../../adr/0021-single-context-multi-viewport.md)
+  — governs the atlas's **tier and lifetime** as of #772, and nothing else here: D2 puts the atlas,
+  rasteriser, glyph cache and the cell derived from them in the per-config tier, keyed by the four
+  consumer selectors and refcounted, and its *Consequences* own what LRU eviction costs once the cache
+  has more than one writer. The atlas's own design — two regions, the ASCII fast path, the eviction
+  policy itself — is still governed by nothing
 - [ADR-0018 — build justerm-renderer](../../adr/0018-justerm-renderer.md) — the crate exists and
   reimplements beamterm; the atlas design is inherited rather than decided here
+
+> **This section read "None." until #772.** That was true of the atlas as a *design* and stopped being
+> true of it as a *resource*: the moment two grids can share one cache, who owns it and when it dies
+> are decided somewhere, and that somewhere is ADR-0021.
 
 ## Design model
 
@@ -31,7 +39,16 @@ it.
   committed-but-unuploaded slot, and one more the module doc enumerates.
 - **A within-frame eviction can corrupt cells already packed in the same frame** — the atlas is
   mutable during a pass over the grid, so a slot handed out early can be reused before the frame is
-  drawn. This is the hazard the split exists to make testable.
+  drawn. This is the hazard the split exists to make testable. Within one frame it is *refused*
+  rather than repaired: a frame needing more distinct glyphs than a region holds is surfaced
+  (`FrameExceedsCapacity`) instead of drawn wrong.
+- **Since #772 the same eviction is a *cross-grid* event, and that half cannot be refused the same
+  way** — the cache is shared by every grid on one font configuration, so one grid's pack can repoint
+  a slot another grid's already-packed instances still address. The upload diff, which exists to
+  catch a slot changing under an undamaged cell, cannot see it: the instance floats did not change,
+  only what the atlas holds at the index they name. So the cache **counts its evictions**, a grid
+  records the count it packed against, and the render loop re-packs the difference away. See
+  [multi-viewport](multi-viewport.md)'s known holes for what that does and does not settle.
 
 ## Code
 

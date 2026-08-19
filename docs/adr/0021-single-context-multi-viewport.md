@@ -309,12 +309,46 @@ narrower claim. Verifying it would confirm a description of wezterm, not a premi
   moment a second writer exists. ghostty pays nothing here because its atlas grows and never repoints a
   slot (above); the first implementation of this tier owes an equivalent guarantee — a slot pin for the
   frame, a pack epoch, or forcing every registered grid to re-pack when its atlas evicts.
-- **A *global* selector inside the per-config key invalidates the whole registry at once.** The key is
-  (font family, size, spacing, DPR), and DPR is global — so a DPR change re-bakes **every** entry,
-  which is a different operation from the per-grid-selector case this ADR already describes (one
-  terminal joining a different entry). `max_texture_size` has the same shape, since it bounds the cell
-  through `recompute_cell`. Re-keying one entry and rebuilding all of them are separate paths in the
-  registry's lifetime design.
+  **Discharged by #772 (2026-08-19), and it took two of the three rather than one — because the
+  three are answers to two different questions.** The list above reads as a menu and is not one: an
+  eviction happens **only once a region is full**, so the hazard splits by whether the grids' *live*
+  glyph sets fit a region together, and each half needs a different mechanism.
+  - **They fit** (the reachable case). A sibling can still evict this grid's slots, because a full
+    region evicts on any miss and an idle grid's glyphs age out. Answered by the *pack epoch*, in its
+    cheapest form: the glyph cache counts what it repoints, a grid records the count it packed
+    against, and `render` re-packs any grid whose configuration has moved on. It converges, and that
+    is a property rather than a hope — the re-pack marks this grid's glyphs most-recently-used, so
+    the next eviction takes one of the dead slots.
+  - **They do not fit.** No epoch converges here, and re-packing alone leaves the grids alternating.
+    Answered by the *slot pin for the frame*, made **render-scoped**: the render loop hands one pin
+    set to every grid it packs, so a pack that cannot fit beside its siblings is **refused** exactly
+    as an over-capacity single frame already was (`ResolveError::FrameExceedsCapacity`) rather than
+    drawn wrong. A refusal also dirties every grid sharing that configuration, which is what makes
+    the outcome a fixed point instead of an alternation; registration order decides which grid keeps
+    its glyphs, the same order the draw loop already uses.
+  **What this was measured against, because pixels alone cannot see it.** Two grids at 1200 distinct
+  live glyphs each, against a region holding 1953: before the pin, one grid drew 911 lit subpixels
+  beside its sibling and **891 alone** — stably wrong, every frame, with no error anywhere and a
+  green pixel suite. After: 891 every frame, matching the control, with the refusal reported on every
+  frame. A control in the same run is the only thing that separates the two.
+- **A global input does not belong *in* the key; it belongs to the path that rebuilds every entry
+  (sharpened 2026-08-19, #772 — this bullet read *"the key is (font family, size, spacing, DPR)"*).**
+  The conclusion it drew was right and is now implemented: re-keying one entry and rebuilding all of
+  them are separate paths in the registry's lifetime. The premise was not. One canvas means one
+  drawing buffer and one `devicePixelRatio`, so the DPR is **globally constant across the registry at
+  any instant** — no two live entries can differ in it, and a component every key shares cannot
+  separate two keys. Putting it in would buy nothing and cost something real: a DPR change would have
+  to rewrite every key, and until it did, every entry's key would be a lie. So the key is the four
+  consumer selectors (family, size, letter-spacing, line-height) and the DPR is a global input every
+  entry is baked at; `setDevicePixelRatio` rebuilds all of them in place, atomically — which is the
+  one case where editing a shared entry is right rather than wrong, because nobody is being moved
+  into a configuration they did not ask for. `max_texture_size` has the same shape and the same
+  answer.
+  **ghostty does hash the DPI** — `DesiredSize` is `{ points, xdpi, ydpi }` (`src/font/face.zig:50`),
+  hashed into the grid key (`src/font/SharedGridSet.zig:564`) — and it does not transfer, for the
+  reason already recorded for the cell in [multi-viewport](../map/territory/multi-viewport.md): a
+  ghostty `Surface` is an OS window that can be dragged onto a monitor of its own density, so its DPI
+  genuinely *is* per-surface. N viewports on one canvas have one density between them.
 - **Memory becomes a scale question the current shape never had.** All grids' instance buffers are
   resident; a hidden terminal costs its buffer even when not drawn. **Measured in #770, so this now
   carries a number rather than a worry**: ≈171 B/cell as an upper bound (a wasm-heap slope, which

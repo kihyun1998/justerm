@@ -236,13 +236,19 @@
     r.isGridDrawn(0) === true &&
     isColor(snapshot(), (COLS - 1) * cw, (ROWS - 1) * ch, cw, ch, defaultBgOf(COLS - 1, ROWS - 1));
 
-  // ── A registered grid follows the font configuration it selects into ─────────────────────────
-  // The four font/metric fields are per-grid *as settings* (ADR-0021 D1) while the atlas, rasteriser
-  // and cell they key are per-config (D2) — and until #772 there is exactly ONE config, so every
-  // grid selects into it. `draw_grid` derives the underline thickness from the drawing grid's own
-  // `font_size`, so a grid keeping its birth value after a `setFontSize` would draw a *different
-  // underline weight in the same font* and never come back. Measured rather than reasoned about:
-  // an underlined SPACE has no glyph ink, so every lit row in its cell is the underline.
+  // ── A registered grid keeps the configuration it was born into ───────────────────────────────
+  // **This check inverted at #772, and the inversion is the slice.** The four font/metric fields are
+  // per-grid *as settings* (ADR-0021 D1) while the atlas, rasteriser and cell they key are per-config
+  // (D2). While there was exactly ONE config, every grid selected into it, so the honest bookkeeping
+  // was to write a `setFontSize` to every grid — and this check asserted that it was
+  // (`aRegisteredGridFollowsTheFontConfigurationItSelectsInto`, #771). Now each grid has a
+  // configuration of its own to select, so `setFontSize` moves the DEFAULT grid to a different entry
+  // and leaves this one exactly where it was. Same rule, opposite pixels, because the thing the rule
+  // is about finally exists.
+  //
+  // `draw_grid` derives the underline thickness from the drawing grid's own `font_size`, which is
+  // what makes the difference visible at all. Measured rather than reasoned about: an underlined
+  // SPACE has no glyph ink, so every lit row in its cell is the underline.
   const underlineRows = (px, x0, y0) => {
     let rows = 0;
     for (let y = y0; y < y0 + ch; y++) {
@@ -290,8 +296,15 @@
   // The control first: assert the window this check needs actually exists. At the default font the
   // thickness is 1, so if the bigger size did not move it there is nothing here to measure.
   checks.theBiggerFontDrawsAThickerUnderline = defaultRows > 1;
-  checks.aRegisteredGridFollowsTheFontConfigurationItSelectsInto =
-    registeredRows === defaultRows;
+  // …and the grid that did not ask for the bigger font still draws at the smaller one's weight.
+  // Stated as an inequality plus a floor rather than as `=== 1`: the point is that the two grids
+  // disagree, and that the one that stayed behind is still drawing something.
+  checks.aRegisteredGridKeepsTheConfigurationItWasBornInto =
+    registeredRows < defaultRows && registeredRows >= 1;
+  // Two configurations are live at this moment, which is the state the check above is about — and
+  // `atlasCount` is how it is said out loud (#772). Without this, "the two disagree" would also be
+  // true of a renderer that had simply stopped drawing the registered grid.
+  checks.theTwoGridsAreOnTwoConfigurations = r.atlasCount() === 2;
 
   // ── Errors still throw rather than being absorbed ────────────────────────────────────────────
   checks.anUnknownGridCannotBeFed = threw(() => feedGrid(9999, 2, 1, () => A_BG));

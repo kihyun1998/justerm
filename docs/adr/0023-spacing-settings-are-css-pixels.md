@@ -74,7 +74,7 @@ than solving it.
 ### The payoff is at the DPR change
 
 Because spacing is stored logically, a density change re-derives the cell correctly for free:
-`rebake_atlas` re-measures the glyph box at the new device size and re-applies the same CSS-px spacing
+`bake_config` re-measures the glyph box at the new device size and re-applies the same CSS-px spacing
 (#322 + #338 + #359). A gap keeps its apparent size when the window moves to another monitor. A
 device-px setting would need the consumer to notice the DPR change and re-scale, which is exactly the
 kind of derived work ADR-0017 keeps out of consumers.
