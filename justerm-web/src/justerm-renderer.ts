@@ -734,6 +734,18 @@ export class JustermRenderer implements Renderer {
      * rebuilds inside its next `render()`, not when this event fires, so re-applying the box first
      * would copy the pre-restore numbers. One extra present on a rare event is the price.
      */
+    // Order is load-bearing, and #772 is what made it so. `render()` runs the renderer's `restore`,
+    // which re-derives the drawing buffer — and now also re-selects any font configuration whose
+    // selectors moved while the context was dead, so the CELL can land here rather than at the
+    // setter that asked for it. `applyCanvasCssBox` then reads `cssWidth`/`cssHeight` back from the
+    // renderer, so it sees the post-restore numbers. Swap the two lines and the display box
+    // describes the pre-loss buffer until something else happens to re-fit.
+    //
+    // Checked rather than assumed while sweeping #772: nothing here re-fits `cols`/`rows` after a
+    // restore, and nothing needs to — `restore` re-derives the buffer from the grid it already
+    // holds, and this reads the result. The concern that a cell moving without a consumer-visible
+    // signal could strand {@link FitController}'s dedupe is closed by that, **for as long as this
+    // handler keeps rendering before it reads the box back**.
     this.onContextRestored = (): void => {
       this.backend.render();
       this.applyCanvasCssBox();
