@@ -1791,6 +1791,37 @@ test("adopting a new device pixel ratio re-bakes and re-applies the canvas box (
   expect(after.rows).toBe(before.rows);
 });
 
+// #339, re-homed by #773 — the browser's drawing-buffer clamp, and who adopts it.
+//
+// Until renderer 0.15.0 the renderer shrank the *grid* to what the granted buffer held, so
+// `terminalSize()` was "the grid actually adopted" and this package needed no test of its own. The
+// renderer clamps only the **surface** now (a buffer shared by N grids belongs to none of them), so
+// the read-back is the widget's — and this is the only gate on it anywhere in `justerm-web`. Its
+// absence is why five doc sites here could go on describing the old outcome without anything firing.
+//
+// Without the read-back the failure is silent in the way this repo treats as worst: no error, the
+// grid keeps the columns it asked for, and every cell past the buffer's edge is clipped by the
+// scissor — drawn nowhere, while `terminalSize()` still reports them to the application driving the
+// engine.
+test("an oversized fit adopts the grid the granted buffer holds (#339/#773)", async ({ page }) => {
+  await expect(page.getByRole("button", { name: /Finish command/ })).toBeVisible();
+
+  // 200000 CSS px is far past any implementation's buffer limit at any sane cell.
+  const p = await page.evaluate(() => window.__oversizeProbe!(200_000));
+
+  // PRECONDITION, not a result: if the request did not actually exceed what the implementation
+  // allocates, every assertion below passes vacuously on a machine with a huge MAX_TEXTURE_SIZE.
+  expect(p.askedCols * p.cellW).toBeGreaterThan(p.maxTexture);
+
+  // The widget adopted less than it asked for…
+  expect(p.cols).toBeLessThan(p.askedCols);
+  // …and it is the largest grid the GRANTED buffer holds, not an arbitrary smaller one.
+  expect(p.cols * p.cellW).toBeLessThanOrEqual(p.bufW);
+  expect((p.cols + 1) * p.cellW).toBeGreaterThan(p.bufW);
+  // …and the display box still describes the buffer that exists, so nothing is stretched.
+  expect(Math.abs(p.appliedW * p.dpr - p.bufW)).toBeLessThan(1);
+});
+
 // #325 follow-up, found by measuring the slice rather than by reading it: **a GL restore is the one
 // buffer change with no consumer call behind it.**
 //

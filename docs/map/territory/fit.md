@@ -97,14 +97,24 @@ names as its model — exactly the kind of detail that diverges quietly.
   the key. It self-heals on the next observer fire, and there may not be one. Found by #632's
   completeness pass; the cure is to read the geometry at flush time rather than replay a snapshot,
   which is what xterm's `fit()` does by construction.
-- **The key remembers what was *proposed*, not what the renderer *adopted*.** A drawing-buffer clamp
-  (#339) can make the renderer take less than it was asked for, and then the remembered pair describes
-  a grid nobody holds — the same defect #632 fixed, one axis over. `terminalSize()` is the documented
-  truth; the controller never reads it, because `ResizePort` is write-only.
+- ~~**The key remembers what was *proposed*, not what the renderer *adopted*.**~~ **Closed by #773**
+  (renderer 0.15.0), and by a change of owner rather than by a fix here. A drawing-buffer clamp
+  (#339) used to shrink the *grid*, so the remembered pair could describe a grid nobody held — the
+  same defect #632 fixed, one axis over. Nothing clamps a grid now: `resizeGrid` records what it was
+  told and the **surface** adopts the browser's grant, which `cssWidth`/`cssHeight` report. So
+  proposed and adopted are the same pair, and `terminalSize()` is an echo of it.
+
+  What the closure does *not* say is that the clamp went away. It moved: a consumer that asks for
+  more than the buffer can hold now gets a grid drawing outside its own rect, clipped by the scissor
+  rather than silently reduced. Reading `cssWidth()` back is how that is noticed.
 - ~~**No `matchMedia` listener watches for resolution changes.**~~ **Closed by #325** (2026-08-10):
   `JustermRenderer` now owns a resolution watcher that re-bakes at the new density and re-applies the
-  canvas display box. **It does not re-fit**, deliberately — the grid is the consumer's (#417/#578)
-  and the widget holds no container measurement — so this territory's job is unchanged and a consumer
+  canvas display box — and since #773 it also re-derives the **drawing buffer** from the grid it is
+  holding, because the renderer stopped doing that (a buffer shared by N grids belongs to none of
+  them). Three paths reach the same private step: a density change, a font or spacing change, and a
+  GL restore that adopted a density nobody notified. **It still does not re-fit**, deliberately — the
+  grid is the consumer's (#417/#578) and the widget holds no container measurement — so this
+  territory's job is unchanged and a consumer
   that wants the grid re-derived still calls `resize()` with its own box, as it already must after a
   font or spacing change. xterm.js draws the same line: its `handleDevicePixelRatioChange` calls no
   resize either.

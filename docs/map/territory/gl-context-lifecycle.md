@@ -114,12 +114,19 @@ machine that decides what the renderer does in between.
 - **A restore is also a *density* adoption, and that half had no consumer trigger at all** (#325).
   `restore()` re-reads the **live** device pixel ratio rather than the one the renderer was built
   with — deliberately, because a DPR notification arriving during a loss is *dropped* rather than
-  queued — so the cell, and with it the drawing buffer, can move across a restore nobody asked for.
-  The bullet above resolves the *clamp* case by having the consumer repeat its fit when
-  `isContextLost()` goes false; this one cannot be reached that way, because with no resize in
-  flight nothing tells a consumer a repeat is due. So the widget re-applies the canvas display box
-  itself on `webglcontextrestored`, and **drives one render first** — the rebuild happens inside
-  that render, so applying the box before it copies the pre-restore numbers (mutation-checked).
+  queued — so the **cell** can move across a restore nobody asked for. The bullet above resolves the
+  *clamp* case by having the consumer repeat its fit when `isContextLost()` goes false; this one
+  cannot be reached that way, because with no resize in flight nothing tells a consumer a repeat is
+  due. So the widget handles it on `webglcontextrestored`: it **drives one render first** — the
+  rebuild happens inside that render, so acting before it uses the pre-restore cell
+  (mutation-checked) — then re-derives the drawing buffer from the grid it holds, re-applies the
+  canvas display box, and renders again (a resized buffer is a cleared one).
+
+  **The buffer stopped moving on its own at renderer 0.15.0 (#773)**, which is why this bullet now
+  names three steps where it named one: the renderer re-bakes at the live density and leaves the
+  buffer as asked, so a restore that adopts a new density leaves a grid too large for the buffer
+  holding it until the widget re-derives. Caught by this territory's own e2e rather than by reading
+  — the #325 test went red at the migration with a 1369-tall grid inside a 703-tall buffer.
   Measured before the fix: dpr 1 → 2 across a loss left a `2556x1369` buffer under a canvas styled
   `1278x703`. Note which half was wrong — the **width** was accidentally correct because the cell
   doubled exactly (9 → 18), and only the height was off (`703` against `684.5`, the cell having gone
