@@ -1,0 +1,307 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>justerm-renderer proof — N grids drawn as viewports on one canvas (#771)</title>
+<style>
+  body { margin: 0; background: #000; }
+  #c { display: block; image-rendering: pixelated; }
+</style>
+<!--
+  #771 (Epic #287 S3): one GL context draws N grids onto one canvas, each into its own rect. This is
+  the first slice of the epic that is demoable on its own, and the first evidence that its premise
+  holds at all.
+
+  What the pixels here have to establish, and what each check is discriminating against:
+
+    · a placed grid draws INSIDE its rect and its neighbours' pixels are untouched — the failure it
+      rules out is one grid's clear or cells reaching the whole buffer (no scissor / no per-rect
+      projection);
+    · the rect the consumer measured, top-left origin, lands where the consumer meant — the failure
+      is the y-flip, which is invisible on a rect that happens to be centred and catastrophic on one
+      that is not, so the two grids here sit at OPPOSITE ends of the buffer. Swap the flip and both
+      checks fail, in each other's place;
+    · a grid that is registered and not drawn costs no pixels AND no pack — the second half is the
+      decision this slice makes about hidden terminals, and it is asserted through `packs()`;
+    · a single-grid consumer's output is unchanged, measured as a CONTROL in the same run: the same
+      frame is drawn with no siblings, its pixels captured, and compared after two grids are placed.
+
+  Every assertion is dpr-independent (the runner sweeps 1 / 1.1 / 1.5 / 2) but the y-flip is not
+  dpr-INSENSITIVE — the buffer height it subtracts from is `rows * cell`, and the cell is measured
+  at `FONT_SIZE * dpr`. A flip written against the CSS box instead of the device buffer passes at
+  dpr 1 and fails at the rest, which is the reason that check is worth running four times.
+
+  Read in device px (cell_width()/cell_height() ARE u_cell_size, #331).
+
+  Build: wasm-pack build --target web --dev --out-dir pkg
+-->
+<canvas id="c" width="48" height="16"></canvas>
+<script type="module">
+  import init, { JustermRenderer } from "../pkg/justerm_renderer.js";
+  import { readRect } from "./proof.js";
+  await init();
+
+  const COLS = 8, ROWS = 4, N = COLS * ROWS;
+  const SPACE = 0x20;
+  const RGB = (c) => ((2 << 24) | c) >>> 0;   // absolute Rgb colour ref (tag 2); Default = 0 (tag 0)
+  const DEF_FG = 0xffffff, DEF_BG = 0x101018;
+  const A_BG = 0xcc2020, B_BG = 0x20cc20, C_BG = 0x2020cc;
+
+  const palette = new Uint32Array(256);
+  const r = new JustermRenderer("#c", palette, DEF_FG, DEF_BG);
+  const gl = document.querySelector("#c").getContext("webgl2");
+
+  const checks = {};
+  const threw = (fn) => { try { fn(); return false; } catch { return true; } };
+
+  r.resize(COLS, ROWS);
+  const [cw, ch] = [r.cell_width(), r.cell_height()];
+  const [bw, bh] = [gl.drawingBufferWidth, gl.drawingBufferHeight];
+
+  // ── Frame helpers ────────────────────────────────────────────────────────────────────────────
+  // A Full damage frame is one span per LINE, span-ordered — not one covering span.
+  const frame = (cols, rows, bgOf) => {
+    const cells = cols * rows;
+    const spans = new Uint32Array(rows * 5);
+    for (let row = 0; row < rows; row++) spans.set([row, 0, cols - 1, row * cols, cols], row * 5);
+    const bg = new Uint32Array(cells);
+    for (let i = 0; i < cells; i++) bg[i] = RGB(bgOf(i % cols, (i / cols) | 0));
+    return [
+      new Uint32Array([cols, rows, 0 /* Full */, 0, 0, 0, 0, 1 /* blink_on */]),
+      spans,
+      new Uint32Array(cells).fill(SPACE),
+      new Uint32Array(cells),              // fg: Default — a SPACE has no ink, so bg IS the pixel
+      bg,
+      new Uint16Array(cells), new Uint32Array(cells), [],
+    ];
+  };
+  const feedDefault = (cols, rows, bgOf) => r.apply_damage(...frame(cols, rows, bgOf));
+  const feedGrid = (id, cols, rows, bgOf) => r.applyDamageTo(id, ...frame(cols, rows, bgOf));
+
+  // The default grid's frame: every cell a different, deterministic colour, so a region that moved
+  // by one cell is as visible as one that changed colour.
+  const defaultBgOf = (col, row) => 0x400000 + col * 0x000010 + row * 0x001000;
+
+  // ── Pixel helpers ────────────────────────────────────────────────────────────────────────────
+  const snapshot = () => {
+    const img = readRect(gl, { x: 0, y: 0, w: bw, h: bh });
+    // readPixels counts rows from the bottom; flip to top-left origin, the space the consumer
+    // measures a rect in and the space `Viewport` stores one in.
+    return (x, y) => { const i = ((bh - 1 - y) * bw + x) * 4; return [img.buf[i], img.buf[i + 1], img.buf[i + 2]]; };
+  };
+  const near = (v, t) => Math.abs(v - t) <= 4;
+  /** Whether the cells of the default grid's own frame show through at `[col, col+cols)`, `row`. */
+  const defaultShowsThrough = (px, col, row, cols) =>
+    Array.from({ length: cols }, (_, i) =>
+      isColor(px, (col + i) * cw, row * ch, cw, ch, defaultBgOf(col + i, row))).every(Boolean);
+  const isColor = (px, x0, y0, w, h, packed) => {
+    const [er, eg, eb] = [(packed >> 16) & 0xff, (packed >> 8) & 0xff, packed & 0xff];
+    for (let y = y0; y < y0 + h; y++)
+      for (let x = x0; x < x0 + w; x++) {
+        const [pr, pg, pb] = px(x, y);
+        if (!near(pr, er) || !near(pg, eg) || !near(pb, eb)) return false;
+      }
+    return true;
+  };
+
+  // ── Control: the single-grid renderer, before any sibling exists ─────────────────────────────
+  // Captured in THIS run at THIS dpr, so the comparison below is against a measurement rather than
+  // against a number someone wrote down. This is also the AC "a single-grid consumer's output is
+  // unchanged": everything after this point adds grids and must not move these pixels.
+  feedDefault(COLS, ROWS, defaultBgOf);
+  r.render();
+  const solo = readRect(gl, { x: 0, y: 0, w: bw, h: bh }).buf.slice();
+  const soloPx = snapshot();
+  checks.theSingleGridPathStillDrawsItsOwnFrame =
+    isColor(soloPx, 0, 0, cw, ch, defaultBgOf(0, 0)) &&
+    isColor(soloPx, (COLS - 1) * cw, (ROWS - 1) * ch, cw, ch, defaultBgOf(COLS - 1, ROWS - 1));
+
+  // ── Two grids, at opposite ends of the buffer ────────────────────────────────────────────────
+  // A: the TOP-left two cells. B: the BOTTOM-left two cells. Placed in device px, top-left origin.
+  const a = r.addGrid(palette, DEF_FG, DEF_BG);
+  const b = r.addGrid(palette, DEF_FG, DEF_BG);
+  const RECT_W = 2 * cw, RECT_H = ch;
+  const A_RECT = { x: 0, y: 0, w: RECT_W, h: RECT_H };
+  const B_RECT = { x: 0, y: bh - RECT_H, w: RECT_W, h: RECT_H };
+
+  // Fed BEFORE either is placed: a grid holds its own cells whether or not it draws.
+  feedGrid(a, 2, 1, () => A_BG);
+  feedGrid(b, 2, 1, () => B_BG);
+  r.render();
+  // Neither is placed, so neither drew — the buffer is still exactly the single-grid frame.
+  const unplaced = readRect(gl, { x: 0, y: 0, w: bw, h: bh }).buf;
+  checks.anUnplacedGridDrawsNothingEvenWhenItHasContent =
+    unplaced.every((v, i) => v === solo[i]);
+
+  r.setViewport(a, A_RECT.x, A_RECT.y, A_RECT.w, A_RECT.h);
+  r.setViewport(b, B_RECT.x, B_RECT.y, B_RECT.w, B_RECT.h);
+  r.render();
+  const px = snapshot();
+
+  // Two grids with different content, drawn at once, by one context onto one canvas.
+  checks.twoGridsDrawDifferentContentAtOnce =
+    isColor(px, A_RECT.x, A_RECT.y, A_RECT.w, A_RECT.h, A_BG) &&
+    isColor(px, B_RECT.x, B_RECT.y, B_RECT.w, B_RECT.h, B_BG);
+
+  // The y-flip, stated as the thing that fails without it: A is at the TOP, so it must NOT be at
+  // the bottom, and B the reverse. An unflipped `gl.viewport` puts each exactly where the other is,
+  // so these two checks are each other's discriminator.
+  // Whose cells a grid draws, named separately from whether it drew at all. One program means one
+  // VAO would be a plausible arrangement, and it is the wrong one: an attribute pointer captures the
+  // buffer that was bound when it was set, so a shared VAO makes every grid draw whichever grid's
+  // buffer was pointed at last. That failure is silent — a full, plausible terminal, belonging to
+  // someone else — so it gets its own assertion rather than being folded into "A drew A".
+  checks.aGridDrawsItsOwnCellsAndNotAnotherGrids =
+    !isColor(px, A_RECT.x, A_RECT.y, cw, ch, defaultBgOf(0, 0));
+
+  checks.theTopRectIsNotAtTheBottom = !isColor(px, B_RECT.x, B_RECT.y, B_RECT.w, B_RECT.h, A_BG);
+  checks.theBottomRectIsNotAtTheTop = !isColor(px, A_RECT.x, A_RECT.y, A_RECT.w, A_RECT.h, B_BG);
+
+  // Nothing bleeds: the cell immediately right of A's rect, and the one immediately below it, are
+  // still the default grid's — so neither A's clear nor A's cells left its rect.
+  checks.nothingBleedsSidewaysOutOfARect = isColor(px, RECT_W, 0, cw, ch, defaultBgOf(2, 0));
+  checks.nothingBleedsDownwardsOutOfARect = isColor(px, 0, ch, cw, ch, defaultBgOf(0, 1));
+  // …and the whole middle of the buffer — every cell no grid was placed over — is byte-identical to
+  // the single-grid capture. This is the check that fails if a per-grid clear escapes its scissor.
+  let untouched = true;
+  for (let row = 1; row < ROWS - 1 && untouched; row++)
+    for (let col = 0; col < COLS && untouched; col++)
+      untouched = isColor(px, col * cw, row * ch, cw, ch, defaultBgOf(col, row));
+  checks.everyCellNoGridWasPlacedOverIsUnchanged = untouched;
+
+  // A frame WIDER than the rect it is drawn into is clipped, not spilled: 6 cells of content in a
+  // 2-cell rect leaves the third cell showing the default grid.
+  feedGrid(a, 6, 1, () => A_BG);
+  r.render();
+  const wide = snapshot();
+  checks.aFrameWiderThanItsRectIsClippedToIt =
+    isColor(wide, A_RECT.x, A_RECT.y, A_RECT.w, A_RECT.h, A_BG) &&
+    isColor(wide, RECT_W, 0, cw, ch, defaultBgOf(2, 0));
+  feedGrid(a, 2, 1, () => A_BG);
+  r.render();
+
+  // ── Hiding and removing, in pixels ───────────────────────────────────────────────────────────
+  r.clearViewport(b);
+  r.render();
+  const hidden = snapshot();
+  checks.hidingAGridStopsItsPixels = defaultShowsThrough(hidden, 0, ROWS - 1, 2);
+  checks.hidingOneGridLeavesTheOtherDrawing =
+    isColor(hidden, A_RECT.x, A_RECT.y, A_RECT.w, A_RECT.h, A_BG);
+
+  r.setViewport(b, B_RECT.x, B_RECT.y, B_RECT.w, B_RECT.h);
+  r.render();
+  // Coming back is a PLACEMENT, not a rebuild: nothing was fed to B between the hide and the show,
+  // and its cells are on screen again. That is the re-attach cost Epic #287 exists to remove,
+  // observed rather than argued.
+  checks.aHiddenGridComesBackWithoutBeingRefed =
+    isColor(snapshot(), B_RECT.x, B_RECT.y, B_RECT.w, B_RECT.h, B_BG);
+
+  // ── A registered-but-not-drawn grid is not packed either (this slice's decision) ──────────────
+  // `Option<Viewport>` gates the draw; nothing gated the work behind it, and a hidden grid the
+  // consumer keeps feeding would pack and upload every frame for pixels nobody sees. Measured at
+  // ~0.4 ms/frame on a release build at 120x40, which is why the gate is here rather than deferred.
+  const c = r.addGrid(palette, DEF_FG, DEF_BG);
+  r.render();                                   // settle: every drawn grid is clean from here
+  feedGrid(c, 2, 1, () => C_BG);
+  const packsBefore = r.packs();
+  r.render();
+  checks.aHiddenGridIsFedWithoutBeingPacked = r.packs() === packsBefore;
+
+  const C_RECT = { x: bw - RECT_W, y: 0, w: RECT_W, h: RECT_H };
+  r.setViewport(c, C_RECT.x, C_RECT.y, C_RECT.w, C_RECT.h);
+  r.render();
+  // …and the deferral self-heals: the frame it was fed while hidden is what it draws when placed,
+  // packed exactly once at that moment.
+  checks.placingAGridPacksItExactlyOnce = r.packs() === packsBefore + 1;
+  checks.aGridPlacedAfterBeingFedShowsWhatItWasFed =
+    isColor(snapshot(), C_RECT.x, C_RECT.y, C_RECT.w, C_RECT.h, C_BG);
+  // Three grids, three rects, one canvas, one context.
+  checks.threeGridsDrawAtOnce = (() => {
+    const p = snapshot();
+    return isColor(p, A_RECT.x, A_RECT.y, A_RECT.w, A_RECT.h, A_BG) &&
+      isColor(p, B_RECT.x, B_RECT.y, B_RECT.w, B_RECT.h, B_BG) &&
+      isColor(p, C_RECT.x, C_RECT.y, C_RECT.w, C_RECT.h, C_BG);
+  })();
+
+  r.removeGrid(c);
+  r.render();
+  checks.removingADrawnGridStopsItsPixels = defaultShowsThrough(snapshot(), COLS - 2, 0, 2);
+
+  // ── The buffer is the surface's, not one grid's ──────────────────────────────────────────────
+  // `resize` re-places the default over the whole (new) buffer; a placed grid keeps the rect the
+  // consumer gave it, in device px, and is the consumer's to re-place. Assert the default followed
+  // the buffer rather than that the others did not move — the latter is the same statement twice.
+  r.resize(COLS, ROWS);
+  feedDefault(COLS, ROWS, defaultBgOf);
+  r.render();
+  checks.resizeKeepsTheDefaultOverTheWholeBuffer =
+    r.isGridDrawn(0) === true &&
+    isColor(snapshot(), (COLS - 1) * cw, (ROWS - 1) * ch, cw, ch, defaultBgOf(COLS - 1, ROWS - 1));
+
+  // ── A registered grid follows the font configuration it selects into ─────────────────────────
+  // The four font/metric fields are per-grid *as settings* (ADR-0021 D1) while the atlas, rasteriser
+  // and cell they key are per-config (D2) — and until #772 there is exactly ONE config, so every
+  // grid selects into it. `draw_grid` derives the underline thickness from the drawing grid's own
+  // `font_size`, so a grid keeping its birth value after a `setFontSize` would draw a *different
+  // underline weight in the same font* and never come back. Measured rather than reasoned about:
+  // an underlined SPACE has no glyph ink, so every lit row in its cell is the underline.
+  const underlineRows = (px, x0, y0) => {
+    let rows = 0;
+    for (let y = y0; y < y0 + ch; y++) {
+      let lit = false;
+      for (let x = x0; x < x0 + cw && !lit; x++) lit = px(x, y)[0] > 100 || px(x, y)[1] > 100;
+      if (lit) rows++;
+    }
+    return rows;
+  };
+  const UNDERLINE = 1 << 3;
+  const underlined = (cols, rows) => {
+    const f = frame(cols, rows, () => 0x000000);
+    f[5] = new Uint16Array(cols * rows).fill(UNDERLINE);
+    f[3] = new Uint32Array(cols * rows).fill(RGB(0xffffff));   // fg: the underline's colour
+    return f;
+  };
+  // Only the default and this one grid draw from here, so a sampled cell is unambiguous.
+  [a, b].forEach((id) => r.clearViewport(id));
+  const u = r.addGrid(palette, DEF_FG, DEF_BG);
+  r.applyDamageTo(u, ...underlined(2, 1));
+
+  // A font size far from the default's, so `max(1, round(px/15))` lands on a different integer.
+  r.setFontSize(45);
+  const [cw2, ch2] = [r.cell_width(), r.cell_height()];
+  r.resize(COLS, ROWS);
+  r.apply_damage(...underlined(COLS, ROWS));
+  r.setViewport(u, 0, 2 * ch2, 2 * cw2, ch2);
+  r.render();
+  const afterFont = readRect(gl, { x: 0, y: 0, w: gl.drawingBufferWidth, h: gl.drawingBufferHeight });
+  const px2 = (x, y) => {
+    const i = ((gl.drawingBufferHeight - 1 - y) * gl.drawingBufferWidth + x) * 4;
+    return [afterFont.buf[i], afterFont.buf[i + 1], afterFont.buf[i + 2]];
+  };
+  const rowsIn = (x0, y0) => {
+    let n = 0;
+    for (let y = y0; y < y0 + ch2; y++) {
+      let lit = false;
+      for (let x = x0; x < x0 + cw2 && !lit; x++) lit = px2(x, y)[0] > 100;
+      if (lit) n++;
+    }
+    return n;
+  };
+  const defaultRows = rowsIn(4 * cw2, 2 * ch2);   // a cell no grid was placed over
+  const registeredRows = rowsIn(0, 2 * ch2);
+  // The control first: assert the window this check needs actually exists. At the default font the
+  // thickness is 1, so if the bigger size did not move it there is nothing here to measure.
+  checks.theBiggerFontDrawsAThickerUnderline = defaultRows > 1;
+  checks.aRegisteredGridFollowsTheFontConfigurationItSelectsInto =
+    registeredRows === defaultRows;
+
+  // ── Errors still throw rather than being absorbed ────────────────────────────────────────────
+  checks.anUnknownGridCannotBeFed = threw(() => feedGrid(9999, 2, 1, () => A_BG));
+
+  const failed = Object.entries(checks).filter(([, ok]) => !ok).map(([k]) => k);
+  window.__proof = {
+    ok: failed.length === 0,
+    failed,
+    checks,
+    info: { dpr: devicePixelRatio, cell: [cw, ch], buffer: [bw, bh], grids: r.gridCount() },
+  };
+  window.__done = true;
+</script>

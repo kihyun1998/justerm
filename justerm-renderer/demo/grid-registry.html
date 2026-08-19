@@ -134,8 +134,18 @@
   checks.anIdIsNeverReused = revived !== gone && !ids.includes(revived);
 
   // ── The single-grid path is untouched, WITH siblings registered ──────────────────────────────
-  // Same frame, same pixels the pre-#770 renderer drew. The other 122 proofs establish that on a
-  // renderer holding one grid; the point here is that holding four changes none of it.
+  // Same frame, same pixels the pre-#770 renderer drew. The other proofs establish that on a
+  // renderer holding one grid; the point here is that *holding* four changes none of it.
+  //
+  // Holding, not placing. Since #771 a **placed** grid paints its rect, so the sibling this page
+  // left placed a few checks up would legitimately cover the default's first cell — which is that
+  // slice's behaviour, asserted in `multi-viewport.html`, and not a thing this page should be
+  // measuring. Hide it, so the claim under test is the one this page is about: registration alone
+  // is invisible.
+  ids.filter((id) => id !== gone).forEach((id) => { if (r.isGridDrawn(id)) r.clearViewport(id); });
+  checks.noSiblingIsDrawnForTheSingleGridComparison =
+    ids.every((id) => id === gone || r.isGridDrawn(id) === false) && r.isGridDrawn(revived) === false;
+
   const header = new Uint32Array([COLS, ROWS, 0 /* Full */, 0, 0, 0, 0, 1 /* blink_on */]);
   const spans = new Uint32Array([0, 0, COLS - 1, 0, N]);
   const bg = Uint32Array.from(CELL_BG, RGB);

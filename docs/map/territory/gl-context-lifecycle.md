@@ -185,6 +185,16 @@ Still unchecked: what any of them does with GPU resources it cannot rebuild.
 - [cell geometry](cell-geometry.md) — every deferring entry point above is one of its setters or the
   resize, so a change to what derives the cell changes what a loss window has to hold
 - [widget lifecycle](widget-lifecycle.md) — the consumer sets the timeout and reacts to the callback
+- [multi-viewport rendering](multi-viewport.md) — one context means **one loss for every grid at
+  once**, so `restore` walks the grid registry rather than acting on a single grid: since #771 it
+  rebuilds every registered grid's VAO and instance buffer and drops every upload baseline. It had
+  to, because a draw loop turns a stale per-grid GPU object from *nothing draws it* into *the wrong
+  grid's cells are drawn* — binding a VAO from the dead context raises `INVALID_OPERATION` and leaves
+  the previously bound one in place. The refill came with it (`restore` ends in an
+  `upload_instances` per slot, against a baseline invalidated for every grid), so what is owed is not
+  more *code* but the **evidence**: no proof anywhere loses a context with more than one grid
+  registered, so the N-grid restore path ships on reasoning. Asserting the recovery **per grid**,
+  through the real listener path, is the context-loss slice's real remaining work
 
 ## Known holes / open
 

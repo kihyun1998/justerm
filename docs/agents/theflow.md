@@ -48,6 +48,7 @@ defect, however confidently a lens reports it.
 | A spacing setting is **CSS px** | both references take device px | ADR-0023 |
 | Both contrast ratios live on the web **`Theme`** — the text one (`minimumContrastRatio`) and the cursor one (`cursorContrast`) | neither reference puts contrast in its colour scheme: xterm.js types both as *options* and its `ITheme` is colours only (`typings/xterm.d.ts:372`), and alacritty's cursor guard is a non-configurable constant (`alacritty/src/display/content.rs:22`) | #225, extended by #580, on the **consumer-facing API shape** tie-breaker row — our own API's coherence. What the cursor guard defends is `cursorColor`, which is on `Theme`, so the threshold has to travel with a theme swap; splitting the two contrast ratios across two homes is what would be incoherent. Rows pinned in `reference-facts.md` § "Cursor policy knobs" |
 | Renderer resources tier **three ways** — global / per-config / per-grid — and the per-grid tier **holds GPU state** (`instance_vbo`) | ghostty tiers font machinery per-config (`SharedGridSet`) but puts the GPU device, atlas texture and render thread **per-surface** (`Surface.zig:86-92`), i.e. its bottom tier is the device; wezterm tiers per-window GPU state and per-pane non-GPU state with **no config tier**, its `PaneState` holding no GPU resources at all | ADR-0021, adjudicated in #768. Both references are *shapes we chose against*, and for opposite reasons: ghostty's arrangement is the one this design exists to remove (a device per terminal), while wezterm's per-pane tier can hold nothing because it emits every pane's quads through one allocator into shared layers — justerm packs per grid and diffs per grid, so its bottom tier must hold the buffer. A lens reporting either as a defect is `DELIBERATE` with this row |
+| A **viewport rect** is given in **device px, top-left origin**, and the renderer flips it to GL's bottom-origin y itself | three.js takes a viewport in **CSS px with a bottom-origin y** and multiplies by the pixel ratio it owns (`src/renderers/WebGLRenderer.js:804-816`, SHA `83d8667`), leaving the flip to its caller | #771, on the **consumer-facing units** tie-breaker row — our own API's coherence. `cell_width()` already declares device px to be the space for *"anything that addresses the drawing buffer — `readPixels`, GL interop, a picking rect"*, and the flip needs the **granted** buffer height, which this renderer owns and the consumer's `canvas.height` may not equal (#339). three.js can push both outward because its caller supplies fractions of a canvas the renderer itself scales; ours supplies a measured DOM box. Taking CSS px would also import three.js's rounding step, which is the error #337 exists about |
 | A marker is an **object with identity** — `MarkerId` + kind + exit code + column | ghostty stores OSC-133 as a 2-bit field on the row (`page.zig:1976`); alacritty has no line-mark concept at all | ADR-0015. Row-attached state cannot carry any of the four, so "put the marks on the row" is not a smaller version of a marker — it is a different primitive |
 | A cell **stores** a variation selector on a non-emoji base (`x` + VS16), so text extraction hands it back | ghostty drops it — *"the terminal does not store those selectors in the cell, so callers must also restore their grapheme break state"* (`src/unicode/grapheme.zig:56`) | #317 §1, on the **spec** row of the tie-breaker above (ADR-0004). Not a UAX #29 disagreement: ghostty's own `graphemeWidth('x', 0xFE0F)` returns `len = 2` (`:315`), so both agree the selector is in the cluster — they differ on whether the cell keeps what the cluster contains. Widths are identical, so this is invisible on screen and observable only in a copy |
 
@@ -124,6 +125,7 @@ returns zero hits instead of an error — see Step 7 "What a worktree breaks".
 | alacritty | `../.refs/alacritty` (sparse: `alacritty_terminal`, `alacritty/src`) | `852e971cddfabe222d2d5bcda466e130f53af207` |
 | ghostty | `../.refs/ghostty` (sparse: `src`) | `e6e26e165ab143f087761cee9f8a479801a27ba7` |
 | xterm.js | `../.refs/xterm.js` (sparse: `src`, `addons`, `test`, `typings`) | `699f5537b0232e444cb98261b8b3991c3cfecb5e` |
+| three.js | `../.refs/three.js` (sparse: `src/renderers`, `examples`) | `83d8667898fd32a6a0f1af92f6d91065db272ce2` |
 
 Create them once (they are outside the repo, so nothing to gitignore):
 
@@ -135,7 +137,19 @@ git clone --depth 1 --filter=blob:none --sparse https://github.com/ghostty-org/g
 cd ghostty && git sparse-checkout set src && cd ..
 git clone --depth 1 --filter=blob:none --sparse https://github.com/xtermjs/xterm.js xterm.js
 cd xterm.js && git sparse-checkout set src addons test typings && cd ..
+git clone --depth 1 --filter=blob:none --sparse https://github.com/mrdoob/three.js three.js
+cd three.js && git sparse-checkout set src/renderers examples && cd ..
 ```
+
+**three.js was pinned on 2026-08-19 (#771), and only because a slice needed a fact from it.** ADR-0021
+cites four sources and two of them — three.js and wezterm — had no tree, so half its prior art was
+uncheckable; #768 declined to fix that in the abstract and said to pin one *when a slice needs a fact,
+for that question*. #771 is that slice: it draws N grids as viewports, and three.js's multiple-views
+example is the named mechanism reference. Pinning it settled two things a summary would not have —
+its per-view loop does **no** full-canvas clear (its views tile the canvas, so it has no gutter to
+answer for), and `renderer.setViewport` passes straight to `gl.viewport` with the caller supplying a
+bottom-origin `y`, so the y-flip is *not* reference-supplied and is ours because our input is a DOM
+box. **wezterm still has no tree**; pin it the same way, for the question that needs it.
 
 **`typings` was added to xterm.js's set on 2026-08-07 (#743), and `test` on 2026-08-06 (#733); the pin
 did not move either time.** The second one generalises the first: #743 was about a *consumer-facing*

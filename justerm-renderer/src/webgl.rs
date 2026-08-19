@@ -49,7 +49,7 @@ use crate::preedit::{
     writes as preedit_writes,
 };
 use crate::rasterizer::Rasterizer;
-use crate::registry::{GridId, GridRegistry, Viewport};
+use crate::registry::{DEFAULT_SLOT, GridId, GridRegistry, Viewport};
 use crate::render_policy::ColorPolicy;
 use crate::upload::{UploadPlan, invalidate_baseline, plan_upload};
 
@@ -503,10 +503,23 @@ impl Drop for ContextLossHandler {
 }
 
 /// The GL program + buffers + uniform locations built once at startup (`build_pipeline`).
-struct Pipeline {
-    program: glow::Program,
+/// The GPU objects one grid owns (#771). Built together because the VAO's whole content is where
+/// the instance buffer is: `vertex_attrib_pointer_f32` captures the buffer bound at the time, so a
+/// VAO is not a thing two grids can share — ADR-0021 D2 asks whether one instance can serve two
+/// grids *byte-for-byte*, and this one cannot. #768 left that open as "either a per-grid VAO or a
+/// re-pointer per grid per frame"; the re-pointer would keep the per-grid fact in the global tier
+/// and rewrite it N times a frame, which is the arrangement D2 rejects rather than a cheaper form
+/// of it.
+struct GridBuffers {
     vao: glow::VertexArray,
     instance_vbo: glow::Buffer,
+}
+
+struct Pipeline {
+    program: glow::Program,
+    /// The one quad every cell instance is drawn from — static, identical for every grid, and
+    /// referenced by each grid's VAO. Global by ADR-0021 D2: two grids share it byte-for-byte.
+    quad_vbo: glow::Buffer,
     u_projection: glow::UniformLocation,
     u_cell_size: glow::UniformLocation,
     u_char_size: glow::UniformLocation,
@@ -554,7 +567,9 @@ struct GlobalTier {
     /// `set_font_size` (#406) / `set_font_family` (#413) — re-bakes it.
     dpr: f32,
     program: glow::Program,
-    vao: glow::VertexArray,
+    /// The shared per-vertex quad. Global, unlike the VAO that points at it: two grids share these
+    /// four vertices byte-for-byte, and neither can share a VAO (ADR-0021 D2, #771).
+    quad_vbo: glow::Buffer,
     u_projection: glow::UniformLocation,
     u_cell_size: glow::UniformLocation,
     u_char_size: glow::UniformLocation,
@@ -610,13 +625,17 @@ struct ConfigTier {
 /// the four font/metric fields: they are per-grid *as settings*, while the machinery they key
 /// (`ConfigTier`) is not. `instance_vbo` is here rather than global because `uploaded` mirrors it —
 /// one shared buffer with N per-grid baselines would let one grid's upload silently invalidate
-/// another's.
+/// another's — and `vao` followed it in #771, because a VAO records which buffer feeds the draw.
 ///
 /// Multi-viewport (#287) multiplies **this struct and nothing else**, so a method that touches only
 /// this tier is written as an inherent method here rather than on the facade. That is the split's
 /// load-bearing half: moving a field out of this struct breaks those methods at compile time.
 struct GridTier {
     instance_vbo: glow::Buffer,
+    /// The VAO that points at this grid's `instance_vbo`. Per-grid for the same reason the buffer
+    /// is: an attribute pointer captures the buffer bound when it was set, so a VAO's content *is*
+    /// which grid's cells feed the draw (#771 resolves the corollary #768 recorded).
+    vao: glow::VertexArray,
     /// The cursor this frame, or `None` for hidden / blinked off (#270). Blink timing is the
     /// consumer's policy, as `blink_on` is (#282) — the renderer only draws what it is handed.
     cursor: Option<Cursor>,
@@ -772,6 +791,50 @@ impl JustermRenderer {
         self.grids.default_grid_mut()
     }
 
+    /// The grid in a registry slot — how the draw loop and the pack path address a grid (#771).
+    /// See `GridRegistry::viewport_at` for why those two walk slots while every consumer-facing
+    /// export takes an id.
+    fn grid_at(&self, at: usize) -> &GridTier {
+        self.grids.grid_at(at)
+    }
+
+    /// Mutable form of [`grid_at`](Self::grid_at).
+    fn grid_at_mut(&mut self, at: usize) -> &mut GridTier {
+        self.grids.grid_at_mut(at)
+    }
+
+    /// Write the font selectors to **every** registered grid, because the configuration they select
+    /// into has just moved and there is only one of it.
+    ///
+    /// ADR-0021 D1 makes the four font/metric fields per-grid *as settings*; D2 keeps the machinery
+    /// they key (atlas, rasteriser, cell) per-config. Until S4 (#772) there is exactly **one** config
+    /// tier, so every grid selects into it — and a grid whose selector says 14 while the atlas it
+    /// draws through was baked at 28 is not per-grid state, it is bookkeeping disagreeing with the
+    /// configuration it names.
+    ///
+    /// That disagreement is **visible**, which is why this exists rather than being left tidy:
+    /// [`draw_grid`](Self::draw_grid) derives `u_line_thickness` from the drawing grid's own
+    /// `font_size`, so a registered grid would keep its birth thickness after a `setFontSize` — two
+    /// terminals in one font with different underline weights, and no path back, since only the
+    /// default was ever written. #772 is what makes these selectors genuinely independent, by giving
+    /// each grid a configuration of its own to select.
+    fn broadcast_font(&mut self, font_size: f32, font_family: &str) {
+        for at in 0..self.grids.len() {
+            let grid = self.grid_at_mut(at);
+            grid.font_size = font_size;
+            grid.font_family = font_family.to_string();
+        }
+    }
+
+    /// The spacing half of [`broadcast_font`](Self::broadcast_font), for the same reason.
+    fn broadcast_spacing(&mut self, letter_spacing: f32, line_height: f32) {
+        for at in 0..self.grids.len() {
+            let grid = self.grid_at_mut(at);
+            grid.letter_spacing = letter_spacing;
+            grid.line_height = line_height;
+        }
+    }
+
     /// Register a terminal grid and return its id (#770).
     ///
     /// The new grid is **registered but not drawn** — it holds its own per-grid state from this
@@ -780,14 +843,16 @@ impl JustermRenderer {
     /// until it is laid out.
     ///
     /// It costs **one** of the per-grid tier and nothing of the other two: one GPU instance buffer
-    /// (ADR-0021 D2 — no selector, not shareable, cheap to create), and no atlas, rasteriser, glyph
-    /// cache, program or VAO, all of which stay one per context / per configuration. The grid joins
-    /// the renderer's current font configuration by taking its selectors; S4 (#772) is what turns
-    /// those selectors into a shared, refcounted atlas key.
+    /// **and the VAO that points at it** (ADR-0021 D2 — no selector, not shareable, cheap to create;
+    /// a VAO's whole content is *which* buffer feeds the draw, so it cannot be shared byte-for-byte
+    /// and follows the buffer, #771). No atlas, rasteriser, glyph cache, program or shared quad
+    /// buffer — those stay one per context / per configuration. The grid joins the renderer's
+    /// current font configuration by taking its selectors; S4 (#772) is what turns those selectors
+    /// into a shared, refcounted atlas key.
     ///
-    /// Nothing draws it yet — S3 (#771) is the draw loop. What exists here is the registration and
-    /// the per-grid state, which is what #773's per-grid setters and #771's viewport loop both
-    /// need to have somewhere to land.
+    /// It is **not drawn** until [`set_viewport`](Self::set_viewport) places it, and until then it is
+    /// not packed either: `render` skips a grid with no viewport before the pack, so feeding a hidden
+    /// grid costs the scatter and nothing after it (#771).
     #[wasm_bindgen(js_name = addGrid)]
     pub fn add_grid(
         &mut self,
@@ -812,15 +877,16 @@ impl JustermRenderer {
         //
         // That is left alone rather than guarded, because refusing would be the wrong contract: a
         // consumer registering a terminal while the context happens to be dead wants the grid, and
-        // #774 is written to give **every** registered grid a fresh buffer on restore — drawn and
-        // not-drawn alike. Until it lands, a non-default grid does not survive a loss at all
-        // (`restore` rebuilds the default's buffer only), which nothing can reach because nothing
-        // draws or feeds one. See the map territory's known holes.
-        let instance_vbo = unsafe { self.global.gl.create_buffer().map_err(js_err)? };
+        // `restore` gives **every** registered grid a fresh VAO and buffer and refills it — drawn
+        // and not-drawn alike (#771 had to, since a stale per-grid VAO draws the *wrong* grid once
+        // there is a draw loop). What is not yet true is that anyone has *watched* it happen with
+        // more than one grid registered: no proof loses a context with siblings, so the N-grid
+        // recovery rests on reasoning until #774 asserts it per grid. See the map territory.
+        let buffers = Self::build_grid_buffers(&self.global.gl, self.global.quad_vbo)?;
         let (font_size, font_family) = (self.grid().font_size, self.grid().font_family.clone());
         let (letter_spacing, line_height) = (self.grid().letter_spacing, self.grid().line_height);
         let id = self.grids.register(GridTier::new(
-            instance_vbo,
+            buffers,
             palette,
             font_size,
             font_family,
@@ -848,8 +914,12 @@ impl JustermRenderer {
             .grids
             .remove(GridId::from_raw(grid))
             .map_err(|e| JsValue::from_str(&e.message()))?;
-        // Safety: live GL context; a buffer destroyed by a context loss deletes as a no-op.
-        unsafe { self.global.gl.delete_buffer(removed.instance_vbo) };
+        // Safety: live GL context. Deleting an object that died with a lost context raises
+        // `INVALID_OPERATION` and changes nothing (measured, #770) — an error flag, not a no-op.
+        unsafe {
+            self.global.gl.delete_vertex_array(removed.vao);
+            self.global.gl.delete_buffer(removed.instance_vbo);
+        }
         Ok(())
     }
 
@@ -959,6 +1029,54 @@ impl JustermRenderer {
         underline_colors: Option<Vec<u32>>,
     ) -> Result<(), JsValue> {
         self.grid_mut().apply_damage(
+            header,
+            spans,
+            codepoints,
+            fg,
+            bg,
+            flags,
+            extra,
+            side_table,
+            underline_colors,
+        )
+    }
+
+    /// [`apply_damage`](Self::apply_damage), addressed to a **registered** grid (#771).
+    ///
+    /// Expand-phase scaffolding, retired by S5 (#773) when `applyDamage` itself takes the grid it
+    /// acts on. It exists now because the draw loop this slice adds is otherwise unreachable: a
+    /// registered grid has its own cells, its own instance buffer and its own VAO, and without a
+    /// way to put content in one, "two grids draw at once" cannot be shown — or tested.
+    ///
+    /// The frame's `header` carries the grid's `cols`/`rows`, so a registered grid is sized by what
+    /// it is fed. It is **not** sized by [`resize`](Self::resize), which sizes the shared drawing
+    /// buffer and belongs to the surface rather than to any one terminal.
+    ///
+    /// Errors on an unknown id, and otherwise exactly as `applyDamage` does. It is the one member
+    /// of the multi-grid export set that **accepts** the implicit default grid (id `0`), and that is the
+    /// honest answer rather than an omission: `setViewport` / `clearViewport` / `removeGrid` refuse the
+    /// default because its rect and its lifetime have a different producer, while its *content* has
+    /// the same one every other grid's does. `applyDamageTo(0, …)` is `applyDamage`.
+    #[allow(clippy::too_many_arguments)]
+    #[wasm_bindgen(js_name = applyDamageTo)]
+    pub fn apply_damage_to(
+        &mut self,
+        grid: u32,
+        header: &[u32],
+        spans: &[u32],
+        codepoints: &[u32],
+        fg: &[u32],
+        bg: &[u32],
+        flags: &[u16],
+        extra: &[u32],
+        side_table: Vec<String>,
+        underline_colors: Option<Vec<u32>>,
+    ) -> Result<(), JsValue> {
+        let at = self
+            .grids
+            .index_of(GridId::from_raw(grid))
+            .map_err(|e| JsValue::from_str(&e.message()))?;
+        self.grid_at_mut(at).apply_damage(
             header,
             spans,
             codepoints,
@@ -1123,8 +1241,8 @@ impl JustermRenderer {
     /// Re-resolve [`Self::cursor_cells`] against the last frame's flags. Called when a frame arrives
     /// (its flags may have changed under a still cursor) *and* when the cursor moves (onto either
     /// half of a wide char, with no new frame).
-    fn resolve_cursor_cells(&mut self) {
-        self.grid_mut().resolve_cursor_cells()
+    fn resolve_cursor_cells(&mut self, at: usize) {
+        self.grid_at_mut(at).resolve_cursor_cells()
     }
 
     /// The number of columns actually adopted by the last [`resize`](Self::resize). Usually the
@@ -1176,12 +1294,18 @@ impl JustermRenderer {
     /// anchor is off the grid. The packer takes it so the layers below glyph resolution can stand
     /// down over those cells; `preedit_patch` writes the same cells, and both derive from
     /// [`preedit::writes`](crate::preedit::writes) so they cannot disagree.
-    fn preedit_span(&self, cols: u32, rows: u32) -> Option<PreeditSpan> {
-        self.grid().preedit_span(cols, rows)
+    fn preedit_span(&self, at: usize, cols: u32, rows: u32) -> Option<PreeditSpan> {
+        self.grid_at(at).preedit_span(cols, rows)
     }
 
-    fn preedit_patch(&self, cells: &Cells, bg: &[u32], fg: &[u32]) -> Option<PreeditPatch> {
-        self.grid().preedit_patch(cells, bg, fg)
+    fn preedit_patch(
+        &self,
+        at: usize,
+        cells: &Cells,
+        bg: &[u32],
+        fg: &[u32],
+    ) -> Option<PreeditPatch> {
+        self.grid_at(at).preedit_patch(cells, bg, fg)
     }
 
     /// Set the background cell opacity: `0` = fully transparent, `1` = opaque (default). The
@@ -1395,8 +1519,7 @@ impl JustermRenderer {
 
         let Pipeline {
             program,
-            vao,
-            instance_vbo,
+            quad_vbo,
             u_projection,
             u_cell_size,
             u_char_size,
@@ -1409,6 +1532,7 @@ impl JustermRenderer {
             u_cursor_text_color,
             u_cursor_thickness,
         } = Self::build_pipeline(&gl)?;
+        let default_buffers = Self::build_grid_buffers(&gl, quad_vbo)?;
         // The atlas stores padded cells; the glyph is drawn inset by PADDING.
         let atlas = Self::build_atlas(&gl, pad_w, pad_h)?;
         // Tell the shader how much of each padded atlas cell is guard band, so it insets the
@@ -1428,7 +1552,7 @@ impl JustermRenderer {
                 canvas,
                 dpr,
                 program,
-                vao,
+                quad_vbo,
                 u_projection,
                 u_cell_size,
                 u_char_size,
@@ -1458,7 +1582,7 @@ impl JustermRenderer {
             // step with the buffer it snaps. A grid registered *later* arrives NOT drawn (#770).
             grids: GridRegistry::new(
                 GridTier::new(
-                    instance_vbo,
+                    default_buffers,
                     palette,
                     FONT_SIZE,
                     "monospace".to_string(),
@@ -1495,13 +1619,64 @@ impl JustermRenderer {
 
         // Safety: all calls are on a live GL context; buffers/attribs are set up once.
         unsafe {
-            let vao = gl.create_vertex_array().map_err(js_err)?;
-            gl.bind_vertex_array(Some(vao));
-
-            // Per-vertex quad geometry → location 0.
+            // Per-vertex quad geometry. Filled here and pointed at location 0 by every grid's VAO
+            // (`build_grid_buffers`) — an attribute pointer is VAO state, so it cannot be set here.
             let quad_vbo = gl.create_buffer().map_err(js_err)?;
             gl.bind_buffer(glow::ARRAY_BUFFER, Some(quad_vbo));
             gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, f32_bytes(&QUAD), glow::STATIC_DRAW);
+
+            let u_projection = uniform(gl, program, "u_projection")?;
+            let u_cell_size = uniform(gl, program, "u_cell_size")?;
+            let u_char_size = uniform(gl, program, "u_char_size")?;
+            let u_char_offset = uniform(gl, program, "u_char_offset")?;
+            let u_line_thickness = uniform(gl, program, "u_line_thickness")?;
+            let u_padding_frac = uniform(gl, program, "u_padding_frac")?;
+            let u_bg_alpha = uniform(gl, program, "u_bg_alpha")?;
+            let u_cursor = uniform(gl, program, "u_cursor")?;
+            let u_cursor_color = uniform(gl, program, "u_cursor_color")?;
+            let u_cursor_text_color = uniform(gl, program, "u_cursor_text_color")?;
+            let u_cursor_thickness = uniform(gl, program, "u_cursor_thickness")?;
+            // The atlas sampler stays on texture unit 0.
+            gl.use_program(Some(program));
+            let u_atlas = uniform(gl, program, "u_atlas")?;
+            gl.uniform_1_i32(Some(&u_atlas), 0);
+
+            Ok(Pipeline {
+                program,
+                quad_vbo,
+                u_projection,
+                u_cell_size,
+                u_char_size,
+                u_char_offset,
+                u_line_thickness,
+                u_padding_frac,
+                u_bg_alpha,
+                u_cursor,
+                u_cursor_color,
+                u_cursor_text_color,
+                u_cursor_thickness,
+            })
+        }
+    }
+
+    /// One grid's instance buffer and the VAO that points at it (#771).
+    ///
+    /// The attribute *layout* is the same for every grid — there is one program, so the instance
+    /// format is the union of what any terminal needs and a per-grid layout is not reachable
+    /// (#287). What differs per grid is which buffer feeds it, and that is exactly what a VAO
+    /// records.
+    fn build_grid_buffers(
+        gl: &glow::Context,
+        quad_vbo: glow::Buffer,
+    ) -> Result<GridBuffers, JsValue> {
+        // Safety: live GL context. Every call below is buffer/attribute setup on a fresh VAO.
+        unsafe {
+            let vao = gl.create_vertex_array().map_err(js_err)?;
+            gl.bind_vertex_array(Some(vao));
+
+            // Per-vertex quad geometry → location 0. The buffer is the shared one; only the
+            // pointer into it is per-VAO.
+            gl.bind_buffer(glow::ARRAY_BUFFER, Some(quad_vbo));
             gl.vertex_attrib_pointer_f32(0, 2, glow::FLOAT, false, 8, 0);
             gl.enable_vertex_attrib_array(0);
 
@@ -1531,39 +1706,7 @@ impl JustermRenderer {
             }
 
             gl.bind_vertex_array(None);
-
-            let u_projection = uniform(gl, program, "u_projection")?;
-            let u_cell_size = uniform(gl, program, "u_cell_size")?;
-            let u_char_size = uniform(gl, program, "u_char_size")?;
-            let u_char_offset = uniform(gl, program, "u_char_offset")?;
-            let u_line_thickness = uniform(gl, program, "u_line_thickness")?;
-            let u_padding_frac = uniform(gl, program, "u_padding_frac")?;
-            let u_bg_alpha = uniform(gl, program, "u_bg_alpha")?;
-            let u_cursor = uniform(gl, program, "u_cursor")?;
-            let u_cursor_color = uniform(gl, program, "u_cursor_color")?;
-            let u_cursor_text_color = uniform(gl, program, "u_cursor_text_color")?;
-            let u_cursor_thickness = uniform(gl, program, "u_cursor_thickness")?;
-            // The atlas sampler stays on texture unit 0.
-            gl.use_program(Some(program));
-            let u_atlas = uniform(gl, program, "u_atlas")?;
-            gl.uniform_1_i32(Some(&u_atlas), 0);
-
-            Ok(Pipeline {
-                program,
-                vao,
-                instance_vbo,
-                u_projection,
-                u_cell_size,
-                u_char_size,
-                u_char_offset,
-                u_line_thickness,
-                u_padding_frac,
-                u_bg_alpha,
-                u_cursor,
-                u_cursor_color,
-                u_cursor_text_color,
-                u_cursor_thickness,
-            })
+            Ok(GridBuffers { vao, instance_vbo })
         }
     }
 
@@ -1800,8 +1943,7 @@ impl JustermRenderer {
         self.config.atlas = atlas;
         self.config.char_size = char_size;
         self.config.atlas_cell = (pad_w, pad_h);
-        self.grid_mut().font_family = font_family;
-        self.grid_mut().font_size = font_size;
+        self.broadcast_font(font_size, &font_family);
         self.global.dpr = dpr;
         // The spacing policy survives; the cell it produces does not (#322 + #338 + #406).
         self.recompute_cell();
@@ -1938,8 +2080,7 @@ impl JustermRenderer {
             self.config.cell_size,
             self.config.char_offset,
         );
-        self.grid_mut().letter_spacing = letter_spacing;
-        self.grid_mut().line_height = line_height;
+        self.broadcast_spacing(letter_spacing, line_height);
         self.recompute_cell();
 
         // Keep the policy, defer the re-bake: an atlas built on a dead context comes back
@@ -1956,12 +2097,8 @@ impl JustermRenderer {
             return;
         }
         if self.rebake_for_cell().is_err() {
-            (
-                self.grid_mut().letter_spacing,
-                self.grid_mut().line_height,
-                self.config.cell_size,
-                self.config.char_offset,
-            ) = prev;
+            self.broadcast_spacing(prev.0, prev.1);
+            (self.config.cell_size, self.config.char_offset) = (prev.2, prev.3);
             // The rasteriser was moved to the new cell before the bake; move it back, or it keeps
             // drawing bitmaps sized for a cell nothing else believes in.
             let _ = self.config.rasterizer.set_cell(prev.2, prev.3);
@@ -2110,9 +2247,38 @@ impl JustermRenderer {
         rasterizer.set_cell(cell, glyph_offset(cell, (cell_w, cell_h)))?;
         let (pad_w, pad_h) = rasterizer.padded_size();
 
-        // 1. Build the replacements without touching any live field.
-        let pipeline = Self::build_pipeline(&self.global.gl)?;
+        // 1. Build the replacements without touching any live field. Every grid gets its own —
+        //    the VAO and the instance buffer are per-grid (#771), and both died with the context.
+        //    Rebuilding only the default's would leave a registered grid binding a VAO that belongs
+        //    to a dead context: the bind raises `INVALID_OPERATION` and leaves the *previous*
+        //    grid's VAO in place, so grid B would silently draw grid A's cells. The refill comes
+        //    with it — step 4 uploads every slot against a baseline invalidated for every grid — so
+        //    what #774 still owes is the *evidence*, per grid and through the real listener path,
+        //    not more of this.
+        //
+        //    Order matters for the error paths: the atlas is built FIRST, because its `?` has no
+        //    cleanup arm and everything built before it would leak. Master leaked one pipeline that
+        //    way; N grid buffers behind the same `?` would have made it N+1.
         let atlas = Self::build_atlas(&self.global.gl, pad_w, pad_h)?;
+        let pipeline = Self::build_pipeline(&self.global.gl)?;
+        let mut grid_buffers = Vec::with_capacity(self.grids.len());
+        for _ in 0..self.grids.len() {
+            match Self::build_grid_buffers(&self.global.gl, pipeline.quad_vbo) {
+                Ok(b) => grid_buffers.push(b),
+                Err(e) => {
+                    unsafe {
+                        for b in &grid_buffers {
+                            self.global.gl.delete_vertex_array(b.vao);
+                            self.global.gl.delete_buffer(b.instance_vbo);
+                        }
+                        self.global.gl.delete_program(pipeline.program);
+                        self.global.gl.delete_buffer(pipeline.quad_vbo);
+                        self.global.gl.delete_texture(atlas);
+                    }
+                    return Err(e);
+                }
+            }
+        }
         let rebake = (|| -> Result<(), JsValue> {
             self.bake_all_glyphs(&rasterizer, atlas, (pad_w, pad_h))?;
             // The guard-band fraction is set once per program at construction, so the relinked program
@@ -2126,8 +2292,11 @@ impl JustermRenderer {
             unsafe {
                 self.global.gl.delete_texture(atlas);
                 self.global.gl.delete_program(pipeline.program);
-                self.global.gl.delete_vertex_array(pipeline.vao);
-                self.global.gl.delete_buffer(pipeline.instance_vbo);
+                self.global.gl.delete_buffer(pipeline.quad_vbo);
+                for b in &grid_buffers {
+                    self.global.gl.delete_vertex_array(b.vao);
+                    self.global.gl.delete_buffer(b.instance_vbo);
+                }
             }
             return Err(e);
         }
@@ -2147,15 +2316,28 @@ impl JustermRenderer {
         //    Harmless, and stated so nobody re-derives it: it is an error *flag*, with no state
         //    effect, and the next frame reads clean. What it costs is a consumer polling `getError`
         //    around a restore, which would see a failure that is not one.
-        let (old_program, old_vao, old_vbo, old_atlas) = (
-            self.global.program,
-            self.global.vao,
-            self.grid().instance_vbo,
-            self.config.atlas,
-        );
+        let (old_program, old_quad_vbo, old_atlas) =
+            (self.global.program, self.global.quad_vbo, self.config.atlas);
+        let old_grid_buffers: Vec<GridBuffers> = grid_buffers
+            .into_iter()
+            .enumerate()
+            .map(|(at, new)| {
+                let grid = self.grids.grid_at_mut(at);
+                let old = GridBuffers {
+                    vao: grid.vao,
+                    instance_vbo: grid.instance_vbo,
+                };
+                grid.vao = new.vao;
+                grid.instance_vbo = new.instance_vbo;
+                // The fresh buffer is empty and the baseline still describes the dead one — drop it
+                // so the refill below plans a `Full` upload even when the frame is byte-identical
+                // (#263). Every grid, not just the default: the trap #774 is named for.
+                invalidate_baseline(&mut grid.uploaded);
+                old
+            })
+            .collect();
         self.global.program = pipeline.program;
-        self.global.vao = pipeline.vao;
-        self.grid_mut().instance_vbo = pipeline.instance_vbo;
+        self.global.quad_vbo = pipeline.quad_vbo;
         self.config.atlas = atlas;
         self.global.u_projection = pipeline.u_projection;
         self.global.u_cell_size = pipeline.u_cell_size;
@@ -2176,13 +2358,12 @@ impl JustermRenderer {
         unsafe {
             self.global.gl.delete_texture(old_atlas);
             self.global.gl.delete_program(old_program);
-            self.global.gl.delete_vertex_array(old_vao);
-            self.global.gl.delete_buffer(old_vbo);
+            self.global.gl.delete_buffer(old_quad_vbo);
+            for b in &old_grid_buffers {
+                self.global.gl.delete_vertex_array(b.vao);
+                self.global.gl.delete_buffer(b.instance_vbo);
+            }
         }
-
-        // 3. The new `instance_vbo` is empty and the baseline still describes the dead one — drop it
-        //    so the refill below plans a `Full` upload even when the frame is byte-identical (#263).
-        invalidate_baseline(&mut self.grid_mut().uploaded);
 
         // 4. The loss reset the drawing-buffer size and the viewport; re-derive them from the grid at
         //    the (possibly new) DPR, then refill the buffer so `render` draws the pre-loss frame.
@@ -2191,7 +2372,9 @@ impl JustermRenderer {
         //    Nothing extra is stored for it — the grid it committed IS `grid_size`.
         let (cols, rows) = self.grid().grid_size;
         self.resize(cols, rows);
-        self.upload_instances();
+        for at in 0..self.grids.len() {
+            self.upload_instances(at);
+        }
         Ok(())
     }
 
@@ -2455,13 +2638,15 @@ impl JustermRenderer {
         // The direct path packs immediately — it retains no grid for `render` to re-pack from, so
         // it cannot defer (#421). Clear the dirty flag: this pack IS the current state.
         let underline_colors = underline_colors.unwrap_or_default();
-        let result = self.resolve_and_pack(&cells, bg, fg, &underline_colors, blink_on);
+        let result =
+            self.resolve_and_pack(DEFAULT_SLOT, &cells, bg, fg, &underline_colors, blink_on);
         self.grid_mut().needs_repack = false;
         result
     }
 
     fn resolve_and_pack(
         &mut self,
+        at: usize,
         cells: &Cells,
         bg: &[u32],
         fg: &[u32],
@@ -2483,7 +2668,7 @@ impl JustermRenderer {
         // so the glyph it supplies is rasterised like any other and every later stage — contrast,
         // overlay compositing, the cursor span — sees the composed cell rather than the one the
         // application last wrote there.
-        let patch = self.preedit_patch(cells, bg, fg);
+        let patch = self.preedit_patch(at, cells, bg, fg);
         let patched = patch.as_ref().map(|p| Cells {
             cols: cells.cols,
             rows: cells.rows,
@@ -2563,18 +2748,20 @@ impl JustermRenderer {
         }
 
         // Keep the flags: a cursor may move onto a wide char before the next frame arrives.
-        self.grid_mut().last_flags.clear();
-        self.grid_mut().last_flags.extend_from_slice(cells.flags);
-        self.grid_mut().last_cols = cells.cols;
-        self.grid_mut().last_blink_on = blink_on;
-        self.resolve_cursor_cells();
+        self.grid_at_mut(at).last_flags.clear();
+        self.grid_at_mut(at)
+            .last_flags
+            .extend_from_slice(cells.flags);
+        self.grid_at_mut(at).last_cols = cells.cols;
+        self.grid_at_mut(at).last_blink_on = blink_on;
+        self.resolve_cursor_cells(at);
         let frame = Frame {
             cols: cells.cols,
             rows: cells.rows,
             // The same span the patch above took over — handed on so every stage after glyph
             // resolution stands down inside it (ADR-0028 D2). Derived here rather than carried out
             // of `preedit_patch` so that the two cannot disagree about which cells are composed.
-            preedit: self.preedit_span(cells.cols, cells.rows),
+            preedit: self.preedit_span(at, cells.cols, cells.rows),
             bg,
             fg,
             slots: &slots,
@@ -2585,30 +2772,30 @@ impl JustermRenderer {
         // #271: composite the current selection / search overlay into each cell's packed bg. The
         // spans are owned by the renderer so they outlive the borrow; empty ⇒ no highlight.
         let overlay = Overlay {
-            active: &self.grid().active_match_spans,
-            selection: &self.grid().selection_spans,
-            matches: &self.grid().match_spans,
-            colors: self.grid().highlight_colors,
+            active: &self.grid_at(at).active_match_spans,
+            selection: &self.grid_at(at).selection_spans,
+            matches: &self.grid_at(at).match_spans,
+            colors: self.grid_at(at).highlight_colors,
         };
         // #272: the RGB-space colour policy (bold→bright, dim, minimum-contrast, …), assembled from
         // the renderer's fields.
         let policy = ColorPolicy {
-            bold_to_bright: self.grid().bold_to_bright,
-            min_contrast: self.grid().min_contrast,
-            selection_fg: self.grid().selection_fg,
+            bold_to_bright: self.grid_at(at).bold_to_bright,
+            min_contrast: self.grid_at(at).min_contrast,
+            selection_fg: self.grid_at(at).selection_fg,
         };
         // #393: the consumer-projected marker decorations for this frame (parsed from the flat wire).
-        let decorations = parse_decorations(&self.grid().decoration_spans);
-        self.grid_mut().instances = pack_instances(
+        let decorations = parse_decorations(&self.grid_at(at).decoration_spans);
+        self.grid_at_mut(at).instances = pack_instances(
             &frame,
-            &self.grid().palette,
+            &self.grid_at(at).palette,
             blink_on,
             &overlay,
             &policy,
             &decorations,
         );
-        self.grid_mut().instance_count = count as i32;
-        self.upload_instances();
+        self.grid_at_mut(at).instance_count = count as i32;
+        self.upload_instances(at);
         Ok(())
     }
 
@@ -2617,14 +2804,14 @@ impl JustermRenderer {
     /// resize) reallocates the whole buffer; otherwise each changed contiguous range goes up via
     /// `buffer_sub_data` and an unchanged frame does no GL work at all. `self.grid().uploaded` mirrors
     /// what the GPU holds so the next frame can diff against it.
-    fn upload_instances(&mut self) {
+    fn upload_instances(&mut self, at: usize) {
         // Bind the two tiers this touches once, as separate fields of `self`: the baseline lives
         // beside the buffer it mirrors (both per-grid), and the context that uploads it is global.
         // Going through `grid_mut()` at each site instead would re-borrow all of `self` per call —
         // and `uploaded.clone_from(&instances)` is two fields of ONE grid, which only splits when
         // the grid is a place expression.
         let gl = &self.global.gl;
-        let grid = self.grids.default_grid_mut();
+        let grid = self.grids.grid_at_mut(at);
         match plan_upload(&grid.uploaded, &grid.instances, INSTANCE_FLOATS) {
             UploadPlan::Full => unsafe {
                 gl.bind_buffer(glow::ARRAY_BUFFER, Some(grid.instance_vbo));
@@ -2661,8 +2848,8 @@ impl JustermRenderer {
     /// the grid out so the `&mut self` pack does not borrow-conflict, then puts it back.
     ///
     /// [`render`]: Self::render
-    fn repack_from_grid(&mut self) -> Result<(), JsValue> {
-        let Some(grid) = self.grid_mut().grid.take() else {
+    fn repack_from_grid(&mut self, at: usize) -> Result<(), JsValue> {
+        let Some(grid) = self.grid_at_mut(at).grid.take() else {
             return Ok(());
         };
         let cells = Cells {
@@ -2673,13 +2860,14 @@ impl JustermRenderer {
             clusters: grid.clusters(),
         };
         let result = self.resolve_and_pack(
+            at,
             &cells,
             grid.bg(),
             grid.fg(),
             grid.underline_colors(),
-            self.grid().last_blink_on,
+            self.grid_at(at).last_blink_on,
         );
-        self.grid_mut().grid = Some(grid);
+        self.grid_at_mut(at).grid = Some(grid);
         result
     }
 
@@ -2716,39 +2904,120 @@ impl JustermRenderer {
             }
             FrameAction::Draw => {}
         }
-        // Pack once, here, if a mutation since the last render dirtied the buffer (#421) — the
-        // context is live past the match above (Skip returned, Rebuild restored). A frame that set
-        // overlay + decorations + `apply_damage` marked dirty three times but re-packs once. On a
-        // pack error the flag stays set, so the next render retries (self-healing).
-        if self.grid().needs_repack {
-            self.repack_from_grid()?;
-            self.grid_mut().needs_repack = false;
+        // Pack once per drawn grid, here, if a mutation since the last render dirtied its buffer
+        // (#421) — the context is live past the match above (Skip returned, Rebuild restored). A
+        // frame that set overlay + decorations + `apply_damage` marked dirty three times but
+        // re-packs once. On a pack error the flag stays set, so the next render retries
+        // (self-healing).
+        //
+        // **A grid with no viewport is not packed either, and that is a decision** (#771). The
+        // registry's `Option<Viewport>` says whether a grid *draws*; nothing said whether a hidden
+        // grid still pays for the frames it is fed, and the consumer's adoption design keeps hidden
+        // terminals mounted **and feeding**. Measured on a release build at 120x40, an ungated
+        // hidden grid costs about 0.4 ms/frame — pack + upload about 0.33 of it — so ten of them
+        // would spend a quarter of a 60 fps budget on pixels nobody sees. Gating it here is free
+        // rather than clever: the dirty flag stays set while the grid is hidden, so the first
+        // render after it is placed packs it, once. Ghostty gates the same two things on the same
+        // state (`renderer/Thread.zig:526-531` the draw, `:644-650` the CPU rebuild); alacritty
+        // gates only the paint.
+        //
+        // One grid's bad frame must not blank its neighbours, so a pack error is held and the
+        // frame still draws. It surfaces after the draw, and the flag it left set means the next
+        // render retries exactly as the single-grid path did.
+        let mut pack_error = None;
+        for at in 0..self.grids.len() {
+            if self.grids.viewport_at(at).is_none() {
+                continue;
+            }
+            if self.grid_at(at).needs_repack {
+                match self.repack_from_grid(at) {
+                    Ok(()) => self.grid_at_mut(at).needs_repack = false,
+                    Err(e) => pack_error = pack_error.or(Some(e)),
+                }
+            }
         }
         self.draw();
-        Ok(())
+        match pack_error {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
     }
 
     /// Number of instance-buffer packs run so far (#421 diagnostic). The consumer/proofs read the
-    /// **delta** across an operation to assert `render` packs once per frame, not once per setter.
+    /// **delta** across an operation to assert `render` packs once per *dirty drawn grid* per frame
+    /// — not once per setter, and not at all for a grid with no viewport (#771).
     /// Not a stable API surface — a counter for verification, not a rendering control.
     #[wasm_bindgen(js_name = packs)]
     pub fn packs(&self) -> u32 {
         self.pack_count
     }
 
-    /// Issue the frame's GL commands. The caller has established that the context is live and its
-    /// resources are intact.
+    /// Issue the frame's GL commands: one clear of the whole drawing buffer, then one pass per
+    /// **drawn** grid (#771). The caller has established that the context is live and its resources
+    /// are intact.
+    ///
+    /// The full-buffer clear happens once and before the loop, and it clears to **transparent**
+    /// rather than to any grid's background. The buffer is one shared plane that the grids do not
+    /// have to tile (ADR-0021's z-order constraint: every terminal is an overlay on it), so the
+    /// area between two rects belongs to the page behind the canvas — painting a terminal's colour
+    /// there would be this renderer deciding a background it was never given. A single-grid
+    /// consumer sees no difference: the default grid's rect **is** the whole buffer (`resize` then
+    /// `place_default`), so its own clear covers every pixel this one touched.
+    ///
+    /// three.js's multiple-views example does no full clear at all
+    /// (`examples/webgl_multiple_views.html:252-278`) — its views tile the canvas, so it has no
+    /// uncovered area to answer for. That is a silence rather than a divergence.
+    ///
+    /// **Grids are painted in registration order and are not composited with each other.** A later
+    /// grid's rect *replaces* what is under it rather than blending with it, because each grid opens
+    /// with a `clear` and a clear writes. So a translucent grid (`setBgAlpha`) shows the page behind
+    /// the canvas, never the grid it overlaps. Overlapping rects are the consumer's business —
+    /// tiling panes do not produce one — and the same is true of the reference's per-view clear.
     fn draw(&self) {
-        let [dr, dg, db] = gl_rgb(self.grid().palette.default_bg);
         unsafe {
-            // Clear with the injected background opacity so any area not covered by a cell is
-            // see-through too; cells then write their own per-pixel alpha (#298). The buffer is now
-            // an exact multiple of the cell (#331), so the only uncovered area is a frame whose grid
-            // is smaller than the one `resize` was given.
-            self.global.gl.clear_color(dr, dg, db, self.grid().bg_alpha);
+            self.global.gl.disable(glow::SCISSOR_TEST);
+            self.global
+                .gl
+                .viewport(0, 0, self.global.size.0, self.global.size.1);
+            self.global.gl.clear_color(0.0, 0.0, 0.0, 0.0);
             self.global.gl.clear(glow::COLOR_BUFFER_BIT);
 
-            if self.grid().instance_count == 0 {
+            // Every grid's clear and every grid's cells are confined to its own rect from here.
+            // The viewport alone would already clip the *cells* (they are drawn in clip space and
+            // the transform maps NDC onto the rect), but `clear` ignores the viewport entirely —
+            // so without the scissor each grid's background clear would wipe the whole buffer,
+            // leaving only the last grid visible.
+            self.global.gl.enable(glow::SCISSOR_TEST);
+            for at in 0..self.grids.len() {
+                if let Some(viewport) = self.grids.viewport_at(at) {
+                    self.draw_grid(at, viewport);
+                }
+            }
+            self.global.gl.disable(glow::SCISSOR_TEST);
+        }
+    }
+
+    /// Draw one grid into its rect. Assumes `SCISSOR_TEST` is enabled by the caller.
+    ///
+    /// # Safety
+    ///
+    /// Live context with intact resources, as [`draw`](Self::draw) establishes.
+    unsafe fn draw_grid(&self, at: usize, viewport: Viewport) {
+        let grid = self.grid_at(at);
+        let (vx, vy, vw, vh) = viewport.gl_rect(self.global.size.1);
+        let [dr, dg, db] = gl_rgb(grid.palette.default_bg);
+        unsafe {
+            self.global.gl.viewport(vx, vy, vw, vh);
+            self.global.gl.scissor(vx, vy, vw, vh);
+            // Clear with the injected background opacity so any area of this grid's rect not
+            // covered by a cell is see-through too; cells then write their own per-pixel alpha
+            // (#298). For the default grid the buffer is an exact multiple of the cell (#331), so
+            // the only uncovered area is a frame whose grid is smaller than the one `resize` was
+            // given; a placed grid's rect is the consumer's box and may be any size.
+            self.global.gl.clear_color(dr, dg, db, grid.bg_alpha);
+            self.global.gl.clear(glow::COLOR_BUFFER_BIT);
+
+            if grid.instance_count == 0 {
                 return;
             }
 
@@ -2759,10 +3028,14 @@ impl JustermRenderer {
                 .bind_texture(glow::TEXTURE_2D_ARRAY, Some(self.config.atlas));
             // The instance buffer already holds the current frame — `upload_instances` (in the
             // pack path) uploaded only the changed cells (#263), so render just binds + draws.
-            self.global.gl.bind_vertex_array(Some(self.global.vao));
+            // Binding THIS grid's VAO is what points the attributes at THIS grid's buffer: the
+            // pointer is VAO state, which is why the VAO is per-grid (#771 resolving #768).
+            self.global.gl.bind_vertex_array(Some(grid.vao));
 
-            let proj =
-                Mat4::orthographic_from_size(self.global.size.0 as f32, self.global.size.1 as f32);
+            // The projection is sized to the RECT, not to the buffer: `gl.viewport` above already
+            // maps clip space onto the rect, so a buffer-sized projection would scale every grid
+            // by `buffer / rect`. Identical for the default grid, whose rect is the buffer.
+            let proj = Mat4::orthographic_from_size(vw as f32, vh as f32);
             self.global.gl.uniform_matrix_4_f32_slice(
                 Some(&self.global.u_projection),
                 false,
@@ -2785,19 +3058,19 @@ impl JustermRenderer {
             );
             self.global.gl.uniform_1_f32(
                 Some(&self.global.u_line_thickness),
-                crate::metrics::line_thickness(self.grid().font_size * self.global.dpr) as f32,
+                crate::metrics::line_thickness(grid.font_size * self.global.dpr) as f32,
             );
             self.global
                 .gl
-                .uniform_1_f32(Some(&self.global.u_bg_alpha), self.grid().bg_alpha);
+                .uniform_1_f32(Some(&self.global.u_bg_alpha), grid.bg_alpha);
             // `u_cursor.w == 0` means NO cursor; a shape is `shape_id + 1`. Every shape — block
             // included — reaches the shader this way, so a move or a blink is a uniform, not an
             // upload (#270).
-            let (cx, cy, span, shape) = match self.grid().cursor {
+            let (cx, cy, span, shape) = match grid.cursor {
                 Some(c) => (
-                    self.grid().cursor_cells.0 as f32,
+                    grid.cursor_cells.0 as f32,
                     c.row as f32,
-                    self.grid().cursor_cells.1 as f32,
+                    grid.cursor_cells.1 as f32,
                     shape_id(c.shape) as f32 + 1.0,
                 ),
                 None => (0.0, 0.0, 1.0, 0.0),
@@ -2817,21 +3090,21 @@ impl JustermRenderer {
             // `col ∈ [cursor.col, cursor.col + span)`, i.e. only when `col < cols` — so a mis-read
             // guarded colour is never sampled by any fragment. Valid as long as `covers()` keeps that
             // gate.
-            let (color, text_color) = match self.grid().cursor {
+            let (color, text_color) = match grid.cursor {
                 Some(c) => {
                     let cell_bg = (c.row as usize)
-                        .checked_mul(self.grid().last_cols as usize)
-                        .and_then(|i| i.checked_add(self.grid().cursor_cells.0 as usize))
+                        .checked_mul(grid.last_cols as usize)
+                        .and_then(|i| i.checked_add(grid.cursor_cells.0 as usize))
                         .and_then(|i| i.checked_mul(INSTANCE_FLOATS))
-                        .and_then(|base| self.grid().instances.get(base + 2..base + 5));
+                        .and_then(|base| grid.instances.get(base + 2..base + 5));
                     match cell_bg {
                         Some(bg) => guarded_cursor_colors(
                             c.color,
                             c.text_color,
                             [bg[0], bg[1], bg[2]],
-                            self.grid().palette.default_fg,
-                            self.grid().palette.default_bg,
-                            self.grid().cursor_contrast,
+                            grid.palette.default_fg,
+                            grid.palette.default_bg,
+                            grid.cursor_contrast,
                         ),
                         None => (c.color, c.text_color),
                     }
@@ -2848,15 +3121,12 @@ impl JustermRenderer {
                 .uniform_3_f32(Some(&self.global.u_cursor_text_color), tr, tg, tb);
             self.global.gl.uniform_1_f32(
                 Some(&self.global.u_cursor_thickness),
-                cursor_thickness(self.grid().cursor_thickness_frac, self.config.cell_size.0) as f32,
+                cursor_thickness(grid.cursor_thickness_frac, self.config.cell_size.0) as f32,
             );
 
-            self.global.gl.draw_arrays_instanced(
-                glow::TRIANGLE_STRIP,
-                0,
-                4,
-                self.grid().instance_count,
-            );
+            self.global
+                .gl
+                .draw_arrays_instanced(glow::TRIANGLE_STRIP, 0, 4, grid.instance_count);
         }
     }
 }
@@ -2895,7 +3165,7 @@ fn js_err(msg: String) -> JsValue {
 
 impl GridTier {
     /// One terminal's state at rest: no cells, no cursor, no overlays, every consumer policy at
-    /// its default. The caller supplies what a grid cannot default — its own GPU instance buffer
+    /// its default. The caller supplies what a grid cannot default — its own GPU buffers
     /// (ADR-0021 D2), its palette, the four font/metric **selectors** (D1: per-grid settings, even
     /// though the machinery they key is per-config), and the grid it is sized to.
     ///
@@ -2903,7 +3173,7 @@ impl GridTier {
     /// a field added to this tier cannot be initialised in one path and forgotten in the other —
     /// which is the mistake a second literal would invite the moment there were two of them.
     fn new(
-        instance_vbo: glow::Buffer,
+        buffers: GridBuffers,
         palette: Palette,
         font_size: f32,
         font_family: String,
@@ -2912,7 +3182,8 @@ impl GridTier {
         grid_size: (u32, u32),
     ) -> Self {
         GridTier {
-            instance_vbo,
+            instance_vbo: buffers.instance_vbo,
+            vao: buffers.vao,
             cursor: None,
             cursor_cells: (0, 1),
             last_flags: Vec::new(),

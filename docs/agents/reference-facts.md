@@ -1679,9 +1679,11 @@ Read ghostty's "surface" as justerm's *grid* throughout (the noun inverts — se
 
 **The two references disagree about how much a hidden terminal stops doing**, which is why the last
 two rows are here rather than in an argument: ghostty skips the CPU cell rebuild as well as the
-paint, alacritty skips only the paint. justerm gates neither yet — `Option<Viewport>` decides whether
-a grid draws and says nothing about whether it packs — and choosing belongs to the slice that writes
-the draw loop, not to the one that holds the state.
+paint, alacritty skips only the paint. **#771 chose ghostty's amount** — the draw loop skips a grid
+with no viewport before it packs it, so a hidden grid that is still being fed costs the scatter and
+nothing after it. Written here as a record of what the choice was between; the reasoning and the
+measured price are in `docs/map/territory/multi-viewport.md`. (This paragraph said "justerm gates
+neither yet" until that slice landed.)
 
 **What transfers and what does not.** The state transfers: an invisible surface is never
 unregistered and nothing it owns is released, which is exactly the guarantee penterm's adoption PRD
@@ -1695,3 +1697,39 @@ asks for (*"hidden workspaces' grids stay registered, viewport cleared"*). Two t
   hidden (`display:none` reads back zero). So justerm carries the not-drawn state as the **absence of
   a viewport** rather than as a flag beside a retained one, and the consumer re-supplies the rect on
   the way back — which it must anyway, since the layout it is returning into is why it was hidden.
+
+## Drawing N views on one canvas — the mechanism reference, and the two places it does not reach (#771, verified 2026-08-19)
+
+Read for #771's draw loop (Epic #287 S3). three.js is the **mechanism** citation ADR-0021 makes for
+"N grids, one context", and #771 is the slice that needed a fact from it, so it now has a pinned tree
+(the routing table in `theflow.md`). It is cited for the *shape of the loop* and nothing else: the
+tie-breaker gives renderer resource ownership justerm's own model, and units their own API's
+coherence, so both rows below where the two differ are recorded as differences, not as corrections.
+
+| Fact | Reference | Site |
+|---|---|---|
+| The multi-view loop is per view: **viewport, then scissor, then `setScissorTest(true)`, then a per-view clear colour**, and only then a render — one rect at a time on one canvas | three.js | `examples/webgl_multiple_views.html:266-276` |
+| The **projection is sized to the view's rect**, not to the canvas: `camera.aspect = width / height`, re-derived per view per frame | three.js | `examples/webgl_multiple_views.html:273-274` |
+| There is **no full-canvas clear** anywhere in the loop or before it — the example's views tile the canvas, so no pixel is outside every rect and it never has to answer for one (`renderer.clear` and `autoClear` do not appear in the file at all) | three.js | `examples/webgl_multiple_views.html:252-258` |
+| `setViewport` takes a rect in **CSS px with a bottom-origin y**, and the renderer multiplies by the pixel ratio it owns and rounds | three.js | `src/renderers/WebGLRenderer.js:804-816` |
+
+**What transfers.** The loop's shape, whole: per-rect viewport + scissor + clear + draw, with the
+projection re-sized to the rect. justerm's `draw` is that loop. The scissor is load-bearing for the
+same reason in both: `clear` ignores the viewport, so without it each view's background clear wipes
+the whole buffer.
+
+**What does not, and why each is a difference rather than a defect.**
+
+- **The full-canvas clear.** justerm has one and three.js does not, because justerm's grids are not
+  obliged to tile — a consumer places them where its layout says, and the area between two rects
+  belongs to the page behind a canvas that is a transparent overlay plane (ADR-0021's z-order
+  constraint). The reference is *silent* here rather than opposed: it has no uncovered area to have
+  an opinion about.
+- **The rect's units and origin.** three.js takes CSS px and flips nothing, because its caller hands
+  it fractions of a canvas the renderer itself scales (`setPixelRatio`). justerm takes **device px,
+  top-left origin**, and flips at the `gl.viewport` site: its caller hands it a measured DOM box, and
+  the buffer height to flip against is one this renderer owns and may have been granted less of than
+  it asked for (#339). The consumer-facing-units tie-breaker is our own API's coherence, and
+  `cell_width()`'s contract already puts *"anything that addresses the drawing buffer — `readPixels`,
+  GL interop, a picking rect"* in device px. Taking CSS px would also import three.js's rounding step,
+  which #337 is the local record of not wanting.
