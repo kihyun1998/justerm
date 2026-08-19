@@ -782,9 +782,10 @@ export class JustermRenderer implements Renderer {
     // **Order relative to the font calls above does not matter**, and this comment used to claim it
     // did ("both derive the cell from the glyph metrics those establish") — a dependency the renderer
     // deliberately removed. Every path that changes the glyph box, the DPR or either spacing value
-    // funnels through `recompute_cell`, which reads all four together, and the font path explicitly
-    // re-derives the cell from the *surviving* spacing policy. So font-then-spacing and
-    // spacing-then-font land on the same cell. Stated because a comment asserting a constraint that
+    // funnels through one function that reads all four together — `recompute_cell` up to renderer
+    // 0.14.x, `bake_config` after it, which builds a whole font *configuration* rather than a cell
+    // (#772) — and the font path re-derives from the *surviving* spacing policy either way. So
+    // font-then-spacing and spacing-then-font land on the same cell. Stated because a comment asserting a constraint that
     // does not exist is one someone later "fixes" by reordering, and then has to re-derive why it was
     // safe.
     backend.setLetterSpacing(opts.letterSpacing ?? 0);
@@ -919,12 +920,25 @@ export class JustermRenderer implements Renderer {
    * **Read the cell back rather than deriving it from what you passed.** `adopt_spacing` can hand you
    * something other than what you asked for in three separate ways, and none of them reports an error:
    * a `lineHeight` whose cell the atlas cannot hold is *shrunk* (#359); a failed atlas re-bake rolls
-   * the whole change back to the previous spacing; and while the GL context is lost the **cell moves
-   * immediately but the buffer does not** — `adopt_spacing` runs `recompute_cell()` *before* its
-   * lost-context guard (`webgl.rs`), so {@link cellSize} reports the new cell while the atlas re-bake
-   * and the drawing-buffer resize wait for `webglcontextrestored`. (This sentence used to say the cell
-   * "does not move at all", which was false against that ordering — corrected in #632, whose own
-   * reasoning depended on it.) {@link cellSize} and
+   * the whole change back to the previous spacing; and **what happens while the GL context is lost
+   * depends on which renderer you are on**, so read the cell back rather than assuming either:
+   *
+   * - **renderer 0.14.x and earlier** — the cell moves immediately and the buffer does not.
+   *   `adopt_spacing` ran `recompute_cell()` *before* its lost-context guard, so {@link cellSize}
+   *   reported the new cell while the atlas re-bake and the drawing-buffer resize waited for
+   *   `webglcontextrestored`. (This bullet used to say the cell "does not move at all", which was
+   *   false against that ordering — corrected in #632.)
+   * - **after that** — neither moves until the restore. The cell belongs to a *font configuration*
+   *   since #772, and a setter arriving on a dead context cannot bake one, so it advances the
+   *   selector and defers; `restore` re-selects from the surviving selectors and the cell lands
+   *   then. This is the more consistent of the two, and it is the one #632's dedupe wants: there is
+   *   no longer a window in which the cell has moved and the buffer has not.
+   *
+   * **#632's conclusion is unaffected either way**, which is worth stating because the comment it
+   * corrected is the bullet above: {@link FitController} dedupes on the cell *and* the grid, and the
+   * reason is that a cell change can leave the grid identical — true under both orderings.
+   *
+   * {@link cellSize} and
    * {@link terminalSize} are the truth afterwards — and `terminalSize` matters as much as the cell,
    * because the renderer's internal re-size adopts what the drawing buffer will actually grant (#339),
    * so a large enough cell shrinks the *grid* as well.

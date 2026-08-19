@@ -194,7 +194,17 @@ Still unchecked: what any of them does with GPU resources it cannot rebuild.
   context is dead writes its selector and defers the rest (an atlas cannot be baked on a dead
   context), leaving that grid naming a configuration whose key it no longer matches. The reconcile
   runs *after* the commit and propagates its error, so a failure leaves a self-consistent restore,
-  the retry latch set, and the whole function re-run on the next frame — idempotent by construction. It had
+  the retry latch set, and the whole function re-run on the next frame — idempotent by construction.
+  It also skips re-baking a configuration that the reconcile is about to release, which is the whole
+  glyph set of a font nobody is on any more.
+- **The setters' deferral guard was missing a third window, and it is the one this territory is
+  named for** (#772). `gpu_work_must_wait` asked the context and the `is_lost` flag; `on_restored`
+  clears `is_lost` and sets `pending_rebuild`, so between `webglcontextrestored` and the rebuild both
+  sources answered *"fine"* while the program, VAO and atlas were still the destroyed ones. Its own
+  doc-comment claimed that window was covered. The composition now lives on the state machine beside
+  `action` (`ContextState::must_defer`), which is where ADR-0027 D1 puts it — the source that owns
+  the flags answers the question about them — and a setter in that window defers instead of building
+  into resources `restore` replaces one frame later. It had
   to, because a draw loop turns a stale per-grid GPU object from *nothing draws it* into *the wrong
   grid's cells are drawn* — binding a VAO from the dead context raises `INVALID_OPERATION` and leaves
   the previously bound one in place. The refill came with it (`restore` ends in an

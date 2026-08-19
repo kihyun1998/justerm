@@ -309,23 +309,28 @@ narrower claim. Verifying it would confirm a description of wezterm, not a premi
   moment a second writer exists. ghostty pays nothing here because its atlas grows and never repoints a
   slot (above); the first implementation of this tier owes an equivalent guarantee — a slot pin for the
   frame, a pack epoch, or forcing every registered grid to re-pack when its atlas evicts.
-  **Discharged in part by #772 (2026-08-19), and the part that is left is not one of the three.** The
-  second was taken, in its cheapest form: the glyph cache counts what it repoints, a grid records the
-  count it packed against, and `render` re-packs any grid whose configuration has moved on. What
-  choosing between the three revealed is that none of them is complete on its own, for a reason that
-  is arithmetic rather than architectural — an eviction happens **only once a region is full**, so in
-  every state where this hazard exists the grids' *historical* set has already overflowed. The
-  guarantee therefore converges exactly when their **live** sets fit a region together, which is the
-  reachable case and the one that is now fixed: the re-pack marks that grid's glyphs
-  most-recently-used, so the next eviction takes one of the dead slots instead. Where the live sets do
-  **not** fit, re-packing oscillates — A's repair evicts B's, B's evicts A's — and no epoch or pin
-  changes that, because nothing can be right. The single-grid form of the same impossibility is
-  **refused** rather than drawn (`ResolveError::FrameExceedsCapacity`, *"an over-capacity frame is
-  surfaced, not silently corrupted"*), so the shape of the remaining answer is a **render-scoped
-  pin**: pin the union of the drawn grids' working sets for the frame and surface a render whose union
-  exceeds a region. That is deliberately not decided here — it carries a product cost this record
-  should not settle alone, since one terminal with a huge glyph set would make `render` throw for
-  every terminal on the surface.
+  **Discharged by #772 (2026-08-19), and it took two of the three rather than one — because the
+  three are answers to two different questions.** The list above reads as a menu and is not one: an
+  eviction happens **only once a region is full**, so the hazard splits by whether the grids' *live*
+  glyph sets fit a region together, and each half needs a different mechanism.
+  - **They fit** (the reachable case). A sibling can still evict this grid's slots, because a full
+    region evicts on any miss and an idle grid's glyphs age out. Answered by the *pack epoch*, in its
+    cheapest form: the glyph cache counts what it repoints, a grid records the count it packed
+    against, and `render` re-packs any grid whose configuration has moved on. It converges, and that
+    is a property rather than a hope — the re-pack marks this grid's glyphs most-recently-used, so
+    the next eviction takes one of the dead slots.
+  - **They do not fit.** No epoch converges here, and re-packing alone leaves the grids alternating.
+    Answered by the *slot pin for the frame*, made **render-scoped**: the render loop hands one pin
+    set to every grid it packs, so a pack that cannot fit beside its siblings is **refused** exactly
+    as an over-capacity single frame already was (`ResolveError::FrameExceedsCapacity`) rather than
+    drawn wrong. A refusal also dirties every grid sharing that configuration, which is what makes
+    the outcome a fixed point instead of an alternation; registration order decides which grid keeps
+    its glyphs, the same order the draw loop already uses.
+  **What this was measured against, because pixels alone cannot see it.** Two grids at 1200 distinct
+  live glyphs each, against a region holding 1953: before the pin, one grid drew 911 lit subpixels
+  beside its sibling and **891 alone** — stably wrong, every frame, with no error anywhere and a
+  green pixel suite. After: 891 every frame, matching the control, with the refusal reported on every
+  frame. A control in the same run is the only thing that separates the two.
 - **A global input does not belong *in* the key; it belongs to the path that rebuilds every entry
   (sharpened 2026-08-19, #772 — this bullet read *"the key is (font family, size, spacing, DPR)"*).**
   The conclusion it drew was right and is now implemented: re-keying one entry and rebuilding all of

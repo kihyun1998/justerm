@@ -39,7 +39,7 @@ use crate::frame_grid::{DamageFrame, FrameGrid, cell_count};
 use crate::glyph_cache::{
     FontStyle, GLYPHS_PER_LAYER, GlyphCache, WIDE_BASE, WIDE_CAPACITY, slot_texcoord,
 };
-use crate::glyph_resolve::{Cells, ResolveError, resolve_frame};
+use crate::glyph_resolve::{Cells, FramePins, ResolveError, resolve_frame};
 use crate::mat4::Mat4;
 use crate::metrics::{device_cell, fit_cell_to_atlas, glyph_offset};
 use crate::overlay::{HighlightColors, Overlay};
@@ -553,6 +553,14 @@ pub struct JustermRenderer {
     /// Count of `resolve_and_pack` runs — a diagnostic the proofs read to assert render packs once
     /// per frame, not once per setter (#421). Wraps harmlessly; only deltas are meaningful.
     pack_count: u32,
+    /// The glyphs the current pack scope may not evict (#772).
+    ///
+    /// A field rather than a threaded parameter because the thing it models is a **scope**, and a
+    /// scope with one owner is clearer as state than as an argument every layer forwards: `render`
+    /// clears it once and every grid it packs shares it, so a grid cannot evict a slot a sibling
+    /// committed to in the same frame; `apply_frame` clears it for its own immediate pack, which is
+    /// the only scope that pack actually has.
+    pins: FramePins,
     /// Count of atlas bakes — every construction of a `ConfigTier`, plus every in-place rebuild of
     /// one (a DPR change, a context restore). The diagnostic that makes *sharing* observable rather
     /// than inferred (#772): a grid joining an existing configuration must move this by zero.
@@ -1756,6 +1764,7 @@ impl JustermRenderer {
                 },
             ),
             pack_count: 0,
+            pins: FramePins::new(),
             bake_count: 1, // the configuration built above
         };
         let mut renderer = renderer;
@@ -2268,15 +2277,26 @@ impl JustermRenderer {
     ///   `drawingBufferWidth` already reads 0. Measured in Chromium: immediately after
     ///   `WEBGL_lose_context.loseContext()`, `gl.isContextLost()` is `true` and the flag below is
     ///   still `false`. Guarding on the flag alone is what let #639 survive its own first fix.
-    /// - the state machine's flag — our own bookkeeping. The mirror window: a context can come back
+    /// - the state machine's flags — our own bookkeeping. The mirror window: a context can come back
     ///   before we have processed `webglcontextrestored`, so the GL answers "live" while the
     ///   program, VAO and atlas it owned are still the destroyed ones and `restore` has not run.
-    ///   Baking into those would be as wrong as baking into a dead context.
+    ///   Baking into those would be as wasted as baking into a dead context.
     ///
-    /// So: defer if **either** says so. Note that `resize` does not use this — it holds the actual
-    /// answer, having just read the drawing buffer back, and guards on that instead.
+    /// **The second bullet described a window this function did not actually cover, until #772.**
+    /// It asked `is_lost()`, and `on_restored` clears exactly that flag while setting
+    /// `pending_rebuild` — so in the post-`webglcontextrestored`, pre-rebuild window both sources
+    /// answered "fine" and a setter went ahead and baked into resources `restore` replaced on the
+    /// next frame. The composition now lives on the state machine (`must_defer`), beside `action`,
+    /// which is where ADR-0027 D1 puts it: the source that owns the flags answers the question about
+    /// them. Note that `resize` does not use this — it holds the actual answer, having just read the
+    /// drawing buffer back, and guards on that instead.
     fn gpu_work_must_wait(&self) -> bool {
-        self.global.raw_gl.is_context_lost() || self.global.ctx_loss.state.borrow().is_lost()
+        let live = if self.global.raw_gl.is_context_lost() {
+            ContextLiveness::Dead
+        } else {
+            ContextLiveness::Usable
+        };
+        self.global.ctx_loss.state.borrow().must_defer(live)
     }
 
     /// Register a callback invoked when a lost context has not been restored within the deadline
@@ -2371,7 +2391,22 @@ impl JustermRenderer {
                 }
             }
         }
-        let config_ids = self.configs.ids();
+        // Only the configurations that will still have a holder once step 3 has run. An entry whose
+        // every grid has drifted off its key — a mid-loss `setFontSize` writes the selector and
+        // defers — is released by the reconcile, so baking it here would rasterise a whole glyph set
+        // into a texture deleted a few lines later. That is one full re-bake thrown away on every
+        // restore that follows a mid-loss font change: exactly the operation this epic exists to
+        // stop paying for.
+        let config_ids: Vec<_> = self
+            .configs
+            .ids()
+            .into_iter()
+            .filter(|&id| {
+                (0..self.grids.len()).any(|at| {
+                    self.grid_at(at).config == id && self.key_of(at) == *self.configs.key(id)
+                })
+            })
+            .collect();
         for &id in &config_ids {
             let key = self.configs.key(id).clone();
             let built = Self::bake_config(
@@ -2742,6 +2777,7 @@ impl JustermRenderer {
         // The direct path packs immediately — it retains no grid for `render` to re-pack from, so
         // it cannot defer (#421). Clear the dirty flag: this pack IS the current state.
         let underline_colors = underline_colors.unwrap_or_default();
+        self.pins.clear(); // this pack's scope is itself — see the field's doc
         let result =
             self.resolve_and_pack(DEFAULT_SLOT, &cells, bg, fg, &underline_colors, blink_on);
         self.grid_mut().needs_repack = false;
@@ -2796,6 +2832,7 @@ impl JustermRenderer {
         // from `&global` (the GL the upload closure needs); they are separate fields of the facade,
         // so this borrows neither through the other.
         let gl = &self.global.gl;
+        let pins = &mut self.pins;
         let config = self.configs.get_mut(self.grids.grid_at(at).config);
         let ConfigTier {
             cache,
@@ -2810,6 +2847,7 @@ impl JustermRenderer {
         let slots = resolve_frame(
             cells,
             cache,
+            pins,
             |text, style, wide| {
                 // Rasterise, then classify with the hybrid signal (#297): a colour emoji comes
                 // back in its own palette (COLR/CBDT/SVG) → is_color_bitmap; an emoji the font
@@ -2836,7 +2874,13 @@ impl JustermRenderer {
         .map_err(|e| match e {
             ResolveError::Rasterize(js) => js,
             ResolveError::FrameExceedsCapacity => JsValue::from_str(
-                "justerm-renderer: frame references more distinct glyphs than the atlas can hold",
+                // Two causes since #772, and a consumer cannot tell them apart from the outside, so
+                // the message names both: this frame alone, or this frame together with the other
+                // grids drawn beside it through the same font configuration. Either way the pack is
+                // refused rather than drawn wrong — the grid keeps its last frame and this reaches
+                // the consumer as a thrown error.
+                "justerm-renderer: more distinct glyphs than the atlas can hold — this frame, or \
+                 this frame together with the other grids sharing its font configuration",
             ),
             ResolveError::GridOverflows { cols, rows } => JsValue::from_str(&format!(
                 "justerm-renderer: grid {cols}x{rows} has more cells than a u32 can count"
@@ -3043,6 +3087,14 @@ impl JustermRenderer {
         // One grid's bad frame must not blank its neighbours, so a pack error is held and the
         // frame still draws. It surfaces after the draw, and the flag it left set means the next
         // render retries exactly as the single-grid path did.
+        // One pin set for the whole loop, so a grid cannot evict a slot a sibling packed earlier in
+        // the SAME frame (#772). Without it the second grid's pack repoints the first's committed
+        // slots, the first is not re-diffed because its instance floats did not change, and it draws
+        // **stably wrong** — measured, and invisible to a pixel check without a control: a grid drew
+        // 911 lit subpixels beside a sibling and 891 alone, every frame, with no error anywhere.
+        // With the pin the second pack is refused instead, which is exactly what an over-capacity
+        // *single* frame has always got (`FrameExceedsCapacity`), extended to the union.
+        self.pins.clear();
         let mut pack_error = None;
         for at in 0..self.grids.len() {
             if self.grids.viewport_at(at).is_none() {
@@ -3058,7 +3110,33 @@ impl JustermRenderer {
             if self.grid_at(at).needs_repack || stale {
                 match self.repack_from_grid(at) {
                     Ok(()) => self.grid_at_mut(at).needs_repack = false,
-                    Err(e) => pack_error = pack_error.or(Some(e)),
+                    Err(e) => {
+                        // A refused pack has to leave a **fixed point**, or the frames alternate.
+                        //
+                        // The pin only covers grids that actually packed this frame, and a clean
+                        // grid does not pack — so without this the cycle is: this grid is refused
+                        // and its sibling stays correct; next frame the sibling is clean, packs
+                        // nothing, leaves the pins empty, and *this* grid succeeds by repointing
+                        // the sibling's slots. Measured: `a` alternating 891 (right) / 911 (wrong)
+                        // with the error appearing only on alternate frames.
+                        //
+                        // Dirtying every grid that shares this configuration makes them all pack,
+                        // every frame, for as long as the overflow lasts — so the earlier ones pin
+                        // their glyphs first and stay correct, and the same grid is refused each
+                        // time. Registration order decides who wins, which is the order everything
+                        // else in this loop already uses (#771) and puts the implicit default grid
+                        // first. The extra packing costs what a re-pack costs, in a state that is
+                        // already reporting an error every frame; it is bounded by the overflow.
+                        let config = self.grid_at(at).config;
+                        for other in 0..self.grids.len() {
+                            if self.grids.viewport_at(other).is_some()
+                                && self.grid_at(other).config == config
+                            {
+                                self.grid_at_mut(other).needs_repack = true;
+                            }
+                        }
+                        pack_error = pack_error.or(Some(e));
+                    }
                 }
             }
         }

@@ -247,6 +247,7 @@
   // The setter cannot bake on a dead context, so it advances the selector and defers; `restore`'s
   // reconcile pass is what actually moves the grid between entries. Without it the default would
   // come back drawing through an atlas keyed by the size it no longer asks for.
+  const bakesBeforeMidLoss = r.bakes();
   const lost2 = once("webglcontextlost");
   lose.loseContext();
   await lost2;
@@ -259,6 +260,15 @@
   const cw45 = r.cell_width();
   notes.afterMidLossFontChange = { cw45, cwB, cwS, atlases: r.atlasCount() };
   checks.aMidLossFontChangeLandsOnTheRestore = cw45 !== cwB && cw45 !== cwS;
+  // …and the restore does not bake the configuration it is about to leave. Two entries were live
+  // before the loss; one of them is the default's, whose selectors drifted, so after the reconcile
+  // it has no holder and is released. A restore that re-baked it first would rasterise a whole glyph
+  // set into a texture deleted a few lines later — one full re-bake thrown away on every restore
+  // that follows a mid-loss font change. So: one bake for the configuration that survives, one for
+  // the configuration the default moves to, and none for the one it leaves.
+  notes.afterMidLossFontChange.bakes = r.bakes() - bakesBeforeMidLoss;
+  checks.aRestoreDoesNotBakeTheConfigurationItIsLeaving =
+    r.bakes() === bakesBeforeMidLoss + 2 && r.atlasCount() === 2;
   // `d` never moved, so its entry is still there beside the freshly built 45 one.
   checks.andTheGridThatDidNotMoveKeepsItsOwn = r.atlasCount() === 2;
 
@@ -328,6 +338,43 @@
   checks.aGridWhoseSlotsWereRepointedRepairsItself = sameBytes(mineBefore, mineAfter);
   // …and it did so while still sharing one atlas with the grid that evicted it.
   checks.andTheTwoWereSharingOneAtlasThroughout = r.atlasCount() === 1;
+
+  // ── When two grids' live sets cannot both fit, the loser is REFUSED rather than drawn wrong ──
+  // The other half of the same hazard, and the half a pixel check cannot see without a control. An
+  // over-capacity *single* frame has always been refused rather than corrupted; two grids whose
+  // union overflows are the cross-grid form of the same impossibility, and until the render loop
+  // shared one pin set across its packs they were silently, stably wrong instead — measured, before
+  // the fix: this grid drew 911 lit subpixels beside its sibling and 891 alone, every frame, forever,
+  // with no error anywhere. Green pixels and a green suite; only the control tells them apart.
+  //
+  // A refused pack also has to leave a FIXED POINT. The pin covers grids that packed this frame, and
+  // a clean grid does not pack — so a refusal must dirty everyone sharing the configuration, or the
+  // frames alternate between "correct and reported" and "wrong and silent".
+  r.clearViewport(d);
+  r.setFontSize(SMALL);
+  r.resize(30, 8);
+  const [ocw, och] = [r.cell_width(), r.cell_height()];
+  const MINE_BIG = distinct(1000, 0x1000);
+  const THEIRS_BIG = distinct(1000, 0x2400);
+  r.apply_damage(...glyphRow(40, 25, MINE_BIG));
+  r.applyDamageTo(d, ...glyphRow(40, 25, THEIRS_BIG));
+  r.setViewport(d, 0, 4 * och, 30 * ocw, 4 * och);
+  const over = [];
+  for (let i = 0; i < 4; i++) {
+    let threw = false;
+    try { r.render(); } catch { threw = true; }
+    over.push({ threw, ink: inkOf(rectBytes(0, 0, 8 * ocw, och)) });
+  }
+  // The control, in the same run and after the same frames: the same grid with no sibling sharing
+  // its cache. This is the number the four above have to equal.
+  r.clearViewport(d);
+  r.render();
+  r.render();
+  const aloneInk = inkOf(rectBytes(0, 0, 8 * ocw, och));
+  notes.overCapacity = { over, aloneInk };
+  checks.anOverCapacityUnionIsReportedEveryFrame = over.every((f) => f.threw);
+  checks.andTheGridThatPacksFirstStaysCorrect =
+    aloneInk > 0 && over.every((f) => f.ink === aloneInk);
 
   const failed = Object.entries(checks).filter(([, ok]) => !ok).map(([k]) => k);
   window.__proof = { checks, notes, ok: failed.length === 0, failed };

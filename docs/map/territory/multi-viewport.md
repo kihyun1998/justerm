@@ -286,13 +286,19 @@ The list below is what lands **when the multi-grid work does**, and the entries 
   live set shrinks and the first grid repairs itself with no new frame from the consumer. Turning the
   comparison off makes those four cells draw the sibling's glyphs, which is the corruption made
   visible: ink over the four cells goes 207 → 421.
-  **What choosing between the three candidates revealed** is that none of them is complete, for an
-  arithmetic reason: an eviction happens *only once a region is full*, so wherever this hazard exists
-  the grids' historical set has already overflowed. The re-pack converges exactly when their **live**
-  sets fit a region together (the reachable case, now fixed — the re-pack makes that grid's glyphs
-  most-recently-used, so the next eviction takes a dead slot). Where the live sets do not fit,
-  re-packing oscillates and nothing can be right; the single-grid form of that impossibility is
-  *refused* rather than drawn, so the shape of the remaining answer is a **render-scoped pin** over
-  the union of the drawn grids' working sets. That is open, and it is left open on purpose — it
-  carries a product decision (one terminal with a huge glyph set would make `render` throw for every
-  terminal on the surface) rather than only an implementation.
+  **Choosing between ADR-0021's three candidates revealed that they answer two different questions**,
+  so #772 took two of them. An eviction happens *only once a region is full*, which splits the hazard
+  by whether the grids' **live** glyph sets fit a region together:
+  - *they fit* — the **pack epoch** above, which converges because the re-pack makes that grid's
+    glyphs most-recently-used and the next eviction takes a dead slot;
+  - *they do not fit* — the **slot pin**, made render-scoped: one pin set for the whole pack loop, so
+    a grid that cannot fit beside its siblings is **refused** rather than drawn wrong, exactly as an
+    over-capacity single frame already was. A refusal dirties every grid on that configuration, which
+    is what makes it a fixed point rather than an alternation — without that the frames alternate
+    between correct-and-reported and wrong-and-silent (measured).
+  **The measurement is the part worth keeping**, because it is what a pixel suite structurally cannot
+  see. Two grids at 1200 distinct live glyphs each, region 1953: before the pin, one grid drew 911 lit
+  subpixels beside its sibling and **891 alone** — stably wrong, every frame, no error anywhere, and
+  every proof green. After: 891 every frame, equal to the control, with the refusal reported on every
+  frame. `demo/per-config-atlas.html` runs both halves, and the alone-control in the same run is the
+  only thing that tells them apart.

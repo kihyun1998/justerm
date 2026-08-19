@@ -83,9 +83,47 @@ fn sanitize_codepoint(cp: u32) -> char {
 }
 
 /// Resolve a frame ([`Cells`], dense row-major) to one atlas slot per cell.
+/// The glyphs a pack must not evict — what makes a slot handed out early still mean the same thing
+/// when the frame is drawn.
+///
+/// **Owned by the caller, so its scope is the caller's choice, and that is the whole of the
+/// cross-grid guarantee (#772).** A single `resolve_frame` protects its own cells by refusing a
+/// frame that needs more distinct glyphs than a region holds — but once a glyph cache is shared by
+/// every grid on one font configuration, the grids drawn in the *same* frame are packed by separate
+/// calls, and the second one can evict a slot the first has already committed to. Its instances are
+/// packed and will not be re-diffed, so nothing downstream can notice.
+///
+/// So the render loop makes **one** of these and passes it to every grid it packs: a pack that
+/// cannot fit alongside its siblings is surfaced rather than drawn wrong, exactly as an
+/// over-capacity single frame already was. A pack outside a render loop (the direct `apply_frame`
+/// path) makes its own, which is the scope it actually has.
+///
+/// Two sets rather than one because the normal and wide LRUs are independent (`glyph_cache`) — a key
+/// referenced in one region must not spuriously protect an identical key in the other.
+#[derive(Default)]
+pub struct FramePins {
+    normal: HashSet<GlyphKey>,
+    wide: HashSet<GlyphKey>,
+}
+
+impl FramePins {
+    /// A pin set covering nothing yet — one render's worth, or one direct pack's.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Open a new scope. The caller that owns the scope is the caller that clears it: a `render`
+    /// clears once before its pack loop, a direct pack clears before its own call.
+    pub fn clear(&mut self) {
+        self.normal.clear();
+        self.wide.clear();
+    }
+}
+
 pub fn resolve_frame<B, E>(
     cells: &Cells,
     cache: &mut GlyphCache,
+    pins: &mut FramePins,
     // Rasterise a grapheme and report whether the bitmap is a **colour emoji** (`is_color_bitmap`)
     // — the caller inspects the pixels it just drew (#284). An emoji is allocated in the wide
     // region with `EMOJI_FLAG`, so its glyph field tells the shader to sample the texture colour.
@@ -110,11 +148,9 @@ pub fn resolve_frame<B, E>(
         return Err(ResolveError::FrameShorterThanGrid { cells: count, got });
     }
     let mut slots = Vec::with_capacity(count);
-    // Glyphs already resolved in THIS frame — evicting one would corrupt an earlier cell.
-    // Tracked per region (the normal and wide LRUs are independent, `glyph_cache`), so a key
-    // referenced in one region can't spuriously protect an identical key in the other.
-    let mut normal_frame: HashSet<GlyphKey> = HashSet::new();
-    let mut wide_frame: HashSet<GlyphKey> = HashSet::new();
+    // Glyphs already resolved in this pass — evicting one would corrupt a cell already packed
+    // against it. The set is the CALLER's (see `FramePins`): within a render it spans every grid
+    // drawn in the frame, so one grid cannot evict a sibling's committed slots either.
     // A wide lead assigns its right half to the following (spacer) cell.
     let mut pending_right: Option<u16> = None;
     for idx in 0..count {
@@ -167,9 +203,9 @@ pub fn resolve_frame<B, E>(
         };
 
         let region = if kind == GlyphKind::Normal {
-            &mut normal_frame
+            &mut pins.normal
         } else {
-            &mut wide_frame
+            &mut pins.wide
         };
 
         let slot = match cache.touch(&key, kind) {
@@ -261,6 +297,7 @@ mod tests {
         let err = resolve_frame(
             &cells(u32::MAX, 2, &[], &[]),
             &mut cache,
+            &mut FramePins::new(),
             no_raster,
             no_upload,
         );
@@ -278,6 +315,7 @@ mod tests {
         let err = resolve_frame(
             &cells(1000, 1000, &[0x41, 0x42], &[0, 0]),
             &mut cache,
+            &mut FramePins::new(),
             no_raster,
             no_upload,
         );
@@ -299,6 +337,7 @@ mod tests {
         let slots = resolve_frame(
             &cells(2, 1, &[0x41, 0x42], &[0, 0]),
             &mut cache,
+            &mut FramePins::new(),
             no_raster,
             no_upload,
         )
@@ -317,6 +356,7 @@ mod tests {
         let slots = resolve_frame(
             &cells(1, 1, &[0x2192], &[0]),
             &mut cache,
+            &mut FramePins::new(),
             |t, s, w| {
                 rasterized.push((t.to_string(), s, w));
                 Ok::<(String, bool), ()>((t.to_string(), false))
@@ -343,6 +383,7 @@ mod tests {
         let err = resolve_frame(
             &cells(1, 1, &[0x2192], &[0]),
             &mut cache,
+            &mut FramePins::new(),
             |_, _, _| Err::<(String, bool), &str>("boom"),
             |_, _, _| uploads += 1,
         )
@@ -368,11 +409,77 @@ mod tests {
         let err = resolve_frame(
             &cells(n, 1, &cps, &flags),
             &mut cache,
+            &mut FramePins::new(),
             |t, _, _| Ok::<(String, bool), ()>((t.to_string(), false)),
             |_, _, _| {},
         )
         .unwrap_err();
         assert_eq!(err, ResolveError::FrameExceedsCapacity);
+    }
+
+    #[test]
+    fn two_grids_sharing_a_pin_set_cannot_evict_each_others_committed_slots() {
+        // The cross-grid half of the guard above (#772). Two grids drawn in one frame are packed by
+        // two `resolve_frame` calls against ONE shared cache, so the second can repoint a slot the
+        // first has already committed to — and nothing downstream notices, because the first grid's
+        // instance floats did not change, only what the atlas holds at the index they name.
+        //
+        // Measured in a browser before this pin existed: a grid drew 911 lit subpixels beside a
+        // sibling and 891 alone, stably, every frame, with no error anywhere. Silently wrong is the
+        // failure class this repo refuses; the single-frame form of the same impossibility was
+        // already refused, and sharing the pin set is what extends that refusal across the loop.
+        let free = (NORMAL_CAPACITY - ASCII_SLOTS) as u32; // 1953
+        let (a, b) = (free - 100, 200u32); // together 2053 > 1953; each alone fits
+        let mine: Vec<u32> = (0..a).map(|i| 0x2200 + i).collect();
+        let theirs: Vec<u32> = (0..b).map(|i| 0x0250 + i).collect();
+        let raster =
+            |t: &str, _: FontStyle, _: bool| Ok::<(String, bool), ()>((t.to_string(), false));
+
+        // Shared pins — the render loop's arrangement.
+        let mut cache = GlyphCache::new();
+        let mut pins = FramePins::new();
+        resolve_frame(
+            &cells(a, 1, &mine, &vec![0u16; a as usize]),
+            &mut cache,
+            &mut pins,
+            raster,
+            |_, _, _| {},
+        )
+        .expect("the first grid fits on its own");
+        let err = resolve_frame(
+            &cells(b, 1, &theirs, &vec![0u16; b as usize]),
+            &mut cache,
+            &mut pins,
+            raster,
+            |_, _, _| {},
+        )
+        .unwrap_err();
+        assert_eq!(
+            err,
+            ResolveError::FrameExceedsCapacity,
+            "the second grid is refused rather than repointing the first's slots"
+        );
+
+        // CONTROL, same run: with a pin set each — the arrangement outside a render loop — the
+        // second frame succeeds, by evicting the first's. That is what makes the assertion above
+        // about the SHARING rather than about the capacity.
+        let mut cache = GlyphCache::new();
+        resolve_frame(
+            &cells(a, 1, &mine, &vec![0u16; a as usize]),
+            &mut cache,
+            &mut FramePins::new(),
+            raster,
+            |_, _, _| {},
+        )
+        .unwrap();
+        resolve_frame(
+            &cells(b, 1, &theirs, &vec![0u16; b as usize]),
+            &mut cache,
+            &mut FramePins::new(),
+            raster,
+            |_, _, _| {},
+        )
+        .expect("with its own pin set the second frame evicts instead of being refused");
     }
 
     #[test]
@@ -390,6 +497,7 @@ mod tests {
         let err = resolve_frame(
             &cells(n, 1, &cps, &flags),
             &mut cache,
+            &mut FramePins::new(),
             |t, _, _| Ok::<(String, bool), ()>((t.to_string(), false)),
             |_, _, _| {},
         )
@@ -405,6 +513,7 @@ mod tests {
         let slots = resolve_frame(
             &cells(3, 1, &[0x2192, 0x2190, 0x2192], &[0, 0, 0]),
             &mut cache,
+            &mut FramePins::new(),
             |t, _, _| Ok::<(String, bool), ()>((t.to_string(), false)),
             |_, _, _| {},
         )
@@ -430,6 +539,7 @@ mod tests {
                 &[WIDE_CHAR, WIDE_CHAR_SPACER, 0],
             ),
             &mut cache,
+            &mut FramePins::new(),
             |t, s, w| {
                 rasterized.push((t.to_string(), s, w));
                 Ok::<(String, bool), ()>((t.to_string(), false))
@@ -458,6 +568,7 @@ mod tests {
         let slots = resolve_frame(
             &cells(2, 1, &[0x1F680, 0x0], &[WIDE_CHAR, WIDE_CHAR_SPACER]),
             &mut cache,
+            &mut FramePins::new(),
             |_t, _s, _w| Ok::<(String, bool), ()>(("rocket".to_string(), true)),
             |slot, w, _b| uploaded.push((slot, w)),
         )
@@ -490,6 +601,7 @@ mod tests {
         let f1 = resolve_frame(
             &cells(1, 1, &[0x2764], &[0]), // ❤ codepoint, flags have no WIDE_CHAR
             &mut cache,
+            &mut FramePins::new(),
             |_t, _s, _w| {
                 raster_calls += 1;
                 Ok::<(String, bool), ()>(("x".to_string(), true)) // font drew it in colour
@@ -510,6 +622,7 @@ mod tests {
         let f2 = resolve_frame(
             &cells(1, 1, &[0x2764], &[0]),
             &mut cache,
+            &mut FramePins::new(),
             |_t, _s, _w| {
                 raster_calls += 1;
                 Ok::<(String, bool), ()>(("x".to_string(), true))
@@ -533,6 +646,7 @@ mod tests {
         let slots = resolve_frame(
             &cells(5, 1, &[0x01, 0x1F, 0x7F, 0x80, 0x9F], &[0, 0, 0, 0, 0]),
             &mut cache,
+            &mut FramePins::new(),
             no_raster,
             no_upload,
         )
@@ -561,6 +675,7 @@ mod tests {
                 clusters: &[family.to_string()],
             },
             &mut cache,
+            &mut FramePins::new(),
             |t, _, _| {
                 rasterized.push(t.to_string());
                 Ok::<(String, bool), ()>((t.to_string(), false))
@@ -596,6 +711,7 @@ mod tests {
                 clusters: &["e\u{0301}".to_string(), String::new()], // cell0 = decomposed cluster
             },
             &mut cache,
+            &mut FramePins::new(),
             |t, _, _| {
                 rasterized.push(t.to_string());
                 Ok::<(String, bool), ()>((t.to_string(), false))
