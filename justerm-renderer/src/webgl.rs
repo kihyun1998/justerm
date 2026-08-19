@@ -2132,8 +2132,21 @@ impl JustermRenderer {
             return Err(e);
         }
 
-        // 2. Commit. The outgoing GL objects died with the context, so deleting them is a no-op on
-        //    the GL side — it only frees glow's handle slots.
+        // 2. Commit. Deleting the outgoing GL objects frees glow's handle slots, which is the whole
+        //    reason to do it — the objects themselves died with the context.
+        //
+        //    **It is not a no-op on the GL side, which this comment claimed until it was measured**
+        //    (#770). An object belongs to the context that created it, and after a restore that is
+        //    the *previous* context, so each delete below raises `INVALID_OPERATION`. Measured two
+        //    ways and in two environments, both agreeing: in raw WebGL with no wasm involved
+        //    (delete a pre-loss buffer → `0x0502`; delete one created after the restore → `0`), and
+        //    through this function (the restoring `render` leaves `0x0502`, a renderer that never
+        //    lost its context leaves `0`) — on headless SwiftShader and on a real NVIDIA/D3D11
+        //    browser alike.
+        //
+        //    Harmless, and stated so nobody re-derives it: it is an error *flag*, with no state
+        //    effect, and the next frame reads clean. What it costs is a consumer polling `getError`
+        //    around a restore, which would see a failure that is not one.
         let (old_program, old_vao, old_vbo, old_atlas) = (
             self.global.program,
             self.global.vao,

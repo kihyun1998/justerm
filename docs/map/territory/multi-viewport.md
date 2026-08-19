@@ -171,10 +171,17 @@ The list below is what lands **when the multi-grid work does**, and the entries 
   frame it is fed — and the consumer's adoption design keeps a hidden workspace's Blocks mounted and
   feeding (penterm's `terminal-single-context-adoption` PRD: `ContentArea`'s `display:none` mount
   policy is kept, and each mounted Block feeds decoded frames). So after the per-grid setters land,
-  a hidden terminal's per-frame CPU cost is real and nobody has budgeted it. Both references gate more
-  than the draw and **disagree on how much** (the rows under `## Reference behaviour`), so this is a
-  design decision the draw loop (#771) or the setter contract (#773) owns, not a defect here: today
-  nothing feeds a non-default grid at all.
+  a hidden terminal's per-frame CPU cost is real. **Measured, so the decision has a number** (#770,
+  120×40, release wasm, two environments agreeing within ~10 % — headless SwiftShader and a real
+  NVIDIA/D3D11 browser): scattering a frame costs ≈**0.04 ms**, and the pack + upload behind it
+  ≈**0.33 ms**, against ≈0.003 ms to draw. So an ungated hidden grid costs ≈**0.4 ms per frame**, of
+  which the scatter is what a fed grid pays regardless and the rest is what a gate could take back —
+  ten hidden terminals at 60 fps would be ≈4 ms of a 16.7 ms budget, a quarter of the frame spent on
+  pixels nobody sees. The upload is not the expensive half: an identical frame (whose diff uploads
+  nothing) and a frame where every cell changes cost the same to within noise, so this is wasm CPU
+  and it transfers. Both references gate more than the draw and **disagree on how much** (the rows
+  under `## Reference behaviour`), so the choice is the draw loop's (#771) or the setter contract's
+  (#773), not a defect here: today nothing feeds a non-default grid at all.
 - **The middle tier has a hazard the record now names but nothing yet answers.** Sharing one atlas
   across grids makes [glyph atlas](glyph-atlas.md)'s within-frame eviction corruption a *cross-grid*
   event, and the upload diff — which is the defence today — cannot see it, because a grid that is not
