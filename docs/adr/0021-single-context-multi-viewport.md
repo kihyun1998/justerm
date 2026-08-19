@@ -172,6 +172,15 @@ fields nobody had written when it was drafted.** Two placements changed on adjud
   plan for:** the VAO captures `instance_vbo` in its attribute state (`vertex_attrib_pointer_f32` and
   `vertex_attrib_divisor` are called with it bound, inside the VAO), so a per-grid VBO forces either a
   per-grid VAO or a re-pointer per grid per frame.
+- **The corollary was settled by #771: the VAO went per-grid too, and D2 is what decided it.** The
+  question D2 asks is whether one instance can serve two grids **byte-for-byte**, and a VAO whose
+  content is *where grid X's instance buffer is* cannot — the re-pointer alternative does not make it
+  shareable, it keeps a per-grid fact in the global tier and rewrites it N times a frame, which is the
+  arrangement D2 rejects rather than a cheaper form of it. Nothing else moved with it: the per-vertex
+  quad buffer the VAO points at **stays global**, because two grids do share those four vertices
+  byte-for-byte. So the global tier holds one program, one quad and the uniform locations; the attribute
+  *layout* is still global by construction (one program means one instance format, and per-grid layouts
+  are not reachable), while which buffer feeds it is not.
 
 **The consumer gains one new concept.** `TerminalSurface` owns the canvas, the context, the atlas
 registry keyed by config, the single `requestAnimationFrame` loop, the grid registry and context-loss

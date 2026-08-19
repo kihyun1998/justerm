@@ -33,14 +33,14 @@
 //   cite.mjs <tree> <path> --find <text>      print every line containing <text>, with numbers
 //   cite.mjs --pins                           check the local trees against the recorded pins
 //
-//   <tree> is alacritty | ghostty | xterm.js; <path> may be partial (`term/mod.rs`) as long as it
+//   <tree> is alacritty | ghostty | xterm.js | three.js; <path> may be partial (`term/mod.rs`) as long as it
 //   resolves to one file.
 
 import { readFileSync, existsSync } from 'node:fs';
 import { execSync } from 'node:child_process';
 import { join, resolve } from 'node:path';
 
-const TREES = ['alacritty', 'ghostty', 'xterm.js'];
+const TREES = ['alacritty', 'ghostty', 'xterm.js', 'three.js'];
 const PINS_DOC = 'docs/agents/theflow.md';
 
 const die = (msg, code = 2) => {

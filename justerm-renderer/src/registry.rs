@@ -73,6 +73,31 @@ pub struct Viewport {
     pub height: i32,
 }
 
+impl Viewport {
+    /// The same rect as `gl.viewport` / `gl.scissor` take it: y measured from the drawing buffer's
+    /// **bottom** edge instead of its top (#771).
+    ///
+    /// The flip lives here rather than at the consumer, and that is a producer question rather than
+    /// a convenience one. The rect is produced by a DOM measurement, and the DOM's origin is
+    /// top-left; GL's is bottom-left. Whoever crosses between the two spaces has to know the
+    /// buffer's height, and the consumer's copy of that is a `canvas.height` it does not own — this
+    /// renderer sizes the buffer, and may be granted less than it asked for (#339). So the only site
+    /// that can flip a rect correctly is the one holding the granted height.
+    ///
+    /// Note that three.js pushes this outward: `renderer.setViewport(x, y, w, h)` passes straight to
+    /// `gl.viewport` and its multiple-views example computes `bottom` itself
+    /// (`examples/webgl_multiple_views.html:265`). It can, because its caller supplies fractions of
+    /// a canvas it also owns; ours supplies a measured box.
+    pub fn gl_rect(&self, buffer_height: i32) -> (i32, i32, i32, i32) {
+        (
+            self.x,
+            buffer_height - (self.y + self.height),
+            self.width,
+            self.height,
+        )
+    }
+}
+
 /// Why a registry lookup was refused. Every variant is a *caller* error arriving from JS, so each
 /// is surfaced as a thrown error rather than a silent no-op (the `apply_damage` precedent, #355).
 #[derive(Debug, PartialEq, Eq)]
@@ -122,6 +147,13 @@ pub struct GridRegistry<T> {
     entries: Vec<Entry<T>>,
     next_id: u32,
 }
+
+/// The slot the implicit default grid occupies, for as long as it exists.
+///
+/// Not a convention the draw loop has to remember: [`GridRegistry::new`] puts it there and
+/// [`GridRegistry::remove`] refuses to take it out, so nothing can shift it — a later grid is
+/// pushed after it, and removing one only shifts the grids behind it.
+pub const DEFAULT_SLOT: usize = 0;
 
 impl<T> GridRegistry<T> {
     /// Start a registry holding the implicit default grid, drawn over `viewport`.
@@ -231,7 +263,32 @@ impl<T> GridRegistry<T> {
         Ok(self.entries[self.index_of(id)?].viewport.is_some())
     }
 
-    fn index_of(&self, id: GridId) -> Result<usize, RegistryError> {
+    /// Where a grid draws, or `None` if it is registered and not drawn (#771's draw loop reads
+    /// this, once per slot per frame).
+    ///
+    /// **Addressed by slot, not by id.** The loop visits `0..len()`, so an id lookup per grid per
+    /// frame would be a linear scan inside a linear walk for nothing; a slot is stable for as long
+    /// as the frame it is read in, because nothing removes a grid mid-frame. Every consumer-facing
+    /// method still takes an id — a slot is an internal address and is never handed across the wasm
+    /// boundary, where a stale one *would* silently retarget (which is why ids are not reused).
+    pub fn viewport_at(&self, at: usize) -> Option<Viewport> {
+        self.entries[at].viewport
+    }
+
+    /// The grid in a slot. See [`viewport_at`](Self::viewport_at) for why the draw loop addresses
+    /// grids this way.
+    pub fn grid_at(&self, at: usize) -> &T {
+        &self.entries[at].grid
+    }
+
+    /// Mutable form of [`grid_at`](Self::grid_at).
+    pub fn grid_at_mut(&mut self, at: usize) -> &mut T {
+        &mut self.entries[at].grid
+    }
+
+    /// The slot a grid id addresses. The bridge from the consumer's handle to the draw loop's
+    /// address, and the same lookup every id-taking method here already makes.
+    pub fn index_of(&self, id: GridId) -> Result<usize, RegistryError> {
         self.entries
             .iter()
             .position(|e| e.id == id)
@@ -481,5 +538,182 @@ mod tests {
         fn viewport_for_test(&self, id: GridId) -> Option<Viewport> {
             self.entries[self.index_of(id).unwrap()].viewport
         }
+    }
+}
+
+#[cfg(test)]
+mod viewport_tests {
+    use super::*;
+
+    /// A 640x384 buffer, and a rect that fills it — the single-grid arrangement.
+    #[test]
+    fn a_rect_filling_the_buffer_is_unchanged_by_the_flip() {
+        let vp = Viewport {
+            x: 0,
+            y: 0,
+            width: 640,
+            height: 384,
+        };
+        assert_eq!(vp.gl_rect(384), (0, 0, 640, 384));
+    }
+
+    #[test]
+    fn a_rect_at_the_buffers_top_edge_lands_at_the_far_end_of_gls_y_axis() {
+        let vp = Viewport {
+            x: 10,
+            y: 0,
+            width: 100,
+            height: 50,
+        };
+        // GL measures from the bottom, so a rect flush with the top sits at `H - height`.
+        assert_eq!(vp.gl_rect(384), (10, 334, 100, 50));
+    }
+
+    #[test]
+    fn a_rect_at_the_buffers_bottom_edge_lands_at_gl_y_zero() {
+        let vp = Viewport {
+            x: 10,
+            y: 334,
+            width: 100,
+            height: 50,
+        };
+        assert_eq!(vp.gl_rect(384), (10, 0, 100, 50));
+    }
+
+    #[test]
+    fn stacked_rects_stay_disjoint_and_reverse_order_under_the_flip() {
+        let top = Viewport {
+            x: 0,
+            y: 0,
+            width: 640,
+            height: 192,
+        };
+        let bottom = Viewport {
+            x: 0,
+            y: 192,
+            width: 640,
+            height: 192,
+        };
+        let (_, top_y, _, top_h) = top.gl_rect(384);
+        let (_, bottom_y, _, bottom_h) = bottom.gl_rect(384);
+
+        // The one the consumer put on top is the one GL puts higher up its y axis...
+        assert!(top_y > bottom_y);
+        // ...and they still tile the buffer exactly, with no overlap and no gap.
+        assert_eq!(bottom_y, 0);
+        assert_eq!(bottom_y + bottom_h, top_y);
+        assert_eq!(top_y + top_h, 384);
+    }
+
+    #[test]
+    fn doubling_the_device_pixel_ratio_doubles_the_flipped_rect() {
+        // The same CSS layout measured at dpr 1 and at dpr 2: every device-px number doubles,
+        // buffer height included. The flip must be linear in that, or a grid drawn correctly at
+        // dpr 1 slides off its box at dpr 2 — the failure #331 is named for.
+        let at_1 = Viewport {
+            x: 5,
+            y: 7,
+            width: 100,
+            height: 50,
+        };
+        let at_2 = Viewport {
+            x: 10,
+            y: 14,
+            width: 200,
+            height: 100,
+        };
+        let (x1, y1, w1, h1) = at_1.gl_rect(384);
+        assert_eq!(at_2.gl_rect(768), (x1 * 2, y1 * 2, w1 * 2, h1 * 2));
+    }
+}
+
+#[cfg(test)]
+mod draw_order_tests {
+    use super::*;
+
+    const VP: Viewport = Viewport {
+        x: 0,
+        y: 0,
+        width: 640,
+        height: 384,
+    };
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct FakeGrid(u32);
+
+    fn registry() -> GridRegistry<FakeGrid> {
+        GridRegistry::new(FakeGrid(0), VP)
+    }
+
+    fn placed(x: i32) -> Viewport {
+        Viewport {
+            x,
+            y: 0,
+            width: 100,
+            height: 50,
+        }
+    }
+
+    /// What the draw loop walks: every slot, with the rect if the grid has one. The default is
+    /// slot 0 and is drawn from construction, so a single-grid consumer's loop is one iteration.
+    #[test]
+    fn a_registered_grid_occupies_a_slot_before_anything_places_it() {
+        let mut r = registry();
+        r.register(FakeGrid(1));
+
+        assert_eq!(r.len(), 2);
+        assert_eq!(r.viewport_at(0), Some(VP));
+        assert_eq!(r.viewport_at(1), None);
+    }
+
+    #[test]
+    fn the_draw_order_is_registration_order_and_placing_does_not_reorder_it() {
+        let mut r = registry();
+        let a = r.register(FakeGrid(1));
+        let b = r.register(FakeGrid(2));
+        // Placed youngest-first: the order the draw loop sees must not follow it.
+        r.set_viewport(b, placed(200)).unwrap();
+        r.set_viewport(a, placed(100)).unwrap();
+
+        let order: Vec<(u32, Option<i32>)> = (0..r.len())
+            .map(|at| (r.grid_at(at).0, r.viewport_at(at).map(|v| v.x)))
+            .collect();
+        assert_eq!(order, vec![(0, Some(0)), (1, Some(100)), (2, Some(200))]);
+    }
+
+    #[test]
+    fn hiding_a_grid_takes_it_out_of_the_draw_order_and_leaves_its_neighbours_in_place() {
+        let mut r = registry();
+        let a = r.register(FakeGrid(1));
+        let b = r.register(FakeGrid(2));
+        r.set_viewport(a, placed(100)).unwrap();
+        r.set_viewport(b, placed(200)).unwrap();
+
+        r.clear_viewport(a).unwrap();
+
+        assert_eq!(r.viewport_at(1), None, "the hidden grid draws nowhere");
+        assert_eq!(r.grid_at(1), &FakeGrid(1), "and is still in its slot");
+        assert_eq!(
+            r.viewport_at(2).map(|v| v.x),
+            Some(200),
+            "the grid after it did not shift"
+        );
+    }
+
+    /// The draw loop needs to reach a grid by slot; the consumer's exports reach it by id. The
+    /// bridge is one lookup, and it is the same one every id-taking method already makes.
+    #[test]
+    fn a_slot_can_be_reached_by_id_and_mutated_there() {
+        let mut r = registry();
+        let a = r.register(FakeGrid(1));
+
+        let at = r.index_of(a).unwrap();
+        r.grid_at_mut(at).0 = 42;
+
+        assert_eq!(r.grid_at(at), &FakeGrid(42));
+        assert_eq!(
+            r.index_of(GridId::from_raw(99)),
+            Err(RegistryError::UnknownGrid(99))
+        );
     }
 }

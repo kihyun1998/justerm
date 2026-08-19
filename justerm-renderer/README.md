@@ -8,14 +8,21 @@ family. Reimplements the third-party `beamterm` renderer in justerm's own archit
   It consumes a decoded frame + an *injected* palette (the consumer owns the theme) and paints via
   WebGL2. Rust → wasm, GL via [`glow`] — the same target for a plain browser and a Tauri webview.
 - **A-ii (hot path in wasm).** Reference→RGB resolution + instance packing happen in Rust; the wasm↔JS
-  boundary is crossed only for the handful of GL calls per frame (single instanced draw call).
+  boundary is crossed only for the handful of GL calls per frame (one instanced draw call per drawn
+  grid).
 
 ## Status
 
 Shipping — Epic #258 is closed and this is the family's active renderer. The GPU pipeline is in:
-glyph atlas + rasterizer, a single instanced grid draw call, cursor, selection / search / active-match
+glyph atlas + rasterizer, an instanced grid draw call, cursor, selection / search / active-match
 overlays, decorations, and live palette / font / metric setters. `justerm-web` renders through it
 (#273), and it composites every layer itself — the widget no longer resolves per-cell colour.
+
+**One context can now hold and draw more than one grid** (Epic #287, in progress). `addGrid` registers
+a terminal grid, `setViewport` places it on the shared drawing buffer in device pixels, `clearViewport`
+hides it while keeping every byte of its state, and `render` draws each placed grid into its own rect.
+The addition is strictly additive so far: every other export still acts on an implicit default grid
+that covers the whole buffer, so a single-grid consumer is unaffected and needs to change nothing.
 
 Published to npm as **`justerm-renderer`** on its own **`renderer-v*`** tag track. That track is
 deliberately separate from the workspace `v*` tags (which publish `justerm-core` +
