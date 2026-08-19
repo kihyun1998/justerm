@@ -21,8 +21,8 @@ stated rather than here, so this paragraph does not need rewriting as each slice
 
 ## Design model
 
-**The tier split is built (#769); everything else below is designed and not built** — read ADR-0021
-for the authoritative form, and `## Code` for what exists today.
+**The tier split (#769) and the grid registry (#770) are built; everything else below is designed and
+not built** — read ADR-0021 for the authoritative form, and `## Code` for what exists today.
 
 - **One context, N viewports**, with per-grid `scissor` + `viewport` rectangles rather than per-grid
   contexts. The browser's context cap is the forcing constraint.
@@ -53,18 +53,25 @@ for the authoritative form, and `## Code` for what exists today.
 
 ## Code
 
-The tier split exists; nothing multi-grid does yet.
+The renderer **holds** N grids and still **draws** one.
 
 - `justerm-renderer/src/webgl.rs` — `GlobalTier`, `ConfigTier` and `GridTier`, with `JustermRenderer`
-  as the facade holding one of each (#769). The per-grid operations are inherent methods on
-  `GridTier`, so they are already written in the form a registry would multiply
+  as the facade holding one global tier, one config tier and a *registry* of grids (#769, #770). The
+  per-grid operations are inherent methods on `GridTier`, which is what let the registry multiply the
+  struct rather than rewrite the methods
+- `justerm-renderer/src/registry.rs` — `GridRegistry`, `GridId`, `Viewport`, `RegistryError` (#770).
+  Pure and host-tested: the payload is a type parameter, so the registry never learns that a grid
+  carries GPU state and the whole of it is testable off the wasm32 target. `GridId::DEFAULT` is the implicit
+  grid every export predating the per-grid setters acts on, and it is the one the registry refuses to
+  remove
+- `justerm-renderer/demo/grid-registry.html` — the browser proof for the registry's observable
+  behaviour, and where the resident-memory number below was measured
 
-Still absent: no terminal-surface type, no scissor path, no grid registry, no atlas keyed by
-configuration — the renderer still draws exactly one grid, and the facade still holds exactly one of
-each tier. (Names of things that do not exist yet are left un-backticked on purpose: every symbol
-under this heading is resolved against the source, so a code-span for an unbuilt type fails the note
-gate — which is the gate doing its job.) What changed is that the three are now separable *types* rather than one struct, so the
-next slice adds a registry instead of first having to find the seams.
+Still absent: no terminal-surface type, no scissor path, no atlas keyed by configuration — the
+renderer draws exactly one grid, whatever it holds, and every grid still selects into the single
+per-config tier. (Names of things that do not exist yet are left un-backticked on purpose: every
+symbol under this heading is resolved against the source, so a code-span for an unbuilt type fails
+the note gate — which is the gate doing its job.)
 
 ## Reference behaviour
 
@@ -72,6 +79,7 @@ In `docs/agents/reference-facts.md` — **linked, never restated** (each row car
 recorded SHA; a paraphrase drops the pin).
 
 - [Multi-viewport resource tiering](../../agents/reference-facts.md#multi-viewport-resource-tiering--how-the-one-reference-that-shares-font-machinery-splits-it-768-verified-2026-08-18)
+- [A terminal registry, and what "registered but not drawn" is made of](../../agents/reference-facts.md#a-terminal-registry-and-what-registered-but-not-drawn-is-made-of-770-verified-2026-08-19)
 
 The rest of ADR-0021's prior art still lives inside the record as prose rather than as pinned rows,
 and two of its four sources (three.js, WezTerm) have no pinned tree at all — so for those the argument
@@ -83,10 +91,13 @@ for the shape remains unverifiable at the moment someone builds against it.
 
 ## Blast radius
 
-**Still effectively nothing**, though no longer for the original reason. This note used to say a
-territory with no code has no blast radius; #769 gave it code, and the radius is *still* empty —
-the tier split changed no behaviour and no public surface, so nothing downstream can observe it. A
-territory can hold code and touch nothing, which is what a pure structural slice looks like.
+**A published surface, and still no observable behaviour.** This note used to say a territory with no
+code has no blast radius; #769 gave it code and the radius stayed empty, because a tier split changes
+nothing anyone can see. #770 is the first slice with a *reach*: six new wasm exports
+(`addGrid` / `removeGrid` / `setViewport` / `clearViewport` / `gridCount` / `isGridDrawn`) ship on the
+`renderer-v*` track, so [published surface](published-surface.md) now has something to carry. What is
+still empty is the behaviour half — the addition is strictly additive, every pre-existing export acts
+on the implicit default grid, and the renderer draws exactly what it drew before.
 
 The list below is what lands **when the multi-grid work does**, and the entries above the fold in
 `## Code` say how much of that has happened:
@@ -129,6 +140,23 @@ The list below is what lands **when the multi-grid work does**, and the entries 
   `set_line_height` reach `adopt_spacing`. All four need the atlas or the cell it derives, i.e. the
   per-config tier — so packing and cell derivation are cross-tier by nature, not by accident, and a
   grid registry must pass a configuration in rather than expecting these to become per-grid.
+- **A registered grid that is not the default is reachable by nothing but the registry, and that is
+  what makes this slice safe rather than what makes it finished.** `restore` rebuilds one grid's
+  instance buffer; a DPR change, a font change and a spacing change re-key one grid's configuration;
+  `resize` sizes one grid. All of them mean the *default* grid. So a second registered grid whose GPU
+  buffer died with a lost context is never given a new one — which is exactly the failure the
+  context-loss slice is written to catch, and it is unreachable until the draw loop lands, because
+  nothing draws or feeds a non-default grid yet. Do not read the current green as coverage of that
+  path; read it as the path not existing yet.
+- **What one resident grid costs, measured rather than worried about** (#770, dev build, Chromium
+  headless, dpr 1 — the epic's open question routed here). The wasm heap slope between an 800-cell
+  and a 10 000-cell populated grid is **≈171 B/cell**, which is an *upper* bound: the heap never
+  shrinks, so it carries each frame's transient JS→wasm copy of the cell columns (~18 B/cell) as well
+  as the state that stays. At that rate an 80×24 grid is ≈320 KiB and a 120×40 grid ≈800 KiB. An
+  **empty** registered grid — a terminal that has produced no output yet — is ≈3 KiB, dominated by
+  its own 256-colour palette, and 64 of them cost less than one populated grid. The number that
+  matters for *"all grids stay resident"* is the populated one: ten hidden 120×40 terminals are on
+  the order of 8 MB of wasm heap, held so that showing one is a placement rather than a rebuild.
 - **The middle tier has a hazard the record now names but nothing yet answers.** Sharing one atlas
   across grids makes [glyph atlas](glyph-atlas.md)'s within-frame eviction corruption a *cross-grid*
   event, and the upload diff — which is the defence today — cannot see it, because a grid that is not

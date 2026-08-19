@@ -1,0 +1,218 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>justerm-renderer proof — the grid registry: register, remove, registered-but-not-drawn (#770)</title>
+<style>
+  body { margin: 0; background: #000; }
+  #c { display: block; image-rendering: pixelated; }
+</style>
+<!--
+  #770 (Epic #287 S2): the renderer holds N grids, and one of the states it holds is "registered but
+  NOT drawn" — a hidden workspace's grid keeps every byte of its state with its viewport cleared,
+  because dropping and re-adding it would reintroduce the re-attach cost the epic exists to remove.
+
+  Nothing new is DRAWN here — the draw loop is #771. What this proves is the registry's observable
+  behaviour through the real wasm boundary, plus the two claims the state alone cannot make:
+
+    · registering N grids costs N of the per-grid tier and ONE of everything else — asserted through
+      the shared tiers' own observables (the cell geometry, the pack counter, the default grid), not
+      inferred from "it looks right";
+    · the single-grid path is untouched WITH siblings registered — the same pixels the pre-#770
+      renderer drew, read back from the drawing buffer.
+
+  The memory section produces a NUMBER for "all grids stay resident" (an epic open question routed
+  here) rather than restating the worry. It is measured, not computed: the wasm heap is read at two
+  grid sizes and the SLOPE taken, so the fixed overhead and the transient copies of a frame's cell
+  arrays fall out of the difference. Reported, and only its robust relationship asserted — an exact
+  byte count is allocator- and build-dependent, and a gate that pins one would fail on a dev/release
+  difference that means nothing.
+
+  Read in device px (cell_width()/cell_height() ARE u_cell_size, #331). The runner sweeps dpr
+  1 / 1.1 / 1.5 / 2; every assertion here is dpr-independent, and the grid the memory section
+  measures is read back from cols()/rows() rather than assumed, because a large grid may be clamped
+  to what the drawing buffer was granted (#339).
+
+  Build: wasm-pack build --target web --dev --out-dir pkg
+-->
+<canvas id="c" width="48" height="16"></canvas>
+<script type="module">
+  import init, { JustermRenderer } from "../pkg/justerm_renderer.js";
+  import { readRect } from "./proof.js";
+  const wasm = await init();
+
+  const COLS = 3, ROWS = 1, N = COLS * ROWS;
+  const SPACE = 0x20;
+  const RGB = (c) => ((2 << 24) | c) >>> 0;   // absolute Rgb colour ref (tag 2); Default = 0 (tag 0)
+  const DEF_FG = 0xffffff, DEF_BG = 0x101018;
+  const CELL_BG = [0xcc2020, 0x20cc20, 0x2020cc];
+
+  const palette = new Uint32Array(256);
+  const r = new JustermRenderer("#c", palette, DEF_FG, DEF_BG);
+  const gl = document.querySelector("#c").getContext("webgl2");
+
+  const checks = {};
+  const threw = (fn) => { try { fn(); return false; } catch { return true; } };
+
+  // ── The implicit default grid ────────────────────────────────────────────────────────────────
+  // Every export predating #773 acts on it, so it exists from construction and draws over the whole
+  // buffer — which is exactly what the single-grid renderer already was, now said as state.
+  checks.startsHoldingOnlyTheImplicitDefault = r.gridCount() === 1;
+  checks.theDefaultGridIsDrawn = r.isGridDrawn(0) === true;
+
+  // ── Registering costs N of the per-grid tier and one of everything else ──────────────────────
+  const before = {
+    packs: r.packs(),
+    cell: [r.cell_width(), r.cell_height()],
+    defaultGrid: [r.cols(), r.rows()],
+  };
+  const ids = [0, 1, 2].map(() => r.addGrid(palette, DEF_FG, DEF_BG));
+
+  checks.nRegistrationsHoldNGrids = r.gridCount() === 1 + ids.length;
+  checks.everyGridHasItsOwnId = new Set(ids).size === ids.length && !ids.includes(0);
+  // The per-config tier is one, whoever joins it: the cell geometry is the atlas's product, so a
+  // registration that re-baked or re-measured anything would move it.
+  checks.registeringTouchesNoSharedGeometry =
+    r.cell_width() === before.cell[0] && r.cell_height() === before.cell[1];
+  // …and no pack ran: a new grid has no cells to pack, and no sibling's buffer is disturbed (#421).
+  checks.registeringPacksNothing = r.packs() === before.packs;
+  // …and the grid the single-grid exports act on is not the one that was just added.
+  checks.registeringLeavesTheDefaultGridAlone =
+    r.cols() === before.defaultGrid[0] && r.rows() === before.defaultGrid[1];
+
+  // ── Registered is not drawn ──────────────────────────────────────────────────────────────────
+  checks.aRegisteredGridIsNotDrawn = ids.every((id) => r.isGridDrawn(id) === false);
+
+  const [cw, ch] = [r.cell_width(), r.cell_height()];
+  r.setViewport(ids[0], 0, 0, cw, ch);
+  checks.placingAGridDrawsIt = r.isGridDrawn(ids[0]) === true;
+
+  r.clearViewport(ids[0]);
+  checks.clearingTheViewportStopsItDrawing = r.isGridDrawn(ids[0]) === false;
+  // The load-bearing half: not drawn is a STATE, not an absence. The grid is still registered, so
+  // coming back is a placement rather than a rebuild.
+  checks.aHiddenGridIsStillRegistered = r.gridCount() === 1 + ids.length;
+
+  r.setViewport(ids[0], 0, 0, cw, ch);
+  checks.aHiddenGridCanComeBack = r.isGridDrawn(ids[0]) === true;
+
+  // ── A caller error is thrown, never silently absorbed (#355's precedent) ──────────────────────
+  checks.anUnknownGridCannotBePlaced = threw(() => r.setViewport(9999, 0, 0, cw, ch));
+  checks.anUnknownGridCannotBeHidden = threw(() => r.clearViewport(9999));
+  checks.anUnknownGridCannotBeQueried = threw(() => r.isGridDrawn(9999));
+  checks.anUnknownGridCannotBeRemoved = threw(() => r.removeGrid(9999));
+  checks.aNegativeViewportIsRefused = threw(() => r.setViewport(ids[0], 0, 0, -1, ch));
+  // The implicit default is what the single-grid exports act on, so it cannot be taken away while
+  // they still exist (#773 removes both together).
+  checks.theDefaultGridCannotBeRemoved = threw(() => r.removeGrid(0));
+  checks.theDefaultSurvivedTheAttempt = r.gridCount() === 1 + ids.length && r.isGridDrawn(0);
+
+  // ── Removal, and the id that is never handed out again ───────────────────────────────────────
+  const gone = ids[2];
+  r.removeGrid(gone);
+  checks.removingAGridUnregistersIt = r.gridCount() === ids.length; // default + two survivors
+  checks.aRemovedGridIsUnknown = threw(() => r.isGridDrawn(gone));
+
+  const revived = r.addGrid(palette, DEF_FG, DEF_BG);
+  // A consumer holds a bare number across the wasm boundary. Reusing a freed id would silently
+  // retarget a stale handle at a different terminal instead of failing.
+  checks.anIdIsNeverReused = revived !== gone && !ids.includes(revived);
+
+  // ── The single-grid path is untouched, WITH siblings registered ──────────────────────────────
+  // Same frame, same pixels the pre-#770 renderer drew. The other 122 proofs establish that on a
+  // renderer holding one grid; the point here is that holding four changes none of it.
+  const header = new Uint32Array([COLS, ROWS, 0 /* Full */, 0, 0, 0, 0, 1 /* blink_on */]);
+  const spans = new Uint32Array([0, 0, COLS - 1, 0, N]);
+  const bg = Uint32Array.from(CELL_BG, RGB);
+  r.resize(COLS, ROWS);
+  r.apply_damage(
+    header, spans,
+    new Uint32Array(N).fill(SPACE),
+    new Uint32Array(N),                 // fg: Default (a SPACE has no ink)
+    bg,
+    new Uint16Array(N), new Uint32Array(N), [],
+  );
+  const packsBeforeRender = r.packs();
+  r.render();
+  checks.renderStillPacksExactlyOnce = r.packs() === packsBeforeRender + 1;
+
+  const [bw, bh] = [gl.drawingBufferWidth, gl.drawingBufferHeight];
+  const img = { ...readRect(gl, { x: 0, y: 0, w: bw, h: bh }), w: bw, h: bh };
+  // readPixels counts rows from the bottom; flip to grid-space (origin top-left).
+  const px = (x, y) => { const i = ((img.h - 1 - y) * img.w + x) * 4; return [img.buf[i], img.buf[i + 1], img.buf[i + 2]]; };
+  const near = (v, t) => Math.abs(v - t) <= 4;
+  const cellIs = (col, packed) => {
+    const [er, eg, eb] = [(packed >> 16) & 0xff, (packed >> 8) & 0xff, packed & 0xff];
+    for (let y = 0; y < ch; y++)
+      for (let x = 0; x < cw; x++) {
+        const [pr, pg, pb] = px(col * cw + x, y);
+        if (!near(pr, er) || !near(pg, eg) || !near(pb, eb)) return false;
+      }
+    return true;
+  };
+  checks.theDefaultGridStillDrawsItsOwnFrame = CELL_BG.every((c, i) => cellIs(i, c));
+
+  // ── What one resident grid costs (Epic #287's memory question, routed here for a number) ──────
+  // Two populated sizes, slope taken between them: the fixed overhead and the transient wasm-side
+  // copies of each frame's cell arrays are in BOTH measurements, so they cancel.
+  const populate = (cols, rows) => {
+    r.resize(cols, rows);
+    const [gcols, grows] = [r.cols(), r.rows()];   // what the buffer actually granted (#339)
+    const cells = gcols * grows;
+    // One span per LINE, span-ordered — a Full frame is `rows` spans, not one covering span.
+    const rowSpans = new Uint32Array(grows * 5);
+    for (let row = 0; row < grows; row++) {
+      rowSpans.set([row, 0, gcols - 1, row * gcols, gcols], row * 5);
+    }
+    r.apply_damage(
+      new Uint32Array([gcols, grows, 0, 0, 0, 0, 0, 1]),
+      rowSpans,
+      new Uint32Array(cells).fill(SPACE),
+      new Uint32Array(cells), new Uint32Array(cells),
+      new Uint16Array(cells), new Uint32Array(cells), [],
+    );
+    r.render();
+    return cells;
+  };
+  const heap = () => wasm.memory.buffer.byteLength;
+
+  const smallCells = populate(40, 20);
+  const heapSmall = heap();
+  const largeCells = populate(200, 50);
+  const heapLarge = heap();
+  // An UPPER bound, and the page says so rather than rounding it into a resident figure: the wasm
+  // heap never shrinks, so this slope carries each frame's transient JS→wasm copy of its cell
+  // columns (~18 B/cell) alongside the state that stays. The resident part is the smaller number.
+  const bytesPerCellPeak = (heapLarge - heapSmall) / (largeCells - smallCells);
+
+  // …and what an EMPTY registration costs, which is what a consumer pays per terminal before any
+  // output arrives. Measured over 64 of them so page granularity (64 KiB) is not the whole signal.
+  const EMPTY_GRIDS = 64;
+  const gridsBeforeBulk = r.gridCount();
+  const heapBeforeEmpty = heap();
+  const bulk = Array.from({ length: EMPTY_GRIDS }, () => r.addGrid(palette, DEF_FG, DEF_BG));
+  const bytesPerEmptyGrid = (heap() - heapBeforeEmpty) / EMPTY_GRIDS;
+
+  checks.registeringManyGridsHeldThemAll = r.gridCount() === gridsBeforeBulk + EMPTY_GRIDS;
+  // The relationship, not the number: an idle registered grid is a small multiple of its struct,
+  // while a POPULATED grid's cost is its cells. This is the shape of "N of the per-grid tier".
+  checks.anEmptyGridCostsFarLessThanAPopulatedOne =
+    bytesPerEmptyGrid * EMPTY_GRIDS < bytesPerCellPeak * largeCells;
+  checks.aPopulatedGridCostsPerCell = bytesPerCellPeak > 0 && Number.isFinite(bytesPerCellPeak);
+
+  // Leaving the registry as we found it also exercises removal at scale.
+  for (const id of bulk) r.removeGrid(id);
+  checks.removingThemAllLeavesTheRegistryWhereItStarted = r.gridCount() === gridsBeforeBulk;
+
+  window.__proof = {
+    ok: Object.values(checks).every(Boolean), checks,
+    dpr: devicePixelRatio,
+    measured: {
+      bytesPerCellPeak,
+      bytesPerEmptyGrid,
+      smallCells, largeCells,
+      heapSmall, heapLarge,
+      peakKiBFor80x24: (bytesPerCellPeak * 80 * 24) / 1024,
+      peakKiBFor120x40: (bytesPerCellPeak * 120 * 40) / 1024,
+    },
+  };
+  window.__done = true;
+</script>
