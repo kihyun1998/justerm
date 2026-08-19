@@ -56,21 +56,34 @@ for (const deviceScaleFactor of RATIOS) {
         expect(failing, `failing checks in ${demo}`).toEqual([]);
         expect(proof.ok, `${demo} reported not-ok`).toBe(true);
 
-        // #331: the drawing buffer IS the grid. Since resize() derives one from the other this can
-        // no longer fail on its own (#353) — it stays as a tripwire against re-deriving the buffer
-        // from a CSS box, which is what made every demo's grid overhang its buffer at dpr 1.1.
+        // #331: the drawing buffer IS the grid — for a page that mounted one grid over the whole
+        // surface, which is what `fitGrid` does and what almost every page here wants. Since #773
+        // that is an arrangement the PAGE establishes rather than something `resize` guaranteed, so
+        // this is the tripwire for a page that sized its surface from something other than its own
+        // grid's cells — which is what made every demo's grid overhang its buffer at dpr 1.1.
+        //
+        // `mayUnderfill` is the one opt-out, and it is named rather than inferred: `oversized.html`
+        // deliberately re-fits a grid into a buffer the browser clamped, so its grid is the largest
+        // one that FITS rather than one that fills. It still has to fit.
         if (proof.gridFit) {
-          expect(
-            proof.gridFit.grid,
-            `${demo} @ dpr ${deviceScaleFactor}: grid must equal the drawing buffer (#331)`,
-          ).toEqual(proof.gridFit.buffer);
+          if (proof.gridFit.mayUnderfill) {
+            expect(
+              proof.gridFit.fits,
+              `${demo} @ dpr ${deviceScaleFactor}: a grid must fit the surface holding it (#331)`,
+            ).toBe(true);
+          } else {
+            expect(
+              proof.gridFit.grid,
+              `${demo} @ dpr ${deviceScaleFactor}: grid must equal the drawing buffer (#331)`,
+            ).toEqual(proof.gridFit.buffer);
+          }
           // #339: this one CAN fail. `canvas.width` is the size we asked for; `drawingBufferWidth`
           // is the size WebGL granted. If they diverge the renderer is drawing a grid the viewport
           // cannot hold, and nothing else in the harness would notice.
           expect(
             proof.gridFit.attr,
             `${demo} @ dpr ${deviceScaleFactor}: the browser clamped the drawing buffer below ` +
-              `canvas.width and resize() did not adopt the grid that fits (#339)`,
+              `canvas.width and resizeSurface() did not adopt the buffer it was granted (#339)`,
           ).toEqual(proof.gridFit.buffer);
         }
       });

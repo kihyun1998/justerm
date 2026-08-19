@@ -36,7 +36,7 @@
 <canvas id="c" width="48" height="16"></canvas>
 <script type="module">
   import init, { JustermRenderer } from "../pkg/justerm_renderer.js";
-  import { readRect } from "./proof.js";
+  import { readRect, fitGrid } from "./proof.js";
   const wasm = await init();
 
   const COLS = 3, ROWS = 1, N = COLS * ROWS;
@@ -46,45 +46,53 @@
   const CELL_BG = [0xcc2020, 0x20cc20, 0x2020cc];
 
   const palette = new Uint32Array(256);
-  const r = new JustermRenderer("#c", palette, DEF_FG, DEF_BG);
+  const r = new JustermRenderer("#c");
   const gl = document.querySelector("#c").getContext("webgl2");
 
   const checks = {};
   const threw = (fn) => { try { fn(); return false; } catch { return true; } };
 
   // ── The implicit default grid ────────────────────────────────────────────────────────────────
-  // Every export predating #773 acts on it, so it exists from construction and draws over the whole
-  // buffer — which is exactly what the single-grid renderer already was, now said as state.
-  checks.startsHoldingOnlyTheImplicitDefault = r.gridCount() === 1;
-  checks.theDefaultGridIsDrawn = r.isGridDrawn(0) === true;
+  // Until S5 it arrived holding an implicit grid drawn over the whole buffer, so that the exports
+  // predating the per-grid setters had something to act on. A surface holding two terminals would
+  // then hold three grids, and the third would paint under both — so the grid went with them.
+  checks.startsHoldingNoGrid = r.gridCount() === 0;
+  // The number a never-assigned JS handle carries addresses nothing, for the renderer's whole life.
+  checks.gridZeroIsNeverAGrid = threw(() => r.isGridDrawn(0));
+
+  const g = r.addGrid(palette, DEF_FG, DEF_BG);
+  checks.registeringOneHoldsOne = r.gridCount() === 1;
+  // …and it arrives NOT drawn, the first grid included: nobody has said where it goes yet.
+  checks.theFirstGridIsNotDrawnUntilPlaced = r.isGridDrawn(g) === false;
 
   // ── Registering costs N of the per-grid tier and one of everything else ──────────────────────
   const before = {
     packs: r.packs(),
-    cell: [r.cell_width(), r.cell_height()],
-    defaultGrid: [r.cols(), r.rows()],
+    cell: [r.cell_width(g), r.cell_height(g)],
+    defaultGrid: [r.cols(g), r.rows(g)],
   };
   const ids = [0, 1, 2].map(() => r.addGrid(palette, DEF_FG, DEF_BG));
 
   checks.nRegistrationsHoldNGrids = r.gridCount() === 1 + ids.length;
-  checks.everyGridHasItsOwnId = new Set(ids).size === ids.length && !ids.includes(0);
+  checks.everyGridHasItsOwnId =
+    new Set(ids).size === ids.length && !ids.includes(g) && !ids.includes(0);
   // The per-config tier is one, whoever joins it: the cell geometry is the atlas's product, so a
   // registration that re-baked or re-measured anything would move it. Note what this check can and
   // cannot see — a re-bake at IDENTICAL parameters produces identical numbers and stays green. What
   // actually holds "one of everything else" is the type: `JustermRenderer` has one `ConfigTier`
   // field, so a second atlas has nowhere to live. This is the observable half, not the whole line.
   checks.registeringTouchesNoSharedGeometry =
-    r.cell_width() === before.cell[0] && r.cell_height() === before.cell[1];
+    r.cell_width(g) === before.cell[0] && r.cell_height(g) === before.cell[1];
   // …and no pack ran: a new grid has no cells to pack, and no sibling's buffer is disturbed (#421).
   checks.registeringPacksNothing = r.packs() === before.packs;
-  // …and the grid the single-grid exports act on is not the one that was just added.
-  checks.registeringLeavesTheDefaultGridAlone =
-    r.cols() === before.defaultGrid[0] && r.rows() === before.defaultGrid[1];
+  // …and a sibling arriving does not disturb the grid that was already here.
+  checks.registeringLeavesTheFirstGridAlone =
+    r.cols(g) === before.defaultGrid[0] && r.rows(g) === before.defaultGrid[1];
 
   // ── Registered is not drawn ──────────────────────────────────────────────────────────────────
   checks.aRegisteredGridIsNotDrawn = ids.every((id) => r.isGridDrawn(id) === false);
 
-  const [cw, ch] = [r.cell_width(), r.cell_height()];
+  const [cw, ch] = [r.cell_width(g), r.cell_height(g)];
   r.setViewport(ids[0], 0, 0, cw, ch);
   checks.placingAGridDrawsIt = r.isGridDrawn(ids[0]) === true;
 
@@ -103,20 +111,22 @@
   checks.anUnknownGridCannotBeQueried = threw(() => r.isGridDrawn(9999));
   checks.anUnknownGridCannotBeRemoved = threw(() => r.removeGrid(9999));
   checks.aNegativeViewportIsRefused = threw(() => r.setViewport(ids[0], 0, 0, -1, ch));
-  // A rect with no area draws nothing, so accepting one and answering "drawn" would be the same
-  // lie the default-grid guards below prevent. The state for "no rect yet" is clearViewport.
+  // A rect with no area draws nothing, so accepting one and answering "drawn" would be a lie about
+  // what this renderer does. The state for "no rect yet" is clearViewport.
   checks.aZeroAreaViewportIsRefused = threw(() => r.setViewport(ids[0], 0, 0, 0, 0));
-  // The implicit default is what the single-grid exports act on, so it cannot be taken away while
-  // they still exist (#773 removes both together)…
-  checks.theDefaultGridCannotBeRemoved = threw(() => r.removeGrid(0));
-  // …and it cannot be hidden or re-placed either, which is the sharper of the two. The single-grid
-  // draw path consults no viewport, so a cleared default would report itself not drawn while still
-  // painting the whole canvas — and at #771 a consumer looping over every id to hide everything
-  // would hide the one grid that must never be hidden.
-  checks.theDefaultGridCannotBeHidden = threw(() => r.clearViewport(0));
-  checks.theDefaultGridCannotBePlacedByTheConsumer = threw(() => r.setViewport(0, 0, 0, cw, ch));
-  checks.theDefaultSurvivedEveryAttempt =
-    r.gridCount() === 1 + ids.length && r.isGridDrawn(0) === true;
+
+  // ── The first grid has no privileges left (#773) ─────────────────────────────────────────────
+  // Until S5 the implicit default refused all three of these: its rect was the drawing buffer's,
+  // written by `resize`, and its lifetime belonged to the exports that acted on it implicitly. Both
+  // producers are the consumer's now, so all three doors are open — asserted rather than assumed,
+  // because the opposite was true one slice ago and nothing else on this page would notice.
+  r.setViewport(g, 0, 0, cw, ch);
+  checks.theFirstGridCanBePlaced = r.isGridDrawn(g) === true;
+  r.clearViewport(g);
+  checks.theFirstGridCanBeHidden = r.isGridDrawn(g) === false;
+  r.setViewport(g, 0, 0, cw, ch);
+  checks.everyGridSurvivedTheUnknownIdAttempts =
+    r.gridCount() === 1 + ids.length && r.isGridDrawn(g) === true;
 
   // ── Removal, and the id that is never handed out again ───────────────────────────────────────
   // Removed while DRAWN — the case a hide-then-remove sequence would never reach, and the one where
@@ -125,7 +135,7 @@
   r.setViewport(gone, 0, 0, cw, ch);
   checks.theGridAboutToBeRemovedIsDrawn = r.isGridDrawn(gone) === true;
   r.removeGrid(gone);
-  checks.removingAGridUnregistersIt = r.gridCount() === ids.length; // default + two survivors
+  checks.removingAGridUnregistersIt = r.gridCount() === ids.length; // the first grid + 2 survivors
   checks.aRemovedGridIsUnknown = threw(() => r.isGridDrawn(gone));
 
   const revived = r.addGrid(palette, DEF_FG, DEF_BG);
@@ -133,12 +143,12 @@
   // retarget a stale handle at a different terminal instead of failing.
   checks.anIdIsNeverReused = revived !== gone && !ids.includes(revived);
 
-  // ── The single-grid path is untouched, WITH siblings registered ──────────────────────────────
-  // Same frame, same pixels the pre-#770 renderer drew. The other proofs establish that on a
+  // ── One grid's output is untouched, WITH siblings registered ─────────────────────────────────
+  // Same frame, same pixels a renderer holding one grid draws. The other proofs establish that on a
   // renderer holding one grid; the point here is that *holding* four changes none of it.
   //
   // Holding, not placing. Since #771 a **placed** grid paints its rect, so the sibling this page
-  // left placed a few checks up would legitimately cover the default's first cell — which is that
+  // left placed a few checks up would legitimately cover this grid's first cell — which is that
   // slice's behaviour, asserted in `multi-viewport.html`, and not a thing this page should be
   // measuring. Hide it, so the claim under test is the one this page is about: registration alone
   // is invisible.
@@ -149,8 +159,8 @@
   const header = new Uint32Array([COLS, ROWS, 0 /* Full */, 0, 0, 0, 0, 1 /* blink_on */]);
   const spans = new Uint32Array([0, 0, COLS - 1, 0, N]);
   const bg = Uint32Array.from(CELL_BG, RGB);
-  r.resize(COLS, ROWS);
-  r.apply_damage(
+  fitGrid(r, g, COLS, ROWS);
+  r.apply_damage(g,
     header, spans,
     new Uint32Array(N).fill(SPACE),
     new Uint32Array(N),                 // fg: Default (a SPACE has no ink)
@@ -175,21 +185,21 @@
       }
     return true;
   };
-  checks.theDefaultGridStillDrawsItsOwnFrame = CELL_BG.every((c, i) => cellIs(i, c));
+  checks.theFirstGridStillDrawsItsOwnFrame = CELL_BG.every((c, i) => cellIs(i, c));
 
   // ── What one resident grid costs (Epic #287's memory question, routed here for a number) ──────
   // Two populated sizes, slope taken between them: the fixed overhead and the transient wasm-side
   // copies of each frame's cell arrays are in BOTH measurements, so they cancel.
   const populate = (cols, rows) => {
-    r.resize(cols, rows);
-    const [gcols, grows] = [r.cols(), r.rows()];   // what the buffer actually granted (#339)
+    fitGrid(r, g, cols, rows);
+    const [gcols, grows] = [r.cols(g), r.rows(g)];   // read back rather than assumed
     const cells = gcols * grows;
     // One span per LINE, span-ordered — a Full frame is `rows` spans, not one covering span.
     const rowSpans = new Uint32Array(grows * 5);
     for (let row = 0; row < grows; row++) {
       rowSpans.set([row, 0, gcols - 1, row * gcols, gcols], row * 5);
     }
-    r.apply_damage(
+    r.apply_damage(g,
       new Uint32Array([gcols, grows, 0, 0, 0, 0, 0, 1]),
       rowSpans,
       new Uint32Array(cells).fill(SPACE),

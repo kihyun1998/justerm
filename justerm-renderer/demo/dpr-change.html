@@ -19,12 +19,13 @@
 <canvas id="c" width="64" height="64"></canvas>
 <script type="module">
   import init, { JustermRenderer } from "../pkg/justerm_renderer.js";
-  import { readCells, countLit, gridFit } from "./proof.js";
+  import { readCells, countLit, gridFit, fitGrid } from "./proof.js";
   await init();
 
-  const r = new JustermRenderer("#c", new Uint32Array(256), 0xffffff, 0x1e1e2e);
+  const r = new JustermRenderer("#c");
+  const g = r.addGrid(new Uint32Array(256), 0xffffff, 0x1e1e2e);
   const COLS = 4, ROWS = 1;
-  r.resize(COLS, ROWS); // a grid; the buffer follows the cell, whatever the density
+  fitGrid(r, g, COLS, ROWS); // a grid; the buffer follows the cell, whatever the density
 
   // The DPR we start at is whatever the browser reports; the page must prove the same properties
   // from any starting density, so every expectation below is expressed as a ratio to it (#328).
@@ -38,7 +39,7 @@
   const zeros = new Uint32Array(COLS);
   const cps = new Uint32Array([0x2500, 0x4e2d, 0x4e2d, 0x20]);
   const flags = new Uint16Array([0, WIDE_CHAR, WIDE_SPACER, 0]);
-  r.apply_frame(COLS, ROWS, zeros, zeros, cps, flags, true);
+  r.apply_frame(g, COLS, ROWS, zeros, zeros, cps, flags, true);
 
   // #370: a cursor must ride the DPR change. `cursor_thickness` is recomputed from the LIVE cell in
   // `draw()`, so a bar set now should survive the re-bake and re-derive against the new cell — but
@@ -46,19 +47,19 @@
   // existing assertions run, and turn the #368 contrast guard off so the red stays predictable (we
   // are proving survival, not contrast). It must be lit before and after, and grow with the density.
   const CURSOR_RED = 0xff0000, BAR = 2;
-  r.setCursorContrast(1.0);
-  r.setCursor(3, 0, BAR, CURSOR_RED, 0x000000);
+  r.setCursorContrast(g, 1.0);
+  r.setCursor(g, 3, 0, BAR, CURSOR_RED, 0x000000);
   r.render();
 
   const canvas = document.querySelector("#c");
   const gl = canvas.getContext("webgl2");
   // Lit pixels of cell `col` over the renderer's device cell — which is RE-MEASURED by the DPR
   // change, so this must be read fresh after it rather than scaled from the CSS cell (#328).
-  const cellLit = (col) => countLit(readCells(gl, r, col));
+  const cellLit = (col) => countLit(readCells(gl, r, g, col));
   // Cursor-red pixels of cell `col`: red high, green/blue low — distinguishes the bar from the
   // white glyphs, whose red channel also clears the `countLit` threshold.
   const cursorLit = (col) => {
-    const { buf } = readCells(gl, r, col);
+    const { buf } = readCells(gl, r, g, col);
     let n = 0;
     for (let i = 0; i < buf.length; i += 4) if (buf[i] > 150 && buf[i + 1] < 100 && buf[i + 2] < 100) n++;
     return n;
@@ -68,6 +69,16 @@
 
   // Inject a mid-session DPR change (the consumer would do this from a matchMedia listener).
   r.setDevicePixelRatio(DPR1);
+  // What the renderer does on its own: hold the CSS box still and re-derive the device buffer at
+  // the new density. That is the ONE thing a density change must not move — the canvas is the same
+  // physical size on the user's screen — and it is why the surface stores a CSS box rather than the
+  // device size it was asked for (#773).
+  const held = { bufferW: canvas.width, bufferH: canvas.height };
+  // What the CONSUMER must do, and this page is where that obligation is written down: the cell was
+  // re-measured, and a grid's rect is DEVICE px measured at the old density, so both the grid and
+  // its placement are stale. Until #773 the renderer did this for the one grid it had; it cannot,
+  // now that a rect's only producer is the consumer's own measured box.
+  fitGrid(r, g, COLS, ROWS);
   r.render();
 
   const after = { box: cellLit(0), wide: cellLit(1), cursor: cursorLit(3), bufferW: canvas.width, bufferH: canvas.height };
@@ -79,10 +90,15 @@
     nonAsciiSurvivesRebake: after.box > 0,
     // the WIDE glyph's 2-slot re-rasterise (slot_id >= WIDE_BASE branch) survives too.
     wideSurvivesRebake: after.wide > 0,
-    // (b) the buffer was re-derived from the STORED GRID at the newly measured cell, with no
-    //     resize() call and no CSS length rounded twice (#331). Exact, at any starting density.
+    // (b1) the renderer held the CSS box across the density change: the device buffer scaled with
+    //      the ratio and nothing else. Within a pixel each way, since the box is a rounded float.
+    surfaceHeldItsCssBoxAcrossTheDensityChange:
+      Math.abs(held.bufferW - before.bufferW * (DPR1 / dpr0)) <= 1 &&
+      Math.abs(held.bufferH - before.bufferH * (DPR1 / dpr0)) <= 1,
+    // (b2) and after the consumer's re-fit the buffer is the grid times the NEWLY measured cell,
+    //      with no CSS length rounded twice (#331). Exact, at any starting density.
     bufferIsGridTimesNewCell:
-      after.bufferW === COLS * r.cell_width() && after.bufferH === ROWS * r.cell_height(),
+      after.bufferW === COLS * r.cell_width(g) && after.bufferH === ROWS * r.cell_height(g),
     // (c) re-rasterised at higher device resolution → more ink pixels (device cell ~4x the area,
     //     since DPR1 = 2 * dpr0). 1.9 is a deliberately slack lower bound on that 4x.
     glyphSharpened: after.box > before.box * 1.9 && after.wide > before.wide * 1.9,
@@ -96,7 +112,7 @@
     cursorScaledWithDpr: after.cursor > before.cursor * 1.9,
   };
   window.__proof = {
-    dpr: dpr0, newDpr: DPR1, gridFit: gridFit(gl, r, COLS, ROWS),
+    dpr: dpr0, newDpr: DPR1, gridFit: gridFit(gl, r, g, COLS, ROWS),
     before, after, checks, ok: Object.values(checks).every(Boolean),
   };
   window.__done = true;

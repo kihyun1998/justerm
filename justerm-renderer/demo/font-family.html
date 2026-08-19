@@ -18,7 +18,7 @@
 <canvas id="c" width="64" height="32"></canvas>
 <script type="module">
   import init, { JustermRenderer } from "../pkg/justerm_renderer.js";
-  import { readRect } from "./proof.js";
+  import { readRect, fitGrid } from "./proof.js";
   await init();
 
   const COLS = 2, ROWS = 1, N = COLS * ROWS;
@@ -26,37 +26,38 @@
   const RGB = (c) => ((2 << 24) | c) >>> 0;    // absolute Rgb colour ref (tag 2)
   const WHITE = 0xffffff;
 
-  const r = new JustermRenderer("#c", new Uint32Array(256), WHITE, 0x000000);
+  const r = new JustermRenderer("#c");
+  const g = r.addGrid(new Uint32Array(256), WHITE, 0x000000);
   const gl = document.querySelector("#c").getContext("webgl2");
   const grab = () => { const [w, h] = [gl.drawingBufferWidth, gl.drawingBufferHeight]; return { ...readRect(gl, { x: 0, y: 0, w, h }), w, h }; };
   // The brightest pixel anywhere — proves the atlas baked and a glyph drew (not a blank frame).
   const maxInk = (img) => { let m = 0; for (let i = 0; i < img.buf.length; i += 4) m = Math.max(m, img.buf[i] + img.buf[i + 1] + img.buf[i + 2]); return m; };
 
   const checks = {};
-  const monoCw = r.cell_width(), monoCh = r.cell_height();
+  const monoCw = r.cell_width(g), monoCh = r.cell_height(g);
 
   // serif re-bakes the atlas → the block-derived cell width changes (serif's block is wider than
   // monospace's fixed advance). Assert the change, not a value (the exact px is env-dependent). serif
   // vs monospace is a font-CLASS distinction present in every real browser font config, unlike the
   // other generics whose headless fallback can coincide with monospace (observed: sans-serif did).
-  r.setFontFamily("serif");
-  const serifCw = r.cell_width();
+  r.setFontFamily(g, "serif");
+  const serifCw = r.cell_width(g);
   checks.familyChangeRebakesTheCell = serifCw !== monoCw;
 
   // The renderer draws a glyph at the new family (the atlas baked, the frame is not blank).
-  r.resize(COLS, ROWS);
-  r.apply_frame(COLS, ROWS, new Uint32Array(N), new Uint32Array([RGB(WHITE), RGB(WHITE)]), new Uint32Array(N).fill(LETTER), new Uint16Array(N), true);
+  fitGrid(r, g, COLS, ROWS);
+  r.apply_frame(g, COLS, ROWS, new Uint32Array(N), new Uint32Array([RGB(WHITE), RGB(WHITE)]), new Uint32Array(N).fill(LETTER), new Uint16Array(N), true);
   r.render();
   checks.drawsAGlyphAtTheNewFamily = maxInk(grab()) > 300; // a white 'A' on black => bright ink present
 
   // Reverting to monospace restores the cell (the re-bake is reversible, keyed on the family string).
-  r.setFontFamily("monospace");
-  checks.revertingRestoresTheCell = r.cell_width() === monoCw && r.cell_height() === monoCh;
+  r.setFontFamily(g, "monospace");
+  checks.revertingRestoresTheCell = r.cell_width(g) === monoCw && r.cell_height(g) === monoCh;
 
   // The same family is a no-op (the guard), leaving the cell put.
-  const cwNow = r.cell_width();
-  r.setFontFamily("monospace");
-  checks.sameFamilyIsANoOp = r.cell_width() === cwNow;
+  const cwNow = r.cell_width(g);
+  r.setFontFamily(g, "monospace");
+  checks.sameFamilyIsANoOp = r.cell_width(g) === cwNow;
 
   window.__proof = {
     ok: Object.values(checks).every(Boolean), checks,

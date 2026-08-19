@@ -49,7 +49,7 @@
 <canvas id="c" width="256" height="32"></canvas>
 <script type="module">
   import init, { JustermRenderer } from "../pkg/justerm_renderer.js";
-  import { readRect } from "./proof.js";
+  import { readRect, fitGrid } from "./proof.js";
   await init();
 
   const WIDE_CHAR = 1 << 8;
@@ -64,7 +64,8 @@
 
   const chans = (c) => [(c >> 16) & 0xff, (c >> 8) & 0xff, c & 0xff];
   const palette = new Uint32Array(256);
-  const r = new JustermRenderer("#c", palette, DEF_FG, DEF_BG);
+  const r = new JustermRenderer("#c");
+  const g = r.addGrid(palette, DEF_FG, DEF_BG);
   const gl = document.querySelector("#c").getContext("webgl2");
 
   const grab = () => { const [w, h] = [gl.drawingBufferWidth, gl.drawingBufferHeight]; return { ...readRect(gl, { x: 0, y: 0, w, h }), w, h }; };
@@ -74,7 +75,7 @@
   /** Every pixel strictly inside cell `col` matches `packed`. Inset one device px so a rounding
    *  edge from the neighbour cannot decide the answer. */
   const cellIs = (img, col, packed) => {
-    const [cw, ch] = [r.cell_width(), r.cell_height()];
+    const [cw, ch] = [r.cell_width(g), r.cell_height(g)];
     const [er, eg, eb] = chans(packed);
     const x0 = Math.round(col * cw) + 1, x1 = Math.min(Math.round((col + 1) * cw) - 1, img.w);
     for (let y = 0; y < Math.min(ch, img.h); y++)
@@ -96,11 +97,11 @@
 
   /** One frame with `selSpans` selected and, optionally, a block caret at `cursorCol`. */
   const draw = (selSpans, cursorCol) => {
-    r.setOverlay(new Uint32Array(selSpans), new Uint32Array([]), SEL_BG, SEL_BG);
-    if (cursorCol === undefined) r.clearCursor();
-    else r.setCursor(cursorCol, 0, BLOCK, CURSOR, DEF_BG);
-    r.resize(COLS, ROWS);
-    r.apply_frame(COLS, ROWS, bg, fg, codepoints, flags, true);
+    r.setOverlay(g, new Uint32Array(selSpans), new Uint32Array([]), SEL_BG, SEL_BG);
+    if (cursorCol === undefined) r.clearCursor(g);
+    else r.setCursor(g, cursorCol, 0, BLOCK, CURSOR, DEF_BG);
+    fitGrid(r, g, COLS, ROWS);
+    r.apply_frame(g, COLS, ROWS, bg, fg, codepoints, flags, true);
     r.render();
     return grab();
   };
@@ -135,7 +136,7 @@
     ok: Object.values(checks).every(Boolean),
     checks,
     dpr: devicePixelRatio,
-    cell: [r.cell_width(), r.cell_height()],
+    cell: [r.cell_width(g), r.cell_height(g)],
   };
   window.__done = true;
 

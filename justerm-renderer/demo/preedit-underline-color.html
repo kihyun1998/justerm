@@ -35,7 +35,7 @@
 <canvas id="c" width="128" height="32"></canvas>
 <script type="module">
   import init, { JustermRenderer } from "../pkg/justerm_renderer.js";
-  import { readRect } from "./proof.js";
+  import { readRect, fitGrid } from "./proof.js";
   await init();
 
   const UNDERLINE = 1 << 3;
@@ -45,7 +45,8 @@
 
   // default fg WHITE, bg BLACK — so "follows the fg" reads as white and SGR 58 red is unmistakable.
   const palette = new Uint32Array(256);
-  const r = new JustermRenderer("#c", palette, 0xffffff, 0x000000);
+  const r = new JustermRenderer("#c");
+  const g = r.addGrid(palette, 0xffffff, 0x000000);
   const gl = document.querySelector("#c").getContext("webgl2");
 
   const grab = () => { const [w, h] = [gl.drawingBufferWidth, gl.drawingBufferHeight]; return { ...readRect(gl, { x: 0, y: 0, w, h }), w, h }; };
@@ -56,17 +57,17 @@
 
   /** Draw the row with `run` composing at column 0, and return the frame's pixels. */
   const draw = (run) => {
-    r.resize(COLS, ROWS);
-    r.setPreedit(0, 0, new Uint32Array(run)); // BEFORE apply_frame — see the header note
+    fitGrid(r, g, COLS, ROWS);
+    r.setPreedit(g, 0, 0, new Uint32Array(run)); // BEFORE apply_frame — see the header note
     // apply_frame(cols, rows, bg, fg, codepoints, flags, blink_on, underlineColors)
-    r.apply_frame(COLS, ROWS, new Uint32Array(N), new Uint32Array(N), new Uint32Array(N).fill(SPACE), flags, true, uc);
+    r.apply_frame(g, COLS, ROWS, new Uint32Array(N), new Uint32Array(N), new Uint32Array(N).fill(SPACE), flags, true, uc);
     r.render();
     return grab();
   };
 
   /** The brightest (most-ink) pixel inside cell `col` — for a SPACE cell that is its underline. */
   const cellRGB = (img, col) => {
-    const [cw, ch] = [r.cell_width(), r.cell_height()];
+    const [cw, ch] = [r.cell_width(g), r.cell_height(g)];
     const x0 = Math.round(col * cw), x1 = Math.min(Math.round((col + 1) * cw), img.w);
     let best = [0, 0, 0], bestSum = -1;
     for (let y = 0; y < Math.min(ch, img.h); y++) for (let x = x0; x < x1; x++) {

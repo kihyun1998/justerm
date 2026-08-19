@@ -31,6 +31,20 @@
 //! landed in the freed slot. Ghostty needs no ids at all — its registry is a list of pointers and
 //! removal is a `swapRemove` (`src/App.zig:172`, `:200-202`) — which is a shape that does not cross
 //! a language boundary, not a shape we chose against.
+//!
+//! ## The registry starts empty (#773)
+//!
+//! S2 (#770) built this around an implicit grid registered at construction, so that every export
+//! predating the per-grid setters had something to act on while the expand phase ran. S5 removes
+//! that grid rather than merely un-privileging it: a surface holding two terminals would otherwise
+//! hold *three* grids, and the third would paint the whole canvas underneath the two the consumer
+//! asked for. So a renderer holds no grid until [`register`](GridRegistry::register), every grid is
+//! removable, and every grid's rect has the same producer — the consumer's measured box.
+//!
+//! Ids therefore start at **1**, and `0` is permanently invalid. It costs nothing and it buys the
+//! module's own stated property one case more: a JS number that was never assigned reads as `0`,
+//! and a `0` that addresses the first-registered grid would be exactly the silent retarget ids are
+//! not reused to prevent.
 
 /// A handle to one registered grid. Opaque to the consumer, which holds it as a number.
 ///
@@ -40,15 +54,6 @@
 pub struct GridId(u32);
 
 impl GridId {
-    /// The implicit grid every pre-multi-grid export acts on.
-    ///
-    /// **Scaffolding for the expand phase, retired by S5 (#773).** S2–S4 add the multi-grid form
-    /// beside the single-grid one so `justerm-web` keeps working across every intermediate renderer
-    /// release; the whole break lands in one release rather than in four. Until then this grid
-    /// exists from construction to drop and [`GridRegistry::remove`] refuses it, because the
-    /// legacy exports have nothing to act on without it.
-    pub const DEFAULT: GridId = GridId(0);
-
     /// The number the consumer holds.
     pub fn raw(self) -> u32 {
         self.0
@@ -108,11 +113,6 @@ pub enum RegistryError {
     /// No grid with this id — never registered, or removed. The two are deliberately one error:
     /// a reused id is what would make them distinguishable, and ids are not reused.
     UnknownGrid(u32),
-    /// The implicit default grid cannot be removed while the single-grid exports still act on it.
-    DefaultNotRemovable,
-    /// The implicit default grid's viewport is the drawing buffer, written by `resize` and by
-    /// nothing else — so a consumer can neither place nor hide it.
-    DefaultViewportIsTheBuffer,
 }
 
 impl RegistryError {
@@ -121,13 +121,6 @@ impl RegistryError {
         match self {
             RegistryError::UnknownGrid(id) => {
                 format!("justerm-renderer: no grid with id {id}")
-            }
-            RegistryError::DefaultNotRemovable => {
-                "justerm-renderer: the default grid cannot be removed".to_string()
-            }
-            RegistryError::DefaultViewportIsTheBuffer => {
-                "justerm-renderer: the default grid's viewport is the drawing buffer — resize it                  instead of placing it"
-                    .to_string()
             }
         }
     }
@@ -151,27 +144,13 @@ pub struct GridRegistry<T> {
     next_id: u32,
 }
 
-/// The slot the implicit default grid occupies, for as long as it exists.
-///
-/// Not a convention the draw loop has to remember: [`GridRegistry::new`] puts it there and
-/// [`GridRegistry::remove`] refuses to take it out, so nothing can shift it — a later grid is
-/// pushed after it, and removing one only shifts the grids behind it.
-pub const DEFAULT_SLOT: usize = 0;
-
 impl<T> GridRegistry<T> {
-    /// Start a registry holding the implicit default grid, drawn over `viewport`.
-    ///
-    /// The default arrives drawn because that is what the single-grid renderer already is — one
-    /// grid filling the drawing buffer. A grid registered *later* arrives **not drawn**: nobody has
-    /// said where it goes yet.
-    pub fn new(default_grid: T, viewport: Viewport) -> Self {
+    /// Start an **empty** registry — see the module doc for why S5 removed the implicit grid
+    /// rather than merely un-privileging it.
+    pub fn new() -> Self {
         GridRegistry {
-            entries: vec![Entry {
-                id: GridId::DEFAULT,
-                viewport: Some(viewport),
-                grid: default_grid,
-            }],
-            next_id: GridId::DEFAULT.0 + 1,
+            entries: Vec::new(),
+            next_id: 1,
         }
     }
 
@@ -188,12 +167,7 @@ impl<T> GridRegistry<T> {
     }
 
     /// Remove a grid and hand its state back, so the caller can release whatever the payload owns.
-    ///
-    /// Refuses [`GridId::DEFAULT`] — see its doc for why that special case exists and when it goes.
     pub fn remove(&mut self, id: GridId) -> Result<T, RegistryError> {
-        if id == GridId::DEFAULT {
-            return Err(RegistryError::DefaultNotRemovable);
-        }
         let at = self.index_of(id)?;
         Ok(self.entries.remove(at).grid)
     }
@@ -203,23 +177,9 @@ impl<T> GridRegistry<T> {
         self.entries.len()
     }
 
-    /// The implicit grid the single-grid exports act on. Infallible: it is registered at
-    /// construction and [`remove`](Self::remove) refuses it.
-    pub fn default_grid(&self) -> &T {
-        &self.entries[0].grid
-    }
-
-    /// Mutable form of [`default_grid`](Self::default_grid).
-    pub fn default_grid_mut(&mut self) -> &mut T {
-        &mut self.entries[0].grid
-    }
-
-    /// Place a grid — it is drawn from now on (#771 draws it; this slice only holds the state).
-    ///
-    /// Refuses [`GridId::DEFAULT`], whose rect is not the consumer's to write: see
-    /// [`place_default`](Self::place_default).
+    /// Place a grid — it is drawn from now on.
     pub fn set_viewport(&mut self, id: GridId, viewport: Viewport) -> Result<(), RegistryError> {
-        let at = self.index_of(self.consumer_placeable(id)?)?;
+        let at = self.index_of(id)?;
         self.entries[at].viewport = Some(viewport);
         Ok(())
     }
@@ -227,38 +187,14 @@ impl<T> GridRegistry<T> {
     /// Stop drawing a grid **without unregistering it**: every byte of its state stays resident, so
     /// coming back is a placement rather than a rebuild.
     ///
-    /// Refuses [`GridId::DEFAULT`] for the same reason [`set_viewport`](Self::set_viewport) does —
-    /// and it is the more important half. Letting a consumer clear the default's viewport would put
-    /// the registry into a state the renderer contradicts: the default would report itself not
-    /// drawn while still painting the whole canvas, because the single-grid draw path does not
-    /// consult a viewport at all. At #771 it becomes worse than a wrong answer — a consumer looping
-    /// over every id to hide everything would hide the one grid that must not be hidden, and stay
-    /// hidden until something happened to resize.
+    /// Every grid is hideable, and since #773 that includes the first one registered: a rect this
+    /// registry holds has exactly one producer — the consumer's measured box — so there is no
+    /// longer a grid whose placement someone else owns, and therefore no grid that would report
+    /// itself not drawn while still painting.
     pub fn clear_viewport(&mut self, id: GridId) -> Result<(), RegistryError> {
-        let at = self.index_of(self.consumer_placeable(id)?)?;
+        let at = self.index_of(id)?;
         self.entries[at].viewport = None;
         Ok(())
-    }
-
-    /// Re-place the default grid over the whole drawing buffer. The renderer's `resize` is the only
-    /// caller, and that is the point of the method existing beside
-    /// [`set_viewport`](Self::set_viewport) rather than as a special case inside it.
-    ///
-    /// **The default's rect has a different producer from every other grid's.** A registered grid is
-    /// placed where the consumer measured its DOM box; the default is placed over the drawing
-    /// buffer, which the renderer owns and derives from the grid it was sized to. A fact belongs to
-    /// the site it is first true at, so the consumer cannot write this one and `resize` does not
-    /// have to ask permission to.
-    pub fn place_default(&mut self, viewport: Viewport) {
-        self.entries[0].viewport = Some(viewport);
-    }
-
-    /// The default grid's viewport is the drawing buffer's, so the consumer may not write it.
-    fn consumer_placeable(&self, id: GridId) -> Result<GridId, RegistryError> {
-        if id == GridId::DEFAULT {
-            return Err(RegistryError::DefaultViewportIsTheBuffer);
-        }
-        Ok(id)
     }
 
     /// Whether a grid currently has a viewport, i.e. whether it draws.
@@ -325,15 +261,22 @@ mod tests {
     }
 
     fn registry() -> GridRegistry<FakeGrid> {
-        GridRegistry::new(FakeGrid::new(0), VP)
+        GridRegistry::new()
     }
 
     #[test]
-    fn the_default_grid_is_registered_and_drawn_from_construction() {
+    fn a_new_registry_holds_no_grid_at_all() {
         let r = registry();
-        assert_eq!(r.len(), 1);
-        assert_eq!(r.is_drawn(GridId::DEFAULT), Ok(true));
-        assert_eq!(r.default_grid().cells, vec![0; 4]);
+        assert_eq!(
+            r.len(),
+            0,
+            "a renderer holds no terminal until one is registered"
+        );
+        // …and the number a never-assigned JS handle carries addresses nothing.
+        assert_eq!(
+            r.is_drawn(GridId::from_raw(0)),
+            Err(RegistryError::UnknownGrid(0))
+        );
     }
 
     #[test]
@@ -341,8 +284,8 @@ mod tests {
         let mut r = registry();
         let ids: Vec<GridId> = (1..=4).map(|t| r.register(FakeGrid::new(t))).collect();
 
-        // N per-grid records, plus the default. Distinct ids, distinct state.
-        assert_eq!(r.len(), 5);
+        // N per-grid records and nothing else. Distinct ids, distinct state.
+        assert_eq!(r.len(), 4);
         assert_eq!(
             ids.iter().collect::<std::collections::HashSet<_>>().len(),
             4
@@ -358,11 +301,10 @@ mod tests {
         let id = r.register(FakeGrid::new(1));
 
         // Registered…
-        assert_eq!(r.len(), 2);
-        // …and NOT drawn: nobody has said where it goes. Absence of a viewport is the state.
+        assert_eq!(r.len(), 1);
+        // …and NOT drawn: nobody has said where it goes yet. Since #773 that is true of the FIRST
+        // grid too — there is no longer one that arrives already covering the buffer.
         assert_eq!(r.is_drawn(id), Ok(false));
-        // The default is unaffected by a sibling arriving.
-        assert_eq!(r.is_drawn(GridId::DEFAULT), Ok(true));
     }
 
     #[test]
@@ -375,7 +317,7 @@ mod tests {
 
         r.clear_viewport(id).unwrap();
         assert_eq!(r.is_drawn(id), Ok(false), "cleared viewport = not drawn");
-        assert_eq!(r.len(), 2, "not drawn is not unregistered");
+        assert_eq!(r.len(), 1, "not drawn is not unregistered");
         assert_eq!(
             r.grid_for_test(id),
             &before,
@@ -398,7 +340,7 @@ mod tests {
             FakeGrid::new(3),
             "the payload comes back to be released"
         );
-        assert_eq!(r.len(), 1);
+        assert_eq!(r.len(), 0);
         assert_eq!(r.is_drawn(id), Err(RegistryError::UnknownGrid(id.raw())));
     }
 
@@ -417,14 +359,22 @@ mod tests {
     }
 
     #[test]
-    fn the_default_grid_cannot_be_removed_while_the_single_grid_exports_need_it() {
+    fn the_first_registered_grid_is_removable_like_any_other() {
         let mut r = registry();
+        let first = r.register(FakeGrid::new(1));
+        let second = r.register(FakeGrid::new(2));
+
+        assert_eq!(r.remove(first), Ok(FakeGrid::new(1)));
         assert_eq!(
-            r.remove(GridId::DEFAULT),
-            Err(RegistryError::DefaultNotRemovable)
+            r.len(),
+            1,
+            "and the renderer is left holding only its sibling"
         );
-        assert_eq!(r.len(), 1);
-        assert_eq!(r.default_grid().cells, vec![0; 4]);
+        assert_eq!(r.grid_for_test(second).cells, vec![2; 4]);
+
+        // Down to none, which is a legal state and not a broken one.
+        assert_eq!(r.remove(second), Ok(FakeGrid::new(2)));
+        assert_eq!(r.len(), 0);
     }
 
     #[test]
@@ -437,6 +387,11 @@ mod tests {
         assert_ne!(
             first, second,
             "a JS consumer holds a bare number; reusing it would silently retarget it"
+        );
+        assert_ne!(
+            first.raw(),
+            0,
+            "0 stays invalid for the registry's whole life"
         );
         assert_eq!(
             r.is_drawn(first),
@@ -461,50 +416,23 @@ mod tests {
         // Stable order, not `swap_remove`'s — the draw loop (#771) must be deterministic.
         assert_eq!(
             r.ids_for_test(),
-            vec![GridId::DEFAULT, b, c, d],
+            vec![b, c, d],
             "the survivors keep their order"
         );
     }
 
     #[test]
-    fn the_consumer_can_neither_place_nor_hide_the_default_grid() {
+    fn the_first_registered_grid_is_placeable_and_hideable_like_any_other() {
         let mut r = registry();
+        let first = r.register(FakeGrid::new(1));
         let moved = Viewport { x: 40, ..VP };
 
-        // The default's rect is the drawing buffer's, and the buffer has one producer — `resize`.
-        assert_eq!(
-            r.set_viewport(GridId::DEFAULT, moved),
-            Err(RegistryError::DefaultViewportIsTheBuffer)
-        );
-        // The important half: a cleared default would report itself not drawn while still painting
-        // the whole canvas, because the single-grid draw path consults no viewport at all.
-        assert_eq!(
-            r.clear_viewport(GridId::DEFAULT),
-            Err(RegistryError::DefaultViewportIsTheBuffer)
-        );
-        assert_eq!(
-            r.is_drawn(GridId::DEFAULT),
-            Ok(true),
-            "and neither took effect"
-        );
-    }
-
-    #[test]
-    fn resize_re_places_the_default_through_its_own_door() {
-        let mut r = registry();
-        let grown = Viewport {
-            width: 1280,
-            height: 768,
-            ..VP
-        };
-
-        r.place_default(grown);
-
-        assert_eq!(r.is_drawn(GridId::DEFAULT), Ok(true));
-        assert_eq!(r.viewport_for_test(GridId::DEFAULT), Some(grown));
-        // …and it did not disturb anyone else's placement.
-        let id = r.register(FakeGrid::new(1));
-        assert_eq!(r.is_drawn(id), Ok(false));
+        // Both doors are open on it, which is the whole of what #773 changed here: its rect has
+        // the same producer as everyone else's — the consumer's measured box.
+        assert_eq!(r.set_viewport(first, moved), Ok(()));
+        assert_eq!(r.viewport_for_test(first), Some(moved));
+        assert_eq!(r.clear_viewport(first), Ok(()));
+        assert_eq!(r.is_drawn(first), Ok(false));
     }
 
     #[test]
@@ -513,20 +441,11 @@ mod tests {
             RegistryError::UnknownGrid(7).message(),
             "justerm-renderer: no grid with id 7"
         );
-        assert_eq!(
-            RegistryError::DefaultNotRemovable.message(),
-            "justerm-renderer: the default grid cannot be removed"
-        );
-        assert!(
-            RegistryError::DefaultViewportIsTheBuffer
-                .message()
-                .contains("the drawing buffer")
-        );
     }
 
-    // Test-only reach into a grid by id. The renderer itself only ever needs the default (every
-    // pre-#773 export acts on it), so shipping a public `get`/`get_mut` would be dead code on
-    // wasm32 — where dead-code analysis is the trustworthy one (lib.rs).
+    // Test-only reach into a grid by id. The renderer reaches a grid by SLOT — `index_of` then
+    // `grid_at` — so shipping a public `get`/`get_mut` here would be dead code on wasm32, where
+    // dead-code analysis is the trustworthy one (lib.rs).
     impl<T> GridRegistry<T> {
         fn grid_for_test(&self, id: GridId) -> &T {
             &self.entries[self.index_of(id).unwrap()].grid
@@ -634,18 +553,11 @@ mod viewport_tests {
 mod draw_order_tests {
     use super::*;
 
-    const VP: Viewport = Viewport {
-        x: 0,
-        y: 0,
-        width: 640,
-        height: 384,
-    };
-
     #[derive(Debug, PartialEq, Eq)]
     struct FakeGrid(u32);
 
     fn registry() -> GridRegistry<FakeGrid> {
-        GridRegistry::new(FakeGrid(0), VP)
+        GridRegistry::new()
     }
 
     fn placed(x: i32) -> Viewport {
@@ -657,16 +569,16 @@ mod draw_order_tests {
         }
     }
 
-    /// What the draw loop walks: every slot, with the rect if the grid has one. The default is
-    /// slot 0 and is drawn from construction, so a single-grid consumer's loop is one iteration.
+    /// What the draw loop walks: every slot, with the rect if the grid has one. Since #773 the
+    /// loop starts with **no** slots, and a one-terminal consumer's loop is one iteration because
+    /// it registered one grid — not because one was there already.
     #[test]
     fn a_registered_grid_occupies_a_slot_before_anything_places_it() {
         let mut r = registry();
         r.register(FakeGrid(1));
 
-        assert_eq!(r.len(), 2);
-        assert_eq!(r.viewport_at(0), Some(VP));
-        assert_eq!(r.viewport_at(1), None);
+        assert_eq!(r.len(), 1);
+        assert_eq!(r.viewport_at(0), None);
     }
 
     #[test]
@@ -681,7 +593,7 @@ mod draw_order_tests {
         let order: Vec<(u32, Option<i32>)> = (0..r.len())
             .map(|at| (r.grid_at(at).0, r.viewport_at(at).map(|v| v.x)))
             .collect();
-        assert_eq!(order, vec![(0, Some(0)), (1, Some(100)), (2, Some(200))]);
+        assert_eq!(order, vec![(1, Some(100)), (2, Some(200))]);
     }
 
     #[test]
@@ -694,10 +606,10 @@ mod draw_order_tests {
 
         r.clear_viewport(a).unwrap();
 
-        assert_eq!(r.viewport_at(1), None, "the hidden grid draws nowhere");
-        assert_eq!(r.grid_at(1), &FakeGrid(1), "and is still in its slot");
+        assert_eq!(r.viewport_at(0), None, "the hidden grid draws nowhere");
+        assert_eq!(r.grid_at(0), &FakeGrid(1), "and is still in its slot");
         assert_eq!(
-            r.viewport_at(2).map(|v| v.x),
+            r.viewport_at(1).map(|v| v.x),
             Some(200),
             "the grid after it did not shift"
         );

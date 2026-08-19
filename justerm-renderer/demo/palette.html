@@ -25,7 +25,7 @@
 <canvas id="c" width="48" height="16"></canvas>
 <script type="module">
   import init, { JustermRenderer } from "../pkg/justerm_renderer.js";
-  import { readRect } from "./proof.js";
+  import { readRect, fitGrid } from "./proof.js";
   await init();
 
   const COLS = 3, ROWS = 1, N = COLS * ROWS;
@@ -39,9 +39,10 @@
   const DEF_FG = 0xffffff;
 
   const paletteA = new Uint32Array(256); paletteA[1] = RED;
-  const r = new JustermRenderer("#c", paletteA, DEF_FG, BG_A);
+  const r = new JustermRenderer("#c");
+  const g = r.addGrid(paletteA, DEF_FG, BG_A);
   const gl = document.querySelector("#c").getContext("webgl2");
-  const [cw, ch] = [r.cell_width(), r.cell_height()];
+  const [cw, ch] = [r.cell_width(g), r.cell_height(g)];
 
   const grab = () => {
     const [w, h] = [gl.drawingBufferWidth, gl.drawingBufferHeight];
@@ -74,8 +75,8 @@
   const bg = new Uint32Array([0 /* Default */, 0 /* Default */, RGB(FIXED)]);
   const header = new Uint32Array([COLS, ROWS, 0 /* Full */, 0, 0, 0, 0, 1 /* blink_on */]);
   const spans = new Uint32Array([0, 0, COLS - 1, 0, N]); // one span, whole row
-  r.resize(COLS, ROWS);
-  r.apply_damage(header, spans, codepoints, fg, bg, new Uint16Array(N), new Uint32Array(N), []);
+  fitGrid(r, g, COLS, ROWS);
+  r.apply_damage(g, header, spans, codepoints, fg, bg, new Uint16Array(N), new Uint32Array(N), []);
   r.render();
   const before = grab();
 
@@ -87,7 +88,7 @@
   // Live theme swap — NO new frame, only setPalette + render(). scheme B: palette[1] green, a new
   // default bg, same default fg.
   const paletteB = new Uint32Array(256); paletteB[1] = GREEN;
-  r.setPalette(paletteB, DEF_FG, BG_B);
+  r.setPalette(g, paletteB, DEF_FG, BG_B);
   r.render();
   const after = grab();
 

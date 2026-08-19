@@ -28,22 +28,23 @@
 <canvas id="c" width="64" height="64"></canvas>
 <script type="module">
   import init, { JustermRenderer } from "../pkg/justerm_renderer.js";
-  import { readRect } from "./proof.js";
+  import { readRect, fitGrid } from "./proof.js";
   await init();
 
   const palette = new Uint32Array(256);
-  const r = new JustermRenderer("#c", palette, 0xffffff, 0x000000);
+  const r = new JustermRenderer("#c");
+  const g = r.addGrid(palette, 0xffffff, 0x000000);
   const canvas = document.querySelector("#c");
   const gl = canvas.getContext("webgl2");
   const dpr = window.devicePixelRatio;
 
   // With both options at their defaults the cell IS the glyph box (`device_cell` is the identity).
-  const charW = r.cell_width(), charH = r.cell_height();
+  const charW = r.cell_width(g), charH = r.cell_height(g);
 
   /** Draw one cell of `cp` and report the extent and placement of its ink, in device px. */
   const inkRun = (cp) => {
-    r.resize(1, 1);
-    r.apply_frame(1, 1, new Uint32Array(1), new Uint32Array(1), new Uint32Array([cp]), new Uint16Array(1), true);
+    fitGrid(r, g, 1, 1);
+    r.apply_frame(g, 1, 1, new Uint32Array(1), new Uint32Array(1), new Uint32Array([cp]), new Uint16Array(1), true);
     r.render();
     const [w, h] = [gl.drawingBufferWidth, gl.drawingBufferHeight];
     const { buf } = readRect(gl, { x: 0, y: 0, w, h }); // same task as render()
@@ -60,8 +61,8 @@
   /** `一`: one continuous horizontal stroke across a wide lead + spacer. */
   const WIDE_CHAR = 1 << 8, WIDE_CHAR_SPACER = 1 << 9;
   const wideRun = () => {
-    r.resize(2, 1);
-    r.apply_frame(2, 1, new Uint32Array(2), new Uint32Array(2),
+    fitGrid(r, g, 2, 1);
+    r.apply_frame(g, 2, 1, new Uint32Array(2), new Uint32Array(2),
       new Uint32Array([0x4e00, 0x20]), new Uint16Array([WIDE_CHAR, WIDE_CHAR_SPACER]), true);
     r.render();
     const [w, h] = [gl.drawingBufferWidth, gl.drawingBufferHeight];
@@ -82,8 +83,8 @@
   /** Two `🬂` (BLOCK SEXTANT-12, the upper third) side by side: the top rows must run unbroken. */
   const SEXTANT_UPPER_THIRD = 0x1FB02;
   const sextantRun = () => {
-    r.resize(2, 1);
-    r.apply_frame(2, 1, new Uint32Array(2), new Uint32Array(2),
+    fitGrid(r, g, 2, 1);
+    r.apply_frame(g, 2, 1, new Uint32Array(2), new Uint32Array(2),
       new Uint32Array([SEXTANT_UPPER_THIRD, SEXTANT_UPPER_THIRD]), new Uint16Array(2), true);
     r.render();
     const [w, h] = [gl.drawingBufferWidth, gl.drawingBufferHeight];
@@ -102,8 +103,8 @@
   /** A 2x2 box frame `┌┐ / └┘`: four corners whose arms must meet across BOTH cell seams, so the
    *  border is a single connected loop enclosing an empty interior — at any spacing (#365). */
   const boxFrame = () => {
-    r.resize(2, 2);
-    r.apply_frame(2, 2, new Uint32Array(4), new Uint32Array(4),
+    fitGrid(r, g, 2, 2);
+    r.apply_frame(g, 2, 2, new Uint32Array(4), new Uint32Array(4),
       new Uint32Array([0x250c, 0x2510, 0x2514, 0x2518]), new Uint16Array(4), true);
     r.render();
     const [w, h] = [gl.drawingBufferWidth, gl.drawingBufferHeight];
@@ -135,11 +136,11 @@
   };
   const frameBase = boxFrame();
   // AC: the frame stays joined at letterSpacing = 4 CSS px AND lineHeight = 1.6 together.
-  r.setLetterSpacing(4);
-  r.setLineHeight(1.6);
+  r.setLetterSpacing(g, 4);
+  r.setLineHeight(g, 1.6);
   const frameSpaced = boxFrame();
-  r.setLetterSpacing(0);
-  r.setLineHeight(1);
+  r.setLetterSpacing(g, 0);
+  r.setLineHeight(g, 1);
 
   /** Count 8-connected lit components of a rendered grid. A diagonal line touches its neighbour at a
    *  pixel CORNER, so it is 8- not 4-connected — the metric a `╱` staircase needs.
@@ -178,8 +179,8 @@
    *  meets at the grid centre. This is `fill_polygon` (#364) going through the GL path for the first
    *  time — the diagonals are the tail of #365 that consumes it. */
   const diagRun = () => {
-    r.resize(2, 2);
-    r.apply_frame(2, 2, new Uint32Array(4), new Uint32Array(4),
+    fitGrid(r, g, 2, 2);
+    r.apply_frame(g, 2, 2, new Uint32Array(4), new Uint32Array(4),
       new Uint32Array([0x20, 0x2571, 0x2571, 0x20]), new Uint16Array(4), true);
     r.render();
     const [w, h] = [gl.drawingBufferWidth, gl.drawingBufferHeight];
@@ -187,17 +188,17 @@
     return { w, h, ...litComponents(buf, w, h) };
   };
   const diagBase = diagRun();
-  r.setLetterSpacing(4);
-  r.setLineHeight(1.6);
+  r.setLetterSpacing(g, 4);
+  r.setLineHeight(g, 1.6);
   const diagSpaced = diagRun();
-  r.setLetterSpacing(0);
-  r.setLineHeight(1);
+  r.setLetterSpacing(g, 0);
+  r.setLineHeight(g, 1);
 
   /** `═` (double horizontal): the busiest device column must cross TWO lit rails, proving the double
    *  line survives the atlas + shader round-trip as two runs, not one thick bar (#365 tail). */
   const doubleRun = () => {
-    r.resize(1, 1);
-    r.apply_frame(1, 1, new Uint32Array(1), new Uint32Array(1),
+    fitGrid(r, g, 1, 1);
+    r.apply_frame(g, 1, 1, new Uint32Array(1), new Uint32Array(1),
       new Uint32Array([0x2550]), new Uint16Array(1), true);
     r.render();
     const [w, h] = [gl.drawingBufferWidth, gl.drawingBufferHeight];
@@ -215,11 +216,11 @@
     return { w, h, rails: maxRuns };
   };
   const doubleBase = doubleRun();
-  r.setLetterSpacing(4);
-  r.setLineHeight(1.6);
+  r.setLetterSpacing(g, 4);
+  r.setLineHeight(g, 1.6);
   const doubleSpaced = doubleRun();
-  r.setLetterSpacing(0);
-  r.setLineHeight(1);
+  r.setLetterSpacing(g, 0);
+  r.setLineHeight(g, 1);
 
   /** The two triangular-half blocks `1FB9A` (UPPER AND LOWER) and `1FB9B` (LEFT AND RIGHT): each a
    *  bowtie that fills part of the cell, and TOGETHER a wedge pair whose four centre-triangles
@@ -227,14 +228,14 @@
    *  codepoints through the GL round-trip (#366), read as raw green (coverage), so the proof does not
    *  depend on the shader's gamma. */
   const greenBuf = (cp) => {
-    r.resize(1, 1);
-    r.apply_frame(1, 1, new Uint32Array(1), new Uint32Array(1), new Uint32Array([cp]), new Uint16Array(1), true);
+    fitGrid(r, g, 1, 1);
+    r.apply_frame(g, 1, 1, new Uint32Array(1), new Uint32Array(1), new Uint32Array([cp]), new Uint16Array(1), true);
     r.render();
     const [w, h] = [gl.drawingBufferWidth, gl.drawingBufferHeight];
     const { buf } = readRect(gl, { x: 0, y: 0, w, h });
-    const g = new Uint8Array(w * h);
-    for (let i = 0; i < w * h; i++) g[i] = buf[i * 4 + 1];
-    return { w, h, g };
+    const green = new Uint8Array(w * h);
+    for (let i = 0; i < w * h; i++) green[i] = buf[i * 4 + 1];
+    return { w, h, g: green };
   };
   const triA = greenBuf(0x1fb9a), triB = greenBuf(0x1fb9b);
   let darkInBoth = 0, solidInBoth = 0, litA = 0, litB = 0;
@@ -280,17 +281,17 @@
 
   // --- letterSpacing: 2 CSS px, so `round(2 * dpr)` device px, split floor-left / rest-right.
   const SPACING = 2;
-  r.setLetterSpacing(SPACING);
+  r.setLetterSpacing(g, SPACING);
   const blockSpaced = inkRun(BLOCK);
   const sextantSpaced = sextantRun();
   const letterSpaced = inkRun(LETTER);
   const wideSpaced = wideRun();
   const dx = Math.round(SPACING * dpr);
-  r.setLetterSpacing(0);
+  r.setLetterSpacing(g, 0);
 
   // --- lineHeight: 1.5, so `floor(charH * 1.5)`, the glyph centred with the odd pixel above.
   const LH = 1.5;
-  r.setLineHeight(LH);
+  r.setLineHeight(g, LH);
   const blockTall = inkRun(BLOCK);
   const letterTall = inkRun(LETTER);
   const cellH = Math.floor(charH * LH);
@@ -298,10 +299,10 @@
 
   // --- the policy must survive a DPR change (#322) and a context restore (#269).
   r.setDevicePixelRatio(dpr * 2);
-  const afterDpr = { cellW: r.cell_width(), cellH: r.cell_height() };
-  r.setLineHeight(1); // read the NEW glyph box back, without having re-applied the policy first
-  const charH2 = r.cell_height();
-  r.setLineHeight(LH);
+  const afterDpr = { cellW: r.cell_width(g), cellH: r.cell_height(g) };
+  r.setLineHeight(g, 1); // read the NEW glyph box back, without having re-applied the policy first
+  const charH2 = r.cell_height(g);
+  r.setLineHeight(g, LH);
   r.setDevicePixelRatio(dpr); // back, so the restore check runs at the sweep's own density
 
   const lose = gl.getExtension("WEBGL_lose_context");
@@ -325,26 +326,26 @@
   // and a storage-less sampler answers alpha 1 — so EVERY glyph renders as a solid block. Measured
   // before the fix: `M` came back fully lit. A proof drawn with `█` alone cannot see that.
   const maxTex = gl.getParameter(gl.MAX_TEXTURE_SIZE);
-  r.setLineHeight(1000);
-  const huge = { cellH: r.cell_height(), letter: inkRun(LETTER) };
+  r.setLineHeight(g, 1000);
+  const huge = { cellH: r.cell_height(g), letter: inkRun(LETTER) };
   const letterCoverage = huge.letter.litCols * huge.letter.litRows / (huge.letter.w * huge.letter.h);
-  r.setLineHeight(1);
+  r.setLineHeight(g, 1);
 
   // --- a setter called WHILE the context is lost must not destroy the grid (#338/#339).
-  r.resize(20, 6);
-  const gridBefore = [r.cols(), r.rows()];
+  fitGrid(r, g, 20, 6);
+  const gridBefore = [r.cols(g), r.rows(g)];
   const lost2 = once("webglcontextlost");
   lose.loseContext();
   await lost2;
-  r.setLineHeight(2);
-  r.setLetterSpacing(1);
-  const gridWhileLost = [r.cols(), r.rows()];
+  r.setLineHeight(g, 2);
+  r.setLetterSpacing(g, 1);
+  const gridWhileLost = [r.cols(g), r.rows(g)];
   await new Promise((res) => setTimeout(res, 0));
   const restored2 = once("webglcontextrestored");
   lose.restoreContext();
   await restored2;
   r.render();
-  const gridAfter = [r.cols(), r.rows()];
+  const gridAfter = [r.cols(g), r.rows(g)];
 
   window.__proof = {
     dpr, charW, charH, dx, dy, cellH, charH2, afterDpr,

@@ -27,15 +27,16 @@
 <canvas id="c" width="128" height="32"></canvas>
 <script type="module">
   import init, { JustermRenderer } from "../pkg/justerm_renderer.js";
-  import { readCells, countLit, gridFit } from "./proof.js";
+  import { readCells, countLit, gridFit, fitGrid } from "./proof.js";
   const FG = 0xffffff, BG = 0x1e1e2e;
   await init();
 
   const palette = new Uint32Array(256);
-  const r = new JustermRenderer("#c", palette, FG, BG);
-  const CW = r.cell_width(), CH = r.cell_height();
+  const r = new JustermRenderer("#c");
+  const g = r.addGrid(palette, FG, BG);
+  const CW = r.cell_width(g), CH = r.cell_height(g);
   const COLS = 4;
-  r.resize(COLS, 1);
+  fitGrid(r, g, COLS, 1);
 
   const canvas = document.querySelector("#c");
   const gl = canvas.getContext("webgl2");
@@ -51,11 +52,11 @@
 
   // readPixels addresses the device-px drawing buffer; ask the renderer for its device cell (#328).
   const litCells = () =>
-    Array.from({ length: COLS }, (_, col) => countLit(readCells(gl, r, col)));
+    Array.from({ length: COLS }, (_, col) => countLit(readCells(gl, r, g, col)));
 
   const cps = new Uint32Array([0x57, 0x58, 0x59, 0x5a]); // WXYZ
   const zeros = new Uint32Array(COLS), flags = new Uint16Array(COLS);
-  r.apply_frame(COLS, 1, zeros, zeros, cps, flags, true);
+  r.apply_frame(g, COLS, 1, zeros, zeros, cps, flags, true);
   r.render();
   const baseline = litCells();
 
@@ -106,7 +107,7 @@
   r.render();
 
   window.__proof = {
-    dpr: window.devicePixelRatio, gridFit: gridFit(gl, r, COLS, 1),
+    dpr: window.devicePixelRatio, gridFit: gridFit(gl, r, g, COLS, 1),
     baseline, suppressed, overdue, stillOnce, lateHeal, staleQuiet, ownDeadlineFires,
     checks: {
       baselineRenders: baseline.every((n) => n > 0),

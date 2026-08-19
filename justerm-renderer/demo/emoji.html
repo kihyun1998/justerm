@@ -18,29 +18,30 @@
 <canvas id="c" width="128" height="32"></canvas>
 <script type="module">
   import init, { JustermRenderer } from "../pkg/justerm_renderer.js";
-  import { readCells, hasColourEmojiFont, gridFit } from "./proof.js";
+  import { readCells, hasColourEmojiFont, gridFit, fitGrid } from "./proof.js";
   const FG = 0xffffff, BG = 0x808080; // white fg, GRAY bg
   const WIDE_CHAR = 1 << 8, WIDE_SPACER = 1 << 9;
   await init();
 
   const palette = new Uint32Array(256);
-  const r = new JustermRenderer("#c", palette, FG, BG);
-  const CW = r.cell_width(), CH = r.cell_height();
+  const r = new JustermRenderer("#c");
+  const g = r.addGrid(palette, FG, BG);
+  const CW = r.cell_width(g), CH = r.cell_height(g);
   const COLS = 4;
-  r.resize(COLS, 1);
+  fitGrid(r, g, COLS, 1);
 
   // Row: [🚀 lead][spacer][A][space]. Default fg/bg refs (0) → white on gray.
   const cps   = new Uint32Array([0x1F680, 0x20,          0x41, 0x20]);
   const flags = new Uint16Array([WIDE_CHAR, WIDE_SPACER, 0,    0]);
   const zeros = new Uint32Array(COLS);
-  r.apply_frame(COLS, 1, zeros, zeros, cps, flags, true);
+  r.apply_frame(g, COLS, 1, zeros, zeros, cps, flags, true);
   r.render();
 
   const gl = document.querySelector("#c").getContext("webgl2");
   // For cell (col,row) return {lit, coloured}: lit = pixels differing from the gray bg;
   // coloured = pixels whose R/G/B spread exceeds a threshold (emoji palette, never gray text).
   const scan = (col) => {
-    const { buf } = readCells(gl, r, col); // exact device cell (#328)
+    const { buf } = readCells(gl, r, g, col); // exact device cell (#328)
     let lit = 0, coloured = 0;
     for (let i = 0; i < buf.length; i += 4) {
       const [rr, gg, bb] = [buf[i], buf[i + 1], buf[i + 2]];
@@ -54,7 +55,7 @@
   const lead = scan(0), spacer = scan(1), letter = scan(2), blank = scan(3);
   const colourEmojiFontPresent = hasColourEmojiFont(); // #334 precondition, see proof.js
   window.__proof = {
-    dpr: window.devicePixelRatio, deviceCell: [CW, CH], gridFit: gridFit(gl, r, COLS, 1),
+    dpr: window.devicePixelRatio, deviceCell: [CW, CH], gridFit: gridFit(gl, r, g, COLS, 1),
     lead, spacer, letter, blank,
     colourEmojiFontPresent,
     checks: {

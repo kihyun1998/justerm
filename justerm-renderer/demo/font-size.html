@@ -21,7 +21,7 @@
 <canvas id="c" width="64" height="32"></canvas>
 <script type="module">
   import init, { JustermRenderer } from "../pkg/justerm_renderer.js";
-  import { readRect } from "./proof.js";
+  import { readRect, fitGrid } from "./proof.js";
   await init();
 
   const COLS = 2, ROWS = 1, N = COLS * ROWS;
@@ -30,7 +30,8 @@
   const RED = 0xcc0000;
 
   const palette = new Uint32Array(256); palette[1] = RED;
-  const r = new JustermRenderer("#c", palette, 0xffffff, 0x000000);
+  const r = new JustermRenderer("#c");
+  const g = r.addGrid(palette, 0xffffff, 0x000000);
   const gl = document.querySelector("#c").getContext("webgl2");
 
   const grab = () => {
@@ -49,11 +50,11 @@
   const checks = {};
 
   // Metrics at the default size (FONT_SIZE = 16 CSS px).
-  const cw16 = r.cell_width(), ch16 = r.cell_height();
+  const cw16 = r.cell_width(g), ch16 = r.cell_height(g);
 
   // Grow to 32 CSS px — double the default.
-  r.setFontSize(32);
-  const cw32 = r.cell_width(), ch32 = r.cell_height();
+  r.setFontSize(g, 32);
+  const cw32 = r.cell_width(g), ch32 = r.cell_height(g);
 
   checks.fontSizeGrowsTheCell = cw32 > cw16 + 2 && ch32 > ch16 + 2;
   const ratioW = cw32 / cw16, ratioH = ch32 / ch16;
@@ -62,21 +63,21 @@
 
   // The renderer still draws at the new size — a BLOCK fills its (bigger) cell with the fg. css_cell
   // moved, so the consumer re-fits: resize to the grid, then a frame.
-  r.resize(COLS, ROWS);
-  r.apply_frame(COLS, ROWS, new Uint32Array(N), new Uint32Array([IDX(1), IDX(1)]), new Uint32Array(N).fill(BLOCK), new Uint16Array(N), true);
+  fitGrid(r, g, COLS, ROWS);
+  r.apply_frame(g, COLS, ROWS, new Uint32Array(N), new Uint32Array([IDX(1), IDX(1)]), new Uint32Array(N).fill(BLOCK), new Uint16Array(N), true);
   r.render();
   checks.rendersAtTheNewSize = centreIs(grab(), 0, cw32, ch32, RED);
 
   // Setting the size back restores the cell (the re-bake is reversible, not a one-way growth).
-  r.setFontSize(16);
-  checks.settingBackRestoresTheCell = Math.abs(r.cell_width() - cw16) <= 1 && Math.abs(r.cell_height() - ch16) <= 1;
+  r.setFontSize(g, 16);
+  checks.settingBackRestoresTheCell = Math.abs(r.cell_width(g) - cw16) <= 1 && Math.abs(r.cell_height(g) - ch16) <= 1;
 
   // An unchanged size and a non-finite size are both no-ops (the guards), leaving the cell put.
-  const cwNow = r.cell_width();
-  r.setFontSize(16);
-  checks.sameSizeIsANoOp = r.cell_width() === cwNow;
-  r.setFontSize(Number.NaN);
-  checks.nonFiniteIsIgnored = r.cell_width() === cwNow;
+  const cwNow = r.cell_width(g);
+  r.setFontSize(g, 16);
+  checks.sameSizeIsANoOp = r.cell_width(g) === cwNow;
+  r.setFontSize(g, Number.NaN);
+  checks.nonFiniteIsIgnored = r.cell_width(g) === cwNow;
 
   window.__proof = {
     ok: Object.values(checks).every(Boolean), checks,

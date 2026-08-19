@@ -14,19 +14,20 @@
 <canvas id="c" width="256" height="96"></canvas>
 <script type="module">
   import init, { JustermRenderer } from "../pkg/justerm_renderer.js";
-  import { readCells, countLit, gridFit } from "./proof.js";
+  import { readCells, countLit, gridFit, fitGrid } from "./proof.js";
   const FG = 0xffffff, BG = 0x1e1e2e;
   await init();
 
   const palette = new Uint32Array(256);
-  const r = new JustermRenderer("#c", palette, FG, BG);
-  const CW = r.cell_width(), CH = r.cell_height();
+  const r = new JustermRenderer("#c");
+  const g = r.addGrid(palette, FG, BG);
+  const CW = r.cell_width(g), CH = r.cell_height(g);
   const COLS = 4, ROWS = 3;
-  r.resize(COLS, ROWS);
+  fitGrid(r, g, COLS, ROWS);
 
   const gl = document.querySelector("#c").getContext("webgl2");
   // Lit-pixel count in cell (col,row), read over its exact DEVICE cell (#328).
-  const cellLit = (col, row) => countLit(readCells(gl, r, col, row));
+  const cellLit = (col, row) => countLit(readCells(gl, r, g, col, row));
   const zeros16 = new Uint16Array(0);
   const emptyU32 = new Uint32Array(0);
   // header = [cols, rows, kind, has_scroll, scroll_top, scroll_bottom, scroll_count, blink_on]
@@ -38,25 +39,25 @@
   const extraN = (n) => new Uint32Array(n); // no clusters (all zero) — u32 since #627
 
   // Frame 1 — Full: row 0 = "ABCD" (one span, cols 0..=3). Rows 1,2 blank.
-  r.apply_damage(hdr(0), new Uint32Array([0, 0, 3, 0, 4]), cps([0x41, 0x42, 0x43, 0x44]), zerosN(4), zerosN(4), flagsN(4), extraN(4), []);
+  r.apply_damage(g, hdr(0), new Uint32Array([0, 0, 3, 0, 4]), cps([0x41, 0x42, 0x43, 0x44]), zerosN(4), zerosN(4), flagsN(4), extraN(4), []);
   r.render();
   const full = { r0: [cellLit(0,0), cellLit(1,0), cellLit(2,0), cellLit(3,0)], r1c1: cellLit(1,1), r2: cellLit(2,2) };
 
   // Frame 2 — Partial: set (1,1) = 'E' only. Row 0 must PERSIST (not wiped).
-  r.apply_damage(hdr(1), new Uint32Array([1, 1, 1, 0, 1]), cps([0x45]), zerosN(1), zerosN(1), flagsN(1), extraN(1), []);
+  r.apply_damage(g, hdr(1), new Uint32Array([1, 1, 1, 0, 1]), cps([0x45]), zerosN(1), zerosN(1), flagsN(1), extraN(1), []);
   r.render();
   const partial = { r0: [cellLit(0,0), cellLit(1,0), cellLit(2,0), cellLit(3,0)], e11: cellLit(1,1), r0c0blank: cellLit(0,1) };
 
   // Frame 3 — Partial + scroll up 1 over rows [0,2], no spans. Content shifts up: the 'E' at
   // (1,1) moves to (1,0); old row 0 (ABCD) is scrolled off; bottom row exposed blank.
-  r.apply_damage(hdr(1, [0, 2, 1]), new Uint32Array([]), emptyU32, emptyU32, emptyU32, zeros16, zeros16, []);
+  r.apply_damage(g, hdr(1, [0, 2, 1]), new Uint32Array([]), emptyU32, emptyU32, emptyU32, zeros16, zeros16, []);
   r.render();
   const scrolled = { e10: cellLit(1,0), r0c0: cellLit(0,0), r0c2: cellLit(2,0), r1: cellLit(1,1), r2: cellLit(2,2) };
 
   // Frame 4 — Partial + scroll DOWN 1 over [0,2], no spans. Exercises the NEGATIVE scroll_count
   // wire path (JS `-1 >>> 0` = 0xFFFFFFFF → Rust `as i32 as i16` = -1). The 'E' at (1,0) shifts
   // back down to (1,1); the top row is exposed blank.
-  r.apply_damage(hdr(1, [0, 2, -1]), new Uint32Array([]), emptyU32, emptyU32, emptyU32, zeros16, zeros16, []);
+  r.apply_damage(g, hdr(1, [0, 2, -1]), new Uint32Array([]), emptyU32, emptyU32, emptyU32, zeros16, zeros16, []);
   r.render();
   const scrolledDown = { e11: cellLit(1,1), r0: cellLit(1,0), r2: cellLit(2,2) };
 
@@ -65,7 +66,7 @@
   // shape justerm-core emits (base in codepoints, only the width-0 mark in side_table). The grid
   // assembles base + mark, NFC-keys it to U+00E9 (e-acute), which has MORE ink than the plain e
   // at cell 1 -- proof the whole grapheme (not the base alone, nor the bare mark) rendered.
-  r.apply_damage(hdr(0), new Uint32Array([0, 0, 1, 0, 2]), cps([0x65, 0x65]), zerosN(2), zerosN(2), flagsN(2),
+  r.apply_damage(g, hdr(0), new Uint32Array([0, 0, 1, 0, 2]), cps([0x65, 0x65]), zerosN(2), zerosN(2), flagsN(2),
     new Uint32Array([1, 0]), ["́"]); // combining acute only (marks); base is in codepoints
   r.render();
   const cluster = { accented: cellLit(0, 0), plain: cellLit(1, 0) };
@@ -75,12 +76,12 @@
   // `buffer_sub_data` ranges with a gap and non-zero byte offsets — while the untouched cells
   // (row 0's cluster from frame 5, and the gap) must persist: proof the partial upload writes
   // ONLY the changed instances to the right slots, not the whole buffer.
-  r.apply_damage(hdr(1), new Uint32Array([2, 0, 0, 0, 1, 2, 3, 3, 1, 1]), cps([0x58, 0x59]), zerosN(2), zerosN(2), flagsN(2), extraN(2), []);
+  r.apply_damage(g, hdr(1), new Uint32Array([2, 0, 0, 0, 1, 2, 3, 3, 1, 1]), cps([0x58, 0x59]), zerosN(2), zerosN(2), flagsN(2), extraN(2), []);
   r.render();
   const disjoint = { x20: cellLit(0, 2), y23: cellLit(3, 2), gap21: cellLit(1, 2), gap22: cellLit(2, 2), row0: [cellLit(0, 0), cellLit(1, 0)] };
 
   window.__proof = {
-    dpr: window.devicePixelRatio, deviceCell: [CW, CH], gridFit: gridFit(gl, r, COLS, ROWS),
+    dpr: window.devicePixelRatio, deviceCell: [CW, CH], gridFit: gridFit(gl, r, g, COLS, ROWS),
     full, partial, scrolled, scrolledDown, cluster, disjoint,
     checks: {
       fullRow0Renders: full.r0.every((n) => n > 0),

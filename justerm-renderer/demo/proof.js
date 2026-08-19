@@ -8,8 +8,32 @@
 // Never re-derive it. Neither `cssCellWidth() * dpr` nor `drawingBufferWidth / COLS` recovers it,
 // and both were in use here before #328, misreading the buffer whenever `devicePixelRatio !== 1`.
 
-/** The renderer's exact device-pixel cell, `[width, height]`. */
-export const deviceCell = (r) => [r.cell_width(), r.cell_height()];
+/** A grid's exact device-pixel cell, `[width, height]`. Per grid since #773: the cell belongs to
+ *  the font configuration that grid selects into, and two grids need not share one. */
+export const deviceCell = (r, g) => [r.cell_width(g), r.cell_height(g)];
+
+/**
+ * Mount the arrangement almost every page here assumes — one terminal filling the whole surface —
+ * and re-fit it whenever the cell moves.
+ *
+ * This is what `resize(cols, rows)` was until #773, assembled by the consumer instead of by the
+ * renderer. It stopped being one call because it was always two tiers (ADR-0021 D3): the grid's
+ * dimensions, and the drawing buffer. A surface drawing N grids in M font configurations has no
+ * cell the buffer can be a multiple of, so the buffer became the consumer's to size — and a
+ * single-grid consumer keeps #331's exactness by asking for `cols * cellWidth` device pixels, both
+ * of them integers this crate handed it.
+ *
+ * Call it again after anything that moves the cell (a font size, a family, either spacing option),
+ * exactly as the pages used to re-`resize`.
+ */
+export function fitGrid(r, g, cols, rows) {
+  r.resizeGrid(g, cols, rows);
+  const [cw, ch] = deviceCell(r, g);
+  const [w, h] = [cols * cw, rows * ch];
+  r.resizeSurface(w, h);
+  r.setViewport(g, 0, 0, w, h);
+  return [w, h];
+}
 
 /**
  * The device-pixel `readPixels` rect covering `cols` cells starting at grid cell `(col, row)`.
@@ -21,8 +45,8 @@ export const deviceCell = (r) => [r.cell_width(), r.cell_height()];
  * Since #331 the buffer is `cols * cell` device px exactly, so a rect for a cell inside the grid the
  * renderer was sized to always lies inside the buffer.
  */
-export function cellRect(gl, r, col, row = 0, cols = 1) {
-  const [cw, ch] = deviceCell(r);
+export function cellRect(gl, r, g, col, row = 0, cols = 1) {
+  const [cw, ch] = deviceCell(r, g);
   return { x: col * cw, y: gl.drawingBufferHeight - (row + 1) * ch, w: cols * cw, h: ch };
 }
 
@@ -34,8 +58,8 @@ export function readRect(gl, { x, y, w, h }) {
 }
 
 /** Read one grid cell (or `cols` adjacent cells) back as RGBA bytes. */
-export const readCells = (gl, r, col, row = 0, cols = 1) =>
-  readRect(gl, cellRect(gl, r, col, row, cols));
+export const readCells = (gl, r, g, col, row = 0, cols = 1) =>
+  readRect(gl, cellRect(gl, r, g, col, row, cols));
 
 /** A pixel is "lit" when its red channel clears the foreground threshold. */
 export const LIT_THRESHOLD = 150;
@@ -110,10 +134,11 @@ export function hasColourEmojiFont() {
 /**
  * Whether a `cols × rows` grid of device cells fits inside the drawing buffer.
  *
- * Since #331 `resize(cols, rows)` sizes the buffer to `cols * cell_width()` exactly, `grid` equals
- * `buffer` for any grid the renderer was sized to. On its own that comparison became an identity —
- * both sides are the same product (#353): it is kept as a tripwire against re-deriving the buffer
- * from a CSS box, not as a live check.
+ * While the renderer sized the buffer itself, `grid` equalled `buffer` for any grid it had been
+ * sized to, and the comparison was an identity — both sides the same product (#353), kept as a
+ * tripwire rather than a live check. Since #773 the buffer is the *consumer's* to size, and
+ * [`fitGrid`] is what keeps the identity on these pages; the tripwire now catches a page that sized
+ * its surface from something other than its own grid's cells.
  *
  * `attr` is what makes this falsifiable again (#339). `canvas.width` is what we *asked* the browser
  * for; `drawingBufferWidth` is what it *gave* us, and WebGL is free to give less. Measured in
@@ -121,9 +146,14 @@ export function hasColourEmojiFont() {
  * MAX_TEXTURE_SIZE. So `clamped` is the only observable that separates "we sized the grid" from
  * "the browser overruled us", and the caller should pass `r.cols()`/`r.rows()` — the grid actually
  * adopted — rather than the numbers it hoped for.
+ *
+ * Since #773 nothing clamps `cols`/`rows` to anything: they report what `resizeGrid` was told, and
+ * it is the SURFACE that adopts what the browser actually granted. So a caller proving a clamp
+ * reads `clamped` against the surface, and `r.cols(g)` is no longer where a browser's refusal shows
+ * up.
  */
-export function gridFit(gl, r, cols, rows) {
-  const [cw, ch] = deviceCell(r);
+export function gridFit(gl, r, g, cols, rows) {
+  const [cw, ch] = deviceCell(r, g);
   const canvas = gl.canvas;
   return {
     grid: [cols * cw, rows * ch],

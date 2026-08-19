@@ -39,7 +39,7 @@
 <canvas id="c" width="64" height="32"></canvas>
 <script type="module">
   import init, { JustermRenderer } from "../pkg/justerm_renderer.js";
-  import { readRect } from "./proof.js";
+  import { readRect, fitGrid } from "./proof.js";
   await init();
 
   const UNDERLINE = 1 << 3;
@@ -54,12 +54,13 @@
   const ROW = { SGR58: 0, FOLLOW_FG: 1, BARE: 2, TILES: 3, STRIKE: 4 };
 
   const palette = new Uint32Array(256);
-  const r = new JustermRenderer("#c", palette, 0xffffff, 0x000000);   // fg WHITE, bg BLACK
+  const r = new JustermRenderer("#c");
+  const g = r.addGrid(palette, 0xffffff, 0x000000);   // fg WHITE, bg BLACK
   const gl = document.querySelector("#c").getContext("webgl2");
 
   // Big enough that a descender is several device px deep at every dpr the runner sweeps.
-  r.setFontSize(44);
-  r.resize(COLS, ROWS);
+  r.setFontSize(g, 44);
+  fitGrid(r, g, COLS, ROWS);
   const canvas = document.querySelector("#c");
   canvas.style.width = r.cssWidth() + "px";
   canvas.style.height = r.cssHeight() + "px";
@@ -77,13 +78,13 @@
       if (row !== ROW.FOLLOW_FG) uc[i] = RGB(0xff0000);   // every row but one declares SGR 58 red
     }
   }
-  r.apply_frame(COLS, ROWS, new Uint32Array(N), new Uint32Array(N), cps, flags, true, uc);
+  r.apply_frame(g, COLS, ROWS, new Uint32Array(N), new Uint32Array(N), cps, flags, true, uc);
   r.render();
 
   const w = gl.drawingBufferWidth, h = gl.drawingBufferHeight;
   const img = { ...readRect(gl, { x: 0, y: 0, w, h }), w, h };
   const px = (x, y) => { const i = ((h - 1 - y) * w + x) * 4; return [img.buf[i], img.buf[i + 1], img.buf[i + 2]]; };
-  const cw = r.cell_width(), ch = r.cell_height();
+  const cw = r.cell_width(g), ch = r.cell_height(g);
   const isRed = ([rr, gg, bb]) => rr >= 150 && gg <= 60 && bb <= 60;
 
   // The band's scanlines, read off the glyph-less SPACE cell of row 0.
