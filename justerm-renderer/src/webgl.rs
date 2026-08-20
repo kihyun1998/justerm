@@ -34,7 +34,7 @@ use crate::cursor::{
 use crate::decoration::parse_decorations;
 use crate::dpr::{css_px, dpr_changed};
 use crate::emoji::is_emoji_text;
-use crate::frame::{Frame, INSTANCE_FLOATS, pack_instances};
+use crate::frame::{BACKDROP, BG_RGB, Frame, GLYPH_FIELD, INSTANCE_FLOATS, pack_instances};
 use crate::frame_grid::{DamageFrame, FrameGrid, cell_count};
 use crate::glyph_cache::{
     FontStyle, GLYPHS_PER_LAYER, GlyphCache, WIDE_BASE, WIDE_CAPACITY, slot_texcoord,
@@ -127,7 +127,10 @@ void main() {
 const FRAG_SRC: &str = r#"#version 300 es
 precision mediump float;
 uniform mediump sampler2DArray u_atlas;
-uniform vec2 u_padding_frac; // guard band as a fraction of the padded atlas cell (#288)
+// Where a CELL sits inside its padded atlas slot: (origin.xy, span.xy), all 0..1 (#288, #791).
+// Not a symmetric inset any more — with a bleed band the slot's two vertical edges differ, and a
+// cell that insets symmetrically stretches itself over the band instead of leaving it alone.
+uniform vec4 u_cell_uv;
 uniform float u_bg_alpha;    // background cell opacity: 0 = transparent, 1 = opaque (#298)
 // The same uniforms the vertex stage declares — one per program, so the PRECISION must match too.
 // This stage is `mediump float`, the vertex stage defaults to `highp`; an unqualified `vec2` here
@@ -220,7 +223,7 @@ void main() {
     // Inset the cell-local texcoord into the padded atlas slot's content region, so the transparent
     // guard band is never sampled (beamterm cell.frag) — stops band bleed while the content maps
     // edge-to-edge of the CELL. Block elements are baked at cell size (#359), so they tile.
-    vec2 inner = v_tex * (1.0 - 2.0 * u_padding_frac) + u_padding_frac;
+    vec2 inner = u_cell_uv.xy + v_tex * u_cell_uv.zw;
     // Nudge off the exact texel edge so NEAREST can't round to a neighbour (beamterm cell.frag);
     // belt-and-suspenders for a fractional cell↔texel mapping (DPR != 1, #265).
     vec3 tc = vec3(inner.x + 0.001, (float(band) + inner.y + 0.001) / 32.0, float(layer));
@@ -532,7 +535,7 @@ struct Pipeline {
     u_char_size: glow::UniformLocation,
     u_char_offset: glow::UniformLocation,
     u_line_thickness: glow::UniformLocation,
-    u_padding_frac: glow::UniformLocation,
+    u_cell_uv: glow::UniformLocation,
     u_bg_alpha: glow::UniformLocation,
     u_cursor: glow::UniformLocation,
     u_cursor_color: glow::UniformLocation,
@@ -604,7 +607,7 @@ struct GlobalTier {
     /// per program as it was until #772 — because the padded cell is a **per-config** dimension:
     /// two grids in different fonts sample atlases with different guard fractions, so this became
     /// a per-draw uniform the moment a second configuration was reachable.
-    u_padding_frac: glow::UniformLocation,
+    u_cell_uv: glow::UniformLocation,
     u_bg_alpha: glow::UniformLocation,
     u_cursor: glow::UniformLocation,
     u_cursor_color: glow::UniformLocation,
@@ -1747,7 +1750,7 @@ impl JustermRenderer {
             u_char_size,
             u_char_offset,
             u_line_thickness,
-            u_padding_frac,
+            u_cell_uv,
             u_bg_alpha,
             u_cursor,
             u_cursor_color,
@@ -1767,7 +1770,7 @@ impl JustermRenderer {
                 u_char_size,
                 u_char_offset,
                 u_line_thickness,
-                u_padding_frac,
+                u_cell_uv,
                 u_bg_alpha,
                 u_cursor,
                 u_cursor_color,
@@ -1816,7 +1819,7 @@ impl JustermRenderer {
             let u_char_size = uniform(gl, program, "u_char_size")?;
             let u_char_offset = uniform(gl, program, "u_char_offset")?;
             let u_line_thickness = uniform(gl, program, "u_line_thickness")?;
-            let u_padding_frac = uniform(gl, program, "u_padding_frac")?;
+            let u_cell_uv = uniform(gl, program, "u_cell_uv")?;
             let u_bg_alpha = uniform(gl, program, "u_bg_alpha")?;
             let u_cursor = uniform(gl, program, "u_cursor")?;
             let u_cursor_color = uniform(gl, program, "u_cursor_color")?;
@@ -1835,7 +1838,7 @@ impl JustermRenderer {
                 u_char_size,
                 u_char_offset,
                 u_line_thickness,
-                u_padding_frac,
+                u_cell_uv,
                 u_bg_alpha,
                 u_cursor,
                 u_cursor_color,
@@ -1870,14 +1873,18 @@ impl JustermRenderer {
             // → locations 1..7.
             let instance_vbo = gl.create_buffer().map_err(js_err)?;
             gl.bind_buffer(glow::ARRAY_BUFFER, Some(instance_vbo));
+            // Byte offsets are derived from `frame`'s named float offsets, not written out: this
+            // table and the packer are two statements of one layout, and a literal here is how they
+            // come apart when a field is appended (#791).
+            const F: i32 = 4; // bytes per float
             for (loc, size, offset) in [
                 (1u32, 2i32, 0i32),
-                (2, 3, 8),
-                (3, 3, 20),
-                (4, 1, 32),
-                (5, 1, 36),
-                (6, 1, 40),
-                (7, 1, 44),
+                (2, 3, BG_RGB as i32 * F),
+                (3, 3, 5 * F),
+                (4, 1, GLYPH_FIELD as i32 * F),
+                (5, 1, 9 * F),
+                (6, 1, 10 * F),
+                (7, 1, BACKDROP as i32 * F),
             ] {
                 gl.vertex_attrib_pointer_f32(
                     loc,
@@ -1992,17 +1999,18 @@ impl JustermRenderer {
         // rather than predicting it: a cell the atlas texture cannot hold leaves that texture
         // storage-less, and a storage-less sampler answers alpha 1 for every glyph (#339/#359).
         let char_size = rasterizer.glyph_box();
+        // The band this face needs, measured before the cell is sized because it is spent out of the
+        // same per-layer height (#791).
+        let bleed_y = rasterizer.bleed_y();
         let cell_size = fit_cell_to_atlas(
             device_cell(char_size, key.letter_spacing(), key.line_height(), dpr),
             PADDING,
-            // #791: no bleed baked yet — the band is reserved by a later slice, and passing 0 here
-            // keeps this configuration's ceiling exactly where #359 measured it.
-            0,
+            bleed_y,
             GLYPHS_PER_LAYER as u32,
             max_texture_size,
         );
         let char_offset = glyph_offset(cell_size, char_size);
-        rasterizer.set_cell(cell_size, char_offset)?;
+        rasterizer.set_cell(cell_size, char_offset, bleed_y)?;
         let atlas_cell = rasterizer.padded_size();
         let atlas = Self::build_atlas(gl, atlas_cell.0, atlas_cell.1)?;
         let baked = match resident {
@@ -2522,7 +2530,7 @@ impl JustermRenderer {
         self.global.u_char_size = pipeline.u_char_size;
         self.global.u_line_thickness = pipeline.u_line_thickness;
         self.global.u_char_offset = pipeline.u_char_offset;
-        self.global.u_padding_frac = pipeline.u_padding_frac;
+        self.global.u_cell_uv = pipeline.u_cell_uv;
         self.global.u_bg_alpha = pipeline.u_bg_alpha;
         self.global.u_cursor = pipeline.u_cursor;
         self.global.u_cursor_color = pipeline.u_cursor_color;
@@ -3238,7 +3246,7 @@ impl JustermRenderer {
         let grid = self.grid_at(at);
         // The configuration THIS grid selects into (#772). Two grids in two fonts draw through two
         // atlases with two cell geometries in the same frame, which is why every one of these is a
-        // per-draw uniform rather than a per-program one — `u_padding_frac` included, since the
+        // per-draw uniform rather than a per-program one — `u_cell_uv` included, since the
         // guard band is a fixed pixel count and its *fraction* differs with the padded cell.
         let config = self.config_at(at);
         let (vx, vy, vw, vh) = viewport.gl_rect(self.global.size.1);
@@ -3297,11 +3305,16 @@ impl JustermRenderer {
             // How much of each padded atlas cell is guard band, so the shader insets the texcoord
             // to the content region (see FRAG_SRC). Set once per program until #772; per draw now,
             // because the padded cell belongs to the configuration rather than to the context.
-            self.global.gl.uniform_2_f32(
-                Some(&self.global.u_padding_frac),
-                PADDING as f32 / config.atlas_cell.0 as f32,
-                PADDING as f32 / config.atlas_cell.1 as f32,
+            let ((ox, oy), (sx, sy)) = crate::metrics::cell_uv(
+                crate::metrics::SlotGeometry {
+                    padded: config.atlas_cell,
+                    draw_origin: (0, 0), // unused by `cell_uv`
+                },
+                config.cell_size,
             );
+            self.global
+                .gl
+                .uniform_4_f32(Some(&self.global.u_cell_uv), ox, oy, sx, sy);
             self.global.gl.uniform_1_f32(
                 Some(&self.global.u_line_thickness),
                 crate::metrics::line_thickness(grid.font_size * self.global.dpr) as f32,

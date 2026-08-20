@@ -130,6 +130,57 @@ pub fn glyph_offset(cell: (u32, u32), char_px: (u32, u32)) -> (u32, u32) {
     (dx / 2, dy.div_ceil(2))
 }
 
+/// The atlas slot a bake fills, and where inside it the glyph's box starts (#791).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SlotGeometry {
+    /// The padded slot: the cell, plus the bleed band above and below, plus the guard band all round.
+    pub padded: (u32, u32),
+    /// Top-left of the glyph's box inside that slot, device px.
+    pub draw_origin: (u32, u32),
+}
+
+/// Lay out one atlas slot: how big it is, and where the glyph goes inside it.
+///
+/// Three offsets stack on the vertical axis and they belong to three different things, which is why
+/// this is one function rather than three additions at the call site: the **guard band** keeps
+/// neighbouring slots from bleeding into each other under sampling (#288), the **bleed band** is the
+/// room `I_neighbour` needs for ink that leaves the cell (ADR-0019 R1.2), and `char_offset` is where
+/// the spacing policy put the glyph *within* the cell (#338). Only the last is horizontal too — the
+/// bleed is vertical for now, so `padded.0` grows by the guard band alone.
+///
+/// `bleed_y = 0` reproduces the pre-#791 bake exactly, which is what lets the band be adopted one
+/// font configuration at a time.
+pub fn slot_geometry(
+    cell: (u32, u32),
+    char_offset: (u32, u32),
+    bleed_y: u32,
+    padding: u32,
+) -> SlotGeometry {
+    SlotGeometry {
+        padded: (cell.0 + 2 * padding, cell.1 + 2 * bleed_y + 2 * padding),
+        draw_origin: (padding + char_offset.0, padding + bleed_y + char_offset.1),
+    }
+}
+
+/// Where a cell's own texcoords land inside its padded slot: `(origin, span)`, both `0..1` (#791).
+///
+/// This replaces the single guard-band fraction the shader used to inset by. That form assumed the
+/// slot's content *was* the cell, so it could subtract the same amount from both edges; once the
+/// slot carries a bleed band the two edges are no longer symmetric on the vertical axis, and a cell
+/// that keeps insetting symmetrically stretches the glyph over the band instead of leaving it to the
+/// neighbour it belongs to.
+///
+/// With `bleed_y = 0` this reduces exactly to the old inset, which is what keeps every pixel proof
+/// written against it meaningful.
+pub fn cell_uv(slot: SlotGeometry, cell: (u32, u32)) -> ((f32, f32), (f32, f32)) {
+    let (pw, ph) = (slot.padded.0 as f32, slot.padded.1 as f32);
+    // The cell's top-left inside the slot is the guard band across, and the guard band plus the
+    // bleed down — which is exactly where the glyph box would start with no spacing offset.
+    let x0 = (slot.padded.0 - cell.0) as f32 / 2.0;
+    let y0 = (slot.padded.1 - cell.1) as f32 / 2.0;
+    ((x0 / pw, y0 / ph), (cell.0 as f32 / pw, cell.1 as f32 / ph))
+}
+
 /// Band reserved beyond whatever the face's own metrics ask for, device px (#791).
 ///
 /// Derived from nothing — it is empirical, and recorded as such. Glyphs overshoot the *declared*
@@ -203,6 +254,59 @@ mod tests {
 
     /// The measured ink box of `█` at `FONT_SIZE * 1` in Chromium (#328): 10 x 16 device px.
     const CHAR: (u32, u32) = (10, 16);
+
+    #[test]
+    fn the_cell_maps_to_its_own_band_of_the_slot_not_to_the_whole_slot() {
+        // The shader's half of the same contract. A taller slot must NOT stretch into the cell —
+        // the cell's texcoords have to land on the middle band and leave the bleed to whoever owns
+        // the ink in it. Worked by hand: a 12x24 cell with bleed 4 and guard 1 is a 14x34 slot, so
+        // the cell occupies y 5..=28 of 34 and x 1..=12 of 14.
+        let (o, s) = cell_uv(slot_geometry((12, 24), (0, 0), 4, 1), (12, 24));
+        assert_eq!(o, (1.0 / 14.0, 5.0 / 34.0));
+        assert_eq!(s, (12.0 / 14.0, 24.0 / 34.0));
+
+        // Bleed 0 reproduces the guard-band inset the shader has always applied, which is the
+        // assertion that keeps every existing pixel proof meaningful across this change.
+        let (o0, s0) = cell_uv(slot_geometry((12, 24), (0, 0), 0, 1), (12, 24));
+        assert_eq!(o0, (1.0 / 14.0, 1.0 / 26.0));
+        assert_eq!(s0, (12.0 / 14.0, 24.0 / 26.0));
+    }
+
+    #[test]
+    fn the_bake_reserves_the_band_around_the_cell_and_pushes_the_glyph_past_it() {
+        // Worked from the slot layout by hand. A padded slot is the cell, plus the bleed band on the
+        // top and bottom edges, plus the guard band on all four; the glyph's box then starts past
+        // the guard band, past the bleed, and past wherever the spacing policy put it in the cell.
+        let cell = (12, 24);
+
+        let g = slot_geometry(cell, (0, 0), 4, 1);
+        assert_eq!(
+            g.padded,
+            (14, 34),
+            "12+2 wide, 24 + 2*4 bleed + 2*1 guard tall"
+        );
+        assert_eq!(
+            g.draw_origin,
+            (1, 5),
+            "1 guard across; 1 guard + 4 bleed down"
+        );
+
+        // `letterSpacing` / `lineHeight` move the glyph inside the cell (#338); the band is outside
+        // it, so the two offsets simply add.
+        let spaced = slot_geometry(cell, (2, 3), 4, 1);
+        assert_eq!(
+            spaced.padded,
+            (14, 34),
+            "the spacing moved the glyph, not the slot"
+        );
+        assert_eq!(spaced.draw_origin, (3, 8));
+
+        // Bleed 0 must reproduce today's bake exactly — this is the assertion that lets the band be
+        // switched on per configuration without every other configuration moving.
+        let none = slot_geometry(cell, (2, 3), 0, 1);
+        assert_eq!(none.padded, (14, 26));
+        assert_eq!(none.draw_origin, (3, 4));
+    }
 
     #[test]
     fn the_bleed_is_derived_per_font_from_what_that_face_overshoots_its_own_cell() {
