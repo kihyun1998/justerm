@@ -1995,6 +1995,9 @@ impl JustermRenderer {
         let cell_size = fit_cell_to_atlas(
             device_cell(char_size, key.letter_spacing(), key.line_height(), dpr),
             PADDING,
+            // #791: no bleed baked yet — the band is reserved by a later slice, and passing 0 here
+            // keeps this configuration's ceiling exactly where #359 measured it.
+            0,
             GLYPHS_PER_LAYER as u32,
             max_texture_size,
         );
