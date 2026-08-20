@@ -130,6 +130,38 @@ pub fn glyph_offset(cell: (u32, u32), char_px: (u32, u32)) -> (u32, u32) {
     (dx / 2, dy.div_ceil(2))
 }
 
+/// Band reserved beyond whatever the face's own metrics ask for, device px (#791).
+///
+/// Derived from nothing — it is empirical, and recorded as such. Glyphs overshoot the *declared*
+/// line box, so a band sized to the line box alone is not enough: measured over ~1,570 codepoints at
+/// em 24 device px, the line-box budget still clips **168** glyphs on Cascadia Mono and **263** on
+/// Lucida Console. xterm.js reserves the same 4 device px in its bake canvas
+/// (`TextureAtlas.ts:485`, `TMP_CANVAS_GLYPH_PADDING * 4` around a cell-height content box, SHA
+/// `699f553`) and reaches ~0 clipped on the same corpus. Two independent arrivals at the same
+/// number is why it is 4 rather than a rounder guess — not a derivation, and not to be read as one.
+pub const BLEED_HEADROOM_PX: u32 = 4;
+
+/// How deep a band each slot reserves above and below the cell, for this font configuration (#791).
+///
+/// The cell is the ink box of `█` (ADR-0022) and the face's own glyphs are not bounded by it, so the
+/// band has to cover the gap between the two — **per face**, because that gap is a property of how
+/// the designer drew one glyph and varies by several device px between faces at the same size. One
+/// number serves both edges, so the larger gap wins; [`BLEED_HEADROOM_PX`] is added on top for what
+/// overshoots even the declared line box.
+///
+/// All four arguments are device px against the baseline: the cell's own ascent and descent, and the
+/// face's, which a browser reports as `fontBoundingBox{Ascent,Descent}`.
+pub fn vertical_bleed(
+    cell_ascent: u32,
+    cell_descent: u32,
+    font_ascent: u32,
+    font_descent: u32,
+) -> u32 {
+    let above = font_ascent.saturating_sub(cell_ascent);
+    let below = font_descent.saturating_sub(cell_descent);
+    above.max(below) + BLEED_HEADROOM_PX
+}
+
 /// Which adjacent cell an `I_neighbour` contribution came from (ADR-0019 R1.2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Adjacent {
@@ -171,6 +203,45 @@ mod tests {
 
     /// The measured ink box of `█` at `FONT_SIZE * 1` in Chromium (#328): 10 x 16 device px.
     const CHAR: (u32, u32) = (10, 16);
+
+    #[test]
+    fn the_bleed_is_derived_per_font_from_what_that_face_overshoots_its_own_cell() {
+        // Measured 2026-08-20 in Chromium at em 24 device px (#791): the cell is the ink box of
+        // `█`, the line box is `fontBoundingBox{Ascent,Descent}`, and the gap between them differs
+        // per face. A constant band would over-reserve on the tight faces and under-reserve on the
+        // loose one — which is the whole argument for deriving it.
+        //
+        //                        cell asc/desc   line box asc/desc   gap   + headroom
+        // Consolas                  22 / 5           22 / 6           1        5
+        // Cascadia Mono             22 / 5           22 / 6           1        5
+        // Courier New               20 / 6           20 / 7           1        5
+        // Lucida Console            19 / 4           19 / 5           1        5
+        // DejaVu Sans Mono          19 / 5           22 / 6           3        7
+        assert_eq!(vertical_bleed(22, 5, 22, 6), 5, "Consolas");
+        assert_eq!(vertical_bleed(20, 6, 20, 7), 5, "Courier New");
+        assert_eq!(vertical_bleed(19, 4, 19, 5), 5, "Lucida Console");
+        assert_eq!(
+            vertical_bleed(19, 5, 22, 6),
+            7,
+            "DejaVu Sans Mono — 3 px of ascent to recover"
+        );
+
+        // The band is one number used on BOTH sides, so the larger of the two gaps wins.
+        assert_eq!(
+            vertical_bleed(19, 5, 22, 12),
+            11,
+            "a deep descender drives it instead"
+        );
+
+        // A face whose ink box already reaches its line box still gets the headroom, because glyphs
+        // overshoot the *declared* line box too: measured, the line-box budget alone still clips 168
+        // glyphs on Cascadia Mono and 263 on Lucida Console, and only the headroom takes those to ~0.
+        assert_eq!(
+            vertical_bleed(22, 6, 22, 6),
+            4,
+            "no gap — the headroom is the whole band"
+        );
+    }
 
     #[test]
     fn a_vertical_bleed_eats_the_layer_height_budget_and_leaves_the_width_alone() {
