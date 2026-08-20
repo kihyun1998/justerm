@@ -34,7 +34,10 @@ use crate::cursor::{
 use crate::decoration::parse_decorations;
 use crate::dpr::{css_px, dpr_changed};
 use crate::emoji::is_emoji_text;
-use crate::frame::{BACKDROP, BG_RGB, Frame, GLYPH_FIELD, INSTANCE_FLOATS, pack_instances};
+use crate::frame::{
+    BACKDROP, BG_RGB, Frame, GLYPH_FIELD, INSTANCE_FLOATS, NEIGHBOUR_DN, NEIGHBOUR_DN_FG,
+    NEIGHBOUR_UP, NEIGHBOUR_UP_FG, pack_instances,
+};
 use crate::frame_grid::{DamageFrame, FrameGrid, cell_count};
 use crate::glyph_cache::{
     FontStyle, GLYPHS_PER_LAYER, GlyphCache, WIDE_BASE, WIDE_CAPACITY, slot_texcoord,
@@ -92,6 +95,13 @@ layout(location = 6) in float a_strike_fg;
 // instance: 1.0 iff this cell's bg is the pristine DEFAULT backdrop — the only surface #298 makes
 // translucent (#455). Provenance, packed by the Rust side, not re-inferred from the resolved colour.
 layout(location = 7) in float a_bg_default;
+// instance: `I_neighbour` (ADR-0019 R1.2, #791) — the glyph field of the cell above and below, and
+// the ink each of them draws in. BLANK_SLOT where that neighbour's ink is withdrawn, which the
+// packer decides because only it holds both cells' resolved backgrounds.
+layout(location = 8) in float a_glyph_up;
+layout(location = 9) in float a_glyph_dn;
+layout(location = 10) in float a_up_fg;
+layout(location = 11) in float a_dn_fg;
 uniform mat4 u_projection;
 uniform vec2 u_cell_size;   // the GRID cell in device px
 out vec3 v_bg;
@@ -102,6 +112,10 @@ flat out float v_bg_default;
 flat out uint v_glyph;
 flat out vec2 v_cell;
 out vec2 v_tex;
+flat out uint v_glyph_up;
+flat out uint v_glyph_dn;
+flat out vec3 v_up_fg;
+flat out vec3 v_dn_fg;
 void main() {
     vec2 origin = a_cell * u_cell_size;
     vec2 pos = floor(origin + a_pos * u_cell_size + 0.5); // pixel-snapped
@@ -121,6 +135,12 @@ void main() {
     // text because the BITMAP has wider margins, and a wide glyph's halves touch because it was
     // baked centred over its two-cell advance.
     v_tex = a_pos;
+    v_glyph_up = uint(a_glyph_up);
+    v_glyph_dn = uint(a_glyph_dn);
+    uint uf = uint(a_up_fg);
+    v_up_fg = vec3(float((uf >> 16u) & 255u), float((uf >> 8u) & 255u), float(uf & 255u)) / 255.0;
+    uint df = uint(a_dn_fg);
+    v_dn_fg = vec3(float((df >> 16u) & 255u), float((df >> 8u) & 255u), float(df & 255u)) / 255.0;
 }
 "#;
 
@@ -160,6 +180,13 @@ flat in float v_bg_default; // 1.0 = the default backdrop (#455/#298)
 flat in uint v_glyph;
 flat in vec2 v_cell;
 in vec2 v_tex;
+flat in uint v_glyph_up;
+flat in uint v_glyph_dn;
+flat in vec3 v_up_fg;
+flat in vec3 v_dn_fg;
+// How deep a band of THIS cell's top and bottom edge may receive a neighbour's ink, device px
+// (#791). Derived per font configuration by `metrics::vertical_bleed`; 0 disables `I_neighbour`.
+uniform float u_bleed_px;
 out vec4 FragColor;
 // A horizontal line centred at `c` (cell-local y, 0..1) with soft edges (beamterm cell.frag).
 // A horizontal line at glyph-box-normalised centre `c`, half-thickness `half` (also normalised),
@@ -229,6 +256,37 @@ void main() {
     vec3 tc = vec3(inner.x + 0.001, (float(band) + inner.y + 0.001) / 32.0, float(layer));
     vec4 texel = texture(u_atlas, tc);
     float coverage = texel.a;
+
+    // ── I_neighbour (ADR-0019 R1.2 / rule 6, #791) ────────────────────────────────────────────
+    // Reader-side: this fragment reads the ADJACENT cells' slots and folds their ink into its own
+    // chain. The quad is still exactly this cell, so nothing overlaps, the composite stays one
+    // evaluation per pixel, and no GL blending is involved.
+    //
+    // A slot holds `bleed | cell | bleed` rows, so the band that spilled toward me sits exactly one
+    // CELL away from where my own row reads — `± u_cell_uv.w` — and no arithmetic about padding or
+    // band depth is needed here. `metrics::ink_rows` states the same mapping in device-px rows and
+    // is where it is tested; this is its texcoord form.
+    //
+    // Sampled unconditionally and masked rather than branched: an implicit-LOD fetch under
+    // non-uniform control flow is undefined in GLSL ES 3.00.
+    float y_px = v_tex.y * u_cell_size.y;
+    float armed = step(0.5, u_bleed_px);
+    float from_above = step(y_px, u_bleed_px) * armed;
+    float from_below = step(u_cell_size.y - u_bleed_px, y_px) * armed;
+
+    float cov_up = textureLod(u_atlas, vec3(inner.x + 0.001,
+        (float(v_glyph_up & 31u) + inner.y + u_cell_uv.w + 0.001) / 32.0,
+        float((v_glyph_up & 0x1FFFu) >> 5u)), 0.0).a * from_above;
+    float cov_dn = textureLod(u_atlas, vec3(inner.x + 0.001,
+        (float(v_glyph_dn & 31u) + inner.y - u_cell_uv.w + 0.001) / 32.0,
+        float((v_glyph_dn & 0x1FFFu) >> 5u)), 0.0).a * from_below;
+
+    // Each carries its OWNER's ink, never this cell's. A background-class neighbour cannot arise:
+    // `builtin` bakes those to the cell and `pad` leaves the band transparent, so nothing
+    // background-shaped ever spills — which is why one position in rule 6 is enough.
+    vec3 foreign_ink = cov_up >= cov_dn ? v_up_fg : v_dn_fg;
+    float foreign = max(cov_up, cov_dn);
+    // ── end I_neighbour ───────────────────────────────────────────────────────────────────────
 
     // A BLOCK cursor recolours the cell before anything composites over it. The instance colours
     // arrive already inverse-swapped and the glyph already concealed, so the cursor lands last —
@@ -331,6 +389,7 @@ void main() {
     // exactly where `a` is smallest.
     float bg_class = float((v_glyph >> 16u) & 1u);
     vec3 ink = mix(vec3(0.0), fg, coverage * bg_class);        // background-class ink joins the bg
+    ink = mix(ink, foreign_ink, foreign);                      // I_neighbour, over this cell's tile
     ink = mix(ink, base_ul, ul_band);                          // the band, over that background
     ink = mix(ink, fg, coverage * (1.0 - bg_class));           // text-class ink, over the band
     ink = mix(ink, base_st, st_band);
@@ -341,7 +400,7 @@ void main() {
     // total weight and disagreed with the colour chain wherever two sources overlapped (a descender
     // crossing its underline is the reachable case, #712's own geometry). The two agreed only where
     // at most one source was partial, which is why it never showed while alpha was the only consumer.
-    float w_bg = (1.0 - coverage * bg_class) * (1.0 - ul_band)
+    float w_bg = (1.0 - coverage * bg_class) * (1.0 - foreign) * (1.0 - ul_band)
                * (1.0 - coverage * (1.0 - bg_class)) * (1.0 - st_band) * (1.0 - cur);
 
     // Only the DEFAULT terminal background is translucent (the see-through backdrop). An explicit
@@ -537,6 +596,7 @@ struct Pipeline {
     u_line_thickness: glow::UniformLocation,
     u_cell_uv: glow::UniformLocation,
     u_bg_alpha: glow::UniformLocation,
+    u_bleed_px: glow::UniformLocation,
     u_cursor: glow::UniformLocation,
     u_cursor_color: glow::UniformLocation,
     u_cursor_text_color: glow::UniformLocation,
@@ -609,6 +669,7 @@ struct GlobalTier {
     /// a per-draw uniform the moment a second configuration was reachable.
     u_cell_uv: glow::UniformLocation,
     u_bg_alpha: glow::UniformLocation,
+    u_bleed_px: glow::UniformLocation,
     u_cursor: glow::UniformLocation,
     u_cursor_color: glow::UniformLocation,
     u_cursor_text_color: glow::UniformLocation,
@@ -1752,6 +1813,7 @@ impl JustermRenderer {
             u_line_thickness,
             u_cell_uv,
             u_bg_alpha,
+            u_bleed_px,
             u_cursor,
             u_cursor_color,
             u_cursor_text_color,
@@ -1772,6 +1834,7 @@ impl JustermRenderer {
                 u_line_thickness,
                 u_cell_uv,
                 u_bg_alpha,
+                u_bleed_px,
                 u_cursor,
                 u_cursor_color,
                 u_cursor_text_color,
@@ -1821,6 +1884,7 @@ impl JustermRenderer {
             let u_line_thickness = uniform(gl, program, "u_line_thickness")?;
             let u_cell_uv = uniform(gl, program, "u_cell_uv")?;
             let u_bg_alpha = uniform(gl, program, "u_bg_alpha")?;
+            let u_bleed_px = uniform(gl, program, "u_bleed_px")?;
             let u_cursor = uniform(gl, program, "u_cursor")?;
             let u_cursor_color = uniform(gl, program, "u_cursor_color")?;
             let u_cursor_text_color = uniform(gl, program, "u_cursor_text_color")?;
@@ -1840,6 +1904,7 @@ impl JustermRenderer {
                 u_line_thickness,
                 u_cell_uv,
                 u_bg_alpha,
+                u_bleed_px,
                 u_cursor,
                 u_cursor_color,
                 u_cursor_text_color,
@@ -1885,6 +1950,10 @@ impl JustermRenderer {
                 (5, 1, 9 * F),
                 (6, 1, 10 * F),
                 (7, 1, BACKDROP as i32 * F),
+                (8, 1, NEIGHBOUR_UP as i32 * F),
+                (9, 1, NEIGHBOUR_DN as i32 * F),
+                (10, 1, NEIGHBOUR_UP_FG as i32 * F),
+                (11, 1, NEIGHBOUR_DN_FG as i32 * F),
             ] {
                 gl.vertex_attrib_pointer_f32(
                     loc,
@@ -3322,6 +3391,11 @@ impl JustermRenderer {
             self.global
                 .gl
                 .uniform_1_f32(Some(&self.global.u_bg_alpha), grid.bg_alpha);
+            // Per configuration, not per grid: the band is a property of the face (#791).
+            self.global.gl.uniform_1_f32(
+                Some(&self.global.u_bleed_px),
+                config.rasterizer.bleed_y() as f32,
+            );
             // `u_cursor.w == 0` means NO cursor; a shape is `shape_id + 1`. Every shape — block
             // included — reaches the shader this way, so a move or a blink is a uniform, not an
             // upload (#270).

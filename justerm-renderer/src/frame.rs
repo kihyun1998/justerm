@@ -57,12 +57,14 @@ use crate::render_policy::{ColorPolicy, dim_foreground, resolve_cell};
 /// state, not an accident of the fold — so the packer, which knows every layer that touched the bg,
 /// emits the answer and the shader stops guessing. It costs its own float because #513 already spent
 /// the line inks' exact-integer budget: a colour fills all 24 f32-safe bits, leaving no spare bit to ride.
-pub const INSTANCE_FLOATS: usize = 14;
+pub const INSTANCE_FLOATS: usize = 16;
 
 /// Named float offsets inside one instance. They exist because the layout used to be addressed by
 /// arithmetic — `INSTANCE_FLOATS - 1` for the last field, a literal `12` for the stride — and both
 /// forms silently read the **wrong** float the moment a field is appended (#791). A name cannot.
 pub const BG_RGB: usize = 2;
+/// The cell's own resolved foreground, 3 floats.
+pub const FG_RGB: usize = 5;
 /// The glyph field: slot in bits 0..12, underline/strike/emoji/ink-class in the high bits.
 pub const GLYPH_FIELD: usize = 8;
 /// 1.0 iff this cell's bg is the pristine default backdrop (#455).
@@ -71,6 +73,11 @@ pub const BACKDROP: usize = 11;
 /// below, or [`BLANK_SLOT`] where that neighbour's ink is withdrawn.
 pub const NEIGHBOUR_UP: usize = 12;
 pub const NEIGHBOUR_DN: usize = 13;
+/// The ink each of those neighbours draws in, packed `0xRRGGBB` one per float — the same
+/// idiom the two line inks use (#513). ADR-0019 R1.2: foreign ink keeps its OWNER's colour,
+/// so the receiver's own `fg` is the wrong answer even though it is already to hand.
+pub const NEIGHBOUR_UP_FG: usize = 14;
+pub const NEIGHBOUR_DN_FG: usize = 15;
 
 /// A decoded frame's per-cell grid: dimensions + the four parallel column arrays the packer
 /// reads (all row-major, ideally length `cols*rows`). `bg`/`fg` are tagged-u32 colour refs,
@@ -681,6 +688,8 @@ pub fn pack_instances(
                 // must both end up blank.
                 f32::from(BLANK_SLOT),
                 f32::from(BLANK_SLOT),
+                0.0,
+                0.0,
             ]);
         }
     }
@@ -698,6 +707,13 @@ pub fn pack_instances(
         let b = i * INSTANCE_FLOATS + BG_RGB;
         [out[b], out[b + 1], out[b + 2]]
     };
+    // Re-pack the neighbour's resolved foreground into the `0xRRGGBB` float the line inks already
+    // use. Exact: these floats were divided by 255 from integers a moment ago.
+    let fg_packed_at = |out: &[f32], i: usize| {
+        let b = i * INSTANCE_FLOATS + FG_RGB;
+        let ch = |v: f32| ((v * 255.0).round() as u32) & 0xFF;
+        ((ch(out[b]) << 16) | (ch(out[b + 1]) << 8) | ch(out[b + 2])) as f32
+    };
     for row in 0..rows {
         for col in 0..cols {
             let idx = row as usize * cols as usize + col as usize;
@@ -707,6 +723,7 @@ pub fn pack_instances(
                 if bg_at(&out, up) == mine {
                     out[idx * INSTANCE_FLOATS + NEIGHBOUR_UP] =
                         out[up * INSTANCE_FLOATS + GLYPH_FIELD];
+                    out[idx * INSTANCE_FLOATS + NEIGHBOUR_UP_FG] = fg_packed_at(&out, up);
                 }
             }
             if row + 1 < rows {
@@ -714,6 +731,7 @@ pub fn pack_instances(
                 if bg_at(&out, dn) == mine {
                     out[idx * INSTANCE_FLOATS + NEIGHBOUR_DN] =
                         out[dn * INSTANCE_FLOATS + GLYPH_FIELD];
+                    out[idx * INSTANCE_FLOATS + NEIGHBOUR_DN_FG] = fg_packed_at(&out, dn);
                 }
             }
         }
@@ -881,6 +899,46 @@ mod tests {
     }
 
     #[test]
+    fn a_neighbours_ink_arrives_in_its_own_colour_not_the_receivers() {
+        // ADR-0019 R1.2: `I_neighbour` carries its OWNER's resolved ink. A descender falling out of
+        // a red line into a white one is still red — it is not this cell's content, so this cell's
+        // colour does not apply to it. Two rows, two different foregrounds, one shared background.
+        let p = palette();
+        let f = Frame {
+            preedit: None,
+            cols: 1,
+            rows: 2,
+            bg: &[0, 0],
+            fg: &[(2 << 24) | 0xE0_6C_75, (2 << 24) | 0x61_AF_EF],
+            slots: &[33, 44],
+            flags: &[0, 0],
+            codepoints: &[],
+            underline_colors: &[],
+        };
+        let got = pack_instances(
+            &f,
+            &p,
+            true,
+            &Overlay::default(),
+            &ColorPolicy::default(),
+            &[],
+        );
+        let up_fg = |c: usize| got[c * INSTANCE_FLOATS + NEIGHBOUR_UP_FG] as u32;
+        let dn_fg = |c: usize| got[c * INSTANCE_FLOATS + NEIGHBOUR_DN_FG] as u32;
+
+        assert_eq!(
+            dn_fg(0),
+            0x61_AF_EF,
+            "row 0 receives row 1's blue, not its own red"
+        );
+        assert_eq!(
+            up_fg(1),
+            0xE0_6C_75,
+            "row 1 receives row 0's red, not its own blue"
+        );
+    }
+
+    #[test]
     fn a_neighbours_ink_is_withdrawn_where_the_two_cells_backgrounds_differ() {
         let p = palette();
         let two_rows = |bg: &'static [u32]| Frame {
@@ -985,6 +1043,9 @@ mod tests {
             // because the atlas reserves index zero for the empty glyph, not by accident here.
             f32::from(BLANK_SLOT),
             f32::from(BLANK_SLOT),
+            // ...and no colour travels with ink that is not there.
+            0.0,
+            0.0,
         ];
         assert_eq!(
             got.len(),

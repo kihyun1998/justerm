@@ -214,6 +214,7 @@ pub fn vertical_bleed(
 }
 
 /// Which adjacent cell an `I_neighbour` contribution came from (ADR-0019 R1.2).
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Adjacent {
     Above,
@@ -221,6 +222,7 @@ pub enum Adjacent {
 }
 
 /// The slot content rows a receiver row reads: its own, and at most one neighbour's.
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InkRows {
     /// Row of the receiver's OWN slot content — offset past the top bleed band.
@@ -234,6 +236,7 @@ pub struct InkRows {
 /// A slot's content is `cell_h + 2*bleed` rows — the cell's box with a band above and below for ink
 /// that leaves it. A receiver's own box is always the middle band; its outer `bleed` rows *also*
 /// carry whatever the adjacent cell spilled toward them, which is the [`Adjacent`] half.
+#[cfg(test)]
 pub fn ink_rows(y: u32, cell_h: u32, bleed: u32) -> InkRows {
     let own = bleed + y;
     let neighbour = if bleed == 0 {
@@ -362,6 +365,36 @@ mod tests {
         assert_eq!(fit_cell_to_atlas((9000, 16), 1, 4, 32, 8192), (8190, 16));
         // And bleed 0 is exactly today's ceiling: the limit moves only when the feature is on.
         assert_eq!(fit_cell_to_atlas((10, 4096), 1, 0, 32, 8192), (10, 254));
+    }
+
+    #[test]
+    fn the_shaders_one_cell_step_is_the_same_mapping_as_the_row_arithmetic() {
+        // The fragment does not compute rows — it samples its own texcoord shifted by exactly one
+        // CELL (`inner.y ± u_cell_uv.w`), which is far simpler than the row form and therefore
+        // worth checking rather than trusting. Both must name the same slot row.
+        let (cell_h, bleed, pad) = (24u32, 4u32, 1u32);
+        let slot = slot_geometry((12, cell_h), (0, 0), bleed, pad);
+        let (origin, span) = cell_uv(slot, (12, cell_h));
+        let ph = slot.padded.1 as f32;
+
+        for y in [0u32, 1, 3, 20, 22, 23] {
+            let rows = ink_rows(y, cell_h, bleed);
+            let Some((which, src_row)) = rows.neighbour else {
+                continue;
+            };
+            // The shader's own-sample v, then one cell up or down.
+            let v_own = origin.1 + (y as f32 + 0.5) / cell_h as f32 * span.1;
+            let v_shader = match which {
+                Adjacent::Above => v_own + span.1,
+                Adjacent::Below => v_own - span.1,
+            };
+            // `ink_rows` counts CONTENT rows; the slot's rows start after the guard band.
+            let row_from_shader = (v_shader * ph - pad as f32).floor() as u32;
+            assert_eq!(
+                row_from_shader, src_row,
+                "y={y} {which:?}: the shader's one-cell step and the row arithmetic disagree"
+            );
+        }
     }
 
     #[test]

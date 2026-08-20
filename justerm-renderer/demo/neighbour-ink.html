@@ -1,0 +1,161 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>justerm-renderer proof — a glyph's ink may leave its cell (I_neighbour, #791)</title>
+<style>
+  body { margin: 0; background: #000; }
+  #c { display: block; image-rendering: pixelated; }
+</style>
+<!--
+  ADR-0019 R1.2 / rule 6. A glyph whose ink exceeds its cell used to have that ink destroyed — at
+  bake, by a slot the size of the cell, and again at sample, by a texcoord inset that never reached
+  past it. The band and `I_neighbour` give it somewhere to land; this page is what says it arrived.
+
+  Three things are asserted, and the third is the one that makes the first two mean something:
+
+    - a glyph THIS FONT cannot fit VERTICALLY in its cell draws all of its ink, counted against the
+      same glyph drawn with no cell at all. The probe must fit horizontally: the band is vertical
+      only, and the horizontal residue is tracked separately, not fixed here;
+    - the ink lands on the NEIGHBOUR, not inside the owner (otherwise the owner simply grew);
+    - `g`, `M` and the full block — which always fitted — are unchanged, so the instrument is not
+      merely counting more pixels everywhere.
+
+  **The probe glyph is chosen at runtime, never hard-coded.** The cell is the ink box of this font's
+  block glyph (ADR-0022), so which codepoints overflow is a property of the font the machine happens
+  to have: locally `monospace` resolves to a face where combining marks spill, on CI it is something
+  else (#578 — no absolute cell dimension is portable). The page measures the cell, then picks a
+  candidate the cell provably cannot hold. If none of them overflows, the page reports `skipped`
+  rather than passing: a proof that cannot see the thing it is for must not read as green.
+
+  Build: wasm-pack build --target web --dev --out-dir pkg
+-->
+<canvas id="c" width="64" height="128"></canvas>
+<script type="module">
+  import init, { JustermRenderer } from "../pkg/justerm_renderer.js";
+  import { readRect } from "./proof.js";
+  await init();
+
+  const palette = new Uint32Array(256);
+  const r = new JustermRenderer("#c");
+  const g = r.addGrid(palette, 0xffffff, 0x000000);
+  const canvas = document.querySelector("#c");
+  const gl = canvas.getContext("webgl2");
+  const dpr = window.devicePixelRatio;
+  const [cw, ch] = [r.cell_width(g), r.cell_height(g)];
+
+  // The same font string the rasteriser bakes with, drawn where no cell can clip it. This is the
+  // independent source of truth: what the FONT draws, measured at the renderer's own alpha
+  // threshold rather than re-derived from the renderer's own output.
+  const FONT = `${16 * dpr}px monospace, monospace`;
+  const big = Math.ceil(16 * dpr * 4);
+  const off = new OffscreenCanvas(big, big).getContext("2d", { willReadFrequently: true });
+  off.textBaseline = "alphabetic";
+  off.textAlign = "left";
+  const base = 16 * dpr * 2;
+
+  /** Ink the font draws for `text`, and how far it reaches past the cell, in device px. */
+  const freeInk = (text) => {
+    off.clearRect(0, 0, big, big);
+    off.font = FONT;
+    off.fillStyle = "white";
+    off.fillText(text, base, base);
+    const d = off.getImageData(0, 0, big, big).data;
+    let lit = 0, minY = 1e9, maxY = -1, minX = 1e9, maxX = -1;
+    for (let y = 0; y < big; y++)
+      for (let x = 0; x < big; x++)
+        if (d[(y * big + x) * 4 + 3] >= 128) {
+          lit++;
+          if (y < minY) minY = y;
+          if (y > maxY) maxY = y;
+          if (x < minX) minX = x;
+          if (x > maxX) maxX = x;
+        }
+    return { lit, above: base - minY, below: maxY - base, minX, maxX };
+  };
+
+  // The cell's own reach, from the glyph it is measured by.
+  const blockInk = freeInk("█");
+
+  // Candidates that stack marks or drop tails past a block's box in SOME face. Ordered widest-reach
+  // first so the strongest available case is the one taken.
+  // A caron or ring reaches ABOVE a capital; a cedilla, ogonek or comma-below drops past the
+  // baseline. Both directions are represented so a font that spares one still exercises the other.
+  const CANDIDATES = [
+    "Ǐ", "Ǒ", "Ǔ", "Ǎ", "Ǻ", "Å", "Ẫ",          // over the top
+    "ƥ", "ǭ", "ǥ", "Ą", "ę", "į", "ų", "Ç", "ç", "Ģ", "ņ", "ŗ", "ǰ", "ᾷ", // under the baseline
+  ];
+  // Vertically over the cell — and horizontally INSIDE it, tested against the cell's own x range
+  // rather than against its width. #791 reserves a band on the vertical axis only, so a probe that
+  // also spills sideways would fail an ink-total assertion for a reason this change never claimed
+  // to fix. Both traps were met writing this page: `Ẫ` is wider than the cell (its 12 missing
+  // pixels are all at the baseline, where the A's legs splay), and `ᾷ` is exactly as wide as the
+  // cell but sits 2 px to the right of it — so a width test passes it and it still overflows.
+  const probe = CANDIDATES.map((t) => ({ t, ink: freeInk(t) })).find(
+    ({ ink }) =>
+      (ink.above > blockInk.above || ink.below > blockInk.below) &&
+      ink.minX >= blockInk.minX &&
+      ink.maxX <= blockInk.maxX,
+  );
+
+  /** Draw `text` alone in the middle row of a 1x3 grid and count what reached the buffer. */
+  const drawn = (text, selectMiddleRow = false) => {
+    const [ROWS, COLS] = [3, 1];
+    r.resizeGrid(g, COLS, ROWS);
+    r.resizeSurface(COLS * cw, ROWS * ch);
+    r.setViewport(g, 0, 0, COLS * cw, ROWS * ch);
+    // A selection is how this page makes two adjacent cells differ in RESOLVED background while
+    // both still hold the same reference — the exact case the withdrawal rule is written for.
+    r.setOverlay(g, new Uint32Array(selectMiddleRow ? [1, 0, 0] : []), new Uint32Array(),
+                 0x30_60_C0, 0x30_60_C0);
+    const cps = new Uint32Array(ROWS);
+    cps[1] = text.codePointAt(0);
+    r.apply_frame(g, COLS, ROWS, new Uint32Array(ROWS), new Uint32Array(ROWS), cps,
+                  new Uint16Array(ROWS), true);
+    r.render();
+    const { buf } = readRect(gl, { x: 0, y: 0, w: COLS * cw, h: ROWS * ch });
+    // Count per grid row. `readPixels` is bottom-origin, so grid row 0 is the TOP of the buffer.
+    const perRow = [0, 0, 0];
+    for (let y = 0; y < ROWS * ch; y++) {
+      const row = Math.floor((ROWS * ch - 1 - y) / ch);
+      for (let x = 0; x < COLS * cw; x++)
+        if (buf[(y * COLS * cw + x) * 4] >= 128) perRow[row]++;
+    }
+    return { perRow, total: perRow[0] + perRow[1] + perRow[2] };
+  };
+
+  const checks = {};
+  if (!probe) {
+    checks.probeAvailable = false;
+  } else {
+    const free = probe.ink;
+    const own = drawn(probe.t);
+    // 1. Every pixel the font drew reached the buffer.
+    checks.theWholeGlyphIsDrawn = own.total === free.lit;
+    // 2. ...and some of it is on a neighbour, which is what makes this I_neighbour rather than a
+    //    cell that merely got taller.
+    checks.someInkLandedOnANeighbour = own.perRow[0] + own.perRow[2] > 0;
+    // 3. The withdrawal: a selection on the owner's row makes the two backgrounds differ, so the
+    //    ink must stop at the edge and the neighbours go dark again.
+    const split = drawn(probe.t, true);
+    checks.withdrawnAtABackgroundEdge = split.perRow[0] === 0 && split.perRow[2] === 0;
+    checks.probeAvailable = true;
+  }
+
+  // Controls: glyphs that always fitted must be untouched, or "more ink everywhere" would pass 1.
+  for (const [name, chr] of [["g", "g"], ["M", "M"], ["block", "█"]]) {
+    const d = drawn(chr);
+    checks[`${name}IsUnchanged`] = d.total === freeInk(chr).lit && d.perRow[0] === 0 && d.perRow[2] === 0;
+  }
+
+  const ok = Object.values(checks).every(Boolean);
+  window.__proof = {
+    ok,
+    checks,
+    probe: probe ? probe.t : null,
+    cell: [cw, ch],
+    blockReach: blockInk,
+    probeReach: probe ? probe.ink : null,
+    dpr,
+  };
+  // The runner waits on this, not on `__proof` (`e2e/proofs.spec.mjs`).
+  window.__done = true;
+</script>
