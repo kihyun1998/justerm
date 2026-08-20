@@ -20,7 +20,7 @@
   has to be that PLACING it after the restore shows what it was fed BEFORE the loss, with no
   re-bake and no re-feed.
 
-  Four grids, each registered in a different state when the context dies:
+  Five grids, each in a different state when the context dies:
 
     · `a`  DRAWN throughout                      — the control, and the only grid an existing proof
                                                    could have covered
@@ -293,6 +293,14 @@
   // placement; this is the surface-wide half, and it was a `notes` entry until the Step 5 pass
   // pointed out that nothing gates a note.)
   checks.theWholeRestorePacksNothing = packsAcrossRestore === 0;
+  // …and the loss window itself packed EXACTLY ONCE, which is the whole of the record correction
+  // this page carries. Two feeds happened in that window: `apply_damage(m, …)` and
+  // `apply_frame(f, …)`. One pack means the direct path packed and the deferred one did not — so
+  // the pairing ADR-0027's ✗ row and this territory's note both used to carry (*"`apply_frame` /
+  // `apply_damage`"*) is wrong at runtime, not merely by reading the tier split. Two would mean the
+  // correction is.
+  checks.onlyTheDirectFeedPathPacksOnADeadContext =
+    r.packs() - packsBeforeLoss === 1;
   // Exactly one bake per LIVE configuration — including the one whose only holder is hidden. Not
   // one (which leaves the hidden grid sampling a dead texture) and not two.
   checks.andExactlyOneAtlasIsBakedPerLiveConfiguration =
