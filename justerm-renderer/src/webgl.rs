@@ -224,6 +224,21 @@ float cursor_dx() {
     float dx = v_cell.x - u_cursor.x;
     return (dx < -0.5 || dx > u_cursor.z - 0.5) ? -1.0 : dx;
 }
+// Is the cell in THIS column at grid row `row` painted by a block cursor? (#791)
+//
+// A block replaces the cell's background at fragment time (`base_bg`, below), so it never reaches
+// the packed instance — and the packer is where ADR-0019 rule 5 withdraws `I_neighbour` at a
+// background edge. That leaves the block cursor as a background edge rule 5 structurally cannot
+// see, so the withdrawal is completed here, on the one stage that knows. Both directions were wrong
+// without it: a neighbour's descender drew *over* the block, and a cursor cell's own glyph — which
+// paints in `u_cursor_text_color` — spilled into the next row in the pre-cursor `fg`, one glyph in
+// two colours split at the cell boundary.
+bool block_cursor_at(float row) {
+    if (int(u_cursor.w) != 1) return false;
+    if (abs(row - u_cursor.y) > 0.5) return false;
+    float dx = v_cell.x - u_cursor.x;
+    return !(dx < -0.5 || dx > u_cursor.z - 0.5);
+}
 // Does this fragment fall on a cursor STROKE? Mirrors `cursor::cursor_rects` in device pixels; a
 // hard edge, like the rects it mirrors — the strokes are pixel-aligned, so antialiasing them would
 // only blur a rectangle onto its own boundary. A block draws no stroke.
@@ -271,20 +286,36 @@ void main() {
     // non-uniform control flow is undefined in GLSL ES 3.00.
     float y_px = v_tex.y * u_cell_size.y;
     float armed = step(0.5, u_bleed_px);
-    float from_above = step(y_px, u_bleed_px) * armed;
-    float from_below = step(u_cell_size.y - u_bleed_px, y_px) * armed;
+    // ...and the block-cursor half of rule 5's withdrawal, which the packer could not apply.
+    float same_up = block_cursor_at(v_cell.y) == block_cursor_at(v_cell.y - 1.0) ? 1.0 : 0.0;
+    float same_dn = block_cursor_at(v_cell.y) == block_cursor_at(v_cell.y + 1.0) ? 1.0 : 0.0;
+    float from_above = step(y_px, u_bleed_px) * armed * same_up;
+    float from_below = step(u_cell_size.y - u_bleed_px, y_px) * armed * same_dn;
 
-    float cov_up = textureLod(u_atlas, vec3(inner.x + 0.001,
+    vec4 tex_up = textureLod(u_atlas, vec3(inner.x + 0.001,
         (float(v_glyph_up & 31u) + inner.y + u_cell_uv.w + 0.001) / 32.0,
-        float((v_glyph_up & 0x1FFFu) >> 5u)), 0.0).a * from_above;
-    float cov_dn = textureLod(u_atlas, vec3(inner.x + 0.001,
+        float((v_glyph_up & 0x1FFFu) >> 5u)), 0.0);
+    vec4 tex_dn = textureLod(u_atlas, vec3(inner.x + 0.001,
         (float(v_glyph_dn & 31u) + inner.y - u_cell_uv.w + 0.001) / 32.0,
-        float((v_glyph_dn & 0x1FFFu) >> 5u)), 0.0).a * from_below;
+        float((v_glyph_dn & 0x1FFFu) >> 5u)), 0.0);
+    float cov_up = tex_up.a * from_above;
+    float cov_dn = tex_dn.a * from_below;
 
-    // Each carries its OWNER's ink, never this cell's. A background-class neighbour cannot arise:
-    // `builtin` bakes those to the cell and `pad` leaves the band transparent, so nothing
-    // background-shaped ever spills — which is why one position in rule 6 is enough.
-    vec3 foreign_ink = cov_up >= cov_dn ? v_up_fg : v_dn_fg;
+    // Each carries its OWNER's ink — including the emoji rule, which is the *owner's* bit 15 and not
+    // this cell's. Reading only coverage here drew a colour emoji's overflow as a monochrome
+    // silhouette in the receiving cell's SGR foreground: measured, a brown pile spilling into the row
+    // below arrived as 11 device px of pure red. R1.2 says foreign ink keeps its owner's ink, and the
+    // owner's ink for an emoji lives in the atlas rather than in the instance.
+    vec3 ink_up = mix(v_up_fg, tex_up.rgb, float((v_glyph_up >> 15u) & 1u));
+    vec3 ink_dn = mix(v_dn_fg, tex_dn.rgb, float((v_glyph_dn >> 15u) & 1u));
+
+    // ONE position in rule 6 serves both, and that is a property of the rule rather than of what can
+    // spill: the clause is "above the receiver's own tile, below everything else the receiver owns",
+    // which never asks the neighbour's class. (An earlier comment here justified it by claiming a
+    // background-class glyph cannot overflow. That is false — Powerline `U+E0A4..=U+E0D6` is
+    // background-class by `glyph_class`, is drawn by the FONT rather than by `builtin`, and is free
+    // to spill like any other font glyph.)
+    vec3 foreign_ink = cov_up >= cov_dn ? ink_up : ink_dn;
     float foreign = max(cov_up, cov_dn);
     // ── end I_neighbour ───────────────────────────────────────────────────────────────────────
 
@@ -2592,19 +2623,42 @@ impl JustermRenderer {
                 self.configs.get_mut(id).adopt(b)
             })
             .collect();
-        self.global.program = pipeline.program;
-        self.global.quad_vbo = pipeline.quad_vbo;
-        self.global.u_projection = pipeline.u_projection;
-        self.global.u_cell_size = pipeline.u_cell_size;
-        self.global.u_char_size = pipeline.u_char_size;
-        self.global.u_line_thickness = pipeline.u_line_thickness;
-        self.global.u_char_offset = pipeline.u_char_offset;
-        self.global.u_cell_uv = pipeline.u_cell_uv;
-        self.global.u_bg_alpha = pipeline.u_bg_alpha;
-        self.global.u_cursor = pipeline.u_cursor;
-        self.global.u_cursor_color = pipeline.u_cursor_color;
-        self.global.u_cursor_text_color = pipeline.u_cursor_text_color;
-        self.global.u_cursor_thickness = pipeline.u_cursor_thickness;
+        // DESTRUCTURED, not field-by-field: a uniform location that survives a restore by being
+        // copied here is one an author has to remember, and `demo/context-loss.html` says in as many
+        // words that forgetting one leaves a location belonging to the dead program. #791 forgot
+        // `u_bleed_px` exactly that way — every frame after a restore raised `INVALID_OPERATION` and
+        // the band silently stopped drawing. Binding every field by name makes the next omission a
+        // compile error instead of a proof nobody wrote.
+        let Pipeline {
+            program,
+            quad_vbo,
+            u_projection,
+            u_cell_size,
+            u_char_size,
+            u_char_offset,
+            u_line_thickness,
+            u_cell_uv,
+            u_bg_alpha,
+            u_bleed_px,
+            u_cursor,
+            u_cursor_color,
+            u_cursor_text_color,
+            u_cursor_thickness,
+        } = pipeline;
+        self.global.program = program;
+        self.global.quad_vbo = quad_vbo;
+        self.global.u_projection = u_projection;
+        self.global.u_cell_size = u_cell_size;
+        self.global.u_char_size = u_char_size;
+        self.global.u_line_thickness = u_line_thickness;
+        self.global.u_char_offset = u_char_offset;
+        self.global.u_cell_uv = u_cell_uv;
+        self.global.u_bg_alpha = u_bg_alpha;
+        self.global.u_bleed_px = u_bleed_px;
+        self.global.u_cursor = u_cursor;
+        self.global.u_cursor_color = u_cursor_color;
+        self.global.u_cursor_text_color = u_cursor_text_color;
+        self.global.u_cursor_thickness = u_cursor_thickness;
         self.global.dpr = dpr;
         unsafe {
             for atlas in old_atlases {

@@ -736,6 +736,48 @@ pub fn pack_instances(
             }
         }
     }
+    // A wide glyph is ONE glyph across two cells, and the grant above is decided per cell — so a
+    // background edge under one of the two columns withdraws one half and leaves the other, cutting
+    // the pair's overflow down the middle of the letter. That is exactly the failure
+    // `docs/map/invariant/a-span-covers-a-wide-pair-whole.md` exists to prevent; a withdrawal gate
+    // produces half-covering decisions the same way the ranges that note enumerates do, so it is a
+    // fifth producer and the invariant reaches it.
+    //
+    // Reconciled on the RECEIVERS, because that is where the disagreement lives: the pair is in the
+    // source row, and the two cells receiving from it may sit under different backgrounds.
+    for row in 0..rows {
+        for col in 0..cols {
+            let idx = row as usize * cols as usize + col as usize;
+            for (field, fg_field, src_row) in [
+                (NEIGHBOUR_UP, NEIGHBOUR_UP_FG, row.checked_sub(1)),
+                (
+                    NEIGHBOUR_DN,
+                    NEIGHBOUR_DN_FG,
+                    (row + 1 < rows).then_some(row + 1),
+                ),
+            ] {
+                let Some(src) = src_row else { continue };
+                let Some(partner_col) = crate::pair::partner_at(flags, cols, src, col) else {
+                    continue;
+                };
+                let mate = row as usize * cols as usize + partner_col as usize;
+                let (a, b) = (
+                    idx * INSTANCE_FLOATS + field,
+                    mate * INSTANCE_FLOATS + field,
+                );
+                // Both, not just this one. Blanking a single side happens to converge because the
+                // partner cell is visited too and reaches the same verdict — measured, a mutation
+                // to one-sided blanking still passes — but that makes the result depend on the
+                // walk visiting every cell, which is not something this loop should have to promise.
+                if out[a] != out[b] {
+                    out[a] = f32::from(BLANK_SLOT);
+                    out[b] = f32::from(BLANK_SLOT);
+                    out[idx * INSTANCE_FLOATS + fg_field] = 0.0;
+                    out[mate * INSTANCE_FLOATS + fg_field] = 0.0;
+                }
+            }
+        }
+    }
     out
 }
 
@@ -896,6 +938,58 @@ mod tests {
     fn neighbours(v: &[f32], cell: usize) -> (u16, u16) {
         let b = cell * INSTANCE_FLOATS;
         (v[b + NEIGHBOUR_UP] as u16, v[b + NEIGHBOUR_DN] as u16)
+    }
+
+    #[test]
+    fn a_wide_pairs_overflow_is_withdrawn_from_both_halves_or_from_neither() {
+        // A wide glyph is ONE glyph across two cells, and the withdrawal is decided per cell — so a
+        // selection edge under one of the two columns withdraws one half and grants the other, and
+        // the pair's descender is cut down the middle of the letter. That is the failure
+        // `docs/map/invariant/a-span-covers-a-wide-pair-whole.md` exists to prevent; a withdrawal
+        // gate is a producer of half-covering decisions the same way a range is.
+        let p = palette();
+        use crate::attrs::{WIDE_CHAR, WIDE_CHAR_SPACER};
+        let flags = [WIDE_CHAR, WIDE_CHAR_SPACER, 0, 0, 0, 0];
+        let f = Frame {
+            preedit: None,
+            cols: 3,
+            rows: 2,
+            bg: &[0; 6],
+            fg: &[0; 6],
+            slots: &[70, 71, 0, 0, 0, 0], // the pair's two baked halves
+            flags: &flags,
+            codepoints: &[],
+            underline_colors: &[],
+        };
+        // Selection covers row 1, column 0 only. Row 1 holds no pair, so nothing widens it — the
+        // two RECEIVERS of row 0's pair therefore disagree unless the pair is reconciled.
+        let sel = [1u32, 0, 0];
+        let ov = Overlay {
+            active: &[],
+            selection: &sel,
+            matches: &[],
+            colors: HighlightColors {
+                selection_bg: 0x30_60_C0,
+                match_bg: 0x30_60_C0,
+                active_match_bg: 0x30_60_C0,
+            },
+        };
+        let got = pack_instances(&f, &p, true, &ov, &ColorPolicy::default(), &[]);
+        let up = |cell: usize| got[cell * INSTANCE_FLOATS + NEIGHBOUR_UP] as u16;
+
+        // Row 1, columns 0 and 1 — the two cells that would receive the pair's overflow.
+        assert_eq!(
+            up(3),
+            BLANK_SLOT,
+            "the selected half is withdrawn, as rule 5 says"
+        );
+        assert_eq!(
+            up(4),
+            BLANK_SLOT,
+            "and so is the other half — one glyph cannot be half withdrawn"
+        );
+        // The unpaired column beside them is untouched by any of this.
+        assert_eq!(up(5), BLANK_SLOT, "column 2 has no glyph above to receive");
     }
 
     #[test]

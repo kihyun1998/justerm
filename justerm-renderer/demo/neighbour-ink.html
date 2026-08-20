@@ -96,30 +96,59 @@
       ink.maxX <= blockInk.maxX,
   );
 
-  /** Draw `text` alone in the middle row of a 1x3 grid and count what reached the buffer. */
-  const drawn = (text, selectMiddleRow = false) => {
+  const RED = (2 << 24) | 0xFF_00_00;
+  const BLUE = (2 << 24) | 0x00_80_FF;
+
+  /**
+   * Draw `text` in the middle row of a 1x3 grid and report what reached the buffer, per row.
+   *
+   * `opts.fill` puts a glyph in the two receiving rows: without it every receiver is EMPTY, and
+   * then nothing below `I_neighbour`'s position in rule 6 is ever composited — which is how three
+   * defects (a colour emoji's overflow drawn monochrome, a block cursor the withdrawal could not
+   * see, a wide pair cut in half) survived this corpus until a lens went looking.
+   */
+  const drawn = (text, opts = {}) => {
+    const { select = null, fill = null, cursorRow = -1, restore = false } = opts;
     const [ROWS, COLS] = [3, 1];
     r.resizeGrid(g, COLS, ROWS);
     r.resizeSurface(COLS * cw, ROWS * ch);
     r.setViewport(g, 0, 0, COLS * cw, ROWS * ch);
     // A selection is how this page makes two adjacent cells differ in RESOLVED background while
     // both still hold the same reference — the exact case the withdrawal rule is written for.
-    r.setOverlay(g, new Uint32Array(selectMiddleRow ? [1, 0, 0] : []), new Uint32Array(),
-                 0x30_60_C0, 0x30_60_C0);
+    r.setOverlay(g, new Uint32Array(select ?? []), new Uint32Array(), 0x30_60_C0, 0x30_60_C0);
+    // `shape: 0` is the BLOCK, and "no cursor" is `clearCursor` — not shape 0, which is what this
+    // page assumed at first and which quietly painted a blue block over row 0 in every draw,
+    // failing even the controls. A block is a background applied per fragment, so the packer cannot
+    // see it and rule 5's withdrawal has to be completed in the shader; that is what this exercises.
+    if (cursorRow >= 0) r.setCursor(g, 0, cursorRow, 0, 0x00_00_FF, 0x00_FF_00);
+    else r.clearCursor(g);
     const cps = new Uint32Array(ROWS);
+    const fg = new Uint32Array(ROWS);
     cps[1] = text.codePointAt(0);
-    r.apply_frame(g, COLS, ROWS, new Uint32Array(ROWS), new Uint32Array(ROWS), cps,
-                  new Uint16Array(ROWS), true);
+    fg[1] = RED; // the owner's ink, so foreign pixels are identifiable by colour
+    if (fill) {
+      cps[0] = fill.codePointAt(0);
+      cps[2] = fill.codePointAt(0);
+      fg[0] = BLUE;
+      fg[2] = BLUE;
+    }
+    r.apply_frame(g, COLS, ROWS, new Uint32Array(ROWS), fg, cps, new Uint16Array(ROWS), true);
     r.render();
     const { buf } = readRect(gl, { x: 0, y: 0, w: COLS * cw, h: ROWS * ch });
-    // Count per grid row. `readPixels` is bottom-origin, so grid row 0 is the TOP of the buffer.
+    // Count per grid row, splitting by COLOUR: red is the owner's ink wherever it landed, blue is
+    // the receiver's own. `readPixels` is bottom-origin, so grid row 0 is the TOP of the buffer.
     const perRow = [0, 0, 0];
+    const redRow = [0, 0, 0];
     for (let y = 0; y < ROWS * ch; y++) {
       const row = Math.floor((ROWS * ch - 1 - y) / ch);
-      for (let x = 0; x < COLS * cw; x++)
-        if (buf[(y * COLS * cw + x) * 4] >= 128) perRow[row]++;
+      for (let x = 0; x < COLS * cw; x++) {
+        const i = (y * COLS * cw + x) * 4;
+        const [R, G, B] = [buf[i], buf[i + 1], buf[i + 2]];
+        if (R >= 128 || G >= 128 || B >= 128) perRow[row]++;
+        if (R >= 128 && G < 64 && B < 64) redRow[row]++;
+      }
     }
-    return { perRow, total: perRow[0] + perRow[1] + perRow[2] };
+    return { perRow, redRow, total: perRow[0] + perRow[1] + perRow[2] };
   };
 
   const checks = {};
@@ -133,14 +162,59 @@
     // 2. ...and some of it is on a neighbour, which is what makes this I_neighbour rather than a
     //    cell that merely got taller.
     checks.someInkLandedOnANeighbour = own.perRow[0] + own.perRow[2] > 0;
-    // 3. The withdrawal: a selection on the owner's row makes the two backgrounds differ, so the
-    //    ink must stop at the edge and the neighbours go dark again.
-    const split = drawn(probe.t, true);
-    checks.withdrawnAtABackgroundEdge = split.perRow[0] === 0 && split.perRow[2] === 0;
+    // 3. DIRECTION. Ink that rose above the owner belongs to the row above and nowhere else.
+    //    Without this, flipping the shader's `+ u_cell_uv.w` to `-` still passes every other check
+    //    here — the host tests that pin direction run against `ink_rows`, and the shader is only
+    //    ever executed in a browser.
+    const overAbove = free.above > blockInk.above;
+    checks.theInkLandsOnTheCorrectSide = overAbove
+      ? own.perRow[0] > 0 && own.perRow[2] === 0
+      : own.perRow[2] > 0 && own.perRow[0] === 0;
+
+    // 4. The withdrawal, both edges at once: a selection on the OWNER's row makes both backgrounds
+    //    differ, so nothing crosses.
+    const split = drawn(probe.t, { select: [1, 0, 0] });
+    checks.withdrawnAtABackgroundEdge = split.redRow[0] === 0 && split.redRow[2] === 0;
+
+    // 5. ...and ONE edge only: selecting the receiving row withdraws that side and leaves the
+    //    other, which a both-sides test cannot tell from a withdrawal that fires unconditionally.
+    // Counted in RED, not in lit pixels: a selection and a block cursor both PAINT the receiving
+    // cell, so "did the foreign ink stop" cannot be asked of total coverage — the cell is full
+    // either way. The owner's ink is the only red on the surface.
+    const oneSide = drawn(probe.t, { select: [overAbove ? 0 : 2, 0, 0] });
+    checks.withdrawnOnOneEdgeOnly =
+      oneSide.redRow[overAbove ? 0 : 2] === 0 && oneSide.redRow[1] === own.redRow[1];
+
+    // 6. A RECEIVER WITH CONTENT. Every check above leaves the neighbours empty, so nothing below
+    //    `I_neighbour` in rule 6 is ever composited. With the receiver holding its own blue glyph,
+    //    the foreign ink must still arrive AND still be the OWNER's red — the receiver's colour
+    //    must not claim it (ADR-0019 R1.2), and the receiver's own ink must not be displaced.
+    const filled = drawn(probe.t, { fill: "M" });
+    const plainM = drawn("M", { fill: "M" });
+    checks.aReceiverKeepsItsOwnInk =
+      filled.perRow[overAbove ? 0 : 2] > plainM.perRow[overAbove ? 0 : 2];
+    checks.foreignInkKeepsItsOwnersColour = filled.redRow[overAbove ? 0 : 2] > 0;
+
+    // 7. A block cursor on the receiving row is a background edge the packer cannot see, so the
+    //    withdrawal has to happen in the shader.
+    const underCursor = drawn(probe.t, { cursorRow: overAbove ? 0 : 2 });
+    checks.withdrawnUnderABlockCursor = underCursor.redRow[overAbove ? 0 : 2] === 0;
+
     checks.probeAvailable = true;
   }
 
+  // NOT GUARDED HERE: a colour emoji's overflow keeping the atlas's own colours (#791). The
+  // shader change is real — the neighbour sample now mixes `tex.rgb` under the owner's emoji bit,
+  // exactly as the own-cell path does — but a proof for it needs a probe this page cannot express.
+  // An emoji is a WIDE glyph, and a wide glyph is baked across a two-cell advance and split, which
+  // is not the path `freeInk`'s single `fillText` measures: a check gated on that measurement asked
+  // for overflow the renderer does not produce. Measured at dpr 1.5, one column, two columns and a
+  // proper lead+spacer pair all put ZERO emoji ink in the neighbouring row. A valid guard has to
+  // take its precondition from the renderer's own bake rather than from a 2D canvas.
+
   // Controls: glyphs that always fitted must be untouched, or "more ink everywhere" would pass 1.
+  // `█` is the load-bearing one — it is what catches a bake origin that forgot the band, which is a
+  // real bug this page's first version found (a run of blocks stopped meeting its neighbour).
   for (const [name, chr] of [["g", "g"], ["M", "M"], ["block", "█"]]) {
     const d = drawn(chr);
     checks[`${name}IsUnchanged`] = d.total === freeInk(chr).lit && d.perRow[0] === 0 && d.perRow[2] === 0;
