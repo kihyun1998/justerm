@@ -2433,22 +2433,22 @@ impl JustermRenderer {
                 }
             }
         }
-        // Only the configurations that will still have a holder once step 3 has run. An entry whose
-        // every grid has drifted off its key — a mid-loss `setFontSize` writes the selector and
-        // defers — is released by the reconcile, so baking it here would rasterise a whole glyph set
-        // into a texture deleted a few lines later. That is one full re-bake thrown away on every
-        // restore that follows a mid-loss font change: exactly the operation this epic exists to
-        // stop paying for.
-        let config_ids: Vec<_> = self
-            .configs
-            .ids()
-            .into_iter()
-            .filter(|&id| {
-                (0..self.grids.len()).any(|at| {
-                    self.grid_at(at).config == id && self.key_of(at) == *self.configs.key(id)
-                })
-            })
-            .collect();
+        // Only the configurations that will still have a holder once step 3 has run — asked of the
+        // registry, by KEY, because that is the question (#788). An entry whose every grid has
+        // drifted off its key is released by the reconcile, so baking it here would rasterise a
+        // whole glyph set into a texture deleted a few lines later: one full re-bake thrown away on
+        // every restore that follows a mid-loss font change, which is the operation this epic
+        // exists to stop paying for.
+        //
+        // **This used to also require a *current* holder (`grid.config == id`), and that is the set
+        // as of now rather than as of after.** Step 3 places a grid on the entry its key matches, so
+        // a grid can join an entry no grid holds at this instant — two grids swapping
+        // configurations mid-loss re-baked neither, and one of them came back drawing through a
+        // texture that died with the context. Measured: `bakes()` 1 against `atlasCount()` 2, and
+        // that grid's ink 168 where a correctly baked atlas gives 183. Silent, and not self-healing
+        // until the next loss.
+        let wanted: Vec<ConfigKey> = (0..self.grids.len()).map(|at| self.key_of(at)).collect();
+        let config_ids = self.configs.ids_wanted_by(&wanted);
         for &id in &config_ids {
             let key = self.configs.key(id).clone();
             let built = Self::bake_config(
