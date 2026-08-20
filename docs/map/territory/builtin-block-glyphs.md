@@ -38,6 +38,13 @@ The entire rationale lives in `builtin.rs`'s module doc (#359).
 - **So the range is intercepted before the font is consulted** and drawn geometrically to the cell.
   The font's own version of these characters is never used.
 
+- **A builtin bitmap does not go through the font, so it does not go through the font's placement
+  either** — `pad()` lays it into the slot directly, and since #791 the slot's cell band starts past
+  a bleed band as well as past the guard band. That origin was wrong for exactly one commit and the
+  symptom was this territory's whole reason for existing: a run of `█` stopped meeting its
+  neighbour. Anything that changes the slot's shape has to move `pad()` with it; a grep for the
+  geometry helper's name will not find this site, because it does not call it.
+
 ## Code
 
 - `justerm-renderer/src/builtin.rs` — the whole territory, and its module doc is the only record of

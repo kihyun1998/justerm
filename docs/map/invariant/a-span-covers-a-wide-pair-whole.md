@@ -30,12 +30,22 @@ defensive coding: a lead standing alone in the last column is a **legal buffer s
 
 ## Why it is cross-cutting
 
-**Four producers in two crates, and no two of them share a layer.** `Term::selection_range` and
+**Five producers in two crates, and no two of them share a layer.** `Term::selection_range` and
 `Term::match_spans` are core's; a decoration rect is the consumer's; the caret is nobody's — it comes
 from the application's cursor position. There is no single seam they pass through *before* the cells
 are known, which is why the rule lives twice on purpose: in `justerm-core`, so `selection_range` and
 `selection_text` cannot disagree about what a selection contains, and in `justerm-renderer`, where
 every span finally meets the flags.
+
+**The fifth is not a range at all** (#791). `I_neighbour` — a glyph's ink landing in the cell above
+or below it — is *withdrawn* where the two cells' backgrounds differ, and that withdrawal is decided
+per cell. A background edge under one column of a pair therefore grants one half and withdraws the
+other, and the pair's overflow is cut down the middle of the letter: this note's own symptom,
+produced by a **gate** rather than by a range. The four producers above all answer "which cells does
+this span cover"; a gate answers "may this cell's ink cross", and the invariant reaches it for the
+same reason — a wide pair is one glyph, so any per-cell decision about it has to be reconciled
+across both halves. Reconciled on the *receivers* in `frame.rs`'s packer, since the pair is in the
+source row while the disagreement is in the receiving one.
 
 That duplication is the reason this is an invariant rather than a note on one territory. The two
 spellings must stay the same rule, and the failure mode is silent: each layer is locally correct

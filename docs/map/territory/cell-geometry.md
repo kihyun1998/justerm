@@ -37,6 +37,15 @@ See [multi-viewport](multi-viewport.md) for the tier and its lifetime.
 - **That split is prior-art consensus, unlike the measurement.** Both references carry a char box
   beside a cell box — this is one of the few places the renderer can point at agreement rather than
   at its own reasoning.
+- **The slot is no longer the cell plus a guard band** (#791). It carries a **bleed band** above and
+  below as well — room for ink that leaves the cell, which the receiving cell reads back
+  (ADR-0019 R1.2). Three consequences worth knowing before touching anything here: the band is
+  derived *per font configuration* (`metrics::vertical_bleed`, from the gap between this face's `█`
+  ink box and its declared line box, plus an empirical headroom), it is spent out of the same
+  per-layer height as the guard band so it **lowers** the tallest cell the atlas can hold, and every
+  site that places something into a slot must use the same origin — `pad()`, the path that lays a
+  builtin bitmap in without going through the font, did not, and every block glyph sat a band too
+  high until the pixel proofs said so.
 - **The nesting is why tiling glyphs are a separate problem.** Once the glyph box sits *inside* the
   cell, anything meant to tile the cell must be drawn to the **cell** instead — see built-in block
   glyphs, which exists entirely because of this.
@@ -109,8 +118,12 @@ grounds as unverified, which is unusual enough to be worth knowing before buildi
 
 ## Known holes / open
 
-- **The founding measurement is graded unverified in its own record.** Everything geometric derives
-  from the `█` ink scan, and ADR-0022 says its grounds were inherited rather than established.
+- ~~**The founding measurement is graded unverified in its own record.**~~ — **measured 2026-08-20
+  (#791)**. ADR-0022 now carries the comparison it asked for: the ink box is never the better cell
+  and on DejaVu Sans Mono it destroys ink on 439 of 1579 sampled codepoints against the line box's
+  84. The *decision* is still unchanged — adopting the line-box metric would move every grid's size
+  and does not fix clipping on its own — so alternative (A) remains open, but it is no longer open
+  for lack of evidence.
 - **Headless proofs cannot be trusted naively here.** A fractional CSS canvas composites white under
   SwiftShader, and a sharpness metric will read that as *the sharpest* result — so a geometry proof
   needs to state what it is actually measuring.

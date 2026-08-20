@@ -122,8 +122,12 @@ Every other source in rule 4's list is authored by the cell being resolved. This
 larger than the cell it occupies deposits ink outside it, and that ink is a source for whichever cell
 it lands in. Three properties, all of which follow from its owner rather than from its receiver:
 
-- **It carries its owner's resolved ink and its owner's class.** R1 is asked of the *owning* cell's
-  glyph, so a background-class tile overflowing its cell is background-class where it lands too.
+- **It carries its owner's resolved ink** — including, for a colour emoji, the atlas's own colours
+  rather than either cell's foreground, since that is where an emoji's ink lives. R1 is asked of the
+  *owning* cell's glyph, so a background-class tile overflowing its cell is background-class where it
+  lands too. **That classification does not move it in rule 6**, which places `I_neighbour` by whose
+  content it is rather than by what it looks like; it is recorded because R1 is stated per ink source
+  and this source would otherwise read as exempt.
 - **It is not the receiver's content.** The receiver's own layers do not recolour it — see rule 5.
 - **Its reach is bounded, and what lies beyond the bound is still destroyed.** How far ink may travel
   is the bake's bleed, a per-configuration quantity, not something this model fixes. A glyph the font
@@ -187,12 +191,21 @@ the user passing over *this* cell. So:
 - **It is withdrawn where the two cells' backgrounds differ.** Ink from one cell sitting on a
   differently-coloured neighbour reads as a rendering fault rather than as a tall letter, and the
   boundary it crosses — a selection edge, a search highlight, a coloured prompt segment — is exactly
-  where a user is looking. Withdrawal is **symmetric on all four edges**, which is a divergence worth
-  naming: xterm.js guards only the left (`GlyphRenderer.ts:263`, SHA `699f553`), and its own reason is
-  that it walks cells left to right and therefore knows only the *previous* background. That is a
-  property of its loop, not a rule about rendering. Resolving reader-side, the receiver holds both
-  backgrounds already, so the symmetric form costs nothing and the asymmetric one would have to be
-  argued for.
+  where a user is looking. Withdrawal is **symmetric on both edges ink can cross**, which today is
+  the vertical pair: the horizontal axis grants nothing, so there is nothing there to withdraw. Worth
+  naming even so, because xterm.js guards only the *left* (`GlyphRenderer.ts:263`, SHA `699f553`) and
+  its own reason is that it walks cells left to right and therefore knows only the *previous*
+  background — a property of its loop, not a rule about rendering. Resolving reader-side, the receiver
+  holds both backgrounds already, so symmetry costs nothing and asymmetry would have to be argued for.
+  Should the horizontal axis ever grant, the rule extends by construction rather than by amendment.
+
+  **Two of the three producers of a background difference never reach the packer, so the rule is
+  enforced in two places.** A *block cursor* is a background applied per fragment (`base_bg`), so no
+  packed value differs and the shader completes the withdrawal; a *wide pair* is one glyph across two
+  cells whose two receivers can sit under different backgrounds, so the packer reconciles them — the
+  cross-cutting invariant *a span covers a wide pair whole* reaches a withdrawal **gate** and not only
+  the four ranges it enumerates. Both were found by an adversarial pass after this amendment was
+  first written, which is why they are stated here rather than left to the code.
 
 **What this costs, stated plainly.** The renderer is no longer uniform across routes: the same visual
 concept expressed as a decoration erases a tile and expressed as an active match does not. That is a
@@ -496,5 +509,7 @@ evaluation per pixel with no GL blending** — #317 §2's `a = 1 − w_bg(1−A)
 enters the same `w_bg` product as every other source. Verified by spike before this amendment was
 written: with the mechanism switched on, a full-block glyph deposited exactly `cell_w × bleed` pixels
 into the adjacent cell, on the correct edge, with the owning cell untouched, and the whole existing
-proof corpus (142 cases across four densities) stayed green with it switched off. The numbers are on
-#791.
+proof corpus stayed green with the spike's uniform at zero. *"Switched off"* means that throwaway
+uniform, not a mode the renderer has — `vertical_bleed` floors at its headroom, so every shipped
+configuration carries a band. The corpus is 146 cases across four densities as of this amendment,
+142 of which predate it. The numbers are on #791.

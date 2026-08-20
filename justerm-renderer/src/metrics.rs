@@ -148,8 +148,9 @@ pub struct SlotGeometry {
 /// the spacing policy put the glyph *within* the cell (#338). Only the last is horizontal too — the
 /// bleed is vertical for now, so `padded.0` grows by the guard band alone.
 ///
-/// `bleed_y = 0` reproduces the pre-#791 bake exactly, which is what lets the band be adopted one
-/// font configuration at a time.
+/// `bleed_y = 0` reproduces the pre-#791 bake exactly. **No configuration is actually without a
+/// band** — [`vertical_bleed`] floors at [`BLEED_HEADROOM_PX`] — so this is the property that keeps
+/// the arithmetic checkable against the old behaviour in a test, not a mode the renderer runs in.
 pub fn slot_geometry(
     cell: (u32, u32),
     char_offset: (u32, u32),
@@ -511,6 +512,11 @@ mod tests {
         // MAX_TEXTURE_SIZE 8192, so the tallest padded cell is 8192/32 = 256, i.e. a 254-px cell at
         // PADDING 1. Measured: at 258 the texture has no storage, sampling returns alpha 1, and every
         // glyph renders as a solid block — `M` came back fully lit.
+        //
+        // **This is the arithmetic at `bleed_y = 0`, which #791 made a case the renderer no longer
+        // runs** — `vertical_bleed` floors at its headroom, so production always spends a band here.
+        // The pin is kept in this form because it is the one the #359 measurement was taken against;
+        // the ceiling that actually ships is the bleed-4 case pinned above it.
         assert_eq!(fit_cell_to_atlas((10, 254), 1, 0, 32, 8192), (10, 254));
         assert_eq!(fit_cell_to_atlas((10, 255), 1, 0, 32, 8192), (10, 254));
         assert_eq!(fit_cell_to_atlas((10, 4096), 1, 0, 32, 8192), (10, 254));

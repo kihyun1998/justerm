@@ -185,7 +185,9 @@ flat in uint v_glyph_dn;
 flat in vec3 v_up_fg;
 flat in vec3 v_dn_fg;
 // How deep a band of THIS cell's top and bottom edge may receive a neighbour's ink, device px
-// (#791). Derived per font configuration by `metrics::vertical_bleed`; 0 disables `I_neighbour`.
+// (#791). Derived per font configuration by `metrics::vertical_bleed`, which floors at its
+// headroom — so 0 does not reach here in practice, and the `armed` guard below defends a value
+// the pipeline does not currently produce rather than a mode anything selects.
 uniform float u_bleed_px;
 out vec4 FragColor;
 // A horizontal line centred at `c` (cell-local y, 0..1) with soft edges (beamterm cell.frag).
