@@ -1859,3 +1859,43 @@ lazy restore would leave it dead until something placed it — and placing it is
 may never come. That is the structural reason this renderer's restore is **eager**, and it is the
 closest any reference gets to #774's question. Recorded as a divergence with a reason rather than as
 prior art to follow.
+
+## Whether a glyph's ink may leave its cell — 3–0, and the single guard that withdraws it (#791, verified 2026-08-20)
+
+Read for #791. justerm-renderer builds its glyph quad from the cell-size uniform, so a glyph's ink is
+destroyed at the cell boundary rather than drawn over the neighbour. The question asked of the trees
+was whether that boundary is a shared convention or ours alone.
+
+**It is ours alone.** All three let the quad be the glyph.
+
+| Fact | Reference | Site |
+|---|---|---|
+| The glyph quad **is the glyph's own bounding box**, not the cell: `zeroToOne = (a_offset / u_resolution) + a_cellpos + (a_unitquad * a_size)`, where `a_size` is the rasterised glyph's size and `a_cellpos` only places the cell's origin | xterm.js | `addons/addon-webgl/src/GlyphRenderer.ts:53` |
+| The atlas bakes into a canvas **taller than the cell** — `deviceCellHeight + TMP_CANVAS_GLYPH_PADDING * 4` — and the bounding-box scan runs over that whole area, so ink above and below the cell survives into the atlas instead of being clipped at bake time | xterm.js | `addons/addon-webgl/src/TextureAtlas.ts:485` |
+| **The one withdrawal, and it is conditional:** left overflow is clipped only when the neighbouring cell's background differs (`bg !== lastBg`). Overflow over a same-background neighbour is drawn | xterm.js | `addons/addon-webgl/src/GlyphRenderer.ts:263` |
+| Backgrounds are a **separate pass drawn before glyphs**, which is what lets an overlapping glyph quad survive its neighbour's fill | xterm.js | `addons/addon-webgl/src/WebglRenderer.ts:399` |
+| A single-width glyph whose ink exceeds **1.5 cells** is rescaled rather than clipped — behind a user option, and never for ASCII, emoji, powerline or nerd-font codepoints | xterm.js | `src/browser/renderer/shared/RendererUtils.ts:47` |
+| The instance carries the glyph's own `width`/`height` with `top`/`left` bearings — again the quad is the glyph, positioned by its bearing | alacritty | `alacritty/src/renderer/text/glsl3.rs:357` |
+| Same shape at the **text** glyph site: `glyph_size = .{ render.glyph.width, render.glyph.height }` with `bearings` carrying the shaper's x-offset | ghostty | `src/renderer/generic.zig:3202-3204` |
+
+**Two traps in this area, both hit while recording these rows, both caught by rule 2/3 rather than by
+reading.** The `bg !== lastBg` guard is at `:263`, not `:262` — an issue body had already been written
+with the wrong number. And ghostty repeats `glyph_size = .{ render.glyph.width, render.glyph.height }`
+**six** times: `addUnderline` (`:3077`), `addOverline`, `addStrikethrough`, `addGlyph` (`:3202`),
+`addCursor`, `addPreeditCell`. A `--find` on the pattern lands on the *decoration* site first, and a
+row citing it would be a correct `file:line` supporting a claim about text rendering that the line does
+not make — rule 3's more dangerous class. Pick the site by enclosing function, not by pattern.
+
+**What the references do not settle.** They agree that overflow is allowed and they do not agree on how
+much room to reserve for it, nor on which edges the withdrawal covers — xterm.js guards only the left
+edge, and its own reason (it walks cells left to right and therefore knows only the *previous*
+background) is an artefact of its loop rather than a principle. So the *permission* is 3–0 prior art;
+the *rule* is a design decision this repo still owns.
+
+**PuTTY is not in `../.refs` and therefore has no row here.** It was read at `dc472b18` (2026-08-17)
+while investigating #791 and it corroborates the permission from a fourth angle — it clips per *run*
+(`windows/window.c`, the `line_box` handed to `ExtTextOut` spans `char_width * len`), so ink bleeds
+freely between cells inside a run and is cut only at the run's edge and at the row. Those citations
+live in #791's body, not here, because this file's line numbers are only meaningful at the pinned SHAs
+in `theflow.md` § "Step 1" and PuTTY is not one of them. Adding it to the routing table is a
+`/grill-the-flow` decision, not a unilateral one.
