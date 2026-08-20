@@ -239,6 +239,22 @@ eager rather than as shapes to follow.
   the retry latch set, and the whole function re-run on the next frame — idempotent by construction.
   It also skips re-baking a configuration that the reconcile is about to release, which is the whole
   glyph set of a font nobody is on any more.
+  **Which configurations those are is a *prediction*, and getting it wrong is how a surviving entry
+  goes un-rebaked** (#788). The bake runs before the reconcile — the reconcile acquires entries and
+  needs the committed live context, so the order is forced — and it therefore has to answer a
+  question about the reconcile's outcome. It used to ask *"does a grid hold this entry now, and
+  still want it"*, which is the set as of **now**; the reconcile places a grid on the entry whose
+  **key** it matches, so a grid could join an entry the bake step had excluded. Two grids swapping
+  configurations mid-loss re-baked **neither**: measured, `bakes()` 1 against `atlasCount()` 2.
+  The prediction now lives on the registry (`ConfigRegistry::ids_wanted_by`), where the old
+  predicate is not merely wrong but **unwritable** — that type does not know which grid holds what,
+  so the only question it can ask is the one it should.
+  **The pixel consequence was looked for and not found, which is worth knowing before it is assumed
+  again**: an un-rebaked atlas kept drawing correctly here, and the reason is most likely the
+  harness rather than the renderer — this browser hands back a non-null `createTexture` on a lost
+  context and its *simulated* loss does not appear to discard texture contents. So this territory's
+  proofs can gate the **state** (an entry that survives is re-baked) and structurally cannot gate
+  the symptom.
 - **The setters' deferral guard was missing a third window, and it is the one this territory is
   named for** (#772). `gpu_work_must_wait` asked the context and the `is_lost` flag; `on_restored`
   clears `is_lost` and sets `pending_rebuild`, so between `webglcontextrestored` and the rebuild both

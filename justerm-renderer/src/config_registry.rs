@@ -214,6 +214,35 @@ impl<T> ConfigRegistry<T> {
         self.entries.iter().map(|e| e.id).collect()
     }
 
+    /// The entries some grid will still hold **after** every grid has been placed on the entry its
+    /// key asks for — the set a restore must re-bake (#788).
+    ///
+    /// **It is a prediction, and it has to be.** `restore` bakes at step 2 and reconciles at step 3,
+    /// and that order is forced: the reconcile acquires entries, which needs the committed live
+    /// context, so it cannot run first. Step 2 therefore has to answer a question about step 3's
+    /// outcome. Matching on the **key alone** is what makes the answer right, because the key is
+    /// what [`find`](Self::find) matches on — a grid whose selectors moved while the context was
+    /// dead joins whichever entry carries its key, **including one no grid holds at this instant**.
+    ///
+    /// The predicate this replaced also required a current holder (`grid.config == id`), which is
+    /// the set as of *now* rather than as of *after*. Two grids swapping configurations mid-loss
+    /// then re-baked neither, and the reconcile moved one of them onto a texture that died with the
+    /// context: no error, plausible glyphs, and no self-repair until the next loss.
+    ///
+    /// It lives here rather than at the call site for the reason ADR-0027 gives for putting
+    /// `must_defer` on the state machine: `webgl.rs` is wasm32-only, so a predicate written there
+    /// has no host test. The stronger half is that the old predicate is **unwritable** here — this
+    /// type does not know which grid holds what, so the question it can ask is the one it should.
+    ///
+    /// Returned in creation order, deduplicated: an entry two grids want is baked once.
+    pub fn ids_wanted_by(&self, keys: &[ConfigKey]) -> Vec<ConfigId> {
+        self.entries
+            .iter()
+            .filter(|e| keys.contains(&e.key))
+            .map(|e| e.id)
+            .collect()
+    }
+
     /// The entry an id addresses.
     ///
     /// The `expect` cannot fire, and it rests on three properties of the *caller* rather than of this
@@ -366,5 +395,64 @@ mod tests {
         assert_eq!(reg.refs(first), 2);
         assert_eq!(reg.refs(second), 1);
         assert_eq!(reg.len(), 2);
+    }
+
+    // ── `ids_wanted_by` — which entries survive a re-key (#788) ─────────────────────────────────
+    //
+    // `restore` bakes BEFORE it reconciles, because the reconcile needs the committed live context
+    // and cannot run first. So the bake step has to *predict* the reconcile's outcome, and the
+    // prediction is by KEY alone — that is what `find` matches on. The bug this replaces asked
+    // "who holds this entry now", which is a different set and the reason a grid could be
+    // reconciled onto an entry nothing re-baked.
+
+    #[test]
+    fn an_entry_nobody_asks_for_is_not_wanted() {
+        // The release case, and the one the old predicate also got right.
+        let (reg, first) = start();
+        assert_eq!(reg.ids_wanted_by(&[key("monospace", 30.0)]), vec![]);
+        assert_eq!(reg.ids_wanted_by(&[key("monospace", 15.0)]), vec![first]);
+    }
+
+    #[test]
+    fn an_entry_with_no_current_holder_is_wanted_when_a_key_asks_for_it() {
+        // **The #788 case.** Two entries, and the two grids swap: each asks for the key the OTHER
+        // one is standing on. Every entry survives the reconcile, so every entry must be re-baked —
+        // and a predicate that also required a *current* holder would return neither.
+        let mut reg = ConfigRegistry::new();
+        let small = reg.insert(key("monospace", 15.0), FakeAtlas(1));
+        let big = reg.insert(key("monospace", 30.0), FakeAtlas(2));
+        let wanted = reg.ids_wanted_by(&[key("monospace", 30.0), key("monospace", 15.0)]);
+        assert_eq!(wanted, vec![small, big]);
+    }
+
+    #[test]
+    fn a_key_no_entry_serves_adds_nothing() {
+        // The grid that will force a fresh bake in the reconcile contributes no id here — it has no
+        // entry to re-bake yet, which is exactly why it is the reconcile's job and not step 2's.
+        let (reg, first) = start();
+        let wanted = reg.ids_wanted_by(&[key("monospace", 15.0), key("monospace", 45.0)]);
+        assert_eq!(wanted, vec![first]);
+    }
+
+    #[test]
+    fn an_entry_wanted_by_two_grids_is_named_once_and_order_follows_creation() {
+        // Baked once, not once per holder — and in `ids()` order, so the caller can zip the result
+        // against what it builds.
+        let mut reg = ConfigRegistry::new();
+        let small = reg.insert(key("monospace", 15.0), FakeAtlas(1));
+        let big = reg.insert(key("monospace", 30.0), FakeAtlas(2));
+        let k = [
+            key("monospace", 30.0),
+            key("monospace", 15.0),
+            key("monospace", 30.0),
+        ];
+        assert_eq!(reg.ids_wanted_by(&k), vec![small, big]);
+    }
+
+    #[test]
+    fn no_keys_wants_nothing() {
+        // A renderer whose last grid left mid-loss: nothing to re-bake, and no panic on the way.
+        let (reg, _) = start();
+        assert_eq!(reg.ids_wanted_by(&[]), vec![]);
     }
 }
