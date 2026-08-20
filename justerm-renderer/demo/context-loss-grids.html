@@ -38,14 +38,33 @@
                                                    it sampling a dead texture
     · `n`  fed while HIDDEN, never drawn at all  — the dirty flag has to survive the loss, so the
                                                    first render after it is placed packs it once
-    · `m`  REGISTERED AND FED DURING the loss    — `addGrid` does not refuse a dead context (its
+    · `m`  REGISTERED AND FED DURING the loss    — `addGrid` does not refuse a dead context: its
                                                    `create_buffer` hands back a non-null dead
-                                                   handle, measured #770) and `apply_damage` runs
-                                                   the pack chain with no liveness predicate at
-                                                   all. Both are safe only because `restore`
-                                                   replaces the buffers and re-bakes every resident
-                                                   glyph; this is that clearance being watched
-                                                   rather than reasoned about
+                                                   handle (measured #770), so the registration
+                                                   succeeds holding an object that died with the
+                                                   context and `restore` has to replace it
+    · `f`  registered before, FED VIA apply_frame
+           during the loss, with a glyph nothing
+           else uses                             — the only one of the five whose recovery is a
+                                                   *validity condition* rather than a mechanism.
+                                                   `apply_frame` is the direct path: it packs from
+                                                   its own call with no liveness predicate, so on a
+                                                   dead context it rasterises into the dead atlas,
+                                                   marks a cache slot resident that the GPU never
+                                                   received, and writes an upload baseline for
+                                                   bytes that were never uploaded. It comes back
+                                                   only because `restore` does BOTH halves —
+                                                   `bake_all_glyphs` over `cache.entries()` for the
+                                                   slot, `invalidate_baseline` for the bytes. That
+                                                   is ADR-0027's one conformance row still
+                                                   resolving as ✗, and nothing had ever watched it
+
+  `apply_damage` is deliberately NOT that case, though two records say it is. It is an inherent
+  method on `GridTier`, and a `GridTier` holds the buffer *handles* but not the `glow::Context` —
+  so it cannot issue a GL call at all. It scatters into the retained grid, sets `needs_repack`, and
+  returns (#421); the pack behind it is `render`'s, which a lost context skips. `m` therefore tests
+  registration during a loss, and `f` tests the pack chain. Conflating them is how this page's first
+  draft claimed to watch a clearance it never entered.
 
   Every check reads ONE GRID'S OWN RECT. That is not a style choice — it is AC 5. A whole-buffer
   comparison passes as long as the visible grids are right, which is exactly the claim in doubt.
@@ -65,13 +84,20 @@
   await init();
 
   const SPACE = 0x20, BLOCK = 0x2588;                 // █ fills its whole cell, whatever the cell is
+  const LAMBDA = 0x3bb;                               // λ — not ASCII, so it is a CACHE slot, not a prebake
   const RGB = (c) => ((2 << 24) | c) >>> 0;           // absolute Rgb colour ref (tag 2)
   const DEF_FG = 0xffffff, DEF_BG = 0x101018;
-  const DARK = 0x101820;                              // every non-ink channel well under the threshold
+  // **Neutral grey on purpose.** The cell background sits under every ink test below, and a
+  // background with a dominant channel of its own biases them: with a blue-ish `0x101820` the blue
+  // grid passed at any ink coverage while the red, green and cyan ones needed coverage above ~0.32
+  // to clear the ratio. That is the family's recorded hazard — `█` is a font's glyph and the CI
+  // runner's font is not this machine's, so a hollower fallback would have failed the three
+  // controls and left the load-bearing check green. Equal channels make the test coverage-symmetric.
+  const DARK = 0x181818;
   // One dominant channel each, so a rect can say WHICH grid's cells it is showing rather than only
-  // that something is lit. `m` is magenta — red and blue high, green low — which no other ink here
-  // can be mistaken for.
-  const A_INK = 0xf03030, H_INK = 0x3030f0, N_INK = 0x30f030, M_INK = 0xf030f0;
+  // that something is lit. `m` is magenta and `f` cyan — a high PAIR against a low third, which no
+  // single-channel ink here can be mistaken for, and which no other pair repeats.
+  const A_INK = 0xf03030, H_INK = 0x3030f0, N_INK = 0x30f030, M_INK = 0xf030f0, F_INK = 0x30f0f0;
   // A font size no other grid asks for, so `h` is the only holder of its configuration.
   const H_FONT = 26;
 
@@ -132,23 +158,26 @@
   const a = r.addGrid(palette, DEF_FG, DEF_BG);
   const h = r.addGrid(palette, DEF_FG, DEF_BG, null, H_FONT);
   const n = r.addGrid(palette, DEF_FG, DEF_BG);
+  const f = r.addGrid(palette, DEF_FG, DEF_BG);
   const [cwA, chA] = [r.cell_width(a), r.cell_height(a)];
   const [cwH, chH] = [r.cell_width(h), r.cell_height(h)];
   const [A_COLS, A_ROWS] = [6, 2], [H_COLS, H_ROWS] = [4, 2], [N_COLS, N_ROWS] = [6, 2];
-  const [M_COLS, M_ROWS] = [4, 1];
+  const [M_COLS, M_ROWS] = [4, 1], [F_COLS, F_ROWS] = [4, 1];
 
   const rectA = { x: 0, y: 0, width: A_COLS * cwA, height: A_ROWS * chA };
   const rectH = { x: 0, y: rectA.height, width: H_COLS * cwH, height: H_ROWS * chH };
   const rectN = { x: 0, y: rectH.y + rectH.height, width: N_COLS * cwA, height: N_ROWS * chA };
   const rectM = { x: 0, y: rectN.y + rectN.height, width: M_COLS * cwA, height: M_ROWS * chA };
-  const SURFACE_W = Math.max(rectA.width, rectH.width, rectN.width, rectM.width);
-  const SURFACE_H = rectM.y + rectM.height;
+  const rectF = { x: 0, y: rectM.y + rectM.height, width: F_COLS * cwA, height: F_ROWS * chA };
+  const SURFACE_W = Math.max(rectA.width, rectH.width, rectN.width, rectM.width, rectF.width);
+  const SURFACE_H = rectF.y + rectF.height;
   r.resizeSurface(SURFACE_W, SURFACE_H);
   const place = (g, rect) => r.setViewport(g, rect.x, rect.y, rect.width, rect.height);
 
   r.resizeGrid(a, A_COLS, A_ROWS);
   r.resizeGrid(h, H_COLS, H_ROWS);
   r.resizeGrid(n, N_COLS, N_ROWS);
+  r.resizeGrid(f, F_COLS, F_ROWS);
 
   // ── Baseline: `a` and `h` drawn, `n` fed but never placed ────────────────────────────────────
   place(a, rectA);
@@ -164,7 +193,7 @@
   checks.theControlGridDrewItsOwnInk = dominates(aBefore, 0);
   checks.theGridAboutToBeHiddenDrewItsOwnInk = dominates(hBefore, 2);
   checks.aGridWithNoViewportIsRegisteredButNotDrawn =
-    r.gridCount() === 3 && r.isGridDrawn(n) === false && r.isGridDrawn(h) === true;
+    r.gridCount() === 4 && r.isGridDrawn(n) === false && r.isGridDrawn(h) === true;
 
   // Hide `h`. It keeps everything it owns — instances, retained grid, atlas reference — and stops
   // painting. Nothing dirties it, so the next pack it gets is the one it does not get.
@@ -193,16 +222,39 @@
   lose.loseContext();
   await lost;
 
-  // A fourth grid REGISTERED while the context is dead, and fed there too. `addGrid` deliberately
-  // does not refuse: Chromium's `createBuffer()` answers with a non-null object on a lost context
-  // (measured, #770), so the registration succeeds holding a handle that is already dead, and
-  // `apply_damage` then runs pack → rasterise → upload through it with no liveness predicate. Both
-  // are cleared only by `restore` replacing the buffers and re-baking the resident glyphs; this is
-  // the first time anything watches that clearance hold.
+  // A grid REGISTERED while the context is dead, and fed there too. `addGrid` deliberately does not
+  // refuse: Chromium's `createBuffer()` answers with a non-null object on a lost context (measured,
+  // #770), so the registration succeeds holding a handle that died with the context, and only
+  // `restore` replacing it makes the grid drawable. The feed here is `apply_damage`, which touches
+  // no GL at all — it is a `GridTier` method and a `GridTier` has the buffer handles but not the
+  // context — so what this grid tests is the REGISTRATION, not the pack chain. `f` below is the
+  // one that tests the pack chain.
   const m = r.addGrid(palette, DEF_FG, DEF_BG);
   r.resizeGrid(m, M_COLS, M_ROWS);
   r.apply_damage(m, ...stripes(M_COLS, M_ROWS, M_INK));
-  checks.aGridRegisteredDuringTheLossJoinsTheRegistry = r.gridCount() === 4;
+  checks.aGridRegisteredDuringTheLossJoinsTheRegistry = r.gridCount() === 5;
+
+  // …and the one entry point that DOES reach pack → rasterise → `upload_glyph` → `upload_instances`
+  // from its own call, with no liveness predicate anywhere on the path: `apply_frame`, the direct
+  // path, which retains no grid for `render` to re-pack from and so cannot defer (#421). On this
+  // dead context it rasterises λ — a codepoint no other grid on this page uses, and not ASCII, so
+  // it is a glyph-CACHE slot rather than a prebake — marks that slot resident, uploads it into a
+  // texture that no longer exists, and records an upload baseline for bytes the GPU never got.
+  //
+  // Nothing rejects any of that. The grid comes back only because `restore` does two separate
+  // things: `bake_all_glyphs` over `cache.entries()` re-rasterises the slot, and
+  // `invalidate_baseline` throws away the baseline that describes an upload which never happened.
+  // Remove or narrow either and this is a frame the consumer submitted, saw acknowledged, and never
+  // sees. ADR-0027's conformance map has carried that as its one open ✗ with this exact validity
+  // condition; the condition had never been observed holding.
+  const fCells = new Uint32Array(F_COLS * F_ROWS).fill(LAMBDA);
+  const fFg = new Uint32Array(F_COLS * F_ROWS).fill(RGB(F_INK));
+  const fBg = new Uint32Array(F_COLS * F_ROWS).fill(RGB(DARK));
+  let feedWhileLostThrew = false;
+  try {
+    r.apply_frame(f, F_COLS, F_ROWS, fBg, fFg, fCells, new Uint16Array(F_COLS * F_ROWS), true);
+  } catch (e) { feedWhileLostThrew = true; console.error(e); }
+  checks.theDirectFeedPathDoesNotRejectADeadContext = feedWhileLostThrew === false;
   // …into a configuration that already exists, so nothing is baked on a dead context and the
   // per-configuration bake count below stays readable.
   checks.andJoinsAnExistingConfigurationRatherThanBakingOne = r.atlasCount() === atlasesBeforeLoss;
@@ -215,14 +267,32 @@
   await restored;
   // The frame after `webglcontextrestored` rebuilds pipeline, buffers and atlases. NOTHING ELSE is
   // called: no re-feed, no re-placement, no re-fit.
+  //
+  // Read the pack counter HERE rather than before the loss, and the difference is not pedantry: the
+  // `apply_frame` above packs from its own call, ON the dead context, so a window that opens before
+  // the loss counts that pack and reports the restore as having packed. It does not. (Measured:
+  // the wider window answers 1 and the restore's own answers 0.)
+  const packsBeforeRestoreRender = r.packs();
   let restoreThrew = false;
   try { r.render(); } catch (e) { restoreThrew = true; console.error(e); }
   const bakesAcrossRestore = r.bakes() - bakesBeforeLoss;
-  const packsAcrossRestore = r.packs() - packsBeforeLoss;
-  notes.acrossRestore = { bakes: bakesAcrossRestore, packs: packsAcrossRestore, atlases: r.atlasCount() };
+  const packsAcrossRestore = r.packs() - packsBeforeRestoreRender;
+  notes.acrossRestore = {
+    bakes: bakesAcrossRestore,
+    packs: packsAcrossRestore,
+    packsSinceBeforeTheLoss: r.packs() - packsBeforeLoss,
+    atlases: r.atlasCount(),
+  };
 
   checks.theRestoreDidNotThrow = restoreThrew === false;
   checks.everyConfigurationSurvivesTheLoss = r.atlasCount() === atlasesBeforeLoss;
+  // The whole restore packs NOTHING — asserted, not merely noted, because it is what makes every
+  // "repaints from render alone" check below load-bearing rather than merely true. A re-pack writes
+  // the instances afresh and would mask a refill that never happened, so without this the control
+  // grid's check could stay green with the refill broken. (`h` carries the same guard for its own
+  // placement; this is the surface-wide half, and it was a `notes` entry until the Step 5 pass
+  // pointed out that nothing gates a note.)
+  checks.theWholeRestorePacksNothing = packsAcrossRestore === 0;
   // Exactly one bake per LIVE configuration — including the one whose only holder is hidden. Not
   // one (which leaves the hidden grid sampling a dead texture) and not two.
   checks.andExactlyOneAtlasIsBakedPerLiveConfiguration =
@@ -253,6 +323,13 @@
     sameBytes(hAfterPlacement, hBefore);
   // …and it is ITS OWN content, not the grid drawn before it in the loop. A dead VAO does not draw
   // nothing: the bind fails and the previously bound one stays, so `a`'s cells would appear here.
+  //
+  // **A named sub-assertion, not an independent one** — `sameBytes` above plus
+  // `theGridAboutToBeHiddenDrewItsOwnInk` already imply it, so it cannot fail while both pass. Kept
+  // for the same reason `context-loss.html` keeps `recoveredAsciiFastPath` beside
+  // `recoveredMatchesBaseline`: when the byte check goes red, this says *how*. Said out loud so it
+  // is not mistaken for coverage — the two ink checks that ARE load-bearing are `n`'s and `f`'s,
+  // which have no pre-loss bytes to compare against.
   checks.andItIsItsOwnInkRatherThanItsNeighbours = dominates(hAfterPlacement, 2);
   // …and it needed no re-bake of its own: the atlas it draws through was restored with everything
   // else, not lazily rebuilt when the grid became visible.
@@ -273,7 +350,10 @@
   r.render();
   const nRecovered = rectBytes(rectN);
   notes.atNPlacement = { packs: r.packs() - packsBeforeN };
-  checks.placingANeverDrawnGridPutsSomethingWhereThereWasNothing =
+  // A window check, and a weak one on purpose: placing a grid gives it a per-rect clear, so this
+  // would move even if the grid drew no cells at all. It says the rect is now the grid's, nothing
+  // more — the ink check two lines down is what says the CONTENT came back.
+  checks.placingANeverDrawnGridTakesOverItsRect =
     !sameBytes(nRecovered, nWhileUnplaced);
   checks.aNeverDrawnGridPacksOnceWhenItIsFirstPlaced = r.packs() === packsBeforeN + 1;
   checks.andComesBackShowingItsOwnInk = dominates(nRecovered, 1);
@@ -284,22 +364,51 @@
   r.render();
   const mRecovered = rectBytes(rectM);
   const mCh = channels(mRecovered);
-  notes.channels = { a: channels(aBefore), h: channels(hAfterPlacement), n: channels(nRecovered), m: mCh };
-  checks.aGridRegisteredWhileTheContextWasDeadDrawsAfterTheRestore =
+  // Same weak window check as `n`'s, for the same reason — the per-rect clear alone satisfies it.
+  checks.aGridRegisteredWhileTheContextWasDeadTakesOverItsRect =
     !sameBytes(mRecovered, mWhileUnplaced);
-  // Magenta — red and blue both far above green — which none of the other three inks can be. Stated
-  // as its own check so a failure says "this is some OTHER grid's ink" rather than only "not lit".
+  // Magenta — red and blue both far above green — which none of the other inks can be. THIS is the
+  // load-bearing one for `m`: a grid still holding its dead VAO would draw a neighbour's cells, and
+  // `m` has no pre-loss bytes for a `sameBytes` check to catch that with.
   checks.andItIsMagentaRatherThanAnyNeighboursInk =
     mCh[0] > 1.5 * mCh[1] && mCh[2] > 1.5 * mCh[1];
+
+  // ── The grid fed through the DIRECT path while the context was dead ──────────────────────────
+  // The state whose recovery is a validity condition rather than a mechanism: a cache slot marked
+  // resident that the GPU never received, and an upload baseline describing bytes that were never
+  // uploaded. If `restore` skipped either repair, λ draws as an empty slot — blank cells, no error
+  // anywhere, and the consumer never learns the frame it submitted was lost.
+  const fWhileUnplaced = rectBytes(rectF);
+  const packsBeforeF = r.packs();
+  place(f, rectF);
+  r.render();
+  const fRecovered = rectBytes(rectF);
+  const fCh = channels(fRecovered);
+  notes.channels = {
+    a: channels(aBefore), h: channels(hAfterPlacement), n: channels(nRecovered), m: mCh, f: fCh,
+  };
+  notes.atFPlacement = { packs: r.packs() - packsBeforeF };
+  checks.aGridFedThroughTheDirectPathOnADeadContextComesBack =
+    !sameBytes(fRecovered, fWhileUnplaced);
+  // Cyan — green and blue both far above red. λ is not ASCII, so this ink can only be on screen if
+  // the restore walked the glyph cache and re-rasterised a slot that was never uploaded.
+  checks.andItsCacheOnlyGlyphWasReRasterisedIntoItsSlot =
+    fCh[1] > 1.5 * fCh[0] && fCh[2] > 1.5 * fCh[0];
+  // …and it did not re-pack to get there. `apply_frame` cleared the dirty flag when it packed on
+  // the dead context, so nothing here rebuilt the instances — which is what makes the baseline half
+  // of the clearance observable at all.
+  checks.andWithoutRepackingOnTheWayBack = r.packs() === packsBeforeF;
 
   // ── The far-side control for the two grids that had no pre-loss pixels ───────────────────────
   // Re-feed exactly what they were given and redraw. If what recovered on its own differs from what
   // an explicit re-feed produces, "it came back" was the wrong reading of those rects.
   r.apply_damage(n, ...stripes(N_COLS, N_ROWS, N_INK));
   r.apply_damage(m, ...stripes(M_COLS, M_ROWS, M_INK));
+  r.apply_frame(f, F_COLS, F_ROWS, fBg, fFg, fCells, new Uint16Array(F_COLS * F_ROWS), true);
   r.render();
   checks.theNeverDrawnGridMatchesAnExplicitRefeed = sameBytes(rectBytes(rectN), nRecovered);
   checks.theMidLossGridMatchesAnExplicitRefeed = sameBytes(rectBytes(rectM), mRecovered);
+  checks.theDirectFedGridMatchesAnExplicitRefeed = sameBytes(rectBytes(rectF), fRecovered);
   // …and the two grids that recovered earlier are still exactly where they were, so nothing in this
   // control pass repaired them retroactively.
   checks.andTheEarlierTwoAreStillWhatTheyWere =
@@ -309,7 +418,7 @@
     dpr: window.devicePixelRatio,
     deviceCell: { a: [cwA, chA], h: [cwH, chH] },
     surface: [gl.drawingBufferWidth, gl.drawingBufferHeight],
-    rects: { a: rectA, h: rectH, n: rectN, m: rectM },
+    rects: { a: rectA, h: rectH, n: rectN, m: rectM, f: rectF },
     notes,
     checks,
   };

@@ -4,6 +4,11 @@ Status: **proposed** (2026-08-03, #689). Promotes the model that accreted across
 four guard decisions in one crate, two of them made inside a single change, each decided as its own
 "which check goes here" and each producing the next.
 
+**Amended 2026-08-20 (#774), conformance map only — D1–D4 untouched.** The open ✗ row named
+`apply_frame` *and* `apply_damage`; the second never had a liveness question to answer, so the row is
+split and the `apply_damage` half struck. This is the kind of revision the paragraph below invites —
+a derivation error, corrected by reading the code the derivation is about, not a change of mind.
+
 **This is a derivation, not a product judgement.** Every clause below follows from what the browser
 actually guarantees about a WebGL context plus the shape of this crate's own modules, so a better
 derivation retires it. Nothing here is a taste call, and the reference the *browser* question would go to cannot arbitrate
@@ -86,7 +91,8 @@ work may be attempted cannot be a function of its state alone.
 | public `isContextLost()` | flag | **D4** ✓ — and since #579 the only row with a *measured* consumer: the widget observes the flag and the context disagreeing, so D4's "different question" is a demonstrated fact rather than a derivation |
 | `on_restore_deadline`'s `!is_lost`, `restore_overdue()` | flag | **D4** ✓ — these decide a *consumer notification* |
 | `render` → `action()` | context ∧ flag, composed inside `action` | **D3 ✓ — resolved by #695.** Was the defect this record derived; D4's corollary said why it was inevitable (an "ask" question placed in a report-only module) and also how to fix it: the module is *given* the answer it cannot fetch, as `ContextLiveness` |
-| `apply_frame` / `apply_damage` | **none** | **D3 ✗ — a defect, and the one row still open.** Harmless only because `restore` does `invalidate_baseline` *and* `bake_all_glyphs`; recorded with that validity condition in `docs/map/territory/gl-context-lifecycle.md`. Untouched by #695 — it packs from its own call, not from `render` |
+| `apply_frame` | **none** | **D3 ✗ — a defect, and the one row still open.** Harmless only because `restore` does `invalidate_baseline` *and* `bake_all_glyphs`; recorded with that validity condition in `docs/map/territory/gl-context-lifecycle.md`. Untouched by #695 — it packs from its own call, not from `render`. **Both halves of that condition were observed holding in #774** (`demo/context-loss-grids.html` feeds this path on a dead context with a cache-only glyph), which bounds the row's cost without closing it |
+| ~~`apply_damage`~~ | n/a | **Struck 2026-08-20 (#774): it never had a liveness question.** It is an inherent method on `GridTier`, which holds the buffer handles but not the `glow::Context`, so the tier split (#769) makes a GL call from it impossible to write. It scatters and sets `needs_repack` (#421); the pack behind it is `render`'s, resolved one row up. Recorded as a struck row rather than deleted because the pairing above it was wrong in this record and in one map note at once, and the correction *shrinks* the open defect — the reachability argument for the ✗ row leaned on `apply_damage` being the path the real consumer uses, and `justerm-web` calls only `apply_damage` |
 | `render`'s `Draw` path in the pre-dispatch window | as above | **D3 ✓ — resolved by the same change**, since both arms are behind one predicate now. The recorded measurement inverts: `packs()` went **+1** in that window and is now **0**, asserted by `demo/context-loss-race.html` |
 
 The last three rows are what earned this record: they were **derived**, not restated. #695 was found
@@ -136,7 +142,7 @@ is the sibling that reaches the window, and it fails against the pre-#695 implem
   whose failure mode is a permanently blank terminal"* — and this closes it.
 - New questions in this area arrive as **conformance items under this record** rather than as fresh
   decisions. The first two are already open: **#695** and, if it is ever fixed rather than left
-  covered-from-behind, the `apply_frame`/`apply_damage` row.
+  covered-from-behind, the `apply_frame` row.
 - **#287 (multi-viewport) inherits it.** One context serving N grids means one liveness answer shared
   by N surfaces, and every row of the conformance map becomes *"usable for which viewport?"*. D1
   answers it by construction — the owner of the answer is still the context, and per-viewport state is

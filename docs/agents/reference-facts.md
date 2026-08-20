@@ -1832,3 +1832,30 @@ terminals, because none of them shares one. xterm is one context per terminal, a
 per window, ghostty one renderer per surface (`Surface.zig:86-92`, in the #768 section). So the case
 #774 exists for — a terminal that is *registered and not drawn* when the context dies — has no
 comparand anywhere, and the tie-breaker gives this layer to justerm's own model in any case.
+
+**The refcount makes xterm's restore a no-op for the atlas whenever a sibling shares the
+configuration**, which is worth stating because it looks like a rebuild and is not: the restoring
+terminal drops its reference, then `_initializeWebGLState` re-acquires and `configEquals` matches the
+sibling's surviving entry, so it rejoins the entry it just left. Only the *sole owner* case actually
+rebuilds — and that rebuild throws away every cached glyph, re-warming ASCII alone. Transposed here
+that shape is the mutation this slice already measured red (*"bake only configurations with a drawn
+holder"*): on one context every entry's texture died, so a refcount-conditional restore leaves the
+untouched entries dead. It is a **negative** corroboration of `restore`'s unconditional per-config
+bake, not a source that could make it wrong.
+
+**three.js is the other half of the answer, and it points the opposite way from what a viewport
+renderer might hope.** `onContextRestore` calls `initGLContext()`, which re-instantiates the property
+and resource managers — `properties = new WebGLProperties()` — so every GPU resource is re-created
+**lazily, at next use**.
+
+| Fact | Reference | Site |
+|---|---|---|
+| The restore handler resets the lost flag and re-runs the whole GL init rather than replaying resources | three.js | `src/renderers/WebGLRenderer.js:1119-1131` |
+| …and that init throws away the per-object GPU property cache, so each resource is rebuilt the next time something draws it | three.js | `src/renderers/WebGLRenderer.js:458` |
+
+Lazy works there because N views draw one scene and every resource is reached every frame. It is
+exactly the shape a **registered-but-not-drawn** grid defeats: a hidden grid has no next use, so a
+lazy restore would leave it dead until something placed it — and placing it is a consumer action that
+may never come. That is the structural reason this renderer's restore is **eager**, and it is the
+closest any reference gets to #774's question. Recorded as a divergence with a reason rather than as
+prior art to follow.
