@@ -38,6 +38,16 @@ machine that decides what the renderer does in between.
 - **Loss destroys GPU state, not the CPU-side model.** The persistent dense grid in the
   [frame adapter](frame-adapter.md) survives, which is what makes a restore a re-upload rather than a
   re-send from the engine.
+- **Registration is the one entry point that neither refuses nor defers, and pays instead** (#787).
+  `add_grid` reaches `bake_config` with no liveness predicate, unlike every other mid-life entry
+  point. Both alternatives are closed to it: refusing is the constructor's privilege and only because
+  a constructor has nothing to defer into, and deferring would defer the **cell** — which the five
+  deferring setters can do and this one cannot, since a consumer reads `cellWidth` back the moment
+  `addGrid` returns and the cell is a CPU ink-scan a dead context does not obstruct. So a grid asking
+  mid-loss for a configuration nobody holds costs **one thrown-away bake** (measured: `bakes()` +1 in
+  the loss window, and the restore bakes it again). Bounded, not merely small: `render` cannot draw
+  while `gpu_work_must_wait()` holds, and a grid born on a configuration is that configuration's own
+  key-matching holder, so the restore always re-bakes it — the second half only true since #788.
 - **Construction is the one entry point that refuses instead of deferring, and it is the only one
   where the *binding* decides the failure shape.** The five below can defer because there is a
   renderer to defer *into*; a constructor has no state machine yet, nothing to replay at `restore`,

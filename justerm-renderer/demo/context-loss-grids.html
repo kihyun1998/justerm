@@ -98,8 +98,10 @@
   // that something is lit. `m` is magenta and `f` cyan — a high PAIR against a low third, which no
   // single-channel ink here can be mistaken for, and which no other pair repeats.
   const A_INK = 0xf03030, H_INK = 0x3030f0, N_INK = 0x30f030, M_INK = 0xf030f0, F_INK = 0x30f0f0;
-  // A font size no other grid asks for, so `h` is the only holder of its configuration.
-  const H_FONT = 26;
+  const W_INK = 0xf0f030;                             // yellow — red and green high, blue low
+  // Font sizes no other grid asks for: `h` is the only holder of its configuration, and `w` asks
+  // mid-loss for one that does not exist yet (#787).
+  const H_FONT = 26, W_FONT = 21;
 
   const palette = new Uint32Array(256);
   const r = new JustermRenderer("#c");
@@ -162,15 +164,19 @@
   const [cwA, chA] = [r.cell_width(a), r.cell_height(a)];
   const [cwH, chH] = [r.cell_width(h), r.cell_height(h)];
   const [A_COLS, A_ROWS] = [6, 2], [H_COLS, H_ROWS] = [4, 2], [N_COLS, N_ROWS] = [6, 2];
-  const [M_COLS, M_ROWS] = [4, 1], [F_COLS, F_ROWS] = [4, 1];
+  const [M_COLS, M_ROWS] = [4, 1], [F_COLS, F_ROWS] = [4, 1], [W_COLS, W_ROWS] = [3, 1];
 
   const rectA = { x: 0, y: 0, width: A_COLS * cwA, height: A_ROWS * chA };
   const rectH = { x: 0, y: rectA.height, width: H_COLS * cwH, height: H_ROWS * chH };
   const rectN = { x: 0, y: rectH.y + rectH.height, width: N_COLS * cwA, height: N_ROWS * chA };
   const rectM = { x: 0, y: rectN.y + rectN.height, width: M_COLS * cwA, height: M_ROWS * chA };
   const rectF = { x: 0, y: rectM.y + rectM.height, width: F_COLS * cwA, height: F_ROWS * chA };
-  const SURFACE_W = Math.max(rectA.width, rectH.width, rectN.width, rectM.width, rectF.width);
-  const SURFACE_H = rectF.y + rectF.height;
+  // `w`'s configuration does not exist yet, so its cell is not known here. Reserve a band using the
+  // largest cell on the page and place the rect from `w`'s own cell once it has one.
+  const rectWBand = { x: 0, y: rectF.y + rectF.height, height: chH };
+  const SURFACE_W = Math.max(rectA.width, rectH.width, rectN.width, rectM.width, rectF.width,
+                             W_COLS * cwH);
+  const SURFACE_H = rectWBand.y + rectWBand.height;
   r.resizeSurface(SURFACE_W, SURFACE_H);
   const place = (g, rect) => r.setViewport(g, rect.x, rect.y, rect.width, rect.height);
 
@@ -259,6 +265,28 @@
   // per-configuration bake count below stays readable.
   checks.andJoinsAnExistingConfigurationRatherThanBakingOne = r.atlasCount() === atlasesBeforeLoss;
 
+  // …and a grid asking mid-loss for a configuration **nobody holds** — the case this page used to
+  // avoid, and the subject of #787. `add_grid` reaches `bake_config` with no liveness predicate,
+  // unlike every other mid-life entry point, so this rasterises the ASCII prebake into a texture
+  // created on a dead context and `restore` bakes the same configuration again a moment later.
+  //
+  // **Recorded as an assertion rather than fixed** (ADR-0027's conformance map, `add_grid` row):
+  // the cost is one thrown-away bake, in a window where `render` provably cannot draw, and the
+  // repair is structural — the entry a grid is born on is its own key-matching holder, so it always
+  // survives the reconcile that #788 corrected. Guarding it would mean a sixth deferral shape:
+  // every other deferring setter defers the **cell** too, and this one cannot, because a consumer
+  // reads `cellWidth` back the moment `addGrid` returns.
+  const bakesBeforeW = r.bakes();
+  const w = r.addGrid(palette, DEF_FG, DEF_BG, null, W_FONT);
+  r.resizeGrid(w, W_COLS, W_ROWS);
+  r.apply_damage(w, ...stripes(W_COLS, W_ROWS, W_INK));
+  checks.aNewConfigurationRegisteredMidLossIsBakedThereAndThenAgainAtRestore =
+    r.atlasCount() === atlasesBeforeLoss + 1 && r.bakes() === bakesBeforeW + 1;
+  // The half that is not waste: the cell is derived on the CPU (an ink-scan), so it is honest
+  // immediately — which is why deferring the whole bake is not available as a fix.
+  checks.andItsCellIsAlreadyItsOwn =
+    r.cell_width(w) !== cwA && r.cell_width(w) !== cwH && r.cell_width(w) > 0;
+
   // Chrome only permits `restoreContext()` once the `webglcontextlost` dispatch has fully unwound —
   // awaiting the event is a microtask and is NOT enough (as `context-loss.html` documents).
   await new Promise((res) => setTimeout(res, 0));
@@ -273,19 +301,26 @@
   // the loss counts that pack and reports the restore as having packed. It does not. (Measured:
   // the wider window answers 1 and the restore's own answers 0.)
   const packsBeforeRestoreRender = r.packs();
+  // The same window for `bakes()` and for the entry count, and for the same reason: `addGrid` above
+  // asked for a configuration nobody held and baked it, on the dead context. A window that opens
+  // before the loss counts that bake as the restore's, and an entry count taken before the loss
+  // describes a registry the loss window has since changed.
+  const bakesBeforeRestoreRender = r.bakes();
+  const atlasesBeforeRestoreRender = r.atlasCount();
   let restoreThrew = false;
   try { r.render(); } catch (e) { restoreThrew = true; console.error(e); }
-  const bakesAcrossRestore = r.bakes() - bakesBeforeLoss;
+  const bakesAcrossRestore = r.bakes() - bakesBeforeRestoreRender;
   const packsAcrossRestore = r.packs() - packsBeforeRestoreRender;
   notes.acrossRestore = {
     bakes: bakesAcrossRestore,
+    bakesSinceBeforeTheLoss: r.bakes() - bakesBeforeLoss,
     packs: packsAcrossRestore,
     packsSinceBeforeTheLoss: r.packs() - packsBeforeLoss,
     atlases: r.atlasCount(),
   };
 
   checks.theRestoreDidNotThrow = restoreThrew === false;
-  checks.everyConfigurationSurvivesTheLoss = r.atlasCount() === atlasesBeforeLoss;
+  checks.everyConfigurationSurvivesTheLoss = r.atlasCount() === atlasesBeforeRestoreRender;
   // The whole restore packs NOTHING — asserted, not merely noted, because it is what makes every
   // "repaints from render alone" check below load-bearing rather than merely true. A re-pack writes
   // the instances afresh and would mask a refill that never happened, so without this the control
@@ -304,7 +339,7 @@
   // Exactly one bake per LIVE configuration — including the one whose only holder is hidden. Not
   // one (which leaves the hidden grid sampling a dead texture) and not two.
   checks.andExactlyOneAtlasIsBakedPerLiveConfiguration =
-    bakesAcrossRestore === atlasesBeforeLoss;
+    bakesAcrossRestore === r.atlasCount();
   // The drawn half, per grid rather than per buffer.
   checks.theDrawnGridRepaintsFromRenderAlone = sameBytes(rectBytes(rectA), aBefore);
   // …and the hidden grid is still hidden, so the rect it will be placed into is still empty. This
@@ -406,6 +441,22 @@
   // the dead context, so nothing here rebuilt the instances — which is what makes the baseline half
   // of the clearance observable at all.
   checks.andWithoutRepackingOnTheWayBack = r.packs() === packsBeforeF;
+
+  // ── The grid whose CONFIGURATION was born mid-loss ───────────────────────────────────────────
+  // Its atlas was baked twice: once into a dead context at `addGrid`, once by the restore. What
+  // matters is that the second one is what it draws through — the entry survives the reconcile
+  // because a grid born on a configuration is that configuration's own key-matching holder.
+  const rectW = { ...rectWBand, width: W_COLS * r.cell_width(w), height: r.cell_height(w) };
+  const wWhileUnplaced = rectBytes(rectW);
+  place(w, rectW);
+  r.render();
+  const wRecovered = rectBytes(rectW);
+  const wCh = channels(wRecovered);
+  checks.theGridWhoseConfigurationWasBornMidLossDrawsAfterTheRestore =
+    !sameBytes(wRecovered, wWhileUnplaced);
+  // Yellow — red and green far above blue, which none of the other five inks is.
+  checks.andItIsYellowRatherThanAnyNeighboursInk =
+    wCh[0] > 1.5 * wCh[2] && wCh[1] > 1.5 * wCh[2];
 
   // ── The far-side control for the two grids that had no pre-loss pixels ───────────────────────
   // Re-feed exactly what they were given and redraw. If what recovered on its own differs from what
