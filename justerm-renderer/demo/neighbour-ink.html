@@ -152,11 +152,13 @@
   };
 
   const checks = {};
+  let drawnProbe = null;
   if (!probe) {
     checks.probeAvailable = false;
   } else {
     const free = probe.ink;
     const own = drawn(probe.t);
+    drawnProbe = own.total;
     // 1. Every pixel the font drew reached the buffer.
     checks.theWholeGlyphIsDrawn = own.total === free.lit;
     // 2. ...and some of it is on a neighbour, which is what makes this I_neighbour rather than a
@@ -212,18 +214,47 @@
   // proper lead+spacer pair all put ZERO emoji ink in the neighbouring row. A valid guard has to
   // take its precondition from the renderer's own bake rather than from a 2D canvas.
 
-  // Controls: glyphs that always fitted must be untouched, or "more ink everywhere" would pass 1.
-  // `█` is the load-bearing one — it is what catches a bake origin that forgot the band, which is a
-  // real bug this page's first version found (a run of blocks stopped meeting its neighbour).
-  for (const [name, chr] of [["g", "g"], ["M", "M"], ["block", "█"]]) {
+  // Controls, and every one of them keyed to what was measured ON THIS MACHINE rather than to what
+  // a glyph does on the author's font. Both forms of that mistake were caught by CI (#791):
+  //
+  //   - `g` and `M` are controls only where they FIT. On a face whose cell is tight — DejaVu Sans
+  //     Mono, where the `█` ink box sits 3 px inside the declared line box — ordinary letters
+  //     overflow and *should* now spill, so asserting they do not is asserting the defect back.
+  //   - `█` is not compared against the font at all. It is drawn by `builtin` to the CELL (#359),
+  //     never through the font, so its reference is `cw * ch` exactly. Measured: the font's own `█`
+  //     ink is 399 px where the cell is 400, and on the author's face the two coincided at 288.
+  const fitsInCell = (i) =>
+    i.above <= blockInk.above && i.below <= blockInk.below &&
+    i.minX >= blockInk.minX && i.maxX <= blockInk.maxX;
+
+  const controls = {};
+  for (const [name, chr] of [["g", "g"], ["M", "M"]]) {
+    const f = freeInk(chr);
+    if (!fitsInCell(f)) continue; // not a control on this face
     const d = drawn(chr);
-    checks[`${name}IsUnchanged`] = d.total === freeInk(chr).lit && d.perRow[0] === 0 && d.perRow[2] === 0;
+    controls[name] = { free: f.lit, drawn: d.total, perRow: d.perRow };
+    // NO SPILL, and not an exact count against the font. A fitting glyph must not deposit anything
+    // on a neighbour — that is the property "the change did not leak ink everywhere", and it is
+    // exact (0 or not). Comparing this glyph's total against a 2D canvas's is comparing two
+    // rasterisation paths, which agree at integral densities and drift a pixel at dpr 1.1; the one
+    // place that comparison IS the point is the probe, where the whole claim is "all of it arrived".
+    checks[`${name}DepositsNothingOnANeighbour`] = d.perRow[0] === 0 && d.perRow[2] === 0;
   }
+
+  // The load-bearing control: this is what catches a bake origin that forgot the band, which is a
+  // real bug this page's first version found (a run of blocks stopped meeting its neighbour).
+  const blk = drawn("█");
+  checks.theBlockStillFillsExactlyItsCellAndNoMore =
+    blk.perRow[1] === cw * ch && blk.perRow[0] === 0 && blk.perRow[2] === 0;
 
   const ok = Object.values(checks).every(Boolean);
   window.__proof = {
     ok,
     checks,
+    // Reported so a CI failure is diagnosable without reproducing the runner's fonts, which is the
+    // same reason `demo/emoji*.html` asserts its font by name (#334): the cell here is derived from
+    // whichever face `monospace` resolves to, so every count below is machine-specific.
+    measured: probe ? { probeFree: probe.ink.lit, probeDrawn: drawnProbe, controls } : { controls },
     probe: probe ? probe.t : null,
     cell: [cw, ch],
     blockReach: blockInk,
