@@ -1,6 +1,14 @@
 # ADR-0019: The cell composition model — a layered, per-channel, total resolution
 
-Status: accepted (2026-07-21) — **amended 2026-08-18** (#317 §2): **R1.1** answers whether a
+Status: accepted (2026-07-21) — **amended 2026-08-20** (#791): rules 1–6 resolve the sources belonging
+to **one** cell, and a glyph whose ink exceeds its cell produces a source whose owner is a *different*
+cell. The model had no term for it, so the renderer resolved it by destruction — at bake and again at
+sample — and the loss is total: measured on our own renderer, the ink drawn equals the ink inside the
+cell box exactly (`ᾷ` 96 = 96, `ǰ` 70 = 70, against `g` 65 = 65 lossless), and on DejaVu Sans Mono 439
+of 1579 sampled codepoints lose ink, `À Á Â Ã Ä Å` among them. Rule 4's enumeration gains
+**`I_neighbour`** and rule 6's order gains one position for it; rule 5 says whose colour it keeps and
+when it is withdrawn. Same class of gap as #712's, one axis over — an accident of the fold deciding
+what Totality reserves for the model. — **amended 2026-08-18** (#317 §2): **R1.1** answers whether a
 background-class glyph goes translucent with the background it joins. It does not, and the reason is
 that `u_bg_alpha` is not a layer — translucency is gated on *no* layer having touched the bg, so at
 that moment R1 has no treatment to transfer. Recorded because until now the answer lived only in a
@@ -97,7 +105,8 @@ generalises #452's per-property decoration merge to the whole stack.
 anything with a real colour beneath it, and replaces only over a bare default background.
 
 **4 — Ink sources are distinct, and one of them is background.** A cell's ink is `I_glyph` (the
-character), `I_underline`, `I_strike` and `I_cursor` (amended 2026-08-04, #525 — this list read
+character), `I_underline`, `I_strike`, `I_cursor` and `I_neighbour` (added 2026-08-20, #791 — the one
+source the cell does not author; see **R1.2**) (amended 2026-08-04, #525 — this list read
 `I_line` *"(underline / strikethrough)"*, and naming two marks as one source is what let a colour
 declared for one of them paint the other). The two line bands are **separate sources that coincide by
 default**, not one source that splits: they run the same treatments off the same follow-fg base, and
@@ -107,6 +116,26 @@ since `SGR 58` is its and no escape sets a strikethrough's. **R1:** when the gly
 `builtin::owns` draws to the cell, asked of the drawer rather than restated), `I_glyph` belongs to the
 **background channel** and takes whatever treatment the bg fold applied. R1 reaches `I_glyph` **only**;
 `I_line` and `I_cursor` are `TEXT` class always.
+
+**R1.2 — `I_neighbour`: the ink of a glyph that belongs to an ADJACENT cell** (added 2026-08-20, #791).
+Every other source in rule 4's list is authored by the cell being resolved. This one is not: a glyph
+larger than the cell it occupies deposits ink outside it, and that ink is a source for whichever cell
+it lands in. Three properties, all of which follow from its owner rather than from its receiver:
+
+- **It carries its owner's resolved ink and its owner's class.** R1 is asked of the *owning* cell's
+  glyph, so a background-class tile overflowing its cell is background-class where it lands too.
+- **It is not the receiver's content.** The receiver's own layers do not recolour it — see rule 5.
+- **Its reach is bounded, and what lies beyond the bound is still destroyed.** How far ink may travel
+  is the bake's bleed, a per-configuration quantity, not something this model fixes. A glyph the font
+  draws two cells wide still loses what falls outside that budget. The model says such ink *has* a
+  home; it does not claim every glyph fits in one. Recorded so the residue is a known limit rather
+  than an assumption that the gap is closed.
+
+The renderer produces this **reader-side**: the receiving cell's fragment samples the adjacent slots
+and folds their coverage into its own chain. That is a mechanism note rather than part of the model,
+and it is here because it is what keeps the model intact — the quad stays exactly one cell, so the
+composite remains one evaluation per pixel and rule 6 keeps deciding occlusion. See *Alternatives*
+for the writer-side shape and why it was refused.
 
 **R1.1 — "whatever treatment the bg fold applied" means the LAYERS' treatments, not the surface's
 opacity** (added 2026-08-18, #317 §2). A background-class glyph stays **opaque** on a translucent
@@ -148,6 +177,23 @@ The line is *authorship*, not paint mode: a decoration and an active match can b
 channel (rule 3) and still differ here, because rule 3 says how a layer paints its own background and
 rule 5 says whether it may take the cell's ink with it.
 
+**`I_neighbour` is authored by neither party, and that answers two questions at once** (added
+2026-08-20, #791). An adjacent cell's ink is not the application declaring *this* cell's colour, nor
+the user passing over *this* cell. So:
+
+- **This cell's layers do not recolour it.** It keeps its owner's resolved ink — a selection washing
+  over me does not repaint the descender that fell in from the row above, because that descender is
+  not my content. Rule 2's pass-through, reached by the same authorship test.
+- **It is withdrawn where the two cells' backgrounds differ.** Ink from one cell sitting on a
+  differently-coloured neighbour reads as a rendering fault rather than as a tall letter, and the
+  boundary it crosses — a selection edge, a search highlight, a coloured prompt segment — is exactly
+  where a user is looking. Withdrawal is **symmetric on all four edges**, which is a divergence worth
+  naming: xterm.js guards only the left (`GlyphRenderer.ts:263`, SHA `699f553`), and its own reason is
+  that it walks cells left to right and therefore knows only the *previous* background. That is a
+  property of its loop, not a rule about rendering. Resolving reader-side, the receiver holds both
+  backgrounds already, so the symmetric form costs nothing and the asymmetric one would have to be
+  argued for.
+
 **What this costs, stated plainly.** The renderer is no longer uniform across routes: the same visual
 concept expressed as a decoration erases a tile and expressed as an active match does not. That is a
 real seam in the API and it is accepted deliberately — the alternative erases box-drawing and shading
@@ -158,8 +204,17 @@ in exchange for an internal symmetry no user can observe.
 2026-08-04, #712):
 
 ```
-background channel  <  I_glyph (BACKGROUND class, by R1)  <  I_underline  <  I_glyph (TEXT class)  <  I_strike  <  I_cursor
+background channel  <  I_glyph (BACKGROUND class, by R1)  <  I_neighbour  <  I_underline  <  I_glyph (TEXT class)  <  I_strike  <  I_cursor
 ```
+
+`I_neighbour`'s position (added 2026-08-20, #791) is the whole of what the model buys here, and it is
+one clause: **above the receiver's own tile, below everything else the receiver owns.** Above the
+tile, because foreign ink is ink and a descender crossing a box-drawing border must be visible, which
+is R1's own argument read from the other side. Below the receiver's underline, glyph, strike and
+caret, because the alternative is that a letter from the row above can amputate this row's letter —
+and *nothing about who typed first should decide that*. This is the clause the writer-side shape
+cannot state at all: there, two overlapping quads are ordered by instance order, i.e. by column, which
+is the accident this rule exists to abolish.
 
 Rules 1–5 resolve a cell's channels; **none of them says what happens when two of rule 4's ink sources
 land on the same pixel**. That was left to whatever order the shader composited in, which is precisely
@@ -405,3 +460,41 @@ decoration); it is rejected here because it drops a highlight the user explicitl
 - **(D) Extend the first-party stance to the whole renderer at once.** Deferred, not rejected. The
   evidence is concentrated in cell composition; rasterisation and colour resolution have not shown the
   same pattern. Revisit if they do.
+
+### For `I_neighbour` (2026-08-20, #791)
+
+WebGL2 has no framebuffer fetch, so ink can reach a neighbouring pixel exactly two ways — the owner
+writes into it, or the receiver reads the owner's. There is no third; depth and stencil do not order
+colour, and a ping-pong FBO is multi-pass under another name. Stating that is what makes this a
+two-way decision rather than an open field.
+
+- **(E) Writer-side: the quad becomes the glyph's own bounding box.** What all three references do
+  (xterm.js `GlyphRenderer.ts:53`, alacritty `renderer/text/glsl3.rs:357`, ghostty
+  `renderer/generic.zig:3202`, SHAs in `reference-facts.md`). **Rejected, and not for being theirs** —
+  the tie-breaker for this layer says a difference from them is not by itself a defect, and the
+  converse holds too: agreement among them is not by itself an argument. Rejected because it costs
+  three things this model already owns. ① A quad overlapping its neighbour cannot know what is under
+  it, so it needs hardware blending, which needs a **premultiplied** drawing buffer — and straight
+  source-over onto a destination of alpha `A` computes `ink·c + dst·(1−c)` where the answer is
+  `(ink·c + dst·A·(1−c))/a`, which at `A = 0, c = 0.5` is verbatim the failure #317 §2 measured and
+  removed. ② A cell's background and its glyph are **one fragment** here, so ordering foreign ink
+  against them means splitting the draw; honouring rule 6 across the split needs **three** passes, not
+  two. ③ Even then, two overlapping glyph quads are ordered by *instance order* — by column — so
+  foreign-vs-own occlusion returns to being an accident of the fold, which is the defect class #712
+  closed. The references pay ①–③ willingly because their model never contained rules 4 and 6; ours
+  does.
+- **(F) Grow the cell instead — size it from the font's declared line box.** Rejected here, and it is
+  **not this ADR's to decide**: it is ADR-0022's alternative (A), still open. It also does not answer
+  the question — measured 2026-08-20, under the line-box metric Cascadia Mono still loses 168 glyphs
+  and Lucida Console 263, because the cell being *bigger* does not stop it being a scissor. Folding
+  the two would move every grid's size in the same change that fixes clipping, and neither decision
+  would then be reviewable on its own.
+
+**What (E)'s rejection preserves, stated so it is not re-derived:** the composite stays **one
+evaluation per pixel with no GL blending** — #317 §2's `a = 1 − w_bg(1−A)` and
+`rgb = (ink + bg·A·w_bg)/a` unchanged, `premultipliedAlpha: false` unchanged — because `I_neighbour`
+enters the same `w_bg` product as every other source. Verified by spike before this amendment was
+written: with the mechanism switched on, a full-block glyph deposited exactly `cell_w × bleed` pixels
+into the adjacent cell, on the correct edge, with the owning cell untouched, and the whole existing
+proof corpus (142 cases across four densities) stayed green with it switched off. The numbers are on
+#791.
