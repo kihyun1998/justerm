@@ -1055,6 +1055,19 @@ impl JustermRenderer {
         // and a registration during a loss succeeds with a buffer that died with the context. (The
         // `Err` arm below is glow's `null` path, which this browser does not take.)
         //
+        // **`createTexture` answers the same way — measured 2026-08-20 (#774)**, and that half was
+        // load-bearing rather than symmetric. The `acquire_config` call below **bakes** on a cache
+        // miss, with no liveness guard, so a grid asking mid-loss for a configuration nobody holds
+        // creates a texture and rasterises the ASCII prebake into it. Had `createTexture` answered
+        // `null`, `bake_config` would map it to `Err` and this function would **refuse** — exactly
+        // the contract the paragraph below says would be wrong. It does not, so the contract holds.
+        // What it costs instead is one thrown-away bake per such registration (measured: `bakes()`
+        // +1 during the loss, and `restore` bakes that configuration again a moment later). The
+        // grid recovers with correct pixels and nothing is left corrupt. Tracked rather than fixed
+        // here, because the question it really raises is which liveness predicate a mid-life entry
+        // point that performs GL work should ask, and ADR-0027's conformance map has no row for
+        // this one.
+        //
         // That is left alone rather than guarded, because refusing would be the wrong contract: a
         // consumer registering a terminal while the context happens to be dead wants the grid, and
         // `restore` gives **every** registered grid a fresh VAO and buffer and refills it — drawn
