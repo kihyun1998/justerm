@@ -1055,13 +1055,27 @@ impl JustermRenderer {
         // and a registration during a loss succeeds with a buffer that died with the context. (The
         // `Err` arm below is glow's `null` path, which this browser does not take.)
         //
+        // **`createTexture` answers the same way — measured 2026-08-20 (#774)**, and that half was
+        // load-bearing rather than symmetric. The `acquire_config` call below **bakes** on a cache
+        // miss, with no liveness guard, so a grid asking mid-loss for a configuration nobody holds
+        // creates a texture and rasterises the ASCII prebake into it. Had `createTexture` answered
+        // `null`, `bake_config` would map it to `Err` and this function would **refuse** — exactly
+        // the contract the paragraph below says would be wrong. It does not, so the contract holds.
+        // What it costs instead is one thrown-away bake per such registration (measured: `bakes()`
+        // +1 during the loss, and `restore` bakes that configuration again a moment later). The
+        // grid recovers with correct pixels and nothing is left corrupt. Tracked rather than fixed
+        // here, because the question it really raises is which liveness predicate a mid-life entry
+        // point that performs GL work should ask, and ADR-0027's conformance map has no row for
+        // this one.
+        //
         // That is left alone rather than guarded, because refusing would be the wrong contract: a
         // consumer registering a terminal while the context happens to be dead wants the grid, and
         // `restore` gives **every** registered grid a fresh VAO and buffer and refills it — drawn
         // and not-drawn alike (#771 had to, since a stale per-grid VAO draws the *wrong* grid once
-        // there is a draw loop). What is not yet true is that anyone has *watched* it happen with
-        // more than one grid registered: no proof loses a context with siblings, so the N-grid
-        // recovery rests on reasoning until #774 asserts it per grid. See the map territory.
+        // there is a draw loop). **Watched rather than reasoned since #774**:
+        // `demo/context-loss-grids.html` registers *and feeds* a grid inside the loss window with
+        // three siblings already on the registry, then places it after the restore and asserts it
+        // draws its own ink rather than a neighbour's. See the map territory.
         // **A grid says which font it is born into, and that is what keeps the middle tier's
         // economy real** (#772 AC 4, #773). It joins rather than bakes whenever a sibling already
         // stands on the same configuration: six terminals in one font hold one atlas between them.
@@ -2385,8 +2399,11 @@ impl JustermRenderer {
         //    grid binding a VAO that belongs to a dead context: the bind raises `INVALID_OPERATION`
         //    and leaves the *previous* grid's VAO in place, so grid B would silently draw grid A's
         //    cells. The refill comes with it — step 4 uploads every slot against a baseline
-        //    invalidated for every grid — so what #774 still owes is the *evidence*, per grid and
-        //    through the real listener path, not more of this.
+        //    invalidated for every grid — and #774 is where that stopped resting on reasoning:
+        //    `demo/context-loss-grids.html` loses one context with four grids in four states
+        //    (drawn / hidden / never drawn / registered mid-loss) and reads each grid's OWN rect
+        //    back. Measured there: one bake per *live* configuration, including the configuration
+        //    whose only holder is hidden, and `packs()` unmoved across the whole restore.
         //
         //    And every **configuration** gets its own atlas, at the live DPR, keeping its own glyph
         //    slots (#772). Baking one atlas here would have restored one grid's font and left the
@@ -2479,7 +2496,10 @@ impl JustermRenderer {
                 grid.instance_vbo = new.instance_vbo;
                 // The fresh buffer is empty and the baseline still describes the dead one — drop it
                 // so the refill below plans a `Full` upload even when the frame is byte-identical
-                // (#263). Every grid, not just the default: the trap #774 is named for.
+                // (#263). Every grid, not just the default: the trap #774 is named for, and
+                // narrowing *either* this or step 4's refill to the grids that draw is what that
+                // page measures — both mutations leave a hidden grid's rect blank on the far side
+                // of the restore, with every other check on the page still green.
                 invalidate_baseline(&mut grid.uploaded);
                 old
             })
