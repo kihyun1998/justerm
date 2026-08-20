@@ -90,7 +90,10 @@ The renderer **holds** N grids and **draws** every one that has been placed.
 - `justerm-renderer/src/config_registry.rs` — `ConfigRegistry`, `ConfigKey`, `ConfigId` (#772): the
   refcounted map from a font configuration to the resources serving it. Pure and host-tested for the
   same reason the grid registry is — the payload is a type parameter, so the registry never learns
-  that a configuration owns a GPU texture
+  that a configuration owns a GPU texture. `ConfigRegistry::ids_wanted_by` is where a restore asks
+  which entries survive a re-key (#788): the question has to be answered *before* the reconcile
+  runs, and asking it here is what makes the wrong version — the one that also required a current
+  holder — impossible to write
 - `justerm-renderer/demo/multi-viewport.html` — the browser proof for the draw loop: three grids in
   three rects on one canvas, the y-flip asserted by placing two of them at opposite ends of the
   buffer, and the single-grid output compared against a control captured in the same run (#771)
