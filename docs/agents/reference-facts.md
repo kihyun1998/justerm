@@ -1790,3 +1790,45 @@ section is not simply an import: its atlas **grows and never evicts** (row in th
 slot handed to one surface can never be reused under another. justerm's glyph cache is LRU-evicting,
 so the guarantee ghostty gets for free is one this design still owes — see ADR-0021's *Consequences*
 and the multi-viewport territory's known holes.
+
+## Recovering a context loss when the resource is SHARED between terminals (#774, verified 2026-08-20)
+
+Read for #774 (Epic #287 S6): one context means one loss for **every** registered grid, so `restore`
+walks two registries rather than acting on a grid. The question asked of the trees was whether any of
+them recovers a resource that two terminals hold *together*.
+
+**One does, and it is the closest analogue in any reference to this repo's `ConfigRegistry`.**
+
+| Fact | Reference | Site |
+|---|---|---|
+| A texture atlas is cached **across terminals** and refcounted by an owner list — `ownedBy: Terminal[]`, with the comment that the implementation may hold terminals forever | xterm.js | `addons/addon-webgl/src/CharAtlasCache.ts:13-21` |
+| A terminal **joins** an existing entry when its generated config compares equal, rather than baking its own | xterm.js | `addons/addon-webgl/src/CharAtlasCache.ts:60-68` |
+| Release disposes the entry **only when the leaver is its sole owner**; otherwise it drops one reference and leaves the shared atlas standing | xterm.js | `addons/addon-webgl/src/CharAtlasCache.ts:85-99` |
+| On `webglcontextrestored` the restoring terminal drops **its own** cache reference, re-initialises its WebGL state, and **asks for a full viewport redraw** | xterm.js | `addons/addon-webgl/src/WebglRenderer.ts:137-145` |
+| The other reference asks the driver's reset status at the point of use, per window, and only when robustness is available | alacritty | `alacritty/src/renderer/mod.rs:283-295` |
+| The third has **no GPU-loss concept to compare**: `rg -i 'lost\|robustness\|device.?removed\|resetstatus'` over the pinned `src` returns hits only about *focus* being lost | ghostty | (a negative result — the grep, not a file) |
+
+**Why the release rule does not transfer, and the direction is not "we drifted".** What xterm shares
+across terminals is a **CPU-side** atlas — a canvas the `TextureAtlas` rasterises into — while each
+renderer owns its own context and uploads its own GL texture from it. So a loss there is *per
+terminal*, and dropping only that terminal's reference is exactly right. justerm's shared entry holds
+the **GPU texture**, on the one context every grid draws through, so the same event takes every entry
+down at once and the restore has to walk the whole registry. The shapes differ because the tier does
+(`theflow.md`'s divergence row: the per-grid tier holds GPU state, against both references). A lens
+reporting the difference as a defect is `DELIBERATE` with that row.
+
+**The last column of that fourth row is the one #774's proof turns on.** xterm can end its restore
+with `_requestRedrawViewport()` because its consumer retains the whole terminal state and can simply
+be asked again. justerm's cannot — the recorded divergence is that the consumer holds *only the
+current frame* (ADR-0020 R3) — so `restore` repaints from the renderer's own retained grid instead,
+and "recovered" has to mean *with no re-feed from the consumer*. That is why
+`demo/context-loss-grids.html` places a hidden grid after the restore and asserts its rect
+byte-for-byte with no `apply_damage` in between: the assertion is stricter than the reference's
+contract because our consumer cannot supply the reference's fallback. The reference corroborates the
+*problem* and has nothing to arbitrate about the solution.
+
+**And the negative result that bounds all of it:** no reference loses **one** context across **N**
+terminals, because none of them shares one. xterm is one context per terminal, alacritty one display
+per window, ghostty one renderer per surface (`Surface.zig:86-92`, in the #768 section). So the case
+#774 exists for — a terminal that is *registered and not drawn* when the context dies — has no
+comparand anywhere, and the tie-breaker gives this layer to justerm's own model in any case.

@@ -95,6 +95,12 @@ machine that decides what the renderer does in between.
   but never uploaded is re-rasterised. Remove or narrow either and this becomes a silent defect: a
   frame the consumer submitted, saw acknowledged, and never sees. It is the one row of ADR-0027's
   conformance map still resolving as ✗.
+  **#774 watched the clearance hold, which is not the same as retiring it.** A grid registered *and
+  fed* inside the loss window comes back drawing its own content after the restore
+  (`demo/context-loss-grids.html`), so the two-part validity condition above is observed rather than
+  argued for — on that path. What is unchanged is that it *is* a validity condition: the frames still
+  go through a dead context, and the ✗ stands until somebody decides whether the clearance is a
+  design or an accident. Nobody has been asked.
 - **What "defer" costs, stated once because each site pays it.** A value the consumer normally reads
   back synchronously — a clamped grid, an atlas-shrunk cell — is settled at restore instead, and the
   consumer is not told. This used to be filed as "the same missing signal as #579, reached from the
@@ -160,6 +166,12 @@ tell — which is the distinction the original sentence flattened.
   shared and this layer is not the one that drifted. What differs is entirely the binding: JS carries
   a `null` on, glow unwraps it. Not indifferent, though — xterm's other two parameter reads *are*
   falsy-guarded, so a `null` there becomes a throw
+- [Recovering a context loss when the resource is shared between terminals](../../agents/reference-facts.md#recovering-a-context-loss-when-the-resource-is-shared-between-terminals-774-verified-2026-08-20)
+  — the one reference that shares a texture atlas across terminals shares the **CPU-side** one and
+  keeps its GL objects per terminal, so its restore drops one reference and asks its consumer for a
+  full redraw. Neither half transfers: our shared entry is the GPU texture, and our consumer has no
+  retained state to be asked. Also the bound on the whole comparison — no reference loses *one*
+  context across *N* terminals, so "registered but not drawn when the context died" has no comparand
 
 Checked since (#579, 2026-08-04): **the #327 comparison has an answer, and it is that only xterm has
 the concept.** xterm arms a 3 s timeout on `webglcontextlost` and fires an emitter if it is still lost
@@ -215,10 +227,19 @@ Still unchecked: what any of them does with GPU resources it cannot rebuild.
   to, because a draw loop turns a stale per-grid GPU object from *nothing draws it* into *the wrong
   grid's cells are drawn* — binding a VAO from the dead context raises `INVALID_OPERATION` and leaves
   the previously bound one in place. The refill came with it (`restore` ends in an
-  `upload_instances` per slot, against a baseline invalidated for every grid), so what is owed is not
-  more *code* but the **evidence**: no proof anywhere loses a context with more than one grid
-  registered, so the N-grid restore path ships on reasoning. Asserting the recovery **per grid**,
-  through the real listener path, is the context-loss slice's real remaining work
+  `upload_instances` per slot, against a baseline invalidated for every grid), so what was owed was
+  not more *code* but the **evidence**. **Supplied by #774**, and the shape of it is the part worth
+  keeping: a pass that reads the drawing buffer can only see the grids that paint, so the recovery of
+  a grid with no viewport is not a hard thing to assert — it is an *unobservable* one, until the
+  proof places the grid after the restore and reads what appears. `demo/context-loss-grids.html`
+  loses one context with four grids in four states (drawn · drawn-then-hidden · fed but never drawn ·
+  registered *and* fed inside the loss window) and compares each grid's **own rect**, because a
+  whole-buffer comparison passes as long as the visible grids are right, which is the claim in doubt.
+  The load-bearing case is the drawn-then-hidden one: it was packed once and nothing has dirtied it,
+  so `render` will not re-pack it and cannot repair anything — measured, `packs()` moves by **0** at
+  its placement — leaving `restore`'s own refill as the only thing that can have filled the new
+  buffer. Narrowing either half of that refill to the grids that draw was mutation-tested and turns
+  exactly that rect blank, with every other check on the page green
 
 ## Known holes / open
 

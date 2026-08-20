@@ -105,6 +105,13 @@ The renderer **holds** N grids and **draws** every one that has been placed.
   match, decorations and cursor. Deliberately **differential** — every check sets one grid and
   compares the other's whole rect byte-for-byte against a capture taken before the call, so it
   asserts *reach* rather than the blend formula it would otherwise have to encode
+- `justerm-renderer/demo/context-loss-grids.html` — the browser proof that one loss is one recovery
+  for **every** registered grid (#774): four grids in four states across one real
+  lose-and-restore cycle driven through the browser's own listeners, each read back on its own rect.
+  Two of them have no viewport when the
+  context dies, which is why this page exists at all — a pixel pass cannot see a grid that does not
+  paint, so the assertion is that *placing* it after the restore shows what it was fed before the
+  loss, with no re-bake, no re-pack and no re-feed
 
 Still absent: **no terminal-surface type.** That is the whole of what this territory's design has
 that its code does not — the tier split (#769), the grid registry (#770), the draw loop (#771), the
@@ -181,9 +188,9 @@ The list below is what lands **when the multi-grid work does**, and the entries 
   *every* registered grid's VAO and instance buffer and drop
   every upload baseline, because it had to: with a draw loop, a grid still holding an object from the
   dead context binds a VAO that raises `INVALID_OPERATION` and leaves the *previous* grid's bound, so
-  grid B would silently draw grid A's cells. What is still the context-loss slice's is the half above
-  the objects — refilling a not-drawn grid's buffer, and proving the recovery **per grid** through the
-  real listener path rather than once for the surface
+  grid B would silently draw grid A's cells. #774 closed the half above the objects — not with code,
+  which was already there, but with the proof that reaches a grid holding **no viewport** at the
+  moment the context dies
 - [cell geometry](cell-geometry.md) — the cell size stops being a property of the renderer and becomes
   a property of a **font configuration**, which a grid selects into. The **device-pixel ratio does
   not** follow it: one canvas means one drawing buffer and one `devicePixelRatio`, so DPR stays global
@@ -224,19 +231,16 @@ The list below is what lands **when the multi-grid work does**, and the entries 
     grid's instance buffer. It now rebuilds **every** registered grid's VAO and buffer, drops every
     upload baseline, and refills every buffer — with a draw loop the old behaviour is not a blank
     grid but a *wrong* one, since binding a VAO from the dead context raises `INVALID_OPERATION` and
-    leaves the previous grid's bound. **What is owed is the evidence, not the code**: no proof
-    anywhere loses a context with more than one grid registered
-    (`demo/context-loss*.html` are single-grid; `demo/multi-viewport.html` never loses one), so the
-    N-grid restore path ships on reasoning. Asserting it **per grid**, through the real listener
-    path, is the context-loss slice's real remaining work — and a pass that only checks the drawn
-    grid cannot tell "all recovered" from "the visible one recovered".
-    **Half of that arrived incidentally in #772**, which is worth knowing before the context-loss
-    slice re-derives it: `demo/per-config-atlas.html` loses and restores a context through the real
-    listener path with **two grids registered and both drawn**, and asserts the whole drawing buffer
-    repaints byte-for-byte plus one atlas bake per live configuration. So the *drawn* half is
-    observed rather than reasoned. What is still owed is exactly the distinction the paragraph above
-    names: nothing anywhere loses a context with a grid that is registered and **not** drawn, and
-    that is the case a pass looking at pixels structurally cannot see.
+    leaves the previous grid's bound. **What was owed was the evidence, not the code**, and it
+    arrived in two pieces. #772 supplied the drawn half incidentally —
+    `demo/per-config-atlas.html` loses and restores a context through the real listener path with
+    **two grids registered and both drawn**, asserting the whole drawing buffer repaints
+    byte-for-byte plus one atlas bake per live configuration. **#774 supplied the rest**, which is
+    the half a pixel pass structurally cannot see: `demo/context-loss-grids.html` holds two grids
+    with **no viewport** when the context dies, and asserts the recovery by *placing* them
+    afterwards. Read the shape rather than the page — "a grid that does not paint cannot be
+    photographed" is why this took its own slice, and it is the same shape any future
+    registered-but-idle state will have.
   - ~~**Still open:** a registered grid keeps the four font/metric selectors it was born with, which
     go stale the moment the default's move.~~ **Closed by #772, by making them true rather than by
     keeping them in step.** A font, spacing or family change moves the *default* to a different
