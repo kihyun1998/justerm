@@ -46,6 +46,17 @@ See [multi-viewport](multi-viewport.md) for the tier and its lifetime.
   site that places something into a slot must use the same origin — `pad()`, the path that lays a
   builtin bitmap in without going through the font, did not, and every block glyph sat a band too
   high until the pixel proofs said so.
+- **The bake may now change the glyph, on one axis, and only to make it fit** (#792). A face draws
+  many single-cell glyphs wider than the box it is given — measured over 2095 codepoints at em 24
+  device px, 252 of them on DejaVu Sans Mono and 1153 on the demo face, with 35 to 629 losing more
+  than 30 % of their ink — and the horizontal axis has no band to catch them: the vertical bleed is
+  sized from the face's declared line box, and the Canvas API exposes no horizontal counterpart to
+  `fontBoundingBox{Ascent,Descent}`. So `metrics::horizontal_fit` condenses such a glyph into its
+  box at bake, and translates one that fits but sits outside. Three properties are load-bearing and
+  each was a defect the proof caught: it is keyed on the **glyph box**, never the cell (a negative
+  `letter_spacing` narrows the cell past the glyph *on purpose*, and the shader crops it); it scales
+  **x only**, so the vertical band's recovery is untouched by construction rather than by a check;
+  and it fires on nothing that fits, which is what `.` and `i` guard in the proof.
 - **The nesting is why tiling glyphs are a separate problem.** Once the glyph box sits *inside* the
   cell, anything meant to tile the cell must be drawn to the **cell** instead — see built-in block
   glyphs, which exists entirely because of this.
@@ -123,7 +134,18 @@ grounds as unverified, which is unusual enough to be worth knowing before buildi
   and on DejaVu Sans Mono it destroys ink on 439 of 1579 sampled codepoints against the line box's
   84. The *decision* is still unchanged — adopting the line-box metric would move every grid's size
   and does not fix clipping on its own — so alternative (A) remains open, but it is no longer open
-  for lack of evidence.
+  for lack of evidence. **Narrowed again 2026-08-21 (#792): on the horizontal axis alternative (A)
+  is excluded outright** — swapping the window from the ink box to the advance moves the clipped
+  count by at most 13 %, so the metric is not the term there at all.
+- ~~**Nothing catches ink that leaves the cell sideways.**~~ — **closed 2026-08-21 (#792)** by
+  condensing at bake rather than by a band; see the design model above. What the closure does *not*
+  cover is a **width-2** glyph whose ink exceeds two cells — and that turned out to be measurably
+  nothing: over 880 wide codepoints (kana, CJK, Hangul, fullwidth forms, two emoji blocks) at em 24
+  device px, **zero** exceed the two-cell box on Consolas, Cascadia Mono, Courier New, Lucida Console
+  or DejaVu Sans Mono, and eight do on the demo face by exactly one device px, which is inside the
+  fit's own tolerance. The same fit does run on that path with a two-cell box; it simply has almost
+  nothing to do there. Worth writing down, because *"the wide bake is a second path the corpus does
+  not reach"* is true of #794's colour question and **not** true of this one.
 - **Headless proofs cannot be trusted naively here.** A fractional CSS canvas composites white under
   SwiftShader, and a sharpness metric will read that as *the sharpest* result — so a geometry proof
   needs to state what it is actually measuring.

@@ -275,7 +275,32 @@ impl Rasterizer {
         // cells), so only the vertical half of the geometry is taken wholesale.
         let x = (PADDING + x_off) as f64;
         let y = origin.1 as f32 + self.ascent;
-        self.ctx.fill_text(text, x, y as f64)?;
+        // Horizontally the slot has no band and never can (#792): the Canvas API exposes no
+        // face-level counterpart to `fontBoundingBox{Ascent,Descent}` for one to be sized from, so
+        // ink past this window is destroyed here rather than landing on a neighbour. Condense it
+        // instead — on this axis alone, because the vertical one already has somewhere to go
+        // (ADR-0019 R1.2). The box is the GLYPH box, never the cell: `metrics::device_cell` lets a
+        // negative `letter_spacing` narrow the cell past the glyph and crop it, and a predicate
+        // keyed on the cell would read that consumer policy as a font fact.
+        let box_w = if wide { 2 * self.phys_w } else { self.phys_w };
+        let metrics = self.ctx.measure_text(text)?;
+        let fit = crate::metrics::horizontal_fit(
+            metrics.actual_bounding_box_left() as f32,
+            metrics.actual_bounding_box_right() as f32,
+            box_w,
+        );
+        if fit.scale_x == 1.0 && fit.pen_offset == 0.0 {
+            self.ctx.fill_text(text, x, y as f64)?;
+        } else {
+            // `pen_offset` is pre-scale, so both the bearing and the ink scale together and the
+            // condensed left edge lands on the box origin. `scale(_, 1.0)` leaves the baseline and
+            // every vertical extent untouched, which is what keeps #791's band uninvolved.
+            self.ctx.save();
+            self.ctx.translate(x, 0.0)?;
+            self.ctx.scale(fit.scale_x as f64, 1.0)?;
+            self.ctx.fill_text(text, fit.pen_offset as f64, y as f64)?;
+            self.ctx.restore();
+        }
         let img = self
             .ctx
             .get_image_data(0.0, 0.0, src_w as f64, padded_h as f64)?;

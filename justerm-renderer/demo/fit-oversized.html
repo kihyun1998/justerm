@@ -1,0 +1,439 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>justerm-renderer proof — a glyph too wide for its box is condensed, not cut (#792)</title>
+<style>
+  body { margin: 0; background: #000; }
+  #c { display: block; image-rendering: pixelated; }
+</style>
+<!--
+  #791 gave a glyph's ink somewhere to go when it leaves its cell VERTICALLY. Horizontally it has
+  nowhere to go and cannot be given anywhere: a slot's band is sized from the face's declared line
+  box, and the Canvas API exposes no horizontal counterpart to `fontBoundingBox{Ascent,Descent}`.
+  So the bake condenses the glyph onto the axis that is over budget instead — `scale(s, 1)`, never
+  uniform, so #791's vertical recovery is untouched by construction (`metrics::horizontal_fit`).
+
+  **This page asserts WHERE the ink is, never how much of it there is.** That is not caution, it is
+  the sibling page's finding: `neighbour-ink.html` records three separate attempts at counting ink
+  against a 2D canvas at a fixed alpha threshold, all of which went red on CI while the feature was
+  working, because two rasterisers distribute coverage differently and a hard cut at 128 then lands
+  on a different number of pixels. So every check below is a shape or a position.
+
+  The instrument is a **column profile**: for each column of the cell, how many pixels are lit. A
+  profile is normalised to unit sum before it is compared, so the two paths' coverage differences
+  cancel and only the shape is left. Two hypotheses are built for the same glyph:
+
+    - CONDENSED — the free glyph's ink box resampled onto the cell's columns (what this fix draws);
+    - CLIPPED   — the free glyph's columns from the pen to the cell's edge (what it drew before).
+
+  and the page requires, in this order, that the two are **measurably apart** and only then that
+  the renderer's own profile is nearer the condensed one. Asserting the second without the first is
+  how a check passes vacuously on a face where the glyph is nearly uniform (#639's habit: assert
+  the window exists before asserting behaviour inside it).
+
+  Every probe is FOUND at runtime, never listed: which codepoints exceed the cell is a property of
+  the face behind `monospace` on this machine, and the cell is derived from that face's own block
+  glyph (ADR-0022, #578). With no candidate the page goes RED on a named `*Available` check rather
+  than passing — a proof that cannot see the thing it is for must not read as a green one.
+
+  Build: wasm-pack build --target web --dev --out-dir pkg
+-->
+<canvas id="c" width="64" height="64"></canvas>
+<script type="module">
+  import init, { JustermRenderer } from "../pkg/justerm_renderer.js";
+  import { readRect, deviceCell, fitGrid } from "./proof.js";
+  await init();
+
+  const palette = new Uint32Array(256);
+  const r = new JustermRenderer("#c");
+  const g = r.addGrid(palette, 0xffffff, 0x000000);
+  const canvas = document.querySelector("#c");
+  const gl = canvas.getContext("webgl2");
+  const dpr = window.devicePixelRatio;
+  const WHITE = (2 << 24) | 0xff_ff_ff;
+
+  // The same font string the rasteriser bakes with, drawn where no cell can clip it.
+  const FONT = `${16 * dpr}px monospace, monospace`;
+  const big = Math.ceil(16 * dpr * 5);
+  const off = new OffscreenCanvas(big, big).getContext("2d", { willReadFrequently: true });
+  off.textBaseline = "alphabetic";
+  off.textAlign = "left";
+  // INTEGER on purpose. Every hypothesis below indexes a column array by `pen + x`, and at dpr 1.1
+  // a fractional pen makes that a fractional property access: `undefined`, then `NaN`, then a
+  // normalise that returns all zeros — and an all-zero hypothesis sits at distance 1 from anything,
+  // so the comparison passes for the wrong reason. Caught here by `apart` going to 0 at dpr 1.1 on
+  // the one comparison whose two hypotheses are built the same way. The non-degeneracy checks below
+  // are the guard that does not depend on noticing it.
+  const pen = Math.round(16 * dpr * 2);
+
+  /** What the FONT draws for `text`: its ink box in pen-relative device px, and its column profile. */
+  const freeInk = (text) => {
+    off.clearRect(0, 0, big, big);
+    off.font = FONT;
+    off.fillStyle = "white";
+    off.fillText(text, pen, pen);
+    const d = off.getImageData(0, 0, big, big).data;
+    const cols = new Float64Array(big);
+    let lit = 0, minX = 1e9, maxX = -1e9, above = -1e9, below = -1e9;
+    for (let y = 0; y < big; y++)
+      for (let x = 0; x < big; x++)
+        if (d[(y * big + x) * 4 + 3] >= 128) {
+          lit++;
+          cols[x]++;
+          if (x - pen < minX) minX = x - pen;
+          if (x - pen > maxX) maxX = x - pen;
+          // Both are distances FROM the baseline, so both grow with a `max` — written as two
+          // sentinels-and-compares once, which is how the first version of this had them
+          // initialised for one direction and compared for the other. It read as "this face has no
+          // such glyph" rather than as a broken measurement.
+          if (pen - y > above) above = pen - y;
+          if (y - pen > below) below = y - pen;
+        }
+    return { lit, cols, minX, maxX, above, below };
+  };
+
+  /** Cheap metric screening — an ink scan per codepoint blows the runner's budget (#791). */
+  const metricBox = (t) => {
+    off.font = FONT;
+    const m = off.measureText(t);
+    return {
+      minX: -m.actualBoundingBoxLeft,
+      maxX: m.actualBoundingBoxRight,
+      above: m.actualBoundingBoxAscent,
+      below: m.actualBoundingBoxDescent,
+      width: m.width,
+    };
+  };
+
+  const blockInk = freeInk("█");
+  const [cw0, ch0] = deviceCell(r, g);
+
+  // ── the profile instrument ────────────────────────────────────────────────────────────────────
+  const normalise = (a) => {
+    const s = a.reduce((x, y) => x + y, 0);
+    return s > 0 ? Array.from(a, (v) => v / s) : Array.from(a, () => 0);
+  };
+  const l1 = (a, b) => a.reduce((acc, v, i) => acc + Math.abs(v - b[i]), 0);
+  /** A normalised profile that carries no ink is not a hypothesis — it is a lookup that missed. */
+  const real = (h) => h.some((v) => v > 0) && Math.abs(h.reduce((a, b) => a + b, 0) - 1) < 1e-6;
+
+  /** The free glyph's ink box resampled onto `n` columns — the shape a condensed bake produces. */
+  const condensedHypothesis = (free, n) => {
+    const w = free.maxX - free.minX + 1;
+    const out = new Float64Array(n);
+    for (let i = 0; i < w; i++) {
+      const j = Math.min(n - 1, Math.floor((i * n) / w));
+      out[j] += free.cols[pen + free.minX + i];
+    }
+    return normalise(out);
+  };
+  /** The free glyph's own columns from the pen to the box edge — the shape a clipped bake produces. */
+  const clippedHypothesis = (free, n) => {
+    const out = new Float64Array(n);
+    for (let i = 0; i < n; i++) out[i] = free.cols[pen + i];
+    return normalise(out);
+  };
+
+  // ── what the renderer actually drew ───────────────────────────────────────────────────────────
+  /**
+   * Put `text` in the centre of a 3x3 grid and report, per cell, how many pixels are lit — plus the
+   * centre cell's column profile. Three columns because containment is the other half of the claim:
+   * a condensed glyph that overshoots would be invisible to any check on its own cell.
+   */
+  const drawn = (text, opts = {}) => {
+    const { spacing = 0 } = opts;
+    r.setLetterSpacing(g, spacing);
+    const [cw, ch] = deviceCell(r, g);
+    const [COLS, ROWS] = [3, 3];
+    fitGrid(r, g, COLS, ROWS);
+    r.resizeSurface(COLS * cw, ROWS * ch);
+    r.setViewport(g, 0, 0, COLS * cw, ROWS * ch);
+    r.clearCursor(g);
+    const n = COLS * ROWS;
+    const cps = new Uint32Array(n);
+    const fg = new Uint32Array(n);
+    cps[4] = text.codePointAt(0);
+    fg[4] = WHITE;
+    r.apply_frame(g, COLS, ROWS, new Uint32Array(n), fg, cps, new Uint16Array(n), true);
+    r.render();
+    const { buf } = readRect(gl, { x: 0, y: 0, w: COLS * cw, h: ROWS * ch });
+    const perCell = new Array(n).fill(0);
+    const profile = new Float64Array(cw);
+    let minCol = 1e9, maxCol = -1e9, minRow = 1e9, maxRow = -1e9;
+    for (let y = 0; y < ROWS * ch; y++) {
+      const row = Math.floor((ROWS * ch - 1 - y) / ch); // readPixels is bottom-origin
+      for (let x = 0; x < COLS * cw; x++) {
+        const i = (y * COLS * cw + x) * 4;
+        if (buf[i] < 128 && buf[i + 1] < 128 && buf[i + 2] < 128) continue;
+        perCell[row * COLS + Math.floor(x / cw)]++;
+        // The centre COLUMN BAND, not the centre cell — across all three rows. Since #791 a
+        // glyph's own ink can land on the row above or below (`I_neighbour`), so a profile counted
+        // inside the cell alone would under-report the glyph by exactly the ink that change
+        // recovered: measured, `Ǆ` at dpr 1 reads 13 rows tall inside its cell and 15 across the
+        // band, which is the 15 the font draws. The neighbouring cells are empty in every draw
+        // here, so anything lit in this band belongs to the probe.
+        if (x >= cw && x < 2 * cw) {
+          const c = x - cw;
+          profile[c]++;
+          if (c < minCol) minCol = c;
+          if (c > maxCol) maxCol = c;
+          const rowPx = ROWS * ch - 1 - y; // rows from the buffer's bottom, so higher = higher up
+          if (rowPx < minRow) minRow = rowPx;
+          if (rowPx > maxRow) maxRow = rowPx;
+        }
+      }
+    }
+    return { perCell, profile, cw, ch, minCol, maxCol, minRow, maxRow, centre: perCell[4] };
+  };
+
+  // ── probe selection ───────────────────────────────────────────────────────────────────────────
+  const RANGES = [
+    [0x00c0, 0x024f], [0x1e00, 0x1eff], [0x1f00, 0x1fff], [0x0386, 0x03ce],
+    [0x0400, 0x04ff], [0x2200, 0x22ff], [0xfb00, 0xfb4f],
+  ];
+  const blockMetric = metricBox("█");
+  const box = blockInk.maxX - blockInk.minX + 1; // the glyph box the bake fits against
+  // How far past the box a probe must reach before it demonstrates anything. One device px is the
+  // tolerance the bake itself applies (`metrics::FIT_TOLERANCE_PX`), which exists because these
+  // metrics run about a pixel long against an alpha scan — so a probe that only overhangs by one
+  // is a probe the fix deliberately leaves alone.
+  const MARGIN = 2;
+
+  // The probe is the STRONGEST candidate the face offers, not the first one found — measured, and
+  // this is what the mutation set found: with the first hit (`Æ`, 1.6x over the box) the shape
+  // comparison below still preferred the condensed hypothesis when the scale was forced to 1, at
+  // dpr 1 and 1.1 where the cell is only 8 or 9 columns wide. A profile that coarse cannot tell two
+  // shapes apart. Screening is `measureText`, which is cheap enough to run over every codepoint in
+  // these ranges; only the winners are pixel-confirmed, because an ink scan per codepoint blew the
+  // runner's 30 s budget (#791).
+  let best = { size: null, placement: null, bothAxis: null };
+  for (const [from, to] of RANGES) {
+    for (let cp = from; cp <= to; cp++) {
+      const t = String.fromCodePoint(cp);
+      const m = metricBox(t);
+      if (m.width === 0) continue;
+      const inkW = m.maxX - m.minX;
+      const overhang = Math.max(m.maxX - box, -m.minX);
+      if (inkW > box * 1.4 && (!best.size || inkW / box > best.size.ratio)) {
+        best.size = { t, ratio: inkW / box };
+      }
+      if (inkW <= box && overhang >= MARGIN && (!best.placement || overhang > best.placement.over)) {
+        best.placement = { t, over: overhang };
+      }
+      if (
+        inkW > box + MARGIN &&
+        m.above > blockMetric.above + MARGIN &&
+        (!best.bothAxis || inkW / box > best.bothAxis.ratio)
+      ) {
+        best.bothAxis = { t, ratio: inkW / box };
+      }
+    }
+  }
+
+  // Confirmed with pixels at the rasteriser's own threshold — nothing below is asserted on a number
+  // the scan did not confirm, which is the sibling page's rule and the reason its screening step
+  // exists at all.
+  const confirm = (cand, ok) => {
+    if (!cand) return null;
+    const f = freeInk(cand.t);
+    return f.lit > 0 && ok(f) ? { t: cand.t, free: f } : null;
+  };
+  const sizeProbe = confirm(best.size, (f) => f.maxX - f.minX + 1 > box * 1.3);
+  const placementProbe = confirm(
+    best.placement,
+    (f) => f.maxX - f.minX + 1 <= box && Math.max(f.maxX - (box - 1), -f.minX) >= MARGIN,
+  );
+  if (placementProbe) {
+    placementProbe.overhang = Math.max(
+      placementProbe.free.maxX - (box - 1),
+      -placementProbe.free.minX,
+    );
+  }
+  // The vertical side takes the same margin as the horizontal one, and for the same reason: a glyph
+  // one pixel over the box spills a single antialiased row, which need not survive the threshold
+  // this page reads pixels at. Measured — `Ǆ` at one px over deposited nothing at dpr 1 while
+  // passing at 1.5 and 2, which is a property of the probe, not of the feature.
+  const bothAxisProbe = confirm(
+    best.bothAxis,
+    (f) => f.maxX - f.minX + 1 > box + MARGIN && f.above > blockInk.above + MARGIN,
+  );
+
+  const checks = {};
+  const measured = {};
+
+  // 1. THE SIZE CLASS — a glyph the font draws wider than its box.
+  if (!sizeProbe) {
+    checks.sizeProbeAvailable = false;
+  } else {
+    const free = sizeProbe.free;
+    const d = drawn(sizeProbe.t);
+    const fitH = condensedHypothesis(free, d.cw);
+    const clipH = clippedHypothesis(free, d.cw);
+    const ren = normalise(profile_(d));
+    const apart = l1(fitH, clipH);
+    const toFit = l1(ren, fitH);
+    const toClip = l1(ren, clipH);
+    measured.sizeProbe = {
+      t: sizeProbe.t, cp: sizeProbe.t.codePointAt(0).toString(16),
+      inkW: free.maxX - free.minX + 1, box, apart, toFit, toClip,
+    };
+    // 1a. Both hypotheses are real profiles, not lookups that missed — see the pen's comment.
+    checks.bothHypothesesCarryInk = real(fitH) && real(clipH) && real(ren);
+    // 1b. The window exists: on this face the two hypotheses are different shapes at all. Without
+    //     this the comparison below can be satisfied by a glyph whose profile is nearly uniform.
+    checks.theTwoHypothesesAreDistinguishable = apart > 0.5;
+    // 1c. ...and what was drawn is the condensed one.
+    checks.theCondensedShapeIsWhatWasDrawn = toFit < toClip;
+    // 1d. CONTAINMENT. A fit that overshoots is invisible to any check on the probe's own cell.
+    checks.nothingLandedOnAHorizontalNeighbour = d.perCell[3] === 0 && d.perCell[5] === 0;
+    checks.sizeProbeAvailable = true;
+  }
+
+  // 2. THE PLACEMENT CLASS — ink that fits the box and sits outside it (59–177 codepoints per face,
+  //    measured 2026-08-21). Scaling does nothing here; only a translation moves it in, and the
+  //    observable is an EDGE POSITION, which no coverage difference can shift by more than a pixel.
+  if (!placementProbe) {
+    checks.placementProbeAvailable = false;
+  } else {
+    const d = drawn(placementProbe.t);
+    const free = placementProbe.free;
+    measured.placementProbe = {
+      t: placementProbe.t, cp: placementProbe.t.codePointAt(0).toString(16),
+      freeMinX: free.minX, freeMaxX: free.maxX, overhang: placementProbe.overhang,
+      drawnMinCol: d.minCol, drawnMaxCol: d.maxCol, box,
+    };
+    // The claim is that nothing was lost, and its position-based form is that the ink drawn spans
+    // as many columns as the font drew. Under the old bake it spans `overhang` fewer — the ink that
+    // fell outside the box was simply gone.
+    checks.inkThatFitsIsMovedInsideTheBox =
+      Math.abs((d.maxCol - d.minCol) - (free.maxX - free.minX)) <= 1;
+    // ...and it is inside, which is the half that says it was moved rather than merely drawn wider.
+    checks.theMovedInkIsWithinTheBox = d.minCol >= 0 && d.maxCol <= d.cw - 1;
+    checks.theMovedInkStaysOffItsNeighbours = d.perCell[3] === 0 && d.perCell[5] === 0;
+    checks.placementProbeAvailable = true;
+  }
+
+  // 3. #791 IS NOT UNDONE — the check the whole choice of `scale(s, 1)` over a uniform fit rests
+  //    on. A uniform fit would shrink the glyph's HEIGHT by the same factor and hand back the ink
+  //    the band recovered; a condense cannot. The observable is the drawn ink's row extent against
+  //    the font's own, which needs no rare probe and holds on every face.
+  if (sizeProbe) {
+    const d = drawn(sizeProbe.t);
+    const freeRows = sizeProbe.free.above + sizeProbe.free.below + 1;
+    const drawnRows = d.maxRow - d.minRow + 1;
+    const scaleX = box / (sizeProbe.free.maxX - sizeProbe.free.minX + 1);
+    // What an aspect-preserving fit would have left. Stated as a rival hypothesis rather than as a
+    // tolerance, because a tolerance has to be guessed and this does not: condensing a stroke to a
+    // third of its width thins it enough that its faintest rows drop under the threshold either
+    // side of this comparison, so "within 1 px of the full height" is too strict to be true while
+    // "a third of the height" is what the alternative actually produces.
+    const uniformRows = freeRows * scaleX;
+    measured.verticalExtent = { freeRows, drawnRows, uniformRows, scaleX };
+    checks.theHeightHypothesesAreDistinguishable = freeRows - uniformRows >= 2;
+    checks.aCondensedGlyphKeepsItsHeightRatherThanScalingWithIt =
+      Math.abs(drawnRows - freeRows) < Math.abs(drawnRows - uniformRows);
+  }
+
+  // ...and where the machine's face happens to offer a glyph that leaves its cell on BOTH axes,
+  // the two features are exercised together. Opportunistic, like the `g`/`M` controls below: a face
+  // without such a glyph cannot show this, and pretending otherwise would make the page red for a
+  // property of the font rather than of the code.
+  if (bothAxisProbe) {
+    const d = drawn(bothAxisProbe.t);
+    measured.bothAxisProbe = {
+      t: bothAxisProbe.t, cp: bothAxisProbe.t.codePointAt(0).toString(16),
+      above: bothAxisProbe.free.above, blockAbove: blockInk.above,
+      rowAbove: d.perCell[1], rowBelow: d.perCell[7],
+    };
+    checks.aCondensedGlyphStillReachesItsVerticalNeighbour = d.perCell[1] + d.perCell[7] > 0;
+  } else {
+    measured.bothAxisProbe = "none on this face";
+  }
+
+  // 4. CONTROLS. A glyph that fits is not touched — neither moved nor condensed. This is what
+  //    catches a fit that fires on everything, which every check above would still pass.
+  const controls = {};
+  // `.` and `i` earn their place separately from the letters: they are far NARROWER than the box,
+  // so a fit that fires on everything expands them by a factor rather than by a pixel. Measured —
+  // with the tolerance mutated to fire on every glyph, `M` at dpr 2 came back one pixel wider than
+  // the font drew it and sat inside the controls' own tolerance, so the letters alone left that
+  // density unguarded.
+  for (const chr of ["g", "M", "A", ".", "i"]) {
+    const f = freeInk(chr);
+    const fits = f.maxX - f.minX + 1 <= box && f.minX >= 0 && f.maxX <= box - 1;
+    if (!fits) continue; // not a control on this face — DejaVu's cell is tight enough to spill
+    const d = drawn(chr);
+    controls[chr] = { freeMinX: f.minX, drawnMinCol: d.minCol, drawnMaxCol: d.maxCol };
+    checks[`${chr}IsNotMoved`] = Math.abs(d.minCol - f.minX) <= 1;
+    checks[`${chr}IsNotCondensed`] = Math.abs((d.maxCol - d.minCol) - (f.maxX - f.minX)) <= 1;
+    checks[`${chr}DepositsNothingOnAHorizontalNeighbour`] = d.perCell[3] === 0 && d.perCell[5] === 0;
+  }
+
+  // 5. The load-bearing control from the sibling page: `builtin` never reaches the font, so no fit
+  //    can fire on it, and a block must still fill its cell exactly (this is what caught a bake
+  //    origin that forgot the band in #791).
+  const blk = drawn("█");
+  checks.theBlockStillFillsExactlyItsCellAndNoMore =
+    blk.centre === blk.cw * blk.ch && blk.perCell[3] === 0 && blk.perCell[5] === 0;
+
+  // 6. THE NEGATIVE-SPACING CONTRACT (`metrics::device_cell`): a cell narrowed past the glyph is
+  //    CROPPED, not stretched — and a fit keyed on the cell rather than on the glyph box would
+  //    condense every glyph on the grid instead. Both hypotheses here are built from the
+  //    RENDERER's own output at spacing 0, so this comparison never crosses rasterisers.
+  {
+    const wide = drawn("M", { spacing: 0 });
+    // Narrow the cell to about 60 % of the glyph's own ink, derived from what the renderer just
+    // drew rather than from a fixed number of pixels. Measured: a flat -2 device px left `M`
+    // fitting the narrowed cell at dpr 1.1 and 2, so the wrong predicate had nothing to condense
+    // and the guard passed for the wrong reason at half the densities the runner sweeps.
+    const inkCols = wide.maxCol - wide.minCol + 1;
+    const targetCw = Math.max(3, Math.round(inkCols * 0.6));
+    const narrow = drawn("M", { spacing: (targetCw - wide.cw) / dpr });
+    r.setLetterSpacing(g, 0);
+    if (narrow.cw < wide.cw) {
+      const base = { cols: padTo(wide.profile, big, pen), minX: 0, maxX: wide.cw - 1 };
+      // Both hypotheses come from the RENDERER's own output at spacing 0, so this comparison never
+      // crosses rasterisers and a coverage difference cannot move it.
+      const cropH = clippedHypothesis(base, narrow.cw);
+      const condH = condensedHypothesis(base, narrow.cw);
+      const ren = normalise(Array.from(narrow.profile));
+      measured.negativeSpacing = {
+        wideCw: wide.cw, narrowCw: narrow.cw,
+        apart: l1(cropH, condH), toCrop: l1(ren, cropH), toCond: l1(ren, condH),
+      };
+      checks.theNarrowedCellHypothesesCarryInk = real(cropH) && real(condH) && real(ren);
+      checks.theNarrowedCellHypothesesAreDistinguishable = l1(cropH, condH) > 0.2;
+      checks.aNarrowedCellStillCropsRatherThanCondensing = l1(ren, cropH) < l1(ren, condH);
+    } else {
+      checks.theCellCouldBeNarrowed = false;
+    }
+  }
+
+  /** The renderer's centre-cell profile as a plain array. */
+  function profile_(d) { return Array.from(d.profile); }
+  /** Lift a renderer profile into the pen-indexed shape the hypothesis builders expect. */
+  function padTo(profile, width, penX) {
+    const out = new Float64Array(width);
+    for (let i = 0; i < profile.length; i++) out[penX + i] = profile[i];
+    return out;
+  }
+
+  // A missing probe goes RED, not green — the sibling page's convention (`neighbour-ink.html`), and
+  // the runner's: it names every false entry in `checks`. A proof that cannot see the thing it is
+  // for must not read as a pass, and it must not read as a silent skip either.
+  const ok = Object.values(checks).every(Boolean);
+
+  window.__proof = {
+    ok,
+    checks,
+    controls,
+    // Printed by the runner on failure. Every number here is machine-specific — the cell comes from
+    // whichever face `monospace` resolves to (ADR-0022, #578) — so a CI-only red is undiagnosable
+    // without it.
+    measured,
+    cell: [cw0, ch0],
+    box,
+    dpr,
+  };
+  // The runner waits on this, not on `__proof` (`e2e/proofs.spec.mjs`).
+  window.__done = true;
+</script>

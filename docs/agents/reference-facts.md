@@ -826,6 +826,23 @@ all keep a registry"* — which is how #46 arrived at a global pool and stopped.
 half that does not show up at the site where the id is minted, and in xterm.js it is eighty lines
 further down in the same file.
 
+## A glyph the font draws wider than its cell (#792, verified 2026-08-21)
+
+Read for #792, where the question was what to do with ink that leaves the cell **sideways**. The
+short version: all three let it overflow, because their glyph quad *is* the glyph's bounding box —
+which is the capability justerm gave up in ADR-0019 to keep one evaluation per pixel. So their
+defaults rest on something this renderer does not have, and neither of the two mechanisms below was
+imported as an authority (the tie-breaker table has no row for glyph bake geometry).
+
+| Fact | Reference | Site |
+|---|---|---|
+| Rescaling exists, and it is **off by default** — an option the user turns on | xterm.js | `src/common/services/OptionsService.ts:51` (`rescaleOverlappingGlyphs: false`) |
+| What it rescales: single-width only, ink over **1.5 cells**, never ASCII (`codepoint > 0xFF`), never emoji, powerline or nerd-font ranges | xterm.js | `src/browser/renderer/shared/RendererUtils.ts:47` |
+| ⚠ **The mechanism is not a re-rasterisation.** It shrinks the *quad's width* to `cell.width - 1` and leaves the texture alone — an anisotropic squeeze of an already-baked bitmap, i.e. a resample. justerm condenses at bake instead, so the browser rasterises a condensed outline; same direction, different artefact | xterm.js | `addons/addon-webgl/src/GlyphRenderer.ts:301` |
+| ghostty has a general constraint system — `fit` / `cover` / `fit_cover1` / `stretch`, plus per-axis alignment, padding and a `max_xy_ratio` | ghostty | `src/font/Glyph.zig:135` |
+| ⚠ **But ordinary text glyphs get `.none`.** The renderer applies a Nerd-Font table entry if there is one, else `.fit` **only when the codepoint is a symbol**, else nothing — so a Latin digraph like `Ǆ` is left to overflow, exactly as alacritty leaves it | ghostty | `src/renderer/generic.zig:3175` |
+| A constraint may span two cells when the next cell is blank (`constraint_width`, `max_constraint_width: u2 = 2`) — the width-2 axis justerm's #792 states as uncounted rather than covered | ghostty | `src/font/Glyph.zig:115` |
+
 ## Renderer ink channels
 
 | Fact | Reference | Site |

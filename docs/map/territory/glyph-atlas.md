@@ -57,6 +57,17 @@ it.
   dpr 1 and +23 % at dpr 2 on the reference face, and the ceiling `fit_cell_to_atlas` enforces drops
   by `2 * bleed`.
 
+- **A glyph that will not fit its box is condensed before it is baked** (#792). The rasteriser
+  measures the grapheme's ink with `measureText` — no readback, so it costs one call on the
+  cache-miss path — and draws under `scale(s, 1)` when the ink exceeds the glyph box. It changes
+  nothing else here: the slot keeps its size, the `GlyphKey` keeps its two fields (the constraint is
+  a pure function of the grapheme and of the configuration's geometry, and the geometry *is* the
+  `ConfigKey`), and every rebuild path — ASCII prebake, `bake_all_glyphs`, a cache miss, a DPR or
+  font change, a context-loss restore — reaches it through the one `rasterize` seam.
+- **`builtin` is outside it by construction, not by a list.** The builtin check precedes `fill_text`,
+  so no fit can fire on a glyph the font never drew — the same shape as #507's dependency inversion,
+  where the classifier *asks* `builtin::owns` rather than restating its ranges.
+
 ## Code
 
 - `justerm-renderer/src/glyph_resolve.rs` — the pure per-cell slot resolution (host-testable)
