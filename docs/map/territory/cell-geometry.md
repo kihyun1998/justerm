@@ -146,6 +146,20 @@ grounds as unverified, which is unusual enough to be worth knowing before buildi
   fit's own tolerance. The same fit does run on that path with a two-cell box; it simply has almost
   nothing to do there. Worth writing down, because *"the wide bake is a second path the corpus does
   not reach"* is true of #794's colour question and **not** true of this one.
+- **The bake's decisions share no written rule, and one attempt to write one is on record as
+  failed.** #791 (a band for ink that leaves the cell), #792 (condense what will not fit its box) and
+  #359 (a tiling family bypasses the font entirely) rhyme, so #798 proposed the rule they might share:
+  *the bake may place a glyph, may scale it on an axis with no other budget, may refuse the font for a
+  family whose correctness is about neighbours — but may never change what the box is.* **Measured
+  against every geometry site in the bake on 2026-08-21, it explains four of seven and dies on the
+  seventh**: it is silent about ink destroyed outside the readback window (`rasterize`'s
+  `get_image_data`, which is what #791 and #792 are both *about*) and about the slot's band
+  (`bleed_y` / `slot_geometry`, which is the slot rather than the glyph), and `fit_cell_to_atlas`
+  **shrinks the cell** when the texture limit refuses to hold it — the one thing the sentence forbids
+  outright. Rescuing it needs an exception bolted on for the GL limit, which is fitting a sentence to
+  the code rather than deriving anything, so #798 was closed as falsified rather than kept open.
+  Recorded here so the next person who notices the rhyme starts from the refutation instead of
+  repeating the guess.
 - **Headless proofs cannot be trusted naively here.** A fractional CSS canvas composites white under
   SwiftShader, and a sharpness metric will read that as *the sharpest* result — so a geometry proof
   needs to state what it is actually measuring.
