@@ -37,7 +37,7 @@
 <canvas id="c" width="64" height="128"></canvas>
 <script type="module">
   import init, { JustermRenderer } from "../pkg/justerm_renderer.js";
-  import { readCells, countLit, fitGrid } from "./proof.js";
+  import { readCells, fitGrid } from "./proof.js";
   await init();
 
   const FG = 0xffffff, BG = 0x000000;
@@ -102,39 +102,73 @@
     (i.above > blockInk.above || i.below > blockInk.below) &&
     i.minX >= blockInk.minX && i.maxX <= blockInk.maxX;
 
-  let probe = null;
-  scan: for (const [from, to] of [[0x00c0, 0x024f], [0x1e00, 0x1eff], [0x0386, 0x03ce], [0x0400, 0x045f]]) {
+  // Screened on metrics — an ink scan per codepoint costs a `getImageData` each and blew the
+  // runner's 30 s budget — and then CONFIRMED BY THE BAKE, below. A pixel scan of a 2D canvas is
+  // not the last word here: measured on CI at dpr 1.1, `Ǘ` clears the block's ink box on both
+  // instruments and the renderer still deposits **0** px on its neighbour, because a single
+  // antialiased row of overshoot does not survive the threshold this page counts at. A page whose
+  // subject is "the band draws" must pick its probe by what the band actually draws.
+  const candidates = [];
+  scan: for (const [from, to] of [
+    [0x00c0, 0x024f], [0x1e00, 0x1eff], [0x1f00, 0x1fff], [0x0386, 0x03ce], [0x0400, 0x045f],
+  ]) {
     for (let cp = from; cp <= to; cp++) {
       const t = String.fromCodePoint(cp);
       const b = metricBox(t);
       if (b.width === 0 || !qualifies(b)) continue;
       const i = freeInk(t);
-      if (i.lit > 0 && confirms(i)) { probe = { t, ink: i }; break scan; }
+      if (i.lit > 0 && confirms(i)) {
+        candidates.push({ t, ink: i });
+        if (candidates.length >= 24) break scan; // bounded: each one below costs a bake and a read
+      }
     }
   }
 
   // ── draw it with a receiving row above and below ──────────────────────────────────────────────
   const [COLS, ROWS] = [1, 3];
   fitGrid(r, g, COLS, ROWS);
-  const rowLit = () => [0, 1, 2].map((row) => countLit(readCells(gl, r, g, 0, row)));
+  // Counted the way `neighbour-ink.html` counts, deliberately: any channel at or above 128, rather
+  // than `countLit`'s red above 150. The band's ink is one or two ANTIALIASED rows, and the stricter
+  // threshold reads them as absent — measured on CI at dpr 1.1, where the first qualifying probe
+  // deposited "0" under the strict count while the sibling page saw the same glyph spill.
+  const rowLit = () =>
+    [0, 1, 2].map((row) => {
+      const { buf } = readCells(gl, r, g, 0, row);
+      let n = 0;
+      for (let i = 0; i < buf.length; i += 4)
+        if (buf[i] >= 128 || buf[i + 1] >= 128 || buf[i + 2] >= 128) n++;
+      return n;
+    });
   const once = (event) => new Promise((res) => canvas.addEventListener(event, res, { once: true }));
 
   const checks = {};
   const measured = {};
 
-  if (!probe) {
-    checks.probeAvailable = false;
-  } else {
+  /** Draw one candidate and report what each row holds — the bake-side precondition. */
+  const drawProbe = (t) => {
     const cps = new Uint32Array(ROWS);
     const fg = new Uint32Array(ROWS);
-    cps[1] = probe.t.codePointAt(0);
+    cps[1] = t.codePointAt(0);
     fg[1] = (2 << 24) | 0xff_ff_ff;
     r.apply_frame(g, COLS, ROWS, new Uint32Array(ROWS), fg, cps, new Uint16Array(ROWS), true);
     r.render();
-    const baseline = rowLit();
+    return rowLit();
+  };
 
-    // The page must see the thing it is for BEFORE it can say the thing survived. Without this a
-    // face whose glyphs all fit would report "unchanged across the loss" while comparing 0 to 0.
+  let probe = null, baseline = null;
+  const tried = [];
+  for (const c of candidates) {
+    const rows = drawProbe(c.t);
+    tried.push({ t: c.t, spill: rows[0] + rows[2] });
+    if (rows[0] + rows[2] > 0) { probe = c; baseline = rows; break; }
+  }
+  measured.tried = tried;
+
+  if (!probe) {
+    checks.probeAvailable = false;
+  } else {
+    // The page sees the thing it is for BEFORE it says the thing survived — and it is the selection
+    // above that establishes it, not a check written after the fact.
     checks.theBandDrawsBeforeTheLoss = baseline[0] + baseline[2] > 0;
 
     // ── kill it ────────────────────────────────────────────────────────────────────────────────
