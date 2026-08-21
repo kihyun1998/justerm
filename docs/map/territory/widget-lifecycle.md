@@ -160,7 +160,18 @@ than of any one collaborator.
 
 - **One rule now exists; the territory is still mostly convention.** #606 settled what happens to
   what the widget is *handed*. Six collaborators the consumer keeps have teardown nobody calls, and
-  two have none at all — that is a **composition-root** question, still tracked on #605.
+  two have none at all — that is a **composition-root** question, and it now lives here rather than
+  on an issue.
+  **Measured 2026-08-21, which is why #605 closed.** The half that was a hypothesis is answered: the
+  anchor predicted that each new slice would re-decide ownership locally, and the three ambient
+  modules added *after* it was filed did the opposite — `frame-loop.ts` (2026-08-03),
+  `context-loss.ts` (08-04) and `dpr-watcher.ts` (08-10) each carry a teardown, and the last two cite
+  #606 in their own source. Five source files now quote that rule. The half that remains is real and
+  unchanged — the only `Terminal.dispose()` calls outside tests sit inside the demo's *proof* probes,
+  and the `Scrollbar` and the resize observer are never disposed on any ordinary path — but nothing
+  can move it: a composition root is a question a **host application** asks, and `justerm-web` has no
+  consumer (penterm's webview is still xterm.js). It becomes live the day one adopts the widget, and
+  this bullet is where that reader will be standing.
 - ~~`Terminal.dispose()` cannot reach the renderer's blink loop.~~ Closed by #606: `dispose?()` is on
   the `Renderer` port and `Terminal.dispose()` calls it, proven in a real browser by counting the
   loop's presenting rAF turns before (>0) and after (0) disposal.
