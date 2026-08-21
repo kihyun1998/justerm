@@ -1,0 +1,225 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>justerm-renderer proof — I_neighbour survives a context loss (#793)</title>
+<style>
+  body { margin: 0; background: #000; }
+  #c { display: block; image-rendering: pixelated; }
+</style>
+<!--
+  `context-loss.html` states the principle this page completes: *"`restore()` re-fetches the THREE
+  cursor uniform locations … if it forgot any of them, the bar would not come back"*. #791 added a
+  fourth, `u_bleed_px`, and forgot it exactly that way — the adopt block copied twelve locations and
+  not that one, so every frame after a restore addressed a uniform belonging to the **dead program**.
+  Measured by #791's re-gate lens before the fix: the band drew 0 px where it had drawn 11 at dpr 1
+  and 20 at dpr 2, and every subsequent frame raised `INVALID_OPERATION` — silently, because nothing
+  in this renderer throws on a GL error.
+
+  The recurrence is closed structurally (the adopt destructures `Pipeline`, so a *new* field omitted
+  is a compile error), and that is precisely what this page is NOT for: a location that is adopted
+  but used wrongly compiles fine, and no test in the corpus draws a glyph whose ink leaves its cell
+  across a loss. The five existing context-loss pages between them cover ASCII, a dynamic glyph, a
+  wide pair, a cursor, several grids, a race and a timeout — none of them overflows a cell.
+
+  Two things are asserted, and they fail for different reasons:
+
+    - the same ink reaches the NEIGHBOURING row after the restore as before it. This is what a stale
+      or unset `u_bleed_px` breaks, and it is counted in pixels rather than compared as an image
+      because the band is the only thing being asked about;
+    - the post-restore frame raises **no GL error**. That is the other half of the same defect and
+      the half no pixel count can see: a draw that keeps working while `INVALID_OPERATION` piles up
+      is a proof passing over a renderer that is one uniform away from drawing nothing.
+
+  The probe is FOUND at runtime, never listed (#578, and `neighbour-ink.html` for the same reason):
+  which codepoints leave the cell is a property of the face behind `monospace` on this machine.
+
+  Build: wasm-pack build --target web --dev --out-dir pkg
+-->
+<canvas id="c" width="64" height="128"></canvas>
+<script type="module">
+  import init, { JustermRenderer } from "../pkg/justerm_renderer.js";
+  import { readCells, fitGrid } from "./proof.js";
+  await init();
+
+  const FG = 0xffffff, BG = 0x000000;
+  const palette = new Uint32Array(256);
+  const r = new JustermRenderer("#c");
+  const g = r.addGrid(palette, FG, BG);
+  const canvas = document.querySelector("#c");
+  const gl = canvas.getContext("webgl2"); // the SAME context the renderer holds
+  const dpr = window.devicePixelRatio;
+  const lose = gl.getExtension("WEBGL_lose_context");
+  if (!lose) throw new Error("WEBGL_lose_context unavailable — cannot prove #793");
+
+  // ── find a glyph this face cannot fit in its cell, vertically ────────────────────────────────
+  // Screened on metrics and confirmed with pixels, the way `neighbour-ink.html` does it: an ink scan
+  // per codepoint costs a `getImageData` each and blew the runner's 30 s budget.
+  const FONT = `${16 * dpr}px monospace, monospace`;
+  const big = Math.ceil(16 * dpr * 4);
+  const off = new OffscreenCanvas(big, big).getContext("2d", { willReadFrequently: true });
+  off.textBaseline = "alphabetic";
+  off.textAlign = "left";
+  const base = Math.round(16 * dpr * 2);
+
+  const freeInk = (text) => {
+    off.clearRect(0, 0, big, big);
+    off.font = FONT;
+    off.fillStyle = "white";
+    off.fillText(text, base, base);
+    const d = off.getImageData(0, 0, big, big).data;
+    let lit = 0, above = -1e9, below = -1e9, minX = 1e9, maxX = -1e9;
+    for (let y = 0; y < big; y++)
+      for (let x = 0; x < big; x++)
+        if (d[(y * big + x) * 4 + 3] >= 128) {
+          lit++;
+          if (base - y > above) above = base - y;
+          if (y - base > below) below = y - base;
+          if (x - base < minX) minX = x - base;
+          if (x - base > maxX) maxX = x - base;
+        }
+    return { lit, above, below, minX, maxX };
+  };
+  const metricBox = (t) => {
+    off.font = FONT;
+    const m = off.measureText(t);
+    return {
+      above: m.actualBoundingBoxAscent,
+      below: m.actualBoundingBoxDescent,
+      minX: -m.actualBoundingBoxLeft,
+      maxX: m.actualBoundingBoxRight,
+      width: m.width,
+    };
+  };
+  const blockInk = freeInk("█");
+  const blockMetric = metricBox("█");
+  // Over the cell VERTICALLY and inside it horizontally. The horizontal half is not about this
+  // page's claim: since #792 a glyph wider than its box is condensed at bake, so a probe that spills
+  // sideways reaches the atlas as a different shape than `freeInk` measured — the vertical band is
+  // what this page is about, and the screen keeps the two apart.
+  const qualifies = (b) =>
+    (b.above > blockMetric.above || b.below > blockMetric.below) &&
+    b.minX >= blockMetric.minX && b.maxX <= blockMetric.maxX;
+  const confirms = (i) =>
+    (i.above > blockInk.above || i.below > blockInk.below) &&
+    i.minX >= blockInk.minX && i.maxX <= blockInk.maxX;
+
+  // Screened on metrics — an ink scan per codepoint costs a `getImageData` each and blew the
+  // runner's 30 s budget — and then CONFIRMED BY THE BAKE, below. A pixel scan of a 2D canvas is
+  // not the last word here: measured on CI at dpr 1.1, `Ǘ` clears the block's ink box on both
+  // instruments and the renderer still deposits **0** px on its neighbour, because a single
+  // antialiased row of overshoot does not survive the threshold this page counts at. A page whose
+  // subject is "the band draws" must pick its probe by what the band actually draws.
+  const candidates = [];
+  scan: for (const [from, to] of [
+    [0x00c0, 0x024f], [0x1e00, 0x1eff], [0x1f00, 0x1fff], [0x0386, 0x03ce], [0x0400, 0x045f],
+  ]) {
+    for (let cp = from; cp <= to; cp++) {
+      const t = String.fromCodePoint(cp);
+      const b = metricBox(t);
+      if (b.width === 0 || !qualifies(b)) continue;
+      const i = freeInk(t);
+      if (i.lit > 0 && confirms(i)) {
+        candidates.push({ t, ink: i });
+        if (candidates.length >= 24) break scan; // bounded: each one below costs a bake and a read
+      }
+    }
+  }
+
+  // ── draw it with a receiving row above and below ──────────────────────────────────────────────
+  const [COLS, ROWS] = [1, 3];
+  fitGrid(r, g, COLS, ROWS);
+  // Counted the way `neighbour-ink.html` counts, deliberately: any channel at or above 128, rather
+  // than `countLit`'s red above 150. The band's ink is one or two ANTIALIASED rows, and the stricter
+  // threshold reads them as absent — measured on CI at dpr 1.1, where the first qualifying probe
+  // deposited "0" under the strict count while the sibling page saw the same glyph spill.
+  const rowLit = () =>
+    [0, 1, 2].map((row) => {
+      const { buf } = readCells(gl, r, g, 0, row);
+      let n = 0;
+      for (let i = 0; i < buf.length; i += 4)
+        if (buf[i] >= 128 || buf[i + 1] >= 128 || buf[i + 2] >= 128) n++;
+      return n;
+    });
+  const once = (event) => new Promise((res) => canvas.addEventListener(event, res, { once: true }));
+
+  const checks = {};
+  const measured = {};
+
+  /** Draw one candidate and report what each row holds — the bake-side precondition. */
+  const drawProbe = (t) => {
+    const cps = new Uint32Array(ROWS);
+    const fg = new Uint32Array(ROWS);
+    cps[1] = t.codePointAt(0);
+    fg[1] = (2 << 24) | 0xff_ff_ff;
+    r.apply_frame(g, COLS, ROWS, new Uint32Array(ROWS), fg, cps, new Uint16Array(ROWS), true);
+    r.render();
+    return rowLit();
+  };
+
+  let probe = null, baseline = null;
+  const tried = [];
+  for (const c of candidates) {
+    const rows = drawProbe(c.t);
+    tried.push({ t: c.t, spill: rows[0] + rows[2] });
+    if (rows[0] + rows[2] > 0) { probe = c; baseline = rows; break; }
+  }
+  measured.tried = tried;
+
+  if (!probe) {
+    checks.probeAvailable = false;
+  } else {
+    // The page sees the thing it is for BEFORE it says the thing survived — and it is the selection
+    // above that establishes it, not a check written after the fact.
+    checks.theBandDrawsBeforeTheLoss = baseline[0] + baseline[2] > 0;
+
+    // ── kill it ────────────────────────────────────────────────────────────────────────────────
+    const lostEvent = once("webglcontextlost");
+    lose.loseContext();
+    await lostEvent;
+    // Chrome refuses `restoreContext()` until the loss dispatch has fully unwound; awaiting the
+    // event is not enough, since the continuation is a microtask. Yield a real macrotask
+    // (`context-loss.html` records the three combinations that were tried).
+    await new Promise((res) => setTimeout(res, 0));
+    const restoredEvent = once("webglcontextrestored");
+    lose.restoreContext();
+    await restoredEvent;
+
+    // No `apply_frame`, no re-upload: the renderer alone must repaint the pre-loss frame, band
+    // included. Drain any error the restore itself left, so the check below can only see errors
+    // this frame produced.
+    while (gl.getError() !== gl.NO_ERROR) { /* drain */ }
+    r.render();
+    const glError = gl.getError();
+    const recovered = rowLit();
+
+    measured.probe = probe.t;
+    measured.baseline = baseline;
+    measured.recovered = recovered;
+    measured.glError = glError;
+
+    // The band is back, exactly. A count, not an image compare: the claim is about the ink that
+    // crossed a cell boundary, and that is the quantity a dead uniform location zeroes.
+    checks.theNeighbourInkComesBackUnchanged =
+      recovered[0] === baseline[0] && recovered[2] === baseline[2];
+    // ...and the owner's own row too, so a restore that recovered the band by drawing everything
+    // twice as tall would not read as a pass.
+    checks.theOwnersOwnRowIsUnchanged = recovered[1] === baseline[1];
+    // The half no pixel count can see. `u_bleed_px` belonging to the dead program raised
+    // `INVALID_OPERATION` on every frame; nothing here throws, so without this the renderer can be
+    // one uniform from blank and still look green.
+    checks.thePostRestoreFrameRaisesNoGlError = glError === gl.NO_ERROR;
+    checks.probeAvailable = true;
+  }
+
+  const ok = Object.values(checks).every(Boolean);
+  window.__proof = {
+    ok,
+    checks,
+    // Printed by the runner when a check fails: every number here is machine-specific, because the
+    // cell is derived from whichever face `monospace` resolves to (#578).
+    measured,
+    cell: [r.cell_width(g), r.cell_height(g)],
+    dpr,
+  };
+  // The runner waits on this, not on `__proof` (`e2e/proofs.spec.mjs`).
+  window.__done = true;
+</script>

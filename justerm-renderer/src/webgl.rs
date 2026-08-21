@@ -2662,17 +2662,24 @@ impl JustermRenderer {
         self.global.u_cursor_text_color = u_cursor_text_color;
         self.global.u_cursor_thickness = u_cursor_thickness;
         self.global.dpr = dpr;
-        unsafe {
-            for atlas in old_atlases {
-                self.global.gl.delete_texture(atlas);
-            }
-            self.global.gl.delete_program(old_program);
-            self.global.gl.delete_buffer(old_quad_vbo);
-            for b in &old_grid_buffers {
-                self.global.gl.delete_vertex_array(b.vao);
-                self.global.gl.delete_buffer(b.instance_vbo);
-            }
-        }
+        // **The old objects are NOT deleted, and that is the fix rather than the omission** (#793).
+        // Every handle displaced above belonged to the context that was destroyed — `restore` has
+        // exactly one call site, `FrameAction::Rebuild`, and every path into it is a rebuild after a
+        // loss — so the objects are already gone and deleting them is a no-op that raises
+        // `INVALID_OPERATION`. Measured on master before this change: the first frame after every
+        // restore raised it **five** times (one atlas, the program, the quad VBO, one VAO, one
+        // instance VBO) with the pixels perfectly correct, so nothing in the corpus could see it.
+        //
+        // It is not cosmetic, and the reason is what #793 is for. A uniform location that survives a
+        // restore by pointing at the dead program raises the *same* `INVALID_OPERATION` — that is
+        // exactly how #791's `u_bleed_px` failed — so a renderer that leaves the error flag set on
+        // every restore has no channel left for the guard to listen to. Deleting nothing keeps the
+        // channel clean, which is what makes `demo/context-loss-neighbour.html`'s error check a
+        // guard rather than a permanent red.
+        //
+        // The `discard` closure above still deletes, and must: what it frees was built by *this*
+        // function on the **live** context and never published.
+        drop((old_atlases, old_program, old_quad_vbo, old_grid_buffers));
 
         // 3. Reconcile any grid whose **selectors** moved while the context was dead (#772). A
         //    `setFontSize` / `setLetterSpacing` arriving mid-loss writes the selector and defers the
