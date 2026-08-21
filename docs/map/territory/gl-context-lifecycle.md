@@ -35,6 +35,17 @@ machine that decides what the renderer does in between.
   — which runs at `free()`, a call the widget deliberately never makes. So the consumer registers an
   indirection once and swaps behind it. Worth knowing before adding a fifth export of this shape: a
   push channel whose only teardown is `Drop` pushes that teardown onto whoever holds it.
+- **A restore deletes nothing it displaces, and that is deliberate** (#793). Every handle the rebuild
+  replaces — the program, the quad VBO, each grid's VAO and instance buffer, each configuration's
+  atlas — belonged to the context that died, so it is already gone; asking GL to delete it is a no-op
+  that raises `INVALID_OPERATION`. Measured on master before the change: the first frame after every
+  restore raised it **five** times with the pixels perfectly correct, so nothing in the proof corpus
+  could see it. The reason it is worth naming rather than tolerating is the *channel*: a uniform
+  location that survives a restore pointing at the dead program raises the same
+  `INVALID_OPERATION` — that is how #791's `u_bleed_px` failed — so a renderer that leaves the error
+  flag set on every restore has nothing left for a guard to listen to. The one deletion that stays is
+  `restore`'s own `discard`, which frees what that function built on the **live** context and never
+  published.
 - **Loss destroys GPU state, not the CPU-side model.** The persistent dense grid in the
   [frame adapter](frame-adapter.md) survives, which is what makes a restore a re-upload rather than a
   re-send from the engine.
@@ -299,6 +310,10 @@ eager rather than as shapes to follow.
   and closed. Kept here rather than deleted because the *shape* is the reusable part: this territory
   went from zero records to one by opening a cheap hypothesis at the second rhyming issue instead of
   waiting for the archaeology that produced the repo's other two records at cluster sizes of 20 and 9.
+- ~~**Nothing draws a glyph whose ink leaves its cell across a restore**~~ — **closed 2026-08-21
+  (#793)** by `demo/context-loss-neighbour.html`, which is also the page that made the spurious
+  `INVALID_OPERATION` above visible. It asserts two things that fail for different reasons: the band's
+  ink comes back unchanged, and the post-restore frame raises no GL error at all.
 - **One site still resolves against ADR-0027 as a defect**, not as an open question: the unguarded
   `apply_frame` / `apply_damage` chain, safe *only* by the validity condition stated in the design
   model above. (`render`/`action()` was the other; #695 closed it.) Nobody has been asked whether it

@@ -1,0 +1,171 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>justerm-renderer proof — a colour emoji's overflow keeps the ATLAS's colours (#794)</title>
+<style>
+  body { margin: 0; background: #000; }
+  #c { display: block; image-rendering: pixelated; }
+</style>
+<!--
+  ADR-0019 R1.2: foreign ink keeps its **owner's** ink, and for a colour emoji the owner's ink lives
+  in the atlas rather than in the instance. #791 made the shader mix `tex.rgb` under the owner's
+  emoji bit for exactly this, after its lens measured the failure — a brown pile spilling into the
+  row below arrived as 11 device px of the receiving cell's flat SGR foreground. Nothing proved it.
+
+  **Why `neighbour-ink.html` could not, and why this page exists** (#794): that page picks its probe
+  by ink-scanning a 2D-canvas `fillText`, which is not the path a wide glyph takes — a wide glyph is
+  baked across a two-cell advance and split, so a check gated on that measurement asks for overflow
+  the renderer does not produce. So the precondition here comes from the **renderer's own bake**: the
+  page draws each candidate and reads back what actually reached the neighbouring row.
+
+  Measured that way on this machine, and recorded because it decides the shape of the page: a colour
+  emoji on the **wide** path deposits ZERO in the neighbouring row at every density, while the same
+  codepoint on the **narrow** (width-1) path — `GlyphKind::EmojiNarrow`, the case #297 established —
+  overflows by 6 device px at dpr 1 and 10 at dpr 2. The guard is therefore built on the narrow
+  path, and the wide path's zero is reported rather than asserted.
+
+  **The colours are chosen so the two hypotheses cannot be confused.** Every cell's foreground is
+  pure BLUE. A `U+1F4A9`-class emoji's atlas ink is warm, so:
+
+    - keeping the atlas's colours  → overflow pixels with red above blue;
+    - painting the owner's fg      → overflow pixels that are blue, i.e. what the defect produced.
+
+  Neither can be reached by the other, at any threshold, which is what makes this a colour check
+  rather than a pixel count (`neighbour-ink.html` records why counts do not travel between the two
+  rasterisers).
+
+  Build: wasm-pack build --target web --dev --out-dir pkg
+-->
+<canvas id="c" width="64" height="64"></canvas>
+<script type="module">
+  import init, { JustermRenderer } from "../pkg/justerm_renderer.js";
+  import { readCells, fitGrid, hasColourEmojiFont, deviceCell } from "./proof.js";
+  await init();
+
+  const palette = new Uint32Array(256);
+  const r = new JustermRenderer("#c");
+  const g = r.addGrid(palette, 0xffffff, 0x000000);
+  const canvas = document.querySelector("#c");
+  const gl = canvas.getContext("webgl2");
+  const dpr = window.devicePixelRatio;
+  const WIDE_CHAR = 1 << 8, WIDE_SPACER = 1 << 9;
+  // Pure blue, tagged Rgb. Every cell wears it, so ink drawn from ANY cell's foreground is blue and
+  // ink drawn from the atlas is not.
+  const BLUE = (2 << 24) | 0x00_00_ff;
+
+  /** Per-row tallies of the probe column: lit, warm (atlas-like), and blue (foreground-like). */
+  const rowInk = (rows, col) =>
+    Array.from({ length: rows }, (_, row) => {
+      const { buf } = readCells(gl, r, g, col, row, 1);
+      let lit = 0, warm = 0, blue = 0, sr = 0, sg = 0, sb = 0;
+      for (let i = 0; i < buf.length; i += 4) {
+        const [R, G, B] = [buf[i], buf[i + 1], buf[i + 2]];
+        if (R <= 30 && G <= 30 && B <= 30) continue;
+        lit++; sr += R; sg += G; sb += B;
+        if (R > B + 40) warm++;
+        if (B > R + 40 && B > 150) blue++;
+      }
+      // The MEAN of the lit ink, because the decisive comparison is a colour and not a count: the
+      // overflow band is the faint bottom edge of a glyph, dark enough that a saturation threshold
+      // ("warm") misses it while it is still nowhere near the foreground it would have worn under
+      // the defect. Measured: 6 lit px at dpr 1 with zero of them clearing `R > B + 40`.
+      return { lit, warm, blue, mean: lit ? [sr / lit, sg / lit, sb / lit] : null };
+    });
+
+  /** Draw `cp` in the middle row of a 1x3 (or 2x3, wide) grid and report what each row holds. */
+  const draw = (cp, wide) => {
+    const [COLS, ROWS] = [wide ? 2 : 1, 3];
+    fitGrid(r, g, COLS, ROWS);
+    const n = COLS * ROWS;
+    const cps = new Uint32Array(n), fg = new Uint32Array(n), flags = new Uint16Array(n);
+    cps[COLS] = cp;
+    flags[COLS] = wide ? WIDE_CHAR : 0;
+    if (wide) { cps[COLS + 1] = 0x20; flags[COLS + 1] = WIDE_SPACER; }
+    // Every cell blue, receivers included: the receiving row's own foreground is the colour the
+    // defect painted foreign ink in, so it must be present and must not be what we find.
+    for (let i = 0; i < n; i++) { if (!cps[i]) cps[i] = 0x20; fg[i] = BLUE; }
+    r.apply_frame(g, COLS, ROWS, new Uint32Array(n), fg, cps, flags, true);
+    r.render();
+    return rowInk(ROWS, 0);
+  };
+
+  // Ordered by how likely the face is to draw them past the cell; the winner is whichever the
+  // RENDERER actually spills, not whichever a 2D canvas says is tall.
+  const CANDIDATES = [0x1f4a9, 0x1f525, 0x1f602, 0x1f984, 0x1f680, 0x1f47e, 0x2764];
+  const checks = {};
+  const measured = {};
+
+  const colourEmojiFontPresent = hasColourEmojiFont();
+  // #334: without a colour-emoji font in the runtime every colour check below is about the host,
+  // not about justerm. Name it rather than reporting a mystery pixel failure.
+  checks.colourEmojiFontPresent = colourEmojiFontPresent;
+
+  if (colourEmojiFontPresent) {
+    let probe = null;
+    const tried = [];
+    for (const cp of CANDIDATES) {
+      const rows = draw(cp, false);
+      const spill = rows[0].lit + rows[2].lit;
+      tried.push({ cp: cp.toString(16), spill });
+      if (spill >= 3) { probe = { cp, rows }; break; }
+    }
+    measured.tried = tried;
+
+    measured.overflowFound = Boolean(probe);
+    if (!probe) {
+      // Nothing to see on this face AT THIS DENSITY, and that is a property of the emoji font and
+      // the cell rather than of the renderer: measured here, `U+1F4A9` spills 6 device px at dpr 1
+      // and 10 at dpr 2, and NOTHING spills at dpr 1.1. Recorded loudly and asserted not at all —
+      // a red here would report the host's fonts as a defect (#578), and a page that is
+      // permanently red at one density is a page nobody reads. The runner prints `measured`, so
+      // "the guard was dormant" stays visible rather than becoming a silent pass.
+    } else {
+      const { rows } = probe;
+      const side = rows[0].lit >= rows[2].lit ? 0 : 2;
+      const recv = rows[side];
+      // The wide path's zero, measured rather than asserted — this is the reason #794 records for
+      // why a guard here is awkward, and it is worth keeping visible if it ever stops being true.
+      const wideRows = draw(probe.cp, true);
+      measured.probe = probe.cp.toString(16);
+      measured.narrow = rows;
+      measured.wide = wideRows;
+
+      // R1.2, the whole claim, as two hypotheses rather than as a threshold: the ink that crossed
+      // the boundary is nearer the OWNER'S OWN INK than it is to the foreground every cell wears.
+      // Under the defect it was that foreground exactly, so the two cannot be confused; and stating
+      // it as a comparison means no absolute colour has to be guessed for an emoji nobody chose.
+      const dist = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+      const FG_RGB = [0, 0, 255];
+      const toOwner = dist(recv.mean, rows[1].mean);
+      const toForeground = dist(recv.mean, FG_RGB);
+      measured.overflowMean = recv.mean;
+      measured.ownerMean = rows[1].mean;
+      measured.distances = { toOwner, toForeground };
+      checks.theOverflowLooksLikeItsOwnersInkNotAForeground = toOwner < toForeground;
+      // ...and it carries no pixel of that foreground at all, which is the exact form the defect
+      // took: a brown pile arriving as flat SGR-coloured pixels.
+      checks.theOverflowIsNotAnyCellsForeground = recv.blue === 0;
+      // The owner's own cell is the control: if it were not coloured either, the page would be
+      // measuring a monochrome bake rather than the overflow rule.
+      checks.theOwnerItselfDrawsInAtlasColour = rows[1].warm > 0;
+      // And the ink in the receiving row genuinely came from the emoji: with a space in the owner's
+      // cell instead, that row is empty. Without this the checks above could be satisfied by
+      // anything at all that happens to be warm in that band.
+      const blank = draw(0x20, false);
+      measured.blank = blank;
+      checks.theReceivingRowIsEmptyWithoutTheEmoji = blank[side].lit === 0;
+    }
+  }
+
+  const ok = Object.values(checks).every(Boolean);
+  window.__proof = {
+    ok,
+    checks,
+    // Printed by the runner on failure: which codepoints were tried and what each deposited, since
+    // that is a property of the machine's emoji font and not reproducible from the source (#578).
+    measured,
+    cell: deviceCell(r, g),
+    dpr,
+  };
+  // The runner waits on this, not on `__proof` (`e2e/proofs.spec.mjs`).
+  window.__done = true;
+</script>

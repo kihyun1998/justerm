@@ -95,6 +95,16 @@ becomes an actual colour — the engine never does that by identity.
   overlaps, the composite stays one evaluation per pixel, and no GL blending is involved — the
   writer-side shape every reference uses would have forced a premultiplied buffer and put
   foreign-vs-own occlusion back under instance order.
+- **A colour emoji's overflow keeps the ATLAS's colours, and since #794 something proves it.** The
+  shader mixes `tex.rgb` under the *owner's* emoji bit, because R1.2 says foreign ink keeps its
+  owner's ink and an emoji's ink lives in the texture. The guard could not be built on
+  `neighbour-ink.html`'s instrument, which picks its probe from a 2D-canvas `fillText` — that is not
+  the path a wide glyph takes. Taking the precondition from the renderer's own bake instead shows
+  why: a colour emoji on the **wide** path deposits nothing on its neighbour, while the same
+  codepoint on the **narrow** (width-1) path spills 6 device px at dpr 1 and 10 at dpr 2. So
+  `demo/emoji-neighbour-ink.html` is built on the narrow path, and states the claim as two
+  hypotheses — the overflow's mean colour is nearer the owner's own ink than the foreground every
+  cell wears — because the defect it guards produced that foreground exactly.
 - **Foreign ink is withdrawn where the two cells' backgrounds differ**, and *resolved* backgrounds:
   two cells can both hold `Default` and still differ once a selection covers one. Two of the three
   producers of that difference are invisible to the packer, so the rule is enforced in two places —
