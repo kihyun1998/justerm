@@ -98,8 +98,10 @@
   // yields more than a dozen candidates on both faces this has been run against.
   //
   // Qualifying means over the cell VERTICALLY and inside it horizontally: #791 reserves a band on
-  // the vertical axis only, so a probe that also spills sideways would fail the ink-total check for
-  // a reason this change never claimed to fix (#792). "Inside" is tested against the cell's own x
+  // the vertical axis only. The reason for the horizontal half changed with #792 and the screen
+  // stays: sideways ink is no longer destroyed, it is CONDENSED at bake — so a probe that spills
+  // that way reaches the atlas as a different shape from the one `freeInk` measured here, and every
+  // comparison below would be against the wrong reference. "Inside" is tested against the cell's own x
   // RANGE, not its width — `ᾷ` is exactly as wide as the cell and sits 2 px to the right of it.
   // Screened with `measureText`, confirmed with pixels. Ink-scanning every codepoint in these
   // ranges costs a `getImageData` per glyph and blew the runner's 30 s budget; the metrics are

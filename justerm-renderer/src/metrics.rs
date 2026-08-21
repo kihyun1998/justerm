@@ -214,6 +214,87 @@ pub fn vertical_bleed(
     above.max(below) + BLEED_HEADROOM_PX
 }
 
+/// How far a glyph's measured ink may exceed its box before the bake condenses it, device px (#792).
+///
+/// Empirical, and recorded as such — the same shape as [`BLEED_HEADROOM_PX`]. The bake decides from
+/// `measureText`'s `actualBoundingBox{Left,Right}`, and that is **not** the alpha >= 128 window the
+/// rasteriser and every pixel proof use: measured in this repo, the metric agrees on one edge and
+/// runs one antialiased row long on the other. A threshold of zero would therefore condense glyphs a
+/// pixel scan says already fit, on the metric's own bias rather than on anything the reader sees.
+/// One pixel is that bias; ink lost within it is one antialiased column at the box edge.
+pub const FIT_TOLERANCE_PX: f32 = 1.0;
+
+/// How a bake makes a glyph fit its box on the horizontal axis (#792).
+///
+/// Applied as `translate(box_origin, ..); scale(scale_x, 1); fill_text(text, pen_offset, ..)`, so
+/// `pen_offset` is in **pre-scale** device px.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct HorizontalFit {
+    /// Horizontal scale for the draw. `1.0` leaves the glyph alone; below 1 condenses it.
+    pub scale_x: f32,
+    /// Device px to draw at, relative to the box origin, before `scale_x` applies.
+    pub pen_offset: f32,
+}
+
+/// Fit a glyph's ink into `box_w`, condensing it only on the axis that is over budget (#792).
+///
+/// The vertical axis is deliberately absent. Since #791 a slot carries a bleed band above and below
+/// the cell and the receiving cell reads it back (ADR-0019 R1.2), so vertical ink already has
+/// somewhere to go; horizontal ink does not, and the Canvas API exposes no face-level horizontal
+/// counterpart to `fontBoundingBox{Ascent,Descent}` for a band to be sized from. Scaling uniformly
+/// would spend budget this renderer already owns and partially undo #791's recovery — so the glyph
+/// is condensed, never shrunk, and its height is untouched by construction rather than by a check.
+///
+/// Both inputs are `measureText`'s, in device px against the pen: `ink_left` is how far the ink
+/// reaches **left** of the pen (negative when the ink starts to its right) and `ink_right` how far
+/// right. The visible window is `[0, box_w)`.
+///
+/// `box_w` is the **glyph box**, never the cell. [`device_cell`] documents that a negative
+/// `letter_spacing` narrows the cell past the glyph, *which the shader crops rather than
+/// stretching*: a predicate keyed on the cell would read that consumer policy as a font fact and
+/// condense every glyph on the grid.
+///
+/// Two treatments, and which one applies is a property of the ink rather than a mode:
+///
+/// - ink **wider** than the box is condensed to exactly the box and aligned to its origin;
+/// - ink that **fits** and sits outside is moved in by the least that puts it inside — never
+///   further, since a glyph's side bearing is the font's and a period is not meant to sit on the
+///   cell's left edge.
+pub fn horizontal_fit(ink_left: f32, ink_right: f32, box_w: u32) -> HorizontalFit {
+    let identity = HorizontalFit {
+        scale_x: 1.0,
+        pen_offset: 0.0,
+    };
+    let box_w = box_w as f32;
+    let ink_w = ink_left + ink_right;
+    // A blank grapheme measures no ink, and a font that reports something worse than that must not
+    // reach the division below.
+    if !ink_w.is_finite() || ink_w <= 0.0 {
+        return identity;
+    }
+    if ink_w > box_w + FIT_TOLERANCE_PX {
+        // Condensed to exactly the box, then aligned to its origin. The offset is pre-scale, so
+        // cancelling the bearing costs the same arithmetic whichever side it is on.
+        return HorizontalFit {
+            scale_x: box_w / ink_w,
+            pen_offset: ink_left,
+        };
+    }
+    let over_left = ink_left.max(0.0);
+    let over_right = (ink_right - box_w).max(0.0);
+    let pen_offset = if over_left > FIT_TOLERANCE_PX {
+        over_left
+    } else if over_right > FIT_TOLERANCE_PX {
+        -over_right
+    } else {
+        0.0
+    };
+    HorizontalFit {
+        scale_x: 1.0,
+        pen_offset,
+    }
+}
+
 /// Which adjacent cell an `I_neighbour` contribution came from (ADR-0019 R1.2).
 #[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -255,6 +336,101 @@ pub fn ink_rows(y: u32, cell_h: u32, bleed: u32) -> InkRows {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Where the ink lands after a fit is applied, as `(left, right)` device px from the box
+    /// origin — the reader's view of it, which is what every assertion below is written against.
+    fn ink_after(fit: HorizontalFit, ink_left: f32, ink_right: f32) -> (f32, f32) {
+        let left = (-ink_left + fit.pen_offset) * fit.scale_x;
+        let right = (ink_right + fit.pen_offset) * fit.scale_x;
+        (left, right)
+    }
+
+    #[test]
+    fn a_glyph_inside_its_box_is_left_exactly_alone() {
+        // Ink from the pen to 8 px in a 12 px box, and a glyph with a natural left side bearing:
+        // neither is touched, and the second is the side condition — "fits" must not mean
+        // "left-align", or every period moves to the cell's edge.
+        assert_eq!(
+            horizontal_fit(0.0, 8.0, 12),
+            HorizontalFit {
+                scale_x: 1.0,
+                pen_offset: 0.0
+            }
+        );
+        assert_eq!(
+            horizontal_fit(-3.0, 9.0, 12),
+            HorizontalFit {
+                scale_x: 1.0,
+                pen_offset: 0.0
+            }
+        );
+    }
+
+    #[test]
+    fn ink_wider_than_the_box_is_condensed_to_exactly_the_box() {
+        // `Ǆ` on the demo face, measured 2026-08-21: 32 device px of ink in a 12 px box.
+        let fit = horizontal_fit(0.0, 32.0, 12);
+        assert_eq!(fit.scale_x, 12.0 / 32.0);
+        let (l, r) = ink_after(fit, 0.0, 32.0);
+        assert_eq!((l, r), (0.0, 12.0));
+    }
+
+    #[test]
+    fn a_condensed_glyph_keeps_its_bearing_out_of_the_box() {
+        // Same total ink, but 2 px of it left of the pen. The condensed ink must still start at the
+        // box origin — an offset applied before the scale, not after.
+        let fit = horizontal_fit(2.0, 30.0, 12);
+        assert_eq!(fit.scale_x, 12.0 / 32.0);
+        let (l, r) = ink_after(fit, 2.0, 30.0);
+        assert_eq!((l, r), (0.0, 12.0));
+    }
+
+    #[test]
+    fn ink_that_fits_but_sits_outside_is_moved_in_rather_than_condensed() {
+        // `ᾷ` on the demo face: ink exactly as wide as the cell, sitting 2 px to its right. Scaling
+        // is a no-op on this class — 59 to 177 codepoints per face — so it must translate, and the
+        // scale must stay 1 or the glyph shrinks for no reason.
+        let fit = horizontal_fit(-2.0, 14.0, 12);
+        assert_eq!(fit.scale_x, 1.0);
+        assert_eq!(ink_after(fit, -2.0, 14.0), (0.0, 12.0));
+    }
+
+    #[test]
+    fn ink_reaching_left_of_the_pen_is_moved_in_by_exactly_what_it_overhangs() {
+        let fit = horizontal_fit(3.0, 5.0, 12);
+        assert_eq!(fit.scale_x, 1.0);
+        assert_eq!(ink_after(fit, 3.0, 5.0), (0.0, 8.0));
+    }
+
+    #[test]
+    fn ink_within_the_tolerance_is_not_condensed_on_the_metric_s_own_bias() {
+        // One px past the box is the measurement's known bias against the alpha scan, not ink the
+        // reader loses. Condensing here would fire on glyphs a pixel scan says already fit.
+        let fit = horizontal_fit(0.0, 13.0, 12);
+        assert_eq!(
+            fit,
+            HorizontalFit {
+                scale_x: 1.0,
+                pen_offset: 0.0
+            }
+        );
+        // ... and one px beyond the tolerance is condensed, so the threshold is a threshold.
+        assert!(horizontal_fit(0.0, 14.0, 12).scale_x < 1.0);
+    }
+
+    #[test]
+    fn a_blank_glyph_produces_no_scale_at_all() {
+        // A space measures no ink; the fit must not divide by it.
+        let fit = horizontal_fit(0.0, 0.0, 12);
+        assert_eq!(
+            fit,
+            HorizontalFit {
+                scale_x: 1.0,
+                pen_offset: 0.0
+            }
+        );
+        assert!(fit.scale_x.is_finite());
+    }
 
     /// The measured ink box of `█` at `FONT_SIZE * 1` in Chromium (#328): 10 x 16 device px.
     const CHAR: (u32, u32) = (10, 16);

@@ -160,6 +160,20 @@ scoped to leave this decision untouched precisely so the two do not become one c
 fractional (13.2 device px on Consolas) while our cell is an integer count of device pixels. How
 xterm.js integerises it has not been read.
 
+**And one axis where alternative (A) is now excluded rather than open (added 2026-08-21, #792).**
+The evidence above is vertical. Measured on the horizontal axis by the same instrument — a pixel scan
+at alpha >= 128 over 2095 codepoints at em 24 device px — swapping the window from the ink box to the
+font's **advance** changes how many codepoints lose ink by at most 13 % (Consolas 462 -> 462, Cascadia
+Mono 560 -> 484, Courier New 370 -> 370, Lucida Console 686 -> 686, DejaVu Sans Mono 252 -> 290; the
+demo face 1153 -> 1153). So on this axis the metric is not merely *not dominant*, it is **not the
+term at all**, and a reader who takes the vertical numbers as evidence for changing the metric would
+be reasoning from the wrong axis. What answers the horizontal axis is #792 — the bake condenses a
+glyph that exceeds its box — and that is a change to what the rasteriser draws, not to what the cell
+is measured from. This ADR's chain above is otherwise unchanged, with one addition worth naming
+because it is the first of its kind here: a **per-glyph** scale now sits between the glyph box and
+the bitmap, so not every geometric quantity in this renderer is a uniform derivation of the one
+measurement any more.
+
 **And a bound worth recording:** the browser cannot reach GDI's budget. Canvas text metrics expose no
 equivalent of the OS/2 win-ascent that `tm.tmHeight` reflects — hence Cascadia Mono's 28 against 32.
 The ceiling for any browser-side metric read is the line box, which is exactly the metric xterm.js

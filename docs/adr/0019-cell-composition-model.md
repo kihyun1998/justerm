@@ -129,11 +129,18 @@ it lands in. Three properties, all of which follow from its owner rather than fr
   content it is rather than by what it looks like; it is recorded because R1 is stated per ink source
   and this source would otherwise read as exempt.
 - **It is not the receiver's content.** The receiver's own layers do not recolour it — see rule 5.
-- **Its reach is bounded, and what lies beyond the bound is still destroyed.** How far ink may travel
-  is the bake's bleed, a per-configuration quantity, not something this model fixes. A glyph the font
-  draws two cells wide still loses what falls outside that budget. The model says such ink *has* a
-  home; it does not claim every glyph fits in one. Recorded so the residue is a known limit rather
-  than an assumption that the gap is closed.
+- **Its reach is bounded, and it bounds only the axis it is a band on.** How far ink may travel is
+  the bake's bleed, a per-configuration quantity, not something this model fixes. The model says
+  such ink *has* a home; it does not claim every glyph fits in one.
+  **Corrected 2026-08-21 (#792): the residue this bullet recorded was horizontal, and it is no
+  longer a residue of this model — it is answered before the model sees it.** The sentence here read
+  *"a glyph the font draws two cells wide still loses what falls outside that budget"*, which is
+  false since the bake condenses such a glyph onto the horizontal axis (`metrics::horizontal_fit`).
+  Nothing in rules 1–6 changed: the ink is still `I_glyph`, still its owner's, still in the owner's
+  slot — there is simply less of it to place, and no `I_neighbour` contribution is produced on an
+  axis that never had a band. What survives of the original sentence is the vertical claim: ink
+  beyond the vertical band is still destroyed, because the band is what bounds that axis and a
+  face can overshoot even its own declared line box.
 
 The renderer produces this **reader-side**: the receiving cell's fragment samples the adjacent slots
 and folds their coverage into its own chain. That is a mechanism note rather than part of the model,
@@ -198,6 +205,12 @@ the user passing over *this* cell. So:
   background — a property of its loop, not a rule about rendering. Resolving reader-side, the receiver
   holds both backgrounds already, so symmetry costs nothing and asymmetry would have to be argued for.
   Should the horizontal axis ever grant, the rule extends by construction rather than by amendment.
+  **It does not, and #792 is why (added 2026-08-21):** a horizontal band has no derivable depth —
+  the Canvas API exposes no face-level counterpart to `fontBoundingBox{Ascent,Descent}` — so that
+  axis was closed by condensing the glyph at bake instead, and there is nothing there to grant. A
+  reader reaching for the band on this axis should read #792's rejected alternatives first: the
+  withdrawal *rule* would extend, but `block_cursor_at` is a different predicate on a horizontal
+  neighbour, and a wide pair's horizontal neighbour is its own spacer.
 
   **Two of the three producers of a background difference never reach the packer, so the rule is
   enforced in two places.** A *block cursor* is a background applied per fragment (`base_bg`), so no
