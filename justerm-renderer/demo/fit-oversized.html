@@ -32,8 +32,16 @@
 
   Every probe is FOUND at runtime, never listed: which codepoints exceed the cell is a property of
   the face behind `monospace` on this machine, and the cell is derived from that face's own block
-  glyph (ADR-0022, #578). With no candidate the page goes RED on a named `*Available` check rather
-  than passing — a proof that cannot see the thing it is for must not read as a green one.
+  glyph (ADR-0022, #578). Missing probes are graded, and the grade is not the same for all three:
+
+    - the SIZE probe is what this page is for, so its absence is a RED `sizeProbeAvailable` — a
+      proof that cannot see the thing it exists for must not read as a green one;
+    - the PLACEMENT and BOTH-AXIS probes are second classes, and whether a face offers one is a
+      property of the face and the density rather than of the renderer. They record
+      "none on this face" in `measured` and assert nothing. Measured: CI's Linux face has a
+      placement candidate at dpr 1.5 and 2 and none at dpr 1 and 1.1, where the cell is 10-11
+      device px and an overhang must be 2 of them. Failing there reports the machine's fonts as a
+      defect (#578), which is the mistake this note exists to stop repeating.
 
   Build: wasm-pack build --target web --dev --out-dir pkg
 -->
@@ -291,8 +299,15 @@
   // 2. THE PLACEMENT CLASS — ink that fits the box and sits outside it (59–177 codepoints per face,
   //    measured 2026-08-21). Scaling does nothing here; only a translation moves it in, and the
   //    observable is an EDGE POSITION, which no coverage difference can shift by more than a pixel.
+  // Opportunistic, like the `g`/`M` controls and the both-axis probe below — NOT like the size
+  // probe, which is what this page is for and stays a hard red when it is missing. Whether a face
+  // offers a glyph that fits its box and still sits outside it is a property of the face and of the
+  // density: measured, CI's Linux face has one at dpr 1.5 and 2 and none at dpr 1 and 1.1, where
+  // the cell is 10-11 device px and an overhang has to be 2 of them. Failing there would report the
+  // machine's fonts as a defect in the renderer (#578), and the checks that carry this page's claim
+  // are all still asserted.
   if (!placementProbe) {
-    checks.placementProbeAvailable = false;
+    measured.placementProbe = "none on this face";
   } else {
     const d = drawn(placementProbe.t);
     const free = placementProbe.free;
@@ -309,7 +324,6 @@
     // ...and it is inside, which is the half that says it was moved rather than merely drawn wider.
     checks.theMovedInkIsWithinTheBox = d.minCol >= 0 && d.maxCol <= d.cw - 1;
     checks.theMovedInkStaysOffItsNeighbours = d.perCell[3] === 0 && d.perCell[5] === 0;
-    checks.placementProbeAvailable = true;
   }
 
   // 3. #791 IS NOT UNDONE — the check the whole choice of `scale(s, 1)` over a uniform fit rests
