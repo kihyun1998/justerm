@@ -212,20 +212,23 @@
     const free = probe.ink;
     const own = drawn(probe.t);
     drawnProbe = own.total;
-    // 1. NO TOTAL IS COMPARED HERE, and that is a decision with two failed attempts behind it.
+    // 1. NO TOTAL IS COMPARED HERE, and the reason is not the one three attempts assumed.
     //
-    //    The tempting check is "every pixel the font drew arrived", counted against a 2D canvas.
-    //    It cannot work, because the renderer already loses ink at fractional densities for reasons
-    //    that predate this change: A/B'd against the pre-#791 build on the same face, `M` measures
-    //    71 px of font ink and BOTH builds draw 61. The probe suffers the same loss, so on the CI
-    //    runner it arrived at exactly the count the cell alone would hold — the overflow landed and
-    //    an equal number of pixels went missing elsewhere. Every total-based form of this assertion
-    //    measures that defect rather than this feature. It is filed separately.
+    //    The tempting check is "every pixel the font drew arrived", counted against a 2D canvas at
+    //    a fixed alpha threshold. Three forms of it (`===`, `>=`, and `> the ink inside the cell`)
+    //    all went red on CI while the feature was working, and the apparent loss looked large
+    //    enough to be a defect: at dpr 1.1 on DejaVu Sans Mono, `M` measures 99 px of font ink and
+    //    the renderer draws 77.
+    //
+    //    It is not a loss. Counted at three thresholds instead of one, the renderer draws MORE:
+    //    122 px against 104 at alpha 32, 67 against 59 at alpha 200, and 21368 against 20768 of
+    //    total alpha mass. The two rasterisers distribute coverage differently, so a single hard
+    //    cut at 128 lands on a different number of pixels while there is more ink, not less. A
+    //    threshold count is simply not a quantity these two paths share.
     //
     //    What this page can state exactly is WHERE the ink is, which is also what the feature
     //    claims: ink appears on a neighbour, on the correct side, in the owner's colour, and stops
-    //    at a background edge. Those are the checks below, and none of them can be moved by ink
-    //    going missing inside the owner's own cell.
+    //    at a background edge. None of those can be moved by how coverage is distributed.
 
     // 2. ...and some of it is on a neighbour, which is what makes this I_neighbour rather than a
     //    cell that merely got taller.
