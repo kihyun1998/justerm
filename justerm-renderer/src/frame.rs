@@ -57,7 +57,27 @@ use crate::render_policy::{ColorPolicy, dim_foreground, resolve_cell};
 /// state, not an accident of the fold — so the packer, which knows every layer that touched the bg,
 /// emits the answer and the shader stops guessing. It costs its own float because #513 already spent
 /// the line inks' exact-integer budget: a colour fills all 24 f32-safe bits, leaving no spare bit to ride.
-pub const INSTANCE_FLOATS: usize = 12;
+pub const INSTANCE_FLOATS: usize = 16;
+
+/// Named float offsets inside one instance. They exist because the layout used to be addressed by
+/// arithmetic — `INSTANCE_FLOATS - 1` for the last field, a literal `12` for the stride — and both
+/// forms silently read the **wrong** float the moment a field is appended (#791). A name cannot.
+pub const BG_RGB: usize = 2;
+/// The cell's own resolved foreground, 3 floats.
+pub const FG_RGB: usize = 5;
+/// The glyph field: slot in bits 0..12, underline/strike/emoji/ink-class in the high bits.
+pub const GLYPH_FIELD: usize = 8;
+/// 1.0 iff this cell's bg is the pristine default backdrop (#455).
+pub const BACKDROP: usize = 11;
+/// `I_neighbour` handles (ADR-0019 R1.2, #791): the glyph field of the cell above and of the cell
+/// below, or [`BLANK_SLOT`] where that neighbour's ink is withdrawn.
+pub const NEIGHBOUR_UP: usize = 12;
+pub const NEIGHBOUR_DN: usize = 13;
+/// The ink each of those neighbours draws in, packed `0xRRGGBB` one per float — the same
+/// idiom the two line inks use (#513). ADR-0019 R1.2: foreign ink keeps its OWNER's colour,
+/// so the receiver's own `fg` is the wrong answer even though it is already to hand.
+pub const NEIGHBOUR_UP_FG: usize = 14;
+pub const NEIGHBOUR_DN_FG: usize = 15;
 
 /// A decoded frame's per-cell grid: dimensions + the four parallel column arrays the packer
 /// reads (all row-major, ideally length `cols*rows`). `bg`/`fg` are tagged-u32 colour refs,
@@ -663,7 +683,99 @@ pub fn pack_instances(
                 underline_packed as f32,
                 strike_packed as f32,
                 if bg_is_default_backdrop { 1.0 } else { 0.0 },
+                // `I_neighbour` starts WITHDRAWN and is granted below — the safe default, since a
+                // cell with no neighbour and a cell whose neighbour is across a background edge
+                // must both end up blank.
+                f32::from(BLANK_SLOT),
+                f32::from(BLANK_SLOT),
+                0.0,
+                0.0,
             ]);
+        }
+    }
+
+    // #791 / ADR-0019 rule 5: hand each cell its vertical neighbours' ink, and withdraw it where the
+    // two cells' **resolved** backgrounds differ. Resolved, not referenced — two cells can hold the
+    // identical `Default` reference and still be different colours once a selection covers one of
+    // them, and that edge is exactly where crossing ink reads as a fault.
+    //
+    // Done as a second walk over what was just packed rather than inside the loop above, because the
+    // answer needs the *neighbour's* composite and the loop only has its own. Reading it back out of
+    // the instance means this shares one resolution with the cell itself — there is no second copy
+    // of the bg pipeline here to drift out of step with the first.
+    let bg_at = |out: &[f32], i: usize| {
+        let b = i * INSTANCE_FLOATS + BG_RGB;
+        [out[b], out[b + 1], out[b + 2]]
+    };
+    // Re-pack the neighbour's resolved foreground into the `0xRRGGBB` float the line inks already
+    // use. Exact: these floats were divided by 255 from integers a moment ago.
+    let fg_packed_at = |out: &[f32], i: usize| {
+        let b = i * INSTANCE_FLOATS + FG_RGB;
+        let ch = |v: f32| ((v * 255.0).round() as u32) & 0xFF;
+        ((ch(out[b]) << 16) | (ch(out[b + 1]) << 8) | ch(out[b + 2])) as f32
+    };
+    for row in 0..rows {
+        for col in 0..cols {
+            let idx = row as usize * cols as usize + col as usize;
+            let mine = bg_at(&out, idx);
+            if row > 0 {
+                let up = idx - cols as usize;
+                if bg_at(&out, up) == mine {
+                    out[idx * INSTANCE_FLOATS + NEIGHBOUR_UP] =
+                        out[up * INSTANCE_FLOATS + GLYPH_FIELD];
+                    out[idx * INSTANCE_FLOATS + NEIGHBOUR_UP_FG] = fg_packed_at(&out, up);
+                }
+            }
+            if row + 1 < rows {
+                let dn = idx + cols as usize;
+                if bg_at(&out, dn) == mine {
+                    out[idx * INSTANCE_FLOATS + NEIGHBOUR_DN] =
+                        out[dn * INSTANCE_FLOATS + GLYPH_FIELD];
+                    out[idx * INSTANCE_FLOATS + NEIGHBOUR_DN_FG] = fg_packed_at(&out, dn);
+                }
+            }
+        }
+    }
+    // A wide glyph is ONE glyph across two cells, and the grant above is decided per cell — so a
+    // background edge under one of the two columns withdraws one half and leaves the other, cutting
+    // the pair's overflow down the middle of the letter. That is exactly the failure
+    // `docs/map/invariant/a-span-covers-a-wide-pair-whole.md` exists to prevent; a withdrawal gate
+    // produces half-covering decisions the same way the ranges that note enumerates do, so it is a
+    // fifth producer and the invariant reaches it.
+    //
+    // Reconciled on the RECEIVERS, because that is where the disagreement lives: the pair is in the
+    // source row, and the two cells receiving from it may sit under different backgrounds.
+    for row in 0..rows {
+        for col in 0..cols {
+            let idx = row as usize * cols as usize + col as usize;
+            for (field, fg_field, src_row) in [
+                (NEIGHBOUR_UP, NEIGHBOUR_UP_FG, row.checked_sub(1)),
+                (
+                    NEIGHBOUR_DN,
+                    NEIGHBOUR_DN_FG,
+                    (row + 1 < rows).then_some(row + 1),
+                ),
+            ] {
+                let Some(src) = src_row else { continue };
+                let Some(partner_col) = crate::pair::partner_at(flags, cols, src, col) else {
+                    continue;
+                };
+                let mate = row as usize * cols as usize + partner_col as usize;
+                let (a, b) = (
+                    idx * INSTANCE_FLOATS + field,
+                    mate * INSTANCE_FLOATS + field,
+                );
+                // Both, not just this one. Blanking a single side happens to converge because the
+                // partner cell is visited too and reaches the same verdict — measured, a mutation
+                // to one-sided blanking still passes — but that makes the result depend on the
+                // walk visiting every cell, which is not something this loop should have to promise.
+                if out[a] != out[b] {
+                    out[a] = f32::from(BLANK_SLOT);
+                    out[b] = f32::from(BLANK_SLOT);
+                    out[idx * INSTANCE_FLOATS + fg_field] = 0.0;
+                    out[mate * INSTANCE_FLOATS + fg_field] = 0.0;
+                }
+            }
         }
     }
     out
@@ -821,6 +933,175 @@ mod tests {
         }
     }
 
+    /// A cell's `I_neighbour` handles: the slot of the cell above and of the cell below, or
+    /// [`BLANK_SLOT`] where that neighbour's ink is withdrawn (ADR-0019 rule 5, #791).
+    fn neighbours(v: &[f32], cell: usize) -> (u16, u16) {
+        let b = cell * INSTANCE_FLOATS;
+        (v[b + NEIGHBOUR_UP] as u16, v[b + NEIGHBOUR_DN] as u16)
+    }
+
+    #[test]
+    fn a_wide_pairs_overflow_is_withdrawn_from_both_halves_or_from_neither() {
+        // A wide glyph is ONE glyph across two cells, and the withdrawal is decided per cell — so a
+        // selection edge under one of the two columns withdraws one half and grants the other, and
+        // the pair's descender is cut down the middle of the letter. That is the failure
+        // `docs/map/invariant/a-span-covers-a-wide-pair-whole.md` exists to prevent; a withdrawal
+        // gate is a producer of half-covering decisions the same way a range is.
+        let p = palette();
+        use crate::attrs::{WIDE_CHAR, WIDE_CHAR_SPACER};
+        let flags = [WIDE_CHAR, WIDE_CHAR_SPACER, 0, 0, 0, 0];
+        let f = Frame {
+            preedit: None,
+            cols: 3,
+            rows: 2,
+            bg: &[0; 6],
+            fg: &[0; 6],
+            slots: &[70, 71, 0, 0, 0, 0], // the pair's two baked halves
+            flags: &flags,
+            codepoints: &[],
+            underline_colors: &[],
+        };
+        // Selection covers row 1, column 0 only. Row 1 holds no pair, so nothing widens it — the
+        // two RECEIVERS of row 0's pair therefore disagree unless the pair is reconciled.
+        let sel = [1u32, 0, 0];
+        let ov = Overlay {
+            active: &[],
+            selection: &sel,
+            matches: &[],
+            colors: HighlightColors {
+                selection_bg: 0x30_60_C0,
+                match_bg: 0x30_60_C0,
+                active_match_bg: 0x30_60_C0,
+            },
+        };
+        let got = pack_instances(&f, &p, true, &ov, &ColorPolicy::default(), &[]);
+        let up = |cell: usize| got[cell * INSTANCE_FLOATS + NEIGHBOUR_UP] as u16;
+
+        // Row 1, columns 0 and 1 — the two cells that would receive the pair's overflow.
+        assert_eq!(
+            up(3),
+            BLANK_SLOT,
+            "the selected half is withdrawn, as rule 5 says"
+        );
+        assert_eq!(
+            up(4),
+            BLANK_SLOT,
+            "and so is the other half — one glyph cannot be half withdrawn"
+        );
+        // The unpaired column beside them is untouched by any of this.
+        assert_eq!(up(5), BLANK_SLOT, "column 2 has no glyph above to receive");
+    }
+
+    #[test]
+    fn a_neighbours_ink_arrives_in_its_own_colour_not_the_receivers() {
+        // ADR-0019 R1.2: `I_neighbour` carries its OWNER's resolved ink. A descender falling out of
+        // a red line into a white one is still red — it is not this cell's content, so this cell's
+        // colour does not apply to it. Two rows, two different foregrounds, one shared background.
+        let p = palette();
+        let f = Frame {
+            preedit: None,
+            cols: 1,
+            rows: 2,
+            bg: &[0, 0],
+            fg: &[(2 << 24) | 0xE0_6C_75, (2 << 24) | 0x61_AF_EF],
+            slots: &[33, 44],
+            flags: &[0, 0],
+            codepoints: &[],
+            underline_colors: &[],
+        };
+        let got = pack_instances(
+            &f,
+            &p,
+            true,
+            &Overlay::default(),
+            &ColorPolicy::default(),
+            &[],
+        );
+        let up_fg = |c: usize| got[c * INSTANCE_FLOATS + NEIGHBOUR_UP_FG] as u32;
+        let dn_fg = |c: usize| got[c * INSTANCE_FLOATS + NEIGHBOUR_DN_FG] as u32;
+
+        assert_eq!(
+            dn_fg(0),
+            0x61_AF_EF,
+            "row 0 receives row 1's blue, not its own red"
+        );
+        assert_eq!(
+            up_fg(1),
+            0xE0_6C_75,
+            "row 1 receives row 0's red, not its own blue"
+        );
+    }
+
+    #[test]
+    fn a_neighbours_ink_is_withdrawn_where_the_two_cells_backgrounds_differ() {
+        let p = palette();
+        let two_rows = |bg: &'static [u32]| Frame {
+            preedit: None,
+            cols: 1,
+            rows: 2,
+            bg,
+            fg: &[0, 0],
+            slots: &[33, 44],
+            flags: &[0, 0],
+            codepoints: &[],
+            underline_colors: &[],
+        };
+
+        // Same background: each cell is handed the other's slot, and the grid edges have none.
+        let same = pack_instances(
+            &two_rows(&[0, 0]),
+            &p,
+            true,
+            &Overlay::default(),
+            &ColorPolicy::default(),
+            &[],
+        );
+        assert_eq!(
+            neighbours(&same, 0),
+            (BLANK_SLOT, 44),
+            "top row: nothing above"
+        );
+        assert_eq!(
+            neighbours(&same, 1),
+            (33, BLANK_SLOT),
+            "bottom row: nothing below"
+        );
+
+        // Now cover ONLY the second row with a selection. Both cells still carry the *same*
+        // background reference — `Default` — so an implementation that compares the reference sees
+        // no difference and lets the ink cross a selection edge. What differs is the RESOLVED
+        // background, which is the thing rule 5 is about.
+        let sel = [1u32, 0, 0]; // row 1, columns 0..=0
+        let ov = Overlay {
+            active: &[],
+            selection: &sel,
+            matches: &[],
+            colors: HighlightColors {
+                selection_bg: 0x30_60_C0,
+                match_bg: 0x30_60_C0,
+                active_match_bg: 0x30_60_C0,
+            },
+        };
+        let split = pack_instances(
+            &two_rows(&[0, 0]),
+            &p,
+            true,
+            &ov,
+            &ColorPolicy::default(),
+            &[],
+        );
+        assert_eq!(
+            neighbours(&split, 0),
+            (BLANK_SLOT, BLANK_SLOT),
+            "the selected row's ink must not fall onto the unselected one"
+        );
+        assert_eq!(
+            neighbours(&split, 1),
+            (BLANK_SLOT, BLANK_SLOT),
+            "and it is symmetric — neither direction crosses the edge"
+        );
+    }
+
     #[test]
     fn packs_bg_fg_and_glyph_field_per_cell() {
         // cell0: bg Rgb(0xE06C75)=224,108,117 ; fg Default->white ; slot 33, no flags
@@ -851,6 +1132,14 @@ mod tests {
             // #455 `bg_default`: this cell's bg is an explicit Rgb (E06C75), NOT the default ref, so it
             // is content — opaque, flag 0.0.
             0.0,
+            // #791 `I_neighbour` handles: a 1x1 grid has no cell above or below, so both stay
+            // withdrawn. Spelled `BLANK_SLOT` rather than `0` for what it means — the two coincide
+            // because the atlas reserves index zero for the empty glyph, not by accident here.
+            f32::from(BLANK_SLOT),
+            f32::from(BLANK_SLOT),
+            // ...and no colour travels with ink that is not there.
+            0.0,
+            0.0,
         ];
         assert_eq!(
             got.len(),
@@ -869,7 +1158,6 @@ mod tests {
     const STRIKE_INK: usize = 10;
 
     /// The index of the #455 translucency-provenance flag: the last float of the instance record.
-    const BACKDROP: usize = INSTANCE_FLOATS - 1;
 
     #[test]
     fn the_default_backdrop_flag_keys_on_provenance_not_colour_equality() {
@@ -1510,7 +1798,7 @@ mod tests {
         // *covered* cell's underline — a mark that is no longer on screen — so reading it draws the
         // composition in the colour of the text it erased, and moving the run one column changes the
         // colour again.
-        const STRIDE: usize = 12; // col,row, bg(3), fg(3), glyph, LINE, strike, bg_default
+        const STRIDE: usize = INSTANCE_FLOATS; // col,row, bg(3), fg(3), glyph, LINE, strike, bg_default
         const LINE: usize = 9;
         const RED: u32 = (2 << 24) | 0xFF_0000;
         let p = palette(); // default_fg = 0xFFFFFF
@@ -3690,7 +3978,7 @@ mod tests {
             },
         };
         let got = pack_instances(&f, &p, true, &ov, &ColorPolicy::default(), &[]);
-        const STRIDE: usize = 12;
+        const STRIDE: usize = INSTANCE_FLOATS;
         (0..N)
             .map(|i| {
                 [
@@ -3777,7 +4065,7 @@ mod tests {
             },
         };
         let got = pack_instances(&f, &p, true, &ov, &ColorPolicy::default(), &[]);
-        const STRIDE: usize = 12;
+        const STRIDE: usize = INSTANCE_FLOATS;
         assert_eq!(
             [got[STRIDE + 2], got[STRIDE + 3], got[STRIDE + 4]],
             gl_rgb(SEL_BG),
@@ -3826,7 +4114,7 @@ mod tests {
                 },
             };
             let got = pack_instances(&f, &p, true, &ov, &ColorPolicy::default(), &[]);
-            const STRIDE: usize = 12;
+            const STRIDE: usize = INSTANCE_FLOATS;
             (0..N)
                 .map(|i| {
                     [

@@ -111,6 +111,60 @@ it as **the current decision with an open validity question**, not as an establi
 actually round badly enough to matter — i.e. whether the grid ends up a different size, and whether that
 size is worse. Until then, "more accurate" is inherited hearsay and this ADR does not repeat it as fact.
 
+### The measurement that was asked for (2026-08-20, recorded on #791)
+
+Done. Chromium on Windows 11, em 24 device px (16 CSS px at dpr 1.5), against the font files installed
+on that machine, with the renderer's own `readPixels` as the ground truth and `g` / `M` / `█` as
+zero-loss controls. Numbers are machine- and font-specific; the mechanism is not.
+
+**The cell this ADR chooses, against the two it did not**, as `ascent + descent` in device px. The GDI
+column is PuTTY's metric (`tm.tmHeight`), added because it is a fourth data point and because it turned
+out to be reachable only outside the browser:
+
+| Font | ink box of `█` (this ADR) | browser line box | GDI `tmHeight` |
+|---|---|---|---|
+| Consolas | 22+5 = 27 | 22+6 = 28 | 22+6 = 28 |
+| Cascadia Mono | 22+5 = 27 | 22+6 = 28 | **26+6 = 32** |
+| Courier New | 20+6 = 26 | 20+7 = 27 | 20+7 = 27 |
+| Lucida Console | 19+4 = 23 | 19+5 = 24 | 19+5 = 24 |
+| DejaVu Sans Mono | **19+5 = 24** | 22+6 = 28 | 22+6 = 28 |
+
+**Is the grid a different size?** Yes, and materially on one face. For a 1200x900 device-pixel box:
+Consolas 85x33 → 90x32, Cascadia Mono 85x33 → 85x32, Courier New 80x34 → 83x33, Lucida Console
+80x39 → 82x37, **DejaVu Sans Mono 75x37 → 83x32**.
+
+**Is that size worse?** The question now has an axis it did not have when this ADR was written: how many
+of a font's glyphs the cell destroys, because the cell is also a scissor. Sweeping ~1,570 codepoints
+(Latin-1, Latin Extended A/B/Additional, Greek, Greek Extended, Cyrillic, punctuation, arrows, maths,
+geometric — the ranges `builtin` owns excluded, since they never reach the font), counting glyphs whose
+ink does not fit:
+
+| Font | ink box (this ADR) | line box | line box + xterm's atlas bleed |
+|---|---:|---:|---:|
+| Consolas | 13 | 13 | 0 |
+| Cascadia Mono | 182 | 168 | 33 |
+| Courier New | 30 | 30 | 0 |
+| Lucida Console | 288 | 263 | 34 |
+| DejaVu Sans Mono | **439** | 84 | 0 |
+
+So the ink box is never better and is sometimes much worse — on DejaVu Sans Mono it loses ink on
+`À Á Â Ã Ä Å È É Ê Ë`, Cyrillic `Ё Й Ў` and `√ ∫ ∮`, which the line box keeps.
+
+**But the measurement also shows the metric is not the dominant term.** The third column is the same
+line box with the bleed xterm.js reserves in its *atlas*, and it is what actually reaches zero. Under
+the line-box metric alone Cascadia Mono still loses 168 glyphs and Lucida Console 263. The clipping
+defect is therefore owned by **#791** (the cell is a scissor at all), not by this ADR — and #791 is
+scoped to leave this decision untouched precisely so the two do not become one change.
+
+**One thing this ADR's alternative (A) still has to answer, newly visible:** the line-box width is
+fractional (13.2 device px on Consolas) while our cell is an integer count of device pixels. How
+xterm.js integerises it has not been read.
+
+**And a bound worth recording:** the browser cannot reach GDI's budget. Canvas text metrics expose no
+equivalent of the OS/2 win-ascent that `tm.tmHeight` reflects — hence Cascadia Mono's 28 against 32.
+The ceiling for any browser-side metric read is the line box, which is exactly the metric xterm.js
+takes, and it compensates in the atlas rather than in the cell.
+
 ## Consequences
 
 - **Our grid can differ from alacritty's and xterm's for the same font and size.** If a font's `█`
@@ -134,7 +188,12 @@ size is worse. Until then, "more accurate" is inherited hearsay and this ADR doe
   measurement.** It is the majority practice and it removes the feedback hazard outright by making
   measurement a metrics read rather than a rasterisation. What stops it being adopted here is that
   switching would move every existing grid's size with no evidence that the new size is better; the
-  comparison in "what would settle it" is the precondition.
+  comparison in "what would settle it" is the precondition. **That precondition is now met** — see
+  "The measurement that was asked for" above. The evidence points at (A): the ink box is never the
+  better cell and on one common face it is much worse. What it does *not* do is make (A) urgent, because
+  the clipping it was measured against is caused by the cell being a scissor rather than by its size,
+  and that is #791's. Adopting (A) remains a decision about **grid fidelity** — whether our cols x rows
+  should agree with the other terminals for the same font and size — and it is still unmade.
 - **(B) Keep the ink scan and make the invariant executable.** Compatible with (A) as a stopgap and worth
   doing regardless: a guard so the loop cannot be closed by accident.
 - **(C) Measure both and reconcile.** Rejected as a design: two sources of truth for one number invites

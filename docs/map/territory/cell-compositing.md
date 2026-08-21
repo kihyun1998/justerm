@@ -68,7 +68,9 @@ becomes an actual colour — the engine never does that by identity.
   from the foreground (#513) rather than the foreground itself — so a coloured underline is
   expressible without a second draw.
 - **Which ink source ends up on top is a question about their CLASS, not about draw order** (#712,
-  ADR-0019 rule 6). Background-channel ink cannot occlude a `TEXT`-class source, so an underline draws
+  ADR-0019 rule 6) — with one source whose position is *not* class-derived: `I_neighbour` sits above
+  the receiver's own tile and below everything else the receiver owns, whatever class its owner had,
+  because the thing being prevented is one row's letter amputating the next row's. Background-channel ink cannot occlude a `TEXT`-class source, so an underline draws
   *over* a tile and *under* a letter — and the glyph field carries the class (bit 16) because the
   shader sees an atlas slot, never a codepoint. Two things here are easy to miss: this is the one place
   a background-class glyph's ink is *ordered* rather than merely recoloured, and the whole question is
@@ -79,8 +81,25 @@ becomes an actual colour — the engine never does that by identity.
   declares the underline's and there is no SGR for a strikethrough's. A cell with no `SGR 58` has
   both inks equal, which is what keeps the split from inventing a divergence of its own.
 - **The instance is flat and fixed-width**: `col, row, bg(3), fg(3), glyph_field, underline_fg,
-  strike_fg, bg_default`. One buffer, one instanced draw call — the same fixed-stride reasoning the
-  wire format uses, for the same reason.
+  strike_fg, bg_default`, and since #791 also `neighbour_up, neighbour_dn, neighbour_up_fg,
+  neighbour_dn_fg` — 16 floats. One buffer, one instanced draw call — the same fixed-stride
+  reasoning the wire format uses, for the same reason. **The offsets are named** (`frame.rs`), not
+  arithmetic: `INSTANCE_FLOATS - 1` for "the last field" and a literal stride both read the *wrong*
+  float the moment a field is appended, and appending four is how that was found.
+- **A cell's ink can come from the cell above or below it** (#791, ADR-0019 **R1.2**). A glyph whose
+  ink exceeds its cell used to have the excess destroyed — at bake, by a slot the size of the cell,
+  and again at sample, by a texcoord inset that never reached past it. The slot now carries a
+  **bleed band** above and below, derived per font configuration from what that face overshoots its
+  own `█`, and the receiving cell's fragment reads the adjacent slots and folds their coverage into
+  the same rule-6 chain. Reader-side, deliberately: the quad stays exactly one cell, so nothing
+  overlaps, the composite stays one evaluation per pixel, and no GL blending is involved — the
+  writer-side shape every reference uses would have forced a premultiplied buffer and put
+  foreign-vs-own occlusion back under instance order.
+- **Foreign ink is withdrawn where the two cells' backgrounds differ**, and *resolved* backgrounds:
+  two cells can both hold `Default` and still differ once a selection covers one. Two of the three
+  producers of that difference are invisible to the packer, so the rule is enforced in two places —
+  the **block cursor** is a per-fragment background and is withdrawn in the shader, and a **wide
+  pair** is one glyph across two cells whose receivers must reach the same verdict.
 - **The packer is pure and host-testable.** Glyph-slot resolution and rasterisation are stateful and
   browser-only; this function takes already-resolved slots, which is what lets the hot path be tested
   without a GPU.
@@ -133,7 +152,8 @@ sites, the outlier, or demoted — so a difference from it is not by itself a de
   draws it as an overlay instead, so the two stay separable
 - [wire format](wire-format.md) — consumes decoded cells; a colour-encoding change lands here first
 - [cell geometry](cell-geometry.md) — supplies the box each instance is drawn into
-- [glyph atlas](glyph-atlas.md) — supplies the resolved slot this packer assumes
+- [glyph atlas](glyph-atlas.md) — supplies the resolved slot this packer assumes; since #791 a slot
+  is taller than its cell, and this packer hands each cell its neighbours' slots as well as its own
 
 ## Known holes / open
 

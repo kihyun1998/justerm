@@ -50,6 +50,13 @@ it.
   records the count it packed against, and the render loop re-packs the difference away. See
   [multi-viewport](multi-viewport.md)'s known holes for what that does and does not settle.
 
+- **A slot is taller than its cell since #791.** It holds `bleed | cell | bleed` rows, the band
+  sized per font configuration, so ink that leaves a cell survives the bake and the neighbouring
+  cell can read it (ADR-0019 R1.2). Slot *count* is untouched — `GLYPHS_PER_LAYER`, `WIDE_BASE` and
+  the eviction bookkeeping all key off slot ids — but the texture is taller: measured +44 % at
+  dpr 1 and +23 % at dpr 2 on the reference face, and the ceiling `fit_cell_to_atlas` enforces drops
+  by `2 * bleed`.
+
 ## Code
 
 - `justerm-renderer/src/glyph_resolve.rs` — the pure per-cell slot resolution (host-testable)

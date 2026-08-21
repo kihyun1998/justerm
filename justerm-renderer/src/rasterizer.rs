@@ -49,6 +49,9 @@ pub struct Rasterizer {
     /// Physical (content) cell in device px — the on-screen grid cell.
     phys_w: u32,
     phys_h: u32,
+    /// The face's declared line box against the baseline, device px (#791).
+    font_ascent: u32,
+    font_descent: u32,
     /// Baseline ascent (px the ink rises above the draw point), for alphabetic-baseline draws.
     ascent: f32,
     /// The GRID cell in device px (#338): the glyph box plus the consumer's spacing policy. The
@@ -59,6 +62,8 @@ pub struct Rasterizer {
     /// Where the glyph box sits inside the cell, device px from its top-left.
     off_x: u32,
     off_y: u32,
+    /// Band reserved above and below the cell for ink that leaves it (ADR-0019 R1.2, #791).
+    bleed_y: u32,
 }
 
 /// A CSS `font` string for the family/size/style (mirrors beamterm `build_font_string`).
@@ -104,6 +109,14 @@ impl Rasterizer {
         let bounds = ink_bounds(&img.data(), buf, buf, 128)
             .ok_or_else(|| JsValue::from_str("justerm-renderer: `█` produced no ink"))?;
         let m = cell_metrics(bounds, draw_offset);
+        // The face's own DECLARED line box, which the bleed band is sized against (#791). It is a
+        // property of the font rather than of the string, so which glyph is measured here is
+        // immaterial — and it is the deepest vertical metric a browser exposes: there is no Canvas
+        // equivalent of the OS/2 win-ascent GDI reports, so this is the ceiling for a browser-side
+        // renderer, and why the band needs an empirical headroom on top of it.
+        let fm = ctx.measure_text("\u{2588}")?;
+        let font_ascent = fm.font_bounding_box_ascent().max(0.0).round() as u32;
+        let font_descent = fm.font_bounding_box_descent().max(0.0).round() as u32;
         // Clamp all three like siblings: a negative ascent (ink below the draw point) would draw
         // glyphs above the padded cell and clip their tops.
         let (phys_w, phys_h, ascent) = (m.width.max(1), m.height.max(1), m.ascent.max(0.0));
@@ -126,10 +139,13 @@ impl Rasterizer {
             phys_w,
             phys_h,
             ascent,
+            font_ascent,
+            font_descent,
             cell_w: phys_w,
             cell_h: phys_h,
             off_x: 0,
             off_y: 0,
+            bleed_y: 0,
         })
     }
 
@@ -143,6 +159,22 @@ impl Rasterizer {
 
     /// The ink-scanned box of `█` in device px — the GLYPH box, which is the grid cell only while
     /// the spacing policy is the identity (#338).
+    /// How deep a band this configuration's slots reserve for ink that leaves the cell (#791).
+    ///
+    /// Derived rather than fixed: the gap between the ink box of this face's block glyph and the
+    /// face's declared line box is a property of how one glyph was drawn, and differs by several
+    /// device px between faces at the same size.
+    pub fn bleed_y(&self) -> u32 {
+        let cell_ascent = self.ascent.max(0.0).round() as u32;
+        let cell_descent = self.phys_h.saturating_sub(cell_ascent);
+        crate::metrics::vertical_bleed(
+            cell_ascent,
+            cell_descent,
+            self.font_ascent,
+            self.font_descent,
+        )
+    }
+
     pub fn glyph_box(&self) -> (u32, u32) {
         (self.phys_w, self.phys_h)
     }
@@ -150,11 +182,17 @@ impl Rasterizer {
     /// Adopt a grid cell and the glyph's place inside it (#338/#359). Every bitmap this rasteriser
     /// produces afterwards is a padded CELL, with the glyph drawn at `off` and a builtin block
     /// element filling the cell outright. The caller must re-bake the atlas: its slots change size.
-    pub fn set_cell(&mut self, cell: (u32, u32), off: (u32, u32)) -> Result<(), JsValue> {
+    pub fn set_cell(
+        &mut self,
+        cell: (u32, u32),
+        off: (u32, u32),
+        bleed_y: u32,
+    ) -> Result<(), JsValue> {
         self.cell_w = cell.0.max(1);
         self.cell_h = cell.1.max(1);
         self.off_x = off.0;
         self.off_y = off.1;
+        self.bleed_y = bleed_y;
         // A wide source is two padded cells minus the shared inner bands; the canvas must hold it.
         let (padded_w, padded_h) = self.padded_size();
         let (need_w, need_h) = (2 * padded_w, padded_h);
@@ -173,7 +211,18 @@ impl Rasterizer {
 
     /// The padded atlas slot in device px: the grid cell plus `PADDING` on each side.
     pub fn padded_size(&self) -> (u32, u32) {
-        (self.cell_w + 2 * PADDING, self.cell_h + 2 * PADDING)
+        self.geometry().padded
+    }
+
+    /// This configuration's slot layout — see [`crate::metrics::slot_geometry`], which owns the
+    /// arithmetic so it can be tested without a browser.
+    fn geometry(&self) -> crate::metrics::SlotGeometry {
+        crate::metrics::slot_geometry(
+            (self.cell_w, self.cell_h),
+            (self.off_x, self.off_y),
+            self.bleed_y,
+            PADDING,
+        )
     }
 
     /// Rasterise one grapheme in the given font `style` into a white/coverage RGBA bitmap,
@@ -221,8 +270,11 @@ impl Rasterizer {
         } else {
             self.off_x
         };
+        let origin = self.geometry().draw_origin;
+        // `x_off` replaces the glyph's own horizontal offset for a wide source (its ink spans two
+        // cells), so only the vertical half of the geometry is taken wholesale.
         let x = (PADDING + x_off) as f64;
-        let y = (PADDING + self.off_y) as f32 + self.ascent;
+        let y = origin.1 as f32 + self.ascent;
         self.ctx.fill_text(text, x, y as f64)?;
         let img = self
             .ctx
@@ -243,11 +295,16 @@ impl Rasterizer {
     /// Centre a cell-sized bitmap inside a padded slot, leaving the guard band transparent.
     fn pad(&self, cell: &[u8], padded_w: u32, padded_h: u32) -> Vec<u8> {
         let mut out = vec![0u8; (padded_w * padded_h * 4) as usize];
-        let p = PADDING as usize;
+        // The cell band starts past the guard band across, and past the guard band AND the bleed
+        // down — the same origin `metrics::cell_uv` hands the shader. `PADDING` on both axes was
+        // right only while the slot's content *was* the cell: with a band reserved it puts every
+        // builtin glyph `bleed_y` rows too high, which is a run of `█` that no longer meets its
+        // neighbour. Caught by `spacing.html` and `cursor.html` at all four densities (#791).
+        let (px, py) = (PADDING as usize, (PADDING + self.bleed_y) as usize);
         let (cw, ch) = (self.cell_w as usize, self.cell_h as usize);
         for row in 0..ch {
             let src = row * cw * 4;
-            let dst = ((row + p) * padded_w as usize + p) * 4;
+            let dst = ((row + py) * padded_w as usize + px) * 4;
             out[dst..dst + cw * 4].copy_from_slice(&cell[src..src + cw * 4]);
         }
         out

@@ -49,11 +49,18 @@ for (const deviceScaleFactor of RATIOS) {
         expect(errors, `page errors in ${demo}`).toEqual([]);
 
         // Name the failing checks rather than just asserting `ok` — a bare `false` tells the next
-        // reader nothing about which property broke.
+        // reader nothing about which property broke. And print whatever the page recorded under
+        // `measured`: several pages here derive their expectations from the machine's own fonts
+        // (#578), so a CI-only red is otherwise undiagnosable without reproducing the runner's
+        // font stack — which is a whole afternoon that a printed number replaces (#791).
         const failing = Object.entries(proof.checks ?? {})
           .filter(([, passed]) => !passed)
           .map(([name]) => name);
-        expect(failing, `failing checks in ${demo}`).toEqual([]);
+        const context = proof.measured
+          ? `
+measured: ${JSON.stringify(proof.measured)}`
+          : "";
+        expect(failing, `failing checks in ${demo}${context}`).toEqual([]);
         expect(proof.ok, `${demo} reported not-ok`).toBe(true);
 
         // #331: the drawing buffer IS the grid — for a page that mounted one grid over the whole
