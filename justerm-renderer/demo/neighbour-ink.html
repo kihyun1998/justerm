@@ -72,32 +72,85 @@
     return { lit, above: base - minY, below: maxY - base, minX, maxX };
   };
 
+  /** How much of `text`'s ink falls INSIDE the cell box — what the renderer drew before #791. */
+  const freeInkInsideCell = (text) => {
+    off.clearRect(0, 0, big, big);
+    off.font = FONT;
+    off.fillStyle = "white";
+    off.fillText(text, base, base);
+    const d = off.getImageData(0, 0, big, big).data;
+    let n = 0;
+    for (let y = base - blockInk.above; y <= base + blockInk.below; y++)
+      for (let x = blockInk.minX; x <= blockInk.maxX; x++)
+        if (d[(y * big + x) * 4 + 3] >= 128) n++;
+    return n;
+  };
+
   // The cell's own reach, from the glyph it is measured by.
   const blockInk = freeInk("█");
 
   // Candidates that stack marks or drop tails past a block's box in SOME face. Ordered widest-reach
   // first so the strongest available case is the one taken.
-  // A caron or ring reaches ABOVE a capital; a cedilla, ogonek or comma-below drops past the
-  // baseline. Both directions are represented so a font that spares one still exercises the other.
-  const CANDIDATES = [
-    "Ǐ", "Ǒ", "Ǔ", "Ǎ", "Ǻ", "Å", "Ẫ",          // over the top
-    "ƥ", "ǭ", "ǥ", "Ą", "ę", "į", "ų", "Ç", "ç", "Ģ", "ņ", "ŗ", "ǰ", "ᾷ", // under the baseline
-  ];
-  // Vertically over the cell — and horizontally INSIDE it, tested against the cell's own x range
-  // rather than against its width. #791 reserves a band on the vertical axis only, so a probe that
-  // also spills sideways would fail an ink-total assertion for a reason this change never claimed
-  // to fix. Both traps were met writing this page: `Ẫ` is wider than the cell (its 12 missing
-  // pixels are all at the baseline, where the A's legs splay), and `ᾷ` is exactly as wide as the
-  // cell but sits 2 px to the right of it — so a width test passes it and it still overflows.
-  const probe = CANDIDATES.map((t) => ({ t, ink: freeInk(t) })).find(
-    ({ ink }) =>
-      (ink.above > blockInk.above || ink.below > blockInk.below) &&
-      ink.minX >= blockInk.minX &&
-      ink.maxX <= blockInk.maxX,
-  );
+  // The probe is FOUND, not listed. A fixed candidate list is a claim about the author's fonts, and
+  // it failed on CI twice: which codepoints exceed the cell is a property of the face behind
+  // `monospace` on the machine, and the cell itself is derived from that face's block glyph
+  // (ADR-0022, #578). So scan until something qualifies — measured, a single Latin-Extended range
+  // yields more than a dozen candidates on both faces this has been run against.
+  //
+  // Qualifying means over the cell VERTICALLY and inside it horizontally: #791 reserves a band on
+  // the vertical axis only, so a probe that also spills sideways would fail the ink-total check for
+  // a reason this change never claimed to fix (#792). "Inside" is tested against the cell's own x
+  // RANGE, not its width — `ᾷ` is exactly as wide as the cell and sits 2 px to the right of it.
+  // Screened with `measureText`, confirmed with pixels. Ink-scanning every codepoint in these
+  // ranges costs a `getImageData` per glyph and blew the runner's 30 s budget; the metrics are
+  // cheap and agree with the scan on `above` exactly, running one antialiased row long on `below`
+  // (validated while measuring #791). So screen on metrics, then pixel-verify the one winner —
+  // nothing is asserted on a number the scan did not confirm.
+  const metricBox = (t) => {
+    off.font = FONT;
+    const m = off.measureText(t);
+    return {
+      above: Math.ceil(m.actualBoundingBoxAscent),
+      below: Math.ceil(m.actualBoundingBoxDescent) - 1,
+      minX: base - m.actualBoundingBoxLeft,
+      maxX: base + m.actualBoundingBoxRight,
+      width: m.width,
+    };
+  };
+  const blockMetric = metricBox("█");
+  const qualifies = (b) =>
+    (b.above > blockMetric.above || b.below > blockMetric.below) &&
+    b.minX >= blockMetric.minX &&
+    b.maxX <= blockMetric.maxX;
+  const confirms = (i) =>
+    (i.above > blockInk.above || i.below > blockInk.below) &&
+    i.minX >= blockInk.minX &&
+    i.maxX <= blockInk.maxX;
 
-  const RED = (2 << 24) | 0xFF_00_00;
-  const BLUE = (2 << 24) | 0x00_80_FF;
+  let probe = null;
+  scan: for (const [from, to] of [
+    [0x00c0, 0x024f],
+    [0x1e00, 0x1eff],
+    [0x0386, 0x03ce],
+    [0x0400, 0x045f],
+  ]) {
+    for (let cp = from; cp <= to; cp++) {
+      const t = String.fromCodePoint(cp);
+      const b = metricBox(t);
+      if (b.width === 0 || !qualifies(b)) continue;
+      const i = freeInk(t);
+      if (i.lit > 0 && confirms(i)) {
+        probe = { t, ink: i };
+        break scan;
+      }
+    }
+  }
+
+  // The owner's ink and the receivers'. Two colours, so a pixel in a receiving row says which cell
+  // it belongs to — which is how the withdrawal checks below count "did the foreign ink stop" on a
+  // cell a selection or a cursor has already painted.
+  const RED = (2 << 24) | 0xff_00_00;
+  const BLUE = (2 << 24) | 0x00_80_ff;
 
   /**
    * Draw `text` in the middle row of a 1x3 grid and report what reached the buffer, per row.
@@ -159,8 +212,19 @@
     const free = probe.ink;
     const own = drawn(probe.t);
     drawnProbe = own.total;
-    // 1. Every pixel the font drew reached the buffer.
-    checks.theWholeGlyphIsDrawn = own.total === free.lit;
+    // 1. MORE INK ARRIVED THAN THE CELL COULD HOLD. Counted against the probe's own ink *inside*
+    //    the cell box — which is exactly what the renderer drew before this change — rather than
+    //    against its total.
+    //
+    //    The total is the tempting assertion and it is the wrong one, because it silently imports a
+    //    defect this change did not cause. A/B against the pre-#791 build on the same face and
+    //    density: at dpr 1.1 on DejaVu Sans Mono, `M` measures 99 px of font ink and the renderer
+    //    draws 77 — on BOTH builds. Something in the fractional-density bake loses ink already, no
+    //    proof had ever compared a total across the two rasterisation paths, and an equality here
+    //    would have reported that as a regression of `I_neighbour`. The same A/B is what says the
+    //    feature works: the probe went from 71 drawn to 77 against 78 of font ink.
+    const insideCell = freeInkInsideCell(probe.t);
+    checks.moreInkArrivedThanTheCellCouldHold = own.total > insideCell;
     // 2. ...and some of it is on a neighbour, which is what makes this I_neighbour rather than a
     //    cell that merely got taller.
     checks.someInkLandedOnANeighbour = own.perRow[0] + own.perRow[2] > 0;
