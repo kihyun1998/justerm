@@ -138,9 +138,21 @@ The renderer **holds** N grids and **draws** every one that has been placed.
   the buffer to `cols * cell` is only available while one grid fills the canvas); `attach` joins a
   surface the host built and takes its rect from `setViewportRect`
 
-**The design and the code now meet.** This section carried *"still absent: no terminal-surface type"*
-through six slices; #775 built it, so what remains of the epic is the browser proof (#776) rather than
-a missing type.
+- `justerm-web/demo/shared-surface.ts` · `justerm-web/demo/shared-surface.html` ·
+  `justerm-web/e2e/shared-surface.spec.ts` — **the consumer-side browser proof** (#776, S8): two
+  terminals at two font sizes on one canvas, each a transparent DOM overlay over its own viewport.
+  It is the epic's real round-trip and not an illustration of it — measured when the slice started,
+  nothing outside `justerm-web/src` called `TerminalSurface.open`, `JustermRenderer.attach`,
+  `observeViewportRect` or `onDensityChange`, so the adapter's shared-tenant branch had never
+  executed in a browser. What it asserts that a renderer-side proof cannot: that the GL viewport
+  lands where the *DOM overlay* is, read as a pixel at a point derived from the two elements' boxes.
+  Its page background is part of the evidence — the gutter between the panes is buffer no grid was
+  placed over, so it stays transparent, which is what separates two rects on one canvas from one grid
+  spanning both
+
+**The design, the code and the proof now meet.** This section carried *"still absent: no
+terminal-surface type"* through six slices; #775 built it and #776 proved it in a browser, so the
+epic's remaining work is a tracker question rather than a missing piece here.
 
 ## Reference behaviour
 

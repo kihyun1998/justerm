@@ -125,6 +125,11 @@ Two consequences are forced by WebGL binding one context to one canvas, and both
 Each terminal keeps its own font, palette, selection, cursor and decorations; two on the same font
 configuration share one glyph atlas, and the last one to leave releases it.
 
+A runnable version of everything above is
+[`demo/shared-surface.html`](https://github.com/kihyun1998/justerm/blob/master/justerm-web/demo/shared-surface.html)
+— two terminals at two font sizes on one canvas, with the page showing through the buffer between
+them. `pnpm demo`, then open `/shared-surface.html`.
+
 ## Tearing down
 
 `Terminal.dispose()` is **end of life**, not unmount. It stops consuming frames, detaches the

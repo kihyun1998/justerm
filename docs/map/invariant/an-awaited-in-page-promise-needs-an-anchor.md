@@ -33,6 +33,7 @@ rather than one suite's convention:
 | Harness | What it reads out of the page | Which shape it used |
 |---|---|---|
 | `justerm-web/e2e/demo.spec.ts` | ten promise-returning `window.__*Probe` hooks | awaited — until #731 |
+| `justerm-web/e2e/shared-surface.spec.ts` | two, on the two-terminal page (#776) | parked, from the start — it takes the same helper, now shared as `justerm-web/e2e/probe.ts` |
 | `justerm-renderer/e2e/proofs.spec.mjs` | `window.__proof`, gated on `window.__done` | parked, from the start |
 | `justerm-renderer/e2e/screen-composited.spec.mjs` | `window.__composited(png)` | awaited — until #731 |
 
@@ -111,8 +112,16 @@ cannot fire when the hazard does.
 
 1. **A new asynchronous in-page hook.** Anything shaped `window.__x = async …` is one obvious spec
    line away from the unsafe shape, and the obvious line is the one a reader writes first.
-2. **A third harness.** Neither guard below covers a suite that does not yet exist, and the two
-   packages that have one each wrote it without knowing the other had.
+2. **A third harness — in a third *package*.** This narrowed on 2026-08-24 (#776) and it is worth
+   being precise about how much. A second suite inside `justerm-web` no longer escapes: its guard
+   enumerates the page and spec files from the directory rather than reading two names, so a new
+   pair is covered the moment it lands — measured, since the hardcoded version stayed green with a
+   deliberate unanchored read sitting in the new spec. The extraction of the helper to
+   `justerm-web/e2e/probe.ts` narrowed it again, from the other side: a second suite now shares the
+   safe mechanism instead of copying it, and the guard scans that file too, which a mutation
+   confirmed is live coverage rather than an aspiration. What is **unchanged** is the original
+   hazard: a new *package* brings its own harness, its own guard and no knowledge of these — which
+   is exactly how the two existing ones came to disagree in silence.
 3. **A rationale that licenses it.** The stale comment `page.evaluate` *"awaits a returned promise, so
    the specs are unchanged"* sat inside `justerm-web/demo/main.ts` — the very file a guard derives
    hook names from — reading as permission. A rule with a live counter-example next to it loses.
