@@ -1091,13 +1091,23 @@ it was found in an afternoon rather than by silent absence.
 
 **Release tracks (tag-driven, all inert until a tag is pushed):** `v*` → `justerm-core`
 (crates.io) + `justerm-wasm-decode` (npm), lockstep; `renderer-v*` → `justerm-renderer`
-(npm); `web-v*` → `justerm-web` (npm, #466 — **published since `web-v0.7.0`**, now at
-**0.9.0**; verified 2026-08-07 against `git tag -l 'web-v*'` and `npm view justerm-web
-version`, both `0.9.0`, where this line had said 0.7.1). **A version written here is a
-registry fact and rots silently** — this one understated the published surface by two
-minor versions, and a claim about *reach* was made from it during #743 ("no known
-consumer, so a breaking `NavView` change costs nothing"). Re-measure before leaning on
-it; do not re-write it from memory. Each publish workflow gates on tag-version == package-version, **and on the
+(npm); `web-v*` → `justerm-web` (npm, #466 — **published since `web-v0.7.0`**).
+**The current version is deliberately not written here any more.** Ask instead — it is one command,
+and it is the only answer that cannot be stale:
+
+```
+npm view justerm-web version && git tag -l 'web-v*' --sort=v:refname | tail -1
+```
+
+**This line has now rotted twice, and the second time it was the warning itself that failed.** It
+said `0.7.1` when the registry said `0.9.0`, so it was corrected to `0.9.0` *and given a warning* —
+*"a version written here is a registry fact and rots silently … re-measure before leaning on it"* —
+after a claim about reach had been made from the wrong number during #743. By 2026-08-24 it said
+`0.9.0` and the registry said **`0.11.0`**, and #802 was routed to the maintainer as a semver
+decision on the strength of it, when the field in question had never been published at all. A
+warning next to a number is read as a caveat on a fact; the number wins. So the number is gone and
+the query is in its place — the same repair `docs/map/README.md` made when it replaced its stored
+"what has no note yet" list with the command that derives it. Each publish workflow gates on tag-version == package-version, **and on the
 README carrying no expiring maturity claim**
 (`.github/scripts/check-published-readme.mjs` — see Step 6; it runs before the build
 so it fails fast, but it still fails *after* the tag is pushed, which is a re-tag).

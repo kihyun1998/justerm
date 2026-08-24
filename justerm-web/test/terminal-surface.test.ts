@@ -294,13 +294,13 @@ describe("TerminalSurface — teardown", () => {
   });
 
   it("survives a tenant whose end callback disposes back into the surface", () => {
-    // The real shape: a terminal's own teardown calls `removeGrid`, and a sole tenant's also calls
-    // `dispose()`. Both re-enter while the surface is mid-teardown, and the latch is what makes that
-    // safe rather than infinite — asserted here because the recursion is invisible at either call
-    // site and only shows up when both exist.
+    // The real shape: a terminal's own teardown calls `removeGrid`, and one that composed the
+    // surface also calls `dispose()`. Both re-enter while the surface is mid-teardown, and the latch
+    // is what makes that safe rather than infinite — asserted here because the recursion is
+    // invisible at either call site and only shows up when both exist.
     const { surface, backend } = harness();
     let ends = 0;
-    const a = surface.addGrid({ ownsExtent: true });
+    const a = surface.addGrid();
     surface.onEnd(a, () => {
       ends++;
       surface.removeGrid(a);
@@ -448,41 +448,20 @@ describe("TerminalSurface — density", () => {
   });
 });
 
-describe("TerminalSurface — the sole tenant", () => {
-  it("refuses a second grid on a surface whose extent one terminal owns", () => {
-    // The single-terminal arrangement sizes the drawing buffer to `cols * cell` — #331's exactness,
-    // where nothing rounds between the grid the shader lays out and the buffer holding it. That is
-    // only available while ONE grid fills the canvas: a second tenant sizing the same buffer to its
-    // own extent would clobber the first, and the failure is the silent kind — no error, the sibling
-    // simply drawn into a buffer that is the wrong size.
-    //
-    // So it is refused loudly here rather than left to whoever measures the pixels afterwards. A
-    // host that wants two terminals sizes the surface itself and claims no sole tenancy.
-    const { surface } = harness();
-    surface.addGrid({ ownsExtent: true });
-
-    expect(() => surface.addGrid()).toThrow(/sole tenant/);
-  });
-
-  it("allows a second grid once the sole tenant has gone", () => {
-    // The claim is a property of the registry's current membership, not a latch: a surface whose one
-    // terminal ended is an ordinary empty surface again.
-    const { surface } = harness();
-    const a = surface.addGrid({ ownsExtent: true });
-    surface.removeGrid(a);
-
-    expect(() => surface.addGrid()).not.toThrow();
-  });
-
-  it("refuses sole tenancy on a surface that already has a terminal", () => {
-    // The mirror direction, and it is not implied by the first: without it the guard would depend on
-    // which order the two attaches happened in.
-    const { surface } = harness();
-    surface.addGrid();
-
-    expect(() => surface.addGrid({ ownsExtent: true })).toThrow(/sole tenant/);
-  });
-});
+/**
+ * **The "sole tenant" block that stood here is deleted, not disabled (#802).**
+ *
+ * It covered a surface refusing a second grid once one tenant had claimed to size the drawing
+ * buffer. That state cannot be constructed: the only surface a terminal auto-sizes is the one
+ * `JustermRenderer.create` composed, and `create` keeps it in a private field with no accessor, so
+ * no second tenant can reach it to attach. The guard defended an unreachable state and the option
+ * existed to feed the guard.
+ *
+ * What replaces the coverage is a **type-level** assertion rather than a runtime one, because the
+ * guarantee is structural: `test/published-seam.types.ts` §3 reddens the moment any member of
+ * `JustermRenderer` hands its surface back. Mutation-verified four ways — a getter, a method, a
+ * public field, and an escape widened to `SurfaceBackend`.
+ */
 
 describe("viewportOrigin — where an overlay sits on the shared buffer", () => {
   it("is the overlay's offset from the canvas, in device px", () => {
