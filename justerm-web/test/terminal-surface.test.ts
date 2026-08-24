@@ -150,6 +150,91 @@ function harness(): Harness {
   return { surface: new TerminalSurface(deps), backend, canvas, raf, queries, dpr };
 }
 
+describe("GridLease — a stale id becomes unrepresentable", () => {
+  it("hands back a lease that carries its own id", () => {
+    // The id still exists: every per-grid renderer call names it, and it crosses the wasm boundary as
+    // a number (#770). What changes is that it is no longer the ONLY thing a caller holds, so it is
+    // no longer the thing a caller has to keep valid.
+    const { surface, backend } = harness();
+
+    const lease = surface.addGrid();
+
+    expect(typeof lease.id).toBe("number");
+    expect(backend.calls.filter((c) => c.startsWith("addGrid"))).toEqual(["addGrid->1"]);
+    expect(lease.released).toBe(false);
+  });
+
+  it("releases exactly once, however many times it is asked", () => {
+    // The `Renderer` port requires `Terminal.dispose()` to be silent on a second call, so something
+    // must absorb it. The difference from the guard this replaces is WHAT absorbs it: the surface
+    // used to swallow an id it could not recognise; a lease declines a second call about ITSELF.
+    // One is not knowing, the other is knowing.
+    const { surface, backend } = harness();
+    const lease = surface.addGrid();
+
+    lease.release();
+    lease.release();
+    lease.release();
+
+    expect(backend.removed).toEqual([lease.id]);
+    expect(lease.released).toBe(true);
+  });
+
+  it("stops delivering to a released lease's callbacks", () => {
+    // The behaviour the three deleted guards were protecting, now a property of the lease rather
+    // than of an id lookup: after release there is nothing to deliver to, and no id anyone can name.
+    const { surface, canvas } = harness();
+    const fired: string[] = [];
+    const a = surface.addGrid();
+    const b = surface.addGrid();
+    a.onReapply(() => fired.push("a"));
+    b.onReapply(() => fired.push("b"));
+
+    a.release();
+    canvas.emit("webglcontextrestored");
+
+    expect(fired).toEqual(["b"]);
+  });
+
+
+  it("delivers nothing to a released lease, however late a callback arrives", () => {
+    // The race a terminal reaches by registering late against its own teardown. Previously this was
+    // "the registry does not hold that id" — a guard. Now it is a property of membership: the lease
+    // left the surface's set on release, so nothing can reach it to deliver, and no guard is needed
+    // for a call that cannot be observed.
+    const { surface, canvas } = harness();
+    const fired: string[] = [];
+    const a = surface.addGrid();
+
+    a.release();
+    a.onReapply(() => fired.push("a"));
+    a.onEnd(() => fired.push("end"));
+    canvas.emit("webglcontextrestored");
+    surface.dispose();
+
+    expect(fired).toEqual([]);
+    // The side condition that makes this about REGISTRATION rather than about delivery: a lease that
+    // accepted the callback would be holding the consumer's closure for the life of the page, which
+    // is what `release`'s contract says it does not do.
+    expect(a.released).toBe(true);
+  });
+
+  it("ends each live lease when the surface ends, and skips released ones", () => {
+    const { surface, backend } = harness();
+    const ended: number[] = [];
+    const a = surface.addGrid();
+    const b = surface.addGrid();
+    a.onEnd(() => ended.push(a.id));
+    b.onEnd(() => ended.push(b.id));
+
+    a.release();
+    surface.dispose();
+
+    expect(ended).toEqual([b.id]);
+    expect(backend.removed.sort()).toEqual([a.id, b.id].sort());
+  });
+});
+
 describe("TerminalSurface — the grid registry", () => {
   it("hands each attached terminal its own grid", () => {
     // The registry is the surface's, and a grid id is the terminal's handle into it. Two terminals
@@ -160,7 +245,7 @@ describe("TerminalSurface — the grid registry", () => {
     const a = surface.addGrid();
     const b = surface.addGrid();
 
-    expect(a).not.toBe(b);
+    expect(a.id).not.toBe(b.id);
     // Filtered rather than compared whole: the constructor registers the loss relay before any of
     // this, which its own test asserts. Pinning the full call list here would make every unrelated
     // constructor change fail in the registry's tests.
@@ -176,26 +261,15 @@ describe("TerminalSurface — the grid registry", () => {
     const a = surface.addGrid();
     const b = surface.addGrid();
 
-    surface.removeGrid(a);
+    a.release();
 
-    expect(backend.removed).toEqual([a]);
+    expect(backend.removed).toEqual([a.id]);
     expect(surface.gridCount).toBe(1);
     // The side condition, and the one that would catch an over-eager teardown: the sibling is still
     // there, so a later surface dispose still has something to release.
-    expect(backend.removed).not.toContain(b);
+    expect(backend.removed).not.toContain(b.id);
   });
 
-  it("ignores a second release of the same grid", () => {
-    // `removeGrid` throws on an id the renderer does not know, and `Terminal.dispose()` is required
-    // to be idempotent — so the guard has to be here, where the registry knows what it still holds.
-    const { surface, backend } = harness();
-    const a = surface.addGrid();
-
-    surface.removeGrid(a);
-    surface.removeGrid(a);
-
-    expect(backend.removed).toEqual([a]);
-  });
 });
 
 describe("TerminalSurface — one animation loop", () => {
@@ -255,7 +329,7 @@ describe("TerminalSurface — teardown", () => {
 
     surface.dispose();
 
-    expect(backend.removed.sort()).toEqual([a, b].sort());
+    expect(backend.removed.sort()).toEqual([a.id, b.id].sort());
     // Ambient work: the pending present is cancelled, the restore listener detached, the density
     // watcher stopped. Each of these DRAWS, so leaving one attached lets an ended surface repaint.
     expect(raf.scheduled).toBe(0);
@@ -272,13 +346,13 @@ describe("TerminalSurface — teardown", () => {
     const ended: number[] = [];
     const a = surface.addGrid();
     const b = surface.addGrid();
-    surface.onEnd(a, () => ended.push(a));
-    surface.onEnd(b, () => ended.push(b));
+    a.onEnd(() => ended.push(a.id));
+    b.onEnd(() => ended.push(b.id));
 
     surface.dispose();
 
-    expect(ended.sort()).toEqual([a, b].sort());
-    expect(backend.removed.sort()).toEqual([a, b].sort());
+    expect(ended.sort()).toEqual([a.id, b.id].sort());
+    expect(backend.removed.sort()).toEqual([a.id, b.id].sort());
   });
 
   it("retires the grid of a tenant that registered no end callback", () => {
@@ -290,7 +364,7 @@ describe("TerminalSurface — teardown", () => {
 
     surface.dispose();
 
-    expect(backend.removed).toEqual([a]);
+    expect(backend.removed).toEqual([a.id]);
   });
 
   it("survives a tenant whose end callback disposes back into the surface", () => {
@@ -301,16 +375,16 @@ describe("TerminalSurface — teardown", () => {
     const { surface, backend } = harness();
     let ends = 0;
     const a = surface.addGrid();
-    surface.onEnd(a, () => {
+    a.onEnd(() => {
       ends++;
-      surface.removeGrid(a);
+      a.release();
       surface.dispose();
     });
 
     surface.dispose();
 
     expect(ends).toBe(1);
-    expect(backend.removed).toEqual([a]);
+    expect(backend.removed).toEqual([a.id]);
   });
 
   it("closes the context-loss channel so a deadline armed before disposal delivers nothing", () => {
@@ -374,60 +448,19 @@ describe("TerminalSurface — context loss", () => {
     const reapplied: number[] = [];
     const a = surface.addGrid();
     const b = surface.addGrid();
-    surface.onReapply(a, () => reapplied.push(a));
-    surface.onReapply(b, () => reapplied.push(b));
+    a.onReapply(() => reapplied.push(a.id));
+    b.onReapply(() => reapplied.push(b.id));
 
     canvas.emit("webglcontextrestored");
 
-    expect(reapplied.sort()).toEqual([a, b].sort());
+    expect(reapplied.sort()).toEqual([a.id, b.id].sort());
     // Order is load-bearing: the renderer rebuilds inside `render()`, not when the event fires, so
     // re-deriving before it would read the PRE-restore cell. Present, re-derive, present (#325).
     const renders = backend.calls.filter((c) => c === "render").length;
     expect(renders).toBe(2);
   });
 
-  it("stops re-deriving for a terminal that has been released", () => {
-    // The mirror of the registry rule: a released grid throws on every per-grid call, so a restore
-    // that still reached it would turn a recovery into an exception for its siblings too.
-    const { surface, canvas } = harness();
-    const reapplied: number[] = [];
-    const a = surface.addGrid();
-    surface.onReapply(a, () => reapplied.push(a));
 
-    surface.removeGrid(a);
-    canvas.emit("webglcontextrestored");
-
-    expect(reapplied).toEqual([]);
-  });
-
-  it("does not resurrect a tenant when handed a grid the registry no longer holds", () => {
-    // The sibling of the test above, and NOT implied by it — found by mutation: making `onReapply`
-    // register unconditionally left that one green, because there the grid was still registered when
-    // the callback was handed over. This is the other order, which a `Terminal` reaches by racing its
-    // own teardown against a late registration.
-    //
-    // What it would cost is worse than a stale callback: an entry re-inserted here is one the surface
-    // believes it holds, so `gridCount` over-reports and `dispose` calls `removeGrid` on an id the
-    // renderer has already retired — which throws, taking every sibling's teardown down with it.
-    const { surface, backend, canvas } = harness();
-    const reapplied: number[] = [];
-    const a = surface.addGrid();
-    surface.removeGrid(a);
-
-    surface.onReapply(a, () => reapplied.push(a));
-    // `onEnd` has to hold the same line, and it is the more expensive of the two to get wrong: a
-    // resurrected tenant here would be *ended* by a later `dispose()`, so a widget that had already
-    // torn itself down would be torn down a second time.
-    const ends: number[] = [];
-    surface.onEnd(a, () => ends.push(a));
-    canvas.emit("webglcontextrestored");
-
-    expect(reapplied).toEqual([]);
-    expect(surface.gridCount).toBe(0);
-    surface.dispose();
-    expect(ends).toEqual([]);
-    expect(backend.removed).toEqual([a]);
-  });
 });
 
 describe("TerminalSurface — density", () => {
@@ -438,13 +471,13 @@ describe("TerminalSurface — density", () => {
     const { surface, backend, queries, dpr } = harness();
     const reapplied: number[] = [];
     const a = surface.addGrid();
-    surface.onReapply(a, () => reapplied.push(a));
+    a.onReapply(() => reapplied.push(a.id));
 
     dpr.value = 2;
     for (const l of [...(queries.at(-1)?.listeners ?? [])]) l();
 
     expect(backend.calls).toContain("setDevicePixelRatio(2)");
-    expect(reapplied).toEqual([a]);
+    expect(reapplied).toEqual([a.id]);
   });
 });
 
