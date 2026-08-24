@@ -1,10 +1,9 @@
 import type { Palette } from "justerm-wasm-decode/colors.js";
-import { ContextLossRelay } from "./context-loss";
 import { CursorBlink } from "./cursor";
-import { DprWatcher } from "./dpr-watcher";
 import { FrameLoop } from "./frame-loop";
 import type { DecorationRect } from "./decorations";
 import { MINIMUM_COLS, MINIMUM_ROWS } from "./fit";
+import { TerminalSurface, type SurfaceBackend } from "./terminal-surface";
 
 import type { Renderer } from "./renderer";
 import { TextBlink } from "./text-blink";
@@ -107,6 +106,24 @@ export interface Theme {
  * own default, so nothing checks the two against each other.
  */
 export const DEFAULT_CURSOR_CONTRAST = 1.5;
+
+/**
+ * A terminal attached to a surface someone else built ({@link JustermRenderer.attach}) — everything
+ * {@link JustermRendererOptions} carries **except the canvas**, which belongs to the surface.
+ *
+ * Omitting `canvasSelector` is the whole difference, and it is the point: a terminal sharing a
+ * surface has no canvas of its own to name. Where it sits on the shared one is a *rect*, supplied
+ * with {@link JustermRenderer.setViewportRect} and re-supplied whenever its overlay moves.
+ *
+ * **Two of its members reach the whole surface rather than this terminal** — `onContextLoss` and
+ * `contextRestoreTimeout`. There is one context per surface, so there is one loss and one deadline;
+ * passing either on a second `attach` **replaces** what the first terminal set, for every terminal on
+ * the canvas. Set them once, on the surface
+ * ({@link TerminalSurface.setOnContextLoss} / {@link TerminalSurface.setContextRestoreTimeout}), and
+ * leave them out of per-terminal options. They are kept in the type rather than removed because the
+ * single-terminal path reaches it too, and there they are exactly per-terminal.
+ */
+export type AttachedRendererOptions = Omit<JustermRendererOptions, "canvasSelector">;
 
 export interface JustermRendererOptions {
   /** CSS selector of the canvas to attach to, e.g. `"#term"`. */
@@ -296,24 +313,19 @@ const EMPTY_U16 = new Uint16Array(0);
  * That declaration gates this mirror against the published *renderer* only. The other published
  * package this widget consumes is gated separately, in `test/published-seam.types.ts` (#646),
  * which asserts that the decoder's columns can feed these parameters — the pairing #627 broke. */
-export interface RendererBackend {
-  /** Register a terminal grid and return its id — since renderer 0.15.0 the **only** way to get one:
-   * a renderer arrives holding none, and every method below that acts on a terminal names the grid
-   * it acts on (#773).
-   *
-   * The four font selectors are optional and trailing, and this package passes all four. They key
-   * the atlas, so naming them here means **one** bake: a grid born at the renderer's defaults and
-   * then moved by `setFontFamily` / `setFontSize` / the two spacing setters would bake an atlas per
-   * call and free each one again, which is up to five bakes to arrive where one gets us. */
-  addGrid(
-    paletteColors: Uint32Array,
-    defaultFg: number,
-    defaultBg: number,
-    fontFamily?: string,
-    fontSize?: number,
-    letterSpacing?: number,
-    lineHeight?: number,
-  ): number;
+/**
+ * The full renderer surface this adapter drives — **the per-grid half plus everything
+ * {@link SurfaceBackend} carries**, which is why it extends it rather than restating those members.
+ *
+ * The two halves are split on a criterion the renderer already compiled in at 0.15.0 (#773): a call
+ * naming a `grid` acts on one terminal, a call naming none acts on the thing every terminal shares.
+ * Extending is what turns that from a comment into a gate — a member that drifts between the two
+ * interfaces fails to compile where {@link TerminalSurface.open}'s `TerminalSurface<PublishedRenderer>`
+ * is passed to {@link JustermRenderer.build}, which takes a `TerminalSurface<RendererBackend>`. That
+ * parameter is this package's drift gate against the published renderer; before #775 the same job was
+ * done by a `const backend: RendererBackend` assignment in `create`, which this change removed.
+ */
+export interface RendererBackend extends SurfaceBackend {
   /** Scatter a decoded frame's damage into the persistent grid, then re-pack. Header is
    * `[cols, rows, kind, hasScroll, scrollTop, scrollBottom, scrollCount, blinkOn]` (#285). */
   apply_damage(
@@ -393,20 +405,6 @@ export interface RendererBackend {
    * #359). */
   setLetterSpacing(grid: number, cssPx: number): void;
   setLineHeight(grid: number, multiplier: number): void;
-  /** Re-bake the atlas at a new device pixel ratio (#322). Like the font and spacing setters this
-   * **moves the cell** — the device cell is `round(metric * dpr)` — so `cssWidth()`/`cssHeight()`
-   * move with it and the canvas display box has to be re-applied. Unlike them it is reached with no
-   * consumer call at all (`DprWatcher`). A no-op if the ratio is unchanged, and **dropped while the
-   * GL context is lost**, because restore re-reads the live ratio and bakes at that density anyway
-   * (`webgl.rs`, #269).
-   *
-   * **It re-bakes the atlases and touches nothing else** — not the drawing buffer, not a viewport
-   * rect (renderer 0.15.0, #773). Both are device-px measurements the *consumer* made, and the
-   * renderer will not convert them through its own copy of the density, which lags: this very
-   * notification is dropped while the context is lost. Re-asking for them is therefore the
-   * consumer's, and for this package that is {@link JustermRenderer.setDevicePixelRatio} — which
-   * holds the grid and so can. It touches no DOM either way. */
-  setDevicePixelRatio(dpr: number): void;
   /** Swap the palette + default fg/bg for a live theme change (#405): re-resolve every retained
    * cell against the new scheme. `paletteColors` is the 256 pre-built indexed colours. */
   setPalette(
@@ -415,20 +413,10 @@ export interface RendererBackend {
     defaultFg: number,
     defaultBg: number,
   ): void;
-  /** Unregister a grid and release what it owned: its VAO, its instance buffer, and — if it was the
-   * last grid standing on its font configuration — that configuration's glyph atlas, rasteriser and
-   * cache. This is the only way to give GPU memory back without dropping the whole wasm instance,
-   * which a consumer holding this object cannot do. */
-  removeGrid(grid: number): void;
   /** Record a grid's dimensions in cells. **It sizes nothing** — since renderer 0.15.0 the drawing
    * buffer is the *surface's* (`resizeSurface`), because a canvas holding N grids in M font
    * configurations has no cell it can be a multiple of (#773). */
   resizeGrid(grid: number, cols: number, rows: number): void;
-  /** Size the shared drawing buffer, in **device px** — the same space `setViewport` takes. Asking
-   * for `cols * cell_width(grid)` is what keeps the exactness the old `resize(cols, rows)`
-   * guaranteed (#331): both numbers are integers the renderer hands back, so nothing rounds between
-   * them. The browser may still grant less (#339), which `cssWidth`/`cssHeight` report. */
-  resizeSurface(width: number, height: number): void;
   /** Place a grid on the shared buffer, in **device px**, top-left origin. A grid draws only once
    * placed; for a one-terminal widget the rect is the whole buffer. */
   setViewport(grid: number, x: number, y: number, width: number, height: number): void;
@@ -444,29 +432,6 @@ export interface RendererBackend {
   /** The cell width/height in **CSS** pixels, unrounded (#331/#335). */
   cssCellWidth(grid: number): number;
   cssCellHeight(grid: number): number;
-  /** The drawing buffer's size in **CSS** pixels — what the canvas display box must be set to. */
-  cssWidth(): number;
-  cssHeight(): number;
-  /** Whether a WebGL context loss has been **reported** to the renderer (#269). Deliberately the
-   * event-driven view rather than `gl.isContextLost()`: a browser destroys a context synchronously
-   * and only *queues* `webglcontextlost`, so this answers `false` for a window in which every GL
-   * call is already dead. Read it as *"was I told"*, never as *"is the GPU usable"* — the renderer
-   * branches on its own internal predicate, which this is not (ADR-0027 D4). */
-  isContextLost(): boolean;
-  /** Whether a lost context has missed its restore deadline (#327) — the poll counterpart of
-   * `setOnContextLoss`, for a consumer that attaches late. Cleared by a late
-   * `webglcontextrestored`, which also heals the renderer. */
-  isRestoreOverdue(): boolean;
-  /** Register the single function the renderer calls when a lost context has not come back within
-   * the deadline. There is **no unset** — the parameter is a `Function` — which is why the adapter
-   * registers an indirection once rather than the consumer's handler directly (`context-loss.ts`;
-   * named in prose rather than linked, because that type is internal to this package). */
-  setOnContextLoss(callback: () => void): void;
-  /** The grace period, in ms, before the callback above fires. Consumer policy (ADR-0017): the
-   * renderer times, the consumer decides how long a blank terminal is tolerable. Applies to the
-   * *next* loss; a deadline already armed keeps the duration it was armed with. */
-  setContextRestoreTimeoutMs(ms: number): void;
-  render(): void;
 }
 
 /** Assemble the flat `apply_damage` header from a decoded frame. Pure (no backend), so the
@@ -665,7 +630,9 @@ const now = (): number => performance.now();
  * it as state, exactly like `setCursor` — #273 wiring note): the adapter sets that state *before*
  * `apply_damage`, so the frame packs once with the current overlay, avoiding a redundant re-pack.
  *
- * Both wasm modules are loaded with **dynamic `import()`** in {@link create}: two top-level
+ * The wasm modules are loaded with **dynamic `import()`**: the renderer's by
+ * {@link TerminalSurface.open} (constructing it is what binds the context to a canvas) and the
+ * decoder's here. Two top-level
  * wasm-bindgen "bundler" imports race their init and the second fails (`__wbindgen_externrefs`
  * undefined), so deferring to runtime lets vite instantiate each cleanly (same reason as the
  * beamterm adapter). Not exercised by the vitest suite — it needs a GL context + the WASM; the
@@ -705,15 +672,20 @@ export class JustermRenderer implements Renderer {
    * re-packs and presents), so leaving it attached lets a disposed widget repaint its canvas. */
   private readonly motionQuery: MediaQueryList;
   private readonly onMotionChange: (e: MediaQueryListEvent) => void;
-  /** Watches the display's density and re-bakes at it (#325). Held so {@link dispose} can stop it:
-   * like the motion listener above, this one *draws*. */
-  private readonly dprWatcher: DprWatcher;
   /** Whether {@link dispose} has already handed this widget's grid back. See its guard. */
   private gridReleased = false;
-
-  /** Re-applies the canvas display box after a GL restore (#325). Held so {@link dispose} can detach
-   * it: it drives a render. */
-  private readonly onContextRestored: () => void;
+  /**
+   * Where this grid sits on the shared drawing buffer, in **device px**, top-left origin — the
+   * origin half of the rect {@link setViewportRect} sets; the extent half is always re-derived from
+   * the grid and the cell, so it is not stored beside it (#775).
+   *
+   * `(0, 0)` for a sole tenant, which is what makes the single-terminal arrangement the special case
+   * of the general one rather than a second code path. For a shared surface it is the terminal's DOM
+   * overlay measured against the canvas — and it has to be re-supplied whenever that box moves,
+   * because WebGL binds one context to one canvas, so a terminal is a transparent overlay over its
+   * viewport and nothing inside the GL layer can observe the overlay drifting away from it.
+   */
+  private rect = { x: 0, y: 0 };
   /** Focus gates the selection colour (focused → `selectionBg`, blurred → the dimmer
    * `selectionInactiveBg`) and the blink (blurred → solid). xterm's two selection colours (#115). */
   private focused = true;
@@ -726,22 +698,34 @@ export class JustermRenderer implements Renderer {
   private lastActiveMatchSpans: Uint32Array = new Uint32Array(0);
   /** Per-frame decoration rects (#120): consumer-side, injected via {@link setDecorationSource}. */
   private decorationSource: ((frame: DecodedFrame) => DecorationRect[]) | undefined;
-  /** The consumer's never-restored-context handler, behind an indirection the renderer holds for
-   * the life of this object (#579). See {@link ContextLossRelay} for why it is not registered
-   * directly — the renderer's setter has no unset, and its own teardown runs at `free()`, which
-   * {@link dispose} does not reach. */
-  private readonly contextLoss = new ContextLossRelay();
-
   private constructor(
     private readonly backend: RendererBackend,
-    /** The one grid this widget owns (#773). A `justerm-web` terminal is one terminal, so this is
-     * a constant for the object's life — what changed at renderer 0.15.0 is that it has to be
-     * *said*, on every call that acts on a terminal rather than on the surface. The surface is this
-     * widget's too, exclusively, which is what lets it keep discharging the obligations the renderer
-     * handed back: re-deriving the drawing buffer after anything that moves the cell. A `Terminal`
-     * that shares a surface with siblings is Epic #287's S7 and a different object. */
+    /**
+     * The surface this terminal draws on — the canvas, the context, the grid registry, the display
+     * density and context-loss recovery (#775). **Everything the renderer scopes to the surface
+     * rather than to a grid now lives there**, which is what lets N terminals share one context.
+     *
+     * Before #775 this object held all of it directly, and that was the defect rather than a
+     * simplification: `dispose()` stopped the density watcher, detached the restore listener and
+     * closed the loss channel — all three surface-scoped — so the *first* terminal to end would have
+     * taken density tracking and context recovery away from every sibling sharing its canvas.
+     */
+    private readonly surface: TerminalSurface<RendererBackend>,
+    /**
+     * Whether this terminal also **ends the surface** when it is disposed.
+     *
+     * True on the {@link JustermRenderer.create} path, which composes the surface itself and is
+     * therefore its only holder; false for a terminal attached to a surface someone else built. The
+     * rule behind both is written down once, in
+     * `docs/map/invariant/a-layer-ends-what-it-exclusively-holds.md` — a layer ends what it
+     * exclusively holds, never what it shares — and composing is one way to be the only holder
+     * rather than a rule of its own.
+     */
+    private readonly ownsSurface: boolean,
+    /** The one grid this widget owns (#773). A `Terminal` is one terminal, so this is a constant for
+     * the object's life — what changed at renderer 0.15.0 is that it has to be *said*, on every call
+     * that acts on a terminal rather than on the surface. */
     private readonly grid: number,
-    private readonly canvas: HTMLCanvasElement,
     // Retained so `setTheme` (#420) can rebuild the 256-colour table from a new ANSI scheme.
     private readonly buildPalette: (ansi: Uint32Array) => Uint32Array,
     // Theme-derived state is mutable: `setTheme` swaps the whole scheme at runtime (#420).
@@ -770,71 +754,109 @@ export class JustermRenderer implements Renderer {
     };
     this.motionQuery.addEventListener("change", this.onMotionChange);
 
-    // #325 — the density can move with no call from anyone (another-density monitor, an OS scale
-    // change), at an unchanged CSS size, so no `ResizeObserver` sees it. Started unconditionally and
-    // with no opt-out: a terminal that stays rasterised at the density it was built at is blurry,
-    // which is a defect rather than a preference, and the reference likewise wires it inside the
-    // library (xterm.js's `CoreBrowserService`) rather than exposing the choice.
-    this.dprWatcher = new DprWatcher(
-      (dpr) => window.matchMedia(`screen and (resolution: ${dpr}dppx)`),
-      () => window.devicePixelRatio,
-      (dpr) => this.setDevicePixelRatio(dpr),
-    );
-    this.dprWatcher.start();
-
     /**
-     * **A restore is the one buffer change with no consumer call behind it** (#325), which is the
-     * same shape as the density change above and was found by measuring it.
+     * **The two events that move this grid's cell with no consumer call behind them** — a density
+     * change and a context restore — reach this terminal through one registration, because from
+     * here they are the same obligation: re-ask for the geometry at whatever the cell has just
+     * become. The surface owns the *when* (both signals are surface-scoped and it holds both); only
+     * this object knows the *what*, which is its own grid.
      *
-     * `restore()` re-reads the **live** device pixel ratio and re-bakes at it (`webgl.rs`, #269) —
-     * deliberately, because a DPR notification arriving while the context is lost is *dropped*
-     * rather than queued. So a density that moved during a loss is adopted here, with no
-     * `setDevicePixelRatio` behind it and no other signal that it happened.
+     * **Why a restore is one of them** (#325). `restore()` re-reads the **live** device pixel ratio
+     * and re-bakes at it (`webgl.rs`, #269) — deliberately, because a DPR notification arriving
+     * while the context is lost is *dropped* rather than queued. So a density that moved while the
+     * context was dead is adopted there, with no setter behind it and no other signal that it
+     * happened.
      *
      * **Since renderer 0.15.0 that adoption moves the CELL and not the buffer** (#773), so this
-     * handler owes the same re-derivation {@link setDevicePixelRatio} owes — and it is the only
-     * place that can pay it, because this event is the only notice the adoption gives. Caught by the
-     * #325 e2e below rather than by reading: on 0.14.0 the renderer re-derived the buffer from the
-     * grid it was holding, so this handler only had to re-read the box; on 0.15.0 the buffer belongs
-     * to no grid, and dpr 1 -> 2 across a loss left a `1369`-tall grid inside a `703`-tall buffer.
+     * re-derivation is owed rather than optional. Caught by the #325 e2e rather than by reading: on
+     * 0.14.0 the renderer re-derived the buffer from the grid it was holding, so only the box had to
+     * be re-read; on 0.15.0 the buffer belongs to no grid, and dpr 1 -> 2 across a loss left a
+     * `1369`-tall grid inside a `703`-tall buffer.
      *
-     * Measured on the older shape, for the failure this handler originally fixed: dpr 1 -> 2 across
-     * a loss left the buffer at `2556x1369` under a canvas still styled `1278x703`; the width was
+     * Measured on the older shape, for the failure this originally fixed: dpr 1 -> 2 across a loss
+     * left the buffer at `2556x1369` under a canvas still styled `1278x703`; the width was
      * accidentally right (the cell doubled exactly) and the height was `703` against a correct
      * `684.5`, so the browser stretched the terminal ~2.7% vertically.
      *
-     * **Driving a render first is not incidental — it is what makes the cell readable.** The
-     * renderer rebuilds inside its next `render()`, not when this event fires, so re-deriving before
-     * it would use the pre-restore cell. One extra present on a rare event is the price.
+     * The present-before and present-after that make the cell readable and the resized buffer
+     * non-blank are the **surface's**, since they present every grid at once — see
+     * {@link TerminalSurface}'s restore handler for why that order is load-bearing.
      */
-    // Order is load-bearing, and #772 is what made it so. The first `render()` runs the renderer's
-    // `restore`, which rebuilds the pipeline and re-selects any font configuration whose selectors
-    // moved while the context was dead — so the CELL lands here rather than at the setter that asked
-    // for it. Only then can the buffer be re-derived from it.
-    //
-    // The second `render()` is because `reapplySurface` re-sizes the drawing buffer, and a resized
-    // buffer is a cleared one: without it the terminal is blank until the next frame the consumer
-    // happens to drive.
-    this.onContextRestored = (): void => {
-      this.backend.render();
-      this.reapplySurface();
-      this.backend.render();
-    };
-    canvas.addEventListener("webglcontextrestored", this.onContextRestored);
+    this.surface.onReapply(this.grid, () => this.reapplySurface());
+    // And how to END this terminal, so a host that disposes the SURFACE ends the widgets on it rather
+    // than retiring their grids under them. Without it this object keeps its blink loop and its
+    // reduced-motion listener while holding an id the renderer has retired, and every per-grid call
+    // then throws `UnknownGrid` on a timer.
+    this.surface.onEnd(this.grid, () => this.dispose());
+  }
+
+  /**
+   * Attach a terminal to an existing {@link TerminalSurface} — the multi-terminal entry point
+   * (Epic #287 S7, #775).
+   *
+   * **What differs from {@link create}, and all of it follows from who composed the surface.** This
+   * terminal claims no sole tenancy, so it neither sizes the shared drawing buffer nor ends the
+   * surface when it is disposed; the host does both. It draws where
+   * {@link JustermRenderer.setViewportRect} puts it, and until that is called it sits at the origin
+   * — where a sole tenant also sits, which is what makes the single-terminal arrangement the special
+   * case of this one rather than a second path through the code.
+   *
+   * Everything else is identical, deliberately: the widget experience is unchanged and the only new
+   * noun is the surface (ADR-0021).
+   *
+   * The consumer still owns the DOM overlay — the hidden IME textarea, the a11y tree, the scrollbar
+   * — and one canvas means every terminal shares one stacking plane, so arbitrary DOM cannot be
+   * interleaved between two of them. Accepted knowingly: it is what one context binding to one
+   * canvas costs.
+   */
+  static async attach(
+    surface: TerminalSurface<RendererBackend>,
+    opts: AttachedRendererOptions,
+  ): Promise<JustermRenderer> {
+    return JustermRenderer.build(surface, false, opts);
   }
 
   static async create(opts: JustermRendererOptions): Promise<JustermRenderer> {
-    // Dynamic import both wasm-bindgen bundler modules (see class doc for the init-race reason).
-    const [renderer, decoder] = await Promise.all([
-      import("justerm-renderer"),
+    // The surface is composed HERE, which is what makes this the single-terminal convenience path
+    // rather than the general one (#775): a host wanting two terminals builds the surface itself
+    // with `TerminalSurface.open` and attaches to it with `attach` above. What this method composes,
+    // the object it returns ends — see the `ownsSurface` constructor parameter.
+    // **Both wasm modules load in parallel**, as they did before the surface existed. Splitting the
+    // old `Promise.all` across two objects made them serial, which is pure startup latency: the
+    // decoder's import is started here and `build`'s `await` on it then resolves out of the module
+    // registry. Stated because the parallelism is invisible at `build`'s call site.
+    const [surface] = await Promise.all([
+      TerminalSurface.open(opts.canvasSelector),
       import("justerm-wasm-decode"),
     ]);
+    // What this method composes, this method ends — including on the failure path, which is the only
+    // place the rule needs saying. A throw after the surface exists would otherwise strand a bound
+    // WebGL2 context, a running density watcher and a canvas listener with no handle to any of them;
+    // a retry on the same canvas gets the same context back and the orphan's listeners fire beside
+    // the new surface's.
+    try {
+      return await JustermRenderer.build(surface, true, opts);
+    } catch (e) {
+      surface.dispose();
+      throw e;
+    }
+  }
+
+  /**
+   * The one construction path both entry points take, so a difference between a sole tenant and a
+   * shared one is a *parameter* rather than a second body that can drift from the first.
+   */
+  private static async build(
+    surface: TerminalSurface<RendererBackend>,
+    ownsSurface: boolean,
+    opts: AttachedRendererOptions,
+  ): Promise<JustermRenderer> {
+    // Dynamic import (see class doc for the init-race reason). Only the decoder now — the renderer
+    // module is the surface's, since constructing it is what binds the context to a canvas.
+    const decoder = await import("justerm-wasm-decode");
     const t = opts.theme;
     const paletteColors = decoder.buildPalette(Uint32Array.from(t.ansi));
-    // Typed assignment (not a cast): the real class is a structural superset of RendererBackend, so
-    // this compiles today AND turns a future signature drift in the published renderer into a compile
-    // error here — the drift gate the injected seam exists for.
-    const backend: RendererBackend = new renderer.JustermRenderer(opts.canvasSelector);
+    const backend = surface.rendererBackend();
     // A renderer arrives holding no terminal since 0.15.0, so this widget's single grid is created
     // here — and its font is named at birth rather than pushed by four setters afterwards. The four
     // selectors key the atlas, so this is **one** bake where the setter route was up to five, each
@@ -842,15 +864,49 @@ export class JustermRenderer implements Renderer {
     //
     // The values are the same ones the setters used, defaults included, so the initial fit is still
     // computed at the consumer's final cell.
-    const gridId = backend.addGrid(
+    //
+    // `ownsExtent`: this terminal sizes the shared drawing buffer to its own grid, which is #331's
+    // exactness and is available only while it is the surface's only tenant. The surface enforces
+    // that — a second `addGrid` on this surface throws rather than silently clobbering the buffer.
+    const gridId = surface.addGrid({
       paletteColors,
-      t.defaultFg,
-      t.defaultBg,
-      opts.fontFamily,
-      opts.fontSize,
-      opts.letterSpacing ?? 0,
-      opts.lineHeight ?? 1,
-    );
+      defaultFg: t.defaultFg,
+      defaultBg: t.defaultBg,
+      fontFamily: opts.fontFamily,
+      fontSize: opts.fontSize,
+      letterSpacing: opts.letterSpacing ?? 0,
+      lineHeight: opts.lineHeight ?? 1,
+      ownsExtent: ownsSurface,
+    });
+    try {
+      return await JustermRenderer.assemble(surface, ownsSurface, opts, gridId, decoder, paletteColors);
+    } catch (e) {
+      // A grid is GPU memory — a VAO, an instance buffer and a refcount on its configuration's atlas
+      // (4.2 MiB at an 8x16 cell, 12.8 MiB at 15x30 on a dpr-2 display, measured for #773's follow-up).
+      // Nothing holds it if assembly throws, and only `removeGrid` gives it back.
+      surface.removeGrid(gridId);
+      throw e;
+    }
+  }
+
+  /**
+   * Everything after the grid exists — the policy setters, the palette and flag tables, the instance
+   * and the create-time options.
+   *
+   * Split from {@link build} for one reason: **it is the error boundary for the grid**. `build` owns
+   * a registered grid from `addGrid` onward and has to give it back if anything here throws, and a
+   * `try` around the whole remainder is only readable if the remainder is one call.
+   */
+  private static async assemble(
+    surface: TerminalSurface<RendererBackend>,
+    ownsSurface: boolean,
+    opts: AttachedRendererOptions,
+    gridId: number,
+    decoder: typeof import("justerm-wasm-decode"),
+    paletteColors: Uint32Array,
+  ): Promise<JustermRenderer> {
+    const t = opts.theme;
+    const backend = surface.rendererBackend();
     // Policy setters (consumer-injected, ADR-0017) — set once; they rarely change.
     backend.setBoldToBright(gridId, t.boldToBright ?? true);
     backend.setMinimumContrastRatio(gridId, t.minimumContrastRatio ?? 1);
@@ -901,12 +957,11 @@ export class JustermRenderer implements Renderer {
       hidden: f.hidden,
       blink: f.blink,
     };
-    const canvas = document.querySelector<HTMLCanvasElement>(opts.canvasSelector);
-    if (!canvas) throw new Error(`justerm-renderer: canvas ${opts.canvasSelector} not found`);
     const instance = new JustermRenderer(
       backend,
+      surface,
+      ownsSurface,
       gridId,
-      canvas,
       (ansi) => decoder.buildPalette(ansi),
       palette,
       flagBits,
@@ -917,13 +972,9 @@ export class JustermRenderer implements Renderer {
       t.activeMatchBg ?? 0x995200,
       t.selectionInactiveBg ?? 0x30313d,
     );
-    // The context-loss relay is registered UNCONDITIONALLY (#579), like `setBgAlpha` above and for
-    // the same reason: the function the renderer holds is then the one this object states, rather
-    // than one nobody wrote down. It also has to be — the renderer's `setOnContextLoss` takes a
-    // `Function` with no unset, so a later `setOnContextLoss(handler)` has nothing to register
-    // *with* unless the indirection is already in place. Cheap: an inert relay is one arrow the GC
-    // keeps, and the renderer only ever calls it on a loss that outlived its deadline.
-    backend.setOnContextLoss(instance.contextLoss.notify);
+    // The relay itself is registered with the renderer by the surface's constructor, unconditionally
+    // and exactly once (#579) — it is surface-scoped, since one context means one loss. This only
+    // installs the consumer's handler behind it.
     if (opts.onContextLoss !== undefined) instance.setOnContextLoss(opts.onContextLoss);
     // The renderer's own default is 3000 (xterm parity), so this is a no-op unless the consumer
     // states one — unlike `setBgAlpha`, because a duration the consumer did not choose is better
@@ -1128,17 +1179,19 @@ export class JustermRenderer implements Renderer {
    * renderer, so this is safe to call unconditionally.
    */
   setDevicePixelRatio(dpr: number): void {
-    this.backend.setDevicePixelRatio(dpr);
-    // Since renderer 0.15.0 this is the whole of what the renderer did NOT do: it re-bakes the
-    // atlases and leaves the drawing buffer exactly as it was asked for, because the buffer is a
-    // device-px measurement the consumer made and the renderer will not convert it through its own
-    // copy of the density — a copy that lags, since this very notification is dropped while the
-    // context is lost (#773). Re-asking is therefore ours, and we can: we hold the grid.
-    //
-    // Without this the buffer would stay put while `cssWidth()` divided it by the new ratio, so a
-    // move to a denser monitor would *halve* the displayed terminal.
-    this.reapplySurface();
-    this.backend.render();
+    // Through the surface, because the density is the surface's: one canvas is one drawing buffer at
+    // one `devicePixelRatio`, so this moves EVERY grid's cell, and the surface re-derives every
+    // attached terminal rather than only the one whose consumer happened to call (#775).
+    // Re-deriving and presenting are the SURFACE's now, and doing them here too would do both twice
+    // per density change — two `resizeSurface` calls (each of which clears the buffer) and two
+    // presents. The obligation itself is unchanged and still real: since renderer 0.15.0 the renderer
+    // re-bakes the atlases and leaves every device-px measurement exactly as it was given, because
+    // those are the consumer's and it will not convert them through its own copy of the density — a
+    // copy that lags, since this very notification is dropped while the context is lost (#773).
+    // Without the re-ask the buffer would stay put while `cssWidth()` divided it by the new ratio,
+    // so a move to a denser monitor would *halve* the displayed terminal. What changed is only WHO
+    // pays it: every attached terminal, not just the one whose consumer happened to call.
+    this.surface.setDevicePixelRatio(dpr);
   }
 
   /**
@@ -1147,16 +1200,22 @@ export class JustermRenderer implements Renderer {
    * {@link JustermRendererOptions.onContextLoss}, whose doc carries the full contract — what the
    * signal means, what it does *not* mean, and why the widget applies no policy of its own.
    *
-   * **Nothing is re-registered with the renderer here.** The renderer holds one relay for the life
-   * of this object (`create`), because `setOnContextLoss` takes a `Function` and offers no unset;
-   * this swaps the handler behind it. That is what makes clearing expressible at all, and it is why
-   * a swap cannot leave the renderer holding a stale closure.
+   * **This reaches the whole SURFACE, not just this terminal** (#775), and on a shared one that
+   * matters: there is one context, so there is one loss and one notification. A second terminal
+   * calling this — or attached with `onContextLoss` in its options — **replaces** the first
+   * terminal's handler for the entire canvas, last call wins, with no diagnostic. A host driving
+   * several terminals should register once, on the surface.
+   *
+   * **Nothing is re-registered with the renderer here.** The surface holds one relay for the life of
+   * the *surface*, because `setOnContextLoss` takes a `Function` and offers no unset; this swaps the
+   * handler behind it. That is what makes clearing expressible at all, and it is why a swap cannot
+   * leave the renderer holding a stale closure.
    *
    * **No redraw**, unlike {@link setCursorBlink} / {@link setBgAlpha}: this changes who is told
    * about a future event, not anything currently on screen.
    */
   setOnContextLoss(handler: (() => void) | undefined): void {
-    this.contextLoss.set(handler);
+    this.surface.setOnContextLoss(handler);
   }
 
   /**
@@ -1170,7 +1229,7 @@ export class JustermRenderer implements Renderer {
    * `loss_epoch` field).
    */
   setContextRestoreTimeout(ms: number): void {
-    this.backend.setContextRestoreTimeoutMs(ms);
+    this.surface.setContextRestoreTimeout(ms);
   }
 
   /**
@@ -1196,7 +1255,7 @@ export class JustermRenderer implements Renderer {
    * re-reading {@link terminalSize} does not cover it.
    */
   isContextLost(): boolean {
-    return this.backend.isContextLost();
+    return this.surface.isContextLost();
   }
 
   /**
@@ -1209,7 +1268,7 @@ export class JustermRenderer implements Renderer {
    * terminal that has since recovered. Read it each time.
    */
   isRestoreOverdue(): boolean {
-    return this.backend.isRestoreOverdue();
+    return this.surface.isRestoreOverdue();
   }
 
   /** Swap the colour scheme at runtime (#420) — rebuild the 256-colour palette from the new ANSI
@@ -1305,10 +1364,17 @@ export class JustermRenderer implements Renderer {
    */
   private applyGrid(cols: number, rows: number): void {
     this.backend.resizeGrid(this.grid, cols, rows);
-    this.backend.resizeSurface(
-      cols * this.backend.cell_width(this.grid),
-      rows * this.backend.cell_height(this.grid),
-    );
+    // Sizing the shared buffer is the SOLE TENANT's alone (#775). Asking for `cols * cell` is #331's
+    // exactness — both are integers the renderer hands back, so nothing rounds between the grid the
+    // shader lays out and the buffer holding it — and it is available only while this grid is the
+    // one thing on the canvas. A terminal sharing a surface leaves the buffer to whoever measured
+    // the container, and takes its rect from `setViewportRect` instead.
+    if (this.ownsSurface) {
+      this.surface.resizeSurface(
+        cols * this.backend.cell_width(this.grid),
+        rows * this.backend.cell_height(this.grid),
+      );
+    }
 
     // **Read the grant back and adopt it** (#339). WebGL is free to give a smaller drawing buffer
     // than asked for, and until renderer 0.15.0 the renderer read that back itself and shrank the
@@ -1325,6 +1391,16 @@ export class JustermRenderer implements Renderer {
     // a lost context it reports the *committed* request rather than a grant (the read-back is
     // deferred to the restore, #639), so this shrinks nothing then — which is right, and the restore
     // path re-runs this whole method.
+    //
+    // **It protects a SOLE TENANT, and only that** (#775). `cssWidth()` is the whole canvas while
+    // `cols` is this tenant's share of it, so for a pane smaller than the surface the comparison is
+    // between quantities of different scope and the clamp cannot fire: measured on the two-terminal
+    // drive, a 450 CSS-px pane at an 8 CSS-px cell fits 56 columns while this computes 112. That is
+    // not a wrong answer for a sole tenant, where the two are the same box by construction — it is a
+    // check that has nothing to say about a shared one. The grant on a shared surface belongs to
+    // whoever asked for the buffer: the host reads `TerminalSurface.cssSize()` back after
+    // `resizeSurface` and re-places its panes. Where the per-grid check should live once a host
+    // actually tiles is an open question, deliberately not answered here.
     const granted = gridForBox(
       this.backend.cssWidth(),
       this.backend.cssHeight(),
@@ -1341,12 +1417,11 @@ export class JustermRenderer implements Renderer {
     const { cols: fitted, rows: fittedRows } = granted ?? { cols, rows };
     this.backend.setViewport(
       this.grid,
-      0,
-      0,
+      this.rect.x,
+      this.rect.y,
       Math.min(cols, fitted) * this.backend.cell_width(this.grid),
       Math.min(rows, fittedRows) * this.backend.cell_height(this.grid),
     );
-    this.applyCanvasCssBox();
   }
 
   /**
@@ -1370,25 +1445,44 @@ export class JustermRenderer implements Renderer {
   }
 
   /**
-   * Set the canvas's **display** box to the CSS size the current drawing buffer must be shown at to
-   * be 1:1. The only two `canvas.style.width/height` writes in this package, which is why they are a
-   * named step rather than two lines: anything that moves the buffer or the cell owes this call, and
-   * whoever forgets it gets a browser-scaled — i.e. blurry — terminal rather than an error.
+   * Place this terminal on the shared canvas: the top-left of its viewport, in **device px**
+   * (#775). For a terminal sharing a surface with siblings — a sole tenant sits at the origin and
+   * never calls this.
    *
-   * **One caller now**: {@link applyGrid}, which every path that moves the buffer or the cell goes
-   * through — a fit, a density change, a font or spacing change. It was extracted at #325 because
-   * there were two and the second could not reuse the first (a density change moves the CSS box
-   * without moving the grid, and `resize` derives a grid from a box this object does not hold);
-   * renderer 0.15.0 merged them by making *every* one of those paths re-ask for the buffer.
+   * **The extent is not a parameter, and that is the point.** A viewport's size is `cols * cell` and
+   * `rows * cell`, both integers the renderer hands back, so passing a measured box would reintroduce
+   * the rounding #331 exists to prevent. What only the host can know is *where* the box is; what only
+   * the renderer can know is how big a grid of cells is. So this takes the first and derives the
+   * second — pair it with {@link resize} to change how many cells fit.
+   *
+   * **The host owes this call whenever the overlay's box moves** — a scroll, a layout change, a pane
+   * drag — and nothing detects a missed one: the GL viewport simply stays where it was while the DOM
+   * overlay (the hidden textarea, the a11y tree, the scrollbar) moves off it. That asymmetry is the
+   * forced consequence of one context being bound to one canvas, and it is accepted knowingly
+   * (ADR-0021).
+   *
+   * **And it is owed after a density change, where the box has not moved at all.** A rect is device
+   * px, so ADR-0021 D3 invalidates it along with every other device-px quantity the host gave — *"the
+   * surface's size as well as every viewport rect, since only the consumer can re-measure them"*.
+   * Nothing here can pay that: this object re-issues the rect it was last given, and scaling it by a
+   * density it holds a copy of is exactly the conversion the renderer refuses one layer down, for the
+   * same reason. Register {@link TerminalSurface.onDensityChange} and re-supply.
    */
-  private applyCanvasCssBox(): void {
-    this.canvas.style.width = `${this.backend.cssWidth()}px`;
-    this.canvas.style.height = `${this.backend.cssHeight()}px`;
+  setViewportRect(x: number, y: number): void {
+    this.rect = { x, y };
+    this.reapplySurface();
   }
+
 
   /** The terminal grid ACTUALLY adopted after the last {@link resize} — not the requested
    * `cols`/`rows`, so a browser drawing-buffer clamp (#339) cannot desync the grid the consumer
    * drives its engine and frames at from the grid the buffer can hold.
+   *
+   * **That guarantee is the sole tenant's** (#775). A terminal sharing a surface occupies part of a
+   * buffer it did not ask for, so the read-back in {@link applyGrid} compares its columns against the
+   * whole canvas and never shrinks it; the grant is the host's to read from
+   * {@link TerminalSurface.cssSize} after it sizes the surface. This still answers what `resizeGrid`
+   * was last given either way — what varies is whether anything clamped it first.
    *
    * **Who adopts it moved at renderer 0.15.0, and this contract did not** (#773). The renderer used
    * to shrink the grid to what the buffer granted; it clamps only the shared *surface* now, because
@@ -1486,8 +1580,31 @@ export class JustermRenderer implements Renderer {
     this.mayHaveBlinkCells = frame.kind === 0 ? here : this.mayHaveBlinkCells || here;
   }
 
+  /**
+   * Present the canvas — and **which of the two ways follows from whether this terminal is alone on
+   * it**, because `render()` takes no grid: one call presents the whole canvas, every registered grid
+   * included.
+   *
+   * - **Sole tenant** (the {@link create} path): synchronous, exactly as before #775. One terminal
+   *   means one present per frame either way, so coalescing buys nothing and would only add a frame
+   *   of latency — and the whole e2e suite drives a frame and reads pixels in the same turn, so
+   *   deferring here would silently change what a large number of unrelated assertions mean.
+   * - **Sharing a surface** (the {@link attach} path): a *request* on the surface's loop, coalesced
+   *   with every sibling's into one present per frame. N terminals presenting synchronously would
+   *   redraw the whole canvas N times a frame — a cost that grows with the number of terminals while
+   *   the pixels do not.
+   *
+   * The two are the same behaviour at N=1, which is what makes this a derivation rather than a mode
+   * switch. `Terminal` calls this on every decoded frame and has no way to choose, so a widget on a
+   * shared surface would otherwise be unable to reach the loop the surface exists to run — the
+   * advice "call `requestRender` instead" was unfollowable while `Terminal.mount` drove this one.
+   *
+   * A host that needs the canvas drawn *before* it returns — reading pixels, a screenshot — calls
+   * {@link TerminalSurface.present} directly.
+   */
   render(): void {
-    this.backend.render();
+    if (this.ownsSurface) this.surface.present();
+    else this.surface.requestRender();
   }
 
   /** The active selection tint for the current focus state (#115). */
@@ -1802,16 +1919,23 @@ export class JustermRenderer implements Renderer {
   dispose(): void {
     this.blinkLoop.stop();
     this.motionQuery.removeEventListener("change", this.onMotionChange);
-    this.dprWatcher.stop();
-    this.canvas.removeEventListener("webglcontextrestored", this.onContextRestored);
-    this.contextLoss.end();
     // Guarded rather than repeated, because this one is not naturally idempotent as the four above
     // are: `removeGrid` throws on an id it does not know, so a second `dispose()` would throw where
     // the `Renderer` port requires silence. A flag rather than a `try`/`catch` — swallowing here
     // would also swallow a genuine failure on the first call.
     if (!this.gridReleased) {
       this.gridReleased = true;
-      this.backend.removeGrid(this.grid);
+      // Through the surface, because the registry is the surface's: it is the only thing that knows
+      // what is still registered, which is what makes a second release silent rather than a throw
+      // from the renderer. This releases THIS grid and nothing else — a sibling on the same surface
+      // keeps its cells, its atlas and its viewport (#775).
+      this.surface.removeGrid(this.grid);
     }
+    // What this object exclusively holds, this object ends — the rule in
+    // `docs/map/invariant/a-layer-ends-what-it-exclusively-holds.md`, which is where it is written
+    // down rather than here. On the `create` path this object is the surface's only holder; on the
+    // `attach` path it is not, and ending a shared surface would take down every sibling drawing on
+    // it.
+    if (this.ownsSurface) this.surface.dispose();
   }
 }

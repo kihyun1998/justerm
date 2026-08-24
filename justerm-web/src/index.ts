@@ -14,7 +14,23 @@ export type { EventHandlers, TermEvent } from "./events";
 export { rendererNotifyingSink, routeWheel, Terminal, wheelGoesToApp, wheelScrollTarget } from "./terminal";
 export type { TerminalOptions, WheelAction } from "./terminal";
 export { JustermRenderer } from "./justerm-renderer";
-export type { JustermRendererOptions, Theme } from "./justerm-renderer";
+export type { AttachedRendererOptions, JustermRendererOptions, Theme } from "./justerm-renderer";
+// TerminalSurface (#775, Epic #287 S7) — one canvas, one WebGL2 context, N attached terminals.
+// The only new noun: `JustermRenderer.create` composes one internally for the single-terminal
+// arrangement, so a consumer that wants one terminal never names it. A host that wants several
+// opens the surface itself and attaches with `JustermRenderer.attach`.
+//
+// `SurfaceDeps` is exported alongside because the class is constructible — the instantiation seam
+// #696 and #579 each declined to build. Unlike `ContextLossRelay`/`FrameLoop`, which stay unexported
+// for being uninjectable, this one is the composition root and a host may want its own seams.
+export { observeViewportRect, TerminalSurface, viewportOrigin } from "./terminal-surface";
+export type {
+  AddGridOptions,
+  OverlayBoxes,
+  SurfaceBackend,
+  SurfaceCanvas,
+  SurfaceDeps,
+} from "./terminal-surface";
 // Context loss (#579) — `ContextLossRelay` is deliberately NOT exported, matching `FrameLoop`
 // (#696), the extraction it copies: both exist because `JustermRenderer` cannot be constructed under
 // vitest, and neither is injectable, so publishing one would add a semver liability a consumer has

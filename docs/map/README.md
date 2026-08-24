@@ -130,7 +130,8 @@ owns no detail of its own.
   [a wasm `Err` payload is thrown verbatim](invariant/wasm-err-payload-is-thrown-verbatim.md) ·
   [RIS keeps configuration and drops coordinates](invariant/ris-keeps-configuration-drops-coordinates.md) ·
   [only U+0020 can be a row's padding](invariant/only-u0020-can-be-padding.md) ·
-  [the write path funnels motion and does not funnel destruction](invariant/no-funnel-for-destruction-in-place.md)
+  [the write path funnels motion and does not funnel destruction](invariant/no-funnel-for-destruction-in-place.md) ·
+  [a layer ends what it exclusively holds](invariant/a-layer-ends-what-it-exclusively-holds.md)
 
 Ask the questions instead of copying the answers (run from `docs/map/`):
 

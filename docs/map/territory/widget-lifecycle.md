@@ -57,7 +57,8 @@ Inventory, re-measured 2026-07-29 — the sweep #605 asked for:
 | Ambient work | teardown handle | who calls it |
 |---|---|---|
 | the renderer's rAF blink loop + reduced-motion listener | `dispose()` | **`Terminal`** (#606) |
-| the context-loss notification the renderer holds for the widget's life (#579) | `dispose()`, via the relay's `end()` | **`Terminal`** — and it *must* be, because the renderer's own teardown of that slot is in `Drop`, i.e. at `free()`, which nothing here calls |
+| the context-loss notification the renderer holds for the widget's life (#579) | `dispose()`, via the relay's `end()` | **`TerminalSurface`** since #775 — it moved off the terminal because `setOnContextLoss` takes no grid: one context means one loss, and a per-terminal channel would both deliver it N times and let the first terminal to end close it for its siblings. It still *must* be closed by hand, for #579's original reason — the renderer's own teardown of that slot is in `Drop`, i.e. at `free()`, which nothing here calls |
+| the density watcher and the `webglcontextrestored` listener (#325) | `dispose()` | **`TerminalSurface`** since #775, and for the same reason: both are surface-scoped (`setDevicePixelRatio` takes no grid, and there is one canvas), and both *draw*. On the terminal they were a live defect the moment a second terminal existed — the first `dispose()` took density tracking and context recovery away from every sibling |
 | input attachment | returns a disposer | `Terminal`, via `detach` |
 | the frame source's two subscriptions | returns `Unsubscribe` | `Terminal` |
 | the scrollbar's window listeners | `dispose()` | nobody |
@@ -69,10 +70,14 @@ Inventory, re-measured 2026-07-29 — the sweep #605 asked for:
 
 - **The remaining rows share one cause and it is not the renderer's.** Every collaborator above is
   consumer-constructed and exported individually; the only thing with a `dispose()` a consumer is
-  plausibly told to call is `Terminal`, and it owns only what it builds. **There is no composition
-  root.** Measured: every `.dispose()` call in production code is a *decoration handle*
-  (`lineDecoration`, `full`, `gutter`) — no collaborator lifecycle is ended anywhere, and
-  `Terminal.dispose()` itself is called nowhere outside tests.
+  plausibly told to call is `Terminal`, and it owns only what it builds. Measured (2026-07-29): every
+  `.dispose()` call in production code is a *decoration handle* (`lineDecoration`, `full`, `gutter`) —
+  no collaborator lifecycle is ended anywhere, and `Terminal.dispose()` itself is called nowhere
+  outside tests.
+  **This bullet said "there is no composition root" until #775, and that half is now answered** — see
+  `## Known holes` for what the answer covers and what it does not. The measurement above is unchanged
+  and is still the reason the rows below have no caller: a surface owns the canvas and the context, not
+  the scrollbar, the fit observer or the a11y timers.
 - **Why #606 was separable from that.** The renderer's was the only row a consumer could not close by
   discipline: `dispose` was not on the port, a **type-level** obstacle rather than a missing call.
   The rest are callable and uncalled, which is a different question — tracked on the spine #605.
@@ -83,6 +88,13 @@ Inventory, re-measured 2026-07-29 — the sweep #605 asked for:
 - `justerm-web/src/renderer.ts` — the port, and the `dispose?()` that made the renderer reachable
 - `justerm-web/src/justerm-renderer.ts` — the blink tick and the reduced-motion listener, and
   the `dispose` `Terminal` now calls
+- `justerm-web/src/terminal-surface.ts` — `TerminalSurface`, the composition root this territory spent
+  two issues without (#775). It owns the canvas, the context, the grid registry, the density watcher,
+  the context-loss relay and the one presenting loop, and its `dispose` ends every grid still attached
+  before its own ambient work. **It is also the first thing here with an instantiation seam**:
+  `SurfaceDeps` injects the backend, `raf`/`caf` and the resolution query, so the *composition* is
+  host-tested rather than browser-only — the trade #696 and #579 each declined, taken the third time
+  because a composition root has nothing left over to extract
 - `justerm-web/src/frame-loop.ts` — `FrameLoop`, which owns the rAF handle for that tick. Host-tested
   with an injected `raf`/`caf` pair, because the widget around it has no instantiation seam (#696)
 - `justerm-web/src/context-loss.ts` — `ContextLossRelay`, the channel `dispose` closes. Extracted for
@@ -121,19 +133,22 @@ In `docs/agents/reference-facts.md` — **linked, never restated**.
   moment the OS reads it, and the widget can only learn of it from a browser event. The same fact is why
   the frame-driven path has no composition gate to key on (#637).
 
-**No invariant originates here — checked, not assumed (#606).** The rule this territory gained ("what a layer is handed
-across a port, that layer ends") was tested for reach before being left here, because a fact that
-holds in N territories belongs in `invariant/` and is invisible from the other N-1 if it is not.
+- [a layer ends what it exclusively holds](../invariant/a-layer-ends-what-it-exclusively-holds.md)
+  — **promoted out of this territory by #775, and the promotion corrected it.** This section used to
+  read *"no invariant originates here"* and carried the rule the territory gained at #606 — *"what a
+  layer is handed across a port, that layer ends"* — with a standing instruction to promote it the day
+  a second injected-collaborator port existed, naming #287's `TerminalSurface` as the likely candidate.
+  That is exactly what arrived, and it **falsified the phrasing**: `JustermRenderer.attach` is handed a
+  surface and deliberately does *not* end it, because the surface is shared. The criterion is
+  **exclusivity**, not provenance — a layer ends what it is the only holder of, whether it built it or
+  was handed it. Both of this territory's sites still derive from the corrected rule; what changed is
+  that the composition case (`create` builds the surface, so it ends it) stopped needing a clause of
+  its own.
 
-It has exactly one site. The criterion is *a port through which a collaborator with its own ambient
-work is injected*, and `justerm-web` is the only layer in the family with one: `justerm-renderer`
-takes a canvas **selector** and a theme, not a collaborator; `justerm-core` takes bytes and holds no
-listener, timer or loop by design (the no-I/O invariant in `CLAUDE.md`). The `DecorationRegistry`
-handle is the mirror image — the widget hands *out* something the consumer ends — which is a
-different rule, not this one at a second site.
-
-Promote it the day a second injected-collaborator port exists. The multi-viewport work (#287) is the
-likely candidate: a `TerminalSurface` holding N grids would be exactly that shape.
+  Kept here rather than replaced by the link, because it is the part the note cannot say about
+  *itself*: the reach check that found one site (#606) was right to leave it, and the one-site
+  phrasing was wrong. A rule promoted on the strength of one site would have shipped the provenance
+  wording into the first host that attaches two terminals.
 
 ## Blast radius
 
@@ -172,6 +187,18 @@ than of any one collaborator.
   can move it: a composition root is a question a **host application** asks, and `justerm-web` has no
   consumer (penterm's webview is still xterm.js). It becomes live the day one adopts the widget, and
   this bullet is where that reader will be standing.
+  **#775 moved it, and the way it moved is worth recording because #605's closing note predicted it
+  could not be.** That note was right about the reason and wrong about the reach: a composition root
+  *is* a question a host asks, and what changed is that this package now has to answer it for itself.
+  One WebGL2 context serving N terminals means something must own the canvas, the registry, the
+  density and the recovery for longer than any one widget lives — so `TerminalSurface` is that root,
+  and its ownership rule fell out of building it rather than being decided in the abstract:
+  [a layer ends what it exclusively holds](../invariant/a-layer-ends-what-it-exclusively-holds.md).
+  **What it does NOT cover, unchanged:** the surface owns what it composes, and the six
+  consumer-constructed collaborators in the table above are not among them. `Scrollbar`, the resize
+  observer, the a11y timers, the accessible view's keydown, the search debounce and the marker index
+  are still callable and uncalled, and still wait on a host that adopts the widget. The root answers
+  *who ends the canvas*, not *who ends everything*.
 - ~~`Terminal.dispose()` cannot reach the renderer's blink loop.~~ Closed by #606: `dispose?()` is on
   the `Renderer` port and `Terminal.dispose()` calls it, proven in a real browser by counting the
   loop's presenting rAF turns before (>0) and after (0) disposal.

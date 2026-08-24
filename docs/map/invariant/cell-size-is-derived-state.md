@@ -22,9 +22,20 @@ and since #773 the first four **name the grid they move**, while the fifth moves
 > another terminal's, and it will look entirely plausible.
 >
 > **`justerm-web` is a one-grid consumer today**, so every reader below still divides by one cell and
-> nothing in it is wrong. The axis arrives there when the surface does (#775): the moment a widget
-> holds two grids, each of the five readers needs to say which grid it is asking about, and each of
-> them reaches the renderer through a different module.
+> nothing in it is wrong.
+>
+> **The surface landed (#775) and the prediction that stood here was wrong — usefully.** It read: *"the
+> axis arrives the moment a widget holds two grids, and each of the five readers needs to say which
+> grid it is asking about."* No reader gained a grid parameter, because **a widget still holds exactly
+> one grid**: the object that multiplied is `JustermRenderer` itself, and the N-grid registry went to
+> `TerminalSurface`, which reads no cell at all. Two terminals are two widgets, each dividing by its
+> own single cell, so the *subject* is carried by object identity rather than by an argument at five
+> call sites.
+>
+> That is a real narrowing of this note, not a reprieve: the subject axis is closed for these readers
+> **as long as one widget means one grid**. The condition is enforced rather than assumed — every
+> per-grid renderer call names the grid, and `JustermRenderer` holds its id as a constructor field for
+> the object's life. A future object holding two would reopen it exactly as predicted.
 
 Everything downstream that divides by a cell dimension therefore holds a value with a **lifetime**, and
 nothing in the type system says so:

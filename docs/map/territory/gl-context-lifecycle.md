@@ -236,6 +236,13 @@ eager rather than as shapes to follow.
   `map_err`: it crosses as a `RuntimeError` *object*, i.e. the one thing here that a consumer's
   `catch` could tell apart from the rest. #688 removed this territory's only site, by guarding above
   the glow call that produced it rather than by changing what anything throws
+- [a layer ends what it exclusively holds](../invariant/a-layer-ends-what-it-exclusively-holds.md)
+  — **this is where a violation of it was actually reachable.** The three things a consumer holds for
+  the context's sake — the density watcher, the `webglcontextrestored` listener and the context-loss
+  relay — are all **surface-scoped**, because one canvas has one context, one density and one loss.
+  They sat on the per-terminal `JustermRenderer` until #775, so the first terminal disposed took
+  context recovery away from every sibling on its canvas: silent, and damaging a bystander rather than
+  the caller. The survivor kept drawing correctly right up to a loss it could no longer recover from
 
 ## Blast radius
 
