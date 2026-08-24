@@ -26,6 +26,7 @@ export type { AttachedRendererOptions, JustermRendererOptions, Theme } from "./j
 export { observeViewportRect, TerminalSurface, viewportOrigin } from "./terminal-surface";
 export type {
   AddGridOptions,
+  GridLease,
   OverlayBoxes,
   SurfaceBackend,
   SurfaceCanvas,

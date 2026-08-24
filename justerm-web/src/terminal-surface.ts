@@ -115,13 +115,93 @@ export interface AddGridOptions {
   lineHeight?: number;
 }
 
-/** The registry's record of one attached terminal. */
-interface Tenant {
-  grid: number;
-  /** What to run when the surface's geometry basis moves under this grid. See {@link TerminalSurface.onReapply}. */
+/**
+ * A terminal's claim on a surface — what {@link TerminalSurface.addGrid} hands back (#805).
+ *
+ * **The id is still here and still a number**, because a grid handle crosses the wasm boundary as
+ * one and every per-grid renderer call names it (recorded in `docs/agents/reference-facts.md`,
+ * #770). What changed is that the id is no longer the *only* thing a caller holds, and therefore no
+ * longer the thing a caller has to keep valid.
+ *
+ * **Why that matters rather than being a style preference.** The same record states the condition
+ * under which number ids are safe at all — *"a stale handle in JS has to fail loudly rather than
+ * address whichever grid landed there"* — and the renderer implements it (`registry.rs` raises
+ * `UnknownGrid`, with its two causes deliberately one error). This package used to swallow that:
+ * three registry methods took an id and silently ignored one they no longer held. A lease removes
+ * the question instead of answering it quietly — there is no id to go stale, because there is no
+ * id-keyed call.
+ *
+ * Every other registration in this package already works this way: `FrameSource.subscribe` returns
+ * an `Unsubscribe`, `observeResize` / `captureInput` / {@link observeViewportRect} return disposers,
+ * and `DecorationRegistry` hands out a `Decoration` with its own `dispose()`.
+ */
+export interface GridLease {
+  /** The renderer's handle for this grid. Pass it to per-grid renderer calls; do not store it as a
+   * substitute for this lease, which is the thing that knows whether it is still valid. */
+  readonly id: number;
+  /** Whether {@link release} has run. */
+  readonly released: boolean;
+  /** Run this when the surface's geometry basis moves under this grid — a context restore or a
+   * density change, the two events that move every grid's cell with no consumer call behind them.
+   * The surface knows *when*; only the terminal knows *what*. A no-op once released. */
+  onReapply(reapply: () => void): void;
+  /** Run this to END the terminal holding this grid, so {@link TerminalSurface.dispose} can end a
+   * tenant rather than merely retire its grid. A no-op once released. */
+  onEnd(end: () => void): void;
+  /**
+   * Hand the grid back, releasing its VAO, its instance buffer and — if it was the last grid on its
+   * font configuration — that configuration's atlas.
+   *
+   * **Idempotent, and that is not the softening this replaced.** The `Renderer` port requires
+   * `Terminal.dispose()` to be silent on a second call, so something must absorb it. What differs is
+   * what does: the surface used to swallow an id it could not recognise, and a lease declines a
+   * second call *about itself*. One is not knowing; the other is knowing.
+   */
+  release(): void;
+}
+
+/** The registry's record of one attached terminal, and the lease handed out for it. */
+class Lease implements GridLease {
   reapply: (() => void) | undefined;
-  /** How to END this terminal. See {@link TerminalSurface.onEnd} for why a grid id is not enough. */
   end: (() => void) | undefined;
+  private done = false;
+
+  constructor(
+    readonly id: number,
+    private readonly onRelease: (lease: Lease) => void,
+  ) {}
+
+  get released(): boolean {
+    return this.done;
+  }
+
+  /**
+   * **No gate here, deliberately — leaving the registry is what stops delivery.**
+   *
+   * Three mechanisms could enforce *"a released lease delivers nothing"*: a guard on these two
+   * registrations, {@link release} clearing what it holds, and the lease leaving the surface's set.
+   * Only the third can be observed: once it is gone from the set, neither `reapplyAll` nor `dispose`
+   * can reach it, so the other two are unfalsifiable by construction — each masked by the one below.
+   *
+   * That is not a tidiness point. A branch no test can redden is a branch nothing is checking, and
+   * the first version of this class had all three, with a mutation passing on two of them. The same
+   * call is on record next door for the same reason (`ContextLossRelay`, #579), and it is the reason
+   * a registration after release is simply harmless here rather than defended against: the lease is
+   * out of the set, and the object itself is garbage as soon as its terminal drops it.
+   */
+  onReapply(reapply: () => void): void {
+    this.reapply = reapply;
+  }
+
+  onEnd(end: () => void): void {
+    this.end = end;
+  }
+
+  release(): void {
+    if (this.done) return;
+    this.done = true;
+    this.onRelease(this);
+  }
 }
 
 const EMPTY_PALETTE = new Uint32Array(256);
@@ -181,7 +261,7 @@ export class TerminalSurface<B extends SurfaceBackend = SurfaceBackend> {
   private readonly raf: (cb: () => void) => number;
   private readonly caf: (id: number) => void;
   /** The attached terminals, keyed by the grid id each was handed. */
-  private readonly tenants = new Map<number, Tenant>();
+  private readonly leases = new Set<Lease>();
   /**
    * The consumer's never-restored-context handler, behind an indirection held for the surface's
    * life. Surface-scoped because `setOnContextLoss` is: one context, one loss, one notification —
@@ -296,7 +376,7 @@ export class TerminalSurface<B extends SurfaceBackend = SurfaceBackend> {
 
   /** How many terminals are attached. For assertions and for a host deciding whether to tear down. */
   get gridCount(): number {
-    return this.tenants.size;
+    return this.leases.size;
   }
 
   /**
@@ -312,7 +392,7 @@ export class TerminalSurface<B extends SurfaceBackend = SurfaceBackend> {
    *   the one `JustermRenderer.create` composed, and that one is unreachable, so the guard defended
    *   a state nobody could construct. `test/published-seam.types.ts` §3 now pins the reachability.)
    */
-  addGrid(opts: AddGridOptions = {}): number {
+  addGrid(opts: AddGridOptions = {}): GridLease {
     if (this.disposed) {
       throw new Error("justerm-web: this TerminalSurface was disposed — build a new one");
     }
@@ -325,55 +405,12 @@ export class TerminalSurface<B extends SurfaceBackend = SurfaceBackend> {
       opts.letterSpacing,
       opts.lineHeight,
     );
-    this.tenants.set(grid, { grid, reapply: undefined, end: undefined });
-    return grid;
-  }
-
-  /**
-   * Hand a grid back. **A no-op for a grid this surface no longer holds** — the guard is here rather
-   * than at the caller because the registry is the only thing that knows what is still registered,
-   * and `removeGrid` throws on an unknown id while `Terminal.dispose()` is required to be idempotent.
-   */
-  removeGrid(grid: number): void {
-    if (!this.tenants.delete(grid)) return;
-    this.backend.removeGrid(grid);
-  }
-
-  /**
-   * Register what to run when the surface's geometry basis moves under `grid` — a context restore or
-   * a density change, the two events that move every grid's cell with no consumer call behind them.
-   *
-   * The terminal supplies this rather than the surface computing it, because what has to be re-asked
-   * is per-grid: the grid's own size at its own new cell, its viewport rect, and — for a sole
-   * tenant — the drawing buffer derived from both. The surface knows *when*; only the terminal knows
-   * *what*.
-   */
-  onReapply(grid: number, reapply: () => void): void {
-    const tenant = this.tenants.get(grid);
-    if (tenant) tenant.reapply = reapply;
-  }
-
-  /**
-   * Register how to **end** the terminal holding `grid`, so {@link dispose} can end a tenant rather
-   * than merely retire its grid.
-   *
-   * **A grid id is not enough, and the gap is not cosmetic.** The registry maps ids, not objects, so
-   * without this a surface teardown releases every grid and leaves each terminal running — its blink
-   * loop, its reduced-motion listener and its frame subscription intact, now holding an id the
-   * renderer has retired. Every per-grid call then throws `UnknownGrid`, on a timer, from a widget the
-   * host has no reason to think is still alive.
-   *
-   * This is the difference between the two sentences the reference's composition root keeps separate:
-   * ghostty's `App.deinit` ends every **surface** it holds and only then its own shared set
-   * (`src/App.zig:107` @ `e6e26e1`), and it can assert that set is empty by then (`:115`) precisely
-   * because ending a terminal is what releases its claim. Releasing the claim without ending the
-   * terminal is the half that cannot be asserted.
-   *
-   * A no-op for a grid the registry does not hold, matching {@link onReapply}.
-   */
-  onEnd(grid: number, end: () => void): void {
-    const tenant = this.tenants.get(grid);
-    if (tenant) tenant.end = end;
+    const lease = new Lease(grid, (l) => {
+      this.leases.delete(l);
+      this.backend.removeGrid(l.id);
+    });
+    this.leases.add(lease);
+    return lease;
   }
 
   /**
@@ -479,7 +516,7 @@ export class TerminalSurface<B extends SurfaceBackend = SurfaceBackend> {
   }
 
   private reapplyAll(): void {
-    for (const tenant of [...this.tenants.values()]) tenant.reapply?.();
+    for (const lease of [...this.leases]) lease.reapply?.();
   }
 
   /**
@@ -540,8 +577,10 @@ export class TerminalSurface<B extends SurfaceBackend = SurfaceBackend> {
     //
     // Re-entrant by design and safe by the latch above: a terminal's own teardown calls back into
     // `removeGrid`, and a sole tenant's also calls `dispose()`, which returns immediately.
-    for (const tenant of [...this.tenants.values()]) tenant.end?.();
-    for (const grid of [...this.tenants.keys()]) this.removeGrid(grid);
+    for (const lease of [...this.leases]) lease.end?.();
+    // Whatever is left had no `end`, or its terminal did not release on being ended. Either way the
+    // grid is GPU memory nothing holds any more, and `release` is what gives it back.
+    for (const lease of [...this.leases]) lease.release();
     if (this.presentId !== undefined) {
       this.caf(this.presentId);
       this.presentId = undefined;

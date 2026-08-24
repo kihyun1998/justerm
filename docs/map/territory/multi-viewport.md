@@ -120,7 +120,12 @@ The renderer **holds** N grids and **draws** every one that has been placed.
   loss, with no re-bake, no re-pack and no re-feed
 
 - `justerm-web/src/terminal-surface.ts` — `TerminalSurface` (#775), the consumer half: one canvas, one
-  context, N attached terminals. It owns the grid registry, the single presenting loop, the density
+  context, N attached terminals. **Registration hands back a `GridLease`, not an id** (#805): the
+  renderer's ids are numbers because they cross the wasm boundary, and `reference-facts.md` records
+  the condition that makes them safe — *a stale handle in JS has to fail loudly*. The web layer had
+  been softening that instead, with three registry methods silently ignoring an id they no longer
+  held; a lease removes the question rather than answering it quietly, and it is the idiom every
+  other registration in the package already uses. It owns the grid registry, the single presenting loop, the density
   watcher and context-loss recovery, and it is constructible under vitest through `SurfaceDeps`, so
   the composition itself is host-tested. `SurfaceBackend` is the **surface-scoped half of the renderer
   backend**, and the split is not a judgement this package makes: it is the renderer's own 0.15.0

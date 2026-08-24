@@ -3,7 +3,7 @@ import { CursorBlink } from "./cursor";
 import { FrameLoop } from "./frame-loop";
 import type { DecorationRect } from "./decorations";
 import { MINIMUM_COLS, MINIMUM_ROWS } from "./fit";
-import { TerminalSurface, type SurfaceBackend } from "./terminal-surface";
+import { TerminalSurface, type GridLease, type SurfaceBackend } from "./terminal-surface";
 
 import type { Renderer } from "./renderer";
 import { TextBlink } from "./text-blink";
@@ -672,8 +672,6 @@ export class JustermRenderer implements Renderer {
    * re-packs and presents), so leaving it attached lets a disposed widget repaint its canvas. */
   private readonly motionQuery: MediaQueryList;
   private readonly onMotionChange: (e: MediaQueryListEvent) => void;
-  /** Whether {@link dispose} has already handed this widget's grid back. See its guard. */
-  private gridReleased = false;
   /**
    * Where this grid sits on the shared drawing buffer, in **device px**, top-left origin — the
    * origin half of the rect {@link setViewportRect} sets; the extent half is always re-derived from
@@ -743,10 +741,17 @@ export class JustermRenderer implements Renderer {
      * unreachability, so the deletion is falsifiable rather than assumed.
      */
     private readonly composedSurface: boolean,
-    /** The one grid this widget owns (#773). A `Terminal` is one terminal, so this is a constant for
-     * the object's life — what changed at renderer 0.15.0 is that it has to be *said*, on every call
-     * that acts on a terminal rather than on the surface. */
-    private readonly grid: number,
+    /**
+     * This widget's claim on the surface (#805). A `Terminal` is one terminal, so it is a constant
+     * for the object's life — what changed at renderer 0.15.0 is that the grid has to be *named* on
+     * every call that acts on a terminal rather than on the surface.
+     *
+     * **A lease rather than the bare id**, and the difference is what happens after teardown: an id
+     * can outlive the grid it names, so holding one meant every registry call had to cope with a
+     * stale one, silently. A lease knows whether it is still valid, so the question does not arise —
+     * see {@link GridLease}, which carries why that matters rather than being a preference.
+     */
+    private readonly lease: GridLease,
     // Retained so `setTheme` (#420) can rebuild the 256-colour table from a new ANSI scheme.
     private readonly buildPalette: (ansi: Uint32Array) => Uint32Array,
     // Theme-derived state is mutable: `setTheme` swaps the whole scheme at runtime (#420).
@@ -803,12 +808,12 @@ export class JustermRenderer implements Renderer {
      * non-blank are the **surface's**, since they present every grid at once — see
      * {@link TerminalSurface}'s restore handler for why that order is load-bearing.
      */
-    this.surface.onReapply(this.grid, () => this.reapplySurface());
+    this.lease.onReapply(() => this.reapplySurface());
     // And how to END this terminal, so a host that disposes the SURFACE ends the widgets on it rather
     // than retiring their grids under them. Without it this object keeps its blink loop and its
     // reduced-motion listener while holding an id the renderer has retired, and every per-grid call
     // then throws `UnknownGrid` on a timer.
-    this.surface.onEnd(this.grid, () => this.dispose());
+    this.lease.onEnd(() => this.dispose());
   }
 
   /**
@@ -886,7 +891,7 @@ export class JustermRenderer implements Renderer {
     // The values are the same ones the setters used, defaults included, so the initial fit is still
     // computed at the consumer's final cell.
     //
-    const gridId = surface.addGrid({
+    const lease = surface.addGrid({
       paletteColors,
       defaultFg: t.defaultFg,
       defaultBg: t.defaultBg,
@@ -896,12 +901,12 @@ export class JustermRenderer implements Renderer {
       lineHeight: opts.lineHeight ?? 1,
     });
     try {
-      return await JustermRenderer.assemble(surface, composedSurface, opts, gridId, decoder, paletteColors);
+      return await JustermRenderer.assemble(surface, composedSurface, opts, lease, decoder, paletteColors);
     } catch (e) {
       // A grid is GPU memory — a VAO, an instance buffer and a refcount on its configuration's atlas
       // (4.2 MiB at an 8x16 cell, 12.8 MiB at 15x30 on a dpr-2 display, measured for #773's follow-up).
       // Nothing holds it if assembly throws, and only `removeGrid` gives it back.
-      surface.removeGrid(gridId);
+      lease.release();
       throw e;
     }
   }
@@ -918,25 +923,25 @@ export class JustermRenderer implements Renderer {
     surface: TerminalSurface<RendererBackend>,
     composedSurface: boolean,
     opts: AttachedRendererOptions,
-    gridId: number,
+    lease: GridLease,
     decoder: typeof import("justerm-wasm-decode"),
     paletteColors: Uint32Array,
   ): Promise<JustermRenderer> {
     const t = opts.theme;
     const backend = surface.rendererBackend();
     // Policy setters (consumer-injected, ADR-0017) — set once; they rarely change.
-    backend.setBoldToBright(gridId, t.boldToBright ?? true);
-    backend.setMinimumContrastRatio(gridId, t.minimumContrastRatio ?? 1);
-    backend.setSelectionForeground(gridId, t.selectionForeground);
+    backend.setBoldToBright(lease.id, t.boldToBright ?? true);
+    backend.setMinimumContrastRatio(lease.id, t.minimumContrastRatio ?? 1);
+    backend.setSelectionForeground(lease.id, t.selectionForeground);
     // Unconditional, and with the default named (#580): a `Theme` is a complete description, so
     // this has to push the same value `setTheme` pushes for an unset field — see
     // `DEFAULT_CURSOR_CONTRAST` for why that obliges this file to own a number the renderer already
     // has one of. No cursor exists yet, so there is nothing to redraw.
-    backend.setCursorContrast(gridId, t.cursorContrast ?? DEFAULT_CURSOR_CONTRAST);
+    backend.setCursorContrast(lease.id, t.cursorContrast ?? DEFAULT_CURSOR_CONTRAST);
     // Background opacity (#577). Set unconditionally at the renderer's own default, so the value the
     // renderer holds is the one this object states rather than one nobody wrote down. No `render`
     // here — nothing has been drawn yet, and the first frame presents it.
-    backend.setBgAlpha(gridId, opts.bgAlpha ?? 1);
+    backend.setBgAlpha(lease.id, opts.bgAlpha ?? 1);
     // Font family, size and both spacing options (#406/#413/#578) went into `addGrid` above.
     //
     // **The ordering question this block used to answer is gone with the four calls**, and the
@@ -954,7 +959,7 @@ export class JustermRenderer implements Renderer {
     // reconciles. An option can afford that where `cursorContrast` above cannot, because options are
     // read once here and never re-applied — there is no reset for an unset one to get wrong.
     if (opts.cursorThickness !== undefined) {
-      backend.setCursorThickness(gridId, opts.cursorThickness);
+      backend.setCursorThickness(lease.id, opts.cursorThickness);
     }
 
     const palette: Palette = {
@@ -978,7 +983,7 @@ export class JustermRenderer implements Renderer {
       backend,
       surface,
       composedSurface,
-      gridId,
+      lease,
       (ansi) => decoder.buildPalette(ansi),
       palette,
       flagBits,
@@ -1026,14 +1031,14 @@ export class JustermRenderer implements Renderer {
   /** The renderer's cell size in **device** pixels — the consumer divides by `devicePixelRatio`
    * to map pointer coordinates to cells (matches the beamterm adapter's `cellSize`). */
   cellSize(): { width: number; height: number } {
-    return { width: this.backend.cell_width(this.grid), height: this.backend.cell_height(this.grid) };
+    return { width: this.backend.cell_width(this.lease.id), height: this.backend.cell_height(this.lease.id) };
   }
 
   /** Change the font size (CSS px) at runtime (#406/#417) — re-bakes the atlas. The cell size moves,
    * so **the consumer must re-fit** (recompute its grid + `resize`) after calling. A no-op at the
    * current size. */
   setFontSize(cssPx: number): void {
-    this.backend.setFontSize(this.grid, cssPx);
+    this.backend.setFontSize(this.lease.id, cssPx);
     this.reapplySurface();
   }
 
@@ -1041,7 +1046,7 @@ export class JustermRenderer implements Renderer {
    * As with {@link setFontSize}, the cell size can move, so **the consumer must re-fit** after. Load
    * a webfont before an unfamiliar family (the browser silently falls back otherwise). */
   setFontFamily(family: string): void {
-    this.backend.setFontFamily(this.grid, family);
+    this.backend.setFontFamily(this.lease.id, family);
     this.reapplySurface();
   }
 
@@ -1103,13 +1108,13 @@ export class JustermRenderer implements Renderer {
    * so a large enough cell shrinks the *grid* as well.
    */
   setLetterSpacing(cssPx: number): void {
-    this.backend.setLetterSpacing(this.grid, cssPx);
+    this.backend.setLetterSpacing(this.lease.id, cssPx);
     this.reapplySurface();
   }
 
   /** See {@link setLetterSpacing} — same cell-moving contract, same re-fit and read-back obligation. */
   setLineHeight(multiplier: number): void {
-    this.backend.setLineHeight(this.grid, multiplier);
+    this.backend.setLineHeight(this.lease.id, multiplier);
     this.reapplySurface();
   }
 
@@ -1132,7 +1137,7 @@ export class JustermRenderer implements Renderer {
    * not re-clamped here — two layers holding the same bound is how they drift apart.
    */
   setBgAlpha(alpha: number): void {
-    this.backend.setBgAlpha(this.grid, alpha);
+    this.backend.setBgAlpha(this.lease.id, alpha);
     this.backend.render();
   }
 
@@ -1153,7 +1158,7 @@ export class JustermRenderer implements Renderer {
    * {@link setTheme} is its runtime path — the same as every other policy that lives there.
    */
   setCursorThickness(frac: number): void {
-    this.backend.setCursorThickness(this.grid, frac);
+    this.backend.setCursorThickness(this.lease.id, frac);
     if (this.cursor) this.redrawCursor();
   }
 
@@ -1307,15 +1312,15 @@ export class JustermRenderer implements Renderer {
     this.activeMatchBg = theme.activeMatchBg ?? 0x995200;
     this.selectionInactiveBg = theme.selectionInactiveBg ?? 0x30313d;
     // Push the palette + the policy colours a theme can carry; each marks the buffer dirty (#421).
-    this.backend.setPalette(this.grid, colors, theme.defaultFg, theme.defaultBg);
-    this.backend.setBoldToBright(this.grid, theme.boldToBright ?? true);
-    this.backend.setMinimumContrastRatio(this.grid, theme.minimumContrastRatio ?? 1);
-    this.backend.setSelectionForeground(this.grid, theme.selectionForeground);
+    this.backend.setPalette(this.lease.id, colors, theme.defaultFg, theme.defaultBg);
+    this.backend.setBoldToBright(this.lease.id, theme.boldToBright ?? true);
+    this.backend.setMinimumContrastRatio(this.lease.id, theme.minimumContrastRatio ?? 1);
+    this.backend.setSelectionForeground(this.lease.id, theme.selectionForeground);
     // The cursor guard travels with the theme (#580), and it has to: what it defends against is a
     // `cursorColor` too close to the cell under it, and this call is the one that just moved both.
     // Omitting it from a theme RESETS it, like every other field here — that completeness is what
     // `DEFAULT_CURSOR_CONTRAST` exists for.
-    this.backend.setCursorContrast(this.grid, theme.cursorContrast ?? DEFAULT_CURSOR_CONTRAST);
+    this.backend.setCursorContrast(this.lease.id, theme.cursorContrast ?? DEFAULT_CURSOR_CONTRAST);
     this.issueOverlay(); // the selection/match blend colours moved
     this.redrawCursor(); // re-push the cursor with its new colour, then present (one pack, #421)
   }
@@ -1353,8 +1358,8 @@ export class JustermRenderer implements Renderer {
     const grid = gridForBox(
       cssWidth,
       cssHeight,
-      this.backend.cssCellWidth(this.grid),
-      this.backend.cssCellHeight(this.grid),
+      this.backend.cssCellWidth(this.lease.id),
+      this.backend.cssCellHeight(this.lease.id),
     );
     // Nothing to propose — an unmeasured cell or a non-finite box (#632). Leave the renderer and the
     // canvas box exactly as they are: resizing to a guess is how an unlaid-out container turned into
@@ -1380,7 +1385,7 @@ export class JustermRenderer implements Renderer {
    * afterwards rather than from the numbers asked for.
    */
   private applyGrid(cols: number, rows: number): void {
-    this.backend.resizeGrid(this.grid, cols, rows);
+    this.backend.resizeGrid(this.lease.id, cols, rows);
     // Sizing the shared buffer is the SOLE TENANT's alone (#775). Asking for `cols * cell` is #331's
     // exactness — both are integers the renderer hands back, so nothing rounds between the grid the
     // shader lays out and the buffer holding it — and it is available only while this grid is the
@@ -1388,8 +1393,8 @@ export class JustermRenderer implements Renderer {
     // the container, and takes its rect from `setViewportRect` instead.
     if (this.composedSurface) {
       this.surface.resizeSurface(
-        cols * this.backend.cell_width(this.grid),
-        rows * this.backend.cell_height(this.grid),
+        cols * this.backend.cell_width(this.lease.id),
+        rows * this.backend.cell_height(this.lease.id),
       );
     }
 
@@ -1421,11 +1426,11 @@ export class JustermRenderer implements Renderer {
     const granted = gridForBox(
       this.backend.cssWidth(),
       this.backend.cssHeight(),
-      this.backend.cssCellWidth(this.grid),
-      this.backend.cssCellHeight(this.grid),
+      this.backend.cssCellWidth(this.lease.id),
+      this.backend.cssCellHeight(this.lease.id),
     );
     if (granted !== undefined && (granted.cols < cols || granted.rows < rows)) {
-      this.backend.resizeGrid(this.grid, granted.cols, granted.rows);
+      this.backend.resizeGrid(this.lease.id, granted.cols, granted.rows);
     }
 
     // A grid draws only where it is placed, and for a one-terminal widget that is the whole buffer.
@@ -1433,11 +1438,11 @@ export class JustermRenderer implements Renderer {
     // and the grid may have just been shrunk to the grant.
     const { cols: fitted, rows: fittedRows } = granted ?? { cols, rows };
     this.backend.setViewport(
-      this.grid,
+      this.lease.id,
       this.rect.x,
       this.rect.y,
-      Math.min(cols, fitted) * this.backend.cell_width(this.grid),
-      Math.min(rows, fittedRows) * this.backend.cell_height(this.grid),
+      Math.min(cols, fitted) * this.backend.cell_width(this.lease.id),
+      Math.min(rows, fittedRows) * this.backend.cell_height(this.lease.id),
     );
   }
 
@@ -1507,7 +1512,7 @@ export class JustermRenderer implements Renderer {
    * a buffer holding N grids belongs to none of them. So {@link resize} reads the grant back and
    * shrinks the grid here instead — which is why this still answers what it always did. */
   terminalSize(): { cols: number; rows: number } {
-    return { cols: this.backend.cols(this.grid), rows: this.backend.rows(this.grid) };
+    return { cols: this.backend.cols(this.lease.id), rows: this.backend.rows(this.lease.id) };
   }
 
   applyFrame(frame: DecodedFrame): void {
@@ -1522,14 +1527,14 @@ export class JustermRenderer implements Renderer {
     this.lastMatchSpans = retainU32(frame.matchSpans ?? new Uint32Array(0));
     this.lastActiveMatchSpans = retainU32(frame.activeMatchSpans ?? new Uint32Array(0));
     this.issueOverlay();
-    this.backend.setDecorations(this.grid, decorationWire(this.decorationSource?.(frame) ?? []));
+    this.backend.setDecorations(this.lease.id, decorationWire(this.decorationSource?.(frame) ?? []));
     this.updateCursor(frame);
     // Pack at the CURRENT text-blink phase, not forced-on — same reason `updateCursor` draws at
     // the cursor's current phase: a content frame arriving during the off phase must not flash the
     // blinking cells back on until the loop's next flip. `apply_damage` stores this as the
     // renderer's `last_blink_on`, so the two stay in step by construction.
     const textBlinkOn = this.textBlink.isVisible(now());
-    this.backend.apply_damage(this.grid,
+    this.backend.apply_damage(this.lease.id,
       damageHeader(frame, textBlinkOn),
       asU32(frame.spans),
       asU32(frame.codepoints),
@@ -1637,13 +1642,13 @@ export class JustermRenderer implements Renderer {
    * theme swap re-colours it too. Its tint is NOT focus-gated — xterm has no inactive variant
    * for match colours (only the selection dims on blur). */
   private issueOverlay(): void {
-    this.backend.setOverlay(this.grid,
+    this.backend.setOverlay(this.lease.id,
       this.lastSelectionSpans,
       this.lastMatchSpans,
       this.activeSelectionBg(),
       this.matchBg,
     );
-    this.backend.setActiveMatch(this.grid, this.lastActiveMatchSpans, this.activeMatchBg);
+    this.backend.setActiveMatch(this.lease.id, this.lastActiveMatchSpans, this.activeMatchBg);
   }
 
   /** Push the frame's cursor to the renderer (native cursor — #270), or clear it when hidden.
@@ -1660,7 +1665,7 @@ export class JustermRenderer implements Renderer {
     if (cmd.kind === "none") return;
     if (cmd.kind === "clear") {
       this.cursor = undefined;
-      this.backend.clearCursor(this.grid);
+      this.backend.clearCursor(this.lease.id);
       return;
     }
     // ADR-0028 D5 — while a composition is open the caret's POSITION is the composition's end, not
@@ -1686,7 +1691,7 @@ export class JustermRenderer implements Renderer {
   private pushCursor(on: boolean): void {
     this.lastBlinkOn = on;
     if (on && this.cursor) {
-      this.backend.setCursor(this.grid,
+      this.backend.setCursor(this.lease.id,
         this.cursor.col,
         this.cursor.row,
         this.cursor.shape,
@@ -1694,7 +1699,7 @@ export class JustermRenderer implements Renderer {
         this.cursorTextColor,
       );
     } else {
-      this.backend.clearCursor(this.grid);
+      this.backend.clearCursor(this.lease.id);
     }
   }
 
@@ -1748,7 +1753,7 @@ export class JustermRenderer implements Renderer {
     // A renderer published before #249 has no such binding: report the anchor cell unchanged, so
     // the widget's anchor logic still works and only the drawing is missing.
     if (!this.backend.setPreedit) return col;
-    const caretCol = this.backend.setPreedit(this.grid, col, row, codepoints);
+    const caretCol = this.backend.setPreedit(this.lease.id, col, row, codepoints);
     // Retained, because D5 is a rule about every frame and not about this call. Frames keep arriving
     // while a composition is open and each one describes the ENGINE's cursor, which knows nothing
     // about the preedit — so without this the caret snaps back under the composed text on the next
@@ -1820,10 +1825,10 @@ export class JustermRenderer implements Renderer {
    */
   private repackAtTextBlinkPhase(on: boolean): boolean {
     const grid = this.lastFrameGrid;
-    if (!grid || grid.cols !== this.backend.cols(this.grid) || grid.rows !== this.backend.rows(this.grid)) {
+    if (!grid || grid.cols !== this.backend.cols(this.lease.id) || grid.rows !== this.backend.rows(this.lease.id)) {
       return false;
     }
-    this.backend.apply_damage(this.grid,
+    this.backend.apply_damage(this.lease.id,
       blinkPhaseHeader(grid.cols, grid.rows, on),
       EMPTY_U32,
       EMPTY_U32,
@@ -1937,18 +1942,15 @@ export class JustermRenderer implements Renderer {
   dispose(): void {
     this.blinkLoop.stop();
     this.motionQuery.removeEventListener("change", this.onMotionChange);
-    // Guarded rather than repeated, because this one is not naturally idempotent as the four above
-    // are: `removeGrid` throws on an id it does not know, so a second `dispose()` would throw where
-    // the `Renderer` port requires silence. A flag rather than a `try`/`catch` — swallowing here
-    // would also swallow a genuine failure on the first call.
-    if (!this.gridReleased) {
-      this.gridReleased = true;
-      // Through the surface, because the registry is the surface's: it is the only thing that knows
-      // what is still registered, which is what makes a second release silent rather than a throw
-      // from the renderer. This releases THIS grid and nothing else — a sibling on the same surface
-      // keeps its cells, its atlas and its viewport (#775).
-      this.surface.removeGrid(this.grid);
-    }
+    // No flag here any more (#805). This widget used to carry a `gridReleased` boolean whose stated
+    // reason was that `removeGrid` throws on an id it does not know — true when it was written, and
+    // false by the time #775 merged, because the guard had moved into the surface. It survived on a
+    // reason that had gone, which is exactly what a lease removes: `release` is idempotent because
+    // the lease knows its own state, so a second `dispose()` needs nothing to remember for it.
+    //
+    // It releases THIS grid and nothing else — a sibling on the same surface keeps its cells, its
+    // atlas and its viewport (#775).
+    this.lease.release();
     // What this object exclusively holds, this object ends — the rule in
     // `docs/map/invariant/a-layer-ends-what-it-exclusively-holds.md`, which is where it is written
     // down rather than here. On the `create` path this object is the surface's only holder; on the
