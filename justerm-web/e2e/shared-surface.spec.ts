@@ -279,3 +279,39 @@ test("one context loss and one restore bring back BOTH terminals, with no frame 
   expect(after.band).toBe(UNPAINTED);
 });
 
+test("a density change re-places every pane, not just the buffer (ADR-0021 D3)", async ({ page }) => {
+  const boot = await page.evaluate(() => window.__surfaceProbe!());
+  expectContextAlive(boot);
+
+  // Adopt twice the current ratio. Driven through the surface's own setter rather than through CDP:
+  // Chromium's density override dispatches no `change` event, so the watcher cannot see it and only
+  // the *adoption* half is reachable from a test — which is the half a shared surface gets wrong.
+  const { before, after } = await page.evaluate(
+    (d) => window.__densityProbe!(d),
+    boot.dpr * 2,
+  );
+
+  // The buffer, which the HOST owes: nothing below this layer can size it, because a buffer holding
+  // N grids in M font configurations has no cell to be a multiple of.
+  expect(after.bufW).toBe(before.bufW * 2);
+  expect(after.bufH).toBe(before.bufH * 2);
+
+  // THE RECTS, which the host also owes and which nothing warns it about. `observeViewportRect` does
+  // not fire here — a `ResizeObserver` on the default box reports CSS px and a density change moves
+  // no CSS box — so a host that re-supplies only the buffer leaves pane B at half its offset, over
+  // its left sibling, with no error. Measured red before the page's handler was fixed to re-place.
+  expect(after.b.rectX).toBe(before.b.rectX * 2);
+  expect(after.b.rectY).toBe(before.b.rectY * 2);
+  // The control that keeps the assertion above from being "everything doubled": pane A is at the
+  // origin, which no ratio moves, and it must stay there.
+  expect(before.a.rectX).toBe(0);
+  expect(after.a.rectX).toBe(0);
+  expect(after.a.rectY).toBe(0);
+  // Anti-vacuity: pane B's origin is non-zero, so doubling it is observable at all.
+  expect(before.b.rectX).toBeGreaterThan(0);
+  expect(before.b.rectY).toBeGreaterThan(0);
+
+  // …and both panes are still painting after the move, rather than merely holding tidy numbers.
+  expect(after.a.centre).toBe(BG_A);
+  expect(after.b.centre).toBe(BG_B);
+});

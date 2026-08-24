@@ -418,6 +418,15 @@ export interface PaneSnapshot {
   step: number;
 }
 
+/** The device-px quantities a density change invalidates, plus a pixel saying the pane is still there. */
+export interface DensitySample {
+  dpr: number;
+  bufW: number;
+  bufH: number;
+  a: { rectX: number; rectY: number; centre: string };
+  b: { rectX: number; rectY: number; centre: string };
+}
+
 export interface SurfaceSnapshot {
   dpr: number;
   /** The context's own verdict. Headless SwiftShader loses contexts on its own (#580), and every
@@ -441,6 +450,21 @@ export interface SurfaceSnapshot {
 declare global {
   interface Window {
     __surfaceProbe?: () => SurfaceSnapshot;
+    /**
+     * Adopt `dpr` as the display density and report the shared buffer and both rects either side of
+     * it — the two-terminal form of what a monitor switch does.
+     *
+     * **Driven through a hook rather than through CDP, and that is forced.** Chromium's
+     * `Emulation.setDeviceMetricsOverride` moves `window.devicePixelRatio` and re-evaluates the
+     * media queries but dispatches **no `change` event** to any `MediaQueryList` (measured for #325,
+     * recorded in `reference-facts.md`), so the watcher genuinely cannot see it and the listener
+     * half is unprovable in Playwright. The *adoption* half is what this drives, which is the half
+     * a shared surface gets wrong.
+     */
+    __densityProbe?: (dpr: number) => {
+      before: DensitySample;
+      after: DensitySample;
+    };
     /**
      * `r,g,b,a` at one device-px point of the shared buffer, top-origin, after a present.
      *
@@ -595,6 +619,29 @@ function snapshot(): SurfaceSnapshot {
 window.__pixelAt = (x: number, y: number): string => {
   surface.present();
   return pixelAt(gl()!, Math.round(x), Math.round(y));
+};
+
+const densitySample = (): DensitySample => {
+  surface.present();
+  const c = gl()!;
+  const of = (t: Attached): { rectX: number; rectY: number; centre: string } => {
+    const r = rectOf(t);
+    return {
+      rectX: r.x,
+      rectY: r.y,
+      centre: pixelAt(c, r.x + (r.w >> 1), r.y + (r.h >> 1)),
+    };
+  };
+  return { dpr: window.devicePixelRatio, bufW: c.drawingBufferWidth, bufH: c.drawingBufferHeight, a: of(a), b: of(b) };
+};
+
+window.__densityProbe = (dpr: number): { before: DensitySample; after: DensitySample } => {
+  stopTimers();
+  const before = densitySample();
+  // The surface pushes this to the renderer, re-derives every terminal, presents, and THEN calls the
+  // handler this page registered — which is where the rects are re-supplied.
+  surface.setDevicePixelRatio(dpr);
+  return { before, after: densitySample() };
 };
 
 window.__surfaceProbe = (): SurfaceSnapshot => {
