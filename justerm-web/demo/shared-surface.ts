@@ -211,8 +211,8 @@ for (const [el, box] of [
  */
 const surface = await TerminalSurface.open("#surface");
 surface.resizeSurface(
-  Math.round(CANVAS.width * window.devicePixelRatio) - 7,
-  Math.round(CANVAS.height * window.devicePixelRatio) - 5,
+  Math.round(CANVAS.width * window.devicePixelRatio),
+  Math.round(CANVAS.height * window.devicePixelRatio),
 );
 
 interface Attached {
