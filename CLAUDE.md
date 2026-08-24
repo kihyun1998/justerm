@@ -17,7 +17,7 @@ VT 바이트 스트림을 터미널 화면 상태(그리드 + 스크롤백)로 �
   영토 노트는 **배타적이지 않고**, N개 영토에 걸치는 사실은 *횡단 불변식* 노트로 승격한다 —
   `abs_floor` 가 네 곳에 걸린 채 아무 데도 안 그려져 있어 세 번 따로 발견된(#113→#144→#207) 실패가
   이 층이 존재하는 이유다. **빈 `## Governing decisions` 는 결함이 아니라 산출물이다.** 유지 규율은
-  `docs/agents/theflow.md` Step 6.
+  `docs/agents/thegraph.md` § `sweep` 의 표면 1(coverage 는 늦어도 되지만 promotion 은 안 됨).
 - **상세 계약(구현 시 참조)**: **`docs/architecture.md`** — 셀·damage·뷰포트/스크롤·cadence·
   selection·직렬화·엔진 API 의 authoritative 스펙. 핵심 결정 근거는 `docs/adr/`(0001 vte·0002
   beamterm→0018 justerm-renderer·0019 셀 합성 모델 — 렌더러가 셀 하나를 bg/fg/잉크로 푸는
@@ -80,7 +80,7 @@ justerm 이 **하지 않는 것** (의존성으로 끌어들이지도 말 것):
 전체*(전 셀·스크롤백·좌표·wrap·wide-char)가 필요하면 **core**(frame 모드 소비처는 뷰포트만 쥐어 물리적으로
 못 함) — 단 *정책*(query·regex·palette)은 소비처가 주입해 core 는 policy/theme-agnostic 유지(**메커니즘
 core, 정책 소비처**). 그 외(색해석·hover·픽셀→셀·debounce·스크롤바·클립보드·전송)는 소비처. 자세히는 ADR-0017.
-*우회 금지*(다른 층 결함을 소비처에서 덮지 말 것)를 포함한 작업 규율은 아래 `### theflow`.
+*우회 금지*(다른 층 결함을 소비처에서 덮지 말 것)를 포함한 작업 규율은 아래 `### thegraph`.
 
 ## 기술 스택
 
@@ -97,8 +97,9 @@ cargo bench              # throughput 마이크로벤치(추세 기록)
 
 루트는 가상 매니페스트(`[package]` 없음)라 `--workspace` 로 멤버를 명시 게이트해야 하고, 그마저도
 `fuzz`·`justerm-facade`·`justerm-renderer`·wasm32-전용 테스트(`justerm-wasm-decode/tests/web.rs`)는
-*빌드조차 안 한다*. 크레이트별 전체 게이트 매트릭스(사각 포함)·크레이트 맵은
-**`docs/agents/theflow.md` § "Step 7 — gate matrix + downstream loop"**.
+*빌드조차 안 한다*. 크레이트별 전체 게이트 매트릭스(사각 포함·**어느 제외가 의도적인지**·CI 대조)는
+**`docs/agents/thegraph.md` § `gate`** — 22개 명령, 실행 사본은 `scripts/thegraph/gates.mjs`.
+크레이트 맵과 downstream 절차는 `docs/agents/theflow.md`.
 
 ## 핵심 규칙
 
