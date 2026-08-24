@@ -390,3 +390,51 @@ test("ending one terminal releases only its grid, and the survivor still recover
   // the renderer had kept a grid the lease gave back.
   expect(loss.after.a.centre).toBe(UNPAINTED);
 });
+
+/**
+ * The two-phase teardown (#775, #776).
+ *
+ * Two tests rather than one, because the claim is a **difference**: the surface's own answers are
+ * identical in both orders — `gridCount` reaches `0` and `addGrid` throws either way — so a test of
+ * the good order alone would pass just as happily against the bad one.
+ *
+ * They exist because this slice found the README describing the wrong one, and the honest reason to
+ * write them is narrower than "coverage": a doc claim nothing can falsify is exactly what rotted
+ * here twice already. The second test is therefore a **stale-doc detector** as much as a behaviour
+ * test — if `surface.dispose()` ever does start ending widgets, it fails, and the README paragraph
+ * it guards is the thing to change.
+ */
+test("tearing down terminals first leaves nothing behind (#775)", async ({ page }) => {
+  const r = await page.evaluate(() => window.__teardownProbe!("terminals-first"));
+
+  expect(r.textareasBefore, "one hidden IME textarea per mounted Terminal").toBe(2);
+  // Every tenant handed its own grid back BEFORE the surface was asked, which is the state ghostty's
+  // root asserts rather than assumes (`src/App.zig:115`) and the order the class doc keeps.
+  expect(r.gridCountBeforeSurface).toBe(0);
+  expect(r.surfaceDisposeThrew).toBeUndefined();
+  // Nothing left mounted, and a frame arriving late is swallowed by a widget that has unsubscribed.
+  expect(r.textareasAfter).toBe(0);
+  expect(r.lateFrameThrew).toBeUndefined();
+  expect(r.addGridThrew).toMatch(/disposed/);
+});
+
+test("disposing only the surface leaves every widget mounted, and the next frame throws (#776)", async ({
+  page,
+}) => {
+  const r = await page.evaluate(() => window.__teardownProbe!("surface-only"));
+
+  // The surface ends properly — this is the half that makes the trap invisible.
+  expect(r.gridCountAfter).toBe(0);
+  expect(r.surfaceDisposeThrew).toBeUndefined();
+  expect(r.addGridThrew).toMatch(/disposed/);
+  // …and it had to do it for the tenants, none of which had ended.
+  expect(r.gridCountBeforeSurface).toBe(2);
+
+  // THE TRAP, and the reason the README paragraph exists. The surface holds grids, not widgets: it
+  // never saw the `Terminal` the host constructed, so every one stays mounted with its hidden
+  // textarea in the DOM and still subscribed to the host's frame source — and the next frame the
+  // host's backend pushes reaches a renderer whose grid is gone.
+  expect(r.textareasAfter).toBe(r.textareasBefore);
+  expect(r.textareasAfter).toBe(2);
+  expect(r.lateFrameThrew).toMatch(/no grid with id/);
+});

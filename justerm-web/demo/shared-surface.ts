@@ -471,6 +471,23 @@ export interface DensitySample {
   b: { rectX: number; rectY: number; centre: string };
 }
 
+/** What a teardown left behind. Counted from the DOM and from the surface, never inferred. */
+export interface TeardownReport {
+  /** Hidden IME textareas in the document — one per mounted `Terminal` (#116). */
+  textareasBefore: number;
+  textareasAfter: number;
+  /** `TerminalSurface.gridCount` just before the surface itself is disposed. `0` says every tenant
+   * had already handed its grid back; `2` says the surface is about to do it for them. */
+  gridCountBeforeSurface: number;
+  gridCountAfter: number;
+  surfaceDisposeThrew: string | undefined;
+  /** A frame pushed into a still-live `FrameSource` afterwards. A `Terminal` that was disposed has
+   * unsubscribed and swallows it; one the surface merely retired the grid under is still
+   * subscribed, and its renderer throws `UnknownGrid`. */
+  lateFrameThrew: string | undefined;
+  addGridThrew: string | undefined;
+}
+
 export interface SurfaceSnapshot {
   dpr: number;
   /** The context's own verdict. Headless SwiftShader loses contexts on its own (#580), and every
@@ -494,6 +511,16 @@ export interface SurfaceSnapshot {
 declare global {
   interface Window {
     __surfaceProbe?: () => SurfaceSnapshot;
+    /**
+     * Tear the whole arrangement down, in one of the two orders a host could pick, and report what
+     * is left. One-shot: it ends the page.
+     *
+     * `"terminals-first"` is the order `justerm-web`'s README prescribes; `"surface-only"` is the
+     * one it prescribed **until #776**, and the reason it is driven here rather than merely
+     * described is that the difference is invisible from the surface's own answers — `gridCount`
+     * reaches `0` and `addGrid` throws either way.
+     */
+    __teardownProbe?: (order: "terminals-first" | "surface-only") => TeardownReport;
     /**
      * Adopt `dpr` as the display density and report the shared buffer and both rects either side of
      * it — the two-terminal form of what a monitor switch does.
@@ -705,6 +732,56 @@ window.__densityProbe = (dpr: number): { before: DensitySample; after: DensitySa
   // handler this page registered — which is where the rects are re-supplied.
   surface.setDevicePixelRatio(dpr);
   return { before, after: densitySample() };
+};
+
+const textareaCount = (): number => document.querySelectorAll("textarea").length;
+
+window.__teardownProbe = (order: "terminals-first" | "surface-only"): TeardownReport => {
+  stopTimers();
+  surface.present();
+  const textareasBefore = textareaCount();
+
+  if (order === "terminals-first") {
+    // What the README prescribes. Each terminal ends itself, which hands its own grid back; the
+    // surface is then left with nothing but its own ambient work.
+    for (const t of attached) {
+      if (t.ended) continue;
+      t.ended = true;
+      t.stopRect();
+      t.term.dispose();
+    }
+  }
+
+  const gridCountBeforeSurface = surface.gridCount;
+  let surfaceDisposeThrew: string | undefined;
+  try {
+    surface.dispose();
+  } catch (e) {
+    surfaceDisposeThrew = String(e);
+  }
+
+  let lateFrameThrew: string | undefined;
+  try {
+    b.pane.push();
+  } catch (e) {
+    lateFrameThrew = String(e);
+  }
+  let addGridThrew: string | undefined;
+  try {
+    surface.addGrid({});
+  } catch (e) {
+    addGridThrew = String(e);
+  }
+
+  return {
+    textareasBefore,
+    textareasAfter: textareaCount(),
+    gridCountBeforeSurface,
+    gridCountAfter: surface.gridCount,
+    surfaceDisposeThrew,
+    lateFrameThrew,
+    addGridThrew,
+  };
 };
 
 window.__surfaceProbe = (): SurfaceSnapshot => {
