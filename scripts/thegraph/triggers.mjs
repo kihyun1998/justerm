@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// thegraph `verify` guard — justerm. Built from docs/agents/thegraph.md · thegraph stamp 2026-08-24.
+// thegraph `verify` guard — justerm. Built from docs/agents/thegraph.md · thegraph stamp 89b477a (kihyun-skills).
 //
 // Decides whether a diff touches a SACRED path, which is what makes the completeness pass mandatory
 // regardless of the enumeration-risk judgement, and what buys the second (refuting) lens.

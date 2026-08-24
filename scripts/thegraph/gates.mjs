@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// thegraph `gate` node — justerm. Built from docs/agents/thegraph.md · thegraph stamp 2026-08-24.
+// thegraph `gate` node — justerm. Built from docs/agents/thegraph.md · thegraph stamp 89b477a (kihyun-skills).
 //
 // Runs every gate for a scope, each one BARE. `test … | tail -1 && commit` always commits, because
 // a pipeline's exit status is the last command's and `tail` always succeeds — a gate you cannot

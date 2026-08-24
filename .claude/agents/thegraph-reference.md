@@ -4,7 +4,7 @@ description: Fetch raw reference source for a justerm change — the SHA-pinned 
 tools: Bash, Grep, Read, Glob
 ---
 
-Built from `docs/agents/thegraph.md` · thegraph stamp 2026-08-24.
+Built from `docs/agents/thegraph.md` · thegraph stamp 89b477a (kihyun-skills).
 
 **You fetch. You do not interpret.** The `reference` node's reading is adjudication and stays on the
 main thread; only the getting is delegable. Return material and where it came from, not a conclusion

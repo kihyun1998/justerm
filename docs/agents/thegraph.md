@@ -7,8 +7,13 @@ the **method** (node-type catalog, four invariants, reasoning habits); this file
 the two tables the whole graph is graded against (tie-breaker, deliberate divergences) and of the
 war-story index.
 
-**Build stamp:** `thegraph` as of 2026-08-24. Generated artifacts carry the same stamp; the skill
-warns when it is behind and never rebuilds on its own.
+**Build stamp:** `thegraph` at **`89b477a`** (`kihyun1998/kihyun-skills`). Generated artifacts carry
+the same stamp; the skill warns when it is behind and never rebuilds on its own.
+
+**It is a commit, not a date, and the reason is this build's own first day.** The stamp started as
+`2026-08-24`; `thegraph` then moved *that same day* — with the six gaps below — and a date stamp
+could not tell the two revisions apart, which is the one job a stamp has. A revision identifier can
+be wrong about *when*; a date can be silently right about the wrong thing.
 
 **`theflow` is not retired.** It remains a valid sibling discipline callable as `/theflow`, and it
 owns data this file points at rather than copies. The default for a substantive change is
@@ -657,39 +662,29 @@ bound (invariant ②).
 
 ---
 
-## Method gaps — `pending`, needs a `thegraph` change
+## Method gaps — **closed upstream at `89b477a`**
 
-Each is a rule that is **general**, not justerm data, and that the catalog claims as fixed while
-lacking it. A build cannot supply these; they are recorded here so the next `/grill-the-graph` finds
-them, and so a run knows it is substituting judgement.
+All six were accepted into `thegraph` on the day this build was compiled, so **none is `pending` and
+a run substituting judgement for one is now working from a stale copy of the skill.** Kept rather
+than deleted, because *where each one landed* is what a later reader needs — and because the shape
+is the reusable part: every one was found by **building the artifacts and running them**, not by
+reading the method. Prose does not execute, so it cannot demonstrate that it is lying.
 
-1. **`proof` has no discriminating-power bar.** The catalog puts both mechanical bars on
-   `implement`'s self-loop and gives `proof` only a *warning* about tautology. justerm has measured
-   twice that the **fixture** is where it fails: a capture passed with the repair it guards
-   disabled, and a golden was green in both states *by construction* while the **harness carried the
-   same defect as the engine**. The missing rule: *before recording a proof artifact, name which of
-   its assertions can observe the change; after, turn the fix off and confirm **that** one reddens
-   and the others do not.*
-2. **The test-trust gate needs a third bar and a re-baseline.** *(a)* **Mutate the predicate, not
-   only the placement.** Moving or deleting a guard shakes *where* it runs and says nothing about
-   whether it asks the right question — and a guard and a test written against the same wrong model
-   confirm each other. Measured: RED→GREEN, side conditions and a placement mutation were all green
-   and the defect survived verbatim, because the guard asked an event-driven flag about a
-   synchronous state and the proof awaited that very event. Two cheap corollaries: **assert the
-   window exists** before asserting behaviour inside it, and **suspect any condition that is a
-   proxy** — a flag for a state, an event for a transition, a successful return for liveness.
-   *(b)* **Re-run the baseline GREEN in the same pass**: both red means you broke the proof, not that
-   the mutation worked. Remove guards one at a time and check a new guard fires before the old one.
-   *(c)* Generalised: **for each assertion, name the mutation that should redden it and run it.**
-3. **`search`'s conflict out is labelled `code` but requires judgement** — invariant ④ pointing at
-   itself, the same argument the catalog itself makes for `classify`.
-4. **A promoted record must not hold the roster**, and **a descriptive cross-cutting note does not
-   preempt an anchor** — both measured here, neither in the catalog's promotion section.
-5. **A lens's `file:line` is a candidate, not a fact.** `CONFIRMED` is defined as *"reproduced, with
-   `file:line`"*, which reads as if the citation is the evidence. Five wrong rows landed in two
-   days, all five from copying a lens report.
-6. **Lower reach, recorded for completeness:** a sweep's hit count is not its result (widen the
-   pattern with the phrasing that produced a hit, before fixing the hit); a `gate` list that mirrors
-   CI should name its authoritative source rather than becoming a third copy — two repos
-   independently routed around this, which is the catalog's own signal test; the harvest cap and
-   rank order exist as policy but with no ordering and no number.
+| # | The gap | Where it landed |
+|---|---|---|
+| 1 | `proof` had no discriminating-power bar — `implement`'s two bars govern the *test*, and nothing governed the artifact a proof is **read from** | `### proof`, as *"name which of its assertions can observe this change; then turn the fix off and confirm **that** one reddens and the others do not"* |
+| 2 | The test-trust gate stopped at placement, and had no re-baseline | `### implement`'s self-loop, now **three** bars: the third is *mutate the predicate*, with the re-baseline folded into the first and two corollaries added (assert the window **exists**; suspect a proxy condition) |
+| 3 | `search`'s decider was `code` while one of its four outs required judgement — invariant ④ pointing at itself | The catalog row: **`code` to query, AI to adjudicate a conflict**, delegable **query only**, plus the node body saying which out cannot be counted |
+| 4 | Nothing said where a promoted record's roster may **not** live, and the anchor-preemption rule covered records only | `### promote` (copy the roster into the record's *context*, never as a list) and `### search` (**only** a decision record preempts an anchor) |
+| 5 | `CONFIRMED` reads as though its `file:line` were the evidence | `### verify`'s grade table, as *"a candidate, not the evidence"* — re-opened at the source or produced by a tool, never transcribed, including out of a report you asked for |
+| 6 | A sweep judged by hit count; a gate list mirroring CI as a silent third copy | `### sweep` and `### gate` |
+
+**What was deliberately not upstreamed:** the harvest's five-call cap. The *policy* half already
+lives at `batch`, and the number is one a repo may set differently without breaking the method — so
+by the split rule it is build data. The **ordering** (`CONFIRMED` first, `INERT`/`DELIBERATE` last at
+one line each) and *"the lens is read-only, so start it at GREEN — wall clock is `max`, not the
+sum"* did go up, because neither is inferable from the node ordering.
+
+**This section is now a `sweep` surface like any other.** If a later `/grill-the-graph` finds a new
+gap, it is added here as `pending` with the same two columns; if `thegraph` moves again, the stamp
+above is what says so.
