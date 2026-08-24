@@ -114,18 +114,16 @@ export const DEFAULT_CURSOR_CONTRAST = 1.5;
  * Omitting `canvasSelector` is the whole difference, and it is the point: a terminal sharing a
  * surface has no canvas of its own to name. Where it sits on the shared one is a *rect*, supplied
  * with {@link JustermRenderer.setViewportRect} and re-supplied whenever its overlay moves.
- */
-export type AttachedRendererOptions = Omit<JustermRendererOptions, "canvasSelector">;
-
-/**
- * **Two members of it reach the whole surface, not this terminal** — `onContextLoss` and
+ *
+ * **Two of its members reach the whole surface rather than this terminal** — `onContextLoss` and
  * `contextRestoreTimeout`. There is one context per surface, so there is one loss and one deadline;
  * passing either on a second `attach` **replaces** what the first terminal set, for every terminal on
  * the canvas. Set them once, on the surface
  * ({@link TerminalSurface.setOnContextLoss} / {@link TerminalSurface.setContextRestoreTimeout}), and
- * leave them out of per-terminal options. They are kept here rather than removed because the
- * single-terminal path reaches this same type, and there they are exactly per-terminal.
+ * leave them out of per-terminal options. They are kept in the type rather than removed because the
+ * single-terminal path reaches it too, and there they are exactly per-terminal.
  */
+export type AttachedRendererOptions = Omit<JustermRendererOptions, "canvasSelector">;
 
 export interface JustermRendererOptions {
   /** CSS selector of the canvas to attach to, e.g. `"#term"`. */
@@ -322,9 +320,10 @@ const EMPTY_U16 = new Uint16Array(0);
  * The two halves are split on a criterion the renderer already compiled in at 0.15.0 (#773): a call
  * naming a `grid` acts on one terminal, a call naming none acts on the thing every terminal shares.
  * Extending is what turns that from a comment into a gate — a member that drifts between the two
- * interfaces fails to compile at the `const backend: RendererBackend` assignment in {@link
- * JustermRenderer.create}, which is the same drift gate that assignment already provides against the
- * published package.
+ * interfaces fails to compile where {@link TerminalSurface.open}'s `TerminalSurface<PublishedRenderer>`
+ * is passed to {@link JustermRenderer.build}, which takes a `TerminalSurface<RendererBackend>`. That
+ * parameter is this package's drift gate against the published renderer; before #775 the same job was
+ * done by a `const backend: RendererBackend` assignment in `create`, which this change removed.
  */
 export interface RendererBackend extends SurfaceBackend {
   /** Scatter a decoded frame's damage into the persistent grid, then re-pack. Header is
@@ -715,10 +714,12 @@ export class JustermRenderer implements Renderer {
     /**
      * Whether this terminal also **ends the surface** when it is disposed.
      *
-     * True on the {@link JustermRenderer.create} path, which composes the surface itself: what a
-     * layer composes, that layer ends — the same rule `Terminal.dispose()` follows for the renderer
-     * it was handed (#606), one level up. False for a terminal attached to a surface someone else
-     * built, where ending it would tear down its siblings' canvas.
+     * True on the {@link JustermRenderer.create} path, which composes the surface itself and is
+     * therefore its only holder; false for a terminal attached to a surface someone else built. The
+     * rule behind both is written down once, in
+     * `docs/map/invariant/a-layer-ends-what-it-exclusively-holds.md` — a layer ends what it
+     * exclusively holds, never what it shares — and composing is one way to be the only holder
+     * rather than a rule of its own.
      */
     private readonly ownsSurface: boolean,
     /** The one grid this widget owns (#773). A `Terminal` is one terminal, so this is a constant for
@@ -888,6 +889,14 @@ export class JustermRenderer implements Renderer {
     }
   }
 
+  /**
+   * Everything after the grid exists — the policy setters, the palette and flag tables, the instance
+   * and the create-time options.
+   *
+   * Split from {@link build} for one reason: **it is the error boundary for the grid**. `build` owns
+   * a registered grid from `addGrid` onward and has to give it back if anything here throws, and a
+   * `try` around the whole remainder is only readable if the remainder is one call.
+   */
   private static async assemble(
     surface: TerminalSurface<RendererBackend>,
     ownsSurface: boolean,
@@ -1382,6 +1391,16 @@ export class JustermRenderer implements Renderer {
     // a lost context it reports the *committed* request rather than a grant (the read-back is
     // deferred to the restore, #639), so this shrinks nothing then — which is right, and the restore
     // path re-runs this whole method.
+    //
+    // **It protects a SOLE TENANT, and only that** (#775). `cssWidth()` is the whole canvas while
+    // `cols` is this tenant's share of it, so for a pane smaller than the surface the comparison is
+    // between quantities of different scope and the clamp cannot fire: measured on the two-terminal
+    // drive, a 450 CSS-px pane at an 8 CSS-px cell fits 56 columns while this computes 112. That is
+    // not a wrong answer for a sole tenant, where the two are the same box by construction — it is a
+    // check that has nothing to say about a shared one. The grant on a shared surface belongs to
+    // whoever asked for the buffer: the host reads `TerminalSurface.cssSize()` back after
+    // `resizeSurface` and re-places its panes. Where the per-grid check should live once a host
+    // actually tiles is an open question, deliberately not answered here.
     const granted = gridForBox(
       this.backend.cssWidth(),
       this.backend.cssHeight(),
@@ -1458,6 +1477,12 @@ export class JustermRenderer implements Renderer {
   /** The terminal grid ACTUALLY adopted after the last {@link resize} — not the requested
    * `cols`/`rows`, so a browser drawing-buffer clamp (#339) cannot desync the grid the consumer
    * drives its engine and frames at from the grid the buffer can hold.
+   *
+   * **That guarantee is the sole tenant's** (#775). A terminal sharing a surface occupies part of a
+   * buffer it did not ask for, so the read-back in {@link applyGrid} compares its columns against the
+   * whole canvas and never shrinks it; the grant is the host's to read from
+   * {@link TerminalSurface.cssSize} after it sizes the surface. This still answers what `resizeGrid`
+   * was last given either way — what varies is whether anything clamped it first.
    *
    * **Who adopts it moved at renderer 0.15.0, and this contract did not** (#773). The renderer used
    * to shrink the grid to what the buffer granted; it clamps only the shared *surface* now, because
@@ -1906,10 +1931,11 @@ export class JustermRenderer implements Renderer {
       // keeps its cells, its atlas and its viewport (#775).
       this.surface.removeGrid(this.grid);
     }
-    // What this object composed, this object ends. On the `create` path that includes the surface;
-    // on the `attach` path it does not, because ending a surface someone else built would take down
-    // every sibling drawing on it. Same rule `Terminal.dispose()` follows one level up for the
-    // renderer it was handed (#606).
+    // What this object exclusively holds, this object ends — the rule in
+    // `docs/map/invariant/a-layer-ends-what-it-exclusively-holds.md`, which is where it is written
+    // down rather than here. On the `create` path this object is the surface's only holder; on the
+    // `attach` path it is not, and ending a shared surface would take down every sibling drawing on
+    // it.
     if (this.ownsSurface) this.surface.dispose();
   }
 }

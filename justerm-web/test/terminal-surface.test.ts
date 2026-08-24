@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { TerminalSurface } from "../src/terminal-surface";
+import { TerminalSurface, viewportOrigin } from "../src/terminal-surface";
 import type { ResolutionQuery } from "../src/dpr-watcher";
 import type { SurfaceBackend, SurfaceDeps } from "../src/terminal-surface";
 
@@ -481,5 +481,48 @@ describe("TerminalSurface — the sole tenant", () => {
     surface.addGrid();
 
     expect(() => surface.addGrid({ ownsExtent: true })).toThrow(/sole tenant/);
+  });
+});
+
+describe("viewportOrigin — where an overlay sits on the shared buffer", () => {
+  it("is the overlay's offset from the canvas, in device px", () => {
+    // Not the overlay's page position: a viewport addresses the drawing buffer, whose origin is the
+    // canvas. Using the raw client rect would place every terminal by however far the page happens
+    // to have been scrolled.
+    const at = viewportOrigin(
+      { overlay: { left: 500, top: 300 }, canvas: { left: 100, top: 100 } },
+      2,
+    );
+    expect(at).toEqual({ x: 800, y: 400 });
+  });
+
+  it("rounds to a whole device pixel", () => {
+    // A GL rect cannot be fractional. At dpr 1.5 a 33.5 CSS-px offset is 50.25 device px, and the
+    // fractional part shows up as blur rather than as displacement — the failure mode #337/#352 are
+    // about, which is why this is asserted rather than left to the caller.
+    const at = viewportOrigin(
+      { overlay: { left: 33.5, top: 10.5 }, canvas: { left: 0, top: 0 } },
+      1.5,
+    );
+    expect(at).toEqual({ x: 50, y: 16 });
+    expect(Number.isInteger(at.x) && Number.isInteger(at.y)).toBe(true);
+  });
+
+  it("clamps an overlay scrolled off the top of the canvas to the origin", () => {
+    // A negative viewport origin is not a smaller rect — it is a GL error or a silently dropped
+    // draw. Reachable the moment a terminal is inside a scroll container.
+    const at = viewportOrigin(
+      { overlay: { left: -40, top: -120 }, canvas: { left: 0, top: 0 } },
+      2,
+    );
+    expect(at).toEqual({ x: 0, y: 0 });
+  });
+
+  it("moves with the density, because the origin is device px", () => {
+    // The same overlay at two ratios is two different buffer positions — which is why a density
+    // change invalidates a rect (ADR-0021 D3) and why this takes the ratio rather than caching one.
+    const boxes = { overlay: { left: 200, top: 50 }, canvas: { left: 0, top: 0 } };
+    expect(viewportOrigin(boxes, 1)).toEqual({ x: 200, y: 50 });
+    expect(viewportOrigin(boxes, 2)).toEqual({ x: 400, y: 100 });
   });
 });

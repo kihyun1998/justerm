@@ -23,9 +23,10 @@ export type { AttachedRendererOptions, JustermRendererOptions, Theme } from "./j
 // `SurfaceDeps` is exported alongside because the class is constructible — the instantiation seam
 // #696 and #579 each declined to build. Unlike `ContextLossRelay`/`FrameLoop`, which stay unexported
 // for being uninjectable, this one is the composition root and a host may want its own seams.
-export { TerminalSurface } from "./terminal-surface";
+export { observeViewportRect, TerminalSurface, viewportOrigin } from "./terminal-surface";
 export type {
   AddGridOptions,
+  OverlayBoxes,
   SurfaceBackend,
   SurfaceCanvas,
   SurfaceDeps,

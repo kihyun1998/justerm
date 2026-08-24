@@ -90,7 +90,7 @@ how many you can show and makes every re-attach re-bake a glyph atlas. `Terminal
 that wants several opens the surface itself and attaches to it:
 
 ```ts
-import { JustermRenderer, TerminalSurface } from "justerm-web";
+import { JustermRenderer, observeViewportRect, TerminalSurface } from "justerm-web";
 
 const surface = await TerminalSurface.open("#surface");
 // The host sizes the shared drawing buffer, in DEVICE px, because it belongs to no one terminal.
@@ -99,9 +99,10 @@ surface.resizeSurface(cssWidth * devicePixelRatio, cssHeight * devicePixelRatio)
 const left = await JustermRenderer.attach(surface, { fontFamily: "monospace", fontSize: 16, theme });
 const right = await JustermRenderer.attach(surface, { fontFamily: "monospace", fontSize: 28, theme });
 
-// Where each one sits on the canvas, in device px, top-left origin. Its SIZE is not a parameter:
-// a viewport is `cols x rows` of that terminal's own cell, which only the renderer can measure.
-right.setViewportRect(halfWidthInDevicePx, 0);
+// Keep each terminal's GL viewport following its DOM overlay — a scroll, a layout change or a pane
+// drag moves the overlay without moving anything WebGL can see. Returns a disposer.
+const stopLeft = observeViewportRect(leftOverlayEl, canvasEl, (x, y) => left.setViewportRect(x, y));
+const stopRight = observeViewportRect(rightOverlayEl, canvasEl, (x, y) => right.setViewportRect(x, y));
 left.resize(cssWidth / 2, cssHeight);
 right.resize(cssWidth / 2, cssHeight);
 
@@ -112,9 +113,14 @@ Two consequences are forced by WebGL binding one context to one canvas, and both
 
 - **Every terminal shares one stacking plane.** Each widget is a transparent DOM overlay over its
   viewport rect, so you cannot interleave arbitrary DOM *between* two terminals.
-- **The overlay must track its rect.** Call `setViewportRect` whenever a terminal's box moves — a
-  scroll, a layout change, a pane drag. Nothing detects a missed call: the GL viewport simply stays
-  where it was while the DOM layer moves off it.
+- **The overlay must track its rect.** `observeViewportRect` does it for you — a `ResizeObserver` on
+  the overlay and the canvas, plus a capture-phase scroll listener, because a `ResizeObserver` fires
+  when a box *changes* and never when an element *moves*. Drive `setViewportRect` yourself instead if
+  you already know when your layout moves; what you must not do is neither, because a missed update
+  is silent — the GL viewport stays where it was while the overlay moves off it.
+- **A density change invalidates every device-px number you gave.** Register
+  `surface.onDensityChange` and re-supply the surface size; `observeViewportRect` re-reads the ratio
+  on its own, so the rects take care of themselves.
 
 Each terminal keeps its own font, palette, selection, cursor and decorations; two on the same font
 configuration share one glyph atlas, and the last one to leave releases it.
@@ -136,10 +142,10 @@ handler — the same thing xterm.js does by clearing its pending restore timeout
 **On a shared surface, disposal releases only that terminal.** A renderer built with
 `JustermRenderer.create` owns the surface it created and ends it, exactly as before. One built with
 `JustermRenderer.attach` does **not**: it hands back its own grid and leaves the surface — the canvas,
-the context, the density tracking and context-loss recovery — running for its siblings. The rule is
-one sentence: *a layer ends what it exclusively holds, and never what it shares.* So a host that
-opened a surface is the one that closes it, with `surface.dispose()`, which also releases any grid
-still attached.
+the context, the density tracking and context-loss recovery — running for its siblings. One sentence
+covers both: *a layer ends what it exclusively holds, and never what it shares.* So a host that
+opened a surface is the one that closes it, with `surface.dispose()`, which ends every terminal still
+attached and then the surface's own work.
 
 Two things it does **not** cover, so they are yours:
 

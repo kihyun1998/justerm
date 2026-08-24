@@ -10,8 +10,11 @@ import { DprWatcher, type ResolutionQuery } from "./dpr-watcher";
  * none acts on the thing every terminal shares — the context, the drawing buffer, the display's
  * density, the loss of the context and the present that draws all of them. So the split between this
  * interface and {@link import("./justerm-renderer").RendererBackend}'s per-grid remainder is a fact
- * about the renderer rather than a shape chosen here, and a drift in it is a compile error at the
- * assignment in `justerm-renderer.ts` rather than a divergence nobody notices.
+ * about the renderer rather than a shape chosen here, and a drift in it is a compile error rather than
+ * a divergence nobody notices. **Where that error lands moved with #775**: it used to be a
+ * `const backend: RendererBackend = new renderer.JustermRenderer(…)` assignment, and it is now the
+ * `TerminalSurface<PublishedRenderer>` that {@link TerminalSurface.open} returns having to satisfy
+ * `JustermRenderer.build`'s `TerminalSurface<RendererBackend>` parameter.
  */
 export interface SurfaceBackend {
   /** Register a terminal grid and return its id — since renderer 0.15.0 the **only** way to get one:
@@ -162,10 +165,13 @@ type PublishedRenderer = InstanceType<typeof import("justerm-renderer").JustermR
  * cannot be interleaved between two of them, and each overlay must track its rect or it drifts away
  * from the GL viewport it is supposed to sit over.
  *
- * **The ownership rule, stated once and nowhere else** (the AC's "in exactly one place"):
+ * **The ownership rule.** It is written down once, as a cross-cutting invariant —
+ * `docs/map/invariant/a-layer-ends-what-it-exclusively-holds.md` — because it holds in three
+ * territories and is invisible from each of them. Restated here only in the form this class
+ * implements, with the note as the authority:
  *
- * > **A terminal releases its own grid; the surface ends every terminal it still holds, and then its
- * > own ambient work.**
+ * > **A layer ends what it exclusively holds, and never what it shares.** So a terminal releases its
+ * > own grid; the surface ends every terminal it still holds, and then its own ambient work.
  *
  * Both halves are the reference's, which is the only reference that has ever had to answer this —
  * ghostty is the one prior art sharing font machinery between terminals. Its `Surface.deinit` derefs
@@ -295,9 +301,9 @@ export class TerminalSurface<B extends SurfaceBackend = SurfaceBackend> {
    * ({@link import("./justerm-renderer").JustermRenderer.attach}).
    *
    * Typed as the parameter rather than as {@link SurfaceBackend} so nothing is cast on the way out:
-   * a surface opened on the published renderer hands back the published renderer, and the adapter's
-   * `const backend: RendererBackend = …` assignment is what turns a signature drift in that package
-   * into a compile error here.
+   * a surface opened on the published renderer hands back the published renderer, which is what lets
+   * `JustermRenderer.build` take a `TerminalSurface<RendererBackend>` and turn a signature drift in
+   * that package into a compile error here.
    */
   rendererBackend(): B {
     return this.backend;
@@ -565,4 +571,81 @@ export class TerminalSurface<B extends SurfaceBackend = SurfaceBackend> {
     this.contextLoss.end();
     this.densityHandler = undefined;
   }
+}
+
+/** The two boxes a viewport rect is derived from, both in CSS px and both from the same clock. */
+export interface OverlayBoxes {
+  /** The terminal's DOM overlay, as `getBoundingClientRect()` reports it. */
+  overlay: { left: number; top: number };
+  /** The surface canvas, from the same call, so the difference is a position *within* the canvas. */
+  canvas: { left: number; top: number };
+}
+
+/**
+ * Compute a terminal's viewport origin on the shared drawing buffer, in **device px**, from where its
+ * DOM overlay sits relative to the canvas (#775).
+ *
+ * Pure and separately testable, which is the point: the arithmetic is where a sign or a unit goes
+ * wrong, and the DOM plumbing around it is not worth a test.
+ *
+ * **Rounded, and to an integer device pixel.** A viewport is a GL rect and cannot be fractional; a
+ * fractional CSS offset at a fractional density otherwise lands the grid a subpixel off its overlay,
+ * which reads as blur rather than as displacement (the failure #337 and #352 are about).
+ *
+ * **Clamped at zero.** An overlay scrolled above the canvas has a negative offset, and a negative
+ * viewport origin is not a smaller rect — it is a GL error or a silently dropped draw.
+ */
+export function viewportOrigin(boxes: OverlayBoxes, dpr: number): { x: number; y: number } {
+  return {
+    x: Math.max(0, Math.round((boxes.overlay.left - boxes.canvas.left) * dpr)),
+    y: Math.max(0, Math.round((boxes.overlay.top - boxes.canvas.top) * dpr)),
+  };
+}
+
+/**
+ * Keep a terminal's GL viewport following its DOM overlay, and hand back the disposer.
+ *
+ * **Why this exists rather than leaving the host to call `setViewportRect`.** One WebGL context binds
+ * to one canvas, so a terminal is a transparent overlay positioned over its slice of that canvas —
+ * and the two layers are moved by different things. A missed update is silent: the GL viewport stays
+ * where it was while the overlay (the hidden IME textarea, the a11y tree, the scrollbar) moves off
+ * it, so the terminal *looks* fine and the caret is in the wrong place.
+ *
+ * **A `ResizeObserver` alone is not enough, and that is the whole reason this is not two lines.** It
+ * fires when the element's *box* changes, never when the element *moves* — a scroll, a sibling
+ * appearing above it, a pane drag all relocate the overlay at an unchanged size. So this observes the
+ * box **and** listens for scroll on the capture phase, which is the only way to hear a scroll on an
+ * ancestor that is not the window.
+ *
+ * Same shape as `observeResize` in `fit.ts`, deliberately: an observer, a disposer, and no state.
+ *
+ * @param overlay the terminal's DOM overlay element
+ * @param canvas the surface's canvas element
+ * @param place what to do with the computed origin — normally `JustermRenderer.setViewportRect`
+ * @param currentDpr reads the live density; the origin is device px, so it moves with the ratio
+ */
+export function observeViewportRect(
+  overlay: Element,
+  canvas: Element,
+  place: (x: number, y: number) => void,
+  currentDpr: () => number = () => window.devicePixelRatio,
+): () => void {
+  const sync = (): void => {
+    const { x, y } = viewportOrigin(
+      { overlay: overlay.getBoundingClientRect(), canvas: canvas.getBoundingClientRect() },
+      currentDpr(),
+    );
+    place(x, y);
+  };
+  const ro = new ResizeObserver(sync);
+  ro.observe(overlay);
+  ro.observe(canvas);
+  // Capture, so a scroll on ANY ancestor is heard: scroll does not bubble from an element, and the
+  // container that moves an overlay is usually not the window.
+  window.addEventListener("scroll", sync, true);
+  sync();
+  return () => {
+    ro.disconnect();
+    window.removeEventListener("scroll", sync, true);
+  };
 }
