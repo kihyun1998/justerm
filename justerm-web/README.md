@@ -118,12 +118,41 @@ Two consequences are forced by WebGL binding one context to one canvas, and both
   when a box *changes* and never when an element *moves*. Drive `setViewportRect` yourself instead if
   you already know when your layout moves; what you must not do is neither, because a missed update
   is silent — the GL viewport stays where it was while the overlay moves off it.
-- **A density change invalidates every device-px number you gave.** Register
-  `surface.onDensityChange` and re-supply the surface size; `observeViewportRect` re-reads the ratio
-  on its own, so the rects take care of themselves.
+- **A density change invalidates every device-px number you gave — including the rects.** Register
+  `surface.onDensityChange`, and from it re-supply **both** the surface size and every terminal's
+  origin:
+
+  ```ts
+  import { viewportOrigin } from "justerm-web";
+
+  surface.onDensityChange((dpr) => {
+    surface.resizeSurface(cssWidth * dpr, cssHeight * dpr);
+    for (const [term, overlayEl] of panes) {
+      const { x, y } = viewportOrigin(
+        { overlay: overlayEl.getBoundingClientRect(), canvas: canvasEl.getBoundingClientRect() },
+        dpr,
+      );
+      term.setViewportRect(x, y);
+      term.resize(paneCssWidth, paneCssHeight); // the cell moved, so the grid may too
+    }
+  });
+  ```
+
+  **`observeViewportRect` will not do the rects for you, and this bullet claimed it would until
+  #776.** It computes at the live ratio, but nothing *re-runs* it on a density change: its three
+  triggers are a `ResizeObserver` on the overlay and the canvas, a capture-phase `scroll`, and one
+  call at setup. A `ResizeObserver` on the default box reports CSS pixels, and a density change moves
+  no CSS box — so it stays silent, and the last origin it sent is left scaled by the old ratio. On a
+  monitor switch a pane at CSS x=500 then draws at half its offset, over its left sibling, with no
+  error and every pixel plausible.
 
 Each terminal keeps its own font, palette, selection, cursor and decorations; two on the same font
 configuration share one glyph atlas, and the last one to leave releases it.
+
+A runnable version of everything above is
+[`demo/shared-surface.html`](https://github.com/kihyun1998/justerm/blob/master/justerm-web/demo/shared-surface.html)
+— two terminals at two font sizes on one canvas, with the page showing through the buffer between
+them. `pnpm demo`, then open `/shared-surface.html`.
 
 ## Tearing down
 
@@ -143,12 +172,30 @@ handler — the same thing xterm.js does by clearing its pending restore timeout
 `JustermRenderer.create` owns the surface it created and ends it, exactly as before. One built with
 `JustermRenderer.attach` does **not**: it hands back its own grid and leaves the surface — the canvas,
 the context, the density tracking and context-loss recovery — running for its siblings. One sentence
-covers both: *a layer ends what it exclusively holds, and never what it shares.* So a host that
-opened a surface is the one that closes it, with `surface.dispose()`, which ends every terminal still
-attached and then the surface's own work.
+covers both: *a layer ends what it exclusively holds, and never what it shares.*
 
-Two things it does **not** cover, so they are yours:
+**Tearing the whole surface down: your terminals first, then the surface.**
 
+```ts
+for (const term of terminals) term.dispose(); // each hands back its own grid
+surface.dispose();                            // then the canvas, the loop, the watcher
+```
+
+`surface.dispose()` does **not** end your `Terminal` widgets, and the order above is not a style
+preference. The surface holds *grids*, not widgets: it ends what each terminal registered with it,
+which is the renderer, and it never saw the `Terminal` you constructed — the same sentence as above,
+applied to itself. Measured on a two-terminal page: calling `surface.dispose()` alone leaves every
+widget mounted with its hidden textarea still in the DOM and still subscribed to your frame source,
+so **the next frame your backend pushes throws** `no grid with id N`. Disposing the terminals first
+leaves nothing behind (2 textareas → 0, `surface.gridCount` already `0`, no throw from either call).
+
+This paragraph said `surface.dispose()` *"ends every terminal still attached"* until #776, which is
+the first code to tear a shared surface down.
+
+Three things disposal does **not** cover, so they are yours:
+
+- **Your `Terminal` widgets**, per the paragraph above, whenever you end the surface rather than the
+  terminal.
 - **Anything you constructed and kept** — a `Scrollbar`, the resize observer returned by
   `observeResize`, the accessibility controllers. The widget never saw them, so it cannot end them.
 - **GPU memory.** Disposing stops the renderer's work; the wasm instance, its GL context and glyph

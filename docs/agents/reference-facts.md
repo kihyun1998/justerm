@@ -1502,6 +1502,37 @@ This section needed `test/` in the xterm.js sparse checkout; the clone recipe in
   is not arbitrary. They license nothing about *why* — in particular, xterm.js's config says nothing
   about cold caches, and this repo's own measurement is the only evidence for that half.
 
+### Whether any reference's browser suite puts two terminals on one page (#776, verified 2026-08-24)
+
+Asked for #776 (Epic #287 S8), which is the consumer-side browser proof that one canvas serves N
+terminals. The question is narrower than #774's and does not follow from it: #774 established that no
+reference **shares a context** between terminals, and this asks whether any of them nevertheless
+constructs two terminals **on one page** in its own suite — because the harness shape would transfer
+even where the architecture does not.
+
+| Fact | Reference | Site |
+|---|---|---|
+| One case exists, and it is incidental: a **throwaway** second terminal in a *font-loading* test, constructed inside a `page.evaluate` string, opened into the **first terminal's own element**, and disposed at the end of the same test | xterm.js | `addons/addon-web-fonts/test/WebFontsAddon.test.ts:100` |
+| …with `open(term.element)` — so it is not even placed anywhere of its own; the arrangement is "a second widget inside the first", not two panes | xterm.js | `addons/addon-web-fonts/test/WebFontsAddon.test.ts:101` |
+| Nowhere else **in a browser**. `rg 'new Terminal\(' test addons` over the pinned tree returns 12 hits across 7 files. Three of those files are browser (playwright) suites — `test/playwright/Terminal.test.ts`, `addon-fit`, and this one — and only this one builds a second instance. The other four are node unit tests under `addons/*/src/`, and two of them *do* build a `terminal2`, but under **jsdom** (`addon-serialize/src/SerializeAddon.test.ts:6`): no canvas, no context, nothing placed | xterm.js | (grepped 2026-08-24) |
+| No comparand at all: neither runs a browser suite, and neither has a two-terminals-one-surface arrangement to run one against | alacritty · ghostty | (absence) |
+
+**What this settles: nothing about justerm's shape, and that is the useful part.** Two independent
+reasons, either sufficient. First, the tie-breaker table has **no row for test-harness structure** —
+stated in as many words in the section above, which is where this question's layer already got its
+answer. Second, the arrangement itself has no comparand: xterm's helper terminal has its own canvas
+and its own context (`addons/addon-webgl/src/WebglRenderer.ts:91`, in the #774 section), so even the
+one case that exists is not the case being proven. A lens reporting the difference is `DELIBERATE`
+with this row.
+
+**Recorded so it is not searched again.** The negative result cost a targeted grep across the pinned
+tree, and the shape of the answer — *"one hit, and it is not the thing"* — is exactly the kind that
+reads as "I must have missed it" to the next person to ask. The corresponding justerm arrangement is
+`justerm-web/demo/shared-surface.html`, whose design therefore rests on this repo's own precedent —
+the renderer's `demo/per-grid-state.html` and `demo/context-loss-grids.html`, which prove the same
+claims one layer down and supplied the differential (compare a sibling's whole rect byte-for-byte)
+that the consumer page reuses.
+
 ## Dating an anchor across a non-uniform move — the one reference with a generation, and why it may compare with `<` (#741, verified 2026-08-06)
 
 justerm serialises a marker line to a stateless consumer, so it needs the coordinate to say *which

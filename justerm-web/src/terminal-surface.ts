@@ -636,12 +636,21 @@ export function viewportOrigin(boxes: OverlayBoxes, dpr: number): { x: number; y
  * box **and** listens for scroll on the capture phase, which is the only way to hear a scroll on an
  * ancestor that is not the window.
  *
+ * **It does not fire on a density change, and a caller must not expect it to.** Its triggers are the
+ * two observed boxes and a scroll; a `ResizeObserver` on the default box reports CSS pixels, and a
+ * density change moves no CSS box. So the origin it last sent stays scaled by the old ratio until
+ * something else moves the overlay. Re-supplying it is the host's, from
+ * {@link TerminalSurface.onDensityChange} — {@link viewportOrigin} is exported for exactly that, so
+ * the host recomputes with this function's own arithmetic rather than a second copy of it. (The
+ * package README claimed the opposite until #776, which is the first code to depend on the answer.)
+ *
  * Same shape as `observeResize` in `fit.ts`, deliberately: an observer, a disposer, and no state.
  *
  * @param overlay the terminal's DOM overlay element
  * @param canvas the surface's canvas element
  * @param place what to do with the computed origin — normally `JustermRenderer.setViewportRect`
- * @param currentDpr reads the live density; the origin is device px, so it moves with the ratio
+ * @param currentDpr reads the live density, at each sync. The origin is device px, so its value
+ *   depends on the ratio — which is *not* the same as tracking it; see the paragraph above.
  */
 export function observeViewportRect(
   overlay: Element,

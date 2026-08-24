@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>justerm-web S8 — two terminals, one surface</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        min-height: 100%;
+        font: 13px/1.5 system-ui, sans-serif;
+        color: #e8e8e8;
+        /* A CHECKERBOARD, and it is load-bearing twice over (#577, #776).
+
+           (1) It must not match either terminal's `defaultBg`. `demo/index.html` was byte-identical
+               to its terminal's background for six slices, so an alpha feature was a visual no-op
+               while its pixel test stayed green — `readPixels` reads the drawing buffer before the
+               compositor, so an invisible feature and a passing probe are compatible states.
+
+           (2) On THIS page it is also the evidence. `draw()` clears the whole canvas to
+               `rgba(0,0,0,0)` and each grid then clears only inside its own scissor rect
+               (`justerm-renderer/src/webgl.rs`), so every part of the shared canvas that no grid
+               was placed over stays transparent and shows this pattern through. The gutter between
+               the two panes, and the band above the right one, are therefore not decoration: they
+               are the only thing on screen that says the two terminals are on ONE canvas rather
+               than on two canvases sitting side by side. Both greys are far from both terminal
+               backgrounds (a deep blue and a deep green) so no sample can be ambiguous. */
+        background-color: #3c3c46;
+        background-image:
+          linear-gradient(45deg, #56566a 25%, transparent 25%, transparent 75%, #56566a 75%),
+          linear-gradient(45deg, #56566a 25%, transparent 25%, transparent 75%, #56566a 75%);
+        background-size: 32px 32px;
+        background-position: 0 0, 16px 16px;
+      }
+
+      /* The stage is `position: relative` so both the canvas and the two overlays can be placed
+         against the same containing block. `observeViewportRect` derives each terminal's GL origin
+         from `getBoundingClientRect()` differences, so it does not care what the containing block
+         is — but a shared one keeps the numbers in this file readable against the numbers in
+         `shared-surface.ts`. */
+      #stage {
+        position: relative;
+        margin: 24px;
+      }
+
+      #surface {
+        position: absolute;
+        left: 0;
+        top: 0;
+        display: block;
+      }
+
+      /* The transparent DOM overlays. One WebGL2 context binds to exactly one canvas, so a terminal
+         cannot have a canvas of its own — it is a transparent box positioned over its slice of the
+         shared one, holding the hidden IME textarea, the a11y tree and any chrome (ADR-0021). The
+         dashed outline is debug affordance for a human, drawn OUTSIDE the box so it cannot land on
+         a pixel any probe samples: `outline` does not participate in layout and is not composited
+         into the drawing buffer at all, unlike a `border`, which would move the box and shift every
+         viewport origin derived from it. */
+      .pane {
+        position: absolute;
+        outline: 1px dashed rgba(255, 255, 255, 0.35);
+        outline-offset: 2px;
+      }
+
+      #legend {
+        position: relative;
+        margin: 24px;
+        max-width: 60em;
+      }
+      #legend code {
+        background: rgba(0, 0, 0, 0.35);
+        padding: 0 0.3em;
+        border-radius: 3px;
+      }
+      [data-testid="surface-ready"]:empty::before {
+        content: "booting…";
+        opacity: 0.6;
+      }
+    </style>
+  </head>
+  <body>
+    <!-- Manual harness for Epic #287 S8 (#776): TWO terminals on ONE canvas, one WebGL2 context,
+         at two different font sizes.
+
+         Run `pnpm demo` (NOT `vite demo` — that skips vite.config.ts and its wasm plugins) and open
+         `/shared-surface.html`.
+
+         What to look at, in the order the epic claims it:
+           1. one `<canvas>` in the DOM, two terminals drawn on it, each with its own background;
+           2. the checkerboard showing through the gutter between them and the band above the right
+              pane — canvas area no grid was placed over;
+           3. the two panes running their own content on their own cadence, at cell sizes that
+              differ because the font sizes do (two entries in the renderer's per-config tier);
+           4. "Lose context" taking the GL context away from BOTH at once and one restore bringing
+              BOTH back, with no frame re-fed from this page;
+           5. "End pane A" releasing only that terminal — its rect goes back to showing the page,
+              while pane B keeps its cells, its atlas and its viewport. This one is a MANUAL
+              affordance: the e2e asserts the four above and not this, because #775's acceptance
+              covers disposal and proves it against a fake backend. Left here because it is the one
+              claim on this page a person can check faster than a test can.
+
+         `demo/index.html` is deliberately untouched by this slice: it is the harness the rest of
+         the e2e suite is written against, and changing its shape would quietly change what a large
+         number of unrelated assertions mean. -->
+    <div id="stage">
+      <canvas id="surface"></canvas>
+      <div class="pane" id="pane-a"></div>
+      <div class="pane" id="pane-b"></div>
+    </div>
+
+    <div id="legend">
+      <p data-testid="surface-ready"></p>
+      <p>
+        One <code>&lt;canvas&gt;</code>, one WebGL2 context, two <code>Terminal</code>s attached to
+        one <code>TerminalSurface</code>. The chequered areas are parts of the shared drawing buffer
+        that no grid was placed over.
+      </p>
+      <p>
+        <button type="button" data-testid="lose-context">Lose context</button>
+        <button type="button" data-testid="end-a">End pane A</button>
+      </p>
+    </div>
+
+    <script type="module" src="./shared-surface.ts"></script>
+  </body>
+</html>

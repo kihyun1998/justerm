@@ -1,6 +1,7 @@
 import { test as base, expect, type BrowserContext, type Page } from "@playwright/test";
 
 import { DEMO_URL } from "../playwright.config";
+import { readAsyncProbe as harvest } from "./probe";
 
 /**
  * The #735 warm-up's two explicit budgets. They sum to 20s so the hook stays inside its 30s slot
@@ -65,13 +66,6 @@ const test = base.extend<{ consoleLines: string[]; bootUrl: string }>({
 const fitsIn = (consoleLines: string[]): string[] =>
   consoleLines.filter((l) => l.includes("[fit] resize"));
 
-/** Where {@link readAsyncProbe} parks a probe's outcome for the harvest to pick up. */
-declare global {
-  interface Window {
-    __probeSettled?: { ok: true; value: unknown } | { ok: false; error: string };
-  }
-}
-
 /**
  * The names of the demo probes that return a **promise**. Kept explicit rather than derived from
  * `Window`, because a structural `[K in keyof Window]` filter matches unrelated DOM methods too;
@@ -92,105 +86,17 @@ type AsyncProbe =
   | "__textBlinkProbe";
 
 /**
- * #731 — **start an async probe in one `evaluate`, park its outcome on `window`, harvest that.
- * Never hand `awaitPromise` a promise nothing keeps reachable.**
- *
- * `await page.evaluate(() => window.__someProbe!())` asks Chromium for
- * `Runtime.callFunctionOn({ awaitPromise: true })` on a promise the page no longer names. On
- * 2026-08-05 that handler came back `{"code":-32000,"message":"Promise was collected"}` — and
- * playwright rewrites *every* protocol error that is neither a JS exception nor a closed session
- * into "Execution context was destroyed, most likely because of a navigation"
- * (`playwright-core@1.61.1`, `rewriteError` at `coreBundle.js:35099`, thrown from
- * `CRExecutionContext.evaluateWithArguments` at `:35176` — the Chromium path; the near-identical
- * `rewriteError3` at `:43674` is Firefox's, which is what #731's body cited). Nothing had navigated:
- * the trace recorded two document loads and no third, and `Page.*`/`Runtime.*` listeners across the
- * failing call saw **zero** events. The reported cause was not the cause, which is what made it
- * expensive — the hunt went to page lifecycle and `goto` ordering.
- *
- * **The obvious rule — "never await across CDP" — is wrong, and measuring it is what produced the
- * one below.** `waitForFunction` is *also* `awaitPromise: true`: it installs a poller returning
- * `{ result, abort }` and then awaits `(h) => h.result`. Traced with `DEBUG=pw:protocol`
- * (2026-08-10): `Runtime.callFunctionOn` id 27, `awaitPromise: true`, outstanding for the whole
- * 1.5s wait. So does every `expect(locator).toBeVisible()`. A rule forbidding that forbids the
- * harness.
- *
- * What differs is **reachability**, and the same trace shows it: the poller is returned
- * `returnByValue: false`, so playwright holds it by `objectId` and passes that objectId back as the
- * argument it awaits — its `result` promise is strongly reachable from an object playwright itself
- * retains for the duration. A probe's promise returned straight out of `evaluate` has no such
- * anchor, and v8_inspector's handler holds it only weakly.
- *
- * **What is measured, and what is not.** Measured: the CI failure (run `30979831545`), the rewrite
- * above, and the trace. *Not* measured, deliberately left unasserted: that V8 actually collected the
- * probe's promise. A forced `HeapProfiler.collectGarbage` collects **0 of 4** promise shapes
- * (timer-resolved, rAF-resolved, async-fn await loop, detached resolver), and the pre-fix `#480`
- * spec passes 12/12 on a 28-core host — single- and double-navigation, idle and at 4x
- * oversubscription. v8_inspector emits that same message when the `InjectedScript` holding a pending
- * handler is torn down, so there are two candidate mechanisms and this repo has pinned neither.
- * Parking the value removes both, which is why the fix does not depend on the answer.
- *
- * **This repo's other browser harness already does it this way** — `justerm-renderer/e2e/
- * proofs.spec.mjs` waits for `__done` and *then* reads `__proof`. Its sibling
- * `screen-composited.spec.mjs` did not, and is converted in the same change as this. So the finding
- * survives the reference-free restatement (*one of our harnesses drifted from the other*), which is
- * what it has to do: the tie-breaker table has no row for test-harness structure. xterm.js reaching
- * the same shape — `writeSync` sets `window.ready = false`, kicks off a callback that sets it true,
- * and polls (`test/playwright/TestUtils.ts:596-601`, pinned SHA in `reference-facts.md`) — is the
- * non-arbitrariness signal and nothing more. Note it does **not** hold the rule globally: its addon
- * tests still await in-page promises for one-shot writes.
- *
- * Rejections are parked too. Awaiting the promise used to surface a probe's own throw as a test
- * failure; harvesting a value that never arrives would instead time out with nothing named, so the
- * outcome carries which side it settled on.
- *
- * **The two paths serialize identically, and that was measured rather than assumed** — the harvest
- * comes back through `jsonValue()` where the old shape came back through `evaluate`'s own return,
- * and several probes report `NaN` on purpose (`#480` below asserts `Number.isFinite` precisely
- * because a `NaN` made its invariant vacuous). A/B on one object through both paths, 2026-08-10:
- * `NaN`, `Infinity`, `-Infinity`, `-0`, a `undefined`-valued key (the key survives), `null`,
- * numbers past `MAX_SAFE_INTEGER`, and all of those nested and inside arrays came back
- * byte-identical. Valid for `playwright-core@1.61.1`, which routes both through the same
- * `parseEvaluationResultValue`; a major bump is the thing that could take it away.
+ * Read one of this page's promise-returning probes, through the park-and-harvest shape #731
+ * established. **The mechanism, and the reasoning behind it, moved to `e2e/probe.ts` in #776** when
+ * a second spec file needed it; this is the two-line alias that recovers this page's return types
+ * from its own {@link AsyncProbe} union, which is where the `Window` declarations for these hooks
+ * live.
  */
-async function readAsyncProbe<K extends AsyncProbe>(
+const readAsyncProbe = <K extends AsyncProbe>(
   page: Page,
   name: K,
-): Promise<Awaited<ReturnType<NonNullable<Window[K]>>>> {
-  await page.evaluate((n) => {
-    delete window.__probeSettled;
-    const probe = window[n] as unknown as (() => Promise<unknown>) | undefined;
-    // Throw the message the old shape threw. `window.__xProbe!()` on a missing probe said
-    // "window.__xProbe is not a function"; binding it to a local first says only "probe is not a
-    // function", which drops the one word that identifies it — and `beforeEach`'s boot-gate comment
-    // is written against the old wording, so it stays true only if this restores it.
-    if (typeof probe !== "function") throw new Error(`window.${n} is not a function`);
-    void probe().then(
-      (value) => {
-        window.__probeSettled = { ok: true, value };
-      },
-      (error) => {
-        window.__probeSettled = { ok: false, error: String(error) };
-      },
-    );
-  }, name);
-
-  // The point of an explicit budget is that a probe which never settles fails with THIS call named
-  // instead of as a bare "test timeout exceeded" — so it has to fire FIRST, and the 30s default
-  // (`playwright.config.ts` sets none) is the whole test's, already part-spent by `beforeEach` and
-  // every step before this one. Under host contention — #735's condition, where a cold boot alone
-  // measured 4s — a budget close to 30s loses that race and buys nothing. 15s is the compromise:
-  // three times the slowest probe measured here (~5s; the blink probes poll a 2s window,
-  // `BLINK_POLL_WINDOW`, and context-loss waits out three 150ms restore deadlines) and still under
-  // half the test's budget.
-  const handle = await page.waitForFunction(() => window.__probeSettled, null, { timeout: 15_000 });
-  const settled = await handle.jsonValue();
-  await handle.dispose();
-  // `waitForFunction` only resolves on a truthy value, so this cannot fire — but the slot is
-  // optional and saying so here is cheaper than an assertion that hides which half went wrong.
-  if (!settled) throw new Error(`${name} harvested an empty slot`);
-  if (!settled.ok) throw new Error(`${name} rejected in the page: ${settled.error}`);
-  return settled.value as Awaited<ReturnType<NonNullable<Window[K]>>>;
-}
+): Promise<Awaited<ReturnType<NonNullable<Window[K]>>>> =>
+  harvest<Awaited<ReturnType<NonNullable<Window[K]>>>>(page, name);
 
 /**
  * #735 — **the cold boot is paid here, where the budget can absorb it.**
