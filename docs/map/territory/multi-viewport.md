@@ -21,9 +21,12 @@ stated rather than here, so this paragraph does not need rewriting as each slice
 
 ## Design model
 
-**The tier split (#769), the grid registry (#770), the viewport draw loop (#771) and the per-config
-atlas registry (#772) are built; everything else below is designed and not built** — read ADR-0021
-for the authoritative form, and `## Code` for what exists today.
+**Every slice of this design is now built** — the tier split (#769), the grid registry (#770), the
+viewport draw loop (#771), the per-config atlas registry (#772), the per-grid contract (#773), the
+surface-wide context loss (#774) and the consumer's `TerminalSurface` (#775). Read ADR-0021 for the
+authoritative form and `## Code` for what exists today. (This sentence named four slices and called
+the rest "designed and not built" until #775; it is the kind of status claim `docs/map/README.md`
+warns about, so prefer `## Code` over it if the two ever disagree again.)
 
 - **A renderer holds no terminal until the consumer registers one** (#773). Until S5 it arrived
   holding an implicit grid drawn over the whole buffer, so that the exports predating the per-grid
@@ -116,12 +119,23 @@ The renderer **holds** N grids and **draws** every one that has been placed.
   paint, so the assertion is that *placing* it after the restore shows what it was fed before the
   loss, with no re-bake, no re-pack and no re-feed
 
-Still absent: **no terminal-surface type.** That is the whole of what this territory's design has
-that its code does not — the tier split (#769), the grid registry (#770), the draw loop (#771), the
-per-config atlas registry (#772) and the per-grid contract (#773) are all built. (Names of
-things that do not exist yet are left un-backticked on purpose: every symbol under this heading is
-resolved against the source, so a code-span for an unbuilt type fails the note gate — which is the
-gate doing its job.)
+- `justerm-web/src/terminal-surface.ts` — `TerminalSurface` (#775), the consumer half: one canvas, one
+  context, N attached terminals. It owns the grid registry, the single presenting loop, the density
+  watcher and context-loss recovery, and it is constructible under vitest through `SurfaceDeps`, so
+  the composition itself is host-tested. `SurfaceBackend` is the **surface-scoped half of the renderer
+  backend**, and the split is not a judgement this package makes: it is the renderer's own 0.15.0
+  signatures, where a call naming a grid acts on one terminal and a call naming none acts on what they
+  share. Measured while splitting — 25 members stayed with the per-grid interface and **every one of
+  them takes a grid**; 11 moved out and **none of them does**
+- `justerm-web/src/justerm-renderer.ts` — `JustermRenderer` is now the per-grid object: it holds a
+  surface, its own grid, and the blink loop and reduced-motion listener that really are per terminal.
+  `create` composes a surface and claims sole tenancy (which is what keeps #331's exactness — sizing
+  the buffer to `cols * cell` is only available while one grid fills the canvas); `attach` joins a
+  surface the host built and takes its rect from `setViewportRect`
+
+**The design and the code now meet.** This section carried *"still absent: no terminal-surface type"*
+through six slices; #775 built it, so what remains of the epic is the browser proof (#776) rather than
+a missing type.
 
 ## Reference behaviour
 
@@ -140,7 +154,13 @@ abstract.
 
 ## Cross-cutting invariants
 
-*(none identified yet)*
+- [a layer ends what it exclusively holds](../invariant/a-layer-ends-what-it-exclusively-holds.md)
+  — this territory is where the rule's second clause lives, and where it was found. A surface is
+  **shared by construction**, so a terminal handed one must not end it; a terminal that *composed*
+  one must. Same rule one level down in the registry: a terminal releases its own grid, the surface
+  releases every grid still registered when it ends. Promoted out of
+  [widget lifecycle](widget-lifecycle.md) by #775, which falsified the phrasing that territory had
+  predicted
 
 ## Blast radius
 
@@ -204,8 +224,12 @@ The list below is what lands **when the multi-grid work does**, and the entries 
 - [GPU upload](gpu-upload.md) — the diff baseline becomes **per-grid**, and so does the instance buffer
   it mirrors: one shared buffer with N baselines would let one grid's upload silently invalidate
   another's. ADR-0021 listed `instance_vbo` as global until #768 corrected it
-- [widget lifecycle](widget-lifecycle.md) — a shared context outlives any one widget, which is a
-  lifecycle question nothing currently owns
+- [widget lifecycle](widget-lifecycle.md) — a shared context outlives any one widget. **#775 gave that
+  an owner**: `TerminalSurface` holds the canvas, the context, the density watcher, the restore
+  listener and the loss relay, all of which sat on the per-terminal object before and would therefore
+  have been taken down by the *first* terminal to be disposed. Measured in a real browser: with two
+  terminals attached, disposing one leaves the other's rect byte-identical (ink 2232 → 2232) and the
+  survivor still recovers from a real lose/restore cycle with no re-feed
 
 ## Known holes / open
 
