@@ -172,12 +172,30 @@ handler — the same thing xterm.js does by clearing its pending restore timeout
 `JustermRenderer.create` owns the surface it created and ends it, exactly as before. One built with
 `JustermRenderer.attach` does **not**: it hands back its own grid and leaves the surface — the canvas,
 the context, the density tracking and context-loss recovery — running for its siblings. One sentence
-covers both: *a layer ends what it exclusively holds, and never what it shares.* So a host that
-opened a surface is the one that closes it, with `surface.dispose()`, which ends every terminal still
-attached and then the surface's own work.
+covers both: *a layer ends what it exclusively holds, and never what it shares.*
 
-Two things it does **not** cover, so they are yours:
+**Tearing the whole surface down: your terminals first, then the surface.**
 
+```ts
+for (const term of terminals) term.dispose(); // each hands back its own grid
+surface.dispose();                            // then the canvas, the loop, the watcher
+```
+
+`surface.dispose()` does **not** end your `Terminal` widgets, and the order above is not a style
+preference. The surface holds *grids*, not widgets: it ends what each terminal registered with it,
+which is the renderer, and it never saw the `Terminal` you constructed — the same sentence as above,
+applied to itself. Measured on a two-terminal page: calling `surface.dispose()` alone leaves every
+widget mounted with its hidden textarea still in the DOM and still subscribed to your frame source,
+so **the next frame your backend pushes throws** `no grid with id N`. Disposing the terminals first
+leaves nothing behind (2 textareas → 0, `surface.gridCount` already `0`, no throw from either call).
+
+This paragraph said `surface.dispose()` *"ends every terminal still attached"* until #776, which is
+the first code to tear a shared surface down.
+
+Three things disposal does **not** cover, so they are yours:
+
+- **Your `Terminal` widgets**, per the paragraph above, whenever you end the surface rather than the
+  terminal.
 - **Anything you constructed and kept** — a `Scrollbar`, the resize observer returned by
   `observeResize`, the accessibility controllers. The widget never saw them, so it cannot end them.
 - **GPU memory.** Disposing stops the renderer's work; the wasm instance, its GL context and glyph
