@@ -574,6 +574,22 @@ export class TerminalSurface<B extends SurfaceBackend = SurfaceBackend> {
     if (!handler) return;
     this.announcedDpr = dpr;
     handler(dpr);
+    // **And present again, because the handler's own obligations left the canvas blank.** What this
+    // asks a host for is a fresh {@link resizeSurface} — which re-creates the drawing buffer, and a
+    // resized buffer is a cleared one. Both callers present BEFORE this point, for a reason that has
+    // not gone away (the cell is not readable until a render has run), so without this the last thing
+    // to touch the buffer is the clear.
+    //
+    // Coalesced rather than immediate: the host may re-place N terminals inside one handler, and each
+    // `setViewportRect` / `resize` already asks its own grid to re-derive. One frame after the whole
+    // handler is the cheapest point at which every terminal is placed.
+    //
+    // Only the SHARED arrangement can reach the blank — a sole tenant's buffer is `reapplyAll`'s own,
+    // sized before the present above — but the call is unconditional because the surface cannot tell
+    // the two apart, and a redundant coalesced present costs one frame that was going to be presented
+    // anyway. (#808; the shape pre-dates it on `setDevicePixelRatio` and is fixed on both paths at
+    // once, since two rules for one mechanism is what this area has repeatedly paid for.)
+    this.requestRender();
   }
 
   /**

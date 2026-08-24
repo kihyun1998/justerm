@@ -377,7 +377,18 @@ const attached: Attached[] = [a, b];
  */
 let densityNotices = 0;
 
-surface.onDensityChange((dpr) => {
+/**
+ * Everything this page owes on a density change, with the one line that is **not** owed behind a
+ * flag.
+ *
+ * `refeed` is the `pane.push()` at the end. A real host does re-feed after a grid change — the engine
+ * has to learn the new size — so the shipped handler passes `true`. But nothing in
+ * `TerminalSurface.onDensityChange`'s contract *requires* it, and that push happens to schedule the
+ * frame that repaints the buffer `resizeSurface` just cleared. So a proof of the library's own repaint
+ * has to be able to switch it off, or it is measuring the page (#808, and #776's shape: the reader
+ * supplying the thing under test).
+ */
+function applyDensity(dpr: number, refeed: boolean): void {
   densityNotices++;
   surface.resizeSurface(Math.round(CANVAS.width * dpr), Math.round(CANVAS.height * dpr));
   for (const t of attached) {
@@ -399,10 +410,12 @@ surface.onDensityChange((dpr) => {
     t.renderer.resize(t.box.width, t.box.height);
     const { cols, rows } = t.renderer.terminalSize();
     t.pane.setGrid(cols, rows);
-    t.pane.push();
+    if (refeed) t.pane.push();
   }
   console.log(`[surface] density ${dpr}`);
-});
+}
+
+surface.onDensityChange((dpr) => applyDensity(dpr, true));
 
 // Two cadences, deliberately coprime-ish so a sample can never catch them in lockstep.
 const TICK_A = 300;
@@ -498,6 +511,21 @@ export interface TeardownReport {
    * subscribed, and its renderer throws `UnknownGrid`. */
   lateFrameThrew: string | undefined;
   addGridThrew: string | undefined;
+}
+
+/** What a contract-only host is left looking at — see `window.__contractOnlyDensityProbe`. */
+export interface ContractOnlyReport {
+  /** Both panes' centres, read in the animation frame the SURFACE scheduled, with nothing presented
+   * by this probe. `0,0,0,0` here means nothing painted in that frame: the drawing buffer holds
+   * whatever survived the last present, and a presented frame is composited and gone. */
+  aCentre: string;
+  bCentre: string;
+  /** The buffer at that moment — so a blank pane cannot be confused with a buffer that never grew. */
+  bufW: number;
+  bufH: number;
+  /** Frames this page fed between the loss and the read. Must be `0`: the whole claim is that the
+   * repaint came from the library rather than from a push the contract does not ask for. */
+  framesPushed: number;
 }
 
 /** What a restore across a moved density did — see `window.__restoreDensityProbe`. */
@@ -604,6 +632,20 @@ declare global {
      * path. That is also the real case: a monitor switch that resets the GPU.
      */
     __restoreDensityProbe?: () => Promise<RestoreDensityReport>;
+    /**
+     * The same restore, with a host that does **only** what `onDensityChange`'s contract lists —
+     * `resizeSurface`, a fresh rect per terminal, a re-fit — and pushes no frame (#808).
+     *
+     * `resizeSurface` re-creates the drawing buffer, which **clears** it, and both of the surface's
+     * density paths present *before* the handler rather than after. So this asks whether the library
+     * repaints what the host's own obligations wiped out, with the page's `pane.push()` — which
+     * happens to schedule exactly that frame — switched off.
+     *
+     * Read inside the animation frame the surface scheduled: rAF callbacks run in registration order
+     * and this probe registers after the restore turn, so the surface's present has already run when
+     * this reads, and nothing here presents.
+     */
+    __contractOnlyDensityProbe?: () => Promise<ContractOnlyReport>;
     __surfaceLossProbe?: () => Promise<{
       before: SurfaceSnapshot;
       /** Read with NO await between `loseContext()` and the two reads — the instant in which the
@@ -1020,6 +1062,66 @@ window.__restoreDensityProbe = async (): Promise<RestoreDensityReport> => {
       contextLost: c.isContextLost(),
     },
   };
+};
+
+window.__contractOnlyDensityProbe = async (): Promise<ContractOnlyReport> => {
+  stopTimers();
+  const context = gl()!;
+  const ext = context.getExtension("WEBGL_lose_context");
+  if (!ext) throw new Error("WEBGL_lose_context unavailable — this probe cannot run");
+
+  // Swap in the contract-only host. Same handler, minus the one line the contract does not ask for.
+  surface.onDensityChange((d) => applyDensity(d, false));
+  await new Promise<void>((r) => requestAnimationFrame(() => r()));
+  surface.present();
+  const pushedBefore = a.pane.pushed + b.pane.pushed;
+
+  const once = (event: string, budget = 5000): Promise<void> =>
+    new Promise((resolve, reject) => {
+      const timer = setTimeout(
+        () => reject(new Error(`#808 contract-only probe: no ${event} within ${budget}ms`)),
+        budget,
+      );
+      canvas.addEventListener(
+        event,
+        () => {
+          clearTimeout(timer);
+          resolve();
+        },
+        { once: true },
+      );
+    });
+
+  const lost = once("webglcontextlost");
+  ext.loseContext();
+  await lost;
+  await new Promise<void>((r) => setTimeout(r, 0));
+
+  const restored = once("webglcontextrestored");
+  ext.restoreContext();
+  await restored;
+
+  // Registered from the restore turn's own microtask, so it lands in the same frame the surface
+  // scheduled from inside its handler — and AFTER it, rAF callbacks running in registration order.
+  // Nothing here presents: if the library scheduled nothing, this reads a buffer whose last present
+  // was composited away, which is what a blank canvas looks like from inside the page.
+  const read = await new Promise<ContractOnlyReport>((resolve) => {
+    requestAnimationFrame(() => {
+      const c = gl()!;
+      const ra = rectOf(a);
+      const rb = rectOf(b);
+      resolve({
+        aCentre: pixelAt(c, ra.x + (ra.w >> 1), ra.y + (ra.h >> 1)),
+        bCentre: pixelAt(c, rb.x + (rb.w >> 1), rb.y + (rb.h >> 1)),
+        bufW: c.drawingBufferWidth,
+        bufH: c.drawingBufferHeight,
+        framesPushed: a.pane.pushed + b.pane.pushed - pushedBefore,
+      });
+    });
+  });
+
+  surface.onDensityChange((d) => applyDensity(d, true));
+  return read;
 };
 
 // ── the boot gate ─────────────────────────────────────────────────────────────────────────────

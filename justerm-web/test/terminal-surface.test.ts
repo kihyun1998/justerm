@@ -553,6 +553,52 @@ describe("TerminalSurface — density", () => {
     expect(backend.calls.filter((c) => c.startsWith("density("))).toEqual([]);
   });
 
+  it("schedules a present after the host's handler, on both paths", () => {
+    // The handler's documented obligations include a fresh `resizeSurface`, which re-creates the
+    // drawing buffer and therefore CLEARS it. Both callers present before the handler — the cell is
+    // not readable until a render has run — so without a present after it, the last thing to touch
+    // the buffer is the clear and the canvas stays blank until something else drives a frame.
+    //
+    // Asserted as SCHEDULED-then-flushed rather than as an immediate `render`, because coalescing is
+    // the claim: a host re-placing N terminals inside one handler owes one frame, not N.
+    const { surface, canvas, backend, raf, queries, dpr } = harness();
+    surface.addGrid();
+    surface.onDensityChange(() => {
+      // exactly what the README asks of a host, and nothing more — no frame pushed.
+      surface.resizeSurface(1800, 680);
+    });
+
+    dpr.value = 2;
+    for (const l of [...(queries.at(-1)?.listeners ?? [])]) l();
+    expect(raf.scheduled).toBe(1);
+    const beforeFlush = backend.calls.filter((c) => c === "render").length;
+    raf.flush();
+    expect(backend.calls.filter((c) => c === "render").length).toBe(beforeFlush + 1);
+    // …and the resize really did land before it, so the present is repainting a cleared buffer
+    // rather than merely being one more frame.
+    expect(backend.calls.indexOf("resizeSurface(1800,680)")).toBeLessThan(
+      backend.calls.lastIndexOf("render"),
+    );
+
+    // The restore path owes the same thing and gets it from the same place.
+    dpr.value = 4;
+    canvas.emit("webglcontextrestored");
+    expect(raf.scheduled).toBe(1);
+  });
+
+  it("schedules nothing when there was nothing to announce", () => {
+    // The side condition that keeps the pair above from being "present on every restore". A restore
+    // that adopted no new density asks the host for nothing, so nothing cleared the buffer and the
+    // two presents the handler already did are the whole of it.
+    const { surface, canvas, raf } = harness();
+    surface.addGrid();
+    surface.onDensityChange(() => surface.resizeSurface(1800, 680));
+
+    canvas.emit("webglcontextrestored");
+
+    expect(raf.scheduled).toBe(0);
+  });
+
   it("keeps owing the host a move that landed before it registered", () => {
     // The field is *"the density this surface last told the host about"*, so it may only advance when
     // somebody was in fact told. Recording unconditionally would let a move that landed in the window

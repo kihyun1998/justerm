@@ -157,6 +157,11 @@ Two consequences are forced by WebGL binding one context to one canvas, and both
   of it transparent. No error was raised, and the left-hand pane was narrow enough to still fit and
   look correct.
 
+  **You do not owe a frame here.** `resizeSurface` re-creates the drawing buffer, which clears it, so
+  the widget presents once on the next animation frame after your handler returns — coalesced, so
+  re-placing ten terminals in one handler still costs one. Push a frame anyway if your engine needs
+  to learn the new grid; what you must not have to do is push one merely to get the pixels back.
+
 Each terminal keeps its own font, palette, selection, cursor and decorations; two on the same font
 configuration share one glyph atlas, and the last one to leave releases it.
 

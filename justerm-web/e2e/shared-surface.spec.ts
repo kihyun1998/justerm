@@ -25,7 +25,11 @@ import { readAsyncProbe as harvest } from "./probe";
  */
 
 /** The probes `demo/shared-surface.ts` installs. */
-type AsyncProbe = "__independenceProbe" | "__surfaceLossProbe" | "__restoreDensityProbe";
+type AsyncProbe =
+  | "__independenceProbe"
+  | "__surfaceLossProbe"
+  | "__restoreDensityProbe"
+  | "__contractOnlyDensityProbe";
 
 /** This page's typed alias over the shared park-and-harvest helper (#731; extracted in #776). */
 const readAsyncProbe = <K extends AsyncProbe>(
@@ -441,6 +445,48 @@ test("a restore that adopts a moved density tells the host, and pane B survives 
     );
   });
   expect(domCentre).toBe(BG_B);
+});
+
+test("a host that does only what the contract lists is not left staring at a cleared buffer (#808)", async ({
+  page,
+}) => {
+  // **The other half of the notification, and it is what makes the notification worth having.** What
+  // `onDensityChange` asks a host for begins with a fresh `resizeSurface` — which re-creates the
+  // drawing buffer, and a resized buffer is a cleared one. Both of the surface's density paths
+  // present *before* the handler, because the cell is not readable until a render has run. So the
+  // repaint after the handler has to come from the surface, or the canvas is blank until something
+  // else happens to drive a frame.
+  //
+  // The page's shipped handler ends with a `pane.push()`, which a real host does anyway and which
+  // happens to schedule exactly that frame — so the probe switches it off. Otherwise this measures
+  // the page (#776: a reader that supplies the thing under test cannot fail).
+  const boot = await page.evaluate(() => window.__surfaceProbe!());
+  expectContextAlive(boot);
+  expect(boot.a.centre).toBe(BG_A);
+  expect(boot.b.centre).toBe(BG_B);
+
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send("Emulation.setDeviceMetricsOverride", {
+    width: 0,
+    height: 0,
+    deviceScaleFactor: boot.dpr * 2,
+    mobile: false,
+  });
+  await page.waitForTimeout(300);
+
+  const r = await readAsyncProbe(page, "__contractOnlyDensityProbe");
+
+  // The host really did re-size the buffer, so a blank pane below is a missing PRESENT and not a
+  // buffer that never grew — the two look identical at the pixel and only this tells them apart.
+  expect(r.bufW).toBe(Math.round(boot.bufW * 2));
+  expect(r.bufH).toBe(Math.round(boot.bufH * 2));
+  // …and nothing was fed. The repaint has to be the library's.
+  expect(r.framesPushed).toBe(0);
+
+  // THE CLAIM: read in the frame the surface scheduled, with nothing presented by this probe, both
+  // panes are painted. Measured with the present removed: `0,0,0,0` for both.
+  expect(r.aCentre).toBe(BG_A);
+  expect(r.bCentre).toBe(BG_B);
 });
 
 test("ending one terminal releases only its grid, and the survivor still recovers (#775)", async ({

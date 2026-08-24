@@ -182,9 +182,16 @@ machine that decides what the renderer does in between.
   CSS, so the right-hand pane's 63 columns started at device x=500 and ran past the buffer's edge —
   the scissor discarded all of it and its centre read `0,0,0,0`. No error, and the left-hand pane
   narrow enough to still fit and look correct, which is what made it quiet.
-  What the announcement does **not** do is repaint: the host's obligations end with a `resizeSurface`,
-  and a resized buffer is a cleared one that nothing here presents afterwards. That is the same shape
-  `setDevicePixelRatio` has had since #775 and is not #808's — recorded under `## Known holes`.
+  **And the announcement carries a repaint, which is the half that was nearly shipped missing.** What
+  it asks a host for begins with a fresh `resizeSurface`, which re-creates the drawing buffer and
+  therefore **clears** it — while both density paths present *before* the handler, for the reason two
+  paragraphs up (the cell is not readable until a render has run). So a host doing exactly what the
+  contract lists was left staring at the clear. `announceDensity` ends in a coalesced
+  `requestRender()`, on both paths at once: two rules for one mechanism is what this area has
+  repeatedly paid for, and the pre-existing half of it was `setDevicePixelRatio`'s since #775.
+  Measured with that one line removed, on a host that pushes no frame: the buffer is correctly
+  `1800x680` and **both** panes read `0,0,0,0` — so the witness is pane A, the one that fits at any
+  density, and a check that only watched the pane #808 is about would have reported this clean.
 
   Measured before the fix: dpr 1 → 2 across a loss left a `2556x1369` buffer under a canvas styled
   `1278x703`. Note which half was wrong — the **width** was accidentally correct because the cell
@@ -342,19 +349,18 @@ eager rather than as shapes to follow.
   model above. (`render`/`action()` was the other; #695 closed it.) Nobody has been asked whether it
   is worth fixing — the answer turns on whether the clearance is a design or an accident, and that
   is a judgement, not a measurement.
-- **Nothing presents after the host pays a density change's obligations, on either path** (#808,
-  measured 2026-08-24). `onDensityChange`'s contract asks the host for a `resizeSurface` and a fresh
-  rect per terminal; `resizeSurface` re-creates the drawing buffer, which **clears** it, and neither
-  `setDevicePixelRatio` nor the restore handler presents after the handler returns — both present
-  *before* it. `setViewportRect` and `resize` reach `resizeGrid` only. So a host that does exactly
-  what the README lists is left with a blank canvas until something else happens to drive a frame.
-  Measured on `demo/shared-surface.html` by deleting the one `pane.push()` its handler ends with: the
-  pane's centre went from `18,58,36,255` to `0,0,0,0` one rAF after the restore with nothing
-  presented. **The demo cannot see this**, because that push schedules the frame the contract does
-  not require — the #776 shape, where the proof supplies what the contract leaves out. Pre-dates
-  #808: `setDevicePixelRatio` has had it since #775, and #808 only adds a second path through it.
-  Nobody has been asked whether the surface should present after the announcement or the contract
-  should say "and drive a frame".
+- ~~**Nothing presents after the host pays a density change's obligations, on either path.**~~
+  **Closed in #808** by the coalesced `requestRender()` in the design model above. Kept because
+  *how it was found* is the reusable part: it was invisible to the whole browser corpus, because
+  `demo/shared-surface.html`'s handler ends with a `pane.push()` that a real host does anyway and
+  that happens to schedule exactly the missing frame — the #776 shape, where the proof supplies the
+  thing under test. The page now takes that push behind a flag so a probe can construct the
+  contract-minimal host, which is the only shape in which the defect is observable at all.
+  **And the first attempt to measure it was invalid, which is worth more than the fix.** Comparing
+  the two library versions one rAF *after* the restore turn returned `0,0,0,0` for both, because a
+  presented frame is composited and the buffer is gone — so it could not tell "cleared" from
+  "already discarded". A read of an unpresented buffer only means something inside the frame the
+  library itself scheduled.
 - **No reference comparison at all**, and the usual comparison set does not apply cleanly — see
   ADR-0027's *Named prior art* for why the absence is itself the finding.
 - **The interaction with the upload planner is stated here and nowhere else.** That a restore must
