@@ -42,7 +42,7 @@ shared surface.
   optional `dispose?()`, `Terminal.dispose()` calling it exactly once, and the inventory of ambient
   work with teardown nobody calls. Clause (1)'s site
 - [multi-viewport](../territory/multi-viewport.md) — clause (2)'s site. A surface is shared by
-  construction, so `JustermRenderer` carries `ownsSurface` and only the composing path ends it. The
+  construction, so `JustermRenderer` carries `composedSurface` and only the composing path ends it. The
   registry half is the same fact one level down: a terminal releases **its own** grid and the surface
   releases every grid still registered when it ends
 - [GL context lifecycle](../territory/gl-context-lifecycle.md) — the density watcher, the

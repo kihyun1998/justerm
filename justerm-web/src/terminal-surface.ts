@@ -113,26 +113,11 @@ export interface AddGridOptions {
   fontSize?: number;
   letterSpacing?: number;
   lineHeight?: number;
-  /**
-   * Claim **sole tenancy**: this terminal sizes the shared drawing buffer to its own grid extent.
-   *
-   * The single-terminal arrangement asks for `cols * cell_width(grid)` device pixels, which is
-   * #331's exactness — both numbers are integers the renderer hands back, so nothing rounds between
-   * the grid the shader lays out and the buffer that has to hold it. That is available only while
-   * one grid fills the canvas. A second tenant sizing the same buffer to *its* extent would clobber
-   * the first, and silently: no error, the sibling simply drawn into a buffer of the wrong size.
-   *
-   * So the claim is exclusive and enforced here ({@link TerminalSurface.addGrid} throws either way
-   * round). A host wanting two terminals sizes the surface itself with
-   * {@link TerminalSurface.resizeSurface} and claims none.
-   */
-  ownsExtent?: boolean;
 }
 
 /** The registry's record of one attached terminal. */
 interface Tenant {
   grid: number;
-  ownsExtent: boolean;
   /** What to run when the surface's geometry basis moves under this grid. See {@link TerminalSurface.onReapply}. */
   reapply: (() => void) | undefined;
   /** How to END this terminal. See {@link TerminalSurface.onEnd} for why a grid id is not enough. */
@@ -321,20 +306,15 @@ export class TerminalSurface<B extends SurfaceBackend = SurfaceBackend> {
    * which is what makes a stale handle fail loudly instead of addressing whichever grid landed in a
    * freed slot.
    *
-   * @throws if the surface has been disposed, or if the sole-tenancy claim
-   *   ({@link AddGridOptions.ownsExtent}) cannot be honoured — see that field for why it is exclusive.
+   * @throws if the surface has been disposed. Nothing else refuses a grid: a surface accepts as
+   *   many terminals as a host attaches. (It used to refuse a second one when a first had claimed to
+   *   size the drawing buffer — deleted in #802, because the only surface a terminal auto-sizes is
+   *   the one `JustermRenderer.create` composed, and that one is unreachable, so the guard defended
+   *   a state nobody could construct. `test/published-seam.types.ts` §3 now pins the reachability.)
    */
   addGrid(opts: AddGridOptions = {}): number {
     if (this.disposed) {
       throw new Error("justerm-web: this TerminalSurface was disposed — build a new one");
-    }
-    const ownsExtent = opts.ownsExtent ?? false;
-    const soleTenant = [...this.tenants.values()].some((t) => t.ownsExtent);
-    if (soleTenant || (ownsExtent && this.tenants.size > 0)) {
-      throw new Error(
-        "justerm-web: this surface already has a sole tenant sizing its drawing buffer — " +
-          "size the surface yourself (resizeSurface) and attach terminals that claim no extent",
-      );
     }
     const grid = this.backend.addGrid(
       opts.paletteColors ?? EMPTY_PALETTE,
@@ -345,7 +325,7 @@ export class TerminalSurface<B extends SurfaceBackend = SurfaceBackend> {
       opts.letterSpacing,
       opts.lineHeight,
     );
-    this.tenants.set(grid, { grid, ownsExtent, reapply: undefined, end: undefined });
+    this.tenants.set(grid, { grid, reapply: undefined, end: undefined });
     return grid;
   }
 

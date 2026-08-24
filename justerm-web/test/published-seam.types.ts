@@ -34,6 +34,13 @@
 import type { DecodedFrame as WasmFrame } from "justerm-wasm-decode";
 import type { JustermRenderer } from "justerm-renderer";
 import type { DecodedFrame as WebFrame } from "../src/types";
+// #802: the containment assertion in section 3 needs both the widget and the surface it holds.
+import type { JustermRenderer as JustermRendererWidget } from "../src/justerm-renderer";
+import { JustermRenderer as JustermRendererClass } from "../src/justerm-renderer";
+import type {
+  SurfaceBackend as SurfaceBackendType,
+  TerminalSurface as TerminalSurfaceType,
+} from "../src/terminal-surface";
 
 /** `A` is usable where `B` is expected. Deliberately one-directional: the question at this seam
  * is whether the decoder's output *feeds* the renderer's input, which is assignability, not
@@ -153,3 +160,90 @@ export type UnpinnedByThisFile = Extract<
  * the frame source-agnostic.
  */
 export type NotReachableByTypes = never;
+
+// ---------------------------------------------------------------------------------------------
+// 3. Containment — the surface `JustermRenderer.create` composes never escapes it (#802)
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * **This assertion replaces a runtime guard, and that is the whole reason it exists.**
+ *
+ * `TerminalSurface.addGrid` used to take an `ownsExtent` flag and throw when a second tenant tried
+ * to join a surface whose buffer one terminal sizes. #802 deleted it: the state it guarded is
+ * unreachable, because the only surface any terminal auto-sizes is the one
+ * {@link import("../src/justerm-renderer").JustermRenderer.create} composed, and that surface is a
+ * private field with no accessor. Nobody can obtain it, so nobody can attach to it.
+ *
+ * That guarantee is **structural**, and a structural guarantee with nothing checking it is one
+ * refactor away from silently going. The moment a `get surface()`, a `surface()` method or a public
+ * field hands it back, `create`'s arrangement stops being exclusive and every consequence the class
+ * derives from "I composed this surface" — it sizes the drawing buffer to its own grid (#331's
+ * exactness), it presents synchronously, it disposes the surface — becomes wrong for the sibling
+ * that just attached.
+ *
+ * So this reddens *at the moment someone exposes it*, which is when the deletion needs
+ * reconsidering, rather than in a browser afterwards. It is a `typecheck` failure, not a test
+ * failure — the same as everything else in this file.
+ *
+ * **Scope, stated because the sentence above is otherwise too strong.** `private` is a TypeScript
+ * fact, erased at emit: the parameter property compiles to an ordinary own enumerable
+ * `this.surface`, so a JS host, `Object.values`, or a `as any` cast still reaches it. What is
+ * defended is that **no typed consumer** can, and that no future edit quietly makes it typed —
+ * which is the failure a person actually walks into. A host casting past a documented-private field
+ * has left the contract, and the guard this replaced would not have helped it either: that guard
+ * lived on one surface's registry, and the same hazard is reachable with entirely public API by
+ * opening a *second* surface on the same canvas, which it never covered.
+ *
+ * Written as a **derivation over `keyof`** rather than as a list of forbidden names, for the reason
+ * §1 gives: a name nobody predicted still lands here.
+ */
+/**
+ * Does `T` carry a surface **anywhere** — returned, awaited, contained, or handed to a callback?
+ *
+ * Every clause here is one the first version let through, and each was verified by probe rather
+ * than reasoned about. The naive shape (`T extends TS ? true : T extends () => TS ? true : false`)
+ * caught only a plain getter, method or field, which is exactly the set the first mutation pass
+ * happened to try — a four-way green that proved the four shapes it tested and nothing else.
+ *
+ * `[T] extends [...]` throughout, **not** the naked `T`: a naked conditional distributes over a
+ * union, so `TerminalSurface | undefined` resolves to `true | false` — `boolean` — and
+ * `boolean extends true` is false. A field nulled on dispose is the most plausible way for one to
+ * appear, so the distributive form missed the likeliest field shape.
+ */
+/** Is a surface one of `T`'s constituents? `Extract` rather than `extends`, so a union carrying one
+ * — the shape a field nulled on dispose takes — is caught rather than resolving to `boolean`. */
+type Mentions<T> = [Extract<T, TerminalSurfaceType<SurfaceBackendType>>] extends [never] ? false : true;
+
+/**
+ * Does `T` hand a surface back — directly, as a union member, awaited, or from a function?
+ *
+ * **What it does NOT catch, stated rather than left for the next person to discover.** A surface
+ * reached through a container or a callback parameter — `TerminalSurface[]`, `{ s: TerminalSurface }`,
+ * `(cb: (s: TerminalSurface) => void) => void` — passes. Those were measured, not assumed: a probe
+ * ran each shape through this exact definition inside `tsconfig.test.json`. They are left uncovered
+ * deliberately, because chasing them costs a recursive conditional nobody can read and none of them
+ * is a plausible way for *one* surface to escape *this* class. The shapes that are plausible — a
+ * getter, a method, a field, a nullable field, a promise, and **any of those as a static** — are
+ * covered and each was verified red by mutation.
+ */
+type YieldsSurface<T> =
+  Mentions<T> extends true ? true
+  : [T] extends [Promise<infer U>] ? Mentions<U>
+  : [T] extends [(...args: never[]) => infer R]
+      ? Mentions<R> extends true ? true
+        : [R] extends [Promise<infer RU>] ? Mentions<RU> : false
+  : false;
+
+/** Every member that hands back the surface. Must be `never`. */
+type LeaksFrom<T> = { [K in keyof T]: YieldsSurface<T[K]> extends true ? K : never }[keyof T];
+
+/**
+ * **Instance side and static side, because `keyof` on an instance type excludes statics** — and the
+ * static side is where the escape is most likely to appear. `create` is itself a static, and the
+ * option #802 explicitly weighed and did not take ("let `create` expose the surface it composed")
+ * would land as exactly that: a static returning the pair. Asserting only the instance side left
+ * this assertion green for the one change it exists to catch.
+ */
+type SurfaceEscapes = LeaksFrom<JustermRendererWidget> | LeaksFrom<typeof JustermRendererClass>;
+
+holds<Equal<SurfaceEscapes, never>>(true);

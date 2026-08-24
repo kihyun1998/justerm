@@ -712,16 +712,37 @@ export class JustermRenderer implements Renderer {
      */
     private readonly surface: TerminalSurface<RendererBackend>,
     /**
-     * Whether this terminal also **ends the surface** when it is disposed.
+     * **Whether this terminal composed the surface it draws on.** One fact, and everything this
+     * class does differently between its two entry points is derived from it — which is why it is a
+     * single flag rather than three (#802).
      *
-     * True on the {@link JustermRenderer.create} path, which composes the surface itself and is
-     * therefore its only holder; false for a terminal attached to a surface someone else built. The
-     * rule behind both is written down once, in
-     * `docs/map/invariant/a-layer-ends-what-it-exclusively-holds.md` — a layer ends what it
-     * exclusively holds, never what it shares — and composing is one way to be the only holder
-     * rather than a rule of its own.
+     * `JustermRenderer.create` composes the surface and keeps it in a private field with no
+     * accessor, so **it is the surface's only possible tenant**: nobody else can obtain it to attach
+     * to. `attach` receives a surface a host opened, which by construction may have siblings.
+     *
+     * The three consequences, each following from that one fact rather than being a separate policy:
+     *
+     * | | composed it (`create`) | given it (`attach`) |
+     * |---|---|---|
+     * | sizes the drawing buffer to its own grid | yes — it is the only tenant, so #331's exactness is available | no — the host sized it |
+     * | presents | synchronously — one tenant, nothing to coalesce | through the surface's loop, coalesced with siblings |
+     * | ends the surface on dispose | yes | no — ending a shared surface takes down its siblings |
+     *
+     * The last row is the general rule, written down once in
+     * `docs/map/invariant/a-layer-ends-what-it-exclusively-holds.md`: a layer ends what it
+     * exclusively holds. Composing is simply how this object comes to be the only holder.
+     *
+     * **"Sole tenant" throughout this file means exactly this flag being true** — a terminal that
+     * composed its surface and is therefore the only one on it. The term used to be defined by the
+     * `ownsExtent` option and its guard; #802 deleted both, so it is anchored here instead. It
+     * describes a state that holds **by construction**, not one anything checks at runtime.
+     *
+     * **This used to be mirrored on the surface** as an `ownsExtent` option, with a guard refusing a
+     * second tenant. #802 deleted both: the guard defended a state that cannot be constructed, since
+     * the surface it protected is unreachable. `test/published-seam.types.ts` §3 pins that
+     * unreachability, so the deletion is falsifiable rather than assumed.
      */
-    private readonly ownsSurface: boolean,
+    private readonly composedSurface: boolean,
     /** The one grid this widget owns (#773). A `Terminal` is one terminal, so this is a constant for
      * the object's life — what changed at renderer 0.15.0 is that it has to be *said*, on every call
      * that acts on a terminal rather than on the surface. */
@@ -820,7 +841,7 @@ export class JustermRenderer implements Renderer {
     // The surface is composed HERE, which is what makes this the single-terminal convenience path
     // rather than the general one (#775): a host wanting two terminals builds the surface itself
     // with `TerminalSurface.open` and attaches to it with `attach` above. What this method composes,
-    // the object it returns ends — see the `ownsSurface` constructor parameter.
+    // the object it returns ends — see the `composedSurface` constructor parameter.
     // **Both wasm modules load in parallel**, as they did before the surface existed. Splitting the
     // old `Promise.all` across two objects made them serial, which is pure startup latency: the
     // decoder's import is started here and `build`'s `await` on it then resolves out of the module
@@ -848,7 +869,7 @@ export class JustermRenderer implements Renderer {
    */
   private static async build(
     surface: TerminalSurface<RendererBackend>,
-    ownsSurface: boolean,
+    composedSurface: boolean,
     opts: AttachedRendererOptions,
   ): Promise<JustermRenderer> {
     // Dynamic import (see class doc for the init-race reason). Only the decoder now — the renderer
@@ -865,9 +886,6 @@ export class JustermRenderer implements Renderer {
     // The values are the same ones the setters used, defaults included, so the initial fit is still
     // computed at the consumer's final cell.
     //
-    // `ownsExtent`: this terminal sizes the shared drawing buffer to its own grid, which is #331's
-    // exactness and is available only while it is the surface's only tenant. The surface enforces
-    // that — a second `addGrid` on this surface throws rather than silently clobbering the buffer.
     const gridId = surface.addGrid({
       paletteColors,
       defaultFg: t.defaultFg,
@@ -876,10 +894,9 @@ export class JustermRenderer implements Renderer {
       fontSize: opts.fontSize,
       letterSpacing: opts.letterSpacing ?? 0,
       lineHeight: opts.lineHeight ?? 1,
-      ownsExtent: ownsSurface,
     });
     try {
-      return await JustermRenderer.assemble(surface, ownsSurface, opts, gridId, decoder, paletteColors);
+      return await JustermRenderer.assemble(surface, composedSurface, opts, gridId, decoder, paletteColors);
     } catch (e) {
       // A grid is GPU memory — a VAO, an instance buffer and a refcount on its configuration's atlas
       // (4.2 MiB at an 8x16 cell, 12.8 MiB at 15x30 on a dpr-2 display, measured for #773's follow-up).
@@ -899,7 +916,7 @@ export class JustermRenderer implements Renderer {
    */
   private static async assemble(
     surface: TerminalSurface<RendererBackend>,
-    ownsSurface: boolean,
+    composedSurface: boolean,
     opts: AttachedRendererOptions,
     gridId: number,
     decoder: typeof import("justerm-wasm-decode"),
@@ -960,7 +977,7 @@ export class JustermRenderer implements Renderer {
     const instance = new JustermRenderer(
       backend,
       surface,
-      ownsSurface,
+      composedSurface,
       gridId,
       (ansi) => decoder.buildPalette(ansi),
       palette,
@@ -1369,7 +1386,7 @@ export class JustermRenderer implements Renderer {
     // shader lays out and the buffer holding it — and it is available only while this grid is the
     // one thing on the canvas. A terminal sharing a surface leaves the buffer to whoever measured
     // the container, and takes its rect from `setViewportRect` instead.
-    if (this.ownsSurface) {
+    if (this.composedSurface) {
       this.surface.resizeSurface(
         cols * this.backend.cell_width(this.grid),
         rows * this.backend.cell_height(this.grid),
@@ -1478,7 +1495,8 @@ export class JustermRenderer implements Renderer {
    * `cols`/`rows`, so a browser drawing-buffer clamp (#339) cannot desync the grid the consumer
    * drives its engine and frames at from the grid the buffer can hold.
    *
-   * **That guarantee is the sole tenant's** (#775). A terminal sharing a surface occupies part of a
+   * **That guarantee belongs to a terminal that composed its surface** (#775) — held by
+   * construction rather than enforced, see `composedSurface`. A terminal sharing a surface occupies part of a
    * buffer it did not ask for, so the read-back in {@link applyGrid} compares its columns against the
    * whole canvas and never shrinks it; the grant is the host's to read from
    * {@link TerminalSurface.cssSize} after it sizes the surface. This still answers what `resizeGrid`
@@ -1603,7 +1621,7 @@ export class JustermRenderer implements Renderer {
    * {@link TerminalSurface.present} directly.
    */
   render(): void {
-    if (this.ownsSurface) this.surface.present();
+    if (this.composedSurface) this.surface.present();
     else this.surface.requestRender();
   }
 
@@ -1936,6 +1954,6 @@ export class JustermRenderer implements Renderer {
     // down rather than here. On the `create` path this object is the surface's only holder; on the
     // `attach` path it is not, and ending a shared surface would take down every sibling drawing on
     // it.
-    if (this.ownsSurface) this.surface.dispose();
+    if (this.composedSurface) this.surface.dispose();
   }
 }
