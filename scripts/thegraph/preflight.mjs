@@ -16,6 +16,11 @@ import { fileURLToPath } from "node:url";
 
 const HERE = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
+/** Splits a child process's stdout into lines, tolerating CRLF. Written once here rather than at
+ *  each call site below. */
+const NL = /\r?\n/;
+
+
 const results = [];
 const ok = (name, detail) => results.push({ level: "ok", name, detail });
 const warn = (name, detail, fix) => results.push({ level: "warn", name, detail, fix });
@@ -72,8 +77,27 @@ if (!refsDir || !existsSync(refsDir)) {
   if (existsSync(cite)) {
     const r = run("node", [cite, "--pins"], { cwd: mainCheckout });
     const out = `${r.stdout || ""}${r.stderr || ""}`.trim();
-    if (r.status === 0) ok("pins", out.split("\n").slice(-1)[0] || "cite.mjs --pins clean");
-    else bad("pins", out.split("\n").slice(-3).join(" | "), "a moved pin makes every recorded file:line unverifiable at once");
+    // Split once, outside the branch. The failure arm reads `rows` too, and it escaped a
+    // ReferenceError only because `offenders` is non-empty whenever there is anything to report —
+    // so the `||` fallback short-circuited past it on every path that had ever run.
+    const rows = out.split(NL);
+    if (r.status === 0) {
+      // Count what cite ACTUALLY verified, not what is on disk. `trees.length` is the directory
+      // count, and `../.refs/` may hold checkouts this repo does not pin (it does) — reporting
+      // those as "matching" would be a success line making a claim nothing checked.
+      const matched = rows.filter((l) => /matches pin/.test(l)).length;
+      const unpinned = trees.filter((t) => !rows.some((l) => l.trim().startsWith(t + " ")));
+      ok("pins", `${matched} tree(s) verified against the recorded SHAs` +
+        (unpinned.length ? `  (present but not pinned, so not checked: ${unpinned.join(", ")})` : ""));
+    } else {
+      // Show the rows that FAILED, not the last few. A tail printed the three MATCHING trees while
+      // the mismatched one scrolled off — a failure message describing the healthy part of the
+      // system, which is worse than no message. Caught by mutating a pin, never by reading it: the
+      // check itself was correct throughout, and only its report was wrong.
+      const offenders = rows.filter((l) => /!=|NO PIN/.test(l)).map((l) => l.trim());
+      bad("pins", offenders.join(" | ") || rows.slice(-1)[0],
+        "a moved pin makes every recorded file:line unverifiable at once, and nothing else reports it");
+    }
   } else {
     warn("pins", "cite.mjs not found — SHAs unverified", "pins were not checked; this is not a pass");
   }
