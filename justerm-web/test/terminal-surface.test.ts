@@ -32,7 +32,12 @@ class FakeBackend implements SurfaceBackend {
     this.removed.push(grid);
   }
   setDevicePixelRatio(dpr: number): void {
-    this.calls.push(`setDevicePixelRatio(${dpr})`);
+    // The renderer **drops** a density notification that arrives while the context is lost, rather
+    // than queueing it — `restore()` re-reads the live ratio instead (#325). Modelled rather than
+    // ignored, so a test that constructs the mid-loss case is asserting the case its comment
+    // describes: without this the `contextLost` line in that test is a dead variable and deleting it
+    // leaves the test green.
+    this.calls.push(`setDevicePixelRatio(${dpr})${this.contextLost ? "-dropped" : ""}`);
   }
   resizeSurface(width: number, height: number): void {
     this.calls.push(`resizeSurface(${width},${height})`);
@@ -129,12 +134,12 @@ interface Harness {
   dpr: { value: number };
 }
 
-function harness(): Harness {
+function harness(initialDpr = 1): Harness {
   const backend = new FakeBackend();
   const canvas = new FakeCanvas();
   const raf = new Raf();
   const queries: FakeQuery[] = [];
-  const dpr = { value: 1 };
+  const dpr = { value: initialDpr };
   const deps: SurfaceDeps = {
     backend,
     canvas,
@@ -478,6 +483,149 @@ describe("TerminalSurface — density", () => {
 
     expect(backend.calls).toContain("setDevicePixelRatio(2)");
     expect(reapplied).toEqual([a.id]);
+  });
+
+  it("tells the host last, after every terminal has re-derived", () => {
+    // The order this method's doc-comment claims and nothing pinned: a host re-measuring inside the
+    // handler must be measuring against the new cell rather than racing it. Recorded through the
+    // backend's own call log so the claim is about SEQUENCE, not about the handler having fired.
+    const { surface, backend, queries, dpr } = harness();
+    const a = surface.addGrid();
+    a.onReapply(() => backend.calls.push("reapply"));
+    surface.onDensityChange((d) => backend.calls.push(`density(${d})`));
+
+    dpr.value = 2;
+    for (const l of [...(queries.at(-1)?.listeners ?? [])]) l();
+
+    expect(backend.calls.slice(-4)).toEqual([
+      "setDevicePixelRatio(2)",
+      "reapply",
+      "render",
+      "density(2)",
+    ]);
+  });
+
+  it("tells the host when a restore adopts a density that moved while the context was dead", () => {
+    // #808. `restore()` re-reads the LIVE ratio and re-bakes at it, because a density notification
+    // arriving during a loss is dropped rather than queued — so a restore is the one density
+    // adoption with no setter behind it. A SOLE tenant repairs itself (`reapplySurface` re-derives
+    // its own buffer, #325); a SHARED one cannot, because the buffer and every viewport rect are
+    // the host's, in device px at the ratio that just stopped being true (ADR-0021 D3).
+    const { surface, canvas, backend, dpr } = harness();
+    const a = surface.addGrid();
+    a.onReapply(() => backend.calls.push("reapply"));
+    surface.onDensityChange((d) => backend.calls.push(`density(${d})`));
+
+    dpr.value = 2;
+    canvas.emit("webglcontextrestored");
+
+    // Told, once, with the live ratio…
+    expect(backend.calls.filter((c) => c.startsWith("density("))).toEqual(["density(2)"]);
+    // …and told LAST, for the same reason the setter tells last: the renderer rebuilds inside the
+    // first `render()`, so anything the host re-measures before that reads the PRE-restore cell.
+    expect(backend.calls.slice(-4)).toEqual(["render", "reapply", "render", "density(2)"]);
+  });
+
+  it("says nothing when a restore adopts the density the host already has", () => {
+    // The half that makes this "the ratio we last announced" rather than "announce on every
+    // restore". A spurious notification is not free: the host's handler re-sizes the drawing
+    // buffer, and a resized buffer is a cleared one — so an unconditional announce would blank
+    // every terminal on the surface once per context loss.
+    const { surface, canvas, backend } = harness();
+    surface.onDensityChange((d) => backend.calls.push(`density(${d})`));
+
+    canvas.emit("webglcontextrestored");
+
+    expect(backend.calls.filter((c) => c.startsWith("density("))).toEqual([]);
+    // The side condition that keeps the assertion above from passing vacuously: the restore ran.
+    expect(backend.calls.filter((c) => c === "render")).toHaveLength(2);
+  });
+
+  it("seeds the announced ratio from the live one, not from 1", () => {
+    // A surface opened on a Retina display starts at 2, and the host sized its buffer at 2. Seeding
+    // the field with a literal would make that surface's first restore announce a change nobody
+    // made — the mutation this test exists to redden.
+    const { surface, canvas, backend } = harness(2);
+    surface.onDensityChange((d) => backend.calls.push(`density(${d})`));
+
+    canvas.emit("webglcontextrestored");
+
+    expect(backend.calls.filter((c) => c.startsWith("density("))).toEqual([]);
+  });
+
+  it("keeps owing the host a move that landed before it registered", () => {
+    // The field is *"the density this surface last told the host about"*, so it may only advance when
+    // somebody was in fact told. Recording unconditionally would let a move that landed in the window
+    // between `open()` and the host's registration read afterwards as agreement — and there is no
+    // second `webglcontextrestored` for one loss, so the debt would never be collected.
+    //
+    // The window is production shape, not a contrivance: `demo/shared-surface.ts` constructs the
+    // surface and registers the handler either side of two awaited `attach()` calls, each awaiting a
+    // wasm decoder init.
+    const { surface, canvas, backend, queries, dpr } = harness();
+
+    dpr.value = 2;
+    for (const l of [...(queries.at(-1)?.listeners ?? [])]) l();
+    surface.onDensityChange((d) => backend.calls.push(`density(${d})`));
+    canvas.emit("webglcontextrestored");
+
+    expect(backend.calls.filter((c) => c.startsWith("density("))).toEqual(["density(2)"]);
+  });
+
+  it("says nothing on a SECOND restore at a ratio the first one already announced", () => {
+    // The half of the restore path the announce-side tests cannot see: notifying without RECORDING
+    // passes every one of them, because they each fire one restore. Two losses in a row is an
+    // ordinary case — it is what the renderer's restore deadline exists for.
+    const { surface, canvas, backend, dpr } = harness();
+    surface.onDensityChange((d) => backend.calls.push(`density(${d})`));
+
+    dpr.value = 2;
+    canvas.emit("webglcontextrestored");
+    canvas.emit("webglcontextrestored");
+
+    expect(backend.calls.filter((c) => c.startsWith("density("))).toEqual(["density(2)"]);
+  });
+
+  it("records the ratio it was GIVEN, not the one the display is at", () => {
+    // `setDevicePixelRatio` is public, so a host may adopt a density the display is not at — and what
+    // the field holds is what the host was *told*, which is the argument. Recording the live ratio
+    // instead would leave the field describing a display nobody was told about, and the restore that
+    // then adopts the live ratio would stay silent about a real move.
+    //
+    // This is also the only test here that drives the setter AS a public setter: the others reach it
+    // through `DprWatcher`, where the argument and the live ratio are equal by construction.
+    const { surface, canvas, backend, dpr } = harness();
+    surface.onDensityChange((d) => backend.calls.push(`density(${d})`));
+
+    surface.setDevicePixelRatio(3);
+    expect(dpr.value).toBe(1);
+    canvas.emit("webglcontextrestored");
+
+    expect(backend.calls.filter((c) => c.startsWith("density("))).toEqual([
+      "density(3)",
+      "density(1)",
+    ]);
+  });
+
+  it("does not re-announce a density the setter already announced during the loss", () => {
+    // The interaction, and the reason this is a REMEMBERED value rather than a comparison against
+    // the backend. A watcher change delivered while the context is dead reaches `setDevicePixelRatio`
+    // — the renderer drops it, but the host is told and re-supplies at the new ratio. `restore()`
+    // then adopts that same live ratio. Announcing again would make the host re-measure and re-size
+    // the buffer a second time, for a move it has already paid for.
+    const { surface, canvas, backend, queries, dpr } = harness();
+    surface.onDensityChange((d) => backend.calls.push(`density(${d})`));
+
+    backend.contextLost = true;
+    dpr.value = 2;
+    for (const l of [...(queries.at(-1)?.listeners ?? [])]) l();
+    backend.contextLost = false;
+    canvas.emit("webglcontextrestored");
+
+    // The renderer really did drop it — without this the test is "setter, then restore at the same
+    // ratio", which is a weaker claim wearing this one's comment.
+    expect(backend.calls).toContain("setDevicePixelRatio(2)-dropped");
+    expect(backend.calls.filter((c) => c.startsWith("density("))).toEqual(["density(2)"]);
   });
 });
 

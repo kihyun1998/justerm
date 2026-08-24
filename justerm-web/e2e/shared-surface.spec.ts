@@ -25,7 +25,7 @@ import { readAsyncProbe as harvest } from "./probe";
  */
 
 /** The probes `demo/shared-surface.ts` installs. */
-type AsyncProbe = "__independenceProbe" | "__surfaceLossProbe";
+type AsyncProbe = "__independenceProbe" | "__surfaceLossProbe" | "__restoreDensityProbe";
 
 /** This page's typed alias over the shared park-and-harvest helper (#731; extracted in #776). */
 const readAsyncProbe = <K extends AsyncProbe>(
@@ -353,6 +353,94 @@ test("a density change re-places every pane, not just the buffer (ADR-0021 D3)",
   // …and both panes are still painting after the move, rather than merely holding tidy numbers.
   expect(after.a.centre).toBe(BG_A);
   expect(after.b.centre).toBe(BG_B);
+});
+
+test("a restore that adopts a moved density tells the host, and pane B survives it (#808)", async ({
+  page,
+}) => {
+  // **The one density adoption with no consumer call behind it.** `restore()` re-reads the LIVE
+  // ratio and re-bakes at it, because a notification arriving during a loss is dropped rather than
+  // queued (`docs/map/territory/gl-context-lifecycle.md`). A SOLE tenant repairs itself —
+  // `reapplySurface` re-derives its own drawing buffer, which is what #325 fixed. A SHARED one
+  // cannot: the buffer and every viewport rect are the host's, in device px at the ratio that has
+  // just stopped being true (ADR-0021 D3), and until #808 nothing told it.
+  //
+  // The setup is only expressible because of a negative result: CDP moves `devicePixelRatio` without
+  // dispatching a `change` event (#325, `reference-facts.md`), so the watcher genuinely cannot see
+  // it and the restore is the only path left — which is also the real case, a monitor switch that
+  // resets the GPU, with the timing made deterministic.
+  const boot = await page.evaluate(() => window.__surfaceProbe!());
+  expectContextAlive(boot);
+  expect(boot.b.centre).toBe(BG_B);
+
+  // **`width: 0, height: 0` disables the SIZE override, and that is load-bearing rather than tidy.**
+  // The #325 negative result is about a density move *alone*; moving the viewport in the same call
+  // re-evaluates the media queries and Chromium then **does** dispatch `change` — measured here,
+  // 1280x720 -> 1280x900 at the same `deviceScaleFactor: 2` took the cell from 11x23 to 22x47 before
+  // any loss, while both size-preserving variants left it at 11x23 with `onDensityChange` at 0. The
+  // sibling test in `demo.spec.ts` passes 1280x720, which happens to equal this suite's viewport, so
+  // it has been size-preserving by coincidence rather than by intent.
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send("Emulation.setDeviceMetricsOverride", {
+    width: 0,
+    height: 0,
+    deviceScaleFactor: boot.dpr * 2,
+    mobile: false,
+  });
+  await page.waitForTimeout(300);
+
+  const r = await readAsyncProbe(page, "__restoreDensityProbe");
+
+  // THE PRECONDITION, asserted rather than assumed. The override moved the ratio and the widget has
+  // adopted nothing: same cell, same buffer, nobody told. If Chromium ever starts dispatching the
+  // `change` event this section stops describing a restore and says so here instead of passing for
+  // the wrong reason.
+  expect(r.injected.dpr).toBe(boot.dpr * 2);
+  expect(r.injected.cellH).toBe(boot.b.cellH);
+  expect(r.injected.notices).toBe(0);
+
+  // …and the restore DID adopt it, or every assertion below is vacuous.
+  expect(r.after.cellH).toBeGreaterThan(r.injected.cellH);
+
+  // THE CLAIM. Told, exactly once, and told inside the restore's own turn — read by a listener
+  // registered after the surface's, with nothing presented by the probe, because presenting is what
+  // runs the renderer's deferred rebuild and a probe that presents supplies what it is measuring
+  // (#776).
+  expect(r.noticesInRestoreTurn).toBe(1);
+  expect(r.after.notices).toBe(1);
+
+  // What the host then paid, and the numbers are the point: the buffer it re-sized, and pane B's
+  // rect re-measured at the new ratio rather than replayed at the old one.
+  expect(r.after.bufW).toBe(r.injected.bufW * 2);
+  expect(r.after.bufH).toBe(r.injected.bufH * 2);
+  expect(r.after.bRectX).toBe(boot.b.rectX * 2);
+  expect(r.after.bRectY).toBe(boot.b.rectY * 2);
+  // Anti-vacuity on the rect: pane B's origin is non-zero, so doubling it is observable at all —
+  // pane A's is `(0, 0)`, which no ratio moves.
+  expect(boot.b.rectX).toBeGreaterThan(0);
+
+  // AND THE PIXEL, which is what makes this a survival claim rather than tidy arithmetic. Measured
+  // before the fix: pane B's 34 columns at the doubled cell start at device x=500 on a buffer nobody
+  // grew past 900, so the scissor discards all of it and the centre reads `0,0,0,0` — no error, and
+  // pane A narrow enough to still fit and look fine, which is what makes the failure quiet.
+  expect(r.after.contextLost).toBe(false);
+  expect(r.after.bCentre).toBe(BG_B);
+  // Pane A is the control: it fits either way, so it says the restore repainted at all rather than
+  // that the notification arrived.
+  expect(r.after.aCentre).toBe(BG_A);
+
+  // And a point derived from the DOM at the live ratio, owing nothing to any number the page
+  // recorded — the reading that cannot be satisfied by a rect nobody sent (#775/#776).
+  const domCentre = await page.evaluate(() => {
+    const canvas = document.querySelector("#surface")!.getBoundingClientRect();
+    const box = document.querySelector("#pane-b")!.getBoundingClientRect();
+    const dpr = window.devicePixelRatio;
+    return window.__pixelAt!(
+      Math.round((box.left - canvas.left + box.width / 2) * dpr),
+      Math.round((box.top - canvas.top + box.height / 2) * dpr),
+    );
+  });
+  expect(domCentre).toBe(BG_B);
 });
 
 test("ending one terminal releases only its grid, and the survivor still recovers (#775)", async ({

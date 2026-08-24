@@ -222,6 +222,16 @@ Three named places it is already queued to recur:
   **What #325 did not settle is this note's open question.** It adopts the new ratio and re-applies
   the canvas box; it adds no invalidation *signal*, so a consumer's own readers are still on the
   honour system. That remains spine #630's.
+  **One signal now exists, and naming its scope is what keeps it from being read as the answer**
+  (#808, 2026-08-24). `TerminalSurface.onDensityChange` fires after a context restore that adopted a
+  density which moved while the context was dead — the one adoption path with no setter behind it. It
+  is not the rejected renderer→consumer push and does not reopen that: it is **surface→host**, it
+  carries the *density* rather than the cell, and its readers are the device-px quantities only the
+  host can re-measure (ADR-0021 D3), not the nine cell readers this note is about. Those nine are
+  still discharged by shape, and were re-checked at #325. What #808 does establish is that the
+  membership test above has a second half on a shared surface: a value derived from the cell can also
+  live **outside** the widget, in a host that gave the renderer device px, and such a value has no
+  shape to fall back on — it can only be told.
 - ~~**#249 (inline preedit).**~~ **Landed 2026-08-03 (ADR-0028) and it did not recur, for a reason
   worth keeping.** The predicted mismatch was two readers of the cell on two refresh policies — the
   drawing at frame rate, the IME anchor at points of use. It did not arise because the *drawing* never

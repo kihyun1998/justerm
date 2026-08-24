@@ -170,6 +170,22 @@ machine that decides what the renderer does in between.
   buffer as asked, so a restore that adopts a new density leaves a grid too large for the buffer
   holding it until the widget re-derives. Caught by this territory's own e2e rather than by reading
   — the #325 test went red at the migration with a 1369-tall grid inside a 703-tall buffer.
+  **And all three of those steps are the SOLE tenant's, which is the half #808 found.** They run
+  inside `reapplySurface`'s `composedSurface` branch, so a terminal sharing a canvas gets none of
+  them: the buffer and every viewport rect belong to whoever measured the container (ADR-0021 D3),
+  in device px at a ratio that has just stopped being true. Until #808 that host was never told —
+  `onDensityChange` was `setDevicePixelRatio`'s alone, and a restore calls no setter. The surface now
+  keeps the density it last **announced** and compares it against the live one after the rebuild,
+  which is also what keeps the notification from firing on a restore that adopted nothing. Measured
+  on `demo/shared-surface.html` (dpr 1 → 2, one lose/restore, `onDensityChange` calls **0**): the
+  cell went 6x12 → 11x23 while the buffer stayed `900x340` under a surface now reporting `450x170`
+  CSS, so the right-hand pane's 63 columns started at device x=500 and ran past the buffer's edge —
+  the scissor discarded all of it and its centre read `0,0,0,0`. No error, and the left-hand pane
+  narrow enough to still fit and look correct, which is what made it quiet.
+  What the announcement does **not** do is repaint: the host's obligations end with a `resizeSurface`,
+  and a resized buffer is a cleared one that nothing here presents afterwards. That is the same shape
+  `setDevicePixelRatio` has had since #775 and is not #808's — recorded under `## Known holes`.
+
   Measured before the fix: dpr 1 → 2 across a loss left a `2556x1369` buffer under a canvas styled
   `1278x703`. Note which half was wrong — the **width** was accidentally correct because the cell
   doubled exactly (9 → 18), and only the height was off (`703` against `684.5`, the cell having gone
@@ -326,6 +342,19 @@ eager rather than as shapes to follow.
   model above. (`render`/`action()` was the other; #695 closed it.) Nobody has been asked whether it
   is worth fixing — the answer turns on whether the clearance is a design or an accident, and that
   is a judgement, not a measurement.
+- **Nothing presents after the host pays a density change's obligations, on either path** (#808,
+  measured 2026-08-24). `onDensityChange`'s contract asks the host for a `resizeSurface` and a fresh
+  rect per terminal; `resizeSurface` re-creates the drawing buffer, which **clears** it, and neither
+  `setDevicePixelRatio` nor the restore handler presents after the handler returns — both present
+  *before* it. `setViewportRect` and `resize` reach `resizeGrid` only. So a host that does exactly
+  what the README lists is left with a blank canvas until something else happens to drive a frame.
+  Measured on `demo/shared-surface.html` by deleting the one `pane.push()` its handler ends with: the
+  pane's centre went from `18,58,36,255` to `0,0,0,0` one rAF after the restore with nothing
+  presented. **The demo cannot see this**, because that push schedules the frame the contract does
+  not require — the #776 shape, where the proof supplies what the contract leaves out. Pre-dates
+  #808: `setDevicePixelRatio` has had it since #775, and #808 only adds a second path through it.
+  Nobody has been asked whether the surface should present after the announcement or the contract
+  should say "and drive a frame".
 - **No reference comparison at all**, and the usual comparison set does not apply cleanly — see
   ADR-0027's *Named prior art* for why the absence is itself the finding.
 - **The interaction with the upload planner is stated here and nowhere else.** That a restore must

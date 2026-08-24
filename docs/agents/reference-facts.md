@@ -361,6 +361,26 @@ listener half cannot be proven end-to-end in Playwright and is unit-tested inste
 *adoption* half is driven through a test hook, the way `justerm-renderer/demo/dpr-change.html`
 already does. Holds as long as Chromium's override keeps that split.
 
+**⚠ The negative result has a validity condition, and it took a wrong conclusion to find it (#808,
+measured 2026-08-24, same headless Chromium).** It holds for a density move *alone*. Change the
+**viewport size in the same `setDeviceMetricsOverride` call** and the queries are re-evaluated *and*
+`change` **is** dispatched — measured on `demo/shared-surface.html` at a fixed `deviceScaleFactor: 2`,
+three variants:
+
+| `width`/`height` | viewport moves? | `change` fires? | cell after 300ms |
+|---|---|---|---|
+| `0` / `0` (size override disabled) | no | no | `11x23` — unchanged |
+| the page's own `1280x720` | no | no | `11x23` — unchanged |
+| `1280x900` | **yes** | **yes** (exact `Xdppx` *and* `(min-resolution: 1.5dppx)`) | `22x47` — adopted |
+
+Two things follow. First, a harness that wants the watcher **blind** — which is the only way to reach
+a restore that adopts an unannounced density — must hold the size fixed; `demo.spec.ts`'s #325 restore
+test passes `1280x720`, which equals that suite's viewport, so it has been size-preserving by
+coincidence rather than by intent. Second, and the reason this row is worth its space: the first
+reading of the `1280x900` run was *"the #325 negative result is now false"*, filed against a run that
+had moved **two** variables. The result stands; the conclusion drawn from an uncontrolled variable did
+not.
+
 ### Cursor policy knobs — where each reference puts them (#580, verified 2026-08-10)
 
 Pins the two constants `justerm-renderer` borrowed for its cursor policy, plus where each reference
