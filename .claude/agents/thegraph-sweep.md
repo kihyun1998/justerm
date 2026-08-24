@@ -29,31 +29,21 @@ Do not act on it.**
 | 7 | A producer API with no consumer call site | After a new published export, ask what call sites it has downstream and treat **none** as the finding. Cross the renderer's `js_name` list and the decoder's getters against `rg` over `justerm-web/src` |
 | 8 | Now-false rationale | Walk the recent PR / issue / release reasoning and retract what the new behaviour falsified. The surviving reasons are usually the transitive ones |
 
-### Surface 1 has derivations the map hub already owns — run them, do not re-invent them
+### Surface 1's derivations and its absence rule both live in the hub — go there
 
-`docs/map/README.md` § *Current coverage* replaced its stored "what has no note yet" list with the
-**commands that derive it**, which is the same repair this file's own hit-count rule is about. Use
-them rather than eyeballing the directory:
+`docs/map/README.md` § *Current coverage* owns the queries that derive what has no note, the record
+of a time one of them was **silently wrong** (a character class that omitted digits reported zero,
+and zero read as clean), and the rule that settles what an absent note *means*. Run its commands
+rather than eyeballing the directory, and read its absence rule rather than judging: an area that is
+only a plan correctly has no territory, while code you are changing that nobody mapped is a finding —
+carried as a candidate, never written unasked, because coverage may lag.
 
-```
-# territories a note points at but nobody has written
-rg -o '\*\*[a-zA-Z0-9 /&-]+\*\* \*\(no (territory )?note yet\)\*' docs/map --no-filename | sort -u
-# notes whose sections are declared empty — a valid state, and worth knowing the count of
-rg -l '^\*\*None\.\*\*' docs/map/territory/
-```
+Not restated here on purpose. The hub's version is better — it carries the measurement — and a second
+copy is what goes stale, which is the failure this whole surface exists to catch.
 
-**A zero from the first command is not "full coverage", and the distinction is this file's own
-hit-count rule pointed at itself.** It finds only the gaps a note *declared* — a `**thing**
-*(no territory note yet)*` marker someone wrote on purpose. A territory nobody ever mentioned
-produces no marker and therefore no hit, so the command answers *"nothing dangling"* and never
-*"nothing missing"*. Measured 2026-08-24: it returns **zero**, with the phrase present only in the
-hub's own prose. Report it as the narrow claim it is.
-
-**Coverage may lag; promotion may not** — that asymmetry is the graph's, not a preference. The first
-site to hit a cross-cutting fact is where it is discovered, and at that moment no note exists, so a
-map that records invariants only after the third rediscovery is a post-hoc archive. A dangling
-reference above is a *reader* problem; a missing invariant note is a **defect that will be found
-again**.
+**What does *not* lag is promotion**, and that asymmetry is the one thing to keep straight while
+sweeping: coverage is a report, promotion is a constraint. A cross-cutting fact this change revealed
+does not land until its `invariant/` note does.
 
 Schema and links are already gated in CI (`check-map-note.mjs`, `check-map-links.mjs`), so do not
 re-check those by hand — they fail the build on their own. Nothing gates coverage, which is why it

@@ -115,6 +115,22 @@ gh api repos/kihyun1998/justerm/issues/<spine>/sub_issues \
   in, which is exactly why they are not visible from it.
 - An empty `## Governing decisions` is a valid entry, not a defect.
 
+**If no territory matches, that is an exit this node owes an answer for — and the hub already has
+it.** Read [`README.md` § *Current coverage*](../map/README.md#current-coverage): it settles whether
+an absent note is a **correct state** (the area is only a plan; the epic is its roster, and a
+territory appears when the first slice lands) or a **finding** (you are changing code nobody has
+mapped, and you are the first person standing there with the evidence). The finding does not block —
+coverage may lag — so it is carried as a candidate to `batch`, never written unasked.
+
+Two failure shapes worth naming before you read an empty result as clean:
+
+- **Your search may be the thing that was empty.** Search by the **artifact** — the module, the wire
+  field, the predicate — never by the feature name, for the same reason `search` states it: a
+  territory rarely shares the vocabulary of the change that lands on it.
+- **The invariant half does not lag.** A cross-cutting fact this change reveals is `sweep`'s
+  obligation and it *blocks*. Coverage is a report; promotion is a constraint. Do not let the first
+  excuse the second.
+
 ### `reference` — 2 source classes, **none summarized**
 
 The summarizing route is **banned by name**: `WebFetch` drops method bodies from large files (an

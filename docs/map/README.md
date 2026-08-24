@@ -192,6 +192,28 @@ Territories are **not** bounded by crate. Decoration spans core's wire, the rend
 widget; cursor is split with the consumer by design. Renderer and web notes attach to territories
 that already exist here rather than forming a second map.
 
+**When a change lands on ground with no note, and what that means.** This is the question a reader
+actually arrives with, and until 2026-08-24 this section answered only its easier half — how to find
+a *dangling reference*, which is a note pointing at an area nobody wrote. The harder half is an area
+nobody has ever pointed at, which produces no marker and therefore no hit, so the query above says
+*"nothing dangling"* and never *"nothing missing"*.
+
+The rule, so an absent note is not read as a backlog item by default:
+
+- **An absent territory is a correct state while the area is only a plan.** Unbuilt work lives in the
+  tracker as an epic, which is its roster; a territory appears **when the first slice lands**, not
+  when the epic opens. Writing one earlier means maintaining a description of something that does not
+  exist yet, and its `## Code` — the section that makes a note checkable — would have nothing to name.
+- **An absent territory under code you are changing is a finding**, and it is *this* change's finding
+  rather than a backlog item, because you are the first person standing there with the evidence in
+  hand. It does **not** block: coverage may lag (§ Maintenance's first obligation), so it is carried
+  as a candidate for the maintainer rather than written unasked.
+- **A cross-cutting invariant the change reveals may not lag, and that is the asymmetry to keep
+  straight.** Coverage is a report; promotion is a constraint. The first site to hit such a fact is
+  where it is discovered and no node exists at that moment, so the change does not land until the
+  `invariant/` note does. `abs_floor` is the measured case — it held at four sites, was drawn at
+  none, and was found three separate times (#113 → #144 → #207).
+
 What has no note yet. Prioritise by **how many notes point at it** — a dangling reference is a reader
 hitting a dead end, and it is a better signal than commit frequency (which misses everything that
 never changes; see the tombstone above). Ask:
