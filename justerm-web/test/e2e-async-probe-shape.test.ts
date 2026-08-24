@@ -28,14 +28,43 @@
  * copy that goes stale, and the one thing this check must not do is silently stop covering a probe
  * added after it was written.
  */
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 const read = (rel: string): string =>
   readFileSync(new URL(rel, import.meta.url), "utf8").replace(/\r\n/g, "\n");
 
-const demoSrc = read("../demo/main.ts");
-const specSrc = read("../e2e/demo.spec.ts");
+/**
+ * **The file sets are enumerated from the directory, never listed** — the same reason the hook names
+ * below are derived rather than written down, applied one level up.
+ *
+ * This file read `demo/main.ts` and `e2e/demo.spec.ts` by name until #776, which added the second
+ * page/spec pair. Measured before changing it: with a deliberate `await page.evaluate(() =>
+ * window.__surfaceLossProbe!())` sitting in the new spec, all three checks below stayed **green**.
+ * The new hooks were not in `hooks` (they are declared in the other page) and the new call was not
+ * in `calls` (it is in the other spec), so the guard was not weakened by the new file — it simply
+ * did not see it. That is precisely the failure this file's own header forbids: *"the one thing this
+ * check must not do is silently stop covering a probe added after it was written."* A name in a
+ * `read()` call is that stale list wearing a different shape from the array the header warns about.
+ *
+ * **Every page's hooks are checked against every e2e module's calls**, rather than pairing a spec to
+ * the page it drives. Pairing is not statically derivable — a spec picks its page at `goto` time and
+ * `test.use({ bootUrl })` moves it — while the union is strictly stronger: the only thing it can
+ * flag that a pairing would not is a spec resolving another page's hook inside an `evaluate`, which
+ * is a defect under this rule wherever the hook was declared.
+ */
+const sourcesIn = (dir: string, keep: (f: string) => boolean): { name: string; src: string }[] =>
+  readdirSync(new URL(`../${dir}/`, import.meta.url))
+    .filter(keep)
+    .sort()
+    .map((name) => ({ name: `${dir}/${name}`, src: read(`../${dir}/${name}`) }));
+
+/** Every demo page's module. `.ts` only — the pages themselves are `.html` and declare nothing. */
+const demoSources = sourcesIn("demo", (f) => f.endsWith(".ts"));
+/** Every e2e module, specs **and** their helpers. `e2e/probe.ts` is in deliberately: it holds the
+ * park-and-harvest mechanism itself, so it is the one file where a regression would reinstate the
+ * hazard for every spec at once. */
+const e2eSources = sourcesIn("e2e", (f) => f.endsWith(".ts"));
 
 /**
  * Every promise-returning `window.__*` hook the demo declares.
@@ -119,24 +148,31 @@ const resolvesTo = (call: string, hook: string): boolean =>
   new RegExp(`(?:=>|return)window\\.${hook}(?![A-Za-z0-9_])`).test(call);
 
 describe("the e2e suite never awaits an unanchored in-page promise (#731)", () => {
-  const hooks = asyncHookNames(demoSrc);
-  const calls = evaluateCalls(specSrc);
+  const hooks = [...new Set(demoSources.flatMap((f) => asyncHookNames(f.src)))];
+  const calls = e2eSources.flatMap((f) =>
+    evaluateCalls(f.src).map((call) => ({ file: f.name, call })),
+  );
 
   // Non-vacuity first: both halves of the check must have found their material, or every
   // assertion below passes by describing nothing. This is the failure the check itself can have.
-  it("finds the demo's async hooks and the spec's evaluate calls", () => {
-    expect(hooks.length, "no `__x?: (…) => Promise<…>` found in demo/main.ts").toBeGreaterThan(5);
-    expect(calls.length, "no `.evaluate(` found in e2e/demo.spec.ts").toBeGreaterThan(20);
-    // …and that the two files talk about the same hooks at all, so a rename cannot empty this.
+  it("finds the demo pages' async hooks and the e2e modules' evaluate calls", () => {
+    // The enumeration found files at all. Without this the two counts below describe nothing, and a
+    // moved or renamed folder would read exactly like a codebase with no probes in it.
+    expect(demoSources.length, "no demo modules found").toBeGreaterThan(0);
+    expect(e2eSources.length, "no e2e modules found").toBeGreaterThan(0);
+    expect(hooks.length, "no `__x?: (…) => Promise<…>` found in any demo module").toBeGreaterThan(5);
+    expect(calls.length, "no `.evaluate(` found in any e2e module").toBeGreaterThan(20);
+    // …and that the two sides talk about the same hooks at all, so a rename cannot empty this.
+    const e2eText = e2eSources.map((f) => f.src).join("\n");
     expect(
-      hooks.some((h) => specSrc.includes(h)),
-      "the spec names none of the demo's async hooks",
+      hooks.some((h) => e2eText.includes(h)),
+      "the e2e modules name none of the demo pages' async hooks",
     ).toBe(true);
   });
 
   it("resolves no async hook inside an evaluate", () => {
-    const offenders = calls.flatMap((call) =>
-      hooks.filter((h) => resolvesTo(call, h)).map((h) => `${h} in ${call.slice(0, 90)}`),
+    const offenders = calls.flatMap(({ file, call }) =>
+      hooks.filter((h) => resolvesTo(call, h)).map((h) => `${h} in ${file}: ${call.slice(0, 90)}`),
     );
     expect(
       offenders,
@@ -148,7 +184,7 @@ describe("the e2e suite never awaits an unanchored in-page promise (#731)", () =
   it("passes no async callback to an evaluate", () => {
     // The other way in: an `async` callback returns a promise whatever its body does, and that one
     // has no anchor either.
-    const offenders = calls.filter((c) => /^\.evaluate(Handle)?\(async/.test(c));
-    expect(offenders.map((c) => c.slice(0, 90))).toEqual([]);
+    const offenders = calls.filter(({ call }) => /^\.evaluate(Handle)?\(async/.test(call));
+    expect(offenders.map(({ file, call }) => `${file}: ${call.slice(0, 90)}`)).toEqual([]);
   });
 });
