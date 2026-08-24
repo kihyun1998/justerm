@@ -23,6 +23,7 @@ import {
   StubFrameSource,
   Terminal,
   TerminalSurface,
+  viewportOrigin,
 } from "../src/index";
 import type { CellGeometry, Theme } from "../src/index";
 import type { DecodedFrame } from "../src/types";
@@ -329,6 +330,20 @@ surface.onDensityChange((dpr) => {
   surface.resizeSurface(Math.round(CANVAS.width * dpr), Math.round(CANVAS.height * dpr));
   for (const t of attached) {
     if (t.ended) continue;
+    // **The rect, explicitly.** `observeViewportRect` does not re-run on a density change — its
+    // triggers are two observed boxes and a scroll, and a `ResizeObserver` on the default box
+    // reports CSS pixels, which a density change does not move. So the origin it last sent is
+    // scaled by the OLD ratio, and nothing else will notice. `viewportOrigin` is exported for this:
+    // the host recomputes with the library's own arithmetic rather than a second copy of it.
+    const { x, y } = viewportOrigin(
+      { overlay: t.overlay.getBoundingClientRect(), canvas: canvas.getBoundingClientRect() },
+      dpr,
+    );
+    t.rect.x = x;
+    t.rect.y = y;
+    t.renderer.setViewportRect(x, y);
+    // …then the grid, because the cell moved too and this pane's box holds a different number of
+    // cells than it did. `resize` re-issues the viewport with the rect just set.
     t.renderer.resize(t.box.width, t.box.height);
     const { cols, rows } = t.renderer.terminalSize();
     t.pane.setGrid(cols, rows);

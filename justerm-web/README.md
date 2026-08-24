@@ -118,9 +118,33 @@ Two consequences are forced by WebGL binding one context to one canvas, and both
   when a box *changes* and never when an element *moves*. Drive `setViewportRect` yourself instead if
   you already know when your layout moves; what you must not do is neither, because a missed update
   is silent — the GL viewport stays where it was while the overlay moves off it.
-- **A density change invalidates every device-px number you gave.** Register
-  `surface.onDensityChange` and re-supply the surface size; `observeViewportRect` re-reads the ratio
-  on its own, so the rects take care of themselves.
+- **A density change invalidates every device-px number you gave — including the rects.** Register
+  `surface.onDensityChange`, and from it re-supply **both** the surface size and every terminal's
+  origin:
+
+  ```ts
+  import { viewportOrigin } from "justerm-web";
+
+  surface.onDensityChange((dpr) => {
+    surface.resizeSurface(cssWidth * dpr, cssHeight * dpr);
+    for (const [term, overlayEl] of panes) {
+      const { x, y } = viewportOrigin(
+        { overlay: overlayEl.getBoundingClientRect(), canvas: canvasEl.getBoundingClientRect() },
+        dpr,
+      );
+      term.setViewportRect(x, y);
+      term.resize(paneCssWidth, paneCssHeight); // the cell moved, so the grid may too
+    }
+  });
+  ```
+
+  **`observeViewportRect` will not do the rects for you, and this bullet claimed it would until
+  #776.** It computes at the live ratio, but nothing *re-runs* it on a density change: its three
+  triggers are a `ResizeObserver` on the overlay and the canvas, a capture-phase `scroll`, and one
+  call at setup. A `ResizeObserver` on the default box reports CSS pixels, and a density change moves
+  no CSS box — so it stays silent, and the last origin it sent is left scaled by the old ratio. On a
+  monitor switch a pane at CSS x=500 then draws at half its offset, over its left sibling, with no
+  error and every pixel plausible.
 
 Each terminal keeps its own font, palette, selection, cursor and decorations; two on the same font
 configuration share one glyph atlas, and the last one to leave releases it.
