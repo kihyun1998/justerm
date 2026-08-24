@@ -269,6 +269,30 @@ export class TerminalSurface<B extends SurfaceBackend = SurfaceBackend> {
    */
   private readonly contextLoss = new ContextLossRelay();
   private readonly dprWatcher: DprWatcher;
+  /** Reads the live display density, for {@link announcedDpr} to be compared against. */
+  private readonly currentDpr: () => number;
+  /**
+   * The density this surface last **told the host about** — not the one the renderer holds, and not
+   * the live one (#808).
+   *
+   * It is the surface's own fact, because the surface is where an announcement is first true: the
+   * renderer's copy answers *"what am I baking at"* and `currentDpr()` answers *"what is the display
+   * at"*, and neither of those is *"what does the host believe"*. Every device-px quantity the host
+   * gave — the drawing buffer's size and every viewport rect — was measured at this ratio, so the
+   * moment it stops matching the live one those numbers are stale and only an announcement can say so
+   * (ADR-0021 D3).
+   *
+   * Seeded from the live ratio rather than from `1`: a surface opened on a Retina display is already
+   * in agreement with a host that sized its buffer there, and nothing is owed.
+   *
+   * Named prior art: xterm.js's WebGL renderer keeps `_devicePixelRatio` for exactly this comparison
+   * — `if (this._devicePixelRatio !== this._coreBrowserService.dpr)`
+   * (`addons/addon-webgl/src/WebglRenderer.ts:186` @ `699f553`). What it does *not* do is consult it
+   * on a restore, and it does not have to: its restore rebuilds at the ratio it stored, while
+   * `justerm-renderer`'s re-reads the live one (#325). The mechanism is the reference's; the site is
+   * ours because the adoption is.
+   */
+  private announcedDpr: number;
   private readonly onContextRestored: () => void;
   /** The pending present's rAF id, or `undefined` when none is scheduled. */
   private presentId: number | undefined;
@@ -282,6 +306,8 @@ export class TerminalSurface<B extends SurfaceBackend = SurfaceBackend> {
     this.canvas = deps.canvas;
     this.raf = deps.raf;
     this.caf = deps.caf;
+    this.currentDpr = deps.currentDpr;
+    this.announcedDpr = deps.currentDpr();
 
     // Registered unconditionally and exactly once, whether or not a consumer opted in: the renderer's
     // `setOnContextLoss` takes a `Function` with no unset, so a later handler has nothing to register
@@ -312,6 +338,13 @@ export class TerminalSurface<B extends SurfaceBackend = SurfaceBackend> {
       this.present();
       this.reapplyAll();
       this.present();
+      // …and only now is it knowable WHICH density was adopted, because the rebuild happened inside
+      // the first `present()`. A sole tenant needs nothing further — `reapplyAll` re-derives its own
+      // buffer from its own grid (#325). A SHARED tenant cannot: the buffer and every viewport rect
+      // are the host's, in device px at a ratio that has just stopped being true, and no `change`
+      // event was ever dispatched for the host to have noticed on its own (#808).
+      const live = this.currentDpr();
+      if (live !== this.announcedDpr) this.announceDensity(live);
     };
     this.canvas.addEventListener("webglcontextrestored", this.onContextRestored);
   }
@@ -488,7 +521,13 @@ export class TerminalSurface<B extends SurfaceBackend = SurfaceBackend> {
     this.present();
     // Told LAST, after every terminal has re-derived what it can, so a host re-measuring inside this
     // handler is measuring against the new cell rather than racing it.
-    this.densityHandler?.(dpr);
+    //
+    // The ratio recorded is the ARGUMENT, not the live one: this is a public setter, so a host may
+    // adopt a density the display is not at, and what {@link announcedDpr} holds is what the host was
+    // told. It is recorded even when the renderer drops the call for a lost context — the host is
+    // still told, still re-supplies at this ratio, and the restore that later adopts the same live
+    // ratio then owes it nothing (#808).
+    this.announceDensity(dpr);
   }
 
   /**
@@ -517,6 +556,40 @@ export class TerminalSurface<B extends SurfaceBackend = SurfaceBackend> {
 
   private reapplyAll(): void {
     for (const lease of [...this.leases]) lease.reapply?.();
+  }
+
+  /**
+   * Hand the ratio to the host, and record it as announced **only if there was a host to hand it
+   * to**. The two are one step on purpose: a notification the field does not record is one the next
+   * restore repeats, and a record with no notification behind it is a debt nobody collects.
+   *
+   * The guard is the field's own definition, not a nicety. A move that lands in the window between
+   * `open()` and the host's {@link onDensityChange} registration would otherwise read afterwards as
+   * agreement — and there is no second `webglcontextrestored` for one loss, so the restore comparison
+   * would stay silent for the rest of the page's life. That window is the production shape: a host
+   * composes the surface, awaits a terminal per pane, and registers the handler after.
+   */
+  private announceDensity(dpr: number): void {
+    const handler = this.densityHandler;
+    if (!handler) return;
+    this.announcedDpr = dpr;
+    handler(dpr);
+    // **And present again, because the handler's own obligations left the canvas blank.** What this
+    // asks a host for is a fresh {@link resizeSurface} — which re-creates the drawing buffer, and a
+    // resized buffer is a cleared one. Both callers present BEFORE this point, for a reason that has
+    // not gone away (the cell is not readable until a render has run), so without this the last thing
+    // to touch the buffer is the clear.
+    //
+    // Coalesced rather than immediate: the host may re-place N terminals inside one handler, and each
+    // `setViewportRect` / `resize` already asks its own grid to re-derive. One frame after the whole
+    // handler is the cheapest point at which every terminal is placed.
+    //
+    // Only the SHARED arrangement can reach the blank — a sole tenant's buffer is `reapplyAll`'s own,
+    // sized before the present above — but the call is unconditional because the surface cannot tell
+    // the two apart, and a redundant coalesced present costs one frame that was going to be presented
+    // anyway. (#808; the shape pre-dates it on `setDevicePixelRatio` and is fixed on both paths at
+    // once, since two rules for one mechanism is what this area has repeatedly paid for.)
+    this.requestRender();
   }
 
   /**

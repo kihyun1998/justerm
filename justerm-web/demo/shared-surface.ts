@@ -366,7 +366,30 @@ const attached: Attached[] = [a, b];
  * rects come back on their own, because `observeViewportRect` re-derives from `getBoundingClientRect`
  * at the live ratio; what only this page can re-supply is the buffer.
  */
-surface.onDensityChange((dpr) => {
+/**
+ * How many times the host has been told the density moved — the counted quantity behind *"the host
+ * was told"*.
+ *
+ * A counter rather than a boolean because #808 is as much about the notification NOT arriving twice
+ * as about it arriving: this handler re-sizes the drawing buffer, and a resized buffer is a cleared
+ * one, so a surface that announced on every restore would blank every terminal once per context
+ * loss. Both directions are read from this one number.
+ */
+let densityNotices = 0;
+
+/**
+ * Everything this page owes on a density change, with the one line that is **not** owed behind a
+ * flag.
+ *
+ * `refeed` is the `pane.push()` at the end. A real host does re-feed after a grid change — the engine
+ * has to learn the new size — so the shipped handler passes `true`. But nothing in
+ * `TerminalSurface.onDensityChange`'s contract *requires* it, and that push happens to schedule the
+ * frame that repaints the buffer `resizeSurface` just cleared. So a proof of the library's own repaint
+ * has to be able to switch it off, or it is measuring the page (#808, and #776's shape: the reader
+ * supplying the thing under test).
+ */
+function applyDensity(dpr: number, refeed: boolean): void {
+  densityNotices++;
   surface.resizeSurface(Math.round(CANVAS.width * dpr), Math.round(CANVAS.height * dpr));
   for (const t of attached) {
     if (t.ended) continue;
@@ -387,10 +410,12 @@ surface.onDensityChange((dpr) => {
     t.renderer.resize(t.box.width, t.box.height);
     const { cols, rows } = t.renderer.terminalSize();
     t.pane.setGrid(cols, rows);
-    t.pane.push();
+    if (refeed) t.pane.push();
   }
   console.log(`[surface] density ${dpr}`);
-});
+}
+
+surface.onDensityChange((dpr) => applyDensity(dpr, true));
 
 // Two cadences, deliberately coprime-ish so a sample can never catch them in lockstep.
 const TICK_A = 300;
@@ -488,6 +513,51 @@ export interface TeardownReport {
   addGridThrew: string | undefined;
 }
 
+/** What a contract-only host is left looking at — see `window.__contractOnlyDensityProbe`. */
+export interface ContractOnlyReport {
+  /** Both panes' centres, read in the animation frame the SURFACE scheduled, with nothing presented
+   * by this probe. `0,0,0,0` here means nothing painted in that frame: the drawing buffer holds
+   * whatever survived the last present, and a presented frame is composited and gone. */
+  aCentre: string;
+  bCentre: string;
+  /** The buffer at that moment — so a blank pane cannot be confused with a buffer that never grew. */
+  bufW: number;
+  bufH: number;
+  /** Frames this page fed between the loss and the read. Must be `0`: the whole claim is that the
+   * repaint came from the library rather than from a push the contract does not ask for. */
+  framesPushed: number;
+}
+
+/** What a restore across a moved density did — see `window.__restoreDensityProbe`. */
+export interface RestoreDensityReport {
+  /** Taken **after** the density override and **before** the loss. Nothing has adopted it yet, and
+   * asserting that is what stops everything below from passing on a page that simply re-rendered:
+   * if Chromium ever starts dispatching the `change` event, this stops describing a restore. */
+  injected: { dpr: number; notices: number; cellH: number; bufW: number; bufH: number };
+  /**
+   * `densityNotices` read **inside** the `webglcontextrestored` turn, by a listener registered after
+   * the surface's own, with nothing presented by this probe.
+   *
+   * The read has to be here rather than after the await, for the reason #776 recorded: presenting is
+   * what runs the renderer's deferred rebuild, so a probe that presents first supplies the very thing
+   * the handler exists to supply. Nothing here draws.
+   */
+  noticesInRestoreTurn: number;
+  /** After the restore and one present, with **no frame fed by this probe**. */
+  after: {
+    dpr: number;
+    notices: number;
+    cellH: number;
+    bufW: number;
+    bufH: number;
+    bRectX: number;
+    bRectY: number;
+    bCentre: string;
+    aCentre: string;
+    contextLost: boolean;
+  };
+}
+
 export interface SurfaceSnapshot {
   dpr: number;
   /** The context's own verdict. Headless SwiftShader loses contexts on its own (#580), and every
@@ -551,6 +621,31 @@ declare global {
       before: SurfaceSnapshot;
       after: SurfaceSnapshot;
     }>;
+    /**
+     * A context loss and restore **across a density that moved while the context was dead** — the
+     * two-terminal form of the one buffer change with no consumer call behind it (#808).
+     *
+     * The spec moves the ratio with CDP first. That is not a convenience: Chromium's
+     * `Emulation.setDeviceMetricsOverride` moves `window.devicePixelRatio` and re-evaluates the media
+     * queries but dispatches **no `change` event** (measured for #325), so the watcher genuinely
+     * cannot see it and `restore()` — which re-reads the LIVE ratio — is left as the only adoption
+     * path. That is also the real case: a monitor switch that resets the GPU.
+     */
+    __restoreDensityProbe?: () => Promise<RestoreDensityReport>;
+    /**
+     * The same restore, with a host that does **only** what `onDensityChange`'s contract lists —
+     * `resizeSurface`, a fresh rect per terminal, a re-fit — and pushes no frame (#808).
+     *
+     * `resizeSurface` re-creates the drawing buffer, which **clears** it, and both of the surface's
+     * density paths present *before* the handler rather than after. So this asks whether the library
+     * repaints what the host's own obligations wiped out, with the page's `pane.push()` — which
+     * happens to schedule exactly that frame — switched off.
+     *
+     * Read inside the animation frame the surface scheduled: rAF callbacks run in registration order
+     * and this probe registers after the restore turn, so the surface's present has already run when
+     * this reads, and nothing here presents.
+     */
+    __contractOnlyDensityProbe?: () => Promise<ContractOnlyReport>;
     __surfaceLossProbe?: () => Promise<{
       before: SurfaceSnapshot;
       /** Read with NO await between `loseContext()` and the two reads — the instant in which the
@@ -891,6 +986,142 @@ window.__surfaceLossProbe = async (): Promise<{
     after,
     framesPushed: after.a.pushed - before.a.pushed + (after.b.pushed - before.b.pushed),
   };
+};
+
+window.__restoreDensityProbe = async (): Promise<RestoreDensityReport> => {
+  stopTimers();
+  const context = gl()!;
+  const ext = context.getExtension("WEBGL_lose_context");
+  if (!ext) throw new Error("WEBGL_lose_context unavailable — this probe cannot run");
+
+  await new Promise<void>((r) => requestAnimationFrame(() => r()));
+  surface.present();
+  const injected = {
+    dpr: window.devicePixelRatio,
+    notices: densityNotices,
+    cellH: b.renderer.cellSize().height,
+    bufW: context.drawingBufferWidth,
+    bufH: context.drawingBufferHeight,
+  };
+
+  const once = (event: string, budget = 5000): Promise<void> =>
+    new Promise((resolve, reject) => {
+      const timer = setTimeout(
+        () => reject(new Error(`#808 restore-density probe: no ${event} within ${budget}ms`)),
+        budget,
+      );
+      canvas.addEventListener(
+        event,
+        () => {
+          clearTimeout(timer);
+          resolve();
+        },
+        { once: true },
+      );
+    });
+
+  const lost = once("webglcontextlost");
+  ext.loseContext();
+  await lost;
+  // A macrotask yield, or Chromium never fires `webglcontextrestored` at all — the same finding the
+  // loss probe above and the renderer's own GL proofs both record.
+  await new Promise<void>((r) => setTimeout(r, 0));
+
+  // Registered after the surface's constructor-time listener, so it runs once that handler has
+  // presented, re-derived, presented and — if the density moved — called the page's handler.
+  // Reading the COUNTER rather than a pixel is deliberate: the page's handler re-sizes the buffer,
+  // and a read of a buffer mid-resize would be reporting the resize rather than the notification.
+  const noticesInTurn = new Promise<number>((resolve) => {
+    canvas.addEventListener("webglcontextrestored", () => resolve(densityNotices), { once: true });
+  });
+
+  const restored = once("webglcontextrestored");
+  ext.restoreContext();
+  await restored;
+  const noticesInRestoreTurn = await noticesInTurn;
+
+  // The host's handler pushed a frame per pane when it re-fitted them, so `present()` here draws
+  // what the host re-supplied. Nothing THIS probe feeds: the panes' own timers are stopped.
+  surface.present();
+  const c = gl()!;
+  const rb = rectOf(b);
+  const ra = rectOf(a);
+  return {
+    injected,
+    noticesInRestoreTurn,
+    after: {
+      dpr: window.devicePixelRatio,
+      notices: densityNotices,
+      cellH: b.renderer.cellSize().height,
+      bufW: c.drawingBufferWidth,
+      bufH: c.drawingBufferHeight,
+      bRectX: rb.x,
+      bRectY: rb.y,
+      bCentre: pixelAt(c, rb.x + (rb.w >> 1), rb.y + (rb.h >> 1)),
+      aCentre: pixelAt(c, ra.x + (ra.w >> 1), ra.y + (ra.h >> 1)),
+      contextLost: c.isContextLost(),
+    },
+  };
+};
+
+window.__contractOnlyDensityProbe = async (): Promise<ContractOnlyReport> => {
+  stopTimers();
+  const context = gl()!;
+  const ext = context.getExtension("WEBGL_lose_context");
+  if (!ext) throw new Error("WEBGL_lose_context unavailable — this probe cannot run");
+
+  // Swap in the contract-only host. Same handler, minus the one line the contract does not ask for.
+  surface.onDensityChange((d) => applyDensity(d, false));
+  await new Promise<void>((r) => requestAnimationFrame(() => r()));
+  surface.present();
+  const pushedBefore = a.pane.pushed + b.pane.pushed;
+
+  const once = (event: string, budget = 5000): Promise<void> =>
+    new Promise((resolve, reject) => {
+      const timer = setTimeout(
+        () => reject(new Error(`#808 contract-only probe: no ${event} within ${budget}ms`)),
+        budget,
+      );
+      canvas.addEventListener(
+        event,
+        () => {
+          clearTimeout(timer);
+          resolve();
+        },
+        { once: true },
+      );
+    });
+
+  const lost = once("webglcontextlost");
+  ext.loseContext();
+  await lost;
+  await new Promise<void>((r) => setTimeout(r, 0));
+
+  const restored = once("webglcontextrestored");
+  ext.restoreContext();
+  await restored;
+
+  // Registered from the restore turn's own microtask, so it lands in the same frame the surface
+  // scheduled from inside its handler — and AFTER it, rAF callbacks running in registration order.
+  // Nothing here presents: if the library scheduled nothing, this reads a buffer whose last present
+  // was composited away, which is what a blank canvas looks like from inside the page.
+  const read = await new Promise<ContractOnlyReport>((resolve) => {
+    requestAnimationFrame(() => {
+      const c = gl()!;
+      const ra = rectOf(a);
+      const rb = rectOf(b);
+      resolve({
+        aCentre: pixelAt(c, ra.x + (ra.w >> 1), ra.y + (ra.h >> 1)),
+        bCentre: pixelAt(c, rb.x + (rb.w >> 1), rb.y + (rb.h >> 1)),
+        bufW: c.drawingBufferWidth,
+        bufH: c.drawingBufferHeight,
+        framesPushed: a.pane.pushed + b.pane.pushed - pushedBefore,
+      });
+    });
+  });
+
+  surface.onDensityChange((d) => applyDensity(d, true));
+  return read;
 };
 
 // ── the boot gate ─────────────────────────────────────────────────────────────────────────────

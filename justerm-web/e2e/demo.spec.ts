@@ -1747,6 +1747,11 @@ test("a GL restore at a changed density re-applies the canvas box (#325)", async
   expect(boot.appliedW * boot.dpr).toBe(boot.bufW);
   expect(boot.appliedH * boot.dpr).toBe(boot.bufH);
 
+  // **`1280x720` is this suite's own viewport, and that is load-bearing rather than incidental**
+  // (measured #808). The negative result below is about a density move *alone*: move the viewport in
+  // the same call and Chromium re-evaluates the queries and **does** dispatch `change`, so the
+  // watcher adopts the new ratio before any loss and this test stops describing a restore. Keep these
+  // two numbers equal to the configured viewport, or pass `0`/`0` to disable the size override.
   const cdp = await page.context().newCDPSession(page);
   await cdp.send("Emulation.setDeviceMetricsOverride", {
     width: 1280,

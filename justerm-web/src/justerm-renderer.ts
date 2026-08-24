@@ -1488,7 +1488,10 @@ export class JustermRenderer implements Renderer {
    * surface's size as well as every viewport rect, since only the consumer can re-measure them"*.
    * Nothing here can pay that: this object re-issues the rect it was last given, and scaling it by a
    * density it holds a copy of is exactly the conversion the renderer refuses one layer down, for the
-   * same reason. Register {@link TerminalSurface.onDensityChange} and re-supply.
+   * same reason. Register {@link TerminalSurface.onDensityChange} and re-supply — which also covers
+   * the density a **context restore** adopts on its own, since a notification arriving during a loss
+   * is dropped rather than queued and the restore re-reads the live ratio (#808). A sole tenant
+   * re-derives its own buffer there and needs none of this; a shared one has no other notice.
    */
   setViewportRect(x: number, y: number): void {
     this.rect = { x, y };

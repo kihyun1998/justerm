@@ -146,6 +146,22 @@ Two consequences are forced by WebGL binding one context to one canvas, and both
   monitor switch a pane at CSS x=500 then draws at half its offset, over its left sibling, with no
   error and every pixel plausible.
 
+  **It also fires after a GL context restore that adopted a density which moved while the context
+  was dead (#808)** — the one density adoption with no call from anyone behind it. A notification
+  arriving during a loss is dropped rather than queued, so the renderer re-reads the live ratio when
+  it rebuilds; a **sole** tenant then repairs itself, because it derives its own drawing buffer, and
+  a **shared** one cannot, because the buffer and every rect are yours. Same handler, same
+  obligation — you do not have to distinguish the two cases. Measured on the two-terminal demo
+  before this landed: dpr 1 → 2 across one loss left the buffer at `900x340` under a surface now
+  reporting `450x170` CSS, with the right-hand pane's viewport entirely outside it and every pixel
+  of it transparent. No error was raised, and the left-hand pane was narrow enough to still fit and
+  look correct.
+
+  **You do not owe a frame here.** `resizeSurface` re-creates the drawing buffer, which clears it, so
+  the widget presents once on the next animation frame after your handler returns — coalesced, so
+  re-placing ten terminals in one handler still costs one. Push a frame anyway if your engine needs
+  to learn the new grid; what you must not have to do is push one merely to get the pixels back.
+
 Each terminal keeps its own font, palette, selection, cursor and decorations; two on the same font
 configuration share one glyph atlas, and the last one to leave releases it.
 
@@ -246,6 +262,13 @@ so any clamp the browser applies settles later, inside the first `render()` afte
 on that event it renders (which is what settles the clamp), re-derives the drawing buffer from the
 grid it is holding, and re-writes the display box from what was actually granted. Both the grid and
 the box heal without a call from you.
+
+**On a shared surface the second of those is yours, and you are told when it is owed.** A terminal
+that shares a canvas does not size the buffer — nothing below you can, since a buffer holding N
+grids in M font configurations has no cell to be a multiple of — so the re-derivation above is the
+sole tenant's alone. What a shared host owes is the same thing it owes on any density change, and it
+arrives through the same channel: `onDensityChange` fires after a restore that adopted a new ratio
+(#808). If the density did not move, nothing is owed and nothing fires.
 
 Measured on the older shape, where nothing did that — asking for 4000 columns during a loss
 (`MAX_TEXTURE_SIZE` 8192, 9px cell):
