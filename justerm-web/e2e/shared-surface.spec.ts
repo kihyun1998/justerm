@@ -36,6 +36,24 @@ const readAsyncProbe = <K extends AsyncProbe>(
 
 const READY = "[data-testid='surface-ready']";
 
+/**
+ * The **stage's** CSS box and the density. Deliberately the stage and not the canvas.
+ *
+ * Every "is the buffer the right size" claim has to stand on something derived from neither the
+ * buffer nor the grant, and it took two tries to find one. `cssWidth()` is `bufW / dpr` inside the
+ * renderer (`justerm-renderer/src/webgl.rs`), so `bufW === round(cssW * dpr)` is an identity holding
+ * for any buffer at all — measured, 7x5 device px short and green. Reading the **canvas** element's
+ * box instead does not help and was the second version of this: `resizeSurface` writes that box from
+ * `cssWidth()`, so it is the same derived number wearing a DOM shape, and it measured green too. The
+ * stage is sized from the page's own intended layout and never from anything the renderer returns,
+ * which is what makes it an independent quantity.
+ */
+const stageBox = (page: Page): Promise<{ w: number; h: number; dpr: number }> =>
+  page.evaluate(() => {
+    const r = document.querySelector("#stage")!.getBoundingClientRect();
+    return { w: r.width, h: r.height, dpr: window.devicePixelRatio };
+  });
+
 /** The `#735` warm-up's two explicit budgets, summing to 20s inside the hook's 30s slot. */
 const GOTO_BUDGET_MS = 8_000;
 const BAR_BUDGET_MS = 12_000;
@@ -109,8 +127,18 @@ test("two grids draw on one canvas, each in its own rect, with the buffer bare b
 
   // One buffer, sized by the HOST in device px — the widget cannot derive it, because a buffer
   // holding N grids in M font configurations has no cell to be a multiple of (ADR-0021 D3).
-  expect(s.bufW).toBe(Math.round(s.cssW * s.dpr));
-  expect(s.bufH).toBe(Math.round(s.cssH * s.dpr));
+  //
+  // Compared against the STAGE's box — see `stageBox` for why neither `cssWidth()` nor the canvas
+  // element's own box can carry this, both of them being the grant wearing a different shape.
+  const box = await stageBox(page);
+  expect(s.bufW).toBe(Math.round(box.w * box.dpr));
+  expect(s.bufH).toBe(Math.round(box.h * box.dpr));
+  // The display box is written from what the browser GRANTED rather than from what was asked for
+  // (#339), so this pair says the grant matched the request. A real clamp would fail here, which is
+  // information: at 900x340 there is nothing near a limit, and a CI that starts clamping should say
+  // so rather than quietly drawing a smaller terminal.
+  expect(s.cssW).toBe(box.w);
+  expect(s.cssH).toBe(box.h);
 
   // Each pane painted its own background, and the two differ — without the second assertion the
   // first pair could both be satisfied by one grid covering the whole canvas.
@@ -184,7 +212,7 @@ test("each GL viewport sits where its DOM overlay does, at a non-zero origin (#7
   expect(await topRight(boxes.b, s.b.cols, s.b.cellW)).toBe(BG_B);
 });
 
-test("two font sizes are two cell geometries in one frame (#772 per-config tier)", async ({
+test("two font sizes give the two grids two cell geometries (#772 per-config tier)", async ({
   page,
 }) => {
   const s = await page.evaluate(() => window.__surfaceProbe!());
@@ -201,6 +229,13 @@ test("two font sizes are two cell geometries in one frame (#772 per-config tier)
   // The consequence a single cell measurement cannot show: pane A's box is WIDER than pane B's and
   // it still fits fewer columns, because the two grids are laid out through different atlases.
   expect(s.a.cols).toBeLessThan(s.b.cols);
+
+  // **What this test does not read: a pixel.** Everything above is what the API reports, and the
+  // title said "in one frame" until the completeness pass measured that this was the *only* test of
+  // the six still green with both grids collapsed onto the origin and painting over each other. That
+  // the two cells are actually *drawn* differently is pinned one layer down, per grid, by a lit-run
+  // measurement (`justerm-renderer/demo/per-config-atlas.html`); here it is bounded from the side by
+  // the placement test's corner samples, which land inside each pane's own extent.
 });
 
 test("feeding one terminal leaves its sibling byte-identical (#773 per-grid state)", async ({
@@ -220,8 +255,12 @@ test("feeding one terminal leaves its sibling byte-identical (#773 per-grid stat
   // grid. A whole-rect digest rather than samples, so "unchanged" covers every pixel.
   expect(after.b.step).toBe(before.b.step);
   expect(after.b.hash).toBe(before.b.hash);
-  // Not a degenerate match: the two panes hash differently, so `toBe` above is comparing real
-  // content rather than two reads of an empty rect.
+  // Not a degenerate match — and the first line of this is what the pass had to add. Comparing A's
+  // hash to B's proves only that the two rects DIFFER, which an all-transparent B satisfies
+  // trivially while A is painted: measured, with pane B's viewport never placed, every B-side
+  // assertion in this test held and only the A-side control failed. What settles it is a pixel that
+  // says B's rect holds B's grid.
+  expect(before.b.centre).toBe(BG_B);
   expect(before.a.hash).not.toBe(before.b.hash);
 });
 
@@ -314,4 +353,40 @@ test("a density change re-places every pane, not just the buffer (ADR-0021 D3)",
   // …and both panes are still painting after the move, rather than merely holding tidy numbers.
   expect(after.a.centre).toBe(BG_A);
   expect(after.b.centre).toBe(BG_B);
+});
+
+test("ending one terminal releases only its grid, and the survivor still recovers (#775)", async ({
+  page,
+}) => {
+  const before = await page.evaluate(() => window.__surfaceProbe!());
+  expectContextAlive(before);
+  expect(before.a.centre).toBe(BG_A);
+  expect(before.b.centre).toBe(BG_B);
+
+  await page.getByTestId("end-a").click();
+
+  const after = await page.evaluate(() => window.__surfaceProbe!());
+  expect(after.a.ended).toBe(true);
+  // Pane A's area goes back to showing the page: its grid left the registry, so the draw loop skips
+  // it and nothing re-clears its rect after the full-canvas transparent clear.
+  expect(after.a.centre).toBe(UNPAINTED);
+  // …and the survivor is untouched, byte for byte. `dispose` releases the leaver's VAO, its instance
+  // buffer and — only if it was the last grid on its font configuration — that configuration's
+  // atlas; pane B is on its own configuration and keeps everything.
+  expect(after.b.centre).toBe(BG_B);
+  expect(after.b.hash).toBe(before.b.hash);
+
+  // **The claim #775 exists for, and it is the one with no browser witness until now.** Its own
+  // rationale for moving the density watcher and the loss channel onto the surface is that while
+  // they sat on the terminal, *"disposing one terminal stopped density tracking for every
+  // sibling"*. So the test is not that the survivor is alive — it is that the survivor still
+  // RECOVERS, after the departure, through a channel the leaver used to own.
+  const loss = await readAsyncProbe(page, "__surfaceLossProbe");
+  expect(loss.raceWindow.glSaysLost, "the context did not actually go down").toBe(true);
+  expect(loss.framesPushed).toBe(0);
+  expect(loss.afterRestoreNoPresent.b).toBe(BG_B);
+  expect(loss.after.b.hash).toBe(loss.before.b.hash);
+  // The departed pane stays departed across the restore — a recovery that resurrected it would mean
+  // the renderer had kept a grid the lease gave back.
+  expect(loss.after.a.centre).toBe(UNPAINTED);
 });

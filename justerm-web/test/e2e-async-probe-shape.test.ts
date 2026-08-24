@@ -61,10 +61,25 @@ const sourcesIn = (dir: string, keep: (f: string) => boolean): { name: string; s
 
 /** Every demo page's module. `.ts` only — the pages themselves are `.html` and declare nothing. */
 const demoSources = sourcesIn("demo", (f) => f.endsWith(".ts"));
-/** Every e2e module, specs **and** their helpers. `e2e/probe.ts` is in deliberately: it holds the
- * park-and-harvest mechanism itself, so it is the one file where a regression would reinstate the
- * hazard for every spec at once. */
+/**
+ * Every e2e module, specs **and** their helpers.
+ *
+ * `e2e/probe.ts` is in deliberately — it holds the park-and-harvest mechanism, so a regression there
+ * reinstates the hazard for every spec at once. **But it is only half covered by the checks below,
+ * and that was measured rather than assumed.** `resolvesTo` looks for a literal `window.__hook`
+ * being returned, and the helper never names a hook: it dereferences one dynamically into a local.
+ * So `void probe().then(` → `return probe().then(` — the exact hazard, in the one file that matters
+ * most — leaves all three checks green. What *is* live there is the async-callback check, since
+ * making that callback `async` is caught by the regex.
+ *
+ * The other half is pinned by the last `it` in this file instead. That check is over-fitted to one
+ * file on purpose: the general rule needs to know that a local came from a `window[…]` lookup, which
+ * is a parser, and this file is deliberately a reduction rather than one.
+ */
 const e2eSources = sourcesIn("e2e", (f) => f.endsWith(".ts"));
+
+/** The shared helper, by name — the one file the checks above cannot fully cover. */
+const PROBE_HELPER = "e2e/probe.ts";
 
 /**
  * Every promise-returning `window.__*` hook the demo declares.
@@ -92,8 +107,10 @@ const asyncHookNames = (src: string): string[] => [
  * (`"a decoration's ruler mark…"`, `"[data-testid='command-live']"`).
  *
  * This is a reduction, not a parser. Its remaining blind spot is a trailing `//` comment on a line
- * that also holds code; nothing here writes one, and the failure would be a loud false positive
- * rather than a miss.
+ * that also holds code **whose own quotes or parens are then left unbalanced**. Trailing comments
+ * themselves are ordinary here — `demo.spec.ts` has a dozen and `shared-surface.spec.ts` adds more,
+ * and this sentence claimed there were none until #776 counted them. All of them balance, so no call
+ * is swallowed; the failure mode if one did not would be a loud false positive rather than a miss.
  */
 const codeOnly = (src: string): string =>
   src
@@ -179,6 +196,20 @@ describe("the e2e suite never awaits an unanchored in-page promise (#731)", () =
       "read these through `readAsyncProbe` — starting the hook and harvesting its parked result " +
         "are two separate evaluates, so the awaited promise is one playwright retains by objectId",
     ).toEqual([]);
+  });
+
+  it("the shared helper does not hand back its probe's promise", () => {
+    // Over-fitted to one file, deliberately — see `e2eSources`. `resolvesTo` cannot see this file's
+    // regression because the helper never names a hook literally, and the helper is the one place
+    // where a regression would reinstate the hazard for every suite at once. Measured: with
+    // `return probe().then(` in place of `void probe().then(`, the three general checks stay green.
+    const helper = e2eSources.find((f) => f.name === PROBE_HELPER);
+    expect(helper, `${PROBE_HELPER} not found — this check has nothing to say`).toBeDefined();
+    const code = codeOnly(helper!.src);
+    expect(code, "the helper must not return the probe's promise to `awaitPromise`").toContain(
+      "voidprobe().then(",
+    );
+    expect(code).not.toContain("returnprobe(");
   });
 
   it("passes no async callback to an evaluate", () => {

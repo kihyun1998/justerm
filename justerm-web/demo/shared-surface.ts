@@ -45,6 +45,16 @@ const CANVAS = { width: 900, height: 340 } as const;
  * What is left over is the evidence — see `shared-surface.html`'s note on the checkerboard. The
  * gutter `x ∈ [400, 500)` and the band `y ∈ [0, 40)` above pane B are canvas that no grid was
  * placed over, and `draw()` leaves them at `rgba(0,0,0,0)`.
+ *
+ * **The two rects must not overlap, and that is load-bearing rather than tidy.** Grids paint in
+ * registration order and are *not* composited with each other: a later grid opens with a `clear`,
+ * and a clear writes, so its rect REPLACES whatever was under it. Every pixel claim on this page —
+ * each pane's centre, each pane's whole-rect digest, the sibling that must come back byte-identical
+ * — would then be reporting the topmost grid rather than its own. The renderer's own
+ * `demo/context-loss-grids.html` states the same dependency for the same reason ("four rects
+ * stacked, none overlapping … so a check cannot fail on account of a neighbour painting into it");
+ * it was unstated here until the completeness pass asked. Overlap is a legitimate consumer
+ * arrangement — it is simply not one any assertion below could survive.
  */
 interface PaneBox {
   readonly left: number;
@@ -119,6 +129,7 @@ class Pane {
   private cols = 0;
   private rows = 0;
   private tick = 0;
+  private pushes = 0;
 
   constructor(
     readonly name: string,
@@ -139,6 +150,24 @@ class Pane {
 
   get step(): number {
     return this.tick;
+  }
+
+  /**
+   * How many frames this pane has emitted.
+   *
+   * Counted rather than asserted, because the alternative was measured and it did not work: the
+   * loss probe used to return a literal `framesPushed: 0` beside a comment calling it *"a number
+   * rather than a claim about what the page did not do"*, and it was exactly the claim. Two real
+   * pushes inserted between the probe's two samples left the whole file green.
+   */
+  get pushed(): number {
+    return this.pushes;
+  }
+
+  /** Emit the current content. The single push site, so {@link pushed} cannot drift from reality. */
+  push(): void {
+    this.pushes++;
+    this.source.push(this.frame());
   }
 
   /**
@@ -224,6 +253,17 @@ interface Attached {
   readonly box: PaneBox;
   readonly stopRect: () => void;
   /**
+   * This grid's last known extent in device px, kept because a released lease cannot be asked.
+   *
+   * Every per-grid renderer call throws `UnknownGrid` once the terminal is disposed — which is the
+   * contract working, not a fault (a lease makes a stale handle fail loudly rather than address
+   * whichever grid landed in the freed slot). But it means the page's own probes must stop asking,
+   * and until they did, clicking "End pane A" left `__surfaceProbe` throwing
+   * `justerm-renderer: no grid with id 1`: the harness broke in the one state the button exists to
+   * construct.
+   */
+  extent: { w: number; h: number };
+  /**
    * The last origin this page **gave** the renderer, device px — not one re-derived at read time.
    *
    * Recorded here because this page is the origin's producer: it measures the DOM box, so it is the
@@ -306,9 +346,9 @@ async function attach(
     },
   });
   term.mount();
-  pane.source.push(pane.frame());
+  pane.push();
 
-  return { pane, renderer, term, overlay, box, stopRect, rect, ended: false };
+  return { pane, renderer, term, overlay, box, stopRect, rect, extent: { w: 0, h: 0 }, ended: false };
 }
 
 const a = await attach(new Pane("a", "PANE A — 20px"), overlayA, PANES.a, FONT_SIZE_A, themeFor(FG_A, BG_A));
@@ -347,7 +387,7 @@ surface.onDensityChange((dpr) => {
     t.renderer.resize(t.box.width, t.box.height);
     const { cols, rows } = t.renderer.terminalSize();
     t.pane.setGrid(cols, rows);
-    t.pane.source.push(t.pane.frame());
+    t.pane.push();
   }
   console.log(`[surface] density ${dpr}`);
 });
@@ -357,11 +397,11 @@ const TICK_A = 300;
 const TICK_B = 700;
 let timerA = window.setInterval(() => {
   a.pane.advance();
-  a.pane.source.push(a.pane.frame());
+  a.pane.push();
 }, TICK_A);
 let timerB = window.setInterval(() => {
   b.pane.advance();
-  b.pane.source.push(b.pane.frame());
+  b.pane.push();
 }, TICK_B);
 
 /** Stop both content timers. Every probe below calls this first: a page that keeps pushing frames
@@ -397,6 +437,9 @@ document.querySelector<HTMLButtonElement>("[data-testid='end-a']")!.addEventList
 
 /** One pane's placement and the pixels inside it. */
 export interface PaneSnapshot {
+  /** Whether this terminal has been disposed. Everything below except `rectX`/`rectY`/`centre` reads
+   * `0` when it has — a released lease cannot be asked, and asking throws. */
+  ended: boolean;
   /** The grid actually adopted — `terminalSize()`, not what `resize` was asked for. */
   cols: number;
   rows: number;
@@ -413,9 +456,10 @@ export interface PaneSnapshot {
   /** FNV-1a over the pane's whole rect. Two captures of one unchanged grid agree exactly; any
    * repaint difference moves it. Cheap enough to take on both panes around every operation. */
   hash: number;
-  /** How many times this pane's content has advanced — so "nothing was re-fed" is a number rather
-   * than a claim about what the page did not do. */
+  /** How many times this pane's content has advanced. */
   step: number;
+  /** How many frames this pane has emitted — the counted quantity behind "nothing was re-fed". */
+  pushed: number;
 }
 
 /** The device-px quantities a density change invalidates, plus a pixel saying the pane is still there. */
@@ -505,9 +549,18 @@ declare global {
       afterRestoreNoPresent: { a: string; b: string; gutter: string };
       /** After `webglcontextrestored`, one `present()`, and **no frame fed from this page**. */
       after: SurfaceSnapshot;
-      /** How many frames this page pushed between `before` and `after`. Must be `0`: recovery here
-       * means the renderer repaints from its own retained grids, because a frame-mode consumer has
-       * no retained state to be asked again for (ADR-0020 R3). */
+      /**
+       * Frames this page pushed between `before` and `after`, **counted** — `pushed` deltas summed
+       * over both panes. Must be `0`: recovery here means the renderer repaints from its own
+       * retained grids, because a frame-mode consumer has no retained state to be asked again for
+       * (ADR-0020 R3).
+       *
+       * It was a literal `0` until the completeness pass measured that two real pushes inserted
+       * between the two samples left every assertion green. The hash pair does catch a re-feed that
+       * *changes* content; an identical one was invisible, and the one reachable path that pushes
+       * with the timers stopped is the density handler — i.e. exactly a restore that adopts a moved
+       * density, which is the case this probe would otherwise misreport.
+       */
       framesPushed: number;
     }>;
   }
@@ -562,18 +615,27 @@ function hashRect(
 /** Where this pane's viewport is, derived exactly as the page derived it for the renderer — the
  * same function, not a second copy of the arithmetic. */
 function rectOf(t: Attached): { x: number; y: number; w: number; h: number } {
-  const cell = t.renderer.cellSize();
-  const { cols, rows } = t.renderer.terminalSize();
   // The origin this page GAVE (see `Attached.rect`); the extent as the renderer derives it — `cols *
   // cell`, both integers it hands back, which is why `setViewportRect` takes no extent at all.
-  return { x: t.rect.x, y: t.rect.y, w: cols * cell.width, h: rows * cell.height };
+  //
+  // A departed tenant keeps the last extent it had (see `Attached.extent`): its grid is gone, so
+  // asking would throw, and where it *used* to be is precisely what a caller wants to read — the
+  // whole point of ending one terminal is that its area goes back to showing the page.
+  if (!t.ended) {
+    const cell = t.renderer.cellSize();
+    const { cols, rows } = t.renderer.terminalSize();
+    t.extent.w = cols * cell.width;
+    t.extent.h = rows * cell.height;
+  }
+  return { x: t.rect.x, y: t.rect.y, w: t.extent.w, h: t.extent.h };
 }
 
 function snapshotPane(t: Attached, context: WebGL2RenderingContext): PaneSnapshot {
   const r = rectOf(t);
-  const cell = t.renderer.cellSize();
-  const { cols, rows } = t.renderer.terminalSize();
+  const cell = t.ended ? { width: 0, height: 0 } : t.renderer.cellSize();
+  const { cols, rows } = t.ended ? { cols: 0, rows: 0 } : t.renderer.terminalSize();
   return {
+    ended: t.ended,
     cols,
     rows,
     cellW: cell.width,
@@ -583,6 +645,7 @@ function snapshotPane(t: Attached, context: WebGL2RenderingContext): PaneSnapsho
     centre: pixelAt(context, r.x + (r.w >> 1), r.y + (r.h >> 1)),
     hash: hashRect(context, r.x, r.y, r.w, r.h),
     step: t.pane.step,
+    pushed: t.pane.pushed,
   };
 }
 
@@ -661,7 +724,7 @@ window.__independenceProbe = async (): Promise<{ before: SurfaceSnapshot; after:
   // which is the point: B's rect must come back byte-identical from B's own retained grid while A's
   // moves.
   a.pane.advance();
-  a.pane.source.push(a.pane.frame());
+  a.pane.push();
   const after = snapshot();
   return { before, after };
 };
@@ -744,7 +807,13 @@ window.__surfaceLossProbe = async (): Promise<{
   // retained. `snapshot()` presents once more, which is what makes the read safe rather than what
   // makes the recovery happen.
   const after = snapshot();
-  return { before, raceWindow, afterRestoreNoPresent, after, framesPushed: 0 };
+  return {
+    before,
+    raceWindow,
+    afterRestoreNoPresent,
+    after,
+    framesPushed: after.a.pushed - before.a.pushed + (after.b.pushed - before.b.pushed),
+  };
 };
 
 // ── the boot gate ─────────────────────────────────────────────────────────────────────────────

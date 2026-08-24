@@ -93,7 +93,12 @@
            3. the two panes running their own content on their own cadence, at cell sizes that
               differ because the font sizes do (two entries in the renderer's per-config tier);
            4. "Lose context" taking the GL context away from BOTH at once and one restore bringing
-              BOTH back, with no frame re-fed from this page.
+              BOTH back, with no frame re-fed from this page;
+           5. "End pane A" releasing only that terminal — its rect goes back to showing the page,
+              while pane B keeps its cells, its atlas and its viewport. This one is a MANUAL
+              affordance: the e2e asserts the four above and not this, because #775's acceptance
+              covers disposal and proves it against a fake backend. Left here because it is the one
+              claim on this page a person can check faster than a test can.
 
          `demo/index.html` is deliberately untouched by this slice: it is the harness the rest of
          the e2e suite is written against, and changing its shape would quietly change what a large
