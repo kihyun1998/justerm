@@ -33,15 +33,21 @@
 //   cite.mjs <tree> <path> --find <text>      print every line containing <text>, with numbers
 //   cite.mjs --pins                           check the local trees against the recorded pins
 //
-//   <tree> is alacritty | ghostty | xterm.js | three.js; <path> may be partial (`term/mod.rs`) as long as it
-//   resolves to one file.
+//   <tree> is alacritty | ghostty | xterm.js | three.js | xterm; <path> may be partial (`term/mod.rs`) as
+//   long as it resolves to one file.
 
 import { readFileSync, existsSync } from 'node:fs';
 import { execSync } from 'node:child_process';
 import { join, resolve } from 'node:path';
 
-const TREES = ['alacritty', 'ghostty', 'xterm.js', 'three.js'];
-const PINS_DOC = 'docs/agents/theflow.md';
+const TREES = ['alacritty', 'ghostty', 'xterm.js', 'three.js', 'xterm'];
+
+// The pin table moved to the graph build when `xterm` was added (2026-08-24). `theflow.md` is an
+// INPUT to that build and is not edited by it, so its table is the older four-tree version and is
+// deliberately left alone — which is exactly why this constant must name the authoritative file
+// rather than "the bindings doc". Two tables and a reader pointed at the wrong one is how a pin
+// silently stops being checked.
+const PINS_DOC = 'docs/agents/thegraph.md';
 
 const die = (msg, code = 2) => {
   console.error(`cite: ${msg}`);
@@ -60,7 +66,10 @@ function refsRoot() {
 
 /** The pinned SHA per tree, read from the table in theflow.md — that table is authoritative. */
 function readPins() {
-  const repoRoot = resolve(execSync('git rev-parse --git-common-dir', { encoding: 'utf8' }).trim(), '..');
+  // The TREES live beside the main checkout (see refsRoot), but the pin DOC is a file under version
+  // control and must come from the WORKING tree — otherwise a branch that adds a tree or refreshes a
+  // pin cannot verify its own table until it merges, which is precisely when verification is owed.
+  const repoRoot = execSync('git rev-parse --show-toplevel', { encoding: 'utf8' }).trim();
   const doc = join(repoRoot, PINS_DOC);
   if (!existsSync(doc)) return new Map();
   const pins = new Map();
@@ -95,7 +104,10 @@ function checkPins(root, only) {
     const head = headOf(dir);
     const pin = pins.get(t);
     if (!head) { rows.push(`  ${t.padEnd(10)} no checkout at ${dir}`); bad++; continue; }
-    if (!pin) { rows.push(`  ${t.padEnd(10)} ${head.slice(0, 12)}  (no pin recorded in ${PINS_DOC})`); continue; }
+    // A tree on disk with no recorded pin is NOT a clean state — every line number cited from it
+    // is unverifiable. Counting it as neither pass nor fail is the vacuous pass this project has
+    // already been bitten by once (a scanner given the wrong path reported `0 scanned` AND green).
+    if (!pin) { rows.push(`  ${t.padEnd(10)} ${head.slice(0, 12)}  NO PIN RECORDED in ${PINS_DOC}  <- unverifiable, not clean`); bad++; continue; }
     if (head === pin) rows.push(`  ${t.padEnd(10)} ${head.slice(0, 12)}  matches pin`);
     else { rows.push(`  ${t.padEnd(10)} ${head.slice(0, 12)}  != pin ${pin.slice(0, 12)}  <- line numbers recorded at the pin may have moved`); bad++; }
   }

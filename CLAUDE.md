@@ -137,9 +137,32 @@ Single-context — one `CONTEXT.md` + `docs/adr/` at the repo root. See `docs/ag
 
 CI 의 `supply-chain` 게이트는 **just-shield**(같은 소유자=first-party, SHA 핀 된 GitHub Actions 공급망 스캐너; 소스는 형제 repo `../just-shield`)로 워크플로를 `scan --strict` 한다. *결정*은 ADR-0006, *운영*(로컬 재현·R1~R10 규칙 해독·실패 대처)은 `docs/agents/supply-chain.md`.
 
-### theflow — 작업 규율 (그 flow)
+### thegraph — 작업 규율 (기본)
 
-**모든 substantive 변경(core·wasm·web·renderer)은 `theflow` 스킬의 7단계 규율로 짠다** — ① 참조·선례·
+**모든 substantive 변경(core·wasm·web·renderer)은 `thegraph` 스킬로 짠다** — 착수 시 `/thegraph`.
+고정된 step 목록이 아니라 **노드 그래프**다: 어느 노드가 존재하고 몇 개인지, 각 노드가 무슨 데이터를
+읽는지, 어느 노드가 에이전트·스크립트로 추출됐는지가 **`docs/agents/thegraph.md`** 에 컴파일돼 있다 —
+착수 전에 그것을 연다. 네 불변식은 스킬이 소유한다(판정 노드는 위임 금지 · 모든 back-edge 는 guard 와
+bound 를 선언 · 사람에게 가는 길은 `batch` 하나 · 모든 조건은 decider 를 명시).
+
+세 표는 **`docs/agents/theflow.md` 가 계속 소유**하고 `thegraph.md` 는 가리키기만 한다: layer 별
+**tie-breaker**(무엇이 prior art 를 이기나 — 4개 layer 는 레퍼런스에 *표 없음*), **의도적 divergence
+목록**(이미 끝난 논쟁), **war-story index**. 사본은 divergence seed 라서 복사하지 않는다.
+
+추출물: `.claude/agents/thegraph-{lens,refuter,reference,sweep}.md` + `scripts/thegraph/{gates,
+triggers,search,preflight}.mjs`. **착수 전 `node scripts/thegraph/preflight.mjs`** — 워크트리 위치·
+`../.refs` 핀·포트 5173 소유자·로컬 `wasm-pack` vs CI 핀을 검사한다(전부 *조용히* 실패하는 것들).
+
+레퍼런스(alacritty·ghostty·xterm.js·three.js·**xterm**)는 **`../.refs/` 의 SHA 핀된 로컬 체크아웃을
+`rg` 로** 읽는다(`WebFetch`·통파일 `gh api` 금지 — 메서드 본문이 조용히 잘린다). **핀 표는
+`thegraph.md` 가 authoritative** 이고 `cite.mjs --pins` 가 그걸 읽는다. 이미 확인된 사실은
+**`docs/agents/reference-facts.md`** 에 `file:line`+SHA 로 쌓이니 백지에서 시작하지 말 것.
+
+(`theflow` 는 여전히 유효한 형제 규율이고 `/theflow` 로 부를 수 있다. 기본은 `thegraph`.)
+
+### theflow — 형제 규율 (7단계)
+
+**`theflow` 스킬의 7단계 규율** — ① 참조·선례·
 외부/레지스트리 사실 실측 대조(추측 금지) → ② 경계(메커니즘 core / 정책 소비처; 계약≠결함, 막은 양방향
 누수) → ③ 순수 로직 `/tdd`(RED→GREEN) + test-trust 게이트(fix off→red, right reason) → ④ real 왕복
 증명(가짜 백엔드 아님; 최강 증명=실 소비처 penterm 링크, DoD ④) → ⑤ adversarial 완전성 패스(subagent
@@ -154,6 +177,5 @@ result 를 선행 기록), 검증한 것만 보고, *우회 금지*(다른 층 �
 스킬은 이제 `disable-model-invocation`(=`/theflow` 커맨드; 이 포인터가 상시 트리거) — 바인딩 doc 은
 `/grill-the-flow` 가 authoring 한다. justerm *바인딩*(크레이트/소비처 맵·참조 라우팅표·경계 구체값·증명수단·
 표면 목록·게이트 매트릭스·downstream 절차·실증 이슈 인덱스)은 **`docs/agents/theflow.md`** — 스킬이 런타임에 읽는다.
-레퍼런스(alacritty·ghostty·xterm.js)는 **`../.refs/` 의 SHA 핀된 로컬 체크아웃을 `rg` 로** 읽는다(`gh api` 아님 — 8줄 사실에
-파일 통째를 받느라 렌즈 한 패스가 20~30분이었다). 이미 확인된 사실은 **`docs/agents/reference-facts.md`** 에 `file:line`+SHA 로
-쌓이니 백지에서 시작하지 말 것. 트리 생성·핀 갱신 절차는 theflow.md § "Step 1".
+레퍼런스 읽기·핀·`reference-facts.md` 는 위 `### thegraph` 가 authoritative 다(핀 표가
+`thegraph.md` 로 옮겨졌고 `theflow.md` 의 표는 4-tree 구판이다). 트리 생성 절차는 theflow.md § "Step 1".

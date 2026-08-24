@@ -1,0 +1,155 @@
+#!/usr/bin/env node
+// thegraph environment preconditions — justerm.
+// Built from docs/agents/thegraph.md § Environment preconditions · thegraph stamp 2026-08-24.
+//
+// Usage:  node scripts/thegraph/preflight.mjs
+//
+// Every check here covers a failure that is SILENT. That is the whole reason this is a script and
+// not a paragraph: none of these produces an error, so none of them is noticed by working carefully.
+// A wrong `../` returns zero hits (which reads as "no prior art"); an adopted dev server makes a
+// GREEN run untrustworthy; a mismatched wasm-pack passes locally and passes in CI, differently.
+
+import { spawnSync } from "node:child_process";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { resolve, dirname, basename } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const HERE = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
+
+const results = [];
+const ok = (name, detail) => results.push({ level: "ok", name, detail });
+const warn = (name, detail, fix) => results.push({ level: "warn", name, detail, fix });
+const bad = (name, detail, fix) => results.push({ level: "bad", name, detail, fix });
+
+const run = (cmd, args, opts = {}) => spawnSync(cmd, args, { encoding: "utf8", ...opts });
+
+// ── 1. where am I, and does `../` mean what this repo's docs think it means ──────────────────────
+//
+// Every sibling path in docs/agents/*.md (../.refs/, ../penterm/, ../just-shield) is written
+// relative to the MAIN CHECKOUT. A worktree elsewhere silently redirects all of them.
+
+const gitCommon = run("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd: HERE });
+const mainCheckout = gitCommon.status === 0
+  ? resolve(gitCommon.stdout.trim(), "..")
+  : null;
+
+const isWorktree = mainCheckout && resolve(mainCheckout) !== resolve(HERE);
+
+if (!mainCheckout) {
+  bad("git", "could not resolve the main checkout", "run inside the repository");
+} else if (!isWorktree) {
+  ok("location", `main checkout (${HERE}) — every ../ path resolves as the docs assume`);
+} else if (resolve(HERE, "..") === resolve(mainCheckout, "..")) {
+  ok("location", `worktree BESIDE the main checkout (${basename(HERE)}) — ../ resolves the same way it does there`);
+} else {
+  bad(
+    "location",
+    `worktree at ${HERE}, main checkout at ${mainCheckout} — they do NOT share a parent, so every ../ path in docs/agents/ points somewhere else`,
+    "move it to ../justerm-wt-<issue>, beside the main checkout, or use absolute paths everywhere",
+  );
+}
+
+// ── 2. the pinned reference trees ────────────────────────────────────────────────────────────────
+//
+// Delegates the SHA comparison to cite.mjs --pins, which owns the pin table, rather than carrying a
+// second copy of it here. A second copy is the thing that goes stale.
+
+const refsDir = mainCheckout ? resolve(mainCheckout, "..", ".refs") : null;
+if (!refsDir || !existsSync(refsDir)) {
+  bad("refs", `../.refs not found (looked in ${refsDir ?? "?"})`, "clone the trees — see docs/agents/thegraph.md § reference");
+} else {
+  const trees = readdirSync(refsDir, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name);
+  const expected = ["alacritty", "ghostty", "xterm.js", "three.js", "xterm"];
+  const missing = expected.filter((t) => !trees.includes(t));
+  if (missing.length) {
+    warn("refs", `present: ${trees.join(", ")} — MISSING: ${missing.join(", ")}`,
+      "a missing tree returns zero hits, which reads exactly like 'no prior art'");
+  } else {
+    ok("refs", `all five trees present in ${refsDir}`);
+  }
+
+  const cite = resolve(mainCheckout, ".github/scripts/cite.mjs");
+  if (existsSync(cite)) {
+    const r = run("node", [cite, "--pins"], { cwd: mainCheckout });
+    const out = `${r.stdout || ""}${r.stderr || ""}`.trim();
+    if (r.status === 0) ok("pins", out.split("\n").slice(-1)[0] || "cite.mjs --pins clean");
+    else bad("pins", out.split("\n").slice(-3).join(" | "), "a moved pin makes every recorded file:line unverifiable at once");
+  } else {
+    warn("pins", "cite.mjs not found — SHAs unverified", "pins were not checked; this is not a pass");
+  }
+}
+
+// ── 3. who owns port 5173 ────────────────────────────────────────────────────────────────────────
+//
+// playwright.config.ts sets reuseExistingServer: !process.env.CI, so a `pnpm demo` already
+// listening from ANOTHER checkout is silently adopted — the worktree's specs then run against that
+// checkout's demo/ and src/. It makes a GREEN run untrustworthy exactly as readily as a red one.
+
+const net = process.platform === "win32"
+  ? run("netstat", ["-ano"])
+  : run("sh", ["-c", "lsof -iTCP:5173 -sTCP:LISTEN -n -P || true"]);
+const netOut = net.stdout || "";
+const listening = process.platform === "win32"
+  ? netOut.split("\n").filter((l) => /:5173\s/.test(l) && /LISTENING/i.test(l))
+  : netOut.split("\n").filter(Boolean).slice(1);
+
+if (listening.length === 0) {
+  ok("port 5173", "free — playwright will start its own server");
+} else {
+  warn("port 5173", `already held: ${listening[0].trim()}`,
+    "find out WHICH checkout owns it before trusting a red run — or a green one");
+}
+
+// ── 4. local wasm-pack vs the CI pin ─────────────────────────────────────────────────────────────
+//
+// check-tool-pins.mjs compares the WORKFLOWS to each other and never looks at the local binary.
+// A local version that differs means the pixel proofs ran against different codegen and a different
+// wasm-opt than the ones that will judge the PR — and both go green.
+
+let pinned = null;
+if (mainCheckout) {
+  const wfDir = resolve(mainCheckout, ".github/workflows");
+  if (existsSync(wfDir)) {
+    for (const f of readdirSync(wfDir)) {
+      const m = readFileSync(resolve(wfDir, f), "utf8").match(/WASM_PACK_VERSION:\s*["']?([\d.]+)/);
+      if (m) { pinned = m[1]; break; }
+    }
+  }
+}
+const local = run("wasm-pack", ["--version"]);
+const localVer = (local.stdout || "").match(/([\d.]+)/)?.[1] ?? null;
+
+if (!pinned) warn("wasm-pack", "no WASM_PACK_VERSION found in any workflow", "the pin could not be read");
+else if (!localVer) warn("wasm-pack", `CI pins ${pinned}; wasm-pack not on PATH`, "only matters if you run test:proofs");
+else if (localVer === pinned) ok("wasm-pack", `${localVer} — matches the CI pin`);
+else bad("wasm-pack", `local ${localVer} ≠ CI ${pinned}`,
+  `cargo install wasm-pack --locked --version ${pinned} — otherwise test:proofs is not the gate CI runs, and both go green`);
+
+// ── 5. just-shield's argument ────────────────────────────────────────────────────────────────────
+//
+// Given the wrong path it reports "0 workflows scanned" AND a green "no violations" — a vacuous
+// pass. The correct argument is the REPO ROOT of the tree you are editing, not .github/workflows,
+// and from a worktree that is the WORKTREE root.
+
+const shield = mainCheckout ? resolve(mainCheckout, "..", "just-shield") : null;
+if (shield && existsSync(shield)) {
+  ok("just-shield", `present at ${shield} — scan with:  cargo run -- scan --strict ${HERE}`);
+} else {
+  warn("just-shield", "not found beside the main checkout",
+    "only needed for a change touching .github/workflows/**");
+}
+
+// ── report ───────────────────────────────────────────────────────────────────────────────────────
+
+const icon = { ok: "  ok  ", warn: " warn ", bad: " BAD  " };
+console.log("thegraph preflight — justerm\n");
+for (const r of results) {
+  console.log(`${icon[r.level]} ${r.name.padEnd(12)} ${r.detail}`);
+  if (r.fix) console.log(`              ↳ ${r.fix}`);
+}
+
+const bads = results.filter((r) => r.level === "bad").length;
+const warns = results.filter((r) => r.level === "warn").length;
+console.log(`\n${results.length - bads - warns} ok · ${warns} warn · ${bads} bad`);
+if (bads === 0 && warns === 0) console.log("\nEvery check here covers a SILENT failure. A clean run is the only evidence they are absent.");
+process.exit(bads ? 1 : 0);

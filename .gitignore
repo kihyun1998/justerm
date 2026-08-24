@@ -23,3 +23,7 @@ target/
 # not: a 0.10.0 renderer tarball, wasm binary included, sat in `git status` as `??` for two
 # days against a shipped 0.11.0, one `git add -A` away from being committed.
 /jrcheck/
+
+# thegraph run state (docs/agents/thegraph.md § Run state). A cache during the run;
+# the issue is the durable record. A cache that reaches a review is noise.
+/.thegraph/
