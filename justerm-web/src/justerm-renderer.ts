@@ -554,6 +554,11 @@ export function gridForBox(
   cellCssWidth: number,
   cellCssHeight: number,
 ): { cols: number; rows: number } | undefined {
+  // A box with no area is "not measured" (#810) — the same answer `proposeDimensions` gives, and the
+  // two paths must not disagree, which is the whole point #632 made them share arithmetic for. See
+  // that function for why the guard is here rather than in the floor below, and for the deliberate
+  // divergence from all three references.
+  if (cssWidth <= 0 || cssHeight <= 0) return undefined;
   const cols = Math.max(MINIMUM_COLS, Math.floor(cssWidth / cellCssWidth));
   const rows = Math.max(MINIMUM_ROWS, Math.floor(cssHeight / cellCssHeight));
   if (!Number.isFinite(cols) || !Number.isFinite(rows)) return undefined;

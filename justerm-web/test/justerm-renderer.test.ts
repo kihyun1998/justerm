@@ -245,7 +245,22 @@ describe("gridForBox", () => {
     // outside the 1-column renderer grid — the surface stops updating. A wide glyph needs a lead
     // *and* a spacer; there is no such thing as a 1-column terminal any more.
     expect(gridForBox(3, 3, 8, 16)).toEqual({ cols: MINIMUM_COLS, rows: 1 });
-    expect(gridForBox(0, 0, 8, 16)).toEqual({ cols: MINIMUM_COLS, rows: 1 });
+  });
+
+  // **This line used to read `expect(gridForBox(0, 0, 8, 16)).toEqual({ cols: MINIMUM_COLS, rows: 1 })`
+  // and #810 changed it deliberately, not incidentally.** What the assertion above was written to pin
+  // is the floor's VALUE — 2 rather than 1 — and the zero box was included as its extreme. The
+  // question of whether a zero box should be floored at all was never asked: a `display: none` box
+  // reports all zeros and is "not measured", which is the case the non-finite refusal beside it
+  // already declines to shrink. So the pinned value survives for every measured box and only the
+  // unmeasured one moves.
+  it("refuses a box with no area instead of flooring it (#810)", () => {
+    expect(gridForBox(0, 0, 8, 16)).toBeUndefined();
+    expect(gridForBox(0, 240, 8, 16)).toBeUndefined();
+    expect(gridForBox(800, 0, 8, 16)).toBeUndefined();
+    expect(gridForBox(-1, 240, 8, 16)).toBeUndefined();
+    // …and a measured box one pixel across is still floored, which is what keeps the two apart.
+    expect(gridForBox(1, 1, 8, 16)).toEqual({ cols: MINIMUM_COLS, rows: 1 });
   });
 
   it("agrees with the fit path, which already floored at the same value", () => {
@@ -295,12 +310,30 @@ describe("gridForBox", () => {
     expect(asFit(Infinity, 240, 8, 16)).toBeUndefined();
   });
 
-  // THE SIDE CONDITION: a zero-sized BOX is not an unmeasured one. Both paths clamp it to the floors
-  // rather than refusing, so the new guards cannot have been widened into "any degenerate input
-  // refuses" — which would silently shrink a terminal whose container has not been laid out yet.
-  it("still clamps a zero-sized box to the floors on both paths", () => {
-    expect(gridForBox(0, 0, 8, 16)).toEqual({ cols: MINIMUM_COLS, rows: 1 });
-    expect(asFit(0, 0, 8, 16)).toEqual({ cols: MINIMUM_COLS, rows: 1 });
+  // **#632 decided the opposite here and #810 reversed it, with the reason recorded rather than the
+  // line quietly edited.** This test read:
+  //
+  //   > THE SIDE CONDITION: a zero-sized BOX is not an unmeasured one. Both paths clamp it to the
+  //   > floors rather than refusing, so the new guards cannot have been widened into "any degenerate
+  //   > input refuses" — which would silently shrink a terminal whose container has not been laid
+  //   > out yet.
+  //
+  // Two things moved it. First, the trailing ground describes the **wrong branch**: refusing leaves
+  // the grid exactly as it is, so it cannot shrink anything; flooring is the branch that shrinks, and
+  // it is the one that was kept. Second, #810 measured what the floor actually does — a `display:
+  // none` box proposes `2`x`1`, the engine reflows through two columns, and on the **alt screen** a
+  // resize is a re-fit rather than a reflow (`docs/map/territory/reflow.md`, #567), so rows are
+  // dropped with nothing to restore them from. That is not recoverable by showing the pane again.
+  //
+  // What survives untouched is the job this test was written for: the guards must stay **narrow**, so
+  // a measured box that is merely tiny still floors on both paths. That is asserted below, and it is
+  // the assertion that would catch a guard widened into "any degenerate input refuses".
+  it("agrees on refusing a box with no area, and on flooring a measured tiny one (#810)", () => {
+    expect(gridForBox(0, 0, 8, 16)).toBeUndefined();
+    expect(asFit(0, 0, 8, 16)).toBeUndefined();
+    // THE SIDE CONDITION, unchanged in substance: 1x1 is measured and tiny, not absent.
+    expect(gridForBox(1, 1, 8, 16)).toEqual({ cols: MINIMUM_COLS, rows: 1 });
+    expect(asFit(1, 1, 8, 16)).toEqual({ cols: MINIMUM_COLS, rows: 1 });
   });
 });
 

@@ -27,6 +27,14 @@ a CSS box and reads the grid back, rather than asking for 80×24 and being given
   the same call.
 - **The scrollbar width is an input.** A grid fitted without subtracting it overflows its container by
   exactly one scrollbar — which is why the parameter exists rather than being derived.
+- **A box with no area is refused, not floored** (#810). An element that is `display: none`,
+  detached, or not yet laid out reports every metric as `0`, and `0` is finite — so the non-finite
+  refusal never saw it while the `MINIMUM_COLS` floor turned it into a plausible `2x1`. Both paths
+  now answer `undefined`, and a box that is *measured* and merely tiny still floors, which is the case
+  the minimum exists for. This is a **deliberate divergence from all three references**, all of which
+  floor; the row in [`theflow.md`](../../agents/theflow.md) carries why, and the short version is that
+  ours is the only fit driven automatically by a `ResizeObserver`, so it is the only one handed a
+  hidden element's box.
 - **The contract runs consumer → CSS box, renderer → `cols`/`rows`.** A consumer that assumes the
   width it asked for is the width it got will be wrong: the engine also clamps `cols` up to
   `MIN_COLUMNS`, silently.
