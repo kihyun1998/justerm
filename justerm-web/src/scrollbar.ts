@@ -36,6 +36,43 @@ export function scrollbarMetrics(pos: ScrollPosition): ScrollbarMetrics {
 }
 
 /**
+ * A drag at `clientY` as a ratio down `track` (0 = top, 1 = bottom), or `undefined` when
+ * the track has **no box to be a ratio of**.
+ *
+ * An element that is `display: none`, detached, or not yet laid out reports every
+ * `getBoundingClientRect()` field as `0` — and `0` is finite, so nothing downstream can tell
+ * "there is no track" from "the pointer is at the track's top". The division then answers
+ * `±Infinity` (or `NaN` at exactly `top`), and the clamp on the next line turns that into a
+ * perfectly plausible **end of the track**. Measured before the fix against a hidden pane's
+ * all-zero rect, viewport scrolled 40 lines up: every mouse move produced ratio `1` →
+ * display offset `0`, i.e. the terminal slammed to the live bottom and stayed there.
+ *
+ * `Scrollbar` binds its move/up listeners to `window` and {@link Scrollbar.update} hides the
+ * track without clearing `dragging`, so a drag genuinely outlives its box — and since #801 a
+ * host is *documented* to hide a pane with `display: none` rather than destroy it, which is the
+ * route that reaches this.
+ *
+ * **Why the predicate is on the box and not on the ratio.** `!Number.isFinite(ratio)` would
+ * catch every input {@link Scrollbar} can actually produce — the two agree everywhere a `DOMRect`
+ * can reach — but it is the wrong statement: a finiteness test is exactly the guard the sibling
+ * sites already had while missing this defect, because the invariant here is that **zero is
+ * finite** (`docs/map/invariant/an-absent-box-measures-as-zero.md`). It only appears to work at
+ * this site because the zero happens to land in a divisor. `<= 0` says what is true — the box
+ * was never measured — and matches `proposeDimensions` (#810) and the renderer's grant check
+ * (#639) rather than inventing a third predicate.
+ *
+ * Contrast `WheelScroller.consumeWheelEvent`, which discharges the same obligation — *a
+ * producer owes its consumer a value the consumer’s type can mean* (#675) — by returning `0`.
+ * That works there because a line count of `0` **is** the no-op; for a ratio `0` means *scroll
+ * to the top*, which is one of the two symptoms above. Hence a union, and a caller that skips
+ * the request entirely.
+ */
+export function dragTrackRatio(clientY: number, track: { top: number; height: number }): number | undefined {
+  if (track.height <= 0) return undefined;
+  return Math.max(0, Math.min(1, (clientY - track.top) / track.height));
+}
+
+/**
  * The display offset a drag to `topRatio` (0 = track top, 1 = bottom) requests.
  * Inverse of {@link scrollbarMetrics}'s `thumbTopRatio`: the dragged-to viewport
  * top line maps back to an offset, clamped to `[0, scrollbackLen]`. The backend
@@ -210,8 +247,11 @@ export class Scrollbar {
 
   private dragTo(clientY: number): void {
     if (!this.dragging) return;
-    const r = this.track.getBoundingClientRect();
-    const ratio = Math.max(0, Math.min(1, (clientY - r.top) / r.height));
+    const ratio = dragTrackRatio(clientY, this.track.getBoundingClientRect());
+    // No box, no request. Deliberately NOT ending the drag: hiding a pane is reversible since
+    // #801, the button is still down, and `mouseup` on `window` still ends it — so a pane shown
+    // again mid-drag goes on following the pointer instead of silently going dead.
+    if (ratio === undefined) return;
     this.opts.onScroll(dragToDisplayOffset(ratio, this.pos));
   }
 

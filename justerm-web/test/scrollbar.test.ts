@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { dragToDisplayOffset, rulerMarkHeightPx, scrollbarMetrics } from "../src/scrollbar";
+import { dragToDisplayOffset, dragTrackRatio, rulerMarkHeightPx, scrollbarMetrics } from "../src/scrollbar";
 import type { RulerMark } from "../src/decorations";
 
 describe("scrollbarMetrics", () => {
@@ -73,5 +73,38 @@ describe("dragToDisplayOffset", () => {
     expect(dragToDisplayOffset(0, pos)).toBe(76); // top → fully scrolled up
     expect(dragToDisplayOffset(1, pos)).toBe(0); // bottom → following the screen
     expect(dragToDisplayOffset(0.5, pos)).toBe(26); // middle: 76 − 50
+  });
+});
+
+describe("dragTrackRatio (#814)", () => {
+  const TRACK = { top: 100, height: 300 };
+
+  // The working case, and it is the control: the guard below must not eat it.
+  it("converts a pointer position into the track ratio it always did", () => {
+    expect(dragTrackRatio(100, TRACK)).toBe(0); // exactly the top
+    expect(dragTrackRatio(400, TRACK)).toBe(1); // exactly the bottom
+    expect(dragTrackRatio(250, TRACK)).toBe(0.5);
+    // Outside the track still clamps — a drag leaves the track whenever the pointer does.
+    expect(dragTrackRatio(-500, TRACK)).toBe(0);
+    expect(dragTrackRatio(9000, TRACK)).toBe(1);
+  });
+
+  // An element with no box reports every field as 0, and 0 is finite — so the ratio is
+  // `Infinity` (or `NaN` at exactly `top`) and the clamp turns it into a plausible end of
+  // the track. Measured against the real arithmetic before the fix, with a hidden pane's
+  // all-zero rect: any clientY > 0 gave ratio 1 → display offset 0, i.e. the viewport
+  // slammed to the live bottom on every mouse move; clientY === 0 gave NaN.
+  it("refuses a track with no height instead of answering an end of it", () => {
+    expect(dragTrackRatio(200, { top: 0, height: 0 })).toBeUndefined(); // was Infinity → 1
+    expect(dragTrackRatio(0, { top: 0, height: 0 })).toBeUndefined(); // was 0/0 → NaN
+    expect(dragTrackRatio(50, { top: 100, height: 0 })).toBeUndefined(); // -Infinity → 0
+  });
+
+  // Pins `<= 0` rather than `=== 0`, matching the family's other absent-box refusals
+  // (`proposeDimensions` #810, the renderer's grant check #639) rather than inventing a
+  // third predicate. A `DOMRect` cannot produce this, but the signature admits it, and
+  // this is the ONE input on which `height <= 0` and a finiteness test disagree.
+  it("refuses a negative height, which a finiteness test would accept", () => {
+    expect(dragTrackRatio(200, { top: 100, height: -300 })).toBeUndefined();
   });
 });

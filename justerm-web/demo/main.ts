@@ -1023,12 +1023,19 @@ function viewportFrame(out?: { scrollCount: number }): DecodedFrame {
   } as DecodedFrame;
 }
 
+/** #814: how many scroll requests the scrollbar has handed this host. The probe's side condition. */
+let barScrollCalls = 0;
 const bar = new Scrollbar(document.body, {
   onScroll: (offset) => {
+    barScrollCalls++;
     displayOffset = offset;
     render();
   },
 });
+// #814: the probe needs the track and thumb, and `Scrollbar` deliberately exposes neither — the
+// constructor appends the track to its parent, so it is the last child at exactly this moment.
+const barTrack = document.body.lastElementChild as HTMLElement;
+const barThumb = barTrack.firstElementChild as HTMLElement;
 
 function render(out?: { scrollCount: number }): void {
   const frame = viewportFrame(out);
@@ -1581,6 +1588,13 @@ declare global {
       before: SoleTenantHideStep;
       hidden: SoleTenantHideStep;
       shown: SoleTenantHideStep;
+    };
+    __scrollbarZeroBoxProbe?: () => {
+      trackWasVisible: boolean;
+      before: ScrollbarDragStep;
+      dragged: ScrollbarDragStep;
+      hidden: ScrollbarDragStep;
+      shown: ScrollbarDragStep;
     };
     __setDpr?: (dpr: number) => void;
     __setLineHeight?: (lh: number) => void;
@@ -2773,6 +2787,95 @@ window.__soleTenantHideProbe = (): {
  * through the proposed columns, and on the alt screen a resize drops rows outright
  * (`docs/map/territory/reflow.md`, #567) with nothing to restore them from.
  */
+/** One observation of the scrollbar drag: what the host was handed, and how often (#814). */
+interface ScrollbarDragStep {
+  /** The host's current display offset — what `onScroll` last wrote. */
+  displayOffset: number;
+  /** Cumulative `onScroll` calls. The side condition: a refused move must not grow this. */
+  calls: number;
+  /** Whether the last offset the host holds is a usable number at all. */
+  finite: boolean;
+}
+
+/**
+ * #814 — drive a real scrollbar drag that outlives its track's box.
+ *
+ * The library's own `update()` hides the track with `display: none` when there is nothing to
+ * scroll, and a host hiding a pane (README, #801) puts an ancestor in the same state; both give
+ * `getBoundingClientRect()` all zeros, which is the input under test. This drives the track
+ * directly so the step is unambiguous.
+ *
+ * `trackWasVisible` asserts the WINDOW EXISTS before anything is asserted inside it: with no
+ * scrollback the track is already hidden, no `mousedown` can land on the thumb, and every later
+ * step would pass vacuously.
+ */
+window.__scrollbarZeroBoxProbe = (): {
+  trackWasVisible: boolean;
+  before: ScrollbarDragStep;
+  dragged: ScrollbarDragStep;
+  hidden: ScrollbarDragStep;
+  shown: ScrollbarDragStep;
+} => {
+  // A pane of its own, so the drag can be hidden the way a HOST hides one — `display: none` on an
+  // ANCESTOR, which is what `justerm-web`'s README documents and what #801 made supported.
+  //
+  // Hiding the track *itself* was the first attempt and it does not model the route: the very
+  // first bad request reaches this host's `onScroll`, which re-renders, which calls
+  // `Scrollbar.update()`, which sets `display: "block"` again — so the library un-hides its own
+  // track in response to the defect and the second move lands on a measured track. Measured with
+  // the guard off: 2 requests, final offset 60, and the `0/0` input never ran. An ancestor's
+  // `display: none` leaves the track's own style alone, so `update()` cannot fight it.
+  const pane = document.createElement("div");
+  pane.style.cssText = "position:absolute;top:0;right:40px;width:14px;height:100%;";
+  document.body.appendChild(pane);
+
+  let calls = 0;
+  let offset = 40; // scrolled UP into history: the position the defect used to destroy
+  const scrollback = 60;
+  const probeBar = new Scrollbar(pane, {
+    onScroll: (o) => {
+      calls++;
+      offset = o;
+      probeBar.update({ displayOffset: offset, scrollbackLen: scrollback, rows: ROWS });
+    },
+  });
+  const track = pane.lastElementChild as HTMLElement;
+  const thumb = track.firstElementChild as HTMLElement;
+
+  const step = (): ScrollbarDragStep => ({
+    displayOffset: offset,
+    calls,
+    finite: Number.isFinite(offset),
+  });
+  const move = (clientY: number): void => {
+    window.dispatchEvent(new MouseEvent("mousemove", { clientY, bubbles: true }));
+  };
+
+  probeBar.update({ displayOffset: offset, scrollbackLen: scrollback, rows: ROWS });
+  const trackWasVisible = track.style.display === "block";
+  const before = step();
+
+  thumb.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+  // The control: a move against a MEASURED track must still scroll, or every later step passes
+  // because the drag never started rather than because the guard held.
+  move(Math.round(window.innerHeight * 0.25));
+  const dragged = step();
+
+  pane.style.display = "none";
+  move(Math.round(window.innerHeight * 0.75));
+  move(0); // the `0/0` input: exactly the hidden track's `top`
+  const hidden = step();
+
+  pane.style.display = "";
+  move(Math.round(window.innerHeight * 0.9));
+  const shown = step();
+
+  window.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+  probeBar.dispose();
+  pane.remove();
+  return { trackWasVisible, before, dragged, hidden, shown };
+};
+
 window.__zeroBoxFitProbe = (): {
   before: { cols: number; rows: number };
   afterZeroBox: { cols: number; rows: number };

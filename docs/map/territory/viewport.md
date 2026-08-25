@@ -48,8 +48,11 @@ from that split.
 ## Cross-cutting invariants
 
 - [an absent element box measures as zero](../invariant/an-absent-box-measures-as-zero.md) — the
-  scrollbar's `dragTo` divides by its track's measured height, so a zero-height track yields
-  `±Infinity` that the surrounding clamp turns into a plausible jump to one end
+  third site, **repaired in #814**. `dragTo` divided by its track's measured height, so a zero-height
+  track yielded `±Infinity` that the surrounding clamp turned into a plausible jump to one end, or
+  `NaN` at exactly the track's top. The ratio step is now `dragTrackRatio`, which takes the box as
+  data and answers `undefined` for `height <= 0`; a refused move makes **no** `onScroll` call, and the
+  drag deliberately survives so a pane shown again mid-gesture keeps following the pointer
 - [alt-screen absolute-index floor](../invariant/alt-screen-buffer-floor.md) — the viewport's window
   is expressed in the same concatenated coordinate space every buffer walk uses
 
