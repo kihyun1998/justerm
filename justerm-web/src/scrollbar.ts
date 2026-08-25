@@ -88,12 +88,27 @@ export function dragTrackRatio(clientY: number, track: { top: number; height: nu
 }
 
 /**
- * The display offset a drag to `topRatio` (0 = track top, 1 = bottom) requests.
- * Inverse of {@link scrollbarMetrics}'s `thumbTopRatio`: the dragged-to viewport
- * top line maps back to an offset, clamped to `[0, scrollbackLen]`. The backend
- * scrolls to it.
+ * The display offset a drag to `topRatio` (0 = track top, 1 = bottom) requests, or `undefined`
+ * for a position this cannot answer for.
+ *
+ * Inverse of {@link scrollbarMetrics}'s `thumbTopRatio`: the dragged-to viewport top line maps
+ * back to an offset, clamped to `[0, scrollbackLen]`. The backend scrolls to it.
+ *
+ * **Checked on the inputs, and a result check would not do** — the same rule `wheelScrollTarget`
+ * carries on the other producer of this consumer callback (`terminal.ts`, #675). Three of the four
+ * poisoned positions surface as `NaN`, but `rows: Infinity` gives **`0`**: `Math.round(60 - ∞)` is
+ * `-Infinity`, and the clamp rescues that into a perfectly finite, perfectly plausible *jump to the
+ * live edge*. Measured, all four, before this guard existed. So guarding the result would fix three
+ * cases and read as if it had fixed all of them.
+ *
+ * The guard is here rather than at the one in-repo caller because this function is **exported**: it
+ * owes its own totality, which is the reason `wheelScrollTarget` gives for its own. `displayOffset`
+ * is deliberately not checked — this function does not read it.
  */
-export function dragToDisplayOffset(topRatio: number, pos: ScrollPosition): number {
+export function dragToDisplayOffset(topRatio: number, pos: ScrollPosition): number | undefined {
+  if (!Number.isFinite(topRatio) || !Number.isFinite(pos.scrollbackLen) || !Number.isFinite(pos.rows)) {
+    return undefined;
+  }
   const total = pos.scrollbackLen + pos.rows;
   const topLine = topRatio * total;
   const offset = Math.round(pos.scrollbackLen - topLine);
@@ -271,7 +286,11 @@ export class Scrollbar {
     // one behavioural difference. Refusing to scroll a pane the user cannot see is the harm #801
     // is about, so inert is the answer here rather than an omission.
     if (ratio === undefined) return;
-    this.opts.onScroll(dragToDisplayOffset(ratio, this.pos));
+    const offset = dragToDisplayOffset(ratio, this.pos);
+    // Same answer for the same reason, one input over: a position the conversion cannot answer for
+    // is not a request either.
+    if (offset === undefined) return;
+    this.opts.onScroll(offset);
   }
 
   dispose(): void {

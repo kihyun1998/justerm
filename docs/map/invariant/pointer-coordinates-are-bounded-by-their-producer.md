@@ -131,6 +131,15 @@ fix mentions a shared rule.
   one layer out: **a producer owes its consumer a value the consumer's type can mean.** Where this
   note is about a coordinate that must be in range, that one is about a number that must be a
   number — and `Math.max`/`Math.min` no more produce it than they produce a bound.
+  **#814 found a third producer of the same callback and made it total too**, and it is the one that
+  shows why the rule has to be applied at the *inputs*. `dragToDisplayOffset` is exported, so it owes
+  its own totality; measured across its four poisoned positions, three surfaced as `NaN` and
+  `rows: Infinity` surfaced as **`0`** — `Math.round(60 - ∞)` is `-Infinity` and the clamp rescues it
+  into a finite, plausible jump to the live edge. A finiteness test on the *result* therefore fixes
+  three of four and reads as if it fixed all four, which `wheelScrollTarget` had already stated in
+  prose (`terminal.ts`) and which a mutation now pins: moving the guard to the result reddens exactly
+  the `rows: Infinity` assertion and nothing else. Note that this producer is **not** a member of the
+  note's own rule — it computes a ratio, not a cell, exactly as the exclusion below says.
   **#680 then closed the drag half, and how it closed is the part worth carrying.** A drag that
   outlives the canvas's box auto-scrolled at the maximum speed, because `SelectionController` builds
   its viewport height as `getRows() * geom.cellHeight` and a **product loses which factor was zero**.

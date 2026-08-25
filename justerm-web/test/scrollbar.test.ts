@@ -111,3 +111,34 @@ describe("dragTrackRatio (#814)", () => {
     expect(dragTrackRatio(200, { top: 100, height: -300 })).toBeUndefined();
   });
 });
+
+describe("dragToDisplayOffset totality (#814)", () => {
+  const POS = { displayOffset: 0, scrollbackLen: 60, rows: 24 };
+
+  // The control: the arithmetic is untouched.
+  it("still converts a healthy position", () => {
+    expect(dragToDisplayOffset(0.5, POS)).toBe(18);
+    // `displayOffset` is not read by this function — pinned so a poisoned one is not mistaken
+    // for a case the guard has to cover.
+    expect(dragToDisplayOffset(0.5, { ...POS, displayOffset: NaN })).toBe(18);
+  });
+
+  // Same rule as the sibling on this seam (#675): a producer owes its consumer a value the
+  // consumer's type can mean, and `wheelScrollTarget` states the reason this function inherits
+  // — it is EXPORTED, so it owes its own totality rather than trusting its one in-repo caller.
+  it("refuses a position it cannot answer for", () => {
+    expect(dragToDisplayOffset(0.5, { ...POS, scrollbackLen: NaN })).toBeUndefined();
+    expect(dragToDisplayOffset(0.5, { ...POS, rows: NaN })).toBeUndefined();
+    expect(dragToDisplayOffset(0.5, { ...POS, scrollbackLen: Infinity })).toBeUndefined();
+    expect(dragToDisplayOffset(NaN, POS)).toBeUndefined();
+  });
+
+  // The one that decides the guard's PLACEMENT, and the reason a result check will not do.
+  // Measured before the fix: `rows: Infinity` gave `0` — finite, plausible, and a silent jump to
+  // the live edge — because `Math.max(0, Math.min(60, -Infinity))` is `0`. The other three gave
+  // `NaN`. `terminal.ts`'s `wheelScrollTarget` records the general form: only `NaN` survives to
+  // the output, so guarding there fixes half the cases and reads as if it fixed all of them.
+  it("refuses the input whose result the clamp would rescue into a plausible wrong number", () => {
+    expect(dragToDisplayOffset(0.5, { ...POS, rows: Infinity })).toBeUndefined();
+  });
+});
