@@ -1300,6 +1300,30 @@ const countLabel = document.createElement("span");
 countLabel.id = "search-count"; // e2e reads it to prove the wasm validator ran (#346)
 countLabel.textContent = "0/0";
 
+// #448: the invalid-regex state on the channel AT reads. #439 settled the ANNOUNCE half as
+// visual-only — VS Code's SimpleFindWidget has no wording to mirror — but that reasoning covers
+// only the announce; without these the state was a border colour and nothing else, so a screen
+// reader could not tell a rejected pattern from a genuine no-match.
+//
+// `aria-describedby` is written ONCE and never toggled. `countLabel` is this box's status text in
+// both states ("3/12" / "invalid"), so the association is structure and only the text varies —
+// which also means `updateCountLabel` has exactly one piece of AT state to reset, not two. This
+// territory's own convention (`docs/map/territory/accessibility.md`) is that every resettable a11y
+// field must be reset in one place with nothing enforcing it, and it has been missed once already.
+//
+// Deliberately NOT gated on `srState.isActive()` (#161), unlike every announce here. That gate
+// exists to stop a streaming terminal spamming a live region; an attribute makes no sound. Gating
+// it would make the DOM state a lie to any AT that attached after the heuristic said "no SR", and
+// it must likewise stay out of `reactivate()`'s reset — it is not announce state.
+input.setAttribute("aria-describedby", countLabel.id);
+// `aria-invalid` is NOT written here, and the reason is measured rather than stylistic. A
+// construction-time "false" looks like it makes the DOM honest before the first query, but
+// `updateCountLabel` writes the same value on every result and this demo's 300ms append tick calls
+// it within a frame of boot — so the line is unreachable in practice, and no assertion in the suite
+// can distinguish its presence from its absence (verified: deleting it leaves the #448 e2e green).
+// ARIA reads an absent `aria-invalid` as "false" anyway, so the only thing it could have bought was
+// assertability, and it does not buy that.
+
 // #439: SR announce for the search count — a DEDICATED polite region (the #160
 // precedent: sharing #119's output or #160's command region would let a flush
 // clobber it), visually hidden like cmdLive. Post-#429 the current match is no
@@ -1358,9 +1382,11 @@ function updateCountLabel(): void {
   if (search.isInvalidRegex()) {
     countLabel.textContent = "invalid";
     input.style.borderColor = "#f38ba8"; // red — regex the engine can't run
+    input.setAttribute("aria-invalid", "true"); // #448 — the same flag, for AT
     return;
   }
   input.style.borderColor = "#45475a";
+  input.setAttribute("aria-invalid", "false"); // #448 — beside the visual reset, so neither latches
   const r = search.result();
   countLabel.textContent = `${r.current}/${r.total}`;
 }
