@@ -318,12 +318,23 @@ describe("gridForBox", () => {
   //   > input refuses" — which would silently shrink a terminal whose container has not been laid
   //   > out yet.
   //
-  // Two things moved it. First, the trailing ground describes the **wrong branch**: refusing leaves
-  // the grid exactly as it is, so it cannot shrink anything; flooring is the branch that shrinks, and
-  // it is the one that was kept. Second, #810 measured what the floor actually does — a `display:
-  // none` box proposes `2`x`1`, the engine reflows through two columns, and on the **alt screen** a
-  // resize is a re-fit rather than a reflow (`docs/map/territory/reflow.md`, #567), so rows are
-  // dropped with nothing to restore them from. That is not recoverable by showing the pane again.
+  // #632 gave TWO grounds and this note first answered only the weaker one. Both, in order:
+  //
+  // 1. The trailing clause above describes the **wrong branch**. Refusing leaves the grid exactly as
+  //    it is, so it cannot shrink anything; flooring is the branch that shrinks. (Checked at the
+  //    source: `git log -S` puts the grant read-back — the second `gridForBox` caller — after this
+  //    test, so when the comment was written refusing really could not shrink anything anywhere.)
+  // 2. **The real ground is in PR #638's body, not in this comment**, and it is a semantic claim:
+  //    *"A container that measured as empty is a real answer; only a non-finite one is not
+  //    measured."* That is what #810 refutes, in one sentence — **a `display: none` element is not a
+  //    container that measured as empty; it is a container that was not measured, and the browser
+  //    spells both `0`.** Which is the whole subject of
+  //    `docs/map/invariant/an-absent-box-measures-as-zero.md`.
+  //
+  // What decided it was severity, measured: the floor proposes `2`x`1`, the engine reflows through
+  // two columns, and on the **alt screen** a resize is a re-fit rather than a reflow
+  // (`docs/map/territory/reflow.md`, #567) that also clears the selection on any geometry change
+  // (`justerm-core/src/term.rs:1516`). Not recoverable by showing the pane again.
   //
   // What survives untouched is the job this test was written for: the guards must stay **narrow**, so
   // a measured box that is merely tiny still floors on both paths. That is asserted below, and it is

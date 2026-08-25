@@ -554,10 +554,21 @@ export function gridForBox(
   cellCssWidth: number,
   cellCssHeight: number,
 ): { cols: number; rows: number } | undefined {
-  // A box with no area is "not measured" (#810) — the same answer `proposeDimensions` gives, and the
-  // two paths must not disagree, which is the whole point #632 made them share arithmetic for. See
-  // that function for why the guard is here rather than in the floor below, and for the deliberate
-  // divergence from all three references.
+  // A box with no area yields no proposal (#810) — the same answer `proposeDimensions` gives, and the
+  // two must not disagree, which is what #632 made them share arithmetic for.
+  //
+  // **Its two callers mean different things by a zero, and the guard is right for both — but only
+  // one of them is `proposeDimensions`'s reason.** `resize()` passes a box the consumer measured,
+  // where `0` means *nobody measured* (an absent element). `applyGrid`'s grant read-back passes
+  // `cssWidth()`/`cssHeight()`, where `0` means *the browser granted nothing* — reachable, because
+  // `apply_surface_size` commits `(0, 0)` when the drawing-buffer read-back is empty. The renderer
+  // already refuses that one on its own side and says why: *"A buffer of no size is not a grant, it
+  // is the absence of an answer"* (`justerm-renderer/src/webgl.rs`, #639). Absence of a measurement
+  // and absence of a grant are different facts with the same shape, and neither is a size.
+  //
+  // Left unguarded, the grant read-back was the worse of the two: `{2, 1}` satisfied
+  // `granted.cols < cols`, so an empty buffer silently clamped **every attached pane's grid** to the
+  // minimum. Nothing named that site until #810's completeness pass.
   if (cssWidth <= 0 || cssHeight <= 0) return undefined;
   const cols = Math.max(MINIMUM_COLS, Math.floor(cssWidth / cellCssWidth));
   const rows = Math.max(MINIMUM_ROWS, Math.floor(cssHeight / cellCssHeight));
