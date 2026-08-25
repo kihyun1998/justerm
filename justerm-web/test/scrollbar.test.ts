@@ -142,3 +142,38 @@ describe("dragToDisplayOffset totality (#814)", () => {
     expect(dragToDisplayOffset(0.5, { ...POS, rows: Infinity })).toBeUndefined();
   });
 });
+
+describe("scrollbarMetrics totality (#814, #463's other half)", () => {
+  // #463 hardened `rulerMarksForFrame` for exactly this and recorded why: `total <= 0` is a size
+  // COMPARISON and NaN slips through every comparison, so the ratios reach `scrollbar.ts`'s style
+  // writes as `"NaN%"`. That fix landed on the marks half; the thumb half kept the comparison.
+  it("answers zero ratios for a position it cannot measure, never NaN", () => {
+    for (const pos of [
+      { displayOffset: 0, scrollbackLen: NaN, rows: 24 },
+      { displayOffset: 0, scrollbackLen: 60, rows: NaN },
+      { displayOffset: 0, scrollbackLen: Infinity, rows: 24 },
+      { displayOffset: 0, scrollbackLen: 60, rows: Infinity },
+      { displayOffset: 0, scrollbackLen: 0, rows: 0 },
+    ]) {
+      const m = scrollbarMetrics(pos);
+      expect(m.visible, JSON.stringify(pos)).toBe(false);
+      expect(Number.isFinite(m.thumbHeightRatio), JSON.stringify(pos)).toBe(true);
+      expect(Number.isFinite(m.thumbTopRatio), JSON.stringify(pos)).toBe(true);
+    }
+  });
+
+  // The control: nothing about a measurable position moves, including the one that is legitimately
+  // invisible (no scrollback) and whose ratios are still meaningful numbers.
+  it("leaves every measurable position exactly as it was", () => {
+    expect(scrollbarMetrics({ displayOffset: 0, scrollbackLen: 76, rows: 24 })).toEqual({
+      visible: true,
+      thumbHeightRatio: 0.24,
+      thumbTopRatio: 0.76,
+    });
+    expect(scrollbarMetrics({ displayOffset: 0, scrollbackLen: 0, rows: 24 })).toEqual({
+      visible: false,
+      thumbHeightRatio: 1,
+      thumbTopRatio: 0,
+    });
+  });
+});

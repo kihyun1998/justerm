@@ -140,6 +140,16 @@ fix mentions a shared rule.
   prose (`terminal.ts`) and which a mutation now pins: moving the guard to the result reddens exactly
   the `rows: Infinity` assertion and nothing else. Note that this producer is **not** a member of the
   note's own rule — it computes a ratio, not a cell, exactly as the exclusion below says.
+  **A fourth producer in the same file came with it, and finding it is the transferable part.**
+  `scrollbarMetrics` divided after a *relational* `visible` check, so a non-finite position answered
+  `visible: false` correctly and still emitted `NaN` ratios into `style.height` / `style.top` as
+  `"NaN%"`. #463 had already fixed exactly this in `decorations.ts` and left the rule in its comment
+  — *"`total <= 0` is a size comparison and NaN slips through every comparison; `Number.isFinite` is
+  the check"* — but only on the **marks** half of `scrollbar.ts`'s style writes, not the **thumb**
+  half. It was found by grepping the closed backlog **by artifact** after the change was written,
+  not by reading the file, and it had first been graded *"no reachable consequence"* — which was true
+  of the symptom and the wrong bar, since the sibling was filed on *"recorded rather than
+  rediscovered"*.
   **#680 then closed the drag half, and how it closed is the part worth carrying.** A drag that
   outlives the canvas's box auto-scrolled at the maximum speed, because `SelectionController` builds
   its viewport height as `getRows() * geom.cellHeight` and a **product loses which factor was zero**.

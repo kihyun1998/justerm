@@ -28,6 +28,16 @@ export interface ScrollbarMetrics {
  */
 export function scrollbarMetrics(pos: ScrollPosition): ScrollbarMetrics {
   const total = pos.scrollbackLen + pos.rows;
+  // **#463's lesson, applied to the half of this file it did not reach.** That issue hardened
+  // `rulerMarksForFrame` and its comment says why: `total <= 0` is a size *comparison*, and NaN
+  // slips through every comparison — so `Number.isFinite` is the check, not a relational one.
+  // Here `visible` is `total > pos.rows`, the same shape: a non-finite position answers `false`
+  // correctly and then divides anyway, and the ratios reach `style.height` / `style.top` as
+  // `"NaN%"`, which the browser drops. The marks half was fixed; the thumb half kept the
+  // comparison. A bar that cannot be measured is not shown, so its ratios are `0`, not `NaN`.
+  if (!Number.isFinite(total) || total <= 0) {
+    return { visible: false, thumbHeightRatio: 0, thumbTopRatio: 0 };
+  }
   return {
     visible: total > pos.rows,
     thumbHeightRatio: pos.rows / total,
