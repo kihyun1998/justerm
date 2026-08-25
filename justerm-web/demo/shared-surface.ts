@@ -1063,6 +1063,17 @@ export interface HideShowStep {
 export interface HideShowReport {
   before: HideShowStep;
   hidden: HideShowStep;
+  /**
+   * Whether **showing presented by itself**, read without this page forcing one.
+   *
+   * Every other reading here calls `surface.present()` first — it has to, because a read that loses
+   * the race to the compositor comes back all zeroes — and that makes them all structurally blind to
+   * the question *"did the library draw this, or did we?"*. `packs` answers it without a pixel: the
+   * grid is dirty and unplaced while hidden, so the first present after it is placed packs it exactly
+   * once. A delta of `1` means something presented between these two reads, and with the content
+   * timers stopped the only candidate is the show itself.
+   */
+  showPresents: { packsBefore: number; packsAfter: number };
   /** Hidden a second time, after the round trip — the baseline the two feeds below are read from. */
   hiddenAgain: HideShowStep;
   /** After feeding pane B **while it is hidden** — the work-gating half. */
@@ -1151,8 +1162,13 @@ window.__hideShowProbe = async (): Promise<HideShowReport> => {
   await settle();
   const fedWhileHidden = step();
 
+  // Show it, and read `packs` either side WITHOUT presenting — see `showPresents`. B is dirty (it was
+  // just fed) and unplaced, so a present here must pack it exactly once.
+  const packsBefore = surface.packs();
   overlayB.style.removeProperty("display");
   await settle();
+  const packsAfter = surface.packs();
+  const showPresents = { packsBefore, packsAfter };
 
   // The control, without which the zero above is indistinguishable from "nothing was fed".
   b.pane.advance();
@@ -1166,6 +1182,7 @@ window.__hideShowProbe = async (): Promise<HideShowReport> => {
     before,
     hidden,
     hiddenAcrossRefit,
+    showPresents,
     hiddenAgain,
     fedWhileHidden,
     fedWhileShown,

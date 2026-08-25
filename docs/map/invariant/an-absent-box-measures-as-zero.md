@@ -59,8 +59,10 @@ because every value involved is finite and in range. The three measured shapes:
 - **The fit path**, measured against the real module. A hidden pane still being fitted proposes `2x1`,
   the engine reflows through two columns, and showing the pane again does not undo it.
 - **A drag that outlives its box.** Both `scrollbar.ts` and `SelectionController` bind their move and
-  up listeners to `window` (`scrollbar.ts:122-124`; the demo at `demo/main.ts`), so a drag in flight
-  when the element is hidden keeps computing against zeros rather than ending.
+  up listeners to `window` (`scrollbar.ts:124-125`; `demo/main.ts:1187`), so a drag in flight when the
+  element is hidden keeps computing against zeros rather than ending. **The reach is read, not run**:
+  the bindings are verified, the zero-height arithmetic is not executed anywhere, and no test
+  constructs a drag that outlives its box.
 
 ## Territories it holds in
 

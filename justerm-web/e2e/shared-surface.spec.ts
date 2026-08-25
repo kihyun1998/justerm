@@ -629,6 +629,15 @@ test("hiding a terminal keeps it — no bake, no atlas churn, and the sibling un
   expect(r.dpr.middle).toBe(r.dpr.start);
   expect(r.dpr.end).toBe(r.dpr.start);
 
+  // — showing DRAWS, and this is the only assertion in either suite that can see it. Every pixel
+  // reading here is taken after a forced `present()`, so deleting the library's own present reddens
+  // none of them; the defect that fix repairs was found with a browser screenshot, which is the only
+  // other instrument that can. A pack delta needs no present of ours.
+  expect(
+    r.showPresents.packsAfter - r.showPresents.packsBefore,
+    "showing a dirty hidden terminal must present by itself, packing it exactly once",
+  ).toBe(1);
+
   // — 1. and it cost nothing to rebuild. The judge.
   expect(r.shown.bakes - r.before.bakes, "a placement bakes no atlas").toBe(0);
   expect(r.shown.atlases, "and releases no font configuration").toBe(r.before.atlases);

@@ -1572,6 +1572,11 @@ declare global {
     __fitProbe?: () => FitProbe;
     __oversizeProbe?: (cssWidth: number) => OversizeProbe;
     __dprProbe?: () => DprSnapshot;
+    __soleTenantHideProbe?: () => {
+      before: SoleTenantHideStep;
+      hidden: SoleTenantHideStep;
+      shown: SoleTenantHideStep;
+    };
     __setDpr?: (dpr: number) => void;
     __setLineHeight?: (lh: number) => void;
   }
@@ -2692,6 +2697,65 @@ window.__dprProbe = (): DprSnapshot => {
 /** #325 — drive the DPR path directly, the way the renderer's own `demo/dpr-change.html` does. The
  * browser's real ratio cannot be moved from inside the page, so this is how the *plumbing* is
  * exercised where the CDP-driven test cannot run. */
+/** One reading of the SOLE TENANT during a hide/show trip — see `window.__soleTenantHideProbe`. */
+export interface SoleTenantHideStep {
+  /** The renderer's own answer, not the widget's flag. */
+  drawn: boolean;
+  /** A pixel at the middle of the canvas, `r,g,b,a`. */
+  centre: string;
+  /** The drawing buffer, which a sole tenant sizes itself — it must survive the trip. */
+  bufW: number;
+  bufH: number;
+  /** The grid, which must also survive: coming back is a placement, not a re-fit. */
+  cols: number;
+  rows: number;
+}
+
+/**
+ * #801 — **hide and show the single-terminal widget**, the arrangement every consumer of this
+ * package uses today.
+ *
+ * The two-terminal page proves the shared case; this one exists because the sole-tenant path is
+ * genuinely different and `show()` was added for it. `applyGrid` re-sizes the shared drawing buffer
+ * for a sole tenant *before* it consults the hidden flag, and a resized buffer is a cleared one — so
+ * this asserts the buffer and the grid are unchanged across the trip rather than assuming the shared
+ * page's result transfers.
+ *
+ * It is also the only place `show()` is exercised at all: a shared tenant comes back through
+ * `setViewportRect`, because its box is what was taken away.
+ */
+window.__soleTenantHideProbe = (): {
+  before: SoleTenantHideStep;
+  hidden: SoleTenantHideStep;
+  shown: SoleTenantHideStep;
+} => {
+  const gl = canvas.getContext("webgl2")!;
+  const step = (): SoleTenantHideStep => {
+    // Present first, in the same turn as the read: without `preserveDrawingBuffer` a read that loses
+    // the race to the compositor comes back all zeroes, which reads exactly like "nothing was drawn".
+    renderer.render();
+    const px = new Uint8Array(4);
+    const x = gl.drawingBufferWidth >> 1;
+    const y = gl.drawingBufferHeight >> 1;
+    gl.readPixels(x, y, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+    const grid = renderer.terminalSize();
+    return {
+      drawn: renderer.isDrawn(),
+      centre: `${px[0]},${px[1]},${px[2]},${px[3]}`,
+      bufW: gl.drawingBufferWidth,
+      bufH: gl.drawingBufferHeight,
+      cols: grid.cols,
+      rows: grid.rows,
+    };
+  };
+  const before = step();
+  renderer.hide();
+  const hidden = step();
+  renderer.show();
+  const shown = step();
+  return { before, hidden, shown };
+};
+
 window.__setDpr = (dpr: number): void => {
   renderer.setDevicePixelRatio(dpr);
 };

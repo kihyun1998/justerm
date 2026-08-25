@@ -2446,3 +2446,52 @@ test("the in-progress composition is drawn, and the caret rides its end (#249)",
   expect(p.anchorComposing).not.toBe(p.anchorIdle);
   expect(p.anchorEnded).toBe(p.anchorIdle);
 });
+
+/**
+ * #801 — **the SOLE TENANT can be set aside and brought back.**
+ *
+ * `e2e/shared-surface.spec.ts` proves the two-terminal case; this exists because the single-terminal
+ * arrangement is what every consumer of this package uses today, its code path genuinely differs, and
+ * `show()` is exercised nowhere else — a shared tenant returns through `setViewportRect`, since its
+ * DOM box is what was taken away.
+ *
+ * The difference that makes a separate test rather than an assumption: `applyGrid` re-sizes the
+ * drawing buffer for a sole tenant *before* it consults the hidden flag, and this package's own
+ * record states twice that a resized buffer is a cleared one. So the buffer and the grid are asserted
+ * across the trip rather than inferred from the shared page's result.
+ */
+test("a sole tenant hides and comes back, with its buffer and grid intact (#801)", async ({
+  page,
+}) => {
+  const p = await page.evaluate(() => window.__soleTenantHideProbe!());
+
+  // The terminal is drawn and painting to begin with. Asserted rather than assumed: if the centre
+  // pixel were already transparent, every claim below would hold vacuously.
+  expect(p.before.drawn).toBe(true);
+  expect(p.before.centre).not.toBe("0,0,0,0");
+
+  // Hidden: the renderer stops drawing it, and the canvas goes back to bare buffer. `clear` is
+  // transparent, so "nothing is placed here" and "this pixel was never written" are the same value —
+  // which is exactly what a hidden grid should produce.
+  expect(p.hidden.drawn).toBe(false);
+  expect(p.hidden.centre).toBe("0,0,0,0");
+
+  // …and nothing was given up. The buffer is the quantity at risk: a sole tenant sizes it inside the
+  // same method that hides, before the hidden check.
+  expect(p.hidden.bufW).toBe(p.before.bufW);
+  expect(p.hidden.bufH).toBe(p.before.bufH);
+  expect({ cols: p.hidden.cols, rows: p.hidden.rows }).toEqual({
+    cols: p.before.cols,
+    rows: p.before.rows,
+  });
+
+  // Shown: back, at the same size, with the same pixels — a placement, not a rebuild.
+  expect(p.shown.drawn).toBe(true);
+  expect(p.shown.centre).toBe(p.before.centre);
+  expect(p.shown.bufW).toBe(p.before.bufW);
+  expect(p.shown.bufH).toBe(p.before.bufH);
+  expect({ cols: p.shown.cols, rows: p.shown.rows }).toEqual({
+    cols: p.before.cols,
+    rows: p.before.rows,
+  });
+});
