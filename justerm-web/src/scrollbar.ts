@@ -48,18 +48,33 @@ export function scrollbarMetrics(pos: ScrollPosition): ScrollbarMetrics {
  * display offset `0`, i.e. the terminal slammed to the live bottom and stayed there.
  *
  * `Scrollbar` binds its move/up listeners to `window` and {@link Scrollbar.update} hides the
- * track without clearing `dragging`, so a drag genuinely outlives its box — and since #801 a
- * host is *documented* to hide a pane with `display: none` rather than destroy it, which is the
- * route that reaches this.
+ * track without clearing `dragging`, so a drag genuinely outlives its box. **Two routes reach
+ * it, and only one of them involves the host:**
  *
- * **Why the predicate is on the box and not on the ratio.** `!Number.isFinite(ratio)` would
- * catch every input {@link Scrollbar} can actually produce — the two agree everywhere a `DOMRect`
- * can reach — but it is the wrong statement: a finiteness test is exactly the guard the sibling
- * sites already had while missing this defect, because the invariant here is that **zero is
- * finite** (`docs/map/invariant/an-absent-box-measures-as-zero.md`). It only appears to work at
- * this site because the zero happens to land in a divisor. `<= 0` says what is true — the box
- * was never measured — and matches `proposeDimensions` (#810) and the renderer's grant check
- * (#639) rather than inventing a third predicate.
+ * - a host hides the pane — `display: none` on an **ancestor**, documented since #801. The
+ *   scrollback is untouched, so the ratio is `1` and the offset is driven to `0`: the measured
+ *   slam to the live bottom, on top of the `NaN`;
+ * - the widget hides its **own** track, because {@link scrollbarMetrics} makes `visible` mean
+ *   `scrollbackLen > 0` and core's `full_reset` (RIS, `ESC c` — a program's `rs1`, `tput reset`,
+ *   a crashed TUI) replaces the whole `Term`, taking `scrollback_len()` to `0`. No host action at
+ *   all: thumb down, the application resets, the next frame hides the track under the drag. Here
+ *   every legal offset is `0`, so only the `NaN` half of the harm exists.
+ *
+ * **Why the predicate is on the box and not on the ratio — and this is about *which* ratio.**
+ * A finiteness test on the value this function *returns* would **accept the headline input**:
+ * `Math.max(0, Math.min(1, Infinity))` is `1`, and `1` is finite, so an all-zero rect sails
+ * through and `dragToDisplayOffset(1, …)` is that slam to the live bottom. Only a finiteness test
+ * on the **un-clamped quotient** is equivalent to this guard, and then only up to a negative
+ * height. `wheelScrollTarget` had already recorded the general form (`terminal.ts`): *"a result
+ * check is not a substitute … the clamp rescues an infinite request into a finite, wrong one …
+ * guarding there would fix half the cases and read as if it had fixed all of them."*
+ *
+ * Given that, `<= 0` is preferred over the quotient form because it says what is true — the box
+ * was never measured — rather than that the arithmetic went odd, and because it matches
+ * `proposeDimensions` (#810) and the renderer's grant check (#639) instead of inventing a third
+ * predicate. The invariant this belongs to is that **zero is finite**
+ * (`docs/map/invariant/an-absent-box-measures-as-zero.md`), which is why a finiteness test is the
+ * wrong shape to reach for even where one placement of it would work.
  *
  * Contrast `WheelScroller.consumeWheelEvent`, which discharges the same obligation — *a
  * producer owes its consumer a value the consumer’s type can mean* (#675) — by returning `0`.
@@ -250,7 +265,11 @@ export class Scrollbar {
     const ratio = dragTrackRatio(clientY, this.track.getBoundingClientRect());
     // No box, no request. Deliberately NOT ending the drag: hiding a pane is reversible since
     // #801, the button is still down, and `mouseup` on `window` still ends it — so a pane shown
-    // again mid-drag goes on following the pointer instead of silently going dead.
+    // again mid-drag resumes following the pointer instead of silently going dead. While it is
+    // hidden the drag is *inert*, not continuing: VS Code's scrollbar keeps scrolling through a
+    // hide because it clones its state at pointerdown and never re-reads a box, and that is the
+    // one behavioural difference. Refusing to scroll a pane the user cannot see is the harm #801
+    // is about, so inert is the answer here rather than an omission.
     if (ratio === undefined) return;
     this.opts.onScroll(dragToDisplayOffset(ratio, this.pos));
   }

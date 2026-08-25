@@ -2576,4 +2576,13 @@ test("a scrollbar drag that outlives its track's box requests nothing (#814)", a
   // Deliberately not ending the drag (#801 made hiding reversible): a pane shown again while the
   // button is still down goes on following the pointer.
   expect(p.shown.calls, "a re-shown track resumes the drag").toBeGreaterThan(p.hidden.calls);
+
+  // The SECOND route, which needs no host at all: `visible` means `scrollbackLen > 0`, and core's
+  // `full_reset` (RIS) empties the scrollback, so the widget hides its own track under the drag.
+  // Found by the completeness pass — this issue's first reach argument said the scrollback "only
+  // grows" and named the host as the only route, having checked `ED 3` and not `full_reset`.
+  expect(p.selfHidden.calls, "a self-hidden track must not request a scroll either").toBe(
+    p.shown.calls,
+  );
+  expect(p.selfHidden.finite, "and must not hand the host NaN").toBe(true);
 });

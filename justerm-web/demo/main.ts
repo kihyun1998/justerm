@@ -1023,19 +1023,12 @@ function viewportFrame(out?: { scrollCount: number }): DecodedFrame {
   } as DecodedFrame;
 }
 
-/** #814: how many scroll requests the scrollbar has handed this host. The probe's side condition. */
-let barScrollCalls = 0;
 const bar = new Scrollbar(document.body, {
   onScroll: (offset) => {
-    barScrollCalls++;
     displayOffset = offset;
     render();
   },
 });
-// #814: the probe needs the track and thumb, and `Scrollbar` deliberately exposes neither — the
-// constructor appends the track to its parent, so it is the last child at exactly this moment.
-const barTrack = document.body.lastElementChild as HTMLElement;
-const barThumb = barTrack.firstElementChild as HTMLElement;
 
 function render(out?: { scrollCount: number }): void {
   const frame = viewportFrame(out);
@@ -1595,6 +1588,7 @@ declare global {
       dragged: ScrollbarDragStep;
       hidden: ScrollbarDragStep;
       shown: ScrollbarDragStep;
+      selfHidden: ScrollbarDragStep;
     };
     __setDpr?: (dpr: number) => void;
     __setLineHeight?: (lh: number) => void;
@@ -2787,6 +2781,22 @@ window.__soleTenantHideProbe = (): {
  * through the proposed columns, and on the alt screen a resize drops rows outright
  * (`docs/map/territory/reflow.md`, #567) with nothing to restore them from.
  */
+window.__zeroBoxFitProbe = (): {
+  before: { cols: number; rows: number };
+  afterZeroBox: { cols: number; rows: number };
+  afterTinyBox: { cols: number; rows: number };
+} => {
+  const before = renderer.terminalSize();
+  renderer.resize(0, 0);
+  const afterZeroBox = renderer.terminalSize();
+  // The control, and the side condition in one: a box that IS measured and merely tiny must still
+  // re-grid, or the guard has been widened into "any small box refuses" and this probe would pass
+  // for the wrong reason.
+  renderer.resize(1, 1);
+  const afterTinyBox = renderer.terminalSize();
+  return { before, afterZeroBox, afterTinyBox };
+};
+
 /** One observation of the scrollbar drag: what the host was handed, and how often (#814). */
 interface ScrollbarDragStep {
   /** The host's current display offset — what `onScroll` last wrote. */
@@ -2815,6 +2825,7 @@ window.__scrollbarZeroBoxProbe = (): {
   dragged: ScrollbarDragStep;
   hidden: ScrollbarDragStep;
   shown: ScrollbarDragStep;
+  selfHidden: ScrollbarDragStep;
 } => {
   // A pane of its own, so the drag can be hidden the way a HOST hides one — `display: none` on an
   // ANCESTOR, which is what `justerm-web`'s README documents and what #801 made supported.
@@ -2831,7 +2842,7 @@ window.__scrollbarZeroBoxProbe = (): {
 
   let calls = 0;
   let offset = 40; // scrolled UP into history: the position the defect used to destroy
-  const scrollback = 60;
+  let scrollback = 60;
   const probeBar = new Scrollbar(pane, {
     onScroll: (o) => {
       calls++;
@@ -2870,26 +2881,19 @@ window.__scrollbarZeroBoxProbe = (): {
   move(Math.round(window.innerHeight * 0.9));
   const shown = step();
 
+  // Route B, and it involves no host at all: `visible` means `scrollbackLen > 0`, and core's
+  // `full_reset` (RIS) takes `scrollback_len()` to 0 — so the widget hides its OWN track under the
+  // drag. `update()` cannot un-hide it here, because it hides *because* the scrollback is empty.
+  // The offset harm is absent by construction (0 is the only legal offset); the `NaN` is not.
+  scrollback = 0;
+  probeBar.update({ displayOffset: offset, scrollbackLen: scrollback, rows: ROWS });
+  move(0); // the `0/0` input, against the track's own `display: none`
+  const selfHidden = step();
+
   window.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
   probeBar.dispose();
   pane.remove();
-  return { trackWasVisible, before, dragged, hidden, shown };
-};
-
-window.__zeroBoxFitProbe = (): {
-  before: { cols: number; rows: number };
-  afterZeroBox: { cols: number; rows: number };
-  afterTinyBox: { cols: number; rows: number };
-} => {
-  const before = renderer.terminalSize();
-  renderer.resize(0, 0);
-  const afterZeroBox = renderer.terminalSize();
-  // The control, and the side condition in one: a box that IS measured and merely tiny must still
-  // re-grid, or the guard has been widened into "any small box refuses" and this probe would pass
-  // for the wrong reason.
-  renderer.resize(1, 1);
-  const afterTinyBox = renderer.terminalSize();
-  return { before, afterZeroBox, afterTinyBox };
+  return { trackWasVisible, before, dragged, hidden, shown, selfHidden };
 };
 
 window.__setDpr = (dpr: number): void => {

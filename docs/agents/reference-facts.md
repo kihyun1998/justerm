@@ -1967,3 +1967,38 @@ freely between cells inside a run and is cut only at the run's edge and at the r
 live in #791's body, not here, because this file's line numbers are only meaningful at the pinned SHAs
 in `theflow.md` § "Step 1" and PuTTY is not one of them. Adding it to the routing table is a
 `/grill-the-flow` decision, not a unilateral one.
+
+## What a scrollbar drag reads on every move — 1 comparable reference, and it reads nothing (#814, verified 2026-08-25)
+
+Read for #814. `justerm-web`'s `Scrollbar.dragTo` re-reads the track's `getBoundingClientRect()` on
+every `mousemove` and turns the pointer's absolute position into a ratio — which is why an element
+that loses its box poisons the drag at all. The question asked of the trees was whether re-reading
+per move is the convention.
+
+**Only one tree can answer**, and the negatives are the useful half:
+
+- **alacritty has no scrollbar.** `rg -ci "scroll_?bar"` over the pinned tree is `0`. It cannot
+  arbitrate.
+- **ghostty has one and computes no ratio.** It pushes `value` / `upper` / `page_size` in **line**
+  units into a GTK adjustment and lets the platform own the pointer→value conversion, which is also
+  why it has no overview ruler (already recorded above).
+
+So the comparison is one-to-one against the scrollbar xterm.js vendors from VS Code, and it does not
+re-read anything.
+
+| Fact | Reference | Site |
+|---|---|---|
+| The drag **clones the scrollbar state at pointerdown** and every later move works from that snapshot | xterm.js | `src/browser/scrollable/abstractScrollbar.ts:239` |
+| Each move is a **delta from the initial pointer position** — `getDesiredScrollPositionFromDelta(pointerDelta)` — so no box is read during the gesture at all | xterm.js | `src/browser/scrollable/abstractScrollbar.ts:257` |
+| Its sizes are **pushed in**, never measured from the DOM: `setVisibleSize` / `setScrollSize` on the state object | xterm.js | `src/browser/scrollable/abstractScrollbar.ts:133` |
+| The one divide it does keep is guarded on that pushed state (`_computedIsNeeded`) before dividing by the slider ratio | xterm.js | `src/browser/scrollable/scrollbarState.ts:214` |
+| The gesture is held by **pointer capture** on the target element, with `pointermove` / `pointerup` bound to the capture target rather than to `window` | xterm.js | `src/browser/scrollable/globalPointerMoveMonitor.ts:58` |
+| **Negative worth having:** no `lostpointercapture` handler is registered, so a drag whose capture is lost ends without running `onStopCallback` — `handleDragEnd` never fires and the slider keeps its active class | xterm.js | `src/browser/scrollable/globalPointerMoveMonitor.ts:58` |
+
+**What this settles and what it does not.** It settles that snapshot-plus-delta is available prior
+art for a drag that survives its element losing a box. It does **not** argue that justerm's
+absolute-position model is a defect: restate that finding with the reference deleted and nothing
+remains, so it is a **design proposal**, and this layer's tie-breaker (our own API's internal
+coherence) gives the reference no vote. #814 fixed the totality of the existing model instead, and
+the recorded difference is that our drag goes *inert* while hidden where VS Code's keeps scrolling —
+which is the behaviour #801 wants, since the pane the user cannot see should not scroll.

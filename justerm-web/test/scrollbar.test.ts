@@ -102,8 +102,11 @@ describe("dragTrackRatio (#814)", () => {
 
   // Pins `<= 0` rather than `=== 0`, matching the family's other absent-box refusals
   // (`proposeDimensions` #810, the renderer's grant check #639) rather than inventing a
-  // third predicate. A `DOMRect` cannot produce this, but the signature admits it, and
-  // this is the ONE input on which `height <= 0` and a finiteness test disagree.
+  // third predicate. A `DOMRect` cannot produce this, but the signature admits it, and it
+  // is the one input on which `height <= 0` and a finiteness test **on the un-clamped
+  // quotient** disagree. A finiteness test on the RETURNED ratio disagrees far more
+  // widely — it accepts every zero-height box, because the clamp turns `Infinity` into a
+  // perfectly finite `1` (`terminal.ts`'s `wheelScrollTarget` records the general form).
   it("refuses a negative height, which a finiteness test would accept", () => {
     expect(dragTrackRatio(200, { top: 100, height: -300 })).toBeUndefined();
   });
