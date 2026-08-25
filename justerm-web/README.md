@@ -101,8 +101,11 @@ const right = await JustermRenderer.attach(surface, { fontFamily: "monospace", f
 
 // Keep each terminal's GL viewport following its DOM overlay — a scroll, a layout change or a pane
 // drag moves the overlay without moving anything WebGL can see. Returns a disposer.
-const stopLeft = observeViewportRect(leftOverlayEl, canvasEl, (x, y) => left.setViewportRect(x, y));
-const stopRight = observeViewportRect(rightOverlayEl, canvasEl, (x, y) => right.setViewportRect(x, y));
+// `undefined` means the overlay has no box at all — a hidden pane. It is NOT an origin of (0, 0).
+const follow = (term: JustermRenderer) => (origin: { x: number; y: number } | undefined) =>
+  origin ? term.setViewportRect(origin.x, origin.y) : term.hide();
+const stopLeft = observeViewportRect(leftOverlayEl, canvasEl, follow(left));
+const stopRight = observeViewportRect(rightOverlayEl, canvasEl, follow(right));
 left.resize(cssWidth / 2, cssHeight);
 right.resize(cssWidth / 2, cssHeight);
 
@@ -118,6 +121,19 @@ Two consequences are forced by WebGL binding one context to one canvas, and both
   when a box *changes* and never when an element *moves*. Drive `setViewportRect` yourself instead if
   you already know when your layout moves; what you must not do is neither, because a missed update
   is silent — the GL viewport stays where it was while the overlay moves off it.
+- **A hidden pane is set aside, not destroyed.** `observeViewportRect` hands your callback
+  `undefined` when the overlay has no box, and `JustermRenderer.hide()` is what you wire it to.
+  Hiding keeps the grid registered, its cells resident and its font configuration's atlas alive, so
+  coming back is a `setViewportRect` and costs no atlas bake — which `surface.bakes()` lets you
+  check. `dispose()` is the other thing: it is end of life, and rebuilding afterwards is exactly the
+  cost a shared surface exists to remove.
+
+  **Hiding the DOM overlay is not by itself hiding the terminal, and the difference is measurable.**
+  The pixels are on the *shared* canvas, not in your overlay. `display: none` removes the box, so
+  `observeViewportRect` fires and your `undefined` branch runs; `visibility: hidden` keeps the box,
+  fires nothing, and leaves the terminal fully drawn and fully paid for — call `hide()` yourself
+  there. Before this branch existed the first case was worse than the second: a removed box read
+  back as the origin `(0, 0)` and re-placed that grid, at full size, over its sibling.
 - **A density change invalidates every device-px number you gave — including the rects.** Register
   `surface.onDensityChange`, and from it re-supply **both** the surface size and every terminal's
   origin:
@@ -128,11 +144,12 @@ Two consequences are forced by WebGL binding one context to one canvas, and both
   surface.onDensityChange((dpr) => {
     surface.resizeSurface(cssWidth * dpr, cssHeight * dpr);
     for (const [term, overlayEl] of panes) {
-      const { x, y } = viewportOrigin(
+      const origin = viewportOrigin(
         { overlay: overlayEl.getBoundingClientRect(), canvas: canvasEl.getBoundingClientRect() },
         dpr,
       );
-      term.setViewportRect(x, y);
+      if (!origin) continue; // a hidden pane has no box to re-scale; it stays hidden
+      term.setViewportRect(origin.x, origin.y);
       term.resize(paneCssWidth, paneCssHeight); // the cell moved, so the grid may too
     }
   });

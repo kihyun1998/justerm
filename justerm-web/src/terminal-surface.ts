@@ -66,6 +66,19 @@ export interface SurfaceBackend {
   /** The grace period, in ms, before the callback above fires. Consumer policy (ADR-0017): the
    * renderer times, the consumer decides how long a blank terminal is tolerable. */
   setContextRestoreTimeoutMs(ms: number): void;
+  /** How many distinct font configurations the renderer holds resources for — i.e. how many glyph
+   * atlases exist (#772). Surface-scoped because an atlas is shared across grids: it takes no id,
+   * and no one terminal can answer it. */
+  atlasCount(): number;
+  /** Atlas bakes run so far (#772) — every configuration built from nothing, plus every in-place
+   * rebuild of one (a density change, a context restore). Read as a **delta** across an operation,
+   * never as an absolute: it is what separates *a grid was placed* from *a grid was rebuilt*, which
+   * is the claim ADR-0021's middle tier exists to make and the one no pixel can settle. */
+  bakes(): number;
+  /** Instance-buffer packs run so far (#421). Read as a delta, like {@link bakes}. Surface-scoped
+   * because `render` presents every grid: one call packs each *dirty drawn* grid once, and — the
+   * property this makes checkable — packs a grid with no viewport not at all (#771). */
+  packs(): number;
   /** Present the whole canvas — **every registered grid**, which is why this takes no id and why the
    * loop that calls it belongs to the surface rather than to any one terminal. */
   render(): void;
@@ -473,6 +486,50 @@ export class TerminalSurface<B extends SurfaceBackend = SurfaceBackend> {
   }
 
   /**
+   * How many glyph atlases this surface holds — one per distinct font configuration (#772).
+   *
+   * **Surface-scoped on the same rule the rest of this interface is split by**: it names no grid,
+   * because an atlas belongs to none. Two terminals in one font answer `1`; a third in another font
+   * answers `2`; the last terminal to leave a configuration releases it.
+   *
+   * This is what makes sharing **observable rather than asserted** (#801). The published README has
+   * claimed since #772 that terminals on one font configuration share one atlas, and until this
+   * method existed on the widget's side no consumer could check it — the number was reachable only
+   * by casting past the adapter to the raw wasm object, which is what #776 had to do.
+   */
+  atlasCount(): number {
+    return this.backend.atlasCount();
+  }
+
+  /**
+   * Atlas bakes run so far — read as a **delta across an operation**, never as an absolute.
+   *
+   * **It is the only thing that separates a placement from a rebuild** (#801). Hiding a terminal and
+   * showing it again should cost nothing but a rect: every byte of its grid, its instances and its
+   * configuration's atlas stays resident (`clearViewport`, #770). A pixel check cannot say whether
+   * that held — the content comes back looking identical either way, which is exactly what a rebuild
+   * also produces. A bake count that does not move can.
+   *
+   * Not a stable API surface; a counter for verification, and it wraps harmlessly.
+   */
+  bakes(): number {
+    return this.backend.bakes();
+  }
+
+  /**
+   * Instance-buffer packs run so far — a delta, like {@link bakes}.
+   *
+   * **What it makes checkable is the cost half of hiding** (#801). The renderer's draw loop skips an
+   * unplaced grid *before* the re-pack, and until this reached the widget the saving was a number
+   * quoted from the renderer's own measurement rather than something a consumer could observe:
+   * feeding a hidden terminal moves this by zero, feeding a shown one does not, and the second half
+   * is what stops the first from being a vacuous zero.
+   */
+  packs(): number {
+    return this.backend.packs();
+  }
+
+  /**
    * Ask for a present on the next animation frame, coalescing every request in between into **one**.
    *
    * This is why the loop is the surface's. `render()` takes no grid: one call presents the whole
@@ -667,15 +724,25 @@ export class TerminalSurface<B extends SurfaceBackend = SurfaceBackend> {
 
 /** The two boxes a viewport rect is derived from, both in CSS px and both from the same clock. */
 export interface OverlayBoxes {
-  /** The terminal's DOM overlay, as `getBoundingClientRect()` reports it. */
-  overlay: { left: number; top: number };
+  /**
+   * The terminal's DOM overlay, as `getBoundingClientRect()` reports it.
+   *
+   * **The size is here because the origin alone cannot answer the question** (#801). A hidden
+   * overlay — `display: none`, or a pane not yet in the layout — reports every field as `0`, which
+   * is indistinguishable from an overlay legitimately sitting at the canvas's top-left corner once
+   * the extent is dropped. It was dropped, and the two states then shared one answer: measured in a
+   * real browser, hiding the second pane of `demo/shared-surface.html` moved its viewport from
+   * `[500, 40]` to `[0, 0]` and drew that whole grid over its sibling, which went on reporting
+   * itself healthy.
+   */
+  overlay: { left: number; top: number; width: number; height: number };
   /** The surface canvas, from the same call, so the difference is a position *within* the canvas. */
   canvas: { left: number; top: number };
 }
 
 /**
  * Compute a terminal's viewport origin on the shared drawing buffer, in **device px**, from where its
- * DOM overlay sits relative to the canvas (#775).
+ * DOM overlay sits relative to the canvas (#775) — or `undefined` when the overlay has no box at all.
  *
  * Pure and separately testable, which is the point: the arithmetic is where a sign or a unit goes
  * wrong, and the DOM plumbing around it is not worth a test.
@@ -686,8 +753,20 @@ export interface OverlayBoxes {
  *
  * **Clamped at zero.** An overlay scrolled above the canvas has a negative offset, and a negative
  * viewport origin is not a smaller rect — it is a GL error or a silently dropped draw.
+ *
+ * **`undefined` is a state, not a failure, and it is why this returns a union** (#801). An overlay
+ * with no area is not somewhere — it is nowhere, and the clamp above is exactly what used to turn
+ * that into the plausible wrong answer `{ x: 0, y: 0 }`. Answering `undefined` makes the caller
+ * decide, at the compiler's insistence, rather than placing a full-size grid at the canvas's corner:
+ * the extent a viewport is given is derived from `cols * cell` and never from this box, so a zeroed
+ * box shrinks nothing and the renderer's own no-area guard is never reached. Making the state
+ * unrepresentable rather than guarded is the same move `GridLease` made one issue earlier (#805).
  */
-export function viewportOrigin(boxes: OverlayBoxes, dpr: number): { x: number; y: number } {
+export function viewportOrigin(
+  boxes: OverlayBoxes,
+  dpr: number,
+): { x: number; y: number } | undefined {
+  if (boxes.overlay.width <= 0 || boxes.overlay.height <= 0) return undefined;
   return {
     x: Math.max(0, Math.round((boxes.overlay.left - boxes.canvas.left) * dpr)),
     y: Math.max(0, Math.round((boxes.overlay.top - boxes.canvas.top) * dpr)),
@@ -717,26 +796,37 @@ export function viewportOrigin(boxes: OverlayBoxes, dpr: number): { x: number; y
  * the host recomputes with this function's own arithmetic rather than a second copy of it. (The
  * package README claimed the opposite until #776, which is the first code to depend on the answer.)
  *
+ * **It DOES fire when the overlay is hidden, and that is why `place` takes a union** (#801).
+ * `display: none` removes the box, which the `ResizeObserver` reports as a size change like any
+ * other — measured in a real browser, not inferred. `visibility: hidden` does not fire it, because
+ * the box survives; that case is the host's to handle with an explicit `JustermRenderer.hide()`,
+ * and it is worth handling, since the pixels live on the shared canvas rather than in the overlay,
+ * so hiding the overlay alone leaves the terminal fully drawn and fully paid for.
+ *
  * Same shape as `observeResize` in `fit.ts`, deliberately: an observer, a disposer, and no state.
  *
  * @param overlay the terminal's DOM overlay element
  * @param canvas the surface's canvas element
- * @param place what to do with the computed origin — normally `JustermRenderer.setViewportRect`
+ * @param place what to do with the computed origin — normally `JustermRenderer.setViewportRect`,
+ *   with `undefined` meaning the overlay has no box and the terminal should stop being drawn
+ *   (`JustermRenderer.hide`). One callback rather than two, because the two are one fact about one
+ *   overlay and a second channel is a second writer to it
  * @param currentDpr reads the live density, at each sync. The origin is device px, so its value
  *   depends on the ratio — which is *not* the same as tracking it; see the paragraph above.
  */
 export function observeViewportRect(
   overlay: Element,
   canvas: Element,
-  place: (x: number, y: number) => void,
+  place: (origin: { x: number; y: number } | undefined) => void,
   currentDpr: () => number = () => window.devicePixelRatio,
 ): () => void {
   const sync = (): void => {
-    const { x, y } = viewportOrigin(
-      { overlay: overlay.getBoundingClientRect(), canvas: canvas.getBoundingClientRect() },
-      currentDpr(),
+    place(
+      viewportOrigin(
+        { overlay: overlay.getBoundingClientRect(), canvas: canvas.getBoundingClientRect() },
+        currentDpr(),
+      ),
     );
-    place(x, y);
   };
   const ro = new ResizeObserver(sync);
   ro.observe(overlay);

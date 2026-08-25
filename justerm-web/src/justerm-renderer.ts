@@ -420,6 +420,15 @@ export interface RendererBackend extends SurfaceBackend {
   /** Place a grid on the shared buffer, in **device px**, top-left origin. A grid draws only once
    * placed; for a one-terminal widget the rect is the whole buffer. */
   setViewport(grid: number, x: number, y: number, width: number, height: number): void;
+  /** Stop drawing a grid **without unregistering it** (#770) — the hidden-workspace state. Every
+   * byte survives: packed instances, upload baseline, palette, cursor, overlays and the
+   * configuration's atlas. The renderer's draw loop skips an unplaced grid *before* the re-pack, so
+   * a hidden grid pays neither the pack nor the upload nor the draw. Placing it again re-packs it
+   * once, from the state it already had. */
+  clearViewport(grid: number): void;
+  /** Whether a grid currently has a viewport, i.e. whether it draws (#770). Throws on an id the
+   * registry does not hold, like every other per-grid call. */
+  isGridDrawn(grid: number): boolean;
   /** The columns/rows a grid was last given by `resizeGrid` — an **echo** since 0.15.0. Nothing
    * clamps a grid any more; a request the buffer cannot hold shows up in `cssWidth`/`cssHeight`,
    * which report what the browser actually granted. */
@@ -684,6 +693,24 @@ export class JustermRenderer implements Renderer {
    * viewport and nothing inside the GL layer can observe the overlay drifting away from it.
    */
   private rect = { x: 0, y: 0 };
+  /**
+   * Whether the host has taken this terminal off the surface — **state consulted at every placement,
+   * not a command issued once** (#801).
+   *
+   * The distinction is the whole of this field's justification, and it is measured rather than
+   * chosen. Seven entry points re-derive this grid's placement — a density change or context
+   * restore through `onReapply`, all four font/spacing setters, {@link resize} and
+   * {@link setViewportRect} — and every one funnels into {@link applyGrid}, which holds the only
+   * `setViewport` call site in this package. A hide implemented as a single `clearViewport` would
+   * therefore be undone by the next density change, silently and with no consumer call behind it.
+   *
+   * Both references keep the same shape for the same reason and neither issues a one-shot: xterm.js
+   * holds `_isPaused` and consults it in `refreshRows`
+   * (`src/browser/services/RenderService.ts:140-153`), ghostty holds `flags.visible` and consults it
+   * at draw (`src/renderer/Thread.zig:528`, *"If we're invisible, we do not draw"*). The convergence
+   * is a cross-check; the derivation above stands without it.
+   */
+  private hidden = false;
   /** Focus gates the selection colour (focused → `selectionBg`, blurred → the dimmer
    * `selectionInactiveBg`) and the blink (blurred → solid). xterm's two selection colours (#115). */
   private focused = true;
@@ -1433,6 +1460,20 @@ export class JustermRenderer implements Renderer {
       this.backend.resizeGrid(this.lease.id, granted.cols, granted.rows);
     }
 
+    // **A hidden terminal is placed nowhere, and this is the only site that can enforce that**
+    // (#801). Every path that re-derives a placement arrives here, so consulting `hidden` once
+    // covers all seven — including the two that carry no consumer call at all, a density change and
+    // a context restore, which is precisely where a one-shot `clearViewport` would have been undone
+    // without anyone calling anything.
+    //
+    // `resizeGrid` above still ran, deliberately: a host may re-fit a hidden pane, and the grid has
+    // to adopt it so that coming back stays a placement rather than a resize-and-repack. What is
+    // withheld is only the rect.
+    if (this.hidden) {
+      this.backend.clearViewport(this.lease.id);
+      return;
+    }
+
     // A grid draws only where it is placed, and for a one-terminal widget that is the whole buffer.
     // Re-issued on every call because a rect is device px: the cell may have just moved under it,
     // and the grid may have just been shrunk to the grant.
@@ -1495,7 +1536,51 @@ export class JustermRenderer implements Renderer {
    */
   setViewportRect(x: number, y: number): void {
     this.rect = { x, y };
+    // Giving a rect IS showing (#801). One field decides whether this terminal draws, and both verbs
+    // write it, so there is no pair of bits that can disagree about the same overlay — the shape
+    // #805 reached one issue earlier for the same reason.
+    this.hidden = false;
     this.reapplySurface();
+  }
+
+  /**
+   * Take this terminal off the surface **without ending it** (#801) — the hidden-tab state.
+   *
+   * Every byte survives: the grid stays registered, its packed instances and upload baseline stay
+   * resident, and its font configuration's atlas is not released. Coming back is
+   * {@link setViewportRect} — a placement, which re-packs once from the state the grid already had.
+   * That is the payoff ADR-0021 states in as many words, and until this method existed a host with a
+   * hidden tab had exactly one option: {@link dispose} the terminal and rebuild it on the way back,
+   * which is the rebuild Epic #287 exists to remove.
+   *
+   * **Hiding the DOM overlay is not this, and cannot be** — measured in a real browser rather than
+   * reasoned. One WebGL context binds to one canvas, so a terminal's pixels are on the *shared*
+   * canvas and not in its overlay: `visibility: hidden` leaves the terminal fully drawn and fully
+   * paid for, and `display: none` is worse, because the box it removes used to be re-read as the
+   * origin `{ 0, 0 }` and re-placed this grid, at full size, on top of a sibling. That path is
+   * closed at its source ({@link viewportOrigin} answers `undefined` for a box with no area), and
+   * this is what a host wires it to.
+   *
+   * Idempotent, and a no-op before the first {@link resize}: a grid with no cells is drawn nowhere
+   * already.
+   */
+  hide(): void {
+    this.hidden = true;
+    this.reapplySurface();
+  }
+
+  /**
+   * Whether this terminal is currently drawn — the renderer's own answer, not a mirror of
+   * {@link hide} (#801).
+   *
+   * Asked of the registry rather than reported from the field above, because the two can differ in
+   * the one direction that matters: a grid is registered **not drawn** until its first
+   * {@link resize} places it, so a terminal that has never been sized answers `false` here while
+   * nothing has hidden it. Reporting the field would answer `true` and be wrong on exactly the case
+   * a host uses this to check.
+   */
+  isDrawn(): boolean {
+    return this.backend.isGridDrawn(this.lease.id);
   }
 
 

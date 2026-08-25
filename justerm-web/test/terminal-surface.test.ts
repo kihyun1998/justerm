@@ -61,6 +61,20 @@ class FakeBackend implements SurfaceBackend {
   setContextRestoreTimeoutMs(ms: number): void {
     this.calls.push(`setContextRestoreTimeoutMs(${ms})`);
   }
+  /** Bumped by the fake so a delta is readable; the real one counts atlas bakes. */
+  bakeCount = 0;
+  /** How many font configurations the fake claims to hold. */
+  atlases = 1;
+  atlasCount(): number {
+    return this.atlases;
+  }
+  bakes(): number {
+    return this.bakeCount;
+  }
+  packCount = 0;
+  packs(): number {
+    return this.packCount;
+  }
   render(): void {
     this.calls.push("render");
   }
@@ -696,7 +710,7 @@ describe("viewportOrigin — where an overlay sits on the shared buffer", () => 
     // canvas. Using the raw client rect would place every terminal by however far the page happens
     // to have been scrolled.
     const at = viewportOrigin(
-      { overlay: { left: 500, top: 300 }, canvas: { left: 100, top: 100 } },
+      { overlay: { left: 500, top: 300, width: 400, height: 300 }, canvas: { left: 100, top: 100 } },
       2,
     );
     expect(at).toEqual({ x: 800, y: 400 });
@@ -707,27 +721,69 @@ describe("viewportOrigin — where an overlay sits on the shared buffer", () => 
     // fractional part shows up as blur rather than as displacement — the failure mode #337/#352 are
     // about, which is why this is asserted rather than left to the caller.
     const at = viewportOrigin(
-      { overlay: { left: 33.5, top: 10.5 }, canvas: { left: 0, top: 0 } },
+      { overlay: { left: 33.5, top: 10.5, width: 400, height: 300 }, canvas: { left: 0, top: 0 } },
       1.5,
     );
     expect(at).toEqual({ x: 50, y: 16 });
-    expect(Number.isInteger(at.x) && Number.isInteger(at.y)).toBe(true);
+    expect(at && Number.isInteger(at.x) && Number.isInteger(at.y)).toBe(true);
   });
 
   it("clamps an overlay scrolled off the top of the canvas to the origin", () => {
     // A negative viewport origin is not a smaller rect — it is a GL error or a silently dropped
     // draw. Reachable the moment a terminal is inside a scroll container.
     const at = viewportOrigin(
-      { overlay: { left: -40, top: -120 }, canvas: { left: 0, top: 0 } },
+      { overlay: { left: -40, top: -120, width: 400, height: 300 }, canvas: { left: 0, top: 0 } },
       2,
     );
     expect(at).toEqual({ x: 0, y: 0 });
   });
 
+  it("answers undefined for an overlay with no box, not the origin (#801)", () => {
+    // The defect this replaced, measured in a real browser: a `display: none` overlay reports every
+    // field as 0, the clamp turned that into `{0,0}`, and the grid — whose extent is derived from
+    // `cols * cell` and never from this box — was re-placed at FULL SIZE on the canvas corner, over
+    // its sibling.
+    //
+    // The side condition is what makes this a test rather than a restatement: the SAME left/top with
+    // a box still answers an origin, so the union is keyed on the extent and not on the position.
+    const at = { left: 0, top: 0 };
+    expect(viewportOrigin({ overlay: { ...at, width: 0, height: 0 }, canvas: at }, 2)).toBeUndefined();
+    expect(viewportOrigin({ overlay: { ...at, width: 400, height: 300 }, canvas: at }, 2)).toEqual({
+      x: 0,
+      y: 0,
+    });
+  });
+
+  it("answers undefined when EITHER dimension is gone, not only when both are", () => {
+    // Mutating the predicate rather than its placement: `width <= 0 && height <= 0` is the plausible
+    // differently-wrong version, and it is green on the test above — a `display: none` box zeroes
+    // both. These two are the window where the two predicates disagree, and a collapsed pane
+    // (`height: 0` inside a flex row, a `width: 0` split) reaches it without anything being hidden.
+    const canvas = { left: 0, top: 0 };
+    expect(
+      viewportOrigin({ overlay: { left: 10, top: 10, width: 0, height: 300 }, canvas }, 1),
+    ).toBeUndefined();
+    expect(
+      viewportOrigin({ overlay: { left: 10, top: 10, width: 400, height: 0 }, canvas }, 1),
+    ).toBeUndefined();
+  });
+
+  it("treats a negative extent as no box, since a rect cannot have one", () => {
+    // `<= 0` rather than `=== 0`. Not defensive: a `getBoundingClientRect` under a CSS transform can
+    // report a negative dimension, and `-1` would otherwise pass a `=== 0` guard and place a grid.
+    const canvas = { left: 0, top: 0 };
+    expect(
+      viewportOrigin({ overlay: { left: 10, top: 10, width: -1, height: 300 }, canvas }, 1),
+    ).toBeUndefined();
+  });
+
   it("moves with the density, because the origin is device px", () => {
     // The same overlay at two ratios is two different buffer positions — which is why a density
     // change invalidates a rect (ADR-0021 D3) and why this takes the ratio rather than caching one.
-    const boxes = { overlay: { left: 200, top: 50 }, canvas: { left: 0, top: 0 } };
+    const boxes = {
+      overlay: { left: 200, top: 50, width: 400, height: 300 },
+      canvas: { left: 0, top: 0 },
+    };
     expect(viewportOrigin(boxes, 1)).toEqual({ x: 200, y: 50 });
     expect(viewportOrigin(boxes, 2)).toEqual({ x: 400, y: 100 });
   });

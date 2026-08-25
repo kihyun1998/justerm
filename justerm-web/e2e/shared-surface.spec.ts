@@ -29,7 +29,8 @@ type AsyncProbe =
   | "__independenceProbe"
   | "__surfaceLossProbe"
   | "__restoreDensityProbe"
-  | "__contractOnlyDensityProbe";
+  | "__contractOnlyDensityProbe"
+  | "__hideShowProbe";
 
 /** This page's typed alias over the shared park-and-harvest helper (#731; extracted in #776). */
 const readAsyncProbe = <K extends AsyncProbe>(
@@ -571,4 +572,70 @@ test("disposing only the surface leaves every widget mounted, and the next frame
   expect(r.textareasAfter).toBe(r.textareasBefore);
   expect(r.textareasAfter).toBe(2);
   expect(r.lateFrameThrew).toMatch(/no grid with id/);
+});
+
+/**
+ * #801 — **a hidden terminal is set aside, not destroyed, and not moved onto its sibling.**
+ *
+ * Three claims, and only the first is what the issue was filed for:
+ *
+ * 1. hide → show costs **no bake**. That is the epic's stated payoff and the only judge available
+ *    for it: the content returns identically whether it was kept or rebuilt, so a pixel comparison
+ *    cannot distinguish a placement from the rebuild ADR-0021 exists to remove.
+ * 2. Hiding does not damage the sibling. Measured before the fix, on this very page: setting
+ *    `#pane-b` to `display: none` moved its viewport from `[500, 40]` to `[0, 0]` and drew that
+ *    whole grid over pane A, which went on reporting itself healthy. Nothing threw — the extent a
+ *    viewport is given is derived from `cols * cell` and never from the measured box, so the
+ *    renderer's own no-area guard is not on this path.
+ * 3. A **re-fit while hidden** leaves it hidden. This is the assertion a one-shot `clearViewport`
+ *    fails, and getting it to fail took two tries: seven paths re-derive a placement, and the first
+ *    version of this step used a density change — which travels through the demo page's own handler,
+ *    re-reads the missing overlay box and hides again, so it agreed with the one-shot instead of
+ *    separating from it. `resize` reaches `applyGrid` with nothing consulted in between.
+ */
+test("hiding a terminal keeps it — no bake, no atlas churn, and the sibling untouched (#801)", async ({
+  page,
+}) => {
+  const r = await readAsyncProbe(page, "__hideShowProbe");
+
+  expectContextAlive({ contextLost: false });
+
+  // — 2. the bystander, at every step. Pane A is never touched by any of this.
+  expect(r.before.insideA, "pane A's own background, before anything").toBe(BG_A);
+  expect(r.hidden.insideA, "hiding B must not paint B's background inside A").toBe(BG_A);
+  expect(r.hiddenAcrossRefit.insideA).toBe(BG_A);
+  expect(r.shown.insideA).toBe(BG_A);
+  expect(r.hidden.aHash, "pane A's whole rect, digested, across the hide").toBe(r.before.aHash);
+  expect(r.shown.aHash).toBe(r.before.aHash);
+
+  // — the hide itself: the renderer stops drawing it, and its area goes back to bare buffer.
+  expect(r.before.bDrawn).toBe(true);
+  expect(r.hidden.bDrawn).toBe(false);
+  expect(r.hidden.atB, "pane B's own centre, with nothing placed there").toBe(UNPAINTED);
+
+  // — 3. still hidden after a re-fit, which goes straight into the widget with no box consulted.
+  expect(r.hiddenAcrossRefit.bDrawn, "a re-fit must not re-place a hidden grid").toBe(false);
+  expect(r.hiddenAcrossRefit.atB).toBe(UNPAINTED);
+
+  // — the show: it comes back, byte for byte, because nothing was released.
+  expect(r.shown.bDrawn).toBe(true);
+  expect(r.shown.atB).toBe(BG_B);
+  expect(r.shown.bHash, "pane B's whole rect returns identical — nothing was re-fed").toBe(
+    r.before.bHash,
+  );
+
+  // — 1. and it cost nothing to rebuild. The judge.
+  expect(r.shown.bakes - r.before.bakes, "a placement bakes no atlas").toBe(0);
+  expect(r.shown.atlases, "and releases no font configuration").toBe(r.before.atlases);
+  expect(r.hidden.atlases, "a hidden grid keeps its configuration resident").toBe(r.before.atlases);
+
+  // — and the cost half, which the issue quoted from the renderer's own measurement rather than
+  // observing. A hidden grid is skipped before the re-pack, so feeding it moves nothing…
+  expect(r.fedWhileHidden.packs - r.hiddenAgain.packs, "a hidden grid is never packed").toBe(0);
+  // …and the control is what stops that zero from meaning "nothing was fed at all". Same pane, same
+  // call, one step later, differing only in whether it is placed.
+  expect(
+    r.fedWhileShown.packs,
+    "the same feed on the same pane, once shown, must pack — otherwise the zero above is vacuous",
+  ).toBeGreaterThan(r.fedWhileHidden.packs);
 });

@@ -138,6 +138,10 @@ The renderer **holds** N grids and **draws** every one that has been placed.
   the buffer to `cols * cell` is only available while one grid fills the canvas); `attach` joins a
   surface the host built and takes its rect from `setViewportRect`
 
+- `justerm-web/src/justerm-renderer.ts` — `hide()` / `isDrawn()` and the `hidden` flag `applyGrid`
+  consults (#801); `justerm-web/src/terminal-surface.ts` — `atlasCount()` / `bakes()`, the two
+  surface-scoped counters that make sharing and the placement-not-rebuild claim *observable* from
+  the widget rather than reachable only by casting past the adapter to the raw wasm object
 - `justerm-web/demo/shared-surface.ts` · `justerm-web/demo/shared-surface.html` ·
   `justerm-web/e2e/shared-surface.spec.ts` — **the consumer-side browser proof** (#776, S8): two
   terminals at two font sizes on one canvas, each a transparent DOM overlay over its own viewport.
@@ -153,6 +157,31 @@ The renderer **holds** N grids and **draws** every one that has been placed.
 **The design, the code and the proof now meet.** This section carried *"still absent: no
 terminal-surface type"* through six slices; #775 built it and #776 proved it in a browser, so the
 epic's remaining work is a tracker question rather than a missing piece here.
+
+**What #801 added, and why it was not a nicety.** The renderer has been able to hold a grid
+*registered but not drawn* since #770; no widget path reached it, so a host with a hidden tab could
+only `dispose()` and rebuild — the rebuild this epic exists to remove. Reaching it turned out to
+require fixing something first, measured on `demo/shared-surface.html` before any code changed:
+hiding a pane with `display: none` did not hide it, it **moved it onto its sibling**. The overlay's
+box goes to all-zeros, `viewportOrigin` clamped that to `{0, 0}`, and the extent a viewport is given
+is derived from `cols * cell` and never from the measured box — so a full-size grid was re-placed at
+the canvas corner, over a neighbour that went on reporting itself healthy, with nothing thrown. The
+renderer's own no-area guard is not on that path and cannot be.
+
+Two things came out of it that are worth carrying rather than re-deriving:
+
+- **`viewportOrigin` answers `{x, y} | undefined`.** A box with no area is not a position, and the
+  clamp is what turned it into a plausible wrong one. The union makes the caller decide at the
+  compiler's insistence — the same *unrepresentable rather than guarded* move `GridLease` made in
+  #805, one issue earlier, in this same file.
+- **Hidden-ness is state the widget consults, never a command it issues once.** Seven entry points
+  re-derive a placement — `onReapply` (a density change and a context restore), the four font and
+  spacing setters, `resize` and `setViewportRect` — and all seven funnel into `applyGrid`, which
+  holds this package's only `setViewport` call site. A `hide()` that merely called `clearViewport`
+  would be undone by the first of those to fire, two of which carry no consumer call at all. It
+  passed the browser proof until that proof's middle step was changed from a density change (which
+  travels through the demo page's own handler, re-reads the missing box, and re-hides — agreeing with
+  the wrong implementation instead of separating from it) to a bare `resize`.
 
 ## Reference behaviour
 
