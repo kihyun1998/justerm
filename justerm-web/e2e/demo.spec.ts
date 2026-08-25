@@ -2542,3 +2542,47 @@ test("a zero box leaves the grid alone, while a measured tiny one still re-grids
   // has been widened into "any small box refuses" and the zero above proves nothing.
   expect(p.afterTinyBox).toEqual({ cols: 2, rows: 1 });
 });
+
+/**
+ * #814 — a scrollbar drag that outlives its track's box must produce no scroll request.
+ *
+ * The unit tests pin the arithmetic; this drives the real listener path in a real browser, which
+ * is the whole point of the issue: before this the reach was **read, not run** — the `window`-bound
+ * listeners, the `dragging` flag `update()` never clears, and the divide were all verified by
+ * reading, and no test had ever constructed a drag that outlives its box.
+ *
+ * What the defect did, measured against the arithmetic with a hidden pane's all-zero rect: any
+ * `clientY > 0` gave ratio `1` → display offset `0`, so every mouse move slammed the viewport to
+ * the live bottom; `clientY === 0` gave `NaN`. Both are asserted below as side conditions rather
+ * than as a single positive claim.
+ */
+test("a scrollbar drag that outlives its track's box requests nothing (#814)", async ({ page }) => {
+  const p = await page.evaluate(() => window.__scrollbarZeroBoxProbe!());
+
+  // The window exists. With no scrollback the track is already hidden and no `mousedown` can land
+  // on the thumb, so every claim below would hold for the wrong reason.
+  expect(p.trackWasVisible, "the track must be visible for a drag to start at all").toBe(true);
+
+  // The control: a move against a MEASURED track still scrolls. Without this the guard could be
+  // "never scroll" and the assertions below would all pass.
+  expect(p.dragged.calls).toBeGreaterThan(p.before.calls);
+
+  // The defect, and its two side conditions: no request reaches the host, and the offset it holds
+  // does not move — not to the live bottom, not to `NaN`.
+  expect(p.hidden.calls, "a track with no box must not request a scroll").toBe(p.dragged.calls);
+  expect(p.hidden.displayOffset).toBe(p.dragged.displayOffset);
+  expect(p.hidden.finite).toBe(true);
+
+  // Deliberately not ending the drag (#801 made hiding reversible): a pane shown again while the
+  // button is still down goes on following the pointer.
+  expect(p.shown.calls, "a re-shown track resumes the drag").toBeGreaterThan(p.hidden.calls);
+
+  // The SECOND route, which needs no host at all: `visible` means `scrollbackLen > 0`, and core's
+  // `full_reset` (RIS) empties the scrollback, so the widget hides its own track under the drag.
+  // Found by the completeness pass — this issue's first reach argument said the scrollback "only
+  // grows" and named the host as the only route, having checked `ED 3` and not `full_reset`.
+  expect(p.selfHidden.calls, "a self-hidden track must not request a scroll either").toBe(
+    p.shown.calls,
+  );
+  expect(p.selfHidden.finite, "and must not hand the host NaN").toBe(true);
+});

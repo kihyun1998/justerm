@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { dragToDisplayOffset, rulerMarkHeightPx, scrollbarMetrics } from "../src/scrollbar";
+import { dragToDisplayOffset, dragTrackRatio, rulerMarkHeightPx, scrollbarMetrics } from "../src/scrollbar";
 import type { RulerMark } from "../src/decorations";
 
 describe("scrollbarMetrics", () => {
@@ -73,5 +73,107 @@ describe("dragToDisplayOffset", () => {
     expect(dragToDisplayOffset(0, pos)).toBe(76); // top → fully scrolled up
     expect(dragToDisplayOffset(1, pos)).toBe(0); // bottom → following the screen
     expect(dragToDisplayOffset(0.5, pos)).toBe(26); // middle: 76 − 50
+  });
+});
+
+describe("dragTrackRatio (#814)", () => {
+  const TRACK = { top: 100, height: 300 };
+
+  // The working case, and it is the control: the guard below must not eat it.
+  it("converts a pointer position into the track ratio it always did", () => {
+    expect(dragTrackRatio(100, TRACK)).toBe(0); // exactly the top
+    expect(dragTrackRatio(400, TRACK)).toBe(1); // exactly the bottom
+    expect(dragTrackRatio(250, TRACK)).toBe(0.5);
+    // Outside the track still clamps — a drag leaves the track whenever the pointer does.
+    expect(dragTrackRatio(-500, TRACK)).toBe(0);
+    expect(dragTrackRatio(9000, TRACK)).toBe(1);
+  });
+
+  // An element with no box reports every field as 0, and 0 is finite — so the ratio is
+  // `Infinity` (or `NaN` at exactly `top`) and the clamp turns it into a plausible end of
+  // the track. Measured against the real arithmetic before the fix, with a hidden pane's
+  // all-zero rect: any clientY > 0 gave ratio 1 → display offset 0, i.e. the viewport
+  // slammed to the live bottom on every mouse move; clientY === 0 gave NaN.
+  it("refuses a track with no height instead of answering an end of it", () => {
+    expect(dragTrackRatio(200, { top: 0, height: 0 })).toBeUndefined(); // was Infinity → 1
+    expect(dragTrackRatio(0, { top: 0, height: 0 })).toBeUndefined(); // was 0/0 → NaN
+    expect(dragTrackRatio(50, { top: 100, height: 0 })).toBeUndefined(); // -Infinity → 0
+  });
+
+  // Pins `<= 0` rather than `=== 0`, matching the family's other absent-box refusals
+  // (`proposeDimensions` #810, the renderer's grant check #639) rather than inventing a
+  // third predicate. A `DOMRect` cannot produce this, but the signature admits it, and it
+  // is the one input on which `height <= 0` and a finiteness test **on the un-clamped
+  // quotient** disagree. A finiteness test on the RETURNED ratio disagrees far more
+  // widely — it accepts every zero-height box, because the clamp turns `Infinity` into a
+  // perfectly finite `1` (`terminal.ts`'s `wheelScrollTarget` records the general form).
+  it("refuses a negative height, which a finiteness test would accept", () => {
+    expect(dragTrackRatio(200, { top: 100, height: -300 })).toBeUndefined();
+  });
+});
+
+describe("dragToDisplayOffset totality (#814)", () => {
+  const POS = { displayOffset: 0, scrollbackLen: 60, rows: 24 };
+
+  // The control: the arithmetic is untouched.
+  it("still converts a healthy position", () => {
+    expect(dragToDisplayOffset(0.5, POS)).toBe(18);
+    // `displayOffset` is not read by this function — pinned so a poisoned one is not mistaken
+    // for a case the guard has to cover.
+    expect(dragToDisplayOffset(0.5, { ...POS, displayOffset: NaN })).toBe(18);
+  });
+
+  // Same rule as the sibling on this seam (#675): a producer owes its consumer a value the
+  // consumer's type can mean, and `wheelScrollTarget` states the reason this function inherits
+  // — it is EXPORTED, so it owes its own totality rather than trusting its one in-repo caller.
+  it("refuses a position it cannot answer for", () => {
+    expect(dragToDisplayOffset(0.5, { ...POS, scrollbackLen: NaN })).toBeUndefined();
+    expect(dragToDisplayOffset(0.5, { ...POS, rows: NaN })).toBeUndefined();
+    expect(dragToDisplayOffset(0.5, { ...POS, scrollbackLen: Infinity })).toBeUndefined();
+    expect(dragToDisplayOffset(NaN, POS)).toBeUndefined();
+  });
+
+  // The one that decides the guard's PLACEMENT, and the reason a result check will not do.
+  // Measured before the fix: `rows: Infinity` gave `0` — finite, plausible, and a silent jump to
+  // the live edge — because `Math.max(0, Math.min(60, -Infinity))` is `0`. The other three gave
+  // `NaN`. `terminal.ts`'s `wheelScrollTarget` records the general form: only `NaN` survives to
+  // the output, so guarding there fixes half the cases and reads as if it fixed all of them.
+  it("refuses the input whose result the clamp would rescue into a plausible wrong number", () => {
+    expect(dragToDisplayOffset(0.5, { ...POS, rows: Infinity })).toBeUndefined();
+  });
+});
+
+describe("scrollbarMetrics totality (#814, #463's other half)", () => {
+  // #463 hardened `rulerMarksForFrame` for exactly this and recorded why: `total <= 0` is a size
+  // COMPARISON and NaN slips through every comparison, so the ratios reach `scrollbar.ts`'s style
+  // writes as `"NaN%"`. That fix landed on the marks half; the thumb half kept the comparison.
+  it("answers zero ratios for a position it cannot measure, never NaN", () => {
+    for (const pos of [
+      { displayOffset: 0, scrollbackLen: NaN, rows: 24 },
+      { displayOffset: 0, scrollbackLen: 60, rows: NaN },
+      { displayOffset: 0, scrollbackLen: Infinity, rows: 24 },
+      { displayOffset: 0, scrollbackLen: 60, rows: Infinity },
+      { displayOffset: 0, scrollbackLen: 0, rows: 0 },
+    ]) {
+      const m = scrollbarMetrics(pos);
+      expect(m.visible, JSON.stringify(pos)).toBe(false);
+      expect(Number.isFinite(m.thumbHeightRatio), JSON.stringify(pos)).toBe(true);
+      expect(Number.isFinite(m.thumbTopRatio), JSON.stringify(pos)).toBe(true);
+    }
+  });
+
+  // The control: nothing about a measurable position moves, including the one that is legitimately
+  // invisible (no scrollback) and whose ratios are still meaningful numbers.
+  it("leaves every measurable position exactly as it was", () => {
+    expect(scrollbarMetrics({ displayOffset: 0, scrollbackLen: 76, rows: 24 })).toEqual({
+      visible: true,
+      thumbHeightRatio: 0.24,
+      thumbTopRatio: 0.76,
+    });
+    expect(scrollbarMetrics({ displayOffset: 0, scrollbackLen: 0, rows: 24 })).toEqual({
+      visible: false,
+      thumbHeightRatio: 1,
+      thumbTopRatio: 0,
+    });
   });
 });

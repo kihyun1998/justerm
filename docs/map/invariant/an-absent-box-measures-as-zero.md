@@ -20,9 +20,14 @@ which is why this cannot live in a helper and has to live here:
 | `justerm-web/src/terminal-surface.ts` — `viewportOrigin` | [multi-viewport](../territory/multi-viewport.md) | **Yes, since #801.** The overlay's *extent* is carried alongside its origin and the return is `{x,y} \| undefined`. Before that the clamp answered `{0,0}`, which re-placed a full-size grid on the canvas corner over a sibling |
 | `justerm-web/src/fit.ts` — `proposeDimensions`, and `justerm-renderer.ts` `gridForBox`. **Two callers, one of which cannot reach a zero**: `resize` passes a consumer-measured box and is the live one; `applyGrid`'s grant read-back passes the drawing buffer, which `resize_surface` refuses to set at `<= 0` and which an empty read-back preserves rather than zeroes — so the guard is defensive there. Worth the row anyway: a completeness pass claimed that caller was a live third site, twice and with two different mechanisms, and both fell to reading `apply_surface_size` | [fit](../territory/fit.md) | **Yes, since #810.** Both refuse a box with no area, the way they already refused a non-finite one. Before that a `0x0` box floored to `MINIMUM_COLS`x`MINIMUM_ROWS` — measured against the real module, a `display: none` box proposed `2x1` while a `NaN` box was correctly refused — and that function's own comment already stated the intent it was missing: *"a non-finite box means 'not measured', exactly when we should NOT shrink the terminal"* |
 | `justerm-web/src/input.ts` — `CellGeometry.originX` / `originY` | [selection](../territory/selection.md) | **It depends on the consumer, which is the part worth carrying.** These are the only two of the six fields with no stated precondition — a position legitimately may be `0` or negative — so `geometryViolations` cannot flag them. What decides exposure is how the *cell* was built: a **rect-derived** cell also goes to `0` when the box does, and that field *is* declared strictly positive, so the signal fires anyway (measured in #672, `demo/main.ts`'s `cellFromEvent`). A **renderer-derived** cell — `renderer.cellSize() / dpr`, which is what `demo/shared-surface.ts` does and what this package's README recommends — stays positive, so only the origin moves and nothing fires. The precondition mechanism itself is #672's, decided and closed as *"signal, do not correct"*; the axis here is the origin's, which that issue did not cover |
-| `justerm-web/src/scrollbar.ts` — `dragTo` | [viewport](../territory/viewport.md) | **No.** `(clientY - r.top) / r.height` on a zero-height track is `±Infinity`, which the surrounding `clamp` turns into a plausible `0` or `1` — a jump to one end — or `NaN` when the pointer is exactly at `r.top` |
+| `justerm-web/src/scrollbar.ts` — `dragTo`, via `dragTrackRatio` | [viewport](../territory/viewport.md) | **Yes, since #814.** The ratio step takes the track box as data and answers `number \| undefined`, refusing `height <= 0`; `dragTo` then makes no request at all. Before that, `(clientY - r.top) / r.height` on a zero-height track was `±Infinity`, which the surrounding `clamp` turned into a plausible end of the track — or `NaN` when the pointer was exactly at `r.top`. **This is the site where a finiteness test *nearly* worked, and the near-miss is the row's value.** On the **un-clamped quotient** it is equivalent up to a negative height (a mutation reddens exactly one assertion). On the value the function **returns** it accepts every zero-height box, because the clamp turns `Infinity` into a perfectly finite `1` — the measured slam to the live bottom. `justerm-web/src/terminal.ts`'s `wheelScrollTarget` had already recorded that general form: *"the clamp rescues an infinite request into a finite, wrong one … guarding there would fix half the cases and read as if it had fixed all of them"* |
 
 ## Why it is cross-cutting
+
+**The roster of who is left lives in spine [#815](https://github.com/kihyun1998/justerm/issues/815), not here.** This
+note holds the rule — which is immutable and belongs in a file; the anchor holds current state, which
+is mutable and needs an editable home. Both, deliberately, the way
+[the cell size is derived state](cell-size-is-derived-state.md) and its spine #630 are.
 
 **Four sites, four territories, and no shared call path, type or test.** Each one reads a box for its
 own purpose — a viewport origin, a column count, a pointer basis, a scroll ratio — and each derives a
@@ -58,11 +63,33 @@ because every value involved is finite and in range. The three measured shapes:
   is derived from `cols * cell` and never from the measured box, so the zeroed box shrinks nothing.
 - **The fit path**, measured against the real module. A hidden pane still being fitted proposes `2x1`,
   the engine reflows through two columns, and showing the pane again does not undo it.
-- **A drag that outlives its box.** Both `scrollbar.ts` and `SelectionController` bind their move and
-  up listeners to `window` (`scrollbar.ts:124-125`; `demo/main.ts:1187`), so a drag in flight when the
-  element is hidden keeps computing against zeros rather than ending. **The reach is read, not run**:
-  the bindings are verified, the zero-height arithmetic is not executed anywhere, and no test
-  constructs a drag that outlives its box.
+- **A drag that outlives its box — measured in a real browser, #814.** Both `scrollbar.ts` and
+  `SelectionController` bind their move and up listeners to `window` (`scrollbar.ts:124-125`;
+  `demo/main.ts:1187`), and `Scrollbar.update()` hides the track without clearing `dragging`, so a
+  drag in flight when the element is hidden keeps computing against zeros rather than ending.
+  Driven through the real listener path with the guard off, host scrolled 40 lines up: two mouse
+  moves against an all-zero rect produced **two spurious scroll requests** and left the host's
+  display offset at **`NaN`**. With the guard, the same moves produce **nothing** and the offset is
+  the one the last measured move set.
+  **Which element is hidden decides which half of the harm you see**, and a probe that gets it
+  wrong reports a milder defect than the one that exists. There are **two real routes**, and they
+  are not interchangeable:
+  - a host hides an **ancestor** (`display: none`, documented since #801). `scrollbackLen` is
+    unchanged, so the ratio is `1` and the offset is driven to `0` — the *slam to the live bottom*,
+    on top of the `NaN`;
+  - the widget hides its **own** track, because `visible` means `scrollbackLen > 0` and core's
+    `full_reset` (RIS, `ESC c` — `tput reset`, a program's `rs1`, a crashed TUI) replaces the whole
+    `Term` and takes `scrollback_len()` to `0` (`justerm-core/src/term.rs`). **No host action at
+    all.** Here `scrollbackLen` is `0` by construction, so the offset harm is absent — every legal
+    offset is `0` — and only the `NaN` survives.
+
+  What does **not** reproduce either is hiding the track while `scrollbackLen` stays positive: the
+  first bad request re-renders the host, `update()` sets `display: "block"` again, and the `0/0`
+  input never runs (measured: 2 requests, a plausible finite offset, no `NaN`). That is a **probe
+  artifact**, not a route — this note said it was the rule for the length of one commit, on the
+  strength of that one measurement, until the RIS path was found by asking what *else* empties a
+  scrollback. `ED 3` had been checked and is unimplemented; `full_reset` had not.
+  `SelectionController`'s half of this bullet is still **read, not run**.
 
 ## Territories it holds in
 
@@ -75,7 +102,8 @@ because every value involved is finite and in range. The three measured shapes:
   also the one place this invariant runs against the prior art: all three references floor a zero box
   and none refuses it, and the divergence is recorded in `docs/agents/theflow.md`
 - [selection](../territory/selection.md) — `CellGeometry`'s two unconstrained fields
-- [viewport](../territory/viewport.md) — the scrollbar's track ratio
+- [viewport](../territory/viewport.md) — the scrollbar's track ratio, **repaired in #814**, and the
+  one site where a finiteness test *nearly* worked — on the quotient, not on the clamped result
 
 ## Discovery history
 
@@ -102,6 +130,15 @@ because every value involved is finite and in range. The three measured shapes:
   reasoned about *"a consumer that re-asserts its size every frame (a `fit()` loop)"* and required the
   exact no-op; a `2x1` floor is not one. Absence producing a *plausible* answer is the invariant's
   subject; this is the case where the plausible answer is also irreversible
+- **#814** (2026-08-25) — repaired the third site, and is the first of the four to be **run** rather
+  than read. Two things it added that reading could not: the defect is **self-concealing** through the
+  library's own `update()` when the wrong element is hidden (above), and the repair's real ground is
+  not this note at all but a **sibling guard one module over** — `wheelAction`'s
+  `!Number.isFinite(lines)` refusal (`justerm-web/src/terminal.ts`, #675) already decided that a
+  non-finite scroll request must not reach the consumer's `onScroll`, while
+  `TerminalOptions.onScroll`'s own doc says the scrollbar drag *"funnels to the SAME callback"*. The
+  scrollbar was the one producer of that callback not on the guard's path — a statement that needs no
+  reference in it, which is why it is the one the change rests on
 - **#801** (2026-08-25) — found while making a hidden terminal reachable. The first site was repaired
   by widening `OverlayBoxes` and returning a union; the other three were enumerated by a completeness
   pass asking which other readers of an element box exist, and are **not** repaired. The first

@@ -131,6 +131,25 @@ fix mentions a shared rule.
   one layer out: **a producer owes its consumer a value the consumer's type can mean.** Where this
   note is about a coordinate that must be in range, that one is about a number that must be a
   number — and `Math.max`/`Math.min` no more produce it than they produce a bound.
+  **#814 found a third producer of the same callback and made it total too**, and it is the one that
+  shows why the rule has to be applied at the *inputs*. `dragToDisplayOffset` is exported, so it owes
+  its own totality; measured across its four poisoned positions, three surfaced as `NaN` and
+  `rows: Infinity` surfaced as **`0`** — `Math.round(60 - ∞)` is `-Infinity` and the clamp rescues it
+  into a finite, plausible jump to the live edge. A finiteness test on the *result* therefore fixes
+  three of four and reads as if it fixed all four, which `wheelScrollTarget` had already stated in
+  prose (`terminal.ts`) and which a mutation now pins: moving the guard to the result reddens exactly
+  the `rows: Infinity` assertion and nothing else. Note that this producer is **not** a member of the
+  note's own rule — it computes a ratio, not a cell, exactly as the exclusion below says.
+  **A fourth producer in the same file came with it, and finding it is the transferable part.**
+  `scrollbarMetrics` divided after a *relational* `visible` check, so a non-finite position answered
+  `visible: false` correctly and still emitted `NaN` ratios into `style.height` / `style.top` as
+  `"NaN%"`. #463 had already fixed exactly this in `decorations.ts` and left the rule in its comment
+  — *"`total <= 0` is a size comparison and NaN slips through every comparison; `Number.isFinite` is
+  the check"* — but only on the **marks** half of `scrollbar.ts`'s style writes, not the **thumb**
+  half. It was found by grepping the closed backlog **by artifact** after the change was written,
+  not by reading the file, and it had first been graded *"no reachable consequence"* — which was true
+  of the symptom and the wrong bar, since the sibling was filed on *"recorded rather than
+  rediscovered"*.
   **#680 then closed the drag half, and how it closed is the part worth carrying.** A drag that
   outlives the canvas's box auto-scrolled at the maximum speed, because `SelectionController` builds
   its viewport height as `getRows() * geom.cellHeight` and a **product loses which factor was zero**.
