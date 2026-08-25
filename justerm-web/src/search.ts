@@ -337,7 +337,25 @@ export class SearchController {
 
   /** Whether the active regex-mode query is invalid (#316 D2) — the box red-flags
    * it and no search ran. Always `false` for literal queries or when no validator
-   * is injected. */
+   * is injected.
+   *
+   * Like {@link SearchResult}, this is a seam whose PRESENTATION is the consumer's
+   * (ADR-0017), and the duty has two halves that were settled separately. The
+   * ANNOUNCE half is deliberately absent (#439): VS Code's SimpleFindWidget has no
+   * wording for a rejected pattern, so there is nothing to mirror. The ATTRIBUTE
+   * half is standard and owes nothing to a reference (#448) — a search box driven
+   * by this should set `aria-invalid` on its input while this is true and clear it
+   * when it is not, and associate the input with whatever element shows the reason
+   * via `aria-describedby`. Without it the state reaches sighted users only, and a
+   * screen-reader user cannot tell a rejected pattern from a genuine no-match.
+   *
+   * Do NOT gate the attribute on a screen-reader-active check the way an announce
+   * is gated. An attribute makes no sound, so the gate's purpose does not reach
+   * it — but the load-bearing reason is narrower: gated markup goes stale while
+   * the gate is closed, so it is only safe where something re-writes it when the
+   * gate reopens. This has no such repair path, and a consumer adding one would
+   * be building the harder half of a mechanism it does not need. The demo wires
+   * the reference implementation for both halves. */
   isInvalidRegex(): boolean {
     return this.invalid;
   }

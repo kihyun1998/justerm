@@ -907,6 +907,203 @@ test.describe("regex validation runs in core's dialect, not JS RegExp (#316 D2, 
     await openSearch(page, "(?<name>x)");
     await expect(page.locator("#search-count")).not.toHaveText("invalid");
   });
+
+  // #448: the same rejection, on the channel AT actually reads. Before this, the state was
+  // carried entirely by a border colour and a label nothing pointed at, so a screen-reader user
+  // could not tell a rejected pattern from a genuine no-match. `#439` settled the ANNOUNCE half
+  // as visual-only — VS Code's SimpleFindWidget has no wording to mirror — and that reasoning
+  // does not reach the attribute half, which is standard and reference-independent.
+  //
+  // Three properties, and the last two are the ones a naive implementation fails:
+  //   1. it is TRUE while rejected,
+  //   2. it goes back to "false" — an attribute that latches leaves the field permanently
+  //      invalid, which is worse than never setting it,
+  //   3. "false" is written, not the attribute removed. ARIA treats absent and "false" alike,
+  //      but a test cannot: absent is also what code that never runs produces, so asserting
+  //      absence would pass against a demo with no wiring at all.
+  test("the rejection reaches AT, and does not latch (#448)", async ({ page }) => {
+    const box = page.locator('input[placeholder="search"]');
+    await page.locator("#term").click({ position: { x: 50, y: 50 } });
+    await page.keyboard.press("Control+f");
+    // The window this asserts inside has to exist: an unopened box would make every
+    // expectation below vacuous.
+    await expect(box).toBeVisible();
+
+    // Honest before a single character is typed. Written by `updateCountLabel`'s valid arm, which
+    // this demo's 300ms append tick has already run — not by anything at construction, which is
+    // why no such line exists there.
+    await expect(box).toHaveAttribute("aria-invalid", "false");
+    // The description is STRUCTURE and is set once: `#search-count` is the search box's status
+    // text in both states ("3/12" / "invalid"), so only its text varies. A describedby that
+    // toggled with the state would be a second thing to reset in the same arm — and a missed
+    // reset in this territory is a defect this repo has already shipped once.
+    await expect(box).toHaveAttribute("aria-describedby", "search-count");
+
+    await page.locator("#search-regex").check();
+    await box.fill("(?=x)"); // rejected by core's dialect, accepted by JS — see the table above
+    await expect(page.locator("#search-count")).toHaveText("invalid");
+    await expect(box).toHaveAttribute("aria-invalid", "true");
+
+    // Un-latch. `(?i)abc` is the one pattern core accepts and JS rejects, so this leg also
+    // re-proves the real validator is behind it.
+    await box.fill("(?i)abc");
+    await expect(page.locator("#search-count")).not.toHaveText("invalid");
+    await expect(box).toHaveAttribute("aria-invalid", "false");
+
+    // Not a one-shot either: the state has to fire again after having been cleared.
+    await box.fill("(?=x)");
+    await expect(box).toHaveAttribute("aria-invalid", "true");
+
+    // Leaving regex mode is the other way out of the state — a literal query is never invalid,
+    // and the mode toggle re-runs the search rather than going through the input handler.
+    await page.locator("#search-regex").uncheck();
+    await expect(box).toHaveAttribute("aria-invalid", "false");
+    await expect(page.locator("#search-count")).not.toHaveText("invalid");
+  });
+
+  // #448: the attribute is deliberately NOT behind the `#161` screen-reader gate, and this is the
+  // only place that claim is falsifiable. Every announce beside it IS gated — the gate exists so a
+  // streaming terminal cannot spam a live region — so writing `if (srState.isActive())` around the
+  // attribute is the single most plausible wrong implementation here: it copies the neighbour.
+  //
+  // The test above cannot catch it, because the demo boots with the screen reader reported ON, so
+  // the gated and ungated implementations agree everywhere it looks. This one asserts inside the
+  // window where they disagree, and it asserts that the window is real: under one SR-off condition
+  // the announce channel stays silent while the attribute channel keeps answering.
+  test("the rejection reaches AT even with the screen reader reported off (#448)", async ({
+    page,
+  }) => {
+    const box = page.locator('input[placeholder="search"]');
+    const searchLive = page.locator("[data-testid='search-live']");
+
+    // The host telling justerm no screen reader is present. Assert the flip landed — with the
+    // button still reading ON, every expectation below would hold for the wrong reason.
+    await page.getByRole("button", { name: "Screen reader: ON" }).click();
+    await expect(page.getByRole("button", { name: "Screen reader: OFF" })).toBeVisible();
+
+    await page.locator("#term").click({ position: { x: 50, y: 50 } });
+    await page.keyboard.press("Control+f");
+    await expect(box).toBeVisible();
+    await page.locator("#search-regex").check();
+
+    // A VALID query first: this is the leg that proves the announce really is suppressed, so the
+    // silence asserted after the invalid one below is a gate and not an accident of ordering.
+    await box.fill("(?i)abc");
+    await expect(page.locator("#search-count")).not.toHaveText("invalid");
+    await expect(box).toHaveAttribute("aria-invalid", "false");
+    await expect(searchLive).toHaveText("");
+
+    // …and the rejection. Same SR-off condition, opposite answers on the two channels.
+    await box.fill("(?=x)");
+    await expect(page.locator("#search-count")).toHaveText("invalid");
+    await expect(box).toHaveAttribute("aria-invalid", "true");
+    await expect(searchLive).toHaveText("");
+  });
+
+  // #448: the two tests above assert OUR attributes; this one asserts what the platform makes of
+  // them. It reads the accessibility tree over CDP, so it is about the OUTCOME — a rejected field
+  // with a reason attached — rather than about the two attribute names we happened to choose.
+  //
+  // What it is NOT, stated because the first version of this comment claimed it and was wrong:
+  // it is not independent cover for `aria-describedby` going stale. The claim was that a pointer
+  // survives its target leaving the tree while the computed description quietly empties. Measured
+  // instead — `aria-hidden="true"` on `#search-count`, and `display: none` on it — Chrome computes
+  // the description from the referenced element in BOTH cases and all three tests stay green.
+  // That is the accname spec's referenced-node exception doing exactly what it says, and it is
+  // worth knowing before anyone hides that label expecting AT to lose it. What actually reddens
+  // here is what reddens above: dropping the flag, and dropping the association.
+  //
+  // What it buys is the mechanism being right rather than merely written: an attribute value the
+  // platform does not honour, or an association it declines to resolve, is green against our own
+  // spelling and empty here. And it is the assertion that survives a change of mechanism —
+  // `aria-errormessage`, a native validity API — which the two above would fail by construction.
+  //
+  // Chromium-only, which costs nothing here — `playwright.config.ts` runs one chromium project.
+  //
+  // The terminal's own hidden textarea is asserted alongside as the control. Every textbox node
+  // carries an `invalid` property whether or not anyone set one, so "the property is present" is
+  // not evidence of anything; only its value is, and the control is what shows the difference.
+  test("the platform accessibility tree reports the rejection, with its reason (#448)", async ({
+    page,
+    context,
+  }) => {
+    const box = page.locator('input[placeholder="search"]');
+    const cdp = await context.newCDPSession(page);
+    await cdp.send("Accessibility.enable");
+
+    /** Every `textbox` in the tree, as {name, description, invalid}. */
+    const textboxes = async (): Promise<
+      Array<{ name?: string; description?: string; invalid?: string }>
+    > => {
+      const tree = await cdp.send("Accessibility.getFullAXTree", {});
+      return tree.nodes
+        .filter((n) => n.role?.value === "textbox")
+        .map((n) => ({
+          name: n.name?.value as string | undefined,
+          description: n.description?.value as string | undefined,
+          invalid: (n.properties ?? []).find((prop) => prop.name === "invalid")?.value.value as
+            | string
+            | undefined,
+        }));
+    };
+
+    await page.locator("#term").click({ position: { x: 50, y: 50 } });
+    await page.keyboard.press("Control+f");
+    await expect(box).toBeVisible();
+    await page.locator("#search-regex").check();
+
+    await box.fill("(?i)abc");
+    await expect(page.locator("#search-count")).not.toHaveText("invalid");
+    expect(await textboxes()).toEqual([
+      { name: "Terminal input", description: undefined, invalid: "false" }, // the control
+      { name: "search", description: "0/0", invalid: "false" },
+    ]);
+
+    await box.fill("(?=x)");
+    await expect(page.locator("#search-count")).toHaveText("invalid");
+    expect(await textboxes()).toEqual([
+      { name: "Terminal input", description: undefined, invalid: "false" }, // unmoved
+      { name: "search", description: "invalid", invalid: "true" },
+    ]);
+  });
+
+  // The announce cadence, which two decision sites already state and the code contradicted.
+  // `announceSearchCount`'s own comment says it is spoken "on user-driven count updates only
+  // (typing, Enter/Shift-Enter)", and the `onResults` wiring says "Label only: #439's announce
+  // cadence stays user-driven" — the whole point being that a streaming terminal must not spam a
+  // polite live region. But the demo's 300ms append tick called `updateCount`, the ANNOUNCING
+  // wrapper, rather than `updateCountLabel`. Measured before the fix: 8 distinct live-region texts
+  // in 2.5s with the box open and no input at all, "1 of 9 found for 'row'" walking up to
+  // "1 of 16". Pre-existing (the tick's call is #142's; #439 moved the announce inside
+  // `updateCount` without revisiting it), and invisible to #439's own test because the only field
+  // that moves is the total and its assertion matches it with `\d+`.
+  //
+  // The two channels are what makes this assertable at all: under the correct cadence the LABEL
+  // keeps tracking the growing match set while the ANNOUNCE stays frozen at what the user's last
+  // keystroke produced. Asserting the announce alone could pass on a page where nothing is
+  // happening, so the label assertion is also what proves the window is real.
+  test("a streaming terminal moves the count but does not speak it (#439's stated cadence)", async ({
+    page,
+  }) => {
+    const live = page.locator("[data-testid='search-live']");
+    await page.locator("#term").click({ position: { x: 50, y: 50 } });
+    await page.keyboard.press("Control+f");
+    await page.locator('input[placeholder="search"]').fill("row");
+
+    // The user's own keystroke DOES announce — that is the cadence, not its absence.
+    await expect(live).toHaveText(/^1 of \d+ found for 'row'$/);
+    const spoken = await live.textContent();
+    const totalAt = async () => Number(/\/(\d+)/.exec((await page.locator("#search-count").textContent()) ?? "")?.[1]);
+    const before = await totalAt();
+
+    // Four append ticks with the search box open and untouched.
+    await page.waitForTimeout(1200);
+
+    // The window is real: output arrived and the visible count followed it.
+    expect(await totalAt()).toBeGreaterThan(before);
+    // …and nothing was said about it.
+    await expect(live).toHaveText(spoken ?? "");
+  });
 });
 
 // #417: the runtime font-size button drives the wired renderer setFontSize (#406) through the real

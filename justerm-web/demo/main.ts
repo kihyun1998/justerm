@@ -1277,6 +1277,11 @@ box.style.cssText =
   "position:fixed;top:8px;right:24px;display:none;gap:8px;align-items:center;background:#313244;color:#cdd6f4;font:14px monospace;padding:6px 10px;border-radius:6px;z-index:10";
 const input = document.createElement("input");
 input.placeholder = "search";
+// An explicit name, matching every other AT-exposed control in the family (`terminal.ts`'s hidden
+// textarea, `accessible-view.ts`'s document). Without it the name resolves from `placeholder` —
+// accname's LOWEST-priority source — which worked, and became load-bearing the moment #448 gave
+// this input a state and a description for AT to read alongside its name.
+input.setAttribute("aria-label", "search");
 input.style.cssText =
   "background:#1e1e2e;color:#cdd6f4;border:1px solid #45475a;padding:2px 6px;font:14px monospace;outline:none";
 
@@ -1299,6 +1304,30 @@ function modeToggle(id: string, label: string): HTMLInputElement {
 const countLabel = document.createElement("span");
 countLabel.id = "search-count"; // e2e reads it to prove the wasm validator ran (#346)
 countLabel.textContent = "0/0";
+
+// #448: the invalid-regex state on the channel AT reads. #439 settled the ANNOUNCE half as
+// visual-only — VS Code's SimpleFindWidget has no wording to mirror — but that reasoning covers
+// only the announce; without these the state was a border colour and nothing else, so a screen
+// reader could not tell a rejected pattern from a genuine no-match.
+//
+// `aria-describedby` is written ONCE and never toggled. `countLabel` is this box's status text in
+// both states ("3/12" / "invalid"), so the association is structure and only the text varies —
+// which also means `updateCountLabel` has exactly one piece of AT state to reset, not two. This
+// territory's own convention (`docs/map/territory/accessibility.md`) is that every resettable a11y
+// field must be reset in one place with nothing enforcing it, and it has been missed once already.
+//
+// Deliberately NOT gated on `srState.isActive()` (#161), unlike every announce here. That gate
+// exists to stop a streaming terminal spamming a live region; an attribute makes no sound. Gating
+// it would make the DOM state a lie to any AT that attached after the heuristic said "no SR", and
+// it must likewise stay out of `reactivate()`'s reset — it is not announce state.
+input.setAttribute("aria-describedby", countLabel.id);
+// `aria-invalid` is NOT written here, and the reason is measured rather than stylistic. A
+// construction-time "false" looks like it makes the DOM honest before the first query, but
+// `updateCountLabel` writes the same value on every result and this demo's 300ms append tick calls
+// it within a frame of boot — so the line is unreachable in practice, and no assertion in the suite
+// can distinguish its presence from its absence (verified: deleting it leaves the #448 e2e green).
+// ARIA reads an absent `aria-invalid` as "false" anyway, so the only thing it could have bought was
+// assertability, and it does not buy that.
 
 // #439: SR announce for the search count — a DEDICATED polite region (the #160
 // precedent: sharing #119's output or #160's command region would let a flush
@@ -1324,8 +1353,10 @@ document.body.append(searchLive);
 // channel). Spoken on user-driven count updates only (typing, Enter/Shift-
 // Enter): a debounced background re-search updates neither the label nor the
 // announce, so a streaming terminal cannot spam the SR. Gated by the SR-active
-// state (#161); the invalid-regex state stays visual-only (updateCount returns
-// before this — no reference wording exists to mirror, red-flag only).
+// state (#161). The invalid-regex state is not ANNOUNCED (updateCount returns
+// before this — no reference wording exists to mirror), but since #448 it is no
+// longer visual-only either: the input carries `aria-invalid` and points at this
+// label through `aria-describedby`, which is the reference-independent half.
 function announceSearchCount(r: SearchResult): void {
   // Closing the box (Escape) resets the count with the query text still in the
   // input — without the visibility guard that would falsely announce "No
@@ -1358,9 +1389,11 @@ function updateCountLabel(): void {
   if (search.isInvalidRegex()) {
     countLabel.textContent = "invalid";
     input.style.borderColor = "#f38ba8"; // red — regex the engine can't run
+    input.setAttribute("aria-invalid", "true"); // #448 — the same flag, for AT
     return;
   }
   input.style.borderColor = "#45475a";
+  input.setAttribute("aria-invalid", "false"); // #448 — beside the visual reset, so neither latches
   const r = search.result();
   countLabel.textContent = `${r.current}/${r.total}`;
 }
@@ -3632,7 +3665,12 @@ function appendTick(): void {
   // the widget's cell cache is invalidated and `positionTextarea` writes the anchor mid-composition.
   if (cursorDrift) driftRow = (driftRow + 1) % ROWS;
   search.onFrame();
-  updateCount();
+  // The LABEL only. `updateCount` is the announcing wrapper, and calling it here spoke a new
+  // "x of y" into the polite live region on every 300ms tick with the box open and nobody
+  // touching it — the exact SR spam #161's gate and #439's user-driven cadence exist to prevent,
+  // and the opposite of what both of their comments claim happens. The tick's call predates the
+  // announce living inside `updateCount` (#142 before #439).
+  updateCountLabel();
   // Real scroll amount: 0 while the screen is still filling, 1 once full (the top
   // line actually scrolls off). Following → emit it; scrolled up → scrollbar only.
   const scrollCount = Math.max(0, log.length - ROWS) - Math.max(0, log.length - 1 - ROWS);
