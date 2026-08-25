@@ -30,7 +30,8 @@ type AsyncProbe =
   | "__surfaceLossProbe"
   | "__restoreDensityProbe"
   | "__contractOnlyDensityProbe"
-  | "__hideShowProbe";
+  | "__hideShowProbe"
+  | "__hiddenBlinkProbe";
 
 /** This page's typed alias over the shared park-and-harvest helper (#731; extracted in #776). */
 const readAsyncProbe = <K extends AsyncProbe>(
@@ -652,4 +653,40 @@ test("hiding a terminal keeps it — no bake, no atlas churn, and the sibling un
     r.fedWhileShown.packs,
     "the same feed on the same pane, once shown, must pack — otherwise the zero above is vacuous",
   ).toBeGreaterThan(r.fedWhileHidden.packs);
+});
+
+/**
+ * #801 — **a hidden terminal's blink loop does not drive the canvas.**
+ *
+ * Both halves of `blinkTick` end in `backend.render()`, which presents the WHOLE canvas — so on a
+ * shared surface a hidden pane's blink was redrawing its siblings twice a second for pixels that are
+ * not on screen. The re-pack was already gated one layer down (the renderer skips an unplaced grid),
+ * which is exactly why this hid: what is wasted is the **present**, and nothing at this layer counts
+ * presents. `packs` cannot see it and neither can a pixel; the probe wraps the raw backend call.
+ *
+ * **Hidden and focused is the state under test, not an odd one.** The cursor half parks solid when
+ * blurred and `display: none` blurs, so the ordinary path self-gated — which made this look narrower
+ * than it is. `visibility: hidden` keeps the box, fires no observer, and keeps focus, which is why
+ * the README tells a host to call `hide()` directly there. That guidance is what makes this reachable.
+ */
+test("a hidden terminal's blink loop presents nothing, and a shown one still does (#801)", async ({
+  page,
+}) => {
+  test.setTimeout(30_000);
+  const r = await readAsyncProbe(page, "__hiddenBlinkProbe");
+
+  // The instrument first. A wrapper that is not on the call path reports zero everywhere, which is
+  // indistinguishable from the fix working.
+  expect(r.wrapperSeesRender, "the present counter must actually be on the call path").toBe(1);
+  expect(r.reducedMotion, "a reduced-motion environment parks the blink solid and proves nothing").toBe(
+    false,
+  );
+
+  expect(r.presentsWhileHidden, "a terminal nobody draws must not drive the canvas").toBe(0);
+  // The control. Without it the zero above is indistinguishable from "the cursor never flipped in
+  // the window" — which is the failure mode a 600 ms interval and a 1400 ms window are chosen against.
+  expect(
+    r.presentsWhileShown,
+    `the same terminal, shown, must still blink — otherwise the zero above proves nothing (window ${r.windowMs}ms)`,
+  ).toBeGreaterThan(0);
 });

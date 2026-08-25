@@ -205,6 +205,16 @@ class Pane {
       extra: new Array<number>(n).fill(0),
       spans,
       sideTable: [],
+      // **A pane needs a cursor to be a terminal.** Until #801 this page's frames carried none, so
+      // neither pane ever ran `updateCursor` — and therefore neither ever started its blink loop,
+      // which is the machinery `__hiddenBlinkProbe` measures. Blink authority stays the
+      // application's (`cursorBlink: false`), so nothing here blinks unless a probe overrides it and
+      // no existing assertion on this page moves.
+      cursorRow: 0,
+      cursorCol: 0,
+      cursorVisible: true,
+      cursorShape: 0,
+      cursorBlink: false,
     };
   }
 }
@@ -628,6 +638,24 @@ declare global {
      * all; a hide implemented as a one-shot `clearViewport` is silently undone by the first to fire.
      */
     __hideShowProbe?: () => Promise<HideShowReport>;
+    /**
+     * Count the renderer's **presents** while pane B blinks, hidden and then shown (#801).
+     *
+     * Presents are the one cost at this layer nothing reports: a hidden grid is already skipped
+     * before the re-pack, so `packs` cannot see this, and every pixel is identical either way. So
+     * this counts the calls directly, by wrapping the raw backend the blink loop reaches — which is
+     * the wasm renderer itself, not `TerminalSurface`, since `blinkTick` calls `backend.render()`.
+     *
+     * The shown half is the control, and it is not optional: without it a zero means "gated" and
+     * "never flipped in the window" equally well.
+     */
+    __hiddenBlinkProbe?: () => Promise<{
+      presentsWhileHidden: number;
+      presentsWhileShown: number;
+      windowMs: number;
+      wrapperSeesRender: number;
+      reducedMotion: boolean;
+    }>;
     /**
      * Tear the whole arrangement down, in one of the two orders a host could pick, and report what
      * is left. One-shot: it ends the page.
@@ -1189,6 +1217,89 @@ window.__hideShowProbe = async (): Promise<HideShowReport> => {
     shown,
     dpr: { start: startDpr, middle: middleDpr, end: window.devicePixelRatio },
   };
+};
+
+window.__hiddenBlinkProbe = async (): Promise<{
+  presentsWhileHidden: number;
+  presentsWhileShown: number;
+  windowMs: number;
+  wrapperSeesRender: number;
+  reducedMotion: boolean;
+}> => {
+  stopTimers();
+  const settle = (): Promise<void> =>
+    new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+  // Long enough for three cursor phase flips at the 600 ms interval. Measured at 1400 ms the control
+  // caught exactly ONE, which is a margin a slower machine can lose — and a control that reaches zero
+  // by bad luck reads as the defect being absent.
+  const windowMs = 2100;
+  const wait = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+  // Count on the RAW backend: `blinkTick` calls `backend.render()` directly, bypassing the surface.
+  // Assigning on the instance shadows the prototype method, and the widget holds this same object.
+  const raw = surface.rendererBackend() as unknown as { render: () => void };
+  const underlying = raw.render.bind(raw);
+  let presents = 0;
+  raw.render = (): void => {
+    presents++;
+    underlying();
+  };
+
+  try {
+    // One frame first: the blink loop is started by `updateCursor`, which only runs on a decoded
+    // frame, and a terminal with no cursor has no phase to flip. This is also the honest shape — a
+    // pane is used and then hidden, never hidden from birth.
+    // **Blink authority first, THEN the frame.** The loop is started by `updateCursor`, which runs
+    // on a decoded frame and starts it only when this terminal actually blinks — so pushing first and
+    // enabling second leaves the loop stopped and every count below reads zero.
+    b.renderer.setCursorBlink(true);
+    b.renderer.setFocused(true);
+    b.pane.advance();
+    b.pane.push();
+    await settle();
+
+    // **The control runs FIRST**, while B is still shown. Measuring it after the hidden window would
+    // leave "the loop never ran at all" and "the loop is gated" sharing one answer.
+    // **Assert the instrument before asserting with it.** `surface.present()` reaches
+    // `backend.render()` synchronously, so this must move the counter by exactly one; a wrapper that
+    // is not on the call path would otherwise report zero presents everywhere and read as a pass.
+    // (`JustermRenderer.render()` is the wrong probe for this and was the first version: on a SHARED
+    // surface it schedules a frame instead of presenting, so it moves nothing in this turn.)
+    presents = 0;
+    surface.present();
+    const wrapperSeesRender = presents;
+    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+    presents = 0;
+    await wait(windowMs);
+    const presentsWhileShown = presents;
+
+    // Hidden **and focused** — the state this package's README points hosts at for
+    // `visibility: hidden`, where no observer fires and `hide()` is called directly. The cursor half
+    // parks solid when blurred, so a blurred hidden pane would gate itself and prove nothing.
+    overlayB.style.setProperty("display", "none");
+    await settle();
+    b.renderer.setFocused(true);
+    await settle();
+
+    presents = 0;
+    await wait(windowMs);
+    const presentsWhileHidden = presents;
+
+    overlayB.style.removeProperty("display");
+    await settle();
+
+    return {
+      presentsWhileHidden,
+      presentsWhileShown,
+      windowMs,
+      wrapperSeesRender,
+      reducedMotion,
+    };
+  } finally {
+    raw.render = underlying;
+    b.renderer.setCursorBlink(undefined);
+  }
 };
 
 window.__restoreDensityProbe = async (): Promise<RestoreDensityReport> => {

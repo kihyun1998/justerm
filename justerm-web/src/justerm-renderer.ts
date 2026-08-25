@@ -1568,8 +1568,7 @@ export class JustermRenderer implements Renderer {
     // pair of bits can disagree about one overlay (the shape #805 reached one issue earlier). A
     // shared tenant returning into a layout goes through here rather than through `show`, because it
     // has to re-supply the origin its missing box took away.
-    this.hidden = false;
-    this.reapplySurface();
+    this.setHidden(false);
   }
 
   /**
@@ -1594,8 +1593,30 @@ export class JustermRenderer implements Renderer {
    * already. {@link show} is the way back.
    */
   hide(): void {
-    this.hidden = true;
+    this.setHidden(true);
+  }
+
+  /**
+   * The one writer of {@link hidden}, so the *transition* has a single site (#801).
+   *
+   * Setting the field is the easy half; what needs a home is what happens on the way **back**.
+   * {@link blinkTick} does no work while hidden, so the phase the renderer holds can drift away from
+   * the live clock — a terminal hidden with its blinking cells lit and shown again after the phase
+   * flipped would keep drawing them lit until the next flip, up to a whole interval later. Re-syncing
+   * once on the true → false edge costs nothing on any other path, which is why it is keyed on the
+   * edge and not on the value: {@link setViewportRect} runs through here on every scroll of an
+   * ancestor, and re-packing the grid on a scroll would be a new cost in the hot path.
+   */
+  private setHidden(next: boolean): void {
+    const was = this.hidden;
+    this.hidden = next;
     this.reapplySurface();
+    if (was && !next) {
+      // Order matters: the grid is placed by `reapplySurface` above, and `repackAtTextBlinkPhase`
+      // refuses while the renderer's grid disagrees with the last frame's.
+      this.syncTextBlinkPhase();
+      if (this.cursor) this.redrawCursor();
+    }
   }
 
   /**
@@ -1618,8 +1639,7 @@ export class JustermRenderer implements Renderer {
    * Idempotent, and a no-op before the first {@link resize}.
    */
   show(): void {
-    this.hidden = false;
-    this.reapplySurface();
+    this.setHidden(false);
   }
 
   /**
@@ -2022,6 +2042,22 @@ export class JustermRenderer implements Renderer {
    * Must not call {@link JustermRenderer.startBlinkLoop} — see `FrameLoop`'s `run` doc.
    */
   private blinkTick(): void {
+    // **A terminal nobody is drawing has no phase worth flipping** (#801). Both halves of this tick
+    // end in `backend.render()`, which presents the WHOLE canvas — so on a shared surface a hidden
+    // pane's blink drives a full redraw of its siblings, twice a second, for pixels that are not on
+    // screen. The re-pack itself is already gated one layer down (the renderer's draw loop skips an
+    // unplaced grid), which is exactly why this was invisible: what is wasted is the present, not
+    // the pack, and no counter at this layer reports presents.
+    //
+    // The cursor half self-gated on the ordinary path and that is what made this look narrower than
+    // it is: `CursorBlink.isVisible` returns solid when `!focused`, and `display: none` blurs the
+    // focused textarea. But `TextBlink.isVisible` has no focus gate at all, and `hide()` called
+    // without a DOM change — which this package's README recommends for `visibility: hidden`, since
+    // no observer fires there — leaves the terminal focused. So the path that needed this is the one
+    // the documentation points at.
+    //
+    // Skipping the work is what makes the phase drift; `setHidden` re-syncs on the way back.
+    if (this.hidden) return;
     const t = now();
     const cursorOn = this.blink.isVisible(t);
     const cursorFlip = cursorOn !== this.lastBlinkOn;
