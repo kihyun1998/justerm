@@ -24,6 +24,11 @@ which is why this cannot live in a helper and has to live here:
 
 ## Why it is cross-cutting
 
+**The roster of who is left lives in spine [#815](https://github.com/kihyun1998/justerm/issues/815), not here.** This
+note holds the rule — which is immutable and belongs in a file; the anchor holds current state, which
+is mutable and needs an editable home. Both, deliberately, the way
+[the cell size is derived state](cell-size-is-derived-state.md) and its spine #630 are.
+
 **Four sites, four territories, and no shared call path, type or test.** Each one reads a box for its
 own purpose — a viewport origin, a column count, a pointer basis, a scroll ratio — and each derives a
 different quantity through different arithmetic. From inside any one of them the question reads as a
