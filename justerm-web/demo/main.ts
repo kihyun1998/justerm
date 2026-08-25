@@ -1348,8 +1348,10 @@ document.body.append(searchLive);
 // channel). Spoken on user-driven count updates only (typing, Enter/Shift-
 // Enter): a debounced background re-search updates neither the label nor the
 // announce, so a streaming terminal cannot spam the SR. Gated by the SR-active
-// state (#161); the invalid-regex state stays visual-only (updateCount returns
-// before this — no reference wording exists to mirror, red-flag only).
+// state (#161). The invalid-regex state is not ANNOUNCED (updateCount returns
+// before this — no reference wording exists to mirror), but since #448 it is no
+// longer visual-only either: the input carries `aria-invalid` and points at this
+// label through `aria-describedby`, which is the reference-independent half.
 function announceSearchCount(r: SearchResult): void {
   // Closing the box (Escape) resets the count with the query text still in the
   // input — without the visibility guard that would falsely announce "No

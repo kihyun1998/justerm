@@ -35,6 +35,12 @@ programmer.
 - **Command outcomes are announced, not just navigable.** When an OSC 133 `CommandFinished` mark
   first becomes visible, the outcome is spoken and a signal fires. VSCode does this on *every*
   command finish rather than only on navigation, and that is the behaviour followed.
+- **An announce is gated; a state is not.** The screen-reader-active check (#161) exists to stop a
+  streaming terminal spamming a live region, so it governs what is *spoken*. Markup that merely
+  describes what is true — the search box's `aria-invalid` (#448), a role, a relationship — is
+  written unconditionally: gating it would make the DOM lie to any AT that attached after the
+  heuristic said no, and it is the reason such markup must stay **out** of `reactivate()`'s reset
+  below, which resets announce state only.
 - **Announcing is gated on `alt_screen`.** A full-screen application repainting is not new content to
   read, which is why that flag rides the frame header at all.
 - **Re-activation must reset every announce-related piece of state.** `reactivate()` emulates a fresh
@@ -123,5 +129,8 @@ an editor rather than a terminal.
   model.
 - **The reset-on-reactivate obligation is a convention.** Every announce-related field must be reset
   in one place, with nothing enforcing it — and it has already been missed once.
-- **The invalid-regex search state is not exposed to AT**, so a screen-reader user gets no signal
-  that their search cannot run. Tracked: #448.
+- **A rejected search pattern is exposed as state and never spoken.** Since #448 the search input
+  carries `aria-invalid` and is associated with the label showing the reason, so the state is
+  perceivable — but nothing announces it, which is #439's decision rather than an oversight, and it
+  means an SR user learns of the rejection when they query the field rather than when it happens.
+  Whether that is enough is answerable only by a real screen reader, and no one has run one.
