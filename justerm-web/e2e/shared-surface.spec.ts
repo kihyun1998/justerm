@@ -102,7 +102,14 @@ test.beforeAll(async ({ browser }) => {
  */
 test.beforeEach(async ({ page }) => {
   await page.goto("/shared-surface.html");
-  await expect(page.locator(READY)).toHaveText(/^ready — A \d+x\d+ · B \d+x\d+/);
+  // Explicit, and larger than the 5s default, for the reason `demo.spec.ts`'s gate states at length:
+  // this asserts THAT the page booted, not how fast, so the only thing a timeout here can report is
+  // machine speed — and `retries: 0` turns that into a red master. This page is the heavier of the
+  // two, since it boots **two** terminals and bakes an atlas per font configuration, so it is the
+  // more exposed of the pair even though the observed timeout was the other one's.
+  await expect(page.locator(READY)).toHaveText(/^ready — A \d+x\d+ · B \d+x\d+/, {
+    timeout: 30_000,
+  });
 });
 
 /**
