@@ -19,7 +19,7 @@ which is why this cannot live in a helper and has to live here:
 |---|---|---|
 | `justerm-web/src/terminal-surface.ts` — `viewportOrigin` | [multi-viewport](../territory/multi-viewport.md) | **Yes, since #801.** The overlay's *extent* is carried alongside its origin and the return is `{x,y} \| undefined`. Before that the clamp answered `{0,0}`, which re-placed a full-size grid on the canvas corner over a sibling |
 | `justerm-web/src/fit.ts` — `proposeDimensions`, mirrored in `justerm-renderer.ts` `gridForBox` | [fit](../territory/fit.md) | **No.** A `0x0` box floors to `MINIMUM_COLS`x`MINIMUM_ROWS`; measured 2026-08-25 against the real module, a `display: none` box proposes `2x1` while a `NaN` box is correctly refused. That function's own comment states the intent it misses — *"a non-finite box means 'not measured', exactly when we should NOT shrink the terminal"* |
-| `justerm-web/src/input.ts` — `CellGeometry.originX` / `originY` | [selection](../territory/selection.md) | **No**, and structurally so: these are the only two of the six fields with no stated precondition, because a position legitimately may be `0` or negative. `geometryViolations` therefore cannot flag them |
+| `justerm-web/src/input.ts` — `CellGeometry.originX` / `originY` | [selection](../territory/selection.md) | **It depends on the consumer, which is the part worth carrying.** These are the only two of the six fields with no stated precondition — a position legitimately may be `0` or negative — so `geometryViolations` cannot flag them. What decides exposure is how the *cell* was built: a **rect-derived** cell also goes to `0` when the box does, and that field *is* declared strictly positive, so the signal fires anyway (measured in #672, `demo/main.ts`'s `cellFromEvent`). A **renderer-derived** cell — `renderer.cellSize() / dpr`, which is what `demo/shared-surface.ts` does and what this package's README recommends — stays positive, so only the origin moves and nothing fires. The precondition mechanism itself is #672's, decided and closed as *"signal, do not correct"*; the axis here is the origin's, which that issue did not cover |
 | `justerm-web/src/scrollbar.ts` — `dragTo` | [viewport](../territory/viewport.md) | **No.** `(clientY - r.top) / r.height` on a zero-height track is `±Infinity`, which the surrounding `clamp` turns into a plausible `0` or `1` — a jump to one end — or `NaN` when the pointer is exactly at `r.top` |
 
 ## Why it is cross-cutting
@@ -77,6 +77,13 @@ because every value involved is finite and in range. The three measured shapes:
 
 ## Discovery history
 
+- **#672** (closed 2026-07) — reached this fact from the other direction without naming it. Its
+  subject was `CellGeometry` having no *preconditions*, so a `NaN` poisons every pointer event, and
+  its sweep recorded in passing that *"a hidden canvas gives `cellWidth === 0` there (the geometry is
+  rect-derived) … finite and wrong rather than ignored"*. That sentence is this invariant, one field
+  over, a month early — and it stayed a parenthesis because the question it was answering was about
+  `NaN`, where the value announces itself. Found by searching the tracker by artifact rather than by
+  feature name, which is the only reason this row exists
 - **#801** (2026-08-25) — found while making a hidden terminal reachable. The first site was repaired
   by widening `OverlayBoxes` and returning a union; the other three were enumerated by a completeness
   pass asking which other readers of an element box exist, and are **not** repaired. The first
