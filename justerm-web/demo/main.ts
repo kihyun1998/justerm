@@ -1277,6 +1277,11 @@ box.style.cssText =
   "position:fixed;top:8px;right:24px;display:none;gap:8px;align-items:center;background:#313244;color:#cdd6f4;font:14px monospace;padding:6px 10px;border-radius:6px;z-index:10";
 const input = document.createElement("input");
 input.placeholder = "search";
+// An explicit name, matching every other AT-exposed control in the family (`terminal.ts`'s hidden
+// textarea, `accessible-view.ts`'s document). Without it the name resolves from `placeholder` —
+// accname's LOWEST-priority source — which worked, and became load-bearing the moment #448 gave
+// this input a state and a description for AT to read alongside its name.
+input.setAttribute("aria-label", "search");
 input.style.cssText =
   "background:#1e1e2e;color:#cdd6f4;border:1px solid #45475a;padding:2px 6px;font:14px monospace;outline:none";
 
@@ -3660,7 +3665,12 @@ function appendTick(): void {
   // the widget's cell cache is invalidated and `positionTextarea` writes the anchor mid-composition.
   if (cursorDrift) driftRow = (driftRow + 1) % ROWS;
   search.onFrame();
-  updateCount();
+  // The LABEL only. `updateCount` is the announcing wrapper, and calling it here spoke a new
+  // "x of y" into the polite live region on every 300ms tick with the box open and nobody
+  // touching it — the exact SR spam #161's gate and #439's user-driven cadence exist to prevent,
+  // and the opposite of what both of their comments claim happens. The tick's call predates the
+  // announce living inside `updateCount` (#142 before #439).
+  updateCountLabel();
   // Real scroll amount: 0 while the screen is still filling, 1 once full (the top
   // line actually scrolls off). Following → emit it; scrolled up → scrollbar only.
   const scrollCount = Math.max(0, log.length - ROWS) - Math.max(0, log.length - 1 - ROWS);

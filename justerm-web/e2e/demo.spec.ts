@@ -1066,6 +1066,44 @@ test.describe("regex validation runs in core's dialect, not JS RegExp (#316 D2, 
       { name: "search", description: "invalid", invalid: "true" },
     ]);
   });
+
+  // The announce cadence, which two decision sites already state and the code contradicted.
+  // `announceSearchCount`'s own comment says it is spoken "on user-driven count updates only
+  // (typing, Enter/Shift-Enter)", and the `onResults` wiring says "Label only: #439's announce
+  // cadence stays user-driven" — the whole point being that a streaming terminal must not spam a
+  // polite live region. But the demo's 300ms append tick called `updateCount`, the ANNOUNCING
+  // wrapper, rather than `updateCountLabel`. Measured before the fix: 8 distinct live-region texts
+  // in 2.5s with the box open and no input at all, "1 of 9 found for 'row'" walking up to
+  // "1 of 16". Pre-existing (the tick's call is #142's; #439 moved the announce inside
+  // `updateCount` without revisiting it), and invisible to #439's own test because the only field
+  // that moves is the total and its assertion matches it with `\d+`.
+  //
+  // The two channels are what makes this assertable at all: under the correct cadence the LABEL
+  // keeps tracking the growing match set while the ANNOUNCE stays frozen at what the user's last
+  // keystroke produced. Asserting the announce alone could pass on a page where nothing is
+  // happening, so the label assertion is also what proves the window is real.
+  test("a streaming terminal moves the count but does not speak it (#439's stated cadence)", async ({
+    page,
+  }) => {
+    const live = page.locator("[data-testid='search-live']");
+    await page.locator("#term").click({ position: { x: 50, y: 50 } });
+    await page.keyboard.press("Control+f");
+    await page.locator('input[placeholder="search"]').fill("row");
+
+    // The user's own keystroke DOES announce — that is the cadence, not its absence.
+    await expect(live).toHaveText(/^1 of \d+ found for 'row'$/);
+    const spoken = await live.textContent();
+    const totalAt = async () => Number(/\/(\d+)/.exec((await page.locator("#search-count").textContent()) ?? "")?.[1]);
+    const before = await totalAt();
+
+    // Four append ticks with the search box open and untouched.
+    await page.waitForTimeout(1200);
+
+    // The window is real: output arrived and the visible count followed it.
+    expect(await totalAt()).toBeGreaterThan(before);
+    // …and nothing was said about it.
+    await expect(live).toHaveText(spoken ?? "");
+  });
 });
 
 // #417: the runtime font-size button drives the wired renderer setFontSize (#406) through the real

@@ -35,12 +35,18 @@ programmer.
 - **Command outcomes are announced, not just navigable.** When an OSC 133 `CommandFinished` mark
   first becomes visible, the outcome is spoken and a signal fires. VSCode does this on *every*
   command finish rather than only on navigation, and that is the behaviour followed.
-- **An announce is gated; a state is not.** The screen-reader-active check (#161) exists to stop a
-  streaming terminal spamming a live region, so it governs what is *spoken*. Markup that merely
-  describes what is true — the search box's `aria-invalid` (#448), a role, a relationship — is
-  written unconditionally: gating it would make the DOM lie to any AT that attached after the
-  heuristic said no, and it is the reason such markup must stay **out** of `reactivate()`'s reset
-  below, which resets announce state only.
+- **Gated markup needs a repair on the off→on edge; markup with no repair must not be gated.** The
+  screen-reader-active check (#161) is not "announces only" — the row tree's `aria-posinset` /
+  `aria-setsize` writes are gated on it too (`AccessibilityController.onFrame`), which is #169's
+  deliberate skip of per-frame DOM churn nobody is reading. What makes that safe is not that the
+  markup is cheap: it is that the bookkeeping keeps running while the gate is closed and
+  `reactivate()` ends by calling `syncTree()`, which re-writes every gated row from the cached
+  frame. So `reactivate()` is **not** an announce-only reset, and reading it as one is how the next
+  gated field arrives without its repair — the #215 shape, one axis over. The search box's
+  `aria-invalid` (#448) is ungated for the other half of the same rule: nothing re-writes it on
+  reactivation (`toggleScreenReader` touches the a11y seam and the button, never the search
+  label), so a gated write would simply stay stale, and a consumer would have to build the repair
+  half to earn a gate it gains nothing from.
 - **Announcing is gated on `alt_screen`.** A full-screen application repainting is not new content to
   read, which is why that flag rides the frame header at all.
 - **Re-activation must reset every announce-related piece of state.** `reactivate()` emulates a fresh
@@ -120,6 +126,10 @@ an editor rather than a terminal.
   accessibility surface; focus handling reaches both
 - [viewport](viewport.md) — the mirror follows the visible window, and the accessible view
   deliberately does not
+- [search & active match](search.md) — the search box is the one *consumer-owned* control this
+  territory reaches into, and two changes have crossed the edge: the result count's live region
+  (#439) and the rejected-pattern state (#448). Since #448 the **published** `isInvalidRegex`
+  doc-comment carries an AT duty, so a change to the search seam is a change to this territory
 
 ## Known holes / open
 

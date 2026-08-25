@@ -350,9 +350,12 @@ export class SearchController {
    * screen-reader user cannot tell a rejected pattern from a genuine no-match.
    *
    * Do NOT gate the attribute on a screen-reader-active check the way an announce
-   * is gated: that gate exists to stop a streaming terminal spamming a live
-   * region, and an attribute makes no sound. The demo wires the reference
-   * implementation for both halves. */
+   * is gated. An attribute makes no sound, so the gate's purpose does not reach
+   * it — but the load-bearing reason is narrower: gated markup goes stale while
+   * the gate is closed, so it is only safe where something re-writes it when the
+   * gate reopens. This has no such repair path, and a consumer adding one would
+   * be building the harder half of a mechanism it does not need. The demo wires
+   * the reference implementation for both halves. */
   isInvalidRegex(): boolean {
     return this.invalid;
   }

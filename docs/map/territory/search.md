@@ -109,6 +109,11 @@ above does not touch it.
   mark per line, ranked under ADR-0024 R3 beside the decoration marks. This is the first place the
   consumer holds match *coordinates* across frames rather than reading them off the frame, which is
   why the invalidate-vs-re-anchor rule below acquired a consumer-side residue
+- [accessibility](accessibility.md) — the only edge here that lands in a **consumer-owned** control.
+  `SearchResult` is the announce seam (#439) and `isInvalidRegex` the AT-state seam (#448), and both
+  duties are written into their **published** doc-comments, so a change to either seam changes what a
+  screen-reader user perceives. The edge went unrecorded through both of those changes and was found
+  by #448's completeness pass, not by either author
 
 ## Known holes / open
 
