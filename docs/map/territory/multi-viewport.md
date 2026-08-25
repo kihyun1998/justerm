@@ -85,9 +85,10 @@ The renderer **holds** N grids and **draws** every one that has been placed.
 - `justerm-renderer/src/registry.rs` — `GridRegistry`, `GridId`, `Viewport`, `RegistryError` (#770),
   and `Viewport::gl_rect`, the top-origin → bottom-origin flip the draw loop applies (#771).
   Pure and host-tested: the payload is a type parameter, so the registry never learns that a grid
-  carries GPU state and the whole of it is testable off the wasm32 target. `GridId::DEFAULT` is the implicit
-  grid every export predating the per-grid setters acts on, and it is the one the registry refuses to
-  remove
+  carries GPU state and the whole of it is testable off the wasm32 target. `GridRegistry::new` starts
+  with **no** entries (#773): the implicit grid S2 registered at construction is gone, so every
+  per-grid export names the grid it acts on — see **Design model** above for why S5 removed it
+  rather than un-privileging it
 - `justerm-renderer/demo/grid-registry.html` — the browser proof for the registry's observable
   behaviour, and where the resident-memory number below was measured
 - `justerm-renderer/src/config_registry.rs` — `ConfigRegistry`, `ConfigKey`, `ConfigId` (#772): the
