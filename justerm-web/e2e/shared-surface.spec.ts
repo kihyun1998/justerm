@@ -624,6 +624,11 @@ test("hiding a terminal keeps it — no bake, no atlas churn, and the sibling un
     r.before.bHash,
   );
 
+  // The trip never touched the density, which is what makes `hiddenAcrossRefit` evidence about the
+  // widget's own funnel rather than about the demo page's density handler.
+  expect(r.dpr.middle).toBe(r.dpr.start);
+  expect(r.dpr.end).toBe(r.dpr.start);
+
   // — 1. and it cost nothing to rebuild. The judge.
   expect(r.shown.bakes - r.before.bakes, "a placement bakes no atlas").toBe(0);
   expect(r.shown.atlases, "and releases no font configuration").toBe(r.before.atlases);

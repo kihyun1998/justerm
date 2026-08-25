@@ -1471,6 +1471,7 @@ export class JustermRenderer implements Renderer {
     // withheld is only the rect.
     if (this.hidden) {
       this.backend.clearViewport(this.lease.id);
+      this.present();
       return;
     }
 
@@ -1485,6 +1486,33 @@ export class JustermRenderer implements Renderer {
       Math.min(cols, fitted) * this.backend.cell_width(this.lease.id),
       Math.min(rows, fittedRows) * this.backend.cell_height(this.lease.id),
     );
+    this.present();
+  }
+
+  /**
+   * Present, because a placement change is **a change to what is on screen** and nothing else on
+   * this path will draw it (#801).
+   *
+   * Found by looking at the compositor rather than at the drawing buffer, which is the only
+   * instrument that can see it: every reading in this package's own probes is taken after a forced
+   * `present()`, so a `readPixels` assertion is structurally blind here. On an idle two-terminal page
+   * — timers stopped, which is exactly the state a host is in when the user has just switched tabs —
+   * hiding a pane left its pixels on the shared canvas, and showing one left it unpainted, until some
+   * unrelated event happened to present.
+   *
+   * The rule it violated is this file's own, stated at {@link setOnContextLoss}: a call that changes
+   * *"who is told about a future event, not anything currently on screen"* owes no redraw — and by
+   * that division a call that moves a grid onto or off the buffer plainly does owe one.
+   *
+   * It sits at the end of {@link applyGrid} rather than in `hide` / `setViewportRect` because that is
+   * where all seven placement paths already meet, and the same argument covers a rect that merely
+   * moved: an overlay dragged across the canvas with no frame behind it had the same gap before this
+   * change, and it is repaired by the same line. {@link render}'s existing split is what is reused —
+   * a sole tenant presents now, a shared tenant coalesces into the surface's one frame — so N
+   * terminals re-placed inside one host handler still cost one present.
+   */
+  private present(): void {
+    this.render();
   }
 
   /**
@@ -1536,9 +1564,10 @@ export class JustermRenderer implements Renderer {
    */
   setViewportRect(x: number, y: number): void {
     this.rect = { x, y };
-    // Giving a rect IS showing (#801). One field decides whether this terminal draws, and both verbs
-    // write it, so there is no pair of bits that can disagree about the same overlay — the shape
-    // #805 reached one issue earlier for the same reason.
+    // Giving a rect IS showing (#801) — the same field {@link hide} and {@link show} write, so no
+    // pair of bits can disagree about one overlay (the shape #805 reached one issue earlier). A
+    // shared tenant returning into a layout goes through here rather than through `show`, because it
+    // has to re-supply the origin its missing box took away.
     this.hidden = false;
     this.reapplySurface();
   }
@@ -1562,10 +1591,34 @@ export class JustermRenderer implements Renderer {
    * this is what a host wires it to.
    *
    * Idempotent, and a no-op before the first {@link resize}: a grid with no cells is drawn nowhere
-   * already.
+   * already. {@link show} is the way back.
    */
   hide(): void {
     this.hidden = true;
+    this.reapplySurface();
+  }
+
+  /**
+   * Draw this terminal again, at the rect it already holds — the inverse of {@link hide}.
+   *
+   * **A sole tenant is why this exists rather than {@link setViewportRect} being the only way back.**
+   * That method also shows, and for a *shared* tenant it is the natural call, since a pane returning
+   * into a layout has to re-supply its origin anyway — its box is what was taken away. But a sole
+   * tenant sits at the origin and is told, on `setViewportRect` itself, that it never calls it. So
+   * without this the single-terminal widget — the `create` path, which is what every consumer of this
+   * package uses today — could enter the hidden state and leave it only by calling the method its own
+   * documentation forbids it. Two doc-comments in this file contradicting each other is the tell, and
+   * on this layer the tie-breaker is our own API's internal coherence rather than any reference.
+   *
+   * A shared tenant that has *moved* while it was away must still call {@link setViewportRect}: this
+   * re-places at the last origin given, and a stale origin is exactly the wrong answer the whole
+   * `undefined` union upstream exists to prevent. Wiring `observeViewportRect` covers that by
+   * construction — a returning box fires it.
+   *
+   * Idempotent, and a no-op before the first {@link resize}.
+   */
+  show(): void {
+    this.hidden = false;
     this.reapplySurface();
   }
 

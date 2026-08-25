@@ -134,6 +134,13 @@ Two consequences are forced by WebGL binding one context to one canvas, and both
   fires nothing, and leaves the terminal fully drawn and fully paid for — call `hide()` yourself
   there. Before this branch existed the first case was worse than the second: a removed box read
   back as the origin `(0, 0)` and re-placed that grid, at full size, over its sibling.
+
+  **If you also fit that pane from the same box, stop the fit while it is hidden.** `display: none`
+  makes the box `0x0`, and `proposeDimensions` floors a zero box at the `2x1` minimum rather than
+  refusing it — measured, and the asymmetry is real: a `NaN` box (also "not measured") *is* refused.
+  So a `FitController` still observing a hidden pane proposes `2` columns, your `ResizePort` reflows
+  the engine through them, and showing the pane back does not undo that. Dispose the fit's observer
+  alongside the hide, or fit from a container that keeps its box.
 - **A density change invalidates every device-px number you gave — including the rects.** Register
   `surface.onDensityChange`, and from it re-supply **both** the surface size and every terminal's
   origin:

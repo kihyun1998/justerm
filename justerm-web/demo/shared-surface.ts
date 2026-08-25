@@ -614,17 +614,18 @@ declare global {
   interface Window {
     __surfaceProbe?: () => SurfaceSnapshot;
     /**
-     * Hide pane B through the DOM, hold it hidden across a density change, then show it again —
-     * and report what a rebuild would have cost (#801).
+     * Hide pane B through the DOM, hold it hidden across a re-fit, then show it again — and report
+     * what a rebuild would have cost (#801).
      *
      * **The bake count is the judge, not the pixels.** Content returning identical is exactly what a
      * `dispose()`-and-rebuild also produces, so a pixel check cannot tell the epic's payoff — *"showing
      * a terminal is a placement rather than a rebuild"* — from the thing it exists to remove. A bake
      * delta of `0` across the whole round trip can.
      *
-     * The density change in the middle is the assertion a naive implementation fails. Seven paths
-     * re-derive a placement and two of them carry no consumer call at all; a hide implemented as a
-     * one-shot `clearViewport` is silently undone by the first of those to fire.
+     * The re-fit in the middle is the assertion a naive implementation fails — see
+     * {@link HideShowReport.hiddenAcrossRefit} for why it is a `resize` and deliberately not a
+     * density change. Seven paths re-derive a placement and two of them carry no consumer call at
+     * all; a hide implemented as a one-shot `clearViewport` is silently undone by the first to fire.
      */
     __hideShowProbe?: () => Promise<HideShowReport>;
     /**
@@ -1085,7 +1086,8 @@ export interface HideShowReport {
    */
   hiddenAcrossRefit: HideShowStep;
   shown: HideShowStep;
-  /** The density the trip ran at either end, so a reader can see the middle step was a real move. */
+  /** The density at each end of the trip. It must NOT move — the middle step is a re-fit, so an
+   * unchanged ratio is the evidence that nothing about this trip depended on a density change. */
   dpr: { start: number; middle: number; end: number };
 }
 

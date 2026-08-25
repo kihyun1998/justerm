@@ -1,0 +1,94 @@
+# Cross-cutting invariant — an absent element box measures as zero, and zero is in range
+
+## The fact
+
+**A DOM element with no box reports every field as `0` — and `0` is a legal value for everything
+derived from it.** `getBoundingClientRect()` on a `display: none` element, on a detached node, or on
+one not yet laid out returns all zeros rather than anything a reader can recognise as *absent*. So
+"there is no box" and "the box is at the origin / is empty" arrive at every downstream site as the
+same number, and no guard phrased on finiteness can separate them: zero is finite.
+
+The sibling failure — a `NaN` box — is **not** this one and is usually already handled, which is what
+makes this one hard to see. `NaN` propagates, announces itself and is refused; zero propagates,
+computes cleanly, and produces a plausible answer that is wrong.
+
+**The repair is always upstream of the derivation, and it is a different repair at every site**,
+which is why this cannot live in a helper and has to live here:
+
+| Site | Territory | Absent distinguishable from a legitimate `0`? |
+|---|---|---|
+| `justerm-web/src/terminal-surface.ts` — `viewportOrigin` | [multi-viewport](../territory/multi-viewport.md) | **Yes, since #801.** The overlay's *extent* is carried alongside its origin and the return is `{x,y} \| undefined`. Before that the clamp answered `{0,0}`, which re-placed a full-size grid on the canvas corner over a sibling |
+| `justerm-web/src/fit.ts` — `proposeDimensions`, mirrored in `justerm-renderer.ts` `gridForBox` | [fit](../territory/fit.md) | **No.** A `0x0` box floors to `MINIMUM_COLS`x`MINIMUM_ROWS`; measured 2026-08-25 against the real module, a `display: none` box proposes `2x1` while a `NaN` box is correctly refused. That function's own comment states the intent it misses — *"a non-finite box means 'not measured', exactly when we should NOT shrink the terminal"* |
+| `justerm-web/src/input.ts` — `CellGeometry.originX` / `originY` | [selection](../territory/selection.md) | **No**, and structurally so: these are the only two of the six fields with no stated precondition, because a position legitimately may be `0` or negative. `geometryViolations` therefore cannot flag them |
+| `justerm-web/src/scrollbar.ts` — `dragTo` | [viewport](../territory/viewport.md) | **No.** `(clientY - r.top) / r.height` on a zero-height track is `±Infinity`, which the surrounding `clamp` turns into a plausible `0` or `1` — a jump to one end — or `NaN` when the pointer is exactly at `r.top` |
+
+## Why it is cross-cutting
+
+**Four sites, four territories, and no shared call path, type or test.** Each one reads a box for its
+own purpose — a viewport origin, a column count, a pointer basis, a scroll ratio — and each derives a
+different quantity through different arithmetic. From inside any one of them the question reads as a
+local numeric edge case, and the local answer is usually right for that site alone: the fit path's
+floor exists so a small container still gets a usable terminal, the geometry's permissiveness exists
+because a position may genuinely be zero or negative.
+
+That is exactly the shape [`docs/map/README.md`](../README.md) exists for. The fact is *invisible from
+each territory* while holding in all of them, and the count is doing work: the first two sites were
+found by one change (#801) and the second pair only by asking, deliberately, which *other* readers of
+an element box exist.
+
+**It is a sibling of, and not an instance of, the product-ambiguity rule.**
+[pointer coordinates are bounded by their producer](pointer-coordinates-are-bounded-by-their-producer.md)
+already records *"when a derived value is ambiguous, the fix is usually upstream of the
+multiplication"*, and `SelectionController.mouseMove` (#680) is that rule's site: its zero comes from
+`getRows() * cellHeight`, a consumer callback times a **renderer-derived** cell, neither of which is a
+DOM box — `cellHeight` stays positive when the overlay vanishes. Same generalisation (resolve
+upstream), different cause (absence versus a lossy product), different noun (a box versus a
+coordinate). Reading #680 as an instance of this invariant was the first hypothesis when #801 revealed
+the fact, and it was wrong; the genuine second site is `fit.ts`.
+
+## What a violation looks like
+
+**A plausible wrong answer, no error, and the damage usually lands on a bystander.** Nothing throws,
+because every value involved is finite and in range. The three measured shapes:
+
+- **#801, measured in a real browser before the fix.** Hiding the second pane of
+  `justerm-web/demo/shared-surface.html` with `display: none` moved its viewport from `[500, 40]` to
+  `[0, 0]`; a full-size grid was drawn over its neighbour, and the neighbour went on reporting itself
+  healthy. The renderer's own zero-area guard is not on that path and cannot be — a viewport's extent
+  is derived from `cols * cell` and never from the measured box, so the zeroed box shrinks nothing.
+- **The fit path**, measured against the real module. A hidden pane still being fitted proposes `2x1`,
+  the engine reflows through two columns, and showing the pane again does not undo it.
+- **A drag that outlives its box.** Both `scrollbar.ts` and `SelectionController` bind their move and
+  up listeners to `window` (`scrollbar.ts:122-124`; the demo at `demo/main.ts`), so a drag in flight
+  when the element is hidden keeps computing against zeros rather than ending.
+
+## Territories it holds in
+
+- [multi-viewport](../territory/multi-viewport.md) — where it was found, and the only site currently
+  repaired. The repair is the *shape* worth copying: carry the extent so the reader can tell, and
+  return a union so the compiler makes every caller decide
+- [fit](../territory/fit.md) — the second site, and the one whose own doc-comment already asked for
+  this check: *"When adding a third box→grid path, check **both** axes: the floor and the refusal."*
+  A third path was added and the axis checked was neither
+- [selection](../territory/selection.md) — `CellGeometry`'s two unconstrained fields
+- [viewport](../territory/viewport.md) — the scrollbar's track ratio
+
+## Discovery history
+
+- **#801** (2026-08-25) — found while making a hidden terminal reachable. The first site was repaired
+  by widening `OverlayBoxes` and returning a union; the other three were enumerated by a completeness
+  pass asking which other readers of an element box exist, and are **not** repaired. The first
+  hypothesis — that `SelectionController.mouseMove` (#680) was the second site — was checked and
+  falsified, which is why the boundary against the product-ambiguity rule is written above rather
+  than left to be re-derived
+
+## Where it will recur
+
+- **Any new reader of an element box.** The tell is one question, and it is answerable at the
+  signature: *can this input distinguish "no box" from a legitimate measurement?* If the answer is no,
+  the repair belongs at the input, not at the computation
+- **Any host that hides a pane.** `display: none` is the ordinary way, `justerm-web`'s README now
+  documents it, and it fires a `ResizeObserver` — so every observer watching that element receives the
+  zeros at once, and they do not all handle them the same way
+- **A third `box → grid` path**, which `fit.ts` predicted by name. The two existing ones agree with
+  each other and both floor, so a copy inherits the defect and a test comparing them stays green

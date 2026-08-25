@@ -200,6 +200,10 @@ abstract.
 
 ## Cross-cutting invariants
 
+- [an absent element box measures as zero](../invariant/an-absent-box-measures-as-zero.md) — **found
+  here** (#801), and repaired here at one of its four sites. A `display: none` overlay reports all
+  zeros, and this territory is where that produced its worst shape: a full-size grid re-placed on the
+  canvas corner over a sibling, with nothing thrown. The other three sites are unrepaired
 - [a layer ends what it exclusively holds](../invariant/a-layer-ends-what-it-exclusively-holds.md)
   — this territory is where the rule's second clause lives, and where it was found. A surface is
   **shared by construction**, so a terminal handed one must not end it; a terminal that *composed*
