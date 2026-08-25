@@ -15,6 +15,11 @@ computes cleanly, and produces a plausible answer that is wrong.
 **The repair is always upstream of the derivation, and it is a different repair at every site**,
 which is why this cannot live in a helper and has to live here:
 
+*(In-repo sites are named by **symbol**, not by line. A note that governs a file is read at the moment
+someone edits that file, so its own line numbers are the ones most likely to be stale — #814 moved a
+citation this note had written **in the same change**. Reference-tree citations keep `file:line`
+because their SHA is pinned.)*
+
 | Site | Territory | Absent distinguishable from a legitimate `0`? |
 |---|---|---|
 | `justerm-web/src/terminal-surface.ts` — `viewportOrigin` | [multi-viewport](../territory/multi-viewport.md) | **Yes, since #801.** The overlay's *extent* is carried alongside its origin and the return is `{x,y} \| undefined`. Before that the clamp answered `{0,0}`, which re-placed a full-size grid on the canvas corner over a sibling |
@@ -64,8 +69,9 @@ because every value involved is finite and in range. The three measured shapes:
 - **The fit path**, measured against the real module. A hidden pane still being fitted proposes `2x1`,
   the engine reflows through two columns, and showing the pane again does not undo it.
 - **A drag that outlives its box — measured in a real browser, #814.** Both `scrollbar.ts` and
-  `SelectionController` bind their move and up listeners to `window` (`scrollbar.ts:124-125`;
-  `demo/main.ts:1187`), and `Scrollbar.update()` hides the track without clearing `dragging`, so a
+  `SelectionController` bind their move and up listeners to `window` (`Scrollbar`'s thumb
+  `mousedown` handler; `demo/main.ts`'s top-level `mousemove`/`mouseup`), and `Scrollbar.update()`
+  hides the track without clearing `dragging`, so a
   drag in flight when the element is hidden keeps computing against zeros rather than ending.
   Driven through the real listener path with the guard off, host scrolled 40 lines up: two mouse
   moves against an all-zero rect produced **two spurious scroll requests** and left the host's
