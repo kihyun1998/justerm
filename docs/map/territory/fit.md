@@ -27,6 +27,14 @@ a CSS box and reads the grid back, rather than asking for 80×24 and being given
   the same call.
 - **The scrollbar width is an input.** A grid fitted without subtracting it overflows its container by
   exactly one scrollbar — which is why the parameter exists rather than being derived.
+- **A box with no area is refused, not floored** (#810). An element that is `display: none`,
+  detached, or not yet laid out reports every metric as `0`, and `0` is finite — so the non-finite
+  refusal never saw it while the `MINIMUM_COLS` floor turned it into a plausible `2x1`. Both paths
+  now answer `undefined`, and a box that is *measured* and merely tiny still floors, which is the case
+  the minimum exists for. This is a **deliberate divergence from all three references**, all of which
+  floor; the row in [`theflow.md`](../../agents/theflow.md) carries why, and the short version is that
+  ours is the only fit driven automatically by a `ResizeObserver`, so it is the only one handed a
+  hidden element's box.
 - **The contract runs consumer → CSS box, renderer → `cols`/`rows`.** A consumer that assumes the
   width it asked for is the width it got will be wrong: the engine also clamps `cols` up to
   `MIN_COLUMNS`, silently.
@@ -60,11 +68,14 @@ names as its model — exactly the kind of detail that diverges quietly.
 ## Cross-cutting invariants
 
 - [an absent element box measures as zero](../invariant/an-absent-box-measures-as-zero.md) — the
-  **second site**, and unrepaired. `proposeDimensions` floors a `0x0` box at `MINIMUM_COLS`/
-  `MINIMUM_ROWS` while refusing a `NaN` one, so the `display: none` box that `justerm-web`'s README
-  now documents as the way to hide a pane proposes `2x1` and the engine reflows through two columns.
-  This note's own doc-comment asked for the check — *"check **both** axes: the floor and the
-  refusal"* — before the path that needed it existed
+  **second site, repaired in #810**. Both paths floored a `0x0` box at `MINIMUM_COLS`/`MINIMUM_ROWS`
+  while refusing a `NaN` one, so the `display: none` box `justerm-web`'s README documents as the way
+  to hide a pane proposed `2x1` and the engine reflowed through two columns. This note's own
+  doc-comment had asked for the check — *"check **both** axes: the floor and the refusal"* — before
+  the path that needed it existed. **This bullet said "and unrepaired" for the length of one commit
+  after the repair landed**, because #810 updated the invariant note and the design-model bullet
+  above and not this one: two rows in this file stating opposite facts, in the section a reader
+  cannot see the need for from inside the territory
 - [the cell size is derived state](../invariant/cell-size-is-derived-state.md)
   — the largest consumer of the cell. Its dedupe could not express *"the cell moved but the grid did
   not"* (#578) until #632 widened the key to carry the cell alongside the proposal. The residual is

@@ -61,7 +61,14 @@ That reasoning is in a code comment rather than in a record.
 
 ## Cross-cutting invariants
 
-*(none identified yet)*
+- [an absent element box measures as zero](../invariant/an-absent-box-measures-as-zero.md) — this
+  territory is where that fact stops being cosmetic and becomes **irreversible**, which is what
+  settled its repair in #810. A hidden element measures `0x0`, the fit paths used to floor that to a
+  `2x1` grid, and a resize is where a proposed grid becomes a change to the buffer: on the primary
+  screen the re-split preserves logical lines, so re-widening restores the content; on the **alt
+  screen** a resize is a re-fit — rows dropped, nothing re-wrapped (see the second bullet under
+  *Design model*) — so there is nothing to restore from. The invariant is about absence producing a
+  *plausible* answer; here the plausible answer also cannot be taken back
 
 ## Blast radius
 

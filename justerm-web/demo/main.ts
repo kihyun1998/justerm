@@ -1572,6 +1572,11 @@ declare global {
     __fitProbe?: () => FitProbe;
     __oversizeProbe?: (cssWidth: number) => OversizeProbe;
     __dprProbe?: () => DprSnapshot;
+    __zeroBoxFitProbe?: () => {
+      before: { cols: number; rows: number };
+      afterZeroBox: { cols: number; rows: number };
+      afterTinyBox: { cols: number; rows: number };
+    };
     __soleTenantHideProbe?: () => {
       before: SoleTenantHideStep;
       hidden: SoleTenantHideStep;
@@ -2754,6 +2759,34 @@ window.__soleTenantHideProbe = (): {
   renderer.show();
   const shown = step();
   return { before, hidden, shown };
+};
+
+/**
+ * #810 — **fitting a pane whose box has gone away must not re-grid it.**
+ *
+ * `JustermRenderer.resize` takes a CSS box and divides it by the cell, which is the same arithmetic
+ * `proposeDimensions` runs; a host that hides a pane and keeps fitting it hands over a `0x0` box,
+ * because that is what a `display: none` element measures. This drives the consumer-visible half of
+ * that: the widget call, against the real wasm renderer.
+ *
+ * Reported as a grid rather than a pixel, because the harm is not on screen — the engine reflows
+ * through the proposed columns, and on the alt screen a resize drops rows outright
+ * (`docs/map/territory/reflow.md`, #567) with nothing to restore them from.
+ */
+window.__zeroBoxFitProbe = (): {
+  before: { cols: number; rows: number };
+  afterZeroBox: { cols: number; rows: number };
+  afterTinyBox: { cols: number; rows: number };
+} => {
+  const before = renderer.terminalSize();
+  renderer.resize(0, 0);
+  const afterZeroBox = renderer.terminalSize();
+  // The control, and the side condition in one: a box that IS measured and merely tiny must still
+  // re-grid, or the guard has been widened into "any small box refuses" and this probe would pass
+  // for the wrong reason.
+  renderer.resize(1, 1);
+  const afterTinyBox = renderer.terminalSize();
+  return { before, afterZeroBox, afterTinyBox };
 };
 
 window.__setDpr = (dpr: number): void => {

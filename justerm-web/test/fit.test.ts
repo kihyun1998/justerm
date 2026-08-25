@@ -74,6 +74,40 @@ describe("proposeDimensions (#114 fit: px → cols/rows)", () => {
     });
   });
 
+  // #810 — a box with no area is "not measured", exactly like a NaN one, and the floor above is what
+  // used to turn it into a plausible wrong answer. The side condition is the test above: an 8x8 box
+  // is measured and genuinely tiny, and still floors. What separates them is `<= 0`, not smallness.
+  it("returns undefined for a box with no area, rather than flooring it (#810)", () => {
+    expect(proposeDimensions({ ...base(), parentWidth: 0, parentHeight: 0 })).toBeUndefined();
+  });
+
+  // The predicate is `||`, not `&&`: a collapsed split has one axis at 0 and the other laid out, and
+  // `display: none` zeroes both — so a guard written for the second misses the first entirely.
+  it("returns undefined when EITHER axis has no area (#810)", () => {
+    expect(proposeDimensions({ ...base(), parentWidth: 0 })).toBeUndefined();
+    expect(proposeDimensions({ ...base(), parentHeight: 0 })).toBeUndefined();
+  });
+
+  // `<= 0` rather than `=== 0`. A negative box is not a small box; it is a measurement that cannot be
+  // one, and flooring it would be the same wrong answer arrived at from the other side.
+  it("returns undefined for a negative box (#810)", () => {
+    expect(proposeDimensions({ ...base(), parentWidth: -1 })).toBeUndefined();
+  });
+
+  // The guard is on the PARENT box, not on the space left after padding. A parent that exists but
+  // whose padding eats it is a layout the host chose and measured; an absent parent is not a layout
+  // at all. Conflating them would change a case #810 never measured.
+  it("still floors when padding eats a box that WAS measured (#810)", () => {
+    expect(
+      proposeDimensions({
+        ...base(),
+        parentWidth: 10,
+        parentHeight: 10,
+        padding: { top: 20, bottom: 20, left: 20, right: 20 },
+      }),
+    ).toEqual({ cols: 2, rows: 1 });
+  });
+
   // A cell dimension of 0 means the renderer hasn't measured yet — fitting would divide
   // by zero (Infinity). Return undefined so the caller skips the resize (xterm's
   // `dims.css.cell.width === 0` guard).

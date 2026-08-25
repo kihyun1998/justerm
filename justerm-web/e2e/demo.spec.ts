@@ -2495,3 +2495,33 @@ test("a sole tenant hides and comes back, with its buffer and grid intact (#801)
     rows: p.before.rows,
   });
 });
+
+/**
+ * #810 — **a hidden pane's zero box does not re-grid the terminal.**
+ *
+ * The unit tests pin the arithmetic on both sizing paths; this drives the consumer-visible call
+ * against the real wasm renderer, which is where a host hiding a pane actually lands: it keeps
+ * fitting, and a `display: none` element measures `0x0`.
+ *
+ * The harm this prevents is not on screen, which is why the assertion is a grid and not a pixel. The
+ * engine reflows through whatever columns it is given, and on the **alt screen** a resize is a re-fit
+ * rather than a reflow (#567) — rows are dropped with nothing to restore them from, so a pane hidden
+ * while running a full-screen TUI does not come back.
+ */
+test("a zero box leaves the grid alone, while a measured tiny one still re-grids (#810)", async ({
+  page,
+}) => {
+  const p = await page.evaluate(() => window.__zeroBoxFitProbe!());
+
+  // Asserted, not assumed: if the terminal were already at the floor, every claim below would hold
+  // vacuously.
+  expect(p.before.cols).toBeGreaterThan(2);
+
+  expect(p.afterZeroBox, "a box with no area is not measured, so nothing is proposed").toEqual(
+    p.before,
+  );
+
+  // The control. Same call, same terminal, a box that IS measured — it must re-grid, or the guard
+  // has been widened into "any small box refuses" and the zero above proves nothing.
+  expect(p.afterTinyBox).toEqual({ cols: 2, rows: 1 });
+});

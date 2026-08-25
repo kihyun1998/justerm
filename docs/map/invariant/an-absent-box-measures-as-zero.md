@@ -18,7 +18,7 @@ which is why this cannot live in a helper and has to live here:
 | Site | Territory | Absent distinguishable from a legitimate `0`? |
 |---|---|---|
 | `justerm-web/src/terminal-surface.ts` — `viewportOrigin` | [multi-viewport](../territory/multi-viewport.md) | **Yes, since #801.** The overlay's *extent* is carried alongside its origin and the return is `{x,y} \| undefined`. Before that the clamp answered `{0,0}`, which re-placed a full-size grid on the canvas corner over a sibling |
-| `justerm-web/src/fit.ts` — `proposeDimensions`, mirrored in `justerm-renderer.ts` `gridForBox` | [fit](../territory/fit.md) | **No.** A `0x0` box floors to `MINIMUM_COLS`x`MINIMUM_ROWS`; measured 2026-08-25 against the real module, a `display: none` box proposes `2x1` while a `NaN` box is correctly refused. That function's own comment states the intent it misses — *"a non-finite box means 'not measured', exactly when we should NOT shrink the terminal"* |
+| `justerm-web/src/fit.ts` — `proposeDimensions`, and `justerm-renderer.ts` `gridForBox`. **Two callers, one of which cannot reach a zero**: `resize` passes a consumer-measured box and is the live one; `applyGrid`'s grant read-back passes the drawing buffer, which `resize_surface` refuses to set at `<= 0` and which an empty read-back preserves rather than zeroes — so the guard is defensive there. Worth the row anyway: a completeness pass claimed that caller was a live third site, twice and with two different mechanisms, and both fell to reading `apply_surface_size` | [fit](../territory/fit.md) | **Yes, since #810.** Both refuse a box with no area, the way they already refused a non-finite one. Before that a `0x0` box floored to `MINIMUM_COLS`x`MINIMUM_ROWS` — measured against the real module, a `display: none` box proposed `2x1` while a `NaN` box was correctly refused — and that function's own comment already stated the intent it was missing: *"a non-finite box means 'not measured', exactly when we should NOT shrink the terminal"* |
 | `justerm-web/src/input.ts` — `CellGeometry.originX` / `originY` | [selection](../territory/selection.md) | **It depends on the consumer, which is the part worth carrying.** These are the only two of the six fields with no stated precondition — a position legitimately may be `0` or negative — so `geometryViolations` cannot flag them. What decides exposure is how the *cell* was built: a **rect-derived** cell also goes to `0` when the box does, and that field *is* declared strictly positive, so the signal fires anyway (measured in #672, `demo/main.ts`'s `cellFromEvent`). A **renderer-derived** cell — `renderer.cellSize() / dpr`, which is what `demo/shared-surface.ts` does and what this package's README recommends — stays positive, so only the origin moves and nothing fires. The precondition mechanism itself is #672's, decided and closed as *"signal, do not correct"*; the axis here is the origin's, which that issue did not cover |
 | `justerm-web/src/scrollbar.ts` — `dragTo` | [viewport](../territory/viewport.md) | **No.** `(clientY - r.top) / r.height` on a zero-height track is `±Infinity`, which the surrounding `clamp` turns into a plausible `0` or `1` — a jump to one end — or `NaN` when the pointer is exactly at `r.top` |
 
@@ -69,9 +69,11 @@ because every value involved is finite and in range. The three measured shapes:
 - [multi-viewport](../territory/multi-viewport.md) — where it was found, and the only site currently
   repaired. The repair is the *shape* worth copying: carry the extent so the reader can tell, and
   return a union so the compiler makes every caller decide
-- [fit](../territory/fit.md) — the second site, and the one whose own doc-comment already asked for
-  this check: *"When adding a third box→grid path, check **both** axes: the floor and the refusal."*
-  A third path was added and the axis checked was neither
+- [fit](../territory/fit.md) — the second site, **repaired in #810**, and the one whose own
+  doc-comment had already asked for this check: *"When adding a third box→grid path, check **both**
+  axes: the floor and the refusal."* A third path was added and the axis checked was neither. It is
+  also the one place this invariant runs against the prior art: all three references floor a zero box
+  and none refuses it, and the divergence is recorded in `docs/agents/theflow.md`
 - [selection](../territory/selection.md) — `CellGeometry`'s two unconstrained fields
 - [viewport](../territory/viewport.md) — the scrollbar's track ratio
 
@@ -84,6 +86,22 @@ because every value involved is finite and in range. The three measured shapes:
   over, a month early — and it stayed a parenthesis because the question it was answering was about
   `NaN`, where the value announces itself. Found by searching the tracker by artifact rather than by
   feature name, which is the only reason this row exists
+- **#639** (before either) — reached this fact in the renderer without naming it, and is the
+  reference-free ground the repair actually rests on: *"A buffer of no size is not a grant, it is the
+  absence of an answer"* (`justerm-renderer/src/webgl.rs`), with the same `<= 0`, both-axes, `||`
+  predicate. Found only by a completeness pass looking for prior art **inside** the family after the
+  argument had been built out of the references
+- **#810** (2026-08-25) — repaired the second site the same day it was filed, and found a **third
+  reader** of an absent box while doing it (the grant read-back above). Its value to this note
+  is the **severity**, which the note did not have when it was written: the floor is not a cosmetic
+  wrong answer. On the primary screen a reflow preserves logical lines, so re-widening restores the
+  content; on the **alt screen** a resize is a re-fit — *"rows dropped or added to reach the new size,
+  nothing re-wrapped"* ([reflow](../territory/reflow.md), #567) — so a pane hidden while running a
+  full-screen TUI loses rows with nothing to restore them from — and the same resize clears the
+  selection on **any** geometry change (`justerm-core/src/term.rs:1516`), whose comment had already
+  reasoned about *"a consumer that re-asserts its size every frame (a `fit()` loop)"* and required the
+  exact no-op; a `2x1` floor is not one. Absence producing a *plausible* answer is the invariant's
+  subject; this is the case where the plausible answer is also irreversible
 - **#801** (2026-08-25) — found while making a hidden terminal reachable. The first site was repaired
   by widening `OverlayBoxes` and returning a union; the other three were enumerated by a completeness
   pass asking which other readers of an element box exist, and are **not** repaired. The first

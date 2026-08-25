@@ -135,12 +135,14 @@ Two consequences are forced by WebGL binding one context to one canvas, and both
   there. Before this branch existed the first case was worse than the second: a removed box read
   back as the origin `(0, 0)` and re-placed that grid, at full size, over its sibling.
 
-  **If you also fit that pane from the same box, stop the fit while it is hidden.** `display: none`
-  makes the box `0x0`, and `proposeDimensions` floors a zero box at the `2x1` minimum rather than
-  refusing it — measured, and the asymmetry is real: a `NaN` box (also "not measured") *is* refused.
-  So a `FitController` still observing a hidden pane proposes `2` columns, your `ResizePort` reflows
-  the engine through them, and showing the pane back does not undo that. Dispose the fit's observer
-  alongside the hide, or fit from a container that keeps its box.
+  **Fitting a hidden pane is safe, and it was not before #810.** `display: none` makes the box
+  `0x0`, and both sizing paths — `proposeDimensions` and the `resize` a widget does for you — now
+  answer *nothing to propose* for a box with no area, exactly as they already did for a `NaN` one. So
+  a `FitController` that keeps observing a hidden pane simply stops proposing, and the grid it had is
+  the grid it comes back with. Until #810 that box floored to the `2x1` minimum instead, your
+  `ResizePort` reflowed the engine through two columns, and on the alt screen — where a resize drops
+  rows rather than re-wrapping them — showing the pane back did not undo it. A box that is *measured*
+  and merely tiny still floors, which is the case the minimum exists for.
 - **A density change invalidates every device-px number you gave — including the rects.** Register
   `surface.onDensityChange`, and from it re-supply **both** the surface size and every terminal's
   origin:

@@ -77,6 +77,26 @@ export const MINIMUM_ROWS = 1;
 export function proposeDimensions(input: FitInput): Dimensions | undefined {
   // The renderer hasn't measured a cell yet → can't fit (xterm's `cell.width === 0` guard).
   if (input.cellWidth === 0 || input.cellHeight === 0) return undefined;
+  // **A box with no area is "not measured", and the floor below is what hid that** (#810). An element
+  // with no box — `display: none`, detached, not yet laid out — reports every field as `0`, and `0`
+  // is finite, so the non-finite refusal at the bottom of this function never sees it while the
+  // `Math.max` floor turns it into a plausible `2`x`1`. That is the same sentence the refusal already
+  // makes ("not measured, exactly when we should NOT shrink"), applied to the second way a browser
+  // says it.
+  //
+  // **All three references floor here instead, and the divergence is ours on purpose.** xterm.js
+  // (`addon-fit/src/FitAddon.ts`), alacritty (`alacritty/src/display/mod.rs:249`) and ghostty
+  // (`src/renderer/size.zig:260`) all clamp up to a minimum with no zero-box branch. Two of them own
+  // an OS window, which cannot be `display: none`, so a zero box is a degenerate state and flooring
+  // is a sane recovery. xterm.js is in the same world as us and still floors — but its `FitAddon`
+  // registers **no listeners**, so a hidden terminal is simply never fitted. Ours is automatic
+  // (`observeResize` drives this from a `ResizeObserver`, which `display: none` fires), so we receive
+  // an input they do not. We automated what they left manual, and this is the cost of that.
+  //
+  // **The guard is on the PARENT box, not on the space left after padding.** A parent that exists but
+  // whose padding exceeds it is a layout the host measured and chose; an absent parent is not a
+  // layout at all. Flooring stays right for the first.
+  if (input.parentWidth <= 0 || input.parentHeight <= 0) return undefined;
   // A *layout* scrollbar (one that occupies width) only reserves it when there is scrollback
   // to scroll — matches xterm `FitAddon` (`scrollback === 0 ? 0 : ...`). NB: justerm's own
   // #112 scrollbar is an OVERLAY (`position:absolute`, no layout width) — content sits under
