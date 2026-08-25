@@ -557,14 +557,25 @@ export function gridForBox(
   // A box with no area yields no proposal (#810) — the same answer `proposeDimensions` gives, and the
   // two must not disagree, which is what #632 made them share arithmetic for.
   //
-  // **Its two callers mean different things by a zero, and the guard is right for both — but only
-  // one of them is `proposeDimensions`'s reason.** `resize()` passes a box the consumer measured,
-  // where `0` means *nobody measured* (an absent element). `applyGrid`'s grant read-back passes
-  // `cssWidth()`/`cssHeight()`, where `0` means *the browser granted nothing* — reachable, because
-  // `apply_surface_size` commits `(0, 0)` when the drawing-buffer read-back is empty. The renderer
-  // already refuses that one on its own side and says why: *"A buffer of no size is not a grant, it
-  // is the absence of an answer"* (`justerm-renderer/src/webgl.rs`, #639). Absence of a measurement
-  // and absence of a grant are different facts with the same shape, and neither is a size.
+  // **Only one of the two callers can actually deliver a zero, and saying which is the point.**
+  // `resize()` passes a box the consumer measured, where `0` means *nobody measured* — an absent
+  // element, which is #810's whole subject and is reached on an ordinary path. `applyGrid`'s grant
+  // read-back passes `cssWidth()`/`cssHeight()`, and that is **not** reachable at zero through the
+  // supported API: `resize_surface` throws on `<= 0`, and `apply_surface_size` seeds its committed
+  // size from `global.requested` and **breaks without narrowing** when the drawing-buffer read-back
+  // is empty, so a failed grant preserves the request rather than zeroing it
+  // (`justerm-renderer/src/webgl.rs`). The only remaining route is a canvas element authored at
+  // `width="0"` whose surface is never sized.
+  //
+  // So for that caller this guard is **defensive, not a repair**, and it is written down because two
+  // earlier drafts of this comment claimed the opposite — first that an empty grant commits `(0, 0)`,
+  // then that the README's multi-pane example reaches it. Neither survives reading
+  // `apply_surface_size`. What the guard does buy there is that the two callers cannot disagree about
+  // what a zero means, which is the property #632 made them share arithmetic for.
+  //
+  // The renderer refuses its own read-back for the neighbouring reason, and the sentence is the one
+  // this guard borrows: *"A buffer of no size is not a grant, it is the absence of an answer"*
+  // (#639). An unmeasured box and an ungranted buffer are different facts with the same shape.
   //
   // Left unguarded, the grant read-back was the worse of the two: `{2, 1}` satisfied
   // `granted.cols < cols`, so an empty buffer silently clamped **every attached pane's grid** to the
