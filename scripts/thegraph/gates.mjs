@@ -33,7 +33,19 @@ const GATES = [
   { scope: "core", cmd: "cargo build -p justerm-wasm-decode --tests --target wasm32-unknown-unknown", note: "tests/web.rs is wasm32-only and 0-compiles on host" },
   { scope: "core", cmd: 'cargo doc --workspace --no-deps', env: { RUSTDOCFLAGS: "-D warnings" }, note: "rustdoc lints ≠ clippy ≠ doctests" },
   { scope: "core", cmd: "node .github/scripts/check-map-links.mjs docs CLAUDE.md CONTEXT.md README.md" },
-  { scope: "core", cmd: 'bash -c \'bad=0; for f in docs/map/territory/*.md docs/map/invariant/*.md; do node .github/scripts/check-map-note.mjs "$f" || bad=1; done; exit $bad\'', note: "note SCHEMA ≠ note LINKS — a different tool from the line above" },
+  // `argv`, not `cmd`, and the reason is measured. CI runs this as a multi-line bash `run:` block on
+  // ubuntu; spelling it as one shell string here made it a PERMANENT FALSE RED on Windows, where
+  // `shell: true` resolves to `%ComSpec%` = cmd.exe, which does not group with single quotes and
+  // consumes the `||` as its own operator — bash then receives an unterminated `-c` and answers
+  // "line 2: syntax error: unexpected end of file". The check itself was fine the whole time (run by
+  // hand over all 43 notes it exits 0), so every local `core` run reported a red that was not one:
+  // the exact failure this runner exists to prevent, pointed the wrong way. Found while gating #448.
+  // Going through `argv` skips the shell entirely, on both platforms, and keeps the command TEXT
+  // identical to CI's — which is the point of a mirror.
+  { scope: 'core',
+    cmd: 'bash -c \'bad=0; for f in docs/map/territory/*.md docs/map/invariant/*.md; do node .github/scripts/check-map-note.mjs "$f" || bad=1; done; exit $bad\'',
+    argv: ["bash", "-c", 'bad=0; for f in docs/map/territory/*.md docs/map/invariant/*.md; do node .github/scripts/check-map-note.mjs "$f" || bad=1; done; exit $bad'],
+    note: 'note SCHEMA ≠ note LINKS — a different tool from the line above' },
   { scope: "core", cmd: "node .github/scripts/check-tool-pins.mjs", note: "compares the WORKFLOWS to each other; does not look at your local wasm-pack — preflight.mjs does" },
 
   // web
@@ -138,12 +150,15 @@ for (const g of selected) {
   }
   console.log(`\n=== ${g.cwd ? `(cd ${g.cwd}) ` : ""}${g.cmd}`);
   // BARE. Inherited stdio, no pipe, exit status read directly.
-  const r = spawnSync(g.cmd, {
-    shell: true,
+  // A gate carrying `argv` is spawned with NO shell — see the note on the one that does.
+  const opts = {
     stdio: "inherit",
     cwd: resolve(ROOT, g.cwd ?? "."),
     env: { ...process.env, ...(g.env ?? {}) },
-  });
+  };
+  const r = g.argv
+    ? spawnSync(g.argv[0], g.argv.slice(1), opts)
+    : spawnSync(g.cmd, { ...opts, shell: true });
   if (r.status !== 0) failed.push({ g, status: r.status });
 }
 
