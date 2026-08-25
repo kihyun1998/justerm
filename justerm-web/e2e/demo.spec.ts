@@ -194,7 +194,24 @@ test.beforeEach(async ({ page, bootUrl }) => {
   // `setTimeout`, an `img.decode()`) after the bar mounts and every probe-reading test in this file
   // starts failing with `window.__xProbe is not a function`. Then this gate must move to something
   // the probes themselves emit.
-  await expect(page.getByRole("button", { name: /Finish command/ })).toBeVisible();
+  //
+  // **The timeout is explicit, and larger than the default, because this gate asserts THAT the app
+  // booted and not how fast.** Every other `expect` in this file keeps the 5s default; those are
+  // claims about behaviour, and a slow one is worth seeing. This one is a proxy, so the only thing a
+  // timeout here can report is machine speed — which is the failure this paragraph already warns
+  // about two lines up, and which `retries: 0` turns into a red master.
+  //
+  // Measured on master `dc85158` (2026-08-25): this gate timed out once, in `web-e2e`, on a commit
+  // that changed **one markdown file**. It took 5.9s against the 5s default while its three
+  // parameterised-boot siblings in the same run finished in 1.3s, 1.4s and 2.1s *including* their
+  // assertions — so the run was not broadly slow, one boot stalled. Locally the same URL boots in
+  // 274ms median / 544ms worst of 8, a 9x margin, which is why this is not tuned closer.
+  //
+  // `retries` is deliberately NOT the fix. A retry hides a genuine flake as readily as an
+  // environmental one, and this repo's discipline is that a green you never saw fail is not evidence.
+  await expect(page.getByRole("button", { name: /Finish command/ })).toBeVisible({
+    timeout: 30_000,
+  });
 });
 
 test("control bar shows the action buttons", async ({ page }) => {
