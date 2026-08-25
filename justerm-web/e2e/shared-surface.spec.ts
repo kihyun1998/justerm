@@ -29,7 +29,9 @@ type AsyncProbe =
   | "__independenceProbe"
   | "__surfaceLossProbe"
   | "__restoreDensityProbe"
-  | "__contractOnlyDensityProbe";
+  | "__contractOnlyDensityProbe"
+  | "__hideShowProbe"
+  | "__hiddenBlinkProbe";
 
 /** This page's typed alias over the shared park-and-harvest helper (#731; extracted in #776). */
 const readAsyncProbe = <K extends AsyncProbe>(
@@ -571,4 +573,120 @@ test("disposing only the surface leaves every widget mounted, and the next frame
   expect(r.textareasAfter).toBe(r.textareasBefore);
   expect(r.textareasAfter).toBe(2);
   expect(r.lateFrameThrew).toMatch(/no grid with id/);
+});
+
+/**
+ * #801 — **a hidden terminal is set aside, not destroyed, and not moved onto its sibling.**
+ *
+ * Three claims, and only the first is what the issue was filed for:
+ *
+ * 1. hide → show costs **no bake**. That is the epic's stated payoff and the only judge available
+ *    for it: the content returns identically whether it was kept or rebuilt, so a pixel comparison
+ *    cannot distinguish a placement from the rebuild ADR-0021 exists to remove.
+ * 2. Hiding does not damage the sibling. Measured before the fix, on this very page: setting
+ *    `#pane-b` to `display: none` moved its viewport from `[500, 40]` to `[0, 0]` and drew that
+ *    whole grid over pane A, which went on reporting itself healthy. Nothing threw — the extent a
+ *    viewport is given is derived from `cols * cell` and never from the measured box, so the
+ *    renderer's own no-area guard is not on this path.
+ * 3. A **re-fit while hidden** leaves it hidden. This is the assertion a one-shot `clearViewport`
+ *    fails, and getting it to fail took two tries: seven paths re-derive a placement, and the first
+ *    version of this step used a density change — which travels through the demo page's own handler,
+ *    re-reads the missing overlay box and hides again, so it agreed with the one-shot instead of
+ *    separating from it. `resize` reaches `applyGrid` with nothing consulted in between.
+ */
+test("hiding a terminal keeps it — no bake, no atlas churn, and the sibling untouched (#801)", async ({
+  page,
+}) => {
+  const r = await readAsyncProbe(page, "__hideShowProbe");
+
+  expectContextAlive({ contextLost: false });
+
+  // — 2. the bystander, at every step. Pane A is never touched by any of this.
+  expect(r.before.insideA, "pane A's own background, before anything").toBe(BG_A);
+  expect(r.hidden.insideA, "hiding B must not paint B's background inside A").toBe(BG_A);
+  expect(r.hiddenAcrossRefit.insideA).toBe(BG_A);
+  expect(r.shown.insideA).toBe(BG_A);
+  expect(r.hidden.aHash, "pane A's whole rect, digested, across the hide").toBe(r.before.aHash);
+  expect(r.shown.aHash).toBe(r.before.aHash);
+
+  // — the hide itself: the renderer stops drawing it, and its area goes back to bare buffer.
+  expect(r.before.bDrawn).toBe(true);
+  expect(r.hidden.bDrawn).toBe(false);
+  expect(r.hidden.atB, "pane B's own centre, with nothing placed there").toBe(UNPAINTED);
+
+  // — 3. still hidden after a re-fit, which goes straight into the widget with no box consulted.
+  expect(r.hiddenAcrossRefit.bDrawn, "a re-fit must not re-place a hidden grid").toBe(false);
+  expect(r.hiddenAcrossRefit.atB).toBe(UNPAINTED);
+
+  // — the show: it comes back, byte for byte, because nothing was released.
+  expect(r.shown.bDrawn).toBe(true);
+  expect(r.shown.atB).toBe(BG_B);
+  expect(r.shown.bHash, "pane B's whole rect returns identical — nothing was re-fed").toBe(
+    r.before.bHash,
+  );
+
+  // The trip never touched the density, which is what makes `hiddenAcrossRefit` evidence about the
+  // widget's own funnel rather than about the demo page's density handler.
+  expect(r.dpr.middle).toBe(r.dpr.start);
+  expect(r.dpr.end).toBe(r.dpr.start);
+
+  // — showing DRAWS, and this is the only assertion in either suite that can see it. Every pixel
+  // reading here is taken after a forced `present()`, so deleting the library's own present reddens
+  // none of them; the defect that fix repairs was found with a browser screenshot, which is the only
+  // other instrument that can. A pack delta needs no present of ours.
+  expect(
+    r.showPresents.packsAfter - r.showPresents.packsBefore,
+    "showing a dirty hidden terminal must present by itself, packing it exactly once",
+  ).toBe(1);
+
+  // — 1. and it cost nothing to rebuild. The judge.
+  expect(r.shown.bakes - r.before.bakes, "a placement bakes no atlas").toBe(0);
+  expect(r.shown.atlases, "and releases no font configuration").toBe(r.before.atlases);
+  expect(r.hidden.atlases, "a hidden grid keeps its configuration resident").toBe(r.before.atlases);
+
+  // — and the cost half, which the issue quoted from the renderer's own measurement rather than
+  // observing. A hidden grid is skipped before the re-pack, so feeding it moves nothing…
+  expect(r.fedWhileHidden.packs - r.hiddenAgain.packs, "a hidden grid is never packed").toBe(0);
+  // …and the control is what stops that zero from meaning "nothing was fed at all". Same pane, same
+  // call, one step later, differing only in whether it is placed.
+  expect(
+    r.fedWhileShown.packs,
+    "the same feed on the same pane, once shown, must pack — otherwise the zero above is vacuous",
+  ).toBeGreaterThan(r.fedWhileHidden.packs);
+});
+
+/**
+ * #801 — **a hidden terminal's blink loop does not drive the canvas.**
+ *
+ * Both halves of `blinkTick` end in `backend.render()`, which presents the WHOLE canvas — so on a
+ * shared surface a hidden pane's blink was redrawing its siblings twice a second for pixels that are
+ * not on screen. The re-pack was already gated one layer down (the renderer skips an unplaced grid),
+ * which is exactly why this hid: what is wasted is the **present**, and nothing at this layer counts
+ * presents. `packs` cannot see it and neither can a pixel; the probe wraps the raw backend call.
+ *
+ * **Hidden and focused is the state under test, not an odd one.** The cursor half parks solid when
+ * blurred and `display: none` blurs, so the ordinary path self-gated — which made this look narrower
+ * than it is. `visibility: hidden` keeps the box, fires no observer, and keeps focus, which is why
+ * the README tells a host to call `hide()` directly there. That guidance is what makes this reachable.
+ */
+test("a hidden terminal's blink loop presents nothing, and a shown one still does (#801)", async ({
+  page,
+}) => {
+  test.setTimeout(30_000);
+  const r = await readAsyncProbe(page, "__hiddenBlinkProbe");
+
+  // The instrument first. A wrapper that is not on the call path reports zero everywhere, which is
+  // indistinguishable from the fix working.
+  expect(r.wrapperSeesRender, "the present counter must actually be on the call path").toBe(1);
+  expect(r.reducedMotion, "a reduced-motion environment parks the blink solid and proves nothing").toBe(
+    false,
+  );
+
+  expect(r.presentsWhileHidden, "a terminal nobody draws must not drive the canvas").toBe(0);
+  // The control. Without it the zero above is indistinguishable from "the cursor never flipped in
+  // the window" — which is the failure mode a 600 ms interval and a 1400 ms window are chosen against.
+  expect(
+    r.presentsWhileShown,
+    `the same terminal, shown, must still blink — otherwise the zero above proves nothing (window ${r.windowMs}ms)`,
+  ).toBeGreaterThan(0);
 });

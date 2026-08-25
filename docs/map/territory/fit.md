@@ -59,6 +59,12 @@ names as its model — exactly the kind of detail that diverges quietly.
 
 ## Cross-cutting invariants
 
+- [an absent element box measures as zero](../invariant/an-absent-box-measures-as-zero.md) — the
+  **second site**, and unrepaired. `proposeDimensions` floors a `0x0` box at `MINIMUM_COLS`/
+  `MINIMUM_ROWS` while refusing a `NaN` one, so the `display: none` box that `justerm-web`'s README
+  now documents as the way to hide a pane proposes `2x1` and the engine reflows through two columns.
+  This note's own doc-comment asked for the check — *"check **both** axes: the floor and the
+  refusal"* — before the path that needed it existed
 - [the cell size is derived state](../invariant/cell-size-is-derived-state.md)
   — the largest consumer of the cell. Its dedupe could not express *"the cell moved but the grid did
   not"* (#578) until #632 widened the key to carry the cell alongside the proposal. The residual is

@@ -157,8 +157,9 @@ than of any one collaborator.
 
 - [caret drawing](caret-drawing.md) · [caret report](caret-report.md) — the blink phase is driven by
   the rAF loop this territory owns. `Terminal` can now **end** it (#606); what it still cannot do is
-  **pause** it, so neither blink loop stops while the terminal is off-screen (#607). Ending and
-  pausing turned out to be separable questions, which is why one shipped without the other
+  **pause** it, so neither blink loop stops while the terminal is off-screen (#607, closed
+  `NOT_PLANNED` on a measurement — see `## Blast radius`). Ending and pausing turned out to be
+  separable questions, which is why one shipped without the other
 - [GL context lifecycle](gl-context-lifecycle.md) — the consumer sets the restore timeout and reacts
   to the callback. Since #579 that owner **is** stated: the widget registers the channel and closes
   it on `dispose`, which is the second rule this territory has (after #606's) and the first one that
@@ -202,8 +203,31 @@ than of any one collaborator.
 - ~~`Terminal.dispose()` cannot reach the renderer's blink loop.~~ Closed by #606: `dispose?()` is on
   the `Renderer` port and `Terminal.dispose()` calls it, proven in a real browser by counting the
   loop's presenting rAF turns before (>0) and after (0) disposal.
-- **Neither blink loop pauses when the terminal is off-screen**, so a backgrounded tab keeps
-  animating. Tracked: #607.
+- **Neither blink loop pauses when the terminal is off-screen** — but read the two corrections
+  before acting on it. A backgrounded *tab* does **not** keep animating: `rAF` stops for a hidden
+  document, which is why #607 was about element visibility inside a *visible* page, and it closed
+  `NOT_PLANNED` on a measurement — 5 presents in 1500 ms, all 5 from the demo's own frame timer and
+  **0** from the blink loop, because the shipped defaults are a steady cursor and text blink off.
+  So this is not tracked work; it is a validity condition, and #607 stated it: a consumer setting
+  `cursorBlink: true` or `textBlinkInterval > 0` gets a real flip about twice a second.
+
+  **#801 answered half of it, and the halves are not interchangeable.** That slice gave the widget
+  the visibility input #607 said it did not have — the `hidden` flag — and `blinkTick` now returns on
+  it, so a terminal the host has **set aside** drives nothing: measured on the two-terminal page, 4
+  whole-canvas presents in 2100 ms before the gate and 0 after, with a shown sibling holding at 3
+  either way. What is *still* open is #607's actual question, **scrolled out of view inside a visible
+  page**, which no flag here can see because nobody tells the widget about it. The two references do
+  not agree on the boundary either, and neither contains the other: xterm.js's `IntersectionObserver`
+  catches a scrolled-away pane and `display: none` but **not** `visibility: hidden` (the box survives
+  and still intersects); our flag catches whatever the host reports, which via `observeViewportRect`
+  is `display: none` and via `hide()` is anything at all. So #607 is not reopened by this — it would
+  need its own observer, and that is the decision it was closed on.
+
+  The half that *was* closed had a narrower trigger than it looks, and the two blink clocks differ:
+  `CursorBlink.isVisible` parks solid when `!focused` and `display: none` blurs, so the ordinary hide
+  path self-gated; `TextBlink.isVisible` has no focus gate at all. The path that made it reachable is
+  the one `justerm-web`'s README points at — `hide()` called directly for `visibility: hidden`, where
+  no observer fires and focus is kept.
 - **No reference comparison** for teardown composition, which is the one thing a widget library is
   usually judged on by its consumers. (Its *scheduling* half now has one — see below.)
 - **The widget still cannot be constructed in a test.** `vitest.config.ts` runs the `node`

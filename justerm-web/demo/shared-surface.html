@@ -117,8 +117,18 @@
         that no grid was placed over.
       </p>
       <p>
+        <strong>Hide pane B</strong> sets its overlay to <code>display: none</code> — the path a
+        tabbed host takes. Its area goes back to chequerboard because nothing is placed there any
+        more, while its grid, its cells and its font configuration&rsquo;s atlas all stay resident:
+        showing it again is a placement, not a rebuild, and <code>surface.bakes()</code> does not
+        move across the trip. Its content keeps advancing while hidden — a terminal that is set
+        aside is not a terminal that is stopped.
+      </p>
+      <p>
         <button type="button" data-testid="lose-context">Lose context</button>
         <button type="button" data-testid="end-a">End pane A</button>
+        <button type="button" data-testid="hide-b">Hide pane B</button>
+        <button type="button" data-testid="show-b">Show pane B</button>
       </p>
     </div>
 

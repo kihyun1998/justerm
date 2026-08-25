@@ -205,6 +205,16 @@ class Pane {
       extra: new Array<number>(n).fill(0),
       spans,
       sideTable: [],
+      // **A pane needs a cursor to be a terminal.** Until #801 this page's frames carried none, so
+      // neither pane ever ran `updateCursor` — and therefore neither ever started its blink loop,
+      // which is the machinery `__hiddenBlinkProbe` measures. Blink authority stays the
+      // application's (`cursorBlink: false`), so nothing here blinks unless a probe overrides it and
+      // no existing assertion on this page moves.
+      cursorRow: 0,
+      cursorCol: 0,
+      cursorVisible: true,
+      cursorShape: 0,
+      cursorBlink: false,
     };
   }
 }
@@ -300,10 +310,17 @@ async function attach(
   // lands while the grid is still 0x0 and is a no-op inside the adapter; the rect it stores is what
   // the fit then re-issues.
   const rect = { x: 0, y: 0 };
-  const stopRect = observeViewportRect(overlay, canvas, (x, y) => {
-    rect.x = x;
-    rect.y = y;
-    renderer.setViewportRect(x, y);
+  const stopRect = observeViewportRect(overlay, canvas, (origin) => {
+    // `undefined` means this overlay has no box — `display: none`, or not in the layout yet. It is
+    // NOT an origin of `{0,0}`, and reading it as one is what used to draw this grid over its
+    // sibling at full size (#801). Hiding keeps every byte; the next real box shows it again.
+    if (!origin) {
+      renderer.hide();
+      return;
+    }
+    rect.x = origin.x;
+    rect.y = origin.y;
+    renderer.setViewportRect(origin.x, origin.y);
   });
 
   // How many cells fit in THIS pane — not in the canvas. The adapter's #339 grant read-back compares
@@ -398,13 +415,19 @@ function applyDensity(dpr: number, refeed: boolean): void {
     // reports CSS pixels, which a density change does not move. So the origin it last sent is
     // scaled by the OLD ratio, and nothing else will notice. `viewportOrigin` is exported for this:
     // the host recomputes with the library's own arithmetic rather than a second copy of it.
-    const { x, y } = viewportOrigin(
+    const origin = viewportOrigin(
       { overlay: t.overlay.getBoundingClientRect(), canvas: canvas.getBoundingClientRect() },
       dpr,
     );
-    t.rect.x = x;
-    t.rect.y = y;
-    t.renderer.setViewportRect(x, y);
+    // A hidden pane has no box to re-scale, so a density change leaves it hidden rather than
+    // guessing an origin for it (#801). It is re-placed by its own `ResizeObserver` when it returns.
+    if (!origin) {
+      t.renderer.hide();
+      continue;
+    }
+    t.rect.x = origin.x;
+    t.rect.y = origin.y;
+    t.renderer.setViewportRect(origin.x, origin.y);
     // …then the grid, because the cell moved too and this pane's box holds a different number of
     // cells than it did. `resize` re-issues the viewport with the rect just set.
     t.renderer.resize(t.box.width, t.box.height);
@@ -456,6 +479,25 @@ document.querySelector<HTMLButtonElement>("[data-testid='end-a']")!.addEventList
   a.stopRect();
   a.term.dispose();
   console.log("[a] ended");
+});
+
+/**
+ * Hide and show pane B **through the DOM**, which is what a tabbed host actually does.
+ *
+ * Deliberately `display: none` on the overlay rather than a bare `b.renderer.hide()`: that is the
+ * path a real host takes, it is the one that used to relocate this grid onto its sibling, and it
+ * exercises `observeViewportRect` — so the button drives the whole chain rather than the one method
+ * at the end of it. The explicit call is still reachable and still needed, for the `visibility:
+ * hidden` case where no box changes and nothing fires.
+ */
+document.querySelector<HTMLButtonElement>("[data-testid='hide-b']")!.addEventListener("click", () => {
+  overlayB.style.setProperty("display", "none");
+  console.log("[b] hidden");
+});
+
+document.querySelector<HTMLButtonElement>("[data-testid='show-b']")!.addEventListener("click", () => {
+  overlayB.style.removeProperty("display");
+  console.log("[b] shown");
 });
 
 // ── probes ────────────────────────────────────────────────────────────────────────────────────
@@ -581,6 +623,39 @@ export interface SurfaceSnapshot {
 declare global {
   interface Window {
     __surfaceProbe?: () => SurfaceSnapshot;
+    /**
+     * Hide pane B through the DOM, hold it hidden across a re-fit, then show it again — and report
+     * what a rebuild would have cost (#801).
+     *
+     * **The bake count is the judge, not the pixels.** Content returning identical is exactly what a
+     * `dispose()`-and-rebuild also produces, so a pixel check cannot tell the epic's payoff — *"showing
+     * a terminal is a placement rather than a rebuild"* — from the thing it exists to remove. A bake
+     * delta of `0` across the whole round trip can.
+     *
+     * The re-fit in the middle is the assertion a naive implementation fails — see
+     * {@link HideShowReport.hiddenAcrossRefit} for why it is a `resize` and deliberately not a
+     * density change. Seven paths re-derive a placement and two of them carry no consumer call at
+     * all; a hide implemented as a one-shot `clearViewport` is silently undone by the first to fire.
+     */
+    __hideShowProbe?: () => Promise<HideShowReport>;
+    /**
+     * Count the renderer's **presents** while pane B blinks, hidden and then shown (#801).
+     *
+     * Presents are the one cost at this layer nothing reports: a hidden grid is already skipped
+     * before the re-pack, so `packs` cannot see this, and every pixel is identical either way. So
+     * this counts the calls directly, by wrapping the raw backend the blink loop reaches — which is
+     * the wasm renderer itself, not `TerminalSurface`, since `blinkTick` calls `backend.render()`.
+     *
+     * The shown half is the control, and it is not optional: without it a zero means "gated" and
+     * "never flipped in the window" equally well.
+     */
+    __hiddenBlinkProbe?: () => Promise<{
+      presentsWhileHidden: number;
+      presentsWhileShown: number;
+      windowMs: number;
+      wrapperSeesRender: number;
+      reducedMotion: boolean;
+    }>;
     /**
      * Tear the whole arrangement down, in one of the two orders a host could pick, and report what
      * is left. One-shot: it ends the page.
@@ -986,6 +1061,245 @@ window.__surfaceLossProbe = async (): Promise<{
     after,
     framesPushed: after.a.pushed - before.a.pushed + (after.b.pushed - before.b.pushed),
   };
+};
+
+/** One reading of the whole surface during the hide/show round trip. */
+export interface HideShowStep {
+  /** Atlas bakes so far. Read as a DELTA across the trip — the only thing that separates a
+   * placement from a rebuild, since both return identical pixels. */
+  bakes: number;
+  /** Font configurations resident. A release-and-rebuild moves this too, and it distinguishes
+   * *the configuration was freed* from *the configuration was re-baked in place*. */
+  atlases: number;
+  /** Instance-buffer packs so far. A grid with no viewport is skipped before the re-pack, so
+   * feeding a hidden terminal must not move this — and feeding a shown one must. */
+  packs: number;
+  /** What the RENDERER says about pane B — `isGridDrawn`, not the widget's own flag. */
+  bDrawn: boolean;
+  /** Pane B's whole rect, digested. Identical either side of the trip iff the content returned. */
+  bHash: number;
+  /** Pane A's whole rect, digested. This is the bystander: it must not move at any step. */
+  aHash: number;
+  /** A pixel inside pane A, at the point pane B's grid lands on when it is placed at the canvas
+   * origin. The D1 regression: this used to become pane B's background the moment B was hidden. */
+  insideA: string;
+  /** A pixel at pane B's own centre. Unpainted while hidden — nothing draws there, and the buffer's
+   * clear is transparent. */
+  atB: string;
+}
+
+export interface HideShowReport {
+  before: HideShowStep;
+  hidden: HideShowStep;
+  /**
+   * Whether **showing presented by itself**, read without this page forcing one.
+   *
+   * Every other reading here calls `surface.present()` first — it has to, because a read that loses
+   * the race to the compositor comes back all zeroes — and that makes them all structurally blind to
+   * the question *"did the library draw this, or did we?"*. `packs` answers it without a pixel: the
+   * grid is dirty and unplaced while hidden, so the first present after it is placed packs it exactly
+   * once. A delta of `1` means something presented between these two reads, and with the content
+   * timers stopped the only candidate is the show itself.
+   */
+  showPresents: { packsBefore: number; packsAfter: number };
+  /** Hidden a second time, after the round trip — the baseline the two feeds below are read from. */
+  hiddenAgain: HideShowStep;
+  /** After feeding pane B **while it is hidden** — the work-gating half. */
+  fedWhileHidden: HideShowStep;
+  /** After feeding pane B once it is shown again — the control, without which the zero above is
+   * indistinguishable from "nothing was fed at all". */
+  fedWhileShown: HideShowStep;
+  /**
+   * After a **re-fit** taken while hidden — the step a one-shot `clearViewport` fails.
+   *
+   * `resize` and not a density change, and the difference is the whole value of this step. A density
+   * change goes through this page's own handler, which re-reads the overlay box, finds it gone and
+   * hides again — so it lands in agreement with a one-shot implementation and cannot separate the
+   * two. Measured: a `hide()` that merely called `clearViewport` once passed this test until this
+   * step was changed. `resize` funnels straight into the widget's `applyGrid` with no box consulted,
+   * which is the window where a flag and a one-shot disagree, and it is the realistic path — a host
+   * re-fits every pane on a window resize, hidden ones included.
+   *
+   * It is also the only such path that bakes nothing: every font and spacing setter re-bakes the
+   * atlas, which would move the very counter this probe reads as its judge.
+   */
+  hiddenAcrossRefit: HideShowStep;
+  shown: HideShowStep;
+  /** The density at each end of the trip. It must NOT move — the middle step is a re-fit, so an
+   * unchanged ratio is the evidence that nothing about this trip depended on a density change. */
+  dpr: { start: number; middle: number; end: number };
+}
+
+window.__hideShowProbe = async (): Promise<HideShowReport> => {
+  // Stop the content timers first. A pane that advances mid-trip changes its own digest, and the
+  // claim here is about placement rather than about content.
+  stopTimers();
+
+  const settle = (): Promise<void> =>
+    new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+
+  const step = (): HideShowStep => {
+    surface.present();
+    const context = gl()!;
+    const dpr = window.devicePixelRatio;
+    const ra = rectOf(a);
+    const rb = rectOf(b);
+    return {
+      bakes: surface.bakes(),
+      atlases: surface.atlasCount(),
+      packs: surface.packs(),
+      bDrawn: b.renderer.isDrawn(),
+      bHash: hashRect(context, rb.x, rb.y, rb.w, rb.h),
+      aHash: hashRect(context, ra.x, ra.y, ra.w, ra.h),
+      // Inside pane A, and inside where pane B would land if it were placed at the origin. Both
+      // conditions matter: a point only in A cannot see the relocation, and a point only in B's
+      // would-be rect is not evidence about the bystander.
+      insideA: pixelAt(context, Math.round(60 * dpr), Math.round(60 * dpr)),
+      atB: pixelAt(context, rb.x + (rb.w >> 1), rb.y + (rb.h >> 1)),
+    };
+  };
+
+  const startDpr = window.devicePixelRatio;
+  const before = step();
+
+  overlayB.style.setProperty("display", "none");
+  await settle();
+  const hidden = step();
+
+  // A re-fit while hidden — straight into the widget, no overlay read. See `hiddenAcrossRefit`.
+  b.renderer.resize(b.box.width, b.box.height);
+  await settle();
+  const middleDpr = window.devicePixelRatio;
+  const hiddenAcrossRefit = step();
+
+  overlayB.style.removeProperty("display");
+  await settle();
+  const shown = step();
+
+  // — a SECOND round, for the cost half. It has to come after `shown` so that the round trip above
+  // stays a pure placement: nothing was fed between `before` and `shown`, which is what lets their
+  // digests be compared at all. Hiding again also shows the pair is repeatable.
+  overlayB.style.setProperty("display", "none");
+  await settle();
+  const hiddenAgain = step();
+
+  // Feed the hidden terminal. It still scatters — that half is consumer-driven and ungated — but the
+  // pack, the upload and the draw are all behind the viewport check.
+  b.pane.advance();
+  b.pane.push();
+  await settle();
+  const fedWhileHidden = step();
+
+  // Show it, and read `packs` either side WITHOUT presenting — see `showPresents`. B is dirty (it was
+  // just fed) and unplaced, so a present here must pack it exactly once.
+  const packsBefore = surface.packs();
+  overlayB.style.removeProperty("display");
+  await settle();
+  const packsAfter = surface.packs();
+  const showPresents = { packsBefore, packsAfter };
+
+  // The control, without which the zero above is indistinguishable from "nothing was fed".
+  b.pane.advance();
+  b.pane.push();
+  await settle();
+  const fedWhileShown = step();
+
+  // No restart: every probe on this page leaves the timers stopped, for the reason `stopTimers`
+  // states — a page that keeps pushing frames turns a placement question into a timing one.
+  return {
+    before,
+    hidden,
+    hiddenAcrossRefit,
+    showPresents,
+    hiddenAgain,
+    fedWhileHidden,
+    fedWhileShown,
+    shown,
+    dpr: { start: startDpr, middle: middleDpr, end: window.devicePixelRatio },
+  };
+};
+
+window.__hiddenBlinkProbe = async (): Promise<{
+  presentsWhileHidden: number;
+  presentsWhileShown: number;
+  windowMs: number;
+  wrapperSeesRender: number;
+  reducedMotion: boolean;
+}> => {
+  stopTimers();
+  const settle = (): Promise<void> =>
+    new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+  // Long enough for three cursor phase flips at the 600 ms interval. Measured at 1400 ms the control
+  // caught exactly ONE, which is a margin a slower machine can lose — and a control that reaches zero
+  // by bad luck reads as the defect being absent.
+  const windowMs = 2100;
+  const wait = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+  // Count on the RAW backend: `blinkTick` calls `backend.render()` directly, bypassing the surface.
+  // Assigning on the instance shadows the prototype method, and the widget holds this same object.
+  const raw = surface.rendererBackend() as unknown as { render: () => void };
+  const underlying = raw.render.bind(raw);
+  let presents = 0;
+  raw.render = (): void => {
+    presents++;
+    underlying();
+  };
+
+  try {
+    // One frame first: the blink loop is started by `updateCursor`, which only runs on a decoded
+    // frame, and a terminal with no cursor has no phase to flip. This is also the honest shape — a
+    // pane is used and then hidden, never hidden from birth.
+    // **Blink authority first, THEN the frame.** The loop is started by `updateCursor`, which runs
+    // on a decoded frame and starts it only when this terminal actually blinks — so pushing first and
+    // enabling second leaves the loop stopped and every count below reads zero.
+    b.renderer.setCursorBlink(true);
+    b.renderer.setFocused(true);
+    b.pane.advance();
+    b.pane.push();
+    await settle();
+
+    // **The control runs FIRST**, while B is still shown. Measuring it after the hidden window would
+    // leave "the loop never ran at all" and "the loop is gated" sharing one answer.
+    // **Assert the instrument before asserting with it.** `surface.present()` reaches
+    // `backend.render()` synchronously, so this must move the counter by exactly one; a wrapper that
+    // is not on the call path would otherwise report zero presents everywhere and read as a pass.
+    // (`JustermRenderer.render()` is the wrong probe for this and was the first version: on a SHARED
+    // surface it schedules a frame instead of presenting, so it moves nothing in this turn.)
+    presents = 0;
+    surface.present();
+    const wrapperSeesRender = presents;
+    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+    presents = 0;
+    await wait(windowMs);
+    const presentsWhileShown = presents;
+
+    // Hidden **and focused** — the state this package's README points hosts at for
+    // `visibility: hidden`, where no observer fires and `hide()` is called directly. The cursor half
+    // parks solid when blurred, so a blurred hidden pane would gate itself and prove nothing.
+    overlayB.style.setProperty("display", "none");
+    await settle();
+    b.renderer.setFocused(true);
+    await settle();
+
+    presents = 0;
+    await wait(windowMs);
+    const presentsWhileHidden = presents;
+
+    overlayB.style.removeProperty("display");
+    await settle();
+
+    return {
+      presentsWhileHidden,
+      presentsWhileShown,
+      windowMs,
+      wrapperSeesRender,
+      reducedMotion,
+    };
+  } finally {
+    raw.render = underlying;
+    b.renderer.setCursorBlink(undefined);
+  }
 };
 
 window.__restoreDensityProbe = async (): Promise<RestoreDensityReport> => {

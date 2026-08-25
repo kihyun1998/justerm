@@ -105,6 +105,12 @@ at a recorded SHA; a paraphrase drops the pin).
 
 ## Cross-cutting invariants
 
+- [an absent element box measures as zero](../invariant/an-absent-box-measures-as-zero.md) —
+  `CellGeometry.originX`/`originY` are the only two of its six fields with no stated precondition,
+  because a position may legitimately be `0` or negative, so `geometryViolations` structurally cannot
+  flag a box that has gone away — though whether anything *else* flags it depends on how the consumer
+  built the cell, which the note states. Distinct from the product ambiguity #680 settled next door,
+  which this note draws the boundary against
 - [the write path funnels motion and does not funnel destruction](../invariant/no-funnel-for-destruction-in-place.md)
   — this territory takes the **positional** answer, and it is the discriminator that keeps the note
   honest: a selection is a region of the screen, so showing what is now under the highlight after
