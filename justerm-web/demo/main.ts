@@ -1634,6 +1634,7 @@ declare global {
       silent: OriginDragArm;
       declares: OriginDragArm;
     };
+    __seedRows?: (n: number) => { rows: number; scrollbackLen: number };
     __setDpr?: (dpr: number) => void;
     __setLineHeight?: (lh: number) => void;
   }
@@ -3899,6 +3900,26 @@ function appendTick(): void {
 // loop's re-pack disabled, because these frames were carrying it.
 let appendTimer = window.setInterval(appendTick, 300);
 render();
+
+/**
+ * #818 — run `n` output ticks **synchronously**, the way the 300 ms timer would have, so a test can
+ * reach a scrollback state without waiting in wall-clock time for it.
+ *
+ * The measurement this exists for: two e2e tests poll for `thumbTop >= 50` — enough scrollback that
+ * a wheel of 12 lines cannot clamp against the top — against a 25 s budget. On an **idle** machine
+ * that state arrives at **19.7 s** (thumb pinned at `0` for the first 8.5 s, then climbing), so the
+ * budget was 79 % consumed before any load. A full suite run costs the remaining 5.3 s, and the
+ * failure is a *budget exhaustion* that reads as a flake — measured at exactly 25.0 s.
+ *
+ * Calling the real `appendTick` rather than pushing rows into `log` is the point: it is the same
+ * function the timer drives, so the state a test starts from is the state 65 ticks produce, not an
+ * approximation of it. Raising the budget instead would have moved the cliff rather than removed
+ * it, and this repo's gate rule refuses a threshold moved to make a run green.
+ */
+window.__seedRows = (n: number): { rows: number; scrollbackLen: number } => {
+  for (let i = 0; i < n; i++) appendTick();
+  return { rows: log.length, scrollbackLen: maxOffset() };
+};
 
 // #114 S11: auto-fit. On container (viewport) resize, compute the grid from the CSS box +
 // the renderer's cell size and drive a debounced resize INTENT — the backend's job is to
