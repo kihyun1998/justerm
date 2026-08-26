@@ -164,6 +164,24 @@ describe("geometryViolations — the CellGeometry precondition (#672)", () => {
     expect(geometryViolations(okGeom)).toEqual([]);
   });
 
+  // #672 chose diagnosis over correction, and a diagnosis nobody can reach is not one. This
+  // deliberately imports from the PACKAGE ENTRY POINT rather than from `../src/input`, because the
+  // claim is about the published surface: every other test in this file would stay green if the
+  // re-export were dropped from `index.ts`, which is exactly how it went unexported until #819's
+  // sweep. `GeometryViolation` was already an exported interface with no way to obtain one.
+  it("is reachable from the package entry point, with its violation type", async () => {
+    const pkg = await import("../src/index");
+    const violations: import("../src/index").GeometryViolation[] = pkg.geometryViolations({
+      ...okGeom,
+      cellWidth: 0,
+    });
+    expect(violations.map((v) => v.field)).toEqual(["cellWidth"]);
+    // …and the internals stay internal: `checkGeometry` would double the widget's own warning, and
+    // `resetGeometryWarnings` is this package's test-only lever, like `clampTo`.
+    expect(pkg).not.toHaveProperty("checkGeometry");
+    expect(pkg).not.toHaveProperty("resetGeometryWarnings");
+  });
+
   // The measured defect. All six fields, because all six arrive from the
   // consumer's `getGeometry()` — a wider surface than xterm's, whose converter
   // takes only the cell from a measurement it owns and `colCount`/`rowCount`
