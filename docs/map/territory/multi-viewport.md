@@ -202,9 +202,23 @@ abstract.
 ## Cross-cutting invariants
 
 - [an absent element box measures as zero](../invariant/an-absent-box-measures-as-zero.md) — **found
-  here** (#801), and repaired here at one of its four sites. A `display: none` overlay reports all
-  zeros, and this territory is where that produced its worst shape: a full-size grid re-placed on the
-  canvas corner over a sibling, with nothing thrown. The other three sites are unrepaired
+  here** (#801), and repaired here at the first of its four sites. A `display: none` overlay reports
+  all zeros, and this territory is where that produced its worst shape: a full-size grid re-placed on
+  the canvas corner over a sibling, with nothing thrown. **All four sites are repaired since #819**
+  (#801, #810, #814, #819).
+
+  **The bound that comes with keying on the box, measured 2026-08-26 and belonging here because this
+  is the territory that acts on it.** `viewportOrigin` refuses on `width <= 0 || height <= 0`, so
+  *only a hide that zeroes the box sets a pane aside* — and several ordinary CSS ways of hiding do
+  not. Driven on `demo/shared-surface.html`, reading the pixel where pane B is drawn: `display: none`
+  clears it (`183,224,198` → `27,42,74`); **`content-visibility: hidden` leaves it byte-identical**,
+  so the host believes it hid a pane the user is still looking at. A closed `<details>` ancestor
+  behaves the same way — full-size box, `checkVisibility()` false, no hit-test — and `visibility:
+  hidden` was already known (#801). `[hidden]`, a closed `<dialog>` and a detached node do zero the
+  box. This is **not** a recurrence of the invariant above: the box is a *truthful* measurement in
+  every one of these, which is exactly why nothing can infer the host's intent from it and why
+  `hide()` has to be called by hand. Recorded as a rule rather than a list, because the list is what
+  goes stale — the predicate is one line and every guard in the package shares it
 - [a layer ends what it exclusively holds](../invariant/a-layer-ends-what-it-exclusively-holds.md)
   — this territory is where the rule's second clause lives, and where it was found. A surface is
   **shared by construction**, so a terminal handed one must not end it; a terminal that *composed*
