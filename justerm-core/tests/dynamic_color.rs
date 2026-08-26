@@ -418,3 +418,36 @@ fn osc11_stack_queries_the_cursor_slot() {
         ]
     );
 }
+
+/// `OSC 104 ;` — a separator and nothing after it — resets the **whole** table,
+/// like the bare `OSC 104`. This is a fix to shipped behaviour (#832): the arm
+/// tested the field *count*, so `["104", ""]` fell into the per-index loop where
+/// `"".parse::<u8>()` failed and the reset vanished with no signal.
+///
+/// Same empty-field class as the `OSC 10`/`11`/`12` fix in this slice, one arm
+/// over in the same `match`, but a different *answer* — for a reset, empty means
+/// "all", not "skip". That is why it needed its own reference reading rather than
+/// the neighbouring rule: xterm `misc.c:3057` → `:3077`, xterm.js
+/// `InputHandler.ts:3224`, ghostty `color.zig:235`, three for three.
+#[test]
+fn osc104_with_an_empty_payload_resets_the_whole_table() {
+    let mut t = Engine::new(80, 24);
+    t.feed(b"\x1b]104;\x07");
+    assert_eq!(t.drain_events(), vec![TermEvent::ResetPaletteColor(None)]);
+
+    t.feed(b"\x1b]104;\x1b\\"); // both terminators
+    assert_eq!(t.drain_events(), vec![TermEvent::ResetPaletteColor(None)]);
+}
+
+/// The emptiness test is the *payload*, not "every field is empty": for
+/// `OSC 104 ; ;` xterm's buffer is `";"`, which is not empty, so it takes the
+/// index path — where neither field parses and nothing is reset. Pinned so a
+/// later simplification to `all(is_empty)` has to argue with the reference
+/// rather than with nothing. (ghostty is the outlier here, resetting everything,
+/// because its tokenizer drops both separators.)
+#[test]
+fn osc104_with_two_empty_fields_is_not_the_reset_all_form() {
+    let mut t = Engine::new(80, 24);
+    t.feed(b"\x1b]104;;\x07");
+    assert_eq!(t.drain_events(), vec![]);
+}

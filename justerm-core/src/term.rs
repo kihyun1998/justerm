@@ -4484,10 +4484,26 @@ impl Perform for Term {
                     }
                 }
             }
-            // OSC 104 = reset palette entries (#122): no arg resets the whole
-            // table, else one event per named index.
+            // OSC 104 = reset palette entries (#122): an **empty payload** resets
+            // the whole table, else one event per named index.
+            //
+            // Empty means both `OSC 104` and `OSC 104 ;` (#832). vte hands those
+            // over as `["104"]` and `["104", ""]`, and testing only the first left
+            // the second falling into the index loop, where `"".parse::<u8>()`
+            // fails and the reset evaporated silently. xterm tests the payload
+            // string rather than the field count — `if (*buf != '\0')`
+            // (`misc.c:3057`), whose else-branch is *"resetting all colors"*
+            // (`misc.c:3077`) — and xterm.js gates on the same emptiness
+            // (`InputHandler.ts:3223-3224`, a slot-less RESTORE).
+            //
+            // The test is `params[1]` being the *whole* payload, not "every field
+            // is empty": for `OSC 104 ; ;` xterm's buf is `";"`, which is not
+            // empty, so that form takes the index path. (ghostty differs here —
+            // `tokenizeScalar` drops both separators and it resets everything —
+            // but it agrees on the form that matters, `misc.c` and xterm.js do
+            // not, and ADR-0004 puts the spec proxy on top.)
             b"104" => {
-                if params.len() <= 1 {
+                if params.len() <= 1 || (params.len() == 2 && params[1].is_empty()) {
                     self.events.push(TermEvent::ResetPaletteColor(None));
                 } else {
                     for &idx in &params[1..] {
