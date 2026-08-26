@@ -1245,7 +1245,10 @@ impl Term {
     ///
     /// **An empty spec addresses its slot and leaves it alone** — neither a set
     /// nor a reset — and the stack still advances past it, so `OSC 10 ; ; <bg>`
-    /// is the documented way to reach the background alone. xterm's two empty
+    /// is how xterm reaches the background alone. That skip-and-advance is xterm's
+    /// *implementation*, not documented behaviour: `ctlseqs.txt:2082` documents only
+    /// the stack (*"each successive parameter changes the next color in the list"*)
+    /// and expects at least one parameter. The two empty
     /// cases are the same rule from both ends: nothing left in the string yields
     /// no name (`misc.c:3684-3685`), and a separator where a name should be yields no
     /// name either (`misc.c:3687`) before the parse steps past it.

@@ -36,7 +36,7 @@
 //!
 //! The third is an honest gap in the *material*, not in the assertions: this
 //! stream never carries a non-empty cursor spec, so it cannot observe the slot.
-//! That axis is covered by `dynamic_color.rs` and by xterm's `misc.c:3678` loop.
+//! That axis is covered by `dynamic_color.rs` and by xterm's `misc.c:3679` loop.
 
 use justerm_core::{Engine, TermEvent};
 
@@ -67,7 +67,12 @@ fn a_real_nvim_session_relays_a_reset_and_no_empty_sets() {
 #[test]
 fn no_event_in_a_real_session_carries_an_empty_colour_spec() {
     let mut e = replay();
-    for ev in e.drain_events() {
+    let events = e.drain_events();
+    // Assert the window exists before asserting behaviour inside it: a loop over
+    // an empty vector is vacuously true, so a capture that stopped producing
+    // events would pass this silently instead of reporting that it had.
+    assert!(!events.is_empty(), "the capture produced no events at all");
+    for ev in events {
         match ev {
             TermEvent::SetCursorColor(ref s)
             | TermEvent::SetForeground(ref s)

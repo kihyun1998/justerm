@@ -288,6 +288,14 @@ fn osc12_with_an_empty_spec_relays_nothing() {
 
 /// OSC 12 with no field at all — not even a separator — is the same non-event.
 /// This is xterm's other empty case (`misc.c:3684-3685`, nothing left in the string).
+///
+/// **This test has no discriminating power over #832 and is kept anyway.** It was
+/// green before the change and stays green under every mutation of it, because
+/// `params[1..]` is empty so the loop never runs — the behaviour is a property of
+/// vte's split, not of anything here. It documents which of the two empty forms
+/// this arm is *not* responsible for; the one that needed a guard is the test
+/// above. Measured, not assumed: it survived both the guard-deletion and the
+/// `continue`-to-`break` predicate mutations.
 #[test]
 fn osc12_with_no_field_at_all_relays_nothing() {
     let mut t = Engine::new(80, 24);
@@ -346,7 +354,7 @@ fn osc10_and_osc11_with_an_empty_spec_relay_nothing() {
 }
 
 /// An empty field **skips its slot and still advances to the next** — it does not
-/// end the stack. So `OSC 10 ; ; <spec>` is the documented way to address the
+/// end the stack. So `OSC 10 ; ; <spec>` is how xterm addresses the
 /// background alone, and it must relay a background change and *no* foreground
 /// change (xterm `misc.c:3687-3692`: the null name is skipped, then the parse
 /// steps past the separator).

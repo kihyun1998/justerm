@@ -2097,3 +2097,55 @@ the Engine genuinely has.
 | `OSC 12` is a set-or-report on the same dynamic-colour path as 10/11 — so the empty-spec rule at the top of this section governs it | xterm.js | `src/common/InputHandler.ts:3210` |
 | `OSC 112` restores it | xterm.js | `src/common/InputHandler.ts:3268` |
 
+| The slot order is fixed and the cursor is third: `OSC_TEXT_FG = 10`, then BG, then CURSOR — all above the first `#if` guard, so a build option cannot renumber them | xterm | `ptyx.h:1018`, `:1020` |
+| **The stack caps at the cursor in a second reference too** — the next slots are the pointer colours, and it refuses rather than mis-addressing them | alacritty (via `vte`) | `vte-0.15.0/src/ansi.rs:1431` (`if index > NamedColor::Cursor as usize { unhandled(params); break; }`) |
+
+#### The empty-field *advance* splits 3–1, and the outlier believes it does not
+
+Added 2026-08-26 while implementing #832. This is the row that costs a re-derivation if it is
+missing, because reading any single reference gives a confident answer and two of the four give
+opposite ones.
+
+An empty field **skips its slot and still advances to the next**, so `OSC 10 ; ; <spec>` addresses
+the *background*:
+
+| Reference | Advances past an empty field? | Site |
+|---|---|---|
+| xterm | **yes** — the null name is skipped, then `strchr`/`*names++` steps past the separator | `misc.c:3687-3692` |
+| xterm.js | **yes** — `++offset` is in the `for` header, outside the `parseColor` guard | `src/common/InputHandler.ts:3156` |
+| alacritty (via `vte`) | **yes** — `dynamic_code += 1` is the last statement of the loop body, after the `unhandled` else-branch | `vte-0.15.0/src/ansi.rs:1447` |
+| **ghostty** | **no** — `std.mem.tokenizeScalar` never yields an empty token, so the gap is invisible and `OSC 10 ; ; <spec>` sets the **foreground** | `src/terminal/osc/parsers/color.zig:130`, pulled at `:293`, bumped at `:307` |
+
+**Ghostty's divergence is unintentional and unpinned**, which is what makes it dangerous to read: the
+loop opens with `// This matches the xterm behavior (see misc.c ChangeColorsRequest)`
+(`src/terminal/osc/parsers/color.zig:288`), and no test in `src/terminal/` exercises a leading or
+embedded empty field in the dynamic-colour family. A pass that consults ghostty first gets the
+opposite answer *with a comment asserting it is xterm's*.
+
+ADR-0004 settles it without needing the tally: `ctlseqs.txt:2082` indexes the stack by **parameter**
+(*"Each successive parameter changes the next color in the list"*), not by value. justerm follows the
+three.
+
+#### Two more places this family splits, neither of which justerm follows xterm on
+
+| Fact | Position | Site |
+|---|---|---|
+| **`OSC 112 ; <payload>` is discarded entirely** — the reset is in the `need_data = False` list, and unwanted data returns before dispatch | xterm **and** ghostty | xterm `misc.c:4156-4158`; ghostty `src/terminal/osc/parsers/color.zig:320` (with a named test at `:759`) |
+| …while it **still resets**, the payload ignored | xterm.js **and** alacritty (via `vte`), and justerm | xterm.js `src/common/InputHandler.ts:3268`; `vte-0.15.0/src/ansi.rs:1521` |
+| **A colour reply echoes the terminator the request arrived with** (BEL in → BEL out) | xterm, ghostty, alacritty | xterm `misc.c:3567` → emit at `:3593`; ghostty `src/terminal/osc/parsers/color.zig:97`; `vte-0.15.0/src/ansi.rs:1330` |
+| …while the reply is **always ST**, whatever arrived | xterm.js, and justerm | `src/browser/CoreBrowserTerminal.ts:239` |
+
+Neither is a defect justerm can state without naming a reference, so neither was changed by #832 —
+but both are now *known* rather than merely un-looked-at. The terminator one has a measured wrinkle:
+`justerm-core/tests/fixtures/cursor_color_nvim.raw` shows a real `nvim` asking with **BEL**
+(`ESC ] 11 ; ? BEL`) and being answered with ST, and the engine discards `bell_terminated` before any
+event is queued — so a consumer could not echo even if it wanted to.
+
+#### A routing fact: alacritty's OSC dispatch is not in the alacritty tree
+
+`alacritty_terminal` delegates its whole ANSI layer to the **`vte` crate**
+(`alacritty_terminal/Cargo.toml:27`), so grepping the pinned alacritty tree for `osc_dispatch`
+returns **zero hits** and reads exactly like "alacritty does not implement this". Its dynamic-colour
+semantics live in `vte-0.15.0/src/ansi.rs`, which is **the same crate and the same version justerm
+itself depends on** — so this reference is already on disk in the cargo registry, needs no pinned
+tree, and is immutable by virtue of being a published crate version.
