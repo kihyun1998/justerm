@@ -31,6 +31,15 @@ for a terminal engine, that list is half the specification.
 - **Several modes are tracked but not acted on**, deliberately: the engine records the flag and the
   consumer owns the behaviour (synchronized output's paint-hold, colour-scheme notification). That
   pattern repeats often enough to be the territory's signature — see ADR-0017.
+- **An empty OSC field means something different in every family, so there is no general rule to
+  reach for.** Measured while adding the cursor slot (#832), because the obvious generalisation is
+  wrong in both directions: for a **dynamic colour** (OSC 10/11/12) an empty field *addresses its
+  slot and changes nothing*, and the stack still advances past it, so `OSC 10 ; ; <bg>` is the
+  documented way to reach the background alone (xterm `misc.c:3684`, `:3687`); for a **hyperlink**
+  (OSC 8) an empty URI *closes* the current link; for a **title** (OSC 0/2) an empty string *is* the
+  new title. And the neighbour that looks identical is not: xterm's OSC 4 path has no skip at all —
+  an unparseable name **aborts the remaining pairs** (`misc.c:2993-3003`, *"quit on any error"*),
+  which is a third answer again. The rule is per family, decided at its own reference site.
 - **Tab stops are explicit per-column state**, not a modulo: HTS sets, TBC clears, default every
   eighth column. A modulo would be wrong the moment an application moves one.
 - **The scroll region redefines what "scroll" means.** DECSTBM changes which rows `IND` / `RI` /

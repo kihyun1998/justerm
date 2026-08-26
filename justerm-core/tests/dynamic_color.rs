@@ -237,7 +237,7 @@ fn osc10_stacks_fg_then_bg() {
 /// no cursor concept yet". beamterm was replaced by `justerm-renderer` under
 /// ADR-0018, which has had a cursor colour since #368, so the reason the cap
 /// rested on no longer holds. xterm walks the same loop from each sequence's own
-/// offset with no cap at the second slot (`misc.c:3678`), so removing ours
+/// offset with no cap at the second slot (`misc.c:3679`), so removing ours
 /// restores the reference behaviour rather than inventing one.
 #[test]
 fn osc11_stacks_from_bg_into_the_cursor_slot() {
@@ -287,7 +287,7 @@ fn osc12_with_an_empty_spec_relays_nothing() {
 }
 
 /// OSC 12 with no field at all — not even a separator — is the same non-event.
-/// This is xterm's other empty case (`misc.c:3685`, nothing left in the string).
+/// This is xterm's other empty case (`misc.c:3684-3685`, nothing left in the string).
 #[test]
 fn osc12_with_no_field_at_all_relays_nothing() {
     let mut t = Engine::new(80, 24);
@@ -364,7 +364,7 @@ fn osc10_an_empty_first_field_addresses_the_background_alone() {
 
 /// One sequence can fill all three slots, which is what removing the two-slot cap
 /// buys. xterm walks `[fg, bg, cursor, …]` from the sequence's own offset
-/// (`misc.c:3678-3696`; the slot order is `OSC_TEXT_FG = 10` then BG then CURSOR,
+/// (`misc.c:3679-3696`; the slot order is `OSC_TEXT_FG = 10` then BG then CURSOR,
 /// `ptyx.h:1018-1020`).
 #[test]
 fn osc10_stacks_fg_bg_then_cursor() {

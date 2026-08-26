@@ -1238,7 +1238,7 @@ impl Term {
 
     /// OSC 10/11/12 set/query the default fg/bg/cursor colour, stacking the
     /// `;`-separated specs across the `[foreground, background, cursor]` slots —
-    /// xterm's `ChangeColorsRequest` offset loop (`misc.c:3678`, walking
+    /// xterm's `ChangeColorsRequest` offset loop (`misc.c:3679`, walking
     /// `OSC_TEXT_FG` → `OSC_TEXT_BG` → `OSC_TEXT_CURSOR`, `ptyx.h:1018-1020`).
     /// OSC 10 starts at slot 0, OSC 11 at slot 1, OSC 12 at slot 2 (#137, #832).
     /// A `?` spec is a query.
@@ -1247,7 +1247,7 @@ impl Term {
     /// nor a reset — and the stack still advances past it, so `OSC 10 ; ; <bg>`
     /// is the documented way to reach the background alone. xterm's two empty
     /// cases are the same rule from both ends: nothing left in the string yields
-    /// no name (`misc.c:3685`), and a separator where a name should be yields no
+    /// no name (`misc.c:3684-3685`), and a separator where a name should be yields no
     /// name either (`misc.c:3687`) before the parse steps past it.
     ///
     /// That rule is not a hardening detail here, it is a precondition: the empty
