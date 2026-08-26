@@ -22,6 +22,33 @@ const BAR_BUDGET_MS = 12_000;
 const live = "[data-testid='command-live']";
 
 /**
+ * Seed output rows until the scrollbar thumb reaches `threshold`, or give up (#818).
+ *
+ * **Why a loop and not a count.** `thumbTop` is an absolute pixel position, so how many rows it
+ * takes to reach a given one depends on the track height and the fitted row count — and the row
+ * count follows the cell, which is the font's ink box (ADR-0022) and therefore differs between this
+ * machine and CI. A fixed seed passed locally and timed out on CI, which traded a wall-clock race
+ * for a geometry assumption: the same class of error one layer over. `docs/map/` already carries the
+ * rule — no absolute cell dimension is portable.
+ *
+ * It takes the caller's own `read` because the two call sites hold different closures over `page`;
+ * duplicating the thumb's DOM query here would be a second copy to drift.
+ *
+ * Deliberately does NOT assert. The caller keeps its own assertion, so a seed that stops producing
+ * the state reddens there with the condition named, rather than here with a helper's message.
+ */
+async function seedUntilThumb(
+  page: import("@playwright/test").Page,
+  threshold: number,
+  read: () => Promise<number | null>,
+): Promise<void> {
+  for (let i = 0; i < 40; i++) {
+    if (((await read()) ?? 0) >= threshold) return;
+    await page.evaluate(() => window.__seedRows!(20));
+  }
+}
+
+/**
  * #733 — **one navigation per test, and it is `beforeEach`'s.** Every test body starts on a LIVE,
  * fully mounted demo; navigating again would leave the first document running underneath — its
  * `ResizeObserver`, its debounced `[fit] resize` (100ms), its timers — while the second loads, and a
@@ -567,7 +594,12 @@ test.describe("S16 input + wheel + focus wiring (#133)", () => {
     //
     // The assertion stays, with a short budget: it is what says the precondition is REAL rather than
     // assumed, and a seed that stopped producing it must redden here rather than pass quietly.
-    await page.evaluate(() => window.__seedRows!(80));
+    // Seeded UNTIL the condition holds, not a fixed count — `thumbTop` is an absolute pixel
+    // position, so how many rows reach 50 depends on the track height and the fitted row count,
+    // and both differ from this machine on CI (the cell is the font's ink box, and the CI font is
+    // not this one). A fixed 80 passed here and timed out there, which traded a wall-clock race
+    // for a geometry assumption — the same class of error, one layer over.
+    await seedUntilThumb(page, 50, () => thumbTop(page));
     await expect
       .poll(async () => (await thumbTop(page)) ?? 0, { timeout: 5_000, intervals: [100] })
       .toBeGreaterThanOrEqual(50);
@@ -673,7 +705,10 @@ test.describe("S16 input + wheel + focus wiring (#133)", () => {
     // was waiting for had actually arrived. That is worse than the two polls #818 measured: a poll
     // at least fails when its budget runs out, while a sleep that finishes early simply proceeds
     // with too little history and the Alt jump clamps for a reason no assertion names.
-    const seeded = await page.evaluate(() => window.__seedRows!(80));
+    // 150 and not 80: `scrollbackLen` is `log.length - ROWS`, and ROWS follows the fitted grid,
+    // so a seed tuned to this machine's row count leaves a thin margin on a CI whose font gives a
+    // different one. The assertion below is what actually decides; the seed only has to clear it.
+    const seeded = await page.evaluate(() => window.__seedRows!(150));
     expect(seeded.scrollbackLen, "the +5 jump needs history to jump into").toBeGreaterThan(30);
     await notch(false);
     const a = scrolls.at(-1)!; // offset 1
@@ -2614,7 +2649,7 @@ test("a drag does not auto-scroll when the canvas loses its box (#680)", async (
   // Enough history that wheeling up cannot clamp against the top. Seeded rather than waited for,
   // for the reason the #133 wheel test states in full (#818): this poll also sat at ~21 s of its
   // 25 s budget, so the two tests shared one cliff.
-  await page.evaluate(() => window.__seedRows!(80));
+  await seedUntilThumb(page, 50, thumbTop);
   await expect
     .poll(async () => (await thumbTop()) ?? 0, { timeout: 5_000, intervals: [100] })
     .toBeGreaterThanOrEqual(50);
