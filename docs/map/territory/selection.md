@@ -108,9 +108,15 @@ at a recorded SHA; a paraphrase drops the pin).
 - [an absent element box measures as zero](../invariant/an-absent-box-measures-as-zero.md) —
   `CellGeometry.originX`/`originY` are the only two of its six fields with no stated precondition,
   because a position may legitimately be `0` or negative, so `geometryViolations` structurally cannot
-  flag a box that has gone away — though whether anything *else* flags it depends on how the consumer
-  built the cell, which the note states. Distinct from the product ambiguity #680 settled next door,
-  which this note draws the boundary against
+  flag a box that has gone away. **Repaired in #819**: `getGeometry` answers `CellGeometry |
+  undefined`, because the consumer took the measurement and is the only party that can tell absence
+  from a legitimate `0`. This territory holds the site, and it is the one with **state** to unwind —
+  `SelectionController.mouseMove` *and* `tick` both reset `dragScrollAmount`, since a refusal that
+  only returned early would latch the last auto-scroll speed and the consumer's timer fires whether
+  or not the pointer moves. Distinct from the product ambiguity #680 settled next door, which this
+  note draws the boundary against — and #819 is what showed the two are reachable through the *same*
+  symptom: #680's `cellHeight > 0` guard passes when the cell comes from the renderer, so the
+  max-speed auto-scroll it fixed returns through the origin
 - [the write path funnels motion and does not funnel destruction](../invariant/no-funnel-for-destruction-in-place.md)
   — this territory takes the **positional** answer, and it is the discriminator that keeps the note
   honest: a selection is a region of the screen, so showing what is now under the highlight after

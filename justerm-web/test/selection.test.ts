@@ -180,8 +180,10 @@ describe("dragScrollSpeed — distance → scroll lines", () => {
   // viewport, where #667 pinned the opposite reading to reach `tick()`'s floor — see
   // "does not produce a negative edge row when the consumer reports no rows" below, which fails if
   // this returns 0. Deciding between them is a re-decision, not the totality fix #675 is about —
-  // #680 settled the real defect one level up instead, in `SelectionController.mouseMove`, where
-  // the two factors are still separate — so this reading survived rather than being overturned.
+  // #680 settled the unmeasured-*cell* defect one level up instead, in
+  // `SelectionController.mouseMove`, where the two factors are still separate, and #819 settled the
+  // absent-*box* one a step above that, at the producer of the geometry — so this reading survived
+  // both rather than being overturned by either.
   it("still treats a zero height as 'every pointer is outside' (#667's reading, unchanged)", () => {
     expect(dragScrollSpeed(100, 0)).toBe(15);
   });
@@ -641,9 +643,11 @@ describe("SelectionController — the geometry precondition is signalled (#672)"
 
   // The deliberate half, pinned so it cannot change by accident: the controller
   // still drives the port exactly as it did before the signal existed. See the
-  // note in `input.test.ts` for why refusing is not a free upgrade here — this
-  // widget cannot re-measure, so a dropped gesture would not come back on its
-  // own the way xterm's does.
+  // note in `input.test.ts` for why a violated **cell** precondition is
+  // signalled rather than refused. (That note's *"a dropped gesture would not
+  // come back on its own"* clause is retired — #819 measured the opposite — but
+  // it was never this pin's ground, and the refusal #819 did add is on the
+  // absent-box axis, where the geometry here is perfectly measurable.)
   it("still drives the port, unchanged", () => {
     const port = new StubSelectionPort();
     const bad: CellGeometry = { ...GEOM, cellWidth: NaN };
@@ -655,12 +659,17 @@ describe("SelectionController — the geometry precondition is signalled (#672)"
 });
 
 // #680 — the sibling of #675 at the same seam, and the half that issue deliberately left.
-// `mouseMove` builds the viewport height as `getRows() * geom.cellHeight`, so a canvas that has
-// lost its box makes it 0 — and at 0 the inside test `py >= 0 && py <= height` is false for every
-// pointer, so `dragScrollSpeed` reads the pointer's ABSOLUTE y as its distance out and saturates
-// at DRAG_SCROLL_MAX_SPEED. Measured in a real browser: a drag already in progress outlives the
+// `mouseMove` builds the viewport height as `getRows() * geom.cellHeight`, so a cell built from the
+// measured BOX makes it 0 when the canvas loses that box — and at 0 the inside test
+// `py >= 0 && py <= height` is false for every pointer, so `dragScrollSpeed` reads the pointer's
+// ABSOLUTE y as its distance out and saturates at DRAG_SCROLL_MAX_SPEED. Measured in a real browser: a drag already in progress outlives the
 // canvas's box (mousemove/mouseup are window-scoped, the tick timer is already running), and a
 // panel collapsing mid-selection yanked the viewport to the live edge at maximum speed.
+//
+// **"Built from the measured box" is a condition, not a restatement** — #680 did not state it and
+// #819 measured why it matters: a cell derived from the RENDERER stays positive when the box goes
+// away, so this guard never fires and the same drag auto-scrolls at full speed anyway. That half is
+// the `#819` block below; the tests here still own the zero-cell half in full.
 //
 // The guard is at the CALLER, not in `dragScrollSpeed`, because the ambiguity is created by the
 // product: the two factors have different contracts. `cellHeight` is a `CellGeometry` field with a
@@ -724,5 +733,182 @@ describe("SelectionController — an unmeasured cell does not auto-scroll the dr
   // this fix never asks `dragScrollSpeed` what a 0 means.
   it("leaves dragScrollSpeed's own contract alone", () => {
     expect(dragScrollSpeed(100, 0)).toBe(15);
+  });
+});
+
+// #819 (#815 site 4) — a gesture that outlives its element's box.
+//
+// An element with no box reports `getBoundingClientRect()` as all zeros, and `0` is a legal value
+// for everything derived from it: `originX`/`originY` are the only two `CellGeometry` fields with no
+// precondition, because a position may legitimately be 0 or negative. So the block above (#680)
+// cannot help here — it guards `cellHeight`, and a consumer that derives its cell from the RENDERER
+// (`cellSize() / dpr`, which this package's README recommends) keeps a positive cell when the box
+// goes away. Measured in a real browser before this was written: the drag auto-scrolled a hidden
+// pane at DRAG_SCROLL_MAX_SPEED, 45 lines over three ticks, with zero warnings.
+//
+// The repair is the one this API already makes in four other places — `viewportOrigin` (#801),
+// `proposeDimensions` (#810), `dragTrackRatio` (#814) and the renderer's own zero-buffer refusal
+// (#639, "a buffer of no size is not a grant, it is the absence of an answer"): the PRODUCER of the
+// measurement answers `undefined`, and the reader makes no request.
+describe("SelectionController — a gesture that outlives its element's box requests nothing (#819)", () => {
+  // The control, and it runs first: with a measured geometry the drag scrolls. Without it every
+  // assertion below could be satisfied by a controller that simply never scrolls.
+  it("still auto-scrolls while the box is measured", () => {
+    const port = new StubSelectionPort();
+    const scrolls: number[] = [];
+    const ctrl = new SelectionController(port, () => GEOM, { onScroll: (n) => scrolls.push(n), getRows: () => 24 });
+
+    ctrl.mouseDown(leftHalf(5, 3), 1);
+    ctrl.mouseMove(ev(72, 24 * 20 + 30, { buttons: 1 }));
+    ctrl.tick();
+
+    expect(scrolls).toEqual([9]);
+  });
+
+  it("makes no request when the box goes away mid-drag", () => {
+    const port = new StubSelectionPort();
+    const scrolls: number[] = [];
+    let geom: CellGeometry | undefined = GEOM;
+    const ctrl = new SelectionController(port, () => geom, { onScroll: (n) => scrolls.push(n), getRows: () => 24 });
+
+    ctrl.mouseDown(leftHalf(5, 3), 1);
+    const afterPress = port.calls.length;
+    expect(afterPress, "the press must land, or every claim below is vacuous").toBeGreaterThan(0);
+
+    geom = undefined; // the pane is hidden; the drag survives it (move/up are window-scoped)
+    ctrl.mouseMove(ev(52, 300, { buttons: 1 }));
+    ctrl.tick();
+
+    expect(port.calls.length, "no selection command").toBe(afterPress);
+    expect(scrolls, "no scroll request").toEqual([]);
+  });
+
+  // THE LATCH. `dragScrollAmount` is a field and `tick()` fires on it, so a refusal that merely
+  // returns early would freeze the last speed: a drag already auto-scrolling when the pane is
+  // hidden would keep scrolling until `mouseup`, with no pointer motion able to lower it. That is
+  // #675's shape, which recorded that "a signal does not fix that". The refusal must RESET.
+  it("does not latch a speed the drag had already reached", () => {
+    const port = new StubSelectionPort();
+    const scrolls: number[] = [];
+    let geom: CellGeometry | undefined = GEOM;
+    const ctrl = new SelectionController(port, () => geom, { onScroll: (n) => scrolls.push(n), getRows: () => 24 });
+
+    ctrl.mouseDown(leftHalf(5, 3), 1);
+    ctrl.mouseMove(ev(72, 24 * 20 + 30, { buttons: 1 })); // below the viewport: a real auto-scroll
+    ctrl.tick();
+    expect(scrolls, "the window this test lives in must exist").toEqual([9]);
+
+    geom = undefined; // the pane is hidden while the drag is ALREADY scrolling
+    ctrl.tick(); // ... and the consumer's timer keeps firing, with no further pointer motion
+    ctrl.tick();
+
+    expect(scrolls, "a hidden pane must not go on scrolling").toEqual([9]);
+  });
+
+  // The SAME latch through the other door, and it needs its own test because the two guards cover
+  // different windows: the one above never calls `mouseMove` after the box goes, so `tick`'s guard
+  // alone satisfies it. Here the refused move is the last thing that happens before the box comes
+  // BACK — so `tick`'s guard passes and only `mouseMove`'s RESET can be what stops the scroll. A
+  // `mouseMove` that merely returned early — the plausible, differently-wrong predicate — leaves
+  // the speed at 9 and this reddens.
+  it("carries no stale speed across a move it refused", () => {
+    const port = new StubSelectionPort();
+    const scrolls: number[] = [];
+    let geom: CellGeometry | undefined = GEOM;
+    const ctrl = new SelectionController(port, () => geom, { onScroll: (n) => scrolls.push(n), getRows: () => 24 });
+
+    ctrl.mouseDown(leftHalf(5, 3), 1);
+    ctrl.mouseMove(ev(72, 24 * 20 + 30, { buttons: 1 }));
+    ctrl.tick();
+    expect(scrolls, "the window this test lives in must exist").toEqual([9]);
+
+    geom = undefined;
+    ctrl.mouseMove(ev(72, 24 * 20 + 30, { buttons: 1 })); // refused — and must clear the speed
+    geom = GEOM; // the pane is back, so `tick`'s own guard no longer covers anything
+
+    ctrl.tick();
+
+    expect(scrolls, "a refused move must not leave a speed behind it").toEqual([9]);
+  });
+
+  // Deliberately not ending the drag, matching `scrollbar.ts` (#814): measured in a real browser,
+  // a pane shown again under a held button goes on following the pointer.
+  it("resumes when the box comes back, because the drag was never ended", () => {
+    const port = new StubSelectionPort();
+    let geom: CellGeometry | undefined = GEOM;
+    const ctrl = new SelectionController(port, () => geom, { getRows: () => 24 });
+
+    ctrl.mouseDown(leftHalf(5, 3), 1);
+    geom = undefined;
+    ctrl.mouseMove(ev(52, 300, { buttons: 1 }));
+    geom = GEOM;
+    ctrl.mouseMove(rightHalf(7, 4));
+
+    expect(port.calls.at(-1)).toEqual({ kind: "extend", row: 4, col: 7, side: "right" });
+  });
+
+  // The alt-click cursor move is the one origin reader whose wrong answer leaves the family
+  // entirely — it goes out through the consumer's callback, so no engine guard is on that path
+  // (`docs/map/invariant/pointer-coordinates-are-bounded-by-their-producer.md`, reason 1).
+  it("does not move the shell cursor to a cell it could not compute", () => {
+    const port = new StubSelectionPort();
+    const moves: { row: number; col: number }[] = [];
+    let geom: CellGeometry | undefined = GEOM;
+    const ctrl = new SelectionController(port, () => geom, { onMoveCursor: (c) => moves.push(c) });
+
+    ctrl.mouseDown(ev(52, 65, { altKey: true, timeStamp: 0 }), 1);
+    geom = undefined;
+    ctrl.mouseUp(ev(52, 65, { altKey: true, timeStamp: 10 }));
+
+    expect(moves).toEqual([]);
+  });
+
+  // ... and the control for it, so the assertion above is not satisfied by a controller that never
+  // moves the cursor at all.
+  it("still moves the shell cursor when the box is measured", () => {
+    const port = new StubSelectionPort();
+    const moves: { row: number; col: number }[] = [];
+    const ctrl = new SelectionController(port, () => GEOM, { onMoveCursor: (c) => moves.push(c) });
+
+    ctrl.mouseDown(ev(52, 65, { altKey: true, timeStamp: 0 }), 1);
+    ctrl.mouseUp(ev(52, 65, { altKey: true, timeStamp: 10 }));
+
+    expect(moves).toEqual([{ row: 3, col: 5 }]);
+  });
+
+  it("begins no selection on a press it cannot place", () => {
+    const port = new StubSelectionPort();
+    const ctrl = new SelectionController(port, () => undefined);
+
+    ctrl.mouseDown(leftHalf(5, 3), 1);
+    ctrl.mouseMove(ev(52, 300, { buttons: 1 }));
+
+    expect(port.calls).toEqual([]);
+  });
+
+  // A press with no box must not leave a drag armed: if it did, the first move AFTER the box comes
+  // back would extend a selection that was never begun.
+  it("arms no drag from a press it refused", () => {
+    const port = new StubSelectionPort();
+    let geom: CellGeometry | undefined = undefined;
+    const ctrl = new SelectionController(port, () => geom, { getRows: () => 24 });
+
+    ctrl.mouseDown(leftHalf(5, 3), 1);
+    geom = GEOM;
+    ctrl.mouseMove(rightHalf(7, 4));
+
+    expect(port.calls).toEqual([]);
+  });
+
+  // Middle-click paste is not a selection and needs no geometry — it must survive the refusal, or
+  // the guard has been placed above the branch it belongs below.
+  it("still pastes on middle-click with no box", () => {
+    const port = new StubSelectionPort();
+    let pastes = 0;
+    const ctrl = new SelectionController(port, () => undefined, { onPaste: () => pastes++ });
+
+    ctrl.mouseDown(ev(52, 65, { button: 1 }), 1);
+
+    expect(pastes).toBe(1);
   });
 });

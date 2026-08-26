@@ -161,8 +161,19 @@ export { Accessibility } from "./accessibility-dom";
 export { a11ySelectionToPort } from "./a11y-selection";
 export type { TreeSelection } from "./a11y-selection";
 // Input — DOM events → intent (the backend encodes); outbound seam.
+//
+// `geometryViolations` is exported because #672 chose **diagnosis over correction** for a violated
+// `CellGeometry` precondition, and a diagnosis nobody can reach is not one: without this a consumer
+// could neither self-check the value it is about to return nor assert on it in its own tests, and
+// the entire mechanism was reduced to a `console.warn` it cannot route. `GeometryViolation` was
+// already an exported interface with no way to obtain one.
+//
+// `checkGeometry` (the warn-and-answer-anyway wrapper) and `resetGeometryWarnings` stay internal on
+// purpose: the first is the widget's own per-event call and a consumer calling it would double the
+// warning, and the second is test-only for this package, like `clampTo`.
 export {
   captureInput,
+  geometryViolations,
   keyFromDom,
   Mod,
   MouseEvents,
@@ -170,7 +181,7 @@ export {
   StubInputSink,
   wheelMouseFromDom,
 } from "./input";
-export type { TextareaLike } from "./input";
+export type { GeometryViolation, TextareaLike } from "./input";
 // IME composition (#116) — a hidden textarea's composition events → committed text
 // (read from the textarea value, never the unreliable event data; Korean jongseong
 // migration is why). Emits raw `text` intents on the InputSink. Pure logic; the DOM

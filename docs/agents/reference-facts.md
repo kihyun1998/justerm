@@ -1093,6 +1093,11 @@ half that does nothing on its own.
 | …and again when a terminal that was hidden at `open()` becomes visible (comment: *"Terminal was hidden on open"*) — the second half of the loop | xterm.js | `src/browser/services/RenderService.ts:145` |
 | A converter that meets a `NaN` coordinate **warns on the bare console and returns null** — not through xterm's own `LogService`, which defaults to `OFF` and would be silent exactly when a defect needs seeing | xterm.js | `src/browser/AccessibilityManager.ts:332` |
 | ghostty's cell is an **integer type** at the conversion (`@floatFromInt(size.cell.width)`), so a zero/NaN cell is unrepresentable rather than guarded — total by typing, one rung below alacritty's total-by-saturating-cast | ghostty | `src/renderer/size.zig:140` |
+| ⚠ **The loop above is about the CELL, and xterm arranges for it never to run on a hidden element.** `_validateAndSet` **retains the previous positive width/height** when a measurement reads zero, with the comment *"If values are 0 then the element is likely currently display:none, in which case we should retain the previous value"* — so `hasValidSize` stays true through a `display: none` and the `getCoords` guard cannot fire. The default strategy measures `'W'` on an `OffscreenCanvas`, which has no DOM box at all | xterm.js | `src/browser/services/CharSizeService.ts:64` |
+| …and its origin is rect-derived and zeroes with the box (`const rect = element.getBoundingClientRect()`), while the drag listens on the **document** so it outlives the element — the same exposure `justerm-web` has | xterm.js | `src/browser/input/Mouse.ts` `getCoordsRelativeToElement`, `src/browser/services/SelectionService.ts:506` |
+| **No measured origin term exists at all** — the position arrives window-relative from winit and nothing subtracts a measured box | alacritty | `alacritty/src/input/mod.rs:454` |
+| Same: surface-relative from the toolkit (`pos: apprt.CursorPos`) | ghostty | `src/Surface.zig:4513` |
+| An origin *is* subtracted, but it is a **configured constant** (border + scrollbar), so it cannot go to zero by absence | xterm | `ptyx.h:3856` |
 
 **What justerm took, and the one thing it deliberately did not.** `CellGeometry` states its
 preconditions and the converters *signal* a violation; they still answer. The refusal did not
@@ -1102,6 +1107,21 @@ a dropped gesture would not come back on its own. ghostty's route — make it un
 closed for a recorded reason: the CSS cell is a **float on purpose** (ADR-0022, so `cols *
 cssCellWidth()` scales back exactly). The dedupe on the warn is justerm's own, not xterm's: the reach
 here is every event at pointer rate, where xterm's warn sites are selection-change.
+
+**Scope correction — #819 (2026-08-26).** Everything in the paragraph above is about the **cell**, and
+it stands there. It does **not** transfer to the **origin**, and reading it as if it did would be the
+mistake the rows above now prevent:
+
+- *"a dropped gesture would not come back on its own"* is **measured false** for a drag. `getGeometry`
+  is pulled per event, so a pane shown again under a held button resumes on the correct cell — driven
+  in a real browser on the `#819` probe.
+- *"xterm's guard is half of a repair loop"* is true and **irrelevant here**, because on a hidden
+  element xterm's guard never fires at all: it keeps the last positive cell on purpose. What xterm
+  ships on this axis is a cached cell plus a zeroed origin — the exact shape justerm measured as
+  defective.
+- So on the origin axis **no reference arbitrates**: three have no measured origin term, and the
+  fourth diverges into the defect. That is what put #819 on the *consumer-facing API shape → our own
+  API's internal coherence* tie-breaker row rather than on a reference.
 
 ## Who guards a wheel accumulator (#675, verified 2026-07-31)
 

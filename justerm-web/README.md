@@ -57,10 +57,21 @@ const term = new Terminal(source, renderer, {
   // Every length is CSS px, because that is what `clientX`/`clientY` are — `renderer.cellSize()`
   // is DEVICE px, so divide it by the ratio or the pointer lands on the wrong cell at dpr != 1.
   // Return measured values: the cell must be positive and finite, the counts non-negative
-  // integers. A `0` or `NaN` cell (an unlaid-out or hidden container) makes every pointer event
-  // resolve to a garbage cell; the widget warns once per field rather than failing.
+  // integers. A `0` or `NaN` cell makes every pointer event resolve to a garbage cell; the widget
+  // warns once per field rather than failing.
+  //
+  // Return `undefined` when there is nothing to measure — a `display: none` or detached container,
+  // or one the browser has not laid out yet. Do NOT skip this because the cell below stays
+  // positive: an absent box reports EVERY field as 0, including `originX`/`originY`, and a position
+  // of 0 is perfectly legal, so the widget cannot tell an absent box from a container in the corner
+  // of the window. You can. A gesture that outlives its container — `mousemove`/`mouseup` are
+  // window-scoped in every wiring, so a drag survives a tab switch or a collapsing panel — then
+  // resolves cells against the top-left of the window and auto-scrolls a pane nobody can see.
+  // `undefined` makes it request nothing; it does not cancel the gesture, so showing the container
+  // again under a held button resumes it.
   getGeometry: () => {
     const r = canvas.getBoundingClientRect();
+    if (r.width <= 0 || r.height <= 0) return undefined; // no box — not a box at (0, 0)
     const cell = renderer.cellSize(); // device px
     const dpr = window.devicePixelRatio || 1;
     return {

@@ -241,11 +241,19 @@ export interface GeometryViolation {
  * triggers a re-measure (`CoreBrowserTerminal.ts:1058`, `RenderService.ts:145`, both calling
  * `measure()`). This widget deliberately does not measure: `CellGeometry` arrives per event from the
  * consumer's `getGeometry()` callback (#578, and ADR-0017's routing — pixel→cell is the consumer's by
- * definition). Copying the guard would buy the drop without the recovery, and all three outcomes
- * (drop / clamp / propagate) are equally invisible — which is what makes *diagnosis*, not
- * correction, the thing worth adding. The other two references are total for reasons that do not
- * transfer: alacritty's float→int casts saturate, and ghostty's cell is an integer type, so a zero
- * cell is unrepresentable there rather than handled (`size.zig:139`).
+ * definition). All three outcomes (drop / clamp / propagate) are equally invisible, which is what
+ * makes *diagnosis*, not correction, the thing worth adding. The other two references are total for
+ * reasons that do not transfer: alacritty's float→int casts saturate, and ghostty's cell is an
+ * integer type, so a zero cell is unrepresentable there rather than handled (`size.zig:139`).
+ *
+ * **One clause of that reasoning is retired, and only that one (#819).** This paragraph used to add
+ * that copying xterm's guard would *"buy the drop without the recovery"*. Measured false in a real
+ * browser: `getGeometry` is pulled per event, so a refused gesture resumes on the correct cell as
+ * soon as the box comes back — the recovery half is free here, it simply is not the converter's to
+ * run. The rest stands, and its scope is the **cell**: a violated field precondition is what this
+ * function reports. The refusal this widget does make is on a different axis and at a different
+ * site — an *absent box*, refused by whoever measured it (see {@link CaptureOptions.getGeometry}),
+ * because that failure leaves every field in range and so cannot be seen from here at all.
  */
 export function geometryViolations(geom: CellGeometry): GeometryViolation[] {
   const out: GeometryViolation[] = [];
@@ -358,8 +366,22 @@ export function keyFromDom(ev: KeyboardEventLike): KeyEvent {
 }
 
 export interface CaptureOptions {
-  /** Current canvas origin + cell size (read per event — it changes on resize). */
-  getGeometry(): CellGeometry;
+  /**
+   * Current canvas origin + cell size (read per event — it changes on resize).
+   *
+   * **`undefined` means "I could not measure it"**, and it is a real answer rather than a failure
+   * (#819). A DOM element with no box — `display: none`, detached, not yet laid out — reports every
+   * `getBoundingClientRect()` field as `0`, and `0` is a legal value for everything derived from
+   * it: {@link CellGeometry.originX} and `originY` are the only two fields with no precondition,
+   * because a position may legitimately be `0` or negative. So *"there is no box"* and *"the box is
+   * at the origin"* reach every reader as the same number, and no guard phrased on the geometry can
+   * separate them — only the code that took the measurement knows which one it saw.
+   *
+   * Answering `undefined` makes the gesture request nothing at all: no cell for the app, no
+   * selection change, no scroll. It does **not** end the gesture — a pane shown again under a held
+   * button goes on following the pointer.
+   */
+  getGeometry(): CellGeometry | undefined;
   /**
    * Whether mouse/wheel events should be *reported to the app* (the app has a
    * mouse-tracking mode on). When false they stay local (selection / scrollback).
@@ -392,15 +414,22 @@ export function captureInput(target: HTMLElement, sink: InputSink, opts: Capture
     e.preventDefault();
     sink.send({ kind: "key", event: keyFromDom(e) });
   };
+  // #819 — an unmeasured box means there is no coordinate to report. The converters themselves keep
+  // taking a `CellGeometry`: they are total on a real one, and the refusal belongs at the site that
+  // asked for the measurement, not at the arithmetic downstream of it.
   const onMouse =
     (action: MouseAction) =>
     (e: globalThis.MouseEvent): void => {
       if (!reporting()) return;
-      sink.send({ kind: "mouse", event: mouseFromDom(e, action, opts.getGeometry()) });
+      const geom = opts.getGeometry();
+      if (!geom) return;
+      sink.send({ kind: "mouse", event: mouseFromDom(e, action, geom) });
     };
   const onWheel = (e: WheelEvent): void => {
     if (!reporting()) return;
-    sink.send({ kind: "mouse", event: wheelMouseFromDom(e, e.deltaY, opts.getGeometry()) });
+    const geom = opts.getGeometry();
+    if (!geom) return;
+    sink.send({ kind: "mouse", event: wheelMouseFromDom(e, e.deltaY, geom) });
   };
   const onPaste = (e: ClipboardEvent): void => {
     // preventDefault so the pasted text doesn't also land in the (hidden IME) textarea

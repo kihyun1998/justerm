@@ -93,10 +93,13 @@ export function dragScrollSpeed(py: number, height: number): number {
   // to reach `tick()`'s edge-row floor. The two causes are indistinguishable at this signature, so
   // choosing a semantic for 0 is a re-decision rather than a totality fix.
   //
-  // **#680 settled the real defect without touching this**, which is why the sentence above still
-  // stands: the unmeasured-cell case is caught by {@link SelectionController.mouseMove}, one level
-  // up, where the two factors are still separate and only one of them (`cellHeight`) has a
-  // documented precondition. A caller passing a genuine 0 height still gets #667's reading.
+  // **#680 settled the unmeasured-*cell* case without touching this**, which is why the sentence
+  // above still stands: it is caught by {@link SelectionController.mouseMove}, one level up, where
+  // the two factors are still separate and only one of them (`cellHeight`) has a documented
+  // precondition. #819 settled the *other* mechanism of the same condition — an absent box leaves a
+  // renderer-derived cell positive, so neither this function nor #680's guard has anything to fire
+  // on — and it too lands above this signature, at the producer of the measurement. A caller
+  // passing a genuine 0 height still gets #667's reading.
   //
   // `Infinity` passes through for the same reason it always did: it is the documented "no row
   // count supplied → infinitely tall viewport" case, where a pointer above the top must still
@@ -194,7 +197,7 @@ export class SelectionController {
 
   constructor(
     private readonly port: SelectionPort,
-    private readonly getGeometry: () => CellGeometry,
+    private readonly getGeometry: () => CellGeometry | undefined,
     opts: {
       onScroll?: (lines: number) => void;
       getRows?: () => number;
@@ -223,9 +226,14 @@ export class SelectionController {
       return;
     }
     if (ev.button !== 0) return;
+    // Below the paste branch on purpose: middle-click needs no coordinate, so a press with no box
+    // must still paste. Above every state write, so a refused press leaves NO drag armed — if it
+    // armed one, the first move after the box came back would extend a selection never begun.
+    const geom = this.getGeometry();
+    if (!geom) return;
     this.downTimeStamp = ev.timeStamp ?? 0;
     this.dragged = false;
-    const { row, col, side } = cellAndSide(ev, this.getGeometry());
+    const { row, col, side } = cellAndSide(ev, geom);
     if (ev.shiftKey && this.hasSelection) {
       // Shift+click extends the live selection (keep the anchor) — incremental.
       this.port.extend(row, col, side);
@@ -246,12 +254,31 @@ export class SelectionController {
     if (!this.dragging) return;
     this.dragged = true;
     const geom = this.getGeometry();
+    // #819 — the producer says it could not measure the box, so there is no coordinate to compute
+    // and nothing to ask for. **Resetting is the load-bearing half**, not the early return:
+    // `dragScrollAmount` is a field and {@link SelectionController.tick} fires on it, so returning
+    // alone would LATCH whatever speed the drag had already reached — a pane hidden mid-auto-scroll
+    // would go on scrolling until `mouseup`, with no pointer motion able to lower it. That is
+    // #675's shape ("a signal does not fix that"), reached from the opposite direction.
+    //
+    // The drag is deliberately not ended, matching `scrollbar.ts` `dragTo` (#814): measured in a
+    // real browser, a pane shown again under a held button goes on following the pointer.
+    if (!geom) {
+      this.dragScrollAmount = 0;
+      return;
+    }
     const { row, col, side } = cellAndSide(ev, geom);
     this.lastCol = col;
     this.lastSide = side;
     // The viewport height is a *product*, and that is what made this ambiguous (#680): at
     // `rows * cellHeight === 0` the pointer reads as outside the viewport by its own absolute y,
-    // so a drag that outlives the canvas's box auto-scrolls at the maximum speed. The two factors
+    // so a drag whose cell has gone to `0` auto-scrolls at the maximum speed. **That is one of the
+    // two ways a canvas losing its box reaches this line, and #680 read it as the only one** — it
+    // holds for a *rect-derived* cell, which goes to 0 with the box, and not for a *renderer-derived*
+    // one (`cellSize() / dpr`, what this package's README recommends), which stays positive while
+    // only the origin moves. Measured: 45 lines over three ticks on a hidden pane, no warning. The
+    // `undefined` refusal above is what covers that half (#819); this guard is still the whole
+    // answer for the half it was written for. The two factors
     // do not have the same contract, which is what resolves it without re-deciding anything:
     // `cellHeight` is a {@link CellGeometry} field whose precondition is documented (positive and
     // finite, #672), so a 0 there is a violated contract and there is nothing to compute from;
@@ -285,6 +312,15 @@ export class SelectionController {
    * (`SelectionService.ts:707,711`). */
   tick(): void {
     if (!this.dragging || this.dragScrollAmount === 0) return;
+    // #819 — the second half of the reset in {@link SelectionController.mouseMove}, and it is not
+    // redundant with it: this timer is the consumer's and fires whether or not the pointer moves,
+    // so a user holding still while the pane is hidden would never reach that reset. Asking here
+    // costs one callback per tick and is what makes "a pane the user cannot see requests nothing"
+    // true for a stationary pointer as well as a moving one.
+    if (!this.getGeometry()) {
+      this.dragScrollAmount = 0;
+      return;
+    }
     this.onScroll(this.dragScrollAmount);
     const edgeRow = this.dragScrollAmount > 0 ? Math.max(0, this.getRows() - 1) : 0;
     this.port.extend(edgeRow, this.lastCol, this.lastSide);
@@ -299,9 +335,17 @@ export class SelectionController {
     this.dragScrollAmount = 0;
     const elapsed = (ev.timeStamp ?? 0) - this.downTimeStamp;
     if (ev.altKey && !this.dragged && elapsed < ALT_CLICK_MOVE_CURSOR_TIME && this.isAtBottom()) {
+      // #819 — the geometry is read BEFORE the clear, because the two are one act: this branch
+      // trades the empty block selection for a cursor move, and doing half of it would drop a
+      // selection and put nothing in its place. This is also the one origin reader whose wrong
+      // answer leaves the family entirely — the cell goes out through the consumer's callback, so
+      // no engine guard is on that path, present or future (`pointer-coordinates-are-bounded-by-
+      // their-producer.md`, reason 1). A cell we could not compute would become shell keystrokes.
+      const geom = this.getGeometry();
+      if (!geom) return;
       // The empty block selection begun on mousedown is not real — drop it.
       this.port.clear();
-      const { row, col } = cellAndSide(ev, this.getGeometry());
+      const { row, col } = cellAndSide(ev, geom);
       this.onMoveCursor({ row, col });
       return;
     }

@@ -28,6 +28,7 @@ import {
   SearchController,
   SelectionController,
   StubCommandNavPort,
+  StubSelectionPort,
   StubFrameSource,
   Terminal,
   TERSE_ANNOUNCE_TEXT,
@@ -1076,8 +1077,14 @@ const port: SelectionPort = {
 // Cell size in CSS px = the displayed box ÷ the grid — DPR-independent, so it
 // matches the CSS-pixel pointer coords. (Reading cellSize() in buffer px would
 // be off by devicePixelRatio and the selection would land on the wrong row.)
-const getGeometry = (): CellGeometry => {
+// `undefined` when the canvas has no box — `display: none`, detached, not yet laid out (#819). Every
+// field of an absent box reads as `0`, and `0` is a legal origin, so this callback is the last place
+// that can still tell "there is no box" from "the box is at the corner": one `getBoundingClientRect`
+// answers both and only the code holding the element knows which it asked for. Testing the AREA and
+// not the origin is the point — a canvas legitimately at (0, 0) must keep working.
+const getGeometry = (): CellGeometry | undefined => {
   const r = canvas.getBoundingClientRect();
+  if (r.width <= 0 || r.height <= 0) return undefined;
   return { originX: r.left, originY: r.top, cellWidth: r.width / COLS, cellHeight: r.height / ROWS, cols: COLS, rows: ROWS };
 };
 
@@ -1622,6 +1629,10 @@ declare global {
       hidden: ScrollbarDragStep;
       shown: ScrollbarDragStep;
       selfHidden: ScrollbarDragStep;
+    };
+    __geometryOriginProbe?: () => {
+      silent: OriginDragArm;
+      declares: OriginDragArm;
     };
     __setDpr?: (dpr: number) => void;
     __setLineHeight?: (lh: number) => void;
@@ -2432,7 +2443,9 @@ interface ImeAnchorProbe {
 window.__imeAnchorProbe = (): ImeAnchorProbe => {
   const ta = document.querySelector('textarea')!;
   const snap = (): ImeAnchorSnapshot => {
-    const g = getGeometry(); // the SAME callback the widget anchors with, not renderer.cellSize()
+    // `!` — a probe runs against a laid-out page, so the callback has a box to report (#819). If
+    // it ever does not, the probe should crash rather than report a number it did not measure.
+    const g = getGeometry()!; // the SAME callback the widget anchors with, not renderer.cellSize()
     return {
       cellW: g.cellWidth,
       cellH: g.cellHeight,
@@ -2553,7 +2566,7 @@ window.__imeDriftProbe = (): ImeDriftProbe => {
     duringComposition,
     noComposition,
     capsLockSwallowedWhileComposing,
-    cellHeight: getGeometry().cellHeight,
+    cellHeight: getGeometry()!.cellHeight, // laid-out page — see the note in `__imeAnchorProbe`
   };
 };
 
@@ -2633,7 +2646,7 @@ window.__imePointerProbe = (): ImePointerProbe => {
   const capsLockSwallowedAtPointerDown = !capsLockReaches();
 
   // The cell the anchor WOULD land on if the guard let the forced move through.
-  const g = getGeometry();
+  const g = getGeometry()!; // laid-out page — see the note in `__imeAnchorProbe`
   const driftedCell = { left: CURSOR_COL * g.cellWidth, top: driftRow * g.cellHeight };
 
   ta.value = "";
@@ -2927,6 +2940,198 @@ window.__scrollbarZeroBoxProbe = (): {
   probeBar.dispose();
   pane.remove();
   return { trackWasVisible, before, dragged, hidden, shown, selfHidden };
+};
+
+/** One reading of a selection drag that may have outlived its element's box (#815). */
+interface OriginDragStep {
+  /** The cell the seam was last asked to extend to — what the user would see highlighted. */
+  extend: { row: number; col: number; side: string } | null;
+  /** Cumulative `extend` calls. The side condition: a refused move must not grow this. */
+  calls: number;
+  /** Cumulative `onScroll` calls and the total lines they asked for. A pane the user cannot see
+   * must ask for neither — the harm `scrollbar.ts` refuses one territory over. */
+  scrollCalls: number;
+  scrollLines: number;
+  /** Every precondition warning the widget has emitted since this arm began. */
+  warned: string[];
+  /** The geometry the callback answered at this step — the input under test, recorded rather than
+   * assumed, because which field goes to zero is the whole difference between the two arms. */
+  geom: { originX: number; originY: number; cellWidth: number; cellHeight: number } | null;
+}
+
+/** One geometry shape driven through the whole drag (#815). */
+interface OriginDragArm {
+  /** The element had a box before anything was driven. Asserts the window exists. */
+  boxWasVisible: boolean;
+  /** The press landed — without it every later step passes vacuously. */
+  pressBegan: boolean;
+  /** The DISCRIMINATING window exists: the move point is inside the real viewport and outside the
+   * one a lost origin fabricates. If this is false, every later claim is vacuous. */
+  windowExists: boolean;
+  /** A move against a MEASURED box, at the discriminating point: the control. */
+  before: OriginDragStep;
+  /** The same move, same coordinates, with an ancestor set to `display: none`. */
+  hidden: OriginDragStep;
+  /** Three auto-scroll ticks while still hidden. */
+  ticked: OriginDragStep;
+  /** The same move again once the box is back. */
+  shown: OriginDragStep;
+}
+
+/**
+ * #815 — drive a real selection drag that outlives its element's box, once per GEOMETRY SHAPE.
+ *
+ * The two shapes are not a style choice, and the difference between them is the finding. This demo
+ * derives the cell from the measured box (`r.width / COLS`); this package's README derives it from
+ * the renderer (`cellSize() / dpr`). When the box goes away the first takes the CELL to zero — a
+ * documented precondition, so `checkGeometry` warns — while the second leaves the cell positive and
+ * moves only the ORIGIN, which has no precondition to violate, since a position may legitimately be
+ * zero or negative. So the arms are expected to differ in whether anything is SAID, not in whether
+ * the answer is wrong.
+ *
+ * **The move point is chosen, not convenient.** It sits INSIDE the real viewport and OUTSIDE the one
+ * a lost origin fabricates. A first version of this probe moved to a point inside both, which cannot
+ * separate them: `dragScrollSpeed` answered 0 either way, the auto-scroll branch never ran, and the
+ * whole episode read as a single wrong `extend`. `windowExists` asserts that window rather than
+ * assuming it, so a geometry that stops producing it makes this report say so instead of passing.
+ *
+ * A fresh controller on its own pane, for #814's reason: the page's own controller closes over the
+ * page's geometry callback, and hiding the page's container would also drive its fit and its
+ * `ResizeObserver`, so the step would not be attributable. Listeners are bound the way this demo
+ * binds them — press on the element, move on `window` — because that binding is exactly what lets a
+ * drag outlive its element.
+ *
+ * The `rect` arm runs FIRST as the instrument's own control: it must produce warnings, or a silent
+ * `renderer` arm proves nothing about the widget and only that this probe cannot hear it.
+ */
+function runOriginArm(shape: "declares" | "silent"): OriginDragArm {
+  const cell = renderer.cellSize(); // device px
+  const dpr = window.devicePixelRatio || 1;
+  const cw = cell.width / dpr;
+  const ch = cell.height / dpr;
+  // A grid small enough that the discriminating window lands on a real screen, and a NON-ZERO
+  // origin, so "the origin went to zero" is a MOVE rather than a coincidence: at left 0 / top 0 the
+  // defect and correct behaviour agree and every arm would pass.
+  const armCols = 40;
+  const armRows = 20;
+  const paneLeft = 200;
+  const paneTop = 100;
+
+  const pane = document.createElement("div");
+  pane.style.cssText =
+    "position:absolute;left:" +
+    paneLeft +
+    "px;top:" +
+    paneTop +
+    "px;width:" +
+    armCols * cw +
+    "px;height:" +
+    armRows * ch +
+    "px;";
+  const el = document.createElement("div");
+  el.style.cssText = "width:100%;height:100%;";
+  pane.appendChild(el);
+  document.body.appendChild(pane);
+
+  const warned: string[] = [];
+  const realWarn = console.warn.bind(console);
+  console.warn = (...a: unknown[]): void => {
+    warned.push(String(a[0]));
+    realWarn(...a);
+  };
+
+  // Both arms derive the cell from the RENDERER, which is what this package's README recommends and
+  // the construction under which nothing else can notice the box is gone: the cell stays positive,
+  // so #672's precondition is satisfied and #680's `cellHeight > 0` guard passes. The ONLY
+  // difference between them is whether the consumer says so.
+  const geomOf = (): CellGeometry | undefined => {
+    const r = el.getBoundingClientRect();
+    // `silent` is the pre-#819 recipe, kept as this probe's control: it answers a geometry for a box
+    // that is not there, and must still show the defect.
+    if (shape === "declares" && (r.width <= 0 || r.height <= 0)) return undefined;
+    return { originX: r.left, originY: r.top, cellWidth: cw, cellHeight: ch, cols: armCols, rows: armRows };
+  };
+
+  const armPort = new StubSelectionPort();
+  let scrollCalls = 0;
+  let scrollLines = 0;
+  const ctl = new SelectionController(armPort, geomOf, {
+    getRows: () => armRows,
+    onScroll: (lines) => {
+      scrollCalls++;
+      scrollLines += lines;
+    },
+  });
+  const onDown = (e: globalThis.MouseEvent): void => ctl.mouseDown(e, e.detail || 1);
+  const onMove = (e: globalThis.MouseEvent): void => ctl.mouseMove(e);
+  el.addEventListener("mousedown", onDown);
+  window.addEventListener("mousemove", onMove);
+
+  const step = (): OriginDragStep => {
+    const extendCalls = armPort.calls.filter((c) => c.kind === "extend");
+    const last = extendCalls[extendCalls.length - 1];
+    const g = geomOf();
+    return {
+      extend: last && last.kind === "extend" ? { row: last.row, col: last.col, side: last.side } : null,
+      calls: extendCalls.length,
+      scrollCalls,
+      scrollLines,
+      warned: warned.slice(),
+      geom: g
+        ? { originX: g.originX, originY: g.originY, cellWidth: g.cellWidth, cellHeight: g.cellHeight }
+        : null,
+    };
+  };
+
+  const downX = Math.round(paneLeft + 2.5 * cw);
+  const downY = Math.round(paneTop + 2.5 * ch);
+  const moveX = Math.round(paneLeft + 10.5 * cw);
+  const viewportH = armRows * ch;
+  const moveY = Math.round(viewportH + paneTop / 2);
+  const windowExists = moveY > viewportH && moveY < paneTop + viewportH;
+  const move = (): void => {
+    window.dispatchEvent(new MouseEvent("mousemove", { clientX: moveX, clientY: moveY, buttons: 1, bubbles: true }));
+  };
+
+  const boxWasVisible = el.getBoundingClientRect().width > 0;
+  el.dispatchEvent(
+    new MouseEvent("mousedown", { clientX: downX, clientY: downY, button: 0, detail: 1, bubbles: true, cancelable: true }),
+  );
+  const pressBegan = armPort.calls.some((c) => c.kind === "begin");
+
+  move();
+  const before = step();
+
+  // The route the README documents and #801 made supported: `display: none` on an ANCESTOR, so the
+  // element's own style is untouched and nothing the widget does can un-hide it.
+  pane.style.display = "none";
+  move();
+  const hidden = step();
+
+  // The consumer drives this on a timer while the button is down (`demo/main.ts` at 50ms).
+  ctl.tick();
+  ctl.tick();
+  ctl.tick();
+  const ticked = step();
+
+  pane.style.display = "";
+  move();
+  const shown = step();
+
+  window.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+  el.removeEventListener("mousedown", onDown);
+  window.removeEventListener("mousemove", onMove);
+  pane.remove();
+  console.warn = realWarn;
+  return { boxWasVisible, pressBegan, windowExists, before, hidden, ticked, shown };
+}
+
+window.__geometryOriginProbe = (): { silent: OriginDragArm; declares: OriginDragArm } => {
+  // The pre-#819 recipe FIRST, as this probe's own control: it must still show the defect, or a
+  // clean `declares` arm proves only that the probe stopped looking.
+  const silent = runOriginArm("silent");
+  const declares = runOriginArm("declares");
+  return { silent, declares };
 };
 
 window.__setDpr = (dpr: number): void => {
@@ -3636,8 +3841,16 @@ function updateLinks(): void {
   linkCtrl.setLinks([], regex);
   if (lastPointer) linkCtrl.pointerMove(lastPointer[0], lastPointer[1]); // re-hover after re-set
 }
-function cellFromEvent(e: globalThis.MouseEvent): [number, number] {
+// #819 — the fourth pointer converter on this page, and the one whose recorded disposition was
+// CONDITIONAL rather than safe. `pointer-coordinates-are-bounded-by-their-producer.md` grades it
+// inert because "an out-of-range coordinate simply misses the link map" — true only while this
+// page's cell is derived from the BOX, which takes `cellHeight` to 0 and the quotient to Infinity.
+// The moment a page derives its cell from the renderer, as this package's README recommends, the
+// same converter answers an IN-RANGE cell and hovers a link on a pane nobody can see. It is also
+// the widest trigger of the three readers: this listener runs on bare hover, with no press.
+function cellFromEvent(e: globalThis.MouseEvent): [number, number] | undefined {
   const g = getGeometry();
+  if (!g) return undefined;
   return [
     Math.floor((e.clientY - g.originY) / g.cellHeight),
     Math.floor((e.clientX - g.originX) / g.cellWidth),
@@ -3646,13 +3859,16 @@ function cellFromEvent(e: globalThis.MouseEvent): [number, number] {
 
 window.addEventListener("mousemove", (e) => {
   if (e.buttons !== 0) return; // dragging → selection owns it, not link hover
-  lastPointer = cellFromEvent(e);
-  linkCtrl.pointerMove(lastPointer[0], lastPointer[1]);
+  const cell = cellFromEvent(e);
+  if (!cell) return;
+  lastPointer = cell;
+  linkCtrl.pointerMove(cell[0], cell[1]);
 });
 canvas.addEventListener("click", (e) => {
   if (e.ctrlKey || e.metaKey) {
-    const [row, col] = cellFromEvent(e);
-    linkCtrl.click(row, col);
+    const cell = cellFromEvent(e);
+    if (!cell) return;
+    linkCtrl.click(cell[0], cell[1]);
   }
 });
 

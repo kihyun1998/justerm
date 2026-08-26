@@ -164,6 +164,24 @@ describe("geometryViolations — the CellGeometry precondition (#672)", () => {
     expect(geometryViolations(okGeom)).toEqual([]);
   });
 
+  // #672 chose diagnosis over correction, and a diagnosis nobody can reach is not one. This
+  // deliberately imports from the PACKAGE ENTRY POINT rather than from `../src/input`, because the
+  // claim is about the published surface: every other test in this file would stay green if the
+  // re-export were dropped from `index.ts`, which is exactly how it went unexported until #819's
+  // sweep. `GeometryViolation` was already an exported interface with no way to obtain one.
+  it("is reachable from the package entry point, with its violation type", async () => {
+    const pkg = await import("../src/index");
+    const violations: import("../src/index").GeometryViolation[] = pkg.geometryViolations({
+      ...okGeom,
+      cellWidth: 0,
+    });
+    expect(violations.map((v) => v.field)).toEqual(["cellWidth"]);
+    // …and the internals stay internal: `checkGeometry` would double the widget's own warning, and
+    // `resetGeometryWarnings` is this package's test-only lever, like `clampTo`.
+    expect(pkg).not.toHaveProperty("checkGeometry");
+    expect(pkg).not.toHaveProperty("resetGeometryWarnings");
+  });
+
   // The measured defect. All six fields, because all six arrive from the
   // consumer's `getGeometry()` — a wider surface than xterm's, whose converter
   // takes only the cell from a measurement it owns and `colCount`/`rowCount`
@@ -243,7 +261,16 @@ describe("the geometry signal (#672)", () => {
   // re-measure to recover (`CoreBrowserTerminal.ts:1058` and
   // `RenderService.ts:145` both call `measure()` on an invalid size), while
   // `getGeometry()` is the consumer's callback, read per event (#578,
-  // ADR-0017). Dropping the gesture would buy the drop without the recovery.
+  // ADR-0017).
+  //
+  // This note used to end *"dropping the gesture would buy the drop without the
+  // recovery"*. #819 retired that one clause and nothing else: the recovery is
+  // free here, because `getGeometry` is pulled per event, so a refused gesture
+  // resumes as soon as the box comes back (measured in a real browser). What
+  // stands is the scope — a bad **cell** is a violated precondition this
+  // converter signals, and the refusal the widget does make is at the producer
+  // of the measurement, on an axis (an absent box) that leaves every field in
+  // range and so is invisible to `geometryViolations`.
   //
   // This assertion is also the tripwire: an implementation that starts refusing
   // reds here and has to make that decision deliberately.
