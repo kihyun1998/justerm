@@ -140,11 +140,22 @@ Two consequences are forced by WebGL binding one context to one canvas, and both
   cost a shared surface exists to remove.
 
   **Hiding the DOM overlay is not by itself hiding the terminal, and the difference is measurable.**
-  The pixels are on the *shared* canvas, not in your overlay. `display: none` removes the box, so
-  `observeViewportRect` fires and your `undefined` branch runs; `visibility: hidden` keeps the box,
-  fires nothing, and leaves the terminal fully drawn and fully paid for — call `hide()` yourself
-  there. Before this branch existed the first case was worse than the second: a removed box read
-  back as the origin `(0, 0)` and re-placed that grid, at full size, over its sibling.
+  The pixels are on the *shared* canvas, not in your overlay, so what actually sets a pane aside is
+  the box going away — `display: none` removes it, `observeViewportRect` fires, and your `undefined`
+  branch runs. Before that branch existed this case was the *worse* one: a removed box read back as
+  the origin `(0, 0)` and re-placed that grid, at full size, over its sibling.
+
+  **So the rule is "only a hide that zeroes the box hides the terminal", and it is not a list of
+  exceptions.** Every guard in this package keys on the same predicate (`width <= 0 || height <= 0`),
+  which is what makes the rule stable while a list of CSS idioms would not be. Measured on the
+  two-pane demo, reading the pixel where pane B is drawn: `display: none` clears it; **`content-
+  visibility: hidden` leaves it painted, unchanged**. `visibility: hidden`, a closed `<details>`
+  ancestor, `opacity: 0` and an element covered by another all keep a full-size box too, so they all
+  leave the terminal fully drawn and fully paid for. `[hidden]`, a closed `<dialog>` and a detached
+  node do zero the box and work like `display: none`.
+
+  If you hide by any route that keeps the box, **call `hide()` yourself** — the box is a truthful
+  measurement there, so nothing can infer your intent from it.
 
   **Fitting a hidden pane is safe, and it was not before #810.** `display: none` makes the box
   `0x0`, and both sizing paths — `proposeDimensions` and the `resize` a widget does for you — now
