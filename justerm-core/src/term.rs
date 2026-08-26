@@ -1236,20 +1236,42 @@ impl Term {
             .extend_from_slice(format!("\x1b[?997;{ps}n").as_bytes());
     }
 
-    /// OSC 10/11 set/query the default fg/bg, stacking the `;`-separated specs
-    /// across the `[foreground, background]` slots — xterm's
-    /// `_setOrReportSpecialColor` offset loop (#137). OSC 10 starts at slot 0
-    /// (fg → bg), OSC 11 at slot 1 (bg). A `?` spec is a query. xterm's 3rd slot
-    /// (cursor / OSC 12) is out of scope, so the stack caps at two slots — extra
-    /// specs are dropped.
+    /// OSC 10/11/12 set/query the default fg/bg/cursor colour, stacking the
+    /// `;`-separated specs across the `[foreground, background, cursor]` slots —
+    /// xterm's `ChangeColorsRequest` offset loop (`misc.c:3678`, walking
+    /// `OSC_TEXT_FG` → `OSC_TEXT_BG` → `OSC_TEXT_CURSOR`, `ptyx.h:1018-1020`).
+    /// OSC 10 starts at slot 0, OSC 11 at slot 1, OSC 12 at slot 2 (#137, #832).
+    /// A `?` spec is a query.
+    ///
+    /// **An empty spec addresses its slot and leaves it alone** — neither a set
+    /// nor a reset — and the stack still advances past it, so `OSC 10 ; ; <bg>`
+    /// is the documented way to reach the background alone. xterm's two empty
+    /// cases are the same rule from both ends: nothing left in the string yields
+    /// no name (`misc.c:3685`), and a separator where a name should be yields no
+    /// name either (`misc.c:3687`) before the parse steps past it.
+    ///
+    /// That rule is not a hardening detail here, it is a precondition: the empty
+    /// form is the *only* one real applications emit for OSC 12 (`nvim` sends
+    /// `ESC ] 12 ; BEL` four to five times per session), so a cursor slot without
+    /// it would relay a burst of empty-string colour changes every time a user
+    /// opens an editor (#832).
+    ///
+    /// The stack ends after the cursor. xterm's next slots are the pointer
+    /// colours (`OSC_MOUSE_FG` = 13, `OSC_MOUSE_BG` = 14), which justerm does not
+    /// model — dropping a fourth spec is better than mis-addressing it.
     fn special_color(&mut self, params: &[&[u8]], start: usize) {
         for (i, &spec) in params[1..].iter().enumerate() {
+            if spec.is_empty() {
+                continue; // skip this slot, but still advance to the next
+            }
             let event = match start + i {
                 0 if spec == b"?" => TermEvent::QueryForeground,
                 0 => TermEvent::SetForeground(String::from_utf8_lossy(spec).into_owned()),
                 1 if spec == b"?" => TermEvent::QueryBackground,
                 1 => TermEvent::SetBackground(String::from_utf8_lossy(spec).into_owned()),
-                _ => break, // past [fg, bg] — cursor (OSC 12) unsupported
+                2 if spec == b"?" => TermEvent::QueryCursorColor,
+                2 => TermEvent::SetCursorColor(String::from_utf8_lossy(spec).into_owned()),
+                _ => break, // past [fg, bg, cursor] — the pointer colours are unmodelled
             };
             self.events.push(event);
         }
@@ -1275,6 +1297,14 @@ impl Term {
     pub fn report_background(&mut self, spec: &str) {
         self.replies
             .extend_from_slice(format!("\x1b]11;{spec}\x1b\\").as_bytes());
+    }
+
+    /// Answer an OSC 12 cursor-colour query (#832): the same envelope one slot
+    /// over, ST-terminated like its siblings. The consumer supplies the spec — it
+    /// owns the palette, and the engine never learns the colour.
+    pub fn report_cursor_color(&mut self, spec: &str) {
+        self.replies
+            .extend_from_slice(format!("\x1b]12;{spec}\x1b\\").as_bytes());
     }
 
     /// The cells of visible row `i` (0..rows) at the current scroll position.
@@ -4464,14 +4494,20 @@ impl Perform for Term {
                     }
                 }
             }
-            // OSC 10/11 = set/query the default foreground/background, stacking
-            // specs across the [fg, bg] slots (#122, #137). OSC 10 starts at fg,
-            // OSC 11 at bg. The engine forwards raw specs (theme-agnostic).
+            // OSC 10/11/12 = set/query the default foreground/background/cursor
+            // colour, stacking specs across the [fg, bg, cursor] slots (#122,
+            // #137, #832). Each code names the slot the stack starts at. The
+            // engine forwards raw specs (theme-agnostic).
             b"10" => self.special_color(params, 0),
             b"11" => self.special_color(params, 1),
-            // OSC 110 / 111 = reset the default foreground / background (#122).
+            b"12" => self.special_color(params, 2),
+            // OSC 110 / 111 / 112 = reset the default foreground / background /
+            // cursor colour (#122, #832). One slot each, never a stack — xterm's
+            // reset path resolves a single index from the code itself and walks
+            // nothing (`misc.c:3729`).
             b"110" => self.events.push(TermEvent::ResetForeground),
             b"111" => self.events.push(TermEvent::ResetBackground),
+            b"112" => self.events.push(TermEvent::ResetCursorColor),
             _ => {} // other OSCs are later slices
         }
     }
