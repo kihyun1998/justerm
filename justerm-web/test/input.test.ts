@@ -243,7 +243,16 @@ describe("the geometry signal (#672)", () => {
   // re-measure to recover (`CoreBrowserTerminal.ts:1058` and
   // `RenderService.ts:145` both call `measure()` on an invalid size), while
   // `getGeometry()` is the consumer's callback, read per event (#578,
-  // ADR-0017). Dropping the gesture would buy the drop without the recovery.
+  // ADR-0017).
+  //
+  // This note used to end *"dropping the gesture would buy the drop without the
+  // recovery"*. #819 retired that one clause and nothing else: the recovery is
+  // free here, because `getGeometry` is pulled per event, so a refused gesture
+  // resumes as soon as the box comes back (measured in a real browser). What
+  // stands is the scope — a bad **cell** is a violated precondition this
+  // converter signals, and the refusal the widget does make is at the producer
+  // of the measurement, on an axis (an absent box) that leaves every field in
+  // range and so is invisible to `geometryViolations`.
   //
   // This assertion is also the tripwire: an implementation that starts refusing
   // reds here and has to make that decision deliberately.

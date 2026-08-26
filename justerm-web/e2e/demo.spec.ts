@@ -2540,6 +2540,15 @@ test("a wheel survives an unmeasured cell instead of latching NaN (#675)", async
 //
 // Judged on the delta against a same-duration control, not an absolute: the demo appends a line
 // every 300ms, which raises the thumb on its own, and the maximum itself moves as scrollback grows.
+//
+// **Since #819 this test is green for a different reason, and the note is the point.** This page's
+// `getGeometry` is RECT-derived, so hiding the canvas now makes it answer `undefined` and
+// `mouseMove` refuses before `cellHeight > 0` is ever evaluated — the observable outcome asserted
+// below is unchanged, but the guard exercised is #819's, not #680's. #680's guard keeps its own
+// coverage in `test/selection.test.ts`, which injects a DEFINED geometry with a `0` cell, the state
+// only a consumer that derives its cell some other way can produce. Left as an end-to-end pin of
+// the OUTCOME rather than re-pointed at the guard: the browser is where the window-scoped listeners
+// and the live tick timer are real.
 test("a drag does not auto-scroll when the canvas loses its box (#680)", async ({ page }) => {
   const thumbTop = () =>
     page.evaluate(() => {
@@ -2782,4 +2791,69 @@ test("a scrollbar drag that outlives its track's box requests nothing (#814)", a
     p.shown.calls,
   );
   expect(p.selfHidden.finite, "and must not hand the host NaN").toBe(true);
+});
+
+/**
+ * #819 (#815 site 4) — a selection drag that outlives its element's box.
+ *
+ * Two arms, one page, and the ONLY difference between them is whether the consumer's
+ * `getGeometry` says it could not measure. Both derive the cell from the RENDERER, which is what
+ * `justerm-web`'s README recommends and the construction under which nothing else can notice: the
+ * cell stays positive, so #672's precondition is satisfied and #680's `cellHeight > 0` guard
+ * passes. Only `originX`/`originY` move, and those are the two fields with no precondition to
+ * violate, because a position may legitimately be 0.
+ *
+ * `silent` is the pre-#819 recipe and is this test's CONTROL, not a second subject: it must still
+ * show the defect, or a clean `declares` arm would prove that the probe stopped looking rather
+ * than that the widget stopped scrolling.
+ */
+test("a selection drag that outlives its element's box requests nothing (#819)", async ({ page }) => {
+  const p = await page.evaluate(() => window.__geometryOriginProbe!());
+
+  for (const [name, arm] of Object.entries(p)) {
+    // The windows exist. Without these, an arm whose press never landed — or whose move point sat
+    // inside BOTH the real viewport and the one a lost origin fabricates — would pass every claim
+    // below by never entering the branch under test. The second is not hypothetical: the first
+    // version of this probe did exactly that and measured a single wrong `extend` instead of the
+    // max-speed auto-scroll.
+    expect(arm.boxWasVisible, `${name}: the element must have a box to start`).toBe(true);
+    expect(arm.pressBegan, `${name}: the press must land`).toBe(true);
+    expect(arm.windowExists, `${name}: the discriminating window must exist`).toBe(true);
+    expect(arm.before.extend, `${name}: a measured drag resolves the cell under the pointer`).toEqual({
+      row: 17,
+      col: 10,
+      side: "right",
+    });
+    expect(arm.before.scrollCalls, `${name}: and does not auto-scroll from inside the viewport`).toBe(0);
+  }
+
+  // THE CONTROL — the recipe this issue changes, still doing the damage. `45 / 3 = 15` is
+  // `DRAG_SCROLL_MAX_SPEED`: a pane the user cannot see, scrolled at the maximum rate, with the
+  // selection dragged to the edge row each tick and not one warning anywhere.
+  expect(p.silent.ticked.scrollCalls, "control: the old recipe still scrolls a hidden pane").toBe(3);
+  expect(p.silent.ticked.scrollLines, "control: and at the maximum speed").toBe(45);
+  expect(p.silent.ticked.calls, "control: and drags the selection while it does").toBeGreaterThan(
+    p.silent.before.calls,
+  );
+  expect(p.silent.ticked.warned, "control: and says nothing — which is the whole point").toEqual([]);
+
+  // THE SUBJECT — the same page, the same cell, the same gesture, the consumer merely saying so.
+  expect(p.declares.hidden.calls, "no selection command from a box that is not there").toBe(
+    p.declares.before.calls,
+  );
+  expect(p.declares.ticked.scrollCalls, "and no scroll, however long the timer runs").toBe(0);
+  expect(p.declares.ticked.scrollLines).toBe(0);
+  expect(p.declares.ticked.calls, "and the ticks drag nothing").toBe(p.declares.before.calls);
+  expect(p.declares.hidden.geom, "the arm really did refuse — not merely measure zeros").toBeNull();
+
+  // Deliberately not ending the drag (#814's rider, and the reason the reset is a reset rather
+  // than a latch): a pane shown again under a held button goes on following the pointer.
+  expect(p.declares.shown.calls, "a re-shown pane resumes the drag").toBeGreaterThan(
+    p.declares.hidden.calls,
+  );
+  expect(p.declares.shown.extend, "and resumes on the right cell").toEqual({
+    row: 17,
+    col: 10,
+    side: "right",
+  });
 });

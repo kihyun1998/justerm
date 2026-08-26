@@ -347,8 +347,16 @@ async function attach(
     // of a CSS pixel at a fractional density; harmless for a pointer→cell mapping, and named here
     // because it is exactly the kind of silent conversion this package refuses to make on the
     // renderer's behalf elsewhere.
-    getGeometry: (): CellGeometry => {
+    //
+    // `undefined` when the overlay has no box (#819), and this page is where that matters most:
+    // hiding pane B is a supported operation here, the cell comes from the RENDERER so it stays
+    // positive when the box goes, and the origin is the only field that moves — which no
+    // precondition can catch, because a position may legitimately be `0`. Without this the pane's
+    // own `viewportOrigin` refuses the same box two files over while its pointer path goes on
+    // resolving cells against the top-left of the window.
+    getGeometry: (): CellGeometry | undefined => {
       const r = overlay.getBoundingClientRect();
+      if (r.width <= 0 || r.height <= 0) return undefined;
       const cell = renderer.cellSize();
       const dpr = window.devicePixelRatio;
       const { cols, rows } = renderer.terminalSize();

@@ -251,8 +251,13 @@ export interface TerminalOptions {
    * backend feeds them to core's encoders. Required with `element`. */
   input?: InputSink;
   /** Canvas origin + cell size, read per event (it changes on resize) — maps a
-   * wheel notch to cell coords for the app-reporting path. Required with `element`. */
-  getGeometry?(): CellGeometry;
+   * wheel notch to cell coords for the app-reporting path. Required with `element`.
+   *
+   * Answer `undefined` when the box cannot be measured (`display: none`, detached, not yet laid
+   * out): an absent box measures as all zeros and `0` is in range for everything derived from it,
+   * so only the code that took the measurement can tell it from a real one. See
+   * {@link CaptureOptions.getGeometry}, which states the contract (#819). */
+  getGeometry?(): CellGeometry | undefined;
   /** A local scroll request: scroll the viewport to this display offset (lines up
    * from the bottom). Wheel (normal buffer, no app tracking) funnels here; the
    * consumer's scrollbar drag funnels to the SAME callback for one coherent
@@ -591,7 +596,12 @@ export class Terminal {
     const ta = this.textarea;
     const getGeometry = this.options?.getGeometry;
     if (!ta || !getGeometry) return;
+    // An unmeasured box has no anchor to write. Leaving the last one in place is the right answer
+    // here rather than merely the safe one: the textarea is positioned RELATIVE to the element, so
+    // while the element has no box the anchor is not on screen either, and it is re-aimed by the
+    // next frame that moves the cursor once it is (#819).
     const g = getGeometry();
+    if (!g) return;
     ta.style.left = `${col * g.cellWidth}px`;
     ta.style.top = `${row * g.cellHeight}px`;
   }
@@ -604,10 +614,15 @@ export class Terminal {
     const getGeometry = o.getGeometry;
     const input = o.input;
     if (!getGeometry || !input) return;
+    // #819 — read ONCE. Two calls could answer differently (the box can go away between them), and
+    // an unmeasured box means the notch has no cell size to be measured in: `consumeWheelEvent`
+    // accumulates a sub-line fraction, and feeding it a `0` cell latches the accumulator (#675).
+    const geom = getGeometry();
+    if (!geom) return;
     // getGeometry's cellHeight is CSS px, matching pixel-mode deltaY; dpr 1 keeps
     // the scroller's `cellHeight / dpr` at CSS-px-per-cell.
     const lines = this.scroller!.consumeWheelEvent(e, {
-      cellHeight: getGeometry().cellHeight,
+      cellHeight: geom.cellHeight,
       dpr: 1,
       rows: this.rows,
     });
@@ -617,7 +632,7 @@ export class Terminal {
     switch (action.kind) {
       case "app":
         // Direction from the accumulated lines (not raw deltaY) — coords from the event.
-        input.send({ kind: "mouse", event: wheelMouseFromDom(e, lines, getGeometry()) });
+        input.send({ kind: "mouse", event: wheelMouseFromDom(e, lines, geom) });
         return;
       case "altKeys": {
         // The alt buffer has no scrollback; a wheel becomes a cursor key (xterm).

@@ -112,7 +112,13 @@ fix mentions a shared rule.
   need no object. The demo already carries an unbounded fourth converter
   (`demo/main.ts` `cellFromEvent`, feeding `LinkController`); it is inert because an out-of-range
   coordinate simply misses the link map, and it is listed here so the next reader does not have to
-  re-derive that.
+  re-derive that. **That inertness was conditional and the condition was never stated — #819.** It
+  holds only while the page derives its cell from the measured BOX, which takes `cellHeight` to `0`
+  and the quotient to `Infinity`. Derive the cell from the renderer, as this package's README
+  recommends, and the same converter answers an **in-range** cell against a hidden pane, so the
+  hover resolves a real link instead of missing. It is also the widest trigger of the four, needing
+  no press at all — the listener runs on bare motion. `cellFromEvent` now answers
+  `[number, number] | undefined`; the bound was never the missing part.
 - **#287 multi-viewport** — one context serving N grids means N sets of bounds, and a pointer that
   is inside the canvas but outside *this* viewport becomes an ordinary case rather than an edge one.
 - **`NaN`, which no *bound* catches — settled as a precondition instead (#672).** A bound cannot
@@ -121,7 +127,13 @@ fix mentions a shared rule.
   (finite; a positive finite cell; non-negative integer counts) and the converters *signal* a
   violation rather than refusing — xterm's `hasValidCharSize` → `undefined` guard is half of a repair
   loop whose other half (re-measure) this widget cannot have, since the geometry is the consumer's by
-  ADR-0017. Both converters check, because both share `clampTo` and therefore shared the gap.
+  ADR-0017. **One clause of that reading is retired (#819)**, and it is worth naming because it was
+  the load-bearing objection to ever refusing here: the implied *"so a dropped gesture would not come
+  back on its own"* is measured false — `getGeometry` is pulled per event, so a refused gesture
+  resumes on the correct cell the moment the box returns. The rest stands, and its scope is the
+  **cell**. `#819` refuses on a different axis — an *absent box*, where every field is in range and
+  no precondition can fire — at the only site that can see it, the consumer that took the
+  measurement. Both converters check, because both share `clampTo` and therefore shared the gap.
   **The rest of the geometry's readers were never in this note's scope, and #675 closed the scroll
   half of them.** Two of them consumed the same callback and handed the *consumer* a non-finite
   number: `WheelScroller` accumulated a non-finite delta into `wheelPartialScroll` and **latched**
