@@ -72,7 +72,7 @@ nothing about it appears in the frame.
 - `justerm-core/src/event.rs` — `TermEvent`, the event surface
 - `justerm-core/src/term.rs` — `Term::drain_events`, `Term::drain_replies`, and the
   `Term::report_*` methods that queue replies (`report_background`, `report_foreground`,
-  `report_palette_color`, `report_color_scheme`)
+  `report_cursor_color`, `report_palette_color`, `report_color_scheme`)
 - `justerm-core/src/lib.rs` — `Engine::drain_events`, `Engine::drain_replies`
 
 ## Reference behaviour

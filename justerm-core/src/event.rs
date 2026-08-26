@@ -49,6 +49,20 @@ pub enum TermEvent {
     /// The app queried ANSI palette entry `index` (OSC 4 with `?` for that pair);
     /// the consumer answers with `report_palette_color` (#122).
     QueryPaletteColor { index: u8 },
+    /// The app set the cursor colour (OSC 12, #832). The third slot of the same
+    /// dynamic-colour sequence `SetForeground` and `SetBackground` ride, and
+    /// theme-agnostic for the same reason: the raw spec is forwarded and the
+    /// consumer — which owns the palette *and* the cursor's contrast guard —
+    /// applies it.
+    SetCursorColor(String),
+    /// The app queried the cursor colour (OSC 12 with `?`); the consumer answers
+    /// with `report_cursor_color` (#832).
+    QueryCursorColor,
+    /// The app reset the cursor colour to the theme default (OSC 112, #832). The
+    /// third member of the 110/111/112 reset family, and the one real
+    /// applications emit most: `nvim` sends it on startup, on every alt-screen
+    /// transition and on exit.
+    ResetCursorColor,
     /// The app reset the default foreground to the theme default (OSC 110, #122).
     ResetForeground,
     /// The app reset the default background to the theme default (OSC 111, #122).

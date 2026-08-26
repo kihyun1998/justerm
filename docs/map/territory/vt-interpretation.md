@@ -31,6 +31,26 @@ for a terminal engine, that list is half the specification.
 - **Several modes are tracked but not acted on**, deliberately: the engine records the flag and the
   consumer owns the behaviour (synchronized output's paint-hold, colour-scheme notification). That
   pattern repeats often enough to be the territory's signature — see ADR-0017.
+- **An empty OSC field means something different in every family — and, inside one family, in every
+  reference.** Two independent traps, measured while adding the cursor slot (#832), and the second
+  is the one that bites.
+
+  *Across families*, the obvious generalisation is wrong in both directions: for a **dynamic colour**
+  (OSC 10/11/12) an empty field *addresses its slot and changes nothing* while the stack still
+  advances past it, so `OSC 10 ; ; <bg>` is how xterm reaches the background alone (`misc.c:3684`,
+  `:3687` — its *implementation*; `ctlseqs.txt:2082` documents only the stack); for a **hyperlink**
+  (OSC 8) an empty URI *closes* the current link; for a **title** (OSC 0/2) an empty string *is* the
+  new title. The neighbour that looks identical is not: xterm's OSC 4 path has no skip at all — an
+  unparseable name **aborts the remaining pairs** (`misc.c:2993-3003`, *"quit on any error"*).
+
+  *Within* the dynamic-colour family the references then split **3–1 on the advance**, which no
+  amount of reading one of them reveals. xterm, xterm.js and vte all consume the empty slot and move
+  to the next; ghostty tokenizes the payload with `tokenizeScalar`, which **drops empty fields
+  entirely**, so `OSC 10 ; ; <spec>` sets its *foreground* where the other three set the background
+  — under a comment claiming *"This matches the xterm behavior"*. The divergence is a consequence of
+  choosing `tokenize` over `split`, and ghostty has no test that would catch it. Rows in
+  [`reference-facts.md`](../../agents/reference-facts.md#cursor-colour). justerm follows the three,
+  which ADR-0004 settles independently: `ctlseqs.txt:2082` indexes by *parameter*, not by value.
 - **Tab stops are explicit per-column state**, not a modulo: HTS sets, TBC clears, default every
   eighth column. A modulo would be wrong the moment an application moves one.
 - **The scroll region redefines what "scroll" means.** DECSTBM changes which rows `IND` / `RI` /

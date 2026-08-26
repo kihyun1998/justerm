@@ -227,15 +227,28 @@ fn osc10_stacks_fg_then_bg() {
     );
 }
 
-/// OSC 11 starts at the background slot, so a third spec would be the cursor —
-/// out of scope. `OSC 11 ; a ; b` sets background=a and drops b (cursor cap).
+/// OSC 11 starts at the background slot, so its second spec is the cursor:
+/// `OSC 11 ; a ; b` sets background=a **and** cursor=b.
+///
+/// **This assertion was inverted by #832, deliberately.** It shipped as
+/// `osc11_stacks_from_bg_and_caps_at_cursor`, pinning `b` as *dropped*. That drop
+/// was never a decision about OSC 11's second slot — it was a consequence of
+/// #137 capping the stack at two slots, and #137 gave its reason as "beamterm has
+/// no cursor concept yet". beamterm was replaced by `justerm-renderer` under
+/// ADR-0018, which has had a cursor colour since #368, so the reason the cap
+/// rested on no longer holds. xterm walks the same loop from each sequence's own
+/// offset with no cap at the second slot (`misc.c:3679`), so removing ours
+/// restores the reference behaviour rather than inventing one.
 #[test]
-fn osc11_stacks_from_bg_and_caps_at_cursor() {
+fn osc11_stacks_from_bg_into_the_cursor_slot() {
     let mut t = Engine::new(80, 24);
     t.feed(b"\x1b]11;rgb:11/11/11;rgb:22/22/22\x07");
     assert_eq!(
         t.drain_events(),
-        vec![TermEvent::SetBackground("rgb:11/11/11".into())] // cursor slot dropped
+        vec![
+            TermEvent::SetBackground("rgb:11/11/11".into()),
+            TermEvent::SetCursorColor("rgb:22/22/22".into()),
+        ]
     );
 }
 
@@ -252,4 +265,189 @@ fn osc10_stack_mixes_set_and_query_per_slot() {
             TermEvent::QueryBackground,
         ]
     );
+}
+
+// --- OSC 12 / 112, the cursor slot (#832) ---
+
+/// **The degenerate form is the one real applications emit**, so it is the first
+/// test here. `nvim` 0.8.0 emits `ESC ] 12 ; BEL` — an empty spec, no colour —
+/// four to five times in a six-second session. An empty field addresses the slot
+/// and leaves it alone: it is neither a set nor a reset (xterm `misc.c:3687`,
+/// where a separator appearing where a name should be yields a null name, and
+/// only a non-null name is set or queried).
+///
+/// Without this rule, opening an editor fires four spurious cursor-colour
+/// changes each carrying an empty string.
+#[test]
+fn osc12_with_an_empty_spec_relays_nothing() {
+    let mut t = Engine::new(80, 24);
+    t.feed(b"\x1b]12;\x07"); // the captured bytes, verbatim
+    assert_eq!(t.drain_events(), vec![]);
+    assert_eq!(t.drain_replies(), b""); // and it is not a query either
+}
+
+/// OSC 12 with no field at all — not even a separator — is the same non-event.
+/// This is xterm's other empty case (`misc.c:3684-3685`, nothing left in the string).
+///
+/// **This test has no discriminating power over #832 and is kept anyway.** It was
+/// green before the change and stays green under every mutation of it, because
+/// `params[1..]` is empty so the loop never runs — the behaviour is a property of
+/// vte's split, not of anything here. It documents which of the two empty forms
+/// this arm is *not* responsible for; the one that needed a guard is the test
+/// above. Measured, not assumed: it survived both the guard-deletion and the
+/// `continue`-to-`break` predicate mutations.
+#[test]
+fn osc12_with_no_field_at_all_relays_nothing() {
+    let mut t = Engine::new(80, 24);
+    t.feed(b"\x1b]12\x07");
+    assert_eq!(t.drain_events(), vec![]);
+}
+
+/// OSC 12 sets the cursor colour — the raw spec forwarded, like fg and bg. The
+/// engine holds no colour here either; the consumer owns the palette.
+#[test]
+fn osc12_sets_the_cursor_colour() {
+    let mut t = Engine::new(80, 24);
+    t.feed(b"\x1b]12;#ff0000\x07");
+    assert_eq!(
+        t.drain_events(),
+        vec![TermEvent::SetCursorColor("#ff0000".into())]
+    );
+}
+
+/// OSC 12 `?` is a query the consumer answers, mirroring OSC 10/11. The reply
+/// envelope is the engine's; the spec is the consumer's.
+#[test]
+fn osc12_query_and_report_cursor_color() {
+    let mut t = Engine::new(80, 24);
+    t.feed(b"\x1b]12;?\x1b\\");
+    assert_eq!(t.drain_events(), vec![TermEvent::QueryCursorColor]);
+
+    t.report_cursor_color("rgb:ff/00/00");
+    assert_eq!(t.drain_replies(), b"\x1b]12;rgb:ff/00/00\x1b\\");
+}
+
+/// OSC 112 puts the cursor colour back, the third member of the 110/111/112
+/// reset family. `nvim` emits it six times in a default session.
+#[test]
+fn osc112_resets_the_cursor_colour() {
+    let mut t = Engine::new(80, 24);
+    t.feed(b"\x1b]112\x07");
+    assert_eq!(t.drain_events(), vec![TermEvent::ResetCursorColor]);
+
+    t.feed(b"\x1b]112\x1b\\"); // both terminators
+    assert_eq!(t.drain_events(), vec![TermEvent::ResetCursorColor]);
+}
+
+// --- the empty-spec rule, on the slots that already shipped (#832) ---
+
+/// The same rule on the foreground and background slots, which share the
+/// handler. This is a **fix to shipped behaviour**: before #832 these relayed
+/// `SetForeground("")` / `SetBackground("")`, handing the consumer an empty
+/// string to parse as a colour.
+#[test]
+fn osc10_and_osc11_with_an_empty_spec_relay_nothing() {
+    let mut t = Engine::new(80, 24);
+    t.feed(b"\x1b]10;\x07");
+    t.feed(b"\x1b]11;\x07");
+    assert_eq!(t.drain_events(), vec![]);
+}
+
+/// An empty field **skips its slot and still advances to the next** — it does not
+/// end the stack. So `OSC 10 ; ; <spec>` is how xterm addresses the
+/// background alone, and it must relay a background change and *no* foreground
+/// change (xterm `misc.c:3687-3692`: the null name is skipped, then the parse
+/// steps past the separator).
+#[test]
+fn osc10_an_empty_first_field_addresses_the_background_alone() {
+    let mut t = Engine::new(80, 24);
+    t.feed(b"\x1b]10;;#112233\x07");
+    assert_eq!(
+        t.drain_events(),
+        vec![TermEvent::SetBackground("#112233".into())]
+    );
+}
+
+// --- the stack, now three slots deep (#832) ---
+
+/// One sequence can fill all three slots, which is what removing the two-slot cap
+/// buys. xterm walks `[fg, bg, cursor, …]` from the sequence's own offset
+/// (`misc.c:3679-3696`; the slot order is `OSC_TEXT_FG = 10` then BG then CURSOR,
+/// `ptyx.h:1018-1020`).
+#[test]
+fn osc10_stacks_fg_bg_then_cursor() {
+    let mut t = Engine::new(80, 24);
+    t.feed(b"\x1b]10;rgb:11/11/11;rgb:22/22/22;rgb:33/33/33\x07");
+    assert_eq!(
+        t.drain_events(),
+        vec![
+            TermEvent::SetForeground("rgb:11/11/11".into()),
+            TermEvent::SetBackground("rgb:22/22/22".into()),
+            TermEvent::SetCursorColor("rgb:33/33/33".into()),
+        ]
+    );
+}
+
+/// The stack still ends somewhere: xterm's next slots are the pointer colours
+/// (`OSC_MOUSE_FG` = 13, `OSC_MOUSE_BG` = 14), which justerm does not model, so a
+/// fourth spec is dropped rather than mis-addressed.
+#[test]
+fn osc10_stack_stops_after_the_cursor_slot() {
+    let mut t = Engine::new(80, 24);
+    t.feed(b"\x1b]10;a;b;c;d\x07");
+    assert_eq!(
+        t.drain_events(),
+        vec![
+            TermEvent::SetForeground("a".into()),
+            TermEvent::SetBackground("b".into()),
+            TermEvent::SetCursorColor("c".into()),
+        ]
+    );
+}
+
+/// A `?` works in the cursor slot inside a stack, like every other slot.
+#[test]
+fn osc11_stack_queries_the_cursor_slot() {
+    let mut t = Engine::new(80, 24);
+    t.feed(b"\x1b]11;rgb:11/11/11;?\x07");
+    assert_eq!(
+        t.drain_events(),
+        vec![
+            TermEvent::SetBackground("rgb:11/11/11".into()),
+            TermEvent::QueryCursorColor,
+        ]
+    );
+}
+
+/// `OSC 104 ;` — a separator and nothing after it — resets the **whole** table,
+/// like the bare `OSC 104`. This is a fix to shipped behaviour (#832): the arm
+/// tested the field *count*, so `["104", ""]` fell into the per-index loop where
+/// `"".parse::<u8>()` failed and the reset vanished with no signal.
+///
+/// Same empty-field class as the `OSC 10`/`11`/`12` fix in this slice, one arm
+/// over in the same `match`, but a different *answer* — for a reset, empty means
+/// "all", not "skip". That is why it needed its own reference reading rather than
+/// the neighbouring rule: xterm `misc.c:3057` → `:3077`, xterm.js
+/// `InputHandler.ts:3224`, ghostty `color.zig:235`, three for three.
+#[test]
+fn osc104_with_an_empty_payload_resets_the_whole_table() {
+    let mut t = Engine::new(80, 24);
+    t.feed(b"\x1b]104;\x07");
+    assert_eq!(t.drain_events(), vec![TermEvent::ResetPaletteColor(None)]);
+
+    t.feed(b"\x1b]104;\x1b\\"); // both terminators
+    assert_eq!(t.drain_events(), vec![TermEvent::ResetPaletteColor(None)]);
+}
+
+/// The emptiness test is the *payload*, not "every field is empty": for
+/// `OSC 104 ; ;` xterm's buffer is `";"`, which is not empty, so it takes the
+/// index path — where neither field parses and nothing is reset. Pinned so a
+/// later simplification to `all(is_empty)` has to argue with the reference
+/// rather than with nothing. (ghostty is the outlier here, resetting everything,
+/// because its tokenizer drops both separators.)
+#[test]
+fn osc104_with_two_empty_fields_is_not_the_reset_all_form() {
+    let mut t = Engine::new(80, 24);
+    t.feed(b"\x1b]104;;\x07");
+    assert_eq!(t.drain_events(), vec![]);
 }

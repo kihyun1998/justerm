@@ -254,6 +254,13 @@ impl Engine {
         self.term.report_foreground(spec);
     }
 
+    /// Answer an OSC 12 `QueryCursorColor` event (#832): queue the OSC 12 reply
+    /// from the consumer-supplied spec. Theme-agnostic envelope-only, like its
+    /// foreground and background siblings.
+    pub fn report_cursor_color(&mut self, spec: &str) {
+        self.term.report_cursor_color(spec);
+    }
+
     /// Answer an OSC 4 `QueryPaletteColor` event (#122): queue the OSC 4 reply for
     /// `index` from the consumer-supplied spec. Theme-agnostic envelope-only.
     pub fn report_palette_color(&mut self, index: u8, spec: &str) {
