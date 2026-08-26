@@ -2022,3 +2022,78 @@ remains, so it is a **design proposal**, and this layer's tie-breaker (our own A
 coherence) gives the reference no vote. #814 fixed the totality of the existing model instead, and
 the recorded difference is that our drag goes *inert* while hidden where VS Code's keeps scrolling —
 which is the behaviour #801 wants, since the pane the user cannot see should not scroll.
+
+## The VT-gap sweep of 2026-08-26 — five decisions the references settled (#823–#832, verified 2026-08-26)
+
+A full sweep of the Engine's VT dispatch against all five pinned trees produced seven filed gaps.
+These are the rows that **decided** something — each one is the reason a spec says what it says, and
+each was reached by reading source rather than by recalling a convention. They live here because
+they are stable and because two of them are traps: a naive reading of the obvious reference gives
+the wrong answer.
+
+### Empty parameters are not empty values
+
+The sharpest lesson of the sweep, and it cost a defect in a filed spec before it was learned: the
+degenerate form of a sequence is often the **only** form real applications emit, and every
+reference has a deliberate rule for it that a "normal case" reading never reaches.
+
+| Fact | Reference | Site |
+|---|---|---|
+| **An empty dynamic-colour spec sets nothing** — the slot's name is left null and only a non-null name is set or queried. This is the shared `OSC 10`-family path, so it governs foreground, background **and** cursor | xterm | `misc.c:3685` (no names at all), `:3687` (`names[0] == ';'` → an empty *field* is also no name) |
+| **An empty `OSC 52` clipboard target defaults to the system clipboard**, not to "unrecognised". Branches on the first byte being the separator | ghostty | `src/terminal/osc/parsers/clipboard_operation.zig:24` |
+| …and it is pinned by a test named for the case, asserting `52;;?` yields kind `c` | ghostty | `src/terminal/osc/parsers/clipboard_operation.zig:64` |
+
+⚠ **Measured consequence, not theory.** `tmux` 3.2a emits `ESC ] 52 ; ; <base64>` — the *empty*
+target — for both `set-buffer -w` and an ordinary copy-mode copy. `nvim` 0.8.0 emits
+`ESC ] 12 ; BEL` — the *empty* spec — four to five times per session. Both were captured on the
+RHEL 9 VM. A spec that ignores unrecognised targets, or that forwards a raw spec unconditionally,
+fails against the only emitters that exist. #828's target rule was written the wrong way from the
+alacritty reading (which matches a single target byte and has **no** branch for an absent field)
+and was corrected from this row.
+
+### REP's retained character — the two obvious references disagree, and xterm breaks the tie
+
+| Fact | Reference | Site |
+|---|---|---|
+| **`REP` repeats through the ordinary print path**, in a loop, so wrap / wide pairing / pen all apply. Count defaults to one; no retained char means no-op | ghostty | `src/terminal/Terminal.zig:452-456` |
+| The retained char is armed **only by printing** | ghostty | `src/terminal/Terminal.zig:1365` |
+| ⚠ **…and ghostty clears it only on full reset** — so a `REP` after a cursor move repeats a character from earlier in the stream | ghostty | `src/terminal/Terminal.zig:4467` (inside `fullReset`) |
+| **xterm's rule is the opposite, and it is structural rather than a list of clearing sites**: at the end of each byte, `lastchar` is assigned `thischar` **only when the parser is back in the ground state** — and `thischar` is `-1` unless a graphic character was printed. So any completed escape sequence lands in ground with `-1` and disarms the repeat | xterm | `charproc.c:6478` (the ground-state gate), `:3364` (printing arms both) |
+| `REP` then guards on the retained char having **positive width** — a control or zero-width char is not repeatable | xterm | `charproc.c:6154` |
+| **xterm.js agrees with xterm**: its `precedingJoinState` is zeroed on every executed C0 control and at each escape-sequence entry — eleven sites in the parser, not one | xterm.js | `src/common/parser/EscapeSequenceParser.ts:690` (execute fast-path), `:310`, `:502`, `:676`, `:732`, `:775`, `:810`, `:849`, `:878`, `:902`, `:928` |
+
+**The adjudication, since the trees split 2:1.** ADR-0004 gives the spec — and xterm as its closest
+readable proxy — authority over the whole VT layer, above any implementation including ours. xterm
+and xterm.js agree; ghostty is the outlier. So justerm follows **ghostty's mechanism** (repeat by
+re-entering print) with **xterm's lifecycle** (the retained char does not survive a completed
+sequence). Those are two different questions and picking one reference for both is the error #825's
+body made before this row existed.
+
+### Secondary device attributes — report yourself, do not impersonate
+
+| Fact | Reference | Site |
+|---|---|---|
+| **alacritty reports its own version**, derived from its crate version at compile time | alacritty | `alacritty_terminal/src/term/mod.rs:1266-1267` |
+| xterm.js instead **impersonates** whichever terminal it is configured to emulate, branching to xterm / rxvt-unicode / screen replies | xterm.js | `src/common/InputHandler.ts:1737`, the xterm reply at `:1745` (`ESC[>0;276;0c`) |
+
+justerm follows alacritty. Impersonation is self-defeating for an engine that does not implement
+what it would be claiming, and it contradicts the existing DA1, written to advertise only the levels
+the Engine genuinely has.
+
+### The title stack
+
+| Fact | Reference | Site |
+|---|---|---|
+| **Two stacks, not one** — window title and icon name are pushed independently, selected by the second parameter | xterm.js | `src/common/InputHandler.ts:2952` |
+| Depth is bounded at **10**… | xterm.js | `src/common/InputHandler.ts:47` (`STACK_LIMIT`) |
+| …and overflow drops the **oldest** while the push still succeeds | xterm.js | `src/common/InputHandler.ts:2954` |
+| A pop calls the **same title setter** the OSC handler calls, so a restore is an ordinary title change to every consumer | xterm.js | `src/common/InputHandler.ts:2967` |
+| **Negative:** ghostty has no title-stack handling in its terminal core, and alacritty does not implement XTWINOPS at all | ghostty / alacritty | `ghostty/src/**` grepped for `title_stack`/`push_title`/`pop_title` — 0 matches; `alacritty_terminal/src/**` for the `t` final — 0 matches |
+
+### Cursor colour
+
+| Fact | Reference | Site |
+|---|---|---|
+| `OSC 12` is a set-or-report on the same dynamic-colour path as 10/11 — so the empty-spec rule at the top of this section governs it | xterm.js | `src/common/InputHandler.ts:3210` |
+| `OSC 112` restores it | xterm.js | `src/common/InputHandler.ts:3268` |
+
