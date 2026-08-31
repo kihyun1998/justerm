@@ -99,7 +99,8 @@ cargo bench              # throughput 마이크로벤치(추세 기록)
 `fuzz`·`justerm-facade`·`justerm-renderer`·wasm32-전용 테스트(`justerm-wasm-decode/tests/web.rs`)는
 *빌드조차 안 한다*. 크레이트별 전체 게이트 매트릭스(사각 포함·**어느 제외가 의도적인지**·CI 대조)는
 **`docs/agents/thegraph.md` § `gate`** — 22개 명령, 실행 사본은 `scripts/thegraph/gates.mjs`.
-크레이트 맵과 downstream 절차는 `docs/agents/theflow.md`.
+크레이트 맵(어느 디렉터리가 무엇을 소유하나, **구체 경로**로)은 `docs/agents/thegraph.md` §
+`place`, downstream 절차는 같은 파일 § `downstream`.
 
 ## 핵심 규칙
 
@@ -146,12 +147,14 @@ CI 의 `supply-chain` 게이트는 **just-shield**(같은 소유자=first-party,
 착수 전에 그것을 연다. 네 불변식은 스킬이 소유한다(판정 노드는 위임 금지 · 모든 back-edge 는 guard 와
 bound 를 선언 · 사람에게 가는 길은 `batch` 하나 · 모든 조건은 decider 를 명시).
 
-세 표는 **`docs/agents/theflow.md` 가 계속 소유**하고 `thegraph.md` 는 가리키기만 한다: layer 별
-**tie-breaker**(무엇이 prior art 를 이기나 — 4개 layer 는 레퍼런스에 *표 없음*), **의도적 divergence
-목록**(이미 끝난 논쟁), **war-story index**. 사본은 divergence seed 라서 복사하지 않는다.
+세 표는 2026-08-31 부터 **`thegraph.md` 가 소유**한다(§ "Tie-breaker, deliberate divergences, war
+stories"): layer 별 **tie-breaker**(무엇이 prior art 를 이기나 — 4개 layer 는 레퍼런스에 *표 없음*),
+**의도적 divergence 목록**(이미 끝난 논쟁, 22행 — 뒤 10행은 `plat` 이 낸 layout 행이고 그중 하나는
+**UNCLASSIFIED**), **war-story index**. 스키마가 셋 다 *빌드의* 의무로 이름을 대는데 그걸 유지 주체
+없는 문서에 두면 빌드가 미완성이라 옮겼다. `theflow.md` 에 남은 사본은 **superseded** 다.
 
 추출물: `.claude/agents/thegraph-{lens,refuter,reference,sweep}.md` + `scripts/thegraph/{gates,
-triggers,search,preflight}.mjs`. **착수 전 `node scripts/thegraph/preflight.mjs`** — 워크트리 위치·
+triggers,search,preflight,place}.mjs`. **착수 전 `node scripts/thegraph/preflight.mjs`** — 워크트리 위치·
 `../.refs` 핀·포트 5173 소유자·로컬 `wasm-pack` vs CI 핀을 검사한다(전부 *조용히* 실패하는 것들).
 
 레퍼런스(alacritty·ghostty·xterm.js·three.js·**xterm**)는 **`../.refs/` 의 SHA 핀된 로컬 체크아웃을
@@ -159,11 +162,29 @@ triggers,search,preflight}.mjs`. **착수 전 `node scripts/thegraph/preflight.m
 `thegraph.md` 가 authoritative** 이고 `cite.mjs --pins` 가 그걸 읽는다. 이미 확인된 사실은
 **`docs/agents/reference-facts.md`** 에 `file:line`+SHA 로 쌓이니 백지에서 시작하지 말 것.
 
-(`theflow` 는 여전히 유효한 형제 규율이고 `/theflow` 로 부를 수 있다. 기본은 `thegraph`.)
+**`place` 는 `implement` 앞에서 발화한다** — 경계가 정체성인 repo 에서 디렉터리 경계는 seam 이
+*물리적으로* 표현된 자리라, 파일을 틀린 디렉터리에 쓰면 seam 이 깨지는데 에러도 실패 테스트도 경고도
+안 난다. tree rule 은 `thegraph.md` § `place` 에 구체 경로로 있고, `node scripts/thegraph/place.mjs`
+가 diff 에 대고 맞춘다(보고만 하고 판정은 안 한다).
 
-### theflow — 형제 규율 (7단계)
+### theflow — 은퇴한 규율 (기록)
 
-**`theflow` 스킬의 7단계 규율** — ① 참조·선례·
+**`theflow` 스킬은 은퇴했고 설치돼 있지 않다** — 2026-08-31 실측: `/theflow` 는 해석되지 않고,
+바인딩을 authoring 하던 `/grill-the-flow` 도 함께 은퇴했다. 작업 규율은 위 `### thegraph` 하나뿐이고,
+폴백은 없다.
+
+**`docs/agents/theflow.md` 파일은 남으며 지우면 안 된다.** 라우팅 대상이 아니라 *인용 대상*이 됐다 —
+인바운드 인용 약 40건, 그중 일부는 **docs.rs 로 나가는 doc-comment**(`justerm-core/src/term/walk.rs`,
+`justerm-renderer/src/webgl.rs`)와 ADR-0019/0021/0026, `docs/map/` 노트 8곳이다. 그 안에서 **여전히
+유일한 홈**인 것은 `§ "Architecture prior art"`(frame-mode 가 합성한 두 계보와 prior-art *갭*;
+`boundary` 에서 읽는다) 하나다 — 나머지는 `thegraph.md` 로 옮겨졌거나 거기 같이 있다.
+
+아래 7단계 서술은 **stage 이름이 노드 이름으로 바뀌었을 뿐** 대부분 살아 있다:
+① `reference` · ② `boundary` · ③ `implement` · ④ `proof` · ⑤ `verify` · ⑥ `sweep` ·
+⑦ `gate`/`downstream`. 규율의 *메서드*는 이제 형제 스킬들이 소유하고 `thegraph` 가 불러 쓴다.
+읽을 때 이 대응만 얹으면 된다:
+
+**(구 7단계 서술, 기록용)** — ① 참조·선례·
 외부/레지스트리 사실 실측 대조(추측 금지) → ② 경계(메커니즘 core / 정책 소비처; 계약≠결함, 막은 양방향
 누수) → ③ 순수 로직 `/tdd`(RED→GREEN) + test-trust 게이트(fix off→red, right reason) → ④ real 왕복
 증명(가짜 백엔드 아님; 최강 증명=실 소비처 penterm 링크, DoD ④) → ⑤ adversarial 완전성 패스(subagent
@@ -175,8 +196,9 @@ behavior 서술 표면 sweep(docs.rs doc-comment·릴리스 노트·**발행 REA
 방법론까지 소유한다: 1원리+명명된 prior-art 교차검증, "확인 못 함 ≠ 없음"(미확인=갭, cleared=validity 조건),
 결정 유형 라우팅(grill 은 제품·정체성 판단만), DoD 4조건, 이슈=durable 기록(defer·거부한 대안·negative
 result 를 선행 기록), 검증한 것만 보고, *우회 금지*(다른 층 결함을 소비처에서 보정 말고 멈춰서 사용자에게).
-스킬은 이제 `disable-model-invocation`(=`/theflow` 커맨드; 이 포인터가 상시 트리거) — 바인딩 doc 은
-`/grill-the-flow` 가 authoring 한다. justerm *바인딩*(크레이트/소비처 맵·참조 라우팅표·경계 구체값·증명수단·
-표면 목록·게이트 매트릭스·downstream 절차·실증 이슈 인덱스)은 **`docs/agents/theflow.md`** — 스킬이 런타임에 읽는다.
-레퍼런스 읽기·핀·`reference-facts.md` 는 위 `### thegraph` 가 authoritative 다(핀 표가
-`thegraph.md` 로 옮겨졌고 `theflow.md` 의 표는 4-tree 구판이다). 트리 생성 절차는 theflow.md § "Step 1".
+
+**이 문단이 서술하는 바인딩은 전부 `thegraph.md` 로 컴파일됐다** — 크레이트/소비처 맵은 § `place`
+와 § `downstream`, 참조 라우팅표·핀은 § `reference`(핀 표가 authoritative 이고 `cite.mjs --pins` 가
+그걸 읽는다; `theflow.md` 의 표는 4-tree 구판), 경계 구체값은 § `boundary`, 증명수단은
+§ `implement`/`proof`, 표면 목록은 § `sweep`, 게이트 매트릭스는 § `gate`. 트리 생성 절차만
+`theflow.md` § "Step 1" 에 남아 있다.
