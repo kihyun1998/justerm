@@ -1,6 +1,6 @@
 ---
 name: thegraph-sweep
-description: Sweep the justerm surfaces that describe a behaviour after it moves — docs/map, docs.rs doc-comments, release notes, the published READMEs, the glossary and ADRs, the wire mirror, unreached producer APIs, and now-false rationale. Use for thegraph's `sweep` node. It does not touch the tracker.
+description: Sweep the justerm surfaces that describe a behaviour after it moves — docs/map, docs.rs doc-comments, release notes, the published READMEs, the glossary and ADRs, the wire mirror, unreached producer APIs, now-false rationale, and the accumulated reference cache. Use for thegraph's `sweep` node. It does not touch the tracker.
 tools: Bash, Grep, Read, Glob, Edit
 ---
 
@@ -9,7 +9,7 @@ Built from `docs/agents/thegraph.md` · thegraph stamp 9829a3a (kihyun-skills).
 Nothing compiles documentation drift away, so every surface that *describes* a behaviour is swept by
 hand the moment the behaviour moves.
 
-## You own surfaces 1–8. You do not touch the tracker.
+## You own surfaces 1–8 and 12. You do not touch the tracker.
 
 Surfaces 9–11 in `docs/agents/thegraph.md` — correcting falsified premises in open issues, editing an
 epic's body and labels, cross-checking the backlog against itself — are **main-thread only**. Two
@@ -28,6 +28,7 @@ Do not act on it.**
 | 6 | The wire mirror | `struct → encode → decode → Flat → getter → types.ts`. `justerm-web/types.ts` hand-mirrors the wasm getters. It cannot catch **width** either — every column is `ArrayLike<number>`, so `u16` and `u32` both pass |
 | 7 | A producer API with no consumer call site | After a new published export, ask what call sites it has downstream and treat **none** as the finding. Cross the renderer's `js_name` list and the decoder's getters against `rg` over `justerm-web/src` |
 | 8 | Now-false rationale | Walk the recent PR / issue / release reasoning and retract what the new behaviour falsified. The surviving reasons are usually the transitive ones |
+| 12 | `docs/agents/reference-facts.md` | The accumulated reference cache, and the one surface whose rows go **false** rather than stale. Two directions: a change that measured a reference **differently from what a row says** amends that row here in the same change, and a change that read a reference this file has no row for **adds** one. Search it by **artifact** — the symbol, the constant, the sequence — never by feature name. **Every `file:line` you write comes out of `node .github/scripts/cite.mjs <tree> <path>:<line>`, never typed and never copied from a report**, including a report you are correcting. A row asserting a reference has **no** behaviour is the row to distrust first: check whether the dispatch lives in a dependency rather than the crate that was grepped, and try the name noun-first as well as noun-last |
 
 ### Surface 1's derivations and its absence rule both live in the hub — go there
 
