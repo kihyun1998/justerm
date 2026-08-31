@@ -73,6 +73,38 @@ pub struct Term {
     /// touches `self.config`, xterm.js holds it in `OptionsService`, and ghostty passes
     /// the set in per call.
     word_separators: String,
+    /// The window title the application last set (OSC 0/2), retained so that a
+    /// title *pop* has something to restore (#823). Until XTWINOPS 22/23 landed
+    /// the engine forwarded the string and forgot it, which is exactly why a pop
+    /// could not be answered: a party that does not know what it is stacking
+    /// cannot maintain a stack, and the consumer cannot do it either — it holds
+    /// a frame and an event queue and never sees that a pop was requested.
+    ///
+    /// This is **terminal state the application owns**, so it dies on RIS. It
+    /// needs no entry in `full_reset`'s copy-back list — the wholesale rebuild
+    /// drops it, which is the behaviour alacritty spells out (`title_stack =
+    /// Vec::new()` in its `reset_state`). Note it is a *fifth* kind for the RIS
+    /// invariant note's table, which sorts fields into configuration / buffer
+    /// coordinate / pending obligation / id counter: a retained title is none of
+    /// those, and it dies because the application wrote it, not the embedder.
+    window_title: String,
+    /// The icon name, the second axis XTWINOPS addresses (#823). Narrower than
+    /// it looks: **OSC 1 is not parsed**, so the only thing that ever writes
+    /// this is OSC 0, which sets both axes at once. It is retained and stacked
+    /// anyway so that mixed push/pop sequences keep the two axes aligned — the
+    /// engine has no icon-name event, so restoring one has no observable output
+    /// today. That asymmetry is deliberate and stated rather than an oversight;
+    /// xterm.js takes the same route (`setIconName` fires nothing).
+    icon_name: String,
+    /// The window-title stack (XTWINOPS `CSI 22 t` / `CSI 23 t`), bounded at
+    /// [`TITLE_STACK_DEPTH`]. Separate from `icon_name_stack` because the
+    /// sequence's second parameter selects an axis and real applications use it:
+    /// `vim` emits a fully nested `22;0;0t · 22;2t · 22;1t … 23;2t · 23;1t ·
+    /// 23;0;0t`. Collapsing the two would make an icon-only push followed by a
+    /// window-only pop restore the wrong string.
+    window_title_stack: Vec<String>,
+    /// The icon-name stack — the other half of the pair above.
+    icon_name_stack: Vec<String>,
     /// Origin mode (DECOM ?6): when set, cursor addressing is relative to the
     /// scroll region's top margin (and clamped to it).
     origin_mode: bool,
@@ -451,6 +483,20 @@ impl Hyperlink {
 /// large enough that the sweep is not the common path.
 const LINK_IDS_FIRST_SWEEP: usize = 16;
 
+/// How deep an XTWINOPS title stack goes before a push starts dropping the
+/// oldest entry (#823).
+///
+/// Ten is a three-way convergence rather than a preference: xterm's
+/// `MAX_SAVED_TITLES` (`ptyx.h:2357`), xterm.js's `Constants.STACK_LIMIT`, and
+/// the spec's own description of the direct-access parameter as taking a value
+/// *"in the range 1 through 10"* (`ctlseqs.txt:1698`) all name the same number.
+///
+/// Overflow **drops the oldest while the push still succeeds**, which is what
+/// both implementations do (xterm.js `shift()`s; xterm wraps a fixed array).
+/// Refusing the push instead would break the pairing for the *innermost*
+/// nesting levels — the ones a user unwinds first.
+const TITLE_STACK_DEPTH: usize = 10;
+
 /// The `id=` value out of an OSC 8 `params` field, or `None` when it is absent or empty.
 ///
 /// Three rules, each taken from xterm.js's `_createHyperlink` verbatim rather than from
@@ -793,6 +839,10 @@ impl Term {
             link_ids_sweep_at: LINK_IDS_FIRST_SWEEP,
             tabs: default_tabs(cols),
             word_separators: DEFAULT_WORD_SEPARATORS.to_owned(),
+            window_title: String::new(),
+            icon_name: String::new(),
+            window_title_stack: Vec::new(),
+            icon_name_stack: Vec::new(),
             scroll_top: 0,
             scroll_bottom: rows - 1,
             scrollback: VecDeque::new(),
@@ -2346,12 +2396,95 @@ impl Term {
         self.gl = s.gl;
     }
 
+    /// Set the window title and tell the consumer, in one place.
+    ///
+    /// Both writers come through here — the OSC 0/2 path and the XTWINOPS pop
+    /// path — so the retained string and the event a consumer sees cannot
+    /// disagree. A pop deliberately fires the **same** `TermEvent::Title` an
+    /// ordinary title change does: both implementations that carry the stack do
+    /// exactly this (xterm.js's `setTitle` fires `_onTitleChange`, alacritty's
+    /// `pop_title` routes through `set_title`), and a second event would ask
+    /// every consumer to learn a distinction it has no use for. The consequence
+    /// worth stating: `Title` now means *"the title is this"*, not *"the
+    /// application just set this"*.
+    fn set_window_title(&mut self, title: String) {
+        self.window_title.clone_from(&title);
+        self.events.push(TermEvent::Title(title));
+    }
+
+    /// XTWINOPS (`CSI Ps ; Ps ; Ps t`) — window manipulation, of which this
+    /// engine implements exactly two operations (#823).
+    ///
+    /// It owns no window, so most of the family is meaningless here: 14/16 ask
+    /// about pixels the engine has no concept of, and the resize/move/iconify
+    /// operations are requests about a window the consumer owns. 22 (push
+    /// title) and 23 (pop title) are different — they are pure VT state, and
+    /// they were the single most-emitted unimplemented sequence in the capture
+    /// sweep that produced #823. **This does not make `CSI t` a handled final**;
+    /// every other first parameter still falls through and is ignored.
+    ///
+    /// The second parameter selects the axis: absent or `0` both, `1` the icon
+    /// name, `2` the window title, anything else no axis at all. It is honoured
+    /// rather than assumed away because real applications use it — `vim` emits
+    /// a fully nested `22;0;0t · 22;2t · 22;1t … 23;2t · 23;1t · 23;0;0t`,
+    /// which a single shared stack gets wrong.
+    ///
+    /// **The optional third parameter is deliberately ignored**, and that is a
+    /// divergence from the spec rather than a simplification of it:
+    /// `ctlseqs.txt:1698` gives a value in 1..10 *direct access to the stack*,
+    /// storing or retrieving without pushing or popping, and xterm implements
+    /// it (`charproc.c:9272`). Measured reach of that form is zero on every
+    /// axis checked — no occurrence across seven programs recorded under real
+    /// ptys, no file under `/usr/bin` or `/usr/lib64` containing it, no
+    /// terminfo capability that emits `CSI 22/23 t` at all under any candidate
+    /// `TERM`, and no other implementation honouring it (xterm.js ignores it,
+    /// alacritty's dispatch never reads past the first parameter, ghostty
+    /// carries the index and then drops the command). It entered xterm in patch
+    /// #385 (2023-10-01) for symmetry with XTPUSHCOLORS, not because an
+    /// application asked. So `CSI 22;2;3t` is an ordinary push here.
+    fn window_ops(&mut self, params: &Params) {
+        // `param_or` folds an explicit 0 to the default, which is what both
+        // axis and operation want: absent and `0` mean the same thing in each.
+        let axis = param_or(params, 1, 0);
+        let (window, icon) = (axis == 0 || axis == 2, axis == 0 || axis == 1);
+        match param_or(params, 0, 0) {
+            22 => {
+                if window {
+                    let title = self.window_title.clone();
+                    push_title(&mut self.window_title_stack, title);
+                }
+                if icon {
+                    let name = self.icon_name.clone();
+                    push_title(&mut self.icon_name_stack, name);
+                }
+            }
+            23 => {
+                if window && let Some(title) = self.window_title_stack.pop() {
+                    self.set_window_title(title);
+                }
+                // Restoring the icon name has no observable output: the engine
+                // has no icon-name event. The stack is still popped so the two
+                // axes stay aligned across mixed push/pop sequences.
+                if icon && let Some(name) = self.icon_name_stack.pop() {
+                    self.icon_name = name;
+                }
+            }
+            _ => {}
+        }
+    }
+
     /// RIS (ESC c) — full reset to the power-on state (#53). Reconstruct every
     /// screen/mode field to its construction default (preserving only the
     /// dimensions and the scrollback cap), but keep the consumer-bound output
     /// queues (`replies`/`events`) that accrued earlier in this `feed`, and
     /// signal a full repaint. The vte parser lives outside `Term`, so replacing
     /// `self` does not disturb in-progress parsing. Mirrors xterm.js fullReset.
+    ///
+    /// The XTWINOPS title stacks and the retained title/icon strings (#823) are
+    /// **not** on the copy-back list and must not be: they are terminal state the
+    /// application wrote, so `ESC c` is supposed to drop them, and the wholesale
+    /// rebuild does that for free. alacritty spells the same thing out by hand
+    /// (`title_stack = Vec::new()` in `reset_state`).
     fn full_reset(&mut self) {
         let replies = std::mem::take(&mut self.replies);
         let mut events = std::mem::take(&mut self.events);
@@ -4016,6 +4149,21 @@ fn default_tabs(cols: usize) -> Vec<bool> {
 /// First sub-parameter of CSI param `idx`, or `default` when absent or zero
 /// (a zero/omitted numeric param means "1" for cursor movement and "0" for
 /// erase — callers pass the right default).
+/// Push onto an XTWINOPS title stack, bounded at [`TITLE_STACK_DEPTH`] (#823).
+///
+/// At the bound the **oldest** entry goes and the push still succeeds, which is
+/// what both implementations carrying this feature do — xterm.js `shift()`s its
+/// array, alacritty `remove(0)`s its `Vec`, and xterm wraps a fixed-size one.
+/// The alternative (refuse the push) is worse in the case that actually occurs:
+/// it breaks the pairing for the innermost nesting levels, and those are the
+/// ones a user unwinds first.
+fn push_title(stack: &mut Vec<String>, value: String) {
+    if stack.len() >= TITLE_STACK_DEPTH {
+        stack.remove(0);
+    }
+    stack.push(value);
+}
+
 fn param_or(params: &Params, idx: usize, default: u16) -> u16 {
     match params.iter().nth(idx).and_then(|p| p.first().copied()) {
         Some(v) if v != 0 => v,
@@ -4315,7 +4463,8 @@ impl Perform for Term {
                 self.set_scroll_region(top, bottom);
             }
             'm' => self.sgr(params),
-            's' => self.save_cursor(),    // SCOSC (CSI s) — alias of DECSC
+            's' => self.save_cursor(), // SCOSC (CSI s) — alias of DECSC
+            't' => self.window_ops(params), // XTWINOPS — only 22/23 (#823)
             'u' => self.restore_cursor(), // SCORC (CSI u) — alias of DECRC
             // DA1 (primary device attributes, CSI c): advertise VT220 + ANSI
             // colour — the levels justerm actually implements (#27).
@@ -4395,11 +4544,18 @@ impl Perform for Term {
         };
         match number {
             // OSC 0 = icon + window title, OSC 2 = window title. Both set title.
+            // Since #823 the string is also *retained*, because a title pop has
+            // nothing to restore otherwise. OSC 0 writes both axes and OSC 2
+            // only the window one — the distinction was invisible while the
+            // engine merely forwarded, and becomes observable the moment an
+            // axis-limited push/pop pair (which `vim` emits) is answered.
             b"0" | b"2" => {
                 if let Some(&title) = params.get(1) {
-                    self.events.push(TermEvent::Title(
-                        String::from_utf8_lossy(title).into_owned(),
-                    ));
+                    let title = String::from_utf8_lossy(title).into_owned();
+                    if number == b"0" {
+                        self.icon_name.clone_from(&title);
+                    }
+                    self.set_window_title(title);
                 }
             }
             // OSC 7 = current working directory (a file:// URI).

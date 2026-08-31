@@ -821,6 +821,43 @@ Z"`, and a search across the wrap went from 1 hit to 0). It now lives on the
   slice (#26). Note the two stopped being modelled alike at v14: a URI is genuinely shared between
   cells and keeps its frame-local table, while a cluster is not and is now inlined (#621). OSC string terminator may be BEL or ST; vte consumes it and calls `osc_dispatch` once, so
   an OSC-terminating BEL is not double-counted as a bell. [#12]
+- **A title is not just an event — XTWINOPS 22/23 make it retained state with a stack.** The engine
+  parses OSC 0/1/2 and *forwards* the string; that is enough until an application asks for the
+  previous title back. `CSI 22 t` pushes and `CSI 23 t` pops, so the engine must **retain** the
+  current window title and icon name — a party that does not know what it is stacking cannot
+  maintain a stack, and the consumer cannot do it either, because it holds a frame and an event
+  queue and never sees that a pop was requested. Four pieces of hidden state, each measured rather
+  than assumed (RHEL 9, real ptys, `TERM=xterm-256color`):
+  ① **Two stacks, not one.** The second parameter selects the axis (absent or `0` both, `1` icon,
+  `2` window) and it is *reached*: `vim` emits a fully nested `22;0;0t · 22;2t · 22;1t … 23;2t ·
+  23;1t · 23;0;0t`. Collapsing them makes an icon-only push followed by a window-only pop restore
+  the wrong string — which is what alacritty does today, because its dispatch (vte
+  `ansi.rs:1739-1745`) never reads past `params[0]`. `nvim` spells the same "both" operation two
+  ways, `22;0t` *and* `22;0;0t`, so the 2- and 3-parameter forms must agree.
+  ② **Depth 10, dropping the oldest while the push still succeeds.** A three-way convergence:
+  xterm's `MAX_SAVED_TITLES` (`ptyx.h:2357`), xterm.js's `STACK_LIMIT`, and the spec's own
+  *"range 1 through 10"*. Refusing the push instead would break the pairing for the *innermost*
+  nesting levels, which are the ones a user unwinds first.
+  ③ **A pop emits `TermEvent::Title`**, so that event stops meaning "the application set a title"
+  and starts meaning "the title is now this". Both references that implement the stack do exactly
+  this — xterm.js `setTitle` fires `_onTitleChange` (`InputHandler.ts:3037`), alacritty's
+  `pop_title` routes through `set_title`. A second event would ask every consumer to learn a
+  distinction it has no use for.
+  ④ **A pop of the icon name emits nothing, and that is narrower than it looks:** OSC 1 is not
+  parsed at all, so the only thing that ever writes the icon name is OSC 0. The icon stack is still
+  maintained so mixed push/pop sequences keep the two axes aligned; xterm.js takes the same route
+  (`setIconName` fires nothing — *"Icon name is not exposed"*).
+  **The spec's optional third parameter — direct slot access without pushing or popping
+  (`ctlseqs.txt:1698`) — is deliberately not implemented**, and the divergence row carries the
+  reach measurement: zero occurrences across seven programs under real ptys, zero files under
+  `/usr/bin` + `/usr/lib64`, no terminfo cap emitting `CSI 22/23 t` at all under any of the three
+  candidate `TERM`s, zero adoption by any other implementation, and an origin in xterm patch #385
+  (2023-10-01) whose stated reason is symmetry with XTPUSHCOLORS rather than an application asking.
+  Both stacks and the retained strings are **terminal state, so they die on RIS** — which the
+  wholesale `Term` rebuild gives for free, and which alacritty agrees with (`title_stack =
+  Vec::new()` in its reset). Note this is a fifth kind for the RIS table, which sorts fields into
+  configuration / buffer coordinate / pending obligation / id counter: a retained title is none of
+  those, and it dies because the *application* owns it, not the embedder. [#823]
 - **An OSC 8 hyperlink is ambient pen-like state stamped onto cells — not an event, and not closed by
   an SGR reset.** `OSC 8 ; params ; URI` opens a link (one `Arc<str>` per open, shared by that open's cells and
   becomes "current"); `OSC 8 ; ; ` (empty URI) closes it. Every glyph printed while open is stamped
