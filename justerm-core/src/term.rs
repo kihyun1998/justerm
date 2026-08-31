@@ -95,13 +95,39 @@ pub struct Term {
     /// engine has no icon-name event, so restoring one has no observable output
     /// today. That asymmetry is deliberate and stated rather than an oversight;
     /// xterm.js takes the same route (`setIconName` fires nothing).
+    ///
+    /// **The obligation that outlives this comment: no test can observe this
+    /// field, so a fourth writer would disagree with the other three in
+    /// silence.** There are exactly three today, all in this file — `OSC 0` in
+    /// `osc_dispatch`, and the push and pop in [`Term::window_ops`] — and the
+    /// window axis funnels through [`Term::set_window_title`] precisely so its
+    /// retained string and its event cannot drift apart. This axis has no such
+    /// funnel because it has no event to keep in step with. **Adding `OSC 1` is
+    /// the foreseeable fourth writer** (it is the natural neighbour of the OSC
+    /// work in #47's tail), and whoever adds it should route every write through
+    /// one owner the way the window axis does — not because a test will fail,
+    /// but because none can.
     icon_name: String,
     /// The window-title stack (XTWINOPS `CSI 22 t` / `CSI 23 t`), bounded at
     /// [`TITLE_STACK_DEPTH`]. Separate from `icon_name_stack` because the
     /// sequence's second parameter selects an axis and real applications use it:
     /// `vim` emits a fully nested `22;0;0t · 22;2t · 22;1t … 23;2t · 23;1t ·
-    /// 23;0;0t`. Collapsing the two would make an icon-only push followed by a
-    /// window-only pop restore the wrong string.
+    /// 23;0;0t`.
+    ///
+    /// **This is a choice among three models, not two, and the spec does not
+    /// make it** — `ctlseqs.txt:1688-1693` names the two axes and never says how
+    /// many stacks there are. (a) One stack with the axis ignored: alacritty,
+    /// and it restores the wrong string on the sequence above. (b) Two
+    /// independent stacks: xterm.js, and this. (c) One stack of `{icon, window}`
+    /// **pairs**, where an axis-limited push leaves the other member empty and a
+    /// pop that finds an empty member walks *back* through older slots for one:
+    /// xterm (`ptyx.h:2361`, `misc.c:8011`). (c) handles the axis correctly by a
+    /// different mechanism, so the argument against (a) is not an argument
+    /// against it; what separates (b) from (c) is that they do not share a depth
+    /// budget — ten each here, ten *total* there — and that a repeated same-axis
+    /// pop goes silent under (b) while (c) re-emits from an older slot. Neither
+    /// shape is reachable by anything measured, and (b) is the one whose depth
+    /// accounting a reader can predict without simulating a ring.
     window_title_stack: Vec<String>,
     /// The icon-name stack — the other half of the pair above.
     icon_name_stack: Vec<String>,
@@ -486,15 +512,23 @@ const LINK_IDS_FIRST_SWEEP: usize = 16;
 /// How deep an XTWINOPS title stack goes before a push starts dropping the
 /// oldest entry (#823).
 ///
-/// Ten is a three-way convergence rather than a preference: xterm's
-/// `MAX_SAVED_TITLES` (`ptyx.h:2357`), xterm.js's `Constants.STACK_LIMIT`, and
-/// the spec's own description of the direct-access parameter as taking a value
-/// *"in the range 1 through 10"* (`ctlseqs.txt:1698`) all name the same number.
+/// Ten is **two implementations plus a spec inference**, not a clean sweep, and
+/// the difference is worth stating so nobody reads it as more than it is:
+/// xterm's `MAX_SAVED_TITLES` (`ptyx.h:2357`) and xterm.js's
+/// `Constants.STACK_LIMIT` both say ten, and the spec describes the
+/// direct-access parameter as taking a value *"in the range 1 through 10"*
+/// (`ctlseqs.txt:1698`), which only makes sense against a ten-slot stack.
+/// **alacritty is 4096** (`TITLE_STACK_MAX_DEPTH`), so the corpus is 2–1 on the
+/// number. Nothing observed nests deeper than three, so the bound is a
+/// robustness cap rather than a compatibility one, and ten is the value two
+/// references chose for exactly that job.
 ///
-/// Overflow **drops the oldest while the push still succeeds**, which is what
-/// both implementations do (xterm.js `shift()`s; xterm wraps a fixed array).
+/// The **overflow rule**, unlike the number, is 4-for-4: drop the oldest and let
+/// the push succeed. xterm.js `shift()`s, alacritty `remove(0)`s, and xterm gets
+/// there by arithmetic rather than by saying so — `which = used++ %
+/// MAX_SAVED_TITLES` writes an eleventh push over slot 0, which is the oldest.
 /// Refusing the push instead would break the pairing for the *innermost*
-/// nesting levels — the ones a user unwinds first.
+/// nesting levels — the ones a user unwinds first — and nobody does it.
 const TITLE_STACK_DEPTH: usize = 10;
 
 /// The `id=` value out of an OSC 8 `params` field, or `None` when it is absent or empty.
@@ -2482,9 +2516,19 @@ impl Term {
     ///
     /// The XTWINOPS title stacks and the retained title/icon strings (#823) are
     /// **not** on the copy-back list and must not be: they are terminal state the
-    /// application wrote, so `ESC c` is supposed to drop them, and the wholesale
-    /// rebuild does that for free. alacritty spells the same thing out by hand
-    /// (`title_stack = Vec::new()` in `reset_state`).
+    /// application wrote, so *justerm's own* RIS invariant drops them, and the
+    /// wholesale rebuild does that for free.
+    ///
+    /// Read "justerm's own" literally — this is a **minority position, 1–2**, and
+    /// no spec text settles it. Only alacritty agrees (`title_stack =
+    /// Vec::new()` in `reset_state`); xterm.js's `reset()` touches nothing but
+    /// attribute data, and xterm's only bulk free of `saved_titles` is inside
+    /// `VTDestroy`, i.e. widget teardown rather than `ESC c`. So the two
+    /// references whose *model* this slice copied — two stacks, the bound, the
+    /// drop-oldest rule — are the two that keep the stack across a reset. The
+    /// grounds are the invariant note next door, which already records that no
+    /// reference can be cited here because none of them holds the embedder's
+    /// configuration in the object its reset replaces.
     fn full_reset(&mut self) {
         let replies = std::mem::take(&mut self.replies);
         let mut events = std::mem::take(&mut self.events);

@@ -58,7 +58,11 @@ for a terminal engine, that list is half the specification.
   a pass-through into state*, and nothing about the original relay says so. Two axes are involved
   (window title and icon name), each with its own bounded stack, because the sequence's second
   parameter selects one and `vim` uses all three values — a single stack restores the wrong string,
-  which is what alacritty does, its dispatch never reading past the first parameter. The optional
+  which is what alacritty does, its dispatch never reading past the first parameter. That is a
+  choice among **three** models rather than two, and the spec makes none of them: xterm keeps one
+  stack of `{icon, window}` *pairs* and walks back through older slots when the popped member is
+  empty, which handles the axis correctly by a different mechanism and does not share a depth
+  budget with two stacks. Rows in [`reference-facts.md`](../../agents/reference-facts.md). The optional
   third parameter (direct stack-slot access) is a **deliberate divergence from the spec**, decided
   on a five-way reach measurement recorded in #823 and pinned by a test whose name says so.
 - **Tab stops are explicit per-column state**, not a modulo: HTS sets, TBC clears, default every
