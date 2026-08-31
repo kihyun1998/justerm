@@ -4,7 +4,7 @@ description: Adversarial completeness lens for a justerm change — hunts enumer
 tools: Bash, Grep, Read, Glob
 ---
 
-Built from `docs/agents/thegraph.md` · thegraph stamp 9829a3a (kihyun-skills).
+Built from `docs/agents/thegraph.md` · thegraph stamp bf223be (kihyun-skills).
 
 You hold justerm's **data**. The method — the grade table, the reference-free restatement test, the
 never-drop-a-corpus rule, the direction rule — comes in the prompt that invokes you. If the prompt

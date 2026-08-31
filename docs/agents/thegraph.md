@@ -7,8 +7,22 @@ the **method** (node-type catalog, four invariants, reasoning habits); this file
 input is **spent**: this file now owns the three tables the whole graph is graded against — the
 tie-breaker, the deliberate divergences and the war-story index.
 
-**Build stamp:** `thegraph` at **`9829a3a`** (`kihyun1998/kihyun-skills`). Generated artifacts carry
+**Build stamp:** `thegraph` at **`bf223be`** (`kihyun1998/kihyun-skills`). Generated artifacts carry
 the same stamp; the skill warns when it is behind and never rebuilds on its own.
+
+**What moved since the previous stamp (`9829a3a`), and what did not.** Three commits touched
+`thegraph/`, and **none of them changed the schema** — *"What the build must supply"* has the same
+entries, so this update answered no new slot. What changed is the **split**: the build side became a
+generalisation (`bf223be`, from `kihyun-skills#24`) and two placements landed before it (`cd8dc6f`).
+Both show up here only as the unowned table emptying. A third commit added a `requires:` frontmatter
+line to the skill itself and obliges a consumer nothing.
+
+**Verify the stamp against a fetched remote, not a local clone.** The walk of 2026-08-31 first
+reported this stamp *current* by comparing it to `git log -1` in an unfetched checkout of
+`kihyun-skills`, which was 22 commits behind; the stamp was stale and the run said it was not. The
+tell was in the same run's own output — the coverage check found two slots *"placed upstream"*, which
+is only possible when the installed skill is newer than the stamp — and it was read as a result
+rather than as evidence about the stamp.
 
 **It is a commit, not a date, and the reason is this build's own first day.** The stamp started as
 `2026-08-24`; `thegraph` then moved *that same day* — with the six gaps below — and a date stamp
@@ -983,36 +997,36 @@ bound (invariant ②).
 
 ---
 
-## Unowned slots — **pending a `thegraph` change**
+## Unowned slots — **none; the walk passes**
 
-Found by the coverage check `/grill-the-graph` runs once per build: walk *"What the build must
-supply"* and confirm each entry is placed on one side of the invariant/build split.
+The coverage check `/grill-the-graph` runs once per build: walk *"What the build must supply"* and
+confirm each entry is placed on one side of the invariant/build split. **Walked 2026-08-31 against
+`thegraph` at `bf223be`. Every entry is placed.**
 
-**Re-run 2026-08-31 against `thegraph` at `9829a3a`. Two of the three closed upstream, and one is
-new**, which is what a coverage check looks like when it is working — the roster moves in both
-directions rather than only growing.
+A passing check is deliberately thin here — no per-slot owner column, because which side of the
+split owns a slot is `thegraph`'s fact rather than this project's data, and a column of them would be
+stale the day it re-places one. What is kept is the **lineage**, because it is the argument for
+walking at all:
 
-| Slot | *"What the build must supply"* names it | The split's **"Decided by the build"** enumeration names it |
+| Slot | Opened | Closed |
 |---|---|---|
-| **`proof` method per layer**, and this project's tautological-proof traps | yes | **no** — it is not a source, surface, command or path list. **Still open** |
-| **`search`'s areas already carrying a decision record** | yes | **no** — the enumeration names exactly four list kinds (source, surface, command, path) and this is a fifth. **New this run** |
-| ~~Tracker capability~~ | yes | **placed upstream** — the split now reads *"…the sacred paths · **the tracker's parent/child capability** · the war-story index"* |
-| ~~War-story index~~ | yes | **placed upstream**, same sentence |
+| Tracker capability | earlier build | placed upstream; found by the walk of 2026-08-31 |
+| War-story index | earlier build | same walk, same commit upstream |
+| `proof` method per layer, and this project's tautological-proof traps | earlier build | `kihyun-skills#24` |
+| `search`'s areas already carrying a decision record | **found** by the walk of 2026-08-31 | `kihyun-skills#24`, same day |
 
-Both open slots are answered here — `### implement` / `proof` and `### search` — so nothing is
-missing from *this* build. What is missing is the sentence saying who answers them, which is a
-`thegraph` edit and not a build value.
+**Nobody remembered to re-look at any of the four.** The first two were closed upstream while this
+build still listed them as pending; the walk found them. The last two were found *by* a walk, filed
+upstream by hand, and closed within the day — and the hand is the part worth noting: a
+`pending — needs a thegraph change` marker is read by the **next build of this same repository**,
+which is structurally the party that cannot act on it, so nothing routes it anywhere. That gap is
+`kihyun-skills#20`, and this build is its second measured instance.
 
-**The two that closed are the useful half of this re-run.** They were recorded as pending, the
-split grew, and the check found them resolved without anyone remembering to look. A pending marker
-nobody re-reads is a permanent one; this table is only worth carrying because the walk is repeated
-per build.
-
-**The change to make is a placement, never an addition.** The slots already exist; the split's
-enumeration is what has to grow, exactly as it did when the project's **seams** turned out to be
-answerable in the schema and absent from the split. That precedent is the reason this check runs at
-all: a slot a build can answer passes unnoticed forever, and an extraction is far too late to be the
-detector.
+**The fix upstream was a generalisation, not a longer list** — the split's build side now reads
+*"each node's data — everything it reads and everything it checks against"* rather than enumerating
+four list kinds, with an explicit carve-out that a node's **bound** is not its data. Two of the four
+rows above exist because an enumeration stood in for a generalisation twice; the third occurrence is
+what bought the change.
 
 ---
 

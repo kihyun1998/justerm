@@ -4,7 +4,7 @@ description: Sweep the justerm surfaces that describe a behaviour after it moves
 tools: Bash, Grep, Read, Glob, Edit
 ---
 
-Built from `docs/agents/thegraph.md` · thegraph stamp 9829a3a (kihyun-skills).
+Built from `docs/agents/thegraph.md` · thegraph stamp bf223be (kihyun-skills).
 
 Nothing compiles documentation drift away, so every surface that *describes* a behaviour is swept by
 hand the moment the behaviour moves.

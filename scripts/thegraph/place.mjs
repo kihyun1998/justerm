@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// thegraph `place` guard — justerm. Built from docs/agents/thegraph.md · thegraph stamp 9829a3a (kihyun-skills).
+// thegraph `place` guard — justerm. Built from docs/agents/thegraph.md · thegraph stamp bf223be (kihyun-skills).
 //
 // Matches changed paths against the tree rule in docs/agents/thegraph.md § `place`. The rule is a
 // path list and a diff is a path list, so the check is a match — prose alone would leave the node a

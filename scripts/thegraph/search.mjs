@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// thegraph `search` node — justerm. Built from docs/agents/thegraph.md · thegraph stamp 9829a3a (kihyun-skills).
+// thegraph `search` node — justerm. Built from docs/agents/thegraph.md · thegraph stamp bf223be (kihyun-skills).
 //
 // Routes a candidate by THE ARTIFACT IT TOUCHES — the module, the wire field, the predicate, the
 // config key — never by the feature name: a related issue almost never shares your vocabulary.

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // thegraph environment preconditions — justerm.
-// Built from docs/agents/thegraph.md § Environment preconditions · thegraph stamp 9829a3a (kihyun-skills).
+// Built from docs/agents/thegraph.md § Environment preconditions · thegraph stamp bf223be (kihyun-skills).
 //
 // Usage:  node scripts/thegraph/preflight.mjs
 //
