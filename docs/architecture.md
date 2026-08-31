@@ -811,7 +811,8 @@ Z"`, and a search across the wrap went from 1 hit to 0). It now lives on the
   library `alacritty_terminal` does no key encoding at all. Verified against a real neovim+kitty session
   capture (`tests/fixtures/neovim_kitty.raw`). [#23]
 
-- **Consumer events are pull-drained, and OSC 8 is not one of them.** Title (OSC 0/2), bell (BEL), and
+- **Consumer events are pull-drained, and OSC 8 is not one of them.** Title (OSC 0/2, and since #823
+  an XTWINOPS pop), bell (BEL), and
   cwd (OSC 7) are point-in-time notifications: the engine queues them during `feed` and the consumer
   takes them via `drain_events` (emptying the queue — the pull counterpart to an ack). No callback is
   injected across the boundary — unlike alacritty's `EventListener` push model, which would couple the

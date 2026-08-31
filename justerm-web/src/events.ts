@@ -10,13 +10,21 @@
  * consumer *applies* or *answers* those (#122/#85/#82), not the notification surface.
  */
 export type TermEvent =
-  | { type: "title"; title: string } // OSC 0/2 — xterm's onTitleChange
+  | { type: "title"; title: string } // OSC 0/2, or an XTWINOPS pop — xterm's onTitleChange
   | { type: "bell" } // BEL — xterm's onBell
   | { type: "cwd"; cwd: string }; // OSC 7 — a justerm extension (no xterm parity)
 
 /** Consumer notification callbacks. All optional — an absent handler is a no-op. */
 export interface EventHandlers {
-  /** The window/icon title changed (OSC 0/2). */
+  /**
+   * The window title is now `title`.
+   *
+   * Emitted both when the application sets one (OSC 0/2) and when it *restores*
+   * a saved one (XTWINOPS `CSI 23 t`), so read it as "the title is now this"
+   * rather than "the application chose this". A restore may hand back the empty
+   * string — applications push before they set a title — which means "go back
+   * to your default", not "show a blank title".
+   */
   onTitle?(title: string): void;
   /** The terminal bell rang (BEL). */
   onBell?(): void;

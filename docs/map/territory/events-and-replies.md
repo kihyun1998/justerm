@@ -52,6 +52,18 @@ nothing about it appears in the frame.
   `(line, evicted_total, epoch)`. This channel has now had the same fact re-derived at two
   granularities in one day, which is why the invariant note below exists rather than a third bullet.
 
+- **One event, two producers — `Title` names a state, not an act (#823).** XTWINOPS `CSI 22 t` /
+  `CSI 23 t` gave this channel its first event with more than one origin: a title *pop* emits the
+  same `TermEvent::Title` an `OSC 0`/`OSC 2` does. That is deliberate and it is what both references
+  carrying a title stack do (xterm.js's `setTitle` fires `_onTitleChange`; alacritty's `pop_title`
+  routes through `set_title`) — a second event would ask every consumer to learn a distinction it
+  has no use for. The cost is a **tense change in the contract**: the event means *"the title is now
+  this"*, and a consumer reading it as *"the application just chose this"* is wrong on the restore.
+  Two consequences that are not obvious from the sequence alone, both measured on real ptys: every
+  application pushes at **startup, before setting a title**, so a pop routinely restores the *empty*
+  string — which means "go back to your default", not "show a blank title"; and a session that never
+  sets a title still produces one `Title("")` per pop, which is why the `cursor_color_nvim.raw`
+  capture recorded for #832 gained two events it did not have.
 - **Pull, not push — and the alternative is named.** The engine queues during `feed` and the consumer
   takes with `drain_events`, mirroring `damage` / `frame` / `reset_damage`. No callback crosses the
   boundary, so the engine stays decoupled from the consumer's event loop. alacritty's `EventListener`

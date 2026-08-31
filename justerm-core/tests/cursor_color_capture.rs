@@ -18,6 +18,15 @@
 //! @398  ESC ] 112     BEL     reset the cursor colour
 //! ```
 //!
+//! It also carries `CSI 22;0;0t`, `CSI 22;0t`, `CSI 23;0;0t` and `CSI 23;0t` —
+//! nvim's title-stack push/pop pair, which this recording was not made for and
+//! which the engine ignored until #823. Both pops now restore the title, and
+//! since this session never *sets* one they restore the empty string, so the
+//! vector below carries two `Title("")` the earlier version of this file did
+//! not. They are not noise: a capture recorded for one purpose exercising
+//! another slice's path is the strongest evidence either slice gets, which is
+//! why this file asserts the whole vector rather than filtering it.
+//!
 //! **Every OSC 12 a real editor emits is the degenerate empty-spec form**, even
 //! with a cursor colour explicitly configured. That is the fact no synthetic
 //! fixture would have supplied, and it is why the empty-spec rule is a
@@ -47,16 +56,24 @@ fn replay() -> Engine {
     e
 }
 
-/// The whole real session drains to exactly two events. The two `OSC 12`s are
+/// The whole real session drains to exactly four events. The two `OSC 12`s are
 /// **absent** — that is the assertion, not an omission: an empty spec addresses
 /// its slot and changes nothing, so a real editor session disturbs a
-/// user-configured cursor colour zero times before it finally resets it.
+/// user-configured cursor colour zero times before it finally resets it. The
+/// two `Title("")` are nvim's title-stack pops, restoring a title it never set
+/// (#823); their position in the vector is where the stack operations sit in
+/// the stream, so this also pins the ordering across the two slices.
 #[test]
 fn a_real_nvim_session_relays_a_reset_and_no_empty_sets() {
     let mut e = replay();
     assert_eq!(
         e.drain_events(),
-        vec![TermEvent::QueryBackground, TermEvent::ResetCursorColor]
+        vec![
+            TermEvent::QueryBackground,
+            TermEvent::Title(String::new()),
+            TermEvent::Title(String::new()),
+            TermEvent::ResetCursorColor,
+        ]
     );
 }
 

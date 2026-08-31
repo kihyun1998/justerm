@@ -25,6 +25,7 @@ no compiler diagnostic, says which side of the line a field is on.
 | **A coordinate into the buffer** — or anything derived from cell contents | **dies** | RIS wipes every cell, so the coordinate now names nothing. Carrying it would point live state at a buffer that no longer exists | `selection`, `search_highlights`, `active_search_highlight`, the marker sets, the tracked-point sets (#691) |
 | **A pending obligation to the consumer** | **survives** | it describes bytes the consumer still has to write, not screen state — and RIS *adds* to it | `replies`, `events` |
 | **The id counter behind a handle the consumer still holds** | **survives iff the handle's death is not announced** | the coordinate dies with the buffer (row above) — but the *id* naming it is out in the consumer's hands, and a rebuilt counter reissues it. Then a stale ask is answered with a **different** object's state, silently. An announced death makes the question moot, because the holder has already been told | `next_tracked_id` survives (#691, no disposal event — the holder learns by being told `None`); `next_marker_id` does **not**, and reissues freely, because every marker's disposal is announced before the rebuild |
+| **Terminal state the *application* wrote through the VT stream** — not a coordinate, not derived from any cell | **dies** | RIS resets the terminal, and this *is* the terminal's state; the party that set it is the party `ESC c` is resetting. The first row's exemption is for the **embedder**, and an application is not the embedder — which is the whole distinction, since both look like "a string somebody configured" at the definition site | `window_title`, `icon_name` and the two XTWINOPS title stacks (#823). alacritty is the one reference that faces this question and answers it the same way, by hand: `title_stack = Vec::new()` and `title = None` in `reset_state` |
 
 ## Why it is cross-cutting
 
@@ -81,8 +82,14 @@ shape this note warns about at the top: the default is invisible at the definiti
 
 ## Where it will recur
 
-Every field added to `Term` from here. The concrete near-term candidates are all configuration, i.e.
-all on the surviving side and all easy to miss:
+Every field added to `Term` from here. **Not all of them are configuration** — that sentence stood
+here until #823 added four fields on the dying side, and the correction is the useful part: the
+table is read as though its job were only to catch survivors, because a field that dies needs no
+code. It is not. A field that dies still needs the *question answered at its definition site*, or
+the next reader cannot tell a decision from an accident — which is exactly how the fifth row above
+arrived, as a gap rather than as a bug.
+
+The concrete near-term candidates are configuration, i.e. on the surviving side and easy to miss:
 
 - a cap for the unbounded buffer walks (#206), if it is ever made settable rather than a constant
 - any further policy injected under ADR-0017 the way #545 injected the first one
