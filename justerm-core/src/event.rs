@@ -16,7 +16,19 @@ use crate::serialize::{MarkerId, MarkerKind};
 /// A consumer-facing event emitted while parsing the VT stream.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TermEvent {
-    /// The window/icon title was set (OSC 0 or OSC 2).
+    /// The window title is now this string.
+    ///
+    /// Read the tense carefully: since #823 this is **not** only "the
+    /// application set a title". Two paths emit it — `OSC 0`/`OSC 2`, and an
+    /// XTWINOPS title *pop* (`CSI 23 t`) restoring what an earlier `CSI 22 t`
+    /// saved. A consumer that treats it as "the title is now this" is correct
+    /// for both; one that treats it as "the application just chose this" is
+    /// wrong for the second, which is why there is no separate pop event.
+    ///
+    /// A pop can legitimately restore the **empty** string — every application
+    /// measured pushes at startup, before setting a title of its own — and that
+    /// means "go back to whatever you would show by default", not "show a blank
+    /// title".
     Title(String),
     /// The terminal bell rang (BEL, `0x07`).
     Bell,

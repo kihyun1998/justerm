@@ -45,7 +45,9 @@ change.
 >    edit its input, so `theflow.md`'s copies are superseded where they disagree, exactly as the pin
 >    table above already is. Removing them there is the maintainer's act, not this build's.
 >    Absorbing also caught the drift a pointer hides: this file said the divergence table had **10**
->    rows and it has **12** (#792 and #810 added one each after the first build).
+>    rows and it had **12** at that moment (#792 and #810 added one each after the first build).
+>    Written in the past tense on purpose — a live count in prose is the same defect one turn later,
+>    and the table has since grown again (#823).
 
 ---
 
@@ -67,7 +69,7 @@ both, so **no absence needs a reason.**
 | `implement` | **3** | one per layer: core/wasm · web · renderer |
 | `proof` | **3** | same layers |
 | `verify` | **2** | 1 + refuter, because the sacred-path list is non-empty |
-| `sweep` | 1, fanning to **11 surfaces** | see `### sweep` |
+| `sweep` | 1, fanning to **12 surfaces** | see `### sweep` |
 | `gate` | 1 | **22 commands in 4 groups**, 21 of them pass/fail |
 | `search` | once per candidate | 10 areas already carry a record |
 | `batch` | 1 or more | catalog |
@@ -111,8 +113,23 @@ gh api repos/kihyun1998/justerm/issues/<spine>/sub_issues \
 
 - **Enrol, do not announce.** A new sibling joins through the relation; a comment saying it exists
   is not a roster entry.
-- **`.parent` is absent from the REST payload** — to learn an issue's parent, list the candidate
-  parent's `sub_issues` rather than reading the child.
+- **`.parent` is absent from the REST payload, and GraphQL has it.** Measured 2026-08-31, on #823:
+
+  ```
+  gh api graphql -f query='{repository(owner:"kihyun1998",name:"justerm"){
+    issue(number:823){ parent{ number title } } }}'   ->  parent #47
+  ```
+
+  Use that. The fallback — listing each candidate parent's `sub_issues` — still works and is what to
+  reach for when GraphQL is unavailable, but it costs one query per *candidate*, so on a backlog of
+  any size it is the expensive answer to a cheap question.
+
+  **Read a missing field as a missing field, not as an answer.** `gh api repos/…/issues/<n> --jq
+  '.parent.number // "none"'` returns `none` for every issue in this repo, including the eight that
+  have a parent, because REST does not carry the field at all. #823's `spine` node reported "no
+  parent, no siblings" on the strength of it and a duplicate anchor was filed before a `422 Sub
+  issue may only have one parent` exposed it — the write was the only thing that would have. A query
+  that returns nothing for a relation that exists is indistinguishable from a clean result.
 - **Flush split**, so nothing lands in the wrong half: judgements → **body edit** (they read as
   current state, and a stale one is a false status report); evidence → **append-only comment** (it
   is a belief record); relations → **the tree**.
@@ -400,10 +417,40 @@ is argued twice.
 
 **The strongest proof runs in a real consumer, and it attaches to every layer as its strongest
 form.** penterm: `[patch.crates-io] justerm-core = { path = "<worktree>/justerm-core" }` in
-`../penterm/src-tauri/Cargo.toml`. **Point it at the worktree you are editing** — `../justerm/…`
-builds master and the proof passes for the wrong reason. Run penterm's **full** suite; the strongest
-evidence is a penterm test that *pinned the old bug as expected* now **breaking** while the rest
-stays green. For a wasm/web change, link through a **clean-room worktree**.
+**`../penterm/Cargo.toml` — the workspace root, not `src-tauri/Cargo.toml`.** **Point it at the
+worktree you are editing** — `../justerm/…` builds master and the proof passes for the wrong reason.
+Run penterm's **full** suite; the strongest evidence is a penterm test that *pinned the old bug as
+expected* now **breaking** while the rest stays green. For a wasm/web change, link through a
+**clean-room worktree**.
+
+**Two ways this silently does not link, both measured on #823 (2026-08-31), both exit 0.**
+
+1. **Wrong manifest.** In `src-tauri/Cargo.toml` — where this entry said to put it until #823 —
+   cargo prints `warning: patch for the non root package will be ignored, specify patch at the
+   workspace root` and **succeeds**. The patch is a no-op and the "proof" then runs against the
+   published crate. Note this does **not** contradict `### downstream`, which correctly says
+   penterm's *dependency* is declared in `src-tauri/Cargo.toml`: the declaration and the patch live
+   in different files, and fixing one must not "correct" the other.
+2. **Semver-incompatible pin.** At the root it applies but cargo reports `patch justerm-core
+   v0.15.0 … was not used in the crate graph` — penterm requires `^0.6.0` and this workspace is
+   `0.15.0`. **Check the precondition before claiming the proof**: `grep -n '^justerm-core'
+   ../penterm/src-tauri/Cargo.toml` against this workspace's version.
+
+   As of 2026-08-31 that precondition **fails**, so the strongest proof is unavailable for any core
+   change until penterm raises its requirement. That is a fact to *report*, not to route around: say
+   the proof is unavailable and why, and do not upgrade penterm's pin to manufacture one — a nine-
+   minor jump tests nine releases of drift, so a failure under it is unattributable to your slice.
+
+**Verify the link took, never assume it.** `cargo metadata` and read the source back:
+
+```
+cargo metadata --format-version 1 | \
+  node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>console.log(
+    JSON.parse(s).packages.filter(p=>p.name.startsWith('justerm'))
+      .map(p=>p.name+' '+p.version+' <- '+(p.source||'LOCAL PATH')).join('\n')))"
+```
+
+`LOCAL PATH` is the link; a `registry+https://…` source is the no-op above wearing a green run.
 
 **Recording a capture on the VM** (material acquisition for the core/wasm layer; agent-side, no user
 in the loop). `justerm-vm` is a `~/.ssh/config` alias.
@@ -495,7 +542,7 @@ paths. Grep `abs_floor` **and** raw `scrollback.len()` walks — searching for t
 cannot find the defect this entry exists to catch, because every miss so far was a *fresh* unfloored
 walk that never mentioned it.
 
-### `sweep` — 11 surfaces
+### `sweep` — 12 surfaces
 
 **Three of these are main-thread only** (marked ⛔): they write to the tracker or adjudicate, and a
 delegated sweeper doing either violates invariant ③ or ①.
@@ -513,6 +560,7 @@ delegated sweeper doing either violates invariant ③ or ①.
 | 9 | ⛔ Correct falsified premises in **open issues** | *Episodic, not per-change* — its guard is an architecture pivot, not a diff. One pivot broke premises in **4 of 22** open issues, and nothing fails when a premise dies: it survives as a reason not to act. Corrections go in **comments**, never by rewriting a body — and whatever this produces are `candidate`s for `batch`, not edits |
 | 10 | ⛔ **Epic body + labels** | The inverse of #9: an epic body is a live checklist read as current state, so leaving it unedited is a false status report. Tick the box in the slice's own PR. **Sweep the labels with the body** — `blocked` is the one label that decides whether the next agent may pick the work up |
 | 11 | ⛔ **Cross-check the backlog against itself** | Before opening a follow-up, grep the open backlog by the **artifact it touches** for anything its proposal would break, and cross-link **both** ways in the same act of filing. This is `search`'s conflict out, reached from the sweep side |
+| 12 | The accumulated reference cache — [`reference-facts.md`](reference-facts.md) | **A write surface, and the one whose rows go *false* rather than merely stale.** `### reference` covers reading it; this covers the other direction: a change that measures a reference **differently from what a row says** amends that row in the same change, and a change that reads a reference this file has no row for **adds** one. `rg '<the symbol>' docs/agents/reference-facts.md` by artifact, never by feature name. Two rules the `reference` node already states apply verbatim here and are the whole cost of the surface: re-open every `file:line` with `cite.mjs` rather than copying it out of a lens report, and a row asserting a reference has **no** behaviour is the most expensive kind to get wrong |
 
 **Judge a sweep by what it cannot see, never by its hit count.** A low count means the pattern is
 clean **or** the pattern is narrow, and the two are indistinguishable from the number. When a hit
@@ -810,6 +858,8 @@ defect, however confidently a lens reports it.
 | A marker is an **object with identity** — `MarkerId` + kind + exit code + column | ghostty stores OSC-133 as a 2-bit field on the row (`page.zig:1976`); alacritty has no line-mark concept at all | ADR-0015. Row-attached state cannot carry any of the four, so "put the marks on the row" is not a smaller version of a marker — it is a different primitive |
 | A cell **stores** a variation selector on a non-emoji base (`x` + VS16), so text extraction hands it back | ghostty drops it — *"the terminal does not store those selectors in the cell, so callers must also restore their grapheme break state"* (`src/unicode/grapheme.zig:56`) | #317 §1, on the **spec** row of the tie-breaker above (ADR-0004). Not a UAX #29 disagreement: ghostty's own `graphemeWidth('x', 0xFE0F)` returns `len = 2` (`:315`), so both agree the selector is in the cluster — they differ on whether the cell keeps what the cluster contains. Widths are identical, so this is invisible on screen and observable only in a copy |
 
+| XTWINOPS `CSI 22 t` / `CSI 23 t` honour the **second** parameter (the axis) and **ignore the third**, so `CSI 22;2;3t` is an ordinary push | the **spec** defines the third parameter: a value in 1..10 gives *"direct access to the stack … store the title into the stack or retrieve the title from the stack **without pushing/popping**"* (`ctlseqs.txt:1698`), and xterm implements it (`charproc.c:9272` → `misc.c:7988`) | #823, on the **spec** row of the tie-breaker above — and it is the one row where that authority was *not* followed, so the grounds are the measurement rather than a competing reference. Reach of the slot form is **zero on five independent axes**: no occurrence across seven programs recorded under real ptys with a control group (vim · nvim · less · man · htop · tmux · top); **zero files** under `/usr/bin` + `/usr/lib64` matching `\[2[23];[0-9]+;([1-9]\|10)t`; **no terminfo capability emits `CSI 22/23 t` at all** under `xterm-256color`, `tmux-256color` or `screen-256color`, so unlike #825/#826/#828 terminfo cannot rank it either way and applications hardcode the sequence; **zero adoption elsewhere** (xterm.js ignores it, alacritty's dispatch never reads past `params[0]`, ghostty carries the index then drops the command as *"Unimplemented"*); and it entered xterm only in **patch #385 (2023-10-01)**, whose changelog gives its reason as symmetry *"like the XTPUSHCOLORS and XTPOPCOLORS feature"* rather than an application asking — an indexing bug in it was fixed two weeks later in #387. Cost of following the spec instead: xterm's model is one ring of `{icon, window}` pairs with a walk back through older slots, which is a different primitive from two stacks and shares its depth budget differently. A lens reporting "the spec defines this and we do not" is `DELIBERATE` with this row. **Falsifier**: a measurement showing anything emitting the 1..10 form reopens it, and nothing else does |
+
 Add a row when a decision *chooses against* a reference; that is cheaper than
 re-defending it, and the cost of the empty slot is measured — see the #490 entry in
 the war-story index.
@@ -936,18 +986,27 @@ bound (invariant ②).
 ## Unowned slots — **pending a `thegraph` change**
 
 Found by the coverage check `/grill-the-graph` runs once per build: walk *"What the build must
-supply"* and confirm each entry is placed on one side of the invariant/build split. Three are placed
-on **neither**.
+supply"* and confirm each entry is placed on one side of the invariant/build split.
+
+**Re-run 2026-08-31 against `thegraph` at `9829a3a`. Two of the three closed upstream, and one is
+new**, which is what a coverage check looks like when it is working — the roster moves in both
+directions rather than only growing.
 
 | Slot | *"What the build must supply"* names it | The split's **"Decided by the build"** enumeration names it |
 |---|---|---|
-| **`proof` method per layer**, and this project's tautological-proof traps | yes | no — it is not a source, surface, command or path list |
-| **Tracker capability** (does the tracker have a parent/child relation at all) | yes | no |
-| **War-story index** | yes | no |
+| **`proof` method per layer**, and this project's tautological-proof traps | yes | **no** — it is not a source, surface, command or path list. **Still open** |
+| **`search`'s areas already carrying a decision record** | yes | **no** — the enumeration names exactly four list kinds (source, surface, command, path) and this is a fifth. **New this run** |
+| ~~Tracker capability~~ | yes | **placed upstream** — the split now reads *"…the sacred paths · **the tracker's parent/child capability** · the war-story index"* |
+| ~~War-story index~~ | yes | **placed upstream**, same sentence |
 
-All three are answered here — `### implement` / `proof`, the `spine` row of the roster, and the
-absorbed index above — so nothing is missing from *this* build. What is missing is the sentence
-saying who answers them, which is a `thegraph` edit and not a build value.
+Both open slots are answered here — `### implement` / `proof` and `### search` — so nothing is
+missing from *this* build. What is missing is the sentence saying who answers them, which is a
+`thegraph` edit and not a build value.
+
+**The two that closed are the useful half of this re-run.** They were recorded as pending, the
+split grew, and the check found them resolved without anyone remembering to look. A pending marker
+nobody re-reads is a permanent one; this table is only worth carrying because the walk is repeated
+per build.
 
 **The change to make is a placement, never an addition.** The slots already exist; the split's
 enumeration is what has to grow, exactly as it did when the project's **seams** turned out to be

@@ -51,6 +51,20 @@ for a terminal engine, that list is half the specification.
   choosing `tokenize` over `split`, and ghostty has no test that would catch it. Rows in
   [`reference-facts.md`](../../agents/reference-facts.md#cursor-colour). justerm follows the three,
   which ADR-0004 settles independently: `ctlseqs.txt:2082` indexes by *parameter*, not by value.
+- **A sequence can make the engine *retain* something it previously only relayed (#823).** XTWINOPS
+  `CSI 22 t` / `CSI 23 t` push and pop the window title, and answering a pop requires holding the
+  title — so parsing OSC 0/2 and forwarding the string, which had been enough since #12, stopped
+  being enough. The general shape is worth naming because it will recur: *a later sequence can turn
+  a pass-through into state*, and nothing about the original relay says so. Two axes are involved
+  (window title and icon name), each with its own bounded stack, because the sequence's second
+  parameter selects one and `vim` uses all three values — a single stack restores the wrong string,
+  which is what alacritty does, its dispatch never reading past the first parameter. That is a
+  choice among **three** models rather than two, and the spec makes none of them: xterm keeps one
+  stack of `{icon, window}` *pairs* and walks back through older slots when the popped member is
+  empty, which handles the axis correctly by a different mechanism and does not share a depth
+  budget with two stacks. Rows in [`reference-facts.md`](../../agents/reference-facts.md). The optional
+  third parameter (direct stack-slot access) is a **deliberate divergence from the spec**, decided
+  on a five-way reach measurement recorded in #823 and pinned by a test whose name says so.
 - **Tab stops are explicit per-column state**, not a modulo: HTS sets, TBC clears, default every
   eighth column. A modulo would be wrong the moment an application moves one.
 - **The scroll region redefines what "scroll" means.** DECSTBM changes which rows `IND` / `RI` /

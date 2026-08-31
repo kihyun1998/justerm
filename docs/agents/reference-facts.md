@@ -2084,11 +2084,37 @@ the Engine genuinely has.
 
 | Fact | Reference | Site |
 |---|---|---|
-| **Two stacks, not one** — window title and icon name are pushed independently, selected by the second parameter | xterm.js | `src/common/InputHandler.ts:2952` |
-| Depth is bounded at **10**… | xterm.js | `src/common/InputHandler.ts:47` (`STACK_LIMIT`) |
-| …and overflow drops the **oldest** while the push still succeeds | xterm.js | `src/common/InputHandler.ts:2954` |
-| A pop calls the **same title setter** the OSC handler calls, so a restore is an ordinary title change to every consumer | xterm.js | `src/common/InputHandler.ts:2967` |
-| **Negative:** ghostty has no title-stack handling in its terminal core, and alacritty does not implement XTWINOPS at all | ghostty / alacritty | `ghostty/src/**` grepped for `title_stack`/`push_title`/`pop_title` — 0 matches; `alacritty_terminal/src/**` for the `t` final — 0 matches |
+> **The two rows this section used to end with were false, and how they got here is the reusable
+> part (corrected during #823).** It asserted *"ghostty has no title-stack handling in its terminal
+> core, and alacritty does not implement XTWINOPS at all"*, citing its own greps as the evidence.
+> Both halves were artefacts of the grep. alacritty's CSI dispatch is **not in `alacritty_terminal`**
+> — it lives in the `vte` crate — so grepping that directory for the `t` final returns zero however
+> complete the implementation is; grepping the *same directory* for `push_title` returns 20 hits.
+> ghostty names the handlers **noun-first** (`title_push`, not `push_title`), so a noun-last grep
+> misses a routed, gated, index-carrying implementation. Two lessons, both already rules here: a
+> negative from a grep is a statement about the grep, and the *shape* of a name is not portable
+> across languages. A "no prior art" row is the most expensive kind to get wrong, because the next
+> reader is instructed to start from this file.
+
+**Three different models, and the spec does not choose between them.** `ctlseqs.txt:1688-1693`
+names only *"Save xterm icon title on stack"* / *"Save xterm window title on stack"* and never says
+how many stacks exist, so ADR-0004's spec-wins rule does not reach this axis.
+
+| Fact | Reference | Site |
+|---|---|---|
+| **Model (a) — one stack, axis ignored.** `title_stack: Vec<Option<String>>`, and the dispatch never reads past the first parameter, so `22;1t` (icon only) is taken as a window-title push | alacritty (+ `vte`) | `alacritty_terminal/src/term/mod.rs:317`, dispatch at `vte-0.15.0/src/ansi.rs:1739` |
+| **Model (b) — two independent stacks**, selected by the second parameter | xterm.js | `src/common/InputHandler.ts:2952` |
+| **Model (c) — one stack of `{iconName, windowName}` pairs.** One ring slot is consumed per push *regardless of axis*, and an axis-limited push leaves the other member NULL | xterm | `ptyx.h:2361`, push at `charproc.c:9254` → `misc.c:7973` |
+| …and (c) needs a fallback the other two do not: when a popped slot's requested member is NULL, walk **back** through older slots for a non-NULL one | xterm | `misc.c:8011` (`TryHigher`) |
+| Depth is bounded at **10** | xterm.js, xterm | `src/common/InputHandler.ts:47` (`STACK_LIMIT`); `ptyx.h:2357` (`MAX_SAVED_TITLES`) |
+| …but **not universally** — the third implementation is three orders of magnitude larger | alacritty | `alacritty_terminal/src/term/mod.rs:42` (`TITLE_STACK_MAX_DEPTH = 4096`) |
+| Overflow drops the **oldest** while the push still succeeds — **4-for-4**, and xterm only by simulation: `which = used++ % MAX_SAVED_TITLES` writes the 11th push over slot 0 | xterm.js, alacritty, xterm | `InputHandler.ts:2954`; `mod.rs:2238`; `misc.c:7973` |
+| A pop on an **empty** stack does nothing — 3-for-3 | xterm, xterm.js, alacritty | `misc.c:7999` (`result = False`); `InputHandler.ts:2966`; `mod.rs:2252` |
+| A pop calls the **same title setter** the OSC handler calls, so a restore is an ordinary title change to every consumer | xterm.js, alacritty | `src/common/InputHandler.ts:2967`; `mod.rs:2254` → `:2221` |
+| The icon name is **never surfaced** to the consumer | xterm.js | `src/common/InputHandler.ts:3047` (`setIconName` fires nothing) |
+| **A reset does not clear the stack — 1–2 against justerm's own behaviour.** xterm.js's `reset()` touches only attribute data; xterm's only bulk free is widget teardown, not RIS. Only alacritty clears | xterm.js, xterm, alacritty | `src/common/InputHandler.ts:3428`; `charproc.c:12135` (inside `VTDestroy`); `mod.rs:1845` |
+| **The spec defines an optional third parameter** — a value in 1..10 stores into or retrieves from a slot **without** pushing or popping. xterm implements it; xterm.js and alacritty never read it; ghostty parses and carries it, then drops the command | spec, xterm | `ctlseqs.txt:1698`; `charproc.c:9272` |
+| Ghostty **parses but deliberately does nothing**: it requires `params.len ∈ {2,3}` (so a bare `CSI 22 t` is refused) and `params[1] ∈ {0,2}` — the only implementation that declines the icon axis outright — then lists the command under *"Have no terminal-modifying effect"* | ghostty | `src/terminal/stream.zig:2124`; `src/terminal/stream_terminal.zig:340` |
 
 ### Cursor colour
 

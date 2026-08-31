@@ -811,7 +811,8 @@ Z"`, and a search across the wrap went from 1 hit to 0). It now lives on the
   library `alacritty_terminal` does no key encoding at all. Verified against a real neovim+kitty session
   capture (`tests/fixtures/neovim_kitty.raw`). [#23]
 
-- **Consumer events are pull-drained, and OSC 8 is not one of them.** Title (OSC 0/2), bell (BEL), and
+- **Consumer events are pull-drained, and OSC 8 is not one of them.** Title (OSC 0/2, and since #823
+  an XTWINOPS pop), bell (BEL), and
   cwd (OSC 7) are point-in-time notifications: the engine queues them during `feed` and the consumer
   takes them via `drain_events` (emptying the queue — the pull counterpart to an ack). No callback is
   injected across the boundary — unlike alacritty's `EventListener` push model, which would couple the
@@ -821,6 +822,64 @@ Z"`, and a search across the wrap went from 1 hit to 0). It now lives on the
   slice (#26). Note the two stopped being modelled alike at v14: a URI is genuinely shared between
   cells and keeps its frame-local table, while a cluster is not and is now inlined (#621). OSC string terminator may be BEL or ST; vte consumes it and calls `osc_dispatch` once, so
   an OSC-terminating BEL is not double-counted as a bell. [#12]
+- **A title is not just an event — XTWINOPS 22/23 make it retained state with a stack.** The engine
+  parses OSC 0/1/2 and *forwards* the string; that is enough until an application asks for the
+  previous title back. `CSI 22 t` pushes and `CSI 23 t` pops, so the engine must **retain** the
+  current window title and icon name — a party that does not know what it is stacking cannot
+  maintain a stack, and the consumer cannot do it either, because it holds a frame and an event
+  queue and never sees that a pop was requested. Four pieces of hidden state, each measured rather
+  than assumed (RHEL 9, real ptys, `TERM=xterm-256color`):
+  ① **Two stacks, not one.** The second parameter selects the axis (absent or `0` both, `1` icon,
+  `2` window) and it is *reached*: `vim` emits a fully nested `22;0;0t · 22;2t · 22;1t … 23;2t ·
+  23;1t · 23;0;0t`. Collapsing them makes an icon-only push followed by a window-only pop restore
+  the wrong string — which is what alacritty does today, because its dispatch (vte
+  `ansi.rs:1739-1745`) never reads past `params[0]`. `nvim` spells the same "both" operation two
+  ways, `22;0t` *and* `22;0;0t`, so the 2- and 3-parameter forms must agree.
+  ② **Depth 10, dropping the oldest while the push still succeeds.** Two claims of different
+  strength, and collapsing them is the error to avoid. The *number* is 2–1: xterm's
+  `MAX_SAVED_TITLES` (`ptyx.h:2357`) and xterm.js's `STACK_LIMIT` say ten, the spec's *"range 1
+  through 10"* only makes sense against ten slots, and **alacritty is 4096**. Nothing measured nests
+  deeper than three, so the bound is a robustness cap and ten is what two references picked for that
+  job. The *overflow rule* is 4-for-4 — xterm.js `shift()`s, alacritty `remove(0)`s, and xterm's
+  `which = used++ % MAX_SAVED_TITLES` writes an eleventh push over the oldest slot. Refusing the
+  push instead would break the pairing for the *innermost* nesting levels, which are the ones a user
+  unwinds first, and nobody does it.
+  ②′ **Two stacks is a choice among three models, and the spec makes none of them.** `ctlseqs.txt`
+  names the axes and never says how many stacks exist. (a) one stack, axis ignored — alacritty, and
+  it restores the wrong string on the `vim` shape above; (b) two independent stacks — xterm.js and
+  this; (c) one stack of `{icon, window}` **pairs** with a walk back through older slots when the
+  popped member is empty — xterm (`ptyx.h:2361`, `misc.c:8011`). (c) is not (a): it handles the axis
+  correctly by another mechanism. (b) and (c) differ in that they do not share a depth budget (ten
+  *each* vs ten *total*) and that a repeated same-axis pop goes silent under (b) while (c) re-emits
+  from an older slot. Neither is reachable by anything measured.
+  ③ **A pop emits `TermEvent::Title`**, so that event stops meaning "the application set a title"
+  and starts meaning "the title is now this". Both references that implement the stack do exactly
+  this — xterm.js `setTitle` fires `_onTitleChange` (`InputHandler.ts:3037`), alacritty's
+  `pop_title` routes through `set_title`. A second event would ask every consumer to learn a
+  distinction it has no use for.
+  ④ **A pop of the icon name emits nothing, and that is narrower than it looks:** OSC 1 is not
+  parsed *today*, so the only thing that writes the icon name is OSC 0. The icon stack is still
+  maintained so mixed push/pop sequences keep the two axes aligned; xterm.js takes the same route
+  (`setIconName` fires nothing — *"Icon name is not exposed"*), and ghostty goes further, refusing
+  the icon axis outright (`stream.zig:2124` accepts only `params[1] ∈ {0,2}`). Read "today"
+  literally: **no test can observe the icon name**, because there is no icon-name event, so the
+  three writers that exist agree only by inspection and a fourth would disagree in silence. The
+  obligation lives on the field itself — a fourth writer (`OSC 1` is the foreseeable one) routes
+  through a single owner the way the window axis routes through `set_window_title`.
+  **The spec's optional third parameter — direct slot access without pushing or popping
+  (`ctlseqs.txt:1698`) — is deliberately not implemented**, and the divergence row carries the
+  reach measurement: zero occurrences across seven programs under real ptys, zero files under
+  `/usr/bin` + `/usr/lib64`, no terminfo cap emitting `CSI 22/23 t` at all under any of the three
+  candidate `TERM`s, zero adoption by any other implementation, and an origin in xterm patch #385
+  (2023-10-01) whose stated reason is symmetry with XTPUSHCOLORS rather than an application asking.
+  Both stacks and the retained strings are **terminal state, so they die on RIS** — which the
+  wholesale `Term` rebuild gives for free. Say whose rule that is, because it is a **minority
+  position, 1–2**: only alacritty clears (`title_stack = Vec::new()` in its reset), while xterm.js's
+  `reset()` touches nothing but attribute data and xterm's only bulk free is inside `VTDestroy`, i.e.
+  teardown rather than `ESC c`. The two references whose *model* this slice copied are the two that
+  keep the stack. No spec text settles it, so the grounds are justerm's own RIS invariant. Note this is a fifth kind for the RIS table, which sorts fields into
+  configuration / buffer coordinate / pending obligation / id counter: a retained title is none of
+  those, and it dies because the *application* owns it, not the embedder. [#823]
 - **An OSC 8 hyperlink is ambient pen-like state stamped onto cells — not an event, and not closed by
   an SGR reset.** `OSC 8 ; params ; URI` opens a link (one `Arc<str>` per open, shared by that open's cells and
   becomes "current"); `OSC 8 ; ; ` (empty URI) closes it. Every glyph printed while open is stamped
