@@ -3,11 +3,11 @@
 The compiled graph for the `thegraph` skill — which nodes justerm actually has, how many of
 each, what data each one reads, and which are extracted as agents and scripts. The skill holds
 the **method** (node-type catalog, four invariants, reasoning habits); this file holds justerm's
-**graph**. Built by `/grill-the-graph` from [`theflow.md`](theflow.md), which stays the owner of
-the two tables the whole graph is graded against (tie-breaker, deliberate divergences) and of the
-war-story index.
+**graph**. First compiled by `/grill-the-graph` from [`theflow.md`](theflow.md) on 2026-08-24. That
+input is **spent**: this file now owns the three tables the whole graph is graded against — the
+tie-breaker, the deliberate divergences and the war-story index.
 
-**Build stamp:** `thegraph` at **`89b477a`** (`kihyun1998/kihyun-skills`). Generated artifacts carry
+**Build stamp:** `thegraph` at **`9829a3a`** (`kihyun1998/kihyun-skills`). Generated artifacts carry
 the same stamp; the skill warns when it is behind and never rebuilds on its own.
 
 **It is a commit, not a date, and the reason is this build's own first day.** The stamp started as
@@ -15,11 +15,16 @@ the same stamp; the skill warns when it is behind and never rebuilds on its own.
 could not tell the two revisions apart, which is the one job a stamp has. A revision identifier can
 be wrong about *when*; a date can be silently right about the wrong thing.
 
-**`theflow` is not retired.** It remains a valid sibling discipline callable as `/theflow`, and it
-owns data this file points at rather than copies. The default for a substantive change is
-`thegraph`.
+**`theflow` is retired, and the file it left behind is not.** Measured 2026-08-31: there is no
+`theflow` skill installed, so `/theflow` does not resolve, and `grill-the-flow` — the only thing
+that ever authored `theflow.md` — is retired with it. The **file** survives as a *cited corpus*
+rather than as a route: about 40 inbound citations, several of them from doc-comments that ship to
+docs.rs (`justerm-core/src/term/walk.rs`, `justerm-renderer/src/webgl.rs`), from ADRs 0019/0021/0026,
+from eight `docs/map/` notes, and from `cite.mjs`. It is therefore **not deletable on the strength of
+being spent**, and nothing reads it as a method. `thegraph` is the only discipline for a substantive
+change.
 
-> **Three things this build supersedes in `theflow.md`.** Read them here, not there.
+> **Four things this build supersedes in `theflow.md`.** Read them here, not there.
 >
 > 1. **The spine roster is a tracker relation, not a body list.** `theflow.md`'s spine paragraph
 >    says GitHub's defaults are *"`part of #<spine>` tracked-by, an edited body for the roster"*.
@@ -34,6 +39,13 @@ owns data this file points at rather than copies. The default for a substantive 
 >    *"the npm packages have no known consumer"*. That is a derivable fact with a timestamp — the
 >    exact shape that file already repented of for the published version number. Only the
 >    **derivation correction** survives here. See `### downstream`.
+> 4. **This file owns the tie-breaker, the deliberate divergences and the war-story index.** The
+>    schema names all three as the *build's* obligation, and the skill that maintained `theflow.md`
+>    is retired. They are reproduced below **verbatim** at the absorption — and this build does not
+>    edit its input, so `theflow.md`'s copies are superseded where they disagree, exactly as the pin
+>    table above already is. Removing them there is the maintainer's act, not this build's.
+>    Absorbing also caught the drift a pointer hides: this file said the divergence table had **10**
+>    rows and it has **12** (#792 and #810 added one each after the first build).
 
 ---
 
@@ -48,9 +60,10 @@ both, so **no absence needs a reason.**
 | `classify` | 1 | catalog |
 | `spine` | 1 | catalog; tracker has real parent/child |
 | `map` | 1 | `docs/map/` (hub [`README.md`](../map/README.md)) |
-| `reference` | **2 source classes** | see `### reference` — the runtime probe is an *instrument*, not a class |
+| `reference` | **3 source classes** | see `### reference` — the runtime probe is an *instrument*, not a class |
 | `enumerate` | 1 | `docs/architecture.md` §"Hidden VT state" — a **write** surface |
 | `boundary` | 1 | ADR-0017 |
+| `place` | 1 | catalog. The **tree rule** is `### place`, authored by `plat` against 7 maintainer-confirmed peers |
 | `implement` | **3** | one per layer: core/wasm · web · renderer |
 | `proof` | **3** | same layers |
 | `verify` | **2** | 1 + refuter, because the sacred-path list is non-empty |
@@ -131,7 +144,7 @@ Two failure shapes worth naming before you read an empty result as clean:
   obligation and it *blocks*. Coverage is a report; promotion is a constraint. Do not let the first
   excuse the second.
 
-### `reference` — 2 source classes, **none summarized**
+### `reference` — 3 source classes, **none summarized**
 
 The summarizing route is **banned by name**: `WebFetch` drops method bodies from large files (an
 `InputHandler.ts` handler that *is* there reads as absent), and whole-file `gh api` costs a 10K-line
@@ -191,6 +204,26 @@ Read the substitution precisely, because the obvious reading is wrong:
 A local pkg-swap pollutes the pnpm store and `--frozen-lockfile` does not repair it. `justerm-web`
 consumes the **published** `justerm-wasm-decode`, so a new binding is `undefined` at runtime until
 republished.
+
+**Class 3 — layout peers**, read for `### place` and nothing else. **Named, never stored**: a copy
+of somebody else's tree is a derivable fact that rots, so what this build keeps is the *names* and
+the rule they produced. Read on demand as a **real tree** at a stated depth — a layout described on a
+documentation site is summarized and can never confirm anything, while a repository's tree can.
+
+| Peer (named at the package, not the repository) | The role it is a peer for | How it is read |
+|---|---|---|
+| `alacritty_terminal` | the engine crate | Class 1, pinned |
+| `ghostty/src/terminal` | the engine crate | Class 1, pinned |
+| `xterm.js` — `src/common` · `src/browser` · `src/headless` · `addons/*` | the engine ↔ widget seam | Class 1, pinned |
+| `three.js/src/renderers` | renderer internals | Class 1, pinned |
+| `wezterm-term` (the `term/` directory of `wezterm/wezterm`) | a Rust multi-crate workspace's seam | `gh api repos/<r>/contents/<path>` — a **tree listing**, never a file fetch |
+| `tree-sitter/lib/binding_web` | the wasm-binding package | same |
+| `junkdog/beamterm` | the wasm WebGL2 renderer crate | same |
+
+**Confirmed by the maintainer on 2026-08-31**; a peer set the build chose alone would be authority it
+invented and then deferred to. Four of the seven are already Class 1 trees. The other three carry
+**no pin**, which bounds them exactly: a tree listing settles a *layout* question and can never
+settle a semantics one.
 
 **Not a class — an instrument: the throwaway runtime probe.** For a fact the code cannot answer
 — a real coordinate, a call order, an actually-emitted event — write a disposable probe, read the
@@ -259,6 +292,103 @@ the root" means fixing the consumer.
 **The boundary is a membrane.** A core floor (edition 2024, a future MSRV) rides a compatible range
 straight *down* to penterm and web; and a contract change makes a consumer's **rationale** stale,
 which is `sweep`'s problem.
+
+### `place` — the tree rule
+
+**Read before `implement`, never after.** In a repo whose identity is a boundary the directory
+boundary is where the seam is *physically* expressed, so a file written to the wrong one breaks the
+seam while producing **no error, no failing test and no warning** — and everything the rule would
+have said arrives later as rework: the imports, the module wiring, the history.
+
+**Which input won: the declarations, and nothing violates them.** Counted 2026-08-31 — ADR-0010's
+crate-prefix rule holds 5/5 with one *recorded* exception (`justerm-facade/` → package `justerm`, the
+tombstone); the shape ↔ `Term`-half rule is declared in the doc-comments at both ends and holds 3/3
+(`search`, `selection`, `logical`); each of the three workspace exclusions carries its reason in
+`Cargo.toml`. So the tree is not in conflict with the declarations — it is a **sharper** statement of
+them, which is why the rule below is written finer than `CLAUDE.md` states it.
+
+**Four suspected splits, all sorted by content rather than by filename**, because two directories
+holding the same *kind* of file by name routinely hold two different *roles*:
+
+| Suspected split | What the sort was on | Count |
+|---|---|---|
+| `justerm-core/src/<x>.rs` vs `src/term/<x>.rs` | the returned **shape** and the coordinate model it documents / the **`Term` half**, cell-aware and needing the whole buffer | 3 / 3 |
+| core: 4 inline `mod tests` vs 78 files in `tests/` | module-internal unit / through the public API | 4 + 78, overlap 0 |
+| renderer: 26 inline vs **no** `tests/` directory | pure module / `webgl.rs` + `rasterizer.rs`, wasm32-only and 0-compiling on host, so their proof is `e2e/` | 26 + 2 |
+| three script homes | CI's / the graph build's / the package's own | clean by owner |
+
+None survives as a question. Where the sort comes out clean the measured rule **is** the rule.
+
+#### The tree rule — concrete paths
+
+A rule stated as a layer cannot be matched against a diff, so every line below is a path.
+
+```
+justerm-core/          the engine crate — VT parsing, grid, scrollback, cursor, selection, serialize.
+                       No I/O, no drawing
+justerm-wasm-decode/   the wasm binding crate and the npm artifact built from it
+justerm-renderer/      the WebGL2 renderer crate (wasm32-only; carries its own [workspace])
+justerm-web/           the browser widget TS package
+justerm-facade/        the frozen `justerm` name tombstone. Directory name != package name — the
+                       single recorded exception (ADR-0010)
+fuzz/                  cargo-fuzz targets (own [workspace], package `justerm-fuzz`)
+bench/<name>/          a cross-implementation comparison harness belonging to no crate
+scripts/thegraph/      the scripts this build generates
+.claude/agents/        the agents this build generates
+.github/scripts/       CI's scripts
+teach/                 the learning-course workspace
+
+<crate>/src/*.rs                one module per concern, flat
+justerm-core/src/<x>.rs         the returned shape, and the coordinate model it documents
+justerm-core/src/term/<x>.rs    the `Term` half — cell-aware logic needing the whole buffer
+<crate>/src/<x>.rs + <x>/       a module root beside the directory it roots
+<crate>/tests/*.rs              integration through the public API, one file per behaviour
+<crate>/tests/fixtures/         recorded material — captured VT streams (*.raw), screen-dump
+                                goldens (*.golden), and the capture-*.sh that record them.
+                                .gitattributes pins each kind; it is material, not test source
+<crate>/tests/*.proptest-regressions   proptest's committed failure corpus, written by the runner
+inline #[cfg(test)] mod tests   module-internal units
+<crate>/benches/*.rs            criterion
+<crate>/examples/*.rs           cargo example binaries
+justerm-wasm-decode/js/         hand-written JS shipped with the binding
+justerm-wasm-decode/pkg*/       generated, git-ignored
+
+<pkg>/src/**.ts                 shipped source ONLY — `tsconfig.json` includes exactly `src`
+<pkg>/test/*.test.ts            vitest units
+<pkg>/e2e/*.spec.ts             Playwright browser proofs
+<pkg>/demo/                     the runnable browser harness pages
+<pkg>/scripts/*.mjs             that package's own tooling
+
+docs/architecture.md            the authoritative contract spec
+docs/adr/NNNN-<kebab>.md        decision records
+docs/map/{README.md,territory/,invariant/}   the territory graph
+docs/agents/*.md                agent-read bindings and accumulated reference facts
+docs/perf/*.md                  measurement write-ups (their harness lives in bench/<name>/)
+
+LICENSE-* · rust-toolchain.toml · .mcp.json · .github/dependabot.yml · <pkg>/.gitignore
+                                toolchain and repo plumbing. No seam runs through it — claimed
+                                anyway, because an unclaimed path is the guard's FINDING, and a
+                                rule that does not name plumbing reports a licence edit as a new
+                                top-level area
+```
+
+**The rule above is what `place.mjs` matches, and running it is what completed it.** Against all
+**499** tracked files the first draft left **54** unclaimed, and every one was a role the rule had
+simply not named — the generated agents, the recorded capture material, proptest's corpus, the
+plumbing. None was a new area. Prose does not execute, so it cannot demonstrate that it is lying.
+
+**`<pkg>/src` is a gate, not a convention.** `justerm-web/tsconfig.json` includes exactly `src` and
+`tsconfig.test.json` includes `test`, `demo`, `e2e` — which is what makes `process` and `Buffer` a
+compile error in shipped code. Co-locating a `*.test.ts` under `src/` breaks nothing visible and
+dissolves that gate, which is this node's argument in one line.
+
+**Guard mechanism: `scripts/thegraph/place.mjs` over the diff, never a recollection.** The rule is a
+path list and a diff is a path list, so the check is a match. It **reports**; it does not adjudicate.
+
+**Out-edge to `decide`. Guard:** the change needs a **new top-level area** (the last one added
+nothing declared — see the unclassified row in the divergence list), or the tree rule and a named
+peer disagree and the tie-breaker does not settle it. **Writes `triggers`** when the same placement
+is argued twice.
 
 ### `implement` / `proof` — 3 layers
 
@@ -480,10 +610,6 @@ results** — match `headSha` before believing them.
 
 ### `search` — 10 areas already carry a record
 
-Search by **the artifact** — the module, the wire field, the predicate, the config key — never by
-the feature name: a related issue almost never shares your vocabulary. The trigger is **naming**,
-not deciding.
-
 **The conflict out is not `code`, and the script must not pretend otherwise.** Deciding that an
 existing issue's proposal *would break* is judgement, not counting — justerm's measured cases are
 all semantic and never lexical (a wire channel; one branch's entry condition, fg and bg filed as
@@ -540,10 +666,6 @@ itself recorded.
 → `Consequences` → `Alternatives considered`. Amend in place: a status-line note when a later change
 moves the *reason*, a `supersedes` / `superseded by` pair when replaced. An ADR may carry no issue
 number.
-
-**A record earns its place by deriving decisions already taken, not by listing them.** The tests it
-reproduces are its evidence; the ones it contradicts are its findings — adjudicate them, do not
-quietly flip them.
 
 **A promoted record must not hold the roster.** A hand-copied roster inside ADR-0025 went stale in
 **five places in three days** while D1–D4 needed no edit. A roster wants a mutable home and a rule
@@ -631,25 +753,156 @@ maintainer exactly as a rebuild does.
 
 ---
 
-## Boundary rule, tie-breaker, divergences, war stories — by pointer
+## Tie-breaker, deliberate divergences, war stories
 
-These four stay in [`theflow.md`](theflow.md) and are **not copied here**. A copy is the divergence
-seed, and this repo has measured that cost: a hand-copied roster went stale in five places in three
-days, and a `Status:` line copied into `CLAUDE.md` said "proposed" for five days after four ADRs
-were accepted.
+**Absorbed from `theflow.md` on 2026-08-31 and owned here.** The schema names all three as the
+*build's* obligation and the skill that maintained that file is retired, so a pointer would leave
+three required slots in a document nothing routes to. Reproduced **verbatim** at the absorption; the
+copies still sitting in `theflow.md` are superseded where they disagree, and this build does not edit
+its input.
 
-| What | Where | Read it at |
+**The divergence list is co-authored.** The project-scoped rows below are the build's. A run's own
+`human` calls arrive through the issue contract and are never written here.
+
+**Read `Step N` as a node.** The absorbed text is verbatim, so it still speaks in `theflow`'s seven
+steps; they were not rewritten, because re-typing twenty dense rows is exactly how five wrong
+citations landed here in two days. The mapping: **1** -> `reference`, **2** -> `boundary`,
+**3** -> `implement`, **4** -> `proof`, **5** -> `verify`, **6** -> `sweep`, **7** -> `gate` and
+`downstream`.
+
+**Tie-breaker — what wins when prior art and justerm's own evidence disagree.**
+Not one value: the authority differs by layer, and flattening it would break one
+of them. Prior art is always a *cross-check* that shaves detail a first-principles
+model under-reaches; what it is checked *against* is:
+
+| Layer | Authority | Grounds |
 |---|---|---|
-| **Tie-breaker** — what wins when prior art and justerm's evidence disagree, **by layer** (7 rows; four of them give the reference *no vote*) | `theflow.md` § "Tie-breaker" | `reference` (which tree), **and** `verify`'s brief (what a divergence found in it is *worth*) |
-| **Deliberate divergences** — where justerm does not follow its named prior art, on purpose (10 rows, each with the record that decided it) | `theflow.md` § "Deliberate divergences" | `verify`'s brief — it is what the reference-free restatement test is checked against |
-| **Architecture prior art** — the two lineages frame-mode composes, and the prior-art *gaps* | `theflow.md` § "Architecture prior art" | `boundary`, for an engine-vs-renderer or state-sync question |
-| **War-story index** — the precedents that give each rule teeth | `theflow.md` § "War-story index" (inline; **there is no `lessons.md`**) | Not during a run. Its own verdict: *"a rule whose only home is the war-story index is a rule that fires after the cost, not before it"* — which is why the rules that earned their place have been moved into the nodes above |
+| **VT parsing / semantics** | the **spec** — above any implementation, including ours | ADR-0004: spec-faithful *where alacritty omits*. A reference's omission is not a licence to omit; this is what backs justerm's conformance claim |
+| **Renderer cell composition** | **justerm's own model** (ADR-0019) | xterm is a design input, not a validator. In the four decisions before 0019 it was silent (#494), self-contradictory across its own call sites (#495), the outlier (#459), or demoted (#458) |
+| **Glyph bake geometry** (what the rasteriser may do to a glyph before it becomes an atlas slot — place it, scale it, refuse it) | **justerm's own model.** Prior art here is a *mechanism catalogue*, never a validator | Both ADRs next door push this axis away in as many words — ADR-0019's *Out of scope* excludes "glyph rasterisation" and ADR-0022's excludes "rasterisation itself" — so a change here has no record to defer to and needs this row instead. The substance: all three references may leave a glyph to overflow because their quad **is** the glyph's bounding box (alacritty `alacritty/src/renderer/text/glsl3.rs:357`, ghostty `src/renderer/generic.zig:3202`, xterm `addons/addon-webgl/src/GlyphRenderer.ts:53` — whose `a_unitquad * a_size` is the single most decisive line: the quad is the glyph's own size and the cell contributes only an origin), and ADR-0019 gave that capability up deliberately to keep the composite one evaluation per pixel. So their **defaults** rest on something this renderer does not have and are unimportable; their **mechanisms** — xterm's opt-in quad squeeze (`RendererUtils.ts:47`, `OptionsService.ts:51`), ghostty's `Constraint` with `.fit` for symbols (`Glyph.zig:135`, `generic.zig:3175`) — are readable as design inputs. **Added 2026-08-21 (#792)**, which had to state this by hand in its lens brief because the row did not exist — the same cost #768 records one row up |
+| **Renderer resource ownership / tiering** (which tier a renderer resource lives in — global, per-config, per-grid) | **justerm's own model** (ADR-0021 D1–D5) | The split has no reference to outrank it: ADR-0021 states in its own prior-art section that *"the three-tier keying is justerm's own synthesis — no cited reference splits resources global / per-config / per-grid"*, and **only the middle tier has direct precedent**. D1–D5 are derived from what keying costs (a lookup, an indirection and a lifetime, bought only when the shared thing is expensive to rebuild), so ghostty is a **convergence check**: removing it from the argument leaves the derivation standing. Two of the four cited sources (wezterm, three.js) have no pinned tree at all, so they cannot arbitrate even in principle — and #768 narrowed what the wezterm one supports, since D2 put `instance_vbo` in the per-grid tier and wezterm is cited for a bottom tier holding *no* GPU resources. **Added 2026-08-18 (#768)**, which had to state this by hand in its lens brief because the row did not exist |
+| **Wire / frame / API shape** | **this repo's own precedent** | No external authority exists — no reference serializes a terminal state this way (see the architecture prior-art note below: composing a render-free engine with a state wire is justerm's own bet) |
+| **Consumer-facing API shape / units** | **our own API's internal coherence** | ADR-0023: `letter_spacing` is CSS px because `font_size` is, though *both* references use device px. A setting expressed in the same space as an existing one must use that space — an API the consumer has to remember two spaces for is incoherent, not merely different. Same posture as the composition row, one layer down |
+| **Performance claims** | **our measurement, on a release build** | A claim about our own throughput was wrong because it was measured on a debug build; a number from a consumer's journey is a hypothesis until re-measured here |
+| **Who owns a fact that several sites read** | **our own producer** — the site the fact is *first true* at, never a copy, a derivation or a report of it, however locally correct that proxy is. A reference's placement is **unimportable** here | The references answer this inside architectures that never have to ask it: xterm's `Marker` is a live object the buffer mutates in place (`src/common/buffer/Buffer.ts:646`, SHA `699f553`) so there is no basis to reconcile, and every render-free engine hands off *in-process* (the architecture paragraph below — alacritty by borrow, libvterm by C callbacks, ghostty by lock-shared state). Frame-mode's stateless consumer is what creates the question, so this row is structural, not a preference. Derived independently **four** times before being written down once: ADR-0025 D1 (owner = the property's scope; the encode-time cell bit is *never* the authoritative copy), ADR-0026 D2 (the bound site follows from whether the engine owns a **producer** for the coordinate), ADR-0027 D1 (liveness is answered by the source that owns it — the listener's flag owns *"have we been told"*, a different fact), ADR-0028 D1 (each composition surface has exactly one writer). **The failure form is why these arrive as clusters rather than bugs:** each site reaches for whichever nearby signal resembles the answer, and the resemblance holds everywhere except the window that matters, so every site is locally right and review cannot see it. Ask *which site owns this* before *which local rule is better*. **Scope** — this row places a fact and says nothing about how long an owned value stays true once it leaves the owner; that axis is live and housed one rung down (spine #630 for derived state's lifetime, `docs/map/invariant/a-coordinate-carries-the-instant-it-is-true-at.md` for a published coordinate's basis/epoch, landing with #740), and a second home would split its roster. **Promotion falsifier** — if this row derives a site nobody had to be told about, or settles a question before it is asked, it has earned an ADR; until then it routes, and an ADR over the four records above would be archaeology |
+
+A layer not in this table has no recorded tie-breaker — say so and ask, rather
+than borrowing a neighbouring row.
+
+**Deliberate divergences — where justerm does *not* follow its own named prior art,
+on purpose.** The table above says who wins an argument; this says which arguments
+are already over. It is what Step 5's reference-free restatement test is checked
+against: a finding that lands here is `DELIBERATE` with the citation, never a
+defect, however confidently a lens reports it.
+
+| We do | The references do | Decided by |
+|---|---|---|
+| The consumer holds **only the current frame** — no retained terminal state | every reference consumer retains state; even Mosh's receiver keeps a full `Complete` | ADR-0020 R3's grounds (research §6.1). Its (C) *"event-source everything; let the consumer maintain the state"* is rejected **as the default**, so "make the consumer stateful" is not an open question |
+| Colours are stored as **references** (`Default`/`Indexed(u8)`/`Rgb`), never resolved | all three resolve a palette in the engine | `CLAUDE.md` identity (theme-agnostic). justerm never learns a hex colour |
+| **Per-char `UnicodeWidthChar`** width; cluster width is opt-in behind DECSET 2027 | xterm.js clusters by default | the contract in Step 2 below (#297/#300 → #301, subsumed by #295/#305). A consumer unhappy with it is standing on nothing valid |
+| A cell's bg/fg/ink is decided by **our layer model** | xterm's flat `$fg` over a blended `$bg` | ADR-0019 — xterm is a *design input*, not a validator |
+| A single-cell glyph the font draws **wider than its box is condensed at bake**, by default, with no setting | xterm.js rescales only behind `rescaleOverlappingGlyphs`, **default `false`**, and then only past 1.5 cells (`src/common/services/OptionsService.ts:51`, `src/browser/renderer/shared/RendererUtils.ts:47`); ghostty gives ordinary letters `.none` and constrains only symbols (`src/renderer/generic.zig:3175`); alacritty never rescales | #792, on the **glyph bake geometry** row above. Their default is *overflow*, which this renderer cannot do on the horizontal axis: the bleed band is sized from the face's declared line box and the Canvas API exposes no horizontal counterpart, so the real choice here is condense-or-destroy rather than condense-or-overflow. Measured before the change: 252 clipped codepoints on DejaVu Sans Mono and 1153 on the demo face, 35 to 629 of them losing over 30 % of their ink, with `Ǆ` reaching the screen as `D`. A lens reporting "the reference makes this optional" is `DELIBERATE` with this row |
+| A spacing setting is **CSS px** | both references take device px | ADR-0023 |
+| A box with **no area is refused**, not floored — `proposeDimensions` / `gridForBox` answer `undefined` for a `0x0` container, the way they already do for a `NaN` one | **Mixed, and the mixture is the point.** *Converges* with alacritty, which refuses on the raw box with this exact predicate before any arithmetic runs — `if size.width == 0 \|\| size.height == 0 { return; }` (`alacritty/src/event.rs:1958-1964` @ `852e971`), whose comment says it receives `0x0` **routinely**, on window minimize on Windows, and names the downstream harm (ConPTY). *Diverges* from **ghostty**, whose `sizeCallback` has no zero branch (`src/Surface.zig:2482-2496` @ `e6e26e1`) so a zero box reaches `@max(1, calc_cols)` (`src/renderer/size.zig:260`) and is gridded. *Diverges* from **xterm.js**, which refuses a **detached** terminal (`addons/addon-fit/src/FitAddon.ts:61` @ `699f553`) but not a `display: none` one — that still has a `parentElement`, and `Math.max(0, parseInt(...) \|\| 0)` at `:77-78` normalises the unreadable measurement to `0` and then floors it | #810, on the **consumer-facing API shape** row — our own coherence. The reference-free ground is one layer down in this family and predates the question: `justerm-renderer/src/webgl.rs` refuses a zero drawing-buffer read-back with the same predicate and the same sentence — *"A buffer of no size is not a grant, it is the absence of an answer"* (#639). So #810 is this family agreeing with itself, and only the guard's **placement** differs from alacritty's: ours sits inside the pure function because the pure function is the published API. Severity settled the last doubt — the floor proposes `2x1`, and on the **alt screen** a resize is a re-fit that drops rows (`docs/map/territory/reflow.md`, #567) *and* clears the selection on any geometry change (`justerm-core/src/term.rs:1516`, whose comment already reasoned about "a consumer that re-asserts its size every frame (a `fit()` loop)"). **An earlier version of this row claimed all three floor and that "we receive an input they do not"; both were false, and one `rg` over `event.rs` refutes them** |
+| Both contrast ratios live on the web **`Theme`** — the text one (`minimumContrastRatio`) and the cursor one (`cursorContrast`) | neither reference puts contrast in its colour scheme: xterm.js types both as *options* and its `ITheme` is colours only (`typings/xterm.d.ts:372`), and alacritty's cursor guard is a non-configurable constant (`alacritty/src/display/content.rs:22`) | #225, extended by #580, on the **consumer-facing API shape** tie-breaker row — our own API's coherence. What the cursor guard defends is `cursorColor`, which is on `Theme`, so the threshold has to travel with a theme swap; splitting the two contrast ratios across two homes is what would be incoherent. Rows pinned in `reference-facts.md` § "Cursor policy knobs" |
+| Renderer resources tier **three ways** — global / per-config / per-grid — and the per-grid tier **holds GPU state** (`instance_vbo`) | ghostty tiers font machinery per-config (`SharedGridSet`) but puts the GPU device, atlas texture and render thread **per-surface** (`Surface.zig:86-92`), i.e. its bottom tier is the device; wezterm tiers per-window GPU state and per-pane non-GPU state with **no config tier**, its `PaneState` holding no GPU resources at all | ADR-0021, adjudicated in #768. Both references are *shapes we chose against*, and for opposite reasons: ghostty's arrangement is the one this design exists to remove (a device per terminal), while wezterm's per-pane tier can hold nothing because it emits every pane's quads through one allocator into shared layers — justerm packs per grid and diffs per grid, so its bottom tier must hold the buffer. A lens reporting either as a defect is `DELIBERATE` with this row |
+| A **viewport rect** is given in **device px, top-left origin**, and the renderer flips it to GL's bottom-origin y itself | three.js takes a viewport in **CSS px with a bottom-origin y** and multiplies by the pixel ratio it owns (`src/renderers/WebGLRenderer.js:804-816`, SHA `83d8667`), leaving the flip to its caller | #771, on the **consumer-facing units** tie-breaker row — our own API's coherence. `cell_width()` already declares device px to be the space for *"anything that addresses the drawing buffer — `readPixels`, GL interop, a picking rect"*, and the flip needs the **granted** buffer height, which this renderer owns and the consumer's `canvas.height` may not equal (#339). three.js can push both outward because its caller supplies fractions of a canvas the renderer itself scales; ours supplies a measured DOM box. Taking CSS px would also import three.js's rounding step, which is the error #337 exists about |
+| A marker is an **object with identity** — `MarkerId` + kind + exit code + column | ghostty stores OSC-133 as a 2-bit field on the row (`page.zig:1976`); alacritty has no line-mark concept at all | ADR-0015. Row-attached state cannot carry any of the four, so "put the marks on the row" is not a smaller version of a marker — it is a different primitive |
+| A cell **stores** a variation selector on a non-emoji base (`x` + VS16), so text extraction hands it back | ghostty drops it — *"the terminal does not store those selectors in the cell, so callers must also restore their grapheme break state"* (`src/unicode/grapheme.zig:56`) | #317 §1, on the **spec** row of the tie-breaker above (ADR-0004). Not a UAX #29 disagreement: ghostty's own `graphemeWidth('x', 0xFE0F)` returns `len = 2` (`:315`), so both agree the selector is in the cluster — they differ on whether the cell keeps what the cluster contains. Widths are identical, so this is invisible on screen and observable only in a copy |
+
+Add a row when a decision *chooses against* a reference; that is cheaper than
+re-defending it, and the cost of the empty slot is measured — see the #490 entry in
+the war-story index.
+
+**Layout rows**, added 2026-08-31 by `plat` against the 7 confirmed peers in `### reference`
+Class 3. They are what `### place`'s tree rule is defended by, difference by difference — a tree
+nobody can defend difference by difference is not a rule but the shape the repo happened to grow.
+
+| We do | The references do | Decided by |
+|---|---|---|
+| The seam is a **crate wall**, not a directory | xterm.js splits `src/common` from `src/browser`; ghostty keeps `src/terminal` | `plat`, 2026-08-31, on ADR-0017. The boundary has to hold *outside* this repo — penterm consumes `justerm-core` alone — and a directory boundary is not enforced across a publish |
+| No `public/` directory per layer | xterm.js gives each of `common` / `browser` / `headless` a `public/` | `plat`, 2026-08-31. `lib.rs`'s `pub use` plus rustdoc already carry the public surface; a directory would be a second copy of it |
+| Directory name **equals** package name | wezterm's engine crate is `term/` and publishes as `wezterm-term` | `plat`, 2026-08-31, on ADR-0010. In a `-term` *family* the directory is the discoverable member. One exception is recorded: `justerm-facade/` → `justerm` |
+| 78 topic files in `justerm-core/tests/` | alacritty runs one `tests/ref.rs` over recorded fixtures | `plat`, 2026-08-31, on `CLAUDE.md`'s cumulative-conformance rule. One file per VT behaviour is how the long tail gets **named**; a ref harness records that a capture matched and never which behaviour it was |
+| **No** co-located `*.test.ts` under `src/` | xterm.js co-locates units as `src/**/X.test.ts` | `plat`, 2026-08-31, **measured**: `tsconfig.json` includes exactly `src`, and that is the gate making `process`/`Buffer` a compile error. Co-locating dissolves it while breaking no test |
+| The binding's JS lives **inside the binding crate** | beamterm keeps `js/` at the repository root | `plat`, 2026-08-31, on ADR-0008. The binding is a crate and its npm artifact is built from that crate, so the shims are that crate's surface |
+| The renderer has **no** `tests/`; 26 of 28 modules test inline | alacritty mixes inline with `tests/`; wezterm uses `src/test/` | `plat`, 2026-08-31. The 26 pure modules are host-testable; `webgl.rs` and `rasterizer.rs` are wasm32-only and 0-compile on host, so a `tests/` directory could not build and `e2e/` is the proof |
+| **Three** script homes | beamterm keeps one root `scripts/` | `plat`, 2026-08-31. Split by owner: CI's, the graph build's, the package's |
+| The widget is **one** package, not core plus addons | xterm.js publishes 13 `addons/*` | ADR-0017 already decided it: xterm's addons hold **in-process buffer access**, so that split buys them something a frame-mode consumer cannot have |
+| ⚠ **UNCLASSIFIED** — `docs/research/` holds prior art read from real source with `file:line` citations, and so does `docs/agents/reference-facts.md` | — (internal; no reference involved) | **Nobody has decided this.** Left visible rather than resolved by majority. The cost is concrete: `reference`'s route names only `reference-facts.md`, so a survey filed in `docs/research/` is invisible to the exact path that exists to stop an agent starting from a blank tree |
+
+Nothing was **adopted**: no peer difference produced a move whose reason named justerm's boundary.
+Exactly one difference is **unclassified**, and it is the last row.
+
+### War-story index (rules with teeth)
+
+- **No consumer workaround / contract≠defect** — #297/#300 (VS16 FE0F renderer workaround blocked, root → #301); the core per-char width & theme-agnostic color are contracts.
+- **Concept ≠ mechanism** — #150 (accessible-view: VSCode concept, xterm.js extraction mechanism).
+- **Never drop a corpus** — #113/#144/#207 (alt-screen cross-buffer via `abs_floor()`); #158 ("fix is small → skip the reference" caught). Note what #158 actually was: a *corpus* was dropped, not an agent merged — the precedent never spoke to how many subagents read it, which is why merging to one lens over both corpora (2026-07-24) does not contradict it. The event itself lives only in conversation; the issue body and comments carry no record of it, so this line is the whole durable trace.
+- **A divergence is not a direction** — **the rule now lives in Step 5 above**, not
+  here, because it was measured to be unreachable from an index: #547 paid ~40% of one
+  pass's main-thread calls re-deriving by hand a call this file already documented, and
+  the index is not read while a pass is being briefed. That cost is also what retired
+  the corpus split — a lens holding both sides adjudicates direction itself. This entry
+  stays only as the evidence pointer — #396 vs #399, deferrals #398/#400, closed #272
+  with zero silent gaps. A rule whose only home is the war-story index is a rule that
+  fires after the cost, not before it.
+- **A reference cannot erect a claim about our design — #490 (2026-08-04), and the
+  failure was that every piece of the rule was already present.** Working #490, a
+  refuting lens returned `CONFIRMED` that ghostty stores OSC-133 marks as a 2-bit row
+  field (`page.zig:1976`) and that a pin serialises to an origin-relative number
+  (`PageList.zig:5066`) — both true, both verified. It then proposed *splitting the
+  marker populations* as a peer option, and I carried that to the maintainer as one.
+  It was never a candidate: ADR-0015 had already decided a marker carries identity +
+  kind + exit + column, none of which a row bit can hold, and the **Wire / frame / API
+  shape** row of the tie-breaker above gives the reference no authority on that layer
+  at all. The maintainer caught it in one sentence — *"우리가 xterm 을 안 따르기로 한
+  곳에 xterm 걸 가져오면 곤란하다"*. What makes this worth an entry is that nothing was
+  missing: the tie-breaker table existed, the `DELIBERATE` grade existed, and the
+  skill's *"classify findings against the record before reporting them"* existed. The
+  harvest simply never asked, because no step owned the question. Two repairs, at the
+  seam the skill declares: the **test** went to the skill (restate the finding without
+  naming the reference — if it cannot be removed from the sentence it is a design
+  proposal, not a defect), the **list** went to the deliberate-divergence table at the
+  top of this file. The same pass's genuine defects all survive that test with the
+  reference deleted from the argument, which is the tell to look for.
+  **A third repair landed on 2026-08-08, and the gap it closed is the reason to distrust
+  a repair that reads complete.** Both of the above put the check where it could only
+  run *after* the finding arrived — the test on the main thread at harvest, the list in a
+  file the lens is not handed. So the pass still produced reference-shaped proposals at
+  full price; only their disposal got cheaper. The missing half was **entry**: Step 1's
+  routing table now carries a *"what the reference's word is worth here"* column (four of
+  its rows are *no vote*), and Step 5's brief carries that row plus the divergence table
+  as its sixth item, so the lens grades itself instead of being graded. The portable half
+  — *the brief owes the lens the list, or the test can only fire on your main thread* —
+  went back into the skill beside the restatement test. Generalise the shape, not the
+  case: **a repair that only makes a bad finding cheaper to dismiss has not stopped the
+  finding**, and the two are easy to confuse because both show up as less time spent.
+- **Real round-trip / visual side effects** — #166 (reveal-focus headless miss), #172 (live MCP path), #223 (browser verify skipped).
+- **Probe a runtime fact / readPixels≠screenshot** — #328/#331 (dpr≠1 coord bug green on dpr-1), #352, #337 (tautology); #369 (a throwaway `rustc` probe pinned that an unclamped `+inf` fraction saturates `cursor_thickness`'s `u32` cast to `u32::MAX` — correcting a PR rationale that had credited `frac.max(0.0)`; the setter's `[0,1]` clamp is the load-bearing defence, `frac.max(0.0)` only neutralises `NaN`).
+- **Test-trust gate** — #355 (both RED = you broke the proof; re-run baseline GREEN, remove guards one at a time). **#639 is the third bar's evidence and the more uncomfortable case**: RED→GREEN, side conditions, and a placement mutation were *all* done and green, and the fix was still wrong — its guard asked an event-driven flag about a synchronous state, and the proof awaited that very event before testing, so it never entered the window where the two candidate predicates differ. A guard and a test written against the same wrong model agree with each other; only mutating the *predicate* separates them. Found by the Step 5 lens, not by the gate.
+- **Defer / negative results = the issue is the durable record** — #317 (deferral left in PR body only, caught); seed measured numbers + rejected alternatives + cleared-concern validity conditions up front.
+- **Out-of-workspace / formatter / typecheck blind spots** — #333 (renderer unformatted + proofs CI), #341 (web CI + e2e tsconfig), #343/#344 (typecheck vs build).
+- **Behavior-surface drift** — #129/#135 (`mouseWantedEvents` reached `types.ts` only at S16 — grep the wire mirror).
+- **The backlog is a surface too (pivot sweep + file-time conflict check)** — 2026-07-21 sweep of all 22 open issues: one pivot (#273) had falsified premises in 4 of them (#398 names a file deleted in #407 and an acceptance box whose comparand is gone; #249/#317 §2 defer to a beamterm/"shared shader" layer that no longer exists; #325 still says "blocked by #273"), and 3 more pairs/clusters were live conflicts nobody had cross-linked (#440↔#490 wire channel; #494/#495/#496 = one branch's entry condition/fg/bg decided separately; #437↔#441 one port capability). Nothing fails when an issue's *premise* dies — it survives as a reason not to act, or points at a deleted file. Sweep the open backlog after a pivot; grep it by touched artifact before filing a follow-up; correct by comment, never by rewriting the body.
+- **A cluster that keeps re-deciding itself = a missing model (Step 5 promotion)** — the 2026-07 cell-composition cluster. Of its 20 issues **17 were surfaced by another issue in the same set** (`#453 → {#494, #495, #496}`, `#494 → {#506, #507, #508}`); one pair — *a tile glyph's ink vs a background-ish layer* — was decided **8 separate times** (#241, #398, #430③, #453, #494, #496, #507, #508); **11** decisions contradicted or narrowed an earlier one (#453 measured *both* of its own body's premises false before starting); and xterm could not arbitrate the last four (silent #494, self-contradictory across its own call sites #495, judged the outlier #459, demoted to ADR-0017 grounds #458). Every one was filed and doc-commented exactly as this flow prescribes — **the sink was wrong, not the discipline**: an issue holds one decision with its rejected alternatives and a doc-comment pins a rule to one branch, so neither can hold a rule that *spans* decisions (#494's rationale reached 80 lines of comment on a single `if`). Promoted to **ADR-0019**, which *derives* #430 and #494 instead of restating them, and settles #507 as an implementation choice and #398 as won't-fix-with-a-reason. **How the promotion then went wrong is the more useful half.** Its first amendment generalised "a bg-only layer replaces a background-class glyph" across every route, reclassified three pins as conformance defects and spawned #496/#511 to flip them; the branch reached green host + GL proofs before two lenses and a wider prototype showed the rule erases box-drawing and shading whenever a user drags a selection over them or cycles search matches. Retracted the same day and replaced by **rule 5** (*an interaction highlight does not remove content; a declared decoration may*) — the pins were right, #496/#511 closed won't-do, no renderer change. Two lessons, both cheap to miss: a model can be internally coherent and still be reporting a defect in itself, and the tell was available early — the rule had **no user-facing benefit** anyone could name, only symmetry. Both references (xterm's flat `$fg` over a blended `$bg`, alacritty's explicit `"Reveal inversed text when fg/bg is the same"` guard) had said so from the start and were waved off with "our model governs"; it does, but a reference agreeing *with another reference* against you is signal, not noise. The trigger to notice next time is the shape, not the subject: re-deciding a known pair, a consequence *chain* rather than an edge, an earlier premise measured false, a reference that cannot arbitrate, two artifacts in this repo requiring opposite things.
+- **The throughline needs a home before it earns an ADR — the spine (Step 5 / Step 6).** Both records above were archaeology: **ADR-0019** out of 20 issues, **ADR-0025** out of 9 (#521/#528/#530/#532/#533/#534/#535/#538/#540 plus the wire half of #7, filed verb-by-verb before their shared root — a row/pair property a whole-cell write silently mutates — was named). The rung below the ADR bar was the *void*, so the model had nowhere to accrete until the cluster was already big enough to promote. **What the first attempt to *use* the rung taught, before any spine existed:** both clusters that looked like candidates already had a home — the wide-spacer one under ADR-0025 (proposed), the marker-payload one (#440/#490) under ADR-0020 (accepted) — so the record table above *is* the preemption check, and a **proposed record already does a spine's job** (hypothesis + roster + an explicit not-yet-decided list). At that rung the read/write-back round trip is real and observed: #535 and #533 were worked out of ADR-0025's roster (PRs #546, #548) rather than their own bodies, and #546 amended the record back when D4 answered a combination the draft had not anticipated. **Two uses so far, and they proved different halves — which is the useful record, not the count.** `#552` (2026-07-25 → 2026-07-28) ran the rung **in reverse**: its record already existed, so the anchor was opened only to take the half ADR-0025 kept badly, the *live roster* — a hand-copied roster inside the ADR went stale in five places within three days while D1–D4 needed no edit. What that proved is not the hypothesis-holding half this rung was designed for; it is that a **roster wants a mutable home and a rule wants an immutable one**, so they separate even after promotion. `#605` (2026-07-29, `justerm-web`'s ambient work having no lifecycle owner) is the first use in the designed direction — opened *before* any record, holding a suspected root, a two-item roster and an explicit not-yet-decided list — so whether the hypothesis half pays is still open, and the falsifier is written into that issue. **`#744` (2026-08-06) is the first one where the hypothesis half paid and can be checked: it opened holding a suspected root and closed into ADR-0029 with the roster and the measurements still warm, so the record's Context is close to a transcription.** Two things it taught that the design did not anticipate. Its **falsifier fired on a clause nobody was watching** — it named two promotion conditions, neither of which happened, and closed anyway because the *other* half of the same sentence ("with nothing core learns from either") failed: #742 resolved as a *derivation* rather than the one-line contract statement the falsifier assumed. A falsifier is a conjunction, and the clause that decides is not always the one it was written for. And **its exclusion list did real work at the moment of promotion**: the roster was copied through it, keeping #746 (same subtree, different root) out of a record's evidence. (This paragraph read *"no spine issue has been opened in this repo yet"* until 2026-07-29, three days after one had closed. Prefer naming what each use taught over counting them: a count is a status claim with nothing gating it, which is what this file's own Step 6 warns about.)
+- **External/registry facts** — web consumes *published* wasm (new binding `undefined` until republish); clean-room worktree only, regex discriminators `=x` / `(?i)abc` / `(?<name>x)`.
+- **Downstream contract history** — penterm wire VERSION bumps justerm#38/#41/#81; #100 rename API/wire-invariant drop-in.
+
+(A repo-wide evidence log could live in `docs/agents/lessons.md`; for now these
+precedents index inline.)
+
+**Architecture prior art stays in [`theflow.md`](theflow.md) § "Architecture prior art"** — the two
+lineages frame-mode composes, and the prior-art *gaps*. It is not a schema slot, it is read only at
+`boundary` for an engine-vs-renderer or state-sync question, and absorbing it would buy nothing: the
+file is not deletable either way.
 
 ---
 
 ## Extraction plan
 
-**4 agents** in `.claude/agents/`, **4 scripts** in `scripts/thegraph/` (node ESM, matching
+**4 agents** in `.claude/agents/`, **5 scripts** in `scripts/thegraph/` (node ESM, matching
 `.github/scripts/*.mjs`; kept separate because those are CI's and these are not). Each artifact
 carries **only justerm's data** and defers the method to `thegraph` — thin, so it survives the skill
 gaining a paragraph. Each carries the build stamp.
@@ -661,6 +914,7 @@ gaining a paragraph. Each carries the build stamp.
 | `.claude/agents/thegraph-reference.md` | `reference` (fetch only) | the 2 source classes and how each is reached. **Returns the tree path and the raw hit; it is never the source of a `file:line` anyone copies** — the delegation would otherwise buy a wrong citation at full confidence |
 | `.claude/agents/thegraph-sweep.md` | `sweep` | surfaces **1–8 only**. Surfaces 9–11 (⛔ above) stay on the main thread: they write to the tracker or adjudicate |
 | `scripts/thegraph/gates.mjs` | `gate` | the command list, each invoked **bare**, taking a **scope argument** (`core` · `web` · `renderer` · `all`) because two are expensive and conditional. **Asserts its list against `.github/workflows/test.yml`** rather than restating it |
+| `scripts/thegraph/place.mjs` | `place`'s guard, and `gate` again on the final diff | the tree rule as a **path list**, matched against the changed paths. It **reports**; the choice between the rule and a named peer is `place`'s and stays on the main thread |
 | `scripts/thegraph/triggers.mjs` | the `verify` guard | the sacred-path **globs**, matched against the diff. Never a call-site list |
 | `scripts/thegraph/search.mjs` | `search` | the tracker query by artifact + the 10-area preemption table. **Query only** — conflict adjudication is not `code` |
 | `scripts/thegraph/preflight.mjs` | `## Environment preconditions` | worktree location · `../.refs` pins (delegating to `cite.mjs --pins`) · port 5173's owner · local `wasm-pack` vs `WASM_PACK_VERSION` · the `just-shield` argument |
@@ -671,10 +925,35 @@ halves.
 
 **Refusal check.** No adjudicating node is delegated (invariant ①): the four agents are `verify`,
 `verify`, `reference`-fetch and `sweep`, all delegable by the catalog; the four scripts are `code`
-conditions. No `implement`, `boundary`, `enumerate`, `proof`, `batch`, `stop`, `decide` or `promote`
-artifact exists. No path reaches the tracker without passing `batch` (invariant ③) — which is
+conditions. No `implement`, `boundary`, `place`, `enumerate`, `proof`, `batch`, `stop`, `decide` or `promote`
+artifact exists — `place.mjs` is its **guard**, a `code` condition matching two path lists, not the
+node. No path reaches the tracker without passing `batch` (invariant ③) — which is
 exactly what restricting the sweeper to surfaces 1–8 buys. Every back-edge declares a guard **and** a
 bound (invariant ②).
+
+---
+
+## Unowned slots — **pending a `thegraph` change**
+
+Found by the coverage check `/grill-the-graph` runs once per build: walk *"What the build must
+supply"* and confirm each entry is placed on one side of the invariant/build split. Three are placed
+on **neither**.
+
+| Slot | *"What the build must supply"* names it | The split's **"Decided by the build"** enumeration names it |
+|---|---|---|
+| **`proof` method per layer**, and this project's tautological-proof traps | yes | no — it is not a source, surface, command or path list |
+| **Tracker capability** (does the tracker have a parent/child relation at all) | yes | no |
+| **War-story index** | yes | no |
+
+All three are answered here — `### implement` / `proof`, the `spine` row of the roster, and the
+absorbed index above — so nothing is missing from *this* build. What is missing is the sentence
+saying who answers them, which is a `thegraph` edit and not a build value.
+
+**The change to make is a placement, never an addition.** The slots already exist; the split's
+enumeration is what has to grow, exactly as it did when the project's **seams** turned out to be
+answerable in the schema and absent from the split. That precedent is the reason this check runs at
+all: a slot a build can answer passes unnoticed forever, and an extraction is far too late to be the
+detector.
 
 ---
 

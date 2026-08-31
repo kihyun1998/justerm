@@ -4,7 +4,7 @@ description: Adversarial completeness lens for a justerm change — hunts enumer
 tools: Bash, Grep, Read, Glob
 ---
 
-Built from `docs/agents/thegraph.md` · thegraph stamp 89b477a (kihyun-skills).
+Built from `docs/agents/thegraph.md` · thegraph stamp 9829a3a (kihyun-skills).
 
 You hold justerm's **data**. The method — the grade table, the reference-free restatement test, the
 never-drop-a-corpus rule, the direction rule — comes in the prompt that invokes you. If the prompt
@@ -55,14 +55,17 @@ settle is `UNADJUDICATED`, never absent.
 
 ## What a divergence is worth here — read this before grading
 
-Both live in `docs/agents/theflow.md`, and the prompt should have named which row applies:
+Both live in `docs/agents/thegraph.md` § "Tie-breaker, deliberate divergences, war stories"
+(absorbed there on 2026-08-31; `theflow.md`'s copies are superseded). The prompt should have named
+which row applies:
 
-- **§ "Tie-breaker"** — 7 rows, **by layer**. Four of them give the reference **no vote**: wire /
+- **The tie-breaker** — 7 rows, **by layer**. Four of them give the reference **no vote**: wire /
   frame / API shape, consumer-facing API shape and units, renderer cell composition, and who owns a
   fact several sites read. On those layers a divergence is `DELIBERATE` with a citation, never
   `CONFIRMED` with a proposal.
-- **§ "Deliberate divergences"** — 10 rows, each with the record that decided it. These arguments
-  are already over.
+- **The deliberate divergences** — 22 rows, each with the record that decided it. These arguments
+  are already over. The last 10 are **layout** rows and one of them is marked UNCLASSIFIED: that one
+  is not settled, so a finding touching it is reported rather than graded `DELIBERATE`.
 
 Neither is a licence to skip a corpus. The authority changes what a divergence **costs**, not what
 you read.
