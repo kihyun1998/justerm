@@ -7,15 +7,39 @@ the **method** (node-type catalog, four invariants, reasoning habits); this file
 input is **spent**: this file now owns the three tables the whole graph is graded against — the
 tie-breaker, the deliberate divergences and the war-story index.
 
-**Build stamp:** `thegraph` at **`bf223be`** (`kihyun1998/kihyun-skills`). Generated artifacts carry
+**Build stamp:** `thegraph` at **`18edd61`** (`kihyun1998/kihyun-skills`). Generated artifacts carry
 the same stamp; the skill warns when it is behind and never rebuilds on its own.
 
-**What moved since the previous stamp (`9829a3a`), and what did not.** Three commits touched
-`thegraph/`, and **none of them changed the schema** — *"What the build must supply"* has the same
-entries, so this update answered no new slot. What changed is the **split**: the build side became a
-generalisation (`bf223be`, from `kihyun-skills#24`) and two placements landed before it (`cd8dc6f`).
-Both show up here only as the unowned table emptying. A third commit added a `requires:` frontmatter
-line to the skill itself and obliges a consumer nothing.
+**What moved since the previous stamp (`bf223be`), and what did not.** Ten commits touched
+`thegraph/`. **Three inputs decide whether a roster changes at all, and all three came back
+byte-identical** — the schema (*"What the build must supply"*), the node-type catalog table, and the
+invariant/build split. Diffed on 2026-09-02, which is what licenses the rest of this update being a
+confirmation rather than a re-derivation, and what carries the unowned walk below forward by
+construction rather than by re-walking it.
+
+The largest move — `thegraph` splitting into `SKILL.md` + `NODES.md` + `BUILD_CONTRACT.md` — **cost
+this build zero artifact edits.** Grepped all nine artifacts and this file for those three names:
+zero hits. That is the thin-artifact rule paying out exactly as designed: an artifact that never
+names *where* a method lives is indifferent to the method moving. It is worth recording as a
+measured result, because a rule whose payout is invisible is one a later build trims.
+
+Two commits did oblige something, and only one of them reached a slot:
+
+- **`58cef7c` — a delegated node's licence is its tool grant, not its brief.** Read-only became the
+  enforced **default**, moved only by a `**Runs:**` declaration naming each write-capable tool. All
+  four agents needed the declaration; **none needed a narrower grant**, because every brief here
+  already named its commands. Upstream's war story was four agents with shells no brief asked for —
+  the opposite case, and checking rather than pattern-matching is what told them apart. The rule also
+  buys a new artifact: `scripts/thegraph/grants.mjs`, in the `gate` list.
+- **`1799dbb` — `catalog_gaps` got its own slot.** A state slot is the catalog's to fix, so nothing
+  in the roster moved. What *is* this build's is where the slot goes when it leaves the run, and it
+  leaves to a **different tracker**. See `## Run state`.
+
+**A revision named as history is not restamped.** Only the **Build stamp** line above carries this
+build's current revision. Every other `bf223be` in this file is a fact about the past — the previous
+stamp, and the walk performed at it — and stays as written. A blanket find-and-replace over a
+revision id rewrites the past into the present, and afterwards the two read identically, which is
+the one thing a stamp exists to prevent.
 
 **Verify the stamp against a fetched remote, not a local clone.** The walk of 2026-08-31 first
 reported this stamp *current* by comparing it to `git log -1` in an unfetched checkout of
@@ -807,6 +831,13 @@ them are worth naming here because they leave the run:
   `batch` as a re-grill request, and the **next `/grill-the-graph` reads it first**. The build stamp
   catches `thegraph` drifting ahead of this file; *nothing* catches the **repo** drifting ahead of
   it, so this record is the only detector there is.
+- **`catalog_gaps`** — a defect in **`thegraph` itself**, not in this file. It leaves the run to a
+  **different tracker**: `batch` files it against `kihyun1998/kihyun-skills`, never against this
+  repo. That destination is the only part of the slot this build owns, and it is the part a run
+  cannot derive — every other destination a run can reach belongs to justerm, so a catalog defect
+  written to `build_gaps` arrives at a party structurally unable to act on it, and a misrouted item
+  is indistinguishable from a filed one. Telling the two apart: if a re-grill of *this* repo would
+  not make the cause stop happening, it is the catalog's.
 - **`dropped`** — candidates dismissed with their ground, which go into the PR body so dropping is
   itself recorded.
 
@@ -966,7 +997,7 @@ file is not deletable either way.
 
 ## Extraction plan
 
-**4 agents** in `.claude/agents/`, **5 scripts** in `scripts/thegraph/` (node ESM, matching
+**4 agents** in `.claude/agents/`, **6 scripts** in `scripts/thegraph/` (node ESM, matching
 `.github/scripts/*.mjs`; kept separate because those are CI's and these are not). Each artifact
 carries **only justerm's data** and defers the method to `thegraph` — thin, so it survives the skill
 gaining a paragraph. Each carries the build stamp.
@@ -976,7 +1007,8 @@ gaining a paragraph. Each carries the build stamp.
 | `.claude/agents/thegraph-lens.md` | `verify` | corpora paths · the tie-breaker row for the layer · the deliberate-divergence list · the six brief items |
 | `.claude/agents/thegraph-refuter.md` | `verify` (2nd) | the same, opposing stance. Exists **only** because sacred paths do |
 | `.claude/agents/thegraph-reference.md` | `reference` (fetch only) | the 2 source classes and how each is reached. **Returns the tree path and the raw hit; it is never the source of a `file:line` anyone copies** — the delegation would otherwise buy a wrong citation at full confidence |
-| `.claude/agents/thegraph-sweep.md` | `sweep` | surfaces **1–8 only**. Surfaces 9–11 (⛔ above) stay on the main thread: they write to the tracker or adjudicate |
+| `.claude/agents/thegraph-sweep.md` | `sweep` | surfaces **1–8 and 12**. Surfaces 9–11 (⛔ above) stay on the main thread: they write to the tracker or adjudicate. The line the split falls on is *which* write, not whether there is one — 1–8 and 12 are doc surfaces this node amends in place, which is why its grant declares `Edit` |
+| `scripts/thegraph/grants.mjs` | invariant ① over the four agents above | the read-only **default** and the `**Runs:**` declaration that moves it. Asserts the default, **never the claim**: a check keyed on a description saying *"read-only"* is dodged by rephrasing, and was. Joins the `gate` list; it is not a CI step, so `gates.mjs`'s CI cross-check does not see it |
 | `scripts/thegraph/gates.mjs` | `gate` | the command list, each invoked **bare**, taking a **scope argument** (`core` · `web` · `renderer` · `all`) because two are expensive and conditional. **Asserts its list against `.github/workflows/test.yml`** rather than restating it |
 | `scripts/thegraph/place.mjs` | `place`'s guard, and `gate` again on the final diff | the tree rule as a **path list**, matched against the changed paths. It **reports**; the choice between the rule and a named peer is `place`'s and stays on the main thread |
 | `scripts/thegraph/triggers.mjs` | the `verify` guard | the sacred-path **globs**, matched against the diff. Never a call-site list |
@@ -988,12 +1020,22 @@ already exists; `readme_pins.rs` and `check-published-readme.mjs` are `sweep` su
 halves.
 
 **Refusal check.** No adjudicating node is delegated (invariant ①): the four agents are `verify`,
-`verify`, `reference`-fetch and `sweep`, all delegable by the catalog; the four scripts are `code`
+`verify`, `reference`-fetch and `sweep`, all delegable by the catalog; the six scripts are `code`
 conditions. No `implement`, `boundary`, `place`, `enumerate`, `proof`, `batch`, `stop`, `decide` or `promote`
 artifact exists — `place.mjs` is its **guard**, a `code` condition matching two path lists, not the
 node. No path reaches the tracker without passing `batch` (invariant ③) — which is
-exactly what restricting the sweeper to surfaces 1–8 buys. Every back-edge declares a guard **and** a
+exactly what restricting the sweeper to surfaces 9–11 buys. Every back-edge declares a guard **and** a
 bound (invariant ②).
+
+**And invariant ① is now checked rather than asserted.** Every one of the four grants was measured
+against its own brief on 2026-09-02: all four carry `Bash`, the sweeper also `Edit`, and **every
+brief names its commands** — `cite.mjs` in all four, plus `git rev-parse` for a pin, `npm view` /
+`git tag -l` / `npm pack` for the registry class, and `rg` for the sweeper's widen pattern. So no
+grant was narrowed; four `**Runs:**` declarations were added, and `grants.mjs` now fails the build
+if one goes missing. Its own discriminating power was measured the same day, against the two dodges
+the invariant names: a description rewritten to *"proposes edits rather than making them"* with no
+declaration, and a `**Runs:**` naming no tool. **Both reddened, and the baseline came back green in
+the same run** — one red is not a mutation test.
 
 ---
 
@@ -1002,6 +1044,14 @@ bound (invariant ②).
 The coverage check `/grill-the-graph` runs once per build: walk *"What the build must supply"* and
 confirm each entry is placed on one side of the invariant/build split. **Walked 2026-08-31 against
 `thegraph` at `bf223be`. Every entry is placed.**
+
+**The walk of 2026-09-02 carries that result forward rather than repeating it, and the licence is a
+measurement.** Both of the walk's inputs — the schema and the split — were diffed byte-for-byte
+between `bf223be` and `18edd61` and are **identical**; the schema only moved file, out of `SKILL.md`
+into `BUILD_CONTRACT.md`. A walk is a comparison of those two texts, so an identical pair cannot
+produce a different verdict. Recorded as a derivation and not as a second walk, because the two are
+worth different amounts: this one is void the moment either input moves, and the stamp is what says
+whether it has.
 
 A passing check is deliberately thin here — no per-slot owner column, because which side of the
 split owns a slot is `thegraph`'s fact rather than this project's data, and a column of them would be
@@ -1030,7 +1080,35 @@ what bought the change.
 
 ---
 
-## Method gaps — **closed upstream at `89b477a`**
+## Method gaps — **six closed upstream at `89b477a`, one open**
+
+### Open — `sweep`'s contract licenses its delegation on a property the node does not have
+
+Found 2026-09-02, building against `18edd61`. `NODES.md` § `### sweep` says both of these, one
+paragraph apart:
+
+> **Writes** the surfaces, and `swept`.
+
+> **Delegable, fanning out one instance per surface** — … and **it is read-only**, so invariant ①
+> permits it.
+
+Before `58cef7c`, *"read-only"* there was loose prose that could be read as *"does not adjudicate"*.
+That commit made read-only the **enforced default** with a checkable tool grant, so the word now
+names the thing the check measures — and the same contract asks this node to edit documents and
+forbids it the tool for doing so. **The property the delegation is licensed on is one the node
+violates by definition.**
+
+Routed as a **catalog** gap, not a build gap, by the discriminator: the defect is in a skill file,
+and a re-grill of justerm would face the identical ambiguity, so the cause does not clear. It does
+**not** block this build — invariant ① supplies the mechanism, and `thegraph-sweep`'s `Edit` is
+licensed by declaration. The suggested fix is a **wording** change, not a rule change: the
+delegation is licensed by the node not *adjudicating*, which is what invariant ① actually requires,
+and *"read-only"* is the wrong word for it now that the word is load-bearing.
+
+**Not yet filed against `kihyun1998/kihyun-skills`** — recorded here so the next build does not
+rediscover it.
+
+### Closed
 
 All six were accepted into `thegraph` on the day this build was compiled, so **none is `pending` and
 a run substituting judgement for one is now working from a stale copy of the skill.** Kept rather

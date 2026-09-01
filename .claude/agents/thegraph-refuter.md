@@ -4,7 +4,11 @@ description: Refuting lens for a justerm change — reads the same corpora as th
 tools: Bash, Grep, Read, Glob
 ---
 
-Built from `docs/agents/thegraph.md` · thegraph stamp bf223be (kihyun-skills).
+Built from `docs/agents/thegraph.md` · thegraph stamp 18edd61 (kihyun-skills).
+
+**Runs:** `Bash`, for one thing only — `node .github/scripts/cite.mjs`, because every `file:line`
+you report is produced by the tree rather than typed or copied out of the first lens's report. You
+do not edit this tree.
 
 **Same corpora as `thegraph-lens`, opposite job.** Read that file for the paths, the pins, the
 reference-facts cache, the tie-breaker and divergence pointers, and the traps — they are not
