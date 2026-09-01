@@ -4236,6 +4236,10 @@ fn param_or(params: &Params, idx: usize, default: u16) -> u16 {
 /// Pv >= 277   ->  ttymouse=sgr
 /// ```
 ///
+/// And `Pv >= 141` separately unlocks vim's XTGETTCAP key-code interrogation
+/// (its `term.txt`, *xterm-codes*). So the number gates three upgrades at three
+/// thresholds, not one.
+///
 /// justerm at 0.15.0 maps to 1500 and clears it comfortably. A `0.2.x` would map
 /// to 200 and silently cost every consumer the SGR mouse encoding — so the
 /// base-100 scheme is load-bearing for a reason that has nothing to do with
@@ -4587,12 +4591,24 @@ impl Perform for Term {
         //     no reply           ->  ttymouse=xterm
         //     ESC[>1;1500;0c     ->  ttymouse=sgr
         //
-        // and nothing else moved — `termguicolors`, `t_SI`, `t_EI` and `t_RS`
-        // were identical in every arm. So the reply buys the **mouse protocol**:
-        // legacy `xterm` encoding cannot report a column past 223 and cannot
-        // report a release, `sgr` has neither limit. It does *not* buy truecolor
-        // or cursor-shape control, and it does not gate modifyOtherKeys, which
-        // vim emits ~180 bytes before it asks.
+        // The mouse protocol is what the version number buys *directly*: legacy
+        // `xterm` encoding cannot report a column past 223 and cannot report a
+        // release, `sgr` has neither limit.
+        //
+        // It is not the only effect, and the second one is the larger. Answering
+        // also makes vim **ask ten more questions** — `DCS + q <hex> ST`
+        // (XTGETTCAP) for `Co`, `ku`, `kd`, `kl`, `kr`, `k1`, `#2`, `#4`, `%i`
+        // and `*7`: the colour count and the arrow / function / shifted key
+        // codes. vim's own `term.txt` gates that on the reply indicating
+        // "patchlevel 141 or higher", and its point is that a terminal produces
+        // different key codes in different modes, so it asks instead of
+        // guessing. **justerm answers none of those today** — they fall to the
+        // same intermediate catch-all this block sits above — so the capability
+        // is unlocked and then unanswered. That is the honest state, and it is
+        // #47 tail rather than this slice.
+        //
+        // modifyOtherKeys is *not* gated on any of it: vim emits `CSI > 4 ; 2 m`
+        // about 180 bytes before it asks.
         //
         // `>` reaches us as an *intermediate*, so DA2 was not "unhandled" but
         // unreachable: the catch-all below returns before the final is ever
