@@ -4224,6 +4224,23 @@ fn param_or(params: &Params, idx: usize, default: u16) -> u16 {
 /// the spec rather than a divergence from it: `ctlseqs.txt` calls `Pv` "the
 /// firmware version" and fixes no encoding for it.
 ///
+/// **The encoding has a functional floor, and it is not cosmetic.** Measured on
+/// a real pty by sweeping this field alone (RHEL 9.2, vim 8.2), vim picks its
+/// mouse protocol off `Pv`:
+///
+/// ```text
+/// Pv < 95     ->  ttymouse=xterm    (no upgrade at all)
+/// Pv = 95     ->  ttymouse=sgr      (vim special-cases the exact >1;95;0c
+///                                    signature that macOS Terminal sends)
+/// 95..276     ->  ttymouse=xterm2
+/// Pv >= 277   ->  ttymouse=sgr
+/// ```
+///
+/// justerm at 0.15.0 maps to 1500 and clears it comfortably. A `0.2.x` would map
+/// to 200 and silently cost every consumer the SGR mouse encoding — so the
+/// base-100 scheme is load-bearing for a reason that has nothing to do with
+/// monotonicity, and lowering the base would be a behavioural change.
+///
 /// Three edges, all deliberate. A component of 100 or more carries into the
 /// next place — justerm is far from that, and widening the base would change
 /// every number already reported for no measured gain. The pre-release suffix
@@ -4562,6 +4579,20 @@ impl Perform for Term {
         }
         // DA2 (secondary device attributes, CSI > c) — the query vim uses to
         // fill `v:termresponse` and identify what it is talking to (#824).
+        //
+        // What answering it actually buys, measured as a control pair on a real
+        // pty (RHEL 9.2, vim 8.2, TERM=xterm-256color, 24x80; every other query
+        // answered identically in both arms, controls run before and after):
+        //
+        //     no reply           ->  ttymouse=xterm
+        //     ESC[>1;1500;0c     ->  ttymouse=sgr
+        //
+        // and nothing else moved — `termguicolors`, `t_SI`, `t_EI` and `t_RS`
+        // were identical in every arm. So the reply buys the **mouse protocol**:
+        // legacy `xterm` encoding cannot report a column past 223 and cannot
+        // report a release, `sgr` has neither limit. It does *not* buy truecolor
+        // or cursor-shape control, and it does not gate modifyOtherKeys, which
+        // vim emits ~180 bytes before it asks.
         //
         // `>` reaches us as an *intermediate*, so DA2 was not "unhandled" but
         // unreachable: the catch-all below returns before the final is ever
