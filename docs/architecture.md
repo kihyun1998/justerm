@@ -672,6 +672,19 @@ Z"`, and a search across the wrap went from 1 hit to 0). It now lives on the
   spec and restores it (charsets join the set when a charset slice lands). The general tie-break —
   Alacritty on genuine ambiguities, the spec where Alacritty merely omits a mandated behaviour — is
   **ADR-0004**. [#8]
+- **DA2's `Pc` is the first case ADR-0004's classification does *not* fit, and the gap is the
+  record.** Secondary device attributes (`CSI > c`) report `Pp ; Pv ; Pc`. On `Pc` Alacritty sends
+  `1` where xterm, ghostty and xterm.js send `0` — so it neither *omits* the behaviour nor
+  *under-implements* it, which are ADR-0004's two spec-wins branches; it **contradicts**. Its other
+  branch, genuine ambiguity → follow Alacritty, would yield `1`. And `ctlseqs.txt` does not rescue
+  the classification either: its *"always zero"* is said of a **DEC terminal**, a description of
+  hardware rather than a requirement on emulators. justerm sends `0` on a ground that needs no
+  reference — `Pc` registers a ROM cartridge, this engine has none, and `0` is the absence value,
+  which is exactly how the two implementations that comment the field read it. Recorded here rather
+  than re-litigated: **a reference that contradicts is a third case, and the tie-breaker's authority
+  row rather than ADR-0004's text is what covers it.** `Pp` is `1` (VT220) for the coherence reason
+  one field over: DA1 already advertises level 62, and justerm implements neither DECTID nor DECSCL,
+  so it has nothing that could decouple the level from the device type. [#824]
 - **A combining mark (width-0 code point) attaches to the previous base cell, not its own cell.**
   `print` must not drop a width-0 char (the current #2 behaviour). It appends to the cell the cursor
   just left: back up one column, and if that cell is a `WIDE_CHAR_SPACER` back up once more to the

@@ -4224,11 +4224,17 @@ fn param_or(params: &Params, idx: usize, default: u16) -> u16 {
 /// the spec rather than a divergence from it: `ctlseqs.txt` calls `Pv` "the
 /// firmware version" and fixes no encoding for it.
 ///
-/// Two edges, both deliberate. A component of 100 or more carries into the next
-/// place — justerm is far from that, and widening the base would change every
-/// number already reported for no measured gain. And the pre-release suffix is
-/// cut at the **first** hyphen, which is where semver says it begins; alacritty
-/// cuts at the last, which mis-parses a two-part suffix like `-rc.1-dev`.
+/// Three edges, all deliberate. A component of 100 or more carries into the
+/// next place — justerm is far from that, and widening the base would change
+/// every number already reported for no measured gain. The pre-release suffix
+/// is cut at the **first** hyphen, which is where semver says it begins;
+/// alacritty cuts at the last, which mis-parses a two-part suffix like
+/// `-rc.1-dev`. And the monotonicity above holds only below `u16::MAX`: a CSI
+/// parameter is a `u16` in `vte` (saturating), and ghostty types the field
+/// `firmware_version: u16`, so a `Pv` past 65535 — major version 7 — reaches a
+/// receiver saturated. alacritty carries the same latent property; the corpus
+/// prescribes no wider encoding, so this is recorded rather than designed
+/// around.
 const fn version_number(version: &str) -> u32 {
     let bytes = version.as_bytes();
     let mut parts = [0u32; 3];
@@ -4252,21 +4258,49 @@ const fn version_number(version: &str) -> u32 {
 }
 
 /// `Pp` of the secondary DA report: 1 = VT220, from the spec's closed table
-/// (`ctlseqs.txt`). It has to name the same terminal DA1 already advertises —
-/// `CSI ? 62 ; 22 c`, where 62 is VT220-level conformance — or the two replies
-/// contradict each other one field apart. ghostty is the convergence check: its
-/// DA1 is byte-identical to justerm's and its DA2 says 1 likewise
-/// (`src/termio/stream_handler.zig:837`, `:843` @ `e6e26e1`).
+/// (`ctlseqs.txt:825`). It names the same terminal DA1 already advertises —
+/// `CSI ? 62 ; 22 c`, where 62 *is* VT220 (`ctlseqs.txt:778`).
+///
+/// The two are not forced to agree in general: DA1's first parameter is an
+/// operating **level** and `Pp` a device **type**, and xterm can decouple them
+/// through DECTID. justerm implements neither DECTID nor DECSCL, so nothing
+/// here can decouple them — which is why one terminal identity is the only
+/// coherent answer, not because disagreeing would be malformed.
+///
+/// ghostty is the convergence check: it derives both from one device type
+/// (`src/terminal/device_attributes.zig:82`, `:161` @ `e6e26e1`) and pairs a
+/// level-62 DA1 with `Pp = 1` (`src/termio/stream_handler.zig:843`). Its DA1 is
+/// *not* byte-identical to justerm's at its default — `clipboard-write` is
+/// `.allow` (`src/config/Config.zig:2380`), which appends `;52`; the identical
+/// string is its deny branch. alacritty pairs `?6c` (VT102) with `Pp = 0` and
+/// xterm.js `?1;2c` (VT100) with `Pp = 0`, both of which are what this same
+/// rule produces at those levels — so neither is a counterexample, and no
+/// reference in the corpus pairs a level-62 DA1 with a `Pp` other than 1.
 const DA2_TERMINAL_TYPE: u32 = 1;
 
-/// `Pc` of the secondary DA report: the ROM cartridge registration number,
-/// which the spec fixes at zero (`ctlseqs.txt:838`, *"always zero"*). xterm
-/// (`charproc.c:4267`), ghostty (`src/terminal/device_attributes.zig:87`) and
-/// xterm.js all send 0; alacritty sends 1
-/// (`alacritty_terminal/src/term/mod.rs:1267` @ `852e971`) and is the outlier.
-/// ADR-0004 gives the spec authority over any implementation here, so justerm
-/// follows the spec — this is the one field where "follow alacritty" does not.
+/// `Pc` of the secondary DA report: 0.
+///
+/// The ground is first-principles and needs no reference: `Pc` is a **ROM
+/// cartridge registration number**, justerm has no cartridge, and 0 is the
+/// absence value. That is how both implementations that comment the field read
+/// it — xterm writes it as `/* options (none) */` (`charproc.c:4267`) and
+/// ghostty as *"Always 0 for emulators"* (`src/terminal/device_attributes.zig:88`
+/// @ `e6e26e1`). xterm.js sends 0 in all three of its branches; alacritty alone
+/// sends 1 (`alacritty_terminal/src/term/mod.rs:1267` @ `852e971`).
+///
+/// **What does *not* carry this choice, stated because it looks like it should.**
+/// `ctlseqs.txt:839` says `Pc` *"is always zero"* only of a **DEC terminal** —
+/// a description of hardware in xterm's own documentation, not a requirement on
+/// emulators. And ADR-0004 tie-breaks the spec against alacritty where alacritty
+/// *"merely omits or under-implements"*; here alacritty **contradicts**, which
+/// is neither of its branches, and its other branch (genuine ambiguity → follow
+/// alacritty) would give 1. So the value rests on the argument above and on the
+/// 3-1 head count, not on a spec mandate that does not exist.
 const DA2_ROM_CARTRIDGE: u32 = 0;
+
+/// The `Pv` this build reports, folded at compile time so the doc-comment above
+/// is literally true and the query path does no arithmetic.
+const DA2_VERSION: u32 = version_number(env!("CARGO_PKG_VERSION"));
 
 impl Term {
     /// Apply one DEC private mode set (`'h'`) or reset (`'l'`). DECSET/DECRST
@@ -4526,32 +4560,43 @@ impl Perform for Term {
             self.set_cursor_style(param.unwrap_or(1));
             return;
         }
-        // DA2 (secondary device attributes, CSI > c) — vim reads the reply into
-        // `v:termresponse` and will not enable truecolor, modifyOtherKeys or
-        // cursor-shape control against a terminal it cannot identify (#824).
+        // DA2 (secondary device attributes, CSI > c) — the query vim uses to
+        // fill `v:termresponse` and identify what it is talking to (#824).
         //
         // `>` reaches us as an *intermediate*, so DA2 was not "unhandled" but
         // unreachable: the catch-all below returns before the final is ever
         // examined. This opens exactly one route through it — the `>` prefix
-        // alone, with the `c` final — and every other `>`-prefixed sequence
-        // (XTVERSION `CSI > q`, tertiary DA `CSI = c`) keeps falling through.
-        // The match is on the whole slice, not `.first()`, so `CSI > $ c` is
-        // not DA2 either; ghostty and xterm both drop that form.
+        // alone, with the `c` final.
+        //
+        // It is one route out of ten `>` finals xterm routes, and the choice is
+        // reach, not completeness: across this repo's capture corpus `CSI > c`
+        // occurs 3 times and XTMODKEYS `CSI > m` 7 — the latter is the highest-
+        // reach `>` sequence justerm does not route, and it keeps falling
+        // through here exactly as before, tracked with the rest of the tail in
+        // #47. (XTVERSION `CSI > q`, which reads like the obvious neighbour,
+        // occurs **zero** times.)
+        //
+        // The match is on the whole slice rather than `.first()`, so
+        // `CSI > $ c` is not DA2. That is 3-1: xterm drops it
+        // (`VTPrsTbl.c:4747`, `$` is CASE_CSI_IGNORE inside `dec2_table`),
+        // ghostty drops it (`src/terminal/stream.zig:1612`, `else => null`) and
+        // xterm.js drops it (its handler key packs prefix *and* intermediates,
+        // `InputHandler.ts:233`), while alacritty **would answer** it
+        // (`vte-0.15.0/src/ansi.rs:1572` passes `intermediates.first()`). No
+        // producer of that form exists in any pinned corpus, so this is a
+        // divergence with no measured reach — pinned by a test regardless,
+        // because the predicate is otherwise unfalsifiable.
         if intermediates == [b'>'] && action == 'c' {
-            // The spec admits only `Ps = 0` or omitted as a request; a qualifier
-            // we do not recognise is answered with silence rather than with a
-            // report that does not address it. xterm, xterm.js and alacritty
-            // all gate this way (ghostty does not, and has no test that would
-            // notice).
+            // Only `Ps = 0` or omitted is a request; a qualifier we do not
+            // recognise is answered with silence rather than with a report that
+            // does not address it. xterm (`charproc.c:4220`), xterm.js
+            // (`InputHandler.ts:1738`) and alacritty (`ansi.rs:1572`) all gate
+            // this way; ghostty reads no parameter at all and has no test that
+            // would notice.
             if param_or(params, 0, 0) == 0 {
                 self.replies.extend_from_slice(
-                    format!(
-                        "\x1b[>{};{};{}c",
-                        DA2_TERMINAL_TYPE,
-                        version_number(env!("CARGO_PKG_VERSION")),
-                        DA2_ROM_CARTRIDGE
-                    )
-                    .as_bytes(),
+                    format!("\x1b[>{DA2_TERMINAL_TYPE};{DA2_VERSION};{DA2_ROM_CARTRIDGE}c")
+                        .as_bytes(),
                 );
             }
             return;
@@ -4830,9 +4875,12 @@ mod tests {
     /// drifts from its report. What it cannot observe is the mapping itself:
     /// there is only ever one crate version at run time, so a hand-written
     /// literal equal to today's number is byte-identical to the derivation at
-    /// that seam — measured, by replacing the call with `1500` and watching the
-    /// whole file stay green. These cases are what make the mapping falsifiable
-    /// rather than assumed.
+    /// that seam. Measured, by replacing the call site with `1500`:
+    /// `cargo test --workspace` stayed green, and `cargo clippy --workspace
+    /// --all-targets -- -D warnings` **failed** — `version_number` loses its
+    /// only non-test caller and `dead_code` is an error under the gate. So the
+    /// test suite alone cannot see it and the gate can; these cases are what
+    /// make the mapping itself falsifiable rather than assumed.
     #[test]
     fn version_number_pads_semver_base_100() {
         // Each place is two decimal digits wide, so a higher version always

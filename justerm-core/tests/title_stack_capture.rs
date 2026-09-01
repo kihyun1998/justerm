@@ -82,7 +82,7 @@ const CAPTURE: &[u8] = include_bytes!("fixtures/vim_title_stack.raw");
 /// shared helper: what both files are for is disagreeing with the engine, and a
 /// derivation they imported from it — or from each other — could not.
 fn da2_version() -> u32 {
-    let v = env!("CARGO_PKG_VERSION").split('-').next().unwrap();
+    let v = env!("CARGO_PKG_VERSION").split(['-', '+']).next().unwrap();
     let mut p = v.split('.').map(|c| c.parse::<u32>().unwrap_or(0));
     p.next().unwrap_or(0) * 10_000 + p.next().unwrap_or(0) * 100 + p.next().unwrap_or(0)
 }

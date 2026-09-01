@@ -123,7 +123,11 @@ fn unhandled_query_produces_no_reply() {
 /// the engine's, so the two have to agree rather than share one expression.
 fn expected_version() -> u32 {
     let v = env!("CARGO_PKG_VERSION");
-    let v = v.split('-').next().unwrap(); // strip any pre-release suffix
+    // Cut at whichever comes first — semver's pre-release `-` or its build
+    // metadata `+`. Splitting on `-` alone would disagree with the engine on
+    // `1.2.3+build.5`, where `"3+build".parse()` fails to 0 and this helper
+    // would report a *false red* the engine does not deserve.
+    let v = v.split(['-', '+']).next().unwrap();
     let mut parts = v.split('.').map(|p| p.parse::<u32>().unwrap_or(0));
     let major = parts.next().unwrap_or(0);
     let minor = parts.next().unwrap_or(0);
@@ -188,13 +192,33 @@ fn da1_still_replies_exactly_as_before() {
 fn an_unrelated_prefixed_sequence_stays_silent_and_leaves_the_screen_alone() {
     let mut t = Engine::new(80, 24);
     t.feed(b"ab");
-    // XTVERSION and tertiary DA are deliberately unimplemented (#47), and both
-    // reach the dispatcher through the same prefix byte DA2 now opens.
-    t.feed(b"\x1b[>q");
-    t.feed(b"\x1b[=c");
+    // XTMODKEYS first: it is the highest-reach `>` sequence justerm does not
+    // route — 7 occurrences across this repo's captures against DA2's 3 — so it
+    // is the one a widened prefix match would break in practice. XTVERSION and
+    // tertiary DA follow; all three are #47 tail material.
+    t.feed(b"\x1b[>4;2m"); // XTMODKEYS, what vim emits at startup
+    t.feed(b"\x1b[>4;m"); // and at exit
+    t.feed(b"\x1b[>q"); // XTVERSION
+    t.feed(b"\x1b[=c"); // tertiary DA
     t.feed(b"\x1b[>5n");
     assert_eq!(t.drain_replies(), Vec::<u8>::new());
     let grid = t.grid();
     let row: String = (0..grid.cols()).map(|c| grid.row(0)[c].c()).collect();
     assert_eq!(row.trim_end(), "ab");
+}
+
+#[test]
+fn da2_needs_the_prefix_alone_not_merely_a_leading_prefix() {
+    // The handler matches the whole intermediates slice, so a `>` followed by a
+    // real 0x20..0x2f intermediate is not DA2. Without this case the predicate
+    // is unfalsifiable: relaxing it to `intermediates.first() == Some(&b'>')`
+    // leaves every other test in the tree green, because nothing else in the
+    // suite feeds a prefixed sequence that also carries an intermediate.
+    //
+    // 3-1 among the references, and alacritty is the one that would answer, so
+    // this pins a divergence rather than a consensus.
+    let mut t = Engine::new(80, 24);
+    t.feed(b"\x1b[>$c");
+    t.feed(b"\x1b[> c");
+    assert_eq!(t.drain_replies(), Vec::<u8>::new());
 }
