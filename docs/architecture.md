@@ -909,14 +909,18 @@ Z"`, and a search across the wrap went from 1 hit to 0). It now lives on the
   hyperlink is a Cell attribute, not an `Event`). [#26, #635]
 
 - **Query replies are an outbound channel, drained pull-style and kept apart from events.** An app
-  query (`CSI c` DA1, `CSI 5n`/`CSI 6n` DSR, `CSI ? Ps $ p` DECRQM) makes the engine *produce bytes the
+  query (`CSI c` DA1, `CSI > c` DA2, `CSI 5n`/`CSI 6n` DSR, `CSI ? Ps $ p` DECRQM) makes the engine *produce bytes the
   consumer must write back to the PTY* — justerm's first "engine → app" path. They queue during `feed`
   and the consumer takes them via `drain_replies` (raw `Vec<u8>`), separate from `drain_events` (typed
   notifications → UI; replies → PTY). This is alacritty's push `Event::PtyWrite` translated to justerm's
   pull cadence; xterm.js instead unifies replies with key output into one `onData` stream — justerm does
   not, because `encode_*` is a *synchronous* consumer-driven call while a reply is an *async* side-effect
   of parsing. Catches: **DA1 must advertise only what the engine implements** (`CSI ? 62;22 c` = VT220 +
-  ANSI colour, not Sixel/printer it lacks — a lying DA makes apps call absent features); **DSR cursor
+  ANSI colour, not Sixel/printer it lacks — a lying DA makes apps call absent features); **DA2 (`CSI > c`)
+  carries no hidden state of its own** — the reply is a pure function of the query and a compile-time
+  constant — but it is *unreachable* unless `csi_dispatch` opens the `>` intermediate for the `c` final,
+  because `vte` collects `0x3C..=0x3F` into `intermediates` and the dispatcher returns early on any it
+  does not name (#824); **DSR cursor
   position is region-relative under origin mode** (DECOM), 1-based; an unrecognised query emits *nothing*
   (no spurious bytes). The kitty `CSI ? u` query (#23) reuses this channel. [#27]
 

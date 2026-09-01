@@ -4215,6 +4215,59 @@ fn param_or(params: &Params, idx: usize, default: u16) -> u16 {
     }
 }
 
+/// The `Pv` field of the secondary device-attributes report (#824), derived
+/// from the crate version so a release cannot ship a report that disagrees
+/// with what was published.
+///
+/// Semver components are padded base-100, so a higher version always reports a
+/// higher number. That is alacritty's scheme, and it is a *reinterpretation* of
+/// the spec rather than a divergence from it: `ctlseqs.txt` calls `Pv` "the
+/// firmware version" and fixes no encoding for it.
+///
+/// Two edges, both deliberate. A component of 100 or more carries into the next
+/// place — justerm is far from that, and widening the base would change every
+/// number already reported for no measured gain. And the pre-release suffix is
+/// cut at the **first** hyphen, which is where semver says it begins; alacritty
+/// cuts at the last, which mis-parses a two-part suffix like `-rc.1-dev`.
+const fn version_number(version: &str) -> u32 {
+    let bytes = version.as_bytes();
+    let mut parts = [0u32; 3];
+    let mut part = 0usize;
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if b == b'-' || b == b'+' {
+            break;
+        } else if b == b'.' {
+            part += 1;
+            if part >= 3 {
+                break;
+            }
+        } else if b.is_ascii_digit() {
+            parts[part] = parts[part] * 10 + (b - b'0') as u32;
+        }
+        i += 1;
+    }
+    parts[0] * 10_000 + parts[1] * 100 + parts[2]
+}
+
+/// `Pp` of the secondary DA report: 1 = VT220, from the spec's closed table
+/// (`ctlseqs.txt`). It has to name the same terminal DA1 already advertises —
+/// `CSI ? 62 ; 22 c`, where 62 is VT220-level conformance — or the two replies
+/// contradict each other one field apart. ghostty is the convergence check: its
+/// DA1 is byte-identical to justerm's and its DA2 says 1 likewise
+/// (`src/termio/stream_handler.zig:837`, `:843` @ `e6e26e1`).
+const DA2_TERMINAL_TYPE: u32 = 1;
+
+/// `Pc` of the secondary DA report: the ROM cartridge registration number,
+/// which the spec fixes at zero (`ctlseqs.txt:838`, *"always zero"*). xterm
+/// (`charproc.c:4267`), ghostty (`src/terminal/device_attributes.zig:87`) and
+/// xterm.js all send 0; alacritty sends 1
+/// (`alacritty_terminal/src/term/mod.rs:1267` @ `852e971`) and is the outlier.
+/// ADR-0004 gives the spec authority over any implementation here, so justerm
+/// follows the spec — this is the one field where "follow alacritty" does not.
+const DA2_ROM_CARTRIDGE: u32 = 0;
+
 impl Term {
     /// Apply one DEC private mode set (`'h'`) or reset (`'l'`). DECSET/DECRST
     /// carry a list of modes, so `csi_dispatch` folds this over every parameter
@@ -4471,6 +4524,36 @@ impl Perform for Term {
         if intermediates.first() == Some(&b' ') && action == 'q' {
             let param = params.iter().next().and_then(|p| p.first().copied());
             self.set_cursor_style(param.unwrap_or(1));
+            return;
+        }
+        // DA2 (secondary device attributes, CSI > c) — vim reads the reply into
+        // `v:termresponse` and will not enable truecolor, modifyOtherKeys or
+        // cursor-shape control against a terminal it cannot identify (#824).
+        //
+        // `>` reaches us as an *intermediate*, so DA2 was not "unhandled" but
+        // unreachable: the catch-all below returns before the final is ever
+        // examined. This opens exactly one route through it — the `>` prefix
+        // alone, with the `c` final — and every other `>`-prefixed sequence
+        // (XTVERSION `CSI > q`, tertiary DA `CSI = c`) keeps falling through.
+        // The match is on the whole slice, not `.first()`, so `CSI > $ c` is
+        // not DA2 either; ghostty and xterm both drop that form.
+        if intermediates == [b'>'] && action == 'c' {
+            // The spec admits only `Ps = 0` or omitted as a request; a qualifier
+            // we do not recognise is answered with silence rather than with a
+            // report that does not address it. xterm, xterm.js and alacritty
+            // all gate this way (ghostty does not, and has no test that would
+            // notice).
+            if param_or(params, 0, 0) == 0 {
+                self.replies.extend_from_slice(
+                    format!(
+                        "\x1b[>{};{};{}c",
+                        DA2_TERMINAL_TYPE,
+                        version_number(env!("CARGO_PKG_VERSION")),
+                        DA2_ROM_CARTRIDGE
+                    )
+                    .as_bytes(),
+                );
+            }
             return;
         }
         // Other private/intermediate sequences are later slices; ignore them
@@ -4735,9 +4818,57 @@ impl Perform for Term {
 #[cfg(test)]
 mod tests {
     use super::cap_scroll;
+    use super::version_number;
     use crate::Engine;
     use crate::damage::ScrollOp;
     use crate::serialize::MAX_SCROLL_COUNT;
+
+    /// #824 — the `Pv` mapping, in-crate because the seam cannot reach it.
+    ///
+    /// `tests/reply.rs` asserts the reply carries the number *this* crate
+    /// version maps to, which is the assertion that fires the moment a release
+    /// drifts from its report. What it cannot observe is the mapping itself:
+    /// there is only ever one crate version at run time, so a hand-written
+    /// literal equal to today's number is byte-identical to the derivation at
+    /// that seam — measured, by replacing the call with `1500` and watching the
+    /// whole file stay green. These cases are what make the mapping falsifiable
+    /// rather than assumed.
+    #[test]
+    fn version_number_pads_semver_base_100() {
+        // Each place is two decimal digits wide, so a higher version always
+        // reports a higher number — which is the only property `Pv` promises.
+        assert_eq!(version_number("0.0.1"), 1);
+        assert_eq!(version_number("0.15.0"), 15_00);
+        assert_eq!(version_number("1.2.3"), 1_02_03);
+        assert_eq!(version_number("999.99.99"), 9_99_99_99);
+        assert!(version_number("0.16.0") > version_number("0.15.9"));
+        assert!(version_number("1.0.0") > version_number("0.99.99"));
+    }
+
+    #[test]
+    fn version_number_strips_a_pre_release_suffix() {
+        // Semver starts the pre-release at the FIRST hyphen, so a two-part
+        // suffix strips whole. alacritty cuts at the last and mis-parses this.
+        assert_eq!(version_number("0.15.0-dev"), 15_00);
+        assert_eq!(version_number("1.2.3-rc.1-dev"), 1_02_03);
+        assert_eq!(version_number("1.2.3+build.5"), 1_02_03);
+        // The cases above cannot observe the strip at all: their suffixes carry
+        // no digits, so removing the `-` break leaves the number unchanged —
+        // measured, by doing exactly that and watching them stay green. A digit
+        // *inside* the suffix is what the strip is for.
+        assert_eq!(version_number("0.15.0-rc2"), 15_00);
+        assert_eq!(version_number("1.2.3-4"), 1_02_03);
+    }
+
+    #[test]
+    fn version_number_tolerates_a_short_or_odd_version() {
+        // A missing component reads as zero rather than panicking, and a fourth
+        // component is ignored — the report must not be able to fail.
+        assert_eq!(version_number("2"), 2_00_00);
+        assert_eq!(version_number("2.7"), 2_07_00);
+        assert_eq!(version_number("1.2.3.4"), 1_02_03);
+        assert_eq!(version_number(""), 0);
+    }
 
     /// #661 — the wire's `i16` bound, not the region-height one.
     ///

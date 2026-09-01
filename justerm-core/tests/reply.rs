@@ -107,7 +107,94 @@ fn drain_empties_the_reply_buffer() {
 fn unhandled_query_produces_no_reply() {
     let mut t = Engine::new(80, 24);
     t.feed(b"\x1b[7n"); // DSR with an unsupported param
-    t.feed(b"\x1b[>c"); // secondary DA (DA2) — not in this slice
+    t.feed(b"\x1b[>q"); // XTVERSION — a `>`-prefixed final we deliberately do not answer
     t.feed(b"plain text\r\n"); // ordinary output
     assert_eq!(t.drain_replies(), Vec::<u8>::new());
+}
+
+// --- DA2, secondary device attributes (CSI > c) (#824) ---------------------
+//
+// `>` reaches `csi_dispatch` as an *intermediate*, and the dispatcher returns
+// early on any intermediate it does not name — so DA2 was unreachable rather
+// than unhandled, and vim could not identify the terminal. The route is opened
+// for the `c` final only; every other `>`-prefixed final stays silent.
+
+/// The version the reply must carry, derived here by arithmetic independent of
+/// the engine's, so the two have to agree rather than share one expression.
+fn expected_version() -> u32 {
+    let v = env!("CARGO_PKG_VERSION");
+    let v = v.split('-').next().unwrap(); // strip any pre-release suffix
+    let mut parts = v.split('.').map(|p| p.parse::<u32>().unwrap_or(0));
+    let major = parts.next().unwrap_or(0);
+    let minor = parts.next().unwrap_or(0);
+    let patch = parts.next().unwrap_or(0);
+    major * 10_000 + minor * 100 + patch
+}
+
+#[test]
+fn da2_reports_secondary_device_attributes() {
+    let mut t = Engine::new(80, 24);
+    t.feed(b"\x1b[>c"); // secondary DA (DA2) query — what vim sends
+    // Pp = 1 (VT220), matching what DA1 already advertises (62 = level 2);
+    // Pv = justerm's own crate version; Pc = 0, the ROM cartridge field the
+    // spec fixes at zero.
+    let want = format!("\x1b[>1;{};0c", expected_version());
+    assert_eq!(t.drain_replies(), want.as_bytes());
+}
+
+#[test]
+fn da2_answers_an_explicit_zero_first_parameter() {
+    let mut t = Engine::new(80, 24);
+    t.feed(b"\x1b[>0c"); // ctlseqs: "Ps = 0 or omitted -> request"
+    let want = format!("\x1b[>1;{};0c", expected_version());
+    assert_eq!(t.drain_replies(), want.as_bytes());
+}
+
+#[test]
+fn da2_ignores_a_non_zero_first_parameter() {
+    let mut t = Engine::new(80, 24);
+    t.feed(b"\x1b[>1c"); // a qualifier we do not recognise
+    t.feed(b"\x1b[>2c");
+    assert_eq!(t.drain_replies(), Vec::<u8>::new());
+}
+
+#[test]
+fn da2_version_field_tracks_the_crate_version() {
+    // The engine must derive the number from its own crate version rather than
+    // carry a literal, so a release cannot ship a report that disagrees with it.
+    let mut t = Engine::new(80, 24);
+    t.feed(b"\x1b[>c");
+    let reply = String::from_utf8(t.drain_replies()).unwrap();
+    let version = reply
+        .trim_start_matches("\x1b[>1;")
+        .trim_end_matches(";0c")
+        .parse::<u32>()
+        .expect("the version field is a single integer");
+    assert_eq!(version, expected_version());
+    // Padded base-100, so a higher semver always reports a higher number.
+    assert!(version >= 1_00, "a released version reports at least 1_00");
+}
+
+#[test]
+fn da1_still_replies_exactly_as_before() {
+    // The dispatcher change opens one intermediate route; the unprefixed `c`
+    // must be untouched by it.
+    let mut t = Engine::new(80, 24);
+    t.feed(b"\x1b[c");
+    assert_eq!(t.drain_replies(), b"\x1b[?62;22c");
+}
+
+#[test]
+fn an_unrelated_prefixed_sequence_stays_silent_and_leaves_the_screen_alone() {
+    let mut t = Engine::new(80, 24);
+    t.feed(b"ab");
+    // XTVERSION and tertiary DA are deliberately unimplemented (#47), and both
+    // reach the dispatcher through the same prefix byte DA2 now opens.
+    t.feed(b"\x1b[>q");
+    t.feed(b"\x1b[=c");
+    t.feed(b"\x1b[>5n");
+    assert_eq!(t.drain_replies(), Vec::<u8>::new());
+    let grid = t.grid();
+    let row: String = (0..grid.cols()).map(|c| grid.row(0)[c].c()).collect();
+    assert_eq!(row.trim_end(), "ab");
 }

@@ -77,6 +77,16 @@ use justerm_core::{Engine, TermEvent};
 
 const CAPTURE: &[u8] = include_bytes!("fixtures/vim_title_stack.raw");
 
+/// The `Pv` field this capture's DA2 reply carries (#824). Deliberately a
+/// second, independent copy of the arithmetic in `reply.rs` rather than a
+/// shared helper: what both files are for is disagreeing with the engine, and a
+/// derivation they imported from it — or from each other — could not.
+fn da2_version() -> u32 {
+    let v = env!("CARGO_PKG_VERSION").split('-').next().unwrap();
+    let mut p = v.split('.').map(|c| c.parse::<u32>().unwrap_or(0));
+    p.next().unwrap_or(0) * 10_000 + p.next().unwrap_or(0) * 100 + p.next().unwrap_or(0)
+}
+
 #[test]
 fn a_real_vim_session_restores_the_title_it_pushed() {
     let mut term = Engine::new(80, 24);
@@ -106,8 +116,17 @@ fn the_title_stack_adds_nothing_to_the_reply_channel() {
     // position reports its two `CSI 6n` asked for, so pinning the exact bytes
     // is what catches a regression that started answering the rest of the
     // `CSI t` family — `CSI 18 t` replies, and 22/23 must not.
+    //
+    // The third report arrived with #824 and is the reason this expectation
+    // moved: the capture carries one `CSI > c` at offset 273, so this recording
+    // of a real vim asks for the *secondary* device attributes and never for
+    // the primary — it contains no `CSI c` at all. Until #824 the engine
+    // answered nothing, which is the asymmetry that issue is about. The 22/23
+    // claim this test exists for is unchanged: every byte below is accounted
+    // for by a query the stream actually made.
     let mut term = Engine::new(80, 24);
     term.feed(CAPTURE);
     let _ = term.drain_events();
-    assert_eq!(term.drain_replies(), b"\x1b[2;2R\x1b[3;1R".to_vec());
+    let want = format!("\x1b[2;2R\x1b[3;1R\x1b[>1;{};0c", da2_version());
+    assert_eq!(term.drain_replies(), want.as_bytes());
 }
