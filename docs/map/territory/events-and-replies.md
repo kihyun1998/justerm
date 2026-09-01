@@ -84,14 +84,24 @@ nothing about it appears in the frame.
 - `justerm-core/src/event.rs` — `TermEvent`, the event surface
 - `justerm-core/src/term.rs` — `Term::drain_events`, `Term::drain_replies`, and the
   `Term::report_*` methods that queue replies (`report_background`, `report_foreground`,
-  `report_cursor_color`, `report_palette_color`, `report_color_scheme`)
+  `report_cursor_color`, `report_palette_color`, `report_color_scheme`). **`report_*` is not the
+  whole producer set**: a query the engine can answer alone is written inline in `csi_dispatch` and
+  never becomes a method — DA1, DA2, DSR and DECRQM all queue that way. The split is *who holds the
+  answer*: a colour is the consumer's, so it must call back in; a device identity is the engine's.
 - `justerm-core/src/lib.rs` — `Engine::drain_events`, `Engine::drain_replies`
 
 ## Reference behaviour
 
-**None** in `docs/agents/reference-facts.md`. alacritty's `EventListener` is named as the rejected
-alternative in a module comment — a rejected design is exactly the claim worth pinning, since it is
-the argument for the current one.
+In `docs/agents/reference-facts.md` — **linked, never restated**.
+
+- [Secondary device attributes — report yourself, do not impersonate](../../agents/reference-facts.md#secondary-device-attributes--report-yourself-do-not-impersonate)
+  — what each reference puts in a DA2 reply's three fields, which of them gate on the first
+  parameter, and the one field where justerm follows none of the majority's *reasons* even though it
+  matches their value (#824)
+
+alacritty's `EventListener` is still named as the rejected alternative in a module comment and is
+still **unpinned** — a rejected design is exactly the claim worth pinning, since it is the argument
+for the current one.
 
 ## Cross-cutting invariants
 
