@@ -800,6 +800,15 @@ silently**, which is why they are extracted as a script (`preflight.mjs`).
   `pnpm demo` already listening from **another checkout** is silently adopted — and it makes a
   *green* run untrustworthy as readily as a red one. `netstat -ano | grep 5173` before believing
   either.
+- **A delegated agent's tool grant is a silent failure, and this is the only position before the
+  damage.** Invariant ① licenses delegating `verify`, `sweep` and `reference`-fetch on the grounds
+  that they read without adjudicating, and the licence is the **grant**, never the brief's claim. A
+  corrupted grant errors nowhere: the agent simply holds a tool nobody declared, and it surfaces
+  when that agent mutates the worktree a second one is reading — upstream, the second then reported
+  a failure it could not reproduce and graded the run `UNADJUDICATED`, correctly, from inside
+  evidence the first had manufactured. `grants.mjs` is in the `gate` list too, but a gate runs
+  **after** the work and CI runs after the **merge**, and neither sees the file while it is
+  uncommitted. Ordering is the whole value: `node scripts/thegraph/preflight.mjs` before starting.
 - **Local `wasm-pack` must match the CI pin** or `test:proofs` is not the gate CI runs — different
   codegen, different `wasm-opt`, both green. `check-tool-pins.mjs` compares the **workflows against
   each other** and does not look at the local binary. `rg -n WASM_PACK_VERSION .github/workflows/`,
@@ -1008,12 +1017,12 @@ gaining a paragraph. Each carries the build stamp.
 | `.claude/agents/thegraph-refuter.md` | `verify` (2nd) | the same, opposing stance. Exists **only** because sacred paths do |
 | `.claude/agents/thegraph-reference.md` | `reference` (fetch only) | the 2 source classes and how each is reached. **Returns the tree path and the raw hit; it is never the source of a `file:line` anyone copies** — the delegation would otherwise buy a wrong citation at full confidence |
 | `.claude/agents/thegraph-sweep.md` | `sweep` | surfaces **1–8 and 12**. Surfaces 9–11 (⛔ above) stay on the main thread: they write to the tracker or adjudicate. The line the split falls on is *which* write, not whether there is one — 1–8 and 12 are doc surfaces this node amends in place, which is why its grant declares `Edit` |
-| `scripts/thegraph/grants.mjs` | invariant ① over the four agents above | the read-only **default** and the `**Runs:**` declaration that moves it. Asserts the default, **never the claim**: a check keyed on a description saying *"read-only"* is dodged by rephrasing, and was. Joins the `gate` list; it is not a CI step, so `gates.mjs`'s CI cross-check does not see it |
+| `scripts/thegraph/grants.mjs` | invariant ① over the four agents above | the read-only **default** and the `**Runs:**` declaration that moves it. Asserts the default, **never the claim**: a check keyed on a description saying *"read-only"* is dodged by rephrasing, and was. Run from **two positions** — `preflight` before the run, `gate` after it — and the first is the one that matters, because the damage is to a live worktree. It is not a CI step, so `gates.mjs`'s CI cross-check does not see it |
 | `scripts/thegraph/gates.mjs` | `gate` | the command list, each invoked **bare**, taking a **scope argument** (`core` · `web` · `renderer` · `all`) because two are expensive and conditional. **Asserts its list against `.github/workflows/test.yml`** rather than restating it |
 | `scripts/thegraph/place.mjs` | `place`'s guard, and `gate` again on the final diff | the tree rule as a **path list**, matched against the changed paths. It **reports**; the choice between the rule and a named peer is `place`'s and stays on the main thread |
 | `scripts/thegraph/triggers.mjs` | the `verify` guard | the sacred-path **globs**, matched against the diff. Never a call-site list |
 | `scripts/thegraph/search.mjs` | `search` | the tracker query by artifact + the 10-area preemption table. **Query only** — conflict adjudication is not `code` |
-| `scripts/thegraph/preflight.mjs` | `## Environment preconditions` | worktree location · `../.refs` pins (delegating to `cite.mjs --pins`) · port 5173's owner · local `wasm-pack` vs `WASM_PACK_VERSION` · the `just-shield` argument |
+| `scripts/thegraph/preflight.mjs` | `## Environment preconditions` | worktree location · `../.refs` pins (delegating to `cite.mjs --pins`) · port 5173's owner · local `wasm-pack` vs `WASM_PACK_VERSION` · the `just-shield` argument · the agents' tool grants (delegating to `grants.mjs`) |
 
 **Already extracted, not regenerated:** `.github/scripts/cite.mjs` is `reference`'s citation tool and
 already exists; `readme_pins.rs` and `check-published-readme.mjs` are `sweep` surface 4's mechanized

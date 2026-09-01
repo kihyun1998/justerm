@@ -163,6 +163,39 @@ if (shield && existsSync(shield)) {
     "only needed for a change touching .github/workflows/**");
 }
 
+// ── 6. the delegated agents' tool grants ─────────────────────────────────────────────────────────
+//
+// Invariant ① licenses delegating `verify`, `sweep` and `reference`-fetch on the grounds that they
+// read without adjudicating, and the licence is the tool GRANT rather than the brief's claim. A
+// corrupted grant belongs on this list by its own criterion: nothing errors, the agent simply holds
+// a tool nobody declared, and it surfaces when that agent mutates the worktree a second one is
+// reading — which is how it surfaced upstream, and the second agent then reported a failure it
+// could not reproduce, correctly, from inside evidence the first had manufactured.
+//
+// `gates.mjs` runs the same script, so this is not a second check — it is the EARLIER of the two,
+// and the ordering is the whole point. A gate sees a violation after the work; CI would see it
+// after the merge, and would not see it at all while the file is uncommitted. Only this position is
+// before the run that the violation damages.
+
+const grantsScript = resolve(HERE, "scripts", "thegraph", "grants.mjs");
+if (!existsSync(grantsScript)) {
+  bad("agent grants", "scripts/thegraph/grants.mjs is missing",
+    "invariant ① is unchecked without it — restore it or re-run /grill-the-graph");
+} else {
+  const grants = run(process.execPath, [grantsScript], { cwd: HERE });
+  const out = `${grants.stdout || ""}${grants.stderr || ""}`.trim();
+  if (grants.error) {
+    bad("agent grants", `grants.mjs could not be run: ${grants.error.message}`,
+      "a check that did not run is not a pass");
+  } else if (grants.status === 0) {
+    ok("agent grants", out.split(NL).pop() || "clean");
+  } else {
+    const fail = out.split(NL).find((l) => l.startsWith("FAIL")) || "grants.mjs exited non-zero";
+    bad("agent grants", fail,
+      "node scripts/thegraph/grants.mjs — a delegated node carries no write-capable tool unless its brief declares that tool by name");
+  }
+}
+
 // ── report ───────────────────────────────────────────────────────────────────────────────────────
 
 const icon = { ok: "  ok  ", warn: " warn ", bad: " BAD  " };
