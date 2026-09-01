@@ -4236,9 +4236,16 @@ fn param_or(params: &Params, idx: usize, default: u16) -> u16 {
 /// Pv >= 277   ->  ttymouse=sgr
 /// ```
 ///
-/// And `Pv >= 141` separately unlocks vim's XTGETTCAP key-code interrogation
-/// (its `term.txt`, *xterm-codes*). So the number gates three upgrades at three
-/// thresholds, not one.
+/// The mouse rows above reproduced across two independent runs, 11 arms each,
+/// with no-reply controls bracketing both.
+///
+/// A further gate sits on the same field: vim's XTGETTCAP key-code
+/// interrogation, which its `term.txt` (*xterm-codes*) documents as needing a
+/// response indicating "patchlevel 141 or higher". Measured here only to the
+/// extent of bracketing — present at 276 and 1500, absent at 1, 94 and 95 — so
+/// the doc's 141 is consistent but not independently pinned. The number
+/// therefore gates upgrades at three separate thresholds rather than one, and
+/// 1500 clears all three.
 ///
 /// justerm at 0.15.0 maps to 1500 and clears it comfortably. A `0.2.x` would map
 /// to 200 and silently cost every consumer the SGR mouse encoding — so the
@@ -4602,7 +4609,12 @@ impl Perform for Term {
         // codes. vim's own `term.txt` gates that on the reply indicating
         // "patchlevel 141 or higher", and its point is that a terminal produces
         // different key codes in different modes, so it asks instead of
-        // guessing. **justerm answers none of those today** — they fall to the
+        // guessing. Measured rather than taken from the doc: the requests appear
+        // at `Pv` 276 and 1500 and are absent at 1, 94 and 95, which brackets the
+        // gate to (95, 276] and is consistent with 141 without pinning it. What
+        // is stable across runs is whether they appear at all; *how many* arrive
+        // is not — one arm sent each capability once where every other sent it
+        // twice. **justerm answers none of those today** — they fall to the
         // same intermediate catch-all this block sits above — so the capability
         // is unlocked and then unanswered. That is the honest state, and it is
         // #47 tail rather than this slice.
