@@ -271,6 +271,16 @@ The bullets below are the *seeds* — narrative descriptions of individual piece
 gate — in **ADR-0025**. Read that first for those two; keep these bullets as the implementation detail
 under it.
 
+- **DECSET 1041 (`selectToClipboard`) is a mode, and not modelling it is what makes an `OSC 52`
+  `s` target unresolvable here.** The sequence's `s` field means *"the configurable
+  primary/clipboard selection"* — xterm resolves it through `DefaultSelection` → the
+  `selectToClipboard` resource (`button.c:2081`), which defaults to **false**, i.e. PRIMARY
+  (`charproc.c:472`). `CSI ? 1041 h/l` sets that same resource **from the stream**
+  (`ctlseqs.txt:1008`), so the input is parser-visible and an engine tracking the mode could answer
+  `s` itself. justerm relays `ClipboardTarget::Selection` outward instead and lets the consumer
+  resolve it, which is ADR-0017's split — but the two are only equivalent while 1041 is *declined*.
+  Written down because the divergence row for #828's empty-target rule names this as its falsifier:
+  modelling 1041 would make the spec's answer representable and reopen that decision. [#828, #47]
 - **Pending-wrap (deferred last-column wrap).** Printing into the last column does *not* advance to
   the next line — the cursor stays put with a `wrapnext` flag, and wrap happens on the *next* print.
   Eager wrap is a classic off-by-one bug (lines shift). [#2]

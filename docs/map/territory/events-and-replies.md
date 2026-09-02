@@ -64,6 +64,24 @@ nothing about it appears in the frame.
   string — which means "go back to your default", not "show a blank title"; and a session that never
   sets a title still produces one `Title("")` per pop, which is why the `cursor_color_nvim.raw`
   capture recorded for #832 gained two events it did not have.
+- **A request the engine cannot perform is still an event, and `OSC 52` is the clearest case
+  (#828).** The clipboard is the consumer's by definition — ADR-0017 names it in the else-list — so
+  what rides this channel is not a clipboard operation but the *fact that an application asked for
+  one*. The engine's half is the sequence: recognise it, decode the base64, relay
+  `ClipboardStore { target, text }`, and answer a `QueryClipboard` only when the consumer calls
+  `report_clipboard`. **Dropping the event is how a consumer refuses**, which is why there is no
+  allow/deny knob here and why alacritty's four-state `osc52` config has no counterpart — alacritty
+  is the consumer. The security property falls out of the same split rather than being added to it:
+  the engine holds no clipboard, so a query it is never asked to answer discloses nothing, and a
+  *read* is refusable independently of a *write*.
+- **A `report_*` takes back what it needs rather than the engine remembering it.**
+  `report_clipboard(target, text)` follows `report_palette_color(index, spec)`: the consumer names
+  the target it is answering about. alacritty is the alternative and shows the cost — its query
+  captures target and terminator in a closure (`alacritty_terminal/src/term/mod.rs:1740`), which is
+  hidden state plus a question about interleaved replies, bought for something the consumer already
+  holds. Worth reading beside #836, which asks whether the *terminator* should travel this way; that
+  is the one fact of the exchange no `report_*` caller can supply, because the engine discards it at
+  the parser boundary.
 - **Pull, not push — and the alternative is named.** The engine queues during `feed` and the consumer
   takes with `drain_events`, mirroring `damage` / `frame` / `reset_damage`. No callback crosses the
   boundary, so the engine stays decoupled from the consumer's event loop. alacritty's `EventListener`
@@ -84,11 +102,19 @@ nothing about it appears in the frame.
 - `justerm-core/src/event.rs` — `TermEvent`, the event surface
 - `justerm-core/src/term.rs` — `Term::drain_events`, `Term::drain_replies`, and the
   `Term::report_*` methods that queue replies (`report_background`, `report_foreground`,
-  `report_cursor_color`, `report_palette_color`, `report_color_scheme`). **`report_*` is not the
+  `report_cursor_color`, `report_palette_color`, `report_color_scheme`, `report_clipboard`);
+  `Term::clipboard` is the `OSC 52` half that queues onto both channels. **`report_*` is not the
   whole producer set**: a query the engine can answer alone is written inline in `csi_dispatch` and
   never becomes a method — DA1, DA2, DSR and DECRQM all queue that way. The split is *who holds the
-  answer*: a colour is the consumer's, so it must call back in; a device identity is the engine's.
+  answer*: a colour is the consumer's, so it must call back in; a device identity is the engine's —
+  and `OSC 52` is the sharpest case of the first, since the engine holds no clipboard *by design*
 - `justerm-core/src/lib.rs` — `Engine::drain_events`, `Engine::drain_replies`
+- `justerm-core/src/base64.rs` — the RFC 4648 transform `OSC 52` needs in both directions, kept in
+  the engine because it is mechanism and kept out of the dependency list because it is small
+- `justerm-web/src/events.ts` — the widget's **deliberately narrower** mirror: title, bell and cwd
+  only. Its own module note draws the line, and the clipboard events fall on the far side of it
+  (the consumer *acts on* them, it is not merely notified), so a new event here does not
+  automatically owe a row there
 
 ## Reference behaviour
 

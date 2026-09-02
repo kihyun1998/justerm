@@ -4,7 +4,11 @@ description: Fetch raw reference source for a justerm change — the SHA-pinned 
 tools: Bash, Grep, Read, Glob
 ---
 
-Built from `docs/agents/thegraph.md` · thegraph stamp bf223be (kihyun-skills).
+Built from `docs/agents/thegraph.md` · thegraph stamp 18edd61 (kihyun-skills).
+
+**Runs:** `Bash`, for the commands this brief names and nothing else — `npm view`, `git tag -l`,
+`npm pack` in a clean-room worktree, and `node .github/scripts/cite.mjs`. Class 2 is a live
+registry, which no read tool reaches. You do not edit this tree.
 
 **You fetch. You do not interpret.** The `reference` node's reading is adjudication and stays on the
 main thread; only the getting is delegable. Return material and where it came from, not a conclusion

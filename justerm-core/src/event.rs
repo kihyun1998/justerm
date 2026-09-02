@@ -13,7 +13,125 @@
 
 use crate::serialize::{MarkerId, MarkerKind};
 
+/// Which selection an `OSC 52` clipboard request names (#828).
+///
+/// A *value*, never the protocol byte, so a consumer never parses the sequence —
+/// the same reason [`TermEvent::SetPaletteColor`] carries a `u8` index rather
+/// than the field it was written in.
+///
+/// **Three members, and `p` is kept apart from `s` deliberately.** The
+/// sequence's target field admits `c`, `p`, `q`, `s` and the eight cut buffers
+/// (`ctlseqs.txt:2156`); justerm models the three a consumer can act on and
+/// ignores the rest rather than folding them onto a neighbour, since mapping `q`
+/// onto a selection would be the engine inventing an equivalence the application
+/// did not ask for. ghostty folds every unrecognised kind onto the clipboard
+/// (`src/termio/stream_handler.zig:1013`); alacritty ignores them
+/// (`alacritty_terminal/src/term/mod.rs:1714`), and so does this. Read
+/// ghostty's from the `switch` and not from the comment four lines above it,
+/// which says *"we ignore the 'kind' field and always use the standard
+/// clipboard"* and is contradicted by the code under it — only the `else` arm
+/// goes to `.standard`.
+///
+/// **The first draft collapsed `p` and `s` into one member, and that was wrong
+/// on the wire.** alacritty collapses them
+/// (`alacritty_terminal/src/term/mod.rs:1713`) but replies with the byte the
+/// application sent (`:1744`), so the collapse never reaches a client. This
+/// engine hands the consumer a value and gets it back at `report_clipboard`, so
+/// a collapse here would answer `ESC ] 52 ; s ; ?` naming `p` — a selector the
+/// application never wrote, in the one field a client could pair a reply on. The
+/// spec lists the two separately (`ctlseqs.txt:2157`), xterm binds them to
+/// different atoms (`misc.c:3327`) and echoes the recognised list back
+/// (`misc.c:3384`), and ghostty keeps three locations apart in both directions
+/// (`src/Surface.zig:5954`, `src/terminal/c/terminal.zig:2942`). Splitting the
+/// member is what lets the value round-trip without the engine remembering
+/// anything.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ClipboardTarget {
+    /// The system clipboard — the `c` field, **and the empty field**.
+    ///
+    /// The empty field is the common form in the wild rather than an edge case:
+    /// it is what `tmux` 3.2a was measured emitting for both an ordinary
+    /// copy-mode copy and `set-buffer -w` (#828). Reading it as "unrecognised"
+    /// would drop the only emission this project has observed.
+    Clipboard,
+    /// The primary selection — the `p` field. On a platform with no primary
+    /// selection a consumer may treat it as [`Clipboard`](Self::Clipboard); the
+    /// engine does not make that choice for it.
+    Primary,
+    /// The `s` field — *"the configurable primary/clipboard selection"*
+    /// (`ctlseqs.txt:2161`), which is to say: whichever of the two the user has
+    /// configured.
+    ///
+    /// **Relayed rather than resolved, and that is the boundary working.** The
+    /// thing that decides what `s` means is a setting: xterm resolves `SELECT`
+    /// through `DefaultSelection`, which is the `selectToClipboard` resource
+    /// (`button.c:2081`), and under ADR-0017 a setting is the consumer's. So the
+    /// application's choice is carried through unchanged and the consumer
+    /// resolves it against the configuration it owns.
+    ///
+    /// **A consumer with no such setting should treat this as
+    /// [`Primary`](Self::Primary), because that is what xterm-as-shipped does**
+    /// — `selectToClipboard` defaults to false. Worth stating rather than left
+    /// to taste, since the alternative reading sends the copy somewhere the
+    /// reference would not.
+    ///
+    /// And the setting is not purely out of reach: **DECSET 1041 sets the same
+    /// resource from the stream** (`ctlseqs.txt:1008`), so an engine that
+    /// tracked that mode could resolve `s` itself. justerm does not model 1041,
+    /// which is a *declined* capability rather than an impossible one — the
+    /// honest form of the claim, and the mode is unimplemented here like the
+    /// rest of the tail (#47).
+    Selection,
+}
+
 /// A consumer-facing event emitted while parsing the VT stream.
+///
+/// **`#[non_exhaustive]`, so a consumer must carry a `_` arm and a new variant
+/// never breaks one.** Decided 2026-09-02, by the maintainer, while #828 was
+/// adding two — and what decided it was neither this slice nor any consumer we
+/// can see.
+///
+/// **What decided it is `CLAUDE.md`'s own identity statement**: *"`justerm-core`
+/// is not penterm-only — it is a reusable, independent crate."* That sentence
+/// says there are consumers we cannot edit, which is precisely what this
+/// attribute defends; a crate whose identity were "internal, used by penterm"
+/// would want the opposite, because there a broken build is the compiler doing
+/// us a favour. So this follows from a call already made rather than from a
+/// preference, and it reverses only if that identity does.
+///
+/// Three measurements, so the next reader does not have to retake them:
+///
+/// - **crates.io reverse dependencies: zero** (the single row the API returns is
+///   this crate itself), across 248 downloads split over 11 versions — i.e. no
+///   external consumer exists *today*. That is why the identity statement had to
+///   decide it: there was nothing to observe.
+/// - **Cost in this workspace: zero.** `cargo test --workspace` (87 suites) and
+///   `clippy -D warnings` both stay green. A same-crate `match` may still be
+///   exhaustive, `justerm-wasm-decode` and `justerm-renderer` never name
+///   `TermEvent`, and `justerm-web`'s `events.ts` is a deliberately narrower
+///   union (title / bell / cwd).
+/// - **The window closes at `1.0.0`.** Adding this is free while the crate is
+///   `0.x` and is *itself* a breaking change afterwards, while an enum without
+///   it turns every future variant into a major bump. Conformance here is
+///   cumulative by design (#47 is a perpetual tail) and the two slices before
+///   this one added three variants and two, so that rate is measured rather than
+///   assumed.
+///
+/// **The argument that lost, recorded because it is a real cost.** An exhaustive
+/// match is a *feature* for a consumer: the compiler tells them a new event
+/// exists and makes them decide about it. penterm's `route_event` is the worked
+/// example — its `ColumnMode` and `ColorSchemeQuery` arms carry a comment
+/// explaining why each is dropped, written by someone the compiler had just
+/// informed. That signal is given up here, and it now has to come from release
+/// notes. It loses because this is a *notification* channel where ignoring an
+/// unknown event is documented as safe, so the guarantee belongs in prose rather
+/// than in the type — but a consumer who wanted the old behaviour is not
+/// imagining the loss.
+///
+/// (penterm was the evidence that an outside exhaustive matcher can exist — its
+/// five-variant `match` predates nine minor versions of this enum — and not the
+/// reason. It is being reimplemented, which is exactly why it could not be.)
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TermEvent {
     /// The window title is now this string.
@@ -86,6 +204,47 @@ pub enum TermEvent {
     /// theme-agnostic engine relays it; the consumer answers with
     /// `report_background` (#122), mirroring `ColorSchemeQuery`.
     QueryBackground,
+    /// The app asked for `text` to be put on `target` (`OSC 52` with a payload,
+    /// #828). The engine has already base64-decoded it, and holds no clipboard
+    /// of its own.
+    ///
+    /// **This is a request, not a fact.** Whether the copy happens is the
+    /// consumer's: it owns the platform clipboard, any permission model and any
+    /// prompt, and a consumer that drops this event has refused the copy. The
+    /// engine carries no allow/deny knob, which is where it parts company with
+    /// alacritty — alacritty gates the same sequence behind a four-state config
+    /// (`alacritty_terminal/src/term/mod.rs:1706`) because alacritty *is* the
+    /// consumer. Under ADR-0017 that gate lives one layer out.
+    ///
+    /// **An empty `text` means "clear it".** `ESC ] 52 ; c ; ESC \` carries a
+    /// payload that decodes to nothing, and both the spec and xterm end that
+    /// exchange with an empty selection — the spec because `Pd` *"becomes the
+    /// new selection"* whatever it is (`ctlseqs.txt:2166`), xterm because it
+    /// clears the buffer before appending anything (`misc.c:3410`). Note this is
+    /// **not** the spec's *"neither a base64 string nor `?`"* clause at
+    /// `ctlseqs.txt:2174`, which the engine diverges from: an empty payload is a
+    /// perfectly well-formed encoding of no bytes, so it never reaches that
+    /// sentence. Citing `:2174` here, as an earlier draft did, would have the
+    /// same line standing as authority followed and as authority departed from.
+    /// ghostty pins the same input under a test named *"clear clipboard"*
+    /// (`src/terminal/osc/parsers/clipboard_operation.zig:93`). It needs no rule
+    /// of its own here, which is the argument for having none: an empty payload
+    /// *is* a well-formed encoding of no bytes, so it reaches the consumer
+    /// through the ordinary path.
+    ClipboardStore {
+        target: ClipboardTarget,
+        text: String,
+    },
+    /// The app asked what is on `target` (`OSC 52` with a `?` payload, #828).
+    /// The consumer answers by calling `report_clipboard`, which encodes the
+    /// reply — or declines, which is how a clipboard *read* is refused
+    /// independently of a write.
+    ///
+    /// The engine cannot answer this itself and deliberately holds nothing that
+    /// would let it: a query is answered from the consumer's clipboard or not at
+    /// all, so there is no engine state here for a hostile application to read
+    /// back. Same `Query…` + `report_…` shape as `OSC 4`/`10`/`11`/`12`.
+    QueryClipboard { target: ClipboardTarget },
     /// A decoration marker's line left the buffer — evicted past the scrollback
     /// cap, or scrolled out of an in-screen region (#118). The handle is now
     /// dead; the consumer drops the decoration bound to it. This is the

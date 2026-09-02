@@ -7,15 +7,39 @@ the **method** (node-type catalog, four invariants, reasoning habits); this file
 input is **spent**: this file now owns the three tables the whole graph is graded against — the
 tie-breaker, the deliberate divergences and the war-story index.
 
-**Build stamp:** `thegraph` at **`bf223be`** (`kihyun1998/kihyun-skills`). Generated artifacts carry
+**Build stamp:** `thegraph` at **`18edd61`** (`kihyun1998/kihyun-skills`). Generated artifacts carry
 the same stamp; the skill warns when it is behind and never rebuilds on its own.
 
-**What moved since the previous stamp (`9829a3a`), and what did not.** Three commits touched
-`thegraph/`, and **none of them changed the schema** — *"What the build must supply"* has the same
-entries, so this update answered no new slot. What changed is the **split**: the build side became a
-generalisation (`bf223be`, from `kihyun-skills#24`) and two placements landed before it (`cd8dc6f`).
-Both show up here only as the unowned table emptying. A third commit added a `requires:` frontmatter
-line to the skill itself and obliges a consumer nothing.
+**What moved since the previous stamp (`bf223be`), and what did not.** Ten commits touched
+`thegraph/`. **Three inputs decide whether a roster changes at all, and all three came back
+byte-identical** — the schema (*"What the build must supply"*), the node-type catalog table, and the
+invariant/build split. Diffed on 2026-09-02, which is what licenses the rest of this update being a
+confirmation rather than a re-derivation, and what carries the unowned walk below forward by
+construction rather than by re-walking it.
+
+The largest move — `thegraph` splitting into `SKILL.md` + `NODES.md` + `BUILD_CONTRACT.md` — **cost
+this build zero artifact edits.** Grepped all nine artifacts and this file for those three names:
+zero hits. That is the thin-artifact rule paying out exactly as designed: an artifact that never
+names *where* a method lives is indifferent to the method moving. It is worth recording as a
+measured result, because a rule whose payout is invisible is one a later build trims.
+
+Two commits did oblige something, and only one of them reached a slot:
+
+- **`58cef7c` — a delegated node's licence is its tool grant, not its brief.** Read-only became the
+  enforced **default**, moved only by a `**Runs:**` declaration naming each write-capable tool. All
+  four agents needed the declaration; **none needed a narrower grant**, because every brief here
+  already named its commands. Upstream's war story was four agents with shells no brief asked for —
+  the opposite case, and checking rather than pattern-matching is what told them apart. The rule also
+  buys a new artifact: `scripts/thegraph/grants.mjs`, in the `gate` list.
+- **`1799dbb` — `catalog_gaps` got its own slot.** A state slot is the catalog's to fix, so nothing
+  in the roster moved. What *is* this build's is where the slot goes when it leaves the run, and it
+  leaves to a **different tracker**. See `## Run state`.
+
+**A revision named as history is not restamped.** Only the **Build stamp** line above carries this
+build's current revision. Every other `bf223be` in this file is a fact about the past — the previous
+stamp, and the walk performed at it — and stays as written. A blanket find-and-replace over a
+revision id rewrites the past into the present, and afterwards the two read identically, which is
+the one thing a stamp exists to prevent.
 
 **Verify the stamp against a fetched remote, not a local clone.** The walk of 2026-08-31 first
 reported this stamp *current* by comparing it to `git log -1` in an unfetched checkout of
@@ -776,6 +800,15 @@ silently**, which is why they are extracted as a script (`preflight.mjs`).
   `pnpm demo` already listening from **another checkout** is silently adopted — and it makes a
   *green* run untrustworthy as readily as a red one. `netstat -ano | grep 5173` before believing
   either.
+- **A delegated agent's tool grant is a silent failure, and this is the only position before the
+  damage.** Invariant ① licenses delegating `verify`, `sweep` and `reference`-fetch on the grounds
+  that they read without adjudicating, and the licence is the **grant**, never the brief's claim. A
+  corrupted grant errors nowhere: the agent simply holds a tool nobody declared, and it surfaces
+  when that agent mutates the worktree a second one is reading — upstream, the second then reported
+  a failure it could not reproduce and graded the run `UNADJUDICATED`, correctly, from inside
+  evidence the first had manufactured. `grants.mjs` is in the `gate` list too, but a gate runs
+  **after** the work and CI runs after the **merge**, and neither sees the file while it is
+  uncommitted. Ordering is the whole value: `node scripts/thegraph/preflight.mjs` before starting.
 - **Local `wasm-pack` must match the CI pin** or `test:proofs` is not the gate CI runs — different
   codegen, different `wasm-opt`, both green. `check-tool-pins.mjs` compares the **workflows against
   each other** and does not look at the local binary. `rg -n WASM_PACK_VERSION .github/workflows/`,
@@ -807,6 +840,13 @@ them are worth naming here because they leave the run:
   `batch` as a re-grill request, and the **next `/grill-the-graph` reads it first**. The build stamp
   catches `thegraph` drifting ahead of this file; *nothing* catches the **repo** drifting ahead of
   it, so this record is the only detector there is.
+- **`catalog_gaps`** — a defect in **`thegraph` itself**, not in this file. It leaves the run to a
+  **different tracker**: `batch` files it against `kihyun1998/kihyun-skills`, never against this
+  repo. That destination is the only part of the slot this build owns, and it is the part a run
+  cannot derive — every other destination a run can reach belongs to justerm, so a catalog defect
+  written to `build_gaps` arrives at a party structurally unable to act on it, and a misrouted item
+  is indistinguishable from a filed one. Telling the two apart: if a re-grill of *this* repo would
+  not make the cause stop happening, it is the catalog's.
 - **`dropped`** — candidates dismissed with their ground, which go into the PR body so dropping is
   itself recorded.
 
@@ -875,6 +915,9 @@ defect, however confidently a lens reports it.
 | XTWINOPS `CSI 22 t` / `CSI 23 t` honour the **second** parameter (the axis) and **ignore the third**, so `CSI 22;2;3t` is an ordinary push | the **spec** defines the third parameter: a value in 1..10 gives *"direct access to the stack … store the title into the stack or retrieve the title from the stack **without pushing/popping**"* (`ctlseqs.txt:1698`), and xterm implements it (`charproc.c:9272` → `misc.c:7988`) | #823, on the **spec** row of the tie-breaker above — and it is the one row where that authority was *not* followed, so the grounds are the measurement rather than a competing reference. Reach of the slot form is **zero on five independent axes**: no occurrence across seven programs recorded under real ptys with a control group (vim · nvim · less · man · htop · tmux · top); **zero files** under `/usr/bin` + `/usr/lib64` matching `\[2[23];[0-9]+;([1-9]\|10)t`; **no terminfo capability emits `CSI 22/23 t` at all** under `xterm-256color`, `tmux-256color` or `screen-256color`, so unlike #825/#826/#828 terminfo cannot rank it either way and applications hardcode the sequence; **zero adoption elsewhere** (xterm.js ignores it, alacritty's dispatch never reads past `params[0]`, ghostty carries the index then drops the command as *"Unimplemented"*); and it entered xterm only in **patch #385 (2023-10-01)**, whose changelog gives its reason as symmetry *"like the XTPUSHCOLORS and XTPOPCOLORS feature"* rather than an application asking — an indexing bug in it was fixed two weeks later in #387. Cost of following the spec instead: xterm's model is one ring of `{icon, window}` pairs with a walk back through older slots, which is a different primitive from two stacks and shares its depth budget differently. A lens reporting "the spec defines this and we do not" is `DELIBERATE` with this row. **Falsifier**: a measurement showing anything emitting the 1..10 form reopens it, and nothing else does |
 
 | DA2 (`CSI > c`) reports `Pp = 1` / `Pc = 0`, and the handler matches the **whole** intermediates slice | alacritty reports `Pp = 0` / `Pc = 1` (`alacritty_terminal/src/term/mod.rs:1267` @ `852e971`) and answers `CSI > $ c`, because its dispatch passes `intermediates.first()` rather than matching the slice (`vte-0.15.0/src/ansi.rs:1572` — the published crate, not a pinned tree) | #824. Three divergences from one reference on three different grounds, and **not one of them is ADR-0004's spec branch** — that branch covers a reference which *omits or under-implements*, and alacritty here **contradicts**, which is a third case its text does not classify; the **spec** row of the tie-breaker above is what covers it. `ctlseqs.txt:839` does not settle it either: its *"always zero"* is said of a **DEC terminal**, describing hardware rather than binding an emulator. So each field rests on its own ground. **`Pc`**: first principles — the field registers a ROM cartridge, this engine has none, `0` is the absence value, which is how both implementations that comment it read it (`charproc.c:4267` *"options (none)"*, `device_attributes.zig:88` *"Always 0 for emulators"*); 3-1 head count. **`Pp`**: our own DA1 already advertises level 62 (= VT220, `ctlseqs.txt:778`) and justerm implements neither DECTID nor DECSCL, so nothing here can decouple the level from the device type — alacritty's `?6c`/`Pp = 0` is that same rule at VT102, not a counterexample. **The slice match**: 3-1 (xterm `VTPrsTbl.c:4747`, ghostty `stream.zig:1612`, xterm.js `InputHandler.ts:233` all drop the form), with **zero measured reach** — no producer of `CSI > $ c` exists in any pinned corpus, so it is pinned by a test rather than by need. A lens reporting any of the three as "alacritty does otherwise" is `DELIBERATE` with this row. **Falsifier**: a producer of `CSI > $ c`, or a consumer that reads `Pc` as anything but a cartridge id, reopens the third and the first |
+| An **empty** `OSC 52` target field names the **system clipboard** | the **spec** says it names `s0` — *"If the parameter is empty, xterm uses s 0 , to specify the configurable primary/clipboard selection and cut-buffer 0"* (`ctlseqs.txt:2161`), which `misc.c:3359` implements verbatim; and since `selectToClipboard` defaults to false (`charproc.c:472`), **xterm as shipped resolves that to PRIMARY** | #828, on the **spec** row of the tie-breaker — the second row after #823 where that authority is not followed. The grounds are that the spec's answer names two things this engine does not have: a cut buffer, which is unmodelled, and `s`, which xterm resolves through a *user resource* (`button.c:2081`) — policy ADR-0017 assigns to the consumer. Precisely the shape #834 names one family over, where xterm's trigger (*a colour that failed to parse*) is a condition this engine structurally cannot observe. Of the two readings that **are** representable, three independent lineages give the same answer, and the count is smaller than it first looks: alacritty never sees an empty field because `vte` substitutes `b'c'` first (`vte-0.15.0/src/ansi.rs:1488`), so alacritty+vte are **one**; ghostty is a second, by an explicit byte-scan branch pinned under a test (`clipboard_operation.zig:24`, `:64`); xterm.js's clipboard addon is a third, reaching it by ignoring the selector entirely (`addons/addon-clipboard/src/ClipboardAddon.ts:77`). Reach: `tmux` 3.2a emits exactly this form under `set-clipboard on`, captured on the RHEL 9 VM and checked in as `justerm-core/tests/fixtures/tmux_clipboard.raw`, and tmux's own manual documents the action as *"terminal clipboard"* — never primary. Terminfo cannot rank the axis (`Ms=\E]52;%p1%s;%p2%s\007` — the caller fills `Pc`), so the binaries were scanned instead: on that box exactly two files under `/usr/bin` + `/usr/lib64` carry an OSC 52 literal (`nvim`, `tmux`), the only `Pc` forms in them are the `%p1%s` template and a literal **empty** field, and there are **zero** multi-character targets and **zero** occurrences of `s0` — the very form the spec names as xterm's own default. **Falsifier**: an emitter measured sending `s0`, or a decision to model DECSET 1041 (`ctlseqs.txt:1008`), which sets `selectToClipboard` from the stream and would make the spec's answer representable after all |
+
+| A payload that is **not base64 relays nothing** | the **spec** says the selection is **cleared** — *"If the second parameter is neither a base64 string nor ? , then the selection is cleared"* (`ctlseqs.txt:2174`) | #828, same row and same slice as above. What makes this narrower than the spec sentence reads: **xterm has no validator to disagree with.** `AppendToSelectionBuffer` (`button.c:4679`) decodes one character at a time and `return`s on any byte outside the alphabet (`:4698`), so it *filters* — `Zm9v-Zm9v` yields `foofoo` there — and because the store path clears the buffer before appending (`misc.c:3410`), "cleared" is what falls out when the filter keeps nothing. So the disagreement is about what to **accept**, not what to do on refusal. Counted at the source, the family is **three drop** (alacritty `…/term/mod.rs:1717`; ghostty, returning on a decode failure at `src/Surface.zig:2186` and stating the rule beside its test as *"Read requests and malformed base64 must never reach the callback"*, `src/terminal/c/terminal.zig:2961`; and this), **one clears** (xterm.js's addon, deliberately: *"Clear clipboard if text is not a base64 encoded string"*, `ClipboardAddon.ts:55`), **one filters** (xterm). The reference-free ground is the one that decides it: clearing is a *destructive* act, so inferring one from bytes the engine could not parse lets line noise wipe what a user copied by hand — and a filter is worse still, since it hands the consumer text assembled from bytes the application did not send. **Falsifier**: a measured emitter whose malformed payload is *meant* as a clear, which would make the spec's reading intentional rather than emergent |
 
 Add a row when a decision *chooses against* a reference; that is cheaper than
 re-defending it, and the cost of the empty slot is measured — see the #490 entry in
@@ -968,7 +1011,7 @@ file is not deletable either way.
 
 ## Extraction plan
 
-**4 agents** in `.claude/agents/`, **5 scripts** in `scripts/thegraph/` (node ESM, matching
+**4 agents** in `.claude/agents/`, **6 scripts** in `scripts/thegraph/` (node ESM, matching
 `.github/scripts/*.mjs`; kept separate because those are CI's and these are not). Each artifact
 carries **only justerm's data** and defers the method to `thegraph` — thin, so it survives the skill
 gaining a paragraph. Each carries the build stamp.
@@ -978,24 +1021,35 @@ gaining a paragraph. Each carries the build stamp.
 | `.claude/agents/thegraph-lens.md` | `verify` | corpora paths · the tie-breaker row for the layer · the deliberate-divergence list · the six brief items |
 | `.claude/agents/thegraph-refuter.md` | `verify` (2nd) | the same, opposing stance. Exists **only** because sacred paths do |
 | `.claude/agents/thegraph-reference.md` | `reference` (fetch only) | the 2 source classes and how each is reached. **Returns the tree path and the raw hit; it is never the source of a `file:line` anyone copies** — the delegation would otherwise buy a wrong citation at full confidence |
-| `.claude/agents/thegraph-sweep.md` | `sweep` | surfaces **1–8 only**. Surfaces 9–11 (⛔ above) stay on the main thread: they write to the tracker or adjudicate |
+| `.claude/agents/thegraph-sweep.md` | `sweep` | surfaces **1–8 and 12**. Surfaces 9–11 (⛔ above) stay on the main thread: they write to the tracker or adjudicate. The line the split falls on is *which* write, not whether there is one — 1–8 and 12 are doc surfaces this node amends in place, which is why its grant declares `Edit` |
+| `scripts/thegraph/grants.mjs` | invariant ① over the four agents above | the read-only **default** and the `**Runs:**` declaration that moves it. Asserts the default, **never the claim**: a check keyed on a description saying *"read-only"* is dodged by rephrasing, and was. Run from **two positions** — `preflight` before the run, `gate` after it — and the first is the one that matters, because the damage is to a live worktree. It is not a CI step, so `gates.mjs`'s CI cross-check does not see it |
 | `scripts/thegraph/gates.mjs` | `gate` | the command list, each invoked **bare**, taking a **scope argument** (`core` · `web` · `renderer` · `all`) because two are expensive and conditional. **Asserts its list against `.github/workflows/test.yml`** rather than restating it |
 | `scripts/thegraph/place.mjs` | `place`'s guard, and `gate` again on the final diff | the tree rule as a **path list**, matched against the changed paths. It **reports**; the choice between the rule and a named peer is `place`'s and stays on the main thread |
 | `scripts/thegraph/triggers.mjs` | the `verify` guard | the sacred-path **globs**, matched against the diff. Never a call-site list |
 | `scripts/thegraph/search.mjs` | `search` | the tracker query by artifact + the 10-area preemption table. **Query only** — conflict adjudication is not `code` |
-| `scripts/thegraph/preflight.mjs` | `## Environment preconditions` | worktree location · `../.refs` pins (delegating to `cite.mjs --pins`) · port 5173's owner · local `wasm-pack` vs `WASM_PACK_VERSION` · the `just-shield` argument |
+| `scripts/thegraph/preflight.mjs` | `## Environment preconditions` | worktree location · `../.refs` pins (delegating to `cite.mjs --pins`) · port 5173's owner · local `wasm-pack` vs `WASM_PACK_VERSION` · the `just-shield` argument · the agents' tool grants (delegating to `grants.mjs`) |
 
 **Already extracted, not regenerated:** `.github/scripts/cite.mjs` is `reference`'s citation tool and
 already exists; `readme_pins.rs` and `check-published-readme.mjs` are `sweep` surface 4's mechanized
 halves.
 
 **Refusal check.** No adjudicating node is delegated (invariant ①): the four agents are `verify`,
-`verify`, `reference`-fetch and `sweep`, all delegable by the catalog; the four scripts are `code`
+`verify`, `reference`-fetch and `sweep`, all delegable by the catalog; the six scripts are `code`
 conditions. No `implement`, `boundary`, `place`, `enumerate`, `proof`, `batch`, `stop`, `decide` or `promote`
 artifact exists — `place.mjs` is its **guard**, a `code` condition matching two path lists, not the
 node. No path reaches the tracker without passing `batch` (invariant ③) — which is
-exactly what restricting the sweeper to surfaces 1–8 buys. Every back-edge declares a guard **and** a
+exactly what restricting the sweeper to surfaces 9–11 buys. Every back-edge declares a guard **and** a
 bound (invariant ②).
+
+**And invariant ① is now checked rather than asserted.** Every one of the four grants was measured
+against its own brief on 2026-09-02: all four carry `Bash`, the sweeper also `Edit`, and **every
+brief names its commands** — `cite.mjs` in all four, plus `git rev-parse` for a pin, `npm view` /
+`git tag -l` / `npm pack` for the registry class, and `rg` for the sweeper's widen pattern. So no
+grant was narrowed; four `**Runs:**` declarations were added, and `grants.mjs` now fails the build
+if one goes missing. Its own discriminating power was measured the same day, against the two dodges
+the invariant names: a description rewritten to *"proposes edits rather than making them"* with no
+declaration, and a `**Runs:**` naming no tool. **Both reddened, and the baseline came back green in
+the same run** — one red is not a mutation test.
 
 ---
 
@@ -1004,6 +1058,14 @@ bound (invariant ②).
 The coverage check `/grill-the-graph` runs once per build: walk *"What the build must supply"* and
 confirm each entry is placed on one side of the invariant/build split. **Walked 2026-08-31 against
 `thegraph` at `bf223be`. Every entry is placed.**
+
+**The walk of 2026-09-02 carries that result forward rather than repeating it, and the licence is a
+measurement.** Both of the walk's inputs — the schema and the split — were diffed byte-for-byte
+between `bf223be` and `18edd61` and are **identical**; the schema only moved file, out of `SKILL.md`
+into `BUILD_CONTRACT.md`. A walk is a comparison of those two texts, so an identical pair cannot
+produce a different verdict. Recorded as a derivation and not as a second walk, because the two are
+worth different amounts: this one is void the moment either input moves, and the stamp is what says
+whether it has.
 
 A passing check is deliberately thin here — no per-slot owner column, because which side of the
 split owns a slot is `thegraph`'s fact rather than this project's data, and a column of them would be
@@ -1032,7 +1094,35 @@ what bought the change.
 
 ---
 
-## Method gaps — **closed upstream at `89b477a`**
+## Method gaps — **six closed upstream at `89b477a`, one open**
+
+### Open — `sweep`'s contract licenses its delegation on a property the node does not have
+
+Found 2026-09-02, building against `18edd61`. `NODES.md` § `### sweep` says both of these, one
+paragraph apart:
+
+> **Writes** the surfaces, and `swept`.
+
+> **Delegable, fanning out one instance per surface** — … and **it is read-only**, so invariant ①
+> permits it.
+
+Before `58cef7c`, *"read-only"* there was loose prose that could be read as *"does not adjudicate"*.
+That commit made read-only the **enforced default** with a checkable tool grant, so the word now
+names the thing the check measures — and the same contract asks this node to edit documents and
+forbids it the tool for doing so. **The property the delegation is licensed on is one the node
+violates by definition.**
+
+Routed as a **catalog** gap, not a build gap, by the discriminator: the defect is in a skill file,
+and a re-grill of justerm would face the identical ambiguity, so the cause does not clear. It does
+**not** block this build — invariant ① supplies the mechanism, and `thegraph-sweep`'s `Edit` is
+licensed by declaration. The suggested fix is a **wording** change, not a rule change: the
+delegation is licensed by the node not *adjudicating*, which is what invariant ① actually requires,
+and *"read-only"* is the wrong word for it now that the word is load-bearing.
+
+**Not yet filed against `kihyun1998/kihyun-skills`** — recorded here so the next build does not
+rediscover it.
+
+### Closed
 
 All six were accepted into `thegraph` on the day this build was compiled, so **none is `pending` and
 a run substituting judgement for one is now working from a stale copy of the skill.** Kept rather

@@ -5,6 +5,7 @@
 // rule that a shipped usage snippet must compile against the real types).
 #![doc = include_str!("../README.md")]
 
+mod base64;
 mod cell;
 mod color;
 mod cursor;
@@ -23,7 +24,7 @@ pub use cell::{Cell, CellFlags};
 pub use color::Color;
 pub use cursor::{Cursor, CursorShape, Pen};
 pub use damage::{LineDamage, ScrollOp, TermDamage};
-pub use event::TermEvent;
+pub use event::{ClipboardTarget, TermEvent};
 pub use grid::{Grid, Row};
 pub use input::{
     Key, KeyAction, KeyEvent, KeypadKey, Modifiers, MouseAction, MouseButton, MouseEvent,
@@ -265,6 +266,18 @@ impl Engine {
     /// `index` from the consumer-supplied spec. Theme-agnostic envelope-only.
     pub fn report_palette_color(&mut self, index: u8, spec: &str) {
         self.term.report_palette_color(index, spec);
+    }
+
+    /// Answer an OSC 52 [`TermEvent::QueryClipboard`] event (#828): base64-encode
+    /// the consumer's clipboard text into the OSC 52 reply envelope for
+    /// [`Engine::drain_replies`].
+    ///
+    /// The engine holds no clipboard — the text comes from the consumer, which
+    /// owns it along with every policy about it. **Not calling this is how a read
+    /// is refused**, independently of whether stores are honoured, and nothing is
+    /// queued until you do.
+    pub fn report_clipboard(&mut self, target: ClipboardTarget, text: &str) {
+        self.term.report_clipboard(target, text);
     }
 
     /// Whether the app enabled **win32-input-mode** (DEC `?9001`): it asked for

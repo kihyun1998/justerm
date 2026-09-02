@@ -149,8 +149,12 @@ bound 를 선언 · 사람에게 가는 길은 `batch` 하나 · 모든 조건�
 
 세 표는 2026-08-31 부터 **`thegraph.md` 가 소유**한다(§ "Tie-breaker, deliberate divergences, war
 stories"): layer 별 **tie-breaker**(무엇이 prior art 를 이기나 — 4개 layer 는 레퍼런스에 *표 없음*),
-**의도적 divergence 목록**(이미 끝난 논쟁, 23행 — 뒤 10행은 `plat` 이 낸 layout 행이고 그중 하나는
-**UNCLASSIFIED**; 앞 13행 중 #823 은 유일하게 *스펙*을 상대로 한 divergence 다), **war-story index**. 스키마가 셋 다 *빌드의* 의무로 이름을 대는데 그걸 유지 주체
+**의도적 divergence 목록**(이미 끝난 논쟁 — 뒤쪽은 `plat` 이 낸 layout 행이고 그중 하나는
+**UNCLASSIFIED**, 앞쪽은 project 행이며 그중 *스펙*을 상대로 한 divergence 는 **#823 과 #828**
+에서 나왔다), **war-story index**. **행 수는 여기 적지 않는다** — 표가 authoritative 이고, 여기
+복사한 숫자는 슬라이스 하나만 지나도 낡는다. 이 문단이 실제로 그렇게 틀렸었고(`thegraph.md` 가
+같은 실패를 10 vs 12 로 기록해 뒀다), 2026-09-02 에 #828 이 스펙 divergence 2행을 더하면서
+"#823 은 유일하게" 라는 *주장* 까지 같이 거짓이 됐다 — 숫자보다 그쪽이 비싸다. 스키마가 셋 다 *빌드의* 의무로 이름을 대는데 그걸 유지 주체
 없는 문서에 두면 빌드가 미완성이라 옮겼다. `theflow.md` 에 남은 사본은 **superseded** 다.
 
 추출물: `.claude/agents/thegraph-{lens,refuter,reference,sweep}.md` + `scripts/thegraph/{gates,

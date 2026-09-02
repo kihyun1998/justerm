@@ -2051,6 +2051,63 @@ fails against the only emitters that exist. #828's target rule was written the w
 alacritty reading (which matches a single target byte and has **no** branch for an absent field)
 and was corrected from this row.
 
+**Re-measured while implementing #828 (2026-09-02), and the emission reproduced**: a fresh
+`script(1)` recording on the same VM — tmux 3.2a, `set-clipboard on`, `set-buffer -w` — put exactly
+one OSC 52 in a 1278-byte stream, `ESC ] 52 ; ; SEVMTE9KVVNURVJN BEL`, target field empty and
+BEL-terminated. It is checked in as `justerm-core/tests/fixtures/tmux_clipboard.raw`. Unlike
+`cursor_color_nvim.raw` this stream is **not byte-reproducible**: two recordings differ in 12 bytes,
+eight of them `script(1)`'s timestamps and four a real reordering of tmux's own `ESC[?25l` and
+`ESC[1;1H`. So the sha256 check that validates the other captures does not apply to this one.
+
+### OSC 52 — where the references converge, and the two places the spec is not followed (#828, 2026-09-02)
+
+The row above settles the *target* rule. These settle the rest of the sequence, and two of them are
+the grounds for a deliberate divergence rather than a convergence.
+
+| Fact | Reference | Site |
+|---|---|---|
+| **The spec's empty-target default is `s0`, not the clipboard** — *"If the parameter is empty, xterm uses s 0, to specify the configurable primary/clipboard selection and cut-buffer 0"* | xterm (spec) | `ctlseqs.txt:2161` |
+| …and that is the implementation too, one line of C | xterm | `misc.c:3359` |
+| **`vte` itself defaults an empty target to `c`** — and it is the parser crate justerm is built on, though justerm implements `Perform` directly and never reaches this `ansi` module. `params[1].first().unwrap_or(&b'c')` | vte 0.15.0 (registry) | `src/ansi.rs:1488` |
+| **The spec clears the selection when the payload is neither base64 nor `?`** — *"If the second parameter is neither a base64 string nor ? , then the selection is cleared"* | xterm (spec) | `ctlseqs.txt:2174` |
+| …while alacritty drops such a payload silently, its decode sitting inside an `if let Ok` with no else | alacritty | `alacritty_terminal/src/term/mod.rs:1717` |
+| **An empty payload is a clear in every reading**, and ghostty names it so in a test over `52;;` | ghostty | `src/terminal/osc/parsers/clipboard_operation.zig:93` |
+| **A payload *field* that is absent is not an empty payload** — xterm's whole handler sits inside `if (*buf == ';')`, so `OSC 52 ; c` does nothing at all | xterm | `misc.c:3353` |
+| …and ghostty rejects the same form outright | ghostty | `src/terminal/osc/parsers/clipboard_operation.zig:20` |
+| **A multi-character target list is rejected by ghostty** (`data[1] != ';'` → invalid), where `vte`/alacritty take the first byte and drop the rest | ghostty | `src/terminal/osc/parsers/clipboard_operation.zig:36` |
+| **ghostty folds every unrecognised kind onto the standard clipboard**, in as many words — *"we ignore the kind field and always use the standard clipboard"* — where alacritty returns without emitting | ghostty | `src/termio/stream_handler.zig:1009` |
+| …alacritty's is the opposite arm of the same choice | alacritty | `alacritty_terminal/src/term/mod.rs:1714` |
+| **alacritty decodes in the terminal core and re-encodes through a closure that echoes both the target byte and the arriving terminator**; ghostty hands its apprt the payload **still encoded**, so the decode boundary is 1–1 | alacritty / ghostty | `alacritty_terminal/src/term/mod.rs:1717`, `:1743` / `src/termio/stream_handler.zig:1027` |
+| **xterm.js does not implement OSC 52 in `src/`, and DOES implement it in an addon.** The `src/` negative has a working positive control — `registerOscHandler` is called for 0, 1, 2, 4, 8, 10, 11, 12, 104, 110, 111 and 112 and for nothing else — but a scan scoped to `src/` reports "not implemented" for a sequence xterm.js ships. **`addons/` is in this tree's pinned scope; scope the claim to where you looked** | xterm.js | `src/common/InputHandler.ts:286-325`, and `addons/addon-clipboard/src/ClipboardAddon.ts:32` |
+| **xterm.js is a third independent lineage on the empty target**, and it reaches the same answer by ignoring the selector outright: the browser provider always writes `navigator.clipboard`. It also derives the missing-field rule independently — `args.length < 2` over the body split on `;` | xterm.js | `addons/addon-clipboard/src/ClipboardAddon.ts:77`, `:34` |
+| **…and it is the one reference that CLEARS on malformed base64**, deliberately and in a comment: *"Clear clipboard if text is not a base64 encoded string"*, decoding into an empty string inside a bare `catch` | xterm.js | `addons/addon-clipboard/src/ClipboardAddon.ts:55` |
+| **ghostty drops an unpadded or otherwise undecodable payload**, returning on `InvalidPadding` from `calcSizeForSlice` — so the drop-on-malformed family is three (alacritty, ghostty, justerm) against one that clears (xterm.js) and one that filters (xterm) | ghostty | `src/Surface.zig:2186` |
+| **xterm resolves the `s` target through the `selectToClipboard` resource**, which defaults to **false** — so xterm-as-shipped reads `s` (and the empty field, which it expands to `s0`) as PRIMARY | xterm | `button.c:2081`, `charproc.c:472` |
+| **DECSET 1041 sets that same resource from the stream**, so `s`'s resolution is parser-reachable in principle and justerm's omission is a declined capability rather than an impossible one | xterm (spec) | `ctlseqs.txt:1008` |
+| **The reply echoes the selector the application wrote, in all three.** Not a canonical form — xterm writes back the recognised characters *in the order given*, alacritty interpolates the raw byte it was handed, ghostty renders its three locations distinctly | xterm / alacritty / ghostty | `misc.c:3384` / `alacritty_terminal/src/term/mod.rs:1744` / `src/Surface.zig:5954` |
+| **`p` and `s` are different targets, and only alacritty collapses them.** The spec lists both; xterm binds them to different atoms; ghostty's C API pins `s`→selection, `p`→primary, `q`→standard as three outcomes | xterm (spec) / xterm / ghostty | `ctlseqs.txt:2157` / `misc.c:3327` / `src/terminal/c/terminal.zig:2942` |
+| **xterm has no base64 *validator* to disagree with — it is a filter.** `AppendToSelectionBuffer` decodes one character at a time and `return`s on any byte outside the alphabet, so `Zm9v-Zm9v` yields `foofoo` rather than an error. The spec's *"the selection is cleared"* is what falls out when the filter finds nothing to keep, because the store path clears first. **This is the trap in the row above `:2174`**: reading the spec alone suggests a reject-then-clear rule, and there is no reject | xterm | `button.c:4679`, the skip at `:4698`, the clear at `misc.c:3410` |
+| **ghostty states the malformed rule as a comment beside its test** — *"Read requests and malformed base64 must never reach the callback."* The strongest single citation for dropping rather than clearing | ghostty | `src/terminal/c/terminal.zig:2961` |
+| **`vte` deletes C0 bytes inside an OSC string**, which is the only reason a *strict* decoder can accept the ordinary shell idiom: `base64` wraps its output at 76 columns, and the `LF`/`CR` never reach the handler. A space is **not** in that range and does reach it | vte 0.15.0 (registry) | `src/lib.rs:408` |
+| **`vte` ends an OSC on CAN/SUB by *dispatching* it rather than cancelling**, where ECMA-48 makes CAN cancel — so an interrupted payload can arrive complete and truncated. Pre-existing at the parser boundary and shared with alacritty | vte 0.15.0 (registry) | `src/lib.rs:412` |
+
+**Reach of the multi-character target, measured on the RHEL 9 VM (2026-09-02), because the rows above
+leave it open.** `Ms` is present under `xterm-256color` and `tmux-256color` and absent under
+`screen-256color`, but its value is `\E]52;%p1%s;%p2%s\007` — the `Pc` is filled in by the caller, so
+terminfo cannot rank this axis. Scanning the binaries instead: exactly **two** files under
+`/usr/bin` + `/usr/lib64` carry an OSC 52 literal at all (`nvim`, `tmux`); the only `Pc` forms in
+them are the `%p1%s` template (3×) and a literal **empty** field (1×); **zero** multi-character
+targets; and **zero** occurrences of `s0`, the very form the spec names as xterm's own default. So
+refusing a multi-target list costs nothing measurable here, and the empty form this engine handles
+is the only literal that exists on the platform.
+
+⚠ **justerm follows the spec on neither of the two spec rows above, deliberately.** The empty-target
+default is unrepresentable here — `s` resolves through a *user resource* in xterm, which is policy
+ADR-0017 assigns to the consumer, and cut buffers are unmodelled — so it takes the reading all three
+implementations share. And a payload that fails to decode emits nothing rather than clearing,
+because clearing is destructive and inferring one from unparseable bytes lets line noise wipe what a
+user copied. Both are argued at `Term::clipboard`.
+
 ### REP's retained character — the two obvious references disagree, and xterm breaks the tie
 
 | Fact | Reference | Site |

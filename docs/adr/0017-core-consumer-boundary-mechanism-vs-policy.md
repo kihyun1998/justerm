@@ -55,6 +55,19 @@ Three tests, applied in order, route any capability:
 3. **Else** → consumer (colour resolution, hover visuals, pixel→cell, debounce, scrollbar, clipboard,
    transport).
 
+**"Clipboard" in test 3 means the clipboard, not every sequence that mentions one** — a scope this
+list left implicit until `OSC 52` made the two visible at once (#828, 2026-09-02). The platform
+clipboard, whether an application may write it, whether it may read it back, and any prompt about it
+are all the consumer's, and the engine holds no clipboard and carries no allow/deny knob for one.
+But `OSC 52` *arrives in the VT stream*, so recognising it, decoding its base64 payload and encoding
+the reply are test **1** and land in core — a consumer in frame mode never sees the bytes. The two
+tests are not in conflict here; they answer about different objects, and reading test 3 as "core
+must not touch this at all" would have left the capability unreachable by anyone. The general form
+is worth keeping in view when the else-list is next consulted: **an entry names the thing owned, and
+a sequence that requests that thing is a different object from the thing.** What the consumer's
+ownership does decide is that the engine only ever *relays*: dropping the event is how a consumer
+refuses, which is the whole of the policy half.
+
 **Guardrail** (so "core by default" does not bloat the engine): core never does I/O, IPC, or rendering;
 never interprets references into theme values; never holds presentation or interaction state. It takes the
 policy as a *parameter* and returns *buffer-coordinate data*. The bias toward core is a **correctness**

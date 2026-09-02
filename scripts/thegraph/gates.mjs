@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// thegraph `gate` node — justerm. Built from docs/agents/thegraph.md · thegraph stamp bf223be (kihyun-skills).
+// thegraph `gate` node — justerm. Built from docs/agents/thegraph.md · thegraph stamp 18edd61 (kihyun-skills).
 //
 // Runs every gate for a scope, each one BARE. `test … | tail -1 && commit` always commits, because
 // a pipeline's exit status is the last command's and `tail` always succeeds — a gate you cannot
@@ -47,6 +47,7 @@ const GATES = [
     argv: ["bash", "-c", 'bad=0; for f in docs/map/territory/*.md docs/map/invariant/*.md; do node .github/scripts/check-map-note.mjs "$f" || bad=1; done; exit $bad'],
     note: 'note SCHEMA ≠ note LINKS — a different tool from the line above' },
   { scope: "core", cmd: "node .github/scripts/check-tool-pins.mjs", note: "compares the WORKFLOWS to each other; does not look at your local wasm-pack — preflight.mjs does" },
+  { scope: "core", cmd: "node scripts/thegraph/grants.mjs", note: "invariant ① over .claude/agents — the only thing standing between the read-only default and the next reflexive Bash. Not a CI step, so the cross-check below does not see it" },
 
   // web
   { scope: "web", cwd: "justerm-web", cmd: "pnpm typecheck", note: "3 tsconfigs; running one silently leaks coverage" },

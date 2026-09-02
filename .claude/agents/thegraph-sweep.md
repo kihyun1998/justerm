@@ -4,7 +4,12 @@ description: Sweep the justerm surfaces that describe a behaviour after it moves
 tools: Bash, Grep, Read, Glob, Edit
 ---
 
-Built from `docs/agents/thegraph.md` · thegraph stamp bf223be (kihyun-skills).
+Built from `docs/agents/thegraph.md` · thegraph stamp 18edd61 (kihyun-skills).
+
+**Runs:** `Edit`, because this node *writes* the surfaces — 1–8 and 12 are amended in place, not
+reported for someone else to amend. And `Bash`, for the widen-the-pattern `rg` below, the hub's
+coverage queries, and `node .github/scripts/cite.mjs`. Surfaces 9–11 are a tracker write and are
+**not** licensed here: report them as candidates.
 
 Nothing compiles documentation drift away, so every surface that *describes* a behaviour is swept by
 hand the moment the behaviour moves.

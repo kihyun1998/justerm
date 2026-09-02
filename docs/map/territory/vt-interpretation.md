@@ -43,6 +43,18 @@ for a terminal engine, that list is half the specification.
   new title. The neighbour that looks identical is not: xterm's OSC 4 path has no skip at all — an
   unparseable name **aborts the remaining pairs** (`misc.c:2993-3003`, *"quit on any error"*).
 
+  *And `OSC 52` is a fifth answer, added by #828*: an empty **target** field is neither "skip" nor
+  "unrecognised" — it *names the clipboard*, and it is the only form real applications emit (tmux
+  3.2a, captured). That makes the family table complete on the axis rather than merely longer: an
+  empty field means skip for a colour slot, close for a hyperlink, the new value for a title,
+  reset-everything for `OSC 104`, and **a default target** for a clipboard request. Nothing
+  generalises across the five, which is the entry's point; what generalises is that each one has a
+  deliberate rule somewhere and none of them is the obvious one. The `OSC 4` arm is still undecided
+  (#834). Note the shape #828 added on the *payload* side too, since it looks like the same question
+  and is not: a payload **field that is absent** (`OSC 52 ; c`) and an **empty payload**
+  (`OSC 52 ; c ;`) are different sequences — the second is a store of the empty string, which is how
+  the sequence clears a selection.
+
   *Within* the dynamic-colour family the references then split **3–1 on the advance**, which no
   amount of reading one of them reveals. xterm, xterm.js and vte all consume the empty slot and move
   to the next; ghostty tokenizes the payload with `tokenizeScalar`, which **drops empty fields
@@ -78,6 +90,16 @@ for a terminal engine, that list is half the specification.
   reading — across this repo's captures `CSI > m` (XTMODKEYS) occurs 7 times and `CSI > q`
   (XTVERSION) **zero**, which inverts the order the reference trees suggest. Rows in
   [`reference-facts.md`](../../agents/reference-facts.md). The unrouted rest is #47 tail.
+- **An OSC payload arrives unbounded, and a handler that builds anything from one bounds it
+  itself (#828).** Measured with a throwaway probe rather than read off the crate: `vte` is built
+  with its default features, so its OSC accumulator is a `Vec<u8>` and **not** the
+  `ArrayVec<_, MAX_OSC_RAW = 1024>` of its `no_std` path — a 4 MB `OSC 52` reaches `osc_dispatch`
+  complete, as three params totalling 4 000 003 bytes. The consequence is easy to state backwards: a
+  bound on a handler cannot stop the engine allocating, because the parser already did. What it
+  stops is the *second* allocation — the decoded value and whatever the handler then hands a
+  consumer. `MAX_CLIPBOARD_BASE64` is the only one today; the payloads `OSC 0/2`, `OSC 7` and
+  `OSC 8` retain are bounded by nothing, which is a fact about this territory and not a claim that
+  it is wrong.
 - **Tab stops are explicit per-column state**, not a modulo: HTS sets, TBC clears, default every
   eighth column. A modulo would be wrong the moment an application moves one.
 - **The scroll region redefines what "scroll" means.** DECSTBM changes which rows `IND` / `RI` /
