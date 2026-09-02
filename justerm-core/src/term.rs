@@ -629,11 +629,26 @@ pub const MAX_COMMAND_TEXT: usize = 4096;
 /// measured.** `vte` is built with its default features, so its OSC accumulator
 /// is a `Vec<u8>` rather than the `ArrayVec<_, 1024>` of its `no_std` path: a
 /// 4 MB payload arrives at `osc_dispatch` complete, 4 000 003 bytes across three
-/// fields. The allocation this bound refuses is therefore the *second* and
-/// *third* — the decode and the `String` on the event queue — and the property
-/// it buys is that no unbounded string crosses the boundary into a consumer that
-/// then has to hold it. Anyone reading this as "the engine cannot be made to
-/// allocate" has the wrong model; `vte` already did.
+/// fields. Anyone reading this bound as "the engine cannot be made to allocate"
+/// has the wrong model; `vte` already did, before the handler ran.
+///
+/// What it does refuse is the **second** allocation — the rejoin, which copies
+/// every field again — and everything downstream of it. That is why the check
+/// sums the field lengths rather than measuring the joined payload: a bound
+/// applied *after* the join would let a hostile stream buy the copy it was
+/// meant to prevent, which is what the first draft did. The decoded `Vec` is a
+/// third; the `String` is not a fourth, since `String::from_utf8` reuses the
+/// buffer it is given. The property all of it buys is the one worth naming: no
+/// unbounded string crosses the boundary into a consumer that then has to hold
+/// it.
+///
+/// **It does not bound the queue, and the queue is unbounded.** `drain_events`
+/// is pull-style with no back-pressure, so a consumer that does not drain
+/// accumulates stores at up to this size each — the pre-existing hole
+/// `docs/map/territory/events-and-replies.md` records, which this sequence
+/// enlarges by roughly three orders of magnitude over the next-largest payload
+/// (`MAX_COMMAND_TEXT`, 4096). Bounding a queue nobody drains is a different
+/// decision from bounding a payload, and it is not taken here.
 ///
 /// **Dropped rather than truncated**, which is the opposite of
 /// [`MAX_COMMAND_TEXT`] one field up, and the asymmetry is the point: a prefix of
@@ -1412,14 +1427,31 @@ impl Term {
     /// in the consumer — and cut buffers are not modelled at all. So "follow the
     /// spec" is not a well-defined instruction, exactly as it was not for #834's
     /// empty colour spec, where xterm's trigger (*a colour that failed to parse*)
-    /// is a condition this engine structurally cannot observe. Of the two
-    /// readings that *are* representable, all three implementations converge on
-    /// the clipboard — ghostty by an explicit branch pinned by a test
-    /// (`clipboard_operation.zig:24`, `:64`), alacritty by way of `vte`'s
-    /// `params[1].first().unwrap_or(&b'c')` (`vte-0.15.0/src/ansi.rs:1488`, the
-    /// same parser crate this engine is built on) — and the only emission this
-    /// project has measured is `tmux` 3.2a sending exactly this form under
-    /// `set-clipboard on`, where the user's intent is the system clipboard.
+    /// is a condition this engine structurally cannot observe.
+    ///
+    /// Two qualifications, because the short version of this argument overclaims
+    /// in both directions. **The cut buffer is what is unrepresentable; `s` is
+    /// merely unmodelled** — xterm resolves it through the `selectToClipboard`
+    /// resource (`button.c:2081`), and DECSET 1041 sets that same resource *from
+    /// the stream* (`ctlseqs.txt:1008`), so an engine tracking 1041 could
+    /// resolve it. justerm declines to model 1041; that is a choice, not an
+    /// impossibility. And **xterm-as-shipped reads the empty field as PRIMARY**,
+    /// since the resource defaults to false — so this diverges from what the
+    /// reference does by default, not merely from a sentence in its manual.
+    ///
+    /// What decides it is the other two lines of evidence. **Independent
+    /// lineages, and there are fewer than a naive count gives**: alacritty never
+    /// sees an empty field at all, because `vte` substitutes `b'c'` first
+    /// (`vte-0.15.0/src/ansi.rs:1488`) — those two are *one* lineage, not two.
+    /// The genuinely separate ones are ghostty, by an explicit byte-scan branch
+    /// pinned under a test (`clipboard_operation.zig:24`, `:64`), and xterm.js's
+    /// clipboard addon, whose browser provider ignores the selector entirely and
+    /// always writes `navigator.clipboard`
+    /// (`addons/addon-clipboard/src/ClipboardAddon.ts:77`). Three lineages, one
+    /// answer. **And the emitter's own documentation agrees**: `tmux`'s
+    /// `set-clipboard` is documented as setting *the terminal clipboard* — never
+    /// the primary selection — and `tmux` 3.2a is measured sending exactly this
+    /// empty form.
     ///
     /// **A missing payload *field* is not an empty payload.** `OSC 52 ; c`
     /// arrives as two fields and does nothing; `OSC 52 ; c ;` arrives as three,
@@ -1436,15 +1468,37 @@ impl Term {
     /// clipboard, the one failure mode this handler must not have. Rejoined, the
     /// stray `;` reaches the decoder and is refused there.
     ///
-    /// **Malformed in, nothing out**, which is the second deliberate divergence.
-    /// The spec ends a payload that is *"neither a base64 string nor ?"* by
-    /// clearing the selection (`ctlseqs.txt:2174`); this drops it silently, as
-    /// alacritty does (`alacritty_terminal/src/term/mod.rs:1717`). Clearing is a
-    /// destructive act, and inferring one from bytes the engine could not parse
-    /// means corruption on the wire wipes what the user copied by hand. Non-UTF-8
-    /// is refused on the same principle one level up: every text surface this
-    /// crate publishes is UTF-8, and a lossy conversion would hand the consumer
-    /// characters the application never sent.
+    /// **Malformed in, nothing out**, which is the second deliberate divergence
+    /// — and it is narrower than the spec sentence makes it look. The spec ends
+    /// a payload that is *"neither a base64 string nor ?"* by clearing the
+    /// selection (`ctlseqs.txt:2174`); this drops it silently. Clearing is
+    /// destructive, and inferring one from bytes the engine could not parse
+    /// means corruption on the wire wipes what the user copied by hand.
+    ///
+    /// The family, counted rather than asserted: **three drop** — alacritty
+    /// (`alacritty_terminal/src/term/mod.rs:1717`), ghostty, which returns on a
+    /// decode failure (`src/Surface.zig:2186`) and states the rule beside its
+    /// test as *"Read requests and malformed base64 must never reach the
+    /// callback"* (`src/terminal/c/terminal.zig:2961`), and this. **One clears**
+    /// — xterm.js's addon, deliberately: *"Clear clipboard if text is not a
+    /// base64 encoded string"* (`addons/addon-clipboard/src/ClipboardAddon.ts:55`).
+    /// **And one neither** — xterm, below.
+    ///
+    /// What the divergence actually is, stated precisely because reading the
+    /// spec alone gets it wrong: **xterm has no validator to disagree with.**
+    /// `AppendToSelectionBuffer` (`button.c:4679`) decodes one character at a
+    /// time and `return`s on any byte outside the alphabet (`:4698`), so xterm
+    /// *filters* rather than rejects — `Zm9v-Zm9v` yields `foofoo` there — and
+    /// since the store path clears the buffer first (`misc.c:3410`), the spec's
+    /// "cleared" is what falls out when the filter finds nothing to keep. So the
+    /// disagreement is about what to **accept**, not about what to do on
+    /// refusal, and this engine is the stricter of the two on purpose: a filter
+    /// hands the consumer text assembled from bytes the application did not
+    /// send.
+    ///
+    /// Non-UTF-8 is refused on the same principle one level up: every text
+    /// surface this crate publishes is UTF-8, and a lossy conversion would hand
+    /// the consumer characters the application never sent.
     fn clipboard(&mut self, params: &[&[u8]]) {
         let Some(&field) = params.get(1) else {
             return;
@@ -1452,7 +1506,11 @@ impl Term {
         let target = match field {
             // Empty and `c` are the same answer; see the divergence note above.
             b"" | b"c" => ClipboardTarget::Clipboard,
-            b"p" | b"s" => ClipboardTarget::Selection,
+            // `p` and `s` are NOT the same answer, and the first draft made them
+            // one. See `ClipboardTarget`: a collapse here would put a selector
+            // the application never wrote into the reply.
+            b"p" => ClipboardTarget::Primary,
+            b"s" => ClipboardTarget::Selection,
             // Anything else — an unmodelled target like `q` or a cut buffer, and
             // also a *multi*-target list like `pc`, which the spec permits
             // (`ctlseqs.txt:2156`) and this engine cannot express. Both are
@@ -1466,12 +1524,17 @@ impl Term {
         if params.len() < 3 {
             return;
         }
-        let payload: Vec<u8> = params[2..].join(&b';');
-        if payload == b"?" {
-            self.events.push(TermEvent::QueryClipboard { target });
+        // The bound is checked on the fields, BEFORE the join — `join` is itself
+        // an unconditional full copy, so checking after it would let a hostile
+        // payload buy a second allocation the size of the first. `+ len - 3` is
+        // the separators the join puts back.
+        let fields = &params[2..];
+        if fields.iter().map(|f| f.len()).sum::<usize>() + fields.len() - 1 > MAX_CLIPBOARD_BASE64 {
             return;
         }
-        if payload.len() > MAX_CLIPBOARD_BASE64 {
+        let payload: Vec<u8> = fields.join(&b';');
+        if payload == b"?" {
+            self.events.push(TermEvent::QueryClipboard { target });
             return;
         }
         if let Some(bytes) = crate::base64::decode(&payload)
@@ -1498,16 +1561,24 @@ impl Term {
     /// nothing; a consumer refuses a *read* simply by not calling this, whatever
     /// it does about *writes*.
     ///
-    /// The target is rendered canonically — `c` for the clipboard, `p` for the
-    /// selection — so a query with an empty field is answered naming `c`, which
-    /// is what alacritty also sends once `vte` has defaulted the field. The reply
-    /// is ST-terminated like every other reply this crate queues; whether that
-    /// should instead echo the terminator the request arrived with is #836's
-    /// question for the whole channel, not this sequence's.
+    /// **The selector round-trips.** `c` / `p` / `s` in, the same one out, which
+    /// is why [`ClipboardTarget`] keeps `p` and `s` apart: every reference echoes
+    /// the field the application wrote — xterm the recognised list
+    /// (`misc.c:3384`), alacritty the raw byte (`…/term/mod.rs:1744`), ghostty
+    /// its three locations (`src/Surface.zig:5954`) — and it is the one field a
+    /// client can pair a reply on. The single exception is an **empty** field,
+    /// answered naming `c`, which is what alacritty also sends once `vte` has
+    /// defaulted it: the reply says what the engine understood, and there is no
+    /// selector to echo.
+    ///
+    /// The reply is ST-terminated like every other reply this crate queues;
+    /// whether that should instead echo the terminator the request arrived with
+    /// is #836's question for the whole channel, not this sequence's.
     pub fn report_clipboard(&mut self, target: ClipboardTarget, text: &str) {
         let field = match target {
             ClipboardTarget::Clipboard => 'c',
-            ClipboardTarget::Selection => 'p',
+            ClipboardTarget::Primary => 'p',
+            ClipboardTarget::Selection => 's',
         };
         let data = crate::base64::encode(text.as_bytes());
         self.replies
@@ -4870,14 +4941,14 @@ impl Perform for Term {
             b"10" => self.special_color(params, 0),
             b"11" => self.special_color(params, 1),
             b"12" => self.special_color(params, 2),
-            // OSC 110 / 111 / 112 = reset the default foreground / background /
-            // cursor colour (#122, #832). One slot each, never a stack — xterm's
-            // reset path resolves a single index from the code itself and walks
-            // nothing (`misc.c:3729`).
             // OSC 52 = manipulate selection data (#828): `OSC 52 ; Pc ; Pd`.
             // The engine decodes `Pd` and relays the request; the *clipboard* is
             // the consumer's, and so is every policy about it.
             b"52" => self.clipboard(params),
+            // OSC 110 / 111 / 112 = reset the default foreground / background /
+            // cursor colour (#122, #832). One slot each, never a stack — xterm's
+            // reset path resolves a single index from the code itself and walks
+            // nothing (`misc.c:3729`).
             b"110" => self.events.push(TermEvent::ResetForeground),
             b"111" => self.events.push(TermEvent::ResetBackground),
             b"112" => self.events.push(TermEvent::ResetCursorColor),

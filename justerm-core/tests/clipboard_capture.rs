@@ -21,13 +21,25 @@
 //! the whole way.
 //!
 //! **This stream is not byte-reproducible, unlike `cursor_color_nvim.raw`, and
-//! the difference is worth stating rather than smoothing over.** Two recordings
-//! made minutes apart differ in 12 bytes: eight are `script(1)`'s own timestamps,
-//! and **four are a real reordering in tmux's output** — `ESC[?25l ESC[1;1H` in
-//! one run against `ESC[1;1H ESC[?25l` in the other. Neither touches the OSC 52
-//! or anything this file asserts, but "re-record and `sha256sum`" is not a check
-//! this fixture can pass, so nobody should try it and conclude the transfer
-//! broke.
+//! the difference is worth stating rather than smoothing over.** Three
+//! independent sources of variation, none of which touches the OSC 52 or
+//! anything this file asserts:
+//!
+//! 1. **A real reordering in tmux's output** — `ESC[?25l ESC[1;1H` in one run
+//!    against `ESC[1;1H ESC[?25l` in another. Swapping two 6-byte sequences that
+//!    share an `ESC[` prefix differs in **8** byte positions, not 4.
+//! 2. **`script(1)`'s own timestamps** — 4 bytes between two runs in the same
+//!    minute, more across a minute boundary.
+//! 3. **tmux's status-bar clock**, three times in the stream, 2 bytes each.
+//!
+//! So the total depends on when you re-record: two runs seconds apart differ in
+//! ~3 bytes, two a minute apart in ~12, two across the reordering and the clock
+//! in ~21. An earlier version of this note said "12 bytes, eight timestamps and
+//! four reordering" — the two figures were **transposed** and the clock was
+//! never counted. Corrected here because the note's whole purpose is to stop a
+//! reader chasing a defect that is not there, and a wrong breakdown does the
+//! opposite. What stands unchanged: "re-record and `sha256sum`" is not a check
+//! this fixture can pass.
 //!
 //! ## What these assertions can and cannot observe
 //!
@@ -107,11 +119,25 @@ fn the_real_form_is_not_read_as_an_unrecognised_target() {
 
 /// The engine answers nothing on its own, on real bytes: this stream asks no
 /// clipboard question, and the reply channel stays empty until a consumer
-/// chooses to say something. The store above did not put anything on it either,
-/// which is the half a synthetic test states and a real one confirms.
+/// chooses to say something.
+///
+/// **The positive control is the whole test.** Without it this assertion stayed
+/// green with the entire `OSC 52` dispatch arm deleted — nothing in this file
+/// ever made `drain_replies()` non-empty, so an empty channel and a broken one
+/// were the same observation. Measuring a "nothing" is worth exactly as much as
+/// the instrument's demonstrated ability to see a something, so the something is
+/// produced here, in the same test, on the same engine.
 #[test]
 fn the_captured_session_puts_nothing_on_the_reply_channel() {
     let mut e = replay();
     let _ = e.drain_events();
-    assert_eq!(e.drain_replies(), b"");
+    assert_eq!(e.drain_replies(), b"", "the stream asked no question");
+
+    // Positive control: the channel this test just called empty is working.
+    e.report_clipboard(ClipboardTarget::Clipboard, "hi");
+    assert_eq!(
+        e.drain_replies(),
+        b"\x1b]52;c;aGk=\x1b\\",
+        "the reply channel must be able to carry something, or the emptiness above proves nothing"
+    );
 }

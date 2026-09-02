@@ -89,19 +89,29 @@ fn an_explicit_clipboard_target_stores_under_either_terminator() {
     }
 }
 
-/// `p` and `s` both name the primary selection, collapsed the way alacritty
-/// collapses them (`alacritty_terminal/src/term/mod.rs:1713`). A consumer on a
-/// platform without the distinction may treat it as the clipboard; one with it
-/// honours it, which is what carrying the target at all is for.
+/// `p` and `s` are **different targets**, not one. The spec lists them
+/// separately (`ctlseqs.txt:2157`) and xterm binds them to different atoms
+/// (`misc.c:3327`); `s` is *"the configurable primary/clipboard selection"*,
+/// which is a setting, so the engine relays the application's choice and the
+/// consumer resolves it.
+///
+/// An earlier draft collapsed them the way alacritty does
+/// (`alacritty_terminal/src/term/mod.rs:1713`). That is safe for alacritty
+/// because it replies with the raw byte it was sent (`:1744`) and safe for
+/// nobody who replies from the collapsed value — see the reply test below,
+/// which is the assertion that actually catches it.
 #[test]
-fn p_and_s_both_name_the_primary_selection() {
-    for field in ["p", "s"] {
+fn p_and_s_are_different_targets() {
+    for (field, expected) in [
+        ("p", ClipboardTarget::Primary),
+        ("s", ClipboardTarget::Selection),
+    ] {
         let mut t = Engine::new(80, 24);
         t.feed(format!("\x1b]52;{field};aGk=\x07").as_bytes());
         assert_eq!(
             t.drain_events(),
             vec![TermEvent::ClipboardStore {
-                target: ClipboardTarget::Selection,
+                target: expected,
                 text: "hi".into(),
             }],
             "target field {field:?}"
@@ -157,14 +167,36 @@ fn the_report_method_encodes_a_well_formed_reply() {
     assert_eq!(t.drain_replies(), b"\x1b]52;c;aGk=\x1b\\");
 }
 
-/// The selection is named `p` in a reply. The target is rendered canonically
-/// rather than echoed, because the consumer is handed a value and never the
-/// protocol byte — so `s` in, `p` out, both meaning the primary selection.
+/// **The selector round-trips: the reply names the field the application
+/// wrote.** This is the assertion that failed on the first draft, which
+/// collapsed `p` and `s` and so answered `ESC ] 52 ; s ; ?` naming `p` — a
+/// selector the application never sent, in the one field a client can pair a
+/// reply on. Every reference echoes it: xterm the recognised list
+/// (`misc.c:3384`), alacritty the raw byte (`…/term/mod.rs:1744`), ghostty its
+/// three locations (`src/Surface.zig:5954`).
 #[test]
-fn a_selection_reply_names_p() {
-    let mut t = Engine::new(80, 24);
-    t.report_clipboard(ClipboardTarget::Selection, "hi");
-    assert_eq!(t.drain_replies(), b"\x1b]52;p;aGk=\x1b\\");
+fn the_reply_names_the_selector_the_application_wrote() {
+    for (field, target) in [
+        ("c", ClipboardTarget::Clipboard),
+        ("p", ClipboardTarget::Primary),
+        ("s", ClipboardTarget::Selection),
+    ] {
+        let mut t = Engine::new(80, 24);
+        t.feed(format!("\x1b]52;{field};?\x07").as_bytes());
+        let events = t.drain_events();
+        let [TermEvent::QueryClipboard { target: relayed }] = events.as_slice() else {
+            panic!("expected one clipboard query for {field:?}, got {events:?}");
+        };
+        assert_eq!(*relayed, target, "target field {field:?}");
+        // The consumer answers with exactly what it was handed — no lookup, no
+        // remembered byte — and the selector comes back out unchanged.
+        t.report_clipboard(*relayed, "hi");
+        assert_eq!(
+            t.drain_replies(),
+            format!("\x1b]52;{field};aGk=\x1b\\").as_bytes(),
+            "reply for target field {field:?}"
+        );
+    }
 }
 
 /// A query with an empty target is answered naming `c`, which is the same thing
@@ -367,27 +399,70 @@ fn an_oversized_payload_is_dropped_whole() {
     );
 }
 
-/// The engine holds no clipboard, and a `RIS` proves it by having nothing to
-/// clear: a store, a reset, and a query answered afterwards behave exactly as
-/// they would have without the store. Anything the engine retained would have to
-/// be reset here, and there is nothing.
+/// **A `RIS` between a store and its drain does not eat the store.** That is
+/// this channel's clause of
+/// [`ris-keeps-configuration-drops-coordinates`](../../docs/map/invariant/ris-keeps-configuration-drops-coordinates.md):
+/// both queues survive `ESC c`, so a copy the application asked for before a
+/// reset still reaches the consumer that drains after it.
+///
+/// The first version of this test asserted `drain_replies() == b""` after a
+/// reset and called that proof the engine retains no clipboard. It was
+/// **vacuous**: `report_clipboard` was never called, so the reply channel was
+/// empty by construction and an engine that *did* hold a clipboard passed
+/// identically. The retention claim is structural — there is no field — and a
+/// test cannot observe the absence of one; what a test *can* observe is the
+/// queue behaviour above, so that is what this now asserts.
 #[test]
-fn the_engine_retains_nothing_across_a_reset() {
+fn a_reset_between_a_store_and_its_drain_keeps_the_store() {
     let mut t = Engine::new(80, 24);
     t.feed(b"\x1b]52;c;SEVMTE9KVVNURVJN\x07");
-    t.drain_events();
-    t.feed(b"\x1bc"); // RIS
-    t.feed(b"\x1b]52;c;?\x07");
-    assert_eq!(
-        t.drain_events()
-            .iter()
-            .filter(|e| matches!(
-                e,
-                TermEvent::QueryClipboard { .. } | TermEvent::ClipboardStore { .. }
-            ))
-            .count(),
-        1,
-        "the query, and nothing the engine kept from the store"
+    t.feed(b"\x1bc"); // RIS, before anything drains
+    let events = t.drain_events();
+    assert!(
+        events.contains(&TermEvent::ClipboardStore {
+            target: ClipboardTarget::Clipboard,
+            text: "HELLOJUSTERM".into(),
+        }),
+        "the queued store must survive the reset, got {events:?}"
     );
-    assert_eq!(t.drain_replies(), b"", "still nothing to answer with");
+    // And the sequence still works afterwards — the reset cleared no handler
+    // state, because there is none to clear.
+    t.feed(b"\x1b]52;c;aGk=\x07");
+    assert_eq!(
+        t.drain_events(),
+        vec![TermEvent::ClipboardStore {
+            target: ClipboardTarget::Clipboard,
+            text: "hi".into(),
+        }]
+    );
+}
+
+/// **The idiom every shell script uses, and it works because of one line in a
+/// dependency.** `printf '\033]52;c;%s\a' "$(base64 <<<"$text")"` is how a
+/// script reaches the clipboard, and GNU coreutils' `base64` wraps its output at
+/// 76 columns — so the payload arrives with embedded newlines. `vte` deletes C0
+/// bytes inside an OSC string (`vte-0.15.0/src/lib.rs:408`), so they never reach
+/// the decoder, which would refuse them.
+///
+/// The decoder is strict *and* this works, which is only true while that line
+/// exists. Pinned here so that a `vte` bump or a parser swap fails on a sentence
+/// naming the reason rather than on a silently dropped copy. Note the contrast
+/// asserted below: a **space** is not a C0 byte, does reach the decoder, and is
+/// refused.
+#[test]
+fn a_line_wrapped_payload_arrives_contiguous() {
+    let mut t = Engine::new(80, 24);
+    t.feed(b"\x1b]52;c;aMOpbGxvIOKAlCDs\nlYjrhZUg\r\n4pyT\x07");
+    assert_eq!(
+        t.drain_events(),
+        vec![TermEvent::ClipboardStore {
+            target: ClipboardTarget::Clipboard,
+            text: "héllo — 안녕 ✓".into(),
+        }],
+        "CR and LF inside the OSC string are dropped by the parser, not by us"
+    );
+
+    let mut t = Engine::new(80, 24);
+    t.feed(b"\x1b]52;c;aGk =\x07");
+    assert_eq!(t.drain_events(), vec![], "a space is not a C0 byte");
 }

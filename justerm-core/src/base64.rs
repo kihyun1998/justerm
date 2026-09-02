@@ -25,11 +25,15 @@
 //! partial group are all rejected: each of those makes the *decoded* bytes
 //! something the sender did not unambiguously write, which is the one thing the
 //! caller must never hand a consumer. Missing padding is not in that class —
-//! `Zm9vYmE` and `Zm9vYmE=` denote the same five bytes — so both are accepted,
-//! where alacritty's `STANDARD` engine requires canonical padding and would drop
-//! the first. The reach of unpadded emitters is **unmeasured**; the asymmetry is
-//! what decides it, since rejecting costs a silently dropped clipboard and
-//! accepting costs nothing.
+//! `Zm9vYmE` and `Zm9vYmE=` denote the same five bytes — so both are accepted.
+//! **Partial** padding is: `Zg=` is neither, and is refused.
+//!
+//! That laxity is a divergence from **both** references, not one: alacritty's
+//! `STANDARD` engine requires canonical padding
+//! (`alacritty_terminal/src/term/mod.rs:1717`) and ghostty rejects an unpadded
+//! payload as `InvalidPadding` (`src/Surface.zig:2186`). The reach of unpadded
+//! emitters is **unmeasured**; the asymmetry is what decides it, since rejecting
+//! costs a silently dropped clipboard and accepting costs nothing.
 
 /// The standard alphabet (RFC 4648 §4). Not the URL-safe one: `-` and `_` are
 /// refused rather than mapped, because a payload written in one alphabet and
@@ -225,11 +229,28 @@ mod tests {
 
     /// The deliberate laxity, pinned so that tightening it later is a visible
     /// choice rather than an accident. See the module note.
+    ///
+    /// **The rule is "no padding, or all of it" — never part of it**, and the
+    /// middle case is the one that had no assertion. A differential run against
+    /// the `base64` crate configured the way this module *describes* itself
+    /// (padding-indifferent, trailing bits refused) found exactly one class of
+    /// disagreement across all 3.2 M inputs of length ≤ 6: two data characters
+    /// followed by a single `=`. This decoder refuses those and is the
+    /// RFC-correct side of the disagreement — padding exists to bring the length
+    /// to a multiple of four, and one `=` after two characters does not. Nothing
+    /// pinned it: `refuses_padding_that_is_not_at_the_end`'s `"Zm9v="` is killed
+    /// by the length rule before the padding rule is ever consulted.
     #[test]
-    fn accepts_a_correct_payload_that_omits_its_padding() {
-        assert_eq!(decode(b"Zg").as_deref(), Some(&b"f"[..]));
-        assert_eq!(decode(b"Zm8").as_deref(), Some(&b"fo"[..]));
-        assert_eq!(decode(b"Zm9vYmE").as_deref(), Some(&b"fooba"[..]));
+    fn accepts_all_of_its_padding_or_none_of_it_but_never_part() {
+        for unpadded in [&b"Zg"[..], b"Zm8", b"Zm9vYmE"] {
+            assert!(decode(unpadded).is_some(), "unpadded {unpadded:?}");
+        }
+        for canonical in [&b"Zg=="[..], b"Zm8=", b"Zm9vYmE="] {
+            assert!(decode(canonical).is_some(), "canonical {canonical:?}");
+        }
+        for partial in [&b"Zg="[..], b"ZmE=x", b"Zm9vYmE=="] {
+            assert_eq!(decode(partial), None, "partial padding {partial:?}");
+        }
     }
 
     /// The bytes tmux 3.2a was measured emitting on the RHEL 9 VM (#828, second

@@ -19,15 +19,32 @@ use crate::serialize::{MarkerId, MarkerKind};
 /// the same reason [`TermEvent::SetPaletteColor`] carries a `u8` index rather
 /// than the field it was written in.
 ///
-/// **Two members, because two is what the engine can mean.** The sequence's
-/// target field admits `c`, `p`, `q`, `s` and the eight cut buffers
-/// (`ctlseqs.txt:2156`), and justerm models the two a consumer can act on. The
-/// rest are ignored rather than folded into a neighbour: mapping `q` onto the
-/// selection would be the engine inventing an equivalence the application did
-/// not ask for. ghostty folds every unrecognised kind onto the clipboard
-/// (`src/termio/stream_handler.zig:1009`, *"we ignore the kind field"*);
-/// alacritty ignores them (`alacritty_terminal/src/term/mod.rs:1714`), and so
-/// does this.
+/// **Three members, and `p` is kept apart from `s` deliberately.** The
+/// sequence's target field admits `c`, `p`, `q`, `s` and the eight cut buffers
+/// (`ctlseqs.txt:2156`); justerm models the three a consumer can act on and
+/// ignores the rest rather than folding them onto a neighbour, since mapping `q`
+/// onto a selection would be the engine inventing an equivalence the application
+/// did not ask for. ghostty folds every unrecognised kind onto the clipboard
+/// (`src/termio/stream_handler.zig:1013`); alacritty ignores them
+/// (`alacritty_terminal/src/term/mod.rs:1714`), and so does this. Read
+/// ghostty's from the `switch` and not from the comment four lines above it,
+/// which says *"we ignore the 'kind' field and always use the standard
+/// clipboard"* and is contradicted by the code under it — only the `else` arm
+/// goes to `.standard`.
+///
+/// **The first draft collapsed `p` and `s` into one member, and that was wrong
+/// on the wire.** alacritty collapses them
+/// (`alacritty_terminal/src/term/mod.rs:1713`) but replies with the byte the
+/// application sent (`:1744`), so the collapse never reaches a client. This
+/// engine hands the consumer a value and gets it back at `report_clipboard`, so
+/// a collapse here would answer `ESC ] 52 ; s ; ?` naming `p` — a selector the
+/// application never wrote, in the one field a client could pair a reply on. The
+/// spec lists the two separately (`ctlseqs.txt:2157`), xterm binds them to
+/// different atoms (`misc.c:3327`) and echoes the recognised list back
+/// (`misc.c:3384`), and ghostty keeps three locations apart in both directions
+/// (`src/Surface.zig:5954`, `src/terminal/c/terminal.zig:2942`). Splitting the
+/// member is what lets the value round-trip without the engine remembering
+/// anything.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ClipboardTarget {
     /// The system clipboard — the `c` field, **and the empty field**.
@@ -37,14 +54,52 @@ pub enum ClipboardTarget {
     /// copy-mode copy and `set-buffer -w` (#828). Reading it as "unrecognised"
     /// would drop the only emission this project has observed.
     Clipboard,
-    /// The primary selection — the `p` and `s` fields, which alacritty also
-    /// collapses into one (`alacritty_terminal/src/term/mod.rs:1713`). A
-    /// consumer on a platform with no such distinction may treat it as
-    /// [`Clipboard`](Self::Clipboard); one that has it honours it.
+    /// The primary selection — the `p` field. On a platform with no primary
+    /// selection a consumer may treat it as [`Clipboard`](Self::Clipboard); the
+    /// engine does not make that choice for it.
+    Primary,
+    /// The `s` field — *"the configurable primary/clipboard selection"*
+    /// (`ctlseqs.txt:2161`), which is to say: whichever of the two the user has
+    /// configured.
+    ///
+    /// **Relayed rather than resolved, and that is the boundary working.** The
+    /// thing that decides what `s` means is a setting: xterm resolves `SELECT`
+    /// through `DefaultSelection`, which is the `selectToClipboard` resource
+    /// (`button.c:2081`), and under ADR-0017 a setting is the consumer's. So the
+    /// application's choice is carried through unchanged and the consumer
+    /// resolves it against the configuration it owns.
+    ///
+    /// **A consumer with no such setting should treat this as
+    /// [`Primary`](Self::Primary), because that is what xterm-as-shipped does**
+    /// — `selectToClipboard` defaults to false. Worth stating rather than left
+    /// to taste, since the alternative reading sends the copy somewhere the
+    /// reference would not.
+    ///
+    /// And the setting is not purely out of reach: **DECSET 1041 sets the same
+    /// resource from the stream** (`ctlseqs.txt:1008`), so an engine that
+    /// tracked that mode could resolve `s` itself. justerm does not model 1041,
+    /// which is a *declined* capability rather than an impossible one — the
+    /// honest form of the claim, and the mode is unimplemented here like the
+    /// rest of the tail (#47).
     Selection,
 }
 
 /// A consumer-facing event emitted while parsing the VT stream.
+///
+/// **This enum is `pub` and not `#[non_exhaustive]`, so every added variant is a
+/// breaking change for a downstream exhaustive `match`** — the same trade
+/// [`crate::DecodeError`]'s doc-comment records one enum over, and worth stating
+/// here because the measurement comes out differently. In this workspace there
+/// is no such matcher: `justerm-wasm-decode` and `justerm-renderer` never name
+/// `TermEvent`, and `justerm-web`'s `events.ts` is a deliberately narrower union
+/// (title / bell / cwd) whose own header excludes the palette and query events.
+/// **Outside it there is one**, measured while adding `OSC 52` (#828):
+/// penterm's `route_event` matches five variants with no wildcard arm — the set
+/// as of `0.5.0`, against an enum that now carries twenty-one. So penterm cannot
+/// build against this crate today and has not been able to for nine minor
+/// versions; a new variant joins a break rather than causing one. Whether the
+/// answer is `#[non_exhaustive]` here or a wildcard there is a release-time
+/// call, not a slice's.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TermEvent {
     /// The window title is now this string.
@@ -131,7 +186,14 @@ pub enum TermEvent {
     ///
     /// **An empty `text` means "clear it".** `ESC ] 52 ; c ; ESC \` carries a
     /// payload that decodes to nothing, and both the spec and xterm end that
-    /// exchange with an empty selection (`ctlseqs.txt:2174`, `misc.c:3410`);
+    /// exchange with an empty selection — the spec because `Pd` *"becomes the
+    /// new selection"* whatever it is (`ctlseqs.txt:2166`), xterm because it
+    /// clears the buffer before appending anything (`misc.c:3410`). Note this is
+    /// **not** the spec's *"neither a base64 string nor `?`"* clause at
+    /// `ctlseqs.txt:2174`, which the engine diverges from: an empty payload is a
+    /// perfectly well-formed encoding of no bytes, so it never reaches that
+    /// sentence. Citing `:2174` here, as an earlier draft did, would have the
+    /// same line standing as authority followed and as authority departed from.
     /// ghostty pins the same input under a test named *"clear clipboard"*
     /// (`src/terminal/osc/parsers/clipboard_operation.zig:93`). It needs no rule
     /// of its own here, which is the argument for having none: an empty payload
