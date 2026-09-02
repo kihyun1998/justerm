@@ -209,8 +209,9 @@ pub enum MouseButton {
 /// mouse protocols **justerm models** report, closed — and the qualifier matters,
 /// because the unqualified version of this sentence is false. `?1001` hilite
 /// tracking reports something else entirely (`ctlseqs.txt`, the Hilite Mouse
-/// Tracking entry), and [`MouseProtocol`] does not model it. So the closure is
-/// scoped to the protocols in `MouseProtocol` and grows only if that does.
+/// Tracking entry), and `MouseProtocol` does not model it — a crate-private type,
+/// as rustdoc confirms by refusing to link it from here. So the closure is scoped
+/// to the protocols that type names, and grows only if it does.
 ///
 /// It is left exhaustive on both of #843's axes anyway: closed as scoped, and
 /// inward-only — nothing public hands one of these outward, so the attribute would
