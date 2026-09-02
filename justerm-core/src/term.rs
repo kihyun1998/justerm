@@ -2999,9 +2999,26 @@ impl Term {
     ///
     /// The unanimity is over that population and not over every writer of
     /// `cursor.col`. `linefeed_inner` and `reverse_index` do **not** clear it,
-    /// which is a separate and unsettled question — the references split on it
-    /// — and deliberately outside this change. See
+    /// which is a separate and unsettled question — justerm is the outlier 3-1
+    /// there — and deliberately outside this change. Nor is `put_tab` a clean
+    /// precedent: at the right edge of a full row it clears the flag *without
+    /// moving*, so the next character overwrites the last column instead of
+    /// wrapping, which all four references avoid. The rule is sound where the
+    /// verb actually moves the cursor, and CBT always does. See
     /// `docs/agents/reference-facts.md`.
+    ///
+    /// **What the divergence actually costs, stated as behaviour rather than as
+    /// a flag.** On a full row, `CSI Z` then a print puts the character where
+    /// the back-tab landed; every reference puts it on the *following row*,
+    /// having in effect discarded the back-tab. Pinned by
+    /// `back_tab_on_a_full_row_prints_where_it_landed_not_on_the_next_row`.
+    ///
+    /// **Cleared concern, with its validity condition.** xterm and ghostty
+    /// clamp a back-tab to the **left margin** under origin mode
+    /// (`tabs.c:171-175`; `Terminal.zig:2126`), not to column zero. That is
+    /// inert here only because this engine implements no DECSLRM, so both
+    /// reduce to zero. **If DECSLRM ever lands, this function is a site**, and
+    /// nothing else in the tree points at it.
     fn put_back_tab(&mut self, n: usize) {
         let mut col = self.cursor.col;
         for _ in 0..n {

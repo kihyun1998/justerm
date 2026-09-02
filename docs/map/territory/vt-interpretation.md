@@ -119,7 +119,8 @@ for a terminal engine, that list is half the specification.
 ## Code
 
 - `justerm-core/src/term.rs` — the `Perform` implementation and every verb: `print`, `execute`,
-  `csi_dispatch`, `esc_dispatch`, `osc_dispatch`, `put_tab`, and the mode flags they read
+  `csi_dispatch`, `esc_dispatch`, `osc_dispatch`, `put_tab` / `put_back_tab`, and the mode flags
+  they read
 - `justerm-core/src/lib.rs` — `Engine::feed`, which is only `parser.advance(&mut term, bytes)`; the
   `Parser` and `Term` are separate fields because `advance` borrows both mutably
 - `docs/architecture.md` §"Hidden VT state" — the catalogue of what is modelled, partly modelled and

@@ -73,6 +73,16 @@ all.
   caret's own span, all resolve through one helper here
 - [cursor position](../territory/cursor-position.md) — the caret is a span, and the application can
   park it on a spacer
+- [damage](../territory/damage.md) — **a sixth site, found working #826 and not fixed there.** The
+  frame producer folds the cursor in per *cell*, expanding one column at each end (the old cell and
+  the new). But the renderer's caret moves its origin **left** onto the lead when it stands on a
+  spacer, so it lights a column the frame never named. Measured: with a wide glyph at cols 7–8 and
+  the cursor walked onto col 8, the frame reports one span `left 8, right 14` and col 7 is outside
+  it. Both prose statements of the fold — this map's cursor-position note and `architecture.md`'s
+  *"damages the cell the cursor left + the cell it lands on"* — are written per cell and are wrong
+  for a pair. **Validity condition:** no live artefact today, because `justerm-renderer` re-packs
+  the whole viewport every frame and never consults damage for the caret. The gap is in the wire
+  contract, for exactly the cell-invert consumer the fold exists to serve
 
 ## What a violation looks like
 

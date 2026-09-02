@@ -2287,6 +2287,17 @@ about the rest of the deferred-wrap model.
 reference column could not*: ADR-0004 awards the spec top authority on this layer and the spec is
 silent, so the grounds fall to this engine's own coherence.
 
+**State the divergence as behaviour, not as a flag** — measured on 9 columns, `123456789` then
+`CSI Z` then `X`: justerm gives row 0 = `X23456789`, and all four references give row 0 unchanged
+with the `X` on row 1, the back-tab in effect discarded. *Which row the next character lands on* is
+the difference; the flag is only how each engine encodes it.
+
+**And one reference behaviour that is not a bound at all**, worth knowing before anyone copies the
+shape: because alacritty's inner walk never steps past the last stop, its outer `if col == 0 break`
+**cannot fire on a miss**. With every stop cleared, `CSI 65535 Z` costs it 65535 full-row scans.
+justerm's inner walk always reaches 0, so the same guard fires on the second iteration — the guard
+is defensive here and load-bearing there, on identical-looking code.
+
 **The census, taken rather than asserted** (2026-09-02, over every function in
 `justerm-core/src/term.rs` that writes `cursor.col` or `cursor.row`): **22 movers, 14 clearing the
 flag and 8 not.** Every *horizontal-positioning* verb clears it — `move_forward`, `move_back`,

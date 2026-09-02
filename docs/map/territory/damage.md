@@ -69,6 +69,11 @@ at a recorded SHA; a paraphrase drops the pin).
   — `ScrollOp::count` is `isize` here and `i16` on the wire. The accumulator that produces it lives
   in this territory, so the bound has to as well: `encode` cannot refuse a value, and `decode`
   cannot tell a wrapped one from a real one (#661)
+- [a span covers a wide pair whole](../invariant/a-span-covers-a-wide-pair-whole.md)
+  — the cursor fold expands **one column** at each end, but a caret standing on a wide glyph's
+  trailing spacer is drawn from the *lead*, one column further left than the frame ever names. The
+  fold is the one place this territory produces a span rather than consuming one, which is why the
+  pair rule reaches it at all (#826)
 
 ## Blast radius
 

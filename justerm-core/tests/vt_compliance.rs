@@ -140,6 +140,21 @@ fn back_tab_with_no_stops_lands_at_column_one() {
     assert_eq!(term.cursor().col, 0);
 }
 
+/// Stops exist, but none of them is to the *left* of the cursor. Distinct from
+/// the empty-table case: the walk has a populated table and still has to reach
+/// the boundary rather than stopping where it started — which is the state the
+/// references disagree on, alacritty leaving the cursor unmoved.
+#[test]
+fn back_tab_with_every_stop_to_the_right_lands_at_column_one() {
+    let mut term = Engine::new(20, 1);
+    term.feed(b"\x1b[3g"); // clear the defaults, column zero included
+    term.feed(b"\x1b[1;16H\x1bH"); // HTS: one stop, at grid col 15
+    term.feed(b"\x1b[1;11H"); // cursor to grid col 10 — the stop is to the RIGHT
+    term.feed(b"\x1b[Z");
+
+    assert_eq!(term.cursor().col, 0);
+}
+
 /// Back-tab reads the stops HTS set, not a fixed multiple of eight — the two
 /// directions have to agree about where the stops are.
 #[test]
@@ -256,6 +271,47 @@ fn shift_tab_from_our_own_encoder_drives_the_back_tab() {
     term.feed(b"X");
 
     assert_eq!(term.grid().cell(0, 24).c(), 'X');
+}
+
+/// The full shape of the deferred-wrap divergence, on the width where it bites
+/// hardest: a row filled to the last column, which is also a default tab stop
+/// (any width congruent to 1 mod 8 — 9, 17, 33, 81).
+///
+/// justerm honours the back-tab and prints where it landed. All four references
+/// leave the wrap armed, so the same stream puts the `X` on the *following row*
+/// and the back-tab is effectively discarded. That is the divergence — not a
+/// flag, but which row the next character lands on — and this is the assertion
+/// that states it.
+#[test]
+fn back_tab_on_a_full_row_prints_where_it_landed_not_on_the_next_row() {
+    let mut term = Engine::new(9, 2);
+    term.feed(b"123456789"); // fills row 0, arming the deferred wrap
+    assert!(term.cursor().pending_wrap);
+
+    term.feed(b"\x1b[ZX");
+
+    let row0: String = (0..9).map(|c| term.grid().cell(0, c).c()).collect();
+    let row1: String = (0..9).map(|c| term.grid().cell(1, c).c()).collect();
+    assert_eq!(row0, "X23456789"); // the references would leave row 0 intact
+    assert_eq!(row1, "         "); // ...and put the X here
+    assert_eq!(term.cursor().row, 0);
+}
+
+/// `CSI ? Z` and `CSI > Z` are *unreachable*, not unhandled: a private prefix
+/// arrives as an intermediate and `csi_dispatch` returns above the `match`, so
+/// adding a `'Z'` arm did nothing for them (#824's rule).
+///
+/// Pinned because the predicate is otherwise unfalsifiable — nothing else in
+/// this file would notice if the guard moved and `CSI ? Z` started back-tabbing.
+#[test]
+fn back_tab_with_a_private_prefix_is_unrouted() {
+    for seq in [&b"\x1b[?Z"[..], &b"\x1b[>Z"[..], &b"\x1b[<Z"[..]] {
+        let mut term = Engine::new(40, 1);
+        term.feed(b"\x1b[1;28H");
+        term.feed(seq);
+
+        assert_eq!(term.cursor().col, 27, "{seq:?} must not reach the back-tab");
+    }
 }
 
 // ===========================================================================

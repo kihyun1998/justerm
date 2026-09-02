@@ -463,9 +463,19 @@ Z"`, and a search across the wrap went from 1 hit to 0). It now lives on the
   damage-layer hidden state a "cursor is just (row, col)" model omits; it is the engine's job (it owns
   damage), *not* "drawing" (which stays the renderer's). [#38]
 - **Tab stops are explicit per-column state, not a fixed modulo.** A bool-per-column set: HTS
-  (ESC H) sets a stop at the cursor, TBC (CSI g) clears one (param 0) or all (param 3), and HT
-  advances to the next *set* stop — or the last column if none remain (no wrap). Default = every
+  (ESC H) sets a stop at the cursor, TBC (CSI g) clears one (param 0) or all (param 3), HT
+  advances to the next *set* stop — or the last column if none remain (no wrap) — and **CBT
+  (CSI Ps Z) walks the same set backwards** by `Ps` stops, clamping at column 0 and never wrapping
+  to the row above (#826). The two directions are written as mirrors so they cannot disagree about
+  where a stop is; a count repeats the *walk* rather than scaling a distance. Default = every
   8th column (incl. col 0). Resize must re-init/extend the set (#7). [#8]
+
+  ⚠ **Two gaps in this entry, both measured and both out of #826's scope.** `resize` rebuilds the
+  set from defaults *unconditionally* — including a rows-only resize, which discards HTS-set stops
+  without any column changing — where this very line says "re-init/**extend**". And HT at the right
+  edge of a full row clears the deferred wrap without moving, so the next character overwrites the
+  last column instead of wrapping; all four references keep that character. `CHT` (CSI Ps I), the
+  forward counterpart of CBT, is still unimplemented and stays in #47.
 - **Scroll region (DECSTBM) redefines what "scroll" means.** top/bottom margins (0-based,
   inclusive) stored as state; a line-feed at the *bottom margin* scrolls only rows `[top..=bottom]`,
   leaving rows outside fixed — `linefeed` must consult the margins, not the screen edge. DECSTBM
