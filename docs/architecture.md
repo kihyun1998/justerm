@@ -682,6 +682,19 @@ Z"`, and a search across the wrap went from 1 hit to 0). It now lives on the
   spec and restores it (charsets join the set when a charset slice lands). The general tie-break —
   Alacritty on genuine ambiguities, the spec where Alacritty merely omits a mandated behaviour — is
   **ADR-0004**. [#8]
+- **DA2's `Pc` is the first case ADR-0004's classification does *not* fit, and the gap is the
+  record.** Secondary device attributes (`CSI > c`) report `Pp ; Pv ; Pc`. On `Pc` Alacritty sends
+  `1` where xterm, ghostty and xterm.js send `0` — so it neither *omits* the behaviour nor
+  *under-implements* it, which are ADR-0004's two spec-wins branches; it **contradicts**. Its other
+  branch, genuine ambiguity → follow Alacritty, would yield `1`. And `ctlseqs.txt` does not rescue
+  the classification either: its *"always zero"* is said of a **DEC terminal**, a description of
+  hardware rather than a requirement on emulators. justerm sends `0` on a ground that needs no
+  reference — `Pc` registers a ROM cartridge, this engine has none, and `0` is the absence value,
+  which is exactly how the two implementations that comment the field read it. Recorded here rather
+  than re-litigated: **a reference that contradicts is a third case, and the tie-breaker's authority
+  row rather than ADR-0004's text is what covers it.** `Pp` is `1` (VT220) for the coherence reason
+  one field over: DA1 already advertises level 62, and justerm implements neither DECTID nor DECSCL,
+  so it has nothing that could decouple the level from the device type. [#824]
 - **A combining mark (width-0 code point) attaches to the previous base cell, not its own cell.**
   `print` must not drop a width-0 char (the current #2 behaviour). It appends to the cell the cursor
   just left: back up one column, and if that cell is a `WIDE_CHAR_SPACER` back up once more to the
@@ -919,14 +932,18 @@ Z"`, and a search across the wrap went from 1 hit to 0). It now lives on the
   hyperlink is a Cell attribute, not an `Event`). [#26, #635]
 
 - **Query replies are an outbound channel, drained pull-style and kept apart from events.** An app
-  query (`CSI c` DA1, `CSI 5n`/`CSI 6n` DSR, `CSI ? Ps $ p` DECRQM) makes the engine *produce bytes the
+  query (`CSI c` DA1, `CSI > c` DA2, `CSI 5n`/`CSI 6n` DSR, `CSI ? Ps $ p` DECRQM) makes the engine *produce bytes the
   consumer must write back to the PTY* — justerm's first "engine → app" path. They queue during `feed`
   and the consumer takes them via `drain_replies` (raw `Vec<u8>`), separate from `drain_events` (typed
   notifications → UI; replies → PTY). This is alacritty's push `Event::PtyWrite` translated to justerm's
   pull cadence; xterm.js instead unifies replies with key output into one `onData` stream — justerm does
   not, because `encode_*` is a *synchronous* consumer-driven call while a reply is an *async* side-effect
   of parsing. Catches: **DA1 must advertise only what the engine implements** (`CSI ? 62;22 c` = VT220 +
-  ANSI colour, not Sixel/printer it lacks — a lying DA makes apps call absent features); **DSR cursor
+  ANSI colour, not Sixel/printer it lacks — a lying DA makes apps call absent features); **DA2 (`CSI > c`)
+  carries no hidden state of its own** — the reply is a pure function of the query and a compile-time
+  constant — but it is *unreachable* unless `csi_dispatch` opens the `>` intermediate for the `c` final,
+  because `vte` collects `0x3C..=0x3F` into `intermediates` and the dispatcher returns early on any it
+  does not name (#824); **DSR cursor
   position is region-relative under origin mode** (DECOM), 1-based; an unrecognised query emits *nothing*
   (no spurious bytes). The kitty `CSI ? u` query (#23) reuses this channel. [#27]
 

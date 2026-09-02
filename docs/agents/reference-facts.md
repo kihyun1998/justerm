@@ -2132,10 +2132,29 @@ body made before this row existed.
 |---|---|---|
 | **alacritty reports its own version**, derived from its crate version at compile time | alacritty | `alacritty_terminal/src/term/mod.rs:1266-1267` |
 | xterm.js instead **impersonates** whichever terminal it is configured to emulate, branching to xterm / rxvt-unicode / screen replies | xterm.js | `src/common/InputHandler.ts:1737`, the xterm reply at `:1745` (`ESC[>0;276;0c`) |
+| The reply's shape is `CSI > Pp ; Pv ; Pc c`; the `Pp` table is closed and enumerated, and `Pv` is *"the firmware version"* with **no encoding fixed** | spec | `xterm/ctlseqs.txt:816-839` (`Pp = 1 -> "VT220"` at `:825`; `?62` is VT220 at `:778`) |
+| **`Pc` is `0` in three of four.** xterm writes it as `/* options (none) */`; ghostty as *"Always 0 for emulators"*; xterm.js sends 0 in all three impersonation branches. **alacritty alone sends `1`** | xterm · ghostty · alacritty | `xterm/charproc.c:4267` · `ghostty/src/terminal/device_attributes.zig:88` · `alacritty_terminal/src/term/mod.rs:1267` |
+| **`Pp` and DA1's level are one value, not two.** xterm projects both from `terminal_id` (`220 -> 1`); ghostty from one `device_type` defaulted `.vt220 = 1`. So no reference pairs a level-62 DA1 with a `Pp` other than 1 | xterm · ghostty | `xterm/charproc.c:4225-4229` · `ghostty/src/terminal/device_attributes.zig:82`, `:161` |
+| ghostty's DA1 is **not** `ESC[?62;22c` at its default — `clipboard-write` defaults to `.allow`, which appends `;52`. The `;22c` form is its *deny* branch | ghostty | `ghostty/src/config/Config.zig:2380`, `ghostty/src/termio/stream_handler.zig:837` (allow) vs `:839` (deny), DA2 at `:843` |
+| **The first parameter gates the reply in three of four** — only `Ps = 0` or omitted is a request. ghostty reads no parameter at all, and has no test that feeds a non-zero one | xterm · xterm.js · alacritty · ghostty | `xterm/charproc.c:4220` · `xterm.js/src/common/InputHandler.ts:1738` · `vte-0.15.0/src/ansi.rs:1572` · `ghostty/src/terminal/stream.zig:1612-1620` |
+| **A `>` followed by a real intermediate (`CSI > $ c`) is dropped in three of four.** alacritty answers it, because its dispatch passes `intermediates.first()` rather than matching the slice | xterm · ghostty · xterm.js · alacritty | `xterm/VTPrsTbl.c:4747` (`$` is `CASE_CSI_IGNORE` in `dec2_table`) · `ghostty/src/terminal/stream.zig:1612` · `xterm.js/src/common/InputHandler.ts:233` · `vte-0.15.0/src/ansi.rs:1572` |
 
-justerm follows alacritty. Impersonation is self-defeating for an engine that does not implement
-what it would be claiming, and it contradicts the existing DA1, written to advertise only the levels
-the Engine genuinely has.
+**justerm follows alacritty on the *question* — report yourself, do not impersonate — and diverges
+from it on all three *fields* (#824).** Impersonation is self-defeating for an engine that does not
+implement what it would be claiming, and it contradicts the existing DA1, written to advertise only
+the levels the Engine genuinely has. But "follow alacritty" carried no field values when it was
+written, and taken literally it produces `Pp = 0`, `Pc = 1` and a `.first()` match — each wrong here
+for its own reason, recorded at `justerm-core/src/term.rs` beside the two constants and in
+`docs/architecture.md` § Hidden VT state. The row above that mattered most is the `Pc` one: the
+justification is **not** a spec mandate (`ctlseqs.txt:839` describes DEC hardware, not emulators) and
+**not** ADR-0004 (whose spec branch covers *omission*, not contradiction) — it is that this engine
+has no ROM cartridge to register.
+
+**alacritty's dispatch is in the `vte` crate, not in the alacritty tree** — the citations above
+pointing at `vte-0.15.0/src/ansi.rs` are the published crate, which `cite.mjs` does not cover, so
+they carry a crate version rather than a tree SHA. This is the same provenance note the OSC row
+already carries, and it is the trap #823 recorded: grepping `alacritty_terminal` for a CSI final
+returns zero however complete the implementation is.
 
 ### The title stack
 

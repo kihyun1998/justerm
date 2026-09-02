@@ -13,6 +13,10 @@
 //! @1059  ESC ] 52 ; ; SEVMTE9KVVNURVJN  BEL
 //! ```
 //!
+//! It also carries a `CSI > c` — tmux asking DA2 — which this recording was not
+//! made for and which the engine ignored until #824. That is why the reply
+//! assertion below is not an empty vector.
+//!
 //! **The target field is empty, not `c`.** That is the fact no synthetic fixture
 //! would have supplied, and the reason this recording exists: the spec reads an
 //! empty field as `s0` (`ctlseqs.txt:2161`) and the issue's first draft read an
@@ -117,27 +121,50 @@ fn the_real_form_is_not_read_as_an_unrecognised_target() {
     );
 }
 
-/// The engine answers nothing on its own, on real bytes: this stream asks no
-/// clipboard question, and the reply channel stays empty until a consumer
-/// chooses to say something.
+/// The `Pv` field this capture's DA2 reply carries (#824). A third, independent
+/// copy of the arithmetic, for the reason `title_stack_capture.rs` gives beside
+/// the second: what these files are for is disagreeing with the engine, and a
+/// derivation imported from it — or from each other — could not.
+fn da2_version() -> u32 {
+    let v = env!("CARGO_PKG_VERSION").split(['-', '+']).next().unwrap();
+    let mut p = v.split('.').map(|c| c.parse::<u32>().unwrap_or(0));
+    p.next().unwrap_or(0) * 10_000 + p.next().unwrap_or(0) * 100 + p.next().unwrap_or(0)
+}
+
+/// The engine puts **no clipboard reply** on the channel by itself: this stream
+/// asks no clipboard question, and one is queued only when a consumer chooses to
+/// answer.
 ///
-/// **The positive control is the whole test.** Without it this assertion stayed
-/// green with the entire `OSC 52` dispatch arm deleted — nothing in this file
-/// ever made `drain_replies()` non-empty, so an empty channel and a broken one
-/// were the same observation. Measuring a "nothing" is worth exactly as much as
-/// the instrument's demonstrated ability to see a something, so the something is
-/// produced here, in the same test, on the same engine.
+/// **What it does answer is DA2, and that is worth having rather than filtering
+/// out.** This test asserted an *empty* channel until #824 landed, at which
+/// point it went red — not because either slice was wrong, but because the
+/// capture was already carrying a `CSI > c` that the engine had not yet learned
+/// to answer. A recording made for one slice exercising another's path is the
+/// strongest evidence either slice gets (`cursor_color_capture.rs` gained two
+/// `Title("")` from #823 the same way), so the whole vector is asserted rather
+/// than the clipboard's share of it.
+///
+/// **The positive control is the other half of the test.** Before it, the
+/// emptiness assertion stayed green with the entire `OSC 52` dispatch arm
+/// deleted — nothing here ever made `drain_replies()` carry a clipboard reply,
+/// so "the stream asked nothing" and "the channel is broken" were the same
+/// observation. Measuring a nothing is worth exactly what the instrument's
+/// demonstrated ability to see a something is worth.
 #[test]
-fn the_captured_session_puts_nothing_on_the_reply_channel() {
+fn the_captured_session_asks_no_clipboard_question() {
     let mut e = replay();
     let _ = e.drain_events();
-    assert_eq!(e.drain_replies(), b"", "the stream asked no question");
+    assert_eq!(
+        e.drain_replies(),
+        format!("\x1b[>1;{};0c", da2_version()).as_bytes(),
+        "the stream's own replies: a DA2 answer (#824), and no clipboard reply"
+    );
 
-    // Positive control: the channel this test just called empty is working.
+    // Positive control: the channel that just carried no clipboard reply can.
     e.report_clipboard(ClipboardTarget::Clipboard, "hi");
     assert_eq!(
         e.drain_replies(),
         b"\x1b]52;c;aGk=\x1b\\",
-        "the reply channel must be able to carry something, or the emptiness above proves nothing"
+        "the reply channel must be able to carry one, or the assertion above proves nothing"
     );
 }

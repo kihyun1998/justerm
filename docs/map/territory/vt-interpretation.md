@@ -77,6 +77,19 @@ for a terminal engine, that list is half the specification.
   budget with two stacks. Rows in [`reference-facts.md`](../../agents/reference-facts.md). The optional
   third parameter (direct stack-slot access) is a **deliberate divergence from the spec**, decided
   on a five-way reach measurement recorded in #823 and pinned by a test whose name says so.
+- **A private prefix is an *intermediate* here, so an unrouted `(prefix, final)` pair is
+  unreachable rather than unhandled — and the difference is invisible (#824).** `vte` collects
+  `0x3C..=0x3F` (`< = > ?`) into the same `intermediates` slice as the true 0x20..0x2F bytes, and
+  `csi_dispatch` returns early on any intermediate it does not name. So a sequence in that family is
+  not "missing from the `match`" — the `match` is never reached, and adding an arm for its final
+  does nothing. DA2 (`CSI > c`) sat there from the beginning; the kitty `u` path had already opened
+  one such pair, and DA2 is the second. Two consequences worth carrying: the fix is always a guard
+  *above* the catch-all, keyed on the pair rather than on the prefix alone (a `.first()` match makes
+  `CSI > $ c` DA2, which is what alacritty does and the other three references do not); and the
+  remaining members are silent by construction, so their count is a measurement rather than a
+  reading — across this repo's captures `CSI > m` (XTMODKEYS) occurs 7 times and `CSI > q`
+  (XTVERSION) **zero**, which inverts the order the reference trees suggest. Rows in
+  [`reference-facts.md`](../../agents/reference-facts.md). The unrouted rest is #47 tail.
 - **An OSC payload arrives unbounded, and a handler that builds anything from one bounds it
   itself (#828).** Measured with a throwaway probe rather than read off the crate: `vte` is built
   with its default features, so its OSC accumulator is a `Vec<u8>` and **not** the
@@ -87,7 +100,6 @@ for a terminal engine, that list is half the specification.
   consumer. `MAX_CLIPBOARD_BASE64` is the only one today; the payloads `OSC 0/2`, `OSC 7` and
   `OSC 8` retain are bounded by nothing, which is a fact about this territory and not a claim that
   it is wrong.
-
 - **Tab stops are explicit per-column state**, not a modulo: HTS sets, TBC clears, default every
   eighth column. A modulo would be wrong the moment an application moves one.
 - **The scroll region redefines what "scroll" means.** DECSTBM changes which rows `IND` / `RI` /

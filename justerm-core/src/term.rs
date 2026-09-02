@@ -4436,6 +4436,121 @@ fn param_or(params: &Params, idx: usize, default: u16) -> u16 {
     }
 }
 
+/// The `Pv` field of the secondary device-attributes report (#824), derived
+/// from the crate version so a release cannot ship a report that disagrees
+/// with what was published.
+///
+/// Semver components are padded base-100, so a higher version always reports a
+/// higher number. That is alacritty's scheme, and it is a *reinterpretation* of
+/// the spec rather than a divergence from it: `ctlseqs.txt` calls `Pv` "the
+/// firmware version" and fixes no encoding for it.
+///
+/// **The encoding has a functional floor, and it is not cosmetic.** Measured on
+/// a real pty by sweeping this field alone (RHEL 9.2, vim 8.2), vim picks its
+/// mouse protocol off `Pv`:
+///
+/// ```text
+/// Pv < 95     ->  ttymouse=xterm    (no upgrade at all)
+/// Pv = 95     ->  ttymouse=sgr      (vim special-cases the exact >1;95;0c
+///                                    signature that macOS Terminal sends)
+/// 95..276     ->  ttymouse=xterm2
+/// Pv >= 277   ->  ttymouse=sgr
+/// ```
+///
+/// The mouse rows above reproduced across two independent runs, 11 arms each,
+/// with no-reply controls bracketing both.
+///
+/// A further gate sits on the same field: vim's XTGETTCAP key-code
+/// interrogation, which its `term.txt` (*xterm-codes*) documents as needing a
+/// response indicating "patchlevel 141 or higher". Measured here only to the
+/// extent of bracketing — present at 276 and 1500, absent at 1, 94 and 95 — so
+/// the doc's 141 is consistent but not independently pinned. The number
+/// therefore gates upgrades at three separate thresholds rather than one, and
+/// 1500 clears all three.
+///
+/// justerm at 0.15.0 maps to 1500 and clears it comfortably. A `0.2.x` would map
+/// to 200 and silently cost every consumer the SGR mouse encoding — so the
+/// base-100 scheme is load-bearing for a reason that has nothing to do with
+/// monotonicity, and lowering the base would be a behavioural change.
+///
+/// Three edges, all deliberate. A component of 100 or more carries into the
+/// next place — justerm is far from that, and widening the base would change
+/// every number already reported for no measured gain. The pre-release suffix
+/// is cut at the **first** hyphen, which is where semver says it begins;
+/// alacritty cuts at the last, which mis-parses a two-part suffix like
+/// `-rc.1-dev`. And the monotonicity above holds only below `u16::MAX`: a CSI
+/// parameter is a `u16` in `vte` (saturating), and ghostty types the field
+/// `firmware_version: u16`, so a `Pv` past 65535 — major version 7 — reaches a
+/// receiver saturated. alacritty carries the same latent property; the corpus
+/// prescribes no wider encoding, so this is recorded rather than designed
+/// around.
+const fn version_number(version: &str) -> u32 {
+    let bytes = version.as_bytes();
+    let mut parts = [0u32; 3];
+    let mut part = 0usize;
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if b == b'-' || b == b'+' {
+            break;
+        } else if b == b'.' {
+            part += 1;
+            if part >= 3 {
+                break;
+            }
+        } else if b.is_ascii_digit() {
+            parts[part] = parts[part] * 10 + (b - b'0') as u32;
+        }
+        i += 1;
+    }
+    parts[0] * 10_000 + parts[1] * 100 + parts[2]
+}
+
+/// `Pp` of the secondary DA report: 1 = VT220, from the spec's closed table
+/// (`ctlseqs.txt:825`). It names the same terminal DA1 already advertises —
+/// `CSI ? 62 ; 22 c`, where 62 *is* VT220 (`ctlseqs.txt:778`).
+///
+/// The two are not forced to agree in general: DA1's first parameter is an
+/// operating **level** and `Pp` a device **type**, and xterm can decouple them
+/// through DECTID. justerm implements neither DECTID nor DECSCL, so nothing
+/// here can decouple them — which is why one terminal identity is the only
+/// coherent answer, not because disagreeing would be malformed.
+///
+/// ghostty is the convergence check: it derives both from one device type
+/// (`src/terminal/device_attributes.zig:82`, `:161` @ `e6e26e1`) and pairs a
+/// level-62 DA1 with `Pp = 1` (`src/termio/stream_handler.zig:843`). Its DA1 is
+/// *not* byte-identical to justerm's at its default — `clipboard-write` is
+/// `.allow` (`src/config/Config.zig:2380`), which appends `;52`; the identical
+/// string is its deny branch. alacritty pairs `?6c` (VT102) with `Pp = 0` and
+/// xterm.js `?1;2c` (VT100) with `Pp = 0`, both of which are what this same
+/// rule produces at those levels — so neither is a counterexample, and no
+/// reference in the corpus pairs a level-62 DA1 with a `Pp` other than 1.
+const DA2_TERMINAL_TYPE: u32 = 1;
+
+/// `Pc` of the secondary DA report: 0.
+///
+/// The ground is first-principles and needs no reference: `Pc` is a **ROM
+/// cartridge registration number**, justerm has no cartridge, and 0 is the
+/// absence value. That is how both implementations that comment the field read
+/// it — xterm writes it as `/* options (none) */` (`charproc.c:4267`) and
+/// ghostty as *"Always 0 for emulators"* (`src/terminal/device_attributes.zig:88`
+/// @ `e6e26e1`). xterm.js sends 0 in all three of its branches; alacritty alone
+/// sends 1 (`alacritty_terminal/src/term/mod.rs:1267` @ `852e971`).
+///
+/// **What does *not* carry this choice, stated because it looks like it should.**
+/// `ctlseqs.txt:839` says `Pc` *"is always zero"* only of a **DEC terminal** —
+/// a description of hardware in xterm's own documentation, not a requirement on
+/// emulators. And ADR-0004 tie-breaks the spec against alacritty where alacritty
+/// *"merely omits or under-implements"*; here alacritty **contradicts**, which
+/// is neither of its branches, and its other branch (genuine ambiguity → follow
+/// alacritty) would give 1. So the value rests on the argument above and on the
+/// 3-1 head count, not on a spec mandate that does not exist.
+const DA2_ROM_CARTRIDGE: u32 = 0;
+
+/// The `Pv` this build reports, folded at compile time so the doc-comment above
+/// is literally true and the query path does no arithmetic.
+const DA2_VERSION: u32 = version_number(env!("CARGO_PKG_VERSION"));
+
 impl Term {
     /// Apply one DEC private mode set (`'h'`) or reset (`'l'`). DECSET/DECRST
     /// carry a list of modes, so `csi_dispatch` folds this over every parameter
@@ -4692,6 +4807,78 @@ impl Perform for Term {
         if intermediates.first() == Some(&b' ') && action == 'q' {
             let param = params.iter().next().and_then(|p| p.first().copied());
             self.set_cursor_style(param.unwrap_or(1));
+            return;
+        }
+        // DA2 (secondary device attributes, CSI > c) — the query vim uses to
+        // fill `v:termresponse` and identify what it is talking to (#824).
+        //
+        // What answering it actually buys, measured as a control pair on a real
+        // pty (RHEL 9.2, vim 8.2, TERM=xterm-256color, 24x80; every other query
+        // answered identically in both arms, controls run before and after):
+        //
+        //     no reply           ->  ttymouse=xterm
+        //     ESC[>1;1500;0c     ->  ttymouse=sgr
+        //
+        // The mouse protocol is what the version number buys *directly*: legacy
+        // `xterm` encoding cannot report a column past 223 and cannot report a
+        // release, `sgr` has neither limit.
+        //
+        // It is not the only effect, and the second one is the larger. Answering
+        // also makes vim **ask ten more questions** — `DCS + q <hex> ST`
+        // (XTGETTCAP) for `Co`, `ku`, `kd`, `kl`, `kr`, `k1`, `#2`, `#4`, `%i`
+        // and `*7`: the colour count and the arrow / function / shifted key
+        // codes. vim's own `term.txt` gates that on the reply indicating
+        // "patchlevel 141 or higher", and its point is that a terminal produces
+        // different key codes in different modes, so it asks instead of
+        // guessing. Measured rather than taken from the doc: the requests appear
+        // at `Pv` 276 and 1500 and are absent at 1, 94 and 95, which brackets the
+        // gate to (95, 276] and is consistent with 141 without pinning it. What
+        // is stable across runs is whether they appear at all; *how many* arrive
+        // is not — one arm sent each capability once where every other sent it
+        // twice. **justerm answers none of those today** — they fall to the
+        // same intermediate catch-all this block sits above — so the capability
+        // is unlocked and then unanswered. That is the honest state, and it is
+        // #47 tail rather than this slice.
+        //
+        // modifyOtherKeys is *not* gated on any of it: vim emits `CSI > 4 ; 2 m`
+        // about 180 bytes before it asks.
+        //
+        // `>` reaches us as an *intermediate*, so DA2 was not "unhandled" but
+        // unreachable: the catch-all below returns before the final is ever
+        // examined. This opens exactly one route through it — the `>` prefix
+        // alone, with the `c` final.
+        //
+        // It is one route out of ten `>` finals xterm routes, and the choice is
+        // reach, not completeness: across this repo's capture corpus `CSI > c`
+        // occurs 3 times and XTMODKEYS `CSI > m` 7 — the latter is the highest-
+        // reach `>` sequence justerm does not route, and it keeps falling
+        // through here exactly as before, tracked with the rest of the tail in
+        // #47. (XTVERSION `CSI > q`, which reads like the obvious neighbour,
+        // occurs **zero** times.)
+        //
+        // The match is on the whole slice rather than `.first()`, so
+        // `CSI > $ c` is not DA2. That is 3-1: xterm drops it
+        // (`VTPrsTbl.c:4747`, `$` is CASE_CSI_IGNORE inside `dec2_table`),
+        // ghostty drops it (`src/terminal/stream.zig:1612`, `else => null`) and
+        // xterm.js drops it (its handler key packs prefix *and* intermediates,
+        // `InputHandler.ts:233`), while alacritty **would answer** it
+        // (`vte-0.15.0/src/ansi.rs:1572` passes `intermediates.first()`). No
+        // producer of that form exists in any pinned corpus, so this is a
+        // divergence with no measured reach — pinned by a test regardless,
+        // because the predicate is otherwise unfalsifiable.
+        if intermediates == [b'>'] && action == 'c' {
+            // Only `Ps = 0` or omitted is a request; a qualifier we do not
+            // recognise is answered with silence rather than with a report that
+            // does not address it. xterm (`charproc.c:4220`), xterm.js
+            // (`InputHandler.ts:1738`) and alacritty (`ansi.rs:1572`) all gate
+            // this way; ghostty reads no parameter at all and has no test that
+            // would notice.
+            if param_or(params, 0, 0) == 0 {
+                self.replies.extend_from_slice(
+                    format!("\x1b[>{DA2_TERMINAL_TYPE};{DA2_VERSION};{DA2_ROM_CARTRIDGE}c")
+                        .as_bytes(),
+                );
+            }
             return;
         }
         // Other private/intermediate sequences are later slices; ignore them
@@ -4960,9 +5147,60 @@ impl Perform for Term {
 #[cfg(test)]
 mod tests {
     use super::cap_scroll;
+    use super::version_number;
     use crate::Engine;
     use crate::damage::ScrollOp;
     use crate::serialize::MAX_SCROLL_COUNT;
+
+    /// #824 — the `Pv` mapping, in-crate because the seam cannot reach it.
+    ///
+    /// `tests/reply.rs` asserts the reply carries the number *this* crate
+    /// version maps to, which is the assertion that fires the moment a release
+    /// drifts from its report. What it cannot observe is the mapping itself:
+    /// there is only ever one crate version at run time, so a hand-written
+    /// literal equal to today's number is byte-identical to the derivation at
+    /// that seam. Measured, by replacing the call site with `1500`:
+    /// `cargo test --workspace` stayed green, and `cargo clippy --workspace
+    /// --all-targets -- -D warnings` **failed** — `version_number` loses its
+    /// only non-test caller and `dead_code` is an error under the gate. So the
+    /// test suite alone cannot see it and the gate can; these cases are what
+    /// make the mapping itself falsifiable rather than assumed.
+    #[test]
+    fn version_number_pads_semver_base_100() {
+        // Each place is two decimal digits wide, so a higher version always
+        // reports a higher number — which is the only property `Pv` promises.
+        assert_eq!(version_number("0.0.1"), 1);
+        assert_eq!(version_number("0.15.0"), 15_00);
+        assert_eq!(version_number("1.2.3"), 1_02_03);
+        assert_eq!(version_number("999.99.99"), 9_99_99_99);
+        assert!(version_number("0.16.0") > version_number("0.15.9"));
+        assert!(version_number("1.0.0") > version_number("0.99.99"));
+    }
+
+    #[test]
+    fn version_number_strips_a_pre_release_suffix() {
+        // Semver starts the pre-release at the FIRST hyphen, so a two-part
+        // suffix strips whole. alacritty cuts at the last and mis-parses this.
+        assert_eq!(version_number("0.15.0-dev"), 15_00);
+        assert_eq!(version_number("1.2.3-rc.1-dev"), 1_02_03);
+        assert_eq!(version_number("1.2.3+build.5"), 1_02_03);
+        // The cases above cannot observe the strip at all: their suffixes carry
+        // no digits, so removing the `-` break leaves the number unchanged —
+        // measured, by doing exactly that and watching them stay green. A digit
+        // *inside* the suffix is what the strip is for.
+        assert_eq!(version_number("0.15.0-rc2"), 15_00);
+        assert_eq!(version_number("1.2.3-4"), 1_02_03);
+    }
+
+    #[test]
+    fn version_number_tolerates_a_short_or_odd_version() {
+        // A missing component reads as zero rather than panicking, and a fourth
+        // component is ignored — the report must not be able to fail.
+        assert_eq!(version_number("2"), 2_00_00);
+        assert_eq!(version_number("2.7"), 2_07_00);
+        assert_eq!(version_number("1.2.3.4"), 1_02_03);
+        assert_eq!(version_number(""), 0);
+    }
 
     /// #661 — the wire's `i16` bound, not the region-height one.
     ///

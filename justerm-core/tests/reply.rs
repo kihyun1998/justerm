@@ -107,7 +107,118 @@ fn drain_empties_the_reply_buffer() {
 fn unhandled_query_produces_no_reply() {
     let mut t = Engine::new(80, 24);
     t.feed(b"\x1b[7n"); // DSR with an unsupported param
-    t.feed(b"\x1b[>c"); // secondary DA (DA2) — not in this slice
+    t.feed(b"\x1b[>q"); // XTVERSION — a `>`-prefixed final we deliberately do not answer
     t.feed(b"plain text\r\n"); // ordinary output
+    assert_eq!(t.drain_replies(), Vec::<u8>::new());
+}
+
+// --- DA2, secondary device attributes (CSI > c) (#824) ---------------------
+//
+// `>` reaches `csi_dispatch` as an *intermediate*, and the dispatcher returns
+// early on any intermediate it does not name — so DA2 was unreachable rather
+// than unhandled, and vim could not identify the terminal. The route is opened
+// for the `c` final only; every other `>`-prefixed final stays silent.
+
+/// The version the reply must carry, derived here by arithmetic independent of
+/// the engine's, so the two have to agree rather than share one expression.
+fn expected_version() -> u32 {
+    let v = env!("CARGO_PKG_VERSION");
+    // Cut at whichever comes first — semver's pre-release `-` or its build
+    // metadata `+`. Splitting on `-` alone would disagree with the engine on
+    // `1.2.3+build.5`, where `"3+build".parse()` fails to 0 and this helper
+    // would report a *false red* the engine does not deserve.
+    let v = v.split(['-', '+']).next().unwrap();
+    let mut parts = v.split('.').map(|p| p.parse::<u32>().unwrap_or(0));
+    let major = parts.next().unwrap_or(0);
+    let minor = parts.next().unwrap_or(0);
+    let patch = parts.next().unwrap_or(0);
+    major * 10_000 + minor * 100 + patch
+}
+
+#[test]
+fn da2_reports_secondary_device_attributes() {
+    let mut t = Engine::new(80, 24);
+    t.feed(b"\x1b[>c"); // secondary DA (DA2) query — what vim sends
+    // Pp = 1 (VT220), matching what DA1 already advertises (62 = level 2);
+    // Pv = justerm's own crate version; Pc = 0, the ROM cartridge field the
+    // spec fixes at zero.
+    let want = format!("\x1b[>1;{};0c", expected_version());
+    assert_eq!(t.drain_replies(), want.as_bytes());
+}
+
+#[test]
+fn da2_answers_an_explicit_zero_first_parameter() {
+    let mut t = Engine::new(80, 24);
+    t.feed(b"\x1b[>0c"); // ctlseqs: "Ps = 0 or omitted -> request"
+    let want = format!("\x1b[>1;{};0c", expected_version());
+    assert_eq!(t.drain_replies(), want.as_bytes());
+}
+
+#[test]
+fn da2_ignores_a_non_zero_first_parameter() {
+    let mut t = Engine::new(80, 24);
+    t.feed(b"\x1b[>1c"); // a qualifier we do not recognise
+    t.feed(b"\x1b[>2c");
+    assert_eq!(t.drain_replies(), Vec::<u8>::new());
+}
+
+#[test]
+fn da2_version_field_tracks_the_crate_version() {
+    // The engine must derive the number from its own crate version rather than
+    // carry a literal, so a release cannot ship a report that disagrees with it.
+    let mut t = Engine::new(80, 24);
+    t.feed(b"\x1b[>c");
+    let reply = String::from_utf8(t.drain_replies()).unwrap();
+    let version = reply
+        .trim_start_matches("\x1b[>1;")
+        .trim_end_matches(";0c")
+        .parse::<u32>()
+        .expect("the version field is a single integer");
+    assert_eq!(version, expected_version());
+    // Padded base-100, so a higher semver always reports a higher number.
+    assert!(version >= 1_00, "a released version reports at least 1_00");
+}
+
+#[test]
+fn da1_still_replies_exactly_as_before() {
+    // The dispatcher change opens one intermediate route; the unprefixed `c`
+    // must be untouched by it.
+    let mut t = Engine::new(80, 24);
+    t.feed(b"\x1b[c");
+    assert_eq!(t.drain_replies(), b"\x1b[?62;22c");
+}
+
+#[test]
+fn an_unrelated_prefixed_sequence_stays_silent_and_leaves_the_screen_alone() {
+    let mut t = Engine::new(80, 24);
+    t.feed(b"ab");
+    // XTMODKEYS first: it is the highest-reach `>` sequence justerm does not
+    // route — 7 occurrences across this repo's captures against DA2's 3 — so it
+    // is the one a widened prefix match would break in practice. XTVERSION and
+    // tertiary DA follow; all three are #47 tail material.
+    t.feed(b"\x1b[>4;2m"); // XTMODKEYS, what vim emits at startup
+    t.feed(b"\x1b[>4;m"); // and at exit
+    t.feed(b"\x1b[>q"); // XTVERSION
+    t.feed(b"\x1b[=c"); // tertiary DA
+    t.feed(b"\x1b[>5n");
+    assert_eq!(t.drain_replies(), Vec::<u8>::new());
+    let grid = t.grid();
+    let row: String = (0..grid.cols()).map(|c| grid.row(0)[c].c()).collect();
+    assert_eq!(row.trim_end(), "ab");
+}
+
+#[test]
+fn da2_needs_the_prefix_alone_not_merely_a_leading_prefix() {
+    // The handler matches the whole intermediates slice, so a `>` followed by a
+    // real 0x20..0x2f intermediate is not DA2. Without this case the predicate
+    // is unfalsifiable: relaxing it to `intermediates.first() == Some(&b'>')`
+    // leaves every other test in the tree green, because nothing else in the
+    // suite feeds a prefixed sequence that also carries an intermediate.
+    //
+    // 3-1 among the references, and alacritty is the one that would answer, so
+    // this pins a divergence rather than a consensus.
+    let mut t = Engine::new(80, 24);
+    t.feed(b"\x1b[>$c");
+    t.feed(b"\x1b[> c");
     assert_eq!(t.drain_replies(), Vec::<u8>::new());
 }
