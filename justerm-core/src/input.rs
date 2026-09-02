@@ -66,6 +66,11 @@ impl Modifiers {
 /// these encode as the classic VT100/VT220 SS3 sequences; in numeric mode as the
 /// literal character. The consumer produces these for *raw* keypad identity — it
 /// owns NumLock / key-location resolution (#83).
+///
+/// **`#[non_exhaustive]` (#843).** A keypad namespace grows; a consumer *constructs*
+/// these to hand to the encoder rather than matching on them, so an addition costs
+/// it nothing.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeypadKey {
     /// A keypad digit, `0..=9`.
@@ -81,6 +86,12 @@ pub enum KeypadKey {
 
 /// A logical key press from the consumer (already decoded from the platform's
 /// keyboard event — justerm does not read hardware).
+///
+/// **`#[non_exhaustive]` (#843).** Key namespaces grow — media keys, the kitty
+/// protocol's additions — and the traffic here runs inward: a consumer builds a
+/// `Key` for [`crate::Engine::encode_key`] rather than matching one we hand it, so
+/// the attribute costs it nothing and makes the next VT slice additive.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Key {
     /// A printable character (the consumer's already-composed text).
@@ -107,6 +118,10 @@ pub enum Key {
 
 /// Press / repeat / release. Legacy reports only presses; the kitty protocol's
 /// "report event types" flag (bit 1) carries repeat and release too (#23).
+///
+/// **Deliberately exhaustive (#843).** `Press` / `Repeat` / `Release` is the kitty
+/// keyboard protocol's event space, closed. Left exhaustive on purpose, not by
+/// omission.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum KeyAction {
     #[default]
@@ -149,6 +164,14 @@ impl Default for KeyEvent {
 
 /// Which mouse button an event concerns. `None` on a [`MouseEvent`] means bare
 /// motion with no button held.
+///
+/// **Deliberately exhaustive (#843), and it is the case worth reading.** The set is
+/// already open *at the data level* — [`MouseButton::Other`] carries any code we do
+/// not name — so the attribute would add nothing. It would also imply a protection
+/// it does not give: the real hazard is that naming a future `Button8` stops
+/// `Other(8)` being produced, which breaks a consumer matching on it, and
+/// `#[non_exhaustive]` does not defend that at all. An escape-hatch variant and a
+/// non-exhaustive enum solve different halves of the same problem.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MouseButton {
     Left,
@@ -171,6 +194,9 @@ pub enum MouseButton {
 }
 
 /// What the mouse did.
+///
+/// **Deliberately exhaustive (#843).** `Press` / `Release` / `Motion` is what the
+/// mouse protocols report, closed. Left exhaustive on purpose, not by omission.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MouseAction {
     Press,

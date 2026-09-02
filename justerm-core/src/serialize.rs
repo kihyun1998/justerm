@@ -36,6 +36,11 @@ pub const WIRE_VERSION: u8 = VERSION;
 pub(crate) const MAX_SCROLL_COUNT: isize = i16::MAX as isize;
 
 /// Whether a frame redraws everything or just its spans.
+///
+/// **Deliberately exhaustive (#843), and this one is closed by a louder gate than
+/// semver.** A new frame kind is a wire change, so it moves [`WIRE_VERSION`]
+/// (ADR-0008) — which a consumer cannot miss. `#[non_exhaustive]` would only soften
+/// the quieter of the two signals. Left exhaustive on purpose, not by omission.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum FrameKind {
     /// Every row is present (resize / alt-screen clear).
@@ -111,6 +116,27 @@ pub struct MarkerId(pub u32);
 /// its optional exit code). The engine only *parses and anchors* these — the
 /// success/failure colour, earcon and prompt-to-prompt navigation are consumer
 /// policy (ADR-0017), driven off the kind + exit the wire (#159) carries.
+///
+/// **Deliberately exhaustive (#843), and the first draft of that sweep got this
+/// one wrong — the compiler caught it.** The reasoning that failed: OSC 133 has
+/// more subcommands than the four modelled, and [`MarkerKind::Plain`] is already
+/// the shape an unrecognised mark takes, so a *consumer* meeting a new member has
+/// somewhere to put it. True, and not the whole question.
+///
+/// **This enum rides the wire, so a new member is not a consumer's problem
+/// first — it is an encoder's.** `justerm-wasm-decode` maps every member onto a
+/// numeric wire triple, and marking this non-exhaustive forces a `_` arm there,
+/// which converts a future *compile error* into a silently wrong wire value. That
+/// is the exact trade [`FrameKind`] is left exhaustive for, one type over in this
+/// same file: a new member here moves [`WIRE_VERSION`] (ADR-0008), and a wire bump
+/// is a **louder** gate than semver, so the attribute would soften the quieter
+/// signal while removing the loud one.
+///
+/// Worth keeping as a rule rather than as a fix: **a wire-carried enum stays
+/// exhaustive.** #843's own table applied that to `FrameKind` and missed it here,
+/// and nothing but `cargo test --workspace` would have said so — the defect
+/// compiles fine inside this crate, because `#[non_exhaustive]` binds only across
+/// a crate boundary.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum MarkerKind {
     /// A `add_marker` decoration anchor (#118) — no OSC-133 semantics.
@@ -248,6 +274,12 @@ pub struct Frame {
 }
 
 /// Why a byte buffer could not be decoded into a [`Frame`].
+///
+/// **`#[non_exhaustive]` (#843).** A decode error is displayed, never branched on
+/// for correctness, so a new variant is one a consumer can safely fall through on.
+/// See the `BadScroll` note on [`DecodeError::BadGeometry`] — this attribute is what
+/// changes that trade.
+#[non_exhaustive]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum DecodeError {
     /// Ran out of bytes mid-field.
@@ -309,6 +341,18 @@ pub enum DecodeError {
     /// pointing the other way (the header against the engine, not a part against the
     /// header), whereas `BadScroll` would still be one of these six re-labelled. The trade
     /// above is unchanged for them and they stay merged.
+    ///
+    /// **And the *against* half of that trade is now void (#843).** The paragraph rests on
+    /// this enum being *"`pub` and not `#[non_exhaustive]`"*, which stopped being true when
+    /// the attribute landed on it: a seventh variant is no longer a breaking change, so
+    /// splitting `BadScroll` off no longer has to wait for a release that is breaking for
+    /// some other reason. What survives is the *for* half — whether six malformations
+    /// deserve six labels — and that is a diagnostics question to answer on its merits,
+    /// with the version-bump argument removed from the scale rather than answered.
+    ///
+    /// The paragraphs above are deliberately not rewritten. They record what was decided
+    /// and on what, and a reader who cannot see the old grounds cannot tell that the
+    /// conclusion outlived them.
     BadSpan,
 }
 

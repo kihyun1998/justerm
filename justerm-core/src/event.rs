@@ -45,6 +45,12 @@ use crate::serialize::{MarkerId, MarkerKind};
 /// (`src/Surface.zig:5954`, `src/terminal/c/terminal.zig:2942`). Splitting the
 /// member is what lets the value round-trip without the engine remembering
 /// anything.
+///
+/// **`#[non_exhaustive]` (#843).** The set is open by the paragraph above: `q` and
+/// the eight cut buffers are in the sequence and unmodelled here, so a later slice
+/// may name one. A consumer meeting a member it does not know can decline the
+/// request, which is already how it refuses any of them.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ClipboardTarget {
     /// The system clipboard — the `c` field, **and the empty field**.

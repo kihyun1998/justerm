@@ -34,6 +34,10 @@ impl Pen {
 
 /// The cursor's drawn shape (DECSCUSR / the renderer's caret glyph). The engine
 /// reports it on the frame; the renderer draws it. Default `Block` (#81).
+///
+/// **Deliberately exhaustive (#843).** DECSCUSR's shape space, and a renderer has
+/// to draw whatever is in it — a shape it silently skipped would leave no cursor on
+/// screen. Left exhaustive on purpose, not by omission.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum CursorShape {
     #[default]

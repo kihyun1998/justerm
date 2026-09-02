@@ -29,6 +29,10 @@ pub struct ScrollOp {
 }
 
 /// What changed since the last `reset_damage()`.
+///
+/// **Deliberately exhaustive (#843).** A consumer that ignored a new damage kind
+/// would render stale content with no error anywhere, so a new member is one the
+/// compiler must make it look at. Left exhaustive on purpose, not by omission.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum TermDamage {
     /// The whole screen must be redrawn (flood / resize / alt-screen clear).

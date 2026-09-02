@@ -4,6 +4,12 @@
 //! frozen scheme). The engine never knows hex. See CONTEXT.md "Color reference".
 
 /// A cell's foreground or background colour, stored as a reference.
+///
+/// **Deliberately exhaustive (#843).** `Default` / `Indexed` / `Rgb` is the whole
+/// VT colour-reference space, and a consumer that silently ignored a fourth form
+/// would draw the wrong colour. Here the compiler forcing the match is the
+/// protection rather than the cost, which is the half of #843's rule that decides
+/// against the attribute. Left exhaustive on purpose, not by omission.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum Color {
     /// The scheme's default fg/bg — resolved downstream.

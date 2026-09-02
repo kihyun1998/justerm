@@ -11,6 +11,10 @@
 //! of `term.rs` in #587.
 
 /// What a selection covers.
+///
+/// **Deliberately exhaustive (#843).** Each member carries its own span arithmetic,
+/// so a consumer cannot fall back on a neighbour for one it does not know. Left
+/// exhaustive on purpose, not by omission.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SelectionType {
     /// Contiguous run, wrapping line to line.
@@ -25,6 +29,9 @@ pub enum SelectionType {
 
 /// Which half of a cell an anchor sits on — the left or right edge. Lets a drag
 /// include or exclude the cell under the pointer (mouse precision).
+///
+/// **Deliberately exhaustive (#843).** Closed by geometry — there is no third side.
+/// Left exhaustive on purpose, not by omission.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Side {
     Left,
