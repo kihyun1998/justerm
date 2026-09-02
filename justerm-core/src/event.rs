@@ -86,34 +86,52 @@ pub enum ClipboardTarget {
 
 /// A consumer-facing event emitted while parsing the VT stream.
 ///
-/// **This enum is `pub` and not `#[non_exhaustive]`, so every added variant is a
-/// breaking change for a downstream exhaustive `match`** — the same trade
-/// [`crate::DecodeError`]'s doc-comment records one enum over, and worth stating
-/// here because the measurement comes out differently. In this workspace there
-/// is no such matcher: `justerm-wasm-decode` and `justerm-renderer` never name
-/// `TermEvent`, and `justerm-web`'s `events.ts` is a deliberately narrower union
-/// (title / bell / cwd) whose own header excludes the palette and query events.
-/// **Outside it there is one**, measured while adding `OSC 52` (#828):
-/// penterm's `route_event` matches five variants with no wildcard arm — the set
-/// as of `0.5.0`, against an enum that now carries twenty-one. So penterm cannot
-/// build against this crate today and has not been able to for nine minor
-/// versions; a new variant joins a break rather than causing one.
+/// **`#[non_exhaustive]`, so a consumer must carry a `_` arm and a new variant
+/// never breaks one.** Decided 2026-09-02, by the maintainer, while #828 was
+/// adding two — and what decided it was neither this slice nor any consumer we
+/// can see.
 ///
-/// **That consumer is not what decides this, and saying so is the point.**
-/// penterm is parked until `1.0.0`, so its broken match costs nothing now. What
-/// decides it is the version boundary itself: `#[non_exhaustive]` is **free to
-/// add before `1.0.0` and is itself breaking to add after**, while an enum
-/// without it turns every future variant into a major bump. This crate's
-/// conformance is *cumulative by design* — `#47` is a perpetual tail, and the
-/// two slices before this one added three variants and two — so the rate that
-/// argument runs on is not hypothetical.
+/// **What decided it is `CLAUDE.md`'s own identity statement**: *"`justerm-core`
+/// is not penterm-only — it is a reusable, independent crate."* That sentence
+/// says there are consumers we cannot edit, which is precisely what this
+/// attribute defends; a crate whose identity were "internal, used by penterm"
+/// would want the opposite, because there a broken build is the compiler doing
+/// us a favour. So this follows from a call already made rather than from a
+/// preference, and it reverses only if that identity does.
 ///
-/// The case against, stated because it is real: an exhaustive match is a
-/// **feature** for a consumer, the compiler telling them a new event exists, and
-/// penterm's own arms are commented as having been triaged that way. The answer
-/// is that this is a *notification* channel where ignoring an unknown event is
-/// documented as safe, so that signal belongs in release notes rather than in
-/// the type. **Decide it before `1.0.0`, not in a feature slice.**
+/// Three measurements, so the next reader does not have to retake them:
+///
+/// - **crates.io reverse dependencies: zero** (the single row the API returns is
+///   this crate itself), across 248 downloads split over 11 versions — i.e. no
+///   external consumer exists *today*. That is why the identity statement had to
+///   decide it: there was nothing to observe.
+/// - **Cost in this workspace: zero.** `cargo test --workspace` (87 suites) and
+///   `clippy -D warnings` both stay green. A same-crate `match` may still be
+///   exhaustive, `justerm-wasm-decode` and `justerm-renderer` never name
+///   `TermEvent`, and `justerm-web`'s `events.ts` is a deliberately narrower
+///   union (title / bell / cwd).
+/// - **The window closes at `1.0.0`.** Adding this is free while the crate is
+///   `0.x` and is *itself* a breaking change afterwards, while an enum without
+///   it turns every future variant into a major bump. Conformance here is
+///   cumulative by design (#47 is a perpetual tail) and the two slices before
+///   this one added three variants and two, so that rate is measured rather than
+///   assumed.
+///
+/// **The argument that lost, recorded because it is a real cost.** An exhaustive
+/// match is a *feature* for a consumer: the compiler tells them a new event
+/// exists and makes them decide about it. penterm's `route_event` is the worked
+/// example — its `ColumnMode` and `ColorSchemeQuery` arms carry a comment
+/// explaining why each is dropped, written by someone the compiler had just
+/// informed. That signal is given up here, and it now has to come from release
+/// notes. It loses because this is a *notification* channel where ignoring an
+/// unknown event is documented as safe, so the guarantee belongs in prose rather
+/// than in the type — but a consumer who wanted the old behaviour is not
+/// imagining the loss.
+///
+/// (penterm was the evidence that an outside exhaustive matcher can exist — its
+/// five-variant `match` predates nine minor versions of this enum — and not the
+/// reason. It is being reimplemented, which is exactly why it could not be.)
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TermEvent {
     /// The window title is now this string.
