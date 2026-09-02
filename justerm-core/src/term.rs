@@ -11,7 +11,7 @@ use crate::cell::{Cell, CellFlags};
 use crate::color::Color;
 use crate::cursor::{Cursor, CursorShape, Pen};
 use crate::damage::{LineBounds, LineDamage, ScrollOp, TermDamage};
-use crate::event::TermEvent;
+use crate::event::{ClipboardTarget, TermEvent};
 use crate::grid::{ExtAttrs, Grid, Row};
 use crate::input::{
     KeyEvent, MouseEncoding, MouseEvent, MouseProtocol, encode_focus, encode_key, encode_mouse,
@@ -621,6 +621,34 @@ pub const MAX_MARKERS: usize = u16::MAX as usize;
 /// boundary, so the answer is always valid text. No ordinary command reaches it — this
 /// is not a limit a shell user can type into.
 pub const MAX_COMMAND_TEXT: usize = 4096;
+
+/// The longest `OSC 52` base64 payload the engine will decode, in bytes (#828).
+/// A longer one is **dropped whole**, never truncated.
+///
+/// **What this bounds is ours, not the parser's, and the difference was
+/// measured.** `vte` is built with its default features, so its OSC accumulator
+/// is a `Vec<u8>` rather than the `ArrayVec<_, 1024>` of its `no_std` path: a
+/// 4 MB payload arrives at `osc_dispatch` complete, 4 000 003 bytes across three
+/// fields. The allocation this bound refuses is therefore the *second* and
+/// *third* — the decode and the `String` on the event queue — and the property
+/// it buys is that no unbounded string crosses the boundary into a consumer that
+/// then has to hold it. Anyone reading this as "the engine cannot be made to
+/// allocate" has the wrong model; `vte` already did.
+///
+/// **Dropped rather than truncated**, which is the opposite of
+/// [`MAX_COMMAND_TEXT`] one field up, and the asymmetry is the point: a prefix of
+/// a command is a usable answer, while a prefix of a clipboard is text the user
+/// pastes somewhere believing it is what they copied. An ignored copy is visible
+/// the moment they paste; a truncated one is not.
+///
+/// **A backstop, not a policy**, and sized so that no real copy reaches it: 16
+/// MiB of base64 is ~12 MiB of text, well past a whole scrollback buffer's worth
+/// of `tmux set-buffer`. Neither reference has a hard cap to import — alacritty
+/// has none at all and ghostty's `MAX_BUF = 2048` is an inline-buffer threshold
+/// with an allocator path past it (`src/terminal/osc.zig:298`) — so this number
+/// is justerm's own and is chosen by what it must not break rather than by what
+/// it permits.
+pub const MAX_CLIPBOARD_BASE64: usize = 16 * 1024 * 1024;
 
 /// The state DECSC (ESC 7) saves and DECRC (ESC 8) restores: position, pen/SGR,
 /// pending-wrap, and origin mode (per ADR-0004 — DECRC restores origin mode,
@@ -1362,6 +1390,128 @@ impl Term {
             };
             self.events.push(event);
         }
+    }
+
+    /// OSC 52 (`OSC 52 ; Pc ; Pd`) — an application asking to put text on a
+    /// selection, or to read one back (#828).
+    ///
+    /// The engine's half is *mechanism* and nothing else: recognise the
+    /// sequence, resolve `Pc` to a [`ClipboardTarget`], decode `Pd`, and relay.
+    /// It never touches a clipboard, never holds one, and carries no allow/deny
+    /// knob — under ADR-0017 that gate is the consumer's, and a consumer that
+    /// drops the event has refused the request. alacritty puts the gate here
+    /// (`alacritty_terminal/src/term/mod.rs:1706`) because alacritty is the whole
+    /// terminal; this crate is not.
+    ///
+    /// **An absent target field means the clipboard, and that is a divergence
+    /// from the spec taken deliberately.** `ctlseqs.txt:2161` says *"If the
+    /// parameter is empty, xterm uses s 0, to specify the configurable
+    /// primary/clipboard selection and cut-buffer 0"*, and `misc.c:3359` is that
+    /// sentence in code. Neither half is representable here: `s` is whichever
+    /// selection a *user resource* has configured — policy, which ADR-0017 puts
+    /// in the consumer — and cut buffers are not modelled at all. So "follow the
+    /// spec" is not a well-defined instruction, exactly as it was not for #834's
+    /// empty colour spec, where xterm's trigger (*a colour that failed to parse*)
+    /// is a condition this engine structurally cannot observe. Of the two
+    /// readings that *are* representable, all three implementations converge on
+    /// the clipboard — ghostty by an explicit branch pinned by a test
+    /// (`clipboard_operation.zig:24`, `:64`), alacritty by way of `vte`'s
+    /// `params[1].first().unwrap_or(&b'c')` (`vte-0.15.0/src/ansi.rs:1488`, the
+    /// same parser crate this engine is built on) — and the only emission this
+    /// project has measured is `tmux` 3.2a sending exactly this form under
+    /// `set-clipboard on`, where the user's intent is the system clipboard.
+    ///
+    /// **A missing payload *field* is not an empty payload.** `OSC 52 ; c`
+    /// arrives as two fields and does nothing; `OSC 52 ; c ;` arrives as three,
+    /// the third empty, and is a store of the empty string — which is how the
+    /// sequence clears a selection. xterm makes the same split by construction,
+    /// its whole handler sitting inside `if (*buf == ';')` (`misc.c:3353`), and
+    /// ghostty rejects the payload-less form for the same reason
+    /// (`clipboard_operation.zig:20`).
+    ///
+    /// **The payload is `params[2..]` rejoined**, the rule #650 established for
+    /// OSC 8: `vte` splits the whole OSC body on `;`, so reading `params[2]`
+    /// alone would take a payload containing a `;` and decode its first piece —
+    /// which for a well-formed prefix is a *successful* decode of a truncated
+    /// clipboard, the one failure mode this handler must not have. Rejoined, the
+    /// stray `;` reaches the decoder and is refused there.
+    ///
+    /// **Malformed in, nothing out**, which is the second deliberate divergence.
+    /// The spec ends a payload that is *"neither a base64 string nor ?"* by
+    /// clearing the selection (`ctlseqs.txt:2174`); this drops it silently, as
+    /// alacritty does (`alacritty_terminal/src/term/mod.rs:1717`). Clearing is a
+    /// destructive act, and inferring one from bytes the engine could not parse
+    /// means corruption on the wire wipes what the user copied by hand. Non-UTF-8
+    /// is refused on the same principle one level up: every text surface this
+    /// crate publishes is UTF-8, and a lossy conversion would hand the consumer
+    /// characters the application never sent.
+    fn clipboard(&mut self, params: &[&[u8]]) {
+        let Some(&field) = params.get(1) else {
+            return;
+        };
+        let target = match field {
+            // Empty and `c` are the same answer; see the divergence note above.
+            b"" | b"c" => ClipboardTarget::Clipboard,
+            b"p" | b"s" => ClipboardTarget::Selection,
+            // Anything else — an unmodelled target like `q` or a cut buffer, and
+            // also a *multi*-target list like `pc`, which the spec permits
+            // (`ctlseqs.txt:2156`) and this engine cannot express. Both are
+            // dropped rather than approximated: honouring one target of two is
+            // the same defect as truncating a payload, one axis over, and
+            // `vte`/alacritty's first-byte-wins would do exactly that. ghostty
+            // rejects a multi-byte field too (`clipboard_operation.zig:36`).
+            _ => return,
+        };
+        // Two fields is `OSC 52 ; c` — no payload field at all, not an empty one.
+        if params.len() < 3 {
+            return;
+        }
+        let payload: Vec<u8> = params[2..].join(&b';');
+        if payload == b"?" {
+            self.events.push(TermEvent::QueryClipboard { target });
+            return;
+        }
+        if payload.len() > MAX_CLIPBOARD_BASE64 {
+            return;
+        }
+        if let Some(bytes) = crate::base64::decode(&payload)
+            && let Ok(text) = String::from_utf8(bytes)
+        {
+            self.events.push(TermEvent::ClipboardStore { target, text });
+        }
+    }
+
+    /// Answer an OSC 52 [`TermEvent::QueryClipboard`] (#828): base64-encode the
+    /// consumer's text into the OSC 52 reply envelope, ST-terminated.
+    ///
+    /// The consumer hands the target back rather than the engine remembering
+    /// which one was asked about — the same shape as
+    /// [`Term::report_palette_color`], which takes its `index` back for the same
+    /// reason. alacritty is the alternative: its query captures the target and
+    /// the terminator in a closure the consumer later calls
+    /// (`alacritty_terminal/src/term/mod.rs:1740`), which is one more piece of
+    /// hidden state and one more question ("what if replies interleave?") bought
+    /// for nothing the consumer does not already hold.
+    ///
+    /// **Answering is optional, and that is the security property.** The engine
+    /// holds no clipboard, so a query it is never asked to answer reveals
+    /// nothing; a consumer refuses a *read* simply by not calling this, whatever
+    /// it does about *writes*.
+    ///
+    /// The target is rendered canonically — `c` for the clipboard, `p` for the
+    /// selection — so a query with an empty field is answered naming `c`, which
+    /// is what alacritty also sends once `vte` has defaulted the field. The reply
+    /// is ST-terminated like every other reply this crate queues; whether that
+    /// should instead echo the terminator the request arrived with is #836's
+    /// question for the whole channel, not this sequence's.
+    pub fn report_clipboard(&mut self, target: ClipboardTarget, text: &str) {
+        let field = match target {
+            ClipboardTarget::Clipboard => 'c',
+            ClipboardTarget::Selection => 'p',
+        };
+        let data = crate::base64::encode(text.as_bytes());
+        self.replies
+            .extend_from_slice(format!("\x1b]52;{field};{data}\x1b\\").as_bytes());
     }
 
     /// Answer an OSC 4 palette query (#122): wrap the consumer-supplied spec for
@@ -4724,6 +4874,10 @@ impl Perform for Term {
             // cursor colour (#122, #832). One slot each, never a stack — xterm's
             // reset path resolves a single index from the code itself and walks
             // nothing (`misc.c:3729`).
+            // OSC 52 = manipulate selection data (#828): `OSC 52 ; Pc ; Pd`.
+            // The engine decodes `Pd` and relays the request; the *clipboard* is
+            // the consumer's, and so is every policy about it.
+            b"52" => self.clipboard(params),
             b"110" => self.events.push(TermEvent::ResetForeground),
             b"111" => self.events.push(TermEvent::ResetBackground),
             b"112" => self.events.push(TermEvent::ResetCursorColor),

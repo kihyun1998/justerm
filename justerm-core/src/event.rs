@@ -13,6 +13,37 @@
 
 use crate::serialize::{MarkerId, MarkerKind};
 
+/// Which selection an `OSC 52` clipboard request names (#828).
+///
+/// A *value*, never the protocol byte, so a consumer never parses the sequence —
+/// the same reason [`TermEvent::SetPaletteColor`] carries a `u8` index rather
+/// than the field it was written in.
+///
+/// **Two members, because two is what the engine can mean.** The sequence's
+/// target field admits `c`, `p`, `q`, `s` and the eight cut buffers
+/// (`ctlseqs.txt:2156`), and justerm models the two a consumer can act on. The
+/// rest are ignored rather than folded into a neighbour: mapping `q` onto the
+/// selection would be the engine inventing an equivalence the application did
+/// not ask for. ghostty folds every unrecognised kind onto the clipboard
+/// (`src/termio/stream_handler.zig:1009`, *"we ignore the kind field"*);
+/// alacritty ignores them (`alacritty_terminal/src/term/mod.rs:1714`), and so
+/// does this.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ClipboardTarget {
+    /// The system clipboard — the `c` field, **and the empty field**.
+    ///
+    /// The empty field is the common form in the wild rather than an edge case:
+    /// it is what `tmux` 3.2a was measured emitting for both an ordinary
+    /// copy-mode copy and `set-buffer -w` (#828). Reading it as "unrecognised"
+    /// would drop the only emission this project has observed.
+    Clipboard,
+    /// The primary selection — the `p` and `s` fields, which alacritty also
+    /// collapses into one (`alacritty_terminal/src/term/mod.rs:1713`). A
+    /// consumer on a platform with no such distinction may treat it as
+    /// [`Clipboard`](Self::Clipboard); one that has it honours it.
+    Selection,
+}
+
 /// A consumer-facing event emitted while parsing the VT stream.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TermEvent {
@@ -86,6 +117,42 @@ pub enum TermEvent {
     /// theme-agnostic engine relays it; the consumer answers with
     /// `report_background` (#122), mirroring `ColorSchemeQuery`.
     QueryBackground,
+    /// The app asked for `text` to be put on `target` (`OSC 52` with a payload,
+    /// #828). The engine has already base64-decoded it, and holds no clipboard
+    /// of its own.
+    ///
+    /// **This is a request, not a fact.** Whether the copy happens is the
+    /// consumer's: it owns the platform clipboard, any permission model and any
+    /// prompt, and a consumer that drops this event has refused the copy. The
+    /// engine carries no allow/deny knob, which is where it parts company with
+    /// alacritty — alacritty gates the same sequence behind a four-state config
+    /// (`alacritty_terminal/src/term/mod.rs:1706`) because alacritty *is* the
+    /// consumer. Under ADR-0017 that gate lives one layer out.
+    ///
+    /// **An empty `text` means "clear it".** `ESC ] 52 ; c ; ESC \` carries a
+    /// payload that decodes to nothing, and both the spec and xterm end that
+    /// exchange with an empty selection (`ctlseqs.txt:2174`, `misc.c:3410`);
+    /// ghostty pins the same input under a test named *"clear clipboard"*
+    /// (`src/terminal/osc/parsers/clipboard_operation.zig:93`). It needs no rule
+    /// of its own here, which is the argument for having none: an empty payload
+    /// *is* a well-formed encoding of no bytes, so it reaches the consumer
+    /// through the ordinary path.
+    ClipboardStore {
+        target: ClipboardTarget,
+        text: String,
+    },
+    /// The app asked what is on `target` (`OSC 52` with a `?` payload, #828).
+    /// The consumer answers by calling `report_clipboard`, which encodes the
+    /// reply — or declines, which is how a clipboard *read* is refused
+    /// independently of a write.
+    ///
+    /// The engine cannot answer this itself and deliberately holds nothing that
+    /// would let it: a query is answered from the consumer's clipboard or not at
+    /// all, so there is no engine state here for a hostile application to read
+    /// back. Same `Query…` + `report_…` shape as `OSC 4`/`10`/`11`/`12`.
+    QueryClipboard {
+        target: ClipboardTarget,
+    },
     /// A decoration marker's line left the buffer — evicted past the scrollback
     /// cap, or scrolled out of an in-screen region (#118). The handle is now
     /// dead; the consumer drops the decoration bound to it. This is the
