@@ -132,11 +132,26 @@ pub struct MarkerId(pub u32);
 /// is a **louder** gate than semver, so the attribute would soften the quieter
 /// signal while removing the loud one.
 ///
-/// Worth keeping as a rule rather than as a fix: **a wire-carried enum stays
-/// exhaustive.** #843's own table applied that to `FrameKind` and missed it here,
-/// and nothing but `cargo test --workspace` would have said so — the defect
-/// compiles fine inside this crate, because `#[non_exhaustive]` binds only across
-/// a crate boundary.
+/// **The rule, stated by mechanism rather than by symptom**, because the first
+/// phrasing — *"a wire-carried enum stays exhaustive"* — misclassified at both
+/// ends. It over-captured [`DecodeError`], which ADR-0008 makes a wire contract by
+/// *name* yet which crosses the boundary through `Debug` (total, no arms) and is
+/// therefore free to take the attribute; and it under-captured
+/// [`crate::CursorShape`], which is not obviously "wire-carried" from its own
+/// module and is mapped exactly like this one. The mechanism:
+///
+/// > **An enum whose members are mapped onto wire values by a `match` *outside*
+/// > this crate stays exhaustive.**
+///
+/// Measured over `justerm-wasm-decode/src` — the published encoder, and the only
+/// place the boundary bites — that is **exactly three**: [`crate::CursorShape`]
+/// (`lib.rs:198`), [`FrameKind`] (`:192`) and this one (`:233`). Every other
+/// public enum has zero such sites, so no other call turns on this rule.
+///
+/// Nothing but `cargo test --workspace` would have said so: `#[non_exhaustive]`
+/// binds only **across a crate boundary**, so the defect compiles fine inside
+/// `justerm-core` and a bare `cargo test` never sees it. That is the load-bearing
+/// half of the `--workspace` `release.md` insists on.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum MarkerKind {
     /// A `add_marker` decoration anchor (#118) — no OSC-133 semantics.
