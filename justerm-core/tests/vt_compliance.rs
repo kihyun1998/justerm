@@ -75,6 +75,149 @@ fn tbc_clears_all_stops() {
     assert_eq!(term.cursor().col, 19);
 }
 
+/// CBT (CSI Z) steps back to the previous set tab stop — the mirror of HT.
+#[test]
+fn back_tab_lands_on_the_previous_stop() {
+    let mut term = Engine::new(40, 1);
+    term.feed(b"\x1b[1;28H"); // grid col 27, between the stops at 24 and 32
+    term.feed(b"\x1b[Z");
+
+    assert_eq!(term.cursor().col, 24);
+}
+
+/// The count repeats the walk: `CSI 2 Z` moves two stops, which is not the same
+/// as one walk of twice the distance once the stops are uneven.
+#[test]
+fn back_tab_count_repeats_the_walk() {
+    let mut one_sequence = Engine::new(40, 1);
+    one_sequence.feed(b"\x1b[1;28H\x1b[2Z");
+
+    let mut two_sequences = Engine::new(40, 1);
+    two_sequences.feed(b"\x1b[1;28H\x1b[Z\x1b[Z");
+
+    assert_eq!(one_sequence.cursor().col, 16);
+    assert_eq!(two_sequences.cursor().col, 16);
+}
+
+/// An absent count and an explicit zero both mean one — the abbreviated form
+/// terminfo generates is the one with no parameter at all.
+#[test]
+fn back_tab_absent_and_zero_counts_both_move_one_stop() {
+    let mut absent = Engine::new(40, 1);
+    absent.feed(b"\x1b[1;28H\x1b[Z");
+
+    let mut zero = Engine::new(40, 1);
+    zero.feed(b"\x1b[1;28H\x1b[0Z");
+
+    assert_eq!(absent.cursor().col, 24);
+    assert_eq!(zero.cursor().col, 24);
+}
+
+/// A back-tab at column one stays at column one. It is defined within the line,
+/// so it never wraps to the row above.
+#[test]
+fn back_tab_at_column_one_stays_and_does_not_wrap_up() {
+    let mut term = Engine::new(20, 3);
+    term.feed(b"\x1b[2;1H"); // row 1, column 1
+    term.feed(b"\x1b[Z");
+
+    assert_eq!((term.cursor().row, term.cursor().col), (1, 0));
+}
+
+/// With every stop cleared, the leftward walk runs to column one rather than
+/// finding nothing and staying put.
+#[test]
+fn back_tab_with_no_stops_lands_at_column_one() {
+    let mut term = Engine::new(20, 1);
+    term.feed(b"\x1b[3g"); // TBC: clear every stop
+    term.feed(b"\x1b[1;15H");
+    term.feed(b"\x1b[Z");
+
+    assert_eq!(term.cursor().col, 0);
+}
+
+/// Back-tab reads the stops HTS set, not a fixed multiple of eight — the two
+/// directions have to agree about where the stops are.
+#[test]
+fn back_tab_honors_custom_stops() {
+    let mut term = Engine::new(20, 1);
+    term.feed(b"\x1b[3g"); // clear the defaults
+    term.feed(b"\x1b[1;6H\x1bH"); // HTS: a stop at grid col 5
+    term.feed(b"\x1b[1;15H");
+    term.feed(b"\x1b[Z");
+
+    assert_eq!(term.cursor().col, 5); // the custom stop, not the default 8
+}
+
+/// The pairing property: one table, walked both ways. Tab forward across
+/// unevenly spaced stops, back-tab the same number, and the cursor is where it
+/// began. This is what fails if the two walks disagree about a boundary.
+#[test]
+fn forward_then_back_tab_returns_to_the_starting_column() {
+    let mut term = Engine::new(20, 1);
+    term.feed(b"\x1b[3g"); // clear the defaults
+    term.feed(b"\x1b[1;4H\x1bH"); // stops at grid cols 3, 7 and 12
+    term.feed(b"\x1b[1;8H\x1bH");
+    term.feed(b"\x1b[1;13H\x1bH");
+
+    term.feed(b"\r"); // back to column one
+    term.feed(b"\t\t\t");
+    assert_eq!(term.cursor().col, 12);
+
+    term.feed(b"\x1b[3Z");
+    assert_eq!(term.cursor().col, 0);
+}
+
+/// A back-tab clears the deferred wrap, as every other cursor move does — so
+/// the character after it lands in the column the back-tab chose.
+#[test]
+fn back_tab_clears_pending_wrap() {
+    let mut term = Engine::new(3, 2);
+    term.feed(b"abc"); // fills row 0 → pending_wrap set
+    assert!(term.cursor().pending_wrap);
+
+    term.feed(b"\x1b[ZX");
+
+    assert!(!term.cursor().pending_wrap);
+    assert_eq!(term.grid().cell(0, 0).c(), 'X'); // landed at column one
+    assert_eq!(term.cursor().row, 0); // did NOT wrap to row 1
+}
+
+/// A count larger than the screen lands at column one. The walk is bounded by
+/// the grid, so the parameter cannot set the amount of work.
+#[test]
+fn back_tab_with_a_huge_count_lands_at_column_one() {
+    let mut term = Engine::new(20, 1);
+    term.feed(b"\x1b[1;20H");
+    term.feed(b"\x1b[65535Z");
+
+    assert_eq!(term.cursor().col, 0);
+}
+
+/// The alt screen gets the same arithmetic: tab stops are not per-screen, so
+/// the table the back-tab walks is the one the primary screen set.
+#[test]
+fn back_tab_works_on_the_alt_screen() {
+    let mut term = Engine::new(40, 3);
+    term.feed(b"\x1b[?1049h"); // enter alt
+    term.feed(b"\x1b[1;28H\x1b[Z");
+
+    assert_eq!(term.cursor().col, 24);
+}
+
+/// A narrowing resize rebuilds the stops at the new width and clamps the
+/// cursor, so a back-tab afterwards cannot name a column that is gone.
+#[test]
+fn back_tab_after_a_narrowing_resize_stays_in_range() {
+    let mut term = Engine::new(40, 2);
+    term.feed(b"\x1b[1;33H"); // grid col 32 — a stop only the old width had
+    term.resize(10, 2);
+    term.feed(b"\x1b[Z");
+
+    assert!(term.cursor().col < 10);
+    assert_eq!(term.cursor().col, 8);
+}
+
 // ===========================================================================
 // Scroll region (DECSTBM)
 // ===========================================================================
