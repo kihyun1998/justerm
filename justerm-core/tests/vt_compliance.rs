@@ -119,6 +119,12 @@ fn back_tab_absent_and_zero_counts_both_move_one_stop() {
 
 /// A back-tab at column one stays at column one. It is defined within the line,
 /// so it never wraps to the row above.
+///
+/// This one was **green before the fix** — with no `'Z'` arm the cursor never
+/// moved from `(1, 0)` either — so it caught nothing then and is not evidence
+/// that the walk works. It earns its place forward, as the pin against someone
+/// later giving CBT the reverse-wraparound that `backspace` has. The mutation
+/// that reddens it is wrapping to the previous row at column zero.
 #[test]
 fn back_tab_at_column_one_stays_and_does_not_wrap_up() {
     let mut term = Engine::new(20, 3);
