@@ -1,7 +1,7 @@
 //! Issue #8 — VT compliance (common 90%). Grown test-first, one behaviour per
 //! cycle. (The vttest-style conformance harness is a later slice of #8.)
 
-use justerm_core::{Color, Engine, SelectionType, Side};
+use justerm_core::{Color, Engine, Key, KeyEvent, Modifiers, SelectionType, Side};
 
 // ===========================================================================
 // Background Color Erase (BCE)
@@ -216,6 +216,35 @@ fn back_tab_after_a_narrowing_resize_stays_in_range() {
 
     assert!(term.cursor().col < 10);
     assert_eq!(term.cursor().col, 8);
+}
+
+/// The round trip, with a real producer on the other end: justerm's own input
+/// encoder has emitted `CSI Z` for Shift-Tab since #11, so the engine was asking
+/// applications to accept a sequence it then ignored itself. Feed the encoder's
+/// *actual output* — no hand-written escape — and the cursor moves.
+///
+/// This is the strongest proof available for #826. A recorded PTY capture cannot
+/// supply one: ncurses 6.2 prefers absolute addressing and emitted `CSI Z` zero
+/// times in every capture taken for #47, which is the measurement that downgraded
+/// this issue's own reach argument. So the only real producer of this sequence in
+/// reach is the family's own encoder.
+#[test]
+fn shift_tab_from_our_own_encoder_drives_the_back_tab() {
+    let mut term = Engine::new(40, 1);
+    let bytes = term
+        .encode_key(KeyEvent {
+            key: Key::Tab,
+            mods: Modifiers::SHIFT,
+            ..Default::default()
+        })
+        .expect("Shift-Tab has an encoding");
+    assert_eq!(bytes, b"\x1b[Z"); // the producer half, pinned
+
+    term.feed(b"\x1b[1;28H"); // grid col 27
+    term.feed(&bytes); // the consumer half — the same bytes, unedited
+    term.feed(b"X");
+
+    assert_eq!(term.grid().cell(0, 24).c(), 'X');
 }
 
 // ===========================================================================
