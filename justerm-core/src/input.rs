@@ -167,11 +167,21 @@ impl Default for KeyEvent {
 ///
 /// **Deliberately exhaustive (#843), and it is the case worth reading.** The set is
 /// already open *at the data level* — [`MouseButton::Other`] carries any code we do
-/// not name — so the attribute would add nothing. It would also imply a protection
-/// it does not give: the real hazard is that naming a future `Button8` stops
-/// `Other(8)` being produced, which breaks a consumer matching on it, and
-/// `#[non_exhaustive]` does not defend that at all. An escape-hatch variant and a
-/// non-exhaustive enum solve different halves of the same problem.
+/// not name — so the attribute would add nothing a caller could use. That is what
+/// separates this type from [`Key`], which has no catch-all: `Char` and `F` are
+/// semantics, not escape hatches, so an unnamed key has nowhere to go and the
+/// attribute is the only way to keep adding one cheap.
+///
+/// A second argument stood here and was **withdrawn as false** — that naming a
+/// future `Button8` would stop `Other(8)` being produced and break a consumer
+/// matching on it. Three things are wrong with it, and the first is four lines
+/// above: X11 buttons **8 and 9 are already named**, as `Back` and `Forward`, and
+/// `Other` is documented as `10+`. The encoder then collapses the distinction
+/// anyway — `Some(Back)` and `Other(8)` both emit `128` — and nothing outside this
+/// crate matches a `MouseButton` we hand it, because nothing is ever handed one.
+/// Left in view rather than deleted: a doc-comment whose own example contradicts
+/// the enum beside it is worse than no comment, and this one shipped through a
+/// completeness pass before a refuting one caught it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MouseButton {
     Left,

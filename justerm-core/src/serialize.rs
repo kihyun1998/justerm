@@ -152,6 +152,23 @@ pub struct MarkerId(pub u32);
 /// binds only **across a crate boundary**, so the defect compiles fine inside
 /// `justerm-core` and a bare `cargo test` never sees it. That is the load-bearing
 /// half of the `--workspace` `release.md` insists on.
+///
+/// **But do not mistake that gate for a detector of this rule.** It fired here by
+/// the accident that this enum's wire mapping lives one crate over. [`Color`] is
+/// wire-carried too (`encode_color`, below) and its only exhaustive `match` is
+/// *inside* this crate, where the attribute does nothing — so marking `Color`
+/// would leave the workspace **green** and put the attribute on a wire-carried
+/// enum unnoticed. The rule is currently held by this paragraph and by nothing
+/// executable.
+///
+/// **Why the direction is asymmetric at all**, which is the fact the whole sweep
+/// turns on and is easy to state backwards: an exhaustive enum does not *force* a
+/// consumer to handle a new member — they may write `_` whenever they like. It
+/// **preserves their option** to be forced. `#[non_exhaustive]` removes that
+/// option, and on stable Rust it is irreversible: measured on this repo's pinned
+/// 1.96.0, `#![deny(non_exhaustive_omitted_patterns)]` is an *unknown lint*, so a
+/// consumer cannot opt back in. One direction is a default the consumer can
+/// change; the other is a decision taken on their behalf for good.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum MarkerKind {
     /// A `add_marker` decoration anchor (#118) — no OSC-133 semantics.
@@ -359,9 +376,21 @@ pub enum DecodeError {
     ///
     /// **And the *against* half of that trade is now void (#843).** The paragraph rests on
     /// this enum being *"`pub` and not `#[non_exhaustive]`"*, which stopped being true when
-    /// the attribute landed on it: a seventh variant is no longer a breaking change, so
-    /// splitting `BadScroll` off no longer has to wait for a release that is breaking for
-    /// some other reason. What survives is the *for* half — whether six malformations
+    /// the attribute landed on it: a seventh variant is no longer a breaking change **for
+    /// a Rust consumer**, so splitting `BadScroll` off no longer has to wait for a release
+    /// that is breaking for some other reason.
+    ///
+    /// The qualifier is not pedantry. The variant *name* is a cross-language contract —
+    /// ADR-0008 has `justerm-wasm-decode` throw it as the JS `Error` message — and
+    /// `#[non_exhaustive]` does nothing for that consumer. (It is already approximate
+    /// there, since `BadVersion(11)` formats as more than a name.) The ecosystem vote
+    /// points the same way for *this* type specifically: among justerm's own
+    /// dependencies, `regex` and `regex-syntax` mark **error types** non-exhaustive with
+    /// that reason spelled out, while `vte` — a published, semver'd VT crate in the same
+    /// domain — marks **none** of its 17 public enums. Errors yes, domain enums no, which
+    /// is the line this sweep drew before the vote was counted.
+    ///
+    /// What survives is the *for* half — whether six malformations
     /// deserve six labels — and that is a diagnostics question to answer on its merits,
     /// with the version-bump argument removed from the scale rather than answered.
     ///
