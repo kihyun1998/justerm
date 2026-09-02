@@ -11,7 +11,7 @@ use crate::cell::{Cell, CellFlags};
 use crate::color::Color;
 use crate::cursor::{Cursor, CursorShape, Pen};
 use crate::damage::{LineBounds, LineDamage, ScrollOp, TermDamage};
-use crate::event::{ClipboardTarget, TermEvent};
+use crate::event::{ClipboardTarget, TermEvent, Terminator};
 use crate::grid::{ExtAttrs, Grid, Row};
 use crate::input::{
     KeyEvent, MouseEncoding, MouseEvent, MouseProtocol, encode_focus, encode_key, encode_mouse,
@@ -1389,17 +1389,17 @@ impl Term {
     /// The stack ends after the cursor. xterm's next slots are the pointer
     /// colours (`OSC_MOUSE_FG` = 13, `OSC_MOUSE_BG` = 14), which justerm does not
     /// model — dropping a fourth spec is better than mis-addressing it.
-    fn special_color(&mut self, params: &[&[u8]], start: usize) {
+    fn special_color(&mut self, params: &[&[u8]], start: usize, terminator: Terminator) {
         for (i, &spec) in params[1..].iter().enumerate() {
             if spec.is_empty() {
                 continue; // skip this slot, but still advance to the next
             }
             let event = match start + i {
-                0 if spec == b"?" => TermEvent::QueryForeground,
+                0 if spec == b"?" => TermEvent::QueryForeground { terminator },
                 0 => TermEvent::SetForeground(String::from_utf8_lossy(spec).into_owned()),
-                1 if spec == b"?" => TermEvent::QueryBackground,
+                1 if spec == b"?" => TermEvent::QueryBackground { terminator },
                 1 => TermEvent::SetBackground(String::from_utf8_lossy(spec).into_owned()),
-                2 if spec == b"?" => TermEvent::QueryCursorColor,
+                2 if spec == b"?" => TermEvent::QueryCursorColor { terminator },
                 2 => TermEvent::SetCursorColor(String::from_utf8_lossy(spec).into_owned()),
                 _ => break, // past [fg, bg, cursor] — the pointer colours are unmodelled
             };
@@ -1499,7 +1499,7 @@ impl Term {
     /// Non-UTF-8 is refused on the same principle one level up: every text
     /// surface this crate publishes is UTF-8, and a lossy conversion would hand
     /// the consumer characters the application never sent.
-    fn clipboard(&mut self, params: &[&[u8]]) {
+    fn clipboard(&mut self, params: &[&[u8]], terminator: Terminator) {
         let Some(&field) = params.get(1) else {
             return;
         };
@@ -1534,7 +1534,8 @@ impl Term {
         }
         let payload: Vec<u8> = fields.join(&b';');
         if payload == b"?" {
-            self.events.push(TermEvent::QueryClipboard { target });
+            self.events
+                .push(TermEvent::QueryClipboard { target, terminator });
             return;
         }
         if let Some(bytes) = crate::base64::decode(&payload)
@@ -1571,10 +1572,15 @@ impl Term {
     /// defaulted it: the reply says what the engine understood, and there is no
     /// selector to echo.
     ///
-    /// The reply is ST-terminated like every other reply this crate queues;
-    /// whether that should instead echo the terminator the request arrived with
-    /// is #836's question for the whole channel, not this sequence's.
-    pub fn report_clipboard(&mut self, target: ClipboardTarget, text: &str) {
+    /// The reply echoes the terminator the query arrived with, like every other
+    /// reply this crate queues — settled for the whole channel rather than for
+    /// this sequence, which is where #828 left it (#836).
+    pub fn report_clipboard(
+        &mut self,
+        target: ClipboardTarget,
+        text: &str,
+        terminator: Terminator,
+    ) {
         let field = match target {
             ClipboardTarget::Clipboard => 'c',
             ClipboardTarget::Primary => 'p',
@@ -1582,37 +1588,66 @@ impl Term {
         };
         let data = crate::base64::encode(text.as_bytes());
         self.replies
-            .extend_from_slice(format!("\x1b]52;{field};{data}\x1b\\").as_bytes());
+            .extend_from_slice(format!("\x1b]52;{field};{data}").as_bytes());
+        self.replies.extend_from_slice(terminator.bytes());
     }
 
     /// Answer an OSC 4 palette query (#122): wrap the consumer-supplied spec for
-    /// `index` in the OSC 4 reply envelope, ST-terminated.
-    pub fn report_palette_color(&mut self, index: u8, spec: &str) {
+    /// `index` in the OSC 4 reply envelope.
+    ///
+    /// The reply echoes the terminator the query arrived with, which the
+    /// consumer takes off the `Query…` event and hands back here (#836): the
+    /// spec says a terminal *"uses the same terminator used in a query"*
+    /// (`ctlseqs.txt:2020`), and the engine cannot choose on the consumer's
+    /// behalf because only the parser ever saw which byte arrived.
+    pub fn report_palette_color(&mut self, index: u8, spec: &str, terminator: Terminator) {
         self.replies
-            .extend_from_slice(format!("\x1b]4;{index};{spec}\x1b\\").as_bytes());
+            .extend_from_slice(format!("\x1b]4;{index};{spec}").as_bytes());
+        self.replies.extend_from_slice(terminator.bytes());
     }
 
     /// Answer an OSC 10 foreground query (#122): wrap the consumer-supplied spec
-    /// in the OSC 10 reply envelope, ST-terminated.
-    pub fn report_foreground(&mut self, spec: &str) {
+    /// in the OSC 10 reply envelope.
+    ///
+    /// The reply echoes the terminator the query arrived with, which the
+    /// consumer takes off the `Query…` event and hands back here (#836): the
+    /// spec says a terminal *"uses the same terminator used in a query"*
+    /// (`ctlseqs.txt:2020`), and the engine cannot choose on the consumer's
+    /// behalf because only the parser ever saw which byte arrived.
+    pub fn report_foreground(&mut self, spec: &str, terminator: Terminator) {
         self.replies
-            .extend_from_slice(format!("\x1b]10;{spec}\x1b\\").as_bytes());
+            .extend_from_slice(format!("\x1b]10;{spec}").as_bytes());
+        self.replies.extend_from_slice(terminator.bytes());
     }
 
     /// Answer an OSC 11 background query (#122): wrap the consumer-supplied spec
-    /// (it knows its palette) in the OSC 11 reply envelope, ST-terminated. The
-    /// engine formats the envelope only — it never knows the colour.
-    pub fn report_background(&mut self, spec: &str) {
+    /// (it knows its palette) in the OSC 11 reply envelope. The engine formats
+    /// the envelope only — it never knows the colour.
+    ///
+    /// The reply echoes the terminator the query arrived with, which the
+    /// consumer takes off the `Query…` event and hands back here (#836): the
+    /// spec says a terminal *"uses the same terminator used in a query"*
+    /// (`ctlseqs.txt:2020`), and the engine cannot choose on the consumer's
+    /// behalf because only the parser ever saw which byte arrived.
+    pub fn report_background(&mut self, spec: &str, terminator: Terminator) {
         self.replies
-            .extend_from_slice(format!("\x1b]11;{spec}\x1b\\").as_bytes());
+            .extend_from_slice(format!("\x1b]11;{spec}").as_bytes());
+        self.replies.extend_from_slice(terminator.bytes());
     }
 
     /// Answer an OSC 12 cursor-colour query (#832): the same envelope one slot
-    /// over, ST-terminated like its siblings. The consumer supplies the spec — it
+    /// over, terminated like its siblings. The consumer supplies the spec — it
     /// owns the palette, and the engine never learns the colour.
-    pub fn report_cursor_color(&mut self, spec: &str) {
+    ///
+    /// The reply echoes the terminator the query arrived with, which the
+    /// consumer takes off the `Query…` event and hands back here (#836): the
+    /// spec says a terminal *"uses the same terminator used in a query"*
+    /// (`ctlseqs.txt:2020`), and the engine cannot choose on the consumer's
+    /// behalf because only the parser ever saw which byte arrived.
+    pub fn report_cursor_color(&mut self, spec: &str, terminator: Terminator) {
         self.replies
-            .extend_from_slice(format!("\x1b]12;{spec}\x1b\\").as_bytes());
+            .extend_from_slice(format!("\x1b]12;{spec}").as_bytes());
+        self.replies.extend_from_slice(terminator.bytes());
     }
 
     /// The cells of visible row `i` (0..rows) at the current scroll position.
@@ -4989,7 +5024,18 @@ impl Perform for Term {
 
     /// OSC dispatch (#12 event surface): title (0/2), cwd (7). OSC 8 hyperlink
     /// is per-cell state, handled in its own slice (#26), not here.
-    fn osc_dispatch(&mut self, params: &[&[u8]], _bell_terminated: bool) {
+    fn osc_dispatch(&mut self, params: &[&[u8]], bell_terminated: bool) {
+        // Which byte ended the sequence decides which byte ends its reply, and
+        // this is the only place it is observable — vte hands it over per
+        // dispatch and keeps nothing (#836). It rides outward on the query
+        // events rather than being remembered: `drain_events` is a batch, so
+        // two queries can be outstanding at once and one stored scalar could
+        // not say which exchange it belonged to.
+        let terminator = if bell_terminated {
+            Terminator::Bel
+        } else {
+            Terminator::St
+        };
         // params[0] is the OSC number; params[1..] the payload fields.
         let Some(&number) = params.first() else {
             return;
@@ -5082,7 +5128,8 @@ impl Perform for Term {
                     rest = tail;
                     if let Ok(index) = String::from_utf8_lossy(idx).parse::<u8>() {
                         if *spec == b"?" {
-                            self.events.push(TermEvent::QueryPaletteColor { index });
+                            self.events
+                                .push(TermEvent::QueryPaletteColor { index, terminator });
                         } else {
                             self.events.push(TermEvent::SetPaletteColor {
                                 index,
@@ -5125,13 +5172,13 @@ impl Perform for Term {
             // colour, stacking specs across the [fg, bg, cursor] slots (#122,
             // #137, #832). Each code names the slot the stack starts at. The
             // engine forwards raw specs (theme-agnostic).
-            b"10" => self.special_color(params, 0),
-            b"11" => self.special_color(params, 1),
-            b"12" => self.special_color(params, 2),
+            b"10" => self.special_color(params, 0, terminator),
+            b"11" => self.special_color(params, 1, terminator),
+            b"12" => self.special_color(params, 2, terminator),
             // OSC 52 = manipulate selection data (#828): `OSC 52 ; Pc ; Pd`.
             // The engine decodes `Pd` and relays the request; the *clipboard* is
             // the consumer's, and so is every policy about it.
-            b"52" => self.clipboard(params),
+            b"52" => self.clipboard(params, terminator),
             // OSC 110 / 111 / 112 = reset the default foreground / background /
             // cursor colour (#122, #832). One slot each, never a stack — xterm's
             // reset path resolves a single index from the code itself and walks

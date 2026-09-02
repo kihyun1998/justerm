@@ -844,7 +844,11 @@ Z"`, and a search across the wrap went from 1 hit to 0). It now lives on the
   per-cell state (versioned into the wire as its own group), not an event — its own
   slice (#26). Note the two stopped being modelled alike at v14: a URI is genuinely shared between
   cells and keeps its frame-local table, while a cluster is not and is now inlined (#621). OSC string terminator may be BEL or ST; vte consumes it and calls `osc_dispatch` once, so
-  an OSC-terminating BEL is not double-counted as a bell. [#12]
+  an OSC-terminating BEL is not double-counted as a bell. [#12] **Which one arrived is retained and
+  relayed** (#836): every `Query…` event carries a `Terminator`, and the matching `report_*` takes it
+  back, so a reply ends with the byte its query ended with. The engine stores nothing — the fact
+  rides the event, because `drain_events` is a batch and two queries can be outstanding at once.
+  An OSC ended by `CAN`/`SUB` or by a bare `ESC` is not bell-terminated and resolves to ST.
 - **A title is not just an event — XTWINOPS 22/23 make it retained state with a stack.** The engine
   parses OSC 0/1/2 and *forwards* the string; that is enough until an application asks for the
   previous title back. `CSI 22 t` pushes and `CSI 23 t` pops, so the engine must **retain** the

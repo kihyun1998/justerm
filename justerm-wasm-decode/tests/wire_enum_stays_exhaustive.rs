@@ -97,6 +97,7 @@ const EXPECTED: &[&str] = &[
     "TermDamage",
     "ClipboardTarget",
     "TermEvent",
+    "Terminator",
     "KeypadKey",
     "Key",
     "KeyAction",

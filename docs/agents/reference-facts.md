@@ -2235,13 +2235,21 @@ three.
 | **`OSC 112 ; <payload>` is discarded entirely** — the reset is in the `need_data = False` list, and unwanted data returns before dispatch | xterm **and** ghostty | xterm `misc.c:4156-4158`; ghostty `src/terminal/osc/parsers/color.zig:320` (with a named test at `:759`) |
 | …while it **still resets**, the payload ignored | xterm.js **and** alacritty (via `vte`), and justerm | xterm.js `src/common/InputHandler.ts:3268`; `vte-0.15.0/src/ansi.rs:1521` |
 | **A colour reply echoes the terminator the request arrived with** (BEL in → BEL out) | xterm, ghostty, alacritty | xterm `misc.c:3567` → emit at `:3593`; ghostty `src/terminal/osc/parsers/color.zig:97`; `vte-0.15.0/src/ansi.rs:1330` |
-| …while the reply is **always ST**, whatever arrived | xterm.js, and justerm | `src/browser/CoreBrowserTerminal.ts:239` |
+| …while the reply is **always ST**, whatever arrived | xterm.js | `src/browser/CoreBrowserTerminal.ts:239` |
+| **The spec states the rule outright**, and this is the row that decided #836: *"XTerm accepts either BEL or ST for terminating OSC sequences, and when returning information, uses the same terminator used in a query."* ADR-0004 puts this above every implementation on the VT layer. The dates for each terminator are at `:2024-2028` | the spec | `xterm/ctlseqs.txt:2021` |
+| **The mechanism is *carry outward*, not *remember* — on the colour path, in all three** | xterm, ghostty, alacritty | xterm threads `final` as a parameter (`misc.c:3567` → `:3593`); ghostty puts it on the parsed command (`src/terminal/osc.zig:87` → `src/termio/stream_handler.zig:1497`); alacritty binds it into the reply closure it hands its consumer (`alacritty_terminal/src/term/mod.rs:1678-1686`). `vte`'s `terminator` is a local passed straight out and retained nowhere (`vte-0.15.0/src/ansi.rs:1330` → `:1385`, `:1442`, `:1490`) |
+| ⚠ **…except `OSC 52`, where xterm *does* store it**, because X selection retrieval is asynchronous. `int base64_final;` on the screen, written at parse time and read a file away when the paste lands. **Do not quote the row above as a universal** — it holds for the colour path and this is its counterexample, on the one sequence a clipboard reply travels | xterm | `ptyx.h:2637`, written `misc.c:3389`, read `button.c:2218` |
 
-Neither is a defect justerm can state without naming a reference, so neither was changed by #832 —
-but both are now *known* rather than merely un-looked-at. The terminator one has a measured wrinkle:
-`justerm-core/tests/fixtures/cursor_color_nvim.raw` shows a real `nvim` asking with **BEL**
-(`ESC ] 11 ; ? BEL`) and being answered with ST, and the engine discards `bell_terminated` before any
-event is queued — so a consumer could not echo even if it wanted to.
+The first two were open when #832 wrote them and are settled by #836: justerm now echoes, on all
+five OSC reply paths (`OSC 4`/`10`/`11`/`12`/`52`), so it has left the xterm.js row.
+
+**Two measurements worth not repeating.** Every OSC in **all 19** checked-in `.raw` fixtures is
+BEL-terminated — 0 ST — across `nvim`, `vim`, `tmux`, `ls` and the kitty and OSC 133 captures, so no
+real application this project has recorded has ever asked with ST. And `vte` ends an OSC on **three**
+byte classes, not two: `BEL`, the cancel pair `CAN`/`SUB`, and a bare `ESC` opening the next sequence
+(`vte-0.15.0/src/lib.rs:411`, `:415`, `:420`; the BEL test is `:587`). Only the first is reported as
+bell-terminated, so a cancelled query still reaches the consumer and is answered ST — which is what
+xterm hardcodes for that shape (`charproc.c:8964`).
 
 #### A routing fact: alacritty's OSC dispatch is not in the alacritty tree
 

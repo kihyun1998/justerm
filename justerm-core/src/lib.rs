@@ -24,7 +24,7 @@ pub use cell::{Cell, CellFlags};
 pub use color::Color;
 pub use cursor::{Cursor, CursorShape, Pen};
 pub use damage::{LineDamage, ScrollOp, TermDamage};
-pub use event::{ClipboardTarget, TermEvent};
+pub use event::{ClipboardTarget, TermEvent, Terminator};
 pub use grid::{Grid, Row};
 pub use input::{
     Key, KeyAction, KeyEvent, KeypadKey, Modifiers, MouseAction, MouseButton, MouseEvent,
@@ -245,27 +245,27 @@ impl Engine {
     /// the current background spec (it owns the palette) and the engine queues
     /// the OSC 11 reply for `drain_replies`. Theme-agnostic — the engine never
     /// knows the colour, only formats the envelope.
-    pub fn report_background(&mut self, spec: &str) {
-        self.term.report_background(spec);
+    pub fn report_background(&mut self, spec: &str, terminator: Terminator) {
+        self.term.report_background(spec, terminator);
     }
 
     /// Answer an OSC 10 `QueryForeground` event (#122): queue the OSC 10 reply
     /// from the consumer-supplied spec. Theme-agnostic envelope-only.
-    pub fn report_foreground(&mut self, spec: &str) {
-        self.term.report_foreground(spec);
+    pub fn report_foreground(&mut self, spec: &str, terminator: Terminator) {
+        self.term.report_foreground(spec, terminator);
     }
 
     /// Answer an OSC 12 `QueryCursorColor` event (#832): queue the OSC 12 reply
     /// from the consumer-supplied spec. Theme-agnostic envelope-only, like its
     /// foreground and background siblings.
-    pub fn report_cursor_color(&mut self, spec: &str) {
-        self.term.report_cursor_color(spec);
+    pub fn report_cursor_color(&mut self, spec: &str, terminator: Terminator) {
+        self.term.report_cursor_color(spec, terminator);
     }
 
     /// Answer an OSC 4 `QueryPaletteColor` event (#122): queue the OSC 4 reply for
     /// `index` from the consumer-supplied spec. Theme-agnostic envelope-only.
-    pub fn report_palette_color(&mut self, index: u8, spec: &str) {
-        self.term.report_palette_color(index, spec);
+    pub fn report_palette_color(&mut self, index: u8, spec: &str, terminator: Terminator) {
+        self.term.report_palette_color(index, spec, terminator);
     }
 
     /// Answer an OSC 52 [`TermEvent::QueryClipboard`] event (#828): base64-encode
@@ -276,8 +276,13 @@ impl Engine {
     /// owns it along with every policy about it. **Not calling this is how a read
     /// is refused**, independently of whether stores are honoured, and nothing is
     /// queued until you do.
-    pub fn report_clipboard(&mut self, target: ClipboardTarget, text: &str) {
-        self.term.report_clipboard(target, text);
+    pub fn report_clipboard(
+        &mut self,
+        target: ClipboardTarget,
+        text: &str,
+        terminator: Terminator,
+    ) {
+        self.term.report_clipboard(target, text, terminator);
     }
 
     /// Whether the app enabled **win32-input-mode** (DEC `?9001`): it asked for

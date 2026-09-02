@@ -13,6 +13,92 @@
 
 use crate::serialize::{MarkerId, MarkerKind};
 
+/// Which byte ended an OSC sequence — and therefore which one ends its reply.
+///
+/// The engine relays this rather than choosing: a query event carries the
+/// terminator the request arrived with, and the consumer hands it back to the
+/// matching `report_*`. Under ADR-0017 the parse-time fact is a *mechanism* only
+/// the engine can observe, while *which* terminator to send is policy — and a
+/// consumer cannot exercise a policy on a fact it was never given, which is what
+/// #836 measured: `bell_terminated` was discarded at the parser boundary before
+/// any event was queued.
+///
+/// **The spec settles the direction, not just the reference tally.**
+/// `ctlseqs.txt:2020` — *"XTerm accepts either BEL or ST for terminating OSC
+/// sequences, and when returning information, uses the same terminator used in a
+/// query. While the latter is preferred, the former is supported for legacy
+/// applications."* Under ADR-0004 that outranks every implementation, this one
+/// included. **On the colour path** all three implementations that echo carry the
+/// terminator *outward with the request* rather than remembering it: alacritty
+/// binds it into the reply formatter it sends its consumer
+/// (`alacritty_terminal/src/term/mod.rs:1678`), ghostty makes it a field on the
+/// parsed command (`src/terminal/osc.zig:87`, written at
+/// `src/termio/stream_handler.zig:1497`), and xterm threads it as a parameter
+/// (`misc.c:3567`, emitted at `:3593`). xterm.js is the one that always sends ST
+/// (`CoreBrowserTerminal.ts:239`) — which is what this engine used to do.
+///
+/// **The colour qualifier is load-bearing, because `OSC 52` has a counterexample.**
+/// xterm *does* store the terminator for the clipboard: `int base64_final;` on the
+/// screen (`ptyx.h:2637`), written when the request is parsed (`misc.c:3389`) and
+/// read a file away when the paste finally arrives (`button.c:2218`), because its
+/// X selection retrieval is asynchronous. That is shape (b) — the one this engine
+/// weighed and did not take — on the exact sequence `report_clipboard` answers.
+///
+/// It is recorded here because it **strengthens** the choice rather than undoing
+/// it. xterm stores precisely because the reply is detached from the request, and
+/// its store is a *single scalar*, so two overlapping paste requests would collide
+/// exactly as one stored terminator does here. Detachment is the condition
+/// [`crate::Engine::drain_events`] creates for every family at once, not just one —
+/// so carrying answers it where storing only postpones it.
+///
+/// **Carrying beats remembering for a reason that is this channel's.**
+/// [`crate::Engine::drain_events`] hands over a batch, so a consumer can hold two
+/// colour queries at once and answer them in either order; one remembered scalar
+/// could not say which exchange it belonged to. An occurrence's payload is
+/// detached from its instant by the queue — ADR-0029 D4 records the same shape
+/// for coordinates — so there is no re-ask and the fact must ride the event.
+///
+/// **Exhaustive on purpose (#843's rule).** The space is closed by the spec at
+/// exactly two, with a date for each (`ctlseqs.txt:2024-2028`), so there is no
+/// member a later slice may name and nothing for `#[non_exhaustive]` to preserve.
+/// ghostty reaches the same shape independently — `src/terminal/osc.zig:252` is a
+/// two-member `{ st, bel }` with no trailing `_`, which is Zig's marker for an
+/// open enum and is used at 23 other sites in that tree. Convergence on both the
+/// partition and the closure is the non-arbitrariness signal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum Terminator {
+    /// `ESC \` (ST), the terminator ECMA-48 documents and xterm prefers.
+    ///
+    /// The default, and what an OSC ended by **anything other than BEL** resolves
+    /// to. Those streams are real rather than theoretical: `vte` ends a string on
+    /// three byte classes — `BEL`, the cancel pair `CAN`/`SUB` (`0x18` / `0x1a`),
+    /// and a bare `ESC` opening the next sequence — and only the first is reported
+    /// as bell-terminated. So a cancelled query is still relayed, and answered ST.
+    ///
+    /// That is the right answer, not a fallback: xterm hardcodes ST on exactly this
+    /// shape (`charproc.c:8964`, *"should be ST"*) and ghostty's `Terminator.init`
+    /// returns `.st` for a missing byte (`src/terminal/osc.zig:263`).
+    #[default]
+    St,
+    /// `BEL` (`0x07`), supported for legacy applications.
+    ///
+    /// Real applications still emit it: `nvim` 0.8.0 asks `ESC ] 11 ; ? BEL` in
+    /// this crate's own `cursor_color_nvim.raw` fixture. And the shell idiom
+    /// `printf '\e]11;?\a'; read -d $'\a'` reads *until* BEL, so an ST answer to
+    /// a BEL question blocks that `read` until it times out.
+    Bel,
+}
+
+impl Terminator {
+    /// The bytes that end a reply carrying this terminator.
+    pub(crate) fn bytes(self) -> &'static [u8] {
+        match self {
+            Terminator::St => b"\x1b\\",
+            Terminator::Bel => b"\x07",
+        }
+    }
+}
+
 /// Which selection an `OSC 52` clipboard request names (#828).
 ///
 /// A *value*, never the protocol byte, so a consumer never parses the sequence —
@@ -193,7 +279,11 @@ pub enum TermEvent {
     ResetPaletteColor(Option<u8>),
     /// The app queried ANSI palette entry `index` (OSC 4 with `?` for that pair);
     /// the consumer answers with `report_palette_color` (#122).
-    QueryPaletteColor { index: u8 },
+    QueryPaletteColor {
+        index: u8,
+        /// The terminator `report_palette_color` must answer with (#836).
+        terminator: Terminator,
+    },
     /// The app set the cursor colour (OSC 12, #832). The third slot of the same
     /// dynamic-colour sequence `SetForeground` and `SetBackground` ride, and
     /// theme-agnostic for the same reason: the raw spec is forwarded and the
@@ -202,7 +292,10 @@ pub enum TermEvent {
     SetCursorColor(String),
     /// The app queried the cursor colour (OSC 12 with `?`); the consumer answers
     /// with `report_cursor_color` (#832).
-    QueryCursorColor,
+    QueryCursorColor {
+        /// The terminator `report_cursor_color` must answer with (#836).
+        terminator: Terminator,
+    },
     /// The app reset the cursor colour to the theme default (OSC 112, #832). The
     /// third member of the 110/111/112 reset family, and the one real
     /// applications emit most: `nvim` sends it on startup, on every alt-screen
@@ -214,11 +307,17 @@ pub enum TermEvent {
     ResetBackground,
     /// The app queried the default foreground colour (OSC 10 with `?`); the
     /// consumer answers with `report_foreground` (#122).
-    QueryForeground,
+    QueryForeground {
+        /// The terminator `report_foreground` must answer with (#836).
+        terminator: Terminator,
+    },
     /// The app queried the default background colour (OSC 11 with `?`). The
     /// theme-agnostic engine relays it; the consumer answers with
     /// `report_background` (#122), mirroring `ColorSchemeQuery`.
-    QueryBackground,
+    QueryBackground {
+        /// The terminator `report_background` must answer with (#836).
+        terminator: Terminator,
+    },
     /// The app asked for `text` to be put on `target` (`OSC 52` with a payload,
     /// #828). The engine has already base64-decoded it, and holds no clipboard
     /// of its own.
@@ -259,7 +358,11 @@ pub enum TermEvent {
     /// would let it: a query is answered from the consumer's clipboard or not at
     /// all, so there is no engine state here for a hostile application to read
     /// back. Same `Query…` + `report_…` shape as `OSC 4`/`10`/`11`/`12`.
-    QueryClipboard { target: ClipboardTarget },
+    QueryClipboard {
+        target: ClipboardTarget,
+        /// The terminator `report_clipboard` must answer with (#836).
+        terminator: Terminator,
+    },
     /// A decoration marker's line left the buffer — evicted past the scrollback
     /// cap, or scrolled out of an in-screen region (#118). The handle is now
     /// dead; the consumer drops the decoration bound to it. This is the
