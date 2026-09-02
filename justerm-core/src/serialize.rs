@@ -169,6 +169,25 @@ pub struct MarkerId(pub u32);
 /// 1.96.0, `#![deny(non_exhaustive_omitted_patterns)]` is an *unknown lint*, so a
 /// consumer cannot opt back in. One direction is a default the consumer can
 /// change; the other is a decision taken on their behalf for good.
+///
+/// **And #843 runs on two axes, not one.** The first draft wrote down only the
+/// first, which left five calls looking arbitrary until a refuting pass named the
+/// gap. They answer different questions and neither substitutes for the other:
+///
+/// - **Openness — can this set actually grow?** This decides whether the attribute
+///   is *warranted*. Putting it on a closed set states something false in the type;
+///   [`crate::Side`] will not gain a third member, and saying it might is worse
+///   than saying nothing.
+/// - **Direction — does a consumer ever *receive* one?** This decides the *cost*,
+///   not the need. Where nothing public hands the enum outward, there is no match
+///   to preserve and the attribute costs a consumer nothing — so a genuine doubt
+///   about openness resolves toward marking. Where the enum comes outward, the
+///   option being removed is real and closure has to be shown.
+///
+/// Read together they explain the whole roster: [`crate::Key`] is inward *and*
+/// open, so it is marked; [`crate::SelectionType`] is inward and **closed** by
+/// convergence, so it is not; [`crate::Color`] comes outward and is closed, so it
+/// is not twice over.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum MarkerKind {
     /// A `add_marker` decoration anchor (#118) — no OSC-133 semantics.

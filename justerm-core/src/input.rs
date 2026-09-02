@@ -206,7 +206,15 @@ pub enum MouseButton {
 /// What the mouse did.
 ///
 /// **Deliberately exhaustive (#843).** `Press` / `Release` / `Motion` is what the
-/// mouse protocols report, closed. Left exhaustive on purpose, not by omission.
+/// mouse protocols **justerm models** report, closed — and the qualifier matters,
+/// because the unqualified version of this sentence is false. `?1001` hilite
+/// tracking reports something else entirely (`ctlseqs.txt`, the Hilite Mouse
+/// Tracking entry), and [`MouseProtocol`] does not model it. So the closure is
+/// scoped to the protocols in `MouseProtocol` and grows only if that does.
+///
+/// It is left exhaustive on both of #843's axes anyway: closed as scoped, and
+/// inward-only — nothing public hands one of these outward, so the attribute would
+/// cost a consumer nothing and buy nothing either.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MouseAction {
     Press,
