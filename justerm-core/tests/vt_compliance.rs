@@ -1,7 +1,7 @@
 //! Issue #8 — VT compliance (common 90%). Grown test-first, one behaviour per
 //! cycle. (The vttest-style conformance harness is a later slice of #8.)
 
-use justerm_core::{Color, Engine, SelectionType, Side};
+use justerm_core::{Color, Engine, Key, KeyEvent, Modifiers, SelectionType, Side};
 
 // ===========================================================================
 // Background Color Erase (BCE)
@@ -73,6 +73,251 @@ fn tbc_clears_all_stops() {
     term.feed(b"\t"); // HT with no stops → last column
 
     assert_eq!(term.cursor().col, 19);
+}
+
+/// CBT (CSI Z) steps back to the previous set tab stop — the mirror of HT.
+#[test]
+fn back_tab_lands_on_the_previous_stop() {
+    let mut term = Engine::new(40, 1);
+    term.feed(b"\x1b[1;28H"); // grid col 27, between the stops at 24 and 32
+    term.feed(b"\x1b[Z");
+
+    assert_eq!(term.cursor().col, 24);
+}
+
+/// The count repeats the walk: `CSI 2 Z` matches two separate `CSI Z`.
+///
+/// Note what this fixture does *not* exercise — it uses the even default stops,
+/// so it cannot distinguish "repeat the walk" from "one walk of twice the
+/// distance". The uneven case that separates those two lives in
+/// `forward_then_back_tab_returns_to_the_starting_column`.
+#[test]
+fn back_tab_count_repeats_the_walk() {
+    let mut one_sequence = Engine::new(40, 1);
+    one_sequence.feed(b"\x1b[1;28H\x1b[2Z");
+
+    let mut two_sequences = Engine::new(40, 1);
+    two_sequences.feed(b"\x1b[1;28H\x1b[Z\x1b[Z");
+
+    assert_eq!(one_sequence.cursor().col, 16);
+    assert_eq!(two_sequences.cursor().col, 16);
+}
+
+/// An absent count and an explicit zero both mean one — the abbreviated form
+/// terminfo generates is the one with no parameter at all.
+#[test]
+fn back_tab_absent_and_zero_counts_both_move_one_stop() {
+    let mut absent = Engine::new(40, 1);
+    absent.feed(b"\x1b[1;28H\x1b[Z");
+
+    let mut zero = Engine::new(40, 1);
+    zero.feed(b"\x1b[1;28H\x1b[0Z");
+
+    assert_eq!(absent.cursor().col, 24);
+    assert_eq!(zero.cursor().col, 24);
+}
+
+/// A back-tab at column one stays at column one. It is defined within the line,
+/// so it never wraps to the row above.
+///
+/// This one was **green before the fix** — with no `'Z'` arm the cursor never
+/// moved from `(1, 0)` either — so it caught nothing then and is not evidence
+/// that the walk works. It earns its place forward, as the pin against someone
+/// later giving CBT the reverse-wraparound that `backspace` has. The mutation
+/// that reddens it is wrapping to the previous row at column zero.
+#[test]
+fn back_tab_at_column_one_stays_and_does_not_wrap_up() {
+    let mut term = Engine::new(20, 3);
+    term.feed(b"\x1b[2;1H"); // row 1, column 1
+    term.feed(b"\x1b[Z");
+
+    assert_eq!((term.cursor().row, term.cursor().col), (1, 0));
+}
+
+/// With every stop cleared, the leftward walk runs to column one rather than
+/// finding nothing and staying put.
+#[test]
+fn back_tab_with_no_stops_lands_at_column_one() {
+    let mut term = Engine::new(20, 1);
+    term.feed(b"\x1b[3g"); // TBC: clear every stop
+    term.feed(b"\x1b[1;15H");
+    term.feed(b"\x1b[Z");
+
+    assert_eq!(term.cursor().col, 0);
+}
+
+/// Stops exist, but none of them is to the *left* of the cursor. Distinct from
+/// the empty-table case: the walk has a populated table and still has to reach
+/// the boundary rather than stopping where it started — which is the state the
+/// references disagree on, alacritty leaving the cursor unmoved.
+#[test]
+fn back_tab_with_every_stop_to_the_right_lands_at_column_one() {
+    let mut term = Engine::new(20, 1);
+    term.feed(b"\x1b[3g"); // clear the defaults, column zero included
+    term.feed(b"\x1b[1;16H\x1bH"); // HTS: one stop, at grid col 15
+    term.feed(b"\x1b[1;11H"); // cursor to grid col 10 — the stop is to the RIGHT
+    term.feed(b"\x1b[Z");
+
+    assert_eq!(term.cursor().col, 0);
+}
+
+/// Back-tab reads the stops HTS set, not a fixed multiple of eight — the two
+/// directions have to agree about where the stops are.
+#[test]
+fn back_tab_honors_custom_stops() {
+    let mut term = Engine::new(20, 1);
+    term.feed(b"\x1b[3g"); // clear the defaults
+    term.feed(b"\x1b[1;6H\x1bH"); // HTS: a stop at grid col 5
+    term.feed(b"\x1b[1;15H");
+    term.feed(b"\x1b[Z");
+
+    assert_eq!(term.cursor().col, 5); // the custom stop, not the default 8
+}
+
+/// The pairing property: one table, walked both ways. Tab forward across
+/// unevenly spaced stops, back-tab the same number, and the cursor is where it
+/// began. This is what fails if the two walks disagree about a boundary.
+#[test]
+fn forward_then_back_tab_returns_to_the_starting_column() {
+    let mut term = Engine::new(20, 1);
+    term.feed(b"\x1b[3g"); // clear the defaults
+    term.feed(b"\x1b[1;4H\x1bH"); // stops at grid cols 3, 7 and 12
+    term.feed(b"\x1b[1;8H\x1bH");
+    term.feed(b"\x1b[1;13H\x1bH");
+
+    term.feed(b"\r"); // back to column one
+    term.feed(b"\t\t\t");
+    assert_eq!(term.cursor().col, 12);
+
+    term.feed(b"\x1b[3Z");
+    assert_eq!(term.cursor().col, 0);
+}
+
+/// A back-tab clears the deferred wrap, as every other cursor move does — so
+/// the character after it lands in the column the back-tab chose.
+#[test]
+fn back_tab_clears_pending_wrap() {
+    let mut term = Engine::new(3, 2);
+    term.feed(b"abc"); // fills row 0 → pending_wrap set
+    assert!(term.cursor().pending_wrap);
+
+    term.feed(b"\x1b[ZX");
+
+    assert!(!term.cursor().pending_wrap);
+    assert_eq!(term.grid().cell(0, 0).c(), 'X'); // landed at column one
+    assert_eq!(term.cursor().row, 0); // did NOT wrap to row 1
+}
+
+/// A count larger than the screen lands at column one. The walk is bounded by
+/// the grid, so the parameter cannot set the amount of work.
+#[test]
+fn back_tab_with_a_huge_count_lands_at_column_one() {
+    let mut term = Engine::new(20, 1);
+    term.feed(b"\x1b[1;20H");
+    term.feed(b"\x1b[65535Z");
+
+    assert_eq!(term.cursor().col, 0);
+}
+
+/// The alt screen gets the same arithmetic: tab stops are not per-screen, so
+/// the table the back-tab walks is the one the *primary* screen set.
+///
+/// The custom stop is what makes this able to fail for the reason it names. A
+/// per-screen table would be freshly defaulted to 0/8/16/24/32 and answer 24 to
+/// a back-tab from column 27 — exactly what a shared default table answers — so
+/// a version of this test that set no stop could not tell the two apart.
+#[test]
+fn back_tab_works_on_the_alt_screen() {
+    let mut term = Engine::new(40, 3);
+    term.feed(b"\x1b[3g"); // on the PRIMARY: clear every default stop
+    term.feed(b"\x1b[1;6H\x1bH"); // HTS: one stop, at grid col 5
+    term.feed(b"\x1b[?1049h"); // enter alt
+    term.feed(b"\x1b[1;28H\x1b[Z");
+
+    assert_eq!(term.cursor().col, 5); // 24 here would mean a per-screen table
+}
+
+/// A narrowing resize rebuilds the stops at the new width and clamps the
+/// cursor, so a back-tab afterwards cannot name a column that is gone.
+#[test]
+fn back_tab_after_a_narrowing_resize_stays_in_range() {
+    let mut term = Engine::new(40, 2);
+    term.feed(b"\x1b[1;33H"); // grid col 32 — a stop only the old width had
+    term.resize(10, 2);
+    term.feed(b"\x1b[Z");
+
+    assert!(term.cursor().col < 10);
+    assert_eq!(term.cursor().col, 8);
+}
+
+/// The round trip, with a real producer on the other end: justerm's own input
+/// encoder has emitted `CSI Z` for Shift-Tab since #11, so the engine was asking
+/// applications to accept a sequence it then ignored itself. Feed the encoder's
+/// *actual output* — no hand-written escape — and the cursor moves.
+///
+/// This is the strongest proof available for #826. A recorded PTY capture cannot
+/// supply one: ncurses 6.2 prefers absolute addressing and emitted `CSI Z` zero
+/// times in every capture taken for #47, which is the measurement that downgraded
+/// this issue's own reach argument. So the only real producer of this sequence in
+/// reach is the family's own encoder.
+#[test]
+fn shift_tab_from_our_own_encoder_drives_the_back_tab() {
+    let mut term = Engine::new(40, 1);
+    let bytes = term
+        .encode_key(KeyEvent {
+            key: Key::Tab,
+            mods: Modifiers::SHIFT,
+            ..Default::default()
+        })
+        .expect("Shift-Tab has an encoding");
+    assert_eq!(bytes, b"\x1b[Z"); // the producer half, pinned
+
+    term.feed(b"\x1b[1;28H"); // grid col 27
+    term.feed(&bytes); // the consumer half — the same bytes, unedited
+    term.feed(b"X");
+
+    assert_eq!(term.grid().cell(0, 24).c(), 'X');
+}
+
+/// The full shape of the deferred-wrap divergence, on the width where it bites
+/// hardest: a row filled to the last column, which is also a default tab stop
+/// (any width congruent to 1 mod 8 — 9, 17, 33, 81).
+///
+/// justerm honours the back-tab and prints where it landed. All four references
+/// leave the wrap armed, so the same stream puts the `X` on the *following row*
+/// and the back-tab is effectively discarded. That is the divergence — not a
+/// flag, but which row the next character lands on — and this is the assertion
+/// that states it.
+#[test]
+fn back_tab_on_a_full_row_prints_where_it_landed_not_on_the_next_row() {
+    let mut term = Engine::new(9, 2);
+    term.feed(b"123456789"); // fills row 0, arming the deferred wrap
+    assert!(term.cursor().pending_wrap);
+
+    term.feed(b"\x1b[ZX");
+
+    let row0: String = (0..9).map(|c| term.grid().cell(0, c).c()).collect();
+    let row1: String = (0..9).map(|c| term.grid().cell(1, c).c()).collect();
+    assert_eq!(row0, "X23456789"); // the references would leave row 0 intact
+    assert_eq!(row1, "         "); // ...and put the X here
+    assert_eq!(term.cursor().row, 0);
+}
+
+/// `CSI ? Z` and `CSI > Z` are *unreachable*, not unhandled: a private prefix
+/// arrives as an intermediate and `csi_dispatch` returns above the `match`, so
+/// adding a `'Z'` arm did nothing for them (#824's rule).
+///
+/// Pinned because the predicate is otherwise unfalsifiable — nothing else in
+/// this file would notice if the guard moved and `CSI ? Z` started back-tabbing.
+#[test]
+fn back_tab_with_a_private_prefix_is_unrouted() {
+    for seq in [&b"\x1b[?Z"[..], &b"\x1b[>Z"[..], &b"\x1b[<Z"[..]] {
+        let mut term = Engine::new(40, 1);
+        term.feed(b"\x1b[1;28H");
+        term.feed(seq);
+
+        assert_eq!(term.cursor().col, 27, "{seq:?} must not reach the back-tab");
+    }
 }
 
 // ===========================================================================

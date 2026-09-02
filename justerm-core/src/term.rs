@@ -2928,6 +2928,114 @@ impl Term {
         self.cursor.pending_wrap = false;
     }
 
+    /// CBT (CSI Ps Z): step back `n` tab stops, or to column one if fewer
+    /// remain.
+    ///
+    /// The mirror of [`Term::put_tab`] over the *same* table, walked in the
+    /// other direction. Writing it as a mirror rather than as arithmetic is
+    /// what keeps the two from drifting: an application that moved a stop with
+    /// HTS has moved it for both directions, and a modulo here would disagree
+    /// with the forward walk the moment it did.
+    ///
+    /// The count repeats the walk — `n` stops, not one stop `n` columns away —
+    /// which is what makes a multi-field jump land correctly when the stops are
+    /// unevenly spaced.
+    ///
+    /// Backward tabulation is defined *within the line*: it clamps at column
+    /// one and never wraps to the row above, which would make it a
+    /// cursor-relocating operation across rows and give it interactions with
+    /// the wrap state it should not have. The outer loop breaks at column zero
+    /// for that reason and for a second one — it bounds the work by the grid
+    /// rather than by the parameter, so a hostile `CSI 65535 Z` costs one walk
+    /// of the row. That second reason is **defensive only**: `vte` saturates a
+    /// parameter at `u16::MAX`, so the unbounded form would cost 65535 no-op
+    /// iterations, and no test can redden the guard.
+    ///
+    /// The **count** converges 4/4 — every reference repeats the *walk* rather
+    /// than computing a column: alacritty `term/mod.rs:1571-1585` @ `852e971`,
+    /// ghostty `stream_terminal.zig:593-599` + `Terminal.zig:2124-2136` @
+    /// `e6e26e1`, xterm `charproc.c:3745-3752` + `tabs.c:131-180` @ `6380a3e`,
+    /// xterm.js `InputHandler.ts:1141-1151` + `Buffer.ts:599-603` @ `699f553`.
+    ///
+    /// The **clamp is 3/4**, and the outlier is alacritty — the one whose loop
+    /// shape this most resembles, which is why the resemblance is worth
+    /// distrusting. It seeds `col` with the cursor's current column and
+    /// overwrites it only inside `if self.tabs[i]` (`term/mod.rs:1578-1583`),
+    /// so with **no stop to the left it writes the cursor back unchanged** — a
+    /// no-op where the walk below runs to column zero. Reachable after
+    /// `CSI 3 g`, since clearing all stops clears column zero too in both
+    /// engines. xterm (`TabPrev` returns 0), ghostty (returns at
+    /// `x <= left_limit`) and xterm.js (`x < 0 ? 0 : x`) all clamp, and
+    /// `back_tab_with_no_stops_lands_at_column_one` is the test that pins which
+    /// side justerm is on.
+    ///
+    /// **Clearing the deferred wrap diverges from all four, deliberately.**
+    /// None of them clears it here: alacritty's `move_backward_tabs` writes no
+    /// `input_needs_wrap` though its own CUB does (`term/mod.rs:1253`);
+    /// ghostty's `horizontalTabBack` calls the *screen*-level `cursorLeft`,
+    /// which does not touch `pending_wrap`, where its terminal-level one does
+    /// (`Terminal.zig:1768`); xterm's `TabToPrevStop` has no `ResetWrap` at all
+    /// — the only one in `tabs.c` is in the *forward* walk and is gated on the
+    /// `curses` resource (`tabs.c:113`), off by default; and xterm.js has no
+    /// flag, representing the state as `x == cols` and returning early on it,
+    /// so its CBT from the right margin moves *nothing*.
+    ///
+    /// ADR-0004's spec-first rule has nothing to award here, and the reason is
+    /// stronger than "the spec is quiet". `ctlseqs.txt:755` is one line, but
+    /// that file is xterm's documentation *of xterm* rather than the normative
+    /// text; CBT's normative home is ECMA-48, which no pinned tree carries. The
+    /// argument that does not depend on a document nobody here can open: the
+    /// deferred wrap is an **implementation device** for "the cursor is parked
+    /// at the last column", not an ECMA-48 concept, so no version of that spec
+    /// can rule on it in principle.
+    ///
+    /// So the grounds are this engine's own coherence: **every horizontal-positioning
+    /// verb here clears the flag** — `move_forward`, `move_back`, `set_col`,
+    /// `set_row`, `goto`, `move_up`, `move_down`, `backspace`,
+    /// `carriage_return`, `put_tab` — so a back-tab that did not would be the
+    /// sole exception. Leaving it armed also reproduces the very bug #826
+    /// exists to fix, from the other side: the next character would land on the
+    /// *following row* rather than in the column the back-tab chose.
+    ///
+    /// The unanimity is over that population and not over every writer of
+    /// `cursor.col`. `linefeed_inner` and `reverse_index` do **not** clear it,
+    /// which is a separate and unsettled question — justerm is the outlier 3-1
+    /// there — and deliberately outside this change. Nor is `put_tab` a clean
+    /// precedent: at the right edge of a full row it clears the flag *without
+    /// moving*, so the next character overwrites the last column instead of
+    /// wrapping, which all four references avoid. The rule is sound where the
+    /// verb actually moves the cursor, and CBT always does. See
+    /// `docs/agents/reference-facts.md`.
+    ///
+    /// **What the divergence actually costs, stated as behaviour rather than as
+    /// a flag.** On a full row, `CSI Z` then a print puts the character where
+    /// the back-tab landed; every reference puts it on the *following row*,
+    /// having in effect discarded the back-tab. Pinned by
+    /// `back_tab_on_a_full_row_prints_where_it_landed_not_on_the_next_row`.
+    ///
+    /// **Cleared concern, with its validity condition.** xterm and ghostty
+    /// clamp a back-tab to the **left margin** under origin mode
+    /// (`tabs.c:171-175`; `Terminal.zig:2126`), not to column zero. That is
+    /// inert here only because this engine implements no DECSLRM, so both
+    /// reduce to zero. **If DECSLRM ever lands, this function is a site**, and
+    /// nothing else in the tree points at it.
+    fn put_back_tab(&mut self, n: usize) {
+        let mut col = self.cursor.col;
+        for _ in 0..n {
+            if col == 0 {
+                break;
+            }
+            while col > 0 {
+                col -= 1;
+                if self.tabs[col] {
+                    break;
+                }
+            }
+        }
+        self.cursor.col = col;
+        self.cursor.pending_wrap = false;
+    }
+
     /// HTS (ESC H): set a tab stop at the cursor column.
     fn set_tab_stop(&mut self) {
         let col = self.cursor.col;
@@ -4926,6 +5034,9 @@ impl Perform for Term {
             'B' | 'e' => self.move_down(param_or(params, 0, 1) as usize),
             'C' | 'a' => self.move_forward(param_or(params, 0, 1) as usize),
             'D' => self.move_back(param_or(params, 0, 1) as usize),
+            // CBT (CSI Ps Z): back-tab, the mirror of HT over the tab-stop
+            // table. Cursor motion only — it writes no cell (#826).
+            'Z' => self.put_back_tab(param_or(params, 0, 1) as usize),
             'G' | '`' => self.set_col(param_or(params, 0, 1) as usize - 1),
             'd' => self.set_row(param_or(params, 0, 1) as usize - 1),
             'H' | 'f' => {
