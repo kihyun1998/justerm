@@ -41,9 +41,19 @@ Read out of the source; there is no record to read instead.
 
 ## Reference behaviour
 
-**None.** No entry in `docs/agents/reference-facts.md`. The deferred-wrap model is described in
-`architecture.md` as matching xterm's behaviour, but that is prose — never grepped against a pinned
-tree, and it is the single most consequential positional rule here.
+**One axis, measured; the rest still prose.** `architecture.md` describes the deferred-wrap model as
+matching xterm's behaviour, and for most of it that is still prose that was never grepped against a
+pinned tree — the single most consequential positional rule here.
+
+- [Backward tabulation, and who clears the deferred wrap](../../agents/reference-facts.md#backward-tabulation-and-who-clears-the-deferred-wrap-826-verified-2026-09-02)
+  — **which verbs reset the flag**, measured across all four references by #826. The answer is that
+  justerm is the outlier: no reference clears it in CBT, and xterm does not normally clear it in the
+  *forward* tab either — its one `ResetWrap` there is gated on the `curses` resource, off by default.
+  So the "matches xterm" prose is now known to be wrong on at least this axis, in justerm's favour
+  by its own coherence argument and not by the reference's.
+
+Everything else about the model — when `write_glyph` arms it, what consumes it, how it survives a
+resize — remains unpinned.
 
 ## Cross-cutting invariants
 

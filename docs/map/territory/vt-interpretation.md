@@ -101,7 +101,13 @@ for a terminal engine, that list is half the specification.
   `OSC 8` retain are bounded by nothing, which is a fact about this territory and not a claim that
   it is wrong.
 - **Tab stops are explicit per-column state**, not a modulo: HTS sets, TBC clears, default every
-  eighth column. A modulo would be wrong the moment an application moves one.
+  eighth column. A modulo would be wrong the moment an application moves one — and since #826 that
+  is two verbs' problem rather than one, because `CBT` walks the same table backwards. The two walks
+  are written as mirrors for exactly that reason: a count repeats the *walk*, so the directions
+  cannot disagree about where a stop is, and `HT` followed by the same number of `CBT` returns to
+  where it started. One thing they deliberately do **not** mirror is the deferred wrap — see
+  [cursor position](cursor-position.md), where justerm turns out to be the outlier against all four
+  references.
 - **The scroll region redefines what "scroll" means.** DECSTBM changes which rows `IND` / `RI` /
   `LF` move and which leave the screen, so nearly every vertical-motion verb reads it.
 - **RIS and DECSTR are two reset strengths** and the split is itself hidden state — what each does

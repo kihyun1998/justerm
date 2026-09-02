@@ -2259,3 +2259,41 @@ returns **zero hits** and reads exactly like "alacritty does not implement this"
 semantics live in `vte-0.15.0/src/ansi.rs`, which is **the same crate and the same version justerm
 itself depends on** — so this reference is already on disk in the cargo registry, needs no pinned
 tree, and is immutable by virtue of being a published crate version.
+
+## Backward tabulation, and who clears the deferred wrap (#826, verified 2026-09-02)
+
+Two questions, and the references answer them very differently. On **how the walk works** they converge
+4/4; on **the deferred wrap** they are unanimous *against* what justerm does, which is why the second
+half of this section carries mechanism notes rather than bare sites.
+
+Scope: these rows are about `CSI Ps Z` (CBT) and the flag xterm calls `wrapnext`. They say nothing
+about the rest of the deferred-wrap model.
+
+| Fact | Reference | Site |
+|---|---|---|
+| The count repeats the **walk**, one tab stop per unit — none of the four computes a column. alacritty's outer loop breaks at column 0, which is the shape justerm mirrors | alacritty | `alacritty_terminal/src/term/mod.rs:1574` |
+| ghostty repeats it too, but bounds the loop on *"the cursor did not move"* rather than on the column. Observationally the same, because the single-step walk returns at `x <= left_limit` | ghostty | `src/terminal/stream_terminal.zig:597`; walk at `src/terminal/Terminal.zig:2130` |
+| The clamp is column zero, or the **left margin** under origin mode. That second half is an axis justerm does not have — it implements no DECSLRM — so it is *not reached* here rather than diverged from | ghostty | `src/terminal/Terminal.zig:2130` |
+| ⚠ **The spec settles neither the wrap flag nor a bound.** The entire CBT entry is one line naming the sequence and its default | xterm (spec) | `ctlseqs.txt:755` |
+| ⚠ **No reference clears the deferred wrap in CBT — and for xterm the site alone misleads.** `TabToPrevStop` has no `ResetWrap` at all; the only one in `tabs.c` is in the **forward** walk and is gated on `screen->curses`, the more(1) fix (DECSET 41), which is off by default. So even xterm's forward tab does not normally reset it | xterm | `tabs.c:113` (the guard); walk at `tabs.c:132` |
+| alacritty's `move_backward_tabs` writes no `input_needs_wrap`, though its **own CUB does**. An asymmetry inside one file, not a stated position | alacritty | `alacritty_terminal/src/term/mod.rs:1253` (the CUB that does) |
+| **Read the mechanism, not the name**: ghostty's tab-back calls the *screen*-level `cursorLeft`, which does not touch `pending_wrap`. Its *terminal*-level `cursorLeft` does. Two layers, one name, opposite answers | ghostty | `src/terminal/Terminal.zig:1768` (the one that does) |
+| xterm.js has no flag — `x === cols` **is** the state — and `cursorBackwardTab` returns early on it, so its CBT from the right margin moves **nothing at all**. A fifth behaviour rather than a fourth | xterm.js | `src/common/InputHandler.ts:1142`; walk at `src/common/buffer/Buffer.ts:601` |
+
+**What justerm does, and why the divergence is not an oversight.** `put_back_tab` clears
+`pending_wrap`. Per rule 5 this file does not decide that — but it is worth recording *why the
+reference column could not*: ADR-0004 awards the spec top authority on this layer and the spec is
+silent, so the grounds fall to this engine's own coherence. Measured 2026-09-02 in
+`justerm-core/src/term.rs`: **all eight** other cursor-motion verbs clear the flag — `move_forward`,
+`move_back`, `set_col`, `set_row`, `goto`, `put_tab`, `backspace`, `carriage_return` — and none of
+the eight records damage either.
+
+**This partly closes a hole `docs/map/territory/cursor-position.md` named**: that note recorded
+"Reference behaviour: **None**" and warned the deferred-wrap model had never been grepped against a
+pinned tree. It has been now, on this one axis only — which verbs reset the flag — and the answer is
+that justerm is the outlier.
+
+**One thing these rows deliberately do not settle**, because it predates #826: justerm's **forward**
+tab clears the flag where alacritty's `put_tab` *consumes* it (`if input_needs_wrap { wrapline();
+return }`), xterm's does so only under the `curses` resource, and xterm.js's no-ops. Four
+implementations, four behaviours, on a verb this change did not touch.
