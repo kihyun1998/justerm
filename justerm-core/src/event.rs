@@ -97,9 +97,23 @@ pub enum ClipboardTarget {
 /// penterm's `route_event` matches five variants with no wildcard arm — the set
 /// as of `0.5.0`, against an enum that now carries twenty-one. So penterm cannot
 /// build against this crate today and has not been able to for nine minor
-/// versions; a new variant joins a break rather than causing one. Whether the
-/// answer is `#[non_exhaustive]` here or a wildcard there is a release-time
-/// call, not a slice's.
+/// versions; a new variant joins a break rather than causing one.
+///
+/// **That consumer is not what decides this, and saying so is the point.**
+/// penterm is parked until `1.0.0`, so its broken match costs nothing now. What
+/// decides it is the version boundary itself: `#[non_exhaustive]` is **free to
+/// add before `1.0.0` and is itself breaking to add after**, while an enum
+/// without it turns every future variant into a major bump. This crate's
+/// conformance is *cumulative by design* — `#47` is a perpetual tail, and the
+/// two slices before this one added three variants and two — so the rate that
+/// argument runs on is not hypothetical.
+///
+/// The case against, stated because it is real: an exhaustive match is a
+/// **feature** for a consumer, the compiler telling them a new event exists, and
+/// penterm's own arms are commented as having been triaged that way. The answer
+/// is that this is a *notification* channel where ignoring an unknown event is
+/// documented as safe, so that signal belongs in release notes rather than in
+/// the type. **Decide it before `1.0.0`, not in a feature slice.**
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TermEvent {
     /// The window title is now this string.
