@@ -75,10 +75,7 @@ fn a_query_with_an_empty_target_is_a_clipboard_query() {
 /// `vte` normalises the two before the payload reaches us.
 #[test]
 fn an_explicit_clipboard_target_stores_under_either_terminator() {
-    for bytes in [
-        &b"\x1b]52;c;aGk=\x07"[..],
-        &b"\x1b]52;c;aGk=\x1b\\"[..],
-    ] {
+    for bytes in [&b"\x1b]52;c;aGk=\x07"[..], &b"\x1b]52;c;aGk=\x1b\\"[..]] {
         let mut t = Engine::new(80, 24);
         t.feed(bytes);
         assert_eq!(
@@ -142,7 +139,11 @@ fn a_query_relays_no_store() {
 fn a_query_alone_queues_no_reply() {
     let mut t = Engine::new(80, 24);
     t.feed(b"\x1b]52;c;?\x07");
-    assert_eq!(t.drain_replies(), b"", "the engine has no clipboard to answer with");
+    assert_eq!(
+        t.drain_replies(),
+        b"",
+        "the engine has no clipboard to answer with"
+    );
 }
 
 /// The reply *is* the contract, so it is asserted byte for byte: the consumer

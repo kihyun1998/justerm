@@ -66,7 +66,7 @@ pub(crate) fn decode(input: &[u8]) -> Option<Vec<u8>> {
     // the guard back buys nothing and costs a branch no input can reach.
     // A payload that pads at all pads to a whole four-character quantum, which
     // is what makes the pad count implied rather than a second thing to check.
-    if pad != 0 && input.len() % 4 != 0 {
+    if pad != 0 && !input.len().is_multiple_of(4) {
         return None;
     }
     let data = &input[..input.len() - pad];

@@ -150,9 +150,7 @@ pub enum TermEvent {
     /// would let it: a query is answered from the consumer's clipboard or not at
     /// all, so there is no engine state here for a hostile application to read
     /// back. Same `Query…` + `report_…` shape as `OSC 4`/`10`/`11`/`12`.
-    QueryClipboard {
-        target: ClipboardTarget,
-    },
+    QueryClipboard { target: ClipboardTarget },
     /// A decoration marker's line left the buffer — evicted past the scrollback
     /// cap, or scrolled out of an in-screen region (#118). The handle is now
     /// dead; the consumer drops the decoration bound to it. This is the
