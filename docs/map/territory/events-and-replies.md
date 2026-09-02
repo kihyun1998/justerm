@@ -75,13 +75,23 @@ nothing about it appears in the frame.
   the engine holds no clipboard, so a query it is never asked to answer discloses nothing, and a
   *read* is refusable independently of a *write*.
 - **A `report_*` takes back what it needs rather than the engine remembering it.**
-  `report_clipboard(target, text)` follows `report_palette_color(index, spec)`: the consumer names
-  the target it is answering about. alacritty is the alternative and shows the cost — its query
-  captures target and terminator in a closure (`alacritty_terminal/src/term/mod.rs:1740`), which is
-  hidden state plus a question about interleaved replies, bought for something the consumer already
-  holds. Worth reading beside #836, which asks whether the *terminator* should travel this way; that
-  is the one fact of the exchange no `report_*` caller can supply, because the engine discards it at
-  the parser boundary.
+  `report_clipboard(target, text, terminator)` follows `report_palette_color(index, spec,
+  terminator)`: the consumer names the target it is answering about. alacritty is the alternative and
+  shows the cost — its query captures target and terminator in a closure
+  (`alacritty_terminal/src/term/mod.rs:1740`), which is hidden state plus a question about
+  interleaved replies, bought for something the consumer already holds.
+- **The terminator travels the same way, and #836 settled that it must (2026-09-02).** It was the one
+  fact of the exchange no `report_*` caller could supply, because the engine discarded
+  `bell_terminated` at the parser boundary. Now a `Query…` event carries it and the matching
+  `report_*` hands it back, on all five OSC reply paths. **The deciding property is this channel's,
+  not the sequence's**: `drain_events` returns a *batch*, so two queries can be outstanding at once
+  and answered in either order, and one remembered scalar cannot say which exchange it belongs to.
+  That is the same shape [`a coordinate carries the instant it is true at`](../invariant/a-coordinate-carries-the-instant-it-is-true-at.md)
+  states for coordinates — an occurrence's payload is detached from its instant by the queue, so it
+  can only carry — reached independently by a fact that is not a coordinate. xterm is the
+  counterexample worth knowing: it *does* store the terminator, but only for `OSC 52` and only
+  because its selection retrieval is asynchronous, in a single scalar with the collision this
+  channel's batch would provoke.
 - **Pull, not push — and the alternative is named.** The engine queues during `feed` and the consumer
   takes with `drain_events`, mirroring `damage` / `frame` / `reset_damage`. No callback crosses the
   boundary, so the engine stays decoupled from the consumer's event loop. alacritty's `EventListener`

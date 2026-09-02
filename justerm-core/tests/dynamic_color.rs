@@ -5,7 +5,7 @@
 //! a query is answered by the consumer via a `report_*` reply. Both OSC
 //! terminators (BEL `0x07`, ST `ESC \`) are exercised. xterm.js cross-checked.
 
-use justerm_core::{Color, Engine, TermEvent};
+use justerm_core::{Color, Engine, TermEvent, Terminator};
 
 /// OSC 11 sets the default background — the engine forwards the raw spec, not a
 /// parsed colour (it holds no palette; the consumer applies it).
@@ -55,11 +55,15 @@ fn osc4_query_and_report_palette_color() {
     t.feed(b"\x1b]4;5;?\x07");
     assert_eq!(
         t.drain_events(),
-        vec![TermEvent::QueryPaletteColor { index: 5 }]
+        vec![TermEvent::QueryPaletteColor {
+            index: 5,
+            terminator: Terminator::Bel
+        }]
     );
 
-    t.report_palette_color(5, "rgb:00/00/ff");
-    assert_eq!(t.drain_replies(), b"\x1b]4;5;rgb:00/00/ff\x1b\\");
+    // The query arrived BEL-terminated, so the answer is too (#836).
+    t.report_palette_color(5, "rgb:00/00/ff", Terminator::Bel);
+    assert_eq!(t.drain_replies(), b"\x1b]4;5;rgb:00/00/ff\x07");
 }
 
 /// OSC 104 resets palette entries to the theme default: no argument resets the
@@ -98,17 +102,23 @@ fn osc110_111_reset_default_fg_bg() {
 fn osc11_query_emits_a_query_event() {
     let mut t = Engine::new(80, 24);
     t.feed(b"\x1b]11;?\x07");
-    assert_eq!(t.drain_events(), vec![TermEvent::QueryBackground]);
+    assert_eq!(
+        t.drain_events(),
+        vec![TermEvent::QueryBackground {
+            terminator: Terminator::Bel
+        }]
+    );
 }
 
 /// The consumer answers a background query by handing back the spec; the engine
-/// wraps it in the OSC 11 reply envelope (ST-terminated), mirroring
-/// `report_color_scheme`. The spec value is the consumer's (it knows its
-/// palette); only the envelope is the engine's.
+/// wraps it in the OSC 11 reply envelope, mirroring `report_color_scheme`. The
+/// spec value is the consumer's (it knows its palette); only the envelope is
+/// the engine's, and since #836 the terminator is the consumer's too — here
+/// there is no query to take one from, so this names ST directly.
 #[test]
 fn report_background_queues_the_osc11_reply() {
     let mut t = Engine::new(80, 24);
-    t.report_background("rgb:1e/1e/2e");
+    t.report_background("rgb:1e/1e/2e", Terminator::St);
     assert_eq!(t.drain_replies(), b"\x1b]11;rgb:1e/1e/2e\x1b\\");
 }
 
@@ -117,10 +127,15 @@ fn report_background_queues_the_osc11_reply() {
 fn osc10_query_and_report_foreground() {
     let mut t = Engine::new(80, 24);
     t.feed(b"\x1b]10;?\x07");
-    assert_eq!(t.drain_events(), vec![TermEvent::QueryForeground]);
+    assert_eq!(
+        t.drain_events(),
+        vec![TermEvent::QueryForeground {
+            terminator: Terminator::Bel
+        }]
+    );
 
-    t.report_foreground("rgb:ff/ff/ff");
-    assert_eq!(t.drain_replies(), b"\x1b]10;rgb:ff/ff/ff\x1b\\");
+    t.report_foreground("rgb:ff/ff/ff", Terminator::Bel);
+    assert_eq!(t.drain_replies(), b"\x1b]10;rgb:ff/ff/ff\x07");
 }
 
 /// OSC 4 carries multiple `index ; spec` pairs in one sequence — each becomes its
@@ -174,7 +189,10 @@ fn osc4_mixes_set_and_query_per_pair() {
                 index: 1,
                 spec: "rgb:ff/00/00".into()
             },
-            TermEvent::QueryPaletteColor { index: 2 },
+            TermEvent::QueryPaletteColor {
+                index: 2,
+                terminator: Terminator::Bel
+            },
         ]
     );
 }
@@ -262,7 +280,9 @@ fn osc10_stack_mixes_set_and_query_per_slot() {
         t.drain_events(),
         vec![
             TermEvent::SetForeground("rgb:11/11/11".into()),
-            TermEvent::QueryBackground,
+            TermEvent::QueryBackground {
+                terminator: Terminator::Bel
+            },
         ]
     );
 }
@@ -321,9 +341,16 @@ fn osc12_sets_the_cursor_colour() {
 fn osc12_query_and_report_cursor_color() {
     let mut t = Engine::new(80, 24);
     t.feed(b"\x1b]12;?\x1b\\");
-    assert_eq!(t.drain_events(), vec![TermEvent::QueryCursorColor]);
+    // The one query in this file fed ST, and the answer stays ST (#836) —
+    // the control for every BEL case around it.
+    assert_eq!(
+        t.drain_events(),
+        vec![TermEvent::QueryCursorColor {
+            terminator: Terminator::St
+        }]
+    );
 
-    t.report_cursor_color("rgb:ff/00/00");
+    t.report_cursor_color("rgb:ff/00/00", Terminator::St);
     assert_eq!(t.drain_replies(), b"\x1b]12;rgb:ff/00/00\x1b\\");
 }
 
@@ -414,7 +441,9 @@ fn osc11_stack_queries_the_cursor_slot() {
         t.drain_events(),
         vec![
             TermEvent::SetBackground("rgb:11/11/11".into()),
-            TermEvent::QueryCursorColor,
+            TermEvent::QueryCursorColor {
+                terminator: Terminator::Bel
+            },
         ]
     );
 }

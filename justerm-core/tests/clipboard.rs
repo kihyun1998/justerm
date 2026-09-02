@@ -11,7 +11,7 @@
 //! reply bytes — and none reaches into the decoder. The reply *is* the contract,
 //! so it is asserted byte for byte.
 
-use justerm_core::{ClipboardTarget, Engine, TermEvent};
+use justerm_core::{ClipboardTarget, Engine, TermEvent, Terminator};
 
 /// The bytes `tmux` 3.2a was measured emitting on the RHEL 9 VM under
 /// `TERM=xterm-256color` with `set-clipboard on`, copying `HELLOJUSTERM` out of
@@ -67,6 +67,7 @@ fn a_query_with_an_empty_target_is_a_clipboard_query() {
         t.drain_events(),
         vec![TermEvent::QueryClipboard {
             target: ClipboardTarget::Clipboard,
+            terminator: Terminator::Bel,
         }]
     );
 }
@@ -130,6 +131,7 @@ fn a_query_relays_no_store() {
         events,
         vec![TermEvent::QueryClipboard {
             target: ClipboardTarget::Clipboard,
+            terminator: Terminator::Bel,
         }]
     );
     assert!(
@@ -163,8 +165,8 @@ fn the_report_method_encodes_a_well_formed_reply() {
     let mut t = Engine::new(80, 24);
     t.feed(b"\x1b]52;c;?\x07");
     t.drain_events();
-    t.report_clipboard(ClipboardTarget::Clipboard, "hi");
-    assert_eq!(t.drain_replies(), b"\x1b]52;c;aGk=\x1b\\");
+    t.report_clipboard(ClipboardTarget::Clipboard, "hi", Terminator::Bel);
+    assert_eq!(t.drain_replies(), b"\x1b]52;c;aGk=\x07");
 }
 
 /// **The selector round-trips: the reply names the field the application
@@ -184,16 +186,22 @@ fn the_reply_names_the_selector_the_application_wrote() {
         let mut t = Engine::new(80, 24);
         t.feed(format!("\x1b]52;{field};?\x07").as_bytes());
         let events = t.drain_events();
-        let [TermEvent::QueryClipboard { target: relayed }] = events.as_slice() else {
+        let [
+            TermEvent::QueryClipboard {
+                target: relayed,
+                terminator,
+            },
+        ] = events.as_slice()
+        else {
             panic!("expected one clipboard query for {field:?}, got {events:?}");
         };
         assert_eq!(*relayed, target, "target field {field:?}");
         // The consumer answers with exactly what it was handed — no lookup, no
         // remembered byte — and the selector comes back out unchanged.
-        t.report_clipboard(*relayed, "hi");
+        t.report_clipboard(*relayed, "hi", *terminator);
         assert_eq!(
             t.drain_replies(),
-            format!("\x1b]52;{field};aGk=\x1b\\").as_bytes(),
+            format!("\x1b]52;{field};aGk=\x07").as_bytes(),
             "reply for target field {field:?}"
         );
     }
@@ -207,11 +215,11 @@ fn an_empty_target_query_is_answered_naming_the_clipboard() {
     let mut t = Engine::new(80, 24);
     t.feed(b"\x1b]52;;?\x07");
     let events = t.drain_events();
-    let TermEvent::QueryClipboard { target } = events[0] else {
+    let TermEvent::QueryClipboard { target, terminator } = events[0] else {
         panic!("expected a clipboard query, got {events:?}");
     };
-    t.report_clipboard(target, "hi");
-    assert_eq!(t.drain_replies(), b"\x1b]52;c;aGk=\x1b\\");
+    t.report_clipboard(target, "hi", terminator);
+    assert_eq!(t.drain_replies(), b"\x1b]52;c;aGk=\x07");
 }
 
 /// **The round trip that a hand-rolled base64 or an encoding assumption breaks
@@ -233,10 +241,10 @@ fn non_ascii_text_survives_decode_and_re_encode() {
         }]
     );
 
-    t.report_clipboard(ClipboardTarget::Clipboard, TEXT);
+    t.report_clipboard(ClipboardTarget::Clipboard, TEXT, Terminator::Bel);
     assert_eq!(
         t.drain_replies(),
-        format!("\x1b]52;c;{PAYLOAD}\x1b\\").as_bytes()
+        format!("\x1b]52;c;{PAYLOAD}\x07").as_bytes()
     );
 }
 

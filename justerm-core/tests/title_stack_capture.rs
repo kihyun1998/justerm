@@ -73,7 +73,7 @@
 //! `events.rs`, which is exactly the division of labour a capture is for: it
 //! supplies the shapes nobody would have invented, not the edges nobody emits.
 
-use justerm_core::{Engine, TermEvent};
+use justerm_core::{Engine, TermEvent, Terminator};
 
 const CAPTURE: &[u8] = include_bytes!("fixtures/vim_title_stack.raw");
 
@@ -98,8 +98,12 @@ fn a_real_vim_session_restores_the_title_it_pushed() {
     assert_eq!(
         term.drain_events(),
         vec![
-            TermEvent::QueryForeground,
-            TermEvent::QueryBackground,
+            TermEvent::QueryForeground {
+                terminator: Terminator::Bel
+            },
+            TermEvent::QueryBackground {
+                terminator: Terminator::Bel
+            },
             TermEvent::Title("PROBE".into()),
             TermEvent::Title("Thanks for flying Vim".into()),
             TermEvent::Title(String::new()),

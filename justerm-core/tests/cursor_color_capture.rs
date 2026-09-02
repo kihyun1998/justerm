@@ -47,7 +47,7 @@
 //! stream never carries a non-empty cursor spec, so it cannot observe the slot.
 //! That axis is covered by `dynamic_color.rs` and by xterm's `misc.c:3679` loop.
 
-use justerm_core::{Engine, TermEvent};
+use justerm_core::{Engine, TermEvent, Terminator};
 
 fn replay() -> Engine {
     let raw = include_bytes!("fixtures/cursor_color_nvim.raw");
@@ -69,7 +69,9 @@ fn a_real_nvim_session_relays_a_reset_and_no_empty_sets() {
     assert_eq!(
         e.drain_events(),
         vec![
-            TermEvent::QueryBackground,
+            TermEvent::QueryBackground {
+                terminator: Terminator::Bel
+            },
             TermEvent::Title(String::new()),
             TermEvent::Title(String::new()),
             TermEvent::ResetCursorColor,
@@ -120,6 +122,9 @@ fn the_captured_query_is_answerable_through_the_reply_channel() {
         "the stream's own replies, before the consumer says anything"
     );
 
-    e.report_background("rgb:1e/1e/2e");
-    assert_eq!(e.drain_replies(), b"\x1b]11;rgb:1e/1e/2e\x1b\\");
+    // The capture asks with BEL at offset 147, so the answer carries BEL back
+    // (#836). This assertion pinned the ST reply until that landed, and it is
+    // the one real-application byte stream this repo has for the exchange.
+    e.report_background("rgb:1e/1e/2e", Terminator::Bel);
+    assert_eq!(e.drain_replies(), b"\x1b]11;rgb:1e/1e/2e\x07");
 }

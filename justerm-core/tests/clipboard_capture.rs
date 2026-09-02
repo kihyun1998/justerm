@@ -66,7 +66,7 @@
 //! emitter never produces them. What this file uniquely observes is the first
 //! row — and that is the row the whole slice turns on.
 
-use justerm_core::{ClipboardTarget, Engine, TermEvent};
+use justerm_core::{ClipboardTarget, Engine, TermEvent, Terminator};
 
 fn replay() -> Engine {
     let raw = include_bytes!("fixtures/tmux_clipboard.raw");
@@ -161,10 +161,10 @@ fn the_captured_session_asks_no_clipboard_question() {
     );
 
     // Positive control: the channel that just carried no clipboard reply can.
-    e.report_clipboard(ClipboardTarget::Clipboard, "hi");
+    e.report_clipboard(ClipboardTarget::Clipboard, "hi", Terminator::Bel);
     assert_eq!(
         e.drain_replies(),
-        b"\x1b]52;c;aGk=\x1b\\",
+        b"\x1b]52;c;aGk=\x07",
         "the reply channel must be able to carry one, or the assertion above proves nothing"
     );
 }
