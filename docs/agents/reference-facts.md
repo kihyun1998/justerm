@@ -2051,6 +2051,42 @@ fails against the only emitters that exist. #828's target rule was written the w
 alacritty reading (which matches a single target byte and has **no** branch for an absent field)
 and was corrected from this row.
 
+**Re-measured while implementing #828 (2026-09-02), and the emission reproduced**: a fresh
+`script(1)` recording on the same VM — tmux 3.2a, `set-clipboard on`, `set-buffer -w` — put exactly
+one OSC 52 in a 1278-byte stream, `ESC ] 52 ; ; SEVMTE9KVVNURVJN BEL`, target field empty and
+BEL-terminated. It is checked in as `justerm-core/tests/fixtures/tmux_clipboard.raw`. Unlike
+`cursor_color_nvim.raw` this stream is **not byte-reproducible**: two recordings differ in 12 bytes,
+eight of them `script(1)`'s timestamps and four a real reordering of tmux's own `ESC[?25l` and
+`ESC[1;1H`. So the sha256 check that validates the other captures does not apply to this one.
+
+### OSC 52 — where the references converge, and the two places the spec is not followed (#828, 2026-09-02)
+
+The row above settles the *target* rule. These settle the rest of the sequence, and two of them are
+the grounds for a deliberate divergence rather than a convergence.
+
+| Fact | Reference | Site |
+|---|---|---|
+| **The spec's empty-target default is `s0`, not the clipboard** — *"If the parameter is empty, xterm uses s 0, to specify the configurable primary/clipboard selection and cut-buffer 0"* | xterm (spec) | `ctlseqs.txt:2161` |
+| …and that is the implementation too, one line of C | xterm | `misc.c:3359` |
+| **`vte` itself defaults an empty target to `c`** — and it is the parser crate justerm is built on, though justerm implements `Perform` directly and never reaches this `ansi` module. `params[1].first().unwrap_or(&b'c')` | vte 0.15.0 (registry) | `src/ansi.rs:1488` |
+| **The spec clears the selection when the payload is neither base64 nor `?`** — *"If the second parameter is neither a base64 string nor ? , then the selection is cleared"* | xterm (spec) | `ctlseqs.txt:2174` |
+| …while alacritty drops such a payload silently, its decode sitting inside an `if let Ok` with no else | alacritty | `alacritty_terminal/src/term/mod.rs:1717` |
+| **An empty payload is a clear in every reading**, and ghostty names it so in a test over `52;;` | ghostty | `src/terminal/osc/parsers/clipboard_operation.zig:93` |
+| **A payload *field* that is absent is not an empty payload** — xterm's whole handler sits inside `if (*buf == ';')`, so `OSC 52 ; c` does nothing at all | xterm | `misc.c:3353` |
+| …and ghostty rejects the same form outright | ghostty | `src/terminal/osc/parsers/clipboard_operation.zig:20` |
+| **A multi-character target list is rejected by ghostty** (`data[1] != ';'` → invalid), where `vte`/alacritty take the first byte and drop the rest | ghostty | `src/terminal/osc/parsers/clipboard_operation.zig:36` |
+| **ghostty folds every unrecognised kind onto the standard clipboard**, in as many words — *"we ignore the kind field and always use the standard clipboard"* — where alacritty returns without emitting | ghostty | `src/termio/stream_handler.zig:1009` |
+| …alacritty's is the opposite arm of the same choice | alacritty | `alacritty_terminal/src/term/mod.rs:1714` |
+| **alacritty decodes in the terminal core and re-encodes through a closure that echoes both the target byte and the arriving terminator**; ghostty hands its apprt the payload **still encoded**, so the decode boundary is 1–1 | alacritty / ghostty | `alacritty_terminal/src/term/mod.rs:1717`, `:1743` / `src/termio/stream_handler.zig:1027` |
+| **xterm.js does not implement OSC 52 in core at all.** A negative, so how it was reached matters: `rg` for `'52'`, `"52"` and `case 52` across `src/` at the pinned SHA returned zero, and the OSC handler registry has no entry for it | xterm.js | — (measured absence, `src/`) |
+
+⚠ **justerm follows the spec on neither of the two spec rows above, deliberately.** The empty-target
+default is unrepresentable here — `s` resolves through a *user resource* in xterm, which is policy
+ADR-0017 assigns to the consumer, and cut buffers are unmodelled — so it takes the reading all three
+implementations share. And a payload that fails to decode emits nothing rather than clearing,
+because clearing is destructive and inferring one from unparseable bytes lets line noise wipe what a
+user copied. Both are argued at `Term::clipboard`.
+
 ### REP's retained character — the two obvious references disagree, and xterm breaks the tie
 
 | Fact | Reference | Site |
