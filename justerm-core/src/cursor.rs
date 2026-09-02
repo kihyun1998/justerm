@@ -34,6 +34,22 @@ impl Pen {
 
 /// The cursor's drawn shape (DECSCUSR / the renderer's caret glyph). The engine
 /// reports it on the frame; the renderer draws it. Default `Block` (#81).
+///
+/// **Deliberately exhaustive (#843) — and the reason is the wire, not the spec.**
+///
+/// An earlier draft of that sweep said "DECSCUSR's shape space, closed". **That is
+/// false**, and the counter-example is in this repository: `justerm-renderer` has
+/// carried a fourth shape, `HollowBlock`, since before the sweep
+/// (`justerm-renderer/src/cursor.rs:60`, wire id `3`), and no core frame can ask
+/// for it. The space is not closed by the spec; it has already been grown once,
+/// one crate over.
+///
+/// What actually decides it is that **this enum is mapped onto wire values by a
+/// `match` outside this crate** — `justerm-wasm-decode/src/lib.rs:198` turns each
+/// member into an int for the frame header. Marking it non-exhaustive would force
+/// a `_` arm there, converting a future compile error into a silently wrong wire
+/// value. That is the same construct that reddened `cargo test --workspace` for
+/// [`crate::MarkerKind`], where the rule is stated in full.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum CursorShape {
     #[default]

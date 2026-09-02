@@ -66,6 +66,11 @@ impl Modifiers {
 /// these encode as the classic VT100/VT220 SS3 sequences; in numeric mode as the
 /// literal character. The consumer produces these for *raw* keypad identity — it
 /// owns NumLock / key-location resolution (#83).
+///
+/// **`#[non_exhaustive]` (#843).** A keypad namespace grows; a consumer *constructs*
+/// these to hand to the encoder rather than matching on them, so an addition costs
+/// it nothing.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeypadKey {
     /// A keypad digit, `0..=9`.
@@ -81,6 +86,12 @@ pub enum KeypadKey {
 
 /// A logical key press from the consumer (already decoded from the platform's
 /// keyboard event — justerm does not read hardware).
+///
+/// **`#[non_exhaustive]` (#843).** Key namespaces grow — media keys, the kitty
+/// protocol's additions — and the traffic here runs inward: a consumer builds a
+/// `Key` for [`crate::Engine::encode_key`] rather than matching one we hand it, so
+/// the attribute costs it nothing and makes the next VT slice additive.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Key {
     /// A printable character (the consumer's already-composed text).
@@ -107,6 +118,10 @@ pub enum Key {
 
 /// Press / repeat / release. Legacy reports only presses; the kitty protocol's
 /// "report event types" flag (bit 1) carries repeat and release too (#23).
+///
+/// **Deliberately exhaustive (#843).** `Press` / `Repeat` / `Release` is the kitty
+/// keyboard protocol's event space, closed. Left exhaustive on purpose, not by
+/// omission.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum KeyAction {
     #[default]
@@ -149,6 +164,24 @@ impl Default for KeyEvent {
 
 /// Which mouse button an event concerns. `None` on a [`MouseEvent`] means bare
 /// motion with no button held.
+///
+/// **Deliberately exhaustive (#843), and it is the case worth reading.** The set is
+/// already open *at the data level* — [`MouseButton::Other`] carries any code we do
+/// not name — so the attribute would add nothing a caller could use. That is what
+/// separates this type from [`Key`], which has no catch-all: `Char` and `F` are
+/// semantics, not escape hatches, so an unnamed key has nowhere to go and the
+/// attribute is the only way to keep adding one cheap.
+///
+/// A second argument stood here and was **withdrawn as false** — that naming a
+/// future `Button8` would stop `Other(8)` being produced and break a consumer
+/// matching on it. Three things are wrong with it, and the first is four lines
+/// above: X11 buttons **8 and 9 are already named**, as `Back` and `Forward`, and
+/// `Other` is documented as `10+`. The encoder then collapses the distinction
+/// anyway — `Some(Back)` and `Other(8)` both emit `128` — and nothing outside this
+/// crate matches a `MouseButton` we hand it, because nothing is ever handed one.
+/// Left in view rather than deleted: a doc-comment whose own example contradicts
+/// the enum beside it is worse than no comment, and this one shipped through a
+/// completeness pass before a refuting one caught it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MouseButton {
     Left,
@@ -171,6 +204,18 @@ pub enum MouseButton {
 }
 
 /// What the mouse did.
+///
+/// **Deliberately exhaustive (#843).** `Press` / `Release` / `Motion` is what the
+/// mouse protocols **justerm models** report, closed — and the qualifier matters,
+/// because the unqualified version of this sentence is false. `?1001` hilite
+/// tracking reports something else entirely (`ctlseqs.txt`, the Hilite Mouse
+/// Tracking entry), and `MouseProtocol` does not model it — a crate-private type,
+/// as rustdoc confirms by refusing to link it from here. So the closure is scoped
+/// to the protocols that type names, and grows only if it does.
+///
+/// It is left exhaustive on both of #843's axes anyway: closed as scoped, and
+/// inward-only — nothing public hands one of these outward, so the attribute would
+/// cost a consumer nothing and buy nothing either.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MouseAction {
     Press,

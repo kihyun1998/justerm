@@ -11,6 +11,25 @@
 //! of `term.rs` in #587.
 
 /// What a selection covers.
+///
+/// **Deliberately exhaustive (#843), on convergence rather than on traffic.**
+///
+/// An earlier draft of that sweep argued *"a consumer cannot fall back on a
+/// neighbour for one it does not know"* — which describes matching traffic this
+/// API does not have. Measured: this type appears in exactly one public
+/// signature, as a **parameter** to [`crate::Engine::selection_begin`], and
+/// nothing hands one outward. So the attribute would cost a consumer nothing,
+/// and that argument cannot be what keeps it off.
+///
+/// What keeps it off is that the set really is closed: **alacritty arrives at the
+/// same four modes independently**, under different names —
+/// `Simple` / `Semantic` / `Lines` / `Block`
+/// (`alacritty_terminal/src/selection.rs:93`), where its own doc glosses `simple`
+/// as tracking cells "without any expansion" ([`Char`](Self::Char)) and
+/// `semantic` as expanding "to the nearest semantic escape char"
+/// ([`Word`](Self::Word)). Two implementations landing on one partition of the
+/// space is the non-arbitrariness signal, and it is a stronger ground than the
+/// one it replaces.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SelectionType {
     /// Contiguous run, wrapping line to line.
@@ -25,6 +44,9 @@ pub enum SelectionType {
 
 /// Which half of a cell an anchor sits on — the left or right edge. Lets a drag
 /// include or exclude the cell under the pointer (mouse precision).
+///
+/// **Deliberately exhaustive (#843).** Closed by geometry — there is no third side.
+/// Left exhaustive on purpose, not by omission.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Side {
     Left,
