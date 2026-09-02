@@ -2951,13 +2951,23 @@ impl Term {
     /// parameter at `u16::MAX`, so the unbounded form would cost 65535 no-op
     /// iterations, and no test can redden the guard.
     ///
-    /// The count and the clamp converge 4/4 with the references, and each of
-    /// them repeats the *walk* rather than computing a column: alacritty
-    /// `term/mod.rs:1571-1585` (`if col == 0 { break }`, the same shape as
-    /// below) @ `852e971`, ghostty `stream_terminal.zig:593-599` +
-    /// `Terminal.zig:2124-2136` @ `e6e26e1`, xterm `charproc.c:3745-3752` +
-    /// `tabs.c:131-180` @ `6380a3e`, xterm.js `InputHandler.ts:1141-1151` +
-    /// `Buffer.ts:599-603` @ `699f553`.
+    /// The **count** converges 4/4 — every reference repeats the *walk* rather
+    /// than computing a column: alacritty `term/mod.rs:1571-1585` @ `852e971`,
+    /// ghostty `stream_terminal.zig:593-599` + `Terminal.zig:2124-2136` @
+    /// `e6e26e1`, xterm `charproc.c:3745-3752` + `tabs.c:131-180` @ `6380a3e`,
+    /// xterm.js `InputHandler.ts:1141-1151` + `Buffer.ts:599-603` @ `699f553`.
+    ///
+    /// The **clamp is 3/4**, and the outlier is alacritty — the one whose loop
+    /// shape this most resembles, which is why the resemblance is worth
+    /// distrusting. It seeds `col` with the cursor's current column and
+    /// overwrites it only inside `if self.tabs[i]` (`term/mod.rs:1578-1583`),
+    /// so with **no stop to the left it writes the cursor back unchanged** — a
+    /// no-op where the walk below runs to column zero. Reachable after
+    /// `CSI 3 g`, since clearing all stops clears column zero too in both
+    /// engines. xterm (`TabPrev` returns 0), ghostty (returns at
+    /// `x <= left_limit`) and xterm.js (`x < 0 ? 0 : x`) all clamp, and
+    /// `back_tab_with_no_stops_lands_at_column_one` is the test that pins which
+    /// side justerm is on.
     ///
     /// **Clearing the deferred wrap diverges from all four, deliberately.**
     /// None of them clears it here: alacritty's `move_backward_tabs` writes no
@@ -2970,9 +2980,16 @@ impl Term {
     /// flag, representing the state as `x == cols` and returning early on it,
     /// so its CBT from the right margin moves *nothing*.
     ///
-    /// The spec does not settle it — `ctlseqs.txt:755` is one line naming the
-    /// sequence — so ADR-0004's spec-first rule has nothing to award, and the
-    /// grounds are this engine's own coherence: **every horizontal-positioning
+    /// ADR-0004's spec-first rule has nothing to award here, and the reason is
+    /// stronger than "the spec is quiet". `ctlseqs.txt:755` is one line, but
+    /// that file is xterm's documentation *of xterm* rather than the normative
+    /// text; CBT's normative home is ECMA-48, which no pinned tree carries. The
+    /// argument that does not depend on a document nobody here can open: the
+    /// deferred wrap is an **implementation device** for "the cursor is parked
+    /// at the last column", not an ECMA-48 concept, so no version of that spec
+    /// can rule on it in principle.
+    ///
+    /// So the grounds are this engine's own coherence: **every horizontal-positioning
     /// verb here clears the flag** — `move_forward`, `move_back`, `set_col`,
     /// `set_row`, `goto`, `move_up`, `move_down`, `backspace`,
     /// `carriage_return`, `put_tab` — so a back-tab that did not would be the

@@ -85,8 +85,12 @@ fn back_tab_lands_on_the_previous_stop() {
     assert_eq!(term.cursor().col, 24);
 }
 
-/// The count repeats the walk: `CSI 2 Z` moves two stops, which is not the same
-/// as one walk of twice the distance once the stops are uneven.
+/// The count repeats the walk: `CSI 2 Z` matches two separate `CSI Z`.
+///
+/// Note what this fixture does *not* exercise — it uses the even default stops,
+/// so it cannot distinguish "repeat the walk" from "one walk of twice the
+/// distance". The uneven case that separates those two lives in
+/// `forward_then_back_tab_returns_to_the_starting_column`.
 #[test]
 fn back_tab_count_repeats_the_walk() {
     let mut one_sequence = Engine::new(40, 1);
@@ -195,14 +199,21 @@ fn back_tab_with_a_huge_count_lands_at_column_one() {
 }
 
 /// The alt screen gets the same arithmetic: tab stops are not per-screen, so
-/// the table the back-tab walks is the one the primary screen set.
+/// the table the back-tab walks is the one the *primary* screen set.
+///
+/// The custom stop is what makes this able to fail for the reason it names. A
+/// per-screen table would be freshly defaulted to 0/8/16/24/32 and answer 24 to
+/// a back-tab from column 27 — exactly what a shared default table answers — so
+/// a version of this test that set no stop could not tell the two apart.
 #[test]
 fn back_tab_works_on_the_alt_screen() {
     let mut term = Engine::new(40, 3);
+    term.feed(b"\x1b[3g"); // on the PRIMARY: clear every default stop
+    term.feed(b"\x1b[1;6H\x1bH"); // HTS: one stop, at grid col 5
     term.feed(b"\x1b[?1049h"); // enter alt
     term.feed(b"\x1b[1;28H\x1b[Z");
 
-    assert_eq!(term.cursor().col, 24);
+    assert_eq!(term.cursor().col, 5); // 24 here would mean a per-screen table
 }
 
 /// A narrowing resize rebuilds the stops at the new width and clamps the

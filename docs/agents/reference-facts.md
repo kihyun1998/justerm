@@ -2271,7 +2271,9 @@ about the rest of the deferred-wrap model.
 
 | Fact | Reference | Site |
 |---|---|---|
-| The count repeats the **walk**, one tab stop per unit — none of the four computes a column. alacritty's outer loop breaks at column 0, which is the shape justerm mirrors | alacritty | `alacritty_terminal/src/term/mod.rs:1574` |
+| The count repeats the **walk**, one tab stop per unit — none of the four computes a column | alacritty | `alacritty_terminal/src/term/mod.rs:1574` |
+| ⚠ **The clamp is 3/4, not 4/4, and alacritty is the outlier — read the seed, not the loop.** It seeds `col` with the cursor's *current* column and overwrites it only inside `if self.tabs[i]`, so with **no stop to the left it writes the cursor back unchanged**: a no-op where the other three run to column zero. Reachable after `CSI 3 g`, which clears column zero too in both engines. The surface resemblance to justerm's loop (`if col == 0 { break }`) is exactly what makes this easy to miss | alacritty | `alacritty_terminal/src/term/mod.rs:1578` |
+| The other three clamp: `TabPrev` returns `0` after its loop; ghostty returns at `x <= left_limit`; xterm.js ends `x < 0 ? 0 : x` | xterm · ghostty · xterm.js | `tabs.c:132` · `src/terminal/Terminal.zig:2130` · `src/common/buffer/Buffer.ts:601` |
 | ghostty repeats it too, but bounds the loop on *"the cursor did not move"* rather than on the column. Observationally the same, because the single-step walk returns at `x <= left_limit` | ghostty | `src/terminal/stream_terminal.zig:597`; walk at `src/terminal/Terminal.zig:2130` |
 | The clamp is column zero, or the **left margin** under origin mode. That second half is an axis justerm does not have — it implements no DECSLRM — so it is *not reached* here rather than diverged from | ghostty | `src/terminal/Terminal.zig:2130` |
 | ⚠ **The spec settles neither the wrap flag nor a bound.** The entire CBT entry is one line naming the sequence and its default | xterm (spec) | `ctlseqs.txt:755` |
@@ -2295,13 +2297,33 @@ not, because the 8 are a different population: the print path that *arms* the fl
 `restore_cursor` (which restores a saved value rather than setting one), and `linefeed_inner` /
 `reverse_index`.
 
-⚠ **Those last two are not benign, and this section does not settle them.** The flag survives LF and
-RI in this engine, and the references **split**: ghostty's `index` clears it
-(`src/terminal/Terminal.zig`, first lines of `index`), alacritty's `linefeed` and `reverse_index` do
-not (`alacritty_terminal/src/term/mod.rs`, both bodies). xterm and xterm.js were **not** checked, and
-neither was the spec. Measured consequence in justerm, reproduced with a throwaway probe: with the
-wrap armed, `LF` then a print advances **two** rows and leaves one blank, and `RI` then a print lands
-one row *below* where RI moved to. Out of #826's scope and carried to the maintainer instead.
+⚠ **Those last two are not benign, and justerm is the outlier 3-1.** The flag survives LF and RI in
+this engine. Measured consequence, reproduced with a throwaway probe: with the wrap armed, `LF` then
+a print advances **two** rows and leaves one blank, and `RI` then a print lands one row *below* where
+RI moved to.
+
+| Fact | Reference | Site |
+|---|---|---|
+| LF/IND resets the wrap — `xtermIndex` → `CursorDown` → `ResetWrap`; RI reaches the same place through `CursorUp` | xterm | `cursor.c:263` (down), `cursor.c:284` (up) |
+| `index` clears it explicitly, under a comment saying so | ghostty | `src/terminal/Terminal.zig:2174` |
+| No flag to clear, so it *un-parks* the column instead — `if (x >= cols) x--`, commented *"If the end of the line is hit, prevent this action from wrapping around to the next line."* | xterm.js | `src/common/InputHandler.ts:762` |
+| **Does not reset it** — `linefeed` and `reverse_index` write no `input_needs_wrap`. The one reference that agrees with justerm | alacritty | `alacritty_terminal/src/term/mod.rs` (both bodies) |
+
+Out of #826's scope and carried to the maintainer rather than fixed here. **What is still unchecked
+is the normative text** — see the note on ECMA-48 below.
+
+**One more pre-existing difference, flagged and not filed**: justerm rebuilds the tab table from
+defaults on every resize (`term.rs`, `self.tabs = default_tabs(cols)`), discarding HTS-set stops.
+alacritty *preserves* them, growing the table instead (`alacritty_terminal/src/term/mod.rs:2337`,
+`TabStops::resize`, *"Increase tabstop capacity"*), and rebuilds only on RIS. xterm's array is
+width-independent, so the question does not arise there.
+
+**A limit on every "the spec says" claim in this section.** `ctlseqs.txt` is xterm's documentation
+*of xterm*, not the normative text. CBT's normative home is ECMA-48 / ISO-6429, and **no pinned tree
+carries it**, so ADR-0004's spec-first rule cannot actually be exercised from this corpus. Where the
+argument matters — the deferred wrap — it does not need to be: that flag is an implementation device
+for "the cursor is parked past the last column", not an ECMA-48 concept, so no version of the spec
+could rule on it either way.
 
 **This partly closes a hole `docs/map/territory/cursor-position.md` named**: that note recorded
 "Reference behaviour: **None**" and warned the deferred-wrap model had never been grepped against a
