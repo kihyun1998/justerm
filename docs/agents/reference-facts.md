@@ -2283,10 +2283,25 @@ about the rest of the deferred-wrap model.
 **What justerm does, and why the divergence is not an oversight.** `put_back_tab` clears
 `pending_wrap`. Per rule 5 this file does not decide that — but it is worth recording *why the
 reference column could not*: ADR-0004 awards the spec top authority on this layer and the spec is
-silent, so the grounds fall to this engine's own coherence. Measured 2026-09-02 in
-`justerm-core/src/term.rs`: **all eight** other cursor-motion verbs clear the flag — `move_forward`,
-`move_back`, `set_col`, `set_row`, `goto`, `put_tab`, `backspace`, `carriage_return` — and none of
-the eight records damage either.
+silent, so the grounds fall to this engine's own coherence.
+
+**The census, taken rather than asserted** (2026-09-02, over every function in
+`justerm-core/src/term.rs` that writes `cursor.col` or `cursor.row`): **22 movers, 14 clearing the
+flag and 8 not.** Every *horizontal-positioning* verb clears it — `move_forward`, `move_back`,
+`set_col`, `set_row`, `goto`, `move_up`, `move_down`, `backspace`, `carriage_return`, `put_tab` and
+now `put_back_tab` — and none of them records damage. That unanimity is the ground; the raw 14/22 is
+not, because the 8 are a different population: the print path that *arms* the flag (`write_glyph`,
+`try_grapheme_join`, `promote_cluster_to_wide`), the wrap machinery itself (`wrapline_advances`),
+`restore_cursor` (which restores a saved value rather than setting one), and `linefeed_inner` /
+`reverse_index`.
+
+⚠ **Those last two are not benign, and this section does not settle them.** The flag survives LF and
+RI in this engine, and the references **split**: ghostty's `index` clears it
+(`src/terminal/Terminal.zig`, first lines of `index`), alacritty's `linefeed` and `reverse_index` do
+not (`alacritty_terminal/src/term/mod.rs`, both bodies). xterm and xterm.js were **not** checked, and
+neither was the spec. Measured consequence in justerm, reproduced with a throwaway probe: with the
+wrap armed, `LF` then a print advances **two** rows and leaves one blank, and `RI` then a print lands
+one row *below* where RI moved to. Out of #826's scope and carried to the maintainer instead.
 
 **This partly closes a hole `docs/map/territory/cursor-position.md` named**: that note recorded
 "Reference behaviour: **None**" and warned the deferred-wrap model had never been grepped against a

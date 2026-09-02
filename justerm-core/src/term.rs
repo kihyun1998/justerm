@@ -2972,11 +2972,19 @@ impl Term {
     ///
     /// The spec does not settle it — `ctlseqs.txt:755` is one line naming the
     /// sequence — so ADR-0004's spec-first rule has nothing to award, and the
-    /// grounds are justerm's own coherence: every other cursor move here clears
-    /// the flag (`move_forward`, `move_back`, `set_col`, `set_row`, `goto`,
-    /// `put_tab`). Leaving it armed reproduces the very bug #826 exists to fix
-    /// — the next character would land on the *following row* rather than in
-    /// the column the back-tab chose.
+    /// grounds are this engine's own coherence: **every horizontal-positioning
+    /// verb here clears the flag** — `move_forward`, `move_back`, `set_col`,
+    /// `set_row`, `goto`, `move_up`, `move_down`, `backspace`,
+    /// `carriage_return`, `put_tab` — so a back-tab that did not would be the
+    /// sole exception. Leaving it armed also reproduces the very bug #826
+    /// exists to fix, from the other side: the next character would land on the
+    /// *following row* rather than in the column the back-tab chose.
+    ///
+    /// The unanimity is over that population and not over every writer of
+    /// `cursor.col`. `linefeed_inner` and `reverse_index` do **not** clear it,
+    /// which is a separate and unsettled question — the references split on it
+    /// — and deliberately outside this change. See
+    /// `docs/agents/reference-facts.md`.
     fn put_back_tab(&mut self, n: usize) {
         let mut col = self.cursor.col;
         for _ in 0..n {
