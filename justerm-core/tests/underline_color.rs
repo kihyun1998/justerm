@@ -132,15 +132,22 @@ fn the_vm_captured_form_matrix_round_trips_every_encoding() {
     assert_eq!(t.underline_color_at(3, 0), Color::Rgb(0, 128, 255));
     // Row 4: `58;5;46` (indexed, legacy semicolon) on "hint".
     assert_eq!(t.underline_color_at(4, 0), Color::Indexed(46));
-    // Row 5: `58:2::128:64:255` (RGB colon, empty cs) again. NOTE: the matrix uses
-    // `4:0m` between rows to mean "underline off", but justerm parses `4:0` as code 4
-    // → underline ON (the `:0` sub-parameter is the separate underline-*style* sibling,
-    // out of #520's scope), so the underline is sticky-on across the capture. The
-    // colour therefore stores here — the gating itself is proven by
-    // `the_colour_is_stored_only_where_an_underline_is_drawn`, which controls the
-    // underline explicitly with `4m`.
+    // Row 5: `58:2::128:64:255` (RGB colon, empty cs) armed BEFORE any underline, which is
+    // what the row's own text spells out — `no-underline-here` then `4:5m` then
+    // `then-dashed`. **This row's expectation was inverted until #829**, and the note that
+    // stood here said why: `4:0` was parsed as bare code 4 and turned the underline *on*, so
+    // the `4:0m` ending row 4 left it sticky-on and the colour stored where the capture says
+    // it must not. #829 landed the underline-*style* sibling that note called out of scope, so
+    // `4:0` now means off and the capture reads the way it was recorded to read.
     assert_eq!(t.grid().cell(5, 0).c(), 'n');
-    assert_eq!(t.underline_color_at(5, 0), Color::Rgb(128, 64, 255));
+    assert_eq!(
+        t.underline_color_at(5, 0),
+        Color::Default,
+        "`no-underline-here` carries no underline, so no colour is stored on it",
+    );
+    // ...and the colour does store once `4:5m` arms the underline, 17 columns along.
+    assert_eq!(t.grid().cell(5, 17).c(), 't');
+    assert_eq!(t.underline_color_at(5, 17), Color::Rgb(128, 64, 255));
     // Row 6: fg and underline colour DIFFER — white text, red curl.
     assert_eq!(t.grid().cell(6, 0).fg(), Color::Rgb(255, 255, 255));
     assert_eq!(t.underline_color_at(6, 0), Color::Rgb(255, 0, 0));

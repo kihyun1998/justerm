@@ -39,7 +39,10 @@ VT couples them in `SGR` + print, not because they are one concept.
 - `justerm-core/src/term.rs` — `Term::write_glyph` (pen → cell, plus the ucolor stamp), the SGR
   dispatch
 - `justerm-core/src/color.rs` — `Color`
-- `justerm-core/src/cell.rs` — `CellFlags`, `Cell::from_parts`
+- `justerm-core/src/cell.rs` — `CellFlags`, `Cell::from_parts`, `UnderlineStyle` and
+  `CellFlags::set_underline_style` — the pen carries a 3-bit underline **style** as well as a
+  colour since #829, and that setter is the single writer of it *and* of the derived
+  `CellFlags::UNDERLINE`
 
 ## Reference behaviour
 

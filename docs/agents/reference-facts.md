@@ -2543,3 +2543,83 @@ ambiguity to protect, tracked on #847.
 **What justerm does.** Declines `0x9C`, and per this file's rules that is not decided here — but the
 reference column does not split on it the way #849's did. The one implementation that accepts it
 parses codepoints; justerm parses bytes, and the `末` pair above is what the difference costs.
+
+
+## The underline style — where it is stored, who owns "is underlined", and how it reaches the drawing layer (#829, verified 2026-09-03)
+
+Three questions, and the second is the one with an answer worth adopting. On **representation** the
+references split two ways and neither is obviously better. On **ownership** three of the four carry
+the same defect and each pays for it in a way that can be pointed at. On **transport** the split is
+not a disagreement at all — it follows from whether the reference draws the underline as a *band* or
+as a *glyph*, which is a fact about its renderer rather than about underlines.
+
+### Representation — a packed enum, or one flag per style
+
+| Fact | Reference | Site |
+|---|---|---|
+| **A 3-bit enum with `none` as a member**, packed at bits 8–10 of the same `packed struct(u16)` that holds the other attribute bools | ghostty | `src/terminal/style.zig:29-40` (the field at `:38`); the enum `src/terminal/sgr.zig:141-147` |
+| The cell itself holds no style — only a `style_id` into a per-page ref-counted set | ghostty | `src/terminal/page.zig:2066` |
+| **A 3-bit enum, six members**, but in a *third* word: `ExtFlags.UNDERLINE_STYLE = 0x1C000000` on `ExtendedAttrs._ext`, gated by `BgFlags.HAS_EXTENDED` in `bg` and shadowed by a `FgFlags.UNDERLINE` bool in `fg` | xterm.js | `src/common/buffer/Constants.ts:139` (ext), `:130` (gate), `:118` (fg bool); enum at `:150-157` |
+| ⚠ **`_ext` is not in the typed array.** `BufferLine._data` is 3 × u32 per cell; `_extendedAttrs` is a side object map keyed by column, so the style is not part of the packed cell at all | xterm.js | `src/common/buffer/BufferLine.ts:79`, write at `:246-250`, read at `:213-219` |
+| **Five separate bits, one per style**, in the same `u16` as the plain-underline bit — no enum. `UNDERLINE` is bit 3 while `DOUBLE_UNDERLINE`/`UNDERCURL`/`DOTTED_UNDERLINE`/`DASHED_UNDERLINE` are 11–14, so the plain one is not even adjacent | alacritty | `alacritty_terminal/src/term/cell.rs:15-32`; the `ALL_UNDERLINES` union at `:33-35` |
+| **Two bits and no styles beyond double.** `UNDERLINE = AttrBIT(1)`, `ATR_DBL_UNDER = AttrBIT(12)`, and `ATR_DBL_UNDER` does not exist at all without `OPT_WIDE_ATTRS` | xterm | `ptyx.h:3703`, `:3726`, `:3722-3734` |
+
+### Ownership — can "is underlined" and "which style" disagree?
+
+**This is the row set that decided #829.** Not by head-count: three of the four *can* disagree and
+each one has a demonstrable cost, while the fourth made it unrepresentable.
+
+| Fact | Reference | Site |
+|---|---|---|
+| ✅ **No separate boolean exists.** `Style.Flags` carries eight `bool`s and `underline: Underline = .none`; there is no `underline: bool`, so the two cannot disagree | ghostty | `src/terminal/style.zig:29-40` |
+| "Is underlined" is written at each read site as `!= .none` — renderer and DECRQSS report alike | ghostty | `src/renderer/generic.zig:2935`; `src/terminal/Terminal.zig:3570` |
+| **One setter.** SGR 4, 4:x, 21 and 24 all reduce to one `sgr.Attribute` variant landing on one arm | ghostty | `src/terminal/Screen.zig:2269-2271`; the four SGR shapes at `src/terminal/sgr.zig:244-307` |
+| ⚠ **Two readers, opposite precedence, pinned by a test.** `getUnderlineStyle()` is fg-bit-authoritative (no bit ⇒ `NONE`); `isUnderline()` is `_ext`-authoritative and returns 1 with the fg bit clear | xterm.js | `src/common/buffer/AttributeData.ts:125-129` against `:39-44`; the asymmetry asserted at `src/common/buffer/BufferLine.test.ts:124-145` |
+| ⚠ **…and the readers that matter use the second one.** Neither renderer calls `getUnderlineStyle()`; both read `cell.extended.underlineStyle` raw. Taking the named getter as the model gives xterm.js's contract backwards | xterm.js | `src/browser/renderer/dom/DomRendererRowFactory.ts:309`; `addons/addon-webgl/src/TextureAtlas.ts:603` |
+| A **third** writer with no SGR behind it: a URL cell reports `DASHED` unconditionally, and `set ext` bypasses the style setter entirely | xterm.js | `src/common/buffer/AttributeData.ts:142-159`, `:151` |
+| ⚠ **The mutual exclusion is convention, and it is broken outside the SGR path.** SGR does `remove(ALL_UNDERLINES)` then `insert(one)`, but the display layer does a bare `insert(Flags::UNDERLINE)` over whatever the cell already carries | alacritty | `alacritty_terminal/src/term/mod.rs:1902-1922` against `alacritty/src/display/mod.rs:867-869` (the bare insert at `:869`) and `display/content.rs:250` |
+| **What that costs, concretely**: the renderer honours every set bit independently, appending one rect per flag — so a curly cell that is also a hint draws a curl *and* a straight line | alacritty | `alacritty/src/renderer/rects.rs:183-189` (one `update_flag` call per flag, DASHED at `:188`), each appending its own rect via `:191` |
+| ⚠ **Fully independent bits.** `CSI 4m` then `CSI 21m` leaves both set; nothing reconciles them in the model | xterm | `charproc.c:4377-4382` (SGR 4), `:4406-4410` (SGR 21) |
+| **The conflict is resolved at draw time, per consumer.** The screen picks double via an if/else chain; the HTML dump treats the two as equivalent; the SVG dump handles double alone. Three consumers, three resolutions | xterm | `util.c:3682-3696` (the `else` at `:3692-3693`); `html.c:208-216`; `svg.c:271` |
+
+### Transport — does the style reach the shader?
+
+**Read this together with what each reference draws.** Two of the three resolve the style CPU-side,
+and both of those draw the underline *as a glyph*; the one that draws a *band* sends a selector to
+the GPU, which is justerm's shape.
+
+| Fact | Reference | Site |
+|---|---|---|
+| The style is flattened out of the side object into a per-cell integer `ext`, stored as a **fourth column** of a flat `Uint32Array` (`INDICIES_PER_CELL = 4`, `EXT_OFFSET = 3`) and made part of the glyph cache key | xterm.js | `addons/addon-webgl/src/CellColorResolver.ts:49`; `addons/addon-webgl/src/RenderModel.ts:11-14`, `:20`; cache key `addons/addon-webgl/src/TextureAtlas.ts:280-302` |
+| ⚠ **…and the shader never sees it.** It is rehydrated CPU-side and stroked into the atlas by the canvas rasterizer, which switches on `underlineStyle`; the GPU is handed a glyph | xterm.js | `addons/addon-webgl/src/TextureAtlas.ts:491-493`, switch at `:603-682` (`SINGLE` shares the `default:` arm at `:677-678`) |
+| The style also steers a **phase** field for DOTTED — a per-column `variantOffset` in bits 30–32 of the same `ext` int, so adjacent cells' dots line up | xterm.js | `addons/addon-webgl/src/CellColorResolver.ts:63-66`, `:236-237`; consumed at `TextureAtlas.ts:647-663` |
+| The enum is resolved into a **sprite codepoint** (`.single → .underline`, `.curly → …`), rasterized like any glyph; the vertex the GPU receives has no style field at all | ghostty | `src/renderer/generic.zig:3053-3060`; sprite codepoints `src/font/sprite.zig:17-41`; vertex `src/renderer/opengl/shaders.zig:228-251` |
+| ⚠ **The one that draws a band compiles a SEPARATE PROGRAM per kind — it does not send a selector.** Flags stay `Flags` into the renderer, which groups rects by kind and dispatches a different compiled program for each, the kind selected by a `#define` at compile time rather than by a per-instance value. justerm hands **one** shader a 3-bit field and branches inside it: cheaper to add a style, more expensive per fragment. A **divergence**, and the one that will price #830 | alacritty | kinds `alacritty/src/renderer/rects.rs:44-52`; geometry `:79-118`; per-kind programs `:263` and the `#define` at `:441-443`; grouped dispatch `:341` |
+| A second, non-SGR producer of the style exists in **two** references: a link cell's stored style is overwritten for rendering only, the buffer untouched | ghostty · xterm.js | `src/renderer/generic.zig:2919-2930`; `src/common/buffer/AttributeData.ts:153-157` |
+
+### The unknown sub-style — 3–1, and the outlier is the spec-adjacent one
+
+| Fact | Reference | Site |
+|---|---|---|
+| **Falls back to a single underline**, via an ordered slice catch-all after the enumerated forms | alacritty | `vte-0.15.0/src/ansi.rs:1838-1843` (the catch-all at `:1843`) |
+| **Falls back to a single underline**, and says so: *"For unknown underline styles, just render a single underline."* | ghostty | `src/terminal/sgr.zig:277-283` |
+| …but two other malformed shapes emit **nothing** rather than falling back: a trailing colon with no subparam, and a further colon | ghostty | `src/terminal/sgr.zig:254-265` |
+| **Falls back to a single underline** — `if (!~style \|\| style > 5) { style = 1; }`; `4:0` is a separate explicit off | xterm.js | `src/common/InputHandler.ts:2486-2488`, off at `:2492-2495` |
+| ⚠ **Swallows the whole parameter instead.** Any `4` carrying a subparam is filtered out *before* the switch that holds `case 4:`, rewritten to `op = 9999` with the comment *"will never use this, anyway"* — so `CSI 4:1m` does nothing at all and `CSI 4:0m` does not turn the underline off | xterm | `charproc.c:4326-4345` (the swallow at `:4339-4343`); reached via `param_has_subparams()` at `:2019-2034`, armed by `CASE_ESC_COLON` at `:3873-3885` |
+
+**xterm implements no underline style beyond double at all — established as an absence, not a
+"not found".** Three independent surfaces agree: the attribute type has only the two members
+(`ptyx.h:3702-3734`, and `SGR_MASK`/`SGR_MASK2` at `:3772-3775` enumerate the complete set), the SGR
+switch has no third underline case (`charproc.c:4316-4436`), and a grep for curly/undercurl over the
+whole (non-sparse) tree returns only Unicode curly-*brace* rows in `keysym2ucs.c:488` and
+`charsets.h:506`. `ctlseqs.txt:1189-1225` agrees but the negative does not rest on it, since this
+file's rules treat that document as an index.
+
+### A routing trap this section cost an hour to
+
+**alacritty's SGR dispatch is not in the alacritty tree**, and grepping the pinned checkout for the
+`4:3` branch returns **zero hits**, which reads exactly like "alacritty has no prior art here". Its
+`Attr` enum and the `4:x` match arms are in `vte-0.15.0/src/ansi.rs` in the cargo registry — the same
+crate and version justerm itself depends on. The *storage and drawing* are in the tree
+(`term/cell.rs`, `renderer/rects.rs`); only the parse is not. This is the same trap § "A routing
+fact" records for the dynamic-colour path, reached from a different feature.

@@ -7,7 +7,7 @@ use std::collections::VecDeque;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use vte::{Params, Perform};
 
-use crate::cell::{Cell, CellFlags};
+use crate::cell::{Cell, CellFlags, UnderlineStyle};
 use crate::color::Color;
 use crate::cursor::{Cursor, CursorShape, Pen};
 use crate::damage::{LineBounds, LineDamage, ScrollOp, TermDamage};
@@ -3185,9 +3185,16 @@ impl Term {
     /// it off the wire for cells that never draw it (ADR-0020: no inert per-cell payload). SGR 58
     /// is the *underline* colour, so STRIKETHROUGH alone does not arm it.
     ///
-    /// One place, because there are three sites that write a pen-built cell (the glyph, its wide
-    /// spacer, and the vacated wrap column) — mirroring the pen half of `Row::ext_attrs_at`, so a
+    /// One place, because three sites take their extended attrs from the PEN — the glyph, its wide
+    /// spacer, and the vacated wrap column — mirroring the pen half of `Row::ext_attrs_at`, so a
     /// later rider is added here rather than at each of them (#521/#528).
+    ///
+    /// **Five sites build a cell from the pen, not three, and the other two deliberately do not
+    /// come here**: `promote_cluster_to_wide` and `relocate_cluster_wide` synthesise a pair's
+    /// spacer, whose attrs are the LEAD's rather than the pen's (ADR-0025 D4), so they read
+    /// `Row::ext_attrs_at` and the lead's underline style directly. Counting them in is how a
+    /// rider gets added here and silently misses them — which is exactly what #829's underline
+    /// style did until a refuting pass measured it.
     fn pen_ext_attrs(&self) -> ExtAttrs {
         let ucolor = self.cursor.pen.underline_color;
         let armed =
@@ -3575,8 +3582,16 @@ impl Term {
         // have moved on since the base was printed), so they are re-attached here; a base with
         // none clears whatever the overwritten column held (#521).
         let ext = self.grid.row_ref(row).ext_attrs_at(col);
+        // The underline STYLE needs the same treatment as those extended attrs and for the same
+        // reason this comment already gives (#829): it is the LEAD's, and the pen may have moved
+        // on. It rides the packed cell rather than a side map, so it is carried across directly
+        // instead of through `set_ext_attrs`. ADR-0025 D4 — a path that *synthesises* one half of
+        // a pair carries the whole pair; taking this from the pen curls the left half and leaves
+        // the right half bare.
+        let lead_style = self.grid.cell(row, col).underline_style();
         let mut spacer = self.cursor.pen.cell(' ');
         spacer.insert_flags(CellFlags::WIDE_CHAR_SPACER);
+        spacer.set_underline_style(lead_style);
         *self.grid.cell_mut(row, col + 1) = spacer;
         self.grid.row_mut(row).set_ext_attrs(col + 1, ext);
         // The cursor sat at col+1 (just past the narrow base); move it over the new spacer, applying
@@ -3698,8 +3713,12 @@ impl Term {
         // behind it — the read is gated and silently returns the default, and the frame stops
         // round-tripping (the cell encodes as linked with no index).
         self.grid.row_mut(nr).set_ext_attrs(0, ext.clone());
+        // …and the underline style from the relocated LEAD, for the reason the sibling site above
+        // states (#829, ADR-0025 D4).
+        let lead_style = self.grid.cell(nr, 0).underline_style();
         let mut spacer = self.cursor.pen.cell(' ');
         spacer.insert_flags(CellFlags::WIDE_CHAR_SPACER);
+        spacer.set_underline_style(lead_style);
         *self.grid.cell_mut(nr, 1) = spacer;
         self.grid.row_mut(nr).set_ext_attrs(1, ext);
         // Cursor just past the wide cell (pending-wrap if it fills a 2-column row).
@@ -4435,14 +4454,42 @@ impl Term {
                 1 => pen.flags.insert(CellFlags::BOLD),
                 2 => pen.flags.insert(CellFlags::DIM),
                 3 => pen.flags.insert(CellFlags::ITALIC),
-                4 => pen.flags.insert(CellFlags::UNDERLINE),
+                // SGR 4 and its colon sub-parameter form (#829). The sub-parameter is already
+                // here — `params.iter()` yields the whole `&[u16]` and every other arm reads only
+                // `first()` — so `4:3` has been arriving as `[4, 3]` and being truncated to a
+                // plain underline. `4:0` is an explicit off in every reference that implements
+                // the form. An unrecognised sub-style stays a single underline, which is both the
+                // present behaviour and what three of the four references do; #830 owns
+                // confirming that rule once there is more than one style to be wrong about.
+                //
+                // **Every value is stored, though only `Curly` is drawn differently yet.** #830
+                // owns the remaining *marks*; storing and drawing are separable and are separated
+                // here, because they are not symmetric in cost. Storing 2/4/5 is three arms and no
+                // pixel — the shader branches on `Curly` alone. NOT storing them is a loss that
+                // #830 cannot repair: a cell written `4:5m` today and scrolled into history would
+                // record `Single` forever.
+                4 => {
+                    let style = match param.get(1) {
+                        None | Some(1) => UnderlineStyle::Single,
+                        Some(0) => UnderlineStyle::None,
+                        Some(2) => UnderlineStyle::Double,
+                        Some(3) => UnderlineStyle::Curly,
+                        Some(4) => UnderlineStyle::Dotted,
+                        Some(5) => UnderlineStyle::Dashed,
+                        Some(_) => UnderlineStyle::Single,
+                    };
+                    pen.flags.set_underline_style(style);
+                }
                 5 => pen.flags.insert(CellFlags::BLINK),
                 7 => pen.flags.insert(CellFlags::INVERSE),
                 8 => pen.flags.insert(CellFlags::HIDDEN),
                 9 => pen.flags.insert(CellFlags::STRIKETHROUGH),
                 22 => pen.flags.remove(CellFlags::BOLD | CellFlags::DIM),
                 23 => pen.flags.remove(CellFlags::ITALIC),
-                24 => pen.flags.remove(CellFlags::UNDERLINE),
+                // Clears the style, not just the derived flag (#829) — removing `UNDERLINE` alone
+                // would leave a styled-but-not-underlined pen, the disagreement this model exists
+                // to make unrepresentable.
+                24 => pen.flags.set_underline_style(UnderlineStyle::None),
                 25 => pen.flags.remove(CellFlags::BLINK),
                 27 => pen.flags.remove(CellFlags::INVERSE),
                 28 => pen.flags.remove(CellFlags::HIDDEN),

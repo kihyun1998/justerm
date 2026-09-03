@@ -29,6 +29,23 @@ pub const STRIKETHROUGH: u16 = 1 << 7;
 pub const WIDE_CHAR: u16 = 1 << 8;
 /// The trailing cell a wide glyph occupies (it renders the glyph's right half).
 pub const WIDE_CHAR_SPACER: u16 = 1 << 9;
+/// The underline **style** — a 3-bit field at bits 11..=13 of the core's flag word, not a flag
+/// (#829). `0` is not underlined and the values match `justerm_core::UnderlineStyle`, which is the
+/// single owner **in the engine** — `flags()` derives `UNDERLINE` from the style there, so a
+/// core-produced frame can never carry a disagreement. It is not derived *here*: this crate is
+/// published separately and `apply_frame` takes any `u16`, so a caller can hand it a style with no
+/// flag (which draws nothing, because the shader multiplies the band by bit 3) or a flag with no
+/// style (which draws a straight line). Both are the caller's to get right; the guarantee lives one
+/// crate away and this comment used to claim it lived here.
+pub const USTYLE_SHIFT: u16 = 11;
+pub const USTYLE_MASK: u16 = 0b111 << USTYLE_SHIFT;
+// There is deliberately no `CURLY = 3` constant here: this layer *forwards* the field and never
+// interprets it, so a name for one value would be a second definition of a meaning the shader
+// owns. The Rust side stays total over all eight representable values.
+/// The underline style carried by a cell's flags, as the raw 3-bit value.
+pub fn underline_style(flags: u16) -> u16 {
+    (flags & USTYLE_MASK) >> USTYLE_SHIFT
+}
 
 /// Whether the cell is a wide glyph's lead (occupies this + the next column).
 pub fn is_wide_lead(flags: u16) -> bool {
@@ -59,6 +76,26 @@ pub const GLYPH_STRIKETHROUGH: u16 = 1 << 14;
 /// always, so the band draws **over** a tile and **under** a letter's descender. Nothing else in the
 /// field is about the glyph's class — the other bits are its address and its decorations.
 pub const GLYPH_BG_CLASS: u32 = 1 << 16;
+
+/// The underline style's field in the glyph attribute — bits 17..=19, **above** the `u16`, for the
+/// reason [`GLYPH_BG_CLASS`] documents one bit lower: the shader reads the attribute as
+/// `uint(a_glyph)` and an `f32` carries every integer below 2²⁴ exactly, so the `u16` being full
+/// bounds the *field*, not the transport.
+///
+/// It goes to the shader rather than being resolved here for a reason in this crate's own
+/// structure, not a matter of taste: [`GlyphKey`](crate::glyph_cache) has no attribute axis, and
+/// `ascii_fast_path` maps every normal-styled ASCII grapheme to a **fixed pre-allocated slot** with
+/// no cache entry at all. Baking the style into the glyph would multiply atlas entries per
+/// underlined glyph and dismantle that allocator. xterm.js and ghostty resolve the style CPU-side
+/// precisely because they draw the underline *as a glyph* — an answer to a different architecture.
+///
+/// **alacritty draws a band too and does NOT do what this does**: it compiles a *separate shader
+/// program per kind* (`renderer/rects.rs:263`, `#define DRAW_UNDERCURL` at `:441-443`) and groups
+/// its rects per kind, where this hands one shader a per-instance 3-bit field and branches inside
+/// it. That is a real divergence — cheaper for us to add a style, more expensive per draw for them
+/// — and it is what #830 will be paying or saving. An earlier version of this comment called it a
+/// convergence, which a refuting pass measured false.
+pub const GLYPH_USTYLE_SHIFT: u32 = 17;
 
 /// Font style from a cell's flags — bold + italic select the atlas variant.
 pub fn font_style(flags: u16) -> FontStyle {
@@ -92,6 +129,10 @@ pub fn glyph_field(slot: u16, flags: u16, bg_class: bool) -> u32 {
     if bg_class {
         field |= GLYPH_BG_CLASS;
     }
+    // The style rides above the class (#829). It is packed unconditionally rather than gated on
+    // `UNDERLINE`, because the core derives that flag from this very field — a gate here would be
+    // a second place able to disagree with it, which is the shape this feature exists to avoid.
+    field |= u32::from(underline_style(flags)) << GLYPH_USTYLE_SHIFT;
     field
 }
 
@@ -169,6 +210,40 @@ mod tests {
         // It stays inside the f32 exact-integer range the attribute relies on (< 2²⁴), so the
         // shader's `uint(a_glyph)` reads back what the packer wrote.
         assert!(glyph_field(0x1FFF, UNDERLINE | STRIKETHROUGH, true) < (1 << 24));
+    }
+
+    #[test]
+    fn glyph_field_carries_the_underline_style_above_the_class() {
+        // #829. The style is a 3-bit field, so the assertions are about a *value* moving intact,
+        // not about a bit being present — a shift that is off by one still sets bits.
+        const U: u32 = GLYPH_UNDERLINE as u32;
+        const CURLY: u16 = 3; // the shader's value; this layer only forwards it
+        let curly = CURLY << USTYLE_SHIFT;
+        assert_eq!(
+            glyph_field(95, UNDERLINE | curly, false),
+            95 | U | (u32::from(CURLY) << GLYPH_USTYLE_SHIFT),
+        );
+        // Every style value survives the move, including the ones #830 will draw.
+        for s in 0u16..=5 {
+            let f = glyph_field(95, s << USTYLE_SHIFT, false);
+            assert_eq!((f >> GLYPH_USTYLE_SHIFT) & 0b111, u32::from(s), "style {s}");
+            assert_eq!(f & 0x1FFF, 95, "style {s} must not disturb the slot");
+            assert_eq!(f & GLYPH_BG_CLASS, 0, "style {s} must not imply a class");
+        }
+        // It stays inside the f32 exact-integer range the attribute relies on.
+        assert!(glyph_field(0x1FFF, UNDERLINE | STRIKETHROUGH | USTYLE_MASK, true) < (1 << 24));
+    }
+
+    #[test]
+    fn underline_style_reads_the_field_not_a_flag() {
+        assert_eq!(underline_style(0), 0);
+        assert_eq!(underline_style(UNDERLINE), 0, "the flag is not the style");
+        assert_eq!(underline_style(3 << USTYLE_SHIFT), 3);
+        assert_eq!(
+            underline_style(BOLD | ITALIC | (5 << USTYLE_SHIFT) | STRIKETHROUGH),
+            5,
+            "neighbouring flags must not leak into the field",
+        );
     }
 
     #[test]
