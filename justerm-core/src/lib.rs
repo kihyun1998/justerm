@@ -79,6 +79,28 @@ impl Engine {
 
     /// Push a slice of VT bytes. The caller owns the PTY/SSH/socket I/O — the
     /// engine only consumes the bytes it is handed.
+    ///
+    /// **The stream is UTF-8, and a lone `0x80..=0x9F` byte is ill-formed input
+    /// rather than a C1 control (#847).** So the 8-bit forms of the C1 controls are
+    /// not interpreted: `0x9B` does not open a CSI, `0x9D` an OSC, `0x90` a DCS, and
+    /// `0x9C` does not terminate a string — nor does `C2 9C`, the well-formed UTF-8
+    /// encoding of U+009C. Send the 7-bit forms, which every one of them has:
+    /// `ESC [`, `ESC ]`, `ESC P`, `ESC \`.
+    ///
+    /// **This is a contract, not a gap**, and the reason is that an OSC payload
+    /// legitimately carries 8-bit text. `0x9C` is the last byte of `한` (`ED 95 9C`)
+    /// — all six occurrences of it in this repository's recorded captures are
+    /// exactly that — so honouring it as `ST` in a byte-wise parser would cut a
+    /// title mid-character. xterm arrives at the same place from the other side:
+    /// under UTF-8 it maps an ill-formed byte to U+FFFD and *ignores* a properly
+    /// encoded C1, with both escape hatches (`EXP_C2_CONTROLS`, `allowC1Printable`)
+    /// off by default. Measurements and reference sites are in
+    /// `docs/agents/reference-facts.md`.
+    ///
+    /// Two visible consequences, stated so they are not re-discovered as bugs: an
+    /// unrecognised 8-bit introducer leaves its payload to print as ordinary text,
+    /// and an OSC "closed" with `0x9C` stays open, accumulating everything after it
+    /// until a `BEL`, `ESC`, `CAN` or `SUB` arrives.
     pub fn feed(&mut self, bytes: &[u8]) {
         self.parser.advance(&mut self.term, bytes);
     }
