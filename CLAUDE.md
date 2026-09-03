@@ -98,7 +98,9 @@ cargo bench              # throughput 마이크로벤치(추세 기록)
 루트는 가상 매니페스트(`[package]` 없음)라 `--workspace` 로 멤버를 명시 게이트해야 하고, 그마저도
 `fuzz`·`justerm-facade`·`justerm-renderer`·wasm32-전용 테스트(`justerm-wasm-decode/tests/web.rs`)는
 *빌드조차 안 한다*. 크레이트별 전체 게이트 매트릭스(사각 포함·**어느 제외가 의도적인지**·CI 대조)는
-**`docs/agents/thegraph.md` § `gate`** — 22개 명령, 실행 사본은 `scripts/thegraph/gates.mjs`.
+**`docs/agents/thegraph.md` § `gate`**. **명령 개수는 어디에도 적지 않는다** — 권위 있는 목록은
+실행 사본 `scripts/thegraph/gates.mjs`(`--list`)이고, 그건 자기 목록을 `.github/workflows/test.yml`
+에 대고 단언한다. 여기 적힌 숫자는 게이트가 하나 늘어난 날 조용히 거짓이 됐다.
 크레이트 맵(어느 디렉터리가 무엇을 소유하나, **구체 경로**로)은 `docs/agents/thegraph.md` §
 `place`, downstream 절차는 같은 파일 § `downstream`.
 
