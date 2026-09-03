@@ -58,9 +58,17 @@ use crate::serialize::{MarkerId, MarkerKind};
 /// detached from its instant by the queue — ADR-0029 D4 records the same shape
 /// for coordinates — so there is no re-ask and the fact must ride the event.
 ///
-/// **Exhaustive on purpose (#843's rule).** The space is closed by the spec at
-/// exactly two, with a date for each (`ctlseqs.txt:2024-2028`), so there is no
-/// member a later slice may name and nothing for `#[non_exhaustive]` to preserve.
+/// **Exhaustive on purpose (#843's rule).** The space is closed at exactly two,
+/// with a date for each (`ctlseqs.txt:2024-2028`), so there is no member a later
+/// slice may name and nothing for `#[non_exhaustive]` to preserve.
+///
+/// ⚠ **The closure rests on the input space, not on the spec alone (#847).** ECMA-48
+/// gives `ST` a third encoding — the 8-bit C1 `0x9C` — and it is absent here because
+/// [`crate::Engine::feed`] does not treat a lone `0x80..=0x9F` byte as a control at
+/// all, not because the spec stops at two. A reader who finds `0x9C` in `ctlseqs.txt`
+/// and concludes this enum is missing a member has the reasoning backwards: were that
+/// contract ever revisited, the member would follow, and it is the contract that is
+/// load-bearing.
 /// ghostty reaches the same shape independently — `src/terminal/osc.zig:252` is a
 /// two-member `{ st, bel }` with no trailing `_`, which is Zig's marker for an
 /// open enum and is used at 23 other sites in that tree. Convergence on both the
@@ -69,11 +77,17 @@ use crate::serialize::{MarkerId, MarkerKind};
 pub enum Terminator {
     /// `ESC \` (ST), the terminator ECMA-48 documents and xterm prefers.
     ///
-    /// The default, and what an OSC ended by **anything other than BEL** resolves
-    /// to. Those streams are real rather than theoretical: `vte` ends a string on
-    /// three byte classes — `BEL`, the cancel pair `CAN`/`SUB` (`0x18` / `0x1a`),
-    /// and a bare `ESC` opening the next sequence — and only the first is reported
-    /// as bell-terminated. So a cancelled query is still relayed, and answered ST.
+    /// The default, and what an OSC ended by **any other byte that ends one**
+    /// resolves to. Those streams are real rather than theoretical: `vte` ends a
+    /// string on three byte classes — `BEL`, the cancel pair `CAN`/`SUB` (`0x18` /
+    /// `0x1a`), and a bare `ESC` opening the next sequence — and only the first is
+    /// reported as bell-terminated. So a cancelled query is still relayed, and
+    /// answered ST.
+    ///
+    /// **Read "any other byte that ends one" strictly: the 8-bit C1 `ST` (`0x9C`) is
+    /// not a fourth class (#847).** It does not end the string, so there is no event
+    /// to carry a terminator and nothing resolves to this variant — the OSC stays
+    /// open instead. See [`crate::Engine::feed`] for why that is a contract.
     ///
     /// That is the right answer, not a fallback: xterm hardcodes ST on exactly this
     /// shape (`charproc.c:8964`, *"should be ST"*) and ghostty's `Terminator.init`
