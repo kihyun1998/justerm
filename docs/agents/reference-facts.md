@@ -2308,6 +2308,34 @@ not, because the 8 are a different population: the print path that *arms* the fl
 `restore_cursor` (which restores a saved value rather than setting one), and `linefeed_inner` /
 `reverse_index`.
 
+⚠ **Corrected 2026-09-03 (#848). The count is 20, and two of the named functions write nothing.**
+The grep behind "22" used `=`, which also matched `==` (`self.cursor.row == self.scroll_bottom`).
+A strict assignment grep gives **20** writer functions. `wrapline_advances` takes `&self` and cannot
+write anything, and `try_grapheme_join` writes neither field nor the flag — it delegates to
+`promote_cluster_to_wide` (arms) and `demote_cluster_to_narrow` (clears). The arm list above also
+omits `relocate_cluster_wide`, which arms directly. **The 14/8 split was never the ground and is not
+being restated** — the per-verb unanimity was, and it survives; but a number this file publishes has
+to be one a reader can reproduce. Re-measuring it required a *strict* grep, i.e. the instrument that
+produced it could not check it.
+
+⚠ **Also corrected by #848: LF and RI now clear, and `put_tab` at the last column now does not.**
+The two paragraphs below described the state before that change and are kept because the *reference*
+rows in them are unaffected and still pinned. What is no longer true of justerm: the flag no longer
+survives LF or RI, so the engine is no longer the 3-1 outlier there; and the sentence above naming
+`put_tab` among the verbs that always clear now has one exception, grounded in the references
+agreeing the other way on that verb (see § "Forward tabulation at the right edge" below).
+
+⚠ **And the clear is not derivable from "did the verb move".** #848 first wrote it that way and
+measured the counter-example one verb over: `CUF` at the last column moves nothing, destroys the
+character exactly as the old `put_tab` did, and **all four references clear anyway** — xterm
+`cursor.c:243` (`ResetWrap` is `CursorForward`'s last statement, after the clamp), alacritty
+`term/mod.rs:1241` (unconditional, after the `cmp::min`), ghostty `Terminal.zig:1739` (*"Always
+resets pending wrap"*, before the clamp is computed), xterm.js `InputHandler.ts:919`
+(`_moveCursor` → `_restrictCursor`). The clear is per-verb, checked against the references verb by
+verb. A derived predicate would instruct the next author to remove a clear four engines agree on.
+
+**Below is the pre-#848 statement of the LF/RI axis, with its reference rows intact.**
+
 ⚠ **Those last two are not benign, and justerm is the outlier 3-1.** The flag survives LF and RI in
 this engine. Measured consequence, reproduced with a throwaway probe: with the wrap armed, `LF` then
 a print advances **two** rows and leaves one blank, and `RI` then a print lands one row *below* where
@@ -2369,7 +2397,14 @@ asserts `pending_wrap` after the tab and not only the resulting cells.
 pinned tree. It has been now, on this one axis only — which verbs reset the flag — and the answer is
 that justerm is the outlier.
 
-**One thing these rows deliberately do not settle**, because it predates #826: justerm's **forward**
-tab clears the flag where alacritty's `put_tab` *consumes* it (`if input_needs_wrap { wrapline();
-return }`), xterm's does so only under the `curses` resource, and xterm.js's no-ops. Four
-implementations, four behaviours, on a verb this change did not touch.
+~~**One thing these rows deliberately do not settle**, because it predates #826: justerm's
+**forward** tab clears the flag where alacritty's `put_tab` *consumes* it, xterm's does so only
+under the `curses` resource, and xterm.js's no-ops. Four implementations, four behaviours, on a verb
+this change did not touch.~~
+
+**Settled by #848**, and the count in the struck sentence was wrong twice over. There are **two**
+behaviours, not four: alacritty consumes, and the other three keep — xterm's `curses` gate is off by
+default, ghostty's loop is a no-op, and xterm.js's early return leaves the column parked, which are
+three mechanisms for one outcome. justerm was a *third* behaviour, destroying the character, and no
+longer is. The measured rows are in § "Forward tabulation at the right edge, and the deferred wrap"
+below. Counting mechanisms as behaviours is what made "four" look like a reason to leave it open.

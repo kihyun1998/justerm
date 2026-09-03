@@ -71,34 +71,63 @@ pub struct Cursor {
     /// # The lifecycle, and why it is written here (#848)
     ///
     /// **What the flag means:** *the cursor is logically one past the column it
-    /// sits on.* That sentence is the whole rule; every site below is derived from
-    /// it rather than decided on its own. `Term::resize` already reasoned from it
-    /// when it made a reflow that lands the cursor elsewhere hand the logical
-    /// position back to `col`.
+    /// sits on.* That sentence is what every site below is measured against — but
+    /// read the next paragraph before treating it as a rule you can derive a new
+    /// verb's behaviour from, because you cannot.
     ///
-    /// This property has **four site-classes and no fifth**:
+    /// **The clear is per-verb and is not derivable.** The first draft of this
+    /// comment said a verb clears iff it *acted*, with `HT` at the last column as
+    /// the one exception because it moves nothing. That predicate is false, and
+    /// the counter-example is one verb over: `CUF` at the last column also moves
+    /// nothing, also destroys the character that was there — and **all four
+    /// references clear anyway**, three of them unconditionally and one before it
+    /// has even computed the clamp (xterm `cursor.c:243`, alacritty
+    /// `term/mod.rs:1241`, ghostty `Terminal.zig:1739` under *"Always resets
+    /// pending wrap"*, xterm.js `InputHandler.ts:919` via `_restrictCursor`). So a
+    /// derived predicate would instruct the next author to *remove* a clear that
+    /// four engines agree on. What separates `HT` is not a property of the verb; it
+    /// is that on `HT` the references agree the other way, 3-1 (#848).
     ///
-    /// - **Armed** by the print path alone, when a glyph fills the last column and
-    ///   `DECAWM` is on — `Term::write_glyph`, `Term::try_grapheme_join`,
-    ///   `Term::promote_cluster_to_wide`.
+    /// The site-classes, which are what this comment can honestly enumerate:
+    ///
+    /// - **Armed** by the print path, when a glyph fills the last column and
+    ///   `DECAWM` is on — `Term::write_glyph`, `Term::promote_cluster_to_wide`,
+    ///   `Term::relocate_cluster_wide`.
     /// - **Consumed** by the wrap machinery, which is not a clear: `Term::wrapline`
     ///   performs the deferred wrap and only then puts the flag down.
-    /// - **Cleared** by every verb that *acts on* the position — horizontally or
-    ///   vertically, whether by moving the cursor or by scrolling the content under
-    ///   it. The one exception is a verb that computes a move and finds none to
-    ///   make: `HT` at the last column with no stop to its right changes nothing,
-    ///   so it clears nothing. Deriving the clear from "did this verb act" is what
-    ///   makes the set closed; re-deciding it per verb is what left 8 of this
-    ///   crate's 22 cursor-movers silently disagreeing with the other 14 (#848).
-    /// - **Restored**, never set, by `Term::restore_cursor` — `DECRC` reinstates a
-    ///   saved value rather than choosing one.
+    /// - **Translated** by `Term::resize`: where a reflow leaves the cursor off the
+    ///   last column the logical position becomes representable, so the flag is
+    ///   dropped and `col` takes it instead. Neither an arm nor a clear.
+    /// - **Cleared** by the positioning verbs, `HT` excepted — checked verb by verb
+    ///   against the references and recorded in
+    ///   `docs/agents/reference-facts.md`, not inferred.
+    /// - **Restored** by `Term::restore_cursor` and by leaving the alt screen. This
+    ///   one is *not* sound: neither saved slot is repaired on a resize, so a
+    ///   `DECSC` / resize / `DECRC` round-trip can install the flag at a column that
+    ///   is not the last one — a state the sentence at the top forbids. ghostty
+    ///   applies its repair to the saved cursor for exactly this reason
+    ///   (`Screen.zig:2094`). Pre-existing and out of #848's scope; tracked.
+    /// - **Read as a `+1`** by `term::markers`, which adds the flag to `cursor.col`
+    ///   to get an exclusive bound. A change to when the flag survives changes that
+    ///   bound — measured for `HT` at the right edge and the recorded column does
+    ///   move (3 where it was 2 at four columns), but **no public output changed**:
+    ///   the extracted command text is identical either way, because the run that
+    ///   cleared the flag also let the next print overwrite the last cell, and the
+    ///   two shifts cancel. Recorded so the next change here starts from a
+    ///   measurement rather than from the assumption that a reader exists but does
+    ///   not matter. The column itself is not observable through any public API.
+    ///
+    /// **What the obvious check does not reach.** Grepping this crate for writes to
+    /// `cursor.col` / `cursor.row` finds **20** functions — and it is blind to the
+    /// row-shift and erase verbs, which write neither field: `SU`, `SD`, `IL`,
+    /// `DL`, `ICH`, `DCH`, `ECH`, `EL`, `ED` all leave the flag exactly as they
+    /// found it. That is deliberate for `SU`/`SD`, where ghostty saves and restores
+    /// it across the scroll on purpose (`Terminal.zig:2390`), and unsettled for
+    /// `IL`/`DL`, where xterm and ghostty both clear and this engine does not.
     ///
     /// The rule is stated at the property because that is where it is true, the
     /// same reason ADR-0025 D2 gives for the wrap link's per-verb table living in
-    /// `Term::end_wrap`'s doc-comment. **A new cursor-moving verb owes a clear**,
-    /// and the way to check is the one that produced the census: grep this crate
-    /// for writes to `cursor.col` / `cursor.row` and ask, of each, whether it
-    /// acted.
+    /// `Term::end_wrap`'s doc-comment.
     pub pending_wrap: bool,
     pub pen: Pen,
     /// Whether the cursor is shown (DEC ?25). The engine only reports it.
