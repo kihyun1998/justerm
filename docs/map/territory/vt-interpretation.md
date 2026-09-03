@@ -25,6 +25,21 @@ for a terminal engine, that list is half the specification.
 
 - **`Perform` is the whole entry surface.** `print` · `execute` · `csi_dispatch` · `esc_dispatch` ·
   `osc_dispatch` — five methods, and everything the engine does to state hangs off them.
+- **The input space is UTF-8, which puts the 8-bit C1 controls outside it — deliberately, and this
+  entry exists because nothing else said so (#847).** A lone `0x80..=0x9F` byte is ill-formed input,
+  not a control: `0x9B` opens no CSI, `0x9D` no OSC, `0x90` no DCS, and `0x9C` terminates no string
+  — nor does `C2 9C`, which is unambiguous and still declined, because the OSC state consumes
+  *bytes* and cannot ask what codepoint they belong to. The reason is that an OSC payload
+  legitimately carries 8-bit text: `0x9C` is the last byte of `한` (`ED 95 9C`), and all six
+  occurrences in this repo's captures are that. Mechanically, `vte` routes such a byte to
+  `execute()` (`lib.rs:633`) and this territory implements `execute` for C0 only, so the byte is
+  inert and whatever followed it prints as text — a shape worth knowing before reading it as a
+  dropped sequence. The same split is visible *inside* `vte` and inside ghostty, and it is not
+  about 7-bit versus 8-bit: both accept `0x9C` for **DCS** and **APC**, whose payload ranges stop at
+  `0x7E`/`0x7F`, and refuse it for OSC, whose range runs to `0xFF`. Rows in
+  [`reference-facts.md`](../../agents/reference-facts.md). **This is the rare entry that is
+  *deliberately absent* rather than not-reached-yet** — the distinction "Known holes" below says
+  nothing preserves except prose, which is why it is prose here.
 - **Modes are hidden state the engine owns and reports nowhere.** Origin (DECOM), autowrap (DECAWM),
   insert (IRM), newline (LNM), reverse wraparound, bracketed paste, synchronized output,
   colour-scheme updates, grapheme clustering — each changes what a later byte *means*.
