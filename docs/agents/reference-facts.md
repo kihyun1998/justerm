@@ -957,7 +957,7 @@ split does not fall where the obvious rule predicts:
 
 **So "clamp if you own the number, reject if you are reading it" is not the rule, and #663's first
 draft said it was** (in four places, until the completeness pass found the third reference — one this
-repo already cited, at `justerm-core/tests/min_rows.rs:19`). Ghostty owns its resize and refuses
+repo already cited, in `justerm-core/tests/min_rows.rs`). Ghostty owns its resize and refuses
 anyway. Two facts stand once that leg is removed. First, **this boundary cannot repair**: the payload
 behind the header was laid out for the width it declares, so widening `cols` re-indexes a frame rather
 than fixing one, leaving reject and hand-back-wrong-cells as the only total answers. Second, **no
