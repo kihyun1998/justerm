@@ -105,8 +105,10 @@ impl Engine {
     /// *extended*, never rebuilt: a resize that changes only the row count — or one that changes
     /// nothing, since this call has no early return — leaves it exactly as the application set it,
     /// and a stop pushed outside a narrowed grid returns when the grid widens again (#849). The
-    /// DECSTBM scroll region is **reset** to the full screen, which is what every reference does
-    /// on a geometry change; an application that set one re-sends it after a resize.
+    /// DECSTBM scroll region is **reset** to the full screen — but only when the geometry actually
+    /// changed, since it is a range over the current screen and a resize to the size you already
+    /// have redefines nothing. An application that set one re-sends it after a real resize; nothing
+    /// tells it the region is gone, so a call that discarded one needlessly could never be repaired.
     ///
     /// `cols` is widened to [`MIN_COLUMNS`] **silently**: a `resize(1, rows)` during
     /// a pane drag yields a two-column screen with no error. Read the resulting

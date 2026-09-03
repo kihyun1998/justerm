@@ -197,3 +197,71 @@ fn primary_is_usable_after_alt_resize_roundtrip() {
     }
     assert_eq!(term.grid().cell(0, 0).c(), 'l');
 }
+
+/// The rows of a 6-row screen after a line-feed on row 4. With a DECSTBM region
+/// covering rows 2..4 still in force only those three rows move; without one the
+/// line-feed is an ordinary cursor step and nothing scrolls. Asserting the region's
+/// *effect* rather than a field is what makes this a behaviour test.
+///
+/// **The region is set by the caller, before the resize, and never here.** Setting it
+/// inside this helper made the first of the three tests below pass vacuously: what it
+/// observed was a region the helper had just re-established, not one that survived. The
+/// two tests expecting a *reset* are what exposed it.
+fn rows_after_a_feed_at_the_region_bottom(term: &mut Engine) -> Vec<String> {
+    term.feed(b"\x1b[2;1HA\x1b[3;1HB\x1b[4;1HC\x1b[6;1HZ");
+    term.feed(b"\x1b[4;1H\n"); // a line-feed at the region's bottom row
+    (0..6)
+        .map(|r| {
+            (0..6)
+                .map(|c| term.grid().cell(r, c).c())
+                .collect::<String>()
+                .trim_end()
+                .to_string()
+        })
+        .collect()
+}
+
+/// A resize to the geometry the terminal already has is not a geometry change, and
+/// it must not discard the scroll region. `resize` has no early return and
+/// `ResizePort` states no idempotency guarantee, so a consumer re-asserting its size
+/// reaches this — and the region is state only the *application* can restore, which
+/// it never does, because nothing tells it the region is gone.
+///
+/// Every reference is guarded against this by an early return over the whole
+/// function; this engine has none, so the guard is on the reset itself.
+#[test]
+fn a_resize_to_the_same_geometry_keeps_the_scroll_region() {
+    let mut term = Engine::new(6, 6);
+    term.feed(b"\x1b[2;4r");
+    term.resize(6, 6); // identical geometry
+
+    let rows = rows_after_a_feed_at_the_region_bottom(&mut term);
+    assert_eq!(rows, ["", "B", "C", "", "", "Z"]); // only rows 2..4 moved
+}
+
+/// A row change redefines the rows the region is a range over, so it goes. This is
+/// the half that was already right, and it is asserted so the gate above cannot be
+/// widened into "never reset".
+#[test]
+fn a_rows_only_resize_resets_the_scroll_region() {
+    let mut term = Engine::new(6, 7);
+    term.feed(b"\x1b[2;4r");
+    term.resize(6, 6);
+
+    let rows = rows_after_a_feed_at_the_region_bottom(&mut term);
+    assert_eq!(rows, ["", "A", "B", "C", "", "Z"]); // no region: the feed only steps
+}
+
+/// So does a column change, though the region names no column. The references reset
+/// on any geometry change, and the spec's own width change is explicit about it:
+/// xterm's DECCOLM handler calls `resetMargins` under a `DEC 070, pp 5-71 to 5-72`
+/// citation. Gating on the row axis alone would pass every other case here.
+#[test]
+fn a_cols_only_resize_resets_the_scroll_region() {
+    let mut term = Engine::new(7, 6);
+    term.feed(b"\x1b[2;4r");
+    term.resize(6, 6);
+
+    let rows = rows_after_a_feed_at_the_region_bottom(&mut term);
+    assert_eq!(rows, ["", "A", "B", "C", "", "Z"]);
+}

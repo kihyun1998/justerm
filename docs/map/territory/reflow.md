@@ -40,12 +40,13 @@ sits inside `term.rs` and `grid.rs`, and no public method is named for it — yo
   but only one is reproducible by the consumer.
 - **A point one past the last cell cannot be expressed** (#562). Five designs were built, measured
   and rejected — that issue is the content, not a pointer to it.
-- **`resize` also rewrites configuration that is not anchored to a line at all**, and that half has
-  been decided one field at a time. The DECSTBM scroll region is **reset** to the full screen (every
-  reference does the same on a geometry change). The deferred wrap is **carried** — it is cursor
-  state, #848. The tab-stop table is **extended, never rebuilt or trimmed** — it is indexed by
-  columns and written by the application, so a rows-only resize does not name its axis, #849. The
-  three were found separately and no record governs the axis; see *Known holes*.
+- **`resize` also rewrites configuration that is not anchored to a line at all**, and the axis that
+  decides each one is whether the value's *meaning* survives the geometry change. The DECSTBM scroll
+  region is a range over the current screen, so it is **reset** — but only when the geometry actually
+  moved, since a resize to the size the terminal already has changes no meaning. The deferred wrap is
+  cursor state, expressible at any geometry, so it is **carried** (#848). The tab-stop table is a set
+  of marks that still mean what they meant, so it is **extended, never rebuilt or trimmed** (#849).
+  The three were decided one at a time and separately; see *Known holes*.
 
 ## Code
 
@@ -106,12 +107,19 @@ rows rather than within one.
   issue before touching relocation.
 - **Nothing states which point sets must be passed.** The `points` slice is a convention: forget to
   include an anchor set and it is silently misplaced, with no compiler or test naming the omission.
-- **Which fields a resize may reset at all is unanswered**, and it is the question three issues have
-  now each answered for one field (#848 the deferred wrap, #849 the tab table, and the margins by
-  nobody). The counterpart record exists for the *other* reset —
+- **Which fields a resize may reset at all has no record**, though the three fields that raised it
+  are now each decided (#848 the deferred wrap, #849 the tab table, and the margins here). The
+  counterpart record exists for the *other* reset —
   [RIS keeps configuration, drops coordinates](../invariant/ris-keeps-configuration-drops-coordinates.md)
   — and does not transfer: every row there reasons from *"RIS wipes every cell"*, and a resize wipes
-  none. The obvious rule (*application-written state is carried*) derives #848 and #849 and then
-  **fails on the scroll margins**, which are application-written and reset anyway, 3/3 convergent
-  with the references. So the rule is not writable yet, and saying that is the honest state rather
-  than a rule with one unexplained member.
+  none.
+
+  **A formulation that does not break is available and is deliberately not promoted yet.** The axis
+  is *not* who wrote the value — that reading derives #848 and #849 and then fails on the margins,
+  which the application wrote and which reset anyway. It is whether the value's **meaning survives
+  the geometry change**: a range over the screen does not, a set of marks does, cursor state does, a
+  coordinate is clamped, derived state is rebuilt. That derives all seven fields this function
+  touches. What it does not do is *buy* anything — the one question it predicted (the margins on a
+  no-op) was already answered 3/3 by the references and is now fixed — so promoting it would be
+  archaeology over closed issues. The trigger to write it is a **fourth** field whose answer the
+  references do not already give.
