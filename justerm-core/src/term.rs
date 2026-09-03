@@ -2571,6 +2571,7 @@ impl Term {
         let visible = self.cursor.visible;
         self.cursor = self.saved_cursor;
         self.cursor.visible = visible;
+        self.settle_restored_wrap();
     }
 
     /// Switch to the (cleared) alternate buffer without touching the cursor —
@@ -2699,6 +2700,29 @@ impl Term {
         self.origin_mode = s.origin_mode;
         self.charsets = s.charsets;
         self.gl = s.gl;
+        self.settle_restored_wrap();
+    }
+
+    /// A restored deferred wrap is only meaningful at the last column; anywhere
+    /// else the logical position is representable and the cursor takes it.
+    ///
+    /// The same translation `Term::resize` applies to the **live** cursor, applied
+    /// to the two saved slots — which is where ghostty puts it, on the saved cursor
+    /// it has just reflowed (`terminal/Screen.zig:2094`: *"If we had pending wrap
+    /// set and we're no longer at the end of the line, we unset the pending wrap and
+    /// move the cursor to reflect the correct next position"*).
+    ///
+    /// justerm's slots are not reflowed, so the repair belongs at the restore rather
+    /// than at the resize: `decsc` is untouched by `Term::resize` and clamped here,
+    /// and the alt slot is copied whole. Measured before the fix: 4 columns, `abcd`,
+    /// `DECSC`, `resize(8, 3)`, `DECRC` left the flag armed at column 3 of an
+    /// 8-column grid — five columns from the edge — and the next print wrapped
+    /// instead of landing at column 4 (#848).
+    fn settle_restored_wrap(&mut self) {
+        if self.cursor.pending_wrap && self.cursor.col + 1 < self.grid.cols() {
+            self.cursor.pending_wrap = false;
+            self.cursor.col += 1;
+        }
     }
 
     /// Set the window title and tell the consumer, in one place.
@@ -3249,6 +3273,26 @@ impl Term {
         // Resolve a deferred last-column wrap before placing the next glyph.
         // The row being left soft-wrapped: mark its last cell so reflow (#7) can
         // tell it from a hard CR/LF line-end.
+        if self.cursor.pending_wrap && !self.autowrap {
+            // DECAWM was turned off *after* the flag was armed — `write_glyph` arms it
+            // as `pending_wrap = self.autowrap`, so it is never set while the mode is
+            // off, but nothing clears it when `?7l` arrives. Without this the parked
+            // print wrapped with autowrap disabled, and **all four references print in
+            // place**: xterm clears `do_wrap` and only then asks `WRAPAROUND`
+            // (`charproc.c:7059`, `:7192`), xterm.js un-parks with `x = cols - 1` in
+            // the else arm of its `wraparoundMode` branch (`InputHandler.ts:612`),
+            // ghostty gates the whole consume (`Terminal.zig:1368`) and alacritty's
+            // `wrapline` early-returns on `!LINE_WRAP` (`term/mod.rs:962`).
+            //
+            // Those four split 2-2 on whether the *flag* survives; the tie is broken by
+            // this crate's own arm site, which never sets it while the mode is off, so
+            // a flag that outlives `?7l` contradicts the rule that wrote it. That is
+            // xterm's and xterm.js's shape: consume the park, do not wrap.
+            //
+            // Pre-existing, and #848 widened it: until that change `put_tab` cleared
+            // the flag, so `abc` + `?7l` + `HT` + `X` printed in place by accident.
+            self.cursor.pending_wrap = false;
+        }
         if self.cursor.pending_wrap {
             let row = self.cursor.row;
             // Claim the wrap only if there will *be* a next row to continue into. Parked below a
@@ -4290,6 +4334,16 @@ impl Term {
         if cur < self.scroll_top || cur > self.scroll_bottom {
             return;
         }
+        // 3-1 for clearing, and the odd one out is the row-shift family's usual
+        // outlier: xterm `util.c:1295`, ghostty `Terminal.zig:2691` (*"Always unset
+        // pending wrap"*), and xterm.js structurally — `insertLines` opens with
+        // `_restrictCursor()`, whose `Math.min(cols - 1, …)` un-parks the column
+        // (`InputHandler.ts:1346`, `:890`). Only alacritty leaves it.
+        //
+        // `SU`/`SD` deliberately do **not** join them: ghostty saves and restores the
+        // flag around those two on purpose (`Terminal.zig:2390`), so this is a
+        // per-verb answer and not "row-shift verbs clear" (#848).
+        self.cursor.pending_wrap = false;
         self.scroll_region_lines(cur, self.scroll_bottom, n, true);
     }
 
@@ -4301,6 +4355,9 @@ impl Term {
         if cur < self.scroll_top || cur > self.scroll_bottom {
             return;
         }
+        // Same 3-1 as `Term::insert_lines`; xterm `util.c:1388`, ghostty
+        // `Terminal.zig:2856`, xterm.js `InputHandler.ts:1380` via `_restrictCursor`.
+        self.cursor.pending_wrap = false;
         self.scroll_region_lines(cur, self.scroll_bottom, n, false);
     }
 
