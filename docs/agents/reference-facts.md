@@ -2336,6 +2336,34 @@ argument matters — the deferred wrap — it does not need to be: that flag is 
 for "the cursor is parked past the last column", not an ECMA-48 concept, so no version of the spec
 could rule on it either way.
 
+## Forward tabulation at the right edge, and the deferred wrap (#848, verified 2026-09-03)
+
+The axis the section above did **not** cover. `HT` (C0 `0x09`) arriving while the deferred wrap is
+armed — the cursor parked at the last column. Every row re-opened at the pin; none copied from a
+report.
+
+| Reference | Behaviour | Site |
+|---|---|---|
+| alacritty | **Consumes** the wrap — `if input_needs_wrap { self.wrapline(); return; }`, under the comment *"A tab after the last column is the same as a linebreak."* The tab does nothing else that call | `alacritty_terminal/src/term/mod.rs:1366-1371` @ `852e971` |
+| xterm | **Keeps** it. `TabToNextStop` clamps `next` to `LineMaxCol` and calls `set_cur_col`; it never touches `do_wrap` | `tabs.c:142-158` @ `6380a3e` |
+| ⚠ xterm | **…except behind a resource that is off.** The one forward-path `ResetWrap` lives in `TabNext`, gated on `screen->curses && screen->do_wrap && (flags & WRAPAROUND)` — DECSET 41, the more(1) fix. Reading `TabToNextStop` alone gets the default right and would miss that the other behaviour exists at all | xterm | `tabs.c:113-119` @ `6380a3e` |
+| ghostty | **Keeps** it, by arithmetic rather than by decision: `while (cursor.x < scrolling_region.right)` is already false at the right edge, so `horizontalTab` is a total no-op | `src/terminal/Terminal.zig:2111-2121` @ `e6e26e1` |
+| xterm.js | **Keeps** it. No flag exists — `x === cols` *is* the parked state — and `tab()` returns early on `x >= cols`, so the column stays parked and the next print wraps | `src/common/InputHandler.ts:850-853` @ `699f553` |
+| ⚠ **Read the C0 verb, not the CSI one.** `InputHandler.ts:1126` is `cursorForwardTab`, which is **CHT (`CSI Ps I`)**. The C0 `HT` handler is `tab()` at `:850`, registered at `:273`. The two carry an identical early return, so a claim about the default survives the mix-up — a claim about either function's behaviour would not | xterm.js | `src/common/InputHandler.ts:273` (the registration) @ `699f553` |
+
+**The tally, and the thing it is easy to get wrong.** On *keeping the flag* it is **3-1**, alacritty
+the outlier. #848's body called this axis a genuine split by naming only three references and
+omitting ghostty; it is not a tie. On *preserving the character* all four agree **4-0**, and justerm
+was the outlier against all of them until #848 — which is the half that made this a defect rather
+than a divergence.
+
+**What separates the two designs, stated as behaviour.** Both keep the character; they differ on
+which row the *next* one lands in and on when the row changes. Measured at three columns, `abc` then
+`HT` then `X`: the three that keep leave the cursor parked and put `X` at row 1 column 0 **on the
+print**; alacritty moves to row 1 column 0 **on the tab** and puts `X` there. The only observable
+that separates them is the cursor between the two bytes — which is why justerm's test for this
+asserts `pending_wrap` after the tab and not only the resulting cells.
+
 **This partly closes a hole `docs/map/territory/cursor-position.md` named**: that note recorded
 "Reference behaviour: **None**" and warned the deferred-wrap model had never been grepped against a
 pinned tree. It has been now, on this one axis only — which verbs reset the flag — and the answer is

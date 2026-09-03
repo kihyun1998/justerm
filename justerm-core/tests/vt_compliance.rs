@@ -193,7 +193,8 @@ fn forward_then_back_tab_returns_to_the_starting_column() {
     assert_eq!(term.cursor().col, 0);
 }
 
-/// A back-tab clears the deferred wrap, as every other cursor move does — so
+/// A back-tab clears the deferred wrap, as every verb that *acts* on the position
+/// does — so
 /// the character after it lands in the column the back-tab chose.
 #[test]
 fn back_tab_clears_pending_wrap() {

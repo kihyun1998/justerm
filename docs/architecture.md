@@ -284,6 +284,12 @@ under it.
 - **Pending-wrap (deferred last-column wrap).** Printing into the last column does *not* advance to
   the next line — the cursor stays put with a `wrapnext` flag, and wrap happens on the *next* print.
   Eager wrap is a classic off-by-one bug (lines shift). [#2]
+  **Its ownership + lifecycle model lives on `Cursor::pending_wrap`'s doc-comment (#848)** — armed by
+  the print path, *consumed* rather than cleared by the wrap machinery, cleared by every verb that
+  acts on the position except one that finds no move to make, restored by DECRC. Read that before
+  touching any cursor-moving verb; this bullet is the implementation detail under it, the same
+  relation the two properties above have to ADR-0025. It is a doc-comment and not a record because
+  the rule is derived from the flag's one-sentence meaning rather than chosen between alternatives.
 - **Wide-char spacer is a distinct marker, not a blank.** The trailing column of a width-2 char must
   carry a "wide-char spacer" marker (flag/variant), not a plain blank — else overwrite, erase,
   selection, and cursor positioning go wrong. [#2]

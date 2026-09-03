@@ -8,11 +8,19 @@ different territory ([caret report](caret-report.md)).
 
 ## Governing decisions
 
-**None.**
+**None** — and for the deferred wrap that is now a statement about *records*, not about the rule.
 
 The position rules — clamping, the deferred wrap, the alt-screen save/restore pairing — are governed
-by no record. `docs/architecture.md` §"Hidden VT state" describes the deferred wrap as a hazard to
+by no ADR. `docs/architecture.md` §"Hidden VT state" describes the deferred wrap as a hazard to
 model, which is a warning rather than a decision.
+
+Since #848 the deferred wrap's **ownership + lifecycle** does have a single home: the doc-comment on
+`Cursor::pending_wrap`, which names its four site-classes (armed by the print path, *consumed* by the
+wrap machinery, cleared by every verb that acts on the position bar one that finds no move to make,
+restored by DECRC). It is deliberately a doc-comment and not a record: the rule is **derived** from
+the flag's one-sentence meaning — *the cursor is logically one past the column it sits on* — rather
+than chosen between alternatives, and a record's job is to hold a choice. Clamping and the
+save/restore pairing still have neither.
 
 ## Design model
 
@@ -52,8 +60,12 @@ pinned tree — the single most consequential positional rule here.
   So the "matches xterm" prose is now known to be wrong on at least this axis, in justerm's favour
   by its own coherence argument and not by the reference's.
 
-Everything else about the model — when `write_glyph` arms it, what consumes it, how it survives a
-resize — remains unpinned.
+- [Forward tabulation at the right edge, and the deferred wrap](../../agents/reference-facts.md#forward-tabulation-at-the-right-edge-and-the-deferred-wrap-848-verified-2026-09-03)
+  — **whether `HT` at the last column keeps the flag**, measured across all four by #848. 3-1 for
+  keeping; all four preserve the character, where justerm destroyed it.
+
+Everything else about the model — when `write_glyph` arms it, how it survives a resize — remains
+unpinned.
 
 ## Cross-cutting invariants
 
@@ -72,8 +84,15 @@ resize — remains unpinned.
 
 ## Known holes / open
 
-- **Zero governing records**, for rules whose failure mode is a silently shifted screen.
-- **The deferred-wrap rule survives only as a field comment.** It is the kind of thing a reader
-  "simplifies" — advancing the cursor eagerly looks equivalent and is not.
+- **Zero governing records**, for rules whose failure mode is a silently shifted screen. Narrowed
+  by #848 but not closed: the deferred wrap now has a stated lifecycle, clamping and the
+  alt-screen save/restore pairing still have nothing.
+- ~~**The deferred-wrap rule survives only as a field comment.**~~ **Closed by #848 — the field
+  comment is now the owner rather than a remnant**, and it states the rule the 22 cursor-movers are
+  measured against. What the hole predicted had already happened three times over: `put_tab` cleared
+  the flag where nothing moved and destroyed a character, `linefeed` and `reverse_index` left it
+  armed and advanced a row too far. The residual risk is unchanged in *kind* — a new cursor-moving
+  verb that never reads the doc-comment owes a clear and nothing enforces it — which is why the
+  comment carries the grep that produced the census.
 - **DECOM's interaction with the clamp is unspecified** in any artifact: origin mode clamps to the
   region, `set_point` clamps to the screen, and no document states which applies when both do.
