@@ -160,6 +160,15 @@
       }
     return n ? sum / n : 0;
   };
+  // ...and a cell small enough that the amplitude floor is the only thing keeping the curl a
+  // curl. This is the AC's "legible at the smallest supported cell size", and without it the page
+  // proves the curl only where amplitude has room to spare — the exact case #515 gave the band a
+  // thickness floor for.
+  r.setFontSize(g, 6);
+  const tinyCurly = bandCentres(UNDERLINE | CURLY);
+  const tinySingle = bandCentres(UNDERLINE);
+  r.setFontSize(g, 16);
+
   const bigFlat = meanAt(bigCurly, [Math.round(bigW / 4), Math.round((3 * bigW) / 4)]);
   const bigSteep = meanAt(bigCurly, [0, Math.round(bigW / 2)]);
   const bigRatio = bigFlat > 0 ? bigSteep / bigFlat : 0;
@@ -183,6 +192,11 @@
   // amplitude and the amplitude is floored at one device pixel, so 1.5 sits inside the floor and
   // far outside the straight line's (provably zero) wobble.
   checks.theCurlActuallyCurls = spread(curly.centres) >= 1.5;
+
+  // --- the smallest cell, where the amplitude floor is the whole feature ----------------------
+  checks.theCurlStillCurlsAtATinyCell = spread(tinyCurly.centres) >= 1.0;
+  checks.theTinyStraightBandStillDoesNotMove = spread(tinySingle.centres) < 0.25;
+  checks.theTinyCurlIsDrawnAtAll = tinyCurly.centres.some((v) => v !== null);
 
   // --- the period, which nothing asserted until a refuting pass mutated it ---------------------
   // `sin(x * 2pi)` with `x` the fraction across the cell is ONE cycle per cell, and that period is
@@ -254,6 +268,12 @@
       // thickness for the same reason.
       steepOverFlatExtent: +ratioAt(curly).toFixed(3),
       straightSteepOverFlat: +ratioAt(single).toFixed(3),
+      tiny: {
+        cellH: tinyCurly.cellH,
+        cellW: tinyCurly.cellW,
+        curlSpread: +spread(tinyCurly.centres).toFixed(3),
+        straightSpread: +spread(tinySingle.centres).toFixed(3),
+      },
       big: {
         cellH: bigCurly.cellH,
         flatExtent: +bigFlat.toFixed(2),
