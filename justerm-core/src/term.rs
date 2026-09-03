@@ -1822,10 +1822,16 @@ impl Term {
         // this function is the only way any of them runs, and a per-site obligation is
         // the shape `docs/map/territory/marker.md` already records as a known hole for
         // the alt guard. Gated on a *dimension change* as well as on there being a marker:
-        // `resize` has no early return for unchanged geometry, and `justerm-web`'s fit
-        // loop re-asserts the size every frame (`ResizePort` states no idempotency
-        // guarantee), so an ungated bump is a full re-pull per frame — measured at 100
-        // bumps for 100 no-op resizes.
+        // `resize` has no early return for unchanged geometry and `ResizePort` states no
+        // idempotency guarantee, so a consumer may call this with the size it already has —
+        // `justerm-web`'s fit does exactly that when the *cell* moves and the proposed grid
+        // does not, since it dedupes on cell and grid together. An ungated bump would then be
+        // a full re-pull for a resize that changed nothing — measured at 100 bumps for 100
+        // no-op resizes.
+        //
+        // This comment said the fit loop *"re-asserts the size every frame"*, which stopped being true
+        // when #632 gave `FitController` its four-field dedupe. The gate is unaffected: what it
+        // rests on is the missing early return, and that is still measured.
         if (cols != old_cols || rows != old_rows)
             && (!self.normal_markers.is_empty() || !self.alt_markers.is_empty())
         {
