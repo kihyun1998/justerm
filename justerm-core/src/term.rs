@@ -3185,9 +3185,16 @@ impl Term {
     /// it off the wire for cells that never draw it (ADR-0020: no inert per-cell payload). SGR 58
     /// is the *underline* colour, so STRIKETHROUGH alone does not arm it.
     ///
-    /// One place, because there are three sites that write a pen-built cell (the glyph, its wide
-    /// spacer, and the vacated wrap column) — mirroring the pen half of `Row::ext_attrs_at`, so a
+    /// One place, because three sites take their extended attrs from the PEN — the glyph, its wide
+    /// spacer, and the vacated wrap column — mirroring the pen half of `Row::ext_attrs_at`, so a
     /// later rider is added here rather than at each of them (#521/#528).
+    ///
+    /// **Five sites build a cell from the pen, not three, and the other two deliberately do not
+    /// come here**: `promote_cluster_to_wide` and `relocate_cluster_wide` synthesise a pair's
+    /// spacer, whose attrs are the LEAD's rather than the pen's (ADR-0025 D4), so they read
+    /// `Row::ext_attrs_at` and the lead's underline style directly. Counting them in is how a
+    /// rider gets added here and silently misses them — which is exactly what #829's underline
+    /// style did until a refuting pass measured it.
     fn pen_ext_attrs(&self) -> ExtAttrs {
         let ucolor = self.cursor.pen.underline_color;
         let armed =
@@ -4454,11 +4461,21 @@ impl Term {
                 // the form. An unrecognised sub-style stays a single underline, which is both the
                 // present behaviour and what three of the four references do; #830 owns
                 // confirming that rule once there is more than one style to be wrong about.
+                //
+                // **Every value is stored, though only `Curly` is drawn differently yet.** #830
+                // owns the remaining *marks*; storing and drawing are separable and are separated
+                // here, because they are not symmetric in cost. Storing 2/4/5 is three arms and no
+                // pixel — the shader branches on `Curly` alone. NOT storing them is a loss that
+                // #830 cannot repair: a cell written `4:5m` today and scrolled into history would
+                // record `Single` forever.
                 4 => {
                     let style = match param.get(1) {
                         None | Some(1) => UnderlineStyle::Single,
                         Some(0) => UnderlineStyle::None,
+                        Some(2) => UnderlineStyle::Double,
                         Some(3) => UnderlineStyle::Curly,
+                        Some(4) => UnderlineStyle::Dotted,
+                        Some(5) => UnderlineStyle::Dashed,
                         Some(_) => UnderlineStyle::Single,
                     };
                     pen.flags.set_underline_style(style);

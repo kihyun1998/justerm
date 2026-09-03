@@ -76,6 +76,8 @@
     const img = grab();
     const width = Math.min(img.w, Math.round(cellW * COLS));
     const centres = [];
+    const ink = [];      // integrated coverage per column
+    const extent = [];   // lit vertical extent per column
     let peak = 0, maxLitY = -1;
     // Scan the WHOLE image height, not `cellH`. Bounding the loop by the cell was how the first
     // draft's "stays inside the cell" check became a tautology: every sampled y was < cellH, so the
@@ -88,8 +90,12 @@
         if (v > 40) { sum += v * y; wsum += v; peak = Math.max(peak, v); maxLitY = Math.max(maxLitY, y); }
       }
       centres.push(wsum > 0 ? sum / wsum : null);
+      ink.push(wsum);
+      let lit = 0;
+      for (let y = 0; y < img.h; y++) if (px(img, x, y) > 40) lit++;
+      extent.push(lit);
     }
-    return { centres, peak, cellW, cellH, maxLitY };
+    return { centres, ink, extent, peak, cellW, cellH, maxLitY };
   };
 
   // NOTE both of these return 0 on an empty input, so every check built on them is paired with an
@@ -116,9 +122,47 @@
     return n;
   };
 
+  // Mean of a per-column series at the sine's steep positions (x = 0, w/2) over the flat ones
+  // (w/4, 3w/4), sampled in every cell. The straight band is the control: with no x term its
+  // ratio is 1 by construction, so a curl reading 1 too is a fact about the shader rather than
+  // about the instrument.
+  const ratioAt = (m, key = "extent") => {
+    const w = Math.round(m.cellW), series = m[key];
+    const pick = (offs) => {
+      let sum = 0, n = 0;
+      for (let c = 0; c * w < series.length; c++)
+        for (const o of offs) {
+          const i = c * w + o;
+          if (i < series.length && series[i] > 0) { sum += series[i]; n++; }
+        }
+      return n ? sum / n : 0;
+    };
+    const flat = pick([Math.round(w / 4), Math.round((3 * w) / 4)]);
+    return flat > 0 ? pick([0, Math.round(w / 2)]) / flat : 0;
+  };
+
   const checks = {};
   const single = bandCentres(UNDERLINE);
   const curly = bandCentres(UNDERLINE | CURLY);
+
+  // A band thick enough for a 20 % difference to clear the one-pixel quantisation floor.
+  r.setFontSize(g, 48);
+  const bigCurly = bandCentres(UNDERLINE | CURLY);
+  const bigSingle = bandCentres(UNDERLINE);
+  r.setFontSize(g, 16);
+  const bigW = Math.round(bigCurly.cellW);
+  const meanAt = (m, offs) => {
+    let sum = 0, n = 0;
+    for (let c = 0; c * bigW < m.extent.length; c++)
+      for (const o of offs) {
+        const i = c * bigW + o;
+        if (i < m.extent.length && m.extent[i] > 0) { sum += m.extent[i]; n++; }
+      }
+    return n ? sum / n : 0;
+  };
+  const bigFlat = meanAt(bigCurly, [Math.round(bigW / 4), Math.round((3 * bigW) / 4)]);
+  const bigSteep = meanAt(bigCurly, [0, Math.round(bigW / 2)]);
+  const bigRatio = bigFlat > 0 ? bigSteep / bigFlat : 0;
 
   // --- the positive control: the instrument can see a band and pin its centre ------------------
   checks.theStraightUnderlineIsDrawn = single.centres.some((v) => v !== null);
@@ -197,6 +241,26 @@
       centreDelta: +centreDelta.toFixed(3),
       curlyMaxLitY: curly.maxLitY,
       litColumns: curly.centres.filter((v) => v !== null).length,
+      // #829 AA probe. `hline`'s antialiasing takes `fwidth(gy)`, which measures the VERTICAL
+      // derivative only, so a displaced centre makes the band's edge diagonal and the ramp
+      // narrower than the geometry warrants. Coverage is a function of `gy` alone, so the VERTICAL
+      // extent should be flat across the curl (ratio 1.00) and the thinning is perpendicular
+      // (th*cos(theta)); a perpendicular-correct shader would instead read 1/cos(theta) ~ 1.27 at
+      // this cell aspect. Steepest at x = 0 and x = w/2 (cos(2*pi*x) extremal), flattest at w/4
+      // and 3w/4. Predicted max slope = 2*pi*max(lineThickness,1)/cellW, cellH cancelling out.
+      // At the default font the band is 1-2 device px tall, so a per-column thickness ratio is
+      // pure quantisation: it read 0.50 to 1.50 across the dpr sweep while the straight control
+      // read exactly 1 every time. Measured big instead, the way `underline.html` measures
+      // thickness for the same reason.
+      steepOverFlatExtent: +ratioAt(curly).toFixed(3),
+      straightSteepOverFlat: +ratioAt(single).toFixed(3),
+      big: {
+        cellH: bigCurly.cellH,
+        flatExtent: +bigFlat.toFixed(2),
+        steepExtent: +bigSteep.toFixed(2),
+        steepOverFlatExtent: +bigRatio.toFixed(3),
+        straightControl: +ratioAt(bigSingle).toFixed(3),
+      },
     },
     singleSpread: spread(single.centres),
     curlySpread: spread(curly.centres),

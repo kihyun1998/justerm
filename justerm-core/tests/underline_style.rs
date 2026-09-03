@@ -289,3 +289,47 @@ fn a_cluster_promoted_to_wide_gives_its_spacer_the_leads_style() {
         "and so must the spacer — it is the lead's second half, not a fresh pen cell",
     );
 }
+
+#[test]
+fn every_sub_parameter_stores_its_own_style() {
+    // #829 owns *where the style lives*; #830 owns *drawing* the remaining marks. Those halves are
+    // separable and are separated here: storing 2/4/5 correctly costs three match arms and changes
+    // no pixel, because the shader branches only on `Curly`. Not storing them is not free — a cell
+    // written `4:5m` today and scrolled into history records `Single` permanently, and #830 landing
+    // later cannot recover what was never kept.
+    //
+    // All three references that implement the sub-parameter form keep the values distinct
+    // (ghostty `sgr.zig:272`, vte `ansi.rs:1839-1842`, xterm.js `InputHandler.ts:2486` — whose
+    // guard is `style > 5`, so 2/4/5 pass through).
+    for (sub, want) in [
+        (b"4:1".as_slice(), UnderlineStyle::Single),
+        (b"4:2", UnderlineStyle::Double),
+        (b"4:3", UnderlineStyle::Curly),
+        (b"4:4", UnderlineStyle::Dotted),
+        (b"4:5", UnderlineStyle::Dashed),
+    ] {
+        let mut e = Engine::new(20, 3);
+        let mut seq = vec![0x1b, b'['];
+        seq.extend_from_slice(sub);
+        seq.push(b'm');
+        seq.push(b'A');
+        e.feed(&seq);
+        assert_eq!(
+            style_at(&e, 0, 0),
+            want,
+            "CSI {} m",
+            String::from_utf8_lossy(sub)
+        );
+        assert!(flags_at(&e, 0, 0).contains(CellFlags::UNDERLINE));
+    }
+}
+
+#[test]
+fn an_unrecognised_sub_parameter_is_still_a_single_underline() {
+    // The fallback #830 owns the *rule* for; the packing has to be total either way. Three of the
+    // four references degrade to a single underline (xterm is the outlier — it swallows the whole
+    // parameter, so `CSI 4:1m` does nothing there at all).
+    let mut e = Engine::new(20, 3);
+    e.feed(b"\x1b[4:9mA");
+    assert_eq!(style_at(&e, 0, 0), UnderlineStyle::Single);
+}

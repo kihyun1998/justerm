@@ -376,6 +376,25 @@ void main() {
         // thickness: a curl a fraction of a pixel tall IS a straight line, so without it the
         // feature would be a visual no-op at the smallest supported cell while every pixel
         // assertion still passed.
+        // A note on the antialiasing, measured rather than assumed. `hline` derives its ramp from
+        // `fwidth(gy)`, and `gy` is a function of the vertical coordinate alone, so the ramp is
+        // vertical. That is exact for a straight band, whose edge is horizontal; a displaced
+        // centre makes the edge DIAGONAL, and a vertical ramp across a diagonal edge is narrower
+        // than the geometry warrants by `cos(theta)`. Max slope is `2*pi*max(line_thickness,1) /
+        // cell_width` — `char_h` cancels, so this is fixed by the cell's ASPECT, not by font size:
+        // ~0.79 px/px at an 8x16 cell, i.e. theta ~38 deg and cos ~0.79.
+        //
+        // Measured consequence: coverage is a function of `gy` only, so the VERTICAL extent stays
+        // constant across the curl (browser proof, `steepOverFlatExtent` at font 48: 1.00 / 0.90 /
+        // 1.00 / 0.93 over dpr 1 / 1.1 / 1.5 / 2, against a straight-band control of exactly 1 at
+        // every one). A perpendicular-correct shader would instead read ~1.27. So the band really
+        // is ~21% thinner PERPENDICULARLY where the sine is steepest — which at the default font,
+        // where the band is 1-2 device px, is 0.2-0.4 px and therefore sub-pixel. It reaches ~1 px
+        // only at very large fonts.
+        //
+        // Deliberately not asserted as a check: the ratio is the *current* answer, and correcting
+        // the ramp for slope would move it to ~1.27, so a test pinning 1.00 would redden on the
+        // fix. The measurement is published in the proof's `measured` block instead.
         float amp = max(u_line_thickness, 1.0) / max(u_char_size.y, 1.0);
         float x = v_tex.x;
         // Oscillate UPWARD from 0.88 so the curl's lowest point sits where the straight band does
