@@ -40,6 +40,12 @@ sits inside `term.rs` and `grid.rs`, and no public method is named for it — yo
   but only one is reproducible by the consumer.
 - **A point one past the last cell cannot be expressed** (#562). Five designs were built, measured
   and rejected — that issue is the content, not a pointer to it.
+- **`resize` also rewrites configuration that is not anchored to a line at all**, and that half has
+  been decided one field at a time. The DECSTBM scroll region is **reset** to the full screen (every
+  reference does the same on a geometry change). The deferred wrap is **carried** — it is cursor
+  state, #848. The tab-stop table is **extended, never rebuilt or trimmed** — it is indexed by
+  columns and written by the application, so a rows-only resize does not name its axis, #849. The
+  three were found separately and no record governs the axis; see *Known holes*.
 
 ## Code
 
@@ -84,6 +90,12 @@ rows rather than within one.
 - [wide glyph](wide-glyph.md) — `Row::resize` cuts through pairs and D4 stops at this boundary
 - [cursor position](cursor-position.md) — the cursor is a tracked point
 - [viewport](viewport.md) · [damage](damage.md) — a resize marks the whole screen damaged
+- [vt interpretation](vt-interpretation.md) — **the axis the list above cannot reach.** Everything
+  named so far is anchored to a *line*, so nothing here points at the fields `resize` rewrites that
+  are indexed by columns and rows: the tab-stop table and the scroll margins. That absence is the
+  structural reason the tab table was rebuilt on a rows-only resize through #826 and #848 without
+  anyone standing in this note seeing it. The edge already existed in the other direction — that
+  note's blast radius names reflow — and this is the return leg
 
 ## Known holes / open
 
@@ -94,3 +106,12 @@ rows rather than within one.
   issue before touching relocation.
 - **Nothing states which point sets must be passed.** The `points` slice is a convention: forget to
   include an anchor set and it is silently misplaced, with no compiler or test naming the omission.
+- **Which fields a resize may reset at all is unanswered**, and it is the question three issues have
+  now each answered for one field (#848 the deferred wrap, #849 the tab table, and the margins by
+  nobody). The counterpart record exists for the *other* reset —
+  [RIS keeps configuration, drops coordinates](../invariant/ris-keeps-configuration-drops-coordinates.md)
+  — and does not transfer: every row there reasons from *"RIS wipes every cell"*, and a resize wipes
+  none. The obvious rule (*application-written state is carried*) derives #848 and #849 and then
+  **fails on the scroll margins**, which are application-written and reset anyway, 3/3 convergent
+  with the references. So the rule is not writable yet, and saying that is the honest state rather
+  than a rule with one unexplained member.

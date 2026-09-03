@@ -2351,11 +2351,9 @@ RI moved to.
 Out of #826's scope and carried to the maintainer rather than fixed here. **What is still unchecked
 is the normative text** — see the note on ECMA-48 below.
 
-**One more pre-existing difference, flagged and not filed**: justerm rebuilds the tab table from
-defaults on every resize (`term.rs`, `self.tabs = default_tabs(cols)`), discarding HTS-set stops.
-alacritty *preserves* them, growing the table instead (`alacritty_terminal/src/term/mod.rs:2337`,
-`TabStops::resize`, *"Increase tabstop capacity"*), and rebuilds only on RIS. xterm's array is
-width-independent, so the question does not arise there.
+**That difference was filed as #849 and fixed; the description here was wrong twice.** It read
+alacritty off its doc comment (the code also truncates) and omitted both alacritty's axis gate and
+xterm.js entirely. Corrected in full below — see *"The tab-stop table across a resize"*.
 
 **A limit on every "the spec says" claim in this section.** `ctlseqs.txt` is xterm's documentation
 *of xterm*, not the normative text. CBT's normative home is ECMA-48 / ISO-6429, and **no pinned tree
@@ -2454,3 +2452,41 @@ default, ghostty's loop is a no-op, and xterm.js's early return leaves the colum
 three mechanisms for one outcome. justerm was a *third* behaviour, destroying the character, and no
 longer is. The measured rows are in § "Forward tabulation at the right edge, and the deferred wrap"
 below. Counting mechanisms as behaviours is what made "four" look like a reason to leave it open.
+
+
+## The tab-stop table across a resize — four mechanisms, no convergence on the column axis (#849, verified 2026-09-03)
+
+Two axes, answered very differently. On a **rows-only** resize nobody discards a stop, but one of
+the four rewrites the table anyway. On a **column** change all four differ.
+
+| Fact | Reference | Site |
+|---|---|---|
+| Gates the tab work on the **column** axis. The `if` also carries the selection invalidation, so it is one branch serving two fields rather than a decision about tab stops | alacritty | `alacritty_terminal/src/term/mod.rs:681`, call at `:685` |
+| ⚠ **The doc comment says "Increase tabstop capacity" and the code also truncates.** `TabStops::resize` is `Vec::resize_with`, so a narrowing drops every stop past the new width permanently and re-widening fills defaults there instead. Reading the comment alone gives the wrong answer — this is the row that was wrong here for a week | alacritty | `alacritty_terminal/src/term/mod.rs:2337` (comment), `:2341` (the truncating call) |
+| Gates on the column axis and rebuilds the table from defaults, and says so: *"If the column count changes, tabstops are reset"* | ghostty | `src/terminal/Terminal.zig:3698` (the statement), `:3759` (the gate), `:3852` (the swap) |
+| ⚠ **A whole-resize early return, which is what scopes every "always reset" claim in both engines.** Neither reaches any of this when the geometry did not change | alacritty · ghostty | `alacritty_terminal/src/term/mod.rs:662` · `src/terminal/Terminal.zig:3753` |
+| ⚠ **xterm.js touches the table on EVERY resize, and the buffer file does not show it.** `Buffer.ts` carries two `setupTabStops` call sites (ctor, `clear()`); the third is one layer up, the last statement of `BufferSet.resize`, unconditional. Grepping `Buffer.ts` alone answers "never" | xterm.js | `src/common/buffer/BufferSet.ts:127`; reached from `src/common/services/BufferService.ts:54` |
+| And that call is not a no-op: given an argument it seeds from `prevStop(newCols)` and tops the ladder up to the width. Over a table emptied by `CSI 3 g` it **restores the whole default set** on a rows-only resize; over a sparse custom table it **adds stops the application never set** | xterm.js | `src/common/buffer/Buffer.ts:580-593`, `prevStop` at `:599-603` |
+| It never truncates, so a stop outside a narrowed width survives and revives on re-widening — the same end state as xterm, reached by a different mechanism | xterm.js | `src/common/buffer/Buffer.ts:38` (the sparse map) |
+| The table is width-independent — a 1024-bit array rather than a per-column vector, so no resize can reach it. `screen.c` mentions it zero times, and `TabReset` is called only from `VTRealize` and the RIS path | xterm | `ptyx.h:3609-3615`; `charproc.c:12688`, `:14410` |
+| ⚠ **The nearest normative statement is an absence, and it is worth more than the head count.** `set_column_mode` (DECCOLM — a *spec-defined* column change) sits under a *"DEC 070, pp 5-71 to 5-72"* citation and does exactly three things: `xterm_ResetDouble`, `resetMargins`, `CursorSet(0,0)`. The margins and the cursor are in the enumeration; **tab stops are not** | xterm (spec-adjacent) | `charproc.c:7446` (the citation), `:7457-7465` (the body) |
+| An application that wants the default ladder back **asks for it** — DECST8C, `CSI ? 5 W`, *"Reset tab stops to start with column 9, every 8 columns"*. The terminal does not infer the request from a geometry change. justerm implements neither DECST8C nor CHT | xterm (spec) | `ctlseqs.txt:750`; implementation at `charproc.c:5883` |
+
+**Both tallies, because either alone misleads.** *Rows-only*: 4/4 never **discard** a stop, 3/4 do
+not touch the table at all, and xterm.js mutates it. *Column change*: **four references, four
+behaviours** — rebuild (ghostty), prefix-preserve + extend + truncate (alacritty), keep everything
+(xterm), keep everything and top up (xterm.js). There is no convergent answer on the column axis,
+and a bare "the references preserve them" is not citable.
+
+**A limit on the DECCOLM row, stated so nobody upgrades it.** `ctlseqs.txt` and `charproc.c` are
+xterm documenting and implementing xterm; DEC STD 070 itself is in no pinned tree. And xterm's own
+table is width-independent, so its silence about tabs in `set_column_mode` **could** be an artefact
+of having nothing to reset. What survives that objection is the shape: a DEC-manual-cited
+enumeration of what a width change resets, with margins present and tabs absent. It is a vote, not
+an award.
+
+**What justerm does.** Extends, never rebuilds, never trims (#849). Per this file's rules that is
+not decided here — but it is worth recording why the reference column could not decide it either:
+the trim-vs-preserve half splits **2-2** and no tie-breaker row covers the axis, so it is a
+maintainer's call recorded on the issue. The *rebuild* half is not symmetric: the enumeration above
+votes against it and nothing votes for it but ghostty.

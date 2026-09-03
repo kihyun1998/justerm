@@ -1822,10 +1822,16 @@ impl Term {
         // this function is the only way any of them runs, and a per-site obligation is
         // the shape `docs/map/territory/marker.md` already records as a known hole for
         // the alt guard. Gated on a *dimension change* as well as on there being a marker:
-        // `resize` has no early return for unchanged geometry, and `justerm-web`'s fit
-        // loop re-asserts the size every frame (`ResizePort` states no idempotency
-        // guarantee), so an ungated bump is a full re-pull per frame — measured at 100
-        // bumps for 100 no-op resizes.
+        // `resize` has no early return for unchanged geometry and `ResizePort` states no
+        // idempotency guarantee, so a consumer may call this with the size it already has —
+        // `justerm-web`'s fit does exactly that when the *cell* moves and the proposed grid
+        // does not, since it dedupes on cell and grid together. An ungated bump would then be
+        // a full re-pull for a resize that changed nothing — measured at 100 bumps for 100
+        // no-op resizes.
+        //
+        // This comment said the fit loop *"re-asserts the size every frame"*, which stopped being true
+        // when #632 gave `FitController` its four-field dedupe. The gate is unaffected: what it
+        // rests on is the missing early return, and that is still measured.
         if (cols != old_cols || rows != old_rows)
             && (!self.normal_markers.is_empty() || !self.alt_markers.is_empty())
         {
@@ -2181,10 +2187,15 @@ impl Term {
         }
 
         // Carry the deferred wrap across the resize — it is *cursor* state, and it used to be
-        // reset here alongside the margins and tab stops, which are screen configuration and do
-        // legitimately reset. Losing it meant the next byte overwrote the last glyph instead of
-        // wrapping past it, on a column resize *and* on a rows-only one where no reflow runs at
-        // all.
+        // reset here alongside the scroll margins. Losing it meant the next byte overwrote the
+        // last glyph instead of wrapping past it, on a column resize *and* on a rows-only one
+        // where no reflow runs at all.
+        //
+        // This comment also named the tab stops beside the margins, as state that "does
+        // legitimately reset". That was wrong, and #849 measured it: the table is indexed by
+        // *columns* and written by the *application*, so rebuilding it on a rows-only resize
+        // destroyed it on an axis it does not name. The margins still reset; the table does not,
+        // and the extension below is why.
         //
         // The flag means "the cursor is logically one past the column it sits on". Where the
         // reflow leaves it somewhere other than the last column that logical position **is**
@@ -2204,7 +2215,42 @@ impl Term {
         }
         self.scroll_top = 0;
         self.scroll_bottom = rows - 1;
-        self.tabs = default_tabs(cols);
+        // Extend, never rebuild and never trim (#849). A resize changes the *grid*; the
+        // tab-stop table is state the application wrote through the stream. The line this
+        // replaces rebuilt it from defaults on every call, so a window dragged one row
+        // taller — or a consumer merely re-asserting its size, which reaches here because
+        // this function has no early return for unchanged geometry — silently replaced an
+        // application's stops with multiples of eight, on an axis the table is not even
+        // indexed by.
+        //
+        // New columns take the default ladder at their **absolute** index, which is why the
+        // closure carries `index` instead of counting from zero: filling them with `false`
+        // keeps the length right and loses every default stop past the old width.
+        //
+        // Nothing is trimmed, so `tabs.len()` is the widest this terminal has ever been and
+        // the invariant the two walks need is `len() >= cols` rather than equality — every
+        // index site is bounded by `cols` or by `cursor.col`. A stop pushed outside the grid
+        // by a narrowing is unreachable while narrow and returns when the grid widens again.
+        // The corpus splits 2-2 on that half: xterm keeps it structurally (MAX_TABS is 1024,
+        // independent of the screen, `ptyx.h:3611` @ `6380a3e`) and xterm.js keeps it in a
+        // sparse map, while alacritty truncates through `Vec::resize_with`
+        // (`alacritty_terminal/src/term/mod.rs:2341` @ `852e971`) and ghostty rebuilds the
+        // table outright when the column count moves (`src/terminal/Terminal.zig:3759` @
+        // `e6e26e1`). No tie-breaker row covers the axis, so the call is the maintainer's,
+        // recorded on #849.
+        //
+        // Only the *rebuild* is wrong here, not every reset: RIS still restores the default
+        // ladder, because `full_reset` replaces the whole struct and takes the table from
+        // the constructor — the right answer for state the application wrote and `ESC c`
+        // resets.
+        if cols > self.tabs.len() {
+            let mut index = self.tabs.len();
+            self.tabs.resize_with(cols, || {
+                let is_stop = is_default_tab_stop(index);
+                index += 1;
+                is_stop
+            });
+        }
         self.display_offset = self.display_offset.min(self.scrollback.len());
 
         // Damage tracking is sized to the screen; a resize repaints everything,
@@ -4641,7 +4687,16 @@ fn reflow_pane(
 
 /// Default tab stops: one every 8 columns (incl. column 0), matching xterm.
 fn default_tabs(cols: usize) -> Vec<bool> {
-    (0..cols).map(|i| i % 8 == 0).collect()
+    (0..cols).map(is_default_tab_stop).collect()
+}
+
+/// Whether `col` carries a stop in the default ladder.
+///
+/// Shared by the table the constructor builds and the extension [`Term::resize`]
+/// performs, which fills at the *absolute* column index. The two must not drift,
+/// and a second literal `8` is exactly how they would.
+fn is_default_tab_stop(col: usize) -> bool {
+    col.is_multiple_of(8)
 }
 
 /// First sub-parameter of CSI param `idx`, or `default` when absent or zero

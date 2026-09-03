@@ -101,6 +101,13 @@ impl Engine {
     /// search at the new width — a reflow moves match coordinates and can change the match
     /// set), while the selection is carried to its new coordinates for you.
     ///
+    /// **Two pieces of application-written state, answered differently.** The tab-stop table is
+    /// *extended*, never rebuilt: a resize that changes only the row count — or one that changes
+    /// nothing, since this call has no early return — leaves it exactly as the application set it,
+    /// and a stop pushed outside a narrowed grid returns when the grid widens again (#849). The
+    /// DECSTBM scroll region is **reset** to the full screen, which is what every reference does
+    /// on a geometry change; an application that set one re-sends it after a resize.
+    ///
     /// `cols` is widened to [`MIN_COLUMNS`] **silently**: a `resize(1, rows)` during
     /// a pane drag yields a two-column screen with no error. Read the resulting
     /// width back from [`Engine::grid`] or the frame header rather than assuming the
