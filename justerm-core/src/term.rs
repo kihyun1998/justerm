@@ -2379,8 +2379,17 @@ impl Term {
     /// below the region, just descend (no scroll). Column is unchanged (raw LF;
     /// CR is what returns to column 0).
     /// An ordinary line feed — `LF`/`VT`/`FF`, `IND` and `NEL`. None of them serves a wrap.
+    ///
+    /// It clears the deferred wrap, as every acting positioner does — see
+    /// [`Cursor::pending_wrap`]. The clear sits here rather than in
+    /// [`Term::linefeed_inner`] because the wrap machinery drives that same
+    /// primitive and *consumes* the flag rather than clearing it; folding the two
+    /// together would put one property's arm and its clear in one statement.
+    /// Leaving it armed made the print after an `LF` wrap a second time, landing a
+    /// row further down and leaving the row the feed had reached blank (#848).
     fn linefeed(&mut self) {
         self.linefeed_inner(false);
+        self.cursor.pending_wrap = false;
     }
 
     /// A line feed, carrying the one fact the shift itself cannot see: whether the auto-wrap asked
@@ -2654,6 +2663,12 @@ impl Term {
         } else if self.cursor.row > 0 {
             self.cursor.row -= 1;
         }
+        // Cleared in both branches, because both are the verb acting: one moves the
+        // cursor, the other scrolls the content under it. Branching on which would
+        // reintroduce the per-verb special-casing [`Cursor::pending_wrap`] exists to
+        // remove, and xterm and ghostty both clear unconditionally here (`cursor.c:284`
+        // via `CursorUp`; `Terminal.zig:2174` in `index`, under a comment saying so).
+        self.cursor.pending_wrap = false;
     }
 
     // ---- cursor save/restore (DECSC / DECRC) ---------------------------------
@@ -2915,6 +2930,22 @@ impl Term {
 
     /// HT: advance to the next set tab stop, or the last column if none remain
     /// (no wrap).
+    ///
+    /// **The deferred wrap is cleared only when the walk actually moves** — see
+    /// [`Cursor::pending_wrap`], which owns the rule. At the last column there is
+    /// no stop to the right, so this verb changes nothing and must leave the flag
+    /// armed; clearing it there discarded the parked position and let the next
+    /// print overwrite the character already in that column (#848).
+    ///
+    /// Three of the four references keep it here, by three different mechanisms:
+    /// xterm's `TabToNextStop` clamps to `LineMaxCol` and never touches `do_wrap`
+    /// (`tabs.c:142-158`; the one `ResetWrap` on this path is in `TabNext`, gated
+    /// on the `curses` resource at `tabs.c:113`, off by default), ghostty's loop
+    /// condition `cursor.x < scrolling_region.right` is already false
+    /// (`Terminal.zig:2111`), and xterm.js returns early on `x >= cols` because
+    /// that *is* its parked state (`InputHandler.ts:850`). alacritty is the
+    /// outlier and consumes the wrap instead (`term/mod.rs:1366`); it preserves
+    /// the character too, and differs only on which row the next one lands in.
     fn put_tab(&mut self) {
         let cols = self.grid.cols();
         let mut col = self.cursor.col;
@@ -2924,8 +2955,10 @@ impl Term {
                 break;
             }
         }
-        self.cursor.col = col;
-        self.cursor.pending_wrap = false;
+        if col != self.cursor.col {
+            self.cursor.col = col;
+            self.cursor.pending_wrap = false;
+        }
     }
 
     /// CBT (CSI Ps Z): step back `n` tab stops, or to column one if fewer

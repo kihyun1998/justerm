@@ -1181,3 +1181,73 @@ fn plain_overwrite_hides_a_combined_cells_marks() {
         "no stale combining surfaces"
     );
 }
+
+// ===========================================================================
+// The deferred wrap's lifecycle (#848)
+// ===========================================================================
+
+/// HT at the right edge of a full row has nowhere to go, so it must leave the
+/// deferred wrap alone — the character already in the last column survives and
+/// the next print wraps past it.
+#[test]
+fn tab_at_the_right_edge_keeps_the_deferred_wrap() {
+    let mut term = Engine::new(3, 2);
+    term.feed(b"abc"); // fills row 0 → pending_wrap armed
+    assert!(term.cursor().pending_wrap);
+
+    term.feed(b"\t"); // no stop to the right; nothing to move
+    assert!(term.cursor().pending_wrap);
+
+    term.feed(b"X");
+    assert_eq!(term.grid().cell(0, 2).c(), 'c'); // not overwritten
+    assert_eq!(term.grid().cell(1, 0).c(), 'X'); // wrapped past it
+}
+
+/// The same at a second width, because a one-off at three columns could be an
+/// artefact of the geometry rather than of the rule.
+#[test]
+fn tab_at_the_right_edge_keeps_the_deferred_wrap_at_nine_columns() {
+    let mut term = Engine::new(9, 2);
+    term.feed(b"123456789");
+    assert!(term.cursor().pending_wrap);
+
+    term.feed(b"\tX");
+
+    assert_eq!(term.grid().cell(0, 8).c(), '9');
+    assert_eq!(term.grid().cell(1, 0).c(), 'X');
+}
+
+/// LF moves the cursor, so the position the deferred wrap described is gone and
+/// the flag goes with it — the next print lands on the row LF moved to, not one
+/// further down.
+#[test]
+fn linefeed_consumes_the_deferred_wrap() {
+    let mut term = Engine::new(3, 4);
+    term.feed(b"abc");
+    assert!(term.cursor().pending_wrap);
+
+    term.feed(b"\n");
+    assert!(!term.cursor().pending_wrap);
+    assert_eq!(term.cursor().row, 1);
+    assert_eq!(term.cursor().col, 2);
+
+    term.feed(b"X");
+    assert_eq!(term.grid().cell(1, 2).c(), 'X');
+}
+
+/// RI likewise — the print after it lands on the row RI moved to, not one below
+/// where it would overwrite unrelated content.
+#[test]
+fn reverse_index_consumes_the_deferred_wrap() {
+    let mut term = Engine::new(3, 4);
+    term.feed(b"\x1b[2;1H"); // row 1
+    term.feed(b"abc");
+    assert!(term.cursor().pending_wrap);
+
+    term.feed(b"\x1bM"); // RI
+    assert!(!term.cursor().pending_wrap);
+    assert_eq!(term.cursor().row, 0);
+
+    term.feed(b"X");
+    assert_eq!(term.grid().cell(0, 2).c(), 'X');
+}

@@ -67,6 +67,38 @@ pub struct Cursor {
     /// last column: the cursor stays put and the actual line wrap happens on the
     /// *next* print. Eager wrapping here is the classic off-by-one that shifts
     /// lines (see `docs/architecture.md` "Hidden VT state").
+    ///
+    /// # The lifecycle, and why it is written here (#848)
+    ///
+    /// **What the flag means:** *the cursor is logically one past the column it
+    /// sits on.* That sentence is the whole rule; every site below is derived from
+    /// it rather than decided on its own. `Term::resize` already reasoned from it
+    /// when it made a reflow that lands the cursor elsewhere hand the logical
+    /// position back to `col`.
+    ///
+    /// This property has **four site-classes and no fifth**:
+    ///
+    /// - **Armed** by the print path alone, when a glyph fills the last column and
+    ///   `DECAWM` is on — `Term::write_glyph`, `Term::try_grapheme_join`,
+    ///   `Term::promote_cluster_to_wide`.
+    /// - **Consumed** by the wrap machinery, which is not a clear: `Term::wrapline`
+    ///   performs the deferred wrap and only then puts the flag down.
+    /// - **Cleared** by every verb that *acts on* the position — horizontally or
+    ///   vertically, whether by moving the cursor or by scrolling the content under
+    ///   it. The one exception is a verb that computes a move and finds none to
+    ///   make: `HT` at the last column with no stop to its right changes nothing,
+    ///   so it clears nothing. Deriving the clear from "did this verb act" is what
+    ///   makes the set closed; re-deciding it per verb is what left 8 of this
+    ///   crate's 22 cursor-movers silently disagreeing with the other 14 (#848).
+    /// - **Restored**, never set, by `Term::restore_cursor` — `DECRC` reinstates a
+    ///   saved value rather than choosing one.
+    ///
+    /// The rule is stated at the property because that is where it is true, the
+    /// same reason ADR-0025 D2 gives for the wrap link's per-verb table living in
+    /// `Term::end_wrap`'s doc-comment. **A new cursor-moving verb owes a clear**,
+    /// and the way to check is the one that produced the census: grep this crate
+    /// for writes to `cursor.col` / `cursor.row` and ask, of each, whether it
+    /// acted.
     pub pending_wrap: bool,
     pub pen: Pen,
     /// Whether the cursor is shown (DEC ?25). The engine only reports it.
