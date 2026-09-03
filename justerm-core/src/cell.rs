@@ -60,7 +60,11 @@ bitflags::bitflags! {
 /// full, so [the side-map
 /// invariant](https://github.com/kihyun1998/justerm/blob/master/docs/map/invariant/row-keyed-side-maps.md)
 /// does not apply, and packing is what makes the style ride along for free everywhere a cell
-/// moves — reflow, scroll, the wide-pair rider, and the blank a wrapping wide glyph leaves behind.
+/// moves — reflow, scroll, and the blank a wrapping wide glyph leaves behind. **One path needed an
+/// explicit carry and is worth naming rather than counting in**: `promote_cluster_to_wide` /
+/// `relocate_cluster_wide` *synthesise* the pair's spacer from the pen rather than moving it, so
+/// they take the style from the lead the same way they already take its extended attrs (ADR-0025
+/// D4). A refuting pass found that one; the other three are free.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
 #[repr(u8)]
 pub enum UnderlineStyle {
@@ -182,8 +186,10 @@ const BG_LINK: u32 = 1 << 28;
 // UCOLOR_PRESENT (#520): a non-default underline colour (SGR 58) lives in the
 // row's ucolor map at this column. Its own presence bit, gating a separate map —
 // the 12-byte cell (three packed words) has no room for a fourth colour, so the
-// colour rides a side map exactly as the hyperlink does (bits 30,31 stay free
-// for a later underline *style* / a second extended attr).
+// colour rides a side map exactly as the hyperlink does. **The underline style did NOT land
+// here** — this comment used to send the next reader to bits 30,31 for it, and two bits cannot
+// hold six values; it went to the CONTENT word at bits 26..=28 (#829). Bits 30,31 stay free for a
+// second extended attr.
 const BG_UCOLOR: u32 = 1 << 29;
 const BG_FLAG_MASK: u32 = BG_ITALIC | BG_DIM;
 
@@ -438,19 +444,48 @@ impl Cell {
 
     /// Add the given flags (leaving the others set). Sets the word bits directly —
     /// no round-trip through `flags()`/`store_flags`.
+    ///
+    /// **The underline is a field, not a bit, so it is *replaced* rather than OR-ed (#829).**
+    /// Bit-OR is the right operation for every other member and the wrong one for a 3-bit value:
+    /// OR-ing `Dotted` (4) into a `Single` (1) cell yields `Dashed` (5), a style neither the
+    /// caller nor the parser asked for, and a bit pattern no canonical cell has — which would
+    /// break the property this type's derived `Eq` is a bitwise compare because of. A completeness
+    /// pass found this; nothing in this repository reached it, but `Cell` is published.
     pub fn insert_flags(&mut self, flags: CellFlags) {
         let (content, fg, bg) = flag_words(flags.bits() as u32);
-        self.content |= content;
+        self.content |= content & !C_USTYLE_MASK;
         self.fg |= fg;
         self.bg |= bg;
+        // `flag_words` already normalised a bare `UNDERLINE` to `Single`, so "names the underline
+        // at all" is exactly "the normalised style is not `None`".
+        let named = UnderlineStyle::from_bits((content & C_USTYLE_MASK) >> C_USTYLE_SHIFT);
+        if named != UnderlineStyle::None {
+            self.set_underline_style(named);
+        }
     }
 
     /// Clear the given flags (leaving the others as they are).
+    ///
+    /// **Naming the underline clears the whole field (#829)**, whichever way it was named — the
+    /// `UNDERLINE` flag or a style value. Masking the bits off instead would turn one style into
+    /// another (clearing `UNDERLINE`, which normalises to `Single` = `0b001`, subtracts a bit from
+    /// `Curly` = `0b011` and leaves `Double`), so a method documented as clearing a flag would
+    /// return a cell that is still underlined, in a style no input can produce.
     pub fn remove_flags(&mut self, flags: CellFlags) {
         let (content, fg, bg) = flag_words(flags.bits() as u32);
-        self.content &= !content;
+        self.content &= !(content & !C_USTYLE_MASK);
         self.fg &= !fg;
         self.bg &= !bg;
+        let named = UnderlineStyle::from_bits((content & C_USTYLE_MASK) >> C_USTYLE_SHIFT);
+        if named != UnderlineStyle::None {
+            self.set_underline_style(UnderlineStyle::None);
+        }
+    }
+
+    /// Set the underline style on this cell, arming or disarming the derived `UNDERLINE` view bit
+    /// with it. The one writer of the field on a built cell.
+    pub fn set_underline_style(&mut self, style: UnderlineStyle) {
+        self.content = (self.content & !C_USTYLE_MASK) | ((style as u32) << C_USTYLE_SHIFT);
     }
 
     /// Reset to a blank **default** cell — default background included.

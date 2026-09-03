@@ -66,7 +66,12 @@ indices). Cell record (LE): `c` u32 (Unicode scalar, not atlas id), `fg`/`bg`
 u32 each (tag `Default|Indexed|Rgb` + 24-bit payload), `flags` u16, `extra` u16
 (frame-local grapheme index, 0 = none) = **16 bytes**, 4-aligned at v1. Future
 underline style+colour ride `flags`' spare bits (11–15) + the colour tags' spare
-bits — those are *fixed-size* attributes that fit without a record change. An OSC
+bits — those are *fixed-size* attributes that fit without a record change.
+**Paid out**: the underline colour took the sparse-group route instead (#520 —
+it is a colour reference, not a fixed-size attribute, so this sentence was half
+right); the underline **style** took bits 11–13 in #829 with no record change
+and no version bump, leaving 14–15. The prediction is worth keeping in view
+because it is the one place this record can be checked against an outcome. An OSC
 8 hyperlink id, by contrast, references a variable-length URI, so it cannot ride
 spare bits: it is a versioned addition (own index + side-table). **v2 (#26)**
 appends a `link` u16 (frame-local hyperlink index, 0 = none) to the record (now

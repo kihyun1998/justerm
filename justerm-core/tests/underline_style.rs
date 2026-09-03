@@ -209,3 +209,83 @@ fn every_style_round_trips_through_the_packed_cell() {
         assert_eq!(c.fg(), Color::Indexed(3), "{s:?} must not disturb fg");
     }
 }
+
+#[test]
+fn removing_the_underline_flag_clears_the_style_rather_than_rewriting_it() {
+    // A completeness pass found this: `remove_flags`/`insert_flags` set the packed words with
+    // `|=` / `&= !`, and the style is a 3-BIT FIELD, so a bitwise clear of `UNDERLINE` — which
+    // `flag_words` normalises to `Single` = 1 — subtracts bit 26 from `Curly` (3) and leaves
+    // `Double` (2). The method's own contract says "clear the given flags (leaving the others as
+    // they are)"; silently converting one underline style into a different one is not that.
+    //
+    // Zero in-repo call sites pass an underline flag today — all eight pass only wide/wrap
+    // markers — but `Cell` is re-exported and published, and `remove_flags(UNDERLINE)` is exactly
+    // the verb a consumer reaches for to un-underline a cell.
+    let mut f = CellFlags::empty();
+    f.set_underline_style(UnderlineStyle::Curly);
+    let mut c = Cell::from_parts('x', Color::Default, Color::Default, f);
+
+    c.remove_flags(CellFlags::UNDERLINE);
+    assert_eq!(
+        c.underline_style(),
+        UnderlineStyle::None,
+        "clearing the underline must clear the style, not turn a curl into a double",
+    );
+    assert!(!c.flags().contains(CellFlags::UNDERLINE));
+}
+
+#[test]
+fn inserting_a_style_replaces_the_field_rather_than_or_ing_into_it() {
+    // The other direction of the same defect: `Single` (1) OR `Dotted` (4) is `Dashed` (5).
+    let mut f = CellFlags::empty();
+    f.set_underline_style(UnderlineStyle::Single);
+    let mut c = Cell::from_parts('x', Color::Default, Color::Default, f);
+
+    let mut add = CellFlags::empty();
+    add.set_underline_style(UnderlineStyle::Dotted);
+    c.insert_flags(add);
+    assert_eq!(c.underline_style(), UnderlineStyle::Dotted);
+}
+
+#[test]
+fn inserting_an_unrelated_flag_leaves_the_style_alone() {
+    // The guard against over-correcting: a caller adding a wide-char marker must not disturb the
+    // style, which is what every in-repo call site actually does.
+    let mut f = CellFlags::empty();
+    f.set_underline_style(UnderlineStyle::Curly);
+    let mut c = Cell::from_parts('x', Color::Default, Color::Default, f);
+    c.insert_flags(CellFlags::WIDE_CHAR);
+    assert_eq!(c.underline_style(), UnderlineStyle::Curly);
+    c.remove_flags(CellFlags::WIDE_CHAR);
+    assert_eq!(c.underline_style(), UnderlineStyle::Curly);
+}
+
+#[test]
+fn a_cluster_promoted_to_wide_gives_its_spacer_the_leads_style() {
+    // ADR-0025 D4: "any path that moves, SYNTHESISES or frees one cell of a width-2 glyph carries
+    // the whole pair". `promote_cluster_to_wide` synthesises the spacer from `pen.cell(' ')`, and
+    // its own comment already says why that is not enough — "the pen may have moved on since the
+    // base was printed" — which is exactly why it re-attaches the lead's extended attrs. The
+    // underline style rides the packed cell rather than a side map, so it needs the same care:
+    // taking it from the pen paints the pair's left half curled and its right half bare.
+    //
+    // A refuting pass found this. It is pre-existing for the plain UNDERLINE flag, but #829 is
+    // what claims the wide-pair rider carries the style for free, so the claim is made true here
+    // rather than retracted.
+    let mut e = Engine::new(10, 2);
+    e.feed(b"\x1b[?2027h"); // grapheme clustering on
+    e.feed("\x1b[4:3m\u{1F1F0}".as_bytes()); // curly regional indicator, narrow so far
+    e.feed(b"\x1b[24m"); // the pen moves on: underline off
+    e.feed("\u{1F1F7}".as_bytes()); // the joiner promotes the cluster to width 2
+
+    assert_eq!(
+        style_at(&e, 0, 0),
+        UnderlineStyle::Curly,
+        "the lead keeps its style"
+    );
+    assert_eq!(
+        style_at(&e, 0, 1),
+        UnderlineStyle::Curly,
+        "and so must the spacer — it is the lead's second half, not a fresh pen cell",
+    );
+}

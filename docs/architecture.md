@@ -64,9 +64,12 @@ model both share.
   grapheme side-table and no per-cell index).
 - `fg` / `bg`: **color references** — `Default | Indexed(u8 0..255) | Rgb(u8,u8,u8)`. **Never resolved
   hex** — the consumer/renderer maps indices→hex via its (frozen) scheme. Engine is theme-agnostic.
-- `attrs`: standard 8 (bold/dim/italic/underline/blink/inverse/hidden/strikethrough). The record
-  **reserves room** for underline style+color and an OSC 8 hyperlink id so adding them later is not a
-  format change.
+- `attrs`: standard 8 (bold/dim/italic/underline/blink/inverse/hidden/strikethrough), plus the
+  underline **style** as a 3-bit field at bits 11–13 (#829). The record reserved room for exactly
+  this and the prediction held — the style landed with **no format change and no version bump**.
+  Bits 14–15 still reserve room for an OSC 8 hyperlink id. Note `underline` is now a *derived* view
+  of the style rather than an independent flag: it is set iff the style is not `None`, so the two
+  cannot disagree.
 - `width`: 1 (normal) or 2 (wide / CJK fullwidth) — **derived, not stored**: it reads out of
   `flags & WIDE_CHAR` (the trailing column of a wide char carries its own spacer marker). Neither the
   in-memory cell nor the wire record spends a field on it.
@@ -253,9 +256,11 @@ a per-span **sparse** group of `(col, Color)` pairs, so the per-cell record abov
 only cells that draw a coloured underline cost bytes, not every cell. **v14 (#621) generalised that
 shape rather than adding to it**: combining clusters and hyperlink references took the same route out
 of the record, which is why the record is now 14 bytes rather than 18. The sparse-group pattern is now
-how *every* rare per-cell payload reaches the wire, not a special case for one of them. What the
-`flags` bits 11–15 still genuinely reserve is the underline **style** (single/double/curly/dotted) —
-a small enum that *does* fit spare bits — plus the colour tags' spare 6 bits.
+how *every* rare per-cell payload reaches the wire, not a special case for one of them. The underline **style** was the other thing
+`flags` bits 11–15 reserved, and #829 spent bits 11–13 of it on exactly the small enum this
+sentence predicted (none/single/double/curly/dotted/dashed) — with no record change, which is the
+claim above being paid out rather than merely asserted. What is still reserved is bits 14–15 plus
+the colour tags' spare 6 bits.
 
 ## Hidden VT state — model these (and grow this list)
 

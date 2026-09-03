@@ -3575,8 +3575,16 @@ impl Term {
         // have moved on since the base was printed), so they are re-attached here; a base with
         // none clears whatever the overwritten column held (#521).
         let ext = self.grid.row_ref(row).ext_attrs_at(col);
+        // The underline STYLE needs the same treatment as those extended attrs and for the same
+        // reason this comment already gives (#829): it is the LEAD's, and the pen may have moved
+        // on. It rides the packed cell rather than a side map, so it is carried across directly
+        // instead of through `set_ext_attrs`. ADR-0025 D4 — a path that *synthesises* one half of
+        // a pair carries the whole pair; taking this from the pen curls the left half and leaves
+        // the right half bare.
+        let lead_style = self.grid.cell(row, col).underline_style();
         let mut spacer = self.cursor.pen.cell(' ');
         spacer.insert_flags(CellFlags::WIDE_CHAR_SPACER);
+        spacer.set_underline_style(lead_style);
         *self.grid.cell_mut(row, col + 1) = spacer;
         self.grid.row_mut(row).set_ext_attrs(col + 1, ext);
         // The cursor sat at col+1 (just past the narrow base); move it over the new spacer, applying
@@ -3698,8 +3706,12 @@ impl Term {
         // behind it — the read is gated and silently returns the default, and the frame stops
         // round-tripping (the cell encodes as linked with no index).
         self.grid.row_mut(nr).set_ext_attrs(0, ext.clone());
+        // …and the underline style from the relocated LEAD, for the reason the sibling site above
+        // states (#829, ADR-0025 D4).
+        let lead_style = self.grid.cell(nr, 0).underline_style();
         let mut spacer = self.cursor.pen.cell(' ');
         spacer.insert_flags(CellFlags::WIDE_CHAR_SPACER);
+        spacer.set_underline_style(lead_style);
         *self.grid.cell_mut(nr, 1) = spacer;
         self.grid.row_mut(nr).set_ext_attrs(1, ext);
         // Cursor just past the wide cell (pending-wrap if it fills a 2-column row).

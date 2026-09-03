@@ -45,7 +45,9 @@
   const UNDERLINE = 1 << 3;
   const USTYLE_SHIFT = 11;
   const CURLY = 3 << USTYLE_SHIFT;
-  const COLS = 8, ROWS = 1, N = COLS * ROWS;
+  // TWO rows: a curl that spills past the cell's bottom lands in the row below, and with ROWS = 1
+  // there is no row below for it to land in — the spill check would be blind by construction.
+  const COLS = 8, ROWS = 2, N = COLS * ROWS;
   const SPACE = 0x20;
 
   const r = new JustermRenderer("#c");
@@ -63,28 +65,55 @@
   // it. `null` where a column carries no band at all.
   const bandCentres = (flag) => {
     const [cellW, cellH] = [r.cell_width(g), r.cell_height(g)];
-    const flags = new Uint16Array(N).fill(flag);
+    // Only the FIRST row carries the band. The second row is left blank on purpose: it is the place
+    // a spill past the cell's bottom would land, and filling it too would put a legitimate second
+    // band there — which is what made the first attempt at this check fail against itself.
+    const flags = new Uint16Array(N);
+    for (let i = 0; i < COLS; i++) flags[i] = flag;
     fitGrid(r, g, COLS, ROWS);
     r.apply_frame(g, COLS, ROWS, new Uint32Array(N), new Uint32Array(N), new Uint32Array(N).fill(SPACE), flags, true);
     r.render();
     const img = grab();
     const width = Math.min(img.w, Math.round(cellW * COLS));
     const centres = [];
-    let peak = 0;
+    let peak = 0, maxLitY = -1;
+    // Scan the WHOLE image height, not `cellH`. Bounding the loop by the cell was how the first
+    // draft's "stays inside the cell" check became a tautology: every sampled y was < cellH, so the
+    // weighted mean was < cellH by construction, and a band that spilled INTO THE NEXT ROW moved
+    // the measured centre up rather than failing anything.
     for (let x = 0; x < width; x++) {
       let sum = 0, wsum = 0;
-      for (let y = 0; y < Math.min(cellH, img.h); y++) {
+      for (let y = 0; y < img.h; y++) {
         const v = px(img, x, y);
-        if (v > 40) { sum += v * y; wsum += v; peak = Math.max(peak, v); }
+        if (v > 40) { sum += v * y; wsum += v; peak = Math.max(peak, v); maxLitY = Math.max(maxLitY, y); }
       }
       centres.push(wsum > 0 ? sum / wsum : null);
     }
-    return { centres, peak, cellW, cellH };
+    return { centres, peak, cellW, cellH, maxLitY };
   };
 
+  // NOTE both of these return 0 on an empty input, so every check built on them is paired with an
+  // "is drawn" sibling. `spread([]) === 0` silently passing a dark frame is a real trap.
   const spread = (cs) => {
     const lit = cs.filter((v) => v !== null);
     return lit.length ? Math.max(...lit) - Math.min(...lit) : 0;
+  };
+  const mean = (cs) => {
+    const lit = cs.filter((v) => v !== null);
+    return lit.length ? lit.reduce((a, b) => a + b, 0) / lit.length : 0;
+  };
+  // Sign changes of (centre - mean) across one cell. A sine of period P cells crosses its own mean
+  // twice per period, so ONE cycle per cell gives exactly 2 and a 3x frequency gives 6.
+  const crossings = (cs) => {
+    const m = mean(cs);
+    let n = 0, prev = 0;
+    for (const v of cs) {
+      if (v === null) continue;
+      const sign = Math.sign(v - m);
+      if (sign !== 0 && prev !== 0 && sign !== prev) n++;
+      if (sign !== 0) prev = sign;
+    }
+    return n;
   };
 
   const checks = {};
@@ -94,50 +123,87 @@
   // --- the positive control: the instrument can see a band and pin its centre ------------------
   checks.theStraightUnderlineIsDrawn = single.centres.some((v) => v !== null);
   checks.theStraightUnderlineReadsAsItsInk = single.peak >= 230;
-  // A straight band does not move. Sub-pixel AA at the ends of the run can wobble it slightly, so
-  // the bound is a fraction of a pixel rather than exactly zero — still an order below the curl.
-  checks.theStraightUnderlineDoesNotMove = spread(single.centres) < 0.75;
+  // `hline(gy, 0.88, ...)` has no `x` term and `gy` is constant along a device row, so the straight
+  // band's per-column centre is EXACTLY constant. The first draft allowed 0.75 "for sub-pixel AA at
+  // the ends of the run" — an effect the shader has no term to produce, and 100% slack over a
+  // provable zero. A refuting pass measured that; the bound is now near the real value.
+  checks.theStraightUnderlineDoesNotMove = spread(single.centres) < 0.25;
+  // ...and its own period instrument reads zero, which is what makes a non-zero reading on the curl
+  // mean something rather than being an artefact of the counter.
+  checks.theStraightUnderlineHasNoPeriod = crossings(single.centres) === 0;
 
   // --- the claim ------------------------------------------------------------------------------
   checks.theCurlIsDrawn = curly.centres.some((v) => v !== null);
   checks.theCurlReadsAsItsInkToo = curly.peak >= 230;
   // The whole point: the same instrument reports a centre that MOVES. Peak-to-peak is 2x the
-  // amplitude, and the amplitude is floored at one device pixel, so 1.5 is comfortably inside the
-  // floor while being far outside the straight line's wobble.
+  // amplitude and the amplitude is floored at one device pixel, so 1.5 sits inside the floor and
+  // far outside the straight line's (provably zero) wobble.
   checks.theCurlActuallyCurls = spread(curly.centres) >= 1.5;
-  // Stated as a ratio too, so a future change that fattens the straight line's wobble cannot creep
-  // the two together while both absolute bounds still pass.
-  checks.theCurlMovesFarMoreThanTheStraightLine =
-    spread(curly.centres) >= 3 * Math.max(spread(single.centres), 0.25);
 
-  // The curl stays inside the cell — the centre-clamp #515 added, which a displaced centre must not
-  // defeat.
-  checks.theCurlStaysInsideTheCell = curly.centres.every((v) => v === null || v < curly.cellH);
+  // --- the period, which nothing asserted until a refuting pass mutated it ---------------------
+  // `sin(x * 2pi)` with `x` the fraction across the cell is ONE cycle per cell, and that period is
+  // the entire justification for the shader NOT carrying a per-column phase term: a whole number of
+  // cycles makes a per-cell phase and a row-continuous one the same function. Nothing checked it,
+  // so `sin(x * 2pi * 3)` passed every assertion on this page while silently making that
+  // justification false. Two mean-crossings per cell IS one cycle per cell.
+  // Counted over the WHOLE run rather than inside one cell: a sine of this period is AT its mean
+  // exactly on the cell boundary, so a per-cell slice cuts one crossing off and reads 1 where the
+  // shape is plainly one cycle (measured: 1 per cell, 15 over eight). Over the run the count is
+  // exact — two crossings per cycle, less the one at x = 0 that has no predecessor to change sign
+  // against. Eight cells therefore read 15, and a 3x frequency reads 47.
+  const perCell = Math.round(curly.cellW);
+  checks.theCurlIsExactlyOneCyclePerCell = crossings(curly.centres) === 2 * COLS - 1;
 
-  // --- the curl repeats per cell, and that IS the model -----------------------------------
-  // The period is one cycle per cell, so cell 1's centre profile must match cell 0's. A phase that
-  // drifted, or one taken from an absolute pixel coordinate, would break this. The first draft
-  // asserted "the curl joins across boundaries" instead and a mutation proved that check vacuous:
-  // with a whole number of cycles per cell a per-cell phase and a row-continuous one agree
-  // everywhere, so nothing could have failed it.
-  const w = Math.round(curly.cellW);
+  // --- the vertical placement, which nothing asserted either -----------------------------------
+  // A curl drawn through the middle of the cell — where the strikethrough lives — passed every
+  // check on the first draft, because the page compared the two styles' SPREADS and never their
+  // POSITIONS while explicitly holding a positive control positioned to give it exactly that.
+  const centreDelta = Math.abs(mean(curly.centres) - mean(single.centres));
+  checks.theCurlSitsWhereTheUnderlineSits = centreDelta <= spread(curly.centres);
+  checks.theCurlIsInTheLowerHalfOfTheCell = mean(curly.centres) > curly.cellH * 0.5;
+
+  // --- it stays inside the cell ----------------------------------------------------------------
+  // Measured against the LIT ROWS over the whole image, not against a mean the sampling window
+  // bounded. The page mounts two rows, so a band that spills lands in a row that exists.
+  checks.theCurlStaysInsideTheFirstRow = curly.maxLitY < curly.cellH;
+  checks.theStraightBandStaysInsideTheFirstRow = single.maxLitY < single.cellH;
+
+  // --- the curl repeats per cell ----------------------------------------------------------------
+  // Weaker than it reads, and said so rather than left to look strong: `v_tex.x` is quad-local, so
+  // ANY function of it repeats per cell whatever its period. What this can catch is a phase drawn
+  // from a genuinely per-cell-varying source. Kept for that, not as evidence about the shape.
   let worstCellToCellDelta = 0;
-  for (let i = 0; i < w; i++) {
-    const a = curly.centres[i], b = curly.centres[w + i];
+  for (let i = 0; i < perCell; i++) {
+    const a = curly.centres[i], b = curly.centres[perCell + i];
     if (a === null || b === null) continue;
     worstCellToCellDelta = Math.max(worstCellToCellDelta, Math.abs(b - a));
   }
   checks.theCurlRepeatsIdenticallyInEveryCell = worstCellToCellDelta <= 0.5;
-  // ...and it is not repeating a flat line: the profile it repeats is the one that moves.
-  checks.theRepeatedProfileIsTheCurlNotAFlatLine = spread(curly.centres.slice(0, w)) >= 1.5;
 
   window.__proof = {
     ok: Object.values(checks).every(Boolean),
     checks,
     dpr: devicePixelRatio,
+    // The harness prints this key on failure (#791) — a number here replaces an afternoon.
+    measured: {
+      dpr: devicePixelRatio,
+      cellW: curly.cellW,
+      cellH: curly.cellH,
+      perCell: Math.round(curly.cellW),
+      singleSpread: +spread(single.centres).toFixed(3),
+      curlySpread: +spread(curly.centres).toFixed(3),
+      crossingsInOneCell: crossings(curly.centres.slice(0, Math.round(curly.cellW))),
+      crossingsOverAll: crossings(curly.centres),
+      centreDelta: +centreDelta.toFixed(3),
+      curlyMaxLitY: curly.maxLitY,
+      litColumns: curly.centres.filter((v) => v !== null).length,
+    },
     singleSpread: spread(single.centres),
     curlySpread: spread(curly.centres),
     worstCellToCellDelta,
+    curlCrossingsPerCell: crossings(curly.centres.slice(0, Math.round(curly.cellW))),
+    centreDelta,
+    curlyMaxLitY: curly.maxLitY,
     cellW: curly.cellW,
     cellH: curly.cellH,
   };

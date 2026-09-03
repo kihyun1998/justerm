@@ -50,8 +50,11 @@ IPC by identity.
   smallest thing that lets the consumer reconstruct it.
 - **Colours are references, never hex.** `Default | Indexed(u8) | Rgb(..)` encoded as a `u32`. The
   engine is theme-agnostic by identity, so palette resolution happens after decode, in the consumer.
-- **The record reserves room** for underline style/colour and a hyperlink id, so adding them later is
-  not a format change.
+- **The record reserved room** for underline style/colour and a hyperlink id, and the prediction was
+  paid out rather than merely asserted: the underline **style** spent `flags` bits 11–13 in #829 with
+  **no record change and no version bump**, and the underline *colour* went a different way — it is a
+  colour reference, not a fixed-size attribute, so #520 gave it a sparse group. What is still
+  reserved is `flags` bits 14–15 for a hyperlink id.
 - **`encode` and `decode` both live in core**, which is what makes the round-trip testable without a
   consumer — the format is a *contract*, and a contract only one side can execute is untested.
 - **`WIRE_VERSION` is a single `u8`** and a decoder rejects a mismatch outright (`DecodeError`).

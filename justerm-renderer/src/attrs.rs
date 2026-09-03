@@ -31,7 +31,12 @@ pub const WIDE_CHAR: u16 = 1 << 8;
 pub const WIDE_CHAR_SPACER: u16 = 1 << 9;
 /// The underline **style** — a 3-bit field at bits 11..=13 of the core's flag word, not a flag
 /// (#829). `0` is not underlined and the values match `justerm_core::UnderlineStyle`, which is the
-/// single owner: `UNDERLINE` above is *derived* from it, so the two can never disagree here either.
+/// single owner **in the engine** — `flags()` derives `UNDERLINE` from the style there, so a
+/// core-produced frame can never carry a disagreement. It is not derived *here*: this crate is
+/// published separately and `apply_frame` takes any `u16`, so a caller can hand it a style with no
+/// flag (which draws nothing, because the shader multiplies the band by bit 3) or a flag with no
+/// style (which draws a straight line). Both are the caller's to get right; the guarantee lives one
+/// crate away and this comment used to claim it lived here.
 pub const USTYLE_SHIFT: u16 = 11;
 pub const USTYLE_MASK: u16 = 0b111 << USTYLE_SHIFT;
 // There is deliberately no `CURLY = 3` constant here: this layer *forwards* the field and never
@@ -77,12 +82,19 @@ pub const GLYPH_BG_CLASS: u32 = 1 << 16;
 /// `uint(a_glyph)` and an `f32` carries every integer below 2²⁴ exactly, so the `u16` being full
 /// bounds the *field*, not the transport.
 ///
-/// It goes to the shader rather than being resolved here because **this renderer draws the band**
-/// (`webgl.rs` multiplies an `hline` coverage by the underline bit). Two of the three references
-/// resolve the style CPU-side instead — xterm.js strokes it into the glyph atlas and ghostty maps
-/// it to a sprite codepoint — but both of those draw the underline *as a glyph*, so their choice is
-/// an answer to a different architecture, not a divergence from this one. alacritty, which also
-/// draws the band, likewise hands its shader a per-kind selector.
+/// It goes to the shader rather than being resolved here for a reason in this crate's own
+/// structure, not a matter of taste: [`GlyphKey`](crate::glyph_cache) has no attribute axis, and
+/// `ascii_fast_path` maps every normal-styled ASCII grapheme to a **fixed pre-allocated slot** with
+/// no cache entry at all. Baking the style into the glyph would multiply atlas entries per
+/// underlined glyph and dismantle that allocator. xterm.js and ghostty resolve the style CPU-side
+/// precisely because they draw the underline *as a glyph* — an answer to a different architecture.
+///
+/// **alacritty draws a band too and does NOT do what this does**: it compiles a *separate shader
+/// program per kind* (`renderer/rects.rs:263`, `#define DRAW_UNDERCURL` at `:441-443`) and groups
+/// its rects per kind, where this hands one shader a per-instance 3-bit field and branches inside
+/// it. That is a real divergence — cheaper for us to add a style, more expensive per draw for them
+/// — and it is what #830 will be paying or saving. An earlier version of this comment called it a
+/// convergence, which a refuting pass measured false.
 pub const GLYPH_USTYLE_SHIFT: u32 = 17;
 
 /// Font style from a cell's flags — bold + italic select the atlas variant.
