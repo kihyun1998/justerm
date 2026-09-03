@@ -2213,8 +2213,24 @@ impl Term {
             self.cursor.pending_wrap = false;
             self.cursor.col += 1;
         }
-        self.scroll_top = 0;
-        self.scroll_bottom = rows - 1;
+        // The scroll region is a *range over the current screen*, so a geometry change discards
+        // it: at a new row count the range names rows that are not the ones it was set for. Every
+        // reference does the same, and the spec's own width change says so in an enumeration —
+        // xterm's DECCOLM handler calls `resetMargins` under a `DEC 070, pp 5-71 to 5-72`
+        // citation (`charproc.c:7446`, `:7463` @ `6380a3e`).
+        //
+        // What is **not** a geometry change is a resize to the size the terminal already has, and
+        // until this gate the two were the same call. `resize` has no early return, so a consumer
+        // re-asserting its size destroyed a region only the *application* could restore — and the
+        // application is never told, so nothing restores it. Every reference is guarded against
+        // that by an early return this function does not have (`alacritty_terminal/src/term/
+        // mod.rs:662` @ `852e971`, `src/terminal/Terminal.zig:3753` @ `e6e26e1`,
+        // `src/browser/CoreBrowserTerminal.ts:1055` @ `699f553`); the gate is the narrow form of
+        // the same guard, and it is the predicate this function already uses twice above.
+        if cols != old_cols || rows != old_rows {
+            self.scroll_top = 0;
+            self.scroll_bottom = rows - 1;
+        }
         // Extend, never rebuild and never trim (#849). A resize changes the *grid*; the
         // tab-stop table is state the application wrote through the stream. The line this
         // replaces rebuilt it from defaults on every call, so a window dragged one row
