@@ -238,8 +238,8 @@ fn back_tab_works_on_the_alt_screen() {
     assert_eq!(term.cursor().col, 5); // 24 here would mean a per-screen table
 }
 
-/// A narrowing resize rebuilds the stops at the new width and clamps the
-/// cursor, so a back-tab afterwards cannot name a column that is gone.
+/// A narrowing resize clamps the cursor and leaves every stop beyond the new
+/// width unreachable, so a back-tab afterwards cannot name a column that is gone.
 #[test]
 fn back_tab_after_a_narrowing_resize_stays_in_range() {
     let mut term = Engine::new(40, 2);
@@ -249,6 +249,110 @@ fn back_tab_after_a_narrowing_resize_stays_in_range() {
 
     assert!(term.cursor().col < 10);
     assert_eq!(term.cursor().col, 8);
+}
+/// A resize that changes only the **row** count must leave the tab-stop table
+/// alone: the axis it is indexed by did not move. Until #849 the table was
+/// rebuilt from defaults on every resize, so a window dragged one row taller
+/// silently replaced an application's stops with multiples of eight.
+#[test]
+fn a_rows_only_resize_keeps_the_stops_the_application_set() {
+    let mut term = Engine::new(20, 4);
+    term.feed(b"\x1b[3g"); // clear the defaults
+    term.feed(b"\x1b[1;6H\x1bH"); // HTS: stops at grid cols 5 and 11
+    term.feed(b"\x1b[1;12H\x1bH");
+
+    term.resize(20, 5); // columns unchanged, rows 4 -> 5
+
+    term.feed(b"\r\t\t");
+    assert_eq!(term.cursor().col, 11); // 16 here would be the rebuilt defaults
+}
+
+/// `resize` has no early return for unchanged geometry and `ResizePort` states no
+/// idempotency guarantee, so a consumer that merely re-asserts its size reaches
+/// this function. Re-asserting a size changes nothing and must destroy nothing.
+#[test]
+fn a_resize_to_the_same_geometry_keeps_the_stops_the_application_set() {
+    let mut term = Engine::new(20, 4);
+    term.feed(b"\x1b[3g");
+    term.feed(b"\x1b[1;6H\x1bH");
+    term.feed(b"\x1b[1;12H\x1bH");
+
+    term.resize(20, 4); // identical geometry
+
+    term.feed(b"\r\t\t");
+    assert_eq!(term.cursor().col, 11);
+}
+
+/// A widening resize keeps the stops still in range and gives the **new** columns
+/// the default ladder at their *absolute* index. Filling them with `false`
+/// instead — which keeps the length right and passes every other case here — is
+/// what the second assertion exists to catch.
+#[test]
+fn a_widening_resize_keeps_the_old_stops_and_defaults_the_new_columns() {
+    let mut term = Engine::new(20, 4);
+    term.feed(b"\x1b[3g");
+    term.feed(b"\x1b[1;6H\x1bH"); // one stop, at grid col 5
+
+    term.resize(30, 4);
+
+    term.feed(b"\r\t");
+    assert_eq!(term.cursor().col, 5); // the old stop survived the widening
+    term.feed(b"\t");
+    assert_eq!(term.cursor().col, 24); // a default stop past the old width
+}
+
+/// A stop pushed outside the grid by a narrowing is **kept**, so re-widening
+/// restores the set the application asked for rather than a hybrid of the
+/// survivors and fresh defaults. The two references that can express this keep it
+/// (xterm's table is width-independent, xterm.js's is a sparse map); the two that
+/// cannot, drop it. The corpus splits 2-2 and no tie-breaker row covers the axis,
+/// so this is a maintainer's call recorded on #849, not a derivation.
+#[test]
+fn a_stop_outside_a_narrowed_grid_returns_when_the_grid_widens_again() {
+    let mut term = Engine::new(20, 4);
+    term.feed(b"\x1b[3g");
+    term.feed(b"\x1b[1;6H\x1bH");
+    term.feed(b"\x1b[1;12H\x1bH"); // the stop at 11 leaves the grid below
+
+    term.resize(8, 4);
+    term.resize(20, 4);
+
+    term.feed(b"\r\t\t");
+    assert_eq!(term.cursor().col, 11); // 8 or 16 here would be defaults filling in
+}
+
+/// Surviving a resize must not become surviving a **reset**. The table is
+/// terminal state the application wrote, and `ESC c` is what resets the terminal
+/// — the distinction `docs/map/invariant/ris-keeps-configuration-drops-coordinates.md`
+/// draws, and the half of this behaviour that was already right.
+#[test]
+fn a_full_reset_still_rebuilds_the_default_stops() {
+    let mut term = Engine::new(20, 4);
+    term.feed(b"\x1b[3g");
+    term.feed(b"\x1b[1;6H\x1bH");
+
+    term.feed(b"\x1bc"); // RIS
+
+    term.feed(b"\r\t");
+    assert_eq!(term.cursor().col, 8); // the default ladder is back
+}
+
+/// The table is not per-screen, so the resize that destroyed it was usually taken
+/// while a *different* application was on screen: a window drag during vim wiped
+/// the stops the shell underneath had set, and neither program could see why.
+#[test]
+fn a_resize_on_the_alt_screen_keeps_the_stops_the_primary_screen_uses() {
+    let mut term = Engine::new(20, 4);
+    term.feed(b"\x1b[3g");
+    term.feed(b"\x1b[1;6H\x1bH");
+    term.feed(b"\x1b[1;12H\x1bH");
+
+    term.feed(b"\x1b[?1049h"); // a full-screen application takes over
+    term.resize(20, 5);
+    term.feed(b"\x1b[?1049l"); // and exits
+
+    term.feed(b"\r\t\t");
+    assert_eq!(term.cursor().col, 11);
 }
 
 /// The round trip, with a real producer on the other end: justerm's own input

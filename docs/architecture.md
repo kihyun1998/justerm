@@ -474,14 +474,14 @@ Z"`, and a search across the wrap went from 1 hit to 0). It now lives on the
   (CSI Ps Z) walks the same set backwards** by `Ps` stops, clamping at column 0 and never wrapping
   to the row above (#826). The two directions are written as mirrors so they cannot disagree about
   where a stop is; a count repeats the *walk* rather than scaling a distance. Default = every
-  8th column (incl. col 0). Resize must re-init/extend the set (#7). [#8]
-
-  ⚠ **Two gaps in this entry, both measured and both out of #826's scope.** `resize` rebuilds the
-  set from defaults *unconditionally* — including a rows-only resize, which discards HTS-set stops
-  without any column changing — where this very line says "re-init/**extend**". And HT at the right
-  edge of a full row clears the deferred wrap without moving, so the next character overwrites the
-  last column instead of wrapping; all four references keep that character. `CHT` (CSI Ps I), the
-  forward counterpart of CBT, is still unimplemented and stays in #47.
+  8th column (incl. col 0). **A resize *extends* the set and never rebuilds or trims it** (#849):
+  new columns take the default ladder at their *absolute* index, nothing is dropped, and a stop
+  pushed outside a narrowed grid is unreachable while narrow and returns when the grid widens
+  again — so `tabs.len()` is the widest this terminal has been and the invariant the two walks
+  need is `len() >= cols`, not equality. A rows-only resize therefore changes nothing here, and
+  neither does a consumer re-asserting its current size. **RIS still rebuilds**, because the table
+  is state the *application* wrote and `ESC c` is what resets the terminal. `CHT` (CSI Ps I), the
+  forward counterpart of CBT, is still unimplemented and stays in #47. [#8]
 - **Scroll region (DECSTBM) redefines what "scroll" means.** top/bottom margins (0-based,
   inclusive) stored as state; a line-feed at the *bottom margin* scrolls only rows `[top..=bottom]`,
   leaving rows outside fixed — `linefeed` must consult the margins, not the screen edge. DECSTBM

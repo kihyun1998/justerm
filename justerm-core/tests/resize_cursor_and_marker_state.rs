@@ -4,9 +4,12 @@
 //! ## 1. `pending_wrap` is cursor state, not screen configuration
 //!
 //! Printing into the last column does **not** advance: the cursor parks there and the wrap happens
-//! on the *next* print. `resize` reset that flag alongside the scroll margins and the tab stops —
-//! which do legitimately reset — so after a resize the next byte overwrote the last glyph instead
-//! of wrapping past it.
+//! on the *next* print. `resize` reset that flag alongside the scroll margins — so after a resize
+//! the next byte overwrote the last glyph instead of wrapping past it.
+//!
+//! This header used to name the tab stops beside the margins, as state that "does legitimately
+//! reset". #849 measured that false: the table is extended rather than rebuilt now, and only the
+//! margins still reset.
 //!
 //! All three references keep it, and the two that reflow repair it rather than dropping it:
 //!
