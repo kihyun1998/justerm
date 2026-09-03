@@ -260,7 +260,10 @@ float stroke_coverage(float dx) {
 }
 void main() {
     // The glyph field packs slot (bits 0..12), underline (bit 13), strikethrough (bit 14),
-    // and the colour-emoji flag (bit 15, #284).
+    // the colour-emoji flag (bit 15, #284), the glyph's ink class (bit 16, #712) and the
+    // underline STYLE (bits 17..19, #829). The last two sit above the `u16` the rest fits in
+    // because this is read as `uint(a_glyph)` and an `f32` carries every integer below 2²⁴
+    // exactly — the field is full, the transport is not.
     uint slot = v_glyph & 0x1FFFu;
     uint layer = slot >> 5u;   // 32 glyphs stack vertically per layer
     uint band = slot & 31u;
@@ -354,7 +357,32 @@ void main() {
     // #525: the two bands carry SEPARATE coverages now, because they carry separate inks. Folding
     // them with `max()` first was free while one colour served both; it is lossy the moment SGR 58
     // makes them differ, and the loss is total (the underline's colour would paint the strike).
-    float ul_band = hline(gy, 0.88, u_line_thickness, u_char_size.y) * underline;
+    // #829: the underline STYLE is a 3-bit field at bits 17..19, and it displaces the band's
+    // centre rather than adding a second draw — so a curl is the same band, the same ink and the
+    // same thickness, and everything #513/#525 settled about the channel keeps holding.
+    //
+    // The period is exactly ONE cycle per cell, which makes the phase cell-local and continuous at
+    // the same time: `sin` is 2*pi-periodic, so a row-continuous x and a per-cell x agree at every
+    // boundary and everywhere else. A first draft added the cell's column to the phase to "join the
+    // curls across boundaries" and a mutation proved the term dead — removing it changed no pixel,
+    // because there is no window in which the two models differ. Per-cell is also what the two
+    // references that draw a curl at all do, each baking one per cell (ghostty a sprite codepoint,
+    // xterm.js a stroke into the glyph atlas); xterm.js's `variantOffset` exists for DOTTED, whose
+    // period is not a whole cell, and is the thing to reach for when #830 lands that mark.
+    uint ustyle = (v_glyph >> 17u) & 7u;
+    float ul_centre = 0.88;
+    if (ustyle == 3u) { // curly
+        // The amplitude carries a device-px FLOOR for the reason #515 gave the band a minimum
+        // thickness: a curl a fraction of a pixel tall IS a straight line, so without it the
+        // feature would be a visual no-op at the smallest supported cell while every pixel
+        // assertion still passed.
+        float amp = max(u_line_thickness, 1.0) / max(u_char_size.y, 1.0);
+        float x = v_tex.x;
+        // Oscillate UPWARD from 0.88 so the curl's lowest point sits where the straight band does
+        // and `hline`'s centre-clamp still holds at the bottom of the glyph box.
+        ul_centre = 0.88 - amp - amp * sin(x * 6.2831853);
+    }
+    float ul_band = hline(gy, ul_centre, u_line_thickness, u_char_size.y) * underline;
     float st_band = hline(gy, 0.5, u_line_thickness, u_char_size.y) * strike;
     // #513: the line draws in its OWN ink, which the packer resolved without the glyph-only rules
     // (ADR-0019 rule 4 — `I_line` is TEXT class). Still overridden by a block cursor, because the

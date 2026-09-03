@@ -37,7 +37,82 @@ bitflags::bitflags! {
         /// storage could move without a format change. On a cell read from the live grid this bit
         /// is never set.
         const WRAPLINE = 1 << 10;
-        // bits 11..=15 reserved (underline style/colour, hyperlink id).
+        // bits 11..=13 are the underline STYLE (#829) — a 3-bit field, not flags; read and
+        // written through `underline_style` / `set_underline_style`, never with `insert`.
+        // bits 14..=15 reserved (hyperlink id).
+    }
+}
+
+/// How a cell's underline is drawn — `SGR 4 : Ps` (#829).
+///
+/// **This is the storage, and `None` is a member of it.** There is no second boolean saying
+/// whether the cell is underlined: [`CellFlags::UNDERLINE`] survives as a *derived* view bit so
+/// existing consumers keep working, and the style is its only writer. So the two cannot disagree —
+/// which is not a stylistic preference but the defect three of the four references demonstrably
+/// pay for. alacritty's display layer inserts a plain `UNDERLINE` over a cell that already carries
+/// a curl and its renderer draws both rects; xterm.js has two readers that resolve the same
+/// conflict in opposite directions, pinned by a test; xterm leaves both bits set after
+/// `CSI 4m; CSI 21m` and lets each consumer pick a resolution. ghostty is the one where it is not
+/// representable — its `underline` is an `enum(u3)` with `none` among the members and there is no
+/// `underline: bool` — and that is the shape here.
+///
+/// Stored in the **content** word (bits 26..=28), not in a row side map: the packed cell is not
+/// full, so [the side-map
+/// invariant](https://github.com/kihyun1998/justerm/blob/master/docs/map/invariant/row-keyed-side-maps.md)
+/// does not apply, and packing is what makes the style ride along for free everywhere a cell
+/// moves — reflow, scroll, the wide-pair rider, and the blank a wrapping wide glyph leaves behind.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
+#[repr(u8)]
+pub enum UnderlineStyle {
+    /// Not underlined. The absence is a member rather than a separate flag.
+    #[default]
+    None = 0,
+    /// `SGR 4` or `4:1` — one straight line.
+    Single = 1,
+    /// `4:2` — two straight lines. Reached only once #830 lands the remaining marks.
+    Double = 2,
+    /// `4:3` — a curl. The mark #829 carries end to end.
+    Curly = 3,
+    /// `4:4` — a dotted line. #830.
+    Dotted = 4,
+    /// `4:5` — a dashed line. #830.
+    Dashed = 5,
+}
+
+impl UnderlineStyle {
+    /// The style for a raw 3-bit field, normalising anything outside the enum to
+    /// [`Single`](Self::Single) — the packing has eight representable values and six meanings, and
+    /// a total function here is what keeps `Cell`'s bit pattern canonical.
+    fn from_bits(v: u32) -> Self {
+        match v {
+            0 => Self::None,
+            2 => Self::Double,
+            3 => Self::Curly,
+            4 => Self::Dotted,
+            5 => Self::Dashed,
+            _ => Self::Single,
+        }
+    }
+}
+
+/// The underline style's field in the **view** (`CellFlags`), bits 11..=13.
+const CF_USTYLE_SHIFT: u32 = 11;
+const CF_USTYLE_MASK: u32 = 0b111 << CF_USTYLE_SHIFT;
+
+impl CellFlags {
+    /// The underline style this flag set carries.
+    pub fn underline_style(self) -> UnderlineStyle {
+        UnderlineStyle::from_bits((self.bits() as u32 & CF_USTYLE_MASK) >> CF_USTYLE_SHIFT)
+    }
+
+    /// Set the underline style, and [`UNDERLINE`](Self::UNDERLINE) with it.
+    ///
+    /// The single writer of both: setting a style arms the derived flag and clearing it disarms
+    /// the flag, so no caller can produce a set that disagrees with itself.
+    pub fn set_underline_style(&mut self, style: UnderlineStyle) {
+        let bits = (self.bits() as u32 & !CF_USTYLE_MASK) | ((style as u32) << CF_USTYLE_SHIFT);
+        *self = CellFlags::from_bits_retain(bits as u16);
+        self.set(CellFlags::UNDERLINE, style != UnderlineStyle::None);
     }
 }
 
@@ -72,6 +147,12 @@ const C_WRAP: u32 = 1 << 24;
 // text, and the cell renders as the blank it is).
 const C_LEADING_SPACER: u32 = 1 << 25;
 const CONTENT_MARKER_MASK: u32 = C_WIDE | C_SPACER | C_WRAP;
+// The underline style (#829) — a 3-bit field, bits 26..=28 of the content word. It is deliberately
+// *outside* `CONTENT_MARKER_MASK`: that mask means "this column means something even though its
+// codepoint is a space", and a decoration does not, exactly as a colour does not (see
+// `Cell::is_blank`). Bits 29..=31 stay free.
+const C_USTYLE_SHIFT: u32 = 26;
+const C_USTYLE_MASK: u32 = 0b111 << C_USTYLE_SHIFT;
 
 const COLOR_VALUE_MASK: u32 = 0x00FF_FFFF; // bits 0..24
 const COLOR_MODE_SHIFT: u32 = 24; // bits 24..26
@@ -135,11 +216,28 @@ fn unpack_color(w: u32) -> Color {
 /// fixed; see the shift comments. One place for store / insert / remove to share.
 #[inline]
 fn flag_words(f: u32) -> (u32, u32, u32) {
-    let content = (f & 0x0700) << 14; // WIDE/SPACER/WRAP bits 8,9,10 -> 22,23,24
-    let fg = ((f & 0x0001) << 27)     // BOLD     bit 0  -> 27
-        | ((f & 0x0020) << 21)        // INVERSE  bit 5  -> 26
-        | ((f & 0x0018) << 25)        // UNDERLINE/BLINK bits 3,4 -> 28,29
-        | ((f & 0x00C0) << 24); // HIDDEN/STRIKE   bits 6,7 -> 30,31
+    // The underline style owns the underline (#829). A caller that set only `UNDERLINE` means a
+    // single one, so it is normalised here rather than stored as a styleless underline — which is
+    // both the single-owner rule and what keeps the packing canonical, the property `Cell`'s
+    // derived `Eq` is a bitwise compare because of.
+    let mut style = UnderlineStyle::from_bits((f & CF_USTYLE_MASK) >> CF_USTYLE_SHIFT);
+    if style == UnderlineStyle::None && f & 0x0008 != 0 {
+        style = UnderlineStyle::Single;
+    }
+    let content = ((f & 0x0700) << 14)              // WIDE/SPACER/WRAP bits 8,9,10 -> 22,23,24
+        | ((style as u32) << C_USTYLE_SHIFT); // underline style -> 26,27,28
+    let fg = ((f & 0x0001) << 27)                   // BOLD     bit 0  -> 27
+        | ((f & 0x0020) << 21)                      // INVERSE  bit 5  -> 26
+        | ((f & 0x0010) << 25)                      // BLINK    bit 4  -> 29
+        | ((f & 0x00C0) << 24); // HIDDEN/STRIKE bits 6,7 -> 30,31
+    // `FG_UNDERLINE` is deliberately **not written** (#829). The style in the content word is the
+    // single owner, and a mutation proved a derived copy here would be write-only: nothing reads
+    // it — `flags()` derives `UNDERLINE` from the style, and the wire carries
+    // `encode_color(cell.fg())`, a tagged colour, so the fg word's flag bits never leave the
+    // process. A duplicate nobody reads is still a duplicate: it is named like every authoritative
+    // flag beside it, so the next reader uses it, which is exactly how xterm.js ended up with two
+    // readers resolving the same question in opposite directions. The bit stays reserved for its
+    // xterm-mirror position and stays zero, cleared with the rest by `FG_FLAG_MASK`.
     let bg = ((f & 0x0004) << 24)     // ITALIC bit 2 -> 26
         | ((f & 0x0002) << 26); // DIM    bit 1 -> 27
     (content, fg, bg)
@@ -215,7 +313,7 @@ impl Cell {
     /// [`Cell::flags`].
     fn store_flags(&mut self, flags: CellFlags) {
         let (content, fg, bg) = flag_words(flags.bits() as u32);
-        self.content = (self.content & !CONTENT_MARKER_MASK) | content;
+        self.content = (self.content & !(CONTENT_MARKER_MASK | C_USTYLE_MASK)) | content;
         self.fg = (self.fg & !FG_FLAG_MASK) | fg;
         self.bg = (self.bg & !BG_FLAG_MASK) | bg;
     }
@@ -242,6 +340,12 @@ impl Cell {
             == ' ' as u32
     }
 
+    /// How this cell's underline is drawn (#829). [`UnderlineStyle::None`] means not underlined —
+    /// there is no separate boolean to consult, and [`CellFlags::UNDERLINE`] is derived from this.
+    pub fn underline_style(&self) -> UnderlineStyle {
+        UnderlineStyle::from_bits((self.content & C_USTYLE_MASK) >> C_USTYLE_SHIFT)
+    }
+
     /// The foreground colour reference.
     pub fn fg(&self) -> Color {
         unpack_color(self.fg)
@@ -255,10 +359,15 @@ impl Cell {
     /// The cell's flags (SGR attributes + layout markers), reassembled from the
     /// three words — the branchless inverse of `Cell::store_flags`.
     pub fn flags(&self) -> CellFlags {
+        // `UNDERLINE` is *derived* from the style rather than read from `FG_UNDERLINE` (#829), so a
+        // reader can never be handed a set where the flag and the style disagree.
+        let style = (self.content & C_USTYLE_MASK) >> C_USTYLE_SHIFT;
         let bits = ((self.content & CONTENT_MARKER_MASK) >> 14)         // 22,23,24 -> 8,9,10
+            | (style << CF_USTYLE_SHIFT)                               // 26,27,28 -> 11,12,13
+            | if style == 0 { 0 } else { 0x0008 }                      // UNDERLINE, derived
             | ((self.fg & FG_BOLD) >> 27)                              // 27 -> 0
             | ((self.fg & FG_INVERSE) >> 21)                           // 26 -> 5
-            | ((self.fg & (FG_UNDERLINE | FG_BLINK)) >> 25)            // 28,29 -> 3,4
+            | ((self.fg & FG_BLINK) >> 25)                             // 29 -> 4
             | ((self.fg & (FG_HIDDEN | FG_STRIKE)) >> 24)              // 30,31 -> 6,7
             | ((self.bg & BG_ITALIC) >> 24)                           // 26 -> 2
             | ((self.bg & BG_DIM) >> 26); // 27 -> 1
@@ -412,7 +521,7 @@ impl Cell {
 
 #[cfg(test)]
 mod tests {
-    use super::{Cell, CellFlags};
+    use super::{Cell, CellFlags, UnderlineStyle};
     use crate::color::Color;
 
     /// Size pin: slice C moves `link` out of the cell into the row's link map (a
@@ -452,13 +561,32 @@ mod tests {
     /// layout markers (in the content word) — round-trips, alone and combined.
     #[test]
     fn every_flag_round_trips() {
+        // `UNDERLINE` is the one flag that deliberately does **not** round-trip as given (#829).
+        // The underline style is the single owner and `None` is one of its members, so a cell
+        // built with the flag alone is a cell with a *single* underline and reads back carrying
+        // that style — "underlined with no style" is not a state this model has. That is what
+        // keeps the packing canonical, which this type's derived `Eq` is a bitwise compare
+        // because of, and it is asserted here rather than accommodated so the normalisation
+        // cannot be mistaken for a leak.
+        let mut normalised_underline = CellFlags::UNDERLINE;
+        normalised_underline.set_underline_style(UnderlineStyle::Single);
+
         let all = CellFlags::all();
         for bit in all.iter() {
             let cell = Cell::from_parts('x', Color::Default, Color::Default, bit);
-            assert_eq!(cell.flags(), bit, "single {bit:?}");
+            let expected = if bit == CellFlags::UNDERLINE {
+                normalised_underline
+            } else {
+                bit
+            };
+            assert_eq!(cell.flags(), expected, "single {bit:?}");
         }
         let cell = Cell::from_parts('x', Color::Default, Color::Default, all);
-        assert_eq!(cell.flags(), all, "all flags at once");
+        assert_eq!(
+            cell.flags(),
+            all.union(normalised_underline),
+            "all flags at once",
+        );
     }
 
     /// The codepoint occupies 21 bits — the full Unicode range, up to the

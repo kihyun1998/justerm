@@ -7,7 +7,7 @@ use std::collections::VecDeque;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use vte::{Params, Perform};
 
-use crate::cell::{Cell, CellFlags};
+use crate::cell::{Cell, CellFlags, UnderlineStyle};
 use crate::color::Color;
 use crate::cursor::{Cursor, CursorShape, Pen};
 use crate::damage::{LineBounds, LineDamage, ScrollOp, TermDamage};
@@ -4435,14 +4435,32 @@ impl Term {
                 1 => pen.flags.insert(CellFlags::BOLD),
                 2 => pen.flags.insert(CellFlags::DIM),
                 3 => pen.flags.insert(CellFlags::ITALIC),
-                4 => pen.flags.insert(CellFlags::UNDERLINE),
+                // SGR 4 and its colon sub-parameter form (#829). The sub-parameter is already
+                // here — `params.iter()` yields the whole `&[u16]` and every other arm reads only
+                // `first()` — so `4:3` has been arriving as `[4, 3]` and being truncated to a
+                // plain underline. `4:0` is an explicit off in every reference that implements
+                // the form. An unrecognised sub-style stays a single underline, which is both the
+                // present behaviour and what three of the four references do; #830 owns
+                // confirming that rule once there is more than one style to be wrong about.
+                4 => {
+                    let style = match param.get(1) {
+                        None | Some(1) => UnderlineStyle::Single,
+                        Some(0) => UnderlineStyle::None,
+                        Some(3) => UnderlineStyle::Curly,
+                        Some(_) => UnderlineStyle::Single,
+                    };
+                    pen.flags.set_underline_style(style);
+                }
                 5 => pen.flags.insert(CellFlags::BLINK),
                 7 => pen.flags.insert(CellFlags::INVERSE),
                 8 => pen.flags.insert(CellFlags::HIDDEN),
                 9 => pen.flags.insert(CellFlags::STRIKETHROUGH),
                 22 => pen.flags.remove(CellFlags::BOLD | CellFlags::DIM),
                 23 => pen.flags.remove(CellFlags::ITALIC),
-                24 => pen.flags.remove(CellFlags::UNDERLINE),
+                // Clears the style, not just the derived flag (#829) — removing `UNDERLINE` alone
+                // would leave a styled-but-not-underlined pen, the disagreement this model exists
+                // to make unrepresentable.
+                24 => pen.flags.set_underline_style(UnderlineStyle::None),
                 25 => pen.flags.remove(CellFlags::BLINK),
                 27 => pen.flags.remove(CellFlags::INVERSE),
                 28 => pen.flags.remove(CellFlags::HIDDEN),

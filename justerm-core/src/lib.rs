@@ -20,7 +20,7 @@ mod selection;
 mod serialize;
 mod term;
 
-pub use cell::{Cell, CellFlags};
+pub use cell::{Cell, CellFlags, UnderlineStyle};
 pub use color::Color;
 pub use cursor::{Cursor, CursorShape, Pen};
 pub use damage::{LineDamage, ScrollOp, TermDamage};

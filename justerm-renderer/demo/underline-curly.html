@@ -1,0 +1,145 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>justerm-renderer proof — a curly underline is visibly curled (#829)</title>
+<style>
+  body { margin: 0; background: #000; }
+  #c { display: block; image-rendering: pixelated; }
+</style>
+<!--
+  `SGR 4:3` must draw a band that is VISIBLY CURLED, not a straight line in a different variable.
+  The style is a 3-bit field at glyph-field bits 17..19 and the shader displaces the band's centre
+  by a sine of the fraction across the cell, one cycle per cell; everything else about the band — its ink (#513), its thickness
+  (#517), its device-pixel snapping (#515) — is unchanged.
+
+  **Why the measurement is a comparison and not a threshold.** "The curl is drawn" is not
+  observable from the curly cell alone: any band, curled or straight, lights pixels. So the page
+  measures the band's CENTRE per device-pixel column and compares the two styles with one
+  instrument — a straight underline must give a centre that does not move, a curl must give one
+  that moves by at least a line thickness. The straight row is therefore the positive control: if
+  the instrument were broken, the control would fail to report a stable centre rather than silently
+  agreeing with the curl.
+
+  Two failures this is built to catch, both of which pass a naive "is anything lit" check:
+    - the style never reaching the shader (packed wrong, or masked off) -> curl centre is constant,
+      identical to single;
+    - the amplitude collapsing below a device pixel at a small cell -> same symptom, and it is the
+      reason the shader floors the amplitude at 1 device px (#515 gave the thickness the same floor
+      for the same reason).
+
+  It also demands the curl REPEAT identically in every cell, which is the model: the period is one
+  cycle per cell. An earlier draft asserted the opposite-sounding thing — that the curl joins across
+  boundaries — and a shader mutation proved that check could not fail, because with a whole number
+  of cycles per cell a per-cell phase and a row-continuous one are the same function.
+
+  Read in device px (`cell_width()`/`cell_height()` ARE `u_cell_size`, #331); the runner sweeps
+  dpr 1 / 1.1 / 1.5 / 2.
+
+  Build: wasm-pack build --target web --dev --out-dir pkg
+-->
+<canvas id="c" width="256" height="64"></canvas>
+<script type="module">
+  import init, { JustermRenderer } from "../pkg/justerm_renderer.js";
+  import { readRect, fitGrid } from "./proof.js";
+  await init();
+
+  const UNDERLINE = 1 << 3;
+  const USTYLE_SHIFT = 11;
+  const CURLY = 3 << USTYLE_SHIFT;
+  const COLS = 8, ROWS = 1, N = COLS * ROWS;
+  const SPACE = 0x20;
+
+  const r = new JustermRenderer("#c");
+  const g = r.addGrid(new Uint32Array(256), 0xffffff, 0x000000);
+  const gl = document.querySelector("#c").getContext("webgl2");
+
+  const grab = () => {
+    const [w, h] = [gl.drawingBufferWidth, gl.drawingBufferHeight];
+    return { ...readRect(gl, { x: 0, y: 0, w, h }), w, h };
+  };
+  const px = (img, x, y) => { const i = ((img.h - 1 - y) * img.w + x) * 4; return img.buf[i]; };
+
+  // Draw every cell as a SPACE carrying `flag`, then return the band's centre row for each device
+  // pixel column — the intensity-weighted mean of the lit rows, so a sub-pixel shift still moves
+  // it. `null` where a column carries no band at all.
+  const bandCentres = (flag) => {
+    const [cellW, cellH] = [r.cell_width(g), r.cell_height(g)];
+    const flags = new Uint16Array(N).fill(flag);
+    fitGrid(r, g, COLS, ROWS);
+    r.apply_frame(g, COLS, ROWS, new Uint32Array(N), new Uint32Array(N), new Uint32Array(N).fill(SPACE), flags, true);
+    r.render();
+    const img = grab();
+    const width = Math.min(img.w, Math.round(cellW * COLS));
+    const centres = [];
+    let peak = 0;
+    for (let x = 0; x < width; x++) {
+      let sum = 0, wsum = 0;
+      for (let y = 0; y < Math.min(cellH, img.h); y++) {
+        const v = px(img, x, y);
+        if (v > 40) { sum += v * y; wsum += v; peak = Math.max(peak, v); }
+      }
+      centres.push(wsum > 0 ? sum / wsum : null);
+    }
+    return { centres, peak, cellW, cellH };
+  };
+
+  const spread = (cs) => {
+    const lit = cs.filter((v) => v !== null);
+    return lit.length ? Math.max(...lit) - Math.min(...lit) : 0;
+  };
+
+  const checks = {};
+  const single = bandCentres(UNDERLINE);
+  const curly = bandCentres(UNDERLINE | CURLY);
+
+  // --- the positive control: the instrument can see a band and pin its centre ------------------
+  checks.theStraightUnderlineIsDrawn = single.centres.some((v) => v !== null);
+  checks.theStraightUnderlineReadsAsItsInk = single.peak >= 230;
+  // A straight band does not move. Sub-pixel AA at the ends of the run can wobble it slightly, so
+  // the bound is a fraction of a pixel rather than exactly zero — still an order below the curl.
+  checks.theStraightUnderlineDoesNotMove = spread(single.centres) < 0.75;
+
+  // --- the claim ------------------------------------------------------------------------------
+  checks.theCurlIsDrawn = curly.centres.some((v) => v !== null);
+  checks.theCurlReadsAsItsInkToo = curly.peak >= 230;
+  // The whole point: the same instrument reports a centre that MOVES. Peak-to-peak is 2x the
+  // amplitude, and the amplitude is floored at one device pixel, so 1.5 is comfortably inside the
+  // floor while being far outside the straight line's wobble.
+  checks.theCurlActuallyCurls = spread(curly.centres) >= 1.5;
+  // Stated as a ratio too, so a future change that fattens the straight line's wobble cannot creep
+  // the two together while both absolute bounds still pass.
+  checks.theCurlMovesFarMoreThanTheStraightLine =
+    spread(curly.centres) >= 3 * Math.max(spread(single.centres), 0.25);
+
+  // The curl stays inside the cell — the centre-clamp #515 added, which a displaced centre must not
+  // defeat.
+  checks.theCurlStaysInsideTheCell = curly.centres.every((v) => v === null || v < curly.cellH);
+
+  // --- the curl repeats per cell, and that IS the model -----------------------------------
+  // The period is one cycle per cell, so cell 1's centre profile must match cell 0's. A phase that
+  // drifted, or one taken from an absolute pixel coordinate, would break this. The first draft
+  // asserted "the curl joins across boundaries" instead and a mutation proved that check vacuous:
+  // with a whole number of cycles per cell a per-cell phase and a row-continuous one agree
+  // everywhere, so nothing could have failed it.
+  const w = Math.round(curly.cellW);
+  let worstCellToCellDelta = 0;
+  for (let i = 0; i < w; i++) {
+    const a = curly.centres[i], b = curly.centres[w + i];
+    if (a === null || b === null) continue;
+    worstCellToCellDelta = Math.max(worstCellToCellDelta, Math.abs(b - a));
+  }
+  checks.theCurlRepeatsIdenticallyInEveryCell = worstCellToCellDelta <= 0.5;
+  // ...and it is not repeating a flat line: the profile it repeats is the one that moves.
+  checks.theRepeatedProfileIsTheCurlNotAFlatLine = spread(curly.centres.slice(0, w)) >= 1.5;
+
+  window.__proof = {
+    ok: Object.values(checks).every(Boolean),
+    checks,
+    dpr: devicePixelRatio,
+    singleSpread: spread(single.centres),
+    curlySpread: spread(curly.centres),
+    worstCellToCellDelta,
+    cellW: curly.cellW,
+    cellH: curly.cellH,
+  };
+  window.__done = true;
+</script>
