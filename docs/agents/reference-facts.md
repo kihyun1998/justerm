@@ -2490,3 +2490,56 @@ not decided here — but it is worth recording why the reference column could no
 the trim-vs-preserve half splits **2-2** and no tie-breaker row covers the axis, so it is a
 maintainer's call recorded on the issue. The *rebuild* half is not symmetric: the enumeration above
 votes against it and nothing votes for it but ghostty.
+
+
+## The 8-bit C1 `ST` as an OSC terminator, and why the same parsers take it for DCS (#847, verified 2026-09-03)
+
+#836 left this "separate, **unmeasured**". It is measured now, and the useful fact is not the verdict
+but the **reason** — because the obvious phrasing of the verdict is false. "justerm does not support
+8-bit C1 controls" would be wrong against the very parser it is built on: `vte` ends a **DCS** on
+`0x9C`, and so does ghostty, and both refuse it for an **OSC**. The axis is not 7-bit versus 8-bit.
+It is what the control string is allowed to carry.
+
+| Fact | Reference | Site |
+|---|---|---|
+| **An OSC is not ended by `0x9C` — the byte becomes payload.** The `osc_string` state has no arm for it, so it falls to the catch-all | `vte` 0.15.0 (registry) | `src/lib.rs:433` |
+| **…while a DCS *is* ended by `0x9C`**, in the same file, by an explicit arm that unhooks | `vte` 0.15.0 (registry) | `src/lib.rs:331` |
+| **ghostty makes the identical split, and its table shows why in one column.** `0x9C` is an *anywhere* transition to ground — which survives in `dcs_passthrough` and `sos_pm_apc_string`, and is **overwritten in `osc_string` alone** by a payload range that runs to `0xFF` | ghostty | anywhere at `src/terminal/parse_table.zig:68`, overwritten at `:336` |
+| **The payload ranges are the whole argument.** DCS puts `0x20..0x7E`, APC puts `0x20..0x7F` — 7-bit, so `0x9C` can never be legitimate content there. OSC puts `0x20..0xFF` | ghostty | `src/terminal/parse_table.zig:242` (DCS), `:119` (APC), `:336` (OSC) |
+| …and `vte` draws the DCS line in the same place, `0x1C..=0x7E` | `vte` 0.15.0 (registry) | `src/lib.rs:319` |
+| **xterm.js accepts `0x9C` as `OSC_END`** — the one reference that does | xterm.js | `src/common/parser/EscapeSequenceParser.ts:150` |
+| ⚠ **…and it can afford to only because its parser never sees a byte.** `parse()` takes a `Uint32Array` of already-decoded codepoints, so `0x9C` there means U+009C and a continuation byte cannot impersonate it. **Do not read the row above as a vote for byte-wise acceptance** — it is not the same question | xterm.js | `src/common/parser/EscapeSequenceParser.ts:574`, fed from `src/common/InputHandler.ts:481` |
+| **xterm's table also accepts it**: `sos_table` — the table its comment labels *"OSC, DCS, etc."* — maps `0x9C` to `CASE_ST` | xterm | `VTPrsTbl.c:7817` |
+| ⚠ **…and xterm turns that off under UTF-8, which is the row that decides this.** *"If we have a C1 code and the c1_printable flag is not set, simply ignore it **when it was translated from UTF-8**, unless the parse-state tells us that a C1 would be legal."* The parse-state exemption is inside `#if EXP_C2_CONTROLS` | xterm | `charproc.c:3312` (the comment), the gate at `:3316-3329` |
+| **Both escape hatches are off by default.** `EXP_C2_CONTROLS` is `0`, and its own comment calls the feature *"demonstrate an encoding blunder by Unicode.org"*; `allowC1Printable` defaults to `False` | xterm | `ptyx.h:883`; `charproc.c:598` |
+| **The spec asks for the opposite, and names the exception that this is about.** *"a standard-compliant implementation of ECMA-48 ignores the eighth bit of bytes in control strings other than the C1 controls. XTerm does this."* | the spec | `ctlseqs.txt:128-130` |
+
+**The tally, and the reason it is not the interesting part.** Three of four decline `0x9C` as an OSC
+terminator in a UTF-8 world (justerm/`vte`, alacritty via the same crate, ghostty), xterm declines it
+under UTF-8 while accepting it in an 8-bit stream, and xterm.js accepts it unconditionally. But
+alacritty is not an independent vote — it delegates to `vte 0.15.0`, *the same crate and version
+justerm depends on* (`alacritty_terminal/Cargo.toml:27`; see § "A routing fact" above) — and
+xterm.js's acceptance answers a different question, per the ⚠ row. What actually converges is the
+**mechanism**: every parser that reads an OSC payload as bytes refuses, and every parser that reads
+it as codepoints is free to accept.
+
+**The cost of the other choice, measured rather than argued.** `末` is `E6 9C AB`, and its middle
+byte is `0x9C`. Terminating on the raw byte cuts the title mid-character:
+
+```
+ESC ] 0 ; 末 X BEL      ->  Title("末X")     <- what justerm does today
+ESC ] 0 ; 末 X <9c>     ->  []               <- what byte-wise termination would produce
+```
+
+`vte` carries a regression test for exactly that string — `b"\x1b]2;\xe6\x9c\xab\x1b\\"` at
+`src/lib.rs:1003` — so this is a hazard the crate was written against, not one inferred here.
+
+**Where a C1 byte does reach a handler.** In ground state `vte` decodes UTF-8 and routes an invalid
+single byte `<= 0x9F` to `execute()` (`src/lib.rs:633`), so `0x80..=0x9F` arrive as C0-shaped
+executes. `justerm-core` implements `execute` for C0 only, which is why the 8-bit **introducers**
+(`0x9D` OSC, `0x9B` CSI, `0x90` DCS) are inert — a separate axis from the terminator, with no
+ambiguity to protect, tracked on #847.
+
+**What justerm does.** Declines `0x9C`, and per this file's rules that is not decided here — but the
+reference column does not split on it the way #849's did. The one implementation that accepts it
+parses codepoints; justerm parses bytes, and the `末` pair above is what the difference costs.
