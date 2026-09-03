@@ -193,7 +193,8 @@ fn forward_then_back_tab_returns_to_the_starting_column() {
     assert_eq!(term.cursor().col, 0);
 }
 
-/// A back-tab clears the deferred wrap, as every other cursor move does — so
+/// A back-tab clears the deferred wrap, as every verb that *acts* on the position
+/// does — so
 /// the character after it lands in the column the back-tab chose.
 #[test]
 fn back_tab_clears_pending_wrap() {
@@ -1180,4 +1181,157 @@ fn plain_overwrite_hides_a_combined_cells_marks() {
         "x",
         "no stale combining surfaces"
     );
+}
+
+// ===========================================================================
+// The deferred wrap's lifecycle (#848)
+// ===========================================================================
+
+/// HT at the right edge of a full row has nowhere to go, so it must leave the
+/// deferred wrap alone — the character already in the last column survives and
+/// the next print wraps past it.
+#[test]
+fn tab_at_the_right_edge_keeps_the_deferred_wrap() {
+    let mut term = Engine::new(3, 2);
+    term.feed(b"abc"); // fills row 0 → pending_wrap armed
+    assert!(term.cursor().pending_wrap);
+
+    term.feed(b"\t"); // no stop to the right; nothing to move
+    assert!(term.cursor().pending_wrap);
+
+    term.feed(b"X");
+    assert_eq!(term.grid().cell(0, 2).c(), 'c'); // not overwritten
+    assert_eq!(term.grid().cell(1, 0).c(), 'X'); // wrapped past it
+}
+
+/// The same at a second width, because a one-off at three columns could be an
+/// artefact of the geometry rather than of the rule.
+#[test]
+fn tab_at_the_right_edge_keeps_the_deferred_wrap_at_nine_columns() {
+    let mut term = Engine::new(9, 2);
+    term.feed(b"123456789");
+    assert!(term.cursor().pending_wrap);
+
+    term.feed(b"\tX");
+
+    assert_eq!(term.grid().cell(0, 8).c(), '9');
+    assert_eq!(term.grid().cell(1, 0).c(), 'X');
+}
+
+/// LF moves the cursor, so the position the deferred wrap described is gone and
+/// the flag goes with it — the next print lands on the row LF moved to, not one
+/// further down.
+#[test]
+fn linefeed_consumes_the_deferred_wrap() {
+    let mut term = Engine::new(3, 4);
+    term.feed(b"abc");
+    assert!(term.cursor().pending_wrap);
+
+    term.feed(b"\n");
+    assert!(!term.cursor().pending_wrap);
+    assert_eq!(term.cursor().row, 1);
+    assert_eq!(term.cursor().col, 2);
+
+    term.feed(b"X");
+    assert_eq!(term.grid().cell(1, 2).c(), 'X');
+}
+
+/// RI likewise — the print after it lands on the row RI moved to, not one below
+/// where it would overwrite unrelated content.
+#[test]
+fn reverse_index_consumes_the_deferred_wrap() {
+    let mut term = Engine::new(3, 4);
+    term.feed(b"\x1b[2;1H"); // row 1
+    term.feed(b"abc");
+    assert!(term.cursor().pending_wrap);
+
+    term.feed(b"\x1bM"); // RI
+    assert!(!term.cursor().pending_wrap);
+    assert_eq!(term.cursor().row, 0);
+
+    term.feed(b"X");
+    assert_eq!(term.grid().cell(0, 2).c(), 'X');
+}
+
+/// `?7l` arriving *after* the deferred wrap is armed must not wrap: the park is
+/// consumed and the glyph overwrites the last column in place, which is what all
+/// four references do (#848).
+#[test]
+fn autowrap_off_after_the_wrap_is_armed_prints_in_place() {
+    let mut term = Engine::new(3, 2);
+    term.feed(b"abc");
+    assert!(term.cursor().pending_wrap);
+
+    term.feed(b"\x1b[?7l");
+    term.feed(b"X");
+
+    assert_eq!(term.grid().cell(0, 2).c(), 'X');
+    assert_eq!(term.grid().cell(1, 0).c(), ' ');
+    assert!(!term.cursor().pending_wrap);
+}
+
+/// The control for the test above: with `?7l` set *before* anything is printed the
+/// engine already overwrote in place, so a green result there must not be the
+/// pre-existing path.
+#[test]
+fn autowrap_off_before_printing_still_prints_in_place() {
+    let mut term = Engine::new(3, 2);
+    term.feed(b"\x1b[?7l");
+    term.feed(b"abcX");
+
+    assert_eq!(term.grid().cell(0, 2).c(), 'X');
+    assert_eq!(term.grid().cell(1, 0).c(), ' ');
+}
+
+/// A deferred wrap saved by DECSC and restored after a widening resize is not at
+/// the last column any more, so the restore hands the logical position back to the
+/// column instead of leaving a flag the buffer cannot represent (#848).
+#[test]
+fn a_restored_deferred_wrap_settles_when_the_screen_grew() {
+    let mut term = Engine::new(4, 3);
+    term.feed(b"abcd");
+    assert!(term.cursor().pending_wrap);
+
+    term.feed(b"\x1b7"); // DECSC
+    term.resize(8, 3);
+    term.feed(b"\x1b8"); // DECRC
+
+    assert!(!term.cursor().pending_wrap);
+    assert_eq!(term.cursor().col, 4);
+
+    term.feed(b"X");
+    assert_eq!(term.grid().cell(0, 4).c(), 'X');
+}
+
+/// The alt-screen slot is the same fact through the other door — `?1049` copies the
+/// whole cursor rather than going through DECSC.
+#[test]
+fn a_restored_deferred_wrap_settles_on_leaving_the_alt_screen() {
+    let mut term = Engine::new(4, 3);
+    term.feed(b"abcd");
+    term.feed(b"\x1b[?1049h");
+    term.resize(8, 3);
+    term.feed(b"\x1b[?1049l");
+
+    assert!(!term.cursor().pending_wrap);
+    assert_eq!(term.cursor().col, 4);
+}
+
+/// IL and DL clear the deferred wrap, 3-1 in the references — and SU/SD
+/// deliberately do not, which is why this is a per-verb answer rather than a rule
+/// about row-shifting verbs (#848).
+#[test]
+fn insert_and_delete_line_clear_the_deferred_wrap_but_su_sd_do_not() {
+    for seq in [&b"\x1b[L"[..], &b"\x1b[M"[..]] {
+        let mut term = Engine::new(3, 3);
+        term.feed(b"abc");
+        term.feed(seq);
+        assert!(!term.cursor().pending_wrap, "{seq:?} should clear");
+    }
+    for seq in [&b"\x1b[S"[..], &b"\x1b[T"[..]] {
+        let mut term = Engine::new(3, 3);
+        term.feed(b"abc");
+        term.feed(seq);
+        assert!(term.cursor().pending_wrap, "{seq:?} should keep");
+    }
 }

@@ -2308,6 +2308,34 @@ not, because the 8 are a different population: the print path that *arms* the fl
 `restore_cursor` (which restores a saved value rather than setting one), and `linefeed_inner` /
 `reverse_index`.
 
+⚠ **Corrected 2026-09-03 (#848). The count is 20, and two of the named functions write nothing.**
+The grep behind "22" used `=`, which also matched `==` (`self.cursor.row == self.scroll_bottom`).
+A strict assignment grep gives **20** writer functions. `wrapline_advances` takes `&self` and cannot
+write anything, and `try_grapheme_join` writes neither field nor the flag — it delegates to
+`promote_cluster_to_wide` (arms) and `demote_cluster_to_narrow` (clears). The arm list above also
+omits `relocate_cluster_wide`, which arms directly. **The 14/8 split was never the ground and is not
+being restated** — the per-verb unanimity was, and it survives; but a number this file publishes has
+to be one a reader can reproduce. Re-measuring it required a *strict* grep, i.e. the instrument that
+produced it could not check it.
+
+⚠ **Also corrected by #848: LF and RI now clear, and `put_tab` at the last column now does not.**
+The two paragraphs below described the state before that change and are kept because the *reference*
+rows in them are unaffected and still pinned. What is no longer true of justerm: the flag no longer
+survives LF or RI, so the engine is no longer the 3-1 outlier there; and the sentence above naming
+`put_tab` among the verbs that always clear now has one exception, grounded in the references
+agreeing the other way on that verb (see § "Forward tabulation at the right edge" below).
+
+⚠ **And the clear is not derivable from "did the verb move".** #848 first wrote it that way and
+measured the counter-example one verb over: `CUF` at the last column moves nothing, destroys the
+character exactly as the old `put_tab` did, and **all four references clear anyway** — xterm
+`cursor.c:243` (`ResetWrap` is `CursorForward`'s last statement, after the clamp), alacritty
+`term/mod.rs:1241` (unconditional, after the `cmp::min`), ghostty `Terminal.zig:1739` (*"Always
+resets pending wrap"*, before the clamp is computed), xterm.js `InputHandler.ts:919`
+(`_moveCursor` → `_restrictCursor`). The clear is per-verb, checked against the references verb by
+verb. A derived predicate would instruct the next author to remove a clear four engines agree on.
+
+**Below is the pre-#848 statement of the LF/RI axis, with its reference rows intact.**
+
 ⚠ **Those last two are not benign, and justerm is the outlier 3-1.** The flag survives LF and RI in
 this engine. Measured consequence, reproduced with a throwaway probe: with the wrap armed, `LF` then
 a print advances **two** rows and leaves one blank, and `RI` then a print lands one row *below* where
@@ -2336,12 +2364,93 @@ argument matters — the deferred wrap — it does not need to be: that flag is 
 for "the cursor is parked past the last column", not an ECMA-48 concept, so no version of the spec
 could rule on it either way.
 
+## Forward tabulation at the right edge, and the deferred wrap (#848, verified 2026-09-03)
+
+The axis the section above did **not** cover. `HT` (C0 `0x09`) arriving while the deferred wrap is
+armed — the cursor parked at the last column. Every row re-opened at the pin; none copied from a
+report.
+
+| Reference | Behaviour | Site |
+|---|---|---|
+| alacritty | **Consumes** the wrap — `if input_needs_wrap { self.wrapline(); return; }`, under the comment *"A tab after the last column is the same as a linebreak."* The tab does nothing else that call | `alacritty_terminal/src/term/mod.rs:1366-1371` @ `852e971` |
+| xterm | **Keeps** it. `TabToNextStop` clamps `next` to `LineMaxCol` and calls `set_cur_col`; it never touches `do_wrap` | `tabs.c:142-158` @ `6380a3e` |
+| ⚠ xterm | **…except behind a resource that is off.** The one forward-path `ResetWrap` lives in `TabNext`, gated on `screen->curses && screen->do_wrap && (flags & WRAPAROUND)` — DECSET 41, the more(1) fix. Reading `TabToNextStop` alone gets the default right and would miss that the other behaviour exists at all | xterm | `tabs.c:113-119` @ `6380a3e` |
+| ghostty | **Keeps** it, by arithmetic rather than by decision: `while (cursor.x < scrolling_region.right)` is already false at the right edge, so `horizontalTab` is a total no-op | `src/terminal/Terminal.zig:2111-2121` @ `e6e26e1` |
+| xterm.js | **Keeps** it. No flag exists — `x === cols` *is* the parked state — and `tab()` returns early on `x >= cols`, so the column stays parked and the next print wraps | `src/common/InputHandler.ts:850-853` @ `699f553` |
+| ⚠ **Read the C0 verb, not the CSI one.** `InputHandler.ts:1126` is `cursorForwardTab`, which is **CHT (`CSI Ps I`)**. The C0 `HT` handler is `tab()` at `:850`, registered at `:273`. The two carry an identical early return, so a claim about the default survives the mix-up — a claim about either function's behaviour would not | xterm.js | `src/common/InputHandler.ts:273` (the registration) @ `699f553` |
+
+## The deferred wrap across the rest of the verbs (#848, verified 2026-09-03)
+
+Measured while dispositioning the completeness pass's candidates. Same axis, other verbs; every row
+re-opened at the pin.
+
+**Printing with DECAWM off, once the flag is already armed.** On the *observable* it is **4-0** —
+every reference overwrites the last column in place. On the *mechanism* they split 2-2.
+
+| Reference | Flag | Wrap | Site |
+|---|---|---|---|
+| xterm | **consumed unconditionally** — `screen->do_wrap = False;` runs first | then `if ((xw->flags & WRAPAROUND)) WrapLine(xw);` | `charproc.c:7059-7062` and `:7192-7195` @ `6380a3e` |
+| xterm.js | **consumed** — the else arm sets `x = cols - 1`, un-parking | `if (wraparoundMode)` guards the wrap branch | `src/common/InputHandler.ts:582`, `:612` @ `699f553` |
+| ghostty | **kept** — the whole consume is gated | `if (cursor.pending_wrap and modes.get(.wraparound))` | `src/terminal/Terminal.zig:1368` @ `e6e26e1` |
+| alacritty | **kept** — `wrapline()` returns before its own clear | `if !self.mode.contains(TermMode::LINE_WRAP) { return; }` | `alacritty_terminal/src/term/mod.rs:962` @ `852e971` |
+
+justerm takes xterm's shape, and the ground is local rather than a majority: this crate arms with
+`pending_wrap = self.autowrap`, so the flag is never set while the mode is off and one that outlives
+`?7l` contradicts the site that wrote it. The other two arm unconditionally, which is what makes
+keeping coherent *for them*.
+
+**The saved cursor.** ghostty applies its live repair to the saved cursor too — `terminal/Screen.zig:2094`
+@ `e6e26e1`, `if (sc.pending_wrap and sc.x != opts.cols - 1) { sc.pending_wrap = false; sc.x += 1; }`,
+under *"If we reflowed a saved cursor, update it."* No other reference reflows a saved cursor, so this
+row is 1-of-1 rather than a tally.
+
+**IL / DL, and why `SU`/`SD` are not the same question.** **3-1 for clearing.**
+
+| Fact | Reference | Site |
+|---|---|---|
+| `InsertLine` and `DeleteLine` both `ResetWrap` | xterm | `util.c:1295`, `:1388` @ `6380a3e` |
+| `insertLines` / `deleteLines` end with *"Always unset pending wrap"* | ghostty | `src/terminal/Terminal.zig:2691`, `:2856` @ `e6e26e1` |
+| Structural, not explicit — both verbs open with `_restrictCursor()`, whose `Math.min(cols - 1, …)` un-parks | xterm.js | `src/common/InputHandler.ts:1346`, `:1380`; the clamp at `:890` @ `699f553` |
+| Writes no `input_needs_wrap` in either verb — the one that leaves it | alacritty | `alacritty_terminal/src/term/mod.rs` (both bodies) @ `852e971` |
+| ⚠ **`SU`/`SD` go the other way, deliberately.** ghostty saves the flag and restores it in a `defer` around the scroll, so a stationary cursor keeps its park across a content shift | ghostty | `src/terminal/Terminal.zig:2388`, `:2393` @ `e6e26e1` |
+
+That pair is the reason this axis is answered per verb and not by a rule about row-shifting.
+
+**A fifth behaviour, one verb further out.** alacritty's `EL 0` is a **no-op** while the flag is
+armed — `ansi::LineClearMode::Right if cursor.input_needs_wrap => return,`
+(`alacritty_terminal/src/term/mod.rs:1643` @ `852e971`). No other reference does this. It is the same
+question — *is the parked position a real position?* — answered on a verb nobody else treats as
+special, and it is recorded here rather than acted on: justerm's `EL 0` erases from the parked column
+and nothing has measured which answer a real application depends on.
+
+---
+
+**The tally, and the thing it is easy to get wrong.** On *keeping the flag* it is **3-1**, alacritty
+the outlier. #848's body called this axis a genuine split by naming only three references and
+omitting ghostty; it is not a tie. On *preserving the character* all four agree **4-0**, and justerm
+was the outlier against all of them until #848 — which is the half that made this a defect rather
+than a divergence.
+
+**What separates the two designs, stated as behaviour.** Both keep the character; they differ on
+which row the *next* one lands in and on when the row changes. Measured at three columns, `abc` then
+`HT` then `X`: the three that keep leave the cursor parked and put `X` at row 1 column 0 **on the
+print**; alacritty moves to row 1 column 0 **on the tab** and puts `X` there. The only observable
+that separates them is the cursor between the two bytes — which is why justerm's test for this
+asserts `pending_wrap` after the tab and not only the resulting cells.
+
 **This partly closes a hole `docs/map/territory/cursor-position.md` named**: that note recorded
 "Reference behaviour: **None**" and warned the deferred-wrap model had never been grepped against a
 pinned tree. It has been now, on this one axis only — which verbs reset the flag — and the answer is
 that justerm is the outlier.
 
-**One thing these rows deliberately do not settle**, because it predates #826: justerm's **forward**
-tab clears the flag where alacritty's `put_tab` *consumes* it (`if input_needs_wrap { wrapline();
-return }`), xterm's does so only under the `curses` resource, and xterm.js's no-ops. Four
-implementations, four behaviours, on a verb this change did not touch.
+~~**One thing these rows deliberately do not settle**, because it predates #826: justerm's
+**forward** tab clears the flag where alacritty's `put_tab` *consumes* it, xterm's does so only
+under the `curses` resource, and xterm.js's no-ops. Four implementations, four behaviours, on a verb
+this change did not touch.~~
+
+**Settled by #848**, and the count in the struck sentence was wrong twice over. There are **two**
+behaviours, not four: alacritty consumes, and the other three keep — xterm's `curses` gate is off by
+default, ghostty's loop is a no-op, and xterm.js's early return leaves the column parked, which are
+three mechanisms for one outcome. justerm was a *third* behaviour, destroying the character, and no
+longer is. The measured rows are in § "Forward tabulation at the right edge, and the deferred wrap"
+below. Counting mechanisms as behaviours is what made "four" look like a reason to leave it open.

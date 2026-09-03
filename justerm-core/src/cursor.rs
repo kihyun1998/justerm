@@ -67,6 +67,71 @@ pub struct Cursor {
     /// last column: the cursor stays put and the actual line wrap happens on the
     /// *next* print. Eager wrapping here is the classic off-by-one that shifts
     /// lines (see `docs/architecture.md` "Hidden VT state").
+    ///
+    /// # The lifecycle, and why it is written here (#848)
+    ///
+    /// **What the flag means:** *the cursor is logically one past the column it
+    /// sits on.* That sentence is what every site below is measured against — but
+    /// read the next paragraph before treating it as a rule you can derive a new
+    /// verb's behaviour from, because you cannot.
+    ///
+    /// **The clear is per-verb and is not derivable.** The first draft of this
+    /// comment said a verb clears iff it *acted*, with `HT` at the last column as
+    /// the one exception because it moves nothing. That predicate is false, and
+    /// the counter-example is one verb over: `CUF` at the last column also moves
+    /// nothing, also destroys the character that was there — and **all four
+    /// references clear anyway**, three of them unconditionally and one before it
+    /// has even computed the clamp (xterm `cursor.c:243`, alacritty
+    /// `term/mod.rs:1241`, ghostty `Terminal.zig:1739` under *"Always resets
+    /// pending wrap"*, xterm.js `InputHandler.ts:919` via `_restrictCursor`). So a
+    /// derived predicate would instruct the next author to *remove* a clear that
+    /// four engines agree on. What separates `HT` is not a property of the verb; it
+    /// is that on `HT` the references agree the other way, 3-1 (#848).
+    ///
+    /// The site-classes, which are what this comment can honestly enumerate:
+    ///
+    /// - **Armed** by the print path, when a glyph fills the last column and
+    ///   `DECAWM` is on — `Term::write_glyph`, `Term::promote_cluster_to_wide`,
+    ///   `Term::relocate_cluster_wide`.
+    /// - **Consumed** by the wrap machinery, which is not a clear: `Term::wrapline`
+    ///   performs the deferred wrap and only then puts the flag down.
+    /// - **Translated** by `Term::resize`: where a reflow leaves the cursor off the
+    ///   last column the logical position becomes representable, so the flag is
+    ///   dropped and `col` takes it instead. Neither an arm nor a clear.
+    /// - **Cleared** by the positioning verbs, `HT` excepted — checked verb by verb
+    ///   against the references and recorded in
+    ///   `docs/agents/reference-facts.md`, not inferred.
+    /// - **Restored** by `Term::restore_cursor` and by leaving the alt screen, each
+    ///   of which then calls `Term::settle_restored_wrap`: a restored park that is
+    ///   no longer at the last column becomes a column, the same translation
+    ///   `Term::resize` applies to the live cursor. Without it a `DECSC` / resize /
+    ///   `DECRC` round-trip installed a state the sentence at the top forbids.
+    /// - **Read as a `+1`** by `term::markers`, which adds the flag to `cursor.col`
+    ///   to get an exclusive bound. A change to when the flag survives changes that
+    ///   bound — measured for `HT` at the right edge and the recorded column does
+    ///   move (3 where it was 2 at four columns), but **no public output changed**:
+    ///   the extracted command text is identical either way, because the run that
+    ///   cleared the flag also let the next print overwrite the last cell, and the
+    ///   two shifts cancel. Recorded so the next change here starts from a
+    ///   measurement rather than from the assumption that a reader exists but does
+    ///   not matter. The column itself is not observable through any public API.
+    ///
+    /// **What the obvious check does not reach.** Grepping this crate for writes to
+    /// `cursor.col` / `cursor.row` finds **20** functions — and it is blind to the
+    /// row-shift and erase verbs, which write neither field. `IL` and `DL` now clear
+    /// (3-1); `SU` and `SD` deliberately do not, because ghostty saves and restores
+    /// the flag across those two on purpose (`Terminal.zig:2388`); and `ICH`, `DCH`,
+    /// `ECH`, `EL`, `ED` are **unmeasured**, except that alacritty alone makes
+    /// `EL 0` a no-op while parked (`term/mod.rs:1643`). A grep on the cursor fields
+    /// will not tell you any of that.
+    ///
+    /// One more site the field-grep misses: the print path itself reads
+    /// `self.autowrap` before consuming, because `DECAWM` can be turned off after
+    /// the flag is armed and the park must then be spent rather than wrapped.
+    ///
+    /// The rule is stated at the property because that is where it is true, the
+    /// same reason ADR-0025 D2 gives for the wrap link's per-verb table living in
+    /// `Term::end_wrap`'s doc-comment.
     pub pending_wrap: bool,
     pub pen: Pen,
     /// Whether the cursor is shown (DEC ?25). The engine only reports it.
