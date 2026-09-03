@@ -101,12 +101,11 @@ pub struct Cursor {
     /// - **Cleared** by the positioning verbs, `HT` excepted — checked verb by verb
     ///   against the references and recorded in
     ///   `docs/agents/reference-facts.md`, not inferred.
-    /// - **Restored** by `Term::restore_cursor` and by leaving the alt screen. This
-    ///   one is *not* sound: neither saved slot is repaired on a resize, so a
-    ///   `DECSC` / resize / `DECRC` round-trip can install the flag at a column that
-    ///   is not the last one — a state the sentence at the top forbids. ghostty
-    ///   applies its repair to the saved cursor for exactly this reason
-    ///   (`Screen.zig:2094`). Pre-existing and out of #848's scope; tracked.
+    /// - **Restored** by `Term::restore_cursor` and by leaving the alt screen, each
+    ///   of which then calls `Term::settle_restored_wrap`: a restored park that is
+    ///   no longer at the last column becomes a column, the same translation
+    ///   `Term::resize` applies to the live cursor. Without it a `DECSC` / resize /
+    ///   `DECRC` round-trip installed a state the sentence at the top forbids.
     /// - **Read as a `+1`** by `term::markers`, which adds the flag to `cursor.col`
     ///   to get an exclusive bound. A change to when the flag survives changes that
     ///   bound — measured for `HT` at the right edge and the recorded column does
@@ -119,11 +118,16 @@ pub struct Cursor {
     ///
     /// **What the obvious check does not reach.** Grepping this crate for writes to
     /// `cursor.col` / `cursor.row` finds **20** functions — and it is blind to the
-    /// row-shift and erase verbs, which write neither field: `SU`, `SD`, `IL`,
-    /// `DL`, `ICH`, `DCH`, `ECH`, `EL`, `ED` all leave the flag exactly as they
-    /// found it. That is deliberate for `SU`/`SD`, where ghostty saves and restores
-    /// it across the scroll on purpose (`Terminal.zig:2390`), and unsettled for
-    /// `IL`/`DL`, where xterm and ghostty both clear and this engine does not.
+    /// row-shift and erase verbs, which write neither field. `IL` and `DL` now clear
+    /// (3-1); `SU` and `SD` deliberately do not, because ghostty saves and restores
+    /// the flag across those two on purpose (`Terminal.zig:2388`); and `ICH`, `DCH`,
+    /// `ECH`, `EL`, `ED` are **unmeasured**, except that alacritty alone makes
+    /// `EL 0` a no-op while parked (`term/mod.rs:1643`). A grep on the cursor fields
+    /// will not tell you any of that.
+    ///
+    /// One more site the field-grep misses: the print path itself reads
+    /// `self.autowrap` before consuming, because `DECAWM` can be turned off after
+    /// the flag is armed and the park must then be spent rather than wrapped.
     ///
     /// The rule is stated at the property because that is where it is true, the
     /// same reason ADR-0025 D2 gives for the wrap link's per-verb table living in

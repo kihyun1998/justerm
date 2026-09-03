@@ -2379,6 +2379,52 @@ report.
 | xterm.js | **Keeps** it. No flag exists — `x === cols` *is* the parked state — and `tab()` returns early on `x >= cols`, so the column stays parked and the next print wraps | `src/common/InputHandler.ts:850-853` @ `699f553` |
 | ⚠ **Read the C0 verb, not the CSI one.** `InputHandler.ts:1126` is `cursorForwardTab`, which is **CHT (`CSI Ps I`)**. The C0 `HT` handler is `tab()` at `:850`, registered at `:273`. The two carry an identical early return, so a claim about the default survives the mix-up — a claim about either function's behaviour would not | xterm.js | `src/common/InputHandler.ts:273` (the registration) @ `699f553` |
 
+## The deferred wrap across the rest of the verbs (#848, verified 2026-09-03)
+
+Measured while dispositioning the completeness pass's candidates. Same axis, other verbs; every row
+re-opened at the pin.
+
+**Printing with DECAWM off, once the flag is already armed.** On the *observable* it is **4-0** —
+every reference overwrites the last column in place. On the *mechanism* they split 2-2.
+
+| Reference | Flag | Wrap | Site |
+|---|---|---|---|
+| xterm | **consumed unconditionally** — `screen->do_wrap = False;` runs first | then `if ((xw->flags & WRAPAROUND)) WrapLine(xw);` | `charproc.c:7059-7062` and `:7192-7195` @ `6380a3e` |
+| xterm.js | **consumed** — the else arm sets `x = cols - 1`, un-parking | `if (wraparoundMode)` guards the wrap branch | `src/common/InputHandler.ts:582`, `:612` @ `699f553` |
+| ghostty | **kept** — the whole consume is gated | `if (cursor.pending_wrap and modes.get(.wraparound))` | `src/terminal/Terminal.zig:1368` @ `e6e26e1` |
+| alacritty | **kept** — `wrapline()` returns before its own clear | `if !self.mode.contains(TermMode::LINE_WRAP) { return; }` | `alacritty_terminal/src/term/mod.rs:962` @ `852e971` |
+
+justerm takes xterm's shape, and the ground is local rather than a majority: this crate arms with
+`pending_wrap = self.autowrap`, so the flag is never set while the mode is off and one that outlives
+`?7l` contradicts the site that wrote it. The other two arm unconditionally, which is what makes
+keeping coherent *for them*.
+
+**The saved cursor.** ghostty applies its live repair to the saved cursor too — `terminal/Screen.zig:2094`
+@ `e6e26e1`, `if (sc.pending_wrap and sc.x != opts.cols - 1) { sc.pending_wrap = false; sc.x += 1; }`,
+under *"If we reflowed a saved cursor, update it."* No other reference reflows a saved cursor, so this
+row is 1-of-1 rather than a tally.
+
+**IL / DL, and why `SU`/`SD` are not the same question.** **3-1 for clearing.**
+
+| Fact | Reference | Site |
+|---|---|---|
+| `InsertLine` and `DeleteLine` both `ResetWrap` | xterm | `util.c:1295`, `:1388` @ `6380a3e` |
+| `insertLines` / `deleteLines` end with *"Always unset pending wrap"* | ghostty | `src/terminal/Terminal.zig:2691`, `:2856` @ `e6e26e1` |
+| Structural, not explicit — both verbs open with `_restrictCursor()`, whose `Math.min(cols - 1, …)` un-parks | xterm.js | `src/common/InputHandler.ts:1346`, `:1380`; the clamp at `:890` @ `699f553` |
+| Writes no `input_needs_wrap` in either verb — the one that leaves it | alacritty | `alacritty_terminal/src/term/mod.rs` (both bodies) @ `852e971` |
+| ⚠ **`SU`/`SD` go the other way, deliberately.** ghostty saves the flag and restores it in a `defer` around the scroll, so a stationary cursor keeps its park across a content shift | ghostty | `src/terminal/Terminal.zig:2388`, `:2393` @ `e6e26e1` |
+
+That pair is the reason this axis is answered per verb and not by a rule about row-shifting.
+
+**A fifth behaviour, one verb further out.** alacritty's `EL 0` is a **no-op** while the flag is
+armed — `ansi::LineClearMode::Right if cursor.input_needs_wrap => return,`
+(`alacritty_terminal/src/term/mod.rs:1643` @ `852e971`). No other reference does this. It is the same
+question — *is the parked position a real position?* — answered on a verb nobody else treats as
+special, and it is recorded here rather than acted on: justerm's `EL 0` erases from the parked column
+and nothing has measured which answer a real application depends on.
+
+---
+
 **The tally, and the thing it is easy to get wrong.** On *keeping the flag* it is **3-1**, alacritty
 the outlier. #848's body called this axis a genuine split by naming only three references and
 omitting ghostty; it is not a tie. On *preserving the character* all four agree **4-0**, and justerm
