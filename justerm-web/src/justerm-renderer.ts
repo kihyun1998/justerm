@@ -7,7 +7,34 @@ import { TerminalSurface, type GridLease, type SurfaceBackend } from "./terminal
 
 import type { Renderer } from "./renderer";
 import { TextBlink } from "./text-blink";
-import type { DecodedFrame, FlagBits } from "./types";
+import type { DecodedFrame, FlagBits, UnderlineStyle, UnderlineStyles } from "./types";
+
+/**
+ * The two decoder members the widget **carries** rather than lets a consumer re-import (#862).
+ *
+ * **Extracted only so it can be tested, and that is not ceremony — it is the one wiring on this
+ * seam that the type system cannot check.** Measured: replacing `decoder.underlineStyle` with
+ * `decoder.wireVersion` typechecks clean and ships a widget that answers `16` for every cell.
+ * Two TypeScript rules combine to allow it, and neither can be tightened away here:
+ *
+ * - a function taking **fewer** parameters is assignable where one taking more is expected, so
+ *   `() => number` satisfies `(flags: number) => …`;
+ * - a **numeric enum** accepts `number`, so the return type does not discriminate either.
+ *
+ * The sibling member *is* caught — `decoder.Flags` in place of `decoder.UnderlineStyle` is a type
+ * error, because an enum object's type is nominal enough to refuse one. Only the function slips,
+ * which is exactly why the check below is by **reference identity** rather than by type.
+ *
+ * Generic in the value map so a test can hand it a plain object with no cast; the real module
+ * infers `typeof UnderlineStyle`.
+ */
+export function cellStyleContext<S>(decoder: {
+  underlineStyle: (flags: number) => UnderlineStyle;
+  UnderlineStyle: S;
+}): { underlineStyleOf: (flags: number) => UnderlineStyle; styleValues: S } {
+  // Free functions, no receiver — taken by reference rather than wrapped.
+  return { underlineStyleOf: decoder.underlineStyle, styleValues: decoder.UnderlineStyle };
+}
 
 /** Theme colours (packed `0xRRGGBB`). The engine stays ignorant of these — the
  * consumer owns them and the renderer resolves cell refs against them. Carried over
@@ -811,6 +838,17 @@ export class JustermRenderer implements Renderer {
     // Theme-derived state is mutable: `setTheme` swaps the whole scheme at runtime (#420).
     private palette: Palette,
     private readonly flagBits: FlagBits,
+    /**
+     * The decoder's underline-style accessor and its named values (#862, #827 story 15).
+     *
+     * Held the way `buildPalette` above is held, and for the same reason: the decoder is loaded
+     * with `await import(...)` to keep its wasm init off this module's graph, so anything of its
+     * that a consumer needs has to be *carried* here rather than re-imported. A static
+     * `export { UnderlineStyle } from "justerm-wasm-decode"` would have been the obvious shape and
+     * would have undone that.
+     */
+    private readonly underlineStyleOf: (flags: number) => UnderlineStyle,
+    private readonly styleValues: UnderlineStyles,
     private cursorColor: number,
     private cursorTextColor: number,
     private selectionBg: number,
@@ -1038,6 +1076,7 @@ export class JustermRenderer implements Renderer {
       hidden: f.hidden,
       blink: f.blink,
     };
+    const styleCtx = cellStyleContext(decoder);
     const instance = new JustermRenderer(
       backend,
       surface,
@@ -1046,6 +1085,8 @@ export class JustermRenderer implements Renderer {
       (ansi) => decoder.buildPalette(ansi),
       palette,
       flagBits,
+      styleCtx.underlineStyleOf,
+      styleCtx.styleValues,
       t.cursorColor ?? t.defaultFg,
       t.defaultBg,
       t.selectionBg ?? 0x45475a,
@@ -1078,6 +1119,32 @@ export class JustermRenderer implements Renderer {
   }
   get cellFlags(): FlagBits {
     return this.flagBits;
+  }
+
+  /**
+   * The underline style a `flags[i]` word carries (#862) — `Curly`, `Dotted`, and the four others.
+   *
+   * **A method, not a member of {@link cellFlags}.** The style is a 3-bit *field*; that map is one
+   * bit per question and cannot answer "which of six", which is why the decoder split it the same
+   * way (#831). Keeping `cellFlags` a plain object of numbers is also what lets a test pass
+   * `{ bold: 1, … }` as a literal.
+   *
+   * Pass the whole word; the shift and the width appear in no consumer's source. Total — a value
+   * outside the enum reads as `Single`, the same normalisation the engine applies.
+   */
+  underlineStyle(flags: number): UnderlineStyle {
+    return this.underlineStyleOf(flags);
+  }
+
+  /**
+   * The named style values (#862), so a consumer writes `styles.Curly` rather than `3` and never
+   * imports `justerm-wasm-decode` to do it — #827's story 15, which asks for the style on the
+   * surface already being read rather than through a second mechanism.
+   *
+   * Frozen by the decoder; read once and cache, as with {@link cellFlags}.
+   */
+  get underlineStyles(): UnderlineStyles {
+    return this.styleValues;
   }
 
   /** Wire marker-anchored decorations (#120): the source projects each frame's rects (typically

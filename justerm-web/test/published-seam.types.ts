@@ -110,7 +110,12 @@ type ReviewedDecoderExports =
   // Mirrored: `DecodedFrame` by hand and deliberately (§1 guards it), `Flags` by derivation.
   | "flags"
   | "DecodedFrame"
-  | "Flags";
+  | "Flags"
+  // Carried rather than mirrored (#862): `JustermRenderer` holds both and hands them out as
+  // `underlineStyle()` / `underlineStyles`, so a consumer never imports the decoder for them.
+  // They arrived here exactly as this section predicted — unreviewed, at the pin bump.
+  | "underlineStyle"
+  | "UnderlineStyle";
 
 type UnreviewedDecoderExports = Exclude<
   Extract<keyof typeof import("justerm-wasm-decode"), string>,

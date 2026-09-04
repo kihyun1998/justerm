@@ -252,3 +252,39 @@ export interface FrameSource {
 export type FlagBits = {
   [K in Exclude<Extract<keyof WasmFlags, string>, "free">]: number;
 };
+
+/**
+ * How a cell's underline is drawn — the value of `SGR 4 : Ps` (#862).
+ *
+ * **A field, not a flag, which is why it is not in {@link FlagBits}.** That map answers eleven
+ * yes-or-no questions with one bit each; this one is "which of six", and no mask can answer it. The
+ * decoder made the same split for the same reason (#831), and forcing it into the bit map here
+ * would leave a consumer shifting by hand — the thing both surfaces exist to prevent.
+ *
+ * `None` is a **member** of the style, not the absence of one: a cell that is not underlined reads
+ * as `None`. `flags[i] & F.underline` and a non-`None` style are the same question asked twice —
+ * the engine derives the flag from the field, so they cannot disagree on a word this decoder
+ * produced.
+ *
+ * Read a cell's style with {@link import("./justerm-renderer").JustermRenderer.underlineStyle} and
+ * name the values with its `underlineStyles`; a consumer never imports `justerm-wasm-decode` to do
+ * either (#827 story 15).
+ */
+export type UnderlineStyle = import("justerm-wasm-decode").UnderlineStyle;
+
+/**
+ * The named underline-style values, exactly as the decoder freezes them (#862) — `styles.Curly`
+ * rather than `3`.
+ *
+ * Written as a **type-level** module reference on purpose. `import type` cannot carry an enum's
+ * value side, and a real `import { UnderlineStyle }` would make the decoder a *static* runtime
+ * dependency of `src/` — which the widget deliberately avoids, loading it with `await import(...)`
+ * to keep the wasm init off the module graph (see `JustermRenderer`'s class doc). `typeof
+ * import(...)` in type position is erased at emit and adds no edge; `test/published-seam.types.ts`
+ * uses the same form.
+ *
+ * Derived rather than restated, for the reason {@link FlagBits} carries: a value added upstream
+ * arrives here at the next pin bump with nobody having predicted it, and there is no roster to go
+ * stale.
+ */
+export type UnderlineStyles = (typeof import("justerm-wasm-decode"))["UnderlineStyle"];

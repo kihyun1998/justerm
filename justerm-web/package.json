@@ -43,8 +43,8 @@
     "vitest": "^2.1.0"
   },
   "dependencies": {
-    "justerm-renderer": "^0.15.0",
-    "justerm-wasm-decode": "^0.15.0"
+    "justerm-renderer": "^0.17.0",
+    "justerm-wasm-decode": "^0.17.0"
   },
   "main": "./dist/index.js",
   "module": "./dist/index.js",
