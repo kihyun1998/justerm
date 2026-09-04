@@ -1,5 +1,15 @@
 // Public API of justerm-web.
-export type { DecodedFrame, FlagBits, FrameSource, Unsubscribe } from "./types";
+export type {
+  DecodedFrame,
+  FlagBits,
+  FrameSource,
+  // #862: the underline style is a 3-bit field, so it rides beside FlagBits rather than in it.
+  // Types only — the enum's *values* come from `JustermRenderer.underlineStyles`, because a
+  // value re-export here would make the decoder a static runtime import.
+  UnderlineStyle,
+  UnderlineStyles,
+  Unsubscribe,
+} from "./types";
 export type { Renderer } from "./renderer";
 export { StubFrameSource } from "./frame-source";
 // Consumer events (#117) — fire-and-forget title/bell/cwd notifications from core's

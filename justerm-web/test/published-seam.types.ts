@@ -98,8 +98,13 @@ holds<Equal<NotMirrored, never>>(true);
  * whether this export needs mirroring" is not a fact any type carries. So the list is the
  * assertion, and its value is the direction it fails in — a new export appears in
  * `UnreviewedDecoderExports` on its own, at the moment `package.json`'s version range moves, which
- * is exactly when it becomes reachable. `underlineStyle` will land here at the next pin bump; that
- * is intended, and the red is the reminder to mirror it.
+ * is exactly when it becomes reachable.
+ *
+ * **It has fired once, and the prediction is left here as a record rather than rewritten.**
+ * This section was written in #831 saying `underlineStyle` would land here at the next pin
+ * bump; at #862's bump it did, before a line of that ticket was written, naming both it and
+ * `UnderlineStyle`. They are in the list below because they are now handled — carried by
+ * `JustermRenderer` — not because the entry was added to silence the red.
  */
 type ReviewedDecoderExports =
   // Called directly through `typeof import("justerm-wasm-decode")` — no mirror, none needed.
@@ -110,7 +115,12 @@ type ReviewedDecoderExports =
   // Mirrored: `DecodedFrame` by hand and deliberately (§1 guards it), `Flags` by derivation.
   | "flags"
   | "DecodedFrame"
-  | "Flags";
+  | "Flags"
+  // Carried rather than mirrored (#862): `JustermRenderer` holds both and hands them out as
+  // `underlineStyle()` / `underlineStyles`, so a consumer never imports the decoder for them.
+  // They arrived here exactly as this section predicted — unreviewed, at the pin bump.
+  | "underlineStyle"
+  | "UnderlineStyle";
 
 type UnreviewedDecoderExports = Exclude<
   Extract<keyof typeof import("justerm-wasm-decode"), string>,
