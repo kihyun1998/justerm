@@ -159,6 +159,12 @@ uniform highp vec2 u_cell_size;   // the grid cell in device px
 uniform highp vec2 u_char_size;   // the glyph box inside it (#338) — decorations only
 uniform highp vec2 u_char_offset; // where that box starts
 uniform highp float u_line_thickness; // underline/strikethrough thickness in device px (#517)
+// Dots per cell for a DOTTED underline (#830) — a whole number, so the pattern is cell-periodic and
+// the cell-local x below needs no cross-cell phase. Computed host-side by `metrics::dots_per_cell`
+// rather than here, and not only to keep the arithmetic testable: GLSL ES 3.00 leaves `round()`
+// implementation-dependent at exactly 0.5 (`roundEven` is the defined one), so an odd cell width
+// could yield a different dot count on a different GPU. Rust's `round` is one answer everywhere.
+uniform highp float u_dots_per_cell;
 // The cursor (#270): (col, row, span, shape). Shape 0 = NO cursor; otherwise `shape_id + 1`, so
 // 1 = block, 2 = underline, 3 = bar, 4 = hollow block. Every shape lives here rather than in the
 // instance buffer, so moving or blinking the cursor costs one uniform and no upload — a block
@@ -217,6 +223,18 @@ float hline(float gy, float c, float thick_px, float char_h) {
     float aa = 0.5 * fwidth(gy);
     return clamp((gy - (top - aa)) / max(aa, 1e-5), 0.0, 1.0)
          * clamp(((top + th + aa) - gy) / max(aa, 1e-5), 0.0, 1.0);
+}
+// Coverage of an x-axis gate: 1 inside `[lo, hi]`, antialiased at both edges with the same
+// half-pixel ramp `hline` uses on y (#830). The mirror of `hline` on the other axis, and it is what
+// turns one band into a dotted or dashed one — the band itself is unchanged, so `I_line`'s ink and
+// class are untouched and everything #513/#525/#712 settled about the channel keeps holding.
+//
+// `aa` is an argument rather than `fwidth(t)` because a caller gates a WRAPPED coordinate: the
+// derivative of `fract(x)` spikes at the seam, and deriving the ramp from it draws a visible line
+// there. The caller passes the ramp of the *unwrapped* coordinate instead.
+float xgate(float t, float lo, float hi, float aa) {
+    return clamp((t - (lo - aa)) / max(aa, 1e-5), 0.0, 1.0)
+         * clamp(((hi + aa) - t) / max(aa, 1e-5), 0.0, 1.0);
 }
 // Which cell of the cursor's `span`-wide box is this, or -1 for a fragment outside it? Mirrors
 // `cursor::covers`.
@@ -367,10 +385,31 @@ void main() {
     // curls across boundaries" and a mutation proved the term dead — removing it changed no pixel,
     // because there is no window in which the two models differ. Per-cell is also what the two
     // references that draw a curl at all do, each baking one per cell (ghostty a sprite codepoint,
-    // xterm.js a stroke into the glyph atlas); xterm.js's `variantOffset` exists for DOTTED, whose
-    // period is not a whole cell, and is the thing to reach for when #830 lands that mark.
+    // xterm.js a stroke into the glyph atlas). This comment used to send the next reader to
+    // xterm.js's `variantOffset` as *the* answer for DOTTED, whose period is not a whole cell.
+    // #830 landed that mark and took the other one: `metrics::dots_per_cell` quantises the count so
+    // the period is cell-periodic by construction, which is ghostty's route and keeps the term
+    // deleted above deleted.
     uint ustyle = (v_glyph >> 17u) & 7u;
     float ul_centre = 0.88;
+    // The two axes the remaining marks move, and the reason they are variables rather than three
+    // more `hline` calls (#830). Curly displaces the centre; DOTTED and DASHED gate the same band
+    // along x; DOUBLE is the only one that adds a band, which is what the maintainer settled when
+    // this ticket's "make no new structural decision" rule met it. The #829 comment below still
+    // describes a curl correctly and no longer describes the feature.
+    float ul_mask = 1.0;    // x-axis gate — dotted and dashed only
+    float ul_second = -1.0; // a second band's centre, or < 0 for none — double only
+    //
+    // **This chain must stay total over all EIGHT representable values, not six.** `attrs.rs`
+    // forwards the raw 3-bit field and names none of them on purpose, and that crate is published
+    // separately — `apply_frame` takes any `u16` from any caller. So 0, 1, 6 and 7 fall through to a
+    // straight band here. For 1, 6 and 7 that is exactly what `UnderlineStyle::from_bits`
+    // normalises them to one crate away; **0 is reconciled by a different mechanism and the two are
+    // worth not conflating** — `from_bits(0)` is `None`, not a single, and what makes the two agree
+    // is the `underline` bit, which core's one writer (`set_underline_style`) arms with the style.
+    // An earlier version of this comment said `from_bits` normalises all four to a band, which a
+    // refuting pass measured false. An `else if` ending at 5 with no fall-through would break the
+    // agreement in silence: no error, no failing test, a mark that vanishes on a malformed input.
     if (ustyle == 3u) { // curly
         // The amplitude carries a device-px FLOOR for the reason #515 gave the band a minimum
         // thickness: a curl a fraction of a pixel tall IS a straight line, so without it the
@@ -400,8 +439,124 @@ void main() {
         // Oscillate UPWARD from 0.88 so the curl's lowest point sits where the straight band does
         // and `hline`'s centre-clamp still holds at the bottom of the glyph box.
         ul_centre = 0.88 - amp - amp * sin(x * 6.2831853);
+    } else if (ustyle == 2u) { // double
+        // Two bands `2 * thickness` apart centre to centre, with the LOWER one left where a single
+        // underline sits and the second placed above it.
+        //
+        // The separation is 2 of 3: xterm.js `yBotDefault = yTopDefault + lineWidth * 2`
+        // (`TextureAtlas.ts:590-591`) and ghostty "one above ... and one below by one thickness"
+        // (`special.zig:57-70`) agree; alacritty instead straddles the descent at 0.25 / 0.75 of it
+        // (`rects.rs:82-83`), which is a metric this renderer does not have — there is no font file,
+        // which is the same reason #517 took the thickness from the font SIZE.
+        //
+        // The DIRECTION is not a preference, it is `hline`'s clamp. `top` is clamped into the glyph
+        // box, so a pair placed downward has both bands pulled to the same `top` and collapses into
+        // ONE line — with no error, and a pixel assertion that still happily sees an underline.
+        // Going up is free, which is why the curl above oscillates upward for the same reason.
+        // ghostty centres the pair instead and can, because it bakes into a canvas with padding
+        // below the cell; xterm.js, which DOES restrict to the cell height, shifts the pair up so
+        // the bottom band lands where the single would — the same answer under the same constraint.
+        // justerm is permanently in that regime.
+        // **`2 * thickness` is the references' rule and it does not survive OUR rasteriser.**
+        // Measured: at the default 16px font and dpr 1 the thickness is one device pixel, so the
+        // bands sit 2px apart with a 1px gap — and `hline` carries a half-pixel `fwidth` ramp on
+        // each edge, which closes it. The browser proof read `doubleBandHistogram: {"1": 96}`: one
+        // band, at every column, with the merged run's centre exactly 1px above the single's. The
+        // references do not meet this because their marks are not ramped — xterm.js strokes onto a
+        // canvas that snaps a horizontal 1px line, ghostty fills whole rects into a sprite, and
+        // alacritty emits rects. Following their number here would ship a double underline that is
+        // a slightly thicker single one at the size almost every user runs.
+        //
+        // So the separation is `max(2 * thickness, thickness + 2px)`, which is the reference rule
+        // everywhere it has room and a floor of **one** device pixel of genuinely clear air where it
+        // does not — the nominal gap is two, and the two `hline` ramps spend half a pixel each. A
+        // refuting pass caught an earlier version of this sentence claiming two, which is the same
+        // error (a gap stated before the ramp is subtracted) that the paragraph above it corrects.
+        // The floor binds at one-pixel thickness and nowhere else: `max(2,3) = 3`, `max(4,4) = 4`,
+        // `max(6,5) = 6`.
+        // A deliberate divergence with a measurement behind it, on the tie-breaker's "renderer cell
+        // composition is justerm's own model" row.
+        float th = max(u_line_thickness, 1.0);
+        float sep_px = max(2.0 * th, th + 2.0);
+        ul_second = ul_centre - sep_px / max(u_char_size.y, 1.0);
+    } else if (ustyle == 4u) { // dotted
+        // `u_dots_per_cell` is a whole number (`metrics::dots_per_cell`), so this period is
+        // cell-periodic BY CONSTRUCTION and the cell-local `v_tex.x` needs no cross-cell phase —
+        // the term #829 proved inert stays deleted. The two references whose period is *not* a whole
+        // cell both pay for it with cross-cell state (xterm.js's `variantOffset`, alacritty's
+        // every-two-cells inversion); ghostty quantises as this does.
+        //
+        // The dot is CENTRED in its period, so `fract`'s seam falls inside the GAP, where coverage
+        // is zero on both sides. Anchoring the dot at [0, 0.5) instead would put a hard edge exactly
+        // on the discontinuity — visible as a seam at every dot.
+        // **A one-pixel dot cannot be antialiased, and trying erases the mark.** Measured before
+        // this branch existed: at the default 16px font the cell is 8 device px, `dots_per_cell`
+        // gives 4, so a dot is ONE device pixel — and a half-pixel ramp on each side is 0.25 + 0.25
+        // in a gate 0.5 wide, i.e. the whole period. The browser proof read `dottedDuty: 1.0` and
+        // `dottedRuns: 1`: a solid line, every "is drawn" check green.
+        //
+        // alacritty splits on exactly this and it is where the threshold comes from — `draw_dotted`
+        // is a hard per-pixel on/off used below a 2px thickness, and `draw_dotted_aliased` (which
+        // rounds the dots) is used only at or above it (`rect.f.glsl`, dispatched at its `main`).
+        // `aa = 0` makes `xgate` a hard step, which is the same split one function down.
+        float n = max(u_dots_per_cell, 1.0);
+        float period_px = u_cell_size.x / n;
+        float dot_px = 0.5 * period_px; // the lit half of one period, in device px
+        if (dot_px >= 2.0) {
+            ul_mask = xgate(fract(v_tex.x * n), 0.25, 0.75, 0.5 * fwidth(v_tex.x) * n);
+        } else {
+            // Below two device pixels the dot is **pixel-aligned and hard**, tested on the whole
+            // pixel index rather than on a continuous coordinate. Both halves of that are load
+            // bearing and each was measured wrong first:
+            //
+            // Antialiasing a 1px dot ERASES the mark. At the default 16px font the cell is 8 device
+            // px and `dots_per_cell` gives 4, so the dot is one pixel and a half-pixel ramp on each
+            // side fills the whole 0.5-wide gate: the proof read `dottedDuty: 1.0`, `dottedRuns: 1`
+            // — a solid line with every "is drawn" check green.
+            //
+            // The gate is **half-open from the start of the period**, not centred on it. Centred
+            // was the first attempt and it erases the mark the other way: with a 2px period the
+            // fragment centres land on `fract == 0.25` and `0.75`, which are exactly a centred
+            // gate's two edges and are symmetric about the dot, so any symmetric test admits both
+            // or neither. Measured `dottedRuns: 0`. Half-open breaks that symmetry — `0.25` is in,
+            // `0.75` is out — which is the same asymmetry alacritty gets from a parity test on a
+            // pixel INDEX (`rect.f.glsl`, `draw_dotted`).
+            //
+            // **What it must NOT be is that pixel index, and a refuting pass measured why.**
+            // alacritty's parity test is exact because its period is the integer 2; ours is
+            // `cell_w / n`, which is a whole number of pixels only when the cell width is even. On
+            // an odd cell `mod(pixel, period)` drifts across the cell and the residue walks out of
+            // the gate for good, so the dots crowd the left and the rest of every cell goes blank —
+            // computed over the shipped arithmetic, an 11px cell lit columns 0, 2, 4 and nothing
+            // from 5 to 10, and a 17px cell lit 0, 2, 4, 6 and nothing from 7 to 16. And it is
+            // invisible to the cross-cell check by construction, because the drift is *identical*
+            // in every cell. The normalised coordinate tiles the cell exactly whatever `n` is, which
+            // is the property `dots_per_cell` was quantised for in the first place; the pixel index
+            // threw it away one line after buying it.
+            //
+            // The two branches differ in phase by a quarter period. That is safe because the branch
+            // is chosen from `u_cell_size.x` and `n`, both uniform over the grid — no frame mixes
+            // them.
+            ul_mask = 1.0 - step(0.5, fract(v_tex.x * n));
+        }
+    } else if (ustyle == 5u) { // dashed
+        // One period per CELL, with the dash at the two outer quarters so adjacent cells' dashes
+        // JOIN across the boundary into one half-cell dash separated by a half-cell gap. That is
+        // alacritty's construction and its comment states the reason — "since dashes of adjacent
+        // cells connect with each other our dash length is half of the desired total length"
+        // (`rect.f.glsl`, `draw_dashed`). All three references are cell-periodic for dashed, so
+        // unlike dotted this one needed no decision.
+        ul_mask = 1.0 - xgate(v_tex.x, 0.25, 0.75, 0.5 * fwidth(v_tex.x));
     }
-    float ul_band = hline(gy, ul_centre, u_line_thickness, u_char_size.y) * underline;
+    float ul_band = hline(gy, ul_centre, u_line_thickness, u_char_size.y) * ul_mask;
+    if (ul_second >= 0.0) {
+        // `max`, not a second composite: the two bands are ONE ink source (ADR-0019 rule 4 splits
+        // the marks by *authorship of the colour*, and both halves of a double underline are the
+        // same authorship), so they must merge as coverage before the ink is applied. Compositing
+        // them separately would apply `v_underline_fg` twice where they overlap.
+        ul_band = max(ul_band, hline(gy, ul_second, u_line_thickness, u_char_size.y));
+    }
+    ul_band *= underline;
     float st_band = hline(gy, 0.5, u_line_thickness, u_char_size.y) * strike;
     // #513: the line draws in its OWN ink, which the packer resolved without the glyph-only rules
     // (ADR-0019 rule 4 — `I_line` is TEXT class). Still overridden by a block cursor, because the
@@ -433,9 +588,16 @@ void main() {
     // renderer, a red underline over `█▄▓░` goes from 66 red px per cell to 0. Neither reference has
     // a background ink class driving occlusion, so neither faced the choice.
     //
-    // Band-vs-band overlap is arithmetically out of reach: the centres are 0.38 of the glyph box
-    // apart while `u_line_thickness / char_height` stays near 0.06 at every font size, so reaching it
-    // needs a glyph box of about three device px. That is also why `cov` below may stay on `max`
+    // Band-vs-band overlap is arithmetically out of reach *for the single underline*: its centre
+    // is 0.38 of the glyph box from the strikethrough's while `u_line_thickness / char_height` stays
+    // near 0.06 at every font size, so reaching it needs a glyph box of about three device px.
+    // **#830's second band is a different quantity and moves that threshold**: it sits a fixed
+    // number of device PIXELS above 0.88 rather than a fixed fraction, so its distance to the
+    // strikethrough shrinks with the box — the two approach at roughly `0.38 * H < sep_px + T`,
+    // about ten device px rather than three. A completeness pass raised it; the proof now mounts a
+    // struck double (`demo/underline-marks.html`, `aStruckDoubleKeepsThreeSeparateBands`) and reads
+    // three separate bands at every dpr it sweeps, and a mutation that walks the strikethrough
+    // toward the underline reddens that check and only it. That is also why `cov` below may stay on `max`
     // while the colour path composites in sequence — the two agree everywhere the bands do not meet,
     // and reordering the underline does not change *whether* anything is drawn at a pixel.
     // The cursor's strokes draw last and opaque, over the glyph — both references append the
@@ -674,6 +836,7 @@ struct Pipeline {
     u_char_size: glow::UniformLocation,
     u_char_offset: glow::UniformLocation,
     u_line_thickness: glow::UniformLocation,
+    u_dots_per_cell: glow::UniformLocation,
     u_cell_uv: glow::UniformLocation,
     u_bg_alpha: glow::UniformLocation,
     u_bleed_px: glow::UniformLocation,
@@ -743,6 +906,7 @@ struct GlobalTier {
     u_char_size: glow::UniformLocation,
     u_char_offset: glow::UniformLocation,
     u_line_thickness: glow::UniformLocation,
+    u_dots_per_cell: glow::UniformLocation,
     /// The guard band's fraction of a padded atlas cell. Held here — rather than being set once
     /// per program as it was until #772 — because the padded cell is a **per-config** dimension:
     /// two grids in different fonts sample atlases with different guard fractions, so this became
@@ -1891,6 +2055,7 @@ impl JustermRenderer {
             u_char_size,
             u_char_offset,
             u_line_thickness,
+            u_dots_per_cell,
             u_cell_uv,
             u_bg_alpha,
             u_bleed_px,
@@ -1912,6 +2077,7 @@ impl JustermRenderer {
                 u_char_size,
                 u_char_offset,
                 u_line_thickness,
+                u_dots_per_cell,
                 u_cell_uv,
                 u_bg_alpha,
                 u_bleed_px,
@@ -1962,6 +2128,7 @@ impl JustermRenderer {
             let u_char_size = uniform(gl, program, "u_char_size")?;
             let u_char_offset = uniform(gl, program, "u_char_offset")?;
             let u_line_thickness = uniform(gl, program, "u_line_thickness")?;
+            let u_dots_per_cell = uniform(gl, program, "u_dots_per_cell")?;
             let u_cell_uv = uniform(gl, program, "u_cell_uv")?;
             let u_bg_alpha = uniform(gl, program, "u_bg_alpha")?;
             let u_bleed_px = uniform(gl, program, "u_bleed_px")?;
@@ -1982,6 +2149,7 @@ impl JustermRenderer {
                 u_char_size,
                 u_char_offset,
                 u_line_thickness,
+                u_dots_per_cell,
                 u_cell_uv,
                 u_bg_alpha,
                 u_bleed_px,
@@ -2686,6 +2854,7 @@ impl JustermRenderer {
             u_char_size,
             u_char_offset,
             u_line_thickness,
+            u_dots_per_cell,
             u_cell_uv,
             u_bg_alpha,
             u_bleed_px,
@@ -2700,6 +2869,7 @@ impl JustermRenderer {
         self.global.u_cell_size = u_cell_size;
         self.global.u_char_size = u_char_size;
         self.global.u_line_thickness = u_line_thickness;
+        self.global.u_dots_per_cell = u_dots_per_cell;
         self.global.u_char_offset = u_char_offset;
         self.global.u_cell_uv = u_cell_uv;
         self.global.u_bg_alpha = u_bg_alpha;
@@ -3494,9 +3664,15 @@ impl JustermRenderer {
             self.global
                 .gl
                 .uniform_4_f32(Some(&self.global.u_cell_uv), ox, oy, sx, sy);
+            let line_thickness = crate::metrics::line_thickness(grid.font_size * self.global.dpr);
+            self.global
+                .gl
+                .uniform_1_f32(Some(&self.global.u_line_thickness), line_thickness as f32);
+            // Per grid, like the thickness it is derived from — both depend on the font size, and
+            // the dot count also on the cell width, so neither is a per-config constant (#830).
             self.global.gl.uniform_1_f32(
-                Some(&self.global.u_line_thickness),
-                crate::metrics::line_thickness(grid.font_size * self.global.dpr) as f32,
+                Some(&self.global.u_dots_per_cell),
+                crate::metrics::dots_per_cell(config.cell_size.0, line_thickness) as f32,
             );
             self.global
                 .gl

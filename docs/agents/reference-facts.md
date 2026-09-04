@@ -2623,3 +2623,70 @@ file's rules treat that document as an index.
 crate and version justerm itself depends on. The *storage and drawing* are in the tree
 (`term/cell.rs`, `renderer/rects.rs`); only the parse is not. This is the same trap § "A routing
 fact" records for the dynamic-colour path, reached from a different feature.
+
+### The underline marks — how each reference actually DRAWS double, dotted and dashed (#830, verified 2026-09-04)
+
+The section above answers where the style is stored and how it reaches the drawing layer. This
+answers the question that section does not: what geometry each reference puts on the screen. Read
+them together — the transport split there (band versus glyph) is what decides whether a row here is
+importable at all.
+
+**One routing fact first, because it costs an hour otherwise.** alacritty's per-kind fragment shaders
+are in `alacritty/res/rect.f.glsl`, which is **outside** the sparse checkout this repo pins
+(`alacritty_terminal` + `alacritty/src`). `rects.rs:441-443` names the `#define`s and the file they
+select is not there. Widening the sparse set exposes it at the same SHA and invalidates no recorded
+line.
+
+#### Double — the separation converges, the placement does not
+
+| Fact | Reference | Site |
+|---|---|---|
+| Two strokes `lineWidth * 2` apart, centre to centre | xterm.js | `addons/addon-webgl/src/TextureAtlas.ts:590-591`, drawn at `:604-609` |
+| ⚠ **…and under `restrictToCellHeight` the pair shifts UP by that same `lineWidth * 2`**, so the BOTTOM band lands where a single underline would. The one reference that also confines the mark to the cell is the one that reaches this answer | xterm.js | `addons/addon-webgl/src/TextureAtlas.ts:590` (the `restrictToCellHeight ? lineWidth * 2 : 0` term) |
+| Also `2 × thickness` apart, but **centred** on the single's position — *"one underline above the underline position, and one below by one thickness, creating a 'negative' underline where the single underline would be placed"* | ghostty | `src/font/sprite/draw/special.zig:57-70` |
+| Neither: the two bands straddle the **descent**, at `0.25` and `0.75` of it — a metric derived from the font file, which a Canvas renderer does not have (the same absence #517 took the thickness from the font *size* for) | alacritty | `alacritty/src/renderer/rects.rs:80-96` |
+
+#### Dashed — cell-periodic in all three, so no cross-cell state anywhere
+
+| Fact | Reference | Site |
+|---|---|---|
+| `setLineDash([line, gap, end])` at `0.6` / `0.3` / ~`0.1` of the cell width — one period per cell | xterm.js | `addons/addon-webgl/src/TextureAtlas.ts:665-673` |
+| The dash occupies the two outer quarters with the gap in the middle half, and the comment gives the reason: *"since dashes of adjacent cells connect with each other our dash length is half of the desired total length"* | alacritty | `alacritty/res/rect.f.glsl`, `draw_dashed` |
+| A per-cell sprite: `dash_width = width / 3 + 1`, drawn at even indices | ghostty | `src/font/sprite/draw/special.zig:153-164` |
+
+#### ⚠ Dotted — TWO discharges of the same obligation, and the second is easy to miss
+
+A dot period that is not a whole number of cells restarts the pattern at every cell boundary. Every
+reference has to answer it, and they answer it two different ways — which matters because a reader
+who finds only the first concludes cross-cell state is required.
+
+| Fact | Reference | Site |
+|---|---|---|
+| **Carry a phase.** `setLineDash([lineWidth, lineWidth])` — a 1:1 duty at twice the thickness — plus a per-column `variantOffset` threaded through the cell-colour resolver so adjacent cells' dots line up | xterm.js | `addons/addon-webgl/src/TextureAtlas.ts:647-664`; the offset at `addons/addon-webgl/src/CellColorResolver.ts:63-66` |
+| **Carry a phase, differently.** Dots every `2 × thickness`, plus an inversion every two cells, and the comment names the exact case: *"if the cellWidth is odd, the cell will start and end with a dot, creating a dash. To resolve this issue, we invert the pattern every two cells"* | alacritty | `alacritty/res/rect.f.glsl`, `draw_dotted` (the `cellEven` term) |
+| **Quantise instead.** `dot_count` is a **three-way clamp** — `max(min(ceil(w/(4r)), floor(w/(3r)), floor(w/(2r+1))), 1)` — so the period is cell-periodic by construction and no phase exists. Quoting only the `ceil` term states the rule backwards: it asks for the **most** dots and the two `floor` terms exist to cut it back on a narrow cell, which is exactly the regime a "at least one dot" floor is about | ghostty | `src/font/sprite/draw/special.zig:107-121`, the comments naming each term at `:109-118` |
+| ⚠ **A one-pixel dot is drawn HARD, not antialiased**, and the split is explicit: the rounded path is used only at or above a 2px thickness, the parity path below it — and the parity test is on a whole **pixel index**, not on a fraction | alacritty | `alacritty/res/rect.f.glsl`, `main`'s `underlineThickness < 2.` branch, against `draw_dotted` and `draw_dotted_aliased` |
+
+#### Curly — the period was already a convergence
+
+| Fact | Reference | Site |
+|---|---|---|
+| `cos((x + 0.5) * 2 * PI / cellWidth)` — exactly one cycle per cell, amplitude from half the descent | alacritty | `alacritty/res/rect.f.glsl`, `draw_undercurl` |
+
+### `SGR 21` — the spec and three implementations say double; the fourth says cancel-bold (#830, verified 2026-09-04)
+
+Worth a row of its own because the outlier is **`vte`**, the crate justerm's own parser is built on,
+so a reader who checks "what does alacritty do" gets the opposite answer from the other three and
+from the spec.
+
+| Fact | Reference | Site |
+|---|---|---|
+| *"Doubly-underlined, ECMA-48 3rd"* | spec (as indexed by xterm) | `ctlseqs.txt:1200` |
+| `case 21: /* doubly-underlined */ UIntSet(xw->flags, ATR_DBL_UNDER)` — **gated on `OPT_WIDE_ATTRS`**, and `ATR_DBL_UNDER` does not exist at all without it | xterm | `charproc.c:4407-4409`; the attribute at `ptyx.h:3726`, `:3722-3734` |
+| `21 => return .{ .underline = .double }` — the same arm the `4:x` forms land on, which is why `24` clears both spellings | ghostty | `src/terminal/sgr.zig:301`, cleared at `:307` |
+| `p === 21` → `this._processUnderline(UnderlineStyle.DOUBLE, attr)` | xterm.js | `src/common/InputHandler.ts:2653-2655` |
+| ⚠ **`[21] => Some(Attr::CancelBold)`** — not an underline at all. So alacritty has no double underline from the legacy spelling, and this is a **contradiction** rather than an omission: the case ADR-0004's text does not classify, routed by the tie-breaker's spec row exactly as #824 routed DA2 | vte (the published crate, not a pinned tree) | `vte-0.15.0/src/ansi.rs:1849` |
+
+**The consequence of following the spec, stated because it is invisible in the code**: an application
+sending `CSI 1m` then `CSI 21m` *meaning* "stop bold" gets a double underline and keeps its bold.
+`SGR 22` is the arm that cancels bold, in every one of the four.

@@ -4458,16 +4458,17 @@ impl Term {
                 // here — `params.iter()` yields the whole `&[u16]` and every other arm reads only
                 // `first()` — so `4:3` has been arriving as `[4, 3]` and being truncated to a
                 // plain underline. `4:0` is an explicit off in every reference that implements
-                // the form. An unrecognised sub-style stays a single underline, which is both the
-                // present behaviour and what three of the four references do; #830 owns
-                // confirming that rule once there is more than one style to be wrong about.
+                // the form. An unrecognised sub-style stays a single underline: three of the four
+                // references degrade that way (xterm is the outlier and swallows the whole
+                // parameter), and losing an underline entirely is a worse failure than drawing the
+                // wrong kind — the application asked for emphasis and would get nothing, with no way
+                // to tell. #830 confirmed that rule against the corpus rather than changing it.
                 //
-                // **Every value is stored, though only `Curly` is drawn differently yet.** #830
-                // owns the remaining *marks*; storing and drawing are separable and are separated
-                // here, because they are not symmetric in cost. Storing 2/4/5 is three arms and no
-                // pixel — the shader branches on `Curly` alone. NOT storing them is a loss that
-                // #830 cannot repair: a cell written `4:5m` today and scrolled into history would
-                // record `Single` forever.
+                // Every value is stored **and every value is now drawn** (#830). #829 stored all six
+                // while the shader branched on `Curly` alone, because storing and drawing are not
+                // symmetric in cost: storing 2/4/5 was three arms and no pixel, while NOT storing
+                // them was a loss #830 could not have repaired — a cell written `4:5m` and scrolled
+                // into history would have recorded `Single` forever.
                 4 => {
                     let style = match param.get(1) {
                         None | Some(1) => UnderlineStyle::Single,
@@ -4484,6 +4485,26 @@ impl Term {
                 7 => pen.flags.insert(CellFlags::INVERSE),
                 8 => pen.flags.insert(CellFlags::HIDDEN),
                 9 => pen.flags.insert(CellFlags::STRIKETHROUGH),
+                // The legacy double underline (#830), which predates the sub-parameter form above.
+                // It lands on the same field, so `24` clears both spellings — ghostty gets that by
+                // construction (4, 4:x, 21 and 24 all reduce to one variant on one arm,
+                // `Screen.zig:2269-2271`) where xterm leaves two independent bits set and lets each
+                // consumer resolve them (`html.c:208-216` against `svg.c:271`).
+                //
+                // **Decided by the spec, not by a head count**, because the corpus is not
+                // unanimous: `vte` — the crate this engine's own parser is built on — reads `[21]`
+                // as `CancelBold` (`vte-0.15.0/src/ansi.rs:1849`), so alacritty produces no double
+                // underline from it at all. `ctlseqs.txt:1200` reads *"Doubly-underlined, ECMA-48
+                // 3rd"*, and the VT tie-breaker puts the spec above any implementation including
+                // ours; xterm (`charproc.c:4407-4409`), ghostty (`sgr.zig:301`) and xterm.js
+                // (`InputHandler.ts:2653-2655`) all agree. A reference that *contradicts* rather
+                // than omits is the third case ADR-0004's text does not classify — #824 settled
+                // that routing for DA2 and it applies unchanged here.
+                //
+                // The consequence, pinned rather than left to a bug report: an application sending
+                // `CSI 1m` then `CSI 21m` **meaning "stop bold"** gets a double underline and keeps
+                // its bold. That is what `22` is for, and this arm deliberately does not touch it.
+                21 => pen.flags.set_underline_style(UnderlineStyle::Double),
                 22 => pen.flags.remove(CellFlags::BOLD | CellFlags::DIM),
                 23 => pen.flags.remove(CellFlags::ITALIC),
                 // Clears the style, not just the derived flag (#829) — removing `UNDERLINE` alone

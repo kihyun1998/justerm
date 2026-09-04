@@ -124,6 +124,38 @@ pub fn line_thickness(font_px: f32) -> u32 {
     ((font_px / 15.0).round() as u32).max(1)
 }
 
+/// How many dots a **dotted** underline puts in one cell (#830) — `max(1, round(cell_w / (2 *
+/// thickness)))`, a **whole** number so the pattern survives a cell boundary.
+///
+/// The target is xterm.js's dotted rule, `setLineDash([lineWidth, lineWidth])` — a 1:1 duty at a
+/// period of twice the line thickness — and where the cell divides evenly the two agree exactly.
+/// What is added is the quantisation, and it is the whole reason this is a function rather than a
+/// division in the shader.
+///
+/// **Why quantise instead of carrying a phase.** The fragment shader's `x` is cell-local, so a period
+/// that is not a whole number of cells restarts the dots at every boundary — an uneven gap the eye
+/// reads as a defect, and one that no pixel assertion *inside* a single cell can observe. Both
+/// references that draw dotted with a non-cell period pay for it with cross-cell state: xterm.js
+/// threads a per-column `variantOffset` through its cell-colour resolver, and alacritty inverts the
+/// pattern every two cells off `gl_FragCoord.x`, its comment naming the case — *"if the cellWidth is
+/// odd, the cell will start and end with a dot, creating a dash"*. ghostty takes the third route and
+/// quantises (`src/font/sprite/draw/special.zig:107-121`, a three-way clamp — `max(min(ceil(w/(4r)),
+/// floor(w/(3r)), floor(w/(2r+1))), 1)`, where the `ceil` term asks for the most dots and the two
+/// `floor` terms cut it back on a narrow cell), which is
+/// the one taken here: with a whole count the period is cell-periodic **by construction**, so the
+/// per-column phase term #829 deleted as mathematically inert stays deleted instead of being
+/// resurrected for one mark. `webgl.rs` used to point the next reader at `variantOffset` as though it
+/// were the only answer; it is one of two.
+///
+/// The `max(1)` floor is `line_thickness`'s, for the same reason one rung up: zero dots is an
+/// underline that vanished, and losing the mark entirely is a worse failure than drawing a coarse
+/// one. It also makes the function total over a degenerate cell or thickness, which the renderer
+/// can be handed before the first real measurement lands.
+pub fn dots_per_cell(cell_w_px: u32, thickness_px: u32) -> u32 {
+    let period = 2.0 * thickness_px.max(1) as f32;
+    ((cell_w_px as f32 / period).round() as u32).max(1)
+}
+
 pub fn glyph_offset(cell: (u32, u32), char_px: (u32, u32)) -> (u32, u32) {
     let dx = cell.0.saturating_sub(char_px.0);
     let dy = cell.1.saturating_sub(char_px.1);
@@ -714,5 +746,62 @@ mod tests {
         assert_eq!(glyph_offset((8, 16), CHAR), (0, 0));
         assert_eq!(device_cell(CHAR, -100.0, 1.0, 1.0).0, 1);
         assert_eq!(device_cell(CHAR, -100.0, 1.0, 2.0).0, 1);
+    }
+}
+
+#[cfg(test)]
+mod dotted_tests {
+    use super::dots_per_cell;
+
+    #[test]
+    fn a_dot_and_its_gap_are_each_one_line_thickness() {
+        // xterm.js draws dotted as `setLineDash([lineWidth, lineWidth])` — a 1:1 duty at a period of
+        // twice the line thickness (`addon-webgl/src/TextureAtlas.ts`). That is the target this
+        // quantises toward, so where the cell divides evenly the two agree exactly.
+        assert_eq!(dots_per_cell(8, 1), 4); // 8px cell, 1px line -> 1px dot, 1px gap
+        assert_eq!(dots_per_cell(8, 2), 2); // 8px cell, 2px line -> 2px dot, 2px gap
+        assert_eq!(dots_per_cell(16, 2), 4);
+        assert_eq!(dots_per_cell(20, 2), 5);
+    }
+
+    #[test]
+    fn the_count_is_whole_so_the_pattern_survives_a_cell_boundary() {
+        // The reason this function exists at all. The fragment shader's x is CELL-LOCAL, so a period
+        // that is not a whole number of cells restarts the dots at every boundary — an uneven gap the
+        // eye reads as a defect, and one NO pixel assertion inside a single cell can observe.
+        //
+        // Two discharges exist in the corpus. xterm.js and alacritty both carry a cross-cell PHASE
+        // (`computeNextVariantOffset`; and alacritty's `cellEven`, which inverts the pattern every two
+        // cells because "if the cellWidth is odd, the cell will start and end with a dot, creating a
+        // dash"). ghostty instead QUANTISES the count (`src/font/sprite/draw/special.zig:107-121`
+        // — a three-way clamp, not the bare `ceil` an earlier version of this comment quoted in two
+        // places), which is what is taken here: a whole count makes
+        // the period cell-periodic by construction, so the phase term #829 deleted as mathematically
+        // inert stays deleted rather than being resurrected for one mark.
+        //
+        // Any odd cell width is the case that decides it — alacritty's comment names exactly this one.
+        for w in [7u32, 9, 11, 13, 15, 17, 19, 21] {
+            let n = dots_per_cell(w, 1);
+            assert!(n >= 1, "{w}px cell produced {n} dots");
+        }
+        // ...and the property itself: the count is an integer, so `fract(x * n)` is continuous across
+        // the boundary for every cell in the row. Stated as the arithmetic a caller can check.
+        assert_eq!(dots_per_cell(9, 1), 5); // 9/2 = 4.5, rounded away from zero
+        assert_eq!(dots_per_cell(7, 1), 4); // 7/2 = 3.5
+    }
+
+    #[test]
+    fn a_cell_too_small_for_a_pattern_still_gets_one_dot() {
+        // The mirror of `line_thickness_never_vanishes`. Zero dots is an underline that vanishes,
+        // which is the failure the fallback rule exists to prevent one layer up — losing the mark
+        // entirely is worse than drawing a coarse one.
+        assert_eq!(dots_per_cell(3, 2), 1); // 3/4 = 0.75 -> rounds to 1, not 0
+        assert_eq!(dots_per_cell(1, 8), 1);
+        assert_eq!(dots_per_cell(0, 1), 1); // a degenerate cell must not divide by anything
+        // A degenerate THICKNESS floors the thickness, not the count — the two clamps are
+        // independent and collapsing both to one dot would be the wrong answer for a cell that is
+        // perfectly capable of holding a pattern. This assertion said `1` in the first draft and
+        // the implementation disagreed with it; the implementation was right.
+        assert_eq!(dots_per_cell(8, 0), 4);
     }
 }

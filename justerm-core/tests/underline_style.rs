@@ -1,4 +1,5 @@
-//! #829 — a curly underline reaches the screen, SGR 4:3 end to end (the core half).
+//! #829 — a curly underline reaches the screen, SGR 4:3 end to end (the core half), extended by
+//! #830 with the legacy `SGR 21` spelling and a real-PTY oracle for all six values.
 //!
 //! The **style** is the storage and `UnderlineStyle::None` is a member of it; there is no
 //! second boolean saying whether the cell is underlined. `CellFlags::UNDERLINE` survives as a
@@ -29,11 +30,21 @@
 //! | leave the style bits out of `flags()` (storage right, view wrong) | **yes** — `the_style_survives_an_encode_decode_round_trip` |
 //! | forget the style in the vacated wide-wrap column | **yes** — `the_column_a_wrapped_wide_glyph_vacates_carries_the_style` |
 //! | `SGR 24` clears `UNDERLINE` but leaves the style | **yes** — `sgr_24_clears_the_style_not_just_the_flag` |
+//! | `SGR 21` selects `Single` instead of `Double` (#830) | **yes** — both `sgr_21_*` |
+//! | `SGR 21` also cancels bold, i.e. `vte`'s reading (#830) | **yes, and only one test** — `sgr_21_underlines_without_touching_bold_which_is_where_vte_disagrees` |
+//! | `SGR 21` arms the derived `UNDERLINE` flag instead of the field (#830) | **yes** — both `sgr_21_*`, via the normalisation to `Single` |
 //!
 //! One row was **wrong in the first draft and the battery caught it**: a derived `FG_UNDERLINE`
 //! copy in the fg word reddened nothing, because nothing reads it — the wire carries
 //! `encode_color(cell.fg())` and `flags()` derives from the style. The copy was removed rather
 //! than the row rewritten; see `flag_words`.
+//!
+//! A **test** was removed for the mirror-image reason (#830). `SGR 21` then `SGR 24` looked worth
+//! pinning — "both spellings land on one field, so clearing clears both" — and no mutation reddens
+//! it alone: every one that reaches it also reddens `sgr_21_selects_a_double_underline`. With a
+//! single field there is no window in which *"24 clears what 21 set"* differs from *"24 clears the
+//! field"*, which the row above already pins. The absence of that window **is** the single-owner
+//! model, so the property is real and the test was not evidence for it.
 //!
 //! What this file cannot observe: whether the renderer draws a *visibly* curled line. That is the
 //! browser proof's job, and no host assertion substitutes for it.
@@ -332,4 +343,67 @@ fn an_unrecognised_sub_parameter_is_still_a_single_underline() {
     let mut e = Engine::new(20, 3);
     e.feed(b"\x1b[4:9mA");
     assert_eq!(style_at(&e, 0, 0), UnderlineStyle::Single);
+}
+
+#[test]
+fn sgr_21_selects_a_double_underline() {
+    // #830. The legacy form, which predates the sub-parameter one. **The spec decides this, not a
+    // head count**, because the corpus is not unanimous: `vte` — the crate this engine parses
+    // with — reads `[21]` as `CancelBold` (`vte-0.15.0/src/ansi.rs:1849`), so alacritty has no
+    // double underline from it at all. `ctlseqs.txt:1200` says *"Doubly-underlined, ECMA-48 3rd"*,
+    // and the VT tie-breaker puts the spec above any implementation including ours; xterm
+    // (`charproc.c:4407-4409`), ghostty (`sgr.zig:301`) and xterm.js (`InputHandler.ts:2653-2655`)
+    // all agree with it. A reference that *contradicts* rather than omits is the third case
+    // ADR-0004's text does not classify, and #824 settled the routing for it.
+    let mut e = Engine::new(20, 3);
+    e.feed(b"\x1b[21mA");
+    assert_eq!(style_at(&e, 0, 0), UnderlineStyle::Double);
+    assert!(flags_at(&e, 0, 0).contains(CellFlags::UNDERLINE));
+}
+
+#[test]
+fn sgr_21_underlines_without_touching_bold_which_is_where_vte_disagrees() {
+    // The observable consequence of taking the spec's reading: an application sending `CSI 1m` and
+    // then `CSI 21m` **meaning "stop bold"** gets a double underline here and keeps its bold. That
+    // is not a defect to be fixed later — it is what `SGR 22` exists for — but it is behaviour no
+    // signature states, so it is pinned rather than left to be rediscovered from a bug report.
+    let mut e = Engine::new(20, 3);
+    e.feed(b"\x1b[1m\x1b[21mA");
+    assert_eq!(style_at(&e, 0, 0), UnderlineStyle::Double);
+    assert!(
+        flags_at(&e, 0, 0).contains(CellFlags::BOLD),
+        "21 is not 22 — only `CSI 22 m` cancels bold"
+    );
+}
+
+#[test]
+fn the_vm_captured_matrix_carries_every_style_not_only_its_colours() {
+    // A **real PTY capture** (`fixtures/capture-undercurl.sh`, recorded on the Linux VM), already
+    // in the tree since #520 and fed through the parser by `underline_color.rs` — which asserts
+    // only the colours. Six rows, six spellings, one stream nobody hand-wrote to match this parser.
+    //
+    // This test is **not RED**: #829 already stores all six values, and it says so. What it adds is
+    // an oracle that is not synthetic — the difference that matters is that a change to the
+    // sub-parameter parse now has to survive bytes a real editor emitted, not only the arguments
+    // this file passes.
+    let mut e = Engine::new(80, 10);
+    e.feed(include_bytes!("fixtures/undercurl_matrix.raw"));
+    for (row, col, want) in [
+        (0, 0, UnderlineStyle::Curly),  // `4:3m` on "misspeled"
+        (1, 0, UnderlineStyle::Double), // `4:2m` on "warnign"
+        (2, 0, UnderlineStyle::Single), // `4:1m` on "eror"
+        (3, 0, UnderlineStyle::Single), // bare `4m` on "hyperlink"
+        (4, 0, UnderlineStyle::Dotted), // `4:4m` on "hint"
+        // Row 5 arms the colour 17 columns before any underline, so the head of the row is
+        // genuinely un-underlined and the dashed run starts at "then-dashed".
+        (5, 0, UnderlineStyle::None),
+        (5, 17, UnderlineStyle::Dashed), // `4:5m`
+        (6, 0, UnderlineStyle::Curly),   // `4:3m` under an explicit fg
+    ] {
+        assert_eq!(
+            style_at(&e, row, col),
+            want,
+            "captured row {row}, column {col}"
+        );
+    }
 }
