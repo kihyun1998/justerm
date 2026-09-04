@@ -497,8 +497,9 @@ two-way decision rather than an open field.
 - **(E) Writer-side: the quad becomes the glyph's own bounding box.** What all three references do
   (xterm.js `GlyphRenderer.ts:53`, alacritty `renderer/text/glsl3.rs:357`, ghostty
   `renderer/generic.zig:3202`, SHAs in `reference-facts.md`). **Rejected, and not for being theirs** —
-  the tie-breaker for this layer says a difference from them is not by itself a defect, and the
-  converse holds too: agreement among them is not by itself an argument. Rejected because it costs
+  the tie-breaker for this layer (**ADR-0031**, which is where that table's row went when the generated
+  `thegraph` build was retired on 2026-09-04) says a difference from them is not by itself a defect, and
+  the converse holds too: agreement among them is not by itself an argument. Rejected because it costs
   three things this model already owns. ① A quad overlapping its neighbour cannot know what is under
   it, so it needs hardware blending, which needs a **premultiplied** drawing buffer — and straight
   source-over onto a destination of alpha `A` computes `ink·c + dst·(1−c)` where the answer is

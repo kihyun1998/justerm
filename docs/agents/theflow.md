@@ -34,6 +34,13 @@ model under-reaches; what it is checked *against* is:
 A layer not in this table has no recorded tie-breaker — say so and ask, rather
 than borrowing a neighbouring row.
 
+**Two rows were promoted out of this table on 2026-09-04 and are authoritative there, not here** —
+**Glyph bake geometry** → **ADR-0031**, and **Who owns a fact that several sites read** → **ADR-0032**.
+They were the only two rows that named no record of their own, so when the generated `thegraph` build
+(which held the maintained copy of this table) was retired, they had nowhere else to go. The rows below
+are left as written because this file is a cited corpus rather than a routing target; where one of the
+two disagrees with its ADR, **the ADR wins**.
+
 **Deliberate divergences — where justerm does *not* follow its own named prior art,
 on purpose.** The table above says who wins an argument; this says which arguments
 are already over. It is what Step 5's reference-free restatement test is checked

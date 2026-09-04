@@ -64,7 +64,7 @@ function refsRoot() {
   return resolve(commonDir, '..', '..', '.refs');
 }
 
-/** The pinned SHA per tree, read from the table in theflow.md — that table is authoritative. */
+/** The pinned SHA per tree, read from the table in PINS_DOC — that table is authoritative. */
 function readPins() {
   // The TREES live beside the main checkout (see refsRoot), but the pin DOC is a file under version
   // control and must come from the WORKING tree — otherwise a branch that adds a tree or refreshes a

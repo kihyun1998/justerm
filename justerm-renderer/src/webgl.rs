@@ -941,7 +941,7 @@ struct GlobalTier {
     /// by construction — `set_device_pixel_ratio` drops the notification outright while the context
     /// is lost. A box stored through a lagging basis comes back wrong by the ratio between the two
     /// densities, which is exactly what the old cell-count storage could not do. The fact belongs to
-    /// the site it is first true at (`theflow.md`, "who owns a fact that several sites read"), and
+    /// the site it is first true at (ADR-0032, "a shared fact is owned by its producer"), and
     /// that site is the consumer's measurement — so it is kept as measured.
     requested: (i32, i32),
     /// Canvas context-loss listeners + the shared lost/pending-rebuild state (#269). `render`

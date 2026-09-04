@@ -6,9 +6,11 @@ overwritten — so re-fetching them every pass was pure latency. This file is th
 accumulated map, so a pass starts from what is already known and spends its budget on
 new ground.
 
-**Trees and pins:** `../.refs/`, SHAs in `theflow.md` § "Step 1 — reference routing
-table". Every line number here is **at those SHAs**; a pin refresh invalidates the
-column and must re-verify the rows it moves.
+**Trees and pins:** `../.refs/`, SHAs in **[`thegraph.md`](thegraph.md) § References** — the table
+`.github/scripts/cite.mjs --pins` parses, and the only one maintained. `theflow.md` § "Step 1" holds
+an older **four-tree** copy; a reader pointed at the wrong table is how a pin silently stops being
+checked. Every line number here is **at those SHAs**; a pin refresh invalidates the column and must
+re-verify the rows it moves.
 
 ## The rules for a row — these are what make the file trustworthy
 
@@ -850,9 +852,16 @@ further down in the same file.
 
 Read for #792, where the question was what to do with ink that leaves the cell **sideways**. The
 short version: all three let it overflow, because their glyph quad *is* the glyph's bounding box —
-which is the capability justerm gave up in ADR-0019 to keep one evaluation per pixel. So their
-defaults rest on something this renderer does not have, and neither of the two mechanisms below was
-imported as an authority (the tie-breaker table has no row for glyph bake geometry).
+**writer-side placement**, which ADR-0019 rejected as alternative (E). So their defaults rest on
+something this renderer does not have, and neither of the two mechanisms below was imported as an
+authority.
+
+*Corrected 2026-09-04, twice over. The clause here read "the capability justerm gave up in ADR-0019 to
+keep one evaluation per pixel", which reads as* ink cannot leave a cell *— false since #791: it can,
+`I_neighbour` carries it, produced **reader-side**, which is exactly how bleed and one evaluation per
+pixel coexist. What was given up is the writer-side quad, not the bleed. And the parenthesis claiming
+the tie-breaker table had* no row for glyph bake geometry *was true when written and false a day later
+— #792 added the row. It is now* **ADR-0031**.
 
 | Fact | Reference | Site |
 |---|---|---|
