@@ -4484,6 +4484,26 @@ impl Term {
                 7 => pen.flags.insert(CellFlags::INVERSE),
                 8 => pen.flags.insert(CellFlags::HIDDEN),
                 9 => pen.flags.insert(CellFlags::STRIKETHROUGH),
+                // The legacy double underline (#830), which predates the sub-parameter form above.
+                // It lands on the same field, so `24` clears both spellings — ghostty gets that by
+                // construction (4, 4:x, 21 and 24 all reduce to one variant on one arm,
+                // `Screen.zig:2269-2271`) where xterm leaves two independent bits set and lets each
+                // consumer resolve them (`html.c:208-216` against `svg.c:271`).
+                //
+                // **Decided by the spec, not by a head count**, because the corpus is not
+                // unanimous: `vte` — the crate this engine's own parser is built on — reads `[21]`
+                // as `CancelBold` (`vte-0.15.0/src/ansi.rs:1849`), so alacritty produces no double
+                // underline from it at all. `ctlseqs.txt:1200` reads *"Doubly-underlined, ECMA-48
+                // 3rd"*, and the VT tie-breaker puts the spec above any implementation including
+                // ours; xterm (`charproc.c:4407-4409`), ghostty (`sgr.zig:301`) and xterm.js
+                // (`InputHandler.ts:2653-2655`) all agree. A reference that *contradicts* rather
+                // than omits is the third case ADR-0004's text does not classify — #824 settled
+                // that routing for DA2 and it applies unchanged here.
+                //
+                // The consequence, pinned rather than left to a bug report: an application sending
+                // `CSI 1m` then `CSI 21m` **meaning "stop bold"** gets a double underline and keeps
+                // its bold. That is what `22` is for, and this arm deliberately does not touch it.
+                21 => pen.flags.set_underline_style(UnderlineStyle::Double),
                 22 => pen.flags.remove(CellFlags::BOLD | CellFlags::DIM),
                 23 => pen.flags.remove(CellFlags::ITALIC),
                 // Clears the style, not just the derived flag (#829) — removing `UNDERLINE` alone
