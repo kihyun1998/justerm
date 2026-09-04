@@ -1021,13 +1021,18 @@ export class JustermRenderer implements Renderer {
       defaultFg: t.defaultFg,
       defaultBg: t.defaultBg,
     };
+    // Copied into a plain object rather than held: `Flags` is a wasm resource and the decoder's
+    // own guidance is to read it once and destructure. Every member is listed because the type
+    // now *requires* all of them (#831) — this used to name nine of eleven and nothing said so.
     const f = decoder.flags();
     const flagBits: FlagBits = {
       bold: f.bold,
       italic: f.italic,
       underline: f.underline,
       strikethrough: f.strikethrough,
+      wide_char: f.wide_char,
       wide_char_spacer: f.wide_char_spacer,
+      wrapline: f.wrapline,
       inverse: f.inverse,
       dim: f.dim,
       hidden: f.hidden,
