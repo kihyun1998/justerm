@@ -30,6 +30,23 @@ How a version gets there is [release](release.md).
   sentence onto a registry is what makes it a lie.
 - **The publish-time check fires after the tag is already pushed**, so a false positive costs a
   re-tag. That is why its phrase list is kept tight rather than thorough.
+- **What this surface publishes is mostly a map of *names*, and a name map is only as complete as
+  what its guard is derived from (#831).** The decoder's `flags()` hands a consumer eleven named
+  bits so nobody hard-codes a bit value — and its guard asserted those eleven against a list copied
+  from the same eleven, so a member `CellFlags` gained and this one did not was invisible to it
+  forever. Two levels of the same shape were live at once, and only the derivation is a fix:
+  asserting the union against `CellFlags::all()` is complete because `all()` comes from the
+  declaration, while the neighbouring `#843` scanner had the defect *one level up* — its list of
+  **core source files** omitted `cell.rs`, so every type in that file was outside the scan with no
+  roster entry left behind to go missing. A lost file is strictly worse than a lost type. The
+  general rule: on this surface, prefer a check that enumerates the thing being published over one
+  that restates it, and when neither is possible, say in the guard what it cannot see.
+- **A field is not a flag, and the published shape has to say which it is.** The same `flags[i]`
+  word carries eleven yes-or-no bits and one 3-bit *value*. Exporting a twelfth mask would have
+  passed every guard here and still left every consumer shifting by hand — so the style ships as an
+  accessor returning a named value (`underlineStyle` + `UnderlineStyle`), mirroring the split core
+  already makes. The mirror is kept honest by an **exhaustive `match`**: a variant added upstream
+  fails to compile in the binding rather than arriving on npm unnamed.
 - **crates.io rewrites relative links**, resolving them against the crate's README subdirectory —
   so `[x](../CLAUDE.md)` in a crate README does reach the repo root. npm does **not**, and
   `justerm-web@0.7.0` shipped two broken links because of it (#473).
@@ -68,6 +85,13 @@ How a version gets there is [release](release.md).
 - `justerm-core/README.md` · `justerm-wasm-decode/README.md` · `justerm-renderer/README.md` ·
   `justerm-web/README.md` · `justerm-facade/README.md`
 - `justerm-wasm-decode/tests/readme_pins.rs` — the constant pin (per-PR)
+- `justerm-wasm-decode/src/lib.rs` — `Flags`/`flags()` (the eleven named bits) and
+  `UnderlineStyle`/`underlineStyle()` (the 3-bit field, #831): the names a consumer reads a cell's
+  attributes by, guarded by `flags_map_covers_every_declared_cell_flag` and by the exhaustive
+  `match` in `underline_style`
+- `justerm-wasm-decode/tests/wire_enum_stays_exhaustive.rs` — the scan that keeps every core enum
+  this crate maps onto a published value exhaustive (#843); its own source list is the roster that
+  #831 had to widen
 - `.github/scripts/check-published-readme.mjs` — the expiring-claim gate (publish-time)
 - Public doc-comments in `justerm-core/src/lib.rs` — they ship verbatim as the docs.rs page
 - `justerm-web/src/types.ts` — `DecodedFrame`, web's mirror of the published decoder's getters;

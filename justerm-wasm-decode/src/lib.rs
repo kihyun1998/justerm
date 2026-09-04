@@ -551,6 +551,10 @@ pub fn is_valid_regex(pattern: &str) -> bool {
 /// without hard-coding bit values (#36). The values come straight from Rust
 /// `CellFlags`, so there is no JS mirror to drift. Read once and cache (e.g.
 /// destructure the result): the bits never change within a build.
+///
+/// **This covers the flags and nothing else.** A `flags[i]` word also carries the underline
+/// *style* — a 3-bit field, not a flag — and no mask here can answer "which of six", so that half
+/// is [`underline_style`] (#831). The two together are the whole word a consumer needs to name.
 #[wasm_bindgen]
 pub struct Flags {
     pub bold: u16,
@@ -582,6 +586,64 @@ pub fn flags() -> Flags {
         wide_char: F::WIDE_CHAR.bits(),
         wide_char_spacer: F::WIDE_CHAR_SPACER.bits(),
         wrapline: F::WRAPLINE.bits(),
+    }
+}
+
+/// How a cell's underline is drawn — the value of `SGR 4 : Ps` (#831).
+///
+/// **A field, not a flag, and that is why it needs its own export.** [`Flags`] hands out one bit
+/// per attribute because each of those questions is yes-or-no; this one is "which of six", so a
+/// twelfth mask could not have answered it and a consumer given one would still be shifting by
+/// hand — the exact thing [`Flags`] exists to prevent.
+///
+/// [`None`](Self::None) is a **member** of the style, not the absence of one: a cell that is not
+/// underlined reads as `None`, so a consumer never infers "no style" from a zero it was not
+/// promised. `flags[i] & F.underline` and a non-`None` style are the same question asked twice —
+/// the engine derives the flag from this field and normalises a styleless underline to
+/// [`Single`](Self::Single), so the two cannot disagree on a word this decoder produced.
+///
+/// Mirrors `justerm_core::UnderlineStyle`, and [`underline_style`] is the only producer. The
+/// conversion there is an **exhaustive `match`** on the core enum, so a style added upstream is a
+/// compile error here rather than a value arriving unnamed.
+#[wasm_bindgen]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum UnderlineStyle {
+    /// Not underlined.
+    None = 0,
+    /// `SGR 4` or `4:1` — one straight line.
+    Single = 1,
+    /// `4:2`, and the legacy `SGR 21`.
+    Double = 2,
+    /// `4:3` — a curl.
+    Curly = 3,
+    /// `4:4` — a dotted line.
+    Dotted = 4,
+    /// `4:5` — a dashed line.
+    Dashed = 5,
+}
+
+/// The underline style carried by one `flags[i]` word (#831).
+///
+/// Pass the word straight from [`DecodedFrame::flags`]; the style lives in bits the consumer is
+/// deliberately not told about, which is the point — this is the accessor, `justerm_core`'s
+/// `CellFlags::underline_style` is what it delegates to, and neither the shift nor the width
+/// appears in any consumer's source.
+///
+/// **Total.** The 3 bits have eight representable values and six meanings, so anything outside the
+/// enum reads as [`Single`](UnderlineStyle::Single) — the same normalisation the engine applies,
+/// not a second one invented here. Bits outside the field are ignored, so a whole `flags[i]` word
+/// is the intended argument rather than something the caller pre-masks.
+#[wasm_bindgen(js_name = underlineStyle)]
+pub fn underline_style(flags: u16) -> UnderlineStyle {
+    // `from_bits_retain`, not `from_bits`: the style bits are *not* declared members of
+    // `CellFlags`, so the checked constructor would reject every underlined cell.
+    match justerm_core::CellFlags::from_bits_retain(flags).underline_style() {
+        justerm_core::UnderlineStyle::None => UnderlineStyle::None,
+        justerm_core::UnderlineStyle::Single => UnderlineStyle::Single,
+        justerm_core::UnderlineStyle::Double => UnderlineStyle::Double,
+        justerm_core::UnderlineStyle::Curly => UnderlineStyle::Curly,
+        justerm_core::UnderlineStyle::Dotted => UnderlineStyle::Dotted,
+        justerm_core::UnderlineStyle::Dashed => UnderlineStyle::Dashed,
     }
 }
 
@@ -639,7 +701,7 @@ pub fn decode_frame(bytes: &[u8]) -> Result<DecodedFrame, JsValue> {
 mod tests {
     use super::*;
     use core::num::NonZeroU32;
-    use justerm_core::{Cell, CellFlags, Color, Span};
+    use justerm_core::{Cell, CellFlags, Color, Span, UnderlineStyle as CoreStyle};
     use std::collections::BTreeMap;
 
     /// Build a plain ASCII span of `s` on `line` starting at column `left`.
@@ -734,6 +796,263 @@ mod tests {
         assert_eq!(f.wide_char, CellFlags::WIDE_CHAR.bits());
         assert_eq!(f.wide_char_spacer, CellFlags::WIDE_CHAR_SPACER.bits());
         assert_eq!(f.wrapline, CellFlags::WRAPLINE.bits());
+    }
+
+    /// The map is *complete*, which the test above cannot say (#831).
+    ///
+    /// `flags_constants_match_cell_flags_bits` enumerates the same eleven names `flags()` fills
+    /// in, so the two lists were written by one hand and agree with each other forever: a flag
+    /// added to `CellFlags` and forgotten here is invisible to it. This asserts against
+    /// `CellFlags::all()` instead — **derived** from the bitflags declaration rather than
+    /// restated — so the omission is what reddens, not the value.
+    ///
+    /// The underline style is deliberately outside this: bits 11..=13 are not declared members of
+    /// `CellFlags`, so they are absent from `all()` by construction, and the field has its own
+    /// guard in `underline_style_names_every_style_the_engine_can_store` — a mask cannot cover a
+    /// field, and one check pretending to do both would be loose at whichever end it stretched to.
+    ///
+    /// **What it still cannot see**, stated so it is not read as more coverage than it is: a
+    /// *twelfth* constant here that duplicates a bit already named. OR-ing a duplicate changes
+    /// neither the union nor its population count, so no assertion over this word can notice one.
+    /// A popcount check was written for exactly that and removed — it could not fire alone, and it
+    /// would have been a hand-written `11` to update every time `CellFlags` grew.
+    #[test]
+    fn flags_map_covers_every_declared_cell_flag() {
+        let f = flags();
+        let exported = f.bold
+            | f.dim
+            | f.italic
+            | f.underline
+            | f.blink
+            | f.inverse
+            | f.hidden
+            | f.strikethrough
+            | f.wide_char
+            | f.wide_char_spacer
+            | f.wrapline;
+        assert_eq!(
+            exported,
+            CellFlags::all().bits(),
+            "`flags()` does not name every declared `CellFlags` member — missing {:#06x}. Add the \
+             constant to `Flags` and to `flags()`; a JS consumer has no other way to name it.",
+            CellFlags::all().bits() & !exported
+        );
+    }
+
+    // --- #831: the underline style is a field a consumer can name ---
+
+    /// A span whose cells each carry one underline style, in the order given.
+    fn styled_span(line: u16, left: u16, styles: &[CoreStyle]) -> Span {
+        let cells: Vec<Cell> = styles
+            .iter()
+            .map(|&s| {
+                let mut f = CellFlags::empty();
+                f.set_underline_style(s);
+                Cell::from_parts('x', Color::Default, Color::Default, f)
+            })
+            .collect();
+        Span {
+            line,
+            left,
+            right: left + cells.len() as u16 - 1,
+            cells,
+            combining: BTreeMap::new(),
+            links: BTreeMap::new(),
+            ucolors: BTreeMap::new(),
+        }
+    }
+
+    /// The six styles the engine can store, read back **through the wire** by name.
+    ///
+    /// The round trip is the point: `underline_style` is asserted against a `flags[i]` word that a
+    /// real `encode`/`decode` produced, not against one this test built, so it covers the field's
+    /// position surviving serialisation as well as the accessor reading it. Testing the accessor
+    /// on a hand-made word would have been a fixture asserting itself.
+    #[test]
+    fn underline_style_names_every_style_the_engine_can_store() {
+        const ALL: [CoreStyle; 6] = [
+            CoreStyle::None,
+            CoreStyle::Single,
+            CoreStyle::Double,
+            CoreStyle::Curly,
+            CoreStyle::Dotted,
+            CoreStyle::Dashed,
+        ];
+        let frame = partial(80, 24, vec![styled_span(0, 0, &ALL)]);
+        let native = justerm_core::decode(&justerm_core::encode(&frame)).expect("decode");
+        let flat = flatten(&native);
+
+        let read: Vec<UnderlineStyle> = flat.flags.iter().map(|&w| underline_style(w)).collect();
+        assert_eq!(
+            read,
+            vec![
+                UnderlineStyle::None,
+                UnderlineStyle::Single,
+                UnderlineStyle::Double,
+                UnderlineStyle::Curly,
+                UnderlineStyle::Dotted,
+                UnderlineStyle::Dashed,
+            ]
+        );
+        // Six inputs must give six *distinct* answers — the acceptance criterion is that a
+        // consumer can tell them apart, and a binding that collapsed two of them onto one name
+        // would still satisfy an element-wise check written from the same list.
+        let mut distinct = read.clone();
+        distinct.dedup();
+        assert_eq!(
+            distinct.len(),
+            6,
+            "two styles read as the same name: {read:?}"
+        );
+    }
+
+    /// **The same word carries flags and the field, and neither eats the other.**
+    ///
+    /// Every other test here varies the style under one input shape — a row of nothing but styled
+    /// cells. That shape cannot see a style that survives alone and is lost beside a flag, or a
+    /// flag clipped by the field's mask, because it never puts the two in one word. #830 shipped
+    /// with fifteen green checks that shared exactly that blind spot, so the shape is varied here
+    /// deliberately rather than the value.
+    #[test]
+    fn a_style_and_ordinary_flags_ride_the_same_word() {
+        let mut f = CellFlags::BOLD | CellFlags::ITALIC | CellFlags::STRIKETHROUGH;
+        f.set_underline_style(CoreStyle::Dotted);
+        let span = Span {
+            line: 7,
+            left: 13, // not column 0: a span offset must not shift which bits are read
+            right: 13,
+            cells: vec![Cell::from_parts(
+                'q',
+                Color::Indexed(9),
+                Color::Rgb(1, 2, 3),
+                f,
+            )],
+            combining: BTreeMap::new(),
+            links: BTreeMap::new(),
+            ucolors: BTreeMap::new(),
+        };
+        let frame = partial(80, 24, vec![ascii_span(0, 0, "unstyled"), span]);
+        let native = justerm_core::decode(&justerm_core::encode(&frame)).expect("decode");
+        let flat = flatten(&native);
+
+        let w = *flat.flags.last().expect("the styled cell is the last one");
+        assert_eq!(underline_style(w), UnderlineStyle::Dotted);
+        let bits = flags();
+        for (name, mask) in [
+            ("bold", bits.bold),
+            ("italic", bits.italic),
+            ("strikethrough", bits.strikethrough),
+            ("underline", bits.underline),
+        ] {
+            assert_ne!(w & mask, 0, "{name} was lost from a word carrying a style");
+        }
+        // The unstyled neighbours are untouched — a field written too wide would reach them.
+        for &other in &flat.flags[..flat.flags.len() - 1] {
+            assert_eq!(underline_style(other), UnderlineStyle::None);
+        }
+    }
+
+    /// A cell with no style reads as `None` — the documented answer, not an inferred zero (#831).
+    #[test]
+    fn a_cell_with_no_underline_reads_as_none() {
+        let frame = partial(80, 24, vec![ascii_span(0, 0, "hi")]);
+        let native = justerm_core::decode(&justerm_core::encode(&frame)).expect("decode");
+        let flat = flatten(&native);
+        assert!(flat.flags.iter().all(|&w| w & flags().underline == 0));
+        for &w in &flat.flags {
+            assert_eq!(underline_style(w), UnderlineStyle::None);
+        }
+    }
+
+    /// The accessor reads the *field* and nothing else: the same style with every other flag bit
+    /// set gives the same answer, and the two representable values outside the enum normalise the
+    /// way the engine normalises them rather than a second way invented in the binding.
+    #[test]
+    fn underline_style_reads_only_its_own_field() {
+        let curly = 3u16 << 11;
+        assert_eq!(underline_style(curly), UnderlineStyle::Curly);
+        assert_eq!(
+            underline_style(curly | CellFlags::all().bits()),
+            UnderlineStyle::Curly,
+            "a flag set beside the style changed the style"
+        );
+        for spare in [6u16, 7] {
+            assert_eq!(underline_style(spare << 11), UnderlineStyle::Single);
+        }
+    }
+
+    /// **The skew a new decoder sees: a frame written before the style existed.**
+    ///
+    /// A pre-#829 encoder wrote a bare `UNDERLINE` with bits 11..=13 zero. That word is not
+    /// constructible through `Cell` — `flag_words` normalises it on the way in — so the record is
+    /// forged in the encoded bytes, which is the only way to get the real historical word through
+    /// `decode`. It must not error and must read as a plain single underline.
+    #[test]
+    fn a_frame_written_before_the_style_existed_reads_as_a_single_underline() {
+        let mut f = CellFlags::empty();
+        f.set_underline_style(CoreStyle::Single);
+        let frame = partial(80, 24, vec![styled_span(0, 0, &[CoreStyle::Single])]);
+        let mut bytes = justerm_core::encode(&frame);
+
+        // Locate the cell record by its own encoding rather than by a hand-written offset, then
+        // overwrite just its flags field. Asserting the count is what stops this from silently
+        // patching nothing (or something else) if the layout moves.
+        let record = justerm_core::encode_cell_record(&Cell::from_parts(
+            'x',
+            Color::Default,
+            Color::Default,
+            f,
+        ));
+        let hits: Vec<usize> = bytes
+            .windows(justerm_core::CELL_RECORD_LEN)
+            .enumerate()
+            .filter(|(_, w)| *w == record.as_slice())
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(
+            hits.len(),
+            1,
+            "cell record not found exactly once in the frame"
+        );
+        // A styleless underline: bit 3 set, the style field cleared.
+        bytes[hits[0] + 12..hits[0] + 14]
+            .copy_from_slice(&CellFlags::UNDERLINE.bits().to_le_bytes());
+
+        let native = justerm_core::decode(&bytes).expect("a pre-style frame must still decode");
+        let flat = flatten(&native);
+        assert_eq!(underline_style(flat.flags[0]), UnderlineStyle::Single);
+        assert_ne!(flat.flags[0] & flags().underline, 0);
+    }
+
+    /// **The skew an old consumer sees: it ignores bits it has no name for.**
+    ///
+    /// The claim the no-bump decision rests on is that such a reader still draws *something* — and
+    /// that holds only because the engine derives `UNDERLINE` from the style for every non-`None`
+    /// value. Asserted per style rather than once, since the derivation could plausibly be lost
+    /// for the values #830 added while surviving for the ones #829 shipped.
+    #[test]
+    fn a_reader_that_cannot_name_the_style_still_sees_an_underline() {
+        const LIT: [CoreStyle; 5] = [
+            CoreStyle::Single,
+            CoreStyle::Double,
+            CoreStyle::Curly,
+            CoreStyle::Dotted,
+            CoreStyle::Dashed,
+        ];
+        let frame = partial(80, 24, vec![styled_span(0, 0, &LIT)]);
+        let native = justerm_core::decode(&justerm_core::encode(&frame)).expect("decode");
+        let flat = flatten(&native);
+        assert_eq!(flat.flags.len(), LIT.len());
+        for (&w, style) in flat.flags.iter().zip(LIT) {
+            assert_ne!(
+                w & flags().underline,
+                0,
+                "{style:?} reaches an old consumer with no underline at all"
+            );
+        }
+        // And the layout did not move to carry them: the decision recorded on `VERSION` is that
+        // this feature rides in the existing u16, so a bump would falsify the paragraph there.
+        assert_eq!(wire_version(), justerm_core::WIRE_VERSION);
     }
 
     // --- #35: structure-of-arrays cell columns ---

@@ -2,9 +2,15 @@
 //!
 //! **The rule.** `#[non_exhaustive]` binds only across a crate boundary, so an enum
 //! core marks and this crate matches would need a `_` arm here — and that arm turns a
-//! future *compile error* into a silently wrong wire value. Three enums are in that
-//! position (`CursorShape`, `FrameKind`, `MarkerKind`); the rest are free to take the
-//! attribute.
+//! future *compile error* into a silently wrong wire value. Four enums are in that
+//! position (`CursorShape`, `FrameKind`, `MarkerKind`, `UnderlineStyle`); the rest are
+//! free to take the attribute.
+//!
+//! **The fourth arrived after the scan was written, and the scan could not see it (#831).**
+//! `UnderlineStyle` lives in `cell.rs`, which was not among the sources below, so the
+//! roster had no chance of naming it — the class Control 1 exists for, one level up: a
+//! *file* the scan cannot see hides every type in it, and unlike a lost type there is no
+//! roster entry left behind to go missing. The repair is the source list, not an entry.
 //!
 //! **Why this is a test and not a paragraph.** The rule was written after
 //! `cargo test --workspace` reddened on `MarkerKind`, and that gate is *not* a detector
@@ -25,6 +31,7 @@ const ENCODER: &str = include_str!("../src/lib.rs");
 
 /// Core's public-enum sources, by the module each type lives in.
 const CORE_SOURCES: &[(&str, &str)] = &[
+    ("cell.rs", include_str!("../../justerm-core/src/cell.rs")),
     ("color.rs", include_str!("../../justerm-core/src/color.rs")),
     (
         "cursor.rs",
@@ -92,6 +99,7 @@ fn public_enums() -> Vec<(String, bool)> {
 /// notice one enum disappearing from the scan, because the files also declare two
 /// crate-private ones (`MouseProtocol`, `MouseEncoding`) that pad the total.
 const EXPECTED: &[&str] = &[
+    "UnderlineStyle",
     "Color",
     "CursorShape",
     "TermDamage",
@@ -147,7 +155,7 @@ fn the_scanner_finds_both_marked_and_unmarked_enums() {
 /// this is what says so.
 #[test]
 fn the_scanner_finds_the_known_wire_mappings() {
-    for name in ["CursorShape", "FrameKind", "MarkerKind"] {
+    for name in ["CursorShape", "FrameKind", "MarkerKind", "UnderlineStyle"] {
         assert!(
             matched_in_encoder(name),
             "{name} is mapped onto a wire value in src/lib.rs, and the scan missed it — \
