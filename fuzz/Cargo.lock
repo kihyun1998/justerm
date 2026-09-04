@@ -91,7 +91,7 @@ dependencies = [
 
 [[package]]
 name = "justerm-core"
-version = "0.16.0"
+version = "0.17.0"
 dependencies = [
  "bitflags",
  "regex",
