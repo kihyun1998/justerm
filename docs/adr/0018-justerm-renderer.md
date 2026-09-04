@@ -2,6 +2,17 @@
 
 Status: accepted (2026-07-15) — supersedes ADR-0002; proposed 2026-07-07
 
+**Thinned 2026-09-04. Three decisions taken in this file now have records of their own, and this file
+no longer carries a second copy of them**: the cell/glyph-box split and what the cell is measured from
+([ADR-0022](0022-cell-geometry-from-an-ink-scan.md)), a metric setting's unit
+([ADR-0023](0023-spacing-settings-are-css-pixels.md)), and the bake's glyph geometry
+([ADR-0031](0031-glyph-bake-geometry-answers-to-our-own-model.md)). None of the three cited this file
+and this file cited none of them, so the same xterm lines were being quoted at two ranges from two
+places — the drift a duplicate produces before anyone notices it is a duplicate. **Nothing was
+deleted without a home**: the one clause that existed only here (we centre the glyph; alacritty
+baseline-anchors) moved into ADR-0022 in the same change. What stays is this crate's own scope —
+the decision to build it, the accessor contract, the atlas/builtin pipeline, and the cursor.
+
 Note (accepted): the renderer was built out under Epic [#258](https://github.com/kihyun1998/justerm/issues/258)
 — scaffold (#259), native cursor (#270), the atlas/glyph pipeline (#359, #361), the colour long-tail
 (#272), decorations (#393), npm distribution (#394) — and `justerm-web` switched off beamterm onto it
@@ -61,6 +72,14 @@ prior-art (as `justerm-core` studied xterm.js) and build fresh in justerm's own 
 
 Decided in #331/#335 after the CSS-first shape of #252/#265 produced a real clipping bug.
 
+**What this section still owns, since three of its decisions left** (2026-09-04): the *accessor
+contract* — which quantity is in which space, what `resize_*` promises, and what the browser may
+refuse. It does **not** own what the cell is *measured from* ([ADR-0022](0022-cell-geometry-from-an-ink-scan.md)),
+what unit a consumer-facing metric setting takes ([ADR-0023](0023-spacing-settings-are-css-pixels.md)),
+or what the bake may do to a glyph before the composite sees it
+([ADR-0031](0031-glyph-bake-geometry-answers-to-our-own-model.md)). All three were first decided in
+this file and are cited from it rather than restated.
+
 The cell is *measured* in device pixels — the rasteriser ink-scans `█` at `FONT_SIZE * devicePixelRatio`
 — and that integer is what the shader receives as `u_cell_size`. Everything else is derived from it:
 
@@ -117,20 +136,14 @@ grounds, in order of weight:
    `renderer.rs:164-168`), with the sub-cell remainder letterboxed (`terminal_grid.rs:240-241`). That
    route is closed to us: #331 made the grid the source of truth.
 
-**The cell and the glyph box are two rectangles** (#338). They used to be one: the rasteriser ink-scans
-`█` at `FONT_SIZE * dpr` and that box *was* the cell, so the shader could stretch one glyph quad across
-one cell and be right by construction. `letterSpacing` and `lineHeight` break the identity, and something
-must then say where inside the cell the glyph sits — which is why xterm carries `device.char.{top,left}`
-beside `device.cell` (`WebglRenderer.ts:668,675`) and alacritty carries `glyph_offset` beside `offset`
-(`config/font.rs:20-23`). We centre, as xterm does; alacritty baseline-anchors instead.
-
-`letterSpacing` is taken in **CSS px** and applied as `round(spacing * dpr)`. Both references take device
-px — xterm adds `Math.round(letterSpacing)` straight onto an already-DPR-scaled `char.width`
-(`WebglRenderer.ts:654` vs `:671`), alacritty adds an `i8` onto DPI-scaled font metrics
-(`display/mod.rs:411-416,1608`) — so the same setting is a different gap on a Retina display. Our
-`FONT_SIZE` is CSS px scaled by the DPR at rasterisation, and the two halves of one font description
-should speak one unit. (Whether xterm's choice is deliberate is unknown: its source says nothing and no
-issue discusses it. We do not claim it is a bug; we claim the unit does not suit us.)
+**The cell and the glyph box are two rectangles** (#338), and **a spacing setting is CSS pixels**
+(#338) — both were decided here and both have since been **extracted, with their grounds**, to
+[ADR-0022](0022-cell-geometry-from-an-ink-scan.md) (the nested glyph box, `char_size` / `char_offset`,
+and that we centre where alacritty baseline-anchors) and
+[ADR-0023](0023-spacing-settings-are-css-pixels.md) (`letterSpacing` in CSS px applied as
+`round(spacing * dpr)`, against both references' device px, and the rule that generalises past it).
+Read them there; the paragraphs that stood here are gone rather than summarised, because the copy
+that lived here had already drifted from ADR-0022's citation of the same xterm lines.
 
 **The atlas slot is the padded CELL, not the padded glyph box** (#359). #338 kept the slot at the glyph
 box and had the *shader* place and mask each glyph inside its cell. That was a workaround for a fixed-slot

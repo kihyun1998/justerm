@@ -88,7 +88,10 @@ quad, the cursor box, and the CSS cell the consumer divides its box by.
 grow the cell while the glyph keeps its measured size; `char_size` / `char_offset` place it. This part
 *is* the prior-art consensus — xterm carries `device.char.*` beside `device.cell.*` and centres with
 `device.char.{top,left}` (`WebglRenderer.ts:646-671`), and alacritty adds a user `offset` to the cell and
-positions with a separate `glyph_offset`.
+positions with a separate `glyph_offset`. Where the two diverge is the **anchor**, and that half is a
+choice rather than a consensus: we **centre** the glyph in its cell as xterm does, where alacritty
+baseline-anchors instead. *(Stated here from 2026-09-04; it had been recorded only in ADR-0018, whose
+copy of this paragraph carried a second, drifting citation of the same xterm lines.)*
 
 **Glyphs that must tile are drawn to the cell, not to their ink box** (`builtin.rs`, #359/#361/#364-#367).
 This follows from the two rules above rather than standing on its own: once every glyph is masked to its
