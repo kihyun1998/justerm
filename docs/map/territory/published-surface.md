@@ -30,6 +30,51 @@ How a version gets there is [release](release.md).
   sentence onto a registry is what makes it a lie.
 - **The publish-time check fires after the tag is already pushed**, so a false positive costs a
   re-tag. That is why its phrase list is kept tight rather than thorough.
+- **What this surface publishes is mostly a map of *names*, and a name map is only as complete as
+  what its guard is derived from (#831).** The decoder's `flags()` hands a consumer eleven named
+  bits so nobody hard-codes a bit value — and its guard asserted those eleven against a list copied
+  from the same eleven, so a member `CellFlags` gained and this one did not was invisible to it
+  forever. **Three levels of the same shape were live at once**, and each fell to the same repair:
+  the union is now asserted against `CellFlags::all()`, which comes from the declaration; the
+  `#843` scanner had it *one level up*, its list of **core source files** omitting `cell.rs`, so
+  every type in that file was outside the scan with no roster entry left behind to go missing (a
+  lost file is strictly worse than a lost type); and `justerm-web`'s `FlagBits` — this package's
+  copy of that same map — had drifted to **nine of the eleven**, missing `wide_char` and
+  `wrapline`, with the seam gate structurally unable to see it. The rule: prefer a check that
+  enumerates the thing being published over one that restates it, and when neither is possible, say
+  in the guard what it cannot see.
+- **A hand-written mirror needs a reason, and the reason does not transfer between mirrors.**
+  `DecodedFrame` is hand-written *because a frame reaches the widget from any producer on any
+  decoder version* — width-agnosticism is the contract, and importing the decoder's types would
+  break it. That justification was silently inherited by `FlagBits`, which has no second producer
+  at all: nothing but the decoder makes those constants. Once asked separately, it derives —
+  `{ [K in Exclude<keyof Flags, "free">]: number }` — and the roster stops existing rather than
+  being guarded. Testability is untouched; a test still passes `{ bold: 1, … }`, it just can no
+  longer pass a *subset*.
+- **The prior art does not carry a mirror at all**, which is what made the question worth asking.
+  Ruffle's web wrapper imports its types straight from the generated `.d.ts`
+  (`import type { RuffleInstanceBuilder } from "../dist/ruffle_web"`) against a **relative path in
+  its own build**, so no version range exists; Automerge's JS package declares **no runtime
+  dependency** and vendors the wasm output into its own `dist/`, eliminating the skew a different
+  way. Neither consumes its own family's wasm package by npm version range — that is justerm's own
+  choice, bought with independent release tracks, and it is the root the two mirrors grow from.
+- **A field is not a flag, and the published shape has to say which it is.** The same `flags[i]`
+  word carries eleven yes-or-no bits and one 3-bit *value*. Exporting a twelfth mask would have
+  passed every guard here and still left every consumer shifting by hand, so the style ships as an
+  **accessor** rather than a mask (`underlineStyle`). That much is derived: no mask can answer
+  "which of six".
+- **Whether that accessor returns a *named* value is a separate choice, and this surface is now
+  split on it (#831).** `UnderlineStyle` is the first core enum to cross as a `#[wasm_bindgen]`
+  enum. Three crossed before it and all three ship as bare numbers with the mapping in prose —
+  `cursorShape` (`-> u8`, "0 = Block, 1 = Underline, 2 = Bar"), `kind` (`FrameKind` → 0/1) and the
+  marker kind (0..4) — each mirrored in `justerm-web/src/types.ts` as a plain `number`. A
+  documented scalar would have answered "which of six" identically, so the enum is *chosen*, not
+  derived, and the three precedents are counter-examples rather than agreement. Recorded here
+  unresolved on purpose: the open question is whether the named form is the direction and the three
+  become debt, or whether `underlineStyle` is the outlier. Nothing on this surface decides it.
+- **What the named form does buy, and this part is mechanical:** the core→binding conversion is an
+  **exhaustive `match`**, so a variant added upstream fails to compile in the binding rather than
+  arriving on npm unnamed. A scalar mapping written as `as u8` would carry no such guarantee.
 - **crates.io rewrites relative links**, resolving them against the crate's README subdirectory —
   so `[x](../CLAUDE.md)` in a crate README does reach the repo root. npm does **not**, and
   `justerm-web@0.7.0` shipped two broken links because of it (#473).
@@ -49,8 +94,11 @@ How a version gets there is [release](release.md).
   asserting turned out to be one layer out and to be about the **family** rather than about this
   package: *the renderer's parameters must be able to take what the decoder produces.* `justerm-web`
   is merely the only place where both published types are in scope, so the check lives here while
-  routing through neither of this package's own declarations, and `src/` gains no dependency on the
-  decoder's types. Two classes fall out of it, both derived rather than listed: a **width** that
+  routing through neither of this package's own declarations. **It used to be true that `src/` took
+  no decoder type at all**; that was never the rule it read as, and #831 spent it deliberately —
+  `types.ts` now takes one `import type { Flags }`, erased at emit, the way `justerm-renderer.ts`
+  and `accessibility-dom.ts` have taken `Palette` all along. What the width assertions must not
+  route through is *this package's own declarations*, and they still do not. Two classes fall out of it, both derived rather than listed: a **width** that
   stops feeding (`Feeds<decoder column, renderer parameter>`) and a **getter this package never
   mirrored** (`Exclude<keyof wasm, keyof web>` must be `never` — the #129/#135 class, which a
   hand-kept roster would have to predict and `keyof` does not).
@@ -68,6 +116,13 @@ How a version gets there is [release](release.md).
 - `justerm-core/README.md` · `justerm-wasm-decode/README.md` · `justerm-renderer/README.md` ·
   `justerm-web/README.md` · `justerm-facade/README.md`
 - `justerm-wasm-decode/tests/readme_pins.rs` — the constant pin (per-PR)
+- `justerm-wasm-decode/src/lib.rs` — `Flags`/`flags()` (the eleven named bits) and
+  `UnderlineStyle`/`underlineStyle()` (the 3-bit field, #831): the names a consumer reads a cell's
+  attributes by, guarded by `flags_map_covers_every_declared_cell_flag` and by the exhaustive
+  `match` in `underline_style`
+- `justerm-wasm-decode/tests/wire_enum_stays_exhaustive.rs` — the scan that keeps every core enum
+  this crate maps onto a published value exhaustive (#843); its own source list is the roster that
+  #831 had to widen
 - `.github/scripts/check-published-readme.mjs` — the expiring-claim gate (publish-time)
 - Public doc-comments in `justerm-core/src/lib.rs` — they ship verbatim as the docs.rs page
 - `justerm-web/src/types.ts` — `DecodedFrame`, web's mirror of the published decoder's getters;
@@ -76,7 +131,12 @@ How a version gets there is [release](release.md).
   renderer, and the typed binding in `JustermRenderer.create` that gates it
 - `justerm-web/test/published-seam.types.ts` — the decoder-side gate (#646): the published
   decoder's columns must feed the published renderer's parameters, and every decoder getter must be
-  mirrored. Checked by `pnpm typecheck`, not by vitest, and it names what it cannot see
+  mirrored. Checked by `pnpm typecheck`, not by vitest, and it names what it cannot see. §1b (#831)
+  adds the level `keyof DecodedFrame` cannot reach — the decoder's **module-scope** exports, where
+  a new one lands unreviewed at the moment a version range moves
+- `justerm-web/src/types.ts` — `FlagBits`, a mapped type over the published `Flags` rather than a
+  written-out list (#831), which is why it has no roster to go stale; `DecodedFrame` beside it stays
+  hand-written, and the two differ because only one of them has a second producer
 - `justerm-web/package.json` — the two version ranges that decide when a consumed drift is reachable
 
 ## Reference behaviour

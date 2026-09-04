@@ -16,7 +16,43 @@ use crate::term::MIN_COLUMNS;
 use core::num::NonZeroU32;
 use std::collections::BTreeMap;
 
-/// Wire magic ("juSTerm") + format version. A new feature bumps `VERSION`.
+/// Wire magic ("juSTerm") + format version.
+///
+/// **A new feature bumps `VERSION` when it changes the bytes — not when it changes the
+/// meaning.** The rule read "a new feature bumps `VERSION`" until #829/#830/#831, which is the
+/// first feature to falsify it: the underline style (`SGR 4 : Ps`) rides in bits 11..=13 of the
+/// per-cell flag `u16` that every version since v1 has carried, and those bits were zero in every
+/// frame ever encoded. No field changes width, no group is added, no offset moves — so a decoder
+/// gated on the version byte would be rejecting frames it can read.
+///
+/// The reasoning, recorded here because a decision not to bump leaves no other trace:
+///
+/// - **Neither skew direction mis-reads — but an older decoder does not *keep* the field, it
+///   drops it.** `decode` reassembles the flag set with `from_bits_retain`, and that retention
+///   lasts only until `Cell::from_parts`: a pre-#829 `flag_words` masks `f & 0x0700` into the
+///   content word, so bits 11..=13 never reach that build's cells and never reach its `flags`
+///   column. What survives is bit 3, written by the new encoder, which the old build still lifts
+///   to a plain underline. Degradation, not corruption — but a stale decoder cannot forward the
+///   style to a newer renderer, and anyone reasoning from "unknown bits are retained" would
+///   conclude that it can. (Measured on `dba8065`, the commit before #829.) In the other
+///   direction `flag_words` normalises a styleless `UNDERLINE`, which is exactly the word a
+///   pre-#829 encoder wrote, to `Single`.
+/// - **The claim is tested, not asserted**, in `justerm-wasm-decode`
+///   (`a_frame_written_before_the_style_existed_reads_as_a_single_underline` forges that historical
+///   word into a real encoded frame; `a_reader_that_cannot_name_the_style_still_sees_an_underline`
+///   pins the derived flag for all five lit styles).
+/// - **What a bump would not have fixed.** The one real hazard is a consumer assuming bits outside
+///   the decoder's *named* map are unset, and a version byte does not tell it otherwise. #831
+///   answers that where it is actually asked, by naming the field on the published surface
+///   (`underlineStyle`), which is why this decision is recorded rather than deferred to a number.
+/// - **What the decision costs, stated because "degradation" reads as free and it is not.** A
+///   version bump is the family's only *loud* signal: `decodeFrame` returns `BadVersion` and a
+///   stale artifact fails at load. Declining it means a mixed-version install — the npm caret on a
+///   0.x pin resolves a whole minor range independently per package — can pair a style-capable
+///   renderer with a decoder that strips the field, and every curl silently flattens to a straight
+///   line with no error anywhere. That is a real trade and it was taken deliberately: the loud
+///   failure would have rejected frames every one of those decoders can otherwise read correctly,
+///   which is a larger harm than one flattened mark.
 const MAGIC: [u8; 2] = *b"JT";
 const VERSION: u8 = 16; // v16 removes the fourth overlay group — every live marker's absolute line — and adds `marker_count` (u32) to the header in its place: the group was measured at 37-70% of an 80x24 frame at ordinary OSC-133 densities and is the R3 violation ADR-0020 records against itself, so a consumer pulls the index once (`Engine::marker_index`, v15) and the count is its check against drift (#490). The *viewport* marker group stays: it is what command-announce consumes, it is row-filtered, and its population is bounded by MAX_MARKERS (#721) ; v15 adds the marker-index basis to the header — `evicted_total` (u64) and `marker_epoch` (u32) — so a consumer can pull the marker set once and keep it valid instead of being handed every live marker in every frame; the marker groups stayed one version as an oracle for the consumer index and the absolute-line one left in v16 (#490); v14 moves combining clusters and hyperlink refs off the fixed cell record (18 B -> 14 B) into per-span sparse groups, inlining the cluster (no side-table) but keeping the URI table interned, and widens every count/length prefix they use to u32 — the engine could hold a cluster, a URI, or a viewport its own decoder then rejected or, worse, mis-read as Ok (#621); v13 adds a per-span underline-colour group: sparse (col, Color) pairs for cells drawing a coloured underline (SGR 58, #520); v12 adds a fifth overlay group: the consumer-designated active search match's spans (#428); v11 adds a fourth overlay group: every live marker's absolute buffer line for the overview ruler (#120 S3); v10 adds a marker kind discriminant + optional i32 exit to the overlay marker group (#159); v9 adds the alt-screen flag in the header (#149); v8 adds the mouse wanted-events mask in the header (#129/ADR-0016); v7 overlay marker group (#118/ADR-0015); v6 overlay selection + search-match spans (#108/ADR-0014); v5 scroll position (#112/ADR-0013); v4 cursor shape+blink (#81); v3 cursor row/col/visibility (#38)
 
@@ -144,9 +180,16 @@ pub struct MarkerId(pub u32);
 /// > this crate stays exhaustive.**
 ///
 /// Measured over `justerm-wasm-decode/src` — the published encoder, and the only
-/// place the boundary bites — that is **exactly three**: [`crate::CursorShape`]
-/// (`lib.rs:198`), [`FrameKind`] (`:192`) and this one (`:233`). Every other
-/// public enum has zero such sites, so no other call turns on this rule.
+/// place the boundary bites — that is **four**: [`crate::CursorShape`]
+/// (`lib.rs:198`), [`FrameKind`] (`:192`), this one (`:233`), and
+/// [`crate::UnderlineStyle`], which joined when #831 gave the style a name on the
+/// published surface. Every other public enum has zero such sites, so no other
+/// call turns on this rule.
+///
+/// **Do not read that count from here.** It was "exactly three" until #831 and this
+/// paragraph is prose, checked by nothing — the executable roster is
+/// `justerm-wasm-decode/tests/wire_enum_stays_exhaustive.rs`, which derives the set
+/// from core's own sources and is what noticed that `cell.rs` was outside its scan.
 ///
 /// Nothing but `cargo test --workspace` would have said so: `#[non_exhaustive]`
 /// binds only **across a crate boundary**, so the defect compiles fine inside

@@ -66,6 +66,9 @@ at a recorded SHA; a paraphrase drops the pin).
 - [cursor position](cursor-position.md) — same struct, same writing verbs; no semantic coupling
 - [colour policy](colour-policy.md) — consumes the finished cell under ADR-0019; the pen decides what it
   receives, not how it is resolved
+- [published surface](published-surface.md) — `UnderlineStyle` leaves the repo by name (#831): the
+  binding mirrors this enum through an exhaustive `match`, so a variant added to the pen's style is
+  a compile error one crate over rather than an unnamed number on npm
 
 ## Known holes / open
 

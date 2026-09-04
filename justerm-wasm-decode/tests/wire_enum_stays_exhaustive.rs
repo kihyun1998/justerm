@@ -2,9 +2,15 @@
 //!
 //! **The rule.** `#[non_exhaustive]` binds only across a crate boundary, so an enum
 //! core marks and this crate matches would need a `_` arm here — and that arm turns a
-//! future *compile error* into a silently wrong wire value. Three enums are in that
-//! position (`CursorShape`, `FrameKind`, `MarkerKind`); the rest are free to take the
-//! attribute.
+//! future *compile error* into a silently wrong wire value. Four enums are in that
+//! position (`CursorShape`, `FrameKind`, `MarkerKind`, `UnderlineStyle`); the rest are
+//! free to take the attribute.
+//!
+//! **The fourth arrived after the scan was written, and the scan could not see it (#831).**
+//! `UnderlineStyle` lives in `cell.rs`, which was not among the sources below, so the
+//! roster had no chance of naming it — the class Control 1 exists for, one level up: a
+//! *file* the scan cannot see hides every type in it, and unlike a lost type there is no
+//! roster entry left behind to go missing. The repair is the source list, not an entry.
 //!
 //! **Why this is a test and not a paragraph.** The rule was written after
 //! `cargo test --workspace` reddened on `MarkerKind`, and that gate is *not* a detector
@@ -25,6 +31,7 @@ const ENCODER: &str = include_str!("../src/lib.rs");
 
 /// Core's public-enum sources, by the module each type lives in.
 const CORE_SOURCES: &[(&str, &str)] = &[
+    ("cell.rs", include_str!("../../justerm-core/src/cell.rs")),
     ("color.rs", include_str!("../../justerm-core/src/color.rs")),
     (
         "cursor.rs",
@@ -92,6 +99,7 @@ fn public_enums() -> Vec<(String, bool)> {
 /// notice one enum disappearing from the scan, because the files also declare two
 /// crate-private ones (`MouseProtocol`, `MouseEncoding`) that pad the total.
 const EXPECTED: &[&str] = &[
+    "UnderlineStyle",
     "Color",
     "CursorShape",
     "TermDamage",
@@ -112,11 +120,24 @@ const EXPECTED: &[&str] = &[
 
 /// Whether the encoder pattern-matches on this enum — `Name::Variant =>` on one line,
 /// which is the shape every wire mapping in `lib.rs` has.
+///
+/// **The needle is anchored to the left of the arrow**, because the scrutinee's variants are the
+/// side a `match` puts there. Testing the whole line stopped discriminating the moment
+/// `UnderlineStyle` joined the roster (#831): this crate declares an enum of that name *itself*, so
+/// `justerm_core::UnderlineStyle::Curly => UnderlineStyle::Curly` satisfied a bare
+/// `UnderlineStyle::` needle from its **right**-hand side alone — and would have gone on satisfying
+/// it after someone replaced the delegation with a hand-rolled `match (flags >> 11) & 7`, which is
+/// exactly the vacuous state this control exists to report.
+///
+/// Anchoring rather than demanding the crate-qualified form is what keeps it uniform: `FrameKind`
+/// and `MarkerKind` are matched unqualified here (they are imported), so a `justerm_core::` needle
+/// would report those two as missing and fail the control for the wrong reason.
 fn matched_in_encoder(name: &str) -> bool {
     let needle = format!("{name}::");
     ENCODER
         .lines()
-        .any(|l| l.contains(&needle) && l.contains("=>"))
+        .filter_map(|l| l.split_once("=>"))
+        .any(|(scrutinee_side, _)| scrutinee_side.contains(&needle))
 }
 
 /// **Control 1: the scanner sees enums at all**, and sees both kinds. Without this a
@@ -142,12 +163,12 @@ fn the_scanner_finds_both_marked_and_unmarked_enums() {
     );
 }
 
-/// **Control 2: the encoder scan sees the three known wire mappings.** If `lib.rs` is
+/// **Control 2: the encoder scan sees the four known wire mappings.** If `lib.rs` is
 /// refactored so these stop matching this shape, the invariant test goes vacuous, and
 /// this is what says so.
 #[test]
 fn the_scanner_finds_the_known_wire_mappings() {
-    for name in ["CursorShape", "FrameKind", "MarkerKind"] {
+    for name in ["CursorShape", "FrameKind", "MarkerKind", "UnderlineStyle"] {
         assert!(
             matched_in_encoder(name),
             "{name} is mapped onto a wire value in src/lib.rs, and the scan missed it — \

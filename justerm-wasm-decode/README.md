@@ -131,6 +131,28 @@ Blink is a renderer-local animation, not an engine tick.
 (skip the spacer, bold→bright, dim) is your render policy. `wrapline` is engine reflow/copy metadata,
 usually ignored by a renderer.
 
+## Underline style (`underlineStyle()`)
+
+`underline` above answers *whether*; `underlineStyle(flags[i])` answers *which*, returning an
+`UnderlineStyle`: `None`, `Single`, `Double`, `Curly`, `Dotted` or `Dashed` (`SGR 4 : Ps`, plus the
+legacy `SGR 21` on `Double`). It is a 3-bit **field**, not a flag, so there is no mask for it — pass
+the whole `flags[i]` word and never shift by hand.
+
+```js
+import { underlineStyle, UnderlineStyle } from "justerm-wasm-decode";
+
+const style = underlineStyle(flagBits[i]);
+if (style !== UnderlineStyle.None) drawUnderline(col, row, style); // your marks, your policy
+```
+
+A cell that is not underlined reads as `UnderlineStyle.None` — `None` is a value of the style, so
+you never have to infer it from a zero. `flagBits[i] & F.underline` and `style !== None` are the
+same question: the engine derives the flag from the field, so they cannot disagree. Which is to say
+a reader that only knows `F.underline` keeps working and draws a plain line — which is why carrying
+the style did **not** move `wireVersion()`.
+
+Colour is separate and orthogonal: see `frame.underlineColor` (`SGR 58`) above.
+
 ## License
 
 Dual-licensed under [MIT](https://github.com/kihyun1998/justerm/blob/master/LICENSE-MIT) or

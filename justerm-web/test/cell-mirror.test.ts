@@ -12,6 +12,12 @@ const F: FlagBits = {
   dim: 0x400,
   hidden: 0x800,
   blink: 0x10, // #576 — the mirror ignores it (text is text either phase), but the map carries it
+  // #831: the two the map had never carried. This fixture was nine of eleven for the same reason
+  // `FlagBits` itself was, and it is now a compile error to be short — which is the point of
+  // deriving the type rather than listing it. Values here are arbitrary and deliberately not the
+  // decoder's, so nothing in this file can pass by accidentally agreeing with the real layout.
+  wide_char: 0x1000,
+  wrapline: 0x2000,
 };
 
 const cp = (s: string): number => s.codePointAt(0)!;

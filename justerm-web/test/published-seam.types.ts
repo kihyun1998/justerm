@@ -77,6 +77,48 @@ type NotMirrored = Exclude<FrameFields<WasmFrame>, keyof WebFrame>;
 holds<Equal<NotMirrored, never>>(true);
 
 // ---------------------------------------------------------------------------------------------
+// 1b. Roster — the decoder's MODULE-scope exports, which §1 structurally cannot see (#831)
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * `keyof DecodedFrame` covers what hangs off the *frame*. The decoder also exports standalone
+ * functions and classes — `flags()`, and since #831 `underlineStyle()` / `UnderlineStyle` — and
+ * those are outside §1 by construction, not by oversight. That blind spot had already cost
+ * something before anyone looked: `FlagBits`, this package's hand-kept copy of `flags()`, named
+ * **nine of the decoder's eleven** bits, missing `wide_char` and `wrapline`, and nothing anywhere
+ * could say so. (`blink` had gone the same way at #576 and was noticed only because a feature
+ * needed it.)
+ *
+ * The mirror itself is no longer hand-kept — `src/types.ts` derives `FlagBits` from the published
+ * `Flags` with `keyof`, so that particular roster is gone rather than guarded. What remains, and
+ * what this asserts, is the level above it: **a decoder export nobody here has looked at yet.**
+ *
+ * This one is a named list, unlike §1, and the difference is worth stating because the file's own
+ * thesis is derive-don't-restate. There is nothing to derive it *from*: "has a human considered
+ * whether this export needs mirroring" is not a fact any type carries. So the list is the
+ * assertion, and its value is the direction it fails in — a new export appears in
+ * `UnreviewedDecoderExports` on its own, at the moment `package.json`'s version range moves, which
+ * is exactly when it becomes reachable. `underlineStyle` will land here at the next pin bump; that
+ * is intended, and the red is the reminder to mirror it.
+ */
+type ReviewedDecoderExports =
+  // Called directly through `typeof import("justerm-wasm-decode")` — no mirror, none needed.
+  | "decodeFrame"
+  | "buildPalette"
+  | "isValidRegex"
+  | "wireVersion"
+  // Mirrored: `DecodedFrame` by hand and deliberately (§1 guards it), `Flags` by derivation.
+  | "flags"
+  | "DecodedFrame"
+  | "Flags";
+
+type UnreviewedDecoderExports = Exclude<
+  Extract<keyof typeof import("justerm-wasm-decode"), string>,
+  ReviewedDecoderExports
+>;
+holds<Equal<UnreviewedDecoderExports, never>>(true);
+
+// ---------------------------------------------------------------------------------------------
 // 2. Widths — every column the renderer takes can carry what the decoder produces
 // ---------------------------------------------------------------------------------------------
 

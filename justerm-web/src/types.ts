@@ -1,3 +1,9 @@
+// The one import this file takes from the decoder, and it is `import type` — erased at emit, so
+// nothing here gains a runtime dependency. `Palette` already crosses the same way in
+// `justerm-renderer.ts` and `accessibility-dom.ts`. See {@link FlagBits} for why this type is
+// derived while {@link DecodedFrame} below is deliberately not.
+import type { Flags as WasmFlags } from "justerm-wasm-decode";
+
 /**
  * A decoded terminal frame — the unit the renderer consumes.
  *
@@ -207,19 +213,42 @@ export interface FrameSource {
  * nothing (the renderer does it in wasm since #273), so the only survivor of the
  * old per-cell decode is this bit map, which the a11y mirror and the renderer
  * adapter both read.
+ *
+ * **Derived from the published `Flags`, not written out (#831).** It was a hand-kept list of
+ * names until it was measured against its source and found to be nine of eleven: `wide_char` and
+ * `wrapline` had never been added, and nothing could say so — the seam gate one directory over
+ * derives over `keyof DecodedFrame`, and these are module-scope exports, structurally outside it.
+ * The list had already failed once the same way (`blink`, #576, see below).
+ *
+ * `keyof` is what removes the roster rather than checking it: a bit added upstream lands here at
+ * the next pin bump with nobody having predicted it, exactly as {@link DecodedFrame}'s own gate
+ * works one level down. **Testability is unaffected** — this is still a structural object of
+ * numbers, so a test passes `{ bold: 1, … }` as before; what it can no longer do is pass a
+ * *subset*.
+ *
+ * The width is deliberately widened to `number` rather than inherited. `Flags` declares each bit
+ * as a `number` already, but restating it here keeps this type independent of how wasm-bindgen
+ * chooses to render an integer field — the same reason {@link DecodedFrame} types every column
+ * `ArrayLike<number>`.
+ *
+ * `free` is wasm-bindgen's resource plumbing, not a flag; `Symbol.dispose` drops out by taking
+ * string keys only.
+ *
+ * Prior art for the shape: Ruffle's web wrapper imports its types straight from the generated
+ * `.d.ts` (`import type { RuffleInstanceBuilder } from "../dist/ruffle_web"`) and hand-writes
+ * none, and Automerge's JS package vendors the wasm output into its own `dist/` so no version
+ * range exists to drift across. Neither carries a mirror of a published binding. What justerm has
+ * that they do not is a *second producer* — a frame reaches this widget through
+ * {@link FrameSource} from any consumer on any decoder version, which is why
+ * {@link DecodedFrame} stays hand-written and width-agnostic. That reason does not extend here:
+ * nothing but the decoder produces these constants.
+ *
+ * The instance that made the class visible: `blink` (SGR 5, #576) was the last cell flag the wasm
+ * getter exposed and this mirror did not, so nothing on this side could name a blinking cell —
+ * the renderer conceals such a cell on the off phase of the consumer's text-blink clock exactly
+ * as it conceals `hidden` (`ESC[8m`), the two sharing `is_concealed`. It was added by hand. The
+ * two after it were not, which is the whole argument for deriving.
  */
-export interface FlagBits {
-  bold: number;
-  italic: number;
-  underline: number;
-  strikethrough: number;
-  wide_char_spacer: number;
-  inverse: number;
-  dim: number;
-  hidden: number;
-  /** SGR 5 (#576). The renderer conceals a cell carrying this on the off phase of the consumer's
-   * text-blink clock, exactly as it always conceals {@link FlagBits.hidden} (`ESC[8m`) — the two
-   * share `is_concealed`. The last cell flag the wasm getter (`flags().blink`) exposed and this
-   * mirror did not, which is why nothing on this side could name a blinking cell. */
-  blink: number;
-}
+export type FlagBits = {
+  [K in Exclude<Extract<keyof WasmFlags, string>, "free">]: number;
+};
