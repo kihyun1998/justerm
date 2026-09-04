@@ -76,6 +76,18 @@ becomes an actual colour — the engine never does that by identity.
   a background-class glyph's ink is *ordered* rather than merely recoloured, and the whole question is
   **invisible unless something declared a colour** — with the inks equal both orders composite to the
   same bytes, which is why it survived undetected until `SGR 58`.
+- **A mark's antialiasing ramp is part of its geometry, and a separation computed without it is
+  wrong** (#830). `hline` spends half a device pixel on a `fwidth` ramp at each edge, so a band's
+  visible support is one pixel wider than its thickness. Two consequences arrived together and both
+  read as green: a double underline separated by the references' `2 x thickness` **merges into one
+  band** at a one-pixel thickness (measured: one band at every column, the merged centre exactly a
+  pixel above a single's), and a **one-pixel dotted dot is erased entirely** because a half-pixel
+  ramp on each side fills the whole gate (measured: duty 1.0, one run - a solid line). None of the
+  three references meets either, because none of them ramps: xterm.js strokes onto a canvas that
+  snaps a horizontal 1px line, ghostty fills whole rects into a sprite, alacritty emits rects. So a
+  geometry constant imported from any of them has to be re-derived against this ramp before it is
+  believed - which is what put a `thickness + 2px` floor under the double's separation and a hard,
+  unramped path under sub-2px dots.
 - **The two marks are one ink source split by authorship of the colour** (#525, ADR-0019 rule 4).
   They share the follow-fg pipeline and separate only where something *declared* a colour: `SGR 58`
   declares the underline's and there is no SGR for a strikethrough's. A cell with no `SGR 58` has

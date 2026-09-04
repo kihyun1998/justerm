@@ -73,13 +73,20 @@ pub enum UnderlineStyle {
     None = 0,
     /// `SGR 4` or `4:1` — one straight line.
     Single = 1,
-    /// `4:2` — two straight lines. Reached only once #830 lands the remaining marks.
+    /// Two straight lines — `4:2`, and also the legacy `SGR 21`, which is the **only** value with
+    /// a second spelling (#830). Both land on this field, so `SGR 24` clears either of them.
+    ///
+    /// The legacy form is not unanimous in the prior art and the spec is what settles it: `vte`
+    /// reads `21` as *cancel bold*, so an application meaning "stop bold" gets a double underline
+    /// here and keeps its bold. `SGR 22` is the arm that cancels bold.
     Double = 2,
     /// `4:3` — a curl. The mark #829 carries end to end.
     Curly = 3,
-    /// `4:4` — a dotted line. #830.
+    /// `4:4` — a dotted line (#830). Drawn with a whole number of dots per cell, so the pattern
+    /// does not restart at a cell boundary.
     Dotted = 4,
-    /// `4:5` — a dashed line. #830.
+    /// `4:5` — a dashed line (#830). One period per cell, with the dash split across the boundary
+    /// so adjacent cells' dashes join.
     Dashed = 5,
 }
 

@@ -59,6 +59,7 @@
   await init();
 
   const UNDERLINE = 1 << 3;
+  const STRIKETHROUGH = 1 << 7;
   const USTYLE_SHIFT = 11;
   const ST = { single: 1, double: 2, curly: 3, dotted: 4, dashed: 5 };
   const style = (n) => n << USTYLE_SHIFT;
@@ -272,14 +273,16 @@
   checks.theTinyDashedIsDrawn = tinyDashed.litCol.some(Boolean);
   checks.theTinyDoubleIsDrawn = tinyDouble.litCol.some(Boolean);
   checks.theTinyDoubleStaysOffTheRowBelow = tinyDouble.maxLitY < tinyDouble.cellH;
-  // NOT asserted: that the tiny double is still TWO bands. Measured, it is one — at a 6px font the
-  // cell is about 3x6 device px, the bands are 1px each and 2px apart, and `hline`'s own ramp closes
-  // the 1px gap between them. That is arithmetic rather than a defect and every reference meets it
-  // at the same size: xterm.js separates by `lineWidth * 2`, which IS 2px there, and alacritty's
-  // 0.25/0.75-of-descent split is narrower still on a 6px cell. The acceptance asks for the double
-  // to fit the cell "at the default line height", which the checks above prove; the smallest-cell
-  // item it states is about dotted and dashed. So the merge is RECORDED (`tinyDouble.bandHistogram`)
-  // rather than asserted away or asserted against.
+  // This assertion was DECLINED in an earlier draft, on a measurement taken before the separation
+  // floor landed: the histogram then read `{1: ...}` and the comment explaining it away reasoned
+  // from `2 * thickness` — the very rule the floor replaced. A completeness pass caught the
+  // mismatch between the shipped code and its own justification. Re-measured under the shipped
+  // rule the histogram is `{2: ...}` at every dpr, so the check is available and the paragraph
+  // arguing for its absence is gone. The floor is what buys it: `max(2*th, th+2)` at th = 1 is 3
+  // device px, which leaves one fully clear pixel between two 1px bands after each `hline` edge
+  // spends half a pixel on its ramp.
+  checks.theTinyDoubleIsStillTwoBands = every(tinyDouble.bandsWhereLit, (b) => b === 2);
+
   // Deliberately NOT asserted as the strict `>= 2x` above. At a 6px font the cell is a few device px
   // wide, `dots_per_cell` floors toward one, and the two marks converge toward the same shape by
   // arithmetic rather than by a defect. What IS asserted is that neither vanishes and that they are
@@ -288,6 +291,99 @@
   checks.theTinyMarksAreNotIdentical =
     tinyDotted.xRuns !== tinyDashed.xRuns ||
     tinyDotted.litCol.some((v, i) => v !== tinyDashed.litCol[i]);
+
+  // --- an ODD cell width, where a per-pixel period cannot tile the cell -------------------------
+  // A refuting pass computed this defect and it survived reproduction: an earlier draft gated the
+  // sub-2px dots on `mod(pixelIndex, period)`, which is exact only when the period is a whole number
+  // of device pixels — i.e. only when the cell width is EVEN. On an odd cell the residue drifts and
+  // walks out of the gate for good, so an 11px cell lit columns 0, 2, 4 and left 5..10 dark. Every
+  // check above stayed green, `theDottedPatternRepeatsEveryCell` included, because the drift is
+  // identical in every cell.
+  //
+  // `setLetterSpacing` is how a cell width is made odd without a font that happens to measure odd —
+  // one CSS px of spacing at dpr 1 adds one device px to the cell.
+  r.setLetterSpacing(g, 1);
+  const oddDotted = profile(UNDERLINE | style(ST.dotted));
+  const oddDashed = profile(UNDERLINE | style(ST.dashed));
+  r.setLetterSpacing(g, 0);
+
+  checks.theOddCellDottedIsDrawn = oddDotted.litCol.some(Boolean);
+  checks.theOddCellDottedStillRepeatsEveryCell = cellsAgree(oddDotted).agree;
+  // THE check the earlier draft was missing. A cell whose trailing half is blank has its ink pushed
+  // to the left, so compare the two halves of one cell rather than comparing cells to each other.
+  // With the drift this read 3 lit columns against 0; the acceptable band is "both halves carry ink".
+  checks.theOddCellDottedFillsBothHalvesOfTheCell = (() => {
+    const w = Math.floor(oddDotted.cellW);
+    if (w < 4) return true;
+    const half = Math.floor(w / 2);
+    let left = 0, right = 0;
+    for (let k = 0; k < COLS; k++) {
+      const base = Math.round(k * oddDotted.cellW);
+      for (let i = 0; i < half; i++) if (oddDotted.litCol[base + i]) left++;
+      for (let i = half; i < w; i++) if (oddDotted.litCol[base + i]) right++;
+    }
+    return left > 0 && right > 0 && Math.min(left, right) >= 0.4 * Math.max(left, right);
+  })();
+  checks.theOddCellDottedIsStillNotTheDashed =
+    oddDotted.litCol.some((v, i) => v !== oddDashed.litCol[i]);
+
+  // --- a double UNDER a strikethrough, which no check here reached ------------------------------
+  // A completeness pass asked what the second band interacts with that a single one did not, and the
+  // strikethrough is the answer: it is a fixed 0.5 of the glyph box while the second underline band
+  // is a fixed number of device PIXELS above 0.88, so the two approach each other as the box shrinks.
+  // The comment licensing the composite's arithmetic (`webgl.rs`, "band-vs-band overlap is
+  // arithmetically out of reach") was written for the 0.88/0.5 pair and this change moved the pair.
+  const struck = profile(UNDERLINE | style(ST.double) | STRIKETHROUGH);
+  const struckSingle = profile(UNDERLINE | STRIKETHROUGH);
+  checks.aStruckDoubleKeepsThreeSeparateBands = every(struck.bandsWhereLit, (b) => b === 3);
+  checks.aStruckSingleKeepsTwoSeparateBands = every(struckSingle.bandsWhereLit, (b) => b === 2);
+
+  // --- a MIXED row, which every profile above is blind to ---------------------------------------
+  // `profile` fills all twelve cells with ONE flag and every glyph is a space, so the whole page is
+  // invariant under a per-cell shift: an instance-attribute offset or a stale per-cell value would
+  // draw a picture identical to the correct one. This row gives each cell a different style and a
+  // real glyph, and asserts the marks land on the cells that asked for them.
+  const mixedRow = () => {
+    const order = [ST.single, ST.double, ST.dotted, ST.dashed, ST.curly, 0,
+                   ST.single, ST.double, ST.dotted, ST.dashed, ST.curly, 0];
+    const flags = new Uint16Array(N);
+    for (let i = 0; i < COLS; i++) flags[i] = order[i] === 0 ? 0 : (UNDERLINE | style(order[i]));
+    fitGrid(r, g, COLS, ROWS);
+    r.apply_frame(g, COLS, ROWS, new Uint32Array(N), new Uint32Array(N),
+                  new Uint32Array(N).fill(SPACE), flags, true, new Uint32Array(N));
+    r.render();
+    const img = grab();
+    const cw = r.cell_width(g);
+    // The MAXIMUM band count over a cell's own columns. Deliberately not the count in one chosen
+    // column: dotted and dashed leave some columns dark by construction, so a fixed column reads a
+    // different number depending on where the period lands, and the check would be measuring the
+    // phase rather than the mark. The maximum is 1 for every single-band mark, 2 for the double and
+    // 0 where nothing is underlined, whatever the phase does.
+    return order.map((_, k) => {
+      let best = 0;
+      for (let i = 0; i < Math.floor(cw); i++) {
+        const x = Math.min(img.w - 1, Math.round(k * cw) + i);
+        let runs = 0, prev = false;
+        for (let y = img.h - 1; y >= 0; y--) {
+          const lit = red(img, x, y) > LIT;
+          if (lit && !prev) runs++;
+          prev = lit;
+        }
+        best = Math.max(best, runs);
+      }
+      return best;
+    });
+  };
+  const mixed = mixedRow();
+  // The shift detector. Every `profile` above fills all twelve cells with ONE flag, so the picture is
+  // invariant under a per-cell shift — an instance-attribute offset or a stale per-cell value would
+  // draw something identical to the correct answer. Here each cell asks for a different mark, so the
+  // double's extra band is a landmark that can only sit where its own cell is.
+  checks.theDoubleInAMixedRowLandsOnTheCellThatAskedForIt = mixed[1] === 2 && mixed[7] === 2;
+  checks.theSingleBandCellsInAMixedRowHaveOneBand =
+    [0, 2, 3, 4, 6, 8, 9, 10].every((k) => mixed[k] === 1);
+  checks.theUnderlinelessCellsInAMixedRowAreDark = mixed[5] === 0 && mixed[11] === 0;
+  checks.theMixedRowRepeatsItsOwnPattern = mixed.slice(0, 6).join() === mixed.slice(6).join();
 
   window.__proof = {
     ok: Object.values(checks).every(Boolean),
@@ -310,6 +406,7 @@
       // The cross-cell property, as the worst per-cell mask disagreement in columns.
       dottedWorstCellMismatch: dottedRepeat.worst,
       dashedWorstCellMismatch: dashedRepeat.worst,
+      mixedRowBands: mixed,
       lowerBandDelta: +lowerBandDelta.toFixed(3),
       singleCentre: +mean(single.centres).toFixed(3),
       doubleLowerCentre: +mean(double.centres).toFixed(3),

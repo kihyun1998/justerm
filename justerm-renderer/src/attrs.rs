@@ -93,8 +93,9 @@ pub const GLYPH_BG_CLASS: u32 = 1 << 16;
 /// program per kind* (`renderer/rects.rs:263`, `#define DRAW_UNDERCURL` at `:441-443`) and groups
 /// its rects per kind, where this hands one shader a per-instance 3-bit field and branches inside
 /// it. That is a real divergence — cheaper for us to add a style, more expensive per draw for them
-/// — and it is what #830 will be paying or saving. An earlier version of this comment called it a
-/// convergence, which a refuting pass measured false.
+/// — and it is what #830 paid: three branches inside one shader and one added `hline`, against a
+/// program and a draw call per kind. An earlier version of this comment called it a convergence,
+/// which a refuting pass measured false.
 pub const GLYPH_USTYLE_SHIFT: u32 = 17;
 
 /// Font style from a cell's flags — bold + italic select the atlas variant.
@@ -223,7 +224,7 @@ mod tests {
             glyph_field(95, UNDERLINE | curly, false),
             95 | U | (u32::from(CURLY) << GLYPH_USTYLE_SHIFT),
         );
-        // Every style value survives the move, including the ones #830 will draw.
+        // Every style value survives the move, including the three #830 draws.
         for s in 0u16..=5 {
             let f = glyph_field(95, s << USTYLE_SHIFT, false);
             assert_eq!((f >> GLYPH_USTYLE_SHIFT) & 0b111, u32::from(s), "style {s}");

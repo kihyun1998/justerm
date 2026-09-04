@@ -139,7 +139,9 @@ pub fn line_thickness(font_px: f32) -> u32 {
 /// threads a per-column `variantOffset` through its cell-colour resolver, and alacritty inverts the
 /// pattern every two cells off `gl_FragCoord.x`, its comment naming the case — *"if the cellWidth is
 /// odd, the cell will start and end with a dot, creating a dash"*. ghostty takes the third route and
-/// quantises (`src/font/sprite/draw/special.zig`, `dot_count = ceil(width / (4 * radius))`), which is
+/// quantises (`src/font/sprite/draw/special.zig:107-121`, a three-way clamp — `max(min(ceil(w/(4r)),
+/// floor(w/(3r)), floor(w/(2r+1))), 1)`, where the `ceil` term asks for the most dots and the two
+/// `floor` terms cut it back on a narrow cell), which is
 /// the one taken here: with a whole count the period is cell-periodic **by construction**, so the
 /// per-column phase term #829 deleted as mathematically inert stays deleted instead of being
 /// resurrected for one mark. `webgl.rs` used to point the next reader at `variantOffset` as though it
@@ -771,8 +773,9 @@ mod dotted_tests {
         // Two discharges exist in the corpus. xterm.js and alacritty both carry a cross-cell PHASE
         // (`computeNextVariantOffset`; and alacritty's `cellEven`, which inverts the pattern every two
         // cells because "if the cellWidth is odd, the cell will start and end with a dot, creating a
-        // dash"). ghostty instead QUANTISES the count (`src/font/sprite/draw/special.zig`,
-        // `dot_count = ceil(width / (4 * radius))`), which is what is taken here: a whole count makes
+        // dash"). ghostty instead QUANTISES the count (`src/font/sprite/draw/special.zig:107-121`
+        // — a three-way clamp, not the bare `ceil` an earlier version of this comment quoted in two
+        // places), which is what is taken here: a whole count makes
         // the period cell-periodic by construction, so the phase term #829 deleted as mathematically
         // inert stays deleted rather than being resurrected for one mark.
         //
