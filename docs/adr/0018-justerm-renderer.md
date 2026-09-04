@@ -38,6 +38,22 @@ The pain is empirical and recurring — all of it GL *behaviour* impedance the c
 - beamterm has no cursor primitive → the adapter cell-inverts and hand-manages old/new damage.
 - beamterm's built-in selection sees only on-screen cells → justerm owns the selection model (ADR-0002).
 
+**The structural argument is [ADR-0012](0012-first-party-webgl-renderer-direction.md)'s, and it is the
+stronger half** (cited here from 2026-09-04; every other file in this repo writes the pair as
+*"ADR-0012→0018"* and this one had cited neither 0012 nor its argument). The impedance above is
+*behaviour* — each item is something beamterm does that we would rather it did not, and each is
+therefore in principle fixable upstream. #107 found the item that is not: beamterm's drawing unit is
+**one styled glyph per cell**, so there is no sub-cell geometry at all — no way to colour an arbitrary
+rectangle or draw a line *within* a cell. A block cursor survives that (cell invert), and bar,
+underline and hollow-outline do not: each is a thin rectangle at a sub-cell position, and a hollow
+cursor needs a frame **and** the glyph in one cell, i.e. two visual layers. The same wall stands
+behind undercurl, ligature shaping, images / sixel, and smooth pixel-scroll. ADR-0012 recorded that
+as a *direction* and deliberately deferred it — a whole WebGL2 renderer for a hollow cursor is the
+maximal grain, not the correct one — and named its trigger as an accumulated set of sub-cell needs.
+This ADR is that trigger arriving. ADR-0012 also names what makes the swap non-disruptive and is
+worth keeping in view whenever this crate's surface grows: the `Renderer` **port** is the load-bearing
+seam, and `justerm-web`'s public API is the port, not the renderer behind it.
+
 ## Decision
 
 **Build `justerm-renderer`** — a first-party WebGL2 terminal grid renderer, a new Rust crate and a

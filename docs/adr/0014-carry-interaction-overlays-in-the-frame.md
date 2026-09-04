@@ -2,6 +2,17 @@
 
 Status: accepted (2026-06-29, #108) — bumps WIRE_VERSION 5 → 6.
 
+**This is an instance of [ADR-0020](0020-what-qualifies-for-the-frame-snapshot.md), and it is the one
+that ADR-0020 re-examined by name** (noted 2026-09-04). Under R1–R3 this group passes: *"v6 and v12
+pass. Both overlay match groups are viewport spans of engine-projected state the consumer cannot
+compute — `O(viewport)`, state, not derivable. Admitting them was right."* R2 is stated in terms of
+this file's own distinction — the match **set** fails R2 because the consumer ran the query, while its
+viewport **projection** passes because folding a buffer coordinate onto a row needs scrollback,
+soft-wrap and wide-char state only the engine holds. What survives here and nowhere else is the
+**lifecycle taxonomy** below (selection re-anchors, search highlights invalidate) and its
+`set_search_highlights` hand-back; the general "why the frame, not a side channel" argument is
+ADR-0020's.
+
 ## Context
 
 S8 (#109, selection) and S9 (#110, search) paint **highlights** — the selected run, the search-match

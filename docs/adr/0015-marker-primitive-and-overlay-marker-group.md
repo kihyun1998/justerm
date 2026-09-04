@@ -7,6 +7,18 @@ from 2 to **5**. The decision — a marker primitive with its own append-only ov
 projected per viewport, death by event rather than absence — is unchanged; only the record grew.
 Marked inline at the Wire bullet.
 
+**This is an instance of [ADR-0020](0020-what-qualifies-for-the-frame-snapshot.md), and it is the one
+instance that FAILS it** (noted 2026-09-04) — so the routing line here is not the one its three
+same-day siblings carry. ADR-0020 grades the group this file admits: *"`markers` (v7/v10) still fails
+R3, and it is accepted rather than resolved"* — graded `O(viewport)` there until #721 measured **70 000
+records** in it on an 80×24 grid, because several marks legitimately share one line and nothing dedups
+them. Two things follow for a reader of this file. The **marker primitive** — a durable line handle
+the buffer re-anchors, disposed by event rather than by absence — is untouched by that and is the half
+worth reading here. The **wire group** is a standing R3 violation kept because nothing has needed it to
+go, and it is not precedent for a new group; `markerLines` (v11), the *other* unbounded marker group,
+was never an ADR at all and left the frame at v16 (#490). Under R1–R3 a new group is a lookup, and
+this file is not the template.
+
 ## Context
 
 S15 (#120) draws decorations — gutter glyphs, line highlights, rulers — anchored to a buffer *line* that

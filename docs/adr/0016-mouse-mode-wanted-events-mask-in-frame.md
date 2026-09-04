@@ -2,6 +2,16 @@
 
 Status: accepted (2026-06-29, #129) — bumps WIRE_VERSION 7 → 8.
 
+**This is an instance of [ADR-0020](0020-what-qualifies-for-the-frame-snapshot.md)** (noted
+2026-09-04), the last of the four same-day admissions that made a rule necessary. Under R1–R3 it
+passes all three: the mask is current **state** rather than an occurrence (R1), a consumer cannot
+derive it — that is this file's whole single-source argument, since deriving it means re-implementing
+the protocol→events table across the binding boundary (R2), and it is one header byte, `O(1)` (R3).
+What stays here is a question R1–R3 do not ask: given that *something* must be sent, **which
+representation** — the derived mask, not the protocol enum and not the encoding. ADR-0020 governs
+whether a group rides the frame; it has no clause about the shape the group takes once admitted, and
+this file is the one place that question has been argued.
+
 ## Context
 
 S6 (#111) input and the S4 (#112) scrollbar both need the web to decide **locally** whether a mouse/wheel

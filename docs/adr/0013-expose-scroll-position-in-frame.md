@@ -2,6 +2,16 @@
 
 Status: accepted (2026-06-29, #112) — bumps WIRE_VERSION 4 → 5.
 
+**This is an instance of [ADR-0020](0020-what-qualifies-for-the-frame-snapshot.md), not an independent
+axis** (noted 2026-09-04). ADR-0013–0016 were all accepted on one day, on one question — *what may ride
+the frame* — with four separate arguments and no rule; ADR-0020 exists because of exactly that, and its
+Context names these four. Under its R1–R3 this group passes all three: `display_offset` /
+`scrollback_len` are current **state** (R1), a consumer holding only this frame cannot compute them
+(R2), and they are `O(1)` (R3). What is now ADR-0020's rather than this file's is the *general*
+argument — the "Alternatives considered" rejection of a separate scroll-state channel below is one of
+three near-identical rejections written across ADR-0013/0014/0015. Read this file for why **these two
+scalars**, and ADR-0020 for why a group qualifies at all.
+
 ## Context
 
 S4 (#112) is the scrollback **scrollbar**. xterm v6 draws it with VS Code's vendored
