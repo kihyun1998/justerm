@@ -86,8 +86,39 @@ so it never goes to crates.io; the core crate never goes to npm.
 
 `justerm-renderer` is **deliberately outside** the `[workspace.package]` version-lockstep (its
 web-sys/glow deps are wasm32-only and it ships on its own cadence, root `Cargo.toml`). So it carries
-its own version (in `justerm-renderer/Cargo.toml`, its own series — **not** the workspace `0.9.x`) and
-its own tag prefix — a `v*` tag does **not** publish it, and a `renderer-v*` tag publishes **only** it.
+its own version (in `justerm-renderer/Cargo.toml`) and its own tag prefix — a `v*` tag does **not**
+publish it, and a `renderer-v*` tag publishes **only** it.
+
+### One number line, shared with `v*` — separate cadence, not separate numbers
+
+**Decided 2026-09-04, at `v0.17.0` / `renderer-v0.17.0`.** The two tracks draw from **one shared
+number line**. A release takes the next number strictly above *both* tracks' current versions, and
+tags only the track that actually changed.
+
+So the rule is not "release both together" — that would be the lockstep #465 removed, where a Rust
+symbol no consumer imports forced a `justerm-web` bump. Cadence stays independent; only the
+*numbering* is shared. Two consequences, both intended:
+
+- **Equal numbers mean cut at the same moment.** They are never a coincidence again.
+- **A skipped number is normal.** If the workspace releases alone at `0.18.0`, the renderer's next
+  release is `0.19.0`, not `0.18.0`. Registries accept gaps; a gap says "the other track moved".
+
+**Why this over leaving them independent.** The numbers had converged by accident — `justerm-web`
+pinned `^0.15.0` for *both* packages while the published versions were `wasm-decode` 0.16.0 and
+`renderer` 0.15.0, so the pin line read like a matched set and was about to stop being one. An
+accidental correspondence that a reader has learned to trust is worse than an obvious difference,
+and the drift was real: over the six weeks to 2026-09-04 the renderer cut twelve releases to the
+workspace's nine, crossing it repeatedly.
+
+**What this does not fix, so nobody mistakes it for the answer.** *Which versions go together* is
+still `justerm-web/package.json`'s two pins, and nothing publishes that combination. A higher number
+means "cut later", never "compatible with". The deeper root — that the family consumes itself
+through npm **version ranges** at all, which is also where the hand-written mirrors and the
+reachability windows come from — is untouched; neither Ruffle nor Automerge has it (they import from
+their own build, or vendor the wasm into the wrapper).
+
+**Semver is still measured per track**, against the surfaces the sections here and below name. A
+shared number line does not make a renderer minor and a workspace minor mean the same thing.
 
 **Which surface semver is measured against: the wasm/JS one** (`JustermRenderer` and its methods) —
 **not** the crate's Rust symbols (#465). The renderer is published to **npm only**; `publish-crate.yml`
