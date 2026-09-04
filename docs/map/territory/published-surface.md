@@ -133,10 +133,20 @@ How a version gets there is [release](release.md).
   decoder's columns must feed the published renderer's parameters, and every decoder getter must be
   mirrored. Checked by `pnpm typecheck`, not by vitest, and it names what it cannot see. §1b (#831)
   adds the level `keyof DecodedFrame` cannot reach — the decoder's **module-scope** exports, where
-  a new one lands unreviewed at the moment a version range moves
+  a new one lands unreviewed at the moment a version range moves. **It has fired once**: #862's pin
+  bump reddened it on `underlineStyle` / `UnderlineStyle` before a line of that ticket was written,
+  which is the whole design — the window between a value existing upstream and a consumer noticing
+  is closed by the compiler rather than by anyone remembering
 - `justerm-web/src/types.ts` — `FlagBits`, a mapped type over the published `Flags` rather than a
   written-out list (#831), which is why it has no roster to go stale; `DecodedFrame` beside it stays
-  hand-written, and the two differ because only one of them has a second producer
+  hand-written, and the two differ because only one of them has a second producer. `UnderlineStyle`
+  / `UnderlineStyles` (#862) are type-level references to the decoder's module — the enum's *values*
+  are **carried** by `JustermRenderer` rather than re-exported, because a value re-export would make
+  the decoder a static runtime import and the widget loads it dynamically on purpose
+- `justerm-web/src/justerm-renderer.ts` — `cellStyleContext`, extracted for one reason worth naming:
+  wiring `decoder.wireVersion` where the style accessor belongs **typechecks clean** (a function of
+  fewer parameters satisfies one of more; a numeric enum accepts a `number`). Narrowing the
+  parameter makes that class unrepresentable; the identity test beside it covers what is left
 - `justerm-web/package.json` — the two version ranges that decide when a consumed drift is reachable
 
 ## Reference behaviour
