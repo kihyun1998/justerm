@@ -14,7 +14,10 @@
 #![cfg(target_arch = "wasm32")]
 
 use justerm_core::{Cell, CellFlags, Color, Frame, FrameKind, Span, encode_color};
-use justerm_wasm_decode::{build_palette, decode_frame, is_valid_regex, wire_version};
+use justerm_wasm_decode::{
+    UnderlineStyle, build_palette, decode_frame, flags, is_valid_regex, underline_style,
+    wire_version,
+};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_test::*;
 
@@ -288,6 +291,83 @@ fn colour_and_flag_columns_carry_tagged_values() {
     assert_eq!(df.fg().get_index(0), (1 << 24) | 9);
     // flags column carries the raw CellFlags bits.
     assert_eq!(df.flags().get_index(0), CellFlags::BOLD.bits());
+}
+
+// #831: the underline style crosses the boundary as a NAME, read off the `flags` column with no
+// access to the engine — which is the whole deliverable, and the host unit tests cannot reach it.
+// Every value is asserted, not a sample: the bindgen enum is generated code, and a discriminant
+// that shifted would move all of them at once while any single-value check went on passing.
+#[wasm_bindgen_test]
+fn underline_style_crosses_the_boundary_by_name() {
+    use justerm_core::UnderlineStyle as CoreStyle;
+    const ALL: [CoreStyle; 6] = [
+        CoreStyle::None,
+        CoreStyle::Single,
+        CoreStyle::Double,
+        CoreStyle::Curly,
+        CoreStyle::Dotted,
+        CoreStyle::Dashed,
+    ];
+    let cells: Vec<Cell> = ALL
+        .iter()
+        .map(|&st| {
+            // BOLD rides along so this also covers the flags and the field sharing one word
+            // after a real round trip through the wasm typed-array view.
+            let mut f = CellFlags::BOLD;
+            f.set_underline_style(st);
+            Cell::from_parts('x', Color::Default, Color::Default, f)
+        })
+        .collect();
+    let frame = Frame {
+        cols: 80,
+        rows: 24,
+        kind: FrameKind::Partial,
+        spans: vec![Span {
+            line: 0,
+            left: 0,
+            right: 5,
+            cells,
+            combining: Default::default(),
+            links: Default::default(),
+            ucolors: Default::default(),
+        }],
+        link_table: vec![],
+        overlay: Default::default(),
+        ..sample_frame()
+    };
+    let df = decode_frame(&justerm_core::encode(&frame)).expect("decode");
+    let col = df.flags();
+    let f = flags();
+    // The window this test walks must exist: every assertion below lives in a loop over
+    // `col`, and an empty column would pass all of them without observing anything.
+    assert_eq!(col.length(), ALL.len() as u32);
+
+    let read: Vec<UnderlineStyle> = (0..col.length())
+        .map(|i| underline_style(col.get_index(i)))
+        .collect();
+    assert_eq!(
+        read,
+        vec![
+            UnderlineStyle::None,
+            UnderlineStyle::Single,
+            UnderlineStyle::Double,
+            UnderlineStyle::Curly,
+            UnderlineStyle::Dotted,
+            UnderlineStyle::Dashed,
+        ]
+    );
+
+    for i in 0..col.length() {
+        let w = col.get_index(i);
+        // The derived flag agrees with the field on every cell, which is what lets a consumer
+        // that only knows `F.underline` keep drawing (the no-bump decision rests on it).
+        assert_eq!(
+            (w & f.underline != 0),
+            read[i as usize] != UnderlineStyle::None,
+            "cell {i}: F.underline and the style disagree"
+        );
+        assert_ne!(w & f.bold, 0, "cell {i}: BOLD was lost beside the style");
+    }
 }
 
 #[wasm_bindgen_test]

@@ -969,6 +969,35 @@ mod tests {
         }
     }
 
+    /// The published discriminants are core's, value for value.
+    ///
+    /// `underline_style_names_every_style_the_engine_can_store` cannot see this: it compares the
+    /// binding's enum against itself, so a shifted discriminant moves both sides together and the
+    /// check agrees forever. Measured — renumbering `Curly` left the whole suite green, browser
+    /// tests included.
+    ///
+    /// It is a real contract rather than tidiness: `justerm-renderer` forwards bits 11..=13 to its
+    /// shader in **core's** numbering without naming a value, so a consumer that reads the raw
+    /// field and compares it against `UnderlineStyle.Curly` is comparing two paths that must
+    /// agree. The numbers also ship frozen in the generated `Object.freeze({ Curly: 3, … })`.
+    #[test]
+    fn the_published_discriminants_are_cores() {
+        for (binding, core) in [
+            (UnderlineStyle::None, CoreStyle::None),
+            (UnderlineStyle::Single, CoreStyle::Single),
+            (UnderlineStyle::Double, CoreStyle::Double),
+            (UnderlineStyle::Curly, CoreStyle::Curly),
+            (UnderlineStyle::Dotted, CoreStyle::Dotted),
+            (UnderlineStyle::Dashed, CoreStyle::Dashed),
+        ] {
+            assert_eq!(
+                binding as u8, core as u8,
+                "{core:?} is {} in core and {} on the published surface",
+                core as u8, binding as u8
+            );
+        }
+    }
+
     /// A cell with no style reads as `None` — the documented answer, not an inferred zero (#831).
     #[test]
     fn a_cell_with_no_underline_reads_as_none() {
