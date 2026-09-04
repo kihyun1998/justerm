@@ -43,10 +43,21 @@ How a version gets there is [release](release.md).
   that restates it, and when neither is possible, say in the guard what it cannot see.
 - **A field is not a flag, and the published shape has to say which it is.** The same `flags[i]`
   word carries eleven yes-or-no bits and one 3-bit *value*. Exporting a twelfth mask would have
-  passed every guard here and still left every consumer shifting by hand — so the style ships as an
-  accessor returning a named value (`underlineStyle` + `UnderlineStyle`), mirroring the split core
-  already makes. The mirror is kept honest by an **exhaustive `match`**: a variant added upstream
-  fails to compile in the binding rather than arriving on npm unnamed.
+  passed every guard here and still left every consumer shifting by hand, so the style ships as an
+  **accessor** rather than a mask (`underlineStyle`). That much is derived: no mask can answer
+  "which of six".
+- **Whether that accessor returns a *named* value is a separate choice, and this surface is now
+  split on it (#831).** `UnderlineStyle` is the first core enum to cross as a `#[wasm_bindgen]`
+  enum. Three crossed before it and all three ship as bare numbers with the mapping in prose —
+  `cursorShape` (`-> u8`, "0 = Block, 1 = Underline, 2 = Bar"), `kind` (`FrameKind` → 0/1) and the
+  marker kind (0..4) — each mirrored in `justerm-web/src/types.ts` as a plain `number`. A
+  documented scalar would have answered "which of six" identically, so the enum is *chosen*, not
+  derived, and the three precedents are counter-examples rather than agreement. Recorded here
+  unresolved on purpose: the open question is whether the named form is the direction and the three
+  become debt, or whether `underlineStyle` is the outlier. Nothing on this surface decides it.
+- **What the named form does buy, and this part is mechanical:** the core→binding conversion is an
+  **exhaustive `match`**, so a variant added upstream fails to compile in the binding rather than
+  arriving on npm unnamed. A scalar mapping written as `as u8` would carry no such guarantee.
 - **crates.io rewrites relative links**, resolving them against the crate's README subdirectory —
   so `[x](../CLAUDE.md)` in a crate README does reach the repo root. npm does **not**, and
   `justerm-web@0.7.0` shipped two broken links because of it (#473).

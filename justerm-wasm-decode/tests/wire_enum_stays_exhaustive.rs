@@ -120,11 +120,24 @@ const EXPECTED: &[&str] = &[
 
 /// Whether the encoder pattern-matches on this enum — `Name::Variant =>` on one line,
 /// which is the shape every wire mapping in `lib.rs` has.
+///
+/// **The needle is anchored to the left of the arrow**, because the scrutinee's variants are the
+/// side a `match` puts there. Testing the whole line stopped discriminating the moment
+/// `UnderlineStyle` joined the roster (#831): this crate declares an enum of that name *itself*, so
+/// `justerm_core::UnderlineStyle::Curly => UnderlineStyle::Curly` satisfied a bare
+/// `UnderlineStyle::` needle from its **right**-hand side alone — and would have gone on satisfying
+/// it after someone replaced the delegation with a hand-rolled `match (flags >> 11) & 7`, which is
+/// exactly the vacuous state this control exists to report.
+///
+/// Anchoring rather than demanding the crate-qualified form is what keeps it uniform: `FrameKind`
+/// and `MarkerKind` are matched unqualified here (they are imported), so a `justerm_core::` needle
+/// would report those two as missing and fail the control for the wrong reason.
 fn matched_in_encoder(name: &str) -> bool {
     let needle = format!("{name}::");
     ENCODER
         .lines()
-        .any(|l| l.contains(&needle) && l.contains("=>"))
+        .filter_map(|l| l.split_once("=>"))
+        .any(|(scrutinee_side, _)| scrutinee_side.contains(&needle))
 }
 
 /// **Control 1: the scanner sees enums at all**, and sees both kinds. Without this a
@@ -150,7 +163,7 @@ fn the_scanner_finds_both_marked_and_unmarked_enums() {
     );
 }
 
-/// **Control 2: the encoder scan sees the three known wire mappings.** If `lib.rs` is
+/// **Control 2: the encoder scan sees the four known wire mappings.** If `lib.rs` is
 /// refactored so these stop matching this shape, the invariant test goes vacuous, and
 /// this is what says so.
 #[test]

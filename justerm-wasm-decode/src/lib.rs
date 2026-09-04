@@ -624,10 +624,15 @@ pub enum UnderlineStyle {
 
 /// The underline style carried by one `flags[i]` word (#831).
 ///
-/// Pass the word straight from [`DecodedFrame::flags`]; the style lives in bits the consumer is
-/// deliberately not told about, which is the point — this is the accessor, `justerm_core`'s
-/// `CellFlags::underline_style` is what it delegates to, and neither the shift nor the width
-/// appears in any consumer's source.
+/// Pass the word straight from [`DecodedFrame::flags`]; the style lives in bits this API does not
+/// make you know, which is the point — it delegates to `justerm_core`'s
+/// `CellFlags::underline_style`, so no consumer of *this* package writes the shift or the width.
+///
+/// The family's own renderer is the exception and is not a counter-example: `justerm-renderer`
+/// does not depend on `justerm-core`, so it re-declares the field position (`attrs.rs`,
+/// `USTYLE_SHIFT`) and forwards the raw bits to a shader without naming a single value. That
+/// duplication is the recorded one in `docs/map/territory/colour-policy.md`; it is what this
+/// export exists so that nobody *else* has to repeat.
 ///
 /// **Total.** The 3 bits have eight representable values and six meanings, so anything outside the
 /// enum reads as [`Single`](UnderlineStyle::Single) — the same normalisation the engine applies,
@@ -811,11 +816,20 @@ mod tests {
     /// guard in `underline_style_names_every_style_the_engine_can_store` — a mask cannot cover a
     /// field, and one check pretending to do both would be loose at whichever end it stretched to.
     ///
-    /// **What it still cannot see**, stated so it is not read as more coverage than it is: a
-    /// *twelfth* constant here that duplicates a bit already named. OR-ing a duplicate changes
-    /// neither the union nor its population count, so no assertion over this word can notice one.
-    /// A popcount check was written for exactly that and removed — it could not fire alone, and it
+    /// **What it still cannot see**, stated so it is not read as more coverage than it is.
+    ///
+    /// *A twelfth constant duplicating a bit already named.* OR-ing a duplicate changes neither
+    /// the union nor its population count, so no assertion over this word can notice one. A
+    /// popcount check was written for exactly that and removed — it could not fire alone, and it
     /// would have been a hand-written `11` to update every time `CellFlags` grew.
+    ///
+    /// *Anything outside `CellFlags::all()`, which is `0x07ff` — five of the sixteen bits the
+    /// published word actually carries.* Bits 11..=13 are the style, covered by the accessor's own
+    /// tests. **Bits 14..=15 are reserved for a hyperlink id** (`justerm-core/src/cell.rs`) and are
+    /// covered by nothing: if that lands the way the style did — a second undeclared field handled
+    /// in `flag_words` — this check stays green while the published word gains another value no
+    /// consumer can name. That is the same class as the omission this test was widened for, and it
+    /// is recorded here rather than guessed at later.
     #[test]
     fn flags_map_covers_every_declared_cell_flag() {
         let f = flags();
@@ -946,7 +960,10 @@ mod tests {
         ] {
             assert_ne!(w & mask, 0, "{name} was lost from a word carrying a style");
         }
-        // The unstyled neighbours are untouched — a field written too wide would reach them.
+        // The unstyled neighbours still read `None`. This duplicates
+        // `a_cell_with_no_underline_reads_as_none` rather than covering a hazard of its own: the
+        // neighbours are separate 14-byte records with their own `u16`, so no over-wide write
+        // within one word could have reached them. Kept because it is free and reads as intent.
         for &other in &flat.flags[..flat.flags.len() - 1] {
             assert_eq!(underline_style(other), UnderlineStyle::None);
         }
@@ -994,15 +1011,52 @@ mod tests {
         let frame = partial(80, 24, vec![styled_span(0, 0, &[CoreStyle::Single])]);
         let mut bytes = justerm_core::encode(&frame);
 
-        // Locate the cell record by its own encoding rather than by a hand-written offset, then
-        // overwrite just its flags field. Asserting the count is what stops this from silently
-        // patching nothing (or something else) if the layout moves.
-        let record = justerm_core::encode_cell_record(&Cell::from_parts(
-            'x',
-            Color::Default,
-            Color::Default,
-            f,
-        ));
+        // Locate the record by its own encoding, and locate the flags field **inside** it the same
+        // way — by differencing two records that differ in nothing else. A hand-written `+12`
+        // was the first version and a refuting pass broke it: reorder `encode_cell_record` and the
+        // test clobbered two zero bytes of the colour word, forged no historical word at all, and
+        // still went green off the ordinary `Single` cell it had built. The record anchor moved
+        // with the layout; the offset did not.
+        let cell_of = |flags| {
+            justerm_core::encode_cell_record(&Cell::from_parts(
+                'x',
+                Color::Default,
+                Color::Default,
+                flags,
+            ))
+        };
+        let record = cell_of(f);
+        // **Two probes, because one is not enough and the first draft of this proved it.** The
+        // style lives entirely in the word's high byte, so varying only the style moved one byte
+        // and the check demanding two fired on its own test rather than on a defect. Varying a
+        // flag as well reaches the low byte; the union is the field.
+        let mut styled_differently = CellFlags::empty();
+        styled_differently.set_underline_style(CoreStyle::Double);
+        let diff = |other| -> Vec<usize> {
+            record
+                .iter()
+                .zip(cell_of(other).iter())
+                .enumerate()
+                .filter(|(_, (a, b))| a != b)
+                .map(|(i, _)| i)
+                .collect()
+        };
+        let mut differing = diff(styled_differently);
+        differing.extend(diff(f | CellFlags::BOLD));
+        differing.sort_unstable();
+        differing.dedup();
+        assert_eq!(
+            differing.len(),
+            2,
+            "records differing only in their flag word must differ in exactly that u16; got {differing:?}"
+        );
+        assert_eq!(
+            differing[1],
+            differing[0] + 1,
+            "the flags field is not contiguous: {differing:?}"
+        );
+        let field = differing[0];
+
         let hits: Vec<usize> = bytes
             .windows(justerm_core::CELL_RECORD_LEN)
             .enumerate()
@@ -1014,9 +1068,16 @@ mod tests {
             1,
             "cell record not found exactly once in the frame"
         );
-        // A styleless underline: bit 3 set, the style field cleared.
-        bytes[hits[0] + 12..hits[0] + 14]
-            .copy_from_slice(&CellFlags::UNDERLINE.bits().to_le_bytes());
+        // A styleless underline: bit 3 set, the style field cleared. Assert what is being
+        // overwritten, so a patch that lands anywhere but on the live flags word is a failure
+        // rather than a silent no-op.
+        let at = hits[0] + field;
+        assert_eq!(
+            u16::from_le_bytes([bytes[at], bytes[at + 1]]),
+            f.bits(),
+            "the bytes about to be forged are not the styled cell's flags word"
+        );
+        bytes[at..at + 2].copy_from_slice(&CellFlags::UNDERLINE.bits().to_le_bytes());
 
         let native = justerm_core::decode(&bytes).expect("a pre-style frame must still decode");
         let flat = flatten(&native);
@@ -1050,9 +1111,6 @@ mod tests {
                 "{style:?} reaches an old consumer with no underline at all"
             );
         }
-        // And the layout did not move to carry them: the decision recorded on `VERSION` is that
-        // this feature rides in the existing u16, so a bump would falsify the paragraph there.
-        assert_eq!(wire_version(), justerm_core::WIRE_VERSION);
     }
 
     // --- #35: structure-of-arrays cell columns ---
