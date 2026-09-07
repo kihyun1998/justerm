@@ -3638,8 +3638,7 @@ impl Term {
         // the anchored lead.
         if let Some((arow, acol)) = self.repeat_anchor
             && arow == row
-            && (acol == self.cursor.col
-                || (acol + 1 == self.cursor.col && self.grid.cell(row, acol).is_wide()))
+            && acol == self.cursor.col
         {
             return Some(acol);
         }
@@ -3798,14 +3797,18 @@ impl Term {
             prev.push(c);
             UnicodeWidthStr::width(prev.as_str())
         };
+        // Where the cluster ends up, which is not always where it was joined: a promotion at
+        // the last column relocates it to the next row (#303), and the anchor has to follow or
+        // it names a column `vacate_for_wrap` just blanked.
+        let mut at = (row, col);
         if cluster_w == 2 && !self.grid.cell(row, col).is_wide() {
-            self.promote_cluster_to_wide(row, col);
+            at = self.promote_cluster_to_wide(row, col);
         } else if cluster_w == 1 && self.grid.cell(row, col).is_wide() {
             // The mirror case: a default-wide emoji + VS15 (text selector) shrinks to width 1.
             self.demote_cluster_to_narrow(row, col);
         }
         self.damage_span(row, col, col);
-        Some((row, col))
+        Some(at)
     }
 
     /// Shrink a wide cluster cell back to a single-width cell (#295): a default-wide emoji joined by
@@ -3830,13 +3833,12 @@ impl Term {
     /// its spacer, and step the cursor over it. Only reached when a joining scalar (flag's 2nd RI,
     /// VS16) promotes the cluster to width 2. A base pinned at the last column has no room for a
     /// spacer — relocation is a later step; until then it stays narrow (rare, renders single-width).
-    fn promote_cluster_to_wide(&mut self, row: usize, col: usize) {
+    fn promote_cluster_to_wide(&mut self, row: usize, col: usize) -> (usize, usize) {
         let cols = self.grid.cols();
         if col + 1 >= cols {
             // No spacer room at the last column: relocate the whole cluster to the next line as a
             // wide cell (the row soft-wraps), mirroring write_glyph's wide-at-boundary wrap (#303).
-            self.relocate_cluster_wide(row, col);
-            return;
+            return self.relocate_cluster_wide(row, col);
         }
         // Overwriting col+1 with the spacer can orphan the far half of a WIDE glyph standing there
         // (the cursor may have been repositioned before the joining scalar arrived). Reset that
@@ -3875,6 +3877,8 @@ impl Term {
             self.cursor.col = new_col;
         }
         self.damage_span(row, col, col + 1);
+        // Promoted in place: the lead did not move.
+        (row, col)
     }
 
     /// Relocate a last-column narrow cluster to the next line as a wide cell (#303): its base +
@@ -3889,13 +3893,13 @@ impl Term {
     /// The `cols < 2` arm is **unreachable since #547** —
     /// `MIN_COLUMNS = 2` is the floor on every path that sets a width — and is kept only as a
     /// bounds guard for the `col + 1` writes below, not as a described behaviour.
-    fn relocate_cluster_wide(&mut self, row: usize, col: usize) {
+    fn relocate_cluster_wide(&mut self, row: usize, col: usize) -> (usize, usize) {
         let cols = self.grid.cols();
         if cols < 2 || !self.autowrap || !self.wrapline_advances() {
             // Nowhere to place a wide cell — leave it narrow. `!wrapline_advances()` joins the
             // other two for the same reason: with no next row, the relocation would write the
             // cluster over columns 0-1 of the *current* row and destroy whatever is there.
-            return;
+            return (row, col);
         }
         // Capture the base cell (glyph + attrs), its marks, and its extended attrs before
         // vacating. The extended attrs (hyperlink, underline colour) must be read HERE and not
@@ -4001,6 +4005,8 @@ impl Term {
             self.cursor.pending_wrap = false;
         }
         self.damage_span(nr, 0, 1);
+        // The cluster's new home. Callers anchor on this, not on the vacated column.
+        (nr, 0)
     }
 
     // ---- cursor movement (CSI A/B/C/D/G/d/H/f) -------------------------------

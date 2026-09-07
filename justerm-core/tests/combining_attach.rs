@@ -161,43 +161,45 @@ fn a_restored_deferred_wrap_still_attaches_under_the_cursor() {
 
 #[test]
 fn a_mark_after_a_relocated_cluster_follows_it_rather_than_its_vacated_column() {
-    // The window where "the cursor is standing on what the print wrote" and "wherever
-    // the print wrote" come apart, and the reason the first is asked rather than the
-    // second.
+    // Under mode 2027 a narrow base joined by VS16 grows to width 2. At the last column
+    // the pair cannot fit, so `relocate_cluster_wide` vacates that column and re-places
+    // the cluster on the next row — on a one-row grid, reached by *scrolling*, so it
+    // lands back on row 0 at column 0.
     //
-    // Under mode 2027 a narrow base joined by VS16 grows to width 2. At the last
-    // column the pair cannot fit, so `relocate_cluster_wide` vacates it and re-places
-    // the cluster on the next row — and on a one-row grid that "next row" is reached by
-    // *scrolling*, so the cluster lands back on row 0 at column 0 while the record of
-    // where the print wrote still names the far column it came from.
-    //
-    // A helper that trusted that record alone would attach the next mark to a column
-    // the cluster no longer occupies. Reached by proptest (`robustness.rs`) before it
-    // was reached by hand.
-    let mut t = Engine::new(6, 1);
-    t.feed(b"\x1b[?2027h");
-    t.feed("abcde".as_bytes()); // fill columns 0-4, base lands on column 5
-    t.feed("\u{25B6}".as_bytes()); // ▶ , width 1, at column 5
-    t.feed("\u{FE0F}".as_bytes()); // VS16 → width 2 → cannot fit → relocated to column 0
+    // **The width is the whole point of the loop.** The anchor branch keys on the anchor
+    // naming the cursor's own column, and after a relocation the cursor sits at column 2
+    // (or the last column on a 2-wide grid). Only the narrow grids put the *vacated*
+    // column there too — at 6 columns the vacated column is 5, the branch never fires,
+    // and the case is a vacuous window that passes whatever the helper does. This test
+    // was written that way first, and the refuting pass on #865 measured what it missed:
+    // 3 columns dropped the mark onto a blank cell, 2 columns lost it entirely.
+    for cols in [2usize, 3, 4, 6] {
+        let filler = "abcdefgh"[..cols - 1].to_string();
+        let mut t = Engine::new(cols, 1);
+        t.feed(b"\x1b[?2027h");
+        t.feed(filler.as_bytes()); // base lands on the last column
+        t.feed("\u{25B6}".as_bytes()); // a width-1 base
+        t.feed("\u{FE0F}".as_bytes()); // VS16 -> width 2 -> cannot fit -> relocated
 
-    // The window itself, asserted before the behaviour inside it: the cluster really did
-    // move to column 0, so this test cannot pass by never entering the state.
-    assert_eq!(
-        t.grid().cell(0, 0).c(),
-        '\u{25B6}',
-        "precondition: the promoted cluster relocated to column 0"
-    );
-    assert!(
-        t.grid().cell(0, 1).is_wide_spacer(),
-        "precondition: its spacer"
-    );
+        // The window itself, asserted before the behaviour inside it, so a build that
+        // stops relocating reports that rather than passing quietly.
+        assert_eq!(
+            t.grid().cell(0, 0).c(),
+            '\u{25B6}',
+            "precondition at {cols} columns: the cluster relocated to column 0"
+        );
+        assert!(
+            t.grid().cell(0, 1).is_wide_spacer(),
+            "precondition at {cols} columns: its spacer"
+        );
 
-    t.feed("\u{301}".as_bytes()); // a further mark, arriving after the relocation
-    // The relocation soft-wraps, so the logical line is the vacated half followed by
-    // the cluster's new home — the mark has to land on the second half.
-    assert_eq!(
-        t.accessible_text(),
-        format!("abcde\u{25B6}\u{FE0F}{ACUTE}"),
-        "the mark follows the cluster to column 0, not the column it was vacated from"
-    );
+        t.feed("\u{301}".as_bytes()); // a further mark, arriving after the relocation
+        // The relocation soft-wraps, so the logical line is the vacated half followed by
+        // the cluster's new home — the mark has to land on the second half.
+        assert_eq!(
+            t.accessible_text(),
+            format!("{filler}\u{25B6}\u{FE0F}{ACUTE}"),
+            "at {cols} columns the mark follows the cluster, not its vacated column"
+        );
+    }
 }
