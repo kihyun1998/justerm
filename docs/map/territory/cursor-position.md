@@ -64,8 +64,15 @@ pinned tree — the single most consequential positional rule here.
   — **whether `HT` at the last column keeps the flag**, measured across all four by #848. 3-1 for
   keeping; all four preserve the character, where justerm destroyed it.
 
-Everything else about the model — when `write_glyph` arms it, how it survives a resize — remains
-unpinned.
+- [Where a combining mark attaches, and the four mechanisms for locating it](../../agents/reference-facts.md#where-a-combining-mark-attaches-and-the-four-mechanisms-for-locating-it-865-verified-2026-09-07)
+  — **when `write_glyph` arms it**, measured across all four by #865, and the axis this paragraph
+  used to name as unpinned. justerm folds `DECAWM` into the *arm* (`pending_wrap = self.autowrap`);
+  the other three arm unconditionally and test the mode at the *consume* site. The consequence is
+  that this flag **cannot express a pin under `?7l`** — a print that filled the last column and a
+  cursor that merely moved onto it are identical in every cursor field — so anything asking *which
+  cell did the last print land in* must read `Term::repeat_anchor`, not the cursor.
+
+How it survives a resize remains unpinned.
 
 ## Cross-cutting invariants
 

@@ -167,7 +167,16 @@ pub struct Term {
     /// cursor stays in sync with wcwidth apps — clustering is opt-in for exactly that reason (#301).
     grapheme_clustering: bool,
     /// Where the last content-producing print landed — `(row, col)` of that cluster's
-    /// lead cell — or `None` when `REP` (CSI b) has nothing to repeat (#825).
+    /// lead cell — or `None` when nothing has been printed since the last thing that
+    /// cleared it (#825).
+    ///
+    /// **Two readers, and the second one constrains this field harder than the first.**
+    /// `REP` (CSI b) reads the grapheme back off this cell; `Term::cursor_cluster_col`
+    /// asks the narrower question *is the cursor standing on the cell the print wrote*,
+    /// which is the only way to see a pin the deferred-wrap flag cannot express (#865).
+    /// That second reader is why the anchor has to name a cell that **still holds the
+    /// cluster**: a promotion at the last column relocates it to the next row, and the
+    /// join now anchors on where it landed rather than where it was joined.
     ///
     /// The grapheme itself is not stored: it is read back from this cell, which is what
     /// keeps the repeated unit in step with what the cell model actually holds. The
@@ -3584,20 +3593,79 @@ impl Term {
     }
 
     /// The column, on the cursor's row, of the cluster the cursor last printed into —
-    /// or `None` when nothing precedes it on this row.
-    ///
-    /// With pending-wrap the cursor still sits on the just-written last-column glyph, so
-    /// the cluster is *at* the cursor; otherwise it is one column left, and once more
-    /// left over a `WIDE_CHAR_SPACER` to reach its lead. Shared by the combining-mark
+    /// or `None` when nothing precedes it on this row. Shared by the combining-mark
     /// attach point and the mode-2027 join point, which each carried their own copy of
     /// it before #825.
     ///
-    /// **`REP` deliberately does not use this**, and the reason is on
-    /// [`Term::repeat_anchor`]: this reading is wrong whenever autowrap is off and the
-    /// cursor merely advanced onto the last column, which the two callers below cannot
-    /// tell apart and `REP` does not have to, because it records where it wrote.
+    /// # Three cases, and the third one no cursor field can express (#865)
+    ///
+    /// **Pinned by the print.** The cursor sits *on* the glyph it just wrote, so the
+    /// cluster is at the cursor. Two different states arrive here and only one of them
+    /// is visible in the cursor: with autowrap on the print arms `pending_wrap`, but
+    /// with it off [`Term::write_glyph`] arms nothing — the flag is set as
+    /// `pending_wrap = self.autowrap` — while the cursor is pinned all the same. A pin
+    /// and a bare *advance onto* the last column then share every cursor field, and
+    /// reading only the cursor takes the second answer for both: a mark after `?7l` +
+    /// a row-filling print landed one column too far left, and what `selection_text`
+    /// copied was a cluster nobody printed.
+    ///
+    /// [`Term::repeat_anchor`] separates them, because it is not derived from the
+    /// cursor: it is set only by a content-producing print and cleared by every other
+    /// `Perform` callback, so it names the cursor's own column exactly when the print
+    /// put the cursor there. **This is xterm's mechanism rather than a widening of the
+    /// reading below** — xterm keeps `last_written_row` / `last_written_col` behind
+    /// `char_was_written` and attaches the mark there (`charproc.c:3109`), clearing
+    /// that flag inside `ResetWrap` alongside `do_wrap` (`ptyx.h:3252`), which is the
+    /// same pairing the anchor already has. alacritty and xterm.js reach the same
+    /// answer structurally, by never letting the mode reach the arm site at all
+    /// (`term/mod.rs:1136`; `InputHandler.ts:625`, whose `x` is allowed to run to
+    /// `cols`). ghostty probes the cell's content instead (`Terminal.zig:1124`, *"if we
+    /// do not have wraparound, the logic is trickier"*) on its mode-2027 path, while
+    /// its plain zero-width path (`:1329`) still reads the flag and carries the defect
+    /// this case fixes.
+    ///
+    /// **Parked by a restored wrap.** `pending_wrap` alone, with no anchor: `DECSC` /
+    /// move / `DECRC` restores the park while the escapes in between clear the anchor.
+    /// Neither reading subsumes the other, which is why both survive — collapsing them
+    /// onto the anchor steps a column left here, and
+    /// `a_restored_deferred_wrap_still_attaches_under_the_cursor` is the guard.
+    ///
+    /// **Neither.** The cursor is merely *at* a cell, so the cluster is one column
+    /// left, and once more left over a `WIDE_CHAR_SPACER` to reach its lead. This is
+    /// also the answer after a bare cursor move to the last column, which the four
+    /// references answer four different ways: xterm attaches under the cursor
+    /// (`char_was_written` is false after `ResetWrap`, so it falls back to `cur_col`),
+    /// alacritty and ghostty attach one column left, and xterm.js attaches nowhere —
+    /// its `precedingJoinState` is zeroed on every escape transition
+    /// (`EscapeSequenceParser.ts:676`), so `shouldJoin` is false
+    /// (`UnicodeV6.ts:134`) and the mark becomes its own zero-width cell. This engine
+    /// keeps the answer it had, which is the plurality's; #865 deliberately did not
+    /// reopen it, since nothing measured reaches the case.
+    ///
+    /// **`REP` still does not use this**, and the reason is on [`Term::repeat_anchor`]:
+    /// it holds the anchor unconditionally rather than only where the anchor and the
+    /// cursor agree, and a repeat knows a print just happened, so it never needs the
+    /// two fallbacks above.
     fn cursor_cluster_col(&self) -> Option<usize> {
         let row = self.cursor.row;
+        // The pinned case. The wide arm is the same cell reached from its spacer: a
+        // pair that fills the row leaves the cursor on the trailing spacer, one past
+        // the anchored lead.
+        // `col > 0` is not a bounds guard, it preserves a decision. Column 0 is never a
+        // pin — `MIN_COLUMNS = 2`, so a print that fills the last column leaves the cursor
+        // at 1 or beyond — but `push_combining` anchors a base-less mark at column 0
+        // through its own `unwrap_or(0)`, and answering `Some(0)` there would hand
+        // `try_grapheme_join` a cluster to extend where it is documented to decline
+        // (see the `unwrap_or(0)` comment on `push_combining`: *the two differ
+        // deliberately*). Without this, a base-less mark followed by a joining scalar
+        // promoted column 0 to a wide pair that master leaves narrow.
+        if let Some((arow, acol)) = self.repeat_anchor
+            && arow == row
+            && acol == self.cursor.col
+            && self.cursor.col > 0
+        {
+            return Some(acol);
+        }
         let col = if self.cursor.pending_wrap {
             self.cursor.col
         } else if self.cursor.col == 0 {
@@ -3753,14 +3821,18 @@ impl Term {
             prev.push(c);
             UnicodeWidthStr::width(prev.as_str())
         };
+        // Where the cluster ends up, which is not always where it was joined: a promotion at
+        // the last column relocates it to the next row (#303), and the anchor has to follow or
+        // it names a column `vacate_for_wrap` just blanked.
+        let mut at = (row, col);
         if cluster_w == 2 && !self.grid.cell(row, col).is_wide() {
-            self.promote_cluster_to_wide(row, col);
+            at = self.promote_cluster_to_wide(row, col);
         } else if cluster_w == 1 && self.grid.cell(row, col).is_wide() {
             // The mirror case: a default-wide emoji + VS15 (text selector) shrinks to width 1.
             self.demote_cluster_to_narrow(row, col);
         }
         self.damage_span(row, col, col);
-        Some((row, col))
+        Some(at)
     }
 
     /// Shrink a wide cluster cell back to a single-width cell (#295): a default-wide emoji joined by
@@ -3785,13 +3857,12 @@ impl Term {
     /// its spacer, and step the cursor over it. Only reached when a joining scalar (flag's 2nd RI,
     /// VS16) promotes the cluster to width 2. A base pinned at the last column has no room for a
     /// spacer — relocation is a later step; until then it stays narrow (rare, renders single-width).
-    fn promote_cluster_to_wide(&mut self, row: usize, col: usize) {
+    fn promote_cluster_to_wide(&mut self, row: usize, col: usize) -> (usize, usize) {
         let cols = self.grid.cols();
         if col + 1 >= cols {
             // No spacer room at the last column: relocate the whole cluster to the next line as a
             // wide cell (the row soft-wraps), mirroring write_glyph's wide-at-boundary wrap (#303).
-            self.relocate_cluster_wide(row, col);
-            return;
+            return self.relocate_cluster_wide(row, col);
         }
         // Overwriting col+1 with the spacer can orphan the far half of a WIDE glyph standing there
         // (the cursor may have been repositioned before the joining scalar arrived). Reset that
@@ -3830,6 +3901,8 @@ impl Term {
             self.cursor.col = new_col;
         }
         self.damage_span(row, col, col + 1);
+        // Promoted in place: the lead did not move.
+        (row, col)
     }
 
     /// Relocate a last-column narrow cluster to the next line as a wide cell (#303): its base +
@@ -3844,13 +3917,13 @@ impl Term {
     /// The `cols < 2` arm is **unreachable since #547** —
     /// `MIN_COLUMNS = 2` is the floor on every path that sets a width — and is kept only as a
     /// bounds guard for the `col + 1` writes below, not as a described behaviour.
-    fn relocate_cluster_wide(&mut self, row: usize, col: usize) {
+    fn relocate_cluster_wide(&mut self, row: usize, col: usize) -> (usize, usize) {
         let cols = self.grid.cols();
         if cols < 2 || !self.autowrap || !self.wrapline_advances() {
             // Nowhere to place a wide cell — leave it narrow. `!wrapline_advances()` joins the
             // other two for the same reason: with no next row, the relocation would write the
             // cluster over columns 0-1 of the *current* row and destroy whatever is there.
-            return;
+            return (row, col);
         }
         // Capture the base cell (glyph + attrs), its marks, and its extended attrs before
         // vacating. The extended attrs (hyperlink, underline colour) must be read HERE and not
@@ -3956,6 +4029,8 @@ impl Term {
             self.cursor.pending_wrap = false;
         }
         self.damage_span(nr, 0, 1);
+        // The cluster's new home. Callers anchor on this, not on the vacated column.
+        (nr, 0)
     }
 
     // ---- cursor movement (CSI A/B/C/D/G/d/H/f) -------------------------------

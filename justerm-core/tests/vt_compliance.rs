@@ -1914,3 +1914,22 @@ fn rep_caps_a_count_larger_than_the_buffer_can_hold() {
     assert_eq!(small.cursor().col, 2);
     assert_eq!(small.cursor().row, 1);
 }
+
+/// A promotion at the last column relocates the cluster to the next row (#303), and the
+/// repeat anchor has to follow it there. Anchored on the column it was joined at, `REP`
+/// read back the cell `vacate_for_wrap` had just blanked and repeated spaces — visible
+/// only as characters that never appeared, since blanks at a row's end are trimmed away.
+/// Found by the refuting pass on #865, which is the first change to depend on the anchor
+/// naming a cell that still holds the cluster.
+#[test]
+fn rep_after_a_promotion_relocated_the_cluster_repeats_the_cluster() {
+    let mut t = Engine::new(8, 2);
+    t.feed(b"\x1b[?2027h");
+    t.feed("abcdefg\u{25B6}\u{FE0F}".as_bytes()); // ▶ lands on column 7, VS16 widens it → relocates
+    t.feed(b"\x1b[2b"); // REP x2
+    assert_eq!(
+        t.accessible_text(),
+        "abcdefg\u{25B6}\u{FE0F}\u{25B6}\u{FE0F}\u{25B6}\u{FE0F}",
+        "the repeat follows the cluster to its new row, not the column it was vacated from"
+    );
+}

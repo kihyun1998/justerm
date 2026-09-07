@@ -2748,3 +2748,50 @@ from the spec.
 **The consequence of following the spec, stated because it is invisible in the code**: an application
 sending `CSI 1m` then `CSI 21m` *meaning* "stop bold" gets a double underline and keeps its bold.
 `SGR 22` is the arm that cancels bold, in every one of the four.
+
+## Where a combining mark attaches, and the four mechanisms for locating it (#865, verified 2026-09-07)
+
+The axis the three deferred-wrap sections above did not cover. Given a zero-width scalar, **which
+cell does it join?** Every reference answers with a *mechanism* rather than a rule, and the four
+mechanisms are genuinely different — which is why the tally splits differently on the two cases below.
+
+| Reference | How it locates the cell | Site @ pin |
+|---|---|---|
+| xterm | **records where the print wrote** — `use_col = char_was_written ? last_written_col : cur_col` | `charproc.c:3109-3114` @ `6380a3e` |
+| alacritty | reads the wrap flag, which it arms **unconditionally** — `if !input_needs_wrap { column -= 1 }` | `term/mod.rs:1071-1075`, armed at `:1136-1137` @ `852e971` |
+| xterm.js | lets `x` run to `cols`, then steps back — `addCodepointToCell(x - offset, …)` | `src/common/InputHandler.ts:625-632` @ `699f553` |
+| ghostty | **two paths that disagree.** Plain: `left = if (wraparound and pending_wrap) 0 else 1`. Mode 2027: probes the cell — *"if we do not have wraparound, the logic is trickier"* | `src/terminal/Terminal.zig:1329` and `:1124-1129` @ `e6e26e1` |
+
+**Case A — a print filled the last column with `?7l`, then a mark. 3-1 against justerm's old
+behaviour.** xterm, alacritty and xterm.js all attach **under the cursor**. ghostty attaches one
+column left, and that is its *shipped* answer: `grapheme_cluster` carries no `.default = true`
+(`modes.zig:283`), so `:1329` is the live path and `:1124` is not. Recorded because the obvious
+reading is 4-0 — it is only 4-0 if you count ghostty's opt-in path, which contradicts its own
+default one.
+
+**Case B — a bare cursor move onto the last column, then a mark. Four references, four answers,
+so there is no tally at all.**
+
+| Reference | Answer | Why |
+|---|---|---|
+| xterm | under the cursor | `ResetWrap` clears `char_was_written` with `do_wrap` (`ptyx.h:3253-3255`), and `CursorSet` calls it (`cursor.c:93`), so it falls back to `cur_col` |
+| alacritty | one column left | the move cleared `input_needs_wrap` |
+| ghostty | one column left | `:1329`, `left = 1` whenever wraparound is off |
+| xterm.js | **neither** — the mark becomes its own zero-width cell | the intervening CSI zeroes `precedingJoinState` (`EscapeSequenceParser.ts:676`), so `shouldJoin = width === 0 && preceding !== 0` is false (`UnicodeV6.ts:134`) |
+
+justerm keeps *one column left*, which two of the four share. **This section is where an earlier
+claim of "2-2" is corrected**: that count came from pairing xterm with ghostty's mode-2027 path,
+which is not the path ghostty ships and not the path case B reaches — the plain path `return`s
+outright when clustering is on (`Terminal.zig:1324`), so the two are never both live.
+
+⚠ **The anchored value is not the same column in xterm and here.** `screen.c:1069` sets
+`last_written_col = cur_col + real_width - 1` — the **trailing** column of a wide glyph, i.e. its
+`HIDDEN_CHAR` half — where `Term::repeat_anchor` holds the **lead**. So "justerm uses xterm's
+mechanism" is true of the arm/clear pairing and false of the stored value, and any rule ported from
+`charproc.c:3109` has to be re-derived for the lead rather than transcribed.
+
+⚠ **xterm's fallback is not this engine's, either.** With `char_was_written` false xterm reads
+`cur_col` — *under* the cursor — and if that cell is blank it gives up and prints the mark as a base
+glyph (`charproc.c:3140-3145`). justerm falls back to `cursor.col - 1`, which is alacritty's and
+ghostty's. The helper is xterm's arming with alacritty's fallback, and that composite matches no
+single reference — deliberate, and stated so the next reader does not "restore" one half of it.
