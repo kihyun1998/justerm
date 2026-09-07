@@ -66,11 +66,18 @@ pinned tree — the single most consequential positional rule here.
 
 - [Where a combining mark attaches, and the four mechanisms for locating it](../../agents/reference-facts.md#where-a-combining-mark-attaches-and-the-four-mechanisms-for-locating-it-865-verified-2026-09-07)
   — **when `write_glyph` arms it**, measured across all four by #865, and the axis this paragraph
-  used to name as unpinned. justerm folds `DECAWM` into the *arm* (`pending_wrap = self.autowrap`);
-  the other three arm unconditionally and test the mode at the *consume* site. The consequence is
-  that this flag **cannot express a pin under `?7l`** — a print that filled the last column and a
-  cursor that merely moved onto it are identical in every cursor field — so anything asking *which
-  cell did the last print land in* must read `Term::repeat_anchor`, not the cursor.
+  used to name as unpinned. justerm used to fold `DECAWM` into the *arm*
+  (`pending_wrap = self.autowrap`) where the other three arm unconditionally and test the mode at
+  the *consume* site, and the consequence was that the flag **could not express a pin under `?7l`**
+  — a print that filled the last column and a cursor that merely moved onto it were identical in
+  every cursor field. **#869 removed that fold**, so the flag now answers the question again and
+  this engine matches the other three on the arm. Two readers had already paid for the gap: the
+  combining-mark attach point (#865) and the OSC 133 command-text bound (#869).
+
+  A consequence worth carrying, because it moved a decision: with the arm unconditional the flag
+  now *survives* `?7l`, which reverses #848's choice on that axis. #848's ground was explicitly
+  local — *a flag outliving `?7l` contradicts the site that wrote it* — and that site is what
+  changed.
 
 How it survives a resize remains unpinned.
 

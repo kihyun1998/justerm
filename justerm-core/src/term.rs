@@ -170,13 +170,20 @@ pub struct Term {
     /// lead cell — or `None` when nothing has been printed since the last thing that
     /// cleared it (#825).
     ///
-    /// **Two readers, and the second one constrains this field harder than the first.**
-    /// `REP` (CSI b) reads the grapheme back off this cell; `Term::cursor_cluster_col`
-    /// asks the narrower question *is the cursor standing on the cell the print wrote*,
-    /// which is the only way to see a pin the deferred-wrap flag cannot express (#865).
-    /// That second reader is why the anchor has to name a cell that **still holds the
-    /// cluster**: a promotion at the last column relocates it to the next row, and the
-    /// join now anchors on where it landed rather than where it was joined.
+    /// **One reader again — but the constraint the second one imposed is still binding.**
+    /// `REP` (CSI b) reads the grapheme back off this cell, and for a while
+    /// `Term::cursor_cluster_col` also asked *is the cursor standing on the cell the
+    /// print wrote*, because the deferred-wrap flag could not express a pin under `?7l`
+    /// (#865). #869 fixed the flag and that reader went back to it.
+    ///
+    /// **The anchor must still name a cell that holds the cluster, and the reason is
+    /// `REP`'s own, not the departed reader's.** A promotion at the last column
+    /// relocates the cluster to the next row (#303), so the join anchors on where it
+    /// landed rather than where it was joined; anchored on the vacated column, `REP`
+    /// repeats the blanks `vacate_for_wrap` left. Pinned by
+    /// `rep_after_a_promotion_relocated_the_cluster_repeats_the_cluster`. Stated here
+    /// because the rationale that arrived with it named the other reader, and removing
+    /// that reader must not read as permission to undo this.
     ///
     /// The grapheme itself is not stored: it is read back from this cell, which is what
     /// keeps the repeated unit in step with what the cell model actually holds. The
@@ -3470,20 +3477,23 @@ impl Term {
         // The row being left soft-wrapped: mark its last cell so reflow (#7) can
         // tell it from a hard CR/LF line-end.
         if self.cursor.pending_wrap && !self.autowrap {
-            // DECAWM was turned off *after* the flag was armed — `write_glyph` arms it
-            // as `pending_wrap = self.autowrap`, so it is never set while the mode is
-            // off, but nothing clears it when `?7l` arrives. Without this the parked
-            // print wrapped with autowrap disabled, and **all four references print in
-            // place**: xterm clears `do_wrap` and only then asks `WRAPAROUND`
-            // (`charproc.c:7059`, `:7192`), xterm.js un-parks with `x = cols - 1` in
-            // the else arm of its `wraparoundMode` branch (`InputHandler.ts:612`),
-            // ghostty gates the whole consume (`Terminal.zig:1368`) and alacritty's
-            // `wrapline` early-returns on `!LINE_WRAP` (`term/mod.rs:962`).
+            // **This is where DECAWM is tested, and since #869 it is the only place.**
+            // The arm is unconditional, so under `?7l` every row-filling print leaves a
+            // park and this guard is what spends it in place instead of wrapping — not
+            // the narrow "the mode was turned off after the flag was armed" repair it
+            // began as. Deleting it does not merely regress an edge case; it wraps with
+            // autowrap disabled. `decawm.rs::autowrap_off_overwrites_the_last_column` is
+            // the guard on the guard.
             //
-            // Those four split 2-2 on whether the *flag* survives; the tie is broken by
-            // this crate's own arm site, which never sets it while the mode is off, so
-            // a flag that outlives `?7l` contradicts the rule that wrote it. That is
-            // xterm's and xterm.js's shape: consume the park, do not wrap.
+            // **All four references print in place here**: xterm clears `do_wrap` and
+            // only then asks `WRAPAROUND` (`charproc.c:7059-7061`), xterm.js un-parks
+            // with `x = cols - 1` in the else arm of its `wraparoundMode` branch
+            // (`InputHandler.ts:612`), ghostty gates the whole consume
+            // (`Terminal.zig:1368`) and alacritty's `wrapline` early-returns on
+            // `!LINE_WRAP` (`term/mod.rs:962`). What they differ on is whether the flag
+            // is left standing afterwards, and that is a separate axis — see
+            // `docs/agents/reference-facts.md`, where #848's "2-2" is corrected as a
+            // sampling artefact rather than a real split.
             //
             // Pre-existing, and #848 widened it: until that change `put_tab` cleared
             // the flag, so `abc` + `?7l` + `HT` + `X` printed in place by accident.
@@ -3583,9 +3593,13 @@ impl Term {
         let new_col = col + width;
         if new_col >= cols {
             self.cursor.col = cols - 1;
-            // With autowrap off (DECAWM ?7l) the cursor pins to the last column
-            // and the next glyph overwrites in place — no deferred wrap (#63).
-            self.cursor.pending_wrap = self.autowrap;
+            // The park is taken whatever the mode says (#869): the cursor is logically
+            // one past this column either way, and that is the whole of what this flag
+            // means. With `?7l` the *consume* site above spends the park in place, so
+            // the next glyph still overwrites the last column (#63) — but if the mode
+            // is re-enabled before that print, the park is still there and it wraps,
+            // which is what all four references do.
+            self.cursor.pending_wrap = true;
         } else {
             self.cursor.col = new_col;
         }
@@ -3597,75 +3611,46 @@ impl Term {
     /// attach point and the mode-2027 join point, which each carried their own copy of
     /// it before #825.
     ///
-    /// # Three cases, and the third one no cursor field can express (#865)
+    /// # Two cases, and why the first one is trustworthy again (#865, #869)
     ///
-    /// **Pinned by the print.** The cursor sits *on* the glyph it just wrote, so the
-    /// cluster is at the cursor. Two different states arrive here and only one of them
-    /// is visible in the cursor: with autowrap on the print arms `pending_wrap`, but
-    /// with it off [`Term::write_glyph`] arms nothing — the flag is set as
-    /// `pending_wrap = self.autowrap` — while the cursor is pinned all the same. A pin
-    /// and a bare *advance onto* the last column then share every cursor field, and
-    /// reading only the cursor takes the second answer for both: a mark after `?7l` +
-    /// a row-filling print landed one column too far left, and what `selection_text`
-    /// copied was a cluster nobody printed.
+    /// **Parked.** [`Cursor::pending_wrap`] says the cursor is logically one past the
+    /// column it sits on, so the cluster is *at* the cursor — and once left over a
+    /// `WIDE_CHAR_SPACER` to reach its lead.
     ///
-    /// [`Term::repeat_anchor`] separates them, because it is not derived from the
-    /// cursor: it is set only by a content-producing print and cleared by every other
-    /// `Perform` callback, so it names the cursor's own column exactly when the print
-    /// put the cursor there. **This is xterm's mechanism rather than a widening of the
-    /// reading below** — xterm keeps `last_written_row` / `last_written_col` behind
-    /// `char_was_written` and attaches the mark there (`charproc.c:3109`), clearing
-    /// that flag inside `ResetWrap` alongside `do_wrap` (`ptyx.h:3252`), which is the
-    /// same pairing the anchor already has. alacritty and xterm.js reach the same
-    /// answer structurally, by never letting the mode reach the arm site at all
-    /// (`term/mod.rs:1136`; `InputHandler.ts:625`, whose `x` is allowed to run to
-    /// `cols`). ghostty probes the cell's content instead (`Terminal.zig:1124`, *"if we
-    /// do not have wraparound, the logic is trickier"*) on its mode-2027 path, while
-    /// its plain zero-width path (`:1329`) still reads the flag and carries the defect
-    /// this case fixes.
+    /// **This reading was wrong for a whole mode until #869, and the repair is not
+    /// here.** The flag used to be armed as `pending_wrap = self.autowrap`, so with
+    /// `?7l` a print that filled the last column pinned the cursor and armed nothing:
+    /// a pin and a bare *advance onto* that column shared every cursor field, and a
+    /// mark landed one column too far left. #865 worked around it here by consulting
+    /// [`Term::repeat_anchor`]; #869 removed the cause instead — the arm is now
+    /// unconditional and the mode is tested where it is consumed, which is what
+    /// alacritty (`term/mod.rs:1136`), ghostty (`Terminal.zig:1434`) and xterm
+    /// (`charproc.c:7152`) all do — that line is the *exact-fill* arm and is
+    /// unconditional; xterm's *overflow* arm two branches up (`:7145`) is gated on
+    /// `WRAPAROUND`, and the arm site here is only ever reached by the former. The
+    /// workaround was then measured dead across the
+    /// whole core suite, against a positive control that reproduced it under the old
+    /// arming, and removed.
     ///
-    /// **Parked by a restored wrap.** `pending_wrap` alone, with no anchor: `DECSC` /
-    /// move / `DECRC` restores the park while the escapes in between clear the anchor.
-    /// Neither reading subsumes the other, which is why both survive — collapsing them
-    /// onto the anchor steps a column left here, and
-    /// `a_restored_deferred_wrap_still_attaches_under_the_cursor` is the guard.
-    ///
-    /// **Neither.** The cursor is merely *at* a cell, so the cluster is one column
-    /// left, and once more left over a `WIDE_CHAR_SPACER` to reach its lead. This is
-    /// also the answer after a bare cursor move to the last column, which the four
-    /// references answer four different ways: xterm attaches under the cursor
-    /// (`char_was_written` is false after `ResetWrap`, so it falls back to `cur_col`),
-    /// alacritty and ghostty attach one column left, and xterm.js attaches nowhere —
-    /// its `precedingJoinState` is zeroed on every escape transition
-    /// (`EscapeSequenceParser.ts:676`), so `shouldJoin` is false
-    /// (`UnicodeV6.ts:134`) and the mark becomes its own zero-width cell. This engine
-    /// keeps the answer it had, which is the plurality's; #865 deliberately did not
-    /// reopen it, since nothing measured reaches the case.
+    /// **Not parked.** The cursor is merely *at* a cell, so the cluster is one column
+    /// left, and once more left over a spacer. This is also the answer after a bare
+    /// cursor move to the last column, which the four references answer four different
+    /// ways: xterm attaches under the cursor (`char_was_written` is false after
+    /// `ResetWrap`, so it falls back to `cur_col`), alacritty and ghostty attach one
+    /// column left, and xterm.js attaches nowhere — its `precedingJoinState` is zeroed
+    /// on every escape transition (`EscapeSequenceParser.ts:676`), so `shouldJoin` is
+    /// false (`UnicodeV6.ts:134`) and the mark becomes its own zero-width cell. This
+    /// engine keeps the answer it had, which is the plurality's; #865 deliberately did
+    /// not reopen it, since nothing measured reaches the case.
     ///
     /// **`REP` still does not use this**, and the reason is on [`Term::repeat_anchor`]:
-    /// it holds the anchor unconditionally rather than only where the anchor and the
-    /// cursor agree, and a repeat knows a print just happened, so it never needs the
-    /// two fallbacks above.
+    /// it needs the position a print wrote even where the cursor has since moved, which
+    /// is a different question from the one asked here.
     fn cursor_cluster_col(&self) -> Option<usize> {
         let row = self.cursor.row;
         // The pinned case. The wide arm is the same cell reached from its spacer: a
         // pair that fills the row leaves the cursor on the trailing spacer, one past
         // the anchored lead.
-        // `col > 0` is not a bounds guard, it preserves a decision. Column 0 is never a
-        // pin — `MIN_COLUMNS = 2`, so a print that fills the last column leaves the cursor
-        // at 1 or beyond — but `push_combining` anchors a base-less mark at column 0
-        // through its own `unwrap_or(0)`, and answering `Some(0)` there would hand
-        // `try_grapheme_join` a cluster to extend where it is documented to decline
-        // (see the `unwrap_or(0)` comment on `push_combining`: *the two differ
-        // deliberately*). Without this, a base-less mark followed by a joining scalar
-        // promoted column 0 to a wide pair that master leaves narrow.
-        if let Some((arow, acol)) = self.repeat_anchor
-            && arow == row
-            && acol == self.cursor.col
-            && self.cursor.col > 0
-        {
-            return Some(acol);
-        }
         let col = if self.cursor.pending_wrap {
             self.cursor.col
         } else if self.cursor.col == 0 {
@@ -3896,7 +3881,7 @@ impl Term {
         let new_col = col + 2;
         if new_col >= cols {
             self.cursor.col = cols - 1;
-            self.cursor.pending_wrap = self.autowrap;
+            self.cursor.pending_wrap = true;
         } else {
             self.cursor.col = new_col;
         }
@@ -4023,7 +4008,7 @@ impl Term {
         // Cursor just past the wide cell (pending-wrap if it fills a 2-column row).
         if cols <= 2 {
             self.cursor.col = cols - 1;
-            self.cursor.pending_wrap = self.autowrap;
+            self.cursor.pending_wrap = true;
         } else {
             self.cursor.col = 2;
             self.cursor.pending_wrap = false;

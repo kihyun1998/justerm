@@ -90,9 +90,14 @@ pub struct Cursor {
     ///
     /// The site-classes, which are what this comment can honestly enumerate:
     ///
-    /// - **Armed** by the print path, when a glyph fills the last column and
-    ///   `DECAWM` is on — `Term::write_glyph`, `Term::promote_cluster_to_wide`,
-    ///   `Term::relocate_cluster_wide`.
+    /// - **Armed** by the print path, when a glyph fills the last column —
+    ///   `Term::write_glyph`, `Term::promote_cluster_to_wide`,
+    ///   `Term::relocate_cluster_wide`. **Unconditionally, since #869**: `DECAWM` is
+    ///   tested where the park is *consumed*, not where it is armed, which is what the
+    ///   three references that arm this state all do. Folding the mode into the arm
+    ///   made the sentence at the top false for a whole mode — under `?7l` the cursor
+    ///   was pinned with the flag clear — and cost two readers a correct answer
+    ///   (#865, #869) before it was found.
     /// - **Consumed** by the wrap machinery, which is not a clear: `Term::wrapline`
     ///   performs the deferred wrap and only then puts the flag down.
     /// - **Translated** by `Term::resize`: where a reflow leaves the cursor off the
@@ -121,7 +126,14 @@ pub struct Cursor {
     /// row-shift and erase verbs, which write neither field. `IL` and `DL` now clear
     /// (3-1); `SU` and `SD` deliberately do not, because ghostty saves and restores
     /// the flag across those two on purpose (`Terminal.zig:2388`); and `ICH`, `DCH`,
-    /// `ECH`, `EL`, `ED` are **unmeasured**, except that alacritty alone makes
+    /// `ECH`, `EL`, `ED` **were unmeasured until #869 and are now measured**: xterm
+    /// clears in every one of them. `ResetWrap` (`ptyx.h:3253`) puts down `do_wrap`
+    /// *and* `char_was_written` together, and `util.c` calls it from exactly seven
+    /// sites — `InsertLine` `:1295`, `DeleteLine` `:1388`, `InsertChar` `:1497`,
+    /// `DeleteChar` `:1582`, `ClearInLine2` `:1787`, `ClearRight` `:1873`,
+    /// `ClearScreen` `:1926`. This engine keeps the park across all seven, and #869
+    /// widened that divergence's reach from one mode to both. Not a defect on any
+    /// measurement so far, but no longer an unknown. alacritty alone additionally makes
     /// `EL 0` a no-op while parked (`term/mod.rs:1643`). A grep on the cursor fields
     /// will not tell you any of that.
     ///
@@ -129,16 +141,20 @@ pub struct Cursor {
     /// `self.autowrap` before consuming, because `DECAWM` can be turned off after
     /// the flag is armed and the park must then be spent rather than wrapped.
     ///
-    /// **What this flag cannot tell you, and the class the list above does not have
-    /// (#865).** Because it is armed as `pending_wrap = self.autowrap`, it is not a
-    /// general answer to *is the cursor parked on the glyph it just wrote*: with
-    /// `DECAWM` off a print that fills the last column pins the cursor and arms
-    /// nothing, so a pin and a bare move onto that column are identical in every
-    /// field of this struct. `Term::cursor_cluster_col` needs that distinction and
-    /// reads `Term::repeat_anchor` for it. A new reader wanting *which cell did the
-    /// last print land in* should do the same rather than extending this flag —
-    /// and `term::markers`'s `+1` above is the reader that still derives it from
-    /// here, which is why its bound is one short under `?7l`.
+    /// **What this flag is again a general answer to, and what it cost to get there
+    /// (#865, #869).** It now answers *is the cursor parked on the glyph it just
+    /// wrote* in every mode, which is simply the sentence at the top being true. It
+    /// was not, for as long as the arm folded `DECAWM` in: under `?7l` a print that
+    /// filled the last column pinned the cursor and armed nothing, so a pin and a bare
+    /// move onto that column were identical in every field of this struct. Two readers
+    /// paid for that — `Term::cursor_cluster_col`, which grew a workaround in #865 and
+    /// lost it again in #869, and `term::markers`'s `+1` above, whose bound was one
+    /// short under `?7l` until the arm was fixed.
+    ///
+    /// **So a new reader may ask this flag *which cell did the last print land in*,
+    /// and the three arm sites owe that answer.** They are not free to re-introduce a
+    /// condition on the arm without repairing those readers; that is the obligation
+    /// the mode-gated arm carried invisibly for two releases.
     ///
     /// The rule is stated at the property because that is where it is true, the
     /// same reason ADR-0025 D2 gives for the wrap link's per-verb table living in

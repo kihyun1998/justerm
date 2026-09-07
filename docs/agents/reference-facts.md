@@ -2445,15 +2445,51 @@ every reference overwrites the last column in place. On the *mechanism* they spl
 
 | Reference | Flag | Wrap | Site |
 |---|---|---|---|
-| xterm | **consumed unconditionally** — `screen->do_wrap = False;` runs first | then `if ((xw->flags & WRAPAROUND)) WrapLine(xw);` | `charproc.c:7059-7062` and `:7192-7195` @ `6380a3e` |
+| xterm | **consumed unconditionally** — `screen->do_wrap = False;` runs first | then `if ((xw->flags & WRAPAROUND)) WrapLine(xw);` | `charproc.c:7059-7061` @ `6380a3e`. ⚠ **This row used to also cite `:7192-7195`, which is the `!OPT_WIDE_CHARS` build** — the `#else` opens at `:7178`. Corrected by #869; the live consume is the first pair only |
 | xterm.js | **consumed** — the else arm sets `x = cols - 1`, un-parking | `if (wraparoundMode)` guards the wrap branch | `src/common/InputHandler.ts:582`, `:612` @ `699f553` |
 | ghostty | **kept** — the whole consume is gated | `if (cursor.pending_wrap and modes.get(.wraparound))` | `src/terminal/Terminal.zig:1368` @ `e6e26e1` |
 | alacritty | **kept** — `wrapline()` returns before its own clear | `if !self.mode.contains(TermMode::LINE_WRAP) { return; }` | `alacritty_terminal/src/term/mod.rs:962` @ `852e971` |
 
-justerm takes xterm's shape, and the ground is local rather than a majority: this crate arms with
-`pending_wrap = self.autowrap`, so the flag is never set while the mode is off and one that outlives
-`?7l` contradicts the site that wrote it. The other two arm unconditionally, which is what makes
-keeping coherent *for them*.
+⚠ **SUPERSEDED by #869 (2026-09-07). justerm now KEEPS the flag — and measured at the right instant
+that is 4-of-4, not 2-of-2.**
+
+**Where you sample decides the answer, and that is what made this look like a tie twice.** Sampled
+*mid-consume* — does the reference put the flag down while spending the park — it reads 2-2, which
+is the table below. Sampled at the **end of the print**, which is the state the next verb actually
+sees, all four leave a row-filling print parked regardless of DECAWM: xterm re-arms
+unconditionally on the exact-fill path (`charproc.c:7152`, committed at `:7167`), xterm.js's `x++`
+leaves `x == cols`, which *is* its park, and ghostty and alacritty never put it down. #848 read the
+first sampling point and called it 2-2; #869's first draft of this note read it as "matching ghostty
+and alacritty" and understated its own support. Both are the same error.
+
+**Two axes, and naming them is the durable part of this section.**
+
+| axis | question | answer |
+|---|---|---|
+| **arm** | after a row-filling print with `?7l`, is the park taken? | **4-0 yes.** xterm `:7152` (exact fill, unconditional — note the *overflow* arm at `:7145` IS gated on `WRAPAROUND`), alacritty `term/mod.rs:1136`, ghostty `Terminal.zig:1434`, xterm.js `InputHandler.ts:651` |
+| **survive a consume** | after a `?7l` print *spends* that park, does the flag still stand mid-consume? | **2-2.** xterm clears it (`charproc.c:7060`) and xterm.js un-parks; ghostty and alacritty keep it. This is #848's axis and its tally was right |
+
+justerm now matches 4-0 on the arm. On the consume axis it clears and then *re-arms* through the
+same advance, which is xterm's shape too (`:7152` fires again) — so at the end of any print all four
+and justerm agree, and the 2-2 exists only at an instant inside the consume. **A tally is only
+meaningful with its sampling point attached**, which is the thing neither #848 nor #869's first draft
+of this note said.
+The paragraph that stood here read: *"justerm takes xterm's shape, and the ground is local rather
+than a majority: this crate arms with `pending_wrap = self.autowrap`, so the flag is never set while
+the mode is off and one that outlives `?7l` contradicts the site that wrote it. The other two arm
+unconditionally, which is what makes keeping coherent for them."*
+
+Every sentence of that was true and the conclusion still fell, because **the ground was conditional
+on the arm site and the arm site was the thing worth changing**. #869 measured the arm across the
+three references that have one — alacritty `term/mod.rs:1136-1137`, ghostty `Terminal.zig:1434-1436`,
+xterm `charproc.c:7152` — and justerm was **3-0 the outlier**
+and test the mode where the park is *consumed*. Once justerm does the same, "the flag is never set
+while the mode is off" is false and the coherence argument that rejected keeping now supports it.
+
+Recorded at length because this is the failure mode the file exists to prevent: a tally was taken
+correctly, a local coherence argument broke the tie correctly, and **the axis that made the argument
+necessary was never itself measured**. When a tie is broken on "our own shape says otherwise", the
+next question is whether our own shape is the outlier.
 
 **The saved cursor.** ghostty applies its live repair to the saved cursor too — `terminal/Screen.zig:2094`
 @ `e6e26e1`, `if (sc.pending_wrap and sc.x != opts.cols - 1) { sc.pending_wrap = false; sc.x += 1; }`,
@@ -2793,5 +2829,13 @@ mechanism" is true of the arm/clear pairing and false of the stored value, and a
 ⚠ **xterm's fallback is not this engine's, either.** With `char_was_written` false xterm reads
 `cur_col` — *under* the cursor — and if that cell is blank it gives up and prints the mark as a base
 glyph (`charproc.c:3140-3145`). justerm falls back to `cursor.col - 1`, which is alacritty's and
-ghostty's. The helper is xterm's arming with alacritty's fallback, and that composite matches no
-single reference — deliberate, and stated so the next reader does not "restore" one half of it.
+ghostty's.
+
+⚠⚠ **The composite this paragraph warned about is gone (#869), and the warning is kept only to say
+so.** It read: *"The helper is xterm's arming with alacritty's fallback, and that composite matches
+no single reference — deliberate, and stated so the next reader does not 'restore' one half of it."*
+That was true while the helper consulted `repeat_anchor` — xterm's mechanism — to see a pin the
+deferred-wrap flag could not express. #869 fixed the flag's arm, the anchor reader was measured dead
+and removed, and the helper is now one mechanism outright: read an unconditionally-armed park, else
+step back one. **The half that was borrowed from xterm was borrowed to work around a defect, and it
+left when the defect did** — which is the more useful thing to know than the composite ever was.

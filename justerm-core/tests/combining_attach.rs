@@ -4,11 +4,17 @@
 //! (`try_grapheme_join`) locate that cell through one helper, so they are tested
 //! together here.
 //!
-//! The hard case is **autowrap off** (DECAWM `?7l`). With it on, a print that fills
-//! the last column arms the deferred wrap and the cursor is visibly parked *on* the
-//! glyph. With it off the cursor reaches the last column two ways that share every
-//! cursor field — it *filled* the column, or it merely *advanced/was moved onto* it —
-//! and the mark belongs to a different cell in each.
+//! The hard case **was** autowrap off (DECAWM `?7l`), and the reason it was hard has
+//! since been removed. A print that fills the last column arms the deferred wrap and
+//! the cursor is parked *on* the glyph; until #869 that arm folded the mode in, so with
+//! `?7l` the cursor reached the last column two ways that shared every cursor field —
+//! it *filled* the column, or it merely *advanced/was moved onto* it — and the mark
+//! belongs to a different cell in each. #865 told them apart with `Term::repeat_anchor`;
+//! #869 made the arm unconditional and that workaround was measured dead and removed.
+//!
+//! **These tests are kept exactly as they were**, and they still redden if the arm is
+//! re-conditioned — which is the point: they now pin the *behaviour* against whichever
+//! mechanism supplies it, rather than the mechanism they were written against.
 //!
 //! Reference behaviour, all four read at the pins in `docs/agents/thegraph.md`:
 //! a mark after a print that filled the last column attaches **under the cursor** in
@@ -148,10 +154,12 @@ fn autowrap_off_a_second_mark_stacks_on_the_same_pinned_cell() {
 
 #[test]
 fn a_restored_deferred_wrap_still_attaches_under_the_cursor() {
-    // The guard on collapsing the two readings into one. DECSC / move / DECRC restores
-    // the *park* while every escape in between clears the record of where the last
-    // print wrote — so a helper that consulted only that record would step a column
-    // left here. Both readings are load-bearing; neither subsumes the other.
+    // Written as the guard on collapsing #865's two readings into one: DECSC / move /
+    // DECRC restores the *park* while every escape in between clears the record of where
+    // the last print wrote, so a helper consulting only that record stepped a column left
+    // here. There is one reading again since #869, so this no longer separates two
+    // mechanisms — it pins that a restored park is still a park, which is
+    // `Term::settle_restored_wrap`'s contract and nothing else asserts.
     let mut t = Engine::new(3, 2);
     t.feed(b"abc"); // fills the row, arms the deferred wrap
     t.feed(b"\x1b7"); // DECSC
@@ -172,13 +180,16 @@ fn a_mark_after_a_relocated_cluster_follows_it_rather_than_its_vacated_column() 
     // the cluster on the next row — on a one-row grid, reached by *scrolling*, so it
     // lands back on row 0 at column 0.
     //
-    // **The width is the whole point of the loop.** The anchor branch keys on the anchor
-    // naming the cursor's own column, and after a relocation the cursor sits at column 2
-    // (or the last column on a 2-wide grid). Only the narrow grids put the *vacated*
-    // column there too — at 6 columns the vacated column is 5, the branch never fires,
-    // and the case is a vacuous window that passes whatever the helper does. This test
-    // was written that way first, and the refuting pass on #865 measured what it missed:
-    // 3 columns dropped the mark onto a blank cell, 2 columns lost it entirely.
+    // **The width sweep is kept, and what it buys has changed.** It was written because
+    // #865's anchor branch keyed on the anchor naming the cursor's own column, so only
+    // the narrow grids made it fire — at 6 columns the vacated column is 5, the branch
+    // never fired, and the case was a vacuous window that passed whatever the helper did
+    // (the refuting pass measured what that missed: 3 columns dropped the mark onto a
+    // blank cell, 2 columns lost it entirely). That branch is gone since #869. The sweep
+    // now guards the thing that outlived it — `try_grapheme_join` anchoring on where a
+    // relocated cluster *landed* rather than where it was joined, which `REP` still
+    // depends on — and the narrow widths remain the ones where a wrong anchor collides
+    // with a live cell instead of a harmless one.
     for cols in [2usize, 3, 4, 6] {
         let filler = "abcdefgh"[..cols - 1].to_string();
         let mut t = Engine::new(cols, 1);
@@ -213,13 +224,13 @@ fn a_mark_after_a_relocated_cluster_follows_it_rather_than_its_vacated_column() 
 #[test]
 fn a_base_less_mark_at_column_zero_is_not_a_cluster_the_join_may_extend() {
     // `push_combining` anchors a mark that opens a row at column 0 through its own
-    // `unwrap_or(0)`; the join path is documented to decline that case instead, and the
-    // two differ deliberately. The anchor branch must not quietly reconcile them — a
-    // pin is never at column 0 anyway, because `MIN_COLUMNS = 2` puts a filled last
-    // column at 1 or beyond.
+    // `unwrap_or(0)`; the join path declines that case instead, and the two differ
+    // deliberately. `cursor_cluster_col`'s `col == 0 -> None` arm is what keeps them
+    // apart, and it records no reason of its own — this test is the record.
     //
-    // Reached by the completeness pass on #865, which measured this class firing far
-    // more often than the one the fix was written for.
+    // Reached by the completeness pass on #865, where a helper branch briefly answered
+    // `Some(0)` here and reconciled them by accident; that branch is gone since #869,
+    // and the decision it threatened is still only stated here.
     let mut t = Engine::new(6, 2);
     t.feed(b"\x1b[?2027h");
     t.feed("\u{25B6}".as_bytes());
@@ -228,5 +239,24 @@ fn a_base_less_mark_at_column_zero_is_not_a_cluster_the_join_may_extend() {
     assert!(
         !t.grid().cell(0, 0).is_wide(),
         "the join declined, so nothing promoted column 0 to a wide pair"
+    );
+}
+
+#[test]
+fn a_mark_after_a_resize_still_reaches_the_glyph_the_print_filled() {
+    // The case #865 could not fix and #869 does, which is the sharpest evidence that
+    // the workaround was incomplete rather than merely redundant: `Term::resize` clears
+    // the anchor #865 consulted, so the pin became invisible again the moment the screen
+    // changed size. Fixing the flag instead of reading around it covers this for free.
+    //
+    // Measured on master before #869: `"ab\u{301}c"` — the mark on `b`.
+    let mut t = Engine::new(3, 2);
+    t.feed(b"\x1b[?7labc"); // fills the row; the cursor is pinned on `c`
+    t.resize(6, 2); // the anchor is cleared here; the park is translated
+    t.feed(ACUTE.as_bytes());
+    assert_eq!(
+        t.accessible_text(),
+        format!("abc{ACUTE}"),
+        "the mark belongs to `c` across a resize too"
     );
 }

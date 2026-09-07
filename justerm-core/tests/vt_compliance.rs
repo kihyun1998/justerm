@@ -1360,6 +1360,15 @@ fn reverse_index_consumes_the_deferred_wrap() {
 /// `?7l` arriving *after* the deferred wrap is armed must not wrap: the park is
 /// consumed and the glyph overwrites the last column in place, which is what all
 /// four references do (#848).
+///
+/// **The flag now survives that print (#869), and the reference ground moved with it.**
+/// #848 chose xterm's shape — consume the park *and* put the flag down — on a ground
+/// that was local rather than a majority: this crate armed with
+/// `pending_wrap = self.autowrap`, so a flag outliving `?7l` contradicted the site that
+/// wrote it. #869 made the arm unconditional, which is what all three references that
+/// arm do, so that ground is gone and this engine now matches ghostty and alacritty,
+/// which keep it. The observable — overwrite in place, never wrap — is unchanged and is
+/// what the assertions below lead with.
 #[test]
 fn autowrap_off_after_the_wrap_is_armed_prints_in_place() {
     let mut term = Engine::new(3, 2);
@@ -1371,7 +1380,17 @@ fn autowrap_off_after_the_wrap_is_armed_prints_in_place() {
 
     assert_eq!(term.grid().cell(0, 2).c(), 'X');
     assert_eq!(term.grid().cell(1, 0).c(), ' ');
-    assert!(!term.cursor().pending_wrap);
+    // Re-armed by the print that just landed, because the cursor is again logically one
+    // past the column it sits on — the flag's stated meaning, now true under `?7l` too.
+    assert!(term.cursor().pending_wrap);
+
+    // What the surviving flag must not buy: a *second* print still overwrites in place
+    // and still does not wrap. This is the behaviour the old assertion was protecting,
+    // and it is asserted directly here rather than through the flag that stood in for it.
+    term.feed(b"Y");
+    assert_eq!(term.grid().cell(0, 2).c(), 'Y');
+    assert_eq!(term.grid().cell(1, 0).c(), ' ', "still nothing wrapped");
+    assert_eq!(term.cursor().row, 0, "the cursor never left row 0");
 }
 
 /// The control for the test above: with `?7l` set *before* anything is printed the
@@ -1932,4 +1951,78 @@ fn rep_after_a_promotion_relocated_the_cluster_repeats_the_cluster() {
         "abcdefg\u{25B6}\u{FE0F}\u{25B6}\u{FE0F}\u{25B6}\u{FE0F}",
         "the repeat follows the cluster to its new row, not the column it was vacated from"
     );
+}
+
+/// Re-enabling autowrap after a row-filling print *does* wrap the next glyph (#869).
+///
+/// The mirror of `autowrap_off_after_the_wrap_is_armed_prints_in_place`, and the case
+/// the unconditional arm changed: the park is taken while the mode is off, so when the
+/// mode comes back the cursor is still logically one past the last column and the next
+/// print continues on the following row. Before #869 the park was never taken under
+/// `?7l`, so the glyph overwrote the last column instead.
+///
+/// All four references wrap here, each because its own park outlives the mode: xterm
+/// arms `do_wrap` on the exact-fill path unconditionally (`charproc.c:7152`, committed
+/// at `:7167`) and consumes it under `WRAPAROUND` (`:7059-7061`) — note its *overflow*
+/// arm at `:7145` IS gated, and `:7211` is the non-default `!OPT_WIDE_CHARS` build, which
+/// an earlier draft of this comment cited by mistake; alacritty's `input_needs_wrap`
+/// (`term/mod.rs:1136`) reaches `wrapline` (`:1088`), which returns early only while
+/// `LINE_WRAP` is clear (`:962`); ghostty gates the consume, not the arm
+/// (`Terminal.zig:1368`); and xterm.js simply leaves `x == cols` (`InputHandler.ts:651`,
+/// no mode test) so its overflow check wraps on the next write.
+///
+/// `DECSTR` is covered beside `?7h` because it restores DECAWM too, so it reaches this
+/// state without the stream ever naming the mode.
+#[test]
+fn autowrap_re_enabled_after_a_filled_row_wraps_the_next_glyph() {
+    for reenable in [&b"\x1b[?7h"[..], &b"\x1b[!p"[..]] {
+        let mut term = Engine::new(3, 2);
+        term.feed(b"\x1b[?7l");
+        term.feed(b"abc"); // fills the row; the park is taken even with the mode off
+        term.feed(reenable);
+        term.feed(b"X");
+
+        assert_eq!(
+            term.grid().cell(0, 2).c(),
+            'c',
+            "re-enable {reenable:?}: the last column is not overwritten"
+        );
+        assert_eq!(
+            term.grid().cell(1, 0).c(),
+            'X',
+            "re-enable {reenable:?}: the glyph continues on the next row"
+        );
+        assert_eq!(term.cursor().row, 1, "re-enable {reenable:?}");
+    }
+}
+
+/// A resize repairs a park taken with autowrap off, the same as one taken with it on
+/// (#869). Before the unconditional arm there was no park to repair here, so a print
+/// after the resize overwrote the last column of the old width instead of continuing
+/// past it — visible in the reported caret column as well as on screen.
+///
+/// `Term::resize` translates a park that is no longer at the last column into a real
+/// column, which is what makes the widened row continue rather than overwrite.
+///
+/// **This engine is 1-of-3 here, and that is worth stating plainly rather than
+/// discovering later.** Only alacritty repairs the *live* cursor
+/// (`grid/resize.rs:113-116`, `:248-251`). ghostty's repair is on the **saved** cursor
+/// only — `Screen.zig:2086` opens `const sc = &self.saved_cursor.?` and there is no
+/// live-cursor counterpart (`PageList.zig`'s `pending_wrap` belongs to its internal
+/// `ReflowCursor`, not the terminal's). xterm does not translate at resize at all. So
+/// before #869 this engine sat with those two by accident — it had no park to repair
+/// under `?7l` — and now sits with alacritty on purpose. The move is a consequence of
+/// the unconditional arm, not a separate choice, and it is pinned here so it is a
+/// decision somebody can revisit rather than a side effect nobody wrote down.
+#[test]
+fn a_park_taken_with_autowrap_off_survives_a_widening_resize() {
+    let mut term = Engine::new(4, 3);
+    term.feed(b"\x1b[?7l");
+    term.feed(b"abcd"); // fills the 4-column row
+    term.resize(8, 3);
+    term.feed(b"X");
+
+    let row: String = (0..8).map(|c| term.grid().cell(0, c).c()).collect();
+    assert_eq!(row, "abcdX   ", "the row continues past the old width");
+    assert_eq!(term.cursor().col, 5);
 }

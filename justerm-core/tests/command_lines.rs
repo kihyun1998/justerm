@@ -208,3 +208,34 @@ fn alt_screen_yields_no_commands() {
 
     assert!(t.command_lines().is_empty());
 }
+
+/// #869 — a command that exactly fills its row keeps its last character with autowrap
+/// **off**, which is where the deferred-wrap flag stops standing in for "the cursor is
+/// one past the last column".
+///
+/// The `C` mark's column is an exclusive bound on the command text, so it wants a value
+/// one past the last column. That value is not a column, so the bound is carried as
+/// `cursor.col + pending_wrap` (#562) — correct only while a row-filling print actually
+/// arms the flag. `?7l` is the case where it does not.
+///
+/// The autowrap-on row is the control: it passed before #869 and must keep passing, so a
+/// green here cannot come from the bound having been widened for everyone.
+#[test]
+fn a_row_filling_command_keeps_its_last_character_with_autowrap_off() {
+    for pre in [&b"\x1b[?7l"[..], &b""[..]] {
+        let mut t = Engine::new(6, 2);
+        t.feed(pre);
+        // `$ ` + `abcd` is exactly six columns: the command ends on the last one.
+        t.feed(b"\x1b]133;A\x07$ \x1b]133;B\x07abcd\x1b]133;C\x07");
+        let got: Vec<String> = t
+            .command_lines()
+            .iter()
+            .map(|c| c.command.clone())
+            .collect();
+        assert_eq!(
+            got,
+            vec!["abcd".to_string()],
+            "autowrap prefix {pre:?}: the command's last column is inside the bound"
+        );
+    }
+}
